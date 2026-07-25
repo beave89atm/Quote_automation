@@ -1,0 +1,171 @@
+from __future__ import annotations
+
+from typing import Any
+
+import requests
+
+from .auth import AccessToken, SecturaFabAuthError, fetch_password_token
+from .config import SecturaFabConfig
+
+
+class SecturaFabApiError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        body: Any = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
+
+
+class SecturaFabClient:
+    """Thin authenticated HTTP client for SecturaFAB REST endpoints."""
+
+    def __init__(
+        self,
+        config: SecturaFabConfig | None = None,
+        session: requests.Session | None = None,
+    ) -> None:
+        self.config = config or SecturaFabConfig.from_env()
+        self.session = session or requests.Session()
+        self._token: AccessToken | None = None
+
+    def authenticate(self, force: bool = False) -> AccessToken:
+        if self._token and not self._token.is_expired and not force:
+            return self._token
+        self._token = fetch_password_token(self.config, session=self.session)
+        return self._token
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: Any = None,
+        data: Any = None,
+        headers: dict[str, str] | None = None,
+        allow_absolute: bool = False,
+        retry_on_auth_error: bool = True,
+    ) -> requests.Response:
+        token = self.authenticate()
+        if path.startswith("http://") or path.startswith("https://"):
+            if not allow_absolute:
+                raise ValueError("Absolute URLs require allow_absolute=True")
+            url = path
+        else:
+            url = f"{self.config.api_root}/{path.lstrip('/')}"
+
+        req_headers = {
+            "Accept": "application/json",
+            "Authorization": token.authorization_header,
+        }
+        if headers:
+            req_headers.update(headers)
+
+        response = self.session.request(
+            method=method.upper(),
+            url=url,
+            params=params,
+            json=json,
+            data=data,
+            headers=req_headers,
+            timeout=self.config.timeout_seconds,
+        )
+
+        if response.status_code in (401, 403) and retry_on_auth_error:
+            self.authenticate(force=True)
+            assert self._token is not None
+            req_headers["Authorization"] = self._token.authorization_header
+            response = self.session.request(
+                method=method.upper(),
+                url=url,
+                params=params,
+                json=json,
+                data=data,
+                headers=req_headers,
+                timeout=self.config.timeout_seconds,
+            )
+
+        return response
+
+    def get_json(self, path: str, **kwargs: Any) -> Any:
+        response = self.request("GET", path, **kwargs)
+        return self._parse_or_raise(response)
+
+    def post_json(self, path: str, payload: Any = None, **kwargs: Any) -> Any:
+        response = self.request("POST", path, json=payload, **kwargs)
+        return self._parse_or_raise(response)
+
+    def put_json(self, path: str, payload: Any = None, **kwargs: Any) -> Any:
+        response = self.request("PUT", path, json=payload, **kwargs)
+        return self._parse_or_raise(response)
+
+    def delete_json(self, path: str, **kwargs: Any) -> Any:
+        response = self.request("DELETE", path, **kwargs)
+        if response.status_code == 204:
+            return None
+        return self._parse_or_raise(response)
+
+    def whoami(self) -> Any:
+        """Best-effort current-user probe across common Account routes."""
+        candidates = [
+            "Account/UserInfo",
+            "Account/Me",
+            "account/userinfo",
+            "Users/Me",
+            "User",
+        ]
+        errors: list[str] = []
+        for path in candidates:
+            response = self.request("GET", path, retry_on_auth_error=False)
+            if response.status_code < 400:
+                return self._parse_or_raise(response)
+            errors.append(f"{path} -> {response.status_code}")
+        raise SecturaFabApiError(
+            "Could not resolve current user via known Account routes: "
+            + "; ".join(errors)
+        )
+
+    @staticmethod
+    def _parse_or_raise(response: requests.Response) -> Any:
+        if response.status_code >= 400:
+            body: Any
+            try:
+                body = response.json()
+            except ValueError:
+                body = response.text[:1000]
+            raise SecturaFabApiError(
+                f"API request failed ({response.status_code}) for {response.url}",
+                status_code=response.status_code,
+                body=body,
+            )
+        if not response.content:
+            return None
+        try:
+            return response.json()
+        except ValueError:
+            return response.text
+
+
+def ping_token_endpoint(config: SecturaFabConfig | None = None) -> dict[str, Any]:
+    """
+    Validate credentials by requesting a token.
+
+    Returns a redacted summary suitable for logging.
+    """
+    cfg = config or SecturaFabConfig.from_env()
+    try:
+        token = fetch_password_token(cfg)
+    except (SecturaFabAuthError, ValueError) as exc:
+        return {"ok": False, "error": str(exc)}
+    return {
+        "ok": True,
+        "token_type": token.token_type,
+        "expires_at": token.expires_at.isoformat() if token.expires_at else None,
+        "access_token_preview": f"{token.access_token[:8]}…",
+        "raw_keys": sorted((token.raw or {}).keys()),
+    }
