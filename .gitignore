@@ -9,3 +9,11 @@ dist/
 build/
 .discovery/
 *.log
+data/
+frontend/node_modules/
+frontend/dist/
+.DS_Store
+# Large local installers / customer drawing working copies
+tools/*.exe
+references/80341805/
+references/73476047/

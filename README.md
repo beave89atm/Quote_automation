@@ -1,48 +1,74 @@
-# Quote automation
+# Quote automation — Kannon standalone app (weld-first)
 
-Automates fabrication quoting workflows, starting with a SecturaFAB REST API client.
+Team web app for drawing drop → weld takeoff → weld/fit-up times → human review.
 
-## SecturaFAB API
+SecturaFAB client code remains in `secturafab/` for a later integration phase.
 
-Auth uses OAuth2 resource-owner password credentials against:
+## Quick start
 
-`POST https://www.secturafab.com/token`
+### 1. Python deps
 
-### Setup
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-# edit .env with your SecturaFAB username/password (and tenant if required)
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-### Commands
+### 2. Shop rates
 
-```bash
-# Validate login
-python -m secturafab auth-check
+Edit [`config/shop_rates.yaml`](config/shop_rates.yaml) (see [`config/README.md`](config/README.md)):
+- Shared app password (default `kannon`)
+- Weld IPM by size
+- Fit-up factors (with / without fixture)
+- Default efficiency %
 
-# Authenticate + probe common API routes; writes .discovery/
-python -m secturafab discover
+### 3. Frontend
 
-# Current user (if Account route exists)
-python -m secturafab whoami
+A ready-to-serve UI lives in [`frontend/dist`](frontend/dist) (vanilla JS). The React/Vite source in [`frontend/src`](frontend/src) is available when Node/npm is installed:
 
-# List quotes (adaptive path probing)
-python -m secturafab list-quotes --top 10
+```powershell
+cd frontend
+npm install
+npm run build
 ```
 
-### Library usage
+### 4. Run API (serves UI from `frontend/dist`)
 
-```python
-from secturafab import SecturaFabClient
-from secturafab.quotes import QuoteService
-
-client = SecturaFabClient()
-client.authenticate()
-quotes = QuoteService(client).list_quotes()
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-After `discover` succeeds, use the routes/OpenAPI dump in `.discovery/` to harden quote create/update payloads for your tenant.
+Open http://localhost:8000 — password from `shop_rates.yaml`.
+
+### Dev UI (hot reload)
+
+```powershell
+# terminal 1
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
+
+# terminal 2
+cd frontend
+npm run dev
+```
+
+Open http://localhost:5173
+
+## Workflow
+
+1. Drag/drop a **PDF** (required) and optional **STP/STEP**
+2. App extracts weld sizes + estimates lengths (STP when present)
+3. Review inches by size, efficiency %, flags
+4. Recalculate → Accept or Needs info
+5. Export printable HTML or JSON
+
+## Tests
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+## SecturaFAB (paused)
+
+```powershell
+.\.venv\Scripts\python.exe -m secturafab auth-check
+```
+
+Credentials live in `.env` (see `.env.example`).

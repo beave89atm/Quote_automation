@@ -1,0 +1,44 @@
+# Kannon shop rates — REPLACE PLACEHOLDERS with your real numbers.
+# Times use effective shop IPM (includes typical repositioning), not pure arc-on speed.
+
+app:
+  # Shared password for team access (v1). Leave empty to disable auth gate.
+  shared_password: "kannon"
+  default_efficiency_pct: 85
+
+# Office drawing library (SharePoint / OneDrive synced path).
+# When a PDF is uploaded without an STP, the app looks here for a matching
+# part folder and attaches .stp/.step plus lists sibling component PDFs.
+# Override with env KANNON_DRAWING_LIBRARY (semicolon-separated paths).
+drawing_library:
+  roots:
+    - "C:\\Users\\Kyle\\Kannon Manufacturing Inc\\Fort Worth - Documents\\Engineering\\Customer Drawings"
+  auto_attach_stp: true
+
+weld:
+  # Inches per minute by fillet size (effective).
+  ipm:
+    "1/8": 10.0
+    "3/16": 8.0
+    "1/4": 6.0
+    "5/16": 5.0
+    "3/8": 4.0
+    "1/2": 3.0
+  default_ipm: 5.0
+
+fitup:
+  # Minutes of fit-up = base_minutes + (weld_minutes * pct_of_weld) + (joint_count * per_joint_minutes)
+  no_fixture:
+    base_minutes: 10.0
+    pct_of_weld: 0.35
+    per_joint_minutes: 2.0
+  with_fixture:
+    base_minutes: 5.0
+    pct_of_weld: 0.15
+    per_joint_minutes: 0.75
+
+# Rules the takeoff engine should never invent — flag for human review instead.
+always_ask:
+  - cover_plate_welds_not_named_in_notes
+  - kingpin_diameter_if_not_dimensioned
+  - ambiguous_both_sides_vs_all_around
