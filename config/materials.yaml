@@ -1,0 +1,290 @@
+# Material densities and plate weight helpers for assembly weight estimates.
+# Structural steel grades share essentially the same density; grade is tracked for
+# labeling / welding notes. Sources: mild steel ~0.2836 lb/in³, 40.8 lb/ft² per inch thick.
+
+default_material: a36
+
+# denser / more specific patterns should appear earlier in detection (see quote_core/weight.py).
+materials:
+  a656_gr80:
+    label: A656 Grade 80
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "A656 GR 80"
+      - "A656 GR80"
+      - "A656 GRADE 80"
+      - "A656-80"
+      - "656 GR 80"
+      - "656 GRADE 80"
+
+  a572_gr65:
+    label: A572 Grade 65
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "A572 GR 65"
+      - "A572 GR65"
+      - "A572 GRADE 65"
+      - "A572-65"
+
+  a572_gr55:
+    label: A572 Grade 55
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "A572 GR 55"
+      - "A572 GR55"
+      - "A572 GRADE 55"
+      - "A572-55"
+
+  a572_gr50:
+    label: A572 Grade 50
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "A572 GR 50"
+      - "A572 GR50"
+      - "A572 GRADE 50"
+      - "A572-50"
+      - "ASTM A572 50"
+
+  a572_gr42:
+    label: A572 Grade 42
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "A572 GR 42"
+      - "A572 GR42"
+      - "A572 GRADE 42"
+      - "A572-42"
+
+  a656_gr70:
+    label: A656 Grade 70
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "A656 GR 70"
+      - "A656 GR70"
+      - "A656 GRADE 70"
+      - "A656-70"
+
+  a656_gr60:
+    label: A656 Grade 60
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "A656 GR 60"
+      - "A656 GR60"
+      - "A656 GRADE 60"
+      - "A656-60"
+
+  a514:
+    label: A514 (T-1 / quenched & tempered)
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "A514"
+      - "T-1"
+      - "T1 STEEL"
+
+  a992:
+    label: A992
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "A992"
+      - "ASTM A992"
+
+  a500:
+    label: A500 (HSS / tube)
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "A500"
+      - "ASTM A500"
+
+  a516_gr70:
+    label: A516 Grade 70
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "A516 GR 70"
+      - "A516 GR70"
+      - "A516 GRADE 70"
+      - "A516-70"
+
+  ar400:
+    label: AR400 abrasion-resistant
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "AR400"
+      - "AR-400"
+      - "AR 400"
+
+  ar450:
+    label: AR450 abrasion-resistant
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "AR450"
+      - "AR-450"
+      - "AR 450"
+
+  ar500:
+    label: AR500 abrasion-resistant
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "AR500"
+      - "AR-500"
+      - "AR 500"
+
+  a36:
+    label: A36
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "A36"
+      - "ASTM A36"
+      - "MILD STEEL"
+      - "CARBON STEEL"
+
+  # Keep a generic key for fallback / older jobs
+  carbon_steel:
+    label: Carbon / mild steel (unspecified grade)
+    family: carbon_steel
+    density_lb_in3: 0.2836
+    psf_per_inch: 40.8
+    aliases:
+      - "STEEL"
+      - "HR STEEL"
+      - "PLATE STEEL"
+
+  stainless_304:
+    label: Stainless 304
+    family: stainless
+    density_lb_in3: 0.289
+    psf_per_inch: 41.6
+    aliases:
+      - "304SS"
+      - "304 SS"
+      - "SS304"
+      - "STAINLESS 304"
+      - "304 STAINLESS"
+
+  stainless_316:
+    label: Stainless 316
+    family: stainless
+    density_lb_in3: 0.289
+    psf_per_inch: 41.6
+    aliases:
+      - "316SS"
+      - "316 SS"
+      - "SS316"
+      - "STAINLESS 316"
+      - "316 STAINLESS"
+
+  stainless_300:
+    label: Stainless 300-series (unspecified)
+    family: stainless
+    density_lb_in3: 0.289
+    psf_per_inch: 41.6
+    aliases:
+      - "STAINLESS"
+      - "STAINLESS STEEL"
+      - "SS "
+
+  aluminum_6061:
+    label: Aluminum 6061
+    family: aluminum
+    density_lb_in3: 0.098
+    psf_per_inch: 14.1
+    aliases:
+      - "6061"
+      - "6061-T6"
+      - "AL 6061"
+      - "ALUMINUM 6061"
+
+  aluminum_5052:
+    label: Aluminum 5052
+    family: aluminum
+    density_lb_in3: 0.097
+    psf_per_inch: 14.0
+    aliases:
+      - "5052"
+      - "AL 5052"
+      - "ALUMINUM 5052"
+
+  aluminum:
+    label: Aluminum (unspecified)
+    family: aluminum
+    density_lb_in3: 0.098
+    psf_per_inch: 14.1
+    aliases:
+      - "ALUMINUM"
+      - "ALUMINIUM"
+      - "ALUM"
+
+# Bounding-box solids overestimate open sections. Apply fill factors by solid kind.
+bbox_fill_factor:
+  plate: 1.0
+  cover: 1.0
+  angle: 0.35
+  channel: 0.42
+  kingpin: 0.78
+  other: 0.55
+  skip: 0.0
+
+# Plate thickness → lb/ft² for carbon/HSLA steel families. Missing sizes use density formula.
+plate_psf_carbon_steel:
+  "0.125": 5.10    # 1/8
+  "0.1875": 7.65   # 3/16
+  "0.25": 10.20    # 1/4
+  "0.3125": 12.75  # 5/16
+  "0.375": 15.30   # 3/8
+  "0.5": 20.40     # 1/2
+  "0.625": 25.50   # 5/8
+  "0.75": 30.60    # 3/4
+  "1.0": 40.80     # 1
+
+# Preferred scan order (specific grades before generic).
+detect_order:
+  - a656_gr80
+  - a656_gr70
+  - a656_gr60
+  - a572_gr65
+  - a572_gr55
+  - a572_gr50
+  - a572_gr42
+  - a516_gr70
+  - a514
+  - a992
+  - a500
+  - ar500
+  - ar450
+  - ar400
+  - a36
+  - stainless_316
+  - stainless_304
+  - stainless_300
+  - aluminum_6061
+  - aluminum_5052
+  - aluminum
+  - carbon_steel

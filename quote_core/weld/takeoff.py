@@ -36,6 +36,10 @@ ANGLE_LEN_RE = re.compile(
     r"ANGLE.*?(\d+(?:\.\d+)?)\s*[\"″']?\s*$|X\s*(\d+(?:\.\d+)?)\s*[\"″']?\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
+WEIGHT_RE = re.compile(
+    r"(?<![\d.])(\d{1,4}(?:\.\d+)?)\s*(?:lbm|lbs?|pounds?)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -60,6 +64,8 @@ class WeldTakeoffResult:
     notes: list[str] = field(default_factory=list)
     stp_summary: dict[str, Any] = field(default_factory=dict)
 
+    fitup_drivers: dict[str, Any] = field(default_factory=dict)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "items": [i.to_dict() for i in self.items],
@@ -67,6 +73,7 @@ class WeldTakeoffResult:
             "sizes_found": self.sizes_found,
             "notes": self.notes,
             "stp_summary": self.stp_summary,
+            "fitup_drivers": self.fitup_drivers,
             "total_inches": sum(i.inches for i in self.items),
         }
 
@@ -116,69 +123,132 @@ def _extract_dimensions_from_text(text: str) -> list[float]:
     return [d for d in dims if 6.0 <= d <= 120.0]
 
 
+def _ingest_page_text(
+    page_no: int,
+    text: str,
+    *,
+    force_weld_sheet: bool = False,
+) -> tuple[list[str], list[str], list[dict[str, Any]], list[float]]:
+    """Extract weld sizes / notes / dims from one page of text (native or OCR)."""
+    sizes: list[str] = []
+    notes: list[str] = []
+    page_hits: list[dict[str, Any]] = []
+    dimensions = _extract_dimensions_from_text(text)
+    lower = text.lower()
+
+    is_weld_sheet = force_weld_sheet or any(
+        k in lower
+        for k in (
+            "fillet",
+            "trace weld",
+            "corner weld",
+            "full weld",
+            "weld beads",
+            "pre-heat kingpin",
+            "preheat kingpin",
+            "weldment",
+            "weld",
+        )
+    ) or ("weld" in lower and ("1/4" in lower or "5/16" in lower or "1/2" in lower))
+
+    if is_weld_sheet:
+        page_sizes = [_normalize_size(m.group(1)) for m in WELD_SIZE_RE.finditer(text)]
+        for s in page_sizes:
+            sizes.append(s)
+            page_hits.append({"page": page_no, "size": s, "weld_sheet": True})
+
+    for line in text.splitlines():
+        if FULL_WELD_NOTE_RE.search(line) or TRACE_RE.search(line) or MIRROR_RE.search(line):
+            notes.append(f"p{page_no}: {line.strip()}")
+        if ALL_AROUND_HINT_RE.search(line):
+            notes.append(f"p{page_no}: {line.strip()}")
+        if CORNER_1IN_RE.search(line.replace("\n", " ")):
+            notes.append(f"p{page_no}: corner 1/2 x 1in TYP")
+        if "ANGLE" in line.upper() and "X" in line.upper():
+            parts = re.findall(r"(\d+(?:\.\d+)?)", line)
+            for p in parts:
+                try:
+                    val = float(p)
+                except ValueError:
+                    continue
+                if 10.0 <= val <= 120.0:
+                    dimensions.append(val)
+                    notes.append(f"p{page_no}: angle length candidate {val}")
+
+    flat = " ".join(text.split())
+    if CORNER_1IN_RE.search(flat):
+        notes.append(f"p{page_no}: SQUARE 1/2 FILLET CORNER WELDS TO 1\" LENGTH TYP")
+    return sizes, notes, page_hits, dimensions
+
+
 def _parse_pdf_text(
     pdf_path: Path,
-) -> tuple[list[str], list[str], list[dict[str, Any]], list[float]]:
+) -> tuple[list[str], list[str], list[dict[str, Any]], list[float], dict[str, Any]]:
     import fitz
+
+    from quote_core.ocr import ocr_pdf_pages
 
     doc = fitz.open(pdf_path)
     sizes: list[str] = []
     notes: list[str] = []
     page_hits: list[dict[str, Any]] = []
     dimensions: list[float] = []
+    text_chars = 0
+    drawing_count = 0
+    name_hint = "weld" in pdf_path.name.lower() or "weldment" in pdf_path.name.lower()
 
     for i, page in enumerate(doc):
         text = page.get_text("text") or ""
-        lower = text.lower()
-        dimensions.extend(_extract_dimensions_from_text(text))
+        text_chars += len(text.strip())
+        try:
+            drawing_count += len(page.get_drawings() or [])
+        except Exception:  # noqa: BLE001
+            pass
+        s, n, h, d = _ingest_page_text(i + 1, text, force_weld_sheet=False)
+        sizes.extend(s)
+        notes.extend(n)
+        page_hits.extend(h)
+        dimensions.extend(d)
 
-        is_weld_sheet = any(
-            k in lower
-            for k in (
-                "fillet",
-                "trace weld",
-                "corner weld",
-                "full weld",
-                "weld beads",
-                "pre-heat kingpin",
-                "preheat kingpin",
-            )
-        ) or ("weld" in lower and ("1/4" in lower or "5/16" in lower or "1/2" in lower))
-        # Only accept size tokens from weld-detail sheets to avoid dimension false positives.
-        if is_weld_sheet:
-            page_sizes = [_normalize_size(m.group(1)) for m in WELD_SIZE_RE.finditer(text)]
-            for s in page_sizes:
-                sizes.append(s)
-                page_hits.append({"page": i + 1, "size": s, "weld_sheet": True})
-
-        for line in text.splitlines():
-            if FULL_WELD_NOTE_RE.search(line) or TRACE_RE.search(line) or MIRROR_RE.search(line):
-                notes.append(f"p{i+1}: {line.strip()}")
-            if ALL_AROUND_HINT_RE.search(line):
-                notes.append(f"p{i+1}: {line.strip()}")
-            if CORNER_1IN_RE.search(line.replace("\n", " ")):
-                notes.append(f"p{i+1}: corner 1/2 x 1in TYP")
-            # Angle BOM lines often include cut length, e.g. 3/8" X 3" X 2" X 32.75"
-            if "ANGLE" in line.upper() and "X" in line.upper():
-                parts = re.findall(r"(\d+(?:\.\d+)?)", line)
-                for p in parts:
-                    try:
-                        val = float(p)
-                    except ValueError:
-                        continue
-                    if 10.0 <= val <= 120.0:
-                        dimensions.append(val)
-                        notes.append(f"p{i+1}: angle length candidate {val}")
-
-        flat = " ".join(text.split())
-        if CORNER_1IN_RE.search(flat):
-            notes.append(f"p{i+1}: SQUARE 1/2 FILLET CORNER WELDS TO 1\" LENGTH TYP")
-
+    page_count = len(doc)
     doc.close()
+
+    vector_heavy = drawing_count >= 500 and text_chars < 200
+    ocr_info: dict[str, Any] = {"used": False}
+    if vector_heavy or text_chars < 200:
+        ocr_info = ocr_pdf_pages(pdf_path, max_pages=min(4, page_count or 1), dpi=220)
+        if ocr_info.get("used") and ocr_info.get("text"):
+            notes.append("OCR used for low-text / vector PDF pages")
+            for page_row in ocr_info.get("pages") or []:
+                pno = int(page_row.get("page") or 1)
+                otext = str(page_row.get("text") or "")
+                s, n, h, d = _ingest_page_text(
+                    pno,
+                    otext,
+                    force_weld_sheet=name_hint or vector_heavy,
+                )
+                sizes.extend(s)
+                notes.extend(n)
+                page_hits.extend(h)
+                dimensions.extend(d)
+            text_chars = max(text_chars, len(str(ocr_info.get("text") or "")))
+
     counts = Counter(sizes)
-    sizes = [s for s in sizes if counts[s] >= 2]
-    page_hits = [h for h in page_hits if counts.get(h["size"], 0) >= 2]
-    return sizes, notes, page_hits, dimensions
+    # Vector CAD / OCR packs often only print a size once; keep single hits when text is scarce.
+    min_hits = 1 if (vector_heavy or ocr_info.get("used") or text_chars < 400) else 2
+    sizes = [s for s in sizes if counts[s] >= min_hits]
+    page_hits = [h for h in page_hits if counts.get(h["size"], 0) >= min_hits]
+    meta = {
+        "page_count": page_count,
+        "text_chars": text_chars,
+        "drawing_count": drawing_count,
+        "vector_heavy": vector_heavy,
+        "ocr_used": bool(ocr_info.get("used")),
+        "ocr_error": ocr_info.get("error"),
+        "ocr_engine": ocr_info.get("engine"),
+        "ocr_pages": ocr_info.get("pages_ocrd"),
+    }
+    return sizes, notes, page_hits, dimensions, meta
 
 
 def _estimate_segments_from_pdf(
@@ -618,13 +688,24 @@ def _build_items_from_signals(
 
     if not primary_sizes:
         flags.append("No weld size callouts detected in PDF text — manual takeoff required")
+        total_path = _segments_total_inches(segments) if segments else 0.0
+        joint = "No weld sizes found; review drawing"
+        if total_path > 0:
+            joint = (
+                f"Length ~{round(total_path, 2)}\" from {length_source}; "
+                "enter fillet size (PDF has no readable size text)"
+            )
+            flags.append(
+                f"Weld path length estimated at {round(total_path, 2)}\" from geometry — "
+                "enter fillet size to finish takeoff"
+            )
         items.append(
             WeldLineItem(
                 size="unknown",
-                inches=0.0,
-                joint_notes="No weld sizes found; review drawing",
+                inches=round(total_path, 2),
+                joint_notes=joint,
                 confidence="low",
-                source="pdf",
+                source=length_source if total_path > 0 else "pdf",
                 needs_review=True,
             )
         )
@@ -730,12 +811,153 @@ def _build_items_from_signals(
     return items, flags
 
 
+def _extract_weights_lb(texts: list[str]) -> list[float]:
+    found: list[float] = []
+    for text in texts:
+        for m in WEIGHT_RE.finditer(text or ""):
+            try:
+                val = float(m.group(1))
+            except ValueError:
+                continue
+            if 0.5 <= val <= 5000:
+                found.append(val)
+    return found
+
+
+def estimate_fitup_drivers(
+    stp_summary: dict[str, Any],
+    notes: list[str],
+    pdf_path: Path | str | None = None,
+    library_folder: Path | str | None = None,
+) -> dict[str, Any]:
+    """
+    Estimate parts / joints / component weights for fit-up tables.
+    Prefer PDF BOM component weights; else calculate from net area × thickness × grade.
+    BOM piece counts (including OCR) override STEP solid counts.
+    """
+    from quote_core.weight import estimate_assembly_weight
+
+    notes_out: list[str] = []
+    solids = list(stp_summary.get("solids") or [])
+    segments = list(stp_summary.get("weld_segments") or [])
+
+    part_count = 0
+    for solid in solids:
+        kind = str(solid.get("kind") or "")
+        if kind in {"fastener", "hardware", "skip"}:
+            continue
+        part_count += int(solid.get("qty") or 1)
+    if part_count <= 0:
+        part_count = int(stp_summary.get("solid_count") or 0)
+    defaulted_part_count = False
+    if part_count <= 0:
+        part_count = 1
+        defaulted_part_count = True
+
+    skip_kinds = {"kingpin_all_around", "angle_end", "channel_end"}
+    joint_count = sum(1 for s in segments if str(s.get("kind") or "") not in skip_kinds)
+    joint_estimated = False
+    if joint_count <= 0:
+        joint_count = max(1, part_count - 1)
+        joint_estimated = True
+
+    weight_info = estimate_assembly_weight(
+        solids,
+        notes,
+        hole_dias=list(stp_summary.get("circle_diameters") or []),
+        pdf_path=pdf_path,
+        library_folder=library_folder,
+    )
+    assembly_weight = weight_info.get("assembly_weight_lb")
+    component_weights = list(weight_info.get("component_weights_lb") or [])
+    method = str(weight_info.get("method") or "")
+    bom_piece_count = int(weight_info.get("piece_count") or 0)
+    bom_part_numbers = int(weight_info.get("part_number_count") or 0)
+
+    if method.startswith("pdf_bom") or method.startswith("ocr_time") or method.startswith("native_mac"):
+        if bom_piece_count > 0:
+            part_count = bom_piece_count
+            defaulted_part_count = False
+        if component_weights and "geometry_weight_est" not in method and method != "ocr_time":
+            note = (
+                f"Using PDF BOM piece weights ({part_count} pieces"
+                + (f" across {bom_part_numbers} part numbers" if bom_part_numbers else "")
+                + f", total {assembly_weight:g} lb, {weight_info.get('material_label')})"
+            )
+            notes_out.append(note)
+        elif bom_piece_count > 0:
+            # BOM qty/part rows without unit weights: do NOT use a shorter STEP
+            # solid weight list — that under-counts pieces (e.g. 4 solids vs 11 BOM).
+            if "geometry_weight_est" in method or (
+                component_weights and len(component_weights) != bom_piece_count
+            ):
+                notes_out.append(
+                    f"Using PDF BOM piece count ({part_count} pieces"
+                    + (f" across {bom_part_numbers} part numbers" if bom_part_numbers else "")
+                    + ") — unit weights not on drawing; STEP solid weights ignored for fit-up count"
+                )
+                component_weights = []
+                assembly_weight = weight_info.get("assembly_weight_lb")
+            else:
+                notes_out.append(
+                    f"Using PDF BOM piece count ({part_count} pieces"
+                    + (f" across {bom_part_numbers} part numbers" if bom_part_numbers else "")
+                    + ") — unit weights not on drawing; enter weights or confirm STEP estimate"
+                )
+    elif component_weights:
+        part_count = max(part_count, len(component_weights))
+        defaulted_part_count = False
+        notes_out.append(
+            f"Component weights calculated (net area × thickness × grade / section factors): "
+            f"{len(component_weights)} pieces, total {assembly_weight:g} lb "
+            f"({weight_info.get('material_label')})"
+        )
+        notes_out.append(
+            "Calculated weights are estimates — confirm against scale weight or FreeCAD mass props"
+        )
+    else:
+        notes_out.append("Component weights unknown — enter weights or attach PDF/STP with BOM")
+
+    if bom_piece_count > 0 and (
+        method.startswith("pdf_bom")
+        or method.startswith("ocr_time")
+        or method.startswith("native_mac")
+        or "qty_only" in method
+    ):
+        part_count = bom_piece_count
+        defaulted_part_count = False
+
+    if defaulted_part_count:
+        notes_out.insert(0, "Part count defaulted to 1 — enter actual part count")
+    if joint_estimated and bom_piece_count <= 0:
+        notes_out.append("Joint count estimated from part count (parts - 1)")
+    elif joint_estimated and bom_piece_count > 0:
+        # Recompute joint estimate from BOM piece count when no weld segments exist.
+        joint_count = max(1, part_count - 1)
+        notes_out.append("Joint count estimated from BOM piece count (pieces - 1)")
+
+    return {
+        "part_count": part_count,
+        "piece_count": bom_piece_count
+        if bom_piece_count > 0
+        else (len(component_weights) if component_weights else part_count),
+        "joint_count": joint_count,
+        "assembly_weight_lb": assembly_weight,
+        "component_weights_lb": component_weights,
+        "weight_calc": weight_info,
+        "pdf_weight_lb": (weight_info.get("pdf_bom") or {}).get("assembly_weight_lb"),
+        "source": "auto",
+        "notes": notes_out,
+    }
+
+
 def run_weld_takeoff(
     pdf_path: Path | str,
     stp_path: Path | str | None = None,
+    library_folder: Path | str | None = None,
 ) -> WeldTakeoffResult:
     pdf_path = Path(pdf_path)
-    sizes, notes, page_hits, pdf_dimensions = _parse_pdf_text(pdf_path)
+    sizes, notes, page_hits, pdf_dimensions, pdf_meta = _parse_pdf_text(pdf_path)
     stp_summary: dict[str, Any] = {}
     if stp_path:
         try:
@@ -752,12 +974,34 @@ def run_weld_takeoff(
         pdf_name=pdf_path.name,
         pdf_dimensions=pdf_dimensions,
     )
+    if pdf_meta.get("ocr_used"):
+        flags.insert(0, "OCR used to read weld callouts from vector PDF pages")
+    elif pdf_meta.get("vector_heavy"):
+        msg = (
+            "PDF is mostly CAD vector graphics with little extractable text — "
+            "weld symbols/sizes may need manual entry."
+        )
+        if pdf_meta.get("ocr_error"):
+            msg += f" OCR unavailable: {pdf_meta.get('ocr_error')}"
+        else:
+            msg += " Attach STEP for geometry/fit-up when available."
+        flags.insert(0, msg)
+    fitup_drivers = estimate_fitup_drivers(
+        stp_summary,
+        notes,
+        pdf_path=pdf_path,
+        library_folder=library_folder,
+    )
+    for n in fitup_drivers.get("notes") or []:
+        if n not in flags:
+            flags.append(n)
 
     return WeldTakeoffResult(
         items=items,
         flags=flags,
         sizes_found=sorted(set(sizes)),
         notes=notes[:40],
+        fitup_drivers=fitup_drivers,
         stp_summary={
             "solid_count": stp_summary.get("solid_count", 0),
             "unit_scale": stp_summary.get("unit_scale"),
@@ -770,5 +1014,10 @@ def run_weld_takeoff(
             "cover_inches": stp_summary.get("cover_inches"),
             "covers_included_in_total": stp_summary.get("covers_included_in_total"),
             "weld_inches_calc": stp_summary.get("weld_inches_calc"),
+            "pdf_text_chars": pdf_meta.get("text_chars"),
+            "pdf_drawing_count": pdf_meta.get("drawing_count"),
+            "pdf_vector_heavy": pdf_meta.get("vector_heavy"),
+            "ocr_used": pdf_meta.get("ocr_used"),
+            "ocr_error": pdf_meta.get("ocr_error"),
         },
     )

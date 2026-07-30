@@ -43,6 +43,7 @@ class ReviewUpdate(BaseModel):
     items: list[dict[str, Any]]
     efficiency_pct: float | None = None
     ipm_overrides: dict[str, float] | None = None
+    fitup_drivers: dict[str, Any] | None = None
     status: str | None = Field(
         default=None, description="review | accepted | needs_info"
     )
@@ -69,17 +70,28 @@ def get_rates(_: str = Depends(require_auth)) -> dict[str, Any]:
     rates = load_shop_rates(RATES_PATH)
     return {
         "default_efficiency_pct": rates.default_efficiency_pct,
+        "weld_process": rates.weld_process,
         "weld_ipm": rates.weld_ipm,
         "default_ipm": rates.default_ipm,
-        "fitup_no_fixture": {
-            "base_minutes": rates.fitup_no_fixture.base_minutes,
-            "pct_of_weld": rates.fitup_no_fixture.pct_of_weld,
-            "per_joint_minutes": rates.fitup_no_fixture.per_joint_minutes,
-        },
-        "fitup_with_fixture": {
-            "base_minutes": rates.fitup_with_fixture.base_minutes,
-            "pct_of_weld": rates.fitup_with_fixture.pct_of_weld,
-            "per_joint_minutes": rates.fitup_with_fixture.per_joint_minutes,
+        "fitup": {
+            "default_band_id": rates.fitup.default_band_id,
+            "formula": "fitup = sum(per-piece minutes for each physical piece by its weight band)",
+            "weight_bands": [
+                {
+                    "id": b.id,
+                    "label": b.label,
+                    "max_lb": b.max_lb,
+                    "with_fixture": {
+                        "per_piece_minutes": b.with_fixture.per_piece_minutes,
+                        "per_part_minutes": b.with_fixture.per_piece_minutes,
+                    },
+                    "no_fixture": {
+                        "per_piece_minutes": b.no_fixture.per_piece_minutes,
+                        "per_part_minutes": b.no_fixture.per_piece_minutes,
+                    },
+                }
+                for b in rates.fitup.bands
+            ],
         },
         "always_ask": rates.always_ask,
         "config_path": str(RATES_PATH),
@@ -175,6 +187,7 @@ def update_job(
             body.items,
             efficiency_pct=body.efficiency_pct,
             ipm_overrides=body.ipm_overrides,
+            fitup_drivers=body.fitup_drivers,
         )
         if body.status:
             if body.status not in {"review", "accepted", "needs_info"}:
@@ -313,10 +326,10 @@ h1{{margin-bottom:.25rem}} .meta{{color:#555}}
 <ul>
 <li>Total inches: {times.get('total_inches', 0)}</li>
 <li>Weld minutes: {round(times.get('weld_minutes', 0), 2)}</li>
-<li>Fit-up (no fixture): {round(times.get('fitup_no_fixture_minutes', 0), 2)} min</li>
-<li>Fit-up (with fixture): {round(times.get('fitup_with_fixture_minutes', 0), 2)} min</li>
-<li><strong>Quoted no fixture: {times.get('quoted_no_fixture_hours', 0)} hr</strong></li>
-<li><strong>Quoted with fixture: {times.get('quoted_with_fixture_hours', 0)} hr</strong></li>
+<li><strong>No fixture: {times.get('quoted_no_fixture_hours', 0)} hr</strong>
+ (includes {round(times.get('fitup_no_fixture_minutes', 0), 0):.0f} min fit-up)</li>
+<li><strong>With fixture: {times.get('quoted_with_fixture_hours', 0)} hr</strong>
+ (includes {round(times.get('fitup_with_fixture_minutes', 0), 0):.0f} min fit-up)</li>
 </ul>
 <h2>Review flags</h2>
 <ul>{flags or '<li>None</li>'}</ul>

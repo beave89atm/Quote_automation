@@ -8,10 +8,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-# Prefer longer numeric tokens (job / assembly numbers).
-_PART_TOKEN_RE = re.compile(r"\d{5,}")
+# Job / assembly numbers: 80341805 or dashed 35145-1
+_PART_TOKEN_RE = re.compile(r"\d{5,}(?:-\d+)?")
 _NOISE_RE = re.compile(
-    r"(?i)[\s_-]*(fab\s*packet|for\s*quoting|rev\s*[a-z0-9]+|drawing|dwg)$"
+    r"(?i)[\s_-]*(fab\s*packet|for\s*quoting|rev\s*[a-z0-9]+|drawing|dwg|all\s*drawings.*)$"
 )
 
 
@@ -53,7 +53,10 @@ def extract_part_key(*names: str | None) -> str | None:
             candidates.append(compact)
     if not candidates:
         return None
-    # Prefer longest purely numeric token (typical Kannon/MAC job numbers).
+    # Prefer dashed keys (35145-1) over bare (35145), then longer numeric.
+    dashed = [c for c in candidates if "-" in c]
+    if dashed:
+        return max(dashed, key=len)
     numeric = [c for c in candidates if c.isdigit()]
     if numeric:
         return max(numeric, key=len)
@@ -101,41 +104,83 @@ def _folder_score(folder: Path, part_key: str) -> int:
         return 100
     if name.lower() == part_key.lower():
         return 95
+    if name.startswith(part_key + "-") or name.startswith(part_key + " "):
+        return 85
     if name.startswith(part_key):
         return 80
     if part_key in name:
         return 60
+    # Bare key matches dashed folder: 35145 vs 35145-1
+    base = part_key.split("-")[0]
+    if base != part_key and (name == base or name.startswith(base + "-") or name.startswith(base)):
+        return 75
     return 0
 
 
+def _stp_name_matches(path: Path, part_key: str) -> bool:
+    stem = path.stem
+    if stem == part_key or stem.lower() == part_key.lower():
+        return True
+    if stem.lower().startswith(part_key.lower()):
+        return True
+    base = part_key.split("-")[0]
+    if base and (stem == base or stem.lower().startswith(base.lower())):
+        return True
+    return False
+
+
+def _list_stp_files(folder: Path) -> list[Path]:
+    try:
+        return [
+            p
+            for p in folder.iterdir()
+            if p.is_file() and p.suffix.lower() in {".stp", ".step"}
+        ]
+    except OSError:
+        return []
+
+
 def _pick_stp(folder: Path, part_key: str) -> Path | None:
-    steps = [
-        p
-        for p in folder.iterdir()
-        if p.is_file() and p.suffix.lower() in {".stp", ".step"}
-    ]
+    steps = _list_stp_files(folder)
     if not steps:
         return None
-    exact = [
-        p
-        for p in steps
-        if p.stem == part_key or p.stem.lower().startswith(part_key.lower())
-    ]
+    exact = [p for p in steps if _stp_name_matches(p, part_key)]
     pool = exact or steps
     # Prefer .stp over .step when tied; then shorter name.
     pool.sort(key=lambda p: (0 if p.suffix.lower() == ".stp" else 1, len(p.name), p.name.lower()))
     return pool[0]
 
 
+def _find_stp_near_folder(folder: Path, part_key: str) -> Path | None:
+    """
+    Prefer STP inside the part folder; else matching STP in the parent
+    (common Time layout: Time/35145-1.STEP next to Time/35145-1/*.pdf).
+    """
+    inside = _pick_stp(folder, part_key)
+    if inside:
+        return inside
+    parent = folder.parent
+    if not parent or not parent.exists():
+        return None
+    siblings = [p for p in _list_stp_files(parent) if _stp_name_matches(p, part_key)]
+    if not siblings:
+        return None
+    siblings.sort(key=lambda p: (0 if p.suffix.lower() == ".stp" else 1, len(p.name), p.name.lower()))
+    return siblings[0]
+
+
 def _related_pdfs(folder: Path, primary_pdf_name: str | None = None) -> list[Path]:
-    pdfs = sorted(
-        (
-            p
-            for p in folder.iterdir()
-            if p.is_file() and p.suffix.lower() == ".pdf"
-        ),
-        key=lambda p: p.name.lower(),
-    )
+    try:
+        pdfs = sorted(
+            (
+                p
+                for p in folder.iterdir()
+                if p.is_file() and p.suffix.lower() == ".pdf"
+            ),
+            key=lambda p: p.name.lower(),
+        )
+    except OSError:
+        return []
     if primary_pdf_name:
         primary = primary_pdf_name.lower()
         pdfs = [p for p in pdfs if p.name.lower() != primary]
@@ -161,44 +206,53 @@ def find_drawings(
         match.notes.append("Drawing library path not found on this PC (check OneDrive sync)")
         return match
 
-    candidates: list[tuple[int, Path]] = []
+    # (score, folder, optional known stp)
+    candidates: list[tuple[int, Path, Path | None]] = []
     for root in existing_roots:
         # Exact / near-exact folders one level under customer folders:
         # Customer Drawings / {Customer} / {Part}
         try:
             for customer in root.iterdir():
                 if not customer.is_dir():
-                    # Loose files at root — skip for folder match
                     continue
                 # Case: root/part
-                if _folder_score(customer, part_key) >= 60:
-                    candidates.append((_folder_score(customer, part_key), customer))
+                score = _folder_score(customer, part_key)
+                if score >= 60:
+                    candidates.append((score, customer, None))
                 try:
                     for child in customer.iterdir():
                         if child.is_dir():
                             score = _folder_score(child, part_key)
                             if score >= 60:
-                                candidates.append((score, child))
+                                candidates.append((score, child, None))
                 except OSError:
                     continue
         except OSError as exc:
             match.notes.append(f"Could not read {root}: {exc}")
             continue
 
-        # Also: files named {part}.stp sitting under a customer folder (no part subfolder)
+        # Loose STEP files under a customer folder (Time/35145-1.STEP)
         try:
             for customer in root.iterdir():
                 if not customer.is_dir():
                     continue
-                for p in customer.iterdir():
-                    if (
-                        p.is_file()
-                        and p.suffix.lower() in {".stp", ".step"}
-                        and (p.stem == part_key or p.stem.lower().startswith(part_key.lower()))
-                    ):
-                        # Treat parent as the match folder
-                        candidates.append((70, customer))
-                        break
+                for p in _list_stp_files(customer):
+                    if not _stp_name_matches(p, part_key):
+                        continue
+                    # Prefer pairing with a matching subfolder when present
+                    paired = None
+                    try:
+                        for child in customer.iterdir():
+                            if child.is_dir() and _folder_score(child, part_key) >= 60:
+                                paired = child
+                                break
+                    except OSError:
+                        paired = None
+                    if paired is not None:
+                        # High score: folder + known sibling/parent STP
+                        candidates.append((110, paired, p))
+                    else:
+                        candidates.append((105, customer, p))
         except OSError:
             continue
 
@@ -206,15 +260,23 @@ def find_drawings(
         match.notes.append(f"No folder or STP found for {part_key} under drawing library")
         return match
 
-    candidates.sort(key=lambda t: (-t[0], str(t[1]).lower()))
-    folder = candidates[0][1]
+    # Prefer candidates that resolve to an STP, then higher score.
+    ranked: list[tuple[int, int, Path, Path | None]] = []
+    for score, folder, known_stp in candidates:
+        stp = known_stp or _find_stp_near_folder(folder, part_key)
+        has_stp = 1 if stp else 0
+        ranked.append((has_stp, score, folder, stp))
+    ranked.sort(key=lambda t: (-t[0], -t[1], str(t[2]).lower()))
+    _has_stp, _score, folder, stp = ranked[0]
+
     match.folder = folder
-    match.stp_path = _pick_stp(folder, part_key)
+    match.stp_path = stp
     match.related_pdfs = _related_pdfs(folder, primary_pdf_name=primary_pdf_name)
     if match.stp_path:
-        match.notes.append(f"Found STP on shared drive: {match.stp_path.name}")
+        where = "in folder" if match.stp_path.parent == folder else "beside folder"
+        match.notes.append(f"Found STP on shared drive: {match.stp_path.name} ({where})")
     else:
-        match.notes.append(f"Found folder {folder.name} but no STP/STEP inside")
+        match.notes.append(f"Found folder {folder.name} but no STP/STEP inside or beside it")
     if match.related_pdfs:
         match.notes.append(f"{len(match.related_pdfs)} related PDF(s) in same folder")
     return match

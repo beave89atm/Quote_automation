@@ -30,6 +30,8 @@ export default function SettingsPage() {
     );
   }
 
+  const bands = rates.fitup?.weight_bands || [];
+
   return (
     <div className="panel">
       <h1 style={{ marginTop: 0 }}>Shop rates</h1>
@@ -41,10 +43,12 @@ export default function SettingsPage() {
       <h2>Defaults</h2>
       <ul>
         <li>Efficiency: {rates.default_efficiency_pct}%</li>
+        <li>Weld process: {rates.weld_process || "manual"}</li>
         <li>Default IPM: {rates.default_ipm}</li>
       </ul>
 
-      <h2>Weld IPM</h2>
+      <h2>Manual weld IPM</h2>
+      <p className="muted">Robot IPM table will be added later.</p>
       <table className="jobs-table">
         <thead>
           <tr>
@@ -62,23 +66,35 @@ export default function SettingsPage() {
         </tbody>
       </table>
 
-      <h2>Fit-up</h2>
-      <div className="metrics">
-        <div className="metric">
-          <div className="label">No fixture</div>
-          <div className="value" style={{ fontSize: "0.95rem" }}>
-            base {rates.fitup_no_fixture.base_minutes} + {rates.fitup_no_fixture.pct_of_weld * 100}% weld +{" "}
-            {rates.fitup_no_fixture.per_joint_minutes}/joint
-          </div>
-        </div>
-        <div className="metric">
-          <div className="label">With fixture</div>
-          <div className="value" style={{ fontSize: "0.95rem" }}>
-            base {rates.fitup_with_fixture.base_minutes} + {rates.fitup_with_fixture.pct_of_weld * 100}% weld +{" "}
-            {rates.fitup_with_fixture.per_joint_minutes}/joint
-          </div>
-        </div>
-      </div>
+      <h2>Fit-up (per piece by weight band)</h2>
+      <p className="muted">
+        {rates.fitup?.formula ||
+          "sum(per-piece minutes for each physical piece by its weight band)"}
+      </p>
+      <table className="jobs-table">
+        <thead>
+          <tr>
+            <th>Weight band</th>
+            <th>With fixture</th>
+            <th>No fixture</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bands.map((b) => {
+            const withMin =
+              b.with_fixture?.per_piece_minutes ?? b.with_fixture?.per_part_minutes;
+            const noMin =
+              b.no_fixture?.per_piece_minutes ?? b.no_fixture?.per_part_minutes;
+            return (
+              <tr key={b.id}>
+                <td>{b.label}</td>
+                <td className="mono">{withMin} min/piece</td>
+                <td className="mono">{noMin} min/piece</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
 
       <h2>Always ask</h2>
       <ul>
