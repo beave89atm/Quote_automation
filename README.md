@@ -67,8 +67,15 @@ Open http://localhost:5173
 
 ## SecturaFAB (paused)
 
+Auth uses **client credentials** per SecturaFAB support:
+
+1. Create/get id + secret at https://secturafab.com/apikey
+2. Put them in `.env` as `SECTURAFAB_CLIENT_ID` / `SECTURAFAB_CLIENT_SECRET`
+3. Token URL: `https://www.secturafab.com/token` (form body) · API base: `https://api.secturafab.com`  
+   Note: bare `https://secturafab.com/token` (no `www`) returns `unsupported_grant_type` in our tests.
+
 ```powershell
 .\.venv\Scripts\python.exe -m secturafab auth-check
 ```
 
-Credentials live in `.env` (see `.env.example`).
+See `.env.example`.

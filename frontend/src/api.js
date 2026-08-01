@@ -16,7 +16,10 @@ export async function api(path, options = {}) {
     let detail = res.statusText;
     try {
       const data = await res.json();
-      detail = data.detail || JSON.stringify(data);
+            detail = data.detail || JSON.stringify(data);
+            if (detail && typeof detail === "object") {
+              detail = detail.error || detail.message || JSON.stringify(detail);
+            }
     } catch {
       /* ignore */
     }

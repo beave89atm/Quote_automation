@@ -16,25 +16,31 @@ _ITEM_LETTER_RE = re.compile(r"^[A-Z]$")
 _QTY_RE = re.compile(r"^\d{1,3}$")
 
 # qty | item | part  (dash required so 35122 is not split into 3512-2)
+# Item balloons are A–Z (Time often skips I); previously A–G only dropped H+.
 _LINE_QTY_ITEM_PART = re.compile(
-    r"(?<!\d)(\d{1,2})\s*[|Il/]?\s*([A-Ga-g])\s*[|Il/]?\s*"
+    r"(?<!\d)(\d{1,2})\s*[|Il/]?\s*([A-Za-z])\s*[|Il/]?\s*"
     r"(\d{4,7})\s*[-–—=]\s*(\d{1,3}[A-Za-z]?)",
     re.IGNORECASE,
 )
 # item glued to part: G435144-1 (letter immediately before digits)
 _LINE_ITEM_GLUED_PART = re.compile(
-    r"(?<!\d)(\d{1,2})\s*[|Il/]?\s*([A-Ga-g])(\d{4,7})\s*[-–—=]\s*(\d{1,2})",
+    r"(?<!\d)(\d{1,2})\s*[|Il/]?\s*([A-Za-z])(\d{4,7})\s*[-–—=]\s*(\d{1,2})",
     re.IGNORECASE,
 )
 # item | part without qty
 _LINE_ITEM_PART = re.compile(
-    r"(?<![A-Za-z0-9])([A-Ga-g])\s*[|Il/]?\s*"
+    r"(?<![A-Za-z0-9])([A-Za-z])\s*[|Il/]?\s*"
     r"(\d{4,7})\s*[-–—=]\s*(\d{1,2}[A-Za-z]?)",
     re.IGNORECASE,
 )
 # qty | item with truncated part base only
 _LINE_QTY_ITEM_PARTBASE = re.compile(
-    r"(?<!\d)(\d{1,2})\s*[|Il/]?\s*([A-Ga-g])\s*[|Il/]?\s*(\d{4,7})\s*[-–—=]?",
+    r"(?<!\d)(\d{1,2})\s*[|Il/]?\s*([A-Za-z])\s*[|Il/]?\s*(\d{4,7})\s*[-–—=]?",
+    re.IGNORECASE,
+)
+# item | truncated part base (no qty, no suffix) — common on dense Time BOMs
+_LINE_ITEM_PARTBASE = re.compile(
+    r"(?<![A-Za-z0-9])([A-Za-z])\s*[|Il/]?\s*(\d{4,7})\s*[-–—=]?(?!\d)",
     re.IGNORECASE,
 )
 
@@ -152,48 +158,58 @@ def normalize_part_no(raw: str) -> str | None:
     return f"{m.group(1)}-{m.group(2)}"
 
 
-def library_part_bases(folder: Path | None) -> set[str]:
+def _base_from_pdf_stem(stem: str) -> str | None:
+    stem_u = stem.upper().strip()
+    if stem_u in {"CT", "PL", "BOM", "NOTES", "RD"}:
+        return None
+    m = re.match(r"^(\d{4,7})(?:-\d+)?(?:\b|$)", stem_u)
+    return m.group(1) if m else None
+
+
+def library_part_bases(
+    folder: Path | None,
+    related_pdf_names: list[str] | None = None,
+) -> set[str]:
     """Part number bases from sibling drawing PDFs (e.g. 35121.pdf → 35121)."""
-    if not folder or not folder.exists():
-        return set()
     bases: set[str] = set()
-    try:
-        for p in folder.iterdir():
-            if not p.is_file() or p.suffix.lower() != ".pdf":
-                continue
-            stem = p.stem.upper()
-            if stem in {"CT", "PL", "BOM", "NOTES"}:
-                continue
-            m = re.match(r"^(\d{4,7})(?:-\d+)?$", stem)
-            if m:
-                bases.add(m.group(1))
-    except OSError:
-        return set()
+    if folder and folder.exists():
+        try:
+            for p in folder.iterdir():
+                if not p.is_file() or p.suffix.lower() != ".pdf":
+                    continue
+                base = _base_from_pdf_stem(p.stem)
+                if base:
+                    bases.add(base)
+        except OSError:
+            pass
+    for name in related_pdf_names or []:
+        stem = Path(str(name)).stem
+        base = _base_from_pdf_stem(stem)
+        if base:
+            bases.add(base)
     return bases
 
 
 def _correct_part_with_library(part_no: str, bases: set[str]) -> str:
-    """Fix common OCR digit errors using known library part bases."""
+    """Fix common OCR digit errors using known library part bases.
+
+    Only snaps to a library base when exactly one neighbor is Hamming-distance 1.
+    Dense Time families (21684/21688/21689) are otherwise left as OCR-read —
+    rewriting 21689→21684 was dropping a real hose-guard line.
+    """
     norm = normalize_part_no(part_no)
     if not norm:
         return part_no
     base, _, suffix = norm.partition("-")
-    if base in bases:
+    if not bases or base in bases:
         return norm
-    swaps = {"4": "9", "9": "4", "2": "7", "7": "2", "5": "6", "6": "5", "0": "8", "8": "0"}
-    chars = list(base)
-    for i, ch in enumerate(chars):
-        if ch not in swaps:
-            continue
-        trial = "".join(chars[:i] + [swaps[ch]] + chars[i + 1 :])
-        if trial in bases:
-            return f"{trial}-{suffix}"
-    for lib in bases:
-        if len(lib) != len(base):
-            continue
-        diff = sum(a != b for a, b in zip(lib, base))
-        if diff == 1:
-            return f"{lib}-{suffix}"
+    near = [
+        lib
+        for lib in bases
+        if len(lib) == len(base) and sum(a != b for a, b in zip(lib, base)) == 1
+    ]
+    if len(near) == 1:
+        return f"{near[0]}-{suffix}"
     return norm
 
 
@@ -432,6 +448,26 @@ def _parse_qty_item_part_hits(texts: list[str], bases: set[str]) -> list[dict[st
                             "part_base": base,
                         }
                     )
+
+                for m in _LINE_ITEM_PARTBASE.finditer(variant):
+                    item = m.group(1).upper()
+                    base = _fix_leading_digit_glue(m.group(2), bases)
+                    if bases and base not in bases:
+                        if not any(
+                            b.isdigit() and abs(int(base) - int(b)) <= 2 for b in bases
+                        ):
+                            continue
+                    hits.append(
+                        {
+                            "qty": None,
+                            "item": item,
+                            "part_no": f"{base}-?",
+                            "has_qty": False,
+                            "has_suffix": False,
+                            "raw": line,
+                            "part_base": base,
+                        }
+                    )
     return hits
 
 
@@ -497,9 +533,9 @@ def _vote_bom_rows(hits: list[dict[str, Any]], bases: set[str]) -> list[BomRow]:
                 continue
 
         part = _correct_part_with_library(part, bases)
-        # When library bases are known, reject parts that don't resolve to one.
+        # Prefer library bases when available, but keep strong OCR hits even if
+        # the shared folder is incomplete (e.g. missing 21689.pdf beside the STP).
         if bases and part.split("-")[0] not in bases:
-            # Try recovering a longer base from partbase-style hits for this item.
             recovered = None
             for h in group:
                 pb = h.get("part_base")
@@ -507,12 +543,11 @@ def _vote_bom_rows(hits: list[dict[str, Any]], bases: set[str]) -> list[BomRow]:
                     recovered = pb
                     break
             if recovered:
-                # Prefer -1 when suffix unknown/wrong
                 suf = part.split("-", 1)[1] if "-" in part else "1"
                 if suf in {"7", "?", ""}:
                     suf = "1"
                 part = f"{recovered}-{suf}"
-            else:
+            elif not part_votes:
                 continue
         if part in used_parts:
             continue
@@ -626,6 +661,7 @@ def extract_bom_from_ocr_time_style(
     pdf_path: Path | str,
     *,
     library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
     page_index: int = 0,
 ) -> BomResult:
     """
@@ -643,34 +679,55 @@ def extract_bom_from_ocr_time_style(
     if not ocr_available():
         return BomResult(notes=["OCR unavailable for Time-style BOM"], confidence=0.0)
 
-    bases = library_part_bases(Path(library_folder) if library_folder else None)
+    bases = library_part_bases(
+        Path(library_folder) if library_folder else None,
+        related_pdf_names=related_pdf_names,
+    )
     doc = fitz.open(str(pdf_path))
     try:
         page = doc[min(page_index, len(doc) - 1)]
         rect = page.rect
-        # Qty/Item/Part columns — tight right-side crop (avoid title-block noise).
+        # Qty/Item/Part columns — right-side crops. Tall clip needed when BOM
+        # has 10+ rows (e.g. 21678 knuckle); short clip stays cleaner for 7-row sheets.
         left_clip = fitz.Rect(
             rect.width * 0.70,
             rect.height * 0.62,
             rect.width * 0.82,
             rect.height * 0.87,
         )
-        # Slightly taller/wider variants for stubborn sheets.
         mid_clip = fitz.Rect(
             rect.width * 0.695,
             rect.height * 0.615,
             rect.width * 0.835,
             rect.height * 0.875,
         )
-        desc_clip = fitz.Rect(
-            rect.width * 0.70,
-            rect.height * 0.60,
+        tall_clip = fitz.Rect(
+            rect.width * 0.68,
+            rect.height * 0.42,
+            rect.width * 0.88,
+            rect.height * 0.90,
+        )
+        wide_clip = fitz.Rect(
+            rect.width * 0.60,
+            rect.height * 0.40,
             rect.width * 0.995,
-            rect.height * 0.88,
+            rect.height * 0.92,
+        )
+        desc_clip = fitz.Rect(
+            rect.width * 0.68,
+            rect.height * 0.40,
+            rect.width * 0.995,
+            rect.height * 0.90,
         )
 
         texts: list[str] = []
-        for clip, dpi in ((left_clip, 500), (mid_clip, 500), (left_clip, 420)):
+        for clip, dpi in (
+            (left_clip, 500),
+            (mid_clip, 500),
+            (tall_clip, 480),
+            (wide_clip, 420),
+            (left_clip, 420),
+        ):
             images = _render_clip_images(page, clip, dpi)
             texts.extend(_ocr_strings(images, psms=(4, 6, 11)))
 
@@ -712,6 +769,7 @@ def extract_bom(
     *,
     text: str | None = None,
     library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
 ) -> BomResult:
     """
     Multi-strategy BOM extraction.
@@ -727,7 +785,11 @@ def extract_bom(
         notes.extend(native.notes)
 
     if pdf_path:
-        ocr = extract_bom_from_ocr_time_style(pdf_path, library_folder=library_folder)
+        ocr = extract_bom_from_ocr_time_style(
+            pdf_path,
+            library_folder=library_folder,
+            related_pdf_names=related_pdf_names,
+        )
         notes.extend(ocr.notes)
         if ocr.rows:
             ocr.notes = notes + list(ocr.notes)

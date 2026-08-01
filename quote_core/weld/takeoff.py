@@ -82,6 +82,57 @@ def _normalize_size(raw: str) -> str:
     return raw.strip().replace('"', "").replace("″", "").replace("'", "")
 
 
+def _scrub_non_weld_fraction_context(text: str) -> str:
+    """
+    Remove fraction tokens that are dimensions / title-block noise, not fillet sizes.
+
+    Examples that should NOT become weld sizes:
+      1 1/8 REF, 1-1/8", SCALE 1/4, B 1/4 WELDMENT (drawing size code)
+    """
+    scrubbed = text
+    # Mixed numbers: 1 1/8 or 1-1/8 (with optional inch mark / REF)
+    scrubbed = re.sub(
+        r"(?<![\d/])\d{1,3}\s*[-–—]\s*(?:1/2|5/16|3/8|3/16|1/4|1/8)\b",
+        " ",
+        scrubbed,
+        flags=re.IGNORECASE,
+    )
+    scrubbed = re.sub(
+        r"(?<![\d/])\d{1,3}\s+(?:1/2|5/16|3/8|3/16|1/4|1/8)\b",
+        " ",
+        scrubbed,
+        flags=re.IGNORECASE,
+    )
+    # Fraction immediately before REF
+    scrubbed = re.sub(
+        r"(?:1/2|5/16|3/8|3/16|1/4|1/8)\s*[\"″']?\s*REF\b",
+        " ",
+        scrubbed,
+        flags=re.IGNORECASE,
+    )
+    # Title-block / drawing code noise near SCALE or sheet size letter
+    scrubbed = re.sub(
+        r"\bSCALE\b[^.\n]{0,20}(?:1/2|5/16|3/8|3/16|1/4|1/8)",
+        "SCALE ",
+        scrubbed,
+        flags=re.IGNORECASE,
+    )
+    scrubbed = re.sub(
+        r"\b[A-D]\s+(?:1/2|5/16|3/8|3/16|1/4|1/8)\s+WELDMENT\b",
+        " WELDMENT ",
+        scrubbed,
+        flags=re.IGNORECASE,
+    )
+    # BOM header OCR noise: "1/8 QTY" / fraction next to QTY. ITEM
+    scrubbed = re.sub(
+        r"(?:1/2|5/16|3/8|3/16|1/4|1/8)\s*[\"″']?\s*QTY\b",
+        " QTY ",
+        scrubbed,
+        flags=re.IGNORECASE,
+    )
+    return scrubbed
+
+
 def _fraction_to_float(whole: str, num: str, den: str) -> float | None:
     try:
         d = float(den)
@@ -152,7 +203,8 @@ def _ingest_page_text(
     ) or ("weld" in lower and ("1/4" in lower or "5/16" in lower or "1/2" in lower))
 
     if is_weld_sheet:
-        page_sizes = [_normalize_size(m.group(1)) for m in WELD_SIZE_RE.finditer(text)]
+        weld_text = _scrub_non_weld_fraction_context(text)
+        page_sizes = [_normalize_size(m.group(1)) for m in WELD_SIZE_RE.finditer(weld_text)]
         for s in page_sizes:
             sizes.append(s)
             page_hits.append({"page": page_no, "size": s, "weld_sheet": True})
@@ -471,7 +523,7 @@ def _assign_quantities(solids: list[dict[str, Any]], qty_by_name: dict[str, int]
     unnamed = [
         s
         for s in solids
-        if s.get("kind") in {"angle", "channel", "cover"}
+        if s.get("kind") in {"angle", "channel", "cover", "plate_member"}
         and not (s.get("name") and s.get("name") in qty_by_name)
     ]
     if not unnamed or not remaining:
@@ -517,7 +569,11 @@ def _classify_solid(box: list[float]) -> str:
     # Angle: long with ~equal small legs
     if L >= 12 and 1.5 <= W <= 4.0 and 1.5 <= T <= 4.0 and abs(W - T) <= 1.25:
         return "angle"
-    # Cover / flat strip
+    # Thin flat plate members (jib arms, flanges, side plates) — not optional covers.
+    # Covers are reserved for named COVER parts / thicker strip hardware.
+    if L >= 10 and T <= 0.35 and W <= 12.0:
+        return "plate_member"
+    # Cover / flat strip (thicker than sheet / named later)
     if L >= 12 and T <= 1.25 and W <= 4.0:
         return "cover"
     # Channel / gusset rib
@@ -529,6 +585,25 @@ def _classify_solid(box: list[float]) -> str:
     return "other"
 
 
+def _apply_plate_weldment_qty_hints(solids: list[dict[str, Any]]) -> list[str]:
+    """
+    Box-section weldments often export one side plate solid even when BOM qty is 2.
+    If we see one wide thin plate + two narrow flanges, assume paired side plates.
+    """
+    notes: list[str] = []
+    members = [s for s in solids if s.get("kind") == "plate_member"]
+    if len(members) < 2:
+        return notes
+    wide = [s for s in members if (s.get("box") or [0, 0, 0])[1] >= 4.0]
+    narrow = [s for s in members if (s.get("box") or [0, 0, 0])[1] < 4.0]
+    if len(wide) == 1 and len(narrow) >= 1 and int(wide[0].get("qty") or 1) == 1:
+        wide[0]["qty"] = 2
+        notes.append(
+            "Assumed qty 2 for wide side plate (box-section weldment with flange plates)"
+        )
+    return notes
+
+
 def _weld_segments_from_stp(
     stp_summary: dict[str, Any],
     notes: list[str],
@@ -537,6 +612,11 @@ def _weld_segments_from_stp(
     solids = stp_summary.get("solids") or []
     if not solids:
         return []
+
+    qty_notes = _apply_plate_weldment_qty_hints(solids)
+    if qty_notes:
+        stp_summary.setdefault("qty_hint_notes", [])
+        stp_summary["qty_hint_notes"].extend(qty_notes)
 
     full_weld = any(FULL_WELD_NOTE_RE.search(n) for n in notes)
     both_sides = any("BOTH SIDE" in n.upper() or "MIRROR" in n.upper() for n in notes)
@@ -560,6 +640,19 @@ def _weld_segments_from_stp(
         if kind == "plate" or kind == "skip":
             continue
         if kind == "kingpin":
+            continue
+        if kind == "plate_member" and L >= 6:
+            # Thin plate weldment: weld along both long edges (e.g. side to top/bottom).
+            segments.append(
+                {
+                    "length": float(L),
+                    "qty": qty,
+                    "sides": 2,
+                    "kind": "plate_member",
+                    "width": float(W),
+                    "name": name,
+                }
+            )
             continue
         if kind == "cover" and L >= 6:
             cover_seg = {
@@ -671,6 +764,9 @@ def _build_items_from_signals(
         # thinner counts are often plate thickness / BOM noise (e.g. 5/16 plate, 3/8 kingpin).
         if full_weld and dominant_count >= 4:
             primary_sizes = [dominant_size]
+        elif dominant_count == 1:
+            # OCR / vector sheets often show each fillet size once — keep them.
+            primary_sizes = list(weld_sheet_sizes.keys())
         else:
             primary_sizes = [
                 s
@@ -680,11 +776,20 @@ def _build_items_from_signals(
     else:
         primary_sizes = list(size_counts.keys())
 
+    # Prefer structural fillet sizes over thin 1/8 noise when both appear weakly.
+    if len(primary_sizes) > 1 and "1/8" in primary_sizes:
+        stronger = [s for s in primary_sizes if s != "1/8"]
+        if stronger and all(weld_sheet_sizes.get(s, size_counts.get(s, 0)) <= 2 for s in primary_sizes):
+            primary_sizes = stronger
+
     segments = _weld_segments_from_stp(stp_summary, notes)
     length_source = "stp_assembly"
     if not segments:
         segments = _estimate_segments_from_pdf(pdf_dimensions, notes)
         length_source = "pdf_dims"
+    for n in stp_summary.get("qty_hint_notes") or []:
+        if n not in flags:
+            flags.append(n)
 
     if not primary_sizes:
         flags.append("No weld size callouts detected in PDF text — manual takeoff required")
@@ -829,6 +934,7 @@ def estimate_fitup_drivers(
     notes: list[str],
     pdf_path: Path | str | None = None,
     library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Estimate parts / joints / component weights for fit-up tables.
@@ -867,6 +973,7 @@ def estimate_fitup_drivers(
         hole_dias=list(stp_summary.get("circle_diameters") or []),
         pdf_path=pdf_path,
         library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
     )
     assembly_weight = weight_info.get("assembly_weight_lb")
     component_weights = list(weight_info.get("component_weights_lb") or [])
@@ -955,6 +1062,7 @@ def run_weld_takeoff(
     pdf_path: Path | str,
     stp_path: Path | str | None = None,
     library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
 ) -> WeldTakeoffResult:
     pdf_path = Path(pdf_path)
     sizes, notes, page_hits, pdf_dimensions, pdf_meta = _parse_pdf_text(pdf_path)
@@ -991,6 +1099,7 @@ def run_weld_takeoff(
         notes,
         pdf_path=pdf_path,
         library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
     )
     for n in fitup_drivers.get("notes") or []:
         if n not in flags:

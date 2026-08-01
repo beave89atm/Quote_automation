@@ -260,18 +260,27 @@ def find_drawings(
         match.notes.append(f"No folder or STP found for {part_key} under drawing library")
         return match
 
-    # Prefer candidates that resolve to an STP, then higher score.
-    ranked: list[tuple[int, int, Path, Path | None]] = []
+    # Prefer candidates that resolve to an STP, then higher score, then more PDFs.
+    ranked: list[tuple[int, int, int, Path, Path | None]] = []
     for score, folder, known_stp in candidates:
         stp = known_stp or _find_stp_near_folder(folder, part_key)
         has_stp = 1 if stp else 0
-        ranked.append((has_stp, score, folder, stp))
-    ranked.sort(key=lambda t: (-t[0], -t[1], str(t[2]).lower()))
-    _has_stp, _score, folder, stp = ranked[0]
+        pdf_n = len(_related_pdfs(folder, primary_pdf_name=primary_pdf_name))
+        ranked.append((has_stp, score, pdf_n, folder, stp))
+    ranked.sort(key=lambda t: (-t[0], -t[1], -t[2], str(t[3]).lower()))
+    _has_stp, _score, _pdf_n, folder, stp = ranked[0]
 
     match.folder = folder
     match.stp_path = stp
-    match.related_pdfs = _related_pdfs(folder, primary_pdf_name=primary_pdf_name)
+    # Merge component PDFs from all decent candidate folders (STP may live in a
+    # short "Knuckle Weldment" folder while 21689.pdf sits in 21678-1).
+    pdf_by_name: dict[str, Path] = {}
+    for score, cand_folder, _known in candidates:
+        if score < 60:
+            continue
+        for p in _related_pdfs(cand_folder, primary_pdf_name=primary_pdf_name):
+            pdf_by_name.setdefault(p.name.lower(), p)
+    match.related_pdfs = sorted(pdf_by_name.values(), key=lambda p: p.name.lower())
     if match.stp_path:
         where = "in folder" if match.stp_path.parent == folder else "beside folder"
         match.notes.append(f"Found STP on shared drive: {match.stp_path.name} ({where})")

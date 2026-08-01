@@ -279,6 +279,56 @@ def find_library_and_reprocess(
     return payload
 
 
+@app.post("/api/jobs/{job_id}/push-secturafab")
+def push_job_to_secturafab(job_id: int, _: str = Depends(require_auth)) -> dict[str, Any]:
+    """
+    Create/update a SecturaFAB quote using the top-level part number as QuoteNumber,
+    upload drawing PDFs + STEP, and return the push summary.
+    """
+    from secturafab.push import SecturaFabPushService
+
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        if job.status in {"uploaded", "processing"}:
+            raise HTTPException(400, "Wait for takeoff to finish before pushing")
+
+        takeoff = job.takeoff()
+        times = job.times()
+        service = SecturaFabPushService()
+        result = service.push_job(
+            title=job.title or job.pdf_filename or "",
+            pdf_filename=job.pdf_filename,
+            pdf_path=Path(job.pdf_path) if job.pdf_path else None,
+            stp_path=Path(job.stp_path) if job.stp_path else None,
+            takeoff=takeoff,
+            times=times,
+            job_id=job.id,
+        )
+        takeoff["secturafab"] = result.to_dict()
+        job.set_takeoff(takeoff)
+        if result.ok:
+            flags = job.flags()
+            flag = (
+                f"Pushed to SecturaFAB quote {result.quote_number}"
+                + (f" ({result.item_count} items)" if result.item_count is not None else "")
+            )
+            if flag not in flags:
+                flags.append(flag)
+            job.set_flags(flags)
+        db.commit()
+        db.refresh(job)
+        payload = job.to_dict()
+        payload["secturafab_push"] = result.to_dict()
+        if not result.ok:
+            raise HTTPException(status_code=502, detail=result.to_dict())
+        return payload
+    finally:
+        db.close()
+
+
 @app.get("/api/jobs/{job_id}/export")
 def export_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
     db = SessionLocal()

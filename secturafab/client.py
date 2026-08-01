@@ -4,7 +4,7 @@ from typing import Any
 
 import requests
 
-from .auth import AccessToken, SecturaFabAuthError, fetch_password_token
+from .auth import AccessToken, SecturaFabAuthError, fetch_access_token
 from .config import SecturaFabConfig
 
 
@@ -36,7 +36,7 @@ class SecturaFabClient:
     def authenticate(self, force: bool = False) -> AccessToken:
         if self._token and not self._token.is_expired and not force:
             return self._token
-        self._token = fetch_password_token(self.config, session=self.session)
+        self._token = fetch_access_token(self.config, session=self.session)
         return self._token
 
     def request(
@@ -110,6 +110,39 @@ class SecturaFabClient:
             return None
         return self._parse_or_raise(response)
 
+    def post_multipart(
+        self,
+        path: str,
+        *,
+        files: list[tuple[str, tuple[str, Any, str]]],
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        """
+        POST multipart/form-data (CAD / drawing uploads).
+
+        `files` entries are requests-style:
+          ("files", (filename, fileobj, content_type))
+        """
+        token = self.authenticate()
+        url = f"{self.config.api_root}/{path.lstrip('/')}"
+        req_headers = {
+            "Accept": "application/json",
+            "Authorization": token.authorization_header,
+        }
+        if headers:
+            req_headers.update(headers)
+        # Do not set Content-Type — requests adds the multipart boundary.
+        response = self.session.post(
+            url,
+            params=params,
+            files=files,
+            headers=req_headers,
+            timeout=timeout or max(self.config.timeout_seconds, 180.0),
+        )
+        return self._parse_or_raise(response)
+
     def whoami(self) -> Any:
         """Best-effort current-user probe across common Account routes."""
         candidates = [
@@ -159,13 +192,22 @@ def ping_token_endpoint(config: SecturaFabConfig | None = None) -> dict[str, Any
     """
     cfg = config or SecturaFabConfig.from_env()
     try:
-        token = fetch_password_token(cfg)
+        token = fetch_access_token(cfg)
     except (SecturaFabAuthError, ValueError) as exc:
-        return {"ok": False, "error": str(exc)}
+        return {
+            "ok": False,
+            "error": str(exc),
+            "token_url": cfg.token_url,
+            "api_base": cfg.base_url,
+            "grant": "client_credentials" if cfg.uses_client_credentials else "password",
+        }
     return {
         "ok": True,
         "token_type": token.token_type,
         "expires_at": token.expires_at.isoformat() if token.expires_at else None,
         "access_token_preview": f"{token.access_token[:8]}…",
         "raw_keys": sorted((token.raw or {}).keys()),
+        "token_url": cfg.token_url,
+        "api_base": cfg.base_url,
+        "grant": "client_credentials" if cfg.uses_client_credentials else "password",
     }

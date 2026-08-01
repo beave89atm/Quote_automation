@@ -48,6 +48,7 @@ def process_job(job_id: int) -> None:
             pdf_path=Path(job.pdf_path),
             stp_path=Path(job.stp_path) if job.stp_path else None,
             library_folder=library_info.get("folder"),
+            related_pdf_names=list(library_info.get("related_pdfs") or []),
         )
         items = result.items
         takeoff = result.to_dict()

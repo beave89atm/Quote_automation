@@ -32,41 +32,7 @@ class SecturaFabAuthError(RuntimeError):
     """Raised when OAuth token acquisition fails."""
 
 
-def fetch_password_token(
-    config: SecturaFabConfig,
-    session: requests.Session | None = None,
-) -> AccessToken:
-    """
-    Acquire an OAuth access token via resource-owner password credentials.
-
-    SecturaFAB exposes POST /token (ASP.NET OAuth / Katana).
-    """
-    config.require_credentials()
-    http = session or requests.Session()
-
-    form: dict[str, str] = {
-        "grant_type": "password",
-        "username": config.username,
-        "password": config.password,
-    }
-    if config.client_id:
-        form["client_id"] = config.client_id
-    if config.tenant:
-        # Tenant naming varies by tenant setup; send common variants.
-        form["tenant"] = config.tenant
-        form["tenantId"] = config.tenant
-        form["TenantId"] = config.tenant
-
-    response = http.post(
-        config.token_url,
-        data=form,
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json",
-        },
-        timeout=config.timeout_seconds,
-    )
-
+def _token_from_response(response: requests.Response) -> AccessToken:
     if response.status_code >= 400:
         detail: Any
         try:
@@ -97,3 +63,86 @@ def fetch_password_token(
         expires_at=expires_at,
         raw=payload,
     )
+
+
+def fetch_client_credentials_token(
+    config: SecturaFabConfig,
+    session: requests.Session | None = None,
+) -> AccessToken:
+    """
+    Acquire an OAuth access token via client_credentials.
+
+    Per SecturaFAB support: POST https://secturafab.com/token with
+    grant_type, client_id, client_secret as form fields.
+    """
+    if not config.client_id or not config.client_secret:
+        raise ValueError(
+            "SECTURAFAB_CLIENT_ID and SECTURAFAB_CLIENT_SECRET are required "
+            "(from https://secturafab.com/apikey)."
+        )
+    http = session or requests.Session()
+    form = {
+        "grant_type": "client_credentials",
+        "client_id": config.client_id,
+        "client_secret": config.client_secret,
+    }
+    response = http.post(
+        config.token_url,
+        data=form,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
+        timeout=config.timeout_seconds,
+    )
+    return _token_from_response(response)
+
+
+def fetch_password_token(
+    config: SecturaFabConfig,
+    session: requests.Session | None = None,
+) -> AccessToken:
+    """
+    Acquire an OAuth access token via resource-owner password credentials.
+
+    Legacy path — prefer client_credentials when client id/secret are available.
+    """
+    if not config.username or not config.password:
+        raise ValueError(
+            "SECTURAFAB_USERNAME and SECTURAFAB_PASSWORD are required for password grant."
+        )
+    http = session or requests.Session()
+
+    form: dict[str, str] = {
+        "grant_type": "password",
+        "username": config.username,
+        "password": config.password,
+    }
+    if config.client_id:
+        form["client_id"] = config.client_id
+    if config.tenant:
+        form["tenant"] = config.tenant
+        form["tenantId"] = config.tenant
+        form["TenantId"] = config.tenant
+
+    response = http.post(
+        config.token_url,
+        data=form,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
+        timeout=config.timeout_seconds,
+    )
+    return _token_from_response(response)
+
+
+def fetch_access_token(
+    config: SecturaFabConfig,
+    session: requests.Session | None = None,
+) -> AccessToken:
+    """Prefer client_credentials (support guidance); fall back to password grant."""
+    config.require_credentials()
+    if config.uses_client_credentials:
+        return fetch_client_credentials_token(config, session=session)
+    return fetch_password_token(config, session=session)

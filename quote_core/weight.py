@@ -351,6 +351,7 @@ def estimate_assembly_weight(
     pdf_path: Path | str | None = None,
     pdf_text: str | None = None,
     library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Prefer PDF BOM component weights when present.
@@ -378,7 +379,12 @@ def estimate_assembly_weight(
         plate_psf = {}
     note_thicknesses = extract_plate_thicknesses_in(notes or [])
 
-    bom = extract_bom(pdf_path=pdf_path, text=raw_pdf or None, library_folder=library_folder)
+    bom = extract_bom(
+        pdf_path=pdf_path,
+        text=raw_pdf or None,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+    )
     pdf_bom = bom.to_dict()
     # Keep legacy lbm-hit fallback when structured BOM rows are absent.
     if not bom.rows:

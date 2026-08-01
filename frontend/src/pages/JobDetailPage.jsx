@@ -274,6 +274,34 @@ export default function JobDetailPage() {
     }
   }
 
+  async function pushSecturaFab() {
+    setBusy(true);
+    setError("");
+    setMessage("Pushing drawings + STEP to SecturaFAB…");
+    try {
+      const data = await api(`/api/jobs/${id}/push-secturafab`, { method: "POST" });
+      setJob(data);
+      const push = data.secturafab_push || data.takeoff?.secturafab;
+      if (push?.ok) {
+        const renamed = (push.notes || []).find((n) =>
+          String(n).toLowerCase().includes("already used")
+        );
+        setMessage(
+          `SecturaFAB quote ${push.quote_number} created` +
+            (push.item_count != null ? ` · ${push.item_count} items` : "") +
+            (push.uploaded_files?.length ? ` · uploaded ${push.uploaded_files.length} file(s)` : "") +
+            (renamed ? ` · ${renamed}` : "")
+        );
+      } else {
+        setError(push?.error || "SecturaFAB push failed");
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!job) {
     return (
       <div className="panel">
@@ -603,6 +631,15 @@ export default function JobDetailPage() {
         <button className="btn secondary" type="button" disabled={busy} onClick={findLibrary}>
           Find on shared drive
         </button>
+        <button
+          className="btn"
+          type="button"
+          disabled={busy || ["uploaded", "processing"].includes(job.status)}
+          onClick={pushSecturaFab}
+          title="Always create a new SecturaFAB quote; uses part number (date suffix if that number is taken)"
+        >
+          Push to SecturaFAB
+        </button>
         <label className="btn ghost" style={{ cursor: busy ? "default" : "pointer" }}>
           {job.stp_filename ? "Replace STP" : "Attach STP"}
           <input
@@ -618,6 +655,17 @@ export default function JobDetailPage() {
           />
         </label>
       </div>
+      {job.takeoff?.secturafab?.ok ? (
+        <p className="muted" style={{ marginTop: "0.5rem" }}>
+          Last SecturaFAB push: quote <strong>{job.takeoff.secturafab.quote_number}</strong>
+          {job.takeoff.secturafab.item_count != null
+            ? ` · ${job.takeoff.secturafab.item_count} items`
+            : ""}
+          {job.takeoff.secturafab.uploaded_files?.length
+            ? ` · ${job.takeoff.secturafab.uploaded_files.join(", ")}`
+            : ""}
+        </p>
+      ) : null}
       {message ? <p className="muted">{message}</p> : null}
       {error ? <div className="error">{error}</div> : null}
 
