@@ -107,6 +107,8 @@ export default function JobDetailPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [pushReady, setPushReady] = useState(false);
+  const [pushElapsed, setPushElapsed] = useState(0);
 
   function applyDrivers(data) {
     const d = data.takeoff?.fitup_drivers || {};
@@ -277,27 +279,64 @@ export default function JobDetailPage() {
   async function pushSecturaFab() {
     setBusy(true);
     setError("");
-    setMessage("Pushing drawings + STEP to SecturaFAB…");
+    setPushReady(false);
+    setPushElapsed(0);
+    setMessage(
+      "Pushing to SecturaFAB… quote appears early — do not open it yet. Waiting for Profile, Weld, and quantities (often 2–3 min)."
+    );
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      try {
+        await Notification.requestPermission();
+      } catch {
+        /* ignore */
+      }
+    }
+    const started = Date.now();
+    const tick = setInterval(() => {
+      setPushElapsed(Math.round((Date.now() - started) / 1000));
+    }, 1000);
     try {
       const data = await api(`/api/jobs/${id}/push-secturafab`, { method: "POST" });
       setJob(data);
       const push = data.secturafab_push || data.takeoff?.secturafab;
       if (push?.ok) {
-        const renamed = (push.notes || []).find((n) =>
-          String(n).toLowerCase().includes("already used")
+        const secs = Math.round((Date.now() - started) / 1000);
+        const ready = push.ready !== false;
+        setPushReady(ready);
+        const verified = (push.notes || []).some((n) =>
+          /Verified Profile\/Weld|Rolled up assembly/i.test(String(n))
         );
         setMessage(
-          `SecturaFAB quote ${push.quote_number} created` +
-            (push.item_count != null ? ` · ${push.item_count} items` : "") +
-            (push.uploaded_files?.length ? ` · uploaded ${push.uploaded_files.length} file(s)` : "") +
-            (renamed ? ` · ${renamed}` : "")
+          ready
+            ? `Ready — SecturaFAB quote ${push.quote_number} is complete` +
+                (push.item_count != null ? ` · ${push.item_count} items` : "") +
+                ` · ${secs}s. Safe to open in SecturaFAB.`
+            : `SecturaFAB quote ${push.quote_number} created, but finalize reported a warning — refresh the quote and check Profile/Weld/qty.` +
+                (verified ? "" : " Review push notes on the job.")
         );
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          try {
+            new Notification(
+              ready
+                ? `SecturaFAB ready: ${push.quote_number}`
+                : `SecturaFAB push finished with warnings: ${push.quote_number}`,
+              {
+                body: ready
+                  ? "Profile, Weld, and quantities should be attached. Safe to open the quote."
+                  : "Open the job in Quote Automation and check Profile/Weld before quoting.",
+              }
+            );
+          } catch {
+            /* ignore */
+          }
+        }
       } else {
         setError(push?.error || "SecturaFAB push failed");
       }
     } catch (err) {
       setError(err.message);
     } finally {
+      clearInterval(tick);
       setBusy(false);
     }
   }
@@ -368,6 +407,7 @@ export default function JobDetailPage() {
             #{job.id} · <span className={`status ${job.status}`}>{job.status}</span>
             {job.pdf_filename ? ` · ${job.pdf_filename}` : ""}
             {job.stp_filename ? ` · ${job.stp_filename}` : " · No STP"}
+            {job.bom_config ? ` · BOM -${String(job.bom_config).replace(/^-/, "")}` : ""}
           </p>
           {!job.stp_filename ? (
             <p className="error" style={{ marginTop: "0.5rem" }}>
@@ -661,12 +701,25 @@ export default function JobDetailPage() {
           {job.takeoff.secturafab.item_count != null
             ? ` · ${job.takeoff.secturafab.item_count} items`
             : ""}
+          {job.takeoff.secturafab.ready === false
+            ? " · finished with warnings"
+            : job.takeoff.secturafab.ready
+              ? " · ready"
+              : ""}
           {job.takeoff.secturafab.uploaded_files?.length
             ? ` · ${job.takeoff.secturafab.uploaded_files.join(", ")}`
             : ""}
         </p>
       ) : null}
-      {message ? <p className="muted">{message}</p> : null}
+      {busy && pushElapsed > 0 ? (
+        <p className="push-progress">
+          Still working… {pushElapsed}s elapsed. Leave this page open — the quote is not
+          finished until you see <em>Ready</em> below.
+        </p>
+      ) : null}
+      {message ? (
+        <p className={pushReady ? "push-ready" : "muted"}>{message}</p>
+      ) : null}
       {error ? <div className="error">{error}</div> : null}
 
       {(job.flags || []).length ? (

@@ -42,12 +42,94 @@ _LBM_RE = re.compile(
     r"(?<![\d.])(\d{1,4}(?:\.\d+)?)\s*(?:lbm|lbs?)\b",
     re.IGNORECASE,
 )
-# BOM row block: ITEM / QTY / PART No. / DESCRIPTION / WEIGHT lbm
-_BOM_ROW_RE = re.compile(
-    r"(?ms)^\s*(\d{1,3})\s*\n\s*(\d{1,4})\s*\n\s*([A-Z0-9][\w\-]*)\s*\n(.+?)\n\s*"
+# MAC BOM layout A (older): ITEM / QTY / PART / DESCRIPTION / WEIGHT
+_BOM_ROW_ITEM_QTY_PART_RE = re.compile(
+    r"(?ms)^\s*(\d{1,3})\s*\n\s*(\d{1,4})\s*\n\s*([A-Z0-9][\w\-]{4,})\s*\n(.+?)\n\s*"
     r"(\d{1,4}(?:\.\d+)?)\s*lbm\b",
     re.IGNORECASE,
 )
+# MAC BOM layout B (common): ITEM / PART / DESCRIPTION / QTY / WEIGHT
+_BOM_ROW_ITEM_PART_QTY_RE = re.compile(
+    r"(?ms)^\s*(\d{1,3})\s*\n\s*([A-Z0-9][\w\-]{4,})\s*\n(.+?)\n\s*(\d{1,4})\s*\n\s*"
+    r"(\d{1,4}(?:\.\d+)?)\s*lbm\b",
+    re.IGNORECASE,
+)
+_BOM_HEADER_RE = re.compile(
+    r"(?is)Item\s*\n\s*Part\s*Number\s*\n\s*Description\s*\n\s*Qty\s*\n\s*Weight\b"
+)
+
+
+def _bom_section_text(text: str) -> str:
+    """Prefer text after the MAC BOM column header so balloon callouts don't match."""
+    if not text:
+        return ""
+    m = _BOM_HEADER_RE.search(text)
+    if m:
+        return text[m.end() :]
+    return text
+
+
+def _looks_like_part_no(token: str) -> bool:
+    raw = re.sub(r"[^A-Z0-9\-]", "", str(token or "").upper())
+    if len(raw) < 5:
+        return False
+    digits = sum(ch.isdigit() for ch in raw)
+    return digits >= 5
+
+
+def _bom_rows_from_text(text: str) -> list[dict[str, Any]]:
+    section = _bom_section_text(text or "")
+    rows_by_item: dict[int, dict[str, Any]] = {}
+
+    for m in _BOM_ROW_ITEM_PART_QTY_RE.finditer(section):
+        item = int(m.group(1))
+        part = m.group(2).strip()
+        if not _looks_like_part_no(part):
+            continue
+        qty = max(1, int(m.group(4)))
+        unit = round(float(m.group(5)), 2)
+        if unit <= 0 or unit > 20000:
+            continue
+        rows_by_item[item] = {
+            "item": item,
+            "qty": qty,
+            "part_no": part,
+            "description": " ".join(m.group(3).split()),
+            "unit_weight_lb": unit,
+        }
+
+    # Layout A only if layout B didn't populate (avoid double-matching).
+    if not rows_by_item:
+        for m in _BOM_ROW_ITEM_QTY_PART_RE.finditer(section):
+            item = int(m.group(1))
+            part = m.group(3).strip()
+            if not _looks_like_part_no(part):
+                continue
+            qty = max(1, int(m.group(2)))
+            unit = round(float(m.group(5)), 2)
+            if unit <= 0 or unit > 20000:
+                continue
+            rows_by_item[item] = {
+                "item": item,
+                "qty": qty,
+                "part_no": part,
+                "description": " ".join(m.group(4).split()),
+                "unit_weight_lb": unit,
+            }
+
+    return [rows_by_item[k] for k in sorted(rows_by_item)]
+
+
+def _bom_rows_from_pdf_blocks(pdf_path: Path | str) -> list[dict[str, Any]]:
+    """Parse BOM from full page text (MAC tables often span one text stream)."""
+    import fitz
+
+    doc = fitz.open(str(pdf_path))
+    try:
+        raw = "\n".join((page.get_text("text") or "") for page in doc)
+    finally:
+        doc.close()
+    return _bom_rows_from_text(raw)
 
 
 @lru_cache(maxsize=4)
@@ -107,47 +189,6 @@ def _title_weights_from_lines(lines: list[str]) -> list[float]:
                     title_vals.append(float(m.group(1)))
                     break
     return title_vals
-
-
-def _bom_rows_from_text(text: str) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for m in _BOM_ROW_RE.finditer(text or ""):
-        qty = max(1, int(m.group(2)))
-        unit = round(float(m.group(5)), 2)
-        if unit <= 0 or unit > 20000:
-            continue
-        rows.append(
-            {
-                "item": int(m.group(1)),
-                "qty": qty,
-                "part_no": m.group(3).strip(),
-                "description": " ".join(m.group(4).split()),
-                "unit_weight_lb": unit,
-            }
-        )
-    return rows
-
-
-def _bom_rows_from_pdf_blocks(pdf_path: Path | str) -> list[dict[str, Any]]:
-    import fitz
-
-    rows: list[dict[str, Any]] = []
-    seen: set[tuple[int, str, float]] = set()
-    doc = fitz.open(str(pdf_path))
-    try:
-        for page in doc:
-            for block in page.get_text("blocks") or []:
-                blob = str(block[4] if len(block) > 4 else "")
-                for row in _bom_rows_from_text(blob):
-                    key = (row["item"], row["part_no"], row["unit_weight_lb"])
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    rows.append(row)
-    finally:
-        doc.close()
-    rows.sort(key=lambda r: r["item"])
-    return rows
 
 
 def _pieces_from_bom_rows(rows: list[dict[str, Any]]) -> list[float]:
@@ -352,6 +393,7 @@ def estimate_assembly_weight(
     pdf_text: str | None = None,
     library_folder: Path | str | None = None,
     related_pdf_names: list[str] | None = None,
+    bom_config: str | None = None,
 ) -> dict[str, Any]:
     """
     Prefer PDF BOM component weights when present.
@@ -384,6 +426,7 @@ def estimate_assembly_weight(
         text=raw_pdf or None,
         library_folder=library_folder,
         related_pdf_names=related_pdf_names,
+        bom_config=bom_config,
     )
     pdf_bom = bom.to_dict()
     # Keep legacy lbm-hit fallback when structured BOM rows are absent.

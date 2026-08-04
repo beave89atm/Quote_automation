@@ -1,0 +1,295 @@
+1
+00:00:00,011 --> 00:00:03,308
+Hello,
+
+2
+00:00:03,517 --> 00:00:07,129
+it is time to do another quote. We are going to do one that
+
+3
+00:00:07,130 --> 00:00:10,975
+is very simple. Click on New Quote.
+
+4
+00:00:14,181 --> 00:00:16,670
+Then I'm going to grab my drawing,
+
+5
+00:00:24,898 --> 00:00:27,589
+which is right here on my desktop.
+
+6
+00:00:29,238 --> 00:00:34,201
+This one right here, I'm going to drag and drop this into the
+
+7
+00:00:35,626 --> 00:00:37,755
+image files. I click on Image Files,
+
+8
+00:00:37,756 --> 00:00:40,032
+it opens up a drag and drop menu. I drag and drop.
+
+9
+00:00:40,033 --> 00:00:43,700
+I'm going onto it. Since we only have a PDF and we do not
+
+10
+00:00:43,701 --> 00:00:48,808
+have a step file, I am going to quote this using
+
+11
+00:00:48,809 --> 00:00:52,114
+the step file. There are no bins.
+
+12
+00:00:52,115 --> 00:00:54,917
+This is a laser cut part only.
+
+13
+00:00:55,251 --> 00:00:59,620
+So all I need to be able to do is look at the dimensions.
+
+14
+00:01:04,816 --> 00:01:10,277
+And so the dimensions of this part are 5
+
+15
+00:01:10,278 --> 00:01:14,817
+8ths
+
+16
+00:01:14,818 --> 00:01:18,313
+thick, so we need to choose 5 8ths thick.
+
+17
+00:01:18,314 --> 00:01:23,280
+Thank you. Also I need my quantity which is 192 pieces.
+
+18
+00:01:23,972 --> 00:01:25,961
+The material is, let's see what the material
+
+19
+00:01:33,058 --> 00:01:35,868
+is on this one. Nope, this is grade 50, so let's go down.
+
+20
+00:01:35,869 --> 00:01:39,333
+It's not A36, it's a little denser material,
+
+21
+00:01:39,334 --> 00:01:42,399
+harder material, which is that A572 grade 50.
+
+22
+00:01:42,400 --> 00:01:45,376
+We're going to choose that. I've got my 5 8's,
+
+23
+00:01:45,377 --> 00:01:48,404
+192 pieces. Now I'm going to look at my dimensions.
+
+24
+00:01:48,829 --> 00:01:50,851
+It is 2.88,
+
+25
+00:01:50,852 --> 00:01:56,747
+2.88. The width is 2.5,
+
+26
+00:01:56,748 --> 00:02:01,670
+2.5. So my thickness is 5 8's,
+
+27
+00:02:01,671 --> 00:02:03,707
+my length is 2.88,
+
+28
+00:02:03,708 --> 00:02:06,181
+my width is 2.5,
+
+29
+00:02:06,182 --> 00:02:08,343
+and that is it.
+
+30
+00:02:08,378 --> 00:02:12,011
+Now I want to go grab the name, which is the part number.
+
+31
+00:02:12,739 --> 00:02:16,513
+I'm going to copy and paste that into the quote number,
+
+32
+00:02:16,514 --> 00:02:18,591
+because all quote numbers are part numbers.
+
+33
+00:02:18,850 --> 00:02:22,650
+And then also in the description, they have a very long description,
+
+34
+00:02:22,651 --> 00:02:27,069
+but this is just a lift log gusset.
+
+35
+00:02:27,861 --> 00:02:30,812
+That goes in my description, that is directly from from the drawing.
+
+36
+00:02:31,582 --> 00:02:33,724
+So we now have everything.
+
+37
+00:02:33,725 --> 00:02:36,636
+There are no holes in this drawing, so I do not need to include
+
+38
+00:02:36,637 --> 00:02:40,096
+any holes. I have all my dimensions.
+
+39
+00:02:40,097 --> 00:02:45,652
+My quantities, my thickness, I have filled out the description
+
+40
+00:02:45,653 --> 00:02:47,737
+and the part number, and then last,
+
+41
+00:02:48,013 --> 00:02:51,522
+this, uh, is for American Completion Tools,
+
+42
+00:02:51,523 --> 00:02:55,516
+so I hit this drop-down menu for Existing Organization,
+
+43
+00:02:55,517 --> 00:02:58,551
+or I can just start typing in American,
+
+44
+00:02:59,071 --> 00:03:01,855
+and there it is, the first one that comes up, American Completion Tools,
+
+45
+00:03:01,856 --> 00:03:05,908
+that is my customer. So then I'm going to go down here,
+
+46
+00:03:05,909 --> 00:03:09,235
+click New Line Items, because it will not actually create the line item until
+
+47
+00:03:09,236 --> 00:03:13,138
+I click new line item and then it will put it down below and
+
+48
+00:03:13,139 --> 00:03:16,455
+I will see my part with 192 pieces.
+
+49
+00:03:17,285 --> 00:03:19,669
+I'll see my material cost which needs to be updated.
+
+50
+00:03:19,670 --> 00:03:23,764
+I'm going to have to go online and look at the material cost so
+
+51
+00:03:23,765 --> 00:03:25,940
+I can update that, hopefully in the future, Cursor,
+
+52
+00:03:25,941 --> 00:03:28,350
+you'll be able to do that, um,
+
+53
+00:03:28,360 --> 00:03:30,861
+I need you to be able to track down the type of material and
+
+54
+00:03:30,862 --> 00:03:33,297
+the cost, so, right now,
+
+55
+00:03:33,511 --> 00:03:36,464
+something else we can do, I can open this up,
+
+56
+00:03:37,585 --> 00:03:39,920
+on this part, and,
+
+57
+00:03:39,921 --> 00:03:43,050
+it's not letting me open up,
+
+58
+00:03:43,051 --> 00:03:43,620
+for some reason,
+
+59
+00:03:48,857 --> 00:03:51,287
+there we go, open it up, I can go to Nest,
+
+60
+00:03:51,789 --> 00:03:53,857
+see how many I can fit on a sheet.
+
+61
+00:03:54,242 --> 00:03:58,326
+So I will click nest item for this part because I'd like to get
+
+62
+00:03:58,327 --> 00:04:01,877
+as many as possible. It doesn't even need to take up just a small
+
+63
+00:04:01,878 --> 00:04:04,335
+percentage of the sheet. Now,
+
+64
+00:04:04,336 --> 00:04:07,055
+if this took up a very large percentage of the sheet,
+
+65
+00:04:07,138 --> 00:04:10,223
+I may charge the customer for the entire piece of material.
+
+66
+00:04:10,870 --> 00:04:14,520
+If I wanted to charge the customer for the entire piece of material,
+
+67
+00:04:15,019 --> 00:04:17,233
+I would click, uh,
+
+68
+00:04:17,243 --> 00:04:19,404
+I would check the KeepRAM off, right there, that little checkbox,
+
+69
+00:04:19,775 --> 00:04:21,867
+under nesting tab, but,
+
+70
+00:04:22,057 --> 00:04:26,931
+since this is a material that we
+
+71
+00:04:26,932 --> 00:04:32,279
+use often. I
+
+72
+00:04:32,280 --> 00:04:35,766
+will click Keep Remnant
+
+73
+00:04:40,149 --> 00:04:44,601
+That is far as I want Cursor to take it right now.
+
+74
+00:04:45,096 --> 00:04:45,872
+Thank you so much.

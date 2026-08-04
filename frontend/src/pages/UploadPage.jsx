@@ -8,6 +8,7 @@ export default function UploadPage() {
   const [pdf, setPdf] = useState(null);
   const [stp, setStp] = useState(null);
   const [title, setTitle] = useState("");
+  const [bomConfig, setBomConfig] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -32,6 +33,7 @@ export default function UploadPage() {
       body.append("pdf", pdf);
       if (stp) body.append("stp", stp);
       if (title.trim()) body.append("title", title.trim());
+      if (bomConfig.trim()) body.append("bom_config", bomConfig.trim());
       const job = await api("/api/jobs", { method: "POST", body });
       navigate(`/jobs/${job.id}`);
     } catch (err) {
@@ -89,8 +91,27 @@ export default function UploadPage() {
           id="title"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          placeholder="e.g. 73476047 Coupler ASM"
+          placeholder="e.g. 28106-1 Lower Boom Weldment"
         />
+        <p className="muted" style={{ margin: "0.35rem 0 0", fontSize: "0.85rem" }}>
+          For Time multi-option BOMs, put the dash in the title (28106-1) or use the
+          field below so the app reads the correct qty column.
+        </p>
+      </div>
+
+      <div className="field" style={{ marginTop: "1rem" }}>
+        <label htmlFor="bom-config">BOM config / dash (optional)</label>
+        <input
+          id="bom-config"
+          value={bomConfig}
+          onChange={(e) => setBomConfig(e.target.value)}
+          placeholder="-1"
+        />
+        <p className="muted" style={{ margin: "0.35rem 0 0", fontSize: "0.85rem" }}>
+          Example: <code>-1</code> or <code>1</code> selects the <strong>-1</strong> column
+          on drawings with -4/-3/-2/-1 qty options. Also auto-detected from titles like
+          28106-1 or folders named …28106-1.
+        </p>
       </div>
 
       <div className="row">
@@ -104,6 +125,7 @@ export default function UploadPage() {
             setPdf(null);
             setStp(null);
             setTitle("");
+            setBomConfig("");
             setError("");
           }}
         >

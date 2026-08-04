@@ -40,6 +40,11 @@ WEIGHT_RE = re.compile(
     r"(?<![\d.])(\d{1,4}(?:\.\d+)?)\s*(?:lbm|lbs?|pounds?)\b",
     re.IGNORECASE,
 )
+# Plate blank callout on component drawings: 7.00" X 3.19"
+PLATE_BLANK_RE = re.compile(
+    r"(?<![\d.])(\d{1,2}\.\d{1,4})\s*[\"″']?\s*[Xx×]\s*(\d{1,2}\.\d{1,4})\s*[\"″']?",
+)
+GUSSET_DESC_RE = re.compile(r"\bGUSSET\b", re.IGNORECASE)
 
 
 @dataclass
@@ -91,14 +96,15 @@ def _scrub_non_weld_fraction_context(text: str) -> str:
     """
     scrubbed = text
     # Mixed numbers: 1 1/8 or 1-1/8 (with optional inch mark / REF)
+    # Keep to same line — "SCALE: 1:6\\n1/4\"" must NOT become "6 1/4".
     scrubbed = re.sub(
-        r"(?<![\d/])\d{1,3}\s*[-–—]\s*(?:1/2|5/16|3/8|3/16|1/4|1/8)\b",
+        r"(?<![\d/])\d{1,3}[ \t]*[-–—][ \t]*(?:1/2|5/16|3/8|3/16|1/4|1/8)\b",
         " ",
         scrubbed,
         flags=re.IGNORECASE,
     )
     scrubbed = re.sub(
-        r"(?<![\d/])\d{1,3}\s+(?:1/2|5/16|3/8|3/16|1/4|1/8)\b",
+        r"(?<![\d/])\d{1,3}[ \t]+(?:1/2|5/16|3/8|3/16|1/4|1/8)\b",
         " ",
         scrubbed,
         flags=re.IGNORECASE,
@@ -248,10 +254,13 @@ def _parse_pdf_text(
     text_chars = 0
     drawing_count = 0
     name_hint = "weld" in pdf_path.name.lower() or "weldment" in pdf_path.name.lower()
+    saw_weldment_keyword = name_hint
 
     for i, page in enumerate(doc):
         text = page.get_text("text") or ""
         text_chars += len(text.strip())
+        if "weldment" in text.lower() or "fillet" in text.lower():
+            saw_weldment_keyword = True
         try:
             drawing_count += len(page.get_drawings() or [])
         except Exception:  # noqa: BLE001
@@ -287,7 +296,12 @@ def _parse_pdf_text(
 
     counts = Counter(sizes)
     # Vector CAD / OCR packs often only print a size once; keep single hits when text is scarce.
-    min_hits = 1 if (vector_heavy or ocr_info.get("used") or text_chars < 400) else 2
+    # Weldment sheets frequently show one fillet callout (e.g. lone 1/4") — keep it.
+    min_hits = (
+        1
+        if (vector_heavy or ocr_info.get("used") or text_chars < 400 or saw_weldment_keyword)
+        else 2
+    )
     sizes = [s for s in sizes if counts[s] >= min_hits]
     page_hits = [h for h in page_hits if counts.get(h["size"], 0) >= min_hits]
     meta = {
@@ -338,9 +352,157 @@ def _estimate_segments_from_pdf(
             }
         )
     else:
-        for d in mid[:3]:
-            segments.append({"length": d, "qty": 2, "sides": sides, "kind": "member"})
+        # Mid-only envelope dims (common on weldment iso views) are not weld paths —
+        # using them as member lengths undercounts gusset all-arounds badly.
+        # Leave empty so callers can prefer BOM/component takeoff instead.
+        return []
     return segments
+
+
+def _plate_blank_size_from_text(text: str) -> tuple[float, float] | None:
+    """Return (L, W) from a plate blank callout like 7.00\" X 3.19\"."""
+    candidates: list[tuple[float, float]] = []
+    for m in PLATE_BLANK_RE.finditer(text or ""):
+        try:
+            a = float(m.group(1))
+            b = float(m.group(2))
+        except ValueError:
+            continue
+        # Gusset / plate blanks are typically under ~24" each side.
+        if 0.75 <= a <= 24.0 and 0.75 <= b <= 24.0:
+            candidates.append((max(a, b), min(a, b)))
+    if not candidates:
+        return None
+    # Prefer the first title-block blank (usually the overall plate size).
+    return candidates[0]
+
+
+def _plate_blank_size_from_pdf(pdf_path: Path) -> tuple[float, float] | None:
+    from quote_core.weight import _read_pdf_text
+
+    try:
+        return _plate_blank_size_from_text(_read_pdf_text(pdf_path))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _component_pdf_search_dirs(
+    pdf_path: Path | None,
+    library_folder: Path | str | None,
+) -> list[Path]:
+    dirs: list[Path] = []
+    if library_folder:
+        p = Path(library_folder)
+        if p.is_dir():
+            dirs.append(p)
+    if pdf_path:
+        parent = Path(pdf_path).parent
+        if parent.is_dir() and parent not in dirs:
+            dirs.append(parent)
+    return dirs
+
+
+def _find_component_pdf(
+    part_no: str,
+    search_dirs: list[Path],
+    related_pdf_names: list[str] | None = None,
+) -> Path | None:
+    part_u = (part_no or "").upper().strip()
+    if not part_u:
+        return None
+    # Prefer exact related names from the library folder first.
+    name_hints = [n for n in (related_pdf_names or []) if part_u in n.upper()]
+    for d in search_dirs:
+        for hint in name_hints:
+            cand = d / hint
+            if cand.is_file():
+                return cand
+        preferred = [
+            d / f"{part_no}.dwg.pdf",
+            d / f"{part_no}.pdf",
+            d / f"{part_u}.dwg.pdf",
+            d / f"{part_u}.pdf",
+        ]
+        for cand in preferred:
+            if cand.is_file():
+                return cand
+        try:
+            for p in d.iterdir():
+                if p.suffix.lower() != ".pdf":
+                    continue
+                name_u = p.name.upper()
+                if "[1]" in name_u:
+                    continue
+                if name_u.startswith(part_u) or p.stem.upper().startswith(part_u):
+                    return p
+        except OSError:
+            continue
+    return None
+
+
+def _estimate_gusset_all_around_segments(
+    pdf_path: Path | None,
+    library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """
+    When a weldment BOM lists gusset plates, weld all-around ≈ perimeter × qty.
+
+    Example: MD04-2482 blank 7.00\" × 3.19\" → 2*(7+3.19) = 20.38\" per gusset.
+    """
+    from quote_core.bom import extract_bom_from_parts_list
+    from quote_core.weight import _read_pdf_text
+
+    notes: list[str] = []
+    if not pdf_path or not Path(pdf_path).is_file():
+        return [], notes
+
+    try:
+        text = _read_pdf_text(Path(pdf_path))
+    except Exception as exc:  # noqa: BLE001
+        return [], [f"Could not read assembly PDF for gusset takeoff: {exc}"]
+
+    bom = extract_bom_from_parts_list(pdf_path, text=text)
+    gusset_rows = [
+        r
+        for r in bom.rows
+        if GUSSET_DESC_RE.search(r.description or "")
+        or GUSSET_DESC_RE.search(r.part_no or "")
+    ]
+    if not gusset_rows:
+        return [], notes
+
+    search_dirs = _component_pdf_search_dirs(Path(pdf_path), library_folder)
+    segments: list[dict[str, Any]] = []
+    for row in gusset_rows:
+        comp = _find_component_pdf(row.part_no, search_dirs, related_pdf_names)
+        if not comp:
+            notes.append(f"Gusset {row.part_no}: component PDF not found for blank size")
+            continue
+        blank = _plate_blank_size_from_pdf(comp)
+        if not blank:
+            notes.append(f"Gusset {row.part_no}: no L×W blank size on {comp.name}")
+            continue
+        length_in, width_in = blank
+        perimeter = 2.0 * (length_in + width_in)
+        qty = max(1, int(row.qty or 1))
+        segments.append(
+            {
+                "length": round(perimeter, 4),
+                "qty": qty,
+                "sides": 1,
+                "kind": "gusset_all_around",
+                "name": row.part_no,
+                "blank": [length_in, width_in],
+                "description": row.description,
+            }
+        )
+        notes.append(
+            f"Gusset {row.part_no}: all-around 2×({length_in:g}+{width_in:g})"
+            f" = {perimeter:g}\" × qty {qty}"
+        )
+
+    return segments, notes
 
 
 def _parse_stp_boxes(stp_path: Path) -> dict[str, Any]:
@@ -747,6 +909,9 @@ def _build_items_from_signals(
     stp_summary: dict[str, Any],
     pdf_name: str,
     pdf_dimensions: list[float] | None = None,
+    pdf_path: Path | str | None = None,
+    library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
 ) -> tuple[list[WeldLineItem], list[str]]:
     items: list[WeldLineItem] = []
     flags: list[str] = []
@@ -785,8 +950,20 @@ def _build_items_from_signals(
     segments = _weld_segments_from_stp(stp_summary, notes)
     length_source = "stp_assembly"
     if not segments:
-        segments = _estimate_segments_from_pdf(pdf_dimensions, notes)
-        length_source = "pdf_dims"
+        gusset_segs, gusset_notes = _estimate_gusset_all_around_segments(
+            Path(pdf_path) if pdf_path else None,
+            library_folder=library_folder,
+            related_pdf_names=related_pdf_names,
+        )
+        for n in gusset_notes:
+            if n not in flags:
+                flags.append(n)
+        if gusset_segs:
+            segments = gusset_segs
+            length_source = "gusset_all_around"
+        else:
+            segments = _estimate_segments_from_pdf(pdf_dimensions, notes)
+            length_source = "pdf_dims"
     for n in stp_summary.get("qty_hint_notes") or []:
         if n not in flags:
             flags.append(n)
@@ -863,8 +1040,19 @@ def _build_items_from_signals(
     for s in segments:
         if s.get("kind") == "kingpin_all_around":
             note_bits.append(f"kingpin Ø{s.get('diameter', '?')}\" all-around")
+        if s.get("kind") == "gusset_all_around":
+            blank = s.get("blank") or []
+            if len(blank) >= 2:
+                note_bits.append(
+                    f"{s.get('name')}: 2×({blank[0]:g}+{blank[1]:g})×{s.get('qty', 1)}"
+                )
 
-    confidence = "medium" if length_source == "stp_assembly" else "low"
+    if length_source == "stp_assembly":
+        confidence = "medium"
+    elif length_source == "gusset_all_around":
+        confidence = "medium"
+    else:
+        confidence = "low"
     items.append(
         WeldLineItem(
             size=dominant,
@@ -892,6 +1080,10 @@ def _build_items_from_signals(
     if length_source == "pdf_dims":
         flags.append(
             "Lengths estimated from PDF dimensions (no STP) — attach STP for better accuracy"
+        )
+    elif length_source == "gusset_all_around":
+        flags.append(
+            "Weld inches from gusset plate blank perimeters (all-around) — confirm weld symbols"
         )
     cover_inches = float(stp_summary.get("cover_inches") or 0)
     covers_included = bool(stp_summary.get("covers_included_in_total"))
@@ -935,6 +1127,7 @@ def estimate_fitup_drivers(
     pdf_path: Path | str | None = None,
     library_folder: Path | str | None = None,
     related_pdf_names: list[str] | None = None,
+    bom_config: str | None = None,
 ) -> dict[str, Any]:
     """
     Estimate parts / joints / component weights for fit-up tables.
@@ -960,8 +1153,14 @@ def estimate_fitup_drivers(
         part_count = 1
         defaulted_part_count = True
 
-    skip_kinds = {"kingpin_all_around", "angle_end", "channel_end"}
+    skip_kinds = {"kingpin_all_around", "angle_end", "channel_end", "gusset_all_around"}
     joint_count = sum(1 for s in segments if str(s.get("kind") or "") not in skip_kinds)
+    # Each gusset all-around is one joint (plate to parent).
+    joint_count += sum(
+        int(s.get("qty") or 1)
+        for s in segments
+        if str(s.get("kind") or "") == "gusset_all_around"
+    )
     joint_estimated = False
     if joint_count <= 0:
         joint_count = max(1, part_count - 1)
@@ -974,6 +1173,7 @@ def estimate_fitup_drivers(
         pdf_path=pdf_path,
         library_folder=library_folder,
         related_pdf_names=related_pdf_names,
+        bom_config=bom_config,
     )
     assembly_weight = weight_info.get("assembly_weight_lb")
     component_weights = list(weight_info.get("component_weights_lb") or [])
@@ -981,7 +1181,12 @@ def estimate_fitup_drivers(
     bom_piece_count = int(weight_info.get("piece_count") or 0)
     bom_part_numbers = int(weight_info.get("part_number_count") or 0)
 
-    if method.startswith("pdf_bom") or method.startswith("ocr_time") or method.startswith("native_mac"):
+    if (
+        method.startswith("pdf_bom")
+        or method.startswith("ocr_time")
+        or method.startswith("native_mac")
+        or method.startswith("native_parts_list")
+    ):
         if bom_piece_count > 0:
             part_count = bom_piece_count
             defaulted_part_count = False
@@ -1029,6 +1234,7 @@ def estimate_fitup_drivers(
         method.startswith("pdf_bom")
         or method.startswith("ocr_time")
         or method.startswith("native_mac")
+        or method.startswith("native_parts_list")
         or "qty_only" in method
     ):
         part_count = bom_piece_count
@@ -1063,6 +1269,7 @@ def run_weld_takeoff(
     stp_path: Path | str | None = None,
     library_folder: Path | str | None = None,
     related_pdf_names: list[str] | None = None,
+    bom_config: str | None = None,
 ) -> WeldTakeoffResult:
     pdf_path = Path(pdf_path)
     sizes, notes, page_hits, pdf_dimensions, pdf_meta = _parse_pdf_text(pdf_path)
@@ -1081,6 +1288,9 @@ def run_weld_takeoff(
         stp_summary=stp_summary,
         pdf_name=pdf_path.name,
         pdf_dimensions=pdf_dimensions,
+        pdf_path=pdf_path,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
     )
     if pdf_meta.get("ocr_used"):
         flags.insert(0, "OCR used to read weld callouts from vector PDF pages")
@@ -1100,6 +1310,7 @@ def run_weld_takeoff(
         pdf_path=pdf_path,
         library_folder=library_folder,
         related_pdf_names=related_pdf_names,
+        bom_config=bom_config,
     )
     for n in fitup_drivers.get("notes") or []:
         if n not in flags:

@@ -29,6 +29,8 @@ class Job(Base):
     stp_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
     pdf_path: Mapped[str] = mapped_column(String(1024), default="")
     stp_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # Time multi-option BOM column: "1" means use the -1 qty column on 28106.
+    bom_config: Mapped[str | None] = mapped_column(String(32), nullable=True)
     efficiency_pct: Mapped[float] = mapped_column(Float, default=85.0)
     takeoff_json: Mapped[str] = mapped_column(Text, default="{}")
     times_json: Mapped[str] = mapped_column(Text, default="{}")
@@ -64,6 +66,7 @@ class Job(Base):
             "status": self.status,
             "pdf_filename": self.pdf_filename,
             "stp_filename": self.stp_filename,
+            "bom_config": self.bom_config,
             "efficiency_pct": self.efficiency_pct,
             "takeoff": self.takeoff(),
             "times": self.times(),
@@ -79,6 +82,16 @@ engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread"
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
+def _ensure_column(table: str, column: str, ddl: str) -> None:
+    """SQLite-friendly additive migration for existing DBs."""
+    with engine.begin() as conn:
+        rows = conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()
+        names = {str(r[1]) for r in rows}
+        if column not in names:
+            conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
 def init_db() -> None:
     ensure_data_dirs()
     Base.metadata.create_all(bind=engine)
+    _ensure_column("jobs", "bom_config", "bom_config VARCHAR(32)")

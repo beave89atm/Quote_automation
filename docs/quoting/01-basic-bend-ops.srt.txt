@@ -1,0 +1,347 @@
+1
+00:00:00,011 --> 00:00:05,011
+Alright,
+
+2
+00:00:08,021 --> 00:00:11,068
+I'm gonna show you how I do some very basic quoting.
+
+3
+00:00:11,360 --> 00:00:14,447
+Hopefully you're recording my voice, and this is actually working.
+
+4
+00:00:14,878 --> 00:00:18,124
+Alright. We first go to New Quote.
+
+5
+00:00:21,691 --> 00:00:23,912
+Once we click New Quote,
+
+6
+00:00:23,972 --> 00:00:26,950
+we will enter in a quote number,
+
+7
+00:00:27,032 --> 00:00:30,298
+and the quote number is always the part number.
+
+8
+00:00:31,072 --> 00:00:35,945
+So in order to do that, Let's go ahead and upload
+
+9
+00:00:36,161 --> 00:00:38,942
+the drawing, or set of drawings,
+
+10
+00:00:38,977 --> 00:00:42,130
+or step file, either one,
+
+11
+00:00:42,293 --> 00:00:45,915
+either options, into the quoting software.
+
+12
+00:00:46,654 --> 00:00:49,810
+So, first thing we start with, is image files.
+
+13
+00:00:50,374 --> 00:00:53,106
+If we only have a PDF,
+
+14
+00:00:53,595 --> 00:00:56,402
+or a drawing. If we had a step file,
+
+15
+00:00:56,549 --> 00:00:59,793
+which is always preferred, we would start with CAD files.
+
+16
+00:01:01,029 --> 00:01:04,411
+Since we do not have a step file in this scenario,
+
+17
+00:01:04,412 --> 00:01:07,768
+We are immediately going to start with image files.
+
+18
+00:01:07,769 --> 00:01:09,941
+With an image file,
+
+19
+00:01:09,942 --> 00:01:15,262
+I'm going to grab and drop a PDF into that
+
+20
+00:01:15,263 --> 00:01:17,554
+area. Now if you look to the right,
+
+21
+00:01:17,555 --> 00:01:19,771
+here is our drawing. It has successfully uploaded.
+
+22
+00:01:19,772 --> 00:01:24,069
+And since I don't have a step file,
+
+23
+00:01:24,070 --> 00:01:26,469
+uhm,
+
+24
+00:01:26,479 --> 00:01:30,522
+since I don't have a step file, uhm,
+
+25
+00:01:30,532 --> 00:01:35,156
+I'm going to have to fill out all the information.
+
+26
+00:01:35,157 --> 00:01:37,838
+if I had a step file. It would read all the dimensions.
+
+27
+00:01:38,606 --> 00:01:42,577
+So with this one, I know it's a 22 that I'm looking at the
+
+28
+00:01:42,578 --> 00:01:45,355
+drawing on the other side. I'm reading the drawing and the drawing says it's
+
+29
+00:01:45,356 --> 00:01:48,020
+22 gauge. So it's a very thin material.
+
+30
+00:01:48,021 --> 00:01:51,096
+So let's go pick 22 gauge. We got to pick the thickness.
+
+31
+00:01:51,097 --> 00:01:53,106
+We got to also pick that it's,
+
+32
+00:01:53,107 --> 00:01:55,769
+uh, this is a galvanized material.
+
+33
+00:01:56,502 --> 00:01:58,947
+So, because it's, oops,
+
+34
+00:01:59,157 --> 00:02:03,089
+since it's galvanized, I got to find my material that's galvanized material.
+
+35
+00:02:03,090 --> 00:02:05,643
+Uh, there it is. G-A-L-B,
+
+36
+00:02:05,644 --> 00:02:08,731
+galv, 22 gauge. We are going to be making 22 gauge.
+
+37
+00:02:08,732 --> 00:02:11,520
+Uh, 24 pieces, so I enter the 24 in that quantity.
+
+38
+00:02:12,126 --> 00:02:15,753
+Here is, it automatically pulled in my part number right here,
+
+39
+00:02:16,401 --> 00:02:19,756
+which was on the drawing. I'm just going to control and paste that up
+
+40
+00:02:19,757 --> 00:02:23,622
+into my quote number. I do this as it will be easier for me
+
+41
+00:02:23,623 --> 00:02:29,176
+to find this part. The part says it right here in the description line.
+
+42
+00:02:29,349 --> 00:02:35,890
+So, I'm going to look at the description
+
+43
+00:02:35,891 --> 00:02:41,456
+line, and I'm going
+
+44
+00:02:41,457 --> 00:02:46,521
+to fill out the description line in the
+
+45
+00:02:46,522 --> 00:02:47,617
+drawing
+
+46
+00:02:51,630 --> 00:02:52,002
+now.
+
+47
+00:02:56,976 --> 00:02:59,917
+Normally, the description is not all these dimensions,
+
+48
+00:03:00,081 --> 00:03:04,749
+but it looks like these engineers are not wanting to spend time
+
+49
+00:03:04,750 --> 00:03:07,435
+naming all the parts for this project,
+
+50
+00:03:07,758 --> 00:03:10,758
+so now that I've done that, I've got to make sure my length and
+
+51
+00:03:10,759 --> 00:03:14,498
+width, this length and width is always the flat pattern,
+
+52
+00:03:14,547 --> 00:03:18,452
+so I look at the drawing, and you can see the drawing,
+
+53
+00:03:18,453 --> 00:03:20,725
+there is a flat pattern in the drawing,
+
+54
+00:03:20,913 --> 00:03:25,491
+right here it says flat pattern, so I need this dimension 85,
+
+55
+00:03:25,492 --> 00:03:28,662
+42, and then I need this dimension 7,
+
+56
+00:03:28,663 --> 00:03:32,409
+7, 8. 76, always put in the flat dimension,
+
+57
+00:03:33,040 --> 00:03:37,827
+so we have 85,
+
+58
+00:03:37,828 --> 00:03:40,930
+42,
+
+59
+00:03:40,931 --> 00:03:43,153
+and then we have 7,
+
+60
+00:03:43,154 --> 00:03:46,527
+72, and there's our flat pattern,
+
+61
+00:03:46,912 --> 00:03:49,790
+those are in inches, these are in inches, we're good to go,
+
+62
+00:03:50,164 --> 00:03:52,637
+are there any holes? I do not see any holes,
+
+63
+00:03:53,192 --> 00:03:55,245
+so we do not have to add the holes here,
+
+64
+00:03:55,246 --> 00:03:57,830
+uhm, we're gonna click next,
+
+65
+00:03:57,905 --> 00:03:59,963
+that we have our dimensions, our thickness,
+
+66
+00:04:00,443 --> 00:04:02,511
+our type of material, and our quantity,
+
+67
+00:04:04,570 --> 00:04:07,214
+now we must look, make sure it's correct,
+
+68
+00:04:07,246 --> 00:04:11,143
+here it is, the 24 pieces, profile means it's being lasered,
+
+69
+00:04:11,144 --> 00:04:13,846
+cut on our laser, now I want to add bend,
+
+70
+00:04:13,889 --> 00:04:17,371
+operation, come in here, and bend.
+
+71
+00:04:17,372 --> 00:04:20,545
+So, we look how many bends,
+
+72
+00:04:20,604 --> 00:04:24,374
+if you look back at the drawing, you will see on the flat pattern,
+
+73
+00:04:24,731 --> 00:04:26,738
+it has these dotted lines,
+
+74
+00:04:26,739 --> 00:04:29,940
+which means bends, or you can look here and see that it has,
+
+75
+00:04:30,116 --> 00:04:32,758
+there's a bend, there's a bend, one line,
+
+76
+00:04:32,759 --> 00:04:35,329
+two line. two bends, so,
+
+77
+00:04:36,051 --> 00:04:38,603
+I'm going to go add two bends,
+
+78
+00:04:39,292 --> 00:04:42,634
+since this is a longer part, since it's over four foot long,
+
+79
+00:04:43,120 --> 00:04:45,548
+I'm going to come over here and add a second operator,
+
+80
+00:04:45,549 --> 00:04:48,704
+because it's going to take two people to bend it, and since it's a
+
+81
+00:04:48,705 --> 00:04:51,290
+long part, I'm going to make the time per bend,
+
+82
+00:04:51,291 --> 00:04:53,983
+uh, since this is nine, 85 inches,
+
+83
+00:04:53,984 --> 00:04:57,626
+I'm going to make this about 90 seconds per bend,
+
+84
+00:04:57,627 --> 00:05:00,313
+30 minutes, and setup is good,
+
+85
+00:05:00,939 --> 00:05:04,471
+I will add the operation, and for now,
+
+86
+00:05:04,948 --> 00:05:09,042
+this part is good until I go and get the material cost.
+
+87
+00:05:10,130 --> 00:05:11,472
+Alright, that's

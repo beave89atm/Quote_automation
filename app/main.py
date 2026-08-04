@@ -44,6 +44,8 @@ class ReviewUpdate(BaseModel):
     efficiency_pct: float | None = None
     ipm_overrides: dict[str, float] | None = None
     fitup_drivers: dict[str, Any] | None = None
+    bom_config: str | None = None
+    title: str | None = None
     status: str | None = Field(
         default=None, description="review | accepted | needs_info"
     )
@@ -126,20 +128,30 @@ async def create_job(
     pdf: UploadFile = File(...),
     stp: UploadFile | None = File(None),
     title: str = Form(""),
+    bom_config: str = Form(""),
     _: str = Depends(require_auth),
 ) -> dict[str, Any]:
     if not pdf.filename or not pdf.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "PDF file is required")
 
+    from quote_core.bom_config import resolve_bom_config
+
     ensure_data_dirs()
     db = SessionLocal()
     try:
         rates = load_shop_rates(RATES_PATH)
+        job_title = title.strip() or Path(pdf.filename).stem
+        resolved_config = resolve_bom_config(
+            explicit=bom_config,
+            title=job_title,
+            pdf_filename=pdf.filename,
+        )
         job = Job(
-            title=title.strip() or Path(pdf.filename).stem,
+            title=job_title,
             status="uploaded",
             pdf_filename=pdf.filename,
             stp_filename=stp.filename if stp and stp.filename else None,
+            bom_config=resolved_config,
             efficiency_pct=rates.default_efficiency_pct,
         )
         db.add(job)
@@ -177,11 +189,17 @@ async def create_job(
 def update_job(
     job_id: int, body: ReviewUpdate, _: str = Depends(require_auth)
 ) -> dict[str, Any]:
+    from quote_core.bom_config import normalize_bom_config
+
     db = SessionLocal()
     try:
         job = db.get(Job, job_id)
         if not job:
             raise HTTPException(404, "Job not found")
+        if body.title is not None and body.title.strip():
+            job.title = body.title.strip()
+        if body.bom_config is not None:
+            job.bom_config = normalize_bom_config(body.bom_config)
         recompute_from_items(
             job,
             body.items,

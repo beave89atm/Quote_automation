@@ -221,6 +221,25 @@ a { color: var(--brand); text-decoration: none; }
 .error { color: var(--err); margin-top: 0.75rem; }
 
 .muted { color: var(--muted); }
+
+.push-progress {
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 10px;
+  background: #fff3d6;
+  color: var(--warn);
+  border: 1px solid #e6c97a;
+}
+
+.push-ready {
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 10px;
+  background: #e5f6ec;
+  color: var(--ok);
+  border: 1px solid #9fd4b3;
+  font-weight: 600;
+}
 .mono { font-family: "IBM Plex Mono", monospace; }
 
 .fitup-drivers {

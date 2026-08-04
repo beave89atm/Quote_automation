@@ -62,6 +62,58 @@ WEIGHT:
 """
 
 
+_BOM_73476004 = """
+WEIGHT:
+281.0 lbm
+73476004
+Item
+Part Number
+Description
+Qty
+Weight
+1
+23403750
+KING PIN, 3/8"
+1
+12.5 lbm
+2
+73000567
+CHANNEL, COUPLER PLATE ASSL'Y
+2
+7.8 lbm
+3
+73000571
+CHANNEL, OVER KING PIN, COUPLER ASSL'Y
+1
+3.5 lbm
+4
+73001366
+CHANNEL, COUPLER PLATE 102
+1
+32.8 lbm
+5
+73001369
+FRONT COVER, COUPLER PLATE, PNEUMATIC
+2
+12.3 lbm
+6
+73476504
+CHANNEL, COUPLER PLATE 102
+1
+28.1 lbm
+7
+73476505
+MAIN PLATE, COUPLER ASM, 18-16, 102"
+1
+139.6 lbm
+8
+73476506
+ANGLE, COUPLER PLATE ASS'LY, 18-16
+2
+37.9 lbm
+"""
+
+
 def test_extract_pdf_bom_expands_qty_to_pieces():
     bom = extract_pdf_bom_weights(text=_BOM_80341805)
     assert bom["assembly_weight_lb"] == 261.8
@@ -83,6 +135,33 @@ def test_extract_pdf_bom_expands_qty_to_pieces():
         12.7,
         9.4,
         9.4,
+    ]
+    assert sorted(bom["component_weights_lb"]) == sorted(expected)
+
+
+def test_mac_bom_item_part_qty_layout_eleven_pieces():
+    """73476004-style: ITEM / PART / DESCRIPTION / QTY / WEIGHT → 8 PNs / 11 pcs."""
+    bom = extract_pdf_bom_weights(text=_BOM_73476004)
+    assert bom["method"] == "pdf_bom_qty"
+    assert bom["part_number_count"] == 8
+    assert bom["piece_count"] == 11
+    assert bom["assembly_weight_lb"] == 281.0
+    by_part = {r["part_no"]: r for r in bom["bom_rows"]}
+    assert by_part["73000567"]["qty"] == 2 and by_part["73000567"]["unit_weight_lb"] == 7.8
+    assert by_part["73476506"]["qty"] == 2 and by_part["73476506"]["unit_weight_lb"] == 37.9
+    assert by_part["73476505"]["unit_weight_lb"] == 139.6
+    expected = [
+        12.5,
+        7.8,
+        7.8,
+        3.5,
+        32.8,
+        12.3,
+        12.3,
+        28.1,
+        139.6,
+        37.9,
+        37.9,
     ]
     assert sorted(bom["component_weights_lb"]) == sorted(expected)
 

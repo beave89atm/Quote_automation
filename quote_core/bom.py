@@ -38,9 +38,24 @@ _LINE_QTY_ITEM_PARTBASE = re.compile(
     r"(?<!\d)(\d{1,2})\s*[|Il/]?\s*([A-Za-z])\s*[|Il/]?\s*(\d{4,7})\s*[-–—=]?",
     re.IGNORECASE,
 )
-# item | truncated part base (no qty, no suffix) — common on dense Time BOMs
+# qty | item | truncated part base (no qty, no suffix) — common on dense Time BOMs
 _LINE_ITEM_PARTBASE = re.compile(
     r"(?<![A-Za-z0-9])([A-Za-z])\s*[|Il/]?\s*(\d{4,7})\s*[-–—=]?(?!\d)",
+    re.IGNORECASE,
+)
+
+# Multi-option Time BOM: qty(-4) | qty(-3) | qty(-2) | qty(-1) | ITEM | PART
+# Example OCR: ``| - | - | - | 1 | A |16697-2 |Lower BOOM TUBE``
+_MULTI_QTY_LINE_RE = re.compile(
+    r"(?<!\d)(-|\d{1,2})\s*[|\]Il/]\s*(-|\d{1,2})\s*[|\]Il/]\s*"
+    r"(-|\d{1,2})\s*[|\]Il/]\s*(-|\d{1,2})\s*[|\]Il/]\s*"
+    r"([A-Za-z])\s*[|\]Il/]?\s*"
+    r"(\d{4,7})\s*[-–—=]?\s*(\d{1,3}[A-Za-z]?)",
+    re.IGNORECASE,
+)
+_MULTI_QTY_HEADERS_RE = re.compile(
+    r"(?:\[?-4\]?[^\n]{0,20}\[?-3\]?[^\n]{0,20}\[?-2\]?[^\n]{0,20}\[?-1\]?)"
+    r"|(?:-4\s*[|\]]\s*-3\s*[|\]]\s*-2\s*[|\]]\s*-1)",
     re.IGNORECASE,
 )
 
@@ -259,6 +274,116 @@ def extract_bom_from_native_mac(pdf_path: Path | str | None, text: str | None = 
     )
 
 
+_PARTS_LIST_PN_RE = re.compile(r"^[A-Z]{1,3}\d{2}-\d{3,5}$", re.IGNORECASE)
+_PARTS_LIST_HEADER_RE = re.compile(r"\bPARTS\s+LIST\b", re.IGNORECASE)
+_PARTS_LIST_STOP_RE = re.compile(
+    r"^(?:NOTES?:|DO NOT SCALE|SHEET\s+\d|DRAWN|TITLE|DWG\s+NO|CONFIDENTIAL)\b",
+    re.IGNORECASE,
+)
+
+
+def extract_bom_from_parts_list(
+    pdf_path: Path | str | None = None,
+    text: str | None = None,
+) -> BomResult:
+    """
+    Cummins / NGFS native PARTS LIST blocks:
+
+      DESCRIPTION / PART NUMBER / QTY / ITEM
+      PLATE - GUSSET, ...
+      MD04-2482
+      1
+      1
+    """
+    if text is None:
+        if not pdf_path:
+            return BomResult(method=None, confidence=0.0, notes=["No PDF text for PARTS LIST"])
+        from quote_core.weight import _read_pdf_text
+
+        text = _read_pdf_text(Path(pdf_path))
+    if not text or not _PARTS_LIST_HEADER_RE.search(text):
+        return BomResult(method=None, confidence=0.0, notes=["No PARTS LIST header in PDF text"])
+
+    m = _PARTS_LIST_HEADER_RE.search(text)
+    assert m is not None
+    section = text[m.end() :]
+    lines = [ln.strip() for ln in section.splitlines()]
+    # Drop column headers
+    skip = {"DESCRIPTION", "PART NUMBER", "PART NO", "PART NO.", "QTY", "ITEM", "REV"}
+    body: list[str] = []
+    for ln in lines:
+        if not ln:
+            continue
+        if _PARTS_LIST_STOP_RE.match(ln):
+            break
+        if ln.upper() in skip:
+            continue
+        # Balloon duplicates like lone "1" / "A" after the list are ignored once we
+        # have finished collecting rows — stop if we hit a long run of single tokens
+        # after already parsing rows (handled below).
+        body.append(ln)
+
+    rows: list[BomRow] = []
+    i = 0
+    while i < len(body):
+        # Description may wrap across lines until a part number.
+        desc_parts: list[str] = []
+        while i < len(body) and not _PARTS_LIST_PN_RE.match(body[i]):
+            # Ignore stray balloon numbers before the first real description.
+            if desc_parts or not re.fullmatch(r"\d{1,2}|[A-Z]", body[i], re.I):
+                desc_parts.append(body[i])
+            i += 1
+            # Safety: descriptions shouldn't be endless
+            if len(desc_parts) > 6:
+                break
+        if i >= len(body) or not _PARTS_LIST_PN_RE.match(body[i]):
+            break
+        part_no = body[i].upper()
+        i += 1
+        qty = 1
+        item: str | int | None = None
+        if i < len(body) and re.fullmatch(r"\d{1,3}", body[i]):
+            qty = int(body[i])
+            i += 1
+        if i < len(body) and re.fullmatch(r"\d{1,3}|[A-Z]", body[i], re.I):
+            item_raw = body[i]
+            item = int(item_raw) if item_raw.isdigit() else item_raw.upper()
+            i += 1
+        # After a complete BOM, trailing sheet balloons (1..8 / A..D) look like
+        # tiny descriptions — stop if next tokens aren't a real description.
+        rows.append(
+            BomRow(
+                item=item,
+                qty=max(1, qty),
+                part_no=part_no,
+                description=" ".join(desc_parts).strip(),
+                source="native_parts_list",
+                confidence=0.96,
+            )
+        )
+        # Detect balloon tail: next few lines are only short tokens and no PN soon
+        look = body[i : i + 8]
+        if look and all(re.fullmatch(r"\d{1,2}|[A-Z]", x, re.I) for x in look):
+            break
+        if look and not any(_PARTS_LIST_PN_RE.match(x) for x in look) and all(
+            len(x) <= 2 for x in look[:4]
+        ):
+            break
+
+    if not rows:
+        return BomResult(
+            method=None,
+            confidence=0.0,
+            notes=["PARTS LIST header found but no rows parsed"],
+        )
+    return BomResult(
+        rows=rows,
+        method="native_parts_list",
+        confidence=0.96,
+        notes=[f"Parsed native PARTS LIST ({len(rows)} part numbers)"],
+    )
+
+
 def _render_clip_images(page, clip, dpi: int) -> list[tuple[str, Any]]:
     """Return labeled preprocessed PIL images for a page clip."""
     import fitz
@@ -356,6 +481,281 @@ def _cluster_rows(words: list[dict[str, Any]], y_tol: float = 8.0) -> list[list[
     if cur:
         rows.append(sorted(cur, key=lambda z: z["x0"]))
     return rows
+
+
+def _parse_multi_qty_cell(raw: str) -> int:
+    token = (raw or "").strip()
+    if not token or token in {"-", "—", "–", ".", "·"}:
+        return 0
+    try:
+        return max(0, int(token))
+    except ValueError:
+        return 0
+
+
+def _parse_multi_qty_time_hits(
+    texts: list[str],
+    bases: set[str],
+    *,
+    bom_config: str,
+) -> list[dict[str, Any]]:
+    """
+    Parse Time multi-column qty tables (``-4 | -3 | -2 | -1 | ITEM | PART``).
+
+    ``bom_config`` is the dash suffix to keep (e.g. ``\"1\"`` → use the ``-1`` column).
+    """
+    dash = str(bom_config or "").strip().lstrip("-").upper()
+    try:
+        dash_n = int(re.sub(r"[^0-9]", "", dash) or "0")
+    except ValueError:
+        dash_n = 0
+    if dash_n < 1 or dash_n > 4:
+        return []
+
+    # Capture groups are left→right -4,-3,-2,-1 → index 0..3; dash 1 → index 3.
+    col_index = 4 - dash_n
+    hits: list[dict[str, Any]] = []
+    for blob in texts:
+        for raw_line in blob.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            norm = (
+                line.replace("—", "-")
+                .replace("–", "-")
+                .replace("=", "-")
+                .replace("{", "|")
+                .replace("}", "|")
+                .replace("[", "|")
+                .replace("]", "|")
+            )
+            soft = re.sub(
+                r"(\d[0-9A-Za-z]*\d|\d+)",
+                lambda m: _ocr_digit_cleanup(m.group(0).upper()),
+                norm,
+            )
+            for variant in (norm, soft):
+                for m in _MULTI_QTY_LINE_RE.finditer(variant):
+                    qtys = [
+                        _parse_multi_qty_cell(m.group(1)),
+                        _parse_multi_qty_cell(m.group(2)),
+                        _parse_multi_qty_cell(m.group(3)),
+                        _parse_multi_qty_cell(m.group(4)),
+                    ]
+                    qty = qtys[col_index]
+                    item = m.group(5).upper()
+                    base = _fix_leading_digit_glue(m.group(6), bases)
+                    suffix = re.sub(r"[^0-9A-Z]", "", m.group(7).upper())
+                    if not suffix:
+                        continue
+                    part = _correct_part_with_library(f"{base}-{suffix}", bases)
+                    hits.append(
+                        {
+                            "qty": qty,
+                            "item": item,
+                            "part_no": part,
+                            "has_qty": True,
+                            "has_suffix": True,
+                            "raw": line,
+                            "multi_qty": qtys,
+                            "bom_config": dash,
+                        }
+                    )
+    return hits
+
+
+def texts_have_multi_qty_headers(texts: list[str]) -> bool:
+    blob = "\n".join(texts or [])
+    return bool(_MULTI_QTY_HEADERS_RE.search(blob))
+
+
+def _zero_qty_parts_for_config(
+    texts: list[str],
+    bases: set[str],
+    *,
+    bom_config: str,
+) -> set[str]:
+    """Part numbers with qty 0 in the selected dash column (excluded configs)."""
+    hits = _parse_multi_qty_time_hits(texts, bases, bom_config=bom_config)
+    return {str(h["part_no"]) for h in hits if int(h.get("qty") or 0) <= 0 and h.get("has_suffix")}
+
+
+def _supplement_multi_config_bom(
+    rows: list[BomRow],
+    texts: list[str],
+    bases: set[str],
+    *,
+    bom_config: str,
+) -> list[str]:
+    """
+    Recover BOM rows OCR missed on multi-qty tables.
+
+    Dense Time sheets often drop qty columns for some lines (hose guard, end cap,
+    cutout stiffener). If the part/item appears in OCR and is not qty-0 for this
+    dash, add it at qty 1 (or the multi-qty value when known).
+    """
+    from quote_core.bom_config import format_bom_config_label
+
+    notes: list[str] = []
+    if not bom_config or not bases:
+        return notes
+
+    multi_all = _parse_multi_qty_time_hits(texts, bases, bom_config=bom_config)
+    multi_by_item = {
+        str(h["item"]): h for h in multi_all if h.get("item") and int(h.get("qty") or 0) > 0
+    }
+    multi_by_part = {
+        str(h["part_no"]): h for h in multi_all if h.get("has_suffix") and int(h.get("qty") or 0) > 0
+    }
+    zero_parts = _zero_qty_parts_for_config(texts, bases, bom_config=bom_config)
+
+    # Item + part hits without requiring qty columns.
+    loose_hits = _parse_qty_item_part_hits(texts, bases)
+    # Also harvest bare library part numbers from OCR (E/F/H rows often lose item+qty).
+    blob = "\n".join(texts)
+    soft = re.sub(
+        r"(\d[0-9A-Za-z]*\d|\d+)",
+        lambda m: _ocr_digit_cleanup(m.group(0).upper()),
+        blob.replace("—", "-").replace("–", "-").replace("=", "-"),
+    )
+    for base in sorted(bases):
+        if len(base) < 4:
+            continue
+        for m in re.finditer(
+            rf"(?<!\d)({base})\s*[-–—=]?\s*(\d{{1,2}}[A-Za-z]?)\b",
+            soft,
+            flags=re.IGNORECASE,
+        ):
+            suffix = re.sub(r"[^0-9A-Z]", "", m.group(2).upper())
+            if not suffix:
+                continue
+            part = _correct_part_with_library(f"{base}-{suffix}", bases)
+            loose_hits.append(
+                {
+                    "qty": None,
+                    "item": None,
+                    "part_no": part,
+                    "has_qty": False,
+                    "has_suffix": True,
+                    "raw": m.group(0),
+                }
+            )
+
+    existing_items = {r.item for r in rows if isinstance(r.item, str)}
+    existing_parts = {r.part_no for r in rows}
+    existing_bases_with_suffix: dict[str, set[str]] = defaultdict(set)
+    for pn in existing_parts:
+        b, _, s = pn.partition("-")
+        if s:
+            existing_bases_with_suffix[b].add(s)
+
+    added = 0
+    for h in loose_hits:
+        if not h.get("has_suffix"):
+            continue
+        part = str(h.get("part_no") or "")
+        if not part or part.endswith("-?") or part in existing_parts:
+            continue
+        base, _, suf = part.partition("-")
+        if bases and base not in bases:
+            continue
+        # Skip parts that multi-qty marks empty for this dash (other boom tubes).
+        if part in zero_parts:
+            continue
+        # If another suffix of this base is already selected (16697-2), skip siblings.
+        if suf and existing_bases_with_suffix.get(base) and suf not in existing_bases_with_suffix[base]:
+            continue
+        item = h.get("item")
+        if isinstance(item, str) and item in existing_items:
+            continue
+
+        qty = 1
+        if part in multi_by_part:
+            qty = max(1, int(multi_by_part[part]["qty"]))
+            item = item or multi_by_part[part].get("item")
+        elif isinstance(item, str) and item in multi_by_item:
+            qty = max(1, int(multi_by_item[item]["qty"]))
+            part = str(multi_by_item[item]["part_no"])
+            if part in existing_parts:
+                continue
+
+        # Heuristic: hose-guard / stiffener boom pivot often qty 2 when OCR lost columns.
+        # Prefer explicit multi-qty; only guess when description/name hints and qty still 1
+        # from a lone part sighting — use multi text ``2 | 2 | 2 | 2`` near the part.
+        if qty == 1 and part not in multi_by_part:
+            near = ""
+            for blob2 in texts:
+                if base in blob2.replace(" ", ""):
+                    near += "\n" + blob2
+            if re.search(
+                rf"(?:\|\s*)?2\s*[|\]]\s*2\s*[|\]]\s*2\s*[|\]]\s*2\s*[|\]][^\n]{{0,40}}{base}",
+                near.replace("—", "-"),
+                flags=re.I,
+            ):
+                qty = 2
+
+        rows.append(
+            BomRow(
+                item=item if isinstance(item, str) else None,
+                qty=qty,
+                part_no=part,
+                description="",
+                unit_weight_lb=None,
+                source="ocr_time_multi_qty_supp",
+                confidence=0.8,
+            )
+        )
+        existing_parts.add(part)
+        if isinstance(item, str):
+            existing_items.add(item)
+        if suf:
+            existing_bases_with_suffix[base].add(suf)
+        added += 1
+
+    if added:
+        notes.append(
+            f"Supplemented {added} BOM part(s) from OCR + library stems "
+            f"(multi-qty column {format_bom_config_label(bom_config)})"
+        )
+
+    # Dedicated weldment folders (few PDFs) may still miss a garbled PN in OCR
+    # (e.g. 10187 → \"rote7\"). If almost all library stems are already on the BOM,
+    # add the remaining stem(s) at qty 1 with suffix -1.
+    present_bases = {r.part_no.partition("-")[0] for r in rows}
+    missing_bases = sorted(b for b in bases if b not in present_bases)
+    if (
+        5 <= len(rows) <= 20
+        and 1 <= len(missing_bases) <= 3
+        and len(bases) <= 16
+    ):
+        for base in missing_bases:
+            part = f"{base}-1"
+            if part in zero_parts:
+                continue
+            # Prefer a suffix actually seen in OCR for this base.
+            for h in loose_hits:
+                pn = str(h.get("part_no") or "")
+                if pn.startswith(base + "-") and h.get("has_suffix"):
+                    if pn not in zero_parts:
+                        part = pn
+                        break
+            if any(r.part_no == part for r in rows):
+                continue
+            rows.append(
+                BomRow(
+                    item=None,
+                    qty=1,
+                    part_no=part,
+                    description="",
+                    unit_weight_lb=None,
+                    source="ocr_time_multi_qty_lib",
+                    confidence=0.72,
+                )
+            )
+            notes.append(
+                f"Added library component {part} (OCR missed PN; folder stem present)"
+            )
+    return notes
 
 
 def _parse_qty_item_part_hits(texts: list[str], bases: set[str]) -> list[dict[str, Any]]:
@@ -663,26 +1063,34 @@ def extract_bom_from_ocr_time_style(
     library_folder: Path | str | None = None,
     related_pdf_names: list[str] | None = None,
     page_index: int = 0,
+    bom_config: str | None = None,
 ) -> BomResult:
     """
     Parse Time Manufacturing LIST OF MATERIAL tables.
 
     These tables often have column headers at the *bottom* of the grid
     (QTY | ITEM | PART NO. | DESCRIPTION) with data rows stacked above.
+    Multi-option sheets use ``-4 | -3 | -2 | -1`` qty columns — pass
+    ``bom_config=\"1\"`` to keep only the ``-1`` column.
     Uses multi-pass OCR + voting for qty/item/part accuracy on vector CAD.
     """
     import fitz
 
+    from quote_core.bom_config import format_bom_config_label, normalize_bom_config
     from quote_core.ocr import ocr_available
 
     pdf_path = Path(pdf_path)
     if not ocr_available():
         return BomResult(notes=["OCR unavailable for Time-style BOM"], confidence=0.0)
 
+    config = normalize_bom_config(bom_config)
     bases = library_part_bases(
         Path(library_folder) if library_folder else None,
         related_pdf_names=related_pdf_names,
     )
+    used_multi = False
+    supp_notes: list[str] = []
+    bom_rows: list[BomRow] = []
     doc = fitz.open(str(pdf_path))
     try:
         page = doc[min(page_index, len(doc) - 1)]
@@ -731,8 +1139,39 @@ def extract_bom_from_ocr_time_style(
             images = _render_clip_images(page, clip, dpi)
             texts.extend(_ocr_strings(images, psms=(4, 6, 11)))
 
-        hits = _parse_qty_item_part_hits(texts, bases)
+        multi_hits: list[dict[str, Any]] = []
+        texts_for_supp: list[str] = []
+        if config and (
+            texts_have_multi_qty_headers(texts)
+            or _parse_multi_qty_time_hits(texts, bases, bom_config=config)
+        ):
+            multi_hits = _parse_multi_qty_time_hits(texts, bases, bom_config=config)
+            # Keep rows with qty>0 for this dash; also keep qty=0 hits out of vote.
+            multi_hits = [h for h in multi_hits if int(h.get("qty") or 0) > 0]
+            if multi_hits:
+                used_multi = True
+                hits = multi_hits
+                texts_for_supp = texts
+            else:
+                hits = _parse_qty_item_part_hits(texts, bases)
+        else:
+            hits = _parse_qty_item_part_hits(texts, bases)
         bom_rows = _vote_bom_rows(hits, bases)
+        if used_multi:
+            for row in bom_rows:
+                row.source = "ocr_time_multi_qty"
+            # Don't treat the weldment PDF itself as a component (28106.pdf → 28106).
+            primary_base = None
+            m_pri = re.match(r"^(\d{4,7})", pdf_path.stem.upper().replace(" ", ""))
+            if m_pri:
+                primary_base = m_pri.group(1)
+            supp_bases = {b for b in bases if b != primary_base}
+            supp_notes = _supplement_multi_config_bom(
+                bom_rows,
+                texts_for_supp or texts,
+                supp_bases,
+                bom_config=config or "",
+            )
         _repair_suffix_ocr(bom_rows, hits, bases)
         _attach_descriptions(bom_rows, page, desc_clip)
     finally:
@@ -755,13 +1194,27 @@ def extract_bom_from_ocr_time_style(
         return (1, str(r.part_no))
 
     bom_rows.sort(key=sort_key)
-    avg_conf = sum(r.confidence for r in bom_rows) / len(bom_rows)
+    avg_conf = sum(r.confidence for r in bom_rows) / max(1, len(bom_rows))
     notes = [
         f"OCR Time-style BOM: {len(bom_rows)} part numbers, {sum(r.qty for r in bom_rows)} pieces"
     ]
+    if used_multi and config:
+        notes.insert(
+            0,
+            f"Used BOM qty column {format_bom_config_label(config)} "
+            f"(multi-option Time drawing)",
+        )
+        notes.extend(supp_notes)
+        avg_conf = min(0.96, avg_conf + 0.03)
+    elif config and not used_multi:
+        notes.append(
+            f"BOM config {format_bom_config_label(config)} set but multi-qty columns "
+            f"not detected — used single-qty OCR"
+        )
     if bases:
         notes.append(f"Validated part bases against library folder ({len(bases)} PDF stems)")
-    return BomResult(rows=bom_rows, method="ocr_time", confidence=avg_conf, notes=notes)
+    method = "ocr_time_multi_qty" if used_multi else "ocr_time"
+    return BomResult(rows=bom_rows, method=method, confidence=avg_conf, notes=notes)
 
 
 def extract_bom(
@@ -770,12 +1223,14 @@ def extract_bom(
     text: str | None = None,
     library_folder: Path | str | None = None,
     related_pdf_names: list[str] | None = None,
+    bom_config: str | None = None,
 ) -> BomResult:
     """
     Multi-strategy BOM extraction.
 
     1) Native MAC text/blocks (high confidence when present)
-    2) OCR Time-style LIST OF MATERIAL (vector CAD drawings)
+    2) Native PARTS LIST (Cummins / NGFS style)
+    3) OCR Time-style LIST OF MATERIAL (vector CAD drawings)
     """
     notes: list[str] = []
     native = extract_bom_from_native_mac(pdf_path, text=text)
@@ -784,11 +1239,19 @@ def extract_bom(
     if native.notes:
         notes.extend(native.notes)
 
+    parts_list = extract_bom_from_parts_list(pdf_path, text=text)
+    if parts_list.rows and parts_list.piece_count > 0:
+        parts_list.notes = notes + list(parts_list.notes)
+        return parts_list
+    if parts_list.notes:
+        notes.extend(parts_list.notes)
+
     if pdf_path:
         ocr = extract_bom_from_ocr_time_style(
             pdf_path,
             library_folder=library_folder,
             related_pdf_names=related_pdf_names,
+            bom_config=bom_config,
         )
         notes.extend(ocr.notes)
         if ocr.rows:

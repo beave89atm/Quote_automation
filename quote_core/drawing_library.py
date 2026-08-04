@@ -37,6 +37,10 @@ class DrawingMatch:
         }
 
 
+# Cummins / NGFS style: ME04-3453, MD04-2482
+_ALPHA_DASH_PN_RE = re.compile(r"\b([A-Z]{1,3}\d{2}-\d{3,5})\b", re.IGNORECASE)
+
+
 def extract_part_key(*names: str | None) -> str | None:
     """Pull a part/assembly number from filenames or titles."""
     candidates: list[str] = []
@@ -47,13 +51,15 @@ def extract_part_key(*names: str | None) -> str | None:
         stem = _NOISE_RE.sub("", stem).strip(" -_")
         for m in _PART_TOKEN_RE.finditer(stem):
             candidates.append(m.group(0))
+        for m in _ALPHA_DASH_PN_RE.finditer(stem.upper()):
+            candidates.append(m.group(1).upper())
         # Also accept bare alphanumeric stems like A078X022
         compact = re.sub(r"[^A-Za-z0-9]", "", stem)
         if len(compact) >= 5 and any(ch.isdigit() for ch in compact):
             candidates.append(compact)
     if not candidates:
         return None
-    # Prefer dashed keys (35145-1) over bare (35145), then longer numeric.
+    # Prefer dashed keys (35145-1 / ME04-3453) over bare (35145), then longer numeric.
     dashed = [c for c in candidates if "-" in c]
     if dashed:
         return max(dashed, key=len)
@@ -61,6 +67,28 @@ def extract_part_key(*names: str | None) -> str | None:
     if numeric:
         return max(numeric, key=len)
     return max(candidates, key=len)
+
+
+def _part_key_name_variants(part_key: str) -> list[str]:
+    """Filename search variants for a part key (with/without dash)."""
+    key = (part_key or "").upper().strip()
+    if not key:
+        return []
+    out = [key]
+    if "-" in key:
+        out.append(key.replace("-", ""))
+    else:
+        m = re.match(r"^([A-Z]+)(\d{2})(\d{3,5})$", key)
+        if m:
+            out.append(f"{m.group(1)}{m.group(2)}-{m.group(3)}")
+    # Preserve order, drop dupes
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for v in out:
+        if v not in seen:
+            seen.add(v)
+            uniq.append(v)
+    return uniq
 
 
 def _default_office_roots() -> list[Path]:
@@ -257,8 +285,48 @@ def find_drawings(
             continue
 
     if not candidates:
-        match.notes.append(f"No folder or STP found for {part_key} under drawing library")
-        return match
+        # Fallback: locate a PDF/STP whose filename contains the part key
+        # (e.g. ME04-3453.dwg.pdf living under a project folder like 701-100-MN-HX).
+        variants = _part_key_name_variants(part_key)
+        found_folder: Path | None = None
+        for root in existing_roots:
+            if found_folder is not None:
+                break
+            try:
+                for customer in root.iterdir():
+                    if found_folder is not None:
+                        break
+                    if not customer.is_dir():
+                        continue
+                    search_dirs = [customer]
+                    try:
+                        search_dirs.extend(p for p in customer.iterdir() if p.is_dir())
+                    except OSError:
+                        pass
+                    for folder in search_dirs:
+                        try:
+                            hits = [
+                                p
+                                for p in folder.iterdir()
+                                if p.is_file()
+                                and p.suffix.lower() in {".pdf", ".stp", ".step"}
+                                and any(v in p.name.upper() for v in variants)
+                            ]
+                        except OSError:
+                            continue
+                        if hits:
+                            found_folder = folder
+                            break
+            except OSError:
+                continue
+        if found_folder is None:
+            match.notes.append(f"No folder or STP found for {part_key} under drawing library")
+            return match
+        candidates.append((80, found_folder, None))
+        match.notes.append(
+            f"Matched library folder by filename containing {part_key} "
+            f"(folder name differs from part number)"
+        )
 
     # Prefer candidates that resolve to an STP, then higher score, then more PDFs.
     ranked: list[tuple[int, int, int, Path, Path | None]] = []

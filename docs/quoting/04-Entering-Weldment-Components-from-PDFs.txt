@@ -1,0 +1,451 @@
+1
+00:00:00,011 --> 00:00:04,709
+Here is a quote that I'm in the middle of working on.
+
+2
+00:00:05,197 --> 00:00:08,360
+If you will notice that I do not have a step file.
+
+3
+00:00:08,361 --> 00:00:14,115
+So I'm having to enter each individual component by
+
+4
+00:00:14,116 --> 00:00:18,683
+PDF. So I click on Image Files where the
+
+5
+00:00:18,684 --> 00:00:23,318
+PDFs are uploaded. I go to my folder of PDFs.
+
+6
+00:00:24,637 --> 00:00:29,240
+Drop that one. And
+
+7
+00:00:29,241 --> 00:00:33,960
+I begin going through the Bill of Materials and adding each
+
+8
+00:00:33,990 --> 00:00:38,002
+component. For this weldment,
+
+9
+00:00:38,938 --> 00:00:42,663
+I need, You can see that I already have some of them here.
+
+10
+00:00:43,235 --> 00:00:45,279
+So this is a component purchase piece.
+
+11
+00:00:45,280 --> 00:00:49,253
+That's why it's underneath Product Type Component.
+
+12
+00:00:50,315 --> 00:00:55,084
+The next one is another
+
+13
+00:00:55,085 --> 00:00:59,504
+component that I already have entered. And I have entered the dimensions manually by
+
+14
+00:00:59,505 --> 00:01:03,823
+looking at the drawing. Then this one,
+
+15
+00:01:03,824 --> 00:01:06,777
+I'm just trying to see where I'm at, it's 1564,
+
+16
+00:01:06,778 --> 00:01:09,226
+just going through the The next component,
+
+17
+00:01:09,873 --> 00:01:12,218
+checking my quantities, 15,
+
+18
+00:01:12,219 --> 00:01:15,190
+890, 15,
+
+19
+00:01:15,191 --> 00:01:17,361
+891,
+
+20
+00:01:19,225 --> 00:01:25,492
+which there are two of these. And I left off at 10187-1,
+
+21
+00:01:25,493 --> 00:01:30,067
+which is a round bar. So now I've got to move
+
+22
+00:01:30,068 --> 00:01:32,941
+on to the next item,
+
+23
+00:01:32,942 --> 00:01:36,438
+which is 15864, 15864-2.
+
+24
+00:01:36,439 --> 00:01:41,322
+So I go grab that out of my folder
+
+25
+00:01:41,323 --> 00:01:42,823
+and I drop
+
+26
+00:01:55,187 --> 00:02:00,075
+15864-2. On this one, it appears that it is.
+
+27
+00:02:00,076 --> 00:02:04,572
+It is a one quarter inch plate.
+
+28
+00:02:05,836 --> 00:02:08,923
+So I will change my thickness to quarter inch.
+
+29
+00:02:09,494 --> 00:02:13,424
+And it also is grade 50.
+
+30
+00:02:15,743 --> 00:02:22,572
+So I need to change the material type to A572 grade
+
+31
+00:02:22,573 --> 00:02:27,219
+50. There are
+
+32
+00:02:27,220 --> 00:02:30,442
+how many of these in each wellnote?
+
+33
+00:02:32,016 --> 00:02:33,783
+There appears to only be,
+
+34
+00:02:40,096 --> 00:02:44,526
+There is two.
+
+35
+00:02:44,720 --> 00:02:47,870
+So we need to change the quantity to two. How to look in the
+
+36
+00:02:47,871 --> 00:02:52,481
+bill of materials. And this is a dash two.
+
+37
+00:02:52,942 --> 00:02:56,501
+So we need to update the name to dash two to make sure because
+
+38
+00:02:57,090 --> 00:02:59,988
+different dashes represent different configurations.
+
+39
+00:03:01,430 --> 00:03:04,585
+Alright. As we scroll on down, now I'm going to need the length and
+
+40
+00:03:04,586 --> 00:03:09,404
+width. So this part has a
+
+41
+00:03:20,123 --> 00:03:22,646
+same on both.
+
+42
+00:03:24,232 --> 00:03:27,609
+There is going to be a hole in this, and that hole is two
+
+43
+00:03:27,610 --> 00:03:28,447
+and seven eighths.
+
+44
+00:03:32,742 --> 00:03:36,925
+And that is it. Grade 50 thickness is done.
+
+45
+00:03:37,509 --> 00:03:39,655
+Dimensions are done. Hole is in there.
+
+46
+00:03:39,961 --> 00:03:44,532
+I'm good to click new line. Once I add that new
+
+47
+00:03:44,533 --> 00:03:49,235
+line, I need to make sure it rolls up into the top-level
+
+48
+00:03:49,236 --> 00:03:53,592
+weldment. So I will go back and I will open up my top-level weldment
+
+49
+00:03:53,622 --> 00:03:58,150
+to Edit Properties and I will take that individual component and I will
+
+50
+00:03:58,151 --> 00:04:03,434
+copy it and move it over underneath the top-level
+
+51
+00:04:03,435 --> 00:04:08,442
+I click Update Assembly and it is now under my
+
+52
+00:04:08,663 --> 00:04:10,852
+top-level weldment. I have,
+
+53
+00:04:11,254 --> 00:04:15,533
+I believe, two more items in this weldment that are incomplete.
+
+54
+00:04:16,106 --> 00:04:18,487
+Let's check. One,
+
+55
+00:04:18,751 --> 00:04:21,120
+two, yes. The next one is a pivot tube.
+
+56
+00:04:21,121 --> 00:04:23,467
+I have a feeling this one is going to be a linear.
+
+57
+00:04:23,816 --> 00:04:26,926
+Let's go look up the part number. Pivot tube,
+
+58
+00:04:26,927 --> 00:04:30,300
+pivot tube is 15863.
+
+59
+00:04:30,301 --> 00:04:35,583
+Let's go look at drawing 15863.
+
+60
+00:04:35,584 --> 00:04:40,165
+15863 is in fact a
+
+61
+00:04:40,166 --> 00:04:44,650
+tube, and it looks like it's a tube that gets machined on both ends,
+
+62
+00:04:45,171 --> 00:04:48,659
+and so we are going to click on long button,
+
+63
+00:04:48,660 --> 00:04:52,669
+which will pull up my linear. This is a,
+
+64
+00:04:52,670 --> 00:04:57,669
+uh,
+
+65
+00:05:00,410 --> 00:05:04,271
+what type of tube is this. I'm looking at the drawings.
+
+66
+00:05:10,445 --> 00:05:16,022
+This is found material. It is two and three quarters uh
+
+67
+00:05:16,023 --> 00:05:18,374
+d-o-m-2-a-5-13.
+
+68
+00:05:18,375 --> 00:05:22,095
+So we're going to go to r-t for roundness. Then we're going to look
+
+69
+00:05:22,096 --> 00:05:27,044
+at two and seven eighths to match.
+
+70
+00:05:27,064 --> 00:05:30,792
+Then this has, uh,
+
+71
+00:05:30,802 --> 00:05:35,617
+ID of one and
+
+72
+00:05:35,618 --> 00:05:37,979
+looks like seven eighths as well.
+
+73
+00:05:37,980 --> 00:05:42,788
+Uh,
+
+74
+00:05:42,799 --> 00:05:45,406
+does not, oh,
+
+75
+00:05:45,407 --> 00:05:49,613
+I gotta find wall thickness. It it wants wall thickness when entering the linear
+
+76
+00:05:49,614 --> 00:05:54,625
+here not OD so two seven five Two
+
+77
+00:05:54,626 --> 00:05:56,801
+and three quarters. It's a two and seven eighths.
+
+78
+00:05:56,802 --> 00:06:01,085
+It's supposed to be two and Three quarters,
+
+79
+00:06:02,263 --> 00:06:05,230
+right? Is the OD.
+
+80
+00:06:05,231 --> 00:06:11,917
+Then if I do calculation, I have to figure out
+
+81
+00:06:11,918 --> 00:06:18,408
+what my wall thickness is. So if the OD is 2.75
+
+82
+00:06:18,409 --> 00:06:22,897
+minus 1.88 equals 0.87,
+
+83
+00:06:22,898 --> 00:06:27,523
+divide that by two. My wall thickness is four three four
+
+84
+00:06:27,524 --> 00:06:31,671
+three five which is four three eight right here that's close enough that's mechanical
+
+85
+00:06:31,672 --> 00:06:36,406
+tube and we have a winner I've matched up
+
+86
+00:06:36,407 --> 00:06:43,034
+my material type now the length of it is eight inches quantity
+
+87
+00:06:43,035 --> 00:06:47,283
+of one now we've got it and it is correct um I will have
+
+88
+00:06:47,284 --> 00:06:51,479
+to come back to this later because there's a machining operation so after I
+
+89
+00:06:51,480 --> 00:06:58,869
+end this later at the end I will come back and add machining all
+
+90
+00:06:58,870 --> 00:07:04,020
+right the mechanical tube is at the bottom let's edit my assembly pull
+
+91
+00:07:04,021 --> 00:07:08,339
+it into my assembly so I don't forget about it there it is now
+
+92
+00:07:08,340 --> 00:07:12,130
+part of my assembly update assembly. Now I'm going on to my very last
+
+93
+00:07:12,131 --> 00:07:17,776
+component, which is going to be part
+
+94
+00:07:17,777 --> 00:07:20,213
+number 15654.
+
+95
+00:07:20,245 --> 00:07:22,762
+This is a stiffener plate, um,
+
+96
+00:07:22,772 --> 00:07:27,337
+so I'm pretty sure this is going to be just a
+
+97
+00:07:27,338 --> 00:07:31,719
+simple flat plate that I will bring in so I'll go to my image
+
+98
+00:07:31,720 --> 00:07:36,260
+files again click image files I will drag and drop 15654
+
+99
+00:07:36,261 --> 00:07:41,583
+my stiffener plate into the image
+
+100
+00:07:41,584 --> 00:07:46,238
+files box and then this material
+
+101
+00:07:46,239 --> 00:07:51,439
+is a 36 it's quarter inch thick so I'll pick all that information
+
+102
+00:07:51,616 --> 00:07:56,365
+then my length and width is four
+
+103
+00:07:56,692 --> 00:08:01,802
+by five and seven so
+
+104
+00:08:01,803 --> 00:08:06,558
+that is now added there are no holes I
+
+105
+00:08:06,559 --> 00:08:10,909
+will click new line it is now added to my quote then I will
+
+106
+00:08:10,910 --> 00:08:16,494
+go back and edit properties to my assembly pull this item
+
+107
+00:08:16,617 --> 00:08:21,482
+into my assembly click update assembly you can wait until the end to update
+
+108
+00:08:21,483 --> 00:08:25,054
+all of your items into your assembly or you can do it one by
+
+109
+00:08:25,055 --> 00:08:28,296
+one as you add them Now, I need to go back and look at
+
+110
+00:08:28,297 --> 00:08:32,706
+the tube and add my machining time, but I just wanted to show Cursor
+
+111
+00:08:32,707 --> 00:08:37,245
+how you add individual components by PDFs and then tie them back
+
+112
+00:08:37,294 --> 00:08:40,293
+to your large assembly at the top.
+
+113
+00:08:40,294 --> 00:08:42,197
+That is it for now.

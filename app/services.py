@@ -43,16 +43,31 @@ def process_job(job_id: int) -> None:
         library_info = attach_library_stp(job)
         db.commit()
 
+        from quote_core.bom_config import format_bom_config_label, resolve_bom_config
+
+        bom_config = resolve_bom_config(
+            explicit=job.bom_config,
+            title=job.title,
+            pdf_filename=job.pdf_filename,
+            library_folder=library_info.get("folder"),
+            part_key=library_info.get("part_key"),
+        )
+        if bom_config and bom_config != job.bom_config:
+            job.bom_config = bom_config
+            db.commit()
+
         rates = load_shop_rates(RATES_PATH)
         result = run_weld_takeoff(
             pdf_path=Path(job.pdf_path),
             stp_path=Path(job.stp_path) if job.stp_path else None,
             library_folder=library_info.get("folder"),
             related_pdf_names=list(library_info.get("related_pdfs") or []),
+            bom_config=bom_config,
         )
         items = result.items
         takeoff = result.to_dict()
         takeoff["library"] = library_info
+        takeoff["bom_config"] = bom_config
         drivers = _drivers_from_takeoff(takeoff)
         times = compute_weld_times(
             items,
@@ -65,6 +80,12 @@ def process_job(job_id: int) -> None:
         )
 
         flags = list(result.flags)
+        if bom_config:
+            flags.insert(
+                0,
+                f"BOM config {format_bom_config_label(bom_config)} — "
+                f"using that qty column on multi-option drawings",
+            )
         for note in library_info.get("notes") or []:
             if note not in flags:
                 flags.append(note)
