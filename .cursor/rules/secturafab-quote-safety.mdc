@@ -1,0 +1,26 @@
+---
+description: Never delete or edit SecturaFAB quotes unless Kyle explicitly asks
+alwaysApply: true
+---
+
+# SecturaFAB quote safety
+
+Do **not** delete or edit SecturaFAB quotes unless the user explicitly requests that action in the current message.
+
+## Hard limits
+
+- **Never** delete or edit quotes entered by anyone other than the automation **api user** (e.g. Kyle Cleaver or other human users), even during debugging — unless the user explicitly names that quote and asks you to change/delete it.
+- **Do not** delete or edit **api user** / automation-created quotes either (including duplicates, test quotes, or “cleanup”) unless the user explicitly asks.
+- Probing is fine **only** when it creates **new** throwaway quotes you then delete **if the user has allowed test cleanup**, or when you leave them and report the IDs. Prefer asking before deleting any existing quote.
+
+## Allowed without a delete/edit ask
+
+- **Read** quotes (GET / list / compare fields)
+- **Create** new quotes as part of an explicit push or probe the user requested
+- Fix code in this repo so *future* pushes behave correctly
+
+## Examples
+
+- ❌ User: “Profile ops are missing” → agent deletes older `PN 73476004` duplicates to “clean up”
+- ✅ User: “Profile ops are missing” → agent inspects quotes, reports IDs, offers to patch/re-push **and waits**
+- ✅ User: “Delete the empty api-user test quotes from today” → agent may delete only those matching the request

@@ -214,12 +214,15 @@ def categorize_pdf_imported_items(
     quote_id: str,
     *,
     bom_rows: list[dict[str, Any]] | None = None,
+    library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
 ) -> list[str]:
     """
     Lesson 04: Cad (plate) / Linear (tube/bar) / Component (purchased).
 
     After rename, Description is often bare ``15863-1`` — use BOM description
-    text (PIVOT TUBE, …) so Linear classification still works.
+    text (PIVOT TUBE, …) so Linear classification still works. When BOM text is
+    empty, OCR the component PDF title block for TUBE/BAR hints.
     """
     from .push import classify_sectura_item
 
@@ -229,6 +232,34 @@ def categorize_pdf_imported_items(
         return ["No items to categorize"]
 
     bom_desc = _bom_description_map(list(bom_rows or []))
+    # Fill empty BOM descriptions from OCR title text on component PDFs.
+    for row in bom_rows or []:
+        pn = str(row.get("part_no") or row.get("part_number") or "").strip()
+        key = normalize_part_key(pn)
+        if not key or bom_desc.get(key):
+            continue
+        pdf = resolve_component_pdf(
+            pn,
+            library_folder=library_folder,
+            related_pdf_names=related_pdf_names,
+        )
+        if not pdf:
+            continue
+        try:
+            from quote_core.ocr import ocr_pdf_pages
+
+            ocr = ocr_pdf_pages(pdf, max_pages=1, dpi=180, only_when_sparse=False)
+            text = str((ocr or {}).get("text") or "")
+        except Exception:  # noqa: BLE001
+            continue
+        if not text.strip():
+            continue
+        bom_desc[key] = text[:240]
+        upper = text.upper()
+        if any(h in upper for h in ("TUBE", "ROUND BAR", "PIPE", "DOM ")):
+            # Prefer a short token so classify_sectura_item matches Linear.
+            bom_desc[key] = "TUBE " + bom_desc[key]
+
     counts = {"Cad": 0, "Linear": 0, "Component": 0}
     for it in items:
         if it.get("ProductType") in (_ASSEMBLY_TYPE, "300", "assembly"):
@@ -338,6 +369,10 @@ def build_pdf_only_assembly(
 
     if imported:
         notes.append(f"Imported {len(imported)} component PDF(s) via quickAddCAD: {', '.join(imported)}")
+        notes.append(
+            "SecturaFAB filled flat Length×Width from each PDF plate outline "
+            "(lesson 04 Image Files equivalent) — review Linear tubes for stock"
+        )
     if missing:
         notes.append(
             "WARNING: Component PDF not found for BOM part(s): " + ", ".join(missing)
@@ -346,6 +381,16 @@ def build_pdf_only_assembly(
         notes.append("WARNING: No component PDFs imported — assembly has no children")
         return notes
 
+    # Allow CAD geometry to finish before rename / assembly rollup.
+    notes.extend(
+        wait_for_quote_settle(
+            client,
+            quote_id,
+            timeout_s=90.0,
+            stable_s=8.0,
+            min_wait_s=12.0,
+        )
+    )
     notes.extend(
         _rename_imported_descriptions(
             client,
@@ -354,7 +399,13 @@ def build_pdf_only_assembly(
         )
     )
     # Lesson 04: Cad / Linear / Component before assembly rollup.
-    notes.extend(categorize_pdf_imported_items(client, quote_id, bom_rows=rows))
+    notes.extend(categorize_pdf_imported_items(
+        client,
+        quote_id,
+        bom_rows=rows,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+    ))
     notes.extend(ensure_assembly_root(client, quote_id, part_key=part_key))
 
     purchased = find_purchased_part_keys(
@@ -389,6 +440,25 @@ def build_pdf_only_assembly(
             min_wait_s=45.0,
         )
     )
+    # UpdateItem_Part CAD rebuild resets Description to ``15644  - 1/4" A36 …``
+    # — restore BOM PNs / categories / assembly links before qty + Profile.
+    notes.extend(
+        _rename_imported_descriptions(
+            client,
+            quote_id,
+            part_nos=[str(r.get("part_no") or "") for r in rows],
+        )
+    )
+    notes.extend(
+        categorize_pdf_imported_items(
+            client,
+            quote_id,
+            bom_rows=rows,
+            library_folder=library_folder,
+            related_pdf_names=related_pdf_names,
+        )
+    )
+    notes.extend(relink_assembly_children(client, quote_id, part_key=part_key))
     notes.extend(
         apply_bom_quantities(
             client,
@@ -405,6 +475,8 @@ def build_pdf_only_assembly(
             thickness=thickness,
         )
     )
+    # Re-link after qty/material settle — CAD rebuild can drop AssemblyID.
+    notes.extend(relink_assembly_children(client, quote_id, part_key=part_key))
     notes.append(
         "PDF weldment built per lesson 04 — review Linear tubes/stock and any missing BOM rows"
     )

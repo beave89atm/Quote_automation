@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from .client import SecturaFabClient
+from .imperial_ops import ensure_imperial_item_units
 from .profile_ops import (
     count_profile_items,
     ensure_laser_profile_ops,
@@ -14,6 +15,38 @@ from .profile_ops import (
 from .qty_ops import apply_bom_quantities, bom_qty_mismatches
 from .quote_update import rollup_assembly_costs
 from .weld_ops import assembly_has_weld, ensure_weld_ops, resolve_weld_times
+
+
+def _finish_with_imperial_and_rollup(
+    client: SecturaFabClient,
+    quote_id: str,
+    *,
+    part_key: str | None,
+    bom_rows: list[dict[str, Any]] | None,
+    reapply_qty: bool = False,
+) -> list[str]:
+    """Imperial cleanup last so delayed CAD cannot leave mm Descriptions."""
+    notes: list[str] = []
+    notes.extend(ensure_imperial_item_units(client, quote_id))
+    if reapply_qty:
+        notes.extend(
+            apply_bom_quantities(
+                client, quote_id, bom_rows=bom_rows, part_key=part_key
+            )
+        )
+    notes.extend(rollup_assembly_costs(client, quote_id, part_key=part_key))
+    if reapply_qty:
+        # Rollup should not touch qty; verify once more and re-apply if needed.
+        qty_bad = bom_qty_mismatches(
+            client.get_json(f"v1/quote/{quote_id}"), bom_rows, part_key=part_key
+        )
+        if qty_bad:
+            notes.extend(
+                apply_bom_quantities(
+                    client, quote_id, bom_rows=bom_rows, part_key=part_key
+                )
+            )
+    return notes
 
 
 def finalize_quote_ops(
@@ -32,6 +65,7 @@ def finalize_quote_ops(
 
     Late ``UpdateItem_Part`` recalcs can wipe ops ~30–60s after HTTP 200. We wait
     after each attach before declaring success, and re-apply without UpdateItem.
+    Always runs imperial cleanup on every exit so Descriptions stay inch-labeled.
     """
     notes: list[str] = []
     want_weld = resolve_weld_times(times) is not None
@@ -78,12 +112,24 @@ def finalize_quote_ops(
                     need_qty = bool(qty_bad)
                 else:
                     notes.extend(
-                        rollup_assembly_costs(client, quote_id, part_key=part_key)
+                        _finish_with_imperial_and_rollup(
+                            client,
+                            quote_id,
+                            part_key=part_key,
+                            bom_rows=bom_rows,
+                            reapply_qty=False,
+                        )
                     )
                     return notes
             else:
                 notes.extend(
-                    rollup_assembly_costs(client, quote_id, part_key=part_key)
+                    _finish_with_imperial_and_rollup(
+                        client,
+                        quote_id,
+                        part_key=part_key,
+                        bom_rows=bom_rows,
+                        reapply_qty=False,
+                    )
                 )
                 return notes
 
@@ -118,12 +164,21 @@ def finalize_quote_ops(
                 )
             )
 
-    # Final snapshot + rollup attempt even if imperfect
+    # Final snapshot — imperial then BOM qty so Profile/Weld quote POSTs cannot
+    # leave every child at Qty=1 or mm Descriptions.
+    notes.extend(
+        _finish_with_imperial_and_rollup(
+            client,
+            quote_id,
+            part_key=part_key,
+            bom_rows=bom_rows,
+            reapply_qty=True,
+        )
+    )
     detail = client.get_json(f"v1/quote/{quote_id}")
     profiles = count_profile_items(detail)
     has_weld = assembly_has_weld(detail, part_key=part_key)
     qty_bad = bom_qty_mismatches(detail, bom_rows, part_key=part_key)
-    notes.extend(rollup_assembly_costs(client, quote_id, part_key=part_key))
     if profiles == 0 or (want_weld and not has_weld) or qty_bad:
         notes.append(
             f"WARNING: after {attempts} finalize attempts still "

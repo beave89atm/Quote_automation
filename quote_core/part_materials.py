@@ -103,6 +103,21 @@ _MATERIAL_INLINE_RE = re.compile(
     r"GALV(?:ANISED|ANIZED)?|A\s*656(?:\s*(?:GR|GRADE)?\s*\d+)?)"
 )
 
+# Time plate callouts: 1/4 PLATE ASTM A-572 (50K) / 1/4" HR PLATE (A572 GRADE 50)
+# OCR often garbles A572 as A-5S7e2 / A57Z — allow junk between digits.
+_PLATE_CALLOUT_RE = re.compile(
+    r"(?i)(?P<thk>\d+\s*/\s*\d+|\d+(?:\.\d+)?)\s*[\"″'”]?\s*"
+    r"(?:HR\s+)?PLATE\b[^\n]{0,80}?"
+    r"(?:ASTM\s*)?A[-\s]?(?P<astm>36|5\D{0,2}7\D{0,2}2|656|572)"
+    r"(?:\s*(?:GR|GRADE|G|SOK|50K)?\s*(?P<sub>\d{2})?)?",
+)
+_A572_GRADE_RE = re.compile(
+    r"(?i)\bA\s*[-]?\s*5\D{0,2}7\D{0,2}2\b[^\n]{0,24}\b(?:GR|GRADE|G)?\s*50\b"
+    r"|\bA572\s+GRADE\s+50\b"
+    r"|\b50K\b"
+    r"|\bPLATE\b[^\n]{0,40}\bA\s*[-]?\s*5\D{0,2}7\D{0,2}2\b",
+)
+
 _SKIP_NAME_HINTS = (
     "WELDMENT",
     "ALL DRAWING",
@@ -238,6 +253,43 @@ def parse_material_block(text: str) -> tuple[float | None, str | None, str]:
         key = _grade_to_material_key(grade)
         return thk, key, f"MATERIAL inline ({m2.group('thk').strip()} / {grade})"
 
+    # Time-style plate callouts (often only visible via OCR).
+    plate_hits: list[tuple[float, str, str]] = []
+    for m3 in _PLATE_CALLOUT_RE.finditer(text):
+        thk = _parse_thickness_token(m3.group("thk"))
+        if thk is None:
+            continue
+        astm_raw = re.sub(r"\W+", "", (m3.group("astm") or "").strip().upper())
+        sub = (m3.group("sub") or "").strip()
+        snippet = m3.group(0)
+        if astm_raw.startswith("5") and "72" in astm_raw:
+            key = "a572_gr50"
+        elif astm_raw == "656":
+            key = "a656_gr80" if sub in {"80", ""} else f"a656_gr{sub or '80'}"
+        elif _A572_GRADE_RE.search(snippet) or sub == "50":
+            key = "a572_gr50"
+        else:
+            key = "a36"
+        plate_hits.append((thk, key, f"plate callout {snippet.strip()!r}"))
+    if plate_hits:
+        plate_hits.sort(key=lambda p: (0 if p[1] not in {"a36", "carbon_steel"} else 1, -p[0]))
+        thk, key, src = plate_hits[0]
+        return thk, key, src
+
+    if _A572_GRADE_RE.search(text):
+        # Grade known; try any nearby thickness token.
+        for ln in lines:
+            tm = _THICKNESS_LINE_RE.fullmatch(ln) or re.search(
+                r"(?i)\b(\d+\s*/\s*\d+)\s*[\"″']?\s*(?:HR\s+)?PLATE\b", ln
+            )
+            if not tm:
+                continue
+            raw = tm.group("thk") if hasattr(tm, "groupdict") and tm.groupdict().get("thk") else tm.group(1)
+            thk = _parse_thickness_token(raw)
+            if thk is not None:
+                return thk, "a572_gr50", f"A572 GR50 near thickness {raw!r}"
+        return None, "a572_gr50", "A572 GR50 callout (thickness unknown)"
+
     # Thickness-only line (e.g. 3/16 with no grade neighbor)
     for ln in lines:
         tm = _THICKNESS_LINE_RE.fullmatch(ln)
@@ -275,12 +327,26 @@ def extract_part_material_from_pdf(pdf_path: Path | str) -> PartMaterial | None:
     if not key:
         return None
     text = _read_pdf_text(path)
+    # Scanned Time drawings often have no native text — OCR the first page.
+    # dpi=200 is flaky on dash material tables; 220 is more reliable for A572.
+    if not (text or "").strip():
+        try:
+            from quote_core.ocr import ocr_pdf_pages
+
+            ocr = ocr_pdf_pages(path, max_pages=1, dpi=220, only_when_sparse=False)
+            text = str((ocr or {}).get("text") or "").strip()
+            if text:
+                text = f"{text}\n[ocr]"
+        except Exception:  # noqa: BLE001
+            text = text or ""
     thk, mat_key, source = parse_material_block(text)
     if mat_key is None and thk is None:
         return None
     if mat_key is None:
         mat_key = "a36"
         source = f"{source}; defaulted grade A36"
+    if "[ocr]" in (text or ""):
+        source = f"{source}; ocr"
     return PartMaterial(
         part_key=key,
         material_key=mat_key,
@@ -364,11 +430,23 @@ def lookup_part_material(
         return None
     if token in part_materials:
         return part_materials[token]
+    # ``15644-1`` → try base ``15644`` (component PDFs are usually stem-only).
+    base = re.split(r"[-–—]", token, maxsplit=1)[0].strip()
+    if base and base in part_materials:
+        return part_materials[base]
     # Normalize dashed BOM style 7300056-7 → try compact
-    compact = token.replace("-", "")
+    compact = re.sub(r"[^0-9A-Za-z]", "", token).upper()
+    base_compact = re.sub(r"[^0-9A-Za-z]", "", base).upper()
     for key, pm in part_materials.items():
-        if key.replace("-", "") == compact:
+        key_compact = re.sub(r"[^0-9A-Za-z]", "", key).upper()
+        if key_compact == compact or key_compact == base_compact:
             return pm
+        # Prefix: map key 15644 matches token 156441 / 15644-1
+        if base_compact and (
+            base_compact == key_compact or base_compact.startswith(key_compact)
+        ):
+            if len(base_compact) - len(key_compact) <= 2:
+                return pm
     return None
 
 

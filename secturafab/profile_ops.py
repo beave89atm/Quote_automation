@@ -280,9 +280,10 @@ def _is_laser_plate(item: dict[str, Any]) -> bool:
         return False
     if pt in (200, "200", "component"):
         return False
-    if str(item.get("Category") or item.get("ItemType") or "").lower() == "component":
+    cat = str(item.get("Category") or item.get("ItemType") or "").strip().lower()
+    if cat == "component":
         return False
-    if item.get("IsLinear"):
+    if item.get("IsLinear") or cat == "linear":
         return False
     machine = str(item.get("Machine") or "").strip().lower()
     if machine and machine != "laser":
@@ -433,6 +434,8 @@ def apply_part_materials(
     qty_by_pn = bom_qty_map(bom_rows)
     mat_updates = 0
     qty_updates = 0
+    import time
+
     for it in targets:
         iid = it.get("ID")
         if not iid:
@@ -450,21 +453,33 @@ def apply_part_materials(
             "machine": "Laser",
             "qty": int(bom_q),
         }
-        upd = client.request(
-            "POST",
-            "v1/quoteOnline/UpdateItem_Part",
-            params=params,
-        )
-        if upd.status_code >= 400:
+        ok = False
+        last_status = None
+        for attempt in range(1, 5):
+            upd = client.request(
+                "POST",
+                "v1/quoteOnline/UpdateItem_Part",
+                params=params,
+            )
+            last_status = upd.status_code
+            if upd.status_code < 400:
+                ok = True
+                break
+            if upd.status_code not in {429, 500, 502, 503, 504}:
+                break
+            time.sleep(min(8.0, 1.5 * attempt))
+        if not ok:
             notes.append(
                 f"UpdateItem_Part failed for {(it.get('Description') or '')[:40]!r}: "
-                f"{upd.status_code}"
+                f"{last_status}"
             )
             continue
         if pm:
             mat_updates += 1
         if bom_q > 1:
             qty_updates += 1
+        # Brief pause so SecturaFAB is less likely to 502 the next part.
+        time.sleep(0.75)
 
     if mat_updates:
         notes.append(

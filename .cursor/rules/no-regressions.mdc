@@ -1,0 +1,17 @@
+---
+description: Prefer smallest diffs; no drive-by changes; verify before done
+alwaysApply: true
+---
+
+# No regressions
+
+- Prefer the **smallest change** that satisfies the request.
+- Do **not** change behavior, APIs, routes, or UI outside the ask.
+- No drive-by refactors or "while I'm here" cleanups.
+- Match existing patterns in `app/`, `quote_core/`, `secturafab/`, and `frontend/src/` before inventing new ones.
+- Before finishing, run verify from `AGENTS.md`:
+  - Smoke: `.\.venv\Scripts\python.exe -m pytest -q tests/test_smoke_api.py tests/test_time_engine.py tests/test_bom_config.py tests/test_secturafab_push.py`
+  - Full when touching core paths: `.\.venv\Scripts\python.exe -m pytest -q`
+  - `cd frontend; npm run build` (only if frontend changed)
+- If verify fails: fix or report — do **not** claim done.
+- If unsure, ask before large rewrites (especially `secturafab/push.py`, takeoff/BOM, auth, or DB schema).

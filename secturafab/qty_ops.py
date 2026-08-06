@@ -8,6 +8,7 @@ match the BOM pieces-per-assembly.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 from .client import SecturaFabClient
@@ -35,6 +36,84 @@ def extract_bom_rows(takeoff: dict[str, Any] | None) -> list[dict[str, Any]]:
     if isinstance(rows, list):
         return [r for r in rows if isinstance(r, dict)]
     return []
+
+
+def _bom_method(takeoff: dict[str, Any] | None) -> str:
+    takeoff = takeoff or {}
+    bom = ((takeoff.get("fitup_drivers") or {}).get("weight_calc") or {}).get("bom") or {}
+    if isinstance(bom, dict):
+        return str(bom.get("method") or "")
+    return ""
+
+
+def refresh_bom_rows_for_push(
+    takeoff: dict[str, Any] | None,
+    *,
+    title: str | None = None,
+    pdf_path: Path | str | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """
+    Return BOM rows for SecturaFAB push, re-extracting when dash config is known
+    but takeoff still has the unfiltered multi-option BOM (e.g. 27 pcs vs 13).
+    """
+    from quote_core.bom_config import format_bom_config_label, resolve_bom_config
+
+    notes: list[str] = []
+    takeoff = takeoff or {}
+    library = takeoff.get("library") or {}
+    rows = extract_bom_rows(takeoff)
+    bom_config = resolve_bom_config(
+        explicit=takeoff.get("bom_config"),
+        title=title,
+        pdf_filename=Path(pdf_path).name if pdf_path else None,
+        library_folder=library.get("folder"),
+        part_key=library.get("part_key") or title,
+    )
+    method = _bom_method(takeoff)
+    needs_refresh = bool(bom_config) and ("multi_qty" not in method or not rows)
+    if not needs_refresh:
+        return rows, notes
+
+    assembly_pdf = Path(pdf_path) if pdf_path else None
+    if not assembly_pdf or not assembly_pdf.is_file():
+        notes.append(
+            f"BOM config {format_bom_config_label(bom_config)} set but assembly PDF "
+            f"unavailable to refresh multi-qty rows — using takeoff BOM as-is"
+        )
+        return rows, notes
+
+    try:
+        from quote_core.bom import extract_bom_from_ocr_time_style
+
+        refreshed = extract_bom_from_ocr_time_style(
+            assembly_pdf,
+            library_folder=library.get("folder"),
+            bom_config=bom_config,
+        )
+    except Exception as exc:  # noqa: BLE001
+        notes.append(f"WARNING: BOM refresh for dash config failed: {exc}")
+        return rows, notes
+
+    if not refreshed.rows:
+        notes.append("WARNING: BOM refresh returned no rows — using takeoff BOM")
+        return rows, notes
+
+    new_rows = [r.to_dict() for r in refreshed.rows]
+    notes.append(
+        f"Refreshed BOM for config {format_bom_config_label(bom_config)}: "
+        f"{refreshed.part_number_count} PNs / {refreshed.piece_count} pieces "
+        f"(was {len(rows)} rows, method={method or 'none'})"
+    )
+    # Keep takeoff in sync for downstream notes / finalize.
+    wc = ((takeoff.get("fitup_drivers") or {}).get("weight_calc")) or {}
+    if isinstance(wc, dict):
+        wc["bom"] = refreshed.to_dict()
+        drivers = takeoff.setdefault("fitup_drivers", {})
+        drivers["weight_calc"] = wc
+        drivers["piece_count"] = refreshed.piece_count
+        drivers["part_count"] = refreshed.part_number_count
+    takeoff["bom_config"] = bom_config
+    return new_rows, notes
 
 
 def bom_qty_map(bom_rows: list[dict[str, Any]] | None) -> dict[str, int]:
@@ -144,6 +223,8 @@ def apply_bom_quantities(
             continue
         it["Quantity"] = total
         it["Qty"] = total
+        it["BaseQty"] = total
+        # Pieces of this PN per one top-level assembly.
         it["AssemblyQty"] = per
         it["isAssemblyItem"] = True
         if root_id:

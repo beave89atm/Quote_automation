@@ -171,8 +171,14 @@ class SecturaFabClient:
                 body = response.json()
             except ValueError:
                 body = response.text[:1000]
+            detail = ""
+            if isinstance(body, dict):
+                for key in ("ExceptionMessage", "detail", "Message", "title"):
+                    if body.get(key):
+                        detail = f" — {body.get(key)}"
+                        break
             raise SecturaFabApiError(
-                f"API request failed ({response.status_code}) for {response.url}",
+                f"API request failed ({response.status_code}) for {response.url}{detail}",
                 status_code=response.status_code,
                 body=body,
             )

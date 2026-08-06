@@ -165,6 +165,21 @@ export default function JobDetailPage() {
               /* ignore poll errors */
             }
           }, 1000);
+        } else if (
+          ["pushing", "retrying_createfile"].includes(data.takeoff?.secturafab?.status)
+        ) {
+          timer = setInterval(async () => {
+            try {
+              const latest = await refresh();
+              if (!alive) return;
+              const st = latest.takeoff?.secturafab?.status;
+              if (!["pushing", "retrying_createfile"].includes(st)) {
+                clearInterval(timer);
+              }
+            } catch {
+              /* ignore poll errors */
+            }
+          }, 15000);
         }
       } catch (err) {
         if (alive) setError(err.message);
@@ -282,7 +297,7 @@ export default function JobDetailPage() {
     setPushReady(false);
     setPushElapsed(0);
     setMessage(
-      "Pushing to SecturaFAB… quote appears early — do not open it yet. Waiting for Profile, Weld, and quantities (often 2–3 min)."
+      "Starting SecturaFAB push… if drawing upload is down, we retry every 5 minutes automatically."
     );
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
       try {
@@ -295,24 +310,17 @@ export default function JobDetailPage() {
     const tick = setInterval(() => {
       setPushElapsed(Math.round((Date.now() - started) / 1000));
     }, 1000);
-    try {
-      const data = await api(`/api/jobs/${id}/push-secturafab`, { method: "POST" });
-      setJob(data);
-      const push = data.secturafab_push || data.takeoff?.secturafab;
-      if (push?.ok) {
-        const secs = Math.round((Date.now() - started) / 1000);
+
+    function finishPush(push, secs) {
+      if (push?.ok || push?.status === "complete") {
         const ready = push.ready !== false;
         setPushReady(ready);
-        const verified = (push.notes || []).some((n) =>
-          /Verified Profile\/Weld|Rolled up assembly/i.test(String(n))
-        );
         setMessage(
           ready
             ? `Ready — SecturaFAB quote ${push.quote_number} is complete` +
                 (push.item_count != null ? ` · ${push.item_count} items` : "") +
                 ` · ${secs}s. Safe to open in SecturaFAB.`
-            : `SecturaFAB quote ${push.quote_number} created, but finalize reported a warning — refresh the quote and check Profile/Weld/qty.` +
-                (verified ? "" : " Review push notes on the job.")
+            : `SecturaFAB quote ${push.quote_number} created, but finalize reported a warning — refresh the quote and check Profile/Weld/qty.`
         );
         if (typeof Notification !== "undefined" && Notification.permission === "granted") {
           try {
@@ -330,9 +338,42 @@ export default function JobDetailPage() {
             /* ignore */
           }
         }
-      } else {
-        setError(push?.error || "SecturaFAB push failed");
+        return;
       }
+      setError(push?.error || push?.last_error || "SecturaFAB push failed");
+      setMessage("");
+    }
+
+    try {
+      const data = await api(`/api/jobs/${id}/push-secturafab`, { method: "POST" });
+      setJob(data);
+      let push = data.secturafab_push || data.takeoff?.secturafab;
+      const inFlight = new Set(["pushing", "retrying_createfile"]);
+
+      while (inFlight.has(push?.status)) {
+        if (push.status === "retrying_createfile") {
+          const next = push.next_retry_at
+            ? new Date(push.next_retry_at).toLocaleTimeString()
+            : "soon";
+          setMessage(
+            `Waiting for SecturaFAB CreateFile (drawing upload). Attempt ${
+              push.attempts || "?"
+            } failed — next retry at ${next}. ` +
+              (push.last_error ? `(${push.last_error})` : "")
+          );
+        } else {
+          setMessage(
+            "Pushing to SecturaFAB… quote appears after drawings upload. Waiting for Profile, Weld, and quantities."
+          );
+        }
+        await new Promise((r) => setTimeout(r, 15000));
+        const latest = await api(`/api/jobs/${id}`);
+        setJob(latest);
+        push = latest.takeoff?.secturafab;
+      }
+
+      const secs = Math.round((Date.now() - started) / 1000);
+      finishPush(push, secs);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -674,7 +715,11 @@ export default function JobDetailPage() {
         <button
           className="btn"
           type="button"
-          disabled={busy || ["uploaded", "processing"].includes(job.status)}
+          disabled={
+            busy ||
+            ["uploaded", "processing"].includes(job.status) ||
+            ["pushing", "retrying_createfile"].includes(job.takeoff?.secturafab?.status)
+          }
           onClick={pushSecturaFab}
           title="Always create a new SecturaFAB quote; uses part number (date suffix if that number is taken)"
         >
@@ -695,7 +740,7 @@ export default function JobDetailPage() {
           />
         </label>
       </div>
-      {job.takeoff?.secturafab?.ok ? (
+      {job.takeoff?.secturafab?.ok || job.takeoff?.secturafab?.status === "complete" ? (
         <p className="muted" style={{ marginTop: "0.5rem" }}>
           Last SecturaFAB push: quote <strong>{job.takeoff.secturafab.quote_number}</strong>
           {job.takeoff.secturafab.item_count != null
@@ -709,6 +754,19 @@ export default function JobDetailPage() {
           {job.takeoff.secturafab.uploaded_files?.length
             ? ` · ${job.takeoff.secturafab.uploaded_files.join(", ")}`
             : ""}
+        </p>
+      ) : null}
+      {["pushing", "retrying_createfile"].includes(job.takeoff?.secturafab?.status) ? (
+        <p className="muted" style={{ marginTop: "0.5rem" }}>
+          SecturaFAB push in progress
+          {job.takeoff.secturafab.status === "retrying_createfile"
+            ? ` — waiting on CreateFile (attempt ${job.takeoff.secturafab.attempts || "?"}` +
+              (job.takeoff.secturafab.next_retry_at
+                ? `, next ${new Date(job.takeoff.secturafab.next_retry_at).toLocaleTimeString()}`
+                : "") +
+              ")"
+            : ""}
+          . Leave this page open or come back later — retries continue in the background.
         </p>
       ) : null}
       {busy && pushElapsed > 0 ? (

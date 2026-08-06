@@ -172,3 +172,97 @@ def recompute_from_items(
     )
     job.set_takeoff(takeoff)
     job.set_times(times.to_dict())
+
+
+_PUSH_IN_FLIGHT = {"pushing", "retrying_createfile"}
+
+
+def _merge_secturafab_progress(job_id: int, info: dict[str, Any]) -> None:
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job:
+            return
+        takeoff = job.takeoff()
+        sf = dict(takeoff.get("secturafab") or {})
+        notes = list(sf.get("notes") or [])
+        incoming_notes = info.get("notes")
+        if isinstance(incoming_notes, list):
+            for n in incoming_notes:
+                if n and n not in notes:
+                    notes.append(n)
+            sf["notes"] = notes
+        for key, val in info.items():
+            if key == "notes":
+                continue
+            sf[key] = val
+        takeoff["secturafab"] = sf
+        job.set_takeoff(takeoff)
+        db.commit()
+    finally:
+        db.close()
+
+
+def push_job_secturafab(job_id: int) -> None:
+    """Background SecturaFAB push (CreateFile may retry for hours)."""
+    from secturafab.push import SecturaFabPushService
+
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job:
+            return
+        takeoff = job.takeoff()
+        times = job.times()
+        title = job.title or job.pdf_filename or ""
+        pdf_filename = job.pdf_filename
+        pdf_path = Path(job.pdf_path) if job.pdf_path else None
+        stp_path = Path(job.stp_path) if job.stp_path else None
+    finally:
+        db.close()
+
+    def on_progress(info: dict[str, Any]) -> None:
+        _merge_secturafab_progress(job_id, info)
+
+    service = SecturaFabPushService()
+    result = service.push_job(
+        title=title,
+        pdf_filename=pdf_filename,
+        pdf_path=pdf_path,
+        stp_path=stp_path,
+        takeoff=takeoff,
+        times=times,
+        job_id=job_id,
+        on_progress=on_progress,
+    )
+
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job:
+            return
+        takeoff = job.takeoff()
+        takeoff["secturafab"] = result.to_dict()
+        job.set_takeoff(takeoff)
+        if result.ok:
+            flags = job.flags()
+            flag = (
+                f"Pushed to SecturaFAB quote {result.quote_number}"
+                + (f" ({result.item_count} items)" if result.item_count is not None else "")
+            )
+            if flag not in flags:
+                flags.append(flag)
+            for note in result.notes or []:
+                if note.startswith("WARNING:") and note not in flags:
+                    flags.append(note)
+            if result.item_count == 0:
+                warn = (
+                    "WARNING: SecturaFAB quote has 0 line items — PDF assembly "
+                    "or STEP import did not create components"
+                )
+                if warn not in flags:
+                    flags.append(warn)
+            job.set_flags(flags)
+        db.commit()
+    finally:
+        db.close()

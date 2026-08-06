@@ -57,19 +57,13 @@ def test_push_job_creates_quote_and_uploads():
     ), patch(
         "secturafab.push.find_purchased_part_keys", return_value={}
     ), patch(
-        "secturafab.push.extract_bom_rows", return_value=[]
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
     ), patch(
         "secturafab.push.apply_bom_quantities", return_value=[]
-    ), patch(
-        "secturafab.push.apply_part_materials", return_value=[]
-    ), patch(
-        "secturafab.push.wait_for_quote_settle", return_value=["settled"]
     ), patch(
         "secturafab.push.ensure_laser_profile_ops", return_value=["Attached Profile"]
     ), patch("secturafab.push.ensure_weld_ops", return_value=["Attached Weld"]), patch(
         "secturafab.push.finalize_quote_ops", return_value=["Verified"]
-    ), patch(
-        "secturafab.push.build_part_material_map", return_value={}
     ), patch(
         "secturafab.push.extract_assembly_description", return_value=None
     ):
@@ -149,19 +143,13 @@ def test_repush_always_creates_new_quote_and_imports_cad():
     ), patch(
         "secturafab.push.find_purchased_part_keys", return_value={}
     ), patch(
-        "secturafab.push.extract_bom_rows", return_value=[]
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
     ), patch(
         "secturafab.push.apply_bom_quantities", return_value=[]
-    ), patch(
-        "secturafab.push.apply_part_materials", return_value=[]
-    ), patch(
-        "secturafab.push.wait_for_quote_settle", return_value=["settled"]
     ), patch(
         "secturafab.push.ensure_laser_profile_ops", return_value=["Attached Profile"]
     ), patch("secturafab.push.ensure_weld_ops", return_value=["Attached Weld"]), patch(
         "secturafab.push.finalize_quote_ops", return_value=["Verified"]
-    ), patch(
-        "secturafab.push.build_part_material_map", return_value={}
     ):
         result = service.push_job(
             title="21678-1",

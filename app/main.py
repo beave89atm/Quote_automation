@@ -300,10 +300,12 @@ def find_library_and_reprocess(
 @app.post("/api/jobs/{job_id}/push-secturafab")
 def push_job_to_secturafab(job_id: int, _: str = Depends(require_auth)) -> dict[str, Any]:
     """
-    Create/update a SecturaFAB quote using the top-level part number as QuoteNumber,
-    upload drawing PDFs + STEP, and return the push summary.
+    Start a background SecturaFAB push (CreateFile retries every 5 min on outage).
+
+    Returns immediately with ``takeoff.secturafab.status`` of ``pushing``;
+    poll ``GET /api/jobs/{id}`` until status is ``complete`` or ``failed``.
     """
-    from secturafab.push import SecturaFabPushService
+    from .services import _PUSH_IN_FLIGHT, push_job_secturafab
 
     db = SessionLocal()
     try:
@@ -314,37 +316,32 @@ def push_job_to_secturafab(job_id: int, _: str = Depends(require_auth)) -> dict[
             raise HTTPException(400, "Wait for takeoff to finish before pushing")
 
         takeoff = job.takeoff()
-        times = job.times()
-        service = SecturaFabPushService()
-        result = service.push_job(
-            title=job.title or job.pdf_filename or "",
-            pdf_filename=job.pdf_filename,
-            pdf_path=Path(job.pdf_path) if job.pdf_path else None,
-            stp_path=Path(job.stp_path) if job.stp_path else None,
-            takeoff=takeoff,
-            times=times,
-            job_id=job.id,
-        )
-        takeoff["secturafab"] = result.to_dict()
-        job.set_takeoff(takeoff)
-        if result.ok:
-            flags = job.flags()
-            flag = (
-                f"Pushed to SecturaFAB quote {result.quote_number}"
-                + (f" ({result.item_count} items)" if result.item_count is not None else "")
+        existing = takeoff.get("secturafab") or {}
+        if existing.get("status") in _PUSH_IN_FLIGHT:
+            raise HTTPException(
+                409,
+                "SecturaFAB push already in progress — wait for it to finish or fail",
             )
-            if flag not in flags:
-                flags.append(flag)
-            job.set_flags(flags)
+
+        takeoff["secturafab"] = {
+            "ok": False,
+            "status": "pushing",
+            "attempts": 0,
+            "notes": ["SecturaFAB push queued"],
+            "error": None,
+            "last_error": None,
+            "next_retry_at": None,
+        }
+        job.set_takeoff(takeoff)
         db.commit()
         db.refresh(job)
         payload = job.to_dict()
-        payload["secturafab_push"] = result.to_dict()
-        if not result.ok:
-            raise HTTPException(status_code=502, detail=result.to_dict())
-        return payload
+        payload["secturafab_push"] = takeoff["secturafab"]
     finally:
         db.close()
+
+    threading.Thread(target=push_job_secturafab, args=(job_id,), daemon=True).start()
+    return payload
 
 
 @app.get("/api/jobs/{job_id}/export")
