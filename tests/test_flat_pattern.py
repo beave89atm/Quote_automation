@@ -12,6 +12,9 @@ from quote_core.flat_pattern import (
 _MD23_UPLOAD = Path(
     "/home/ubuntu/.cursor/projects/workspace/uploads/MD23-1709LR.idw_c0d4.pdf"
 )
+_MC07_UPLOAD = Path(
+    "/home/ubuntu/.cursor/projects/workspace/uploads/MC07-1620LR.idw_a49f.pdf"
+)
 
 
 def test_flat_section_paren_dims():
@@ -39,6 +42,11 @@ def test_rejects_stock_plate_three_number_callout():
     assert extract_flat_pattern_dims_from_text(text) is None
 
 
+def test_rejects_stock_sheet_two_number_callout():
+    text = 'FLAT PATTERN\n11 GA (0.091") 60" x 120" SHEET, ALUMINUM 5052-H32\n'
+    assert extract_flat_pattern_dims_from_text(text) is None
+
+
 def test_prefers_blank_over_stock_plate():
     text = """
     PARTS LIST
@@ -48,6 +56,24 @@ def test_prefers_blank_over_stock_plate():
     1
     """
     assert extract_flat_pattern_dims_from_text(text) == (26.85, 8.49)
+
+
+def test_mc07_style_prefers_flat_overall_over_feature_parens_and_stock():
+    """Regression: stock 60x120 SHEET + hole parens must not beat 14.75×20.25."""
+    text = """
+    FLAT PATTERN
+    FOR REFERENCE ONLY
+    PARTS LIST
+    11 GA (0.091") 60" x 120" SHEET, ALUMINUM 5052-H32
+    MU02-1004-001
+    NOTES AND HOLES
+    (1.13)
+    (3.2)
+    OVERALL
+    (14.75)
+    (20.25)
+    """
+    assert extract_flat_pattern_dims_from_text(text) == (20.25, 14.75)
 
 
 def test_lesson01_style_long_rail():
@@ -71,6 +97,12 @@ def test_md23_pdf_if_present():
     if not _MD23_UPLOAD.is_file():
         return
     assert extract_flat_pattern_dims(_MD23_UPLOAD) == (26.85, 8.49)
+
+
+def test_mc07_pdf_if_present():
+    if not _MC07_UPLOAD.is_file():
+        return
+    assert extract_flat_pattern_dims(_MC07_UPLOAD) == (20.25, 14.75)
 
 
 def test_synthetic_pdf_blank(tmp_path: Path):
