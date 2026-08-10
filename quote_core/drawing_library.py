@@ -18,6 +18,8 @@ _NOISE_RE = re.compile(
 # Filename revision suffixes: _R00, -R01, R00 (not prose "rev A")
 _REV_SUFFIX_RE = re.compile(r"(?i)[\s_-]*R\d{2}$")
 _PN_PREFIX_RE = re.compile(r"(?i)^PN[\s_-]*")
+# Inventor export stacks: MD23-1703LR.idw.pdf → stem MD23-1703LR.idw
+_CAD_SUFFIX_RE = re.compile(r"(?i)\.(ipt|iam|idw)$")
 
 
 @dataclass
@@ -42,8 +44,21 @@ class DrawingMatch:
         }
 
 
-# Cummins / NGFS style: ME04-3453, MD04-2482
-_ALPHA_DASH_PN_RE = re.compile(r"\b([A-Z]{1,3}\d{2}-\d{3,5})\b", re.IGNORECASE)
+# Cummins / NGFS style: ME04-3453, MD23-1703LR, ME04-2771LR-1
+_ALPHA_DASH_PN_RE = re.compile(
+    r"\b([A-Z]{1,3}\d{2}-\d{3,5}(?:LH|LR|RH)?(?:-\d+)?)\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_cad_suffixes(stem: str) -> str:
+    """``foo.idw`` / ``foo.ipt`` → ``foo`` (Inventor double-extension exports)."""
+    out = stem
+    while True:
+        stripped = _CAD_SUFFIX_RE.sub("", out)
+        if stripped == out:
+            return out
+        out = stripped
 
 
 def extract_part_key(*names: str | None) -> str | None:
@@ -51,12 +66,15 @@ def extract_part_key(*names: str | None) -> str | None:
 
     Keeps vendor dashes (``1511-5024``) and strips filename revision suffixes
     (``_R00``) so Quote Number matches how parts are searched in SecturaFAB.
+    Also strips Inventor ``.idw`` / ``.ipt`` / ``.iam`` stacked on the stem so
+    ``MD23-1703LR.idw.pdf`` yields ``MD23-1703LR`` (not ``MD231703LRidw``).
     """
     candidates: list[str] = []
     for raw in names:
         if not raw:
             continue
         stem = Path(str(raw)).stem
+        stem = _strip_cad_suffixes(stem)
         stem = _PN_PREFIX_RE.sub("", stem)
         stem = _NOISE_RE.sub("", stem).strip(" -_")
         stem = _REV_SUFFIX_RE.sub("", stem).strip(" -_")
@@ -171,10 +189,7 @@ def _stp_name_matches(path: Path, part_key: str) -> bool:
     key = (part_key or "").strip()
     if not key:
         return False
-    stem = path.stem
-    # ``foo.ipt.stp`` → stem ``foo.ipt``; strip a trailing CAD suffix for matching.
-    if stem.lower().endswith((".ipt", ".iam", ".idw")):
-        stem = Path(stem).stem
+    stem = _strip_cad_suffixes(path.stem)
     stem_l = stem.lower()
     key_l = key.lower()
 

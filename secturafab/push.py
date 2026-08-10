@@ -959,6 +959,11 @@ class SecturaFabPushService:
                 pdf_path=job_pdf,
                 library_folder=library.get("folder"),
             )
+            if not organization_name:
+                notes.append(
+                    "WARNING: Could not detect SecturaFAB Organization from "
+                    "drawing/library — set customer manually"
+                )
             if drawings:
 
                 def _createfile_progress(info: dict[str, Any]) -> None:
