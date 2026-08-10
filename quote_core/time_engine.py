@@ -152,8 +152,39 @@ def compute_weld_times(
         total_inches += inches
 
     components = [float(w) for w in (component_weights_lb or []) if float(w) > 0]
-    parts = int(part_count if part_count is not None else (len(components) or max(1, len(by_size))))
+    # Explicit 0 means no fit-up (laser-only / no weld symbols). Do not default to 1.
+    if part_count is not None:
+        parts = max(0, int(part_count))
+    else:
+        parts = len(components) or (1 if by_size else 0)
     joints = int(joint_count) if joint_count is not None else 0
+
+    if parts <= 0 and not by_size:
+        notes.append("No weld takeoff — weld and fit-up left at 0")
+        return TimeBreakdown(
+            by_size=[],
+            total_inches=0.0,
+            weld_minutes=0.0,
+            part_count=0,
+            joint_count=0,
+            assembly_weight_lb=(
+                float(assembly_weight_lb) if assembly_weight_lb is not None else None
+            ),
+            component_weights_lb=[],
+            weight_band_id="none",
+            weight_band_label="none",
+            band_counts={},
+            band_breakdown=[],
+            minutes_per_part={"no_fixture": 0.0, "with_fixture": 0.0},
+            fitup_no_fixture_minutes=0.0,
+            fitup_with_fixture_minutes=0.0,
+            efficiency_pct=eff,
+            total_no_fixture_minutes=0.0,
+            total_with_fixture_minutes=0.0,
+            quoted_no_fixture_minutes=0.0,
+            quoted_with_fixture_minutes=0.0,
+            fitup_notes=notes,
+        )
 
     if components and part_count is not None and len(components) != parts:
         # Explicit piece count (e.g. OCR BOM) wins over a mismatched STEP weight list.

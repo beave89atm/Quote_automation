@@ -81,6 +81,7 @@ def create_assembly_shell(
     *,
     part_key: str,
     qty: int = 1,
+    description: str | None = None,
 ) -> list[str]:
     """Insert a ProductType=Assembly root line when the quote has no items yet."""
     key = (part_key or "").strip()
@@ -103,9 +104,10 @@ def create_assembly_shell(
     if existing:
         return [f"Assembly shell already present ({key})"]
 
+    desc = (description or "").strip() or key
     shell = {
         "ID": str(uuid.uuid4()),
-        "Description": key,
+        "Description": desc[:500],
         "Quantity": max(1, int(qty)),
         "ProductType": _ASSEMBLY_TYPE,
         "IsPlate": False,
@@ -122,7 +124,7 @@ def create_assembly_shell(
     save = client.request("POST", "v1/quote", json=detail)
     if save.status_code >= 400:
         return [f"Creating assembly shell failed ({save.status_code})"]
-    return [f"Created Assembly shell for {key}"]
+    return [f"Created Assembly shell for {key}" + (f" — {desc[:60]}" if desc != key else "")]
 
 
 def quick_add_component_pdf(
@@ -142,7 +144,11 @@ def quick_add_component_pdf(
         "itemID": "00000000-0000-0000-0000-000000000000",
         "machine": machine,
         "material": material,
-        "thickness": thickness,
+        "thickness": re.sub(r"(?i)\s*(inches|inch|in)\s*$", "", str(thickness or "").strip())
+        .replace('"', "")
+        .replace("″", "")
+        .strip()
+        or "0.25",
         "thickness_Units": "inch",
         "qty": max(1, int(qty)),
         "units": "inch",
@@ -479,5 +485,108 @@ def build_pdf_only_assembly(
     notes.extend(relink_assembly_children(client, quote_id, part_key=part_key))
     notes.append(
         "PDF weldment built per lesson 04 — review Linear tubes/stock and any missing BOM rows"
+    )
+    return notes
+
+
+def _apply_item_descriptions(
+    client: SecturaFabClient,
+    quote_id: str,
+    *,
+    description: str,
+) -> list[str]:
+    """Set Description on assembly + child lines from the drawing title."""
+    desc = (description or "").strip()
+    if not desc:
+        return []
+    detail = client.get_json(f"v1/quote/{quote_id}")
+    items = list(detail.get("ItemList") or [])
+    if not items:
+        return []
+    changed = 0
+    for it in items:
+        if str(it.get("Description") or "").strip() != desc:
+            it["Description"] = desc[:500]
+            changed += 1
+    if not changed:
+        return []
+    save = client.request("POST", "v1/quote", json=detail)
+    if save.status_code >= 400:
+        return [f"Setting item Descriptions failed ({save.status_code})"]
+    return [f"Set ItemList Description from drawing: {desc[:80]}"]
+
+
+def build_single_pdf_quote(
+    client: SecturaFabClient,
+    *,
+    quote_id: str,
+    part_key: str,
+    pdf_path: Path,
+    material: str,
+    thickness: str,
+    machine: str = "Laser",
+    qty: int = 1,
+    description: str | None = None,
+) -> list[str]:
+    """
+    Single-component PDF job (no STEP / no library BOM): one part line via
+    quickAddCAD — lesson 01/03 Image Files path. No Assembly parent row.
+
+    Leave CAD Description on the part (e.g. ``PN - 12 Ga A36 …``). Quote-level
+    Description is set separately in push.create_quote.
+    """
+    del description  # quote title only; do not overwrite CAD part Description
+    notes: list[str] = []
+    path = Path(pdf_path)
+    if not path.is_file():
+        notes.append(f"WARNING: Job PDF missing for single-PDF push: {pdf_path}")
+        return notes
+
+    key = (part_key or path.stem or "").strip()
+    thk = re.sub(r"(?i)\s*(inches|inch|in)\s*$", "", str(thickness or "").strip())
+    thk = thk.replace('"', "").replace("″", "").strip() or "0.25"
+
+    try:
+        quick_add_component_pdf(
+            client,
+            quote_id=quote_id,
+            pdf_path=path,
+            material=material,
+            thickness=thk,
+            machine=machine,
+            qty=qty,
+            memo=key or path.stem,
+        )
+        notes.append(
+            f"Imported job PDF via quickAddCAD: {path.name} "
+            f"({machine}, {material}, {thk}) — single-part / no Assembly shell"
+        )
+    except SecturaFabApiError as exc:
+        notes.append(
+            f"WARNING: quickAddCAD failed for job PDF ({path.name}): {exc}"
+        )
+        return notes
+
+    notes.extend(
+        wait_for_quote_settle(
+            client,
+            quote_id,
+            timeout_s=60.0,
+            stable_s=6.0,
+            min_wait_s=8.0,
+        )
+    )
+    # Profile last — never relink/POST structure after this (wipes ops).
+    notes.extend(
+        ensure_laser_profile_ops(
+            client,
+            quote_id,
+            material=material,
+            thickness=thk,
+            verify=True,
+        )
+    )
+    notes.append(
+        "Single-PDF part quote built (no Assembly shell) — confirm Profile + dims"
     )
     return notes

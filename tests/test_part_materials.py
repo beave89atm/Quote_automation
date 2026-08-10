@@ -10,12 +10,22 @@ from quote_core.part_materials import (
 )
 
 
-def test_parse_material_block_a36():
-    text = "Channel, Coupler Plate\nYM\n3/16\nA36\nREV\n"
+def test_parse_material_block_gauge_pando_12ga():
+    text = '''
+ITEM
+DESCRIPTION
+STOCKCODE
+1
+GAUGE/P&O 12GA /SQ IN [8 17/32" X 2 7/32"]
+1510-9422
+GUARD LEVEL TRAILER CHASSIS SMALL
+STEEL MATERIALS - 70,000 PSI
+ALUMINUM MATERIALS - 38,000 PSI
+'''
     thk, key, src = parse_material_block(text)
-    assert thk == 0.1875
+    assert thk == 0.1046
     assert key == "a36"
-    assert "3/16" in src
+    assert "12" in src or "GAUGE" in src.upper() or "gauge" in src
 
 
 def test_parse_material_block_gr50():

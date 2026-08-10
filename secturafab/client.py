@@ -93,8 +93,22 @@ class SecturaFabClient:
         return response
 
     def get_json(self, path: str, **kwargs: Any) -> Any:
-        response = self.request("GET", path, **kwargs)
-        return self._parse_or_raise(response)
+        """GET JSON with short retries on Cloudflare/origin overload (502/503/504)."""
+        import time
+
+        retries = int(kwargs.pop("retries", 4))
+        last_exc: SecturaFabApiError | None = None
+        for attempt in range(1, max(1, retries) + 1):
+            response = self.request("GET", path, **kwargs)
+            try:
+                return self._parse_or_raise(response)
+            except SecturaFabApiError as exc:
+                last_exc = exc
+                if exc.status_code not in {502, 503, 504} or attempt >= retries:
+                    raise
+                time.sleep(min(12.0, 1.5 * attempt))
+        assert last_exc is not None
+        raise last_exc
 
     def post_json(self, path: str, payload: Any = None, **kwargs: Any) -> Any:
         response = self.request("POST", path, json=payload, **kwargs)

@@ -24,7 +24,7 @@ SecturaFAB: copy `.env.example` → `.env`, then `.\.venv\Scripts\python.exe -m 
 .\.venv\Scripts\python.exe -m pytest -q
 
 # Smoke (fast local regression net)
-.\.venv\Scripts\python.exe -m pytest -q tests/test_smoke_api.py tests/test_time_engine.py tests/test_bom_config.py tests/test_secturafab_push.py tests/test_imperial_ops.py
+.\.venv\Scripts\python.exe -m pytest -q tests/test_smoke_api.py tests/test_batch.py tests/test_time_engine.py tests/test_bom_config.py tests/test_secturafab_push.py tests/test_imperial_ops.py
 
 # Frontend when UI changed
 cd frontend; npm run build
@@ -35,6 +35,8 @@ No lint or typecheck scripts are configured (no ruff/mypy/eslint/tsc).
 ## Architecture boundaries — ask before rewriting
 
 - `secturafab/push.py` push order (CAD import → assembly link → ops → **BOM qty last**). Skipping settles or calling `UpdateItem_Part` on STEP assemblies can wipe `ItemList`.
+- **Never full-quote `POST` / relink after Profile (or Weld) is attached** without preserving `OperationCostList` — stale reads have wiped Profile more than once (single-PDF path). Attach Profile **last**, verify it stuck, and treat `Machine` values like `Laser - Bay1` as laser.
+- Single-component PDF quotes **and single-solid STEP** quotes: **one part line only** (no Assembly conversion). Multi-body STEP / multi-BOM lesson 02/04 still uses Assembly + children.
 - `quote_core/weld/takeoff.py`, `quote_core/bom.py`, `bom_config` multi-dash BOM logic.
 - `app/db.py` SQLite schema / additive migrations; do not drop or rename columns casually.
 - `app/auth.py` in-memory shared-password sessions.
@@ -50,6 +52,7 @@ No lint or typecheck scripts are configured (no ruff/mypy/eslint/tsc).
 - Quoting behavior: prefer `docs/quoting/*.md` before inventing shortcuts.
 - Prefer imperial labels on SecturaFAB line items; do not casually rewrite STEP geometry for units.
 - Imperial cleanup must run **last** in finalize (after settle). Delayed CAD can rewrite Descriptions back to `mm X` if skipped on the success path.
+- Machining: **PARKED** — do not invent mill/lathe times or wire geometry engines until Kyle un-parks (`references/machining/VENDOR_DECISION.md`).
 
 ## Definition of done
 
@@ -58,6 +61,14 @@ No lint or typecheck scripts are configured (no ruff/mypy/eslint/tsc).
 - Run the smoke verify command above before claiming done; full `pytest -q` when touching core paths; `npm run build` if frontend changed.
 - For SecturaFAB push changes: live-verify qty, assembly links, and units when the task touches push.
 - After a live push settles, ItemList Descriptions must not contain ` mm X ` / ` mm x ` (shop-visible imperial labels).
+- **SecturaFAB push must not succeed with 0 ItemList lines.** Prefer STEP, else lesson 04 library BOM PDFs, else single-PDF shell from the job PDF. Refuse only when none of those can populate ItemList.
+- **After API route changes:** restart the local uvicorn process (it does not auto-reload). Pytest alone is not enough — live-check the running server before asking Kyle to review:
+  ```powershell
+  Invoke-RestMethod http://127.0.0.1:8000/api/health
+  (Invoke-RestMethod http://127.0.0.1:8000/openapi.json).paths.PSObject.Properties.Name | Where-Object { $_ -like '*batch*' }
+  # POST new routes must not return 405 (401/422/400 is fine without a full body)
+  ```
+- Register static paths like `/api/jobs/batch` **before** `/api/jobs/{job_id}` so they are never shadowed.
 
 ## Feature change plan template
 

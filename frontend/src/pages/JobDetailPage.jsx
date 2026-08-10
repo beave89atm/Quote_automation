@@ -363,17 +363,21 @@ export default function JobDetailPage() {
           );
         } else {
           setMessage(
-            "Pushing to SecturaFAB… quote appears after drawings upload. Waiting for Profile, Weld, and quantities."
+            "Pushing to SecturaFAB… PDF/STEP assembly can take several minutes. Status updates as steps finish."
           );
         }
         await new Promise((r) => setTimeout(r, 15000));
         const latest = await api(`/api/jobs/${id}`);
         setJob(latest);
-        push = latest.takeoff?.secturafab;
+        push = latest.takeoff?.secturafab || push;
       }
 
       const secs = Math.round((Date.now() - started) / 1000);
-      finishPush(push, secs);
+      if (!push) {
+        setError("SecturaFAB push status was lost — refresh the job and check again");
+      } else {
+        finishPush(push, secs);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -718,13 +722,23 @@ export default function JobDetailPage() {
           disabled={
             busy ||
             ["uploaded", "processing"].includes(job.status) ||
-            ["pushing", "retrying_createfile"].includes(job.takeoff?.secturafab?.status)
+            ["pushing", "retrying_createfile"].includes(job.takeoff?.secturafab?.status) ||
+            job.push_readiness?.ready === false
           }
           onClick={pushSecturaFab}
-          title="Always create a new SecturaFAB quote; uses part number (date suffix if that number is taken)"
+            title={
+            job.push_readiness?.ready === false
+              ? job.push_readiness.reason || "needs PDF, STEP, or library match"
+              : "Always create a new SecturaFAB quote; uses part number (date suffix if that number is taken)"
+          }
         >
           Push to SecturaFAB
         </button>
+        {job.push_readiness?.ready === false ? (
+          <span className="muted" style={{ alignSelf: "center" }}>
+            {job.push_readiness.reason || "needs PDF, STEP, or library match"}
+          </span>
+        ) : null}
         <label className="btn ghost" style={{ cursor: busy ? "default" : "pointer" }}>
           {job.stp_filename ? "Replace STP" : "Attach STP"}
           <input

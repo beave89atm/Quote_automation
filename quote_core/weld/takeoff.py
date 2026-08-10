@@ -87,12 +87,26 @@ def _normalize_size(raw: str) -> str:
     return raw.strip().replace('"', "").replace("″", "").replace("'", "")
 
 
+_WELD_BOILERPLATE_RE = re.compile(
+    r"MINIMUM\s+WELD\s+ELECTRODE(?:\s+STRENGTH)?|"
+    r"WELD\s+ELECTRODE(?:\s+STRENGTH)?|"
+    r"ELECTRODE\s+STRENGTH",
+    re.IGNORECASE,
+)
+
+
+def _scrub_weld_boilerplate(text: str) -> str:
+    """Strip title-block weld notes that are not fillet/weld-symbol callouts."""
+    return _WELD_BOILERPLATE_RE.sub(" ", text or "")
+
+
 def _scrub_non_weld_fraction_context(text: str) -> str:
     """
     Remove fraction tokens that are dimensions / title-block noise, not fillet sizes.
 
     Examples that should NOT become weld sizes:
-      1 1/8 REF, 1-1/8", SCALE 1/4, B 1/4 WELDMENT (drawing size code)
+      1 1/8 REF, 1-1/8", SCALE 1/4, B 1/4 WELDMENT (drawing size code),
+      PLATE … 3/16, R3/16" (corner radius)
     """
     scrubbed = text
     # Mixed numbers: 1 1/8 or 1-1/8 (with optional inch mark / REF)
@@ -133,6 +147,20 @@ def _scrub_non_weld_fraction_context(text: str) -> str:
     scrubbed = re.sub(
         r"(?:1/2|5/16|3/8|3/16|1/4|1/8)\s*[\"″']?\s*QTY\b",
         " QTY ",
+        scrubbed,
+        flags=re.IGNORECASE,
+    )
+    # Plate / gauge thickness callouts (TYCROP stock lines, etc.)
+    scrubbed = re.sub(
+        r"\b(?:PLATE|GAUGE|GA|P&O|HR)\b[^\n]{0,48}(?:1/2|5/16|3/8|3/16|1/4|1/8)\b",
+        " ",
+        scrubbed,
+        flags=re.IGNORECASE,
+    )
+    # Corner / fillet radius marks: R3/16"
+    scrubbed = re.sub(
+        r"\bR\s*(?:1/2|5/16|3/8|3/16|1/4|1/8)\b",
+        " ",
         scrubbed,
         flags=re.IGNORECASE,
     )
@@ -191,7 +219,9 @@ def _ingest_page_text(
     notes: list[str] = []
     page_hits: list[dict[str, Any]] = []
     dimensions = _extract_dimensions_from_text(text)
-    lower = text.lower()
+    # Ignore title-block "MINIMUM WELD ELECTRODE STRENGTH" — not a weld symbol.
+    probe = _scrub_weld_boilerplate(text)
+    lower = probe.lower()
 
     is_weld_sheet = force_weld_sheet or any(
         k in lower
@@ -204,12 +234,14 @@ def _ingest_page_text(
             "pre-heat kingpin",
             "preheat kingpin",
             "weldment",
-            "weld",
         )
-    ) or ("weld" in lower and ("1/4" in lower or "5/16" in lower or "1/2" in lower))
+    ) or (
+        "weld" in lower
+        and any(s in lower for s in ("1/4", "5/16", "3/8", "1/2", "3/16", "1/8"))
+    )
 
     if is_weld_sheet:
-        weld_text = _scrub_non_weld_fraction_context(text)
+        weld_text = _scrub_non_weld_fraction_context(probe)
         page_sizes = [_normalize_size(m.group(1)) for m in WELD_SIZE_RE.finditer(weld_text)]
         for s in page_sizes:
             sizes.append(s)
@@ -969,29 +1001,11 @@ def _build_items_from_signals(
             flags.append(n)
 
     if not primary_sizes:
-        flags.append("No weld size callouts detected in PDF text — manual takeoff required")
-        total_path = _segments_total_inches(segments) if segments else 0.0
-        joint = "No weld sizes found; review drawing"
-        if total_path > 0:
-            joint = (
-                f"Length ~{round(total_path, 2)}\" from {length_source}; "
-                "enter fillet size (PDF has no readable size text)"
-            )
-            flags.append(
-                f"Weld path length estimated at {round(total_path, 2)}\" from geometry — "
-                "enter fillet size to finish takeoff"
-            )
-        items.append(
-            WeldLineItem(
-                size="unknown",
-                inches=round(total_path, 2),
-                joint_notes=joint,
-                confidence="low",
-                source=length_source if total_path > 0 else "pdf",
-                needs_review=True,
-            )
+        flags.append(
+            "No weld symbols — weld and fit-up left at 0 (add fillet sizes manually if needed)"
         )
-        return items, flags
+        # Do not invent weld inches from PDF/STP geometry when no fillet callouts exist.
+        return [], flags
 
     if not segments:
         flags.append(
@@ -1302,16 +1316,27 @@ def run_weld_takeoff(
         if pdf_meta.get("ocr_error"):
             msg += f" OCR unavailable: {pdf_meta.get('ocr_error')}"
         else:
-            msg += " Attach STEP for geometry/fit-up when available."
+            msg += " Attach STEP for geometry when available."
         flags.insert(0, msg)
-    fitup_drivers = estimate_fitup_drivers(
-        stp_summary,
-        notes,
-        pdf_path=pdf_path,
-        library_folder=library_folder,
-        related_pdf_names=related_pdf_names,
-        bom_config=bom_config,
-    )
+
+    if not items:
+        fitup_drivers = {
+            "part_count": 0,
+            "joint_count": 0,
+            "assembly_weight_lb": None,
+            "component_weights_lb": [],
+            "source": "no_weld",
+            "notes": ["No weld symbols — weld and fit-up left at 0"],
+        }
+    else:
+        fitup_drivers = estimate_fitup_drivers(
+            stp_summary,
+            notes,
+            pdf_path=pdf_path,
+            library_folder=library_folder,
+            related_pdf_names=related_pdf_names,
+            bom_config=bom_config,
+        )
     for n in fitup_drivers.get("notes") or []:
         if n not in flags:
             flags.append(n)

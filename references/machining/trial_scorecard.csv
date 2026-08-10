@@ -1,0 +1,6 @@
+part_id,role,vendor,date,vendor_setups,vendor_ops,vendor_cycle_min,actual_setups,actual_cycle_min,actual_program_min,setup_delta,cycle_pct_error,usable_y_n,notes
+35145-1,mill-heavy,Paperless Parts,,,,,,,
+21678-1,mixed,Paperless Parts,,,,,,,
+73476004,plate-coupler,Paperless Parts,,,,,,,
+80341687,complex,Paperless Parts,,,,,,,
+MD23-1710LR,control-no-machine,Paperless Parts,,,,,,,

@@ -60,18 +60,22 @@ class Job(Base):
         self.flags_json = json.dumps(flags)
 
     def to_dict(self) -> dict[str, Any]:
+        from .push_readiness import job_push_readiness
+
         return {
             "id": self.id,
             "title": self.title,
             "status": self.status,
             "pdf_filename": self.pdf_filename,
             "stp_filename": self.stp_filename,
+            "stp_path": self.stp_path,
             "bom_config": self.bom_config,
             "efficiency_pct": self.efficiency_pct,
             "takeoff": self.takeoff(),
             "times": self.times(),
             "flags": self.flags(),
             "error_message": self.error_message,
+            "push_readiness": job_push_readiness(self),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

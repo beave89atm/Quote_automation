@@ -15,55 +15,213 @@ _SKIP_LINE = re.compile(
     r"DO NOT|SCALE|DRAWING$|SHEET\s+\d|TITLE:?|FINISH$|MATERIAL$|"
     r"DIMENSIONS ARE|TOLERANCES|FRACTIONAL|ANGULAR|DECIMAL|PROPRIETARY|"
     r"THE INFORMATION|REPRODUCTION|WITHOUT THE|AMTECH|RELEASED TO|"
-    r"BLACK POWDER|N/A$|BY$|ITEM$|QTY|DESCRIPTION$|WEIGHT$"
+    r"BLACK POWDER|N/A$|BY$|ITEM$|QTY|DESCRIPTION$|WEIGHT$|"
+    r"DRAWING NUMBER|STOCKCODE|UNITS$|SIZE\s*[A-Z]?$|REV$|"
+    r"MINIMUM WELD|K-FACTOR|BREAK SHARP|REMOVE ALL|FLAT PATTERNS|"
+    r"THESE DRAWINGS|PART\s+DRAWING|ALL PROJECTED|THIRD ANGLE|"
+    r"LINEAR\s+\d|HOLES\s*\+|BENDS\s+|WRAP ALL|VENDOR IS|"
+    r"WWW\.|HTTP|ROSEDALE|CANADA\s+V\d|"
+    r"CONSMETIC\s+SIDE|COSMETIC\s+SIDE|SECTION\s+[A-Z]-[A-Z]|DETAIL\s+[A-Z]|"
+    r"DOWN\s+\d|T\.?S\.?C\.?$|TYP$|REVISIONS?$|CHECKED BY|DRAWN BY|"
+    r"DRAWING RELEASED|UPDATED POSITIONS|STEEL MATERIALS|ALUMINUM MATERIALS|"
+    r"DWG\s*NO:?$|APPROVED:?$|QA$|MFG$|CHECKED$|DRAWN$"
     r")"
 )
 
+_VIEW_LABEL = re.compile(
+    r"(?i)^(CONSMETIC|COSMETIC|SECTION|DETAIL|SCALE|VIEW|NOTE)\b"
+)
 _DIM_ONLY = re.compile(r"^[\d\s\.\-/\"'″×xX±°R,]+$")
 _WEIGHT_LBM = re.compile(r"(?i)^\d+(\.\d+)?\s*(lbm|lbs?)\b")
-_PART_NUM = re.compile(r"^\d{5,}(?:-\d+)?$")
-_DATE = re.compile(r"^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$")
+_PART_NUM = re.compile(r"^\d{4,}(?:-\d+)?(?:_R\d+)?$", re.IGNORECASE)
+_DATE = re.compile(r"^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$|^\d{4}-\d{2}-\d{2}$")
+_STOCK_OR_BOM = re.compile(
+    r"(?i)^(GAUGE|P&O|HR\s|PLATE|BOLT|NUT|WASHER|SQ\s*IN)\b"
+)
+# Product titles like "PLATE - DOUBLER…" are not stock callouts.
+_PRODUCT_PLATE_TITLE = re.compile(r"(?i)^PLATE\s*[-–—]")
+_DRAWING_NUMBER_LABEL = re.compile(r"(?i)drawing\s*number")
+# Title-block DRAWING NUMBER: 1511-5024 or assembly 35145-1
+_DRAWING_NUMBER_TOKEN = re.compile(
+    r"\b(\d{4}-\d{3,5}|\d{5,}-\d{1,3}[A-Za-z]?|\d{6,10})\b"
+)
+_TITLE_LABEL = re.compile(r"(?i)^TITLE:?$")
+_TITLE_STOP = re.compile(
+    r"(?i)^(DWG\s*NO|SIZE|SHEET|SCALE|REV|DRAWN|CHECKED|APPROVED|MATERIAL|"
+    r"QTY|DESCRIPTION|UNITS|FINISH|WEIGHT|ITEM)\b"
+)
+# Cummins / NGFS confidentiality banners — never use as quote Description.
+_LEGAL_OR_BANNER = re.compile(
+    r"(?i)("
+    r"this notice must appear|"
+    r"\bconfidential\b|"
+    r"proprietary and trade secret|"
+    r"natural gas fuel|"
+    r"^copyright\b|"
+    r"^cummins clean fuel technologies$|"
+    r"must be returned to cummins|"
+    r"all rights reserved|"
+    r"complete or partial reproduction"
+    r")"
+)
+
+
+def _normalize_key(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", (value or "").upper())
+
+
+def extract_drawing_number_from_pdf_text(text: str) -> str | None:
+    """Return the title-block DRAWING NUMBER when present (keeps dashes)."""
+    if not text or not text.strip():
+        return None
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    for i, ln in enumerate(lines):
+        if not _DRAWING_NUMBER_LABEL.search(ln):
+            continue
+        m = _DRAWING_NUMBER_TOKEN.search(ln)
+        if m and not _DRAWING_NUMBER_LABEL.fullmatch(ln):
+            return m.group(1)
+        for j in range(i + 1, min(i + 5, len(lines))):
+            nxt = lines[j]
+            if _DRAWING_NUMBER_LABEL.search(nxt):
+                break
+            if _PART_NUM.fullmatch(nxt):
+                return nxt
+            m2 = _DRAWING_NUMBER_TOKEN.fullmatch(nxt)
+            if m2:
+                return m2.group(1)
+            if len(nxt) <= 24:
+                m3 = _DRAWING_NUMBER_TOKEN.search(nxt)
+                if m3:
+                    return m3.group(1)
+    return None
+
+
+def extract_drawing_number_from_pdf(path: Path) -> str | None:
+    """Read a PDF and return its title-block DRAWING NUMBER when found."""
+    try:
+        text = _read_pdf_text(path)
+    except Exception:  # noqa: BLE001
+        return None
+    return extract_drawing_number_from_pdf_text(text)
+
+
+def _is_noise_line(s: str, *, key: str, key_norm: str, allow_plate_title: bool) -> bool:
+    if not s:
+        return True
+    if _LEGAL_OR_BANNER.search(s):
+        return True
+    if _SKIP_LINE.match(s):
+        return True
+    if _VIEW_LABEL.match(s):
+        return True
+    if _DIM_ONLY.match(s) or _WEIGHT_LBM.match(s) or _DATE.match(s):
+        return True
+    if _PART_NUM.match(s):
+        return True
+    if key and (s == key or _normalize_key(s) == key_norm):
+        return True
+    if _STOCK_OR_BOM.match(s) and not (allow_plate_title and _PRODUCT_PLATE_TITLE.match(s)):
+        return True
+    if len(s) < 6 or len(s) > 120:
+        return True
+    return False
+
+
+def _score_title_candidate(s: str, *, from_title_block: bool) -> tuple[int, int, int]:
+    upper = s.upper()
+    words = [w for w in re.split(r"\s+", s) if w]
+    pts = 0
+    if from_title_block:
+        pts += 100
+    if any(tok in upper for tok in (" ASM", "ASM,", "ASSEMBLY", "WELDMENT", "COUPLER")):
+        pts += 50
+    if any(
+        tok in upper
+        for tok in (
+            "GUARD",
+            "CHASSIS",
+            "TRAILER",
+            "FRAME",
+            "BRACKET",
+            "PLATE",
+            "ARM",
+            "PANEL",
+            "DOUBLER",
+            "CLOSEOUT",
+        )
+    ):
+        pts += 30
+    if len(words) >= 3:
+        pts += 20
+    if len(words) >= 4:
+        pts += 10
+    alpha = sum(1 for c in s if c.isalpha())
+    pts += min(20, alpha // 2)
+    return (pts, len(words), len(s))
 
 
 def extract_title_from_pdf_text(text: str, *, part_key: str | None = None) -> str | None:
     """
-    Best-effort drawing title (e.g. ``COUPLER ASM, 18-16, PNEUMATIC TANK``).
+    Best-effort drawing title (e.g. ``COUPLER ASM, 18-16, PNEUMATIC TANK``
+    or ``PANEL - BACK, UPPER, 604 SERIES SM``).
 
-    Prefers lines with ASM / ASSEMBLY / WELDMENT; otherwise the first
-    substantial non-boilerplate line before the BOM ``ITEM`` header.
+    Prefers the TITLE title-block field over legal notices / BOM material rows.
     """
     if not text or not text.strip():
         return None
 
     key = (part_key or "").strip()
-    candidates: list[str] = []
-    for ln in text.splitlines():
-        s = ln.strip()
-        if not s:
-            continue
-        if re.match(r"^ITEM\b", s, re.IGNORECASE):
-            break
-        if _SKIP_LINE.match(s):
-            continue
-        if _DIM_ONLY.match(s) or _WEIGHT_LBM.match(s) or _DATE.match(s):
-            continue
-        if _PART_NUM.match(s):
-            continue
-        if key and s == key:
-            continue
-        if len(s) < 6:
-            continue
-        candidates.append(s)
+    key_norm = _normalize_key(key)
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    scored: list[tuple[tuple[int, int, int], str]] = []
 
-    if not candidates:
+    i = 0
+    while i < len(lines):
+        s = lines[i]
+        if re.match(r"^ITEM\b", s, re.IGNORECASE):
+            i += 1
+            continue
+        if _TITLE_LABEL.match(s):
+            parts: list[str] = []
+            j = i + 1
+            while j < len(lines) and len(parts) < 2:
+                nxt = lines[j]
+                if _TITLE_LABEL.match(nxt) or _TITLE_STOP.match(nxt):
+                    break
+                if _is_noise_line(nxt, key=key, key_norm=key_norm, allow_plate_title=True):
+                    j += 1
+                    continue
+                parts.append(nxt)
+                j += 1
+            if parts:
+                joined = " ".join(parts)
+                scored.append((_score_title_candidate(joined, from_title_block=True), joined))
+            i = j
+            continue
+        if _is_noise_line(s, key=key, key_norm=key_norm, allow_plate_title=False):
+            i += 1
+            continue
+        scored.append((_score_title_candidate(s, from_title_block=False), s))
+        i += 1
+
+    if not scored:
         return None
 
-    for s in candidates:
-        upper = s.upper()
-        if any(tok in upper for tok in (" ASM", "ASM,", "ASSEMBLY", "WELDMENT", "COUPLER")):
-            return s[:200]
-    # First solid title-like line
-    return candidates[0][:200]
+    ranked = sorted(scored, key=lambda row: row[0], reverse=True)
+    best_score, best = ranked[0]
+    if best_score[0] < 20 and not any(
+        tok in best.upper() for tok in ("ASM", "ASSEMBLY", "WELDMENT", "COUPLER", "PANEL")
+    ):
+        multi = [c for sc, c in scored if len(c.split()) >= 3]
+        if multi:
+            return sorted(
+                multi,
+                key=lambda c: _score_title_candidate(c, from_title_block=False),
+                reverse=True,
+            )[0][:200]
+        return best[:200]
+    return best[:200]
 
 
 def resolve_assembly_drawing_paths(
@@ -73,10 +231,11 @@ def resolve_assembly_drawing_paths(
     library_folder: Path | str | None,
     related_pdf_names: list[str] | None = None,
 ) -> list[Path]:
-    """Prefer the top-level PN.pdf, then weldment / all-drawing packets."""
+    """Prefer the job PDF, then library PN.pdf / weldment packets."""
     key = (part_key or "").strip()
     if key.upper().startswith("PN "):
         key = key[3:].strip()
+    key_norm = _normalize_key(key)
     paths: list[Path] = []
     seen: set[str] = set()
 
@@ -90,21 +249,30 @@ def resolve_assembly_drawing_paths(
         paths.append(p)
 
     folder = Path(library_folder) if library_folder else None
-    # 1) Job primary PDF if it matches the assembly PN
+    # Always include the job PDF when present (stem may be 1510-9422_R01 while
+    # part_key is 15109422R01).
     if pdf_path and pdf_path.is_file():
-        stem = pdf_path.stem.strip()
-        if stem == key or stem.startswith(key):
-            add(pdf_path)
-    # 2) Library PN.pdf
+        add(pdf_path)
     if folder and folder.is_dir() and key:
         add(folder / f"{key}.pdf")
-    # 3) Weldment / assembly packets named with the PN
+        # Also try dashed / undashed variants.
+        if key_norm:
+            try:
+                for p in folder.iterdir():
+                    if p.suffix.lower() != ".pdf":
+                        continue
+                    if _normalize_key(p.stem) == key_norm or _normalize_key(p.stem).startswith(
+                        key_norm
+                    ):
+                        add(p)
+            except OSError:
+                pass
     if folder and folder.is_dir():
         for name in related_pdf_names or []:
             upper = name.upper()
-            if key and key in name and any(
-                h in upper for h in ("WELDMENT", "ALL DRAWING", "ASSEMBLY", "ASM")
-            ):
+            if key and (
+                key in name or key_norm in _normalize_key(name)
+            ) and any(h in upper for h in ("WELDMENT", "ALL DRAWING", "ASSEMBLY", "ASM")):
                 add(folder / name)
     return paths
 

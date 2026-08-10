@@ -290,6 +290,35 @@ def parse_material_block(text: str) -> tuple[float | None, str | None, str]:
                 return thk, "a572_gr50", f"A572 GR50 near thickness {raw!r}"
         return None, "a572_gr50", "A572 GR50 callout (thickness unknown)"
 
+    # Vendor stock lines: GAUGE/P&O 12GA /SQ IN [8 17/32" X 2 7/32"]
+    gauge_stock = re.search(
+        r"(?i)\bGAUGE\s*/\s*P\s*&\s*O\s+(\d+)\s*GA\b|\bP\s*&\s*O\s+(\d+)\s*GA\b|"
+        r"\b(\d+)\s*GA(?:UGE)?\b.*\b(?:P\s*&\s*O|HRPO|PICKLED)\b|"
+        r"\bGAUGE\s*/\s*P\s*&\s*O\s+(\d+)\s*GA",
+        text,
+    )
+    if not gauge_stock:
+        gauge_stock = re.search(
+            r"(?i)GAUGE\s*/\s*P\s*&\s*O\s+(\d+)\s*GA",
+            text,
+        )
+    if gauge_stock:
+        ga = next((g for g in gauge_stock.groups() if g), None)
+        thk = _parse_thickness_token(f"{ga}GA") if ga else None
+        if thk is not None:
+            return thk, "a36", f"GAUGE/P&O {ga}GA → {thk}\" mild steel (P&O)"
+
+    # Bare N GA on a stock/description line (avoid lone "1" balloons).
+    for ln in lines:
+        m_ga = re.search(r"(?i)\b(\d{1,2})\s*GA(?:UGE)?\b", ln)
+        if not m_ga:
+            continue
+        if not re.search(r"(?i)GAUGE|P\s*&\s*O|HRPO|SHEET|PLATE|STOCK", ln):
+            continue
+        thk = _parse_thickness_token(f"{m_ga.group(1)}GA")
+        if thk is not None:
+            return thk, "a36", f"gauge callout on {ln!r}"
+
     # Thickness-only line (e.g. 3/16 with no grade neighbor)
     for ln in lines:
         tm = _THICKNESS_LINE_RE.fullmatch(ln)

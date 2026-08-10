@@ -24,6 +24,32 @@ def _is_assembly_type(item: dict[str, Any]) -> bool:
     return pt in (_ASSEMBLY_TYPE, "300", "assembly") or bool(item.get("IsAssembly"))
 
 
+def needs_assembly_structure(
+    item_list: list[dict[str, Any]] | None,
+    bom_rows: list[dict[str, Any]] | None = None,
+) -> bool:
+    """
+    True when a STEP quote should use lesson-02 Assembly structure.
+
+    Single-solid plate STEPs (one ItemList line, no multi-row BOM) stay as Part
+    so Profile can attach. Multi-body imports or multi-row BOMs need Assembly.
+    """
+    items = list(item_list or [])
+    if len(items) > 1:
+        return True
+    bom_with_qty = 0
+    for row in bom_rows or []:
+        try:
+            qty = float(row.get("qty") or row.get("quantity") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty > 0:
+            bom_with_qty += 1
+            if bom_with_qty > 1:
+                return True
+    return False
+
+
 def _attach_children(
     items: list[dict[str, Any]],
     *,
@@ -75,20 +101,30 @@ def ensure_assembly_root(
         return ["No items — skipped assembly root conversion"]
 
     target = None
+    # Prefer an existing Assembly line (may already have the drawing title as Description).
     for it in items:
-        if _is_assembly_type(it) and _desc_token(str(it.get("Description") or "")) == key:
+        if _is_assembly_type(it):
             target = it
             break
+    if target is None:
+        for it in items:
+            if _desc_token(str(it.get("Description") or "")) == key:
+                target = it
+                break
     if target is None:
         target = pick_weld_target_item(items, part_key=key)
     if not target or not target.get("ID"):
         return [f"Could not find root item for assembly PN {key}"]
 
     tid = str(target["ID"])
+    prior_desc = str(target.get("Description") or "").strip()
 
-    # Rewrite root to match Kyle's assembly line.
+    # Rewrite root to match Kyle's assembly line — keep drawing title when present.
     target["ProductType"] = _ASSEMBLY_TYPE
-    target["Description"] = key
+    if prior_desc and prior_desc != key and len(prior_desc) >= 6:
+        target["Description"] = prior_desc[:500]
+    else:
+        target["Description"] = key
     target["Machine"] = None
     target["IsPlate"] = False
     target["IsPart"] = False

@@ -108,3 +108,35 @@ def test_jobs_with_token(client: TestClient, token: str) -> None:
     assert res.status_code == 200
     body = res.json()
     assert isinstance(body, list)
+
+
+def test_openapi_includes_batch_routes(client: TestClient) -> None:
+    res = client.get("/openapi.json")
+    assert res.status_code == 200
+    paths = res.json().get("paths") or {}
+    assert "/api/jobs/batch" in paths
+    assert "post" in paths["/api/jobs/batch"]
+    assert "/api/jobs/batch-push" in paths
+    assert "post" in paths["/api/jobs/batch-push"]
+
+
+def test_batch_post_is_not_method_not_allowed(client: TestClient, token: str) -> None:
+    """Regression: stale/shadowed routes returned 405 for POST /api/jobs/batch."""
+    res = client.post(
+        "/api/jobs/batch",
+        headers={"X-App-Token": token},
+    )
+    assert res.status_code != 405, res.text
+    assert res.status_code in {400, 422}
+
+
+def test_batch_push_post_is_not_method_not_allowed(
+    client: TestClient, token: str
+) -> None:
+    res = client.post(
+        "/api/jobs/batch-push",
+        headers={"X-App-Token": token},
+        json={},
+    )
+    assert res.status_code != 405, res.text
+    assert res.status_code in {400, 422}

@@ -1,6 +1,6 @@
 # Mill & Lathe Quoting Workflow
 
-**Rule:** Identify operations from the drawing first. Estimate time second. If dimensions, material, tolerance, or finish needed for time are missing — stop and ask for component drawings or STP.
+**Rule:** Identify operations from the drawing first. Estimate time second. If dimensions, material, tolerance, or finish needed for time are missing ï¿½ stop and ask for component drawings or STP.
 
 Later: match ops to Kannon machine list/capabilities (to be provided).
 
@@ -35,7 +35,7 @@ Capture:
 | Perimeter / profile | Contour mill |
 | Pocket / cavity | Pocket mill (rough + finish) |
 | Slot / keyway | Slot mill / keyseat |
-| Hole (loose tol) | Drill (± spot) |
+| Hole (loose tol) | Drill (ï¿½ spot) |
 | Hole (tight tol) | Drill ? bore/ream |
 | Counterbore / countersink | CB / CSK |
 | Tapped hole | Drill ? tap (or thread mill) |
@@ -47,7 +47,7 @@ Count **operations** as distinct machine steps that change tool, fixture, or sid
 1. Each **setup** (flip, re-clamp, tombstone face) is a setup cost + handling time
 2. Within a setup, each **tool** or major feature family is usually one op (or rough+finish = 2)
 3. Hole patterns: often 1 drill op (all same size), separate ops for different sizes/taps
-4. Do **not** merge mill and lathe into one op — different machines unless mill-turn
+4. Do **not** merge mill and lathe into one op ï¿½ different machines unless mill-turn
 
 ## 3. Estimate time (after symbols/features are clear)
 
@@ -56,19 +56,19 @@ Rough quoting formula (refine with shop rates later):
 ```
 Cycle time ? cutting time + non-cutting (rapids, toolchange) + dwell
 Cutting time ? volume removed / MRR   or   path length / feed rate
-Quoted machine time ? (cycle × qty) + setup + programming allowance (shop policy)
+Quoted machine time ? (cycle ï¿½ qty) + setup + programming allowance (shop policy)
 ```
 
 Speeds/feeds helpers (free):
 - FSWizard (web): https://zero-divide.net/fswizard
 - SpeedCalculator.net (web): https://www.speedcalculator.net/speed-and-feed-calculator/
 - HSMAdvisor (desktop trial in `tools/`)
-- FreeCAD CAM (installed) — mill toolpaths from STP when available
-- CAMotics — simulate G-code runtime (mill)
+- FreeCAD CAM (installed) ï¿½ mill toolpaths from STP when available
+- CAMotics ï¿½ simulate G-code runtime (mill)
 
-**Stitch / intermittent / special notes:** apply the same discipline as welding — read the callout before totaling inches or minutes.
+**Stitch / intermittent / special notes:** apply the same discipline as welding ï¿½ read the callout before totaling inches or minutes.
 
-## 4. Missing data — stop and ask
+## 4. Missing data ï¿½ stop and ask
 
 Ask for more info when any of these are missing and needed for time:
 - Material
@@ -89,4 +89,13 @@ Placeholder until Kannon provides:
 - Available tooling (live tooling, 4th axis, probes)
 - Preferred ops per machine
 
-Then: drawing ops ? capable machines only ? time at that machine’s realistic feeds.
+Then: drawing ops ? capable machines only ? time at that machineï¿½s realistic feeds.
+
+## 6. Commercial plug-ins (geometry engines)
+
+Do **not** invent mill/lathe times from PDF geometry alone in Quote Automation.
+
+See:
+- [PLUGINS_AND_TRIAL.md](PLUGINS_AND_TRIAL.md) ï¿½ vendors and Paperless Parts trial protocol
+- [calibration_jobs.md](calibration_jobs.md) ï¿½ five calibration parts
+- [VENDOR_DECISION.md](VENDOR_DECISION.md) ï¿½ trial before any app integration

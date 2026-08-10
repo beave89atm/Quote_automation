@@ -10,20 +10,29 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from quote_core.customer_org import detect_organization
 from quote_core.drawing_library import extract_part_key
+from quote_core.drawing_title import (
+    extract_assembly_description,
+    extract_drawing_number_from_pdf,
+)
 
-from .assembly_ops import ensure_assembly_root, relink_assembly_children
+from .assembly_ops import (
+    ensure_assembly_root,
+    needs_assembly_structure,
+    relink_assembly_children,
+)
 from .client import SecturaFabApiError, SecturaFabClient
 from .component_ops import ensure_purchased_components, find_purchased_part_keys
 from .finalize_ops import finalize_quote_ops
 from .imperial_ops import ensure_imperial_item_units
+from .org_ops import apply_quote_organization
 from .profile_ops import (
     ensure_laser_profile_ops,
 )
 from .qty_ops import apply_bom_quantities, refresh_bom_rows_for_push
 from .quotes import QuoteService
 from .weld_ops import ensure_weld_ops
-from quote_core.drawing_title import extract_assembly_description
 
 # CreateFile outage retry (SecturaFAB DB "underlying provider failed on Open").
 CREATEFILE_RETRY_INTERVAL_S = 300.0
@@ -32,14 +41,20 @@ CREATEFILE_RETRY_MAX_S = 48 * 3600.0
 ProgressCallback = Callable[[dict[str, Any]], None]
 
 
+_QUOTE_REV_SUFFIX_RE = re.compile(r"(?i)[\s_-]*R\d{2}$")
+
+
 def _pn_quote_number(part_key: str) -> str:
-    """SecturaFAB quote number as 'PN {part}' with no revision suffix."""
+    """SecturaFAB Quote Number = bare part key (no 'PN ' prefix, no rev suffix)."""
     key = (part_key or "").strip()
     if not key:
         return ""
     if key.upper().startswith("PN "):
-        return f"PN {key[3:].strip()}"
-    return f"PN {key}"
+        key = key[3:].strip()
+    elif key.upper().startswith("PN"):
+        key = key[2:].lstrip(" _-")
+    key = _QUOTE_REV_SUFFIX_RE.sub("", key).strip(" -_")
+    return key
 
 
 _LINEAR_HINTS = (
@@ -179,8 +194,39 @@ def _snap_plate_thickness(raw: float) -> float | None:
 
 
 def _format_thickness(val: float) -> str:
-    text = f"{val:.4g}"
-    return text
+    """Numeric thickness only — never append 'inch' (SecturaFAB dropdown values are bare)."""
+    t = float(val)
+    # Prefer four-decimal stock values that match common SF dropdown rows.
+    rounded = round(t, 4)
+    if abs(rounded - t) < 1e-9 or abs(t - rounded) <= 0.00015:
+        text = f"{rounded:.4f}".rstrip("0").rstrip(".")
+        if "." not in text:
+            text = f"{rounded:.4f}"
+        return text
+    return f"{t:.4g}"
+
+
+def _sanitize_thickness_param(raw: str | float | None) -> str:
+    """Strip unit suffixes so thickness matches SecturaFAB dropdown values."""
+    if raw is None:
+        return "0.25"
+    if isinstance(raw, (int, float)):
+        return _format_thickness(float(raw))
+    text = str(raw).strip()
+    text = re.sub(r"(?i)\s*(inches|inch|in)\s*$", "", text)
+    text = text.replace('"', "").replace("″", "").replace("'", "").strip()
+    if not text:
+        return "0.25"
+    try:
+        return _format_thickness(float(text))
+    except ValueError:
+        # Fraction like 1/4
+        from quote_core.part_materials import _parse_thickness_token
+
+        parsed = _parse_thickness_token(text)
+        if parsed is not None:
+            return _format_thickness(parsed)
+        return re.sub(r"(?i)[^0-9./]", "", text) or "0.25"
 
 
 def _default_machine() -> str:
@@ -193,11 +239,80 @@ def _default_material(takeoff: dict[str, Any] | None) -> str:
         return env
     drivers = (takeoff or {}).get("fitup_drivers") or {}
     weight = drivers.get("weight_calc") or {}
-    label = str(weight.get("material_label") or weight.get("material_key") or "").strip()
+    key = str(weight.get("material_key") or "").strip().lower()
+    label = str(weight.get("material_label") or "").strip()
+    # Weight heuristics often mis-read title-block boilerplate ("ALUMINUM MATERIALS")
+    # as the part material — do not seed SecturaFAB from weak aluminum guesses.
+    if key in {"aluminum", "aluminium"} or "aluminum" in label.lower():
+        return "A36"
     if label:
         # SecturaFAB grades are typically bare codes like A36 / A572.
         return label.split()[0]
     return "A36"
+
+
+def _resolve_push_material_thickness(
+    *,
+    takeoff: dict[str, Any] | None,
+    stp_path: Path | None,
+    pdf_path: Path | None,
+) -> tuple[str, str, list[str]]:
+    """
+    Prefer material/thickness read from the job PDF title block / stock line.
+    Returns (material, thickness, notes). Thickness never includes 'inch'.
+    """
+    notes: list[str] = []
+    material = _default_material(takeoff)
+    thickness = _sanitize_thickness_param(_default_thickness_in(takeoff, stp_path))
+    known_from_pdf = False
+
+    if pdf_path and Path(pdf_path).is_file():
+        from quote_core.part_materials import extract_part_material_from_pdf
+
+        try:
+            pm = extract_part_material_from_pdf(pdf_path)
+        except Exception as exc:  # noqa: BLE001 — corrupt/minimal test PDFs
+            notes.append(
+                f"WARNING: Could not read material/thickness from PDF ({exc}) — "
+                f"seeded {material} @ {thickness}; confirm in SecturaFAB"
+            )
+            pm = None
+        if pm:
+            if pm.material:
+                material = pm.material
+                known_from_pdf = True
+                notes.append(
+                    f"Material from drawing: {pm.material} ({pm.source})"
+                )
+            if pm.thickness_in is not None:
+                thickness = _sanitize_thickness_param(pm.thickness_param() or pm.thickness_in)
+                notes.append(
+                    f"Thickness from drawing: {thickness} ({pm.source})"
+                )
+                known_from_pdf = True
+            if pm.material_key in {None, ""} or (
+                pm.source.startswith("no_material") or "unknown" in pm.source.lower()
+            ):
+                notes.append(
+                    "WARNING: Drawing material grade not confidently identified — "
+                    f"seeded {material}; confirm in SecturaFAB"
+                )
+        elif not any("Could not read material" in n for n in notes):
+            notes.append(
+                "WARNING: Could not read material/thickness from PDF title block — "
+                f"seeded {material} @ {thickness}; confirm in SecturaFAB"
+            )
+    elif not known_from_pdf:
+        drivers = (takeoff or {}).get("fitup_drivers") or {}
+        weight = drivers.get("weight_calc") or {}
+        if str(weight.get("material_key") or "").lower() in {"aluminum", "aluminium"}:
+            notes.append(
+                "WARNING: Takeoff guessed Aluminum from drawing boilerplate — "
+                f"using {material} @ {thickness} instead; confirm against the PDF"
+            )
+
+    thickness = _sanitize_thickness_param(thickness)
+    return material, thickness, notes
 
 
 def _default_thickness_in(takeoff: dict[str, Any] | None, stp_path: Path | None) -> str:
@@ -326,12 +441,20 @@ def _resolve_part_key(
     pdf_filename: str | None,
     library: dict[str, Any] | None,
     bom_config: str | None = None,
+    pdf_path: str | Path | None = None,
 ) -> str:
-    """Prefer dashed assembly keys (35145-1) over bare numeric stems (35145)."""
+    """Prefer dashed drawing/assembly keys (1511-5024 / 35145-1) over bare stems."""
     from quote_core.bom_config import normalize_bom_config
 
     library = library or {}
     candidates: list[str] = []
+    # Title-block DRAWING NUMBER is the search key in SecturaFAB — prefer it.
+    if pdf_path:
+        p = Path(pdf_path)
+        if p.is_file():
+            drawn = extract_drawing_number_from_pdf(p)
+            if drawn:
+                candidates.append(drawn)
     for raw in (
         library.get("part_key"),
         Path(library["folder"]).name if library.get("folder") else None,
@@ -343,7 +466,7 @@ def _resolve_part_key(
             continue
         key = extract_part_key(str(raw)) or str(raw).strip()
         if key:
-            candidates.append(key)
+            candidates.append(_pn_quote_number(key) or key)
     if not candidates:
         return ""
     dashed = [c for c in candidates if "-" in c]
@@ -446,7 +569,7 @@ class SecturaFabPushService:
         return None
 
     def allocate_quote_number(self, part_key: str) -> str:
-        """Display QuoteNumber: always 'PN {part}' (no date/job/rev suffix)."""
+        """Display QuoteNumber: bare part key (no PN prefix, no date/job/rev suffix)."""
         return _pn_quote_number(part_key)
 
     def create_quote(
@@ -458,11 +581,11 @@ class SecturaFabPushService:
         quote_request_id: str | None = None,
     ) -> str:
         """
-        Create a new SecturaFAB quote that displays as `PN {part}` only.
+        Create a new SecturaFAB quote that displays as the bare part number only.
 
         SecturaFAB requires uniqueness for create, so we mint a temporary
         RevNumber then immediately clear it — otherwise re-pushes would either
-        reuse the old quote or show PN 21678-1-576 in the UI.
+        reuse the old quote or show a revision suffix in the UI.
         """
         display = _pn_quote_number(quote_number)
         temp_rev = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
@@ -488,7 +611,7 @@ class SecturaFabPushService:
         if not isinstance(quote_id, str) or not quote_id:
             raise SecturaFabApiError(f"Create quote returned unexpected body: {quote_id}")
 
-        # Strip revision so the Quote Number field is exactly PN {part}.
+        # Strip revision so the Quote Number field is exactly the part key.
         strip_payload: dict[str, Any] = {
             "ID": quote_id,
             "QuoteNumber": display,
@@ -569,6 +692,7 @@ class SecturaFabPushService:
         files: list[Path],
         *,
         memo: str = "",
+        organization: str | None = None,
         on_progress: ProgressCallback | None = None,
         sleep_fn: Callable[[float], None] | None = None,
         retry_interval_s: float = CREATEFILE_RETRY_INTERVAL_S,
@@ -580,6 +704,9 @@ class SecturaFabPushService:
         started = time.monotonic()
         attempt = 0
         last_exc: SecturaFabApiError | None = None
+        org_name = (organization or "").strip() or os.getenv(
+            "SECTURAFAB_ORGANIZATION", "Kannon Manufacturing"
+        ).strip() or "Kannon Manufacturing"
 
         while True:
             attempt += 1
@@ -596,10 +723,7 @@ class SecturaFabPushService:
                     "LastName": os.getenv("SECTURAFAB_CONTACT_LAST", "QuoteAutomation").strip()
                     or "QuoteAutomation",
                     "Email": os.getenv("SECTURAFAB_CONTACT_EMAIL", "").strip(),
-                    "Organization": os.getenv(
-                        "SECTURAFAB_ORGANIZATION", "Kannon Manufacturing"
-                    ).strip()
-                    or "Kannon Manufacturing",
+                    "Organization": org_name,
                 }
                 # Drop empty optional query params
                 params = {k: v for k, v in params.items() if v}
@@ -693,7 +817,7 @@ class SecturaFabPushService:
                     "itemID": "00000000-0000-0000-0000-000000000000",
                     "machine": machine,
                     "material": material,
-                    "thickness": thickness,
+                    "thickness": _sanitize_thickness_param(thickness),
                     "thickness_Units": "inch",
                     "qty": int(qty),
                     "units": "inch",
@@ -740,12 +864,16 @@ class SecturaFabPushService:
         notes: list[str] = []
         uploaded: list[str] = []
         createfile_attempts = 0
+        quote_id: str | None = None
+        quote_number: str | None = None
+        quote_request_id: str | None = None
         try:
             part_key = _resolve_part_key(
                 title=title,
                 pdf_filename=pdf_filename,
                 library=(takeoff or {}).get("library") or {},
                 bom_config=(takeoff or {}).get("bom_config"),
+                pdf_path=pdf_path,
             )
             if not part_key:
                 return PushResult(
@@ -787,11 +915,34 @@ class SecturaFabPushService:
                     status="failed",
                 )
 
-            memo = _weld_memo(times, takeoff)
-            material = _default_material(takeoff)
-            thickness = _default_thickness_in(takeoff, stp)
-            machine = _default_machine()
+            job_pdf = Path(pdf_path) if pdf_path else None
+            has_job_pdf = bool(job_pdf and job_pdf.is_file())
+            can_populate_items = bool(cad) or (
+                bool(bom_rows) and bool(library.get("folder"))
+            ) or has_job_pdf
+            if not can_populate_items:
+                msg = (
+                    "Cannot push: no STEP/STP, no library BOM path, and no job PDF "
+                    "on disk to build ItemList."
+                )
+                notes.append(msg)
+                return PushResult(
+                    ok=False,
+                    error=msg,
+                    notes=notes,
+                    status="failed",
+                    last_error=msg,
+                )
 
+            memo = _weld_memo(times, takeoff)
+            material, thickness, mat_notes = _resolve_push_material_thickness(
+                takeoff=takeoff,
+                stp_path=stp,
+                pdf_path=job_pdf,
+            )
+            notes.extend(mat_notes)
+            machine = _default_machine()
+            thickness = _sanitize_thickness_param(thickness)
             if on_progress:
                 on_progress(
                     {
@@ -803,6 +954,11 @@ class SecturaFabPushService:
                 )
 
             quote_request_id = None
+            # TYCROP → Propell; Cummins Clean Fuel → Cummins Clean Fuel Technologies.
+            organization_name = detect_organization(
+                pdf_path=job_pdf,
+                library_folder=library.get("folder"),
+            )
             if drawings:
 
                 def _createfile_progress(info: dict[str, Any]) -> None:
@@ -818,6 +974,7 @@ class SecturaFabPushService:
                 quote_request_id = self.upload_drawings_quote_request(
                     drawings,
                     memo=memo,
+                    organization=organization_name,
                     on_progress=_createfile_progress,
                     sleep_fn=createfile_sleep_fn,
                     retry_interval_s=createfile_retry_interval_s,
@@ -837,8 +994,8 @@ class SecturaFabPushService:
                         }
                     )
 
-            # Always create a brand-new quote. Display number is PN {part} only
-            # (temp RevNumber is cleared so the UI does not show PN 21678-1-576).
+            # Always create a brand-new quote. Display number is bare part key
+            # (no "PN " prefix; temp RevNumber is cleared so the UI stays clean).
             quote_number = self.allocate_quote_number(part_key)
             quote_description = extract_assembly_description(
                 part_key=part_key,
@@ -846,6 +1003,11 @@ class SecturaFabPushService:
                 library_folder=library.get("folder"),
                 related_pdf_names=list(library.get("related_pdfs") or []),
             )
+            if quote_description:
+                desc_note = f"Quote Description from assembly drawing: {quote_description}"
+            else:
+                quote_description = (title or "").strip() or part_key
+                desc_note = f"Quote Description from job title: {quote_description}"
             quote_id = self.create_quote(
                 quote_number=quote_number,
                 description=quote_description or "",
@@ -853,14 +1015,19 @@ class SecturaFabPushService:
                 quote_request_id=quote_request_id,
             )
             notes.append(f"Created SecturaFAB quote {quote_number}")
-            if quote_description:
-                notes.append(f"Quote Description from assembly drawing: {quote_description}")
-            else:
-                notes.append(
-                    "No assembly drawing title found — left Quote Description blank"
+            notes.append(desc_note)
+            # Organization before CAD/Profile — later full-quote POSTs can wipe ops.
+            if organization_name:
+                notes.extend(
+                    apply_quote_organization(
+                        self.client,
+                        quote_id,
+                        organization_name=organization_name,
+                    )
                 )
 
             used_step = False
+            used_pdf_shell = False
             if cad:
                 try:
                     self.quick_add_cad(
@@ -898,34 +1065,47 @@ class SecturaFabPushService:
 
             if used_step:
                 notes.extend(self.apply_item_categories(quote_id))
-                # Root STEP solid must be Assembly (not a plate/part) — lesson 02.
-                notes.extend(
-                    ensure_assembly_root(self.client, quote_id, part_key=part_key)
-                )
-                # Purchased hardware / king pins → Component (no laser Profile).
-                # bom_rows already refreshed above for dash config.
-                purchased = find_purchased_part_keys(
-                    library_folder=library.get("folder"),
-                    related_pdf_names=list(library.get("related_pdfs") or []),
-                    bom_rows=bom_rows,
-                )
-                notes.extend(
-                    ensure_purchased_components(
-                        self.client, quote_id, purchased_keys=purchased
+                step_detail = self.client.get_json(f"v1/quote/{quote_id}")
+                step_items = list(step_detail.get("ItemList") or [])
+                use_assembly = needs_assembly_structure(step_items, bom_rows)
+                if use_assembly:
+                    # Multi-body / multi-BOM weldment — lesson 02 Assembly root.
+                    notes.extend(
+                        ensure_assembly_root(
+                            self.client, quote_id, part_key=part_key
+                        )
                     )
-                )
-                # Component conversion can drop links — re-attach children under assembly.
-                notes.extend(
-                    relink_assembly_children(self.client, quote_id, part_key=part_key)
-                )
-                # Do NOT call UpdateItem_Part on STEP assemblies.
-                # On multi-body welds (e.g. 80341687) its delayed CAD rebuild can wipe
-                # the entire ItemList ~1–2 minutes later. Seed material/thickness comes
-                # from quickAddCAD; BOM qty is applied below without UpdateItem_Part.
-                notes.append(
-                    f"Skipped UpdateItem_Part on STEP assembly (seed {material} @ "
-                    f"{thickness}\") — avoids delayed CAD wipe of ItemList"
-                )
+                    purchased = find_purchased_part_keys(
+                        library_folder=library.get("folder"),
+                        related_pdf_names=list(library.get("related_pdfs") or []),
+                        bom_rows=bom_rows,
+                    )
+                    notes.extend(
+                        ensure_purchased_components(
+                            self.client, quote_id, purchased_keys=purchased
+                        )
+                    )
+                    # Component conversion can drop links — re-attach under assembly.
+                    notes.extend(
+                        relink_assembly_children(
+                            self.client, quote_id, part_key=part_key
+                        )
+                    )
+                    # Do NOT call UpdateItem_Part on STEP assemblies.
+                    # On multi-body welds (e.g. 80341687) its delayed CAD rebuild can wipe
+                    # the entire ItemList ~1–2 minutes later.
+                    notes.append(
+                        f"Skipped UpdateItem_Part on STEP assembly (seed {material} @ "
+                        f"{thickness}\") — avoids delayed CAD wipe of ItemList"
+                    )
+                else:
+                    notes.append(
+                        "Single-solid STEP — left as Part (no Assembly conversion)"
+                    )
+                    notes.append(
+                        f"Skipped UpdateItem_Part on single-part STEP (seed {material} @ "
+                        f"{thickness}\") — Profile uses quickAddCAD cut time"
+                    )
                 notes.extend(ensure_imperial_item_units(self.client, quote_id))
                 notes.extend(
                     apply_bom_quantities(
@@ -978,10 +1158,47 @@ class SecturaFabPushService:
                         extra_pdfs=[Path(pdf_path)] if pdf_path else None,
                     )
                 )
-            else:
+            elif has_job_pdf:
+                from .pdf_assembly_ops import build_single_pdf_quote
+
+                used_pdf_shell = True
                 notes.append(
-                    "No STEP/STP on job — quote created with drawings only "
-                    "(no BOM rows / library folder for PDF assembly)"
+                    "Building single-PDF quote (no STEP / no library BOM) from "
+                    f"{job_pdf.name}"
+                )
+                notes.extend(
+                    build_single_pdf_quote(
+                        self.client,
+                        quote_id=quote_id,
+                        part_key=part_key,
+                        pdf_path=job_pdf,
+                        material=material,
+                        thickness=thickness,
+                        machine=machine,
+                        qty=qty,
+                        description=quote_description or title,
+                    )
+                )
+                uploaded.append(job_pdf.name)
+            else:
+                msg = (
+                    "No STEP/STP, no BOM/library PDF assembly, and no job PDF — "
+                    "refusing empty drawings-only quote"
+                )
+                notes.append(msg)
+                return PushResult(
+                    ok=False,
+                    error=msg,
+                    notes=notes,
+                    quote_id=quote_id,
+                    quote_number=quote_number,
+                    quote_request_id=quote_request_id,
+                    created_new_quote=True,
+                    uploaded_files=uploaded,
+                    item_count=0,
+                    status="failed",
+                    last_error=msg,
+                    attempts=createfile_attempts,
                 )
 
             # Lesson 02: Weld is not auto-added by STEP — push Cursor weld + fit-up minutes.
@@ -996,18 +1213,42 @@ class SecturaFabPushService:
 
             # Late CAD recalcs can wipe Profile/Weld/Qty after first attach — verify
             # and re-apply until stable (no more UpdateItem_Part here).
-            if used_step or (bom_rows and library.get("folder")):
+            if used_step or used_pdf_shell or (bom_rows and library.get("folder")):
+                try:
+                    notes.extend(
+                        finalize_quote_ops(
+                            self.client,
+                            quote_id,
+                            material=material,
+                            thickness=thickness,
+                            times=times,
+                            part_key=part_key,
+                            bom_rows=bom_rows,
+                        )
+                    )
+                except SecturaFabApiError as exc:
+                    # Cloudflare/origin blips after a populated quote should not
+                    # discard a successful import — retry final read below.
+                    if exc.status_code in {502, 503, 504}:
+                        notes.append(
+                            f"WARNING: Finalize hit transient {exc.status_code}; "
+                            "re-checking quote ItemList"
+                        )
+                    else:
+                        raise
+
+            # Profile last: finalize / settle POSTs have wiped ops more than once.
+            if used_pdf_shell or used_step or (bom_rows and library.get("folder")):
                 notes.extend(
-                    finalize_quote_ops(
+                    ensure_laser_profile_ops(
                         self.client,
                         quote_id,
                         material=material,
                         thickness=thickness,
-                        times=times,
-                        part_key=part_key,
-                        bom_rows=bom_rows,
+                        verify=True,
                     )
                 )
+
             detail = self.client.get_json(f"v1/quote/{quote_id}")
             item_list = list(detail.get("ItemList") or [])
             item_count = detail.get("ItemCount")
@@ -1028,6 +1269,33 @@ class SecturaFabPushService:
 
             ready = not any(n.startswith("WARNING:") for n in notes)
 
+            final_count = (
+                int(item_count)
+                if item_count is not None
+                else (len(item_list) if item_list else 0)
+            )
+            if final_count <= 0:
+                msg = (
+                    "SecturaFAB quote has 0 line items after import — "
+                    "push marked failed (empty ItemList)"
+                )
+                notes.append(msg)
+                return PushResult(
+                    ok=False,
+                    error=msg,
+                    notes=notes,
+                    quote_id=quote_id,
+                    quote_number=stored_number,
+                    quote_request_id=quote_request_id,
+                    created_new_quote=True,
+                    uploaded_files=uploaded,
+                    item_count=0,
+                    ready=False,
+                    status="failed",
+                    last_error=msg,
+                    attempts=createfile_attempts,
+                )
+
             return PushResult(
                 ok=True,
                 quote_id=quote_id,
@@ -1035,7 +1303,7 @@ class SecturaFabPushService:
                 quote_request_id=quote_request_id,
                 created_new_quote=True,
                 uploaded_files=uploaded,
-                item_count=int(item_count) if item_count is not None else None,
+                item_count=final_count,
                 notes=notes,
                 ready=ready,
                 status="complete",
@@ -1052,6 +1320,8 @@ class SecturaFabPushService:
                         "last_error": err,
                         "notes": list(notes),
                         "attempts": createfile_attempts,
+                        "quote_id": quote_id,
+                        "quote_number": quote_number,
                     }
                 )
             return PushResult(
@@ -1059,6 +1329,10 @@ class SecturaFabPushService:
                 error=err,
                 notes=notes,
                 uploaded_files=uploaded,
+                quote_id=quote_id,
+                quote_number=quote_number,
+                quote_request_id=quote_request_id,
+                created_new_quote=bool(quote_id),
                 status="failed",
                 attempts=createfile_attempts,
                 last_error=err,

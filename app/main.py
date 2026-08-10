@@ -15,9 +15,10 @@ from pydantic import BaseModel, Field
 from quote_core.config import load_shop_rates
 
 from .auth import login, require_auth
+from .batch import pair_upload_files, paired_part_summary
 from .db import Job, SessionLocal, init_db
 from .paths import FRONTEND_DIST, RATES_PATH, UPLOAD_DIR, ensure_data_dirs
-from .services import process_job, recompute_from_items
+from .services import process_job, push_jobs_secturafab_batch, recompute_from_items
 
 app = FastAPI(title="Kannon Quote App", version="0.1.0")
 app.add_middleware(
@@ -111,13 +112,61 @@ def list_jobs(_: str = Depends(require_auth)) -> list[dict[str, Any]]:
         db.close()
 
 
-@app.get("/api/jobs/{job_id}")
-def get_job(job_id: int, _: str = Depends(require_auth)) -> dict[str, Any]:
+class BatchPushBody(BaseModel):
+    job_ids: list[int] = Field(default_factory=list)
+
+
+def _persist_new_job(
+    *,
+    pdf_filename: str,
+    pdf_bytes: bytes,
+    stp_filename: str | None = None,
+    stp_bytes: bytes | None = None,
+    title: str = "",
+    bom_config: str = "",
+) -> dict[str, Any]:
+    """Create a job row, write files, return to_dict (caller starts process_job)."""
+    from quote_core.bom_config import resolve_bom_config
+
+    ensure_data_dirs()
     db = SessionLocal()
     try:
-        job = db.get(Job, job_id)
-        if not job:
-            raise HTTPException(404, "Job not found")
+        rates = load_shop_rates(RATES_PATH)
+        job_title = (title or "").strip() or Path(pdf_filename).stem
+        resolved_config = resolve_bom_config(
+            explicit=bom_config,
+            title=job_title,
+            pdf_filename=pdf_filename,
+        )
+        job = Job(
+            title=job_title,
+            status="uploaded",
+            pdf_filename=pdf_filename,
+            stp_filename=stp_filename,
+            bom_config=resolved_config,
+            efficiency_pct=rates.default_efficiency_pct,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        job_dir = UPLOAD_DIR / str(job.id)
+        job_dir.mkdir(parents=True, exist_ok=True)
+        pdf_dest = job_dir / pdf_filename
+        pdf_dest.write_bytes(pdf_bytes)
+        job.pdf_path = str(pdf_dest)
+
+        if stp_filename and stp_bytes is not None:
+            suffix = Path(stp_filename).suffix.lower()
+            if suffix not in {".stp", ".step"}:
+                raise HTTPException(400, f"Invalid STP for {pdf_filename}")
+            stp_dest = job_dir / stp_filename
+            stp_dest.write_bytes(stp_bytes)
+            job.stp_path = str(stp_dest)
+            job.stp_filename = stp_filename
+
+        db.commit()
+        db.refresh(job)
         return job.to_dict()
     finally:
         db.close()
@@ -134,55 +183,164 @@ async def create_job(
     if not pdf.filename or not pdf.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "PDF file is required")
 
-    from quote_core.bom_config import resolve_bom_config
+    pdf_bytes = await pdf.read()
+    stp_name = None
+    stp_bytes = None
+    if stp and stp.filename:
+        stp_name = stp.filename
+        stp_bytes = await stp.read()
 
-    ensure_data_dirs()
+    payload = _persist_new_job(
+        pdf_filename=pdf.filename,
+        pdf_bytes=pdf_bytes,
+        stp_filename=stp_name,
+        stp_bytes=stp_bytes,
+        title=title,
+        bom_config=bom_config,
+    )
+    threading.Thread(target=process_job, args=(payload["id"],), daemon=True).start()
+    return payload
+
+
+@app.post("/api/jobs/batch")
+async def create_jobs_batch(
+    files: list[UploadFile] = File(...),
+    _: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """
+    Create one job per PDF stem. Pair optional STP/STEP by matching filename stem.
+    Orphan STPs are skipped. Starts takeoff for each created job.
+    """
+    if not files:
+        raise HTTPException(400, "No files uploaded")
+
+    raw: list[tuple[str, bytes]] = []
+    for f in files:
+        name = f.filename or ""
+        data = await f.read()
+        raw.append((name, data))
+
+    paired, skipped = pair_upload_files(raw)
+    if not paired:
+        raise HTTPException(
+            400,
+            "No PDF files found to create jobs. "
+            + ("; ".join(skipped) if skipped else ""),
+        )
+
+    created: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for part in paired:
+        try:
+            payload = _persist_new_job(
+                pdf_filename=part.pdf_name,
+                pdf_bytes=part.pdf_bytes,
+                stp_filename=part.stp_name,
+                stp_bytes=part.stp_bytes,
+            )
+            threading.Thread(
+                target=process_job, args=(payload["id"],), daemon=True
+            ).start()
+            row = dict(payload)
+            row["pair"] = paired_part_summary(part)
+            created.append(row)
+        except HTTPException as exc:
+            errors.append(f"{part.pdf_name}: {exc.detail}")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{part.pdf_name}: {exc}")
+
+    return {
+        "jobs": created,
+        "created_count": len(created),
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
+@app.post("/api/jobs/batch-push")
+def batch_push_secturafab(
+    body: BatchPushBody, _: str = Depends(require_auth)
+) -> dict[str, Any]:
+    """
+    Queue sequential SecturaFAB pushes for ready jobs.
+    Returns immediately; poll each job's takeoff.secturafab.status.
+    """
+    from .push_readiness import job_push_readiness
+    from .services import _PUSH_IN_FLIGHT
+
+    job_ids = [int(x) for x in (body.job_ids or []) if int(x) > 0]
+    if not job_ids:
+        raise HTTPException(400, "job_ids required")
+
+    queued: list[int] = []
+    rejected: list[dict[str, Any]] = []
+
     db = SessionLocal()
     try:
-        rates = load_shop_rates(RATES_PATH)
-        job_title = title.strip() or Path(pdf.filename).stem
-        resolved_config = resolve_bom_config(
-            explicit=bom_config,
-            title=job_title,
-            pdf_filename=pdf.filename,
-        )
-        job = Job(
-            title=job_title,
-            status="uploaded",
-            pdf_filename=pdf.filename,
-            stp_filename=stp.filename if stp and stp.filename else None,
-            bom_config=resolved_config,
-            efficiency_pct=rates.default_efficiency_pct,
-        )
-        db.add(job)
+        for job_id in job_ids:
+            job = db.get(Job, job_id)
+            if not job:
+                rejected.append({"job_id": job_id, "reason": "not found"})
+                continue
+            if job.status in {"uploaded", "processing"}:
+                rejected.append(
+                    {"job_id": job_id, "reason": "takeoff still running"}
+                )
+                continue
+            readiness = job_push_readiness(job)
+            if not readiness["ready"]:
+                rejected.append(
+                    {
+                        "job_id": job_id,
+                        "reason": readiness["reason"] or "not ready to push",
+                    }
+                )
+                continue
+            takeoff = job.takeoff()
+            existing = takeoff.get("secturafab") or {}
+            if existing.get("status") in _PUSH_IN_FLIGHT:
+                rejected.append(
+                    {"job_id": job_id, "reason": "push already in progress"}
+                )
+                continue
+            takeoff["secturafab"] = {
+                "ok": False,
+                "status": "pushing",
+                "attempts": 0,
+                "notes": ["SecturaFAB batch push queued"],
+                "error": None,
+                "last_error": None,
+                "next_retry_at": None,
+            }
+            job.set_takeoff(takeoff)
+            queued.append(job_id)
         db.commit()
-        db.refresh(job)
-
-        job_dir = UPLOAD_DIR / str(job.id)
-        job_dir.mkdir(parents=True, exist_ok=True)
-        pdf_dest = job_dir / pdf.filename
-        with pdf_dest.open("wb") as f:
-            shutil.copyfileobj(pdf.file, f)
-        job.pdf_path = str(pdf_dest)
-
-        if stp and stp.filename:
-            suffix = Path(stp.filename).suffix.lower()
-            if suffix not in {".stp", ".step"}:
-                raise HTTPException(400, "STP/STEP file required for optional 3D upload")
-            stp_dest = job_dir / stp.filename
-            with stp_dest.open("wb") as f:
-                shutil.copyfileobj(stp.file, f)
-            job.stp_path = str(stp_dest)
-
-        db.commit()
-        db.refresh(job)
-        job_id = job.id
-        payload = job.to_dict()
     finally:
         db.close()
 
-    threading.Thread(target=process_job, args=(job_id,), daemon=True).start()
-    return payload
+    if queued:
+        threading.Thread(
+            target=push_jobs_secturafab_batch, args=(queued,), daemon=True
+        ).start()
+
+    return {
+        "queued": queued,
+        "queued_count": len(queued),
+        "rejected": rejected,
+    }
+
+
+# Parameterized job routes after static /batch paths so "batch" is never treated as job_id.
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: int, _: str = Depends(require_auth)) -> dict[str, Any]:
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        return job.to_dict()
+    finally:
+        db.close()
 
 
 @app.patch("/api/jobs/{job_id}")
@@ -305,6 +463,7 @@ def push_job_to_secturafab(job_id: int, _: str = Depends(require_auth)) -> dict[
     Returns immediately with ``takeoff.secturafab.status`` of ``pushing``;
     poll ``GET /api/jobs/{id}`` until status is ``complete`` or ``failed``.
     """
+    from .push_readiness import job_push_readiness
     from .services import _PUSH_IN_FLIGHT, push_job_secturafab
 
     db = SessionLocal()
@@ -314,6 +473,14 @@ def push_job_to_secturafab(job_id: int, _: str = Depends(require_auth)) -> dict[
             raise HTTPException(404, "Job not found")
         if job.status in {"uploaded", "processing"}:
             raise HTTPException(400, "Wait for takeoff to finish before pushing")
+
+        readiness = job_push_readiness(job)
+        if not readiness["ready"]:
+            raise HTTPException(
+                400,
+                readiness["reason"]
+                or "needs STEP or library match before SecturaFAB push",
+            )
 
         takeoff = job.takeoff()
         existing = takeoff.get("secturafab") or {}

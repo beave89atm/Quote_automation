@@ -10,9 +10,14 @@ from typing import Any
 
 # Job / assembly numbers: 80341805 or dashed 35145-1
 _PART_TOKEN_RE = re.compile(r"\d{5,}(?:-\d+)?")
+# Vendor drawing numbers: 1511-5024, 1510-9422 (4-digit left side)
+_VENDOR_DASH_PN_RE = re.compile(r"\b(\d{4}-\d{3,5})\b")
 _NOISE_RE = re.compile(
     r"(?i)[\s_-]*(fab\s*packet|for\s*quoting|rev\s*[a-z0-9]+|drawing|dwg|all\s*drawings.*)$"
 )
+# Filename revision suffixes: _R00, -R01, R00 (not prose "rev A")
+_REV_SUFFIX_RE = re.compile(r"(?i)[\s_-]*R\d{2}$")
+_PN_PREFIX_RE = re.compile(r"(?i)^PN[\s_-]*")
 
 
 @dataclass
@@ -42,24 +47,33 @@ _ALPHA_DASH_PN_RE = re.compile(r"\b([A-Z]{1,3}\d{2}-\d{3,5})\b", re.IGNORECASE)
 
 
 def extract_part_key(*names: str | None) -> str | None:
-    """Pull a part/assembly number from filenames or titles."""
+    """Pull a part/assembly number from filenames or titles.
+
+    Keeps vendor dashes (``1511-5024``) and strips filename revision suffixes
+    (``_R00``) so Quote Number matches how parts are searched in SecturaFAB.
+    """
     candidates: list[str] = []
     for raw in names:
         if not raw:
             continue
         stem = Path(str(raw)).stem
+        stem = _PN_PREFIX_RE.sub("", stem)
         stem = _NOISE_RE.sub("", stem).strip(" -_")
+        stem = _REV_SUFFIX_RE.sub("", stem).strip(" -_")
+        for m in _VENDOR_DASH_PN_RE.finditer(stem):
+            candidates.append(m.group(1))
         for m in _PART_TOKEN_RE.finditer(stem):
             candidates.append(m.group(0))
         for m in _ALPHA_DASH_PN_RE.finditer(stem.upper()):
             candidates.append(m.group(1).upper())
-        # Also accept bare alphanumeric stems like A078X022
+        # Also accept bare alphanumeric stems like A078X022 (never preferred over dashed).
         compact = re.sub(r"[^A-Za-z0-9]", "", stem)
+        compact = _REV_SUFFIX_RE.sub("", compact)
         if len(compact) >= 5 and any(ch.isdigit() for ch in compact):
             candidates.append(compact)
     if not candidates:
         return None
-    # Prefer dashed keys (35145-1 / ME04-3453) over bare (35145), then longer numeric.
+    # Prefer dashed keys (1511-5024 / 35145-1 / ME04-3453) over bare (35145), then longer numeric.
     dashed = [c for c in candidates if "-" in c]
     if dashed:
         return max(dashed, key=len)
@@ -146,13 +160,58 @@ def _folder_score(folder: Path, part_key: str) -> int:
 
 
 def _stp_name_matches(path: Path, part_key: str) -> bool:
+    """
+    True when an STP/STEP filename clearly refers to ``part_key``.
+
+    Accepts exact names (``MC31-1699.stp``) and Cummins-style prefixes
+    (``SM - 50 DGEMC31-1699.stp``). Does **not** match sibling PNs that only
+    share a prefix (``MC31-1704`` for key ``MC31-1699``), and never falls back
+    to an unrelated STP in the same customer folder.
+    """
+    key = (part_key or "").strip()
+    if not key:
+        return False
     stem = path.stem
-    if stem == part_key or stem.lower() == part_key.lower():
+    # ``foo.ipt.stp`` → stem ``foo.ipt``; strip a trailing CAD suffix for matching.
+    if stem.lower().endswith((".ipt", ".iam", ".idw")):
+        stem = Path(stem).stem
+    stem_l = stem.lower()
+    key_l = key.lower()
+
+    if stem_l == key_l:
         return True
-    if stem.lower().startswith(part_key.lower()):
+
+    # Stem starts with key, then end or a non-digit boundary.
+    if stem_l.startswith(key_l):
+        rest = stem_l[len(key_l) :]
+        if not rest or rest[0] in "-_. " or not rest[0].isdigit():
+            return True
+
+    # Contiguous dashed token: "...MC31-1699" / "...MC31-1699R" (not mid-digit).
+    if re.search(rf"(?<![a-z0-9]){re.escape(key_l)}(?![0-9])", stem_l):
         return True
-    base = part_key.split("-")[0]
-    if base and (stem == base or stem.lower().startswith(base.lower())):
+
+    # Compact form: ``DGEMC311699`` contains ``MC311699`` (letters before OK).
+    stem_c = re.sub(r"[^a-z0-9]", "", stem_l)
+    key_c = re.sub(r"[^a-z0-9]", "", key_l)
+    if key_c and len(key_c) >= 5:
+        idx = 0
+        while True:
+            idx = stem_c.find(key_c, idx)
+            if idx < 0:
+                break
+            after = idx + len(key_c)
+            if after < len(stem_c) and stem_c[after].isdigit():
+                idx += 1
+                continue
+            if idx > 0 and stem_c[idx - 1].isdigit():
+                idx += 1
+                continue
+            return True
+
+    # Bare assembly number only when the stem is exactly that base (35145.stp).
+    base = key.split("-")[0]
+    if base and base.lower() != key_l and stem_l == base.lower():
         return True
     return False
 
@@ -169,14 +228,23 @@ def _list_stp_files(folder: Path) -> list[Path]:
 
 
 def _pick_stp(folder: Path, part_key: str) -> Path | None:
+    """Return an STP in ``folder`` only when its name matches ``part_key``."""
     steps = _list_stp_files(folder)
     if not steps:
         return None
     exact = [p for p in steps if _stp_name_matches(p, part_key)]
-    pool = exact or steps
-    # Prefer .stp over .step when tied; then shorter name.
-    pool.sort(key=lambda p: (0 if p.suffix.lower() == ".stp" else 1, len(p.name), p.name.lower()))
-    return pool[0]
+    if not exact:
+        return None
+    # Prefer .stp over .step when tied; then exact stem; then shorter name.
+    exact.sort(
+        key=lambda p: (
+            0 if p.suffix.lower() == ".stp" else 1,
+            0 if p.stem.lower() == part_key.lower() else 1,
+            len(p.name),
+            p.name.lower(),
+        )
+    )
+    return exact[0]
 
 
 def _find_stp_near_folder(folder: Path, part_key: str) -> Path | None:

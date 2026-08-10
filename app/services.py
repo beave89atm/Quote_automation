@@ -205,7 +205,7 @@ def _merge_secturafab_progress(job_id: int, info: dict[str, Any]) -> None:
 
 def push_job_secturafab(job_id: int) -> None:
     """Background SecturaFAB push (CreateFile may retry for hours)."""
-    from secturafab.push import SecturaFabPushService
+    from secturafab.push import SecturaFabPushService, PushResult
 
     db = SessionLocal()
     try:
@@ -224,17 +224,36 @@ def push_job_secturafab(job_id: int) -> None:
     def on_progress(info: dict[str, Any]) -> None:
         _merge_secturafab_progress(job_id, info)
 
-    service = SecturaFabPushService()
-    result = service.push_job(
-        title=title,
-        pdf_filename=pdf_filename,
-        pdf_path=pdf_path,
-        stp_path=stp_path,
-        takeoff=takeoff,
-        times=times,
-        job_id=job_id,
-        on_progress=on_progress,
-    )
+    try:
+        service = SecturaFabPushService()
+        result = service.push_job(
+            title=title,
+            pdf_filename=pdf_filename,
+            pdf_path=pdf_path,
+            stp_path=stp_path,
+            takeoff=takeoff,
+            times=times,
+            job_id=job_id,
+            on_progress=on_progress,
+        )
+    except Exception as exc:  # noqa: BLE001 — must never leave status stuck on pushing
+        err = f"{type(exc).__name__}: {exc}"
+        result = PushResult(
+            ok=False,
+            error=err,
+            status="failed",
+            last_error=err,
+            notes=[f"Background push crashed: {err}"],
+        )
+        on_progress(
+            {
+                "ok": False,
+                "status": "failed",
+                "error": err,
+                "last_error": err,
+                "notes": [f"Background push crashed: {err}"],
+            }
+        )
 
     db = SessionLocal()
     try:
@@ -244,8 +263,8 @@ def push_job_secturafab(job_id: int) -> None:
         takeoff = job.takeoff()
         takeoff["secturafab"] = result.to_dict()
         job.set_takeoff(takeoff)
+        flags = job.flags()
         if result.ok:
-            flags = job.flags()
             flag = (
                 f"Pushed to SecturaFAB quote {result.quote_number}"
                 + (f" ({result.item_count} items)" if result.item_count is not None else "")
@@ -255,10 +274,16 @@ def push_job_secturafab(job_id: int) -> None:
             for note in result.notes or []:
                 if note.startswith("WARNING:") and note not in flags:
                     flags.append(note)
-            if result.item_count == 0:
+            job.set_flags(flags)
+        else:
+            err = result.error or result.last_error or "SecturaFAB push failed"
+            fail_flag = f"SecturaFAB push failed: {err}"
+            if fail_flag not in flags:
+                flags.append(fail_flag)
+            if result.item_count == 0 and result.quote_number:
                 warn = (
-                    "WARNING: SecturaFAB quote has 0 line items — PDF assembly "
-                    "or STEP import did not create components"
+                    f"WARNING: Empty SecturaFAB quote {result.quote_number} "
+                    "(0 items) — do not use; attach STEP/library and re-push"
                 )
                 if warn not in flags:
                     flags.append(warn)
@@ -266,3 +291,12 @@ def push_job_secturafab(job_id: int) -> None:
         db.commit()
     finally:
         db.close()
+
+
+def push_jobs_secturafab_batch(job_ids: list[int]) -> None:
+    """Push jobs one after another to avoid SecturaFAB API overload."""
+    for job_id in job_ids:
+        try:
+            push_job_secturafab(int(job_id))
+        except Exception:  # noqa: BLE001 — never abort the whole batch
+            continue

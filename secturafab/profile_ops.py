@@ -274,6 +274,11 @@ def parse_datapart(raw: Any) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _is_laser_machine(machine: str | None) -> bool:
+    m = str(machine or "").strip().lower()
+    return not m or m == "laser" or m.startswith("laser")
+
+
 def _is_laser_plate(item: dict[str, Any]) -> bool:
     pt = item.get("ProductType")
     if pt in (300, "300", "assembly") or item.get("IsAssembly"):
@@ -286,7 +291,8 @@ def _is_laser_plate(item: dict[str, Any]) -> bool:
     if item.get("IsLinear") or cat == "linear":
         return False
     machine = str(item.get("Machine") or "").strip().lower()
-    if machine and machine != "laser":
+    # "Laser - Bay1" must count as laser (exact == "laser" was a recurring miss).
+    if machine and not _is_laser_machine(machine):
         return False
     # Skip obvious hardware-only lines with no NestedArea / DataPart.
     ops = item.get("OperationCostList") or []
@@ -296,9 +302,12 @@ def _is_laser_plate(item: dict[str, Any]) -> bool:
     if data.get("CuttingLength") or data.get("Time") or data.get("PartLength"):
         return True
     # Plate flag from categorization
-    if item.get("IsPlate") and (machine == "laser" or not machine):
+    if item.get("IsPlate") and _is_laser_machine(machine):
         return True
-    return bool(machine == "laser")
+    # Single-PDF quickAddCAD often sets IsPart=True, IsPlate=False, Machine=Laser.
+    if item.get("IsPart") and _is_laser_machine(machine):
+        return True
+    return _is_laser_machine(machine) and bool(machine)
 
 
 def _build_profile_ops(item_id: str, cut_time_hours: float) -> list[dict[str, Any]]:
@@ -443,6 +452,8 @@ def apply_part_materials(
         pm = lookup_part_material(mat_map, str(it.get("Description") or ""))
         use_mat = pm.material if pm else material
         use_thk = (pm.thickness_param() if pm else None) or thickness
+        use_thk = re.sub(r"(?i)\s*(inches|inch|in)\s*$", "", str(use_thk).strip())
+        use_thk = use_thk.replace('"', "").replace("″", "").strip() or str(thickness)
         token = _desc_token(str(it.get("Description") or ""))
         bom_q = qty_by_pn.get(normalize_part_key(token), 1)
         params: dict[str, Any] = {
@@ -510,23 +521,13 @@ def count_profile_items(detail: dict[str, Any]) -> int:
     return n
 
 
-def ensure_laser_profile_ops(
+def _attach_laser_profile_ops_once(
     client: SecturaFabClient,
     quote_id: str,
     *,
     material: str,
     thickness: str,
-    part_materials: dict[str, Any] | None = None,
 ) -> list[str]:
-    """
-    Ensure laser plate items have Profile primary ops and PrimaryTime.
-
-    Does **not** call UpdateItem_Part (that wipes ops). Apply materials via
-    ``apply_part_materials`` + ``wait_for_quote_settle`` first.
-
-    ``part_materials`` is accepted for API compatibility but ignored here.
-    """
-    del part_materials  # materials must be applied earlier — see apply_part_materials
     notes: list[str] = []
     detail = client.get_json(f"v1/quote/{quote_id}")
     targets = [it for it in (detail.get("ItemList") or []) if _is_laser_plate(it)]
@@ -566,6 +567,9 @@ def ensure_laser_profile_ops(
         it["OperationCostList"] = new_ops
         it["PrimaryTime"] = primary_sum
         it["UnitPrimaryTime"] = primary_sum
+        badge = str(it.get("BadgeString") or "")
+        if "Profile" not in badge:
+            it["BadgeString"] = ("Profile " + badge).strip()
         changed = True
         patched += 1
 
@@ -576,9 +580,79 @@ def ensure_laser_profile_ops(
         else:
             notes.append(
                 f"Attached Profile primary ops on {patched} laser plate item(s) "
-                f"(default material {material} @ {thickness}\")"
+                f"(default material {material} @ {thickness})"
             )
     elif patched == 0:
         notes.append("Laser plate items already had Profile ops")
 
+    return notes
+
+
+def ensure_laser_profile_ops(
+    client: SecturaFabClient,
+    quote_id: str,
+    *,
+    material: str,
+    thickness: str,
+    part_materials: dict[str, Any] | None = None,
+    verify: bool = True,
+) -> list[str]:
+    """
+    Ensure laser plate items have Profile primary ops and PrimaryTime.
+
+    Does **not** call UpdateItem_Part (that wipes ops). Apply materials via
+    ``apply_part_materials`` + ``wait_for_quote_settle`` first.
+
+    After save, optionally re-reads the quote and retries once if Profile is missing
+    (stale full-quote POSTs have wiped ops more than once).
+
+    ``part_materials`` is accepted for API compatibility but ignored here.
+    """
+    del part_materials  # materials must be applied earlier — see apply_part_materials
+    notes: list[str] = []
+    notes.extend(
+        _attach_laser_profile_ops_once(
+            client, quote_id, material=material, thickness=thickness
+        )
+    )
+    if not verify:
+        return notes
+
+    check = client.get_json(f"v1/quote/{quote_id}")
+    missing = [
+        it
+        for it in (check.get("ItemList") or [])
+        if _is_laser_plate(it)
+        and not any(
+            o.get("OperationName") == "Profile"
+            for o in (it.get("OperationCostList") or [])
+        )
+    ]
+    if not missing:
+        return notes
+
+    notes.append(
+        f"WARNING: Profile missing on {len(missing)} laser item(s) after save — retrying"
+    )
+    notes.extend(
+        _attach_laser_profile_ops_once(
+            client, quote_id, material=material, thickness=thickness
+        )
+    )
+    check2 = client.get_json(f"v1/quote/{quote_id}")
+    still = sum(
+        1
+        for it in (check2.get("ItemList") or [])
+        if _is_laser_plate(it)
+        and not any(
+            o.get("OperationName") == "Profile"
+            for o in (it.get("OperationCostList") or [])
+        )
+    )
+    if still:
+        notes.append(
+            f"WARNING: Profile still missing on {still} laser item(s) after retry"
+        )
+    else:
+        notes.append("Profile verified on laser plate item(s) after retry")
     return notes

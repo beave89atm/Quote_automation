@@ -19,6 +19,12 @@ Do **not** delete or edit SecturaFAB quotes unless the user explicitly requests 
 - **Create** new quotes as part of an explicit push or probe the user requested
 - Fix code in this repo so *future* pushes behave correctly
 
+## Push hygiene (recurring bugs)
+
+- Do **not** full-quote `POST` / relink **after** Profile (or Weld) is attached without preserving `OperationCostList` — stale saves wipe ops.
+- Attach Profile **last** and verify it stuck. Treat `Machine` like `Laser - Bay1` as laser.
+- Single-component PDF quotes: one **part** line only (no empty Assembly parent).
+
 ## Examples
 
 - ❌ User: “Profile ops are missing” → agent deletes older `PN 73476004` duplicates to “clean up”
