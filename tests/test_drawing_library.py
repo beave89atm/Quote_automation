@@ -21,6 +21,16 @@ def test_extract_part_key_keeps_vendor_dash_and_strips_rev():
     assert extract_part_key("15115024R00.pdf") == "15115024"
 
 
+def test_extract_part_key_strips_idw_and_keeps_hand_suffix():
+    """Inventor ``.idw.pdf`` exports must not become MD231703LRidw."""
+    assert extract_part_key("MD23-1703LR.idw.pdf") == "MD23-1703LR"
+    assert extract_part_key("MD23-1709LR.idw.pdf") == "MD23-1709LR"
+    assert extract_part_key("MC31-1699.idw.pdf") == "MC31-1699"
+    assert extract_part_key("ME04-2771LR-1.idw.pdf") == "ME04-2771LR-1"
+    assert extract_part_key("MD32-1606.pdf") == "MD32-1606"
+    assert extract_part_key("MD04-2300.ipt.stp") == "MD04-2300"
+
+
 def test_stp_name_matches_cummins_prefixed_and_rejects_siblings(tmp_path: Path):
     from quote_core.drawing_library import _pick_stp, _stp_name_matches
 
