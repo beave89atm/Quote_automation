@@ -14,6 +14,46 @@ from .weld_ops import _desc_token, pick_weld_target_item
 _ASSEMBLY_TYPE = 300
 
 
+def preserve_operation_cost_lists(
+    client: SecturaFabClient,
+    quote_id: str,
+    detail: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Copy current server OperationCostList onto an outbound quote payload by item ID.
+
+    Full-quote POSTs with a stale ItemList (missing Profile/Weld) have wiped ops
+    more than once. Call this immediately before ``POST v1/quote`` when the
+    payload should not intentionally replace ops.
+    """
+    try:
+        fresh = client.get_json(f"v1/quote/{quote_id}")
+    except Exception:  # noqa: BLE001
+        return detail
+    by_id = {
+        str(it.get("ID") or ""): it
+        for it in (fresh.get("ItemList") or [])
+        if it.get("ID")
+    }
+    for it in detail.get("ItemList") or []:
+        iid = str(it.get("ID") or "")
+        src = by_id.get(iid)
+        if not src:
+            continue
+        ops = src.get("OperationCostList")
+        if not ops:
+            continue
+        it["OperationCostList"] = list(ops)
+        if src.get("PrimaryTime") is not None:
+            it["PrimaryTime"] = src.get("PrimaryTime")
+        if src.get("UnitPrimaryTime") is not None:
+            it["UnitPrimaryTime"] = src.get("UnitPrimaryTime")
+        badge = src.get("BadgeString")
+        if badge:
+            it["BadgeString"] = badge
+    return detail
+
+
 def quote_online_update(
     client: SecturaFabClient,
     quote_id: str,
