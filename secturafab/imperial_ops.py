@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 from .client import SecturaFabClient
+from .quote_update import preserve_operation_cost_lists
 
 _MM_DIM_RE = re.compile(
     r"([\d.]+)\s*mm\s*[Xx×]\s*([\d.]+)\s*mm",
@@ -132,6 +133,8 @@ def ensure_imperial_item_units(
     if not changed:
         return ["Quote items already look imperial"]
 
+    # Re-merge live ops so a stale ItemList cannot wipe Profile/Weld on save.
+    detail = preserve_operation_cost_lists(client, quote_id, detail)
     save = client.request("POST", "v1/quote", json=detail)
     if save.status_code >= 400:
         return [f"Imperial unit cleanup save failed ({save.status_code})"]
