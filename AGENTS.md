@@ -87,3 +87,14 @@ Constraints:
 Wait for approval before building. After building, run verify and summarize
 what changed + what you checked.
 ```
+
+## Cursor Cloud specific instructions
+
+The cloud VM is **Linux**, so the PowerShell paths elsewhere in this file (`.\.venv\Scripts\python.exe`) do not apply. Use the POSIX venv instead:
+
+- Backend/tests: `.venv/bin/python` (e.g. `.venv/bin/python -m pytest -q`, `.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000`). The server binds `:8000` and serves both `/api` and the built SPA. It does **not** auto-reload unless `--reload` is passed.
+- The startup update script already provisions the `.venv` (from `requirements*.txt`) and `frontend/node_modules`. Do not re-run those installs unless dependencies changed.
+- **UI is not served until you build it.** `frontend/dist` is gitignored and the update script intentionally does not build it. Run `npm run build --prefix frontend` (one-time per session, or after frontend edits) to serve the SPA at `:8000`, or `npm run dev --prefix frontend` for hot-reload on `:5173` (proxies `/api` → `:8000`).
+- System packages `python3.12-venv` and `tesseract-ocr` are baked into the environment. Tesseract is required for `tests/test_ocr.py::test_ocr_skips_when_native_text_rich` to pass; without the binary that one test fails with "Tesseract OCR not installed" (OCR otherwise degrades gracefully).
+- Login password is `kannon` (from `config/shop_rates.yaml`). The drawing-library roots in that file are Windows/OneDrive paths that don't exist here, so STP auto-attach and `Find on shared drive` won't resolve — the core upload → takeoff → review → export flow works without them.
+- SecturaFAB push is optional and paused; it needs real creds in `.env` (copy `.env.example`) plus egress to `*.secturafab.com`. Everything except push runs fully offline.
