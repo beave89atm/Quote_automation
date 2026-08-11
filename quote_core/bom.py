@@ -59,6 +59,17 @@ _MULTI_QTY_HEADERS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Time Manufacturing native BOM: ITEM NO. / PART NUMBER / DESCRIPTION / 1004715-1 / 1004715-2
+_TIME_ITEM_HEADER_RE = re.compile(r"\bITEM\s*NO\.?\b", re.IGNORECASE)
+_TIME_PART_HEADER_RE = re.compile(r"\bPART\s+NUMBER\b", re.IGNORECASE)
+_TIME_PN_LINE_RE = re.compile(r"^(\d{4,7})-(\d{1,3}[A-Za-z]?)$", re.IGNORECASE)
+_TIME_BOM_STOP_RE = re.compile(
+    r"^(?:SIZE|MATERIAL\s+DESCRIPTION|MATERIAL\s+NO\.?|SHEET|PROJECTION|"
+    r"UNLESS\s+OTHERWISE|TOLERANCES|DWG\.?\s*NO|SCALE|FINISH|CONFIDENTIAL|"
+    r"THIS\s+PRINT|REV\.?|DATE|NOTES?:)\b",
+    re.IGNORECASE,
+)
+
 @dataclass
 class BomRow:
     item: str | int | None
@@ -280,6 +291,230 @@ _PARTS_LIST_STOP_RE = re.compile(
     r"^(?:NOTES?:|DO NOT SCALE|SHEET\s+\d|DRAWN|TITLE|DWG\s+NO|CONFIDENTIAL)\b",
     re.IGNORECASE,
 )
+
+
+def _time_qty_token(tok: str) -> int | None:
+    t = (tok or "").strip()
+    if t in {"-", "—", "–", ".", ""}:
+        return 0
+    if re.fullmatch(r"\d{1,3}", t):
+        return int(t)
+    return None
+
+
+def extract_bom_from_native_time_multiconfig(
+    pdf_path: Path | str | None = None,
+    *,
+    text: str | None = None,
+    bom_config: str | None = None,
+) -> BomResult:
+    """
+    Native Time Manufacturing multi-dash BOM tables.
+
+    CAD text order looks like::
+
+        ITEM NO.
+        PART NUMBER
+        DESCRIPTION
+        1004715-1
+        1004715-2
+        8
+        1004713-2
+        LOWER BOOM TUBE, TURRET END
+        -
+        1
+        ...
+    """
+    if text is None:
+        if not pdf_path:
+            return BomResult(
+                method=None, confidence=0.0, notes=["No PDF text for Time multi-config BOM"]
+            )
+        from quote_core.weight import _read_pdf_text
+
+        text = _read_pdf_text(Path(pdf_path))
+    if not text or not text.strip():
+        return BomResult(
+            method=None, confidence=0.0, notes=["Empty text for Time multi-config BOM"]
+        )
+    if not (_TIME_ITEM_HEADER_RE.search(text) and _TIME_PART_HEADER_RE.search(text)):
+        return BomResult(
+            method=None,
+            confidence=0.0,
+            notes=["No ITEM NO. / PART NUMBER headers for Time multi-config BOM"],
+        )
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    # Find start: PART NUMBER header, then optional DESCRIPTION, then config dash headers.
+    start = None
+    for i, ln in enumerate(lines):
+        if _TIME_PART_HEADER_RE.fullmatch(ln) or ln.upper() == "PART NUMBER":
+            start = i + 1
+            break
+    if start is None:
+        return BomResult(
+            method=None, confidence=0.0, notes=["PART NUMBER header not found on its own line"]
+        )
+
+    # Skip DESCRIPTION column title if present.
+    while start < len(lines) and lines[start].upper() in {"DESCRIPTION", "DESC", "QTY"}:
+        start += 1
+
+    # Config headers: consecutive dashed PNs sharing one base (1004715-1, 1004715-2).
+    headers: list[str] = []
+    header_base: str | None = None
+    j = start
+    while j < len(lines):
+        m = _TIME_PN_LINE_RE.fullmatch(lines[j])
+        if not m:
+            break
+        base, suf = m.group(1), m.group(2).upper()
+        pn = f"{base}-{suf}"
+        if header_base is None:
+            header_base = base
+            headers.append(pn)
+            j += 1
+            continue
+        if base != header_base:
+            break
+        headers.append(pn)
+        j += 1
+    if len(headers) < 2:
+        return BomResult(
+            method=None,
+            confidence=0.0,
+            notes=["Time BOM missing multi-dash column headers (need ≥2 config PNs)"],
+        )
+
+    suffixes = [h.split("-", 1)[1] for h in headers]
+    n_cols = len(headers)
+    body = lines[j:]
+    # Truncate at title-block noise.
+    trimmed: list[str] = []
+    for ln in body:
+        if _TIME_BOM_STOP_RE.match(ln):
+            break
+        trimmed.append(ln)
+    body = trimmed
+
+    raw_rows: list[tuple[str | int, str, str, list[int]]] = []
+    i = 0
+    while i < len(body):
+        # Item number (1–2 digits). Balloon letters are not used on these sheets.
+        if not re.fullmatch(r"\d{1,2}", body[i]):
+            i += 1
+            continue
+        item_no: str | int = int(body[i])
+        i += 1
+        if i >= len(body):
+            break
+        pm = _TIME_PN_LINE_RE.fullmatch(body[i])
+        if not pm:
+            continue
+        # Skip if this looks like another config-header run (same assembly base).
+        if pm.group(1) == header_base:
+            i += 1
+            continue
+        part_no = f"{pm.group(1)}-{pm.group(2).upper()}"
+        i += 1
+        desc_parts: list[str] = []
+        while i < len(body):
+            # Description continues until we can consume n_cols qty tokens.
+            look = body[i : i + n_cols]
+            if len(look) == n_cols and all(_time_qty_token(t) is not None for t in look):
+                # Prefer treating as qty if we already have a description, or if
+                # the next token after the qty block looks like a new item/PN.
+                nxt = body[i + n_cols] if i + n_cols < len(body) else ""
+                if desc_parts or re.fullmatch(r"\d{1,2}", nxt) or _TIME_PN_LINE_RE.fullmatch(nxt):
+                    break
+            # Avoid swallowing a following item number as description when no desc yet
+            # and qty block is immediately available.
+            if not desc_parts and len(body) - i >= n_cols:
+                look2 = body[i : i + n_cols]
+                if all(_time_qty_token(t) is not None for t in look2):
+                    break
+            if _TIME_PN_LINE_RE.fullmatch(body[i]) or _TIME_BOM_STOP_RE.match(body[i]):
+                break
+            if re.fullmatch(r"\d{1,2}", body[i]) and not desc_parts:
+                # Likely next item; abort this row.
+                break
+            desc_parts.append(body[i])
+            i += 1
+            if len(desc_parts) > 6:
+                break
+        qtys: list[int] = []
+        for _ in range(n_cols):
+            if i >= len(body):
+                break
+            q = _time_qty_token(body[i])
+            if q is None:
+                break
+            qtys.append(q)
+            i += 1
+        if len(qtys) != n_cols:
+            continue
+        raw_rows.append((item_no, part_no, " ".join(desc_parts).strip(), qtys))
+
+    if not raw_rows:
+        return BomResult(
+            method=None,
+            confidence=0.0,
+            notes=["Time multi-config headers found but no BOM rows parsed"],
+        )
+
+    # Column selection: explicit bom_config → matching suffix; else prefer -1; else last.
+    dash = str(bom_config or "").strip().lstrip("-").upper()
+    col_index: int | None = None
+    if dash:
+        for idx, suf in enumerate(suffixes):
+            if suf == dash or suf.lstrip("0") == dash.lstrip("0"):
+                col_index = idx
+                break
+    if col_index is None:
+        for idx, suf in enumerate(suffixes):
+            if suf == "1":
+                col_index = idx
+                break
+    if col_index is None:
+        col_index = len(suffixes) - 1
+
+    rows: list[BomRow] = []
+    for item_no, part_no, desc, qtys in raw_rows:
+        qty = qtys[col_index]
+        if qty <= 0:
+            continue
+        rows.append(
+            BomRow(
+                item=item_no,
+                qty=qty,
+                part_no=part_no,
+                description=desc,
+                source="native_time_multi_qty",
+                confidence=0.97,
+            )
+        )
+
+    if not rows:
+        return BomResult(
+            method=None,
+            confidence=0.0,
+            notes=[
+                f"Time multi-config BOM parsed {len(raw_rows)} rows but none with "
+                f"qty>0 in column -{suffixes[col_index]}"
+            ],
+        )
+
+    label = ",".join(f"-{s}" for s in suffixes)
+    return BomResult(
+        rows=rows,
+        method="native_time_multi_qty",
+        confidence=0.97,
+        notes=[
+            f"Parsed native Time multi-config BOM ({label}); "
+            f"kept -{suffixes[col_index]} → {len(rows)} PNs / "
+            f"{sum(r.qty for r in rows)} pieces"
+        ],
+    )
 
 
 def extract_bom_from_parts_list(
@@ -1230,7 +1465,8 @@ def extract_bom(
 
     1) Native MAC text/blocks (high confidence when present)
     2) Native PARTS LIST (Cummins / NGFS style)
-    3) OCR Time-style LIST OF MATERIAL (vector CAD drawings)
+    3) Native Time multi-dash ITEM NO. / PART NUMBER tables
+    4) OCR Time-style LIST OF MATERIAL (vector CAD drawings)
     """
     notes: list[str] = []
     native = extract_bom_from_native_mac(pdf_path, text=text)
@@ -1245,6 +1481,15 @@ def extract_bom(
         return parts_list
     if parts_list.notes:
         notes.extend(parts_list.notes)
+
+    time_multi = extract_bom_from_native_time_multiconfig(
+        pdf_path, text=text, bom_config=bom_config
+    )
+    if time_multi.rows and time_multi.piece_count > 0:
+        time_multi.notes = notes + list(time_multi.notes)
+        return time_multi
+    if time_multi.notes:
+        notes.extend(time_multi.notes)
 
     if pdf_path:
         ocr = extract_bom_from_ocr_time_style(
