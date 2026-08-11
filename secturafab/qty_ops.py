@@ -83,11 +83,12 @@ def refresh_bom_rows_for_push(
         return rows, notes
 
     try:
-        from quote_core.bom import extract_bom_from_ocr_time_style
+        from quote_core.bom import extract_bom
 
-        refreshed = extract_bom_from_ocr_time_style(
+        refreshed = extract_bom(
             assembly_pdf,
             library_folder=library.get("folder"),
+            related_pdf_names=list(library.get("related_pdfs") or []),
             bom_config=bom_config,
         )
     except Exception as exc:  # noqa: BLE001
