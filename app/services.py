@@ -43,15 +43,31 @@ def process_job(job_id: int) -> None:
         library_info = attach_library_stp(job)
         db.commit()
 
-        from quote_core.bom_config import format_bom_config_label, resolve_bom_config
+        from quote_core.bom_config import (
+            format_bom_config_label,
+            infer_bom_config_from_pdf,
+            resolve_bom_config,
+        )
+        from quote_core.drawing_title import extract_drawing_number_from_pdf
+
+        drawing_number = None
+        if job.pdf_path:
+            drawing_number = extract_drawing_number_from_pdf(Path(job.pdf_path))
 
         bom_config = resolve_bom_config(
             explicit=job.bom_config,
             title=job.title,
             pdf_filename=job.pdf_filename,
+            drawing_number=drawing_number,
             library_folder=library_info.get("folder"),
             part_key=library_info.get("part_key"),
         )
+        if not bom_config:
+            bom_config = infer_bom_config_from_pdf(
+                job.pdf_path,
+                title=job.title,
+                pdf_filename=job.pdf_filename,
+            )
         if bom_config and bom_config != job.bom_config:
             job.bom_config = bom_config
             db.commit()

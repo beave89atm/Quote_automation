@@ -440,7 +440,7 @@ def test_refresh_bom_sets_part_count_to_piece_sum(tmp_path, monkeypatch):
     assert refreshed.piece_count == 10
 
     monkeypatch.setattr(
-        "quote_core.bom.extract_bom_from_ocr_time_style",
+        "quote_core.bom.extract_bom",
         lambda *_a, **_k: refreshed,
     )
 

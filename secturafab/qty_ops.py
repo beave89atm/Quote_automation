@@ -62,13 +62,28 @@ def refresh_bom_rows_for_push(
     takeoff = takeoff or {}
     library = takeoff.get("library") or {}
     rows = extract_bom_rows(takeoff)
+    drawing_number = None
+    assembly_pdf_for_dn = Path(pdf_path) if pdf_path else None
+    if assembly_pdf_for_dn and assembly_pdf_for_dn.is_file():
+        from quote_core.drawing_title import extract_drawing_number_from_pdf
+
+        drawing_number = extract_drawing_number_from_pdf(assembly_pdf_for_dn)
     bom_config = resolve_bom_config(
         explicit=takeoff.get("bom_config"),
         title=title,
         pdf_filename=Path(pdf_path).name if pdf_path else None,
+        drawing_number=drawing_number,
         library_folder=library.get("folder"),
         part_key=library.get("part_key") or title,
     )
+    if not bom_config and assembly_pdf_for_dn and assembly_pdf_for_dn.is_file():
+        from quote_core.bom_config import infer_bom_config_from_pdf
+
+        bom_config = infer_bom_config_from_pdf(
+            assembly_pdf_for_dn,
+            title=title,
+            pdf_filename=Path(pdf_path).name if pdf_path else None,
+        )
     method = _bom_method(takeoff)
     needs_refresh = bool(bom_config) and ("multi_qty" not in method or not rows)
     if not needs_refresh:

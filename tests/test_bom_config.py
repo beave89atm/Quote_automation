@@ -1,7 +1,14 @@
 """Tests for BOM config / dash selection and multi-qty Time BOM rows."""
 
+from pathlib import Path
+
 from quote_core.bom import _parse_multi_qty_time_hits, texts_have_multi_qty_headers
-from quote_core.bom_config import normalize_bom_config, resolve_bom_config
+from quote_core.bom_config import (
+    extract_bom_config_from_pdf_text,
+    infer_bom_config_from_pdf,
+    normalize_bom_config,
+    resolve_bom_config,
+)
 
 
 def test_normalize_bom_config():
@@ -18,6 +25,61 @@ def test_resolve_from_folder_name():
         library_folder=r"C:\drawings\Time\Lower Boom Weldment - 28106-1",
     )
     assert cfg == "1"
+
+
+def test_resolve_from_drawing_number_when_filename_bare():
+    """Bare 1004715.pdf + title-block 1004715-2 → dash -2 qty column."""
+    cfg = resolve_bom_config(
+        title="1004715",
+        pdf_filename="1004715.pdf",
+        drawing_number="1004715-2",
+    )
+    assert cfg == "2"
+
+
+def test_explicit_bom_config_beats_drawing_number():
+    cfg = resolve_bom_config(
+        explicit="1",
+        title="1004715",
+        pdf_filename="1004715.pdf",
+        drawing_number="1004715-2",
+    )
+    assert cfg == "1"
+
+
+def test_sheet_label_infers_dash2_not_bom_column_headers():
+    text = """
+PART NUMBER
+DESCRIPTION
+1004715-1
+1004715-2
+8
+1004713-2
+LOWER BOOM TUBE
+1004715-1
+REV.
+ERCN
+1004715-2
+NOTE:
+HOLD THE 8.50 DIMENSION
+DWG.  NO.
+1004715
+"""
+    assert extract_bom_config_from_pdf_text(text, base_hint="1004715") == "2"
+
+
+_JOB3_PDF = Path("data/uploads/3/1004715.pdf")
+
+
+def test_infer_bom_config_from_job3_pdf_if_present():
+    if not _JOB3_PDF.is_file():
+        return
+    assert (
+        infer_bom_config_from_pdf(
+            _JOB3_PDF, title="1004715", pdf_filename="1004715.pdf"
+        )
+        == "2"
+    )
 
 
 def test_multi_qty_headers_and_column_filter():

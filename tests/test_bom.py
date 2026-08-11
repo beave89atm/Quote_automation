@@ -234,3 +234,34 @@ def test_1004715_pdf_dash2_seven_rows():
         "13349-3",
         "25060-5",
     }
+
+
+_JOB3_1004715 = Path("data/uploads/3/1004715.pdf")
+
+
+@pytest.mark.skipif(not _JOB3_1004715.is_file(), reason="job 3 1004715.pdf absent")
+def test_job3_bare_filename_infers_dash2_ten_pieces():
+    """Screenshot regression: bare 1004715.pdf must not OCR to 2 PN / 12 pcs."""
+    from quote_core.bom_config import infer_bom_config_from_pdf
+    from quote_core.weld.takeoff import estimate_fitup_drivers
+
+    cfg = infer_bom_config_from_pdf(
+        _JOB3_1004715, title="1004715", pdf_filename="1004715.pdf"
+    )
+    assert cfg == "2"
+    bom = extract_bom(_JOB3_1004715, bom_config=cfg)
+    assert bom.method == "native_time_multi_qty"
+    assert bom.part_number_count == 7
+    assert bom.piece_count == 10
+    drivers = estimate_fitup_drivers(
+        {
+            "solids": [{"kind": "plate", "qty": 1} for _ in range(7)],
+            "solid_count": 7,
+            "weld_segments": [],
+        },
+        notes=[],
+        pdf_path=_JOB3_1004715,
+        bom_config=cfg,
+    )
+    assert drivers["part_count"] == 10
+    assert drivers["piece_count"] == 10
