@@ -118,6 +118,15 @@ _A572_GRADE_RE = re.compile(
     r"|\bPLATE\b[^\n]{0,40}\bA\s*[-]?\s*5\D{0,2}7\D{0,2}2\b",
 )
 
+# Graded aluminum only (bare "ALUMINUM MATERIALS" title-block noise is ignored).
+_ALUM_GRADE_TOKEN_RE = re.compile(r"(?i)\b(5052|6061)\b")
+_PAREN_THICKNESS_RE = re.compile(
+    r"\(\s*(?P<thk>\d+\.\d+|\d+\s*/\s*\d+)\s*[\"″']?\s*\)"
+)
+_THICKNESS_NOTE_RE = re.compile(
+    r"(?i)\bTHICKNESS\s*:\s*(?P<thk>\.?\d+(?:\.\d+)?)\s*IN\b"
+)
+
 _SKIP_NAME_HINTS = (
     "WELDMENT",
     "ALL DRAWING",
@@ -200,8 +209,48 @@ def _sectura_material_string(material_key: str) -> str:
         return label
     if material_key == "a36":
         return "A36"
+    # SecturaFAB aluminum dropdown uses alloy numbers, not "Aluminum".
+    if material_key == "aluminum_5052":
+        return "5052"
+    if material_key == "aluminum_6061":
+        return "6061"
     # First token of label for other steels (A514, A992, …)
     return label.split()[0] if label else "A36"
+
+
+def _aluminum_key_from_text(snippet: str) -> str | None:
+    """Return aluminum_5052 / aluminum_6061 when a graded alloy token is present."""
+    if not _ALUM_GRADE_TOKEN_RE.search(snippet or ""):
+        return None
+    key = detect_material_key([snippet])
+    if key in {"aluminum_5052", "aluminum_6061"}:
+        return key
+    if re.search(r"(?i)\b5052\b", snippet):
+        return "aluminum_5052"
+    if re.search(r"(?i)\b6061\b", snippet):
+        return "aluminum_6061"
+    return None
+
+
+def _thickness_from_aluminum_line(line: str) -> float | None:
+    """Prefer parenthetical inch thk on stock lines; else fraction / gauge."""
+    m = _PAREN_THICKNESS_RE.search(line or "")
+    if m:
+        thk = _parse_thickness_token(m.group("thk"))
+        if thk is not None:
+            return thk
+    m_frac = re.search(
+        r"(?i)(?<![\d.])(\d+\s*/\s*\d+)\s*[\"″']?\s*(?:[Xx×]|PLATE\b)",
+        line or "",
+    )
+    if m_frac:
+        thk = _parse_thickness_token(m_frac.group(1))
+        if thk is not None:
+            return thk
+    m_ga = re.search(r"(?i)\b(\d{1,2})\s*GA(?:UGE)?\b", line or "")
+    if m_ga:
+        return _parse_thickness_token(f"{m_ga.group(1)}GA")
+    return None
 
 
 def parse_material_block(text: str) -> tuple[float | None, str | None, str]:
@@ -307,6 +356,33 @@ def parse_material_block(text: str) -> tuple[float | None, str | None, str]:
         thk = _parse_thickness_token(f"{ga}GA") if ga else None
         if thk is not None:
             return thk, "a36", f"GAUGE/P&O {ga}GA → {thk}\" mild steel (P&O)"
+
+    # Graded aluminum stock / MATERIAL notes (before steel gauge→A36 fallback).
+    # Requires 5052/6061 — bare "ALUMINUM MATERIALS" boilerplate is ignored.
+    alum_hits: list[tuple[float | None, str, str]] = []
+    for ln in lines:
+        alum_key = _aluminum_key_from_text(ln)
+        if not alum_key:
+            continue
+        thk_al = _thickness_from_aluminum_line(ln)
+        alum_hits.append((thk_al, alum_key, f"aluminum callout on {ln!r}"))
+    if alum_hits:
+        alum_hits.sort(key=lambda p: (0 if p[0] is not None else 1,))
+        thk_al, alum_key, src = alum_hits[0]
+        had_paren = any(
+            _PAREN_THICKNESS_RE.search(ln)
+            for ln in lines
+            if _aluminum_key_from_text(ln)
+        )
+        # Prefer THICKNESS: .091 IN over "1/8 PLATE" wording on MATERIAL notes
+        # when the aluminum line itself had no parenthetical inch thickness.
+        m_note = _THICKNESS_NOTE_RE.search(text)
+        if m_note:
+            note_thk = _parse_thickness_token(m_note.group("thk"))
+            if note_thk is not None and (thk_al is None or not had_paren):
+                thk_al = note_thk
+                src = f"{src}; thickness note"
+        return thk_al, alum_key, src
 
     # Bare N GA on a stock/description line (avoid lone "1" balloons).
     for ln in lines:

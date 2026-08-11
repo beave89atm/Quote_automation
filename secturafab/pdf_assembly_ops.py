@@ -16,6 +16,8 @@ from quote_core.part_materials import PartMaterial, build_part_material_map, loo
 from .assembly_ops import ensure_assembly_root, relink_assembly_children
 from .client import SecturaFabApiError, SecturaFabClient
 from .component_ops import ensure_purchased_components, find_purchased_part_keys
+from .flat_dims_ops import ensure_flat_pattern_dims
+from .imperial_ops import ensure_imperial_item_units
 from .profile_ops import apply_part_materials, ensure_laser_profile_ops, wait_for_quote_settle
 from .qty_ops import apply_bom_quantities, normalize_part_key
 from .weld_ops import _desc_token
@@ -473,6 +475,24 @@ def build_pdf_only_assembly(
             part_key=part_key,
         )
     )
+    notes.extend(ensure_imperial_item_units(client, quote_id))
+    # Per-component flat L×W from each drawing before Profile attach.
+    for row in rows:
+        part_no = str(row.get("part_no") or row.get("part_number") or "").strip()
+        if not part_no:
+            continue
+        pdf = resolve_component_pdf(
+            part_no,
+            library_folder=library_folder,
+            related_pdf_names=related_pdf_names,
+        )
+        if not pdf:
+            continue
+        notes.extend(
+            ensure_flat_pattern_dims(
+                client, quote_id, pdf, match_part=part_no
+            )
+        )
     notes.extend(
         ensure_laser_profile_ops(
             client,
@@ -576,6 +596,8 @@ def build_single_pdf_quote(
             min_wait_s=8.0,
         )
     )
+    notes.extend(ensure_imperial_item_units(client, quote_id))
+    notes.extend(ensure_flat_pattern_dims(client, quote_id, path))
     # Profile last — never relink/POST structure after this (wipes ops).
     notes.extend(
         ensure_laser_profile_ops(

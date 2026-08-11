@@ -25,6 +25,7 @@ from .assembly_ops import (
 from .client import SecturaFabApiError, SecturaFabClient
 from .component_ops import ensure_purchased_components, find_purchased_part_keys
 from .finalize_ops import finalize_quote_ops
+from .flat_dims_ops import ensure_flat_pattern_dims
 from .imperial_ops import ensure_imperial_item_units
 from .org_ops import apply_quote_organization
 from .profile_ops import (
@@ -1112,6 +1113,14 @@ class SecturaFabPushService:
                         f"{thickness}\") — Profile uses quickAddCAD cut time"
                     )
                 notes.extend(ensure_imperial_item_units(self.client, quote_id))
+                # Flat L×W from drawing before Profile — full-quote POST after
+                # Profile can wipe ops.
+                if has_job_pdf:
+                    notes.extend(
+                        ensure_flat_pattern_dims(
+                            self.client, quote_id, job_pdf
+                        )
+                    )
                 notes.extend(
                     apply_bom_quantities(
                         self.client,

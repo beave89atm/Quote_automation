@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from quote_core.part_materials import (
+    _sectura_material_string,
     build_part_material_map,
+    extract_part_material_from_pdf,
     lookup_part_material,
     parse_material_block,
     part_key_from_pdf_name,
+)
+
+_MC07_UPLOAD = Path(
+    "/home/ubuntu/.cursor/projects/workspace/uploads/MC07-1620LR.idw_a49f.pdf"
 )
 
 
@@ -71,3 +79,61 @@ def test_lookup_part_material_from_description():
     assert found is not None
     assert found.material == "A572 Grade 50"
     assert found.thickness_param() == "0.3125"
+
+
+def test_parse_mc07_aluminum_5052_stock_sheet():
+    text = '11 GA (0.091") 60" x 120" SHEET, ALUMINUM 5052-H32\n'
+    thk, key, src = parse_material_block(text)
+    assert key == "aluminum_5052"
+    assert thk == 0.091
+    assert "aluminum" in src
+    assert _sectura_material_string(key) == "5052"
+
+
+def test_parse_aluminum_5052_without_paren_uses_gauge():
+    text = '11 GA 60" x 120" SHEET, ALUMINUM 5052-H32\n'
+    thk, key, _src = parse_material_block(text)
+    assert key == "aluminum_5052"
+    assert thk == 0.1196  # carbon gauge table fallback when no (0.091")
+    assert _sectura_material_string(key) == "5052"
+
+
+def test_parse_md23_style_5052_stock_plate():
+    text = "1/8 x 60 x 120, 5052-H32 ALUMINUM\nMU02-1004-001\n"
+    thk, key, _src = parse_material_block(text)
+    assert key == "aluminum_5052"
+    assert thk == 0.125
+    assert _sectura_material_string("aluminum_6061") == "6061"
+
+
+def test_parse_aluminum_material_note_uses_thickness_note():
+    text = (
+        '4) MATERIAL: MU02-1004 - 1/8" PLATE, ALUMINUM 5052-H32 OR EQUIVALENT\n'
+        "THICKNESS: .091 IN (11 GA)\n"
+    )
+    thk, key, src = parse_material_block(text)
+    assert key == "aluminum_5052"
+    assert thk == 0.091
+    assert "thickness note" in src
+
+
+def test_aluminum_materials_boilerplate_does_not_override_steel_gauge():
+    text = '''
+ITEM
+GAUGE/P&O 12GA /SQ IN [8 17/32" X 2 7/32"]
+STEEL MATERIALS - 70,000 PSI
+ALUMINUM MATERIALS - 38,000 PSI
+'''
+    thk, key, _src = parse_material_block(text)
+    assert key == "a36"
+    assert thk == 0.1046
+
+
+def test_mc07_pdf_if_present():
+    if not _MC07_UPLOAD.is_file():
+        return
+    pm = extract_part_material_from_pdf(_MC07_UPLOAD)
+    assert pm is not None
+    assert pm.material_key == "aluminum_5052"
+    assert pm.material == "5052"
+    assert pm.thickness_in == 0.091
