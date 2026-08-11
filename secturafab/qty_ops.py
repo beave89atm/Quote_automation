@@ -111,7 +111,8 @@ def refresh_bom_rows_for_push(
         drivers = takeoff.setdefault("fitup_drivers", {})
         drivers["weight_calc"] = wc
         drivers["piece_count"] = refreshed.piece_count
-        drivers["part_count"] = refreshed.part_number_count
+        # UI "pieces" and SecturaFAB AssemblyQty use part_count as piece sum.
+        drivers["part_count"] = refreshed.piece_count
     takeoff["bom_config"] = bom_config
     return new_rows, notes
 
