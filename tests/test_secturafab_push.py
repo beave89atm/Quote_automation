@@ -415,6 +415,52 @@ def test_extract_bom_rows_and_qty_map():
     assert qmap["23403750"] == 1
 
 
+def test_refresh_bom_sets_part_count_to_piece_sum(tmp_path, monkeypatch):
+    """Push refresh must sync UI pieces to BOM qty sum (10), not unique PN count (7)."""
+    from quote_core.bom import BomResult, BomRow
+    from secturafab.qty_ops import refresh_bom_rows_for_push
+
+    pdf = tmp_path / "1004715-2.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+
+    refreshed = BomResult(
+        rows=[
+            BomRow(item=1, qty=1, part_no="1004713-2"),
+            BomRow(item=2, qty=2, part_no="1004719-1"),
+            BomRow(item=3, qty=1, part_no="1004711-1"),
+            BomRow(item=4, qty=1, part_no="21822-1"),
+            BomRow(item=5, qty=2, part_no="1004712-1"),
+            BomRow(item=6, qty=2, part_no="13349-3"),
+            BomRow(item=7, qty=1, part_no="25060-5"),
+        ],
+        method="native_time_multi_qty",
+        confidence=0.95,
+    )
+    assert refreshed.part_number_count == 7
+    assert refreshed.piece_count == 10
+
+    monkeypatch.setattr(
+        "quote_core.bom.extract_bom_from_ocr_time_style",
+        lambda *_a, **_k: refreshed,
+    )
+
+    takeoff = {
+        "bom_config": "2",
+        "fitup_drivers": {
+            "part_count": 7,
+            "piece_count": 7,
+            "weight_calc": {"bom": {"method": "ocr_time", "rows": []}},
+        },
+    }
+    rows, notes = refresh_bom_rows_for_push(
+        takeoff, title="1004715-2", pdf_path=pdf
+    )
+    assert len(rows) == 7
+    assert takeoff["fitup_drivers"]["piece_count"] == 10
+    assert takeoff["fitup_drivers"]["part_count"] == 10
+    assert any("10 pieces" in n for n in notes)
+
+
 def test_rollup_assembly_costs_builds_update_payload():
     from unittest.mock import MagicMock
 

@@ -69,3 +69,30 @@ def test_job68_pdf_no_weld_if_present():
     assert result.items == []
     assert result.to_dict()["total_inches"] == 0
     assert any("No weld symbols" in f for f in result.flags)
+
+
+def test_native_time_bom_piece_count_overrides_step_solids(monkeypatch):
+    """1004715-2 style: 7 unique PNs / 10 BOM pcs must win over ~7 STEP solids."""
+    from quote_core.weld.takeoff import estimate_fitup_drivers
+
+    def _fake_weight(*_args, **_kwargs):
+        return {
+            "method": "native_time_multi_qty",
+            "piece_count": 10,
+            "part_number_count": 7,
+            "assembly_weight_lb": None,
+            "component_weights_lb": [],
+            "material_label": None,
+            "bom": {"method": "native_time_multi_qty", "piece_count": 10},
+            "pdf_bom": {},
+        }
+
+    monkeypatch.setattr("quote_core.weight.estimate_assembly_weight", _fake_weight)
+    stp_summary = {
+        "solids": [{"kind": "plate", "qty": 1} for _ in range(7)],
+        "solid_count": 7,
+        "weld_segments": [],
+    }
+    drivers = estimate_fitup_drivers(stp_summary, notes=[])
+    assert drivers["part_count"] == 10
+    assert drivers["piece_count"] == 10
