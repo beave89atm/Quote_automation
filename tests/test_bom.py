@@ -10,8 +10,63 @@ from quote_core.bom import (
     _parse_qty_item_part_hits,
     _vote_bom_rows,
     extract_bom,
+    extract_bom_from_native_time_multiconfig,
     extract_bom_from_ocr_time_style,
     normalize_part_no,
+)
+
+_TIME_1004715_TEXT = """
+ITEM NO.
+PART NUMBER
+DESCRIPTION
+1004715-1
+1004715-2
+8
+1004713-2
+LOWER BOOM TUBE, TURRET END
+-
+1
+7
+1004713-1
+LOWER BOOM TUBE, TURRET END
+1
+-
+6
+1004719-1
+LOWER BOOM STIFFENER
+-
+2
+5
+1004711-1
+STIFFENER, CYLINDER MOUNT
+1
+1
+4
+21822-1
+HOSE GUIDE
+1
+1
+3
+1004712-1
+PIVOT DOUBLER
+2
+2
+2
+13349-3
+CYLINDER MOUNT PLATE
+2
+2
+1
+25060-5
+TUBE, PIVOT
+1
+1
+SIZE
+MATERIAL DESCRIPTION
+"""
+
+_TIME_1004715_PDF = Path(
+    "/home/ubuntu/.cursor/projects/workspace/uploads/1004715_1b49.pdf"
 )
 
 _JIB_PDF = Path("data/uploads/30/35145-1 JIB ARM WELDMENT ALL DRAWINGS-DESKTOP-GTEFB1D.pdf")
@@ -131,3 +186,82 @@ def test_jib_arm_ocr_bom_eleven_pieces():
         ("F", "42021-9", 2),
         ("G", "35144-1", 1),
     }
+
+
+def test_native_time_multiconfig_dash2_seven_rows():
+    bom = extract_bom_from_native_time_multiconfig(
+        text=_TIME_1004715_TEXT, bom_config="2"
+    )
+    assert bom.method == "native_time_multi_qty"
+    assert bom.part_number_count == 7
+    assert bom.piece_count == 10
+    by_pn = {r.part_no: r for r in bom.rows}
+    assert "1004713-1" not in by_pn
+    assert by_pn["1004713-2"].qty == 1
+    assert by_pn["1004719-1"].qty == 2
+    assert by_pn["25060-5"].qty == 1
+    assert by_pn["25060-5"].description.startswith("TUBE")
+
+
+def test_native_time_multiconfig_dash1_excludes_dash2_tube():
+    bom = extract_bom_from_native_time_multiconfig(
+        text=_TIME_1004715_TEXT, bom_config="1"
+    )
+    assert bom.method == "native_time_multi_qty"
+    by_pn = {r.part_no: r.qty for r in bom.rows}
+    assert "1004713-2" not in by_pn
+    assert by_pn["1004713-1"] == 1
+    assert "1004719-1" not in by_pn  # dash-2 only
+
+
+def test_extract_bom_prefers_native_time_over_ocr():
+    bom = extract_bom(text=_TIME_1004715_TEXT, bom_config="2")
+    assert bom.method == "native_time_multi_qty"
+    assert bom.part_number_count == 7
+
+
+@pytest.mark.skipif(not _TIME_1004715_PDF.is_file(), reason="1004715 upload PDF absent")
+def test_1004715_pdf_dash2_seven_rows():
+    bom = extract_bom(_TIME_1004715_PDF, bom_config="2")
+    assert bom.method == "native_time_multi_qty"
+    assert bom.part_number_count == 7
+    assert {r.part_no for r in bom.rows} == {
+        "1004713-2",
+        "1004719-1",
+        "1004711-1",
+        "21822-1",
+        "1004712-1",
+        "13349-3",
+        "25060-5",
+    }
+
+
+_JOB3_1004715 = Path("data/uploads/3/1004715.pdf")
+
+
+@pytest.mark.skipif(not _JOB3_1004715.is_file(), reason="job 3 1004715.pdf absent")
+def test_job3_bare_filename_infers_dash2_ten_pieces():
+    """Screenshot regression: bare 1004715.pdf must not OCR to 2 PN / 12 pcs."""
+    from quote_core.bom_config import infer_bom_config_from_pdf
+    from quote_core.weld.takeoff import estimate_fitup_drivers
+
+    cfg = infer_bom_config_from_pdf(
+        _JOB3_1004715, title="1004715", pdf_filename="1004715.pdf"
+    )
+    assert cfg == "2"
+    bom = extract_bom(_JOB3_1004715, bom_config=cfg)
+    assert bom.method == "native_time_multi_qty"
+    assert bom.part_number_count == 7
+    assert bom.piece_count == 10
+    drivers = estimate_fitup_drivers(
+        {
+            "solids": [{"kind": "plate", "qty": 1} for _ in range(7)],
+            "solid_count": 7,
+            "weld_segments": [],
+        },
+        notes=[],
+        pdf_path=_JOB3_1004715,
+        bom_config=cfg,
+    )
+    assert drivers["part_count"] == 10
+    assert drivers["piece_count"] == 10

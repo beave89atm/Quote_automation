@@ -62,13 +62,28 @@ def refresh_bom_rows_for_push(
     takeoff = takeoff or {}
     library = takeoff.get("library") or {}
     rows = extract_bom_rows(takeoff)
+    drawing_number = None
+    assembly_pdf_for_dn = Path(pdf_path) if pdf_path else None
+    if assembly_pdf_for_dn and assembly_pdf_for_dn.is_file():
+        from quote_core.drawing_title import extract_drawing_number_from_pdf
+
+        drawing_number = extract_drawing_number_from_pdf(assembly_pdf_for_dn)
     bom_config = resolve_bom_config(
         explicit=takeoff.get("bom_config"),
         title=title,
         pdf_filename=Path(pdf_path).name if pdf_path else None,
+        drawing_number=drawing_number,
         library_folder=library.get("folder"),
         part_key=library.get("part_key") or title,
     )
+    if not bom_config and assembly_pdf_for_dn and assembly_pdf_for_dn.is_file():
+        from quote_core.bom_config import infer_bom_config_from_pdf
+
+        bom_config = infer_bom_config_from_pdf(
+            assembly_pdf_for_dn,
+            title=title,
+            pdf_filename=Path(pdf_path).name if pdf_path else None,
+        )
     method = _bom_method(takeoff)
     needs_refresh = bool(bom_config) and ("multi_qty" not in method or not rows)
     if not needs_refresh:
@@ -83,11 +98,12 @@ def refresh_bom_rows_for_push(
         return rows, notes
 
     try:
-        from quote_core.bom import extract_bom_from_ocr_time_style
+        from quote_core.bom import extract_bom
 
-        refreshed = extract_bom_from_ocr_time_style(
+        refreshed = extract_bom(
             assembly_pdf,
             library_folder=library.get("folder"),
+            related_pdf_names=list(library.get("related_pdfs") or []),
             bom_config=bom_config,
         )
     except Exception as exc:  # noqa: BLE001
@@ -111,7 +127,8 @@ def refresh_bom_rows_for_push(
         drivers = takeoff.setdefault("fitup_drivers", {})
         drivers["weight_calc"] = wc
         drivers["piece_count"] = refreshed.piece_count
-        drivers["part_count"] = refreshed.part_number_count
+        # UI "pieces" and SecturaFAB AssemblyQty use part_count as piece sum.
+        drivers["part_count"] = refreshed.piece_count
     takeoff["bom_config"] = bom_config
     return new_rows, notes
 

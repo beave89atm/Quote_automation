@@ -156,6 +156,19 @@ def _persist_new_job(
         pdf_dest.write_bytes(pdf_bytes)
         job.pdf_path = str(pdf_dest)
 
+        # Bare filenames like 1004715.pdf often omit the dash; title-block
+        # DRAWING NUMBER or Time sheet labels (1004715-2 + NOTE:/REV.) pick
+        # the multi-qty column.
+        if not job.bom_config:
+            from quote_core.bom_config import infer_bom_config_from_pdf
+            from quote_core.drawing_title import extract_drawing_number_from_pdf
+
+            drawn = extract_drawing_number_from_pdf(pdf_dest)
+            drawn_cfg = resolve_bom_config(drawing_number=drawn)
+            job.bom_config = drawn_cfg or infer_bom_config_from_pdf(
+                pdf_dest, title=job_title, pdf_filename=pdf_filename
+            )
+
         if stp_filename and stp_bytes is not None:
             suffix = Path(stp_filename).suffix.lower()
             if suffix not in {".stp", ".step"}:

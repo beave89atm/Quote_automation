@@ -27,52 +27,68 @@ def _part_base(part_no: str) -> str:
     return re.split(r"[-–—]", str(part_no or ""), maxsplit=1)[0].strip()
 
 
+def _pdf_stem_key(name: str) -> str:
+    return (
+        Path(name)
+        .stem.upper()
+        .replace(" ", "")
+        .replace("—", "-")
+        .replace("–", "-")
+    )
+
+
 def resolve_component_pdf(
     part_no: str,
     *,
     library_folder: Path | str | None,
     related_pdf_names: list[str] | None = None,
 ) -> Path | None:
-    """Locate ``15644.pdf`` / ``15644-1.pdf`` for BOM part ``15644-1``."""
+    """
+    Locate ``15644-1.pdf`` / ``15644.pdf`` for BOM part ``15644-1``.
+
+    Dash-exact: never return a different suffix (``25060-8.pdf`` for ``25060-5``).
+    Bare ``base.pdf`` is allowed as a shared drawing for that part family.
+    """
     folder = Path(library_folder) if library_folder else None
     if not folder or not folder.is_dir():
         return None
+    part_no = str(part_no or "").strip()
     base = _part_base(part_no)
     if not base:
         return None
+    part_key = _pdf_stem_key(part_no)
     base_u = base.upper()
-    candidates: list[Path] = []
-    preferred_names = [
-        f"{part_no}.pdf",
-        f"{base}.pdf",
-        f"{part_no}.dwg.pdf",
-        f"{base}.dwg.pdf",
-    ]
-    for name in preferred_names:
+
+    # 1) Exact dashed / undashed filenames.
+    for name in (f"{part_no}.pdf", f"{part_no}.dwg.pdf"):
         p = folder / name
         if p.is_file():
             return p
+
+    # 2) Exact stem in related_pdf_names.
     for name in related_pdf_names or []:
-        if base_u in Path(name).stem.upper().replace(" ", ""):
+        if _pdf_stem_key(name) == part_key:
             p = folder / name
             if p.is_file():
-                candidates.append(p)
+                return p
+
+    # 3) Bare base.pdf (shared drawing) — not a different dash.
+    for name in (f"{base}.pdf", f"{base}.dwg.pdf"):
+        p = folder / name
+        if p.is_file():
+            return p
+
+    # 4) Folder scan: exact part stem or exact bare base only.
     try:
         for p in folder.iterdir():
             if p.suffix.lower() != ".pdf":
                 continue
-            stem_u = p.stem.upper().replace(" ", "")
-            if stem_u == base_u or stem_u.startswith(base_u + "-") or stem_u.startswith(
-                base_u + "."
-            ):
-                candidates.append(p)
+            stem_u = _pdf_stem_key(p.name)
+            if stem_u == part_key or stem_u == base_u:
+                return p
     except OSError:
         pass
-    if not candidates:
-        return None
-    # Prefer exact base.pdf over longer names / duplicates.
-    candidates.sort(key=lambda p: (0 if p.stem.upper() == base_u else 1, len(p.name), p.name.lower()))
-    return candidates[0]
+    return None
 
 
 def create_assembly_shell(
@@ -173,28 +189,57 @@ def _rename_imported_descriptions(
     quickAddCAD names PDF imports like ``15644  - 1/4\" A36 …``.
 
     Rewrite Description to the BOM part number so qty/material matching works.
+    Prefer exact full PN; fall back to bare base only when exactly one unused
+    BOM PN shares that base (avoids 25060-5 ↔ 25060-8 collisions).
     """
     detail = client.get_json(f"v1/quote/{quote_id}")
     items = list(detail.get("ItemList") or [])
     unused = list(part_nos)
     changed = 0
-    for it in items:
-        if it.get("ProductType") in (_ASSEMBLY_TYPE, "300", "assembly"):
-            continue
-        token = normalize_part_key(_desc_token(str(it.get("Description") or "")))
-        match = None
-        for pn in unused:
-            base = normalize_part_key(_part_base(pn))
-            full = normalize_part_key(pn)
-            if token == full or token == base or token.startswith(base):
-                match = pn
-                break
-        if not match:
-            continue
+    claimed: set[int] = set()
+
+    def _apply(it: dict[str, Any], match: str) -> None:
+        nonlocal changed
         unused.remove(match)
         if str(it.get("Description") or "").strip() != match:
             it["Description"] = match
             changed += 1
+
+    # Pass 1: exact full PN (normalized, dashes stripped in normalize_part_key).
+    for idx, it in enumerate(items):
+        if it.get("ProductType") in (_ASSEMBLY_TYPE, "300", "assembly"):
+            continue
+        token = normalize_part_key(_desc_token(str(it.get("Description") or "")))
+        if not token:
+            continue
+        match = next(
+            (pn for pn in unused if normalize_part_key(pn) == token),
+            None,
+        )
+        if not match:
+            continue
+        claimed.add(idx)
+        _apply(it, match)
+
+    # Pass 2: CAD bare base (e.g. token 25060) → unique unused BOM PN with that base.
+    for idx, it in enumerate(items):
+        if idx in claimed:
+            continue
+        if it.get("ProductType") in (_ASSEMBLY_TYPE, "300", "assembly"):
+            continue
+        token = normalize_part_key(_desc_token(str(it.get("Description") or "")))
+        if not token:
+            continue
+        candidates = [
+            pn
+            for pn in unused
+            if normalize_part_key(_part_base(pn)) == token
+        ]
+        if len(candidates) != 1:
+            continue
+        claimed.add(idx)
+        _apply(it, candidates[0])
+
     if not changed:
         return []
     save = client.request("POST", "v1/quote", json=detail)
