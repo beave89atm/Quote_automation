@@ -1,0 +1,18 @@
+{
+  "name": "kannon-quote",
+  "install": "python3 -m venv .venv\n.venv/bin/python -m pip install -U pip\n.venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt",
+  "start": "bash scripts/cursor_cloud_write_env.sh",
+  "terminals": [
+    {
+      "name": "api",
+      "command": ".venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000",
+      "description": "Kannon Quote API for Desktop at http://127.0.0.1:8000 (password from config/shop_rates.yaml)"
+    }
+  ],
+  "ports": [
+    {
+      "name": "web",
+      "port": 8000
+    }
+  ]
+}
