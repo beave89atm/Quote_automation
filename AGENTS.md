@@ -87,3 +87,25 @@ Constraints:
 Wait for approval before building. After building, run verify and summarize
 what changed + what you checked.
 ```
+
+## Cursor Cloud specific instructions
+
+### Desktop-only app access (do not use your laptop browser for 127.0.0.1)
+
+Cloud Agents run the app **inside** a remote machine. `http://127.0.0.1:8000` only works in that machine’s browser.
+
+1. Open this Cloud Agent in Cursor.
+2. Open the **Desktop** pane (remote desktop), not Chrome/Edge on your Windows PC.
+3. In **Desktop Chrome’s address bar**, type: `http://127.0.0.1:8000`
+4. Password: from `config/shop_rates.yaml` (`shared_password`, currently `kannon`).
+
+If you click `http://127.0.0.1:8000` from chat or paste it into your laptop browser, you will see **“can’t connect to server”** — that URL points at your PC, not the agent.
+
+Do not use temporary Cloudflare/`trycloudflare.com` tunnels as the primary link.
+
+### Auto-start and SecturaFAB `.env`
+
+- [`.cursor/environment.json`](.cursor/environment.json) installs deps and starts uvicorn on `0.0.0.0:8000` (Desktop: `http://127.0.0.1:8000`).
+- `.env` is gitignored. On boot, `start` runs [`scripts/cursor_cloud_write_env.sh`](scripts/cursor_cloud_write_env.sh), which writes `.env` only when Cursor secrets `SECTURAFAB_CLIENT_ID` and `SECTURAFAB_CLIENT_SECRET` are set.
+- After API route changes, restart the uvicorn terminal (it does not auto-reload).
+- Smoke: `.venv/bin/python -m pytest -q tests/test_smoke_api.py tests/test_batch.py tests/test_time_engine.py tests/test_bom_config.py tests/test_secturafab_push.py tests/test_imperial_ops.py`
