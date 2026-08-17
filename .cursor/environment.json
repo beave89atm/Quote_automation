@@ -1,0 +1,18 @@
+{
+  "name": "kannon-quote",
+  "install": "sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3.12-venv tesseract-ocr\npython3 -m venv .venv\n.venv/bin/python -m pip install -U pip\n.venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt\ncd frontend && npm ci && npm run build",
+  "start": "bash scripts/cursor_cloud_write_env.sh",
+  "terminals": [
+    {
+      "name": "api",
+      "command": ".venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000",
+      "description": "Kannon Quote API for Desktop at http://127.0.0.1:8000 (password from config/shop_rates.yaml)"
+    }
+  ],
+  "ports": [
+    {
+      "name": "web",
+      "port": 8000
+    }
+  ]
+}
