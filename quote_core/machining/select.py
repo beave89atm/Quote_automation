@@ -11,6 +11,35 @@ def _flag(code: str, message: str, *, blocking: bool = True) -> dict[str, Any]:
     return {"code": code, "message": message, "blocking": blocking}
 
 
+def _pick(machine_val: float | None, shop_val: float | None) -> float | None:
+    return machine_val if machine_val is not None else shop_val
+
+
+def envelope_with_shop(
+    machine_env: Envelope,
+    shop: Envelope,
+    *,
+    inherit_fourth_axis: bool = False,
+) -> Envelope:
+    """Fill empty per-machine travels from shop gates. Does not invent numbers."""
+    return Envelope(
+        min_diameter_in=_pick(machine_env.min_diameter_in, shop.min_diameter_in),
+        max_diameter_in=_pick(machine_env.max_diameter_in, shop.max_diameter_in),
+        max_length_in=_pick(machine_env.max_length_in, shop.max_length_in),
+        max_chuck_diameter_in=_pick(
+            machine_env.max_chuck_diameter_in, shop.max_chuck_diameter_in
+        ),
+        x_in=_pick(machine_env.x_in, shop.x_in),
+        y_in=_pick(machine_env.y_in, shop.y_in),
+        z_in=_pick(machine_env.z_in, shop.z_in),
+        fourth_axis_diameter_in=(
+            _pick(machine_env.fourth_axis_diameter_in, shop.fourth_axis_diameter_in)
+            if inherit_fourth_axis
+            else machine_env.fourth_axis_diameter_in
+        ),
+    )
+
+
 def lathe_envelope_flags(
     *,
     diameter_in: float,
@@ -176,8 +205,11 @@ def suggest_lathe(
     )
     ranked: list[dict[str, Any]] = []
     for machine in roster.lathes():
+        shop_for_machine = roster.shop_envelopes.get(machine.class_name) or shop_env
         env_flags = lathe_envelope_flags(
-            diameter_in=diameter_in, length_in=length_in, envelope=machine.envelope
+            diameter_in=diameter_in,
+            length_in=length_in,
+            envelope=envelope_with_shop(machine.envelope, shop_for_machine),
         )
         if needs_live_tooling and not machine.live_tooling:
             env_flags.append(
@@ -203,7 +235,7 @@ def suggest_lathe(
         shop_flags.append(
             _flag(
                 "LATHE_LIVE_TOOLING_REQUIRED",
-                "Live tooling requested; only the Doosan is listed with live tooling. "
+                "Live tooling requested; only the Puma GT3100LM is listed with live tooling. "
                 "If that machine is out of envelope, do not silent-quote.",
             )
         )
@@ -239,11 +271,16 @@ def suggest_mill(
     )
     ranked: list[dict[str, Any]] = []
     for machine in roster.mills():
+        shop_for_machine = roster.shop_envelopes.get(machine.class_name) or shop_env
         env_flags = mill_envelope_flags(
             length_in=length_in,
             width_in=width_in,
             height_in=height_in,
-            envelope=machine.envelope,
+            envelope=envelope_with_shop(
+                machine.envelope,
+                shop_for_machine,
+                inherit_fourth_axis=machine.fourth_axis or machine.subclass == "horizontal",
+            ),
             needs_4th_axis=needs_4th_axis,
             fourth_axis_diameter_in=fourth_axis_diameter_in,
         )

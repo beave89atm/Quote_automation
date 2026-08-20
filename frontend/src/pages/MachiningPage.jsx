@@ -506,7 +506,7 @@ export default function MachiningPage() {
                 checked={latheForm.needs_live_tooling}
                 onChange={(e) => setField("lathe", "needs_live_tooling", e.target.checked)}
               />{" "}
-              Live tooling (Doosan)
+              Live tooling (Puma GT3100LM)
             </label>
           </div>
           <div className="row">
@@ -523,10 +523,13 @@ export default function MachiningPage() {
       {roster && (
         <details className="fitup-notes" style={{ marginTop: "1.5rem" }}>
           <summary>
-            Machine roster ({roster.counts?.cnc_lathes} CNC lathes,{" "}
-            {roster.counts?.cnc_mills} CNC mills) — July 27 2026 starting list
+            Named roster ({roster.counts?.cnc_lathes} CNC lathes,{" "}
+            {roster.counts?.cnc_mills} CNC mills) — shop gates 14″ / 20×40
           </summary>
           <p className="muted">{roster.source}</p>
+          <p className="muted">
+            Per-machine travels and max RPM are empty in the source xlsx — not invented.
+          </p>
           <table className="jobs-table">
             <thead>
               <tr>
@@ -553,8 +556,12 @@ export default function MachiningPage() {
                   </td>
                   <td className="muted">
                     {m.kind === "lathe"
-                      ? `Ø ${m.envelope.min_diameter_in}–${m.envelope.max_diameter_in} × ${m.envelope.max_length_in} L (chuck ${m.envelope.max_chuck_diameter_in})`
-                      : `${m.envelope.x_in} × ${m.envelope.y_in} × ${m.envelope.z_in}`}
+                      ? m.envelope?.max_diameter_in != null
+                        ? `Ø ${m.envelope.min_diameter_in}–${m.envelope.max_diameter_in} × ${m.envelope.max_length_in} L`
+                        : "travels TBD — shop gate ⅜–14″ × 12–14″"
+                      : m.envelope?.x_in != null
+                        ? `${m.envelope.x_in} × ${m.envelope.y_in} × ${m.envelope.z_in}`
+                        : "travels TBD — shop cube 20×40"}
                   </td>
                 </tr>
               ))}

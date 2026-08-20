@@ -54,6 +54,12 @@ class Machine:
     tooling: list[dict[str, Any]]
     notes: str
     spindle_nose: str = ""
+    control: str = ""
+    kva: float | None = None
+    typical_work: str = ""
+    location: str = ""
+    axes: int | None = None
+    source: str = ""
 
     @property
     def kind(self) -> str:
@@ -85,6 +91,12 @@ class Machine:
             "tooling": self.tooling,
             "notes": self.notes,
             "spindle_nose": self.spindle_nose,
+            "control": self.control,
+            "kva": self.kva,
+            "typical_work": self.typical_work,
+            "location": self.location,
+            "axes": self.axes,
+            "source": self.source,
             "display_name": self.display_name,
             "kind": self.kind,
         }
@@ -116,6 +128,7 @@ class MachineRoster:
     notes: list[str]
     shop_envelopes: dict[str, Envelope]
     machines: list[Machine]
+    todos: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
     def lathes(self) -> list[Machine]:
@@ -141,6 +154,7 @@ class MachineRoster:
             "source": self.source,
             "source_status": self.source_status,
             "notes": self.notes,
+            "todos": self.todos,
             "shop_envelopes": {k: v.to_dict() for k, v in self.shop_envelopes.items()},
             "counts": {
                 "cnc_lathes": len(self.cnc_lathes()),
@@ -167,6 +181,7 @@ class MachiningConfig:
     materials: dict[str, MaterialCutData]
     tooling: dict[str, Any]
     coating: dict[str, Any]
+    sectura_book_2021: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
 
     def resolve_material(self, name: str | None) -> MaterialCutData:
@@ -221,6 +236,7 @@ class MachiningConfig:
             },
             "tooling": self.tooling,
             "coating": self.coating,
+            "sectura_book_2021": self.sectura_book_2021,
         }
 
 
@@ -261,6 +277,12 @@ def _machine_from(raw: dict[str, Any]) -> Machine:
         tooling=list(raw.get("tooling") or []),
         notes=str(raw.get("notes") or ""),
         spindle_nose=str(raw.get("spindle_nose") or ""),
+        control=str(raw.get("control") or ""),
+        kva=_num(raw.get("kva")),
+        typical_work=str(raw.get("typical_work") or ""),
+        location=str(raw.get("location") or ""),
+        axes=int(raw["axes"]) if raw.get("axes") not in (None, "") else None,
+        source=str(raw.get("source") or ""),
     )
 
 
@@ -279,6 +301,7 @@ def load_machine_roster(path: Path | str | None = None) -> MachineRoster:
         notes=list(raw.get("notes") or []),
         shop_envelopes=shop,
         machines=machines,
+        todos=list(raw.get("todos") or []),
         raw=raw,
     )
 
@@ -330,5 +353,6 @@ def load_machining_config(path: Path | str | None = None) -> MachiningConfig:
         materials=mats,
         tooling=dict(raw.get("tooling") or {}),
         coating=dict(raw.get("coating") or {}),
+        sectura_book_2021=dict(raw.get("sectura_book_2021") or {}),
         raw=raw,
     )

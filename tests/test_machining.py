@@ -29,15 +29,28 @@ from quote_core.machining.formulas import (
 )
 
 
-def test_roster_july_27_counts():
+def test_named_roster_and_shop_gates():
     roster = load_machine_roster()
     assert len(roster.cnc_lathes()) == 10
-    assert len(roster.cnc_mills()) == 12
-    assert sum(1 for m in roster.mills() if m.class_name == "manual_mill") == 3
+    assert len(roster.cnc_mills()) == 11
+    assert sum(1 for m in roster.mills() if m.class_name == "manual_mill") == 0
     assert sum(1 for m in roster.lathes() if m.class_name == "manual_lathe") == 1
+    assert roster.by_id("victor_174ot").class_name == "manual_lathe"
     assert sum(1 for m in roster.cnc_lathes() if m.live_tooling) == 1
-    assert roster.by_id("doosan_lathe_live_1").live_tooling
-    assert roster.by_id("mori_seiki_hmc_1").taper == "Cat 50"
+    live = roster.by_id("puma_gt3100lm")
+    assert live.live_tooling
+    assert live.horsepower == 25
+    assert live.max_rpm is None
+    hmc = roster.by_id("mori_seiki_sh630")
+    assert hmc.taper == "Cat 50"
+    assert hmc.subclass == "horizontal"
+    assert hmc.kva == 85
+    assert hmc.horsepower is None
+    assert hmc.envelope.x_in is None
+    assert roster.by_id("okk_mcv660").model == "MCV660"
+    assert roster.by_id("feeler_ftc200l").horsepower == 25
+    assert roster.by_id("puma_dnm750_50_ii").horsepower == 15
+    assert "travels_od_length_per_machine" in roster.todos
     env = roster.shop_envelopes["cnc_lathe"]
     assert env.max_diameter_in == 14.0
     assert env.max_length_in == 14.0
@@ -46,6 +59,14 @@ def test_roster_july_27_counts():
     assert mill_env.x_in == 40.0
     assert mill_env.y_in == 20.0
     assert mill_env.fourth_axis_diameter_in == 20.0
+    for machine in roster.machines:
+        assert machine.max_rpm is None
+        if machine.kind == "mill":
+            assert machine.envelope.x_in is None
+            assert machine.envelope.y_in is None
+        else:
+            assert machine.envelope.max_diameter_in is None
+            assert machine.envelope.max_length_in is None
 
 
 def test_published_rpm_uses_3_82():
@@ -244,7 +265,7 @@ def test_lathe_live_tooling_selects_doosan():
             needs_live_tooling=True,
         )
     )
-    assert result["machine"]["suggested"]["id"] == "doosan_lathe_live_1"
+    assert result["machine"]["suggested"]["id"] == "puma_gt3100lm"
     assert result["times"]["setup_key"] == "cnc_lathe_live_tooling"
     assert result["material"]["key"] == "stainless"
 
@@ -285,3 +306,9 @@ def test_machining_config_sources_are_public():
     assert any("cncoptimization.com" in (u or "") for u in urls)
     assert cfg.coating.get("status") == "stub"
     assert cfg.coating.get("enabled") is False
+    book = cfg.sectura_book_2021
+    assert book.get("status") == "stale"
+    assert book.get("mill_sell_usd_per_hr") == 90
+    assert book.get("mill_setup_min") == 20
+    assert book.get("lathe_op") is None
+    assert book.get("coating_usd_per_sqft") is None

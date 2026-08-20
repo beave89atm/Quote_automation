@@ -55,17 +55,33 @@ defaults:
   drill:
     pecks_per_inch: 1.0       # placeholder; extra retracts not modeled yet
 
-# PLACEHOLDER setup minutes — not Kannon shop times. Edit without a code change.
+# Mill setup 20 min is STALE 2021 Sectura book (optional default only).
+# Per-machine setup and 2026 burden rates are TODO — do not invent.
 setup_minutes:
   placeholder: true
+  mill_setup_source: stale_2021_sectura_book
   cnc_lathe: 20
   cnc_lathe_live_tooling: 30
-  cnc_mill_3axis: 25
-  cnc_mill_4axis: 40
-  cnc_mill_horizontal: 35
-  robodrill: 15
-  manual_mill: 30
+  cnc_mill_3axis: 20
+  cnc_mill_4axis: 20
+  cnc_mill_horizontal: 20
+  robodrill: 20
+  manual_mill: 20
   manual_lathe: 25
+
+# STALE 2021 Sectura book — optional default sell rate only. Not 2026 burden.
+sectura_book_2021:
+  status: stale
+  label: STALE 2021 Sectura book — optional default sell rate only
+  mill_sell_usd_per_hr: 90
+  mill_setup_min: 20
+  powdercoat_setup_usd_per_hr: 5
+  lathe_op: null
+  coating_usd_per_sqft: null
+  notes:
+    - "Do not treat as 2026 burden rates."
+    - "No lathe operation in Sectura."
+    - "No powder/zinc $/ft² on the laptop."
 
 # PLACEHOLDER allowance for rapids / toolchange / approach. Not a shop measurement.
 non_cutting_factor:
@@ -258,11 +274,12 @@ tooling:
 coating:
   status: stub
   enabled: false
-  notes: "Powder, zinc, and other finishes are not quoted in v0. Add processes here later."
+  notes: "Powder/zinc $/ft² not on the laptop. STALE 2021 Sectura has PowderCoat-Setup $5/hr only."
   processes:
     powder:
       enabled: false
       minutes_placeholder: null
+      setup_usd_per_hr_stale_2021: 5
     zinc:
       enabled: false
       minutes_placeholder: null

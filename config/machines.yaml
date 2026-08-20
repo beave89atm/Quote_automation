@@ -1,19 +1,30 @@
-# Kannon machine roster — July 27 2026 capabilities list (starting roster).
-# Kyle will send a fuller list later (exact models, HP, max RPM, tooling).
-# Add or edit machines here; no code change required.
+# Named mill/lathe roster from Kyle's Mills and Lathes Equipment.xlsx
+# (Desktop\Business Items\Equipment Details). Travels / OD / length columns
+# in that workbook are EMPTY — do not invent them. max_rpm is unknown.
 #
-# Empty numeric fields (null) mean "not yet supplied" — the calculator still
-# uses shop-level envelopes below and flags parts that exceed them.
+# Shop-level envelopes below are the July 27 2026 capabilities gates and
+# remain the quoting limits until Kyle fills per-machine travels.
 
-source: "Kannon Manufacturing capabilities list, July 27 2026"
-source_status: starting_roster
+source: "Mills and Lathes Equipment.xlsx + July 27 2026 capabilities + asset list"
+source_status: named_roster_v0
 notes:
-  - "Exact model numbers, HP, max RPM, and tooling crib are TBD."
-  - "Primarily chucker lathes; chucks up to 26 in diameter."
-  - "Typical turning envelope: 3/8 through 14 in diameter x 12-14 in long."
-  - "Most milling is Cat 50. Shop cube 20 x 40 in. Full 4th-axis up to 20 in diameter."
+  - "Names from the xlsx. Hwacheon from the asset list (Mansfield, bought 7/2024; may not be on the xlsx)."
+  - "Per-machine travels, OD, length, and max RPM are empty in the source — left null."
+  - "Shop gates (not measured travels): lathe 3/8–14 in dia × 12–14 in long, chucks to 26 in; mill cube 20 × 40; 4th-axis to 20 in dia."
+  - "July 2026 listed 6 OKK VMCs; the xlsx names 5. Confirm the missing OKK."
+  - "July 2026 listed 3 Bridgeport mills; not named on the xlsx — names TBD."
 
-# Shop-level gates used when a machine has no per-machine envelope.
+todos:
+  - travels_od_length_per_machine
+  - max_rpm
+  - sfm_ipt_tables
+  - tooling_crib
+  - per_machine_setup_minutes
+  - burden_rates_2026
+  - coating_usd_per_sqft
+  - missing_okk_if_july_count_was_6
+  - bridgeport_names
+
 shop_envelopes:
   cnc_lathe:
     min_diameter_in: 0.375
@@ -31,477 +42,494 @@ shop_envelopes:
     max_length_in: 14.0
     max_chuck_diameter_in: 26.0
   manual_mill:
-    x_in: 18.0
-    y_in: 12.0
-    z_in: 5.0
+    x_in: null
+    y_in: null
+    z_in: null
     fourth_axis_diameter_in: null
 
+.empty_lathe_envelope: &empty_lathe_envelope
+  min_diameter_in: null
+  max_diameter_in: null
+  max_length_in: null
+  max_chuck_diameter_in: null
+
+.empty_mill_envelope: &empty_mill_envelope
+  x_in: null
+  y_in: null
+  z_in: null
+  fourth_axis_diameter_in: null
+
 lathes:
-  - id: mori_seiki_lathe_1
-    oem: Mori Seiki
-    model: ""
-    class: cnc_lathe
-    count_group: mori_seiki_cnc_lathe
-    horsepower: null
-    max_rpm: null
-    spindle_nose: ""
-    taper: null
-    live_tooling: false
-    envelope:
-      min_diameter_in: 0.375
-      max_diameter_in: 14.0
-      max_length_in: 14.0
-      max_chuck_diameter_in: 26.0
-    tooling: []
-    notes: "One of 4 Mori Seiki CNC lathes. Primarily chucker."
-
-  - id: mori_seiki_lathe_2
-    oem: Mori Seiki
-    model: ""
-    class: cnc_lathe
-    count_group: mori_seiki_cnc_lathe
-    horsepower: null
-    max_rpm: null
-    spindle_nose: ""
-    taper: null
-    live_tooling: false
-    envelope:
-      min_diameter_in: 0.375
-      max_diameter_in: 14.0
-      max_length_in: 14.0
-      max_chuck_diameter_in: 26.0
-    tooling: []
-    notes: "One of 4 Mori Seiki CNC lathes. Primarily chucker."
-
-  - id: mori_seiki_lathe_3
-    oem: Mori Seiki
-    model: ""
-    class: cnc_lathe
-    count_group: mori_seiki_cnc_lathe
-    horsepower: null
-    max_rpm: null
-    spindle_nose: ""
-    taper: null
-    live_tooling: false
-    envelope:
-      min_diameter_in: 0.375
-      max_diameter_in: 14.0
-      max_length_in: 14.0
-      max_chuck_diameter_in: 26.0
-    tooling: []
-    notes: "One of 4 Mori Seiki CNC lathes. Primarily chucker."
-
-  - id: mori_seiki_lathe_4
-    oem: Mori Seiki
-    model: ""
-    class: cnc_lathe
-    count_group: mori_seiki_cnc_lathe
-    horsepower: null
-    max_rpm: null
-    spindle_nose: ""
-    taper: null
-    live_tooling: false
-    envelope:
-      min_diameter_in: 0.375
-      max_diameter_in: 14.0
-      max_length_in: 14.0
-      max_chuck_diameter_in: 26.0
-    tooling: []
-    notes: "One of 4 Mori Seiki CNC lathes. Primarily chucker."
-
-  - id: okuma_lathe_1
+  - id: okuma_l1060
     oem: Okuma
-    model: ""
+    model: L1060
     class: cnc_lathe
-    count_group: okuma_cnc_lathe
+    subclass: chucker
+    count_group: okuma_l1060
+    control: ""
     horsepower: null
+    kva: null
     max_rpm: null
     spindle_nose: ""
     taper: null
+    axes: null
     live_tooling: false
-    envelope:
-      min_diameter_in: 0.375
-      max_diameter_in: 14.0
-      max_length_in: 14.0
-      max_chuck_diameter_in: 26.0
+    fourth_axis: false
+    typical_work: ""
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_lathe_envelope
     tooling: []
-    notes: "One of 3 Okuma CNC lathes. Primarily chucker."
+    notes: "Okuma Lathe L1060."
 
-  - id: okuma_lathe_2
-    oem: Okuma
-    model: ""
+  - id: mori_seiki_sl65_1
+    oem: Mori Seiki
+    model: SL-65
     class: cnc_lathe
-    count_group: okuma_cnc_lathe
+    subclass: chucker
+    count_group: mori_seiki_sl65
+    control: ""
     horsepower: null
+    kva: null
     max_rpm: null
     spindle_nose: ""
     taper: null
+    axes: null
     live_tooling: false
-    envelope:
-      min_diameter_in: 0.375
-      max_diameter_in: 14.0
-      max_length_in: 14.0
-      max_chuck_diameter_in: 26.0
+    fourth_axis: false
+    typical_work: ""
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_lathe_envelope
     tooling: []
-    notes: "One of 3 Okuma CNC lathes. Primarily chucker."
+    notes: "One of 2 Mori Seiki SL-65."
 
-  - id: okuma_lathe_3
-    oem: Okuma
-    model: ""
+  - id: mori_seiki_sl65_2
+    oem: Mori Seiki
+    model: SL-65
     class: cnc_lathe
-    count_group: okuma_cnc_lathe
+    subclass: chucker
+    count_group: mori_seiki_sl65
+    control: ""
     horsepower: null
+    kva: null
     max_rpm: null
     spindle_nose: ""
     taper: null
+    axes: null
     live_tooling: false
-    envelope:
-      min_diameter_in: 0.375
-      max_diameter_in: 14.0
-      max_length_in: 14.0
-      max_chuck_diameter_in: 26.0
+    fourth_axis: false
+    typical_work: ""
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_lathe_envelope
     tooling: []
-    notes: "One of 3 Okuma CNC lathes. Primarily chucker."
+    notes: "One of 2 Mori Seiki SL-65."
 
-  - id: feeler_lathe_1
-    oem: Feeler
-    model: ""
-    class: cnc_lathe
-    count_group: feeler_cnc_lathe
-    horsepower: null
-    max_rpm: null
-    spindle_nose: ""
-    taper: null
-    live_tooling: false
-    envelope:
-      min_diameter_in: 0.375
-      max_diameter_in: 14.0
-      max_length_in: 14.0
-      max_chuck_diameter_in: 26.0
-    tooling: []
-    notes: "Feeler CNC lathe. Primarily chucker."
-
-  - id: doosan_lathe_live_1
+  - id: puma_gt3100lm
     oem: Doosan
-    model: ""
+    model: Puma GT3100LM
     class: cnc_lathe
-    count_group: doosan_cnc_lathe
-    horsepower: null
+    subclass: chucker
+    count_group: puma_gt3100lm
+    control: ""
+    horsepower: 25
+    kva: null
     max_rpm: null
     spindle_nose: ""
     taper: null
+    axes: null
     live_tooling: true
-    envelope:
-      min_diameter_in: 0.375
-      max_diameter_in: 14.0
-      max_length_in: 14.0
-      max_chuck_diameter_in: 26.0
+    fourth_axis: false
+    typical_work: ""
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_lathe_envelope
     tooling: []
-    notes: "Doosan CNC lathe with live tooling. Prefer when C-axis / mill-turn features are required."
+    notes: "Puma GT3100LM — live tooling (July 2026 capabilities). 25 HP listed."
 
-  - id: hwacheon_lathe_1
+  - id: skk_769_1
+    oem: SKK
+    model: "769"
+    class: cnc_lathe
+    subclass: chucker
+    count_group: skk_769
+    control: ""
+    horsepower: null
+    kva: null
+    max_rpm: null
+    spindle_nose: ""
+    taper: null
+    axes: null
+    live_tooling: false
+    fourth_axis: false
+    typical_work: ""
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_lathe_envelope
+    tooling: []
+    notes: "SKK 769 / SKK769. Asset list also says Okuma 769S."
+
+  - id: skk_769_2
+    oem: SKK
+    model: "769"
+    class: cnc_lathe
+    subclass: chucker
+    count_group: skk_769
+    control: ""
+    horsepower: null
+    kva: null
+    max_rpm: null
+    spindle_nose: ""
+    taper: null
+    axes: null
+    live_tooling: false
+    fourth_axis: false
+    typical_work: ""
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_lathe_envelope
+    tooling: []
+    notes: "SKK 769 / SKK769. Asset list also says Okuma 769S."
+
+  - id: mori_seiki_duraturn_1530
+    oem: Mori Seiki
+    model: Duraturn 1530
+    class: cnc_lathe
+    subclass: chucker
+    count_group: mori_seiki_duraturn_1530
+    control: ""
+    horsepower: null
+    kva: null
+    max_rpm: null
+    spindle_nose: ""
+    taper: null
+    axes: null
+    live_tooling: false
+    fourth_axis: false
+    typical_work: ""
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_lathe_envelope
+    tooling: []
+    notes: "Duraturn 1530 Mori Seiki."
+
+  - id: mori_seiki_sl250a
+    oem: Mori Seiki
+    model: SL250A
+    class: cnc_lathe
+    subclass: chucker
+    count_group: mori_seiki_sl250a
+    control: ""
+    horsepower: null
+    kva: null
+    max_rpm: null
+    spindle_nose: ""
+    taper: null
+    axes: null
+    live_tooling: false
+    fourth_axis: false
+    typical_work: ""
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_lathe_envelope
+    tooling: []
+    notes: "MoriSeiki SL250A."
+
+  - id: feeler_ftc200l
+    oem: Feeler
+    model: FTC200L
+    class: cnc_lathe
+    subclass: chucker
+    count_group: feeler_ftc200l
+    control: ""
+    horsepower: 25
+    kva: null
+    max_rpm: null
+    spindle_nose: ""
+    taper: null
+    axes: null
+    live_tooling: false
+    fourth_axis: false
+    typical_work: ""
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_lathe_envelope
+    tooling: []
+    notes: "Feeler FTC200L. 25 HP listed."
+
+  - id: hwacheon_mansfield
     oem: Hwacheon
     model: ""
     class: cnc_lathe
-    count_group: hwacheon_cnc_lathe
+    subclass: chucker
+    count_group: hwacheon_mansfield
+    control: ""
     horsepower: null
+    kva: null
     max_rpm: null
     spindle_nose: ""
     taper: null
+    axes: null
     live_tooling: false
-    envelope:
-      min_diameter_in: 0.375
-      max_diameter_in: 14.0
-      max_length_in: 14.0
-      max_chuck_diameter_in: 26.0
+    fourth_axis: false
+    typical_work: ""
+    location: Mansfield
+    source: asset_list
+    envelope: *empty_lathe_envelope
     tooling: []
-    notes: "Hwacheon CNC lathe. Primarily chucker."
+    notes: "Hwacheon lathe — Mansfield, bought 7/2024 (asset list; may not be on the xlsx). Exact model TBD."
 
-  - id: engine_lathe_1
-    oem: unknown
-    model: ""
+  - id: victor_174ot
+    oem: Victor
+    model: 174OT
     class: manual_lathe
-    count_group: engine_lathe
+    subclass: engine
+    count_group: victor_174ot
+    control: ""
     horsepower: null
+    kva: null
     max_rpm: null
     spindle_nose: ""
     taper: null
+    axes: null
     live_tooling: false
-    envelope:
-      min_diameter_in: 0.375
-      max_diameter_in: 14.0
-      max_length_in: 14.0
-      max_chuck_diameter_in: 26.0
+    fourth_axis: false
+    typical_work: ""
+    location: ""
+    source: asset_list
+    envelope: *empty_lathe_envelope
     tooling: []
-    notes: "Manual engine lathe. Prefer CNC chucker unless qty is 1 and features are simple."
+    notes: "Victor 174OT — engine lathe in the asset list."
 
 mills:
-  - id: mori_seiki_hmc_1
+  - id: okk_mcv660
+    oem: OKK
+    model: MCV660
+    class: cnc_mill
+    subclass: vertical
+    count_group: okk_mcv660
+    control: Mitsubishi
+    taper: Cat 50
+    horsepower: null
+    kva: null
+    max_rpm: null
+    axes: 3
+    live_tooling: false
+    fourth_axis: false
+    typical_work: top plates
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_mill_envelope
+    tooling: []
+    notes: "OKK MCV660 — VMC 3-axis Mitsubishi CAT50. Example: top plates."
+
+  - id: okk_mcv660_fanuc
+    oem: OKK
+    model: MCV660
+    class: cnc_mill
+    subclass: vertical
+    count_group: okk_mcv660_fanuc
+    control: Fanuc
+    taper: Cat 50
+    horsepower: null
+    kva: null
+    max_rpm: null
+    axes: 4
+    live_tooling: false
+    fourth_axis: true
+    typical_work: tubing hangers / large
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_mill_envelope
+    tooling: []
+    notes: "OKK MCV660 (Fanuc) — VMC 4-axis Fanuc CAT50. Tubing hangers / large."
+
+  - id: mori_seiki_sh630
     oem: Mori Seiki
-    model: ""
+    model: SH-630
     class: cnc_mill
     subclass: horizontal
-    count_group: mori_seiki_hmc
+    count_group: mori_seiki_sh630
+    control: Mitsubishi
     taper: Cat 50
     horsepower: null
+    kva: 85
     max_rpm: null
+    axes: 4
+    live_tooling: false
     fourth_axis: true
-    envelope:
-      x_in: 40.0
-      y_in: 20.0
-      z_in: 20.0
-      fourth_axis_diameter_in: 20.0
+    typical_work: gate bearing hubs
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_mill_envelope
     tooling: []
-    notes: "Mori Seiki horizontal Cat 50. Prefer for tombstone / multi-face / 4th-axis work."
+    notes: "Mori Seiki SH-630 — HMC 4-axis Mitsubishi CAT50. Gate bearing hubs. Biggest mill electrically (85 kVA). Do not convert kVA to HP."
 
-  - id: okk_vmc_1
+  - id: okk_vm7
     oem: OKK
-    model: ""
+    model: VM-7
     class: cnc_mill
     subclass: vertical
-    count_group: okk_vmc_cat50
+    count_group: okk_vm7
+    control: Mitsubishi
     taper: Cat 50
     horsepower: null
+    kva: null
     max_rpm: null
-    fourth_axis: true
-    envelope:
-      x_in: 40.0
-      y_in: 20.0
-      z_in: 20.0
-      fourth_axis_diameter_in: 20.0
-    tooling: []
-    notes: "One of 6 OKK vertical Cat 50. Default heavy milling class."
-
-  - id: okk_vmc_2
-    oem: OKK
-    model: ""
-    class: cnc_mill
-    subclass: vertical
-    count_group: okk_vmc_cat50
-    taper: Cat 50
-    horsepower: null
-    max_rpm: null
-    fourth_axis: true
-    envelope:
-      x_in: 40.0
-      y_in: 20.0
-      z_in: 20.0
-      fourth_axis_diameter_in: 20.0
-    tooling: []
-    notes: "One of 6 OKK vertical Cat 50."
-
-  - id: okk_vmc_3
-    oem: OKK
-    model: ""
-    class: cnc_mill
-    subclass: vertical
-    count_group: okk_vmc_cat50
-    taper: Cat 50
-    horsepower: null
-    max_rpm: null
-    fourth_axis: true
-    envelope:
-      x_in: 40.0
-      y_in: 20.0
-      z_in: 20.0
-      fourth_axis_diameter_in: 20.0
-    tooling: []
-    notes: "One of 6 OKK vertical Cat 50."
-
-  - id: okk_vmc_4
-    oem: OKK
-    model: ""
-    class: cnc_mill
-    subclass: vertical
-    count_group: okk_vmc_cat50
-    taper: Cat 50
-    horsepower: null
-    max_rpm: null
-    fourth_axis: true
-    envelope:
-      x_in: 40.0
-      y_in: 20.0
-      z_in: 20.0
-      fourth_axis_diameter_in: 20.0
-    tooling: []
-    notes: "One of 6 OKK vertical Cat 50."
-
-  - id: okk_vmc_5
-    oem: OKK
-    model: ""
-    class: cnc_mill
-    subclass: vertical
-    count_group: okk_vmc_cat50
-    taper: Cat 50
-    horsepower: null
-    max_rpm: null
-    fourth_axis: true
-    envelope:
-      x_in: 40.0
-      y_in: 20.0
-      z_in: 20.0
-      fourth_axis_diameter_in: 20.0
-    tooling: []
-    notes: "One of 6 OKK vertical Cat 50."
-
-  - id: okk_vmc_6
-    oem: OKK
-    model: ""
-    class: cnc_mill
-    subclass: vertical
-    count_group: okk_vmc_cat50
-    taper: Cat 50
-    horsepower: null
-    max_rpm: null
-    fourth_axis: true
-    envelope:
-      x_in: 40.0
-      y_in: 20.0
-      z_in: 20.0
-      fourth_axis_diameter_in: 20.0
-    tooling: []
-    notes: "One of 6 OKK vertical Cat 50."
-
-  - id: fadal_vmc_1
-    oem: Fadal
-    model: ""
-    class: cnc_mill
-    subclass: vertical
-    count_group: fadal_vmc_cat40
-    taper: Cat 40
-    horsepower: null
-    max_rpm: null
+    axes: 3
+    live_tooling: false
     fourth_axis: false
-    envelope:
-      x_in: 40.0
-      y_in: 20.0
-      z_in: 20.0
-      fourth_axis_diameter_in: null
+    typical_work: shaft rollers
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_mill_envelope
     tooling: []
-    notes: "Fadal vertical Cat 40. Lighter / older VMC class."
+    notes: "OKK VM-7 — VMC 3-axis Mitsubishi CAT50. Shaft rollers."
 
-  - id: robodrill_1
-    oem: Fanuc
-    model: Robodrill
-    class: cnc_mill
-    subclass: vertical_high_speed
-    count_group: robodrill_cat30
-    taper: Cat 30
-    horsepower: null
-    max_rpm: null
-    fourth_axis: false
-    envelope:
-      x_in: 20.0
-      y_in: 16.0
-      z_in: 12.0
-      fourth_axis_diameter_in: null
-    tooling: []
-    notes: "One of 2 Robodrills, vertical Cat 30. Prefer small, high-speed, lighter cuts."
-
-  - id: robodrill_2
-    oem: Fanuc
-    model: Robodrill
-    class: cnc_mill
-    subclass: vertical_high_speed
-    count_group: robodrill_cat30
-    taper: Cat 30
-    horsepower: null
-    max_rpm: null
-    fourth_axis: false
-    envelope:
-      x_in: 20.0
-      y_in: 16.0
-      z_in: 12.0
-      fourth_axis_diameter_in: null
-    tooling: []
-    notes: "One of 2 Robodrills, vertical Cat 30."
-
-  - id: doosan_puma_vmc_1
+  - id: puma_dnm750_50_ii
     oem: Doosan
-    model: Puma
+    model: DNM750/50 II
     class: cnc_mill
     subclass: vertical
-    count_group: doosan_puma_vmc_cat50
+    count_group: puma_dnm750_50_ii
+    control: Fanuc
     taper: Cat 50
-    horsepower: null
+    horsepower: 15
+    kva: null
     max_rpm: null
-    fourth_axis: true
-    envelope:
-      x_in: 40.0
-      y_in: 20.0
-      z_in: 20.0
-      fourth_axis_diameter_in: 20.0
+    axes: 3
+    live_tooling: false
+    fourth_axis: false
+    typical_work: tombstones/hangers
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_mill_envelope
     tooling: []
-    notes: "Doosan Puma vertical Cat 50."
+    notes: "PUMA DNM750/50 II — VMC 3-axis Fanuc CAT50. Tombstones/hangers. 15 HP listed."
 
-  - id: leadwell_vmc_1
-    oem: Leadwell
-    model: ""
+  - id: robodrill_d21lib5_1
+    oem: Fanuc
+    model: RoboDrill D21LiB5
+    class: cnc_mill
+    subclass: vertical_high_speed
+    count_group: robodrill_d21lib5
+    control: Fanuc
+    taper: Cat 30
+    horsepower: null
+    kva: null
+    max_rpm: null
+    axes: 3
+    live_tooling: false
+    fourth_axis: false
+    typical_work: Time parts drill/tap/interp
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_mill_envelope
+    tooling: []
+    notes: "One of 2 Fanuc RoboDrill D21LiB5 — VMC 3-axis Fanuc CAT30. Time parts drill/tap/interp."
+
+  - id: robodrill_d21lib5_2
+    oem: Fanuc
+    model: RoboDrill D21LiB5
+    class: cnc_mill
+    subclass: vertical_high_speed
+    count_group: robodrill_d21lib5
+    control: Fanuc
+    taper: Cat 30
+    horsepower: null
+    kva: null
+    max_rpm: null
+    axes: 3
+    live_tooling: false
+    fourth_axis: false
+    typical_work: Time parts drill/tap/interp
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_mill_envelope
+    tooling: []
+    notes: "One of 2 Fanuc RoboDrill D21LiB5 — VMC 3-axis Fanuc CAT30."
+
+  - id: fadal_906_4020ht
+    oem: Fadal
+    model: 906 VMC 4020HT
     class: cnc_mill
     subclass: vertical
-    count_group: leadwell_vmc_cat40
+    count_group: fadal_906_4020ht
+    control: Fadal
     taper: Cat 40
     horsepower: null
+    kva: null
     max_rpm: null
-    fourth_axis: false
-    envelope:
-      x_in: 40.0
-      y_in: 20.0
-      z_in: 20.0
-      fourth_axis_diameter_in: null
+    axes: 4
+    live_tooling: false
+    fourth_axis: true
+    typical_work: Hydril/HydraRig small
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_mill_envelope
     tooling: []
-    notes: "Leadwell vertical Cat 40."
+    notes: "Fadal 906 VMC 4020HT — VMC 4-axis Fadal CAT40. Hydril/HydraRig small."
 
-  - id: bridgeport_1
-    oem: Bridgeport
-    model: ""
-    class: manual_mill
-    subclass: knee
-    count_group: bridgeport_manual
-    taper: R8
+  - id: okk_vm511
+    oem: OKK
+    model: VM511
+    class: cnc_mill
+    subclass: vertical
+    count_group: okk_vm511
+    control: Mitsubishi
+    taper: Cat 50
     horsepower: null
+    kva: null
     max_rpm: null
+    axes: 3
+    live_tooling: false
     fourth_axis: false
-    envelope:
-      x_in: 18.0
-      y_in: 12.0
-      z_in: 5.0
-      fourth_axis_diameter_in: null
+    typical_work: FAI 1–2 pc
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_mill_envelope
     tooling: []
-    notes: "One of 3 Bridgeport manual mills. Prefer CNC unless qty is 1 and features are simple."
+    notes: "OKK VM511 — VMC 3-axis Mitsubishi CAT50. FAI 1–2 pc."
 
-  - id: bridgeport_2
-    oem: Bridgeport
-    model: ""
-    class: manual_mill
-    subclass: knee
-    count_group: bridgeport_manual
-    taper: R8
+  - id: okk_mcv660_blue
+    oem: OKK
+    model: MCV660
+    class: cnc_mill
+    subclass: vertical
+    count_group: okk_mcv660_blue
+    control: Mitsubishi
+    taper: Cat 50
     horsepower: null
+    kva: null
     max_rpm: null
+    axes: 3
+    live_tooling: false
     fourth_axis: false
-    envelope:
-      x_in: 18.0
-      y_in: 12.0
-      z_in: 5.0
-      fourth_axis_diameter_in: null
+    typical_work: knuckle / long
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_mill_envelope
     tooling: []
-    notes: "One of 3 Bridgeport manual mills."
+    notes: "OKK MCV660 (blue, open table) — VMC 3-axis Mitsubishi CAT50. Knuckle / long."
 
-  - id: bridgeport_3
-    oem: Bridgeport
-    model: ""
-    class: manual_mill
-    subclass: knee
-    count_group: bridgeport_manual
-    taper: R8
+  - id: leadwell_v50
+    oem: Leadwell
+    model: V-50
+    class: cnc_mill
+    subclass: vertical
+    count_group: leadwell_v50
+    control: Fanuc
+    taper: Cat 40
     horsepower: null
+    kva: null
     max_rpm: null
+    axes: 3
+    live_tooling: false
     fourth_axis: false
-    envelope:
-      x_in: 18.0
-      y_in: 12.0
-      z_in: 5.0
-      fourth_axis_diameter_in: null
+    typical_work: "Juan's machine"
+    location: ""
+    source: mills_and_lathes_equipment_xlsx
+    envelope: *empty_mill_envelope
     tooling: []
-    notes: "One of 3 Bridgeport manual mills."
+    notes: "Leadwell V-50 — VMC 3-axis Fanuc CAT40. Juan's machine."

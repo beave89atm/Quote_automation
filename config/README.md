@@ -20,7 +20,7 @@ Set `KANNON_DRAWING_LIBRARY` to override roots (semicolon-separated) on each off
 
 ## `machines.yaml`
 
-Starting CNC / manual roster from the July 27 2026 capabilities list. Add rows or fill `model`, `horsepower`, `max_rpm`, `taper`, `envelope`, and `tooling` without a code change. Shop-level gates (14" lathe, 20×40 mill, 20" 4th-axis) live under `shop_envelopes`.
+Named CNC / manual roster from *Mills and Lathes Equipment.xlsx* (plus asset-list Hwacheon / Victor). Per-machine travels and `max_rpm` are **null** — the xlsx columns were empty; do not invent them. Shop-level gates (14" lathe, 20×40 mill, 20" 4th-axis) live under `shop_envelopes`. Add rows or fill HP, RPM, envelope, and tooling without a code change.
 
 ## `machining.yaml`
 

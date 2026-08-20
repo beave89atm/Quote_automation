@@ -159,7 +159,11 @@ def test_machines_with_token(client: TestClient, token: str) -> None:
     assert res.status_code == 200
     body = res.json()
     assert body["counts"]["cnc_lathes"] == 10
-    assert body["counts"]["cnc_mills"] == 12
+    assert body["counts"]["cnc_mills"] == 11
+    names = {m["id"] for m in body["mills"]} | {m["id"] for m in body["lathes"]}
+    assert "mori_seiki_sh630" in names
+    assert "puma_gt3100lm" in names
+    assert "travels_od_length_per_machine" in body["todos"]
 
 
 def test_machining_mill_post_not_405(client: TestClient, token: str) -> None:

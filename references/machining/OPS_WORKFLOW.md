@@ -81,19 +81,19 @@ Ask for more info when any of these are missing and needed for time:
 
 Prefer: component drawings, STP/STEP, or a marked-up print.
 
-## 5. Machine capability match (July 27 2026 starting roster)
+## 5. Machine capability match (named roster + July 2026 shop gates)
 
-Roster lives in `config/machines.yaml` (10 CNC lathes, 12 CNC mills, 3 Bridgeports, 1 engine lathe). Shop gates:
+Named machines live in `config/machines.yaml`. Shop gates (xlsx travels were empty — do not invent):
 
 - Lathe: 3/8–14" diameter × 12–14" long; chucks to 26"
 - Mill: cube 20" × 40"; 4th-axis to 20" diameter
 
 The reviewable calculator is `/machine` (API: `POST /api/machining/mill` and `/lathe`). Out-of-envelope parts are flagged and `ok_to_quote` is false.
 
-Still TBD from Kyle (no code change needed once supplied):
-- Exact model numbers, HP, max RPM
-- Tooling crib / insert grades (replace placeholder SFM)
-- Real setup minutes
+Still TBD (no inventing):
+- Per-machine travels / OD / length / max RPM
+- Tooling crib / real SFM tables
+- Per-machine setup and 2026 burden rates
 
 ## 6. Commercial plug-ins (geometry engines)
 
