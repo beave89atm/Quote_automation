@@ -332,23 +332,28 @@ def recover_time_part_no(raw: str | None, *, item: str | None = None) -> str | N
         base = dashed.group("base")
         suf = dashed.group("suf").upper()
         part = f"{base}-{suf}"
-        if len(base) == 7 and base.startswith("11"):
+        if len(base) == 5 and base.startswith("0"):
+            prefixed = f"1{base}-{suf}"
+            # Only when the result is a 6-digit 10xxxx Time PN (00177-2, 02727-4).
+            if prefixed.startswith("10") and len(prefixed.split("-")[0]) == 6:
+                part = prefixed
+        elif len(base) == 7 and base.startswith("11"):
             dropped = f"{base[1:]}-{suf}"
             if dropped.startswith("1027"):
                 # AX 1102726-1 HOOK pO → 102726-1 (extra leading 1)
                 part = dropped
-        elif len(base) >= 5 and base.startswith("0"):
-            prefixed = f"1{base}-{suf}"
-            if prefixed.startswith("10"):
-                # 02727-4 → 102727-4; 00177-2 → 100177-2 (dropped leading 1)
-                part = prefixed
+        elif len(base) == 7 and base.startswith("1") and not base.startswith("10"):
+            # 1432670-n — extra 1 on an already-complete 6-digit stem.
+            part = f"{base[1:]}-{suf}"
         if item and str(item).upper() == "BB" and part in {_KNOWN_BB_PART, "02727-4"}:
             return _KNOWN_BB_PART
         return part
     bare = _BARE_PN_RE.search(text)
     if bare:
         base = bare.group("base")
-        # Do not invent a dash on 460330 / 460320.
+        if len(base) == 7 and base.startswith("1") and not base.startswith("10"):
+            return base[1:]
+        # Do not invent a dash on 460330 / 460320. Do not prefix complete stems.
         return base
     return normalize_part_no(text)
 
@@ -428,14 +433,14 @@ def _qty_from_one_source(
         return 2, True, "BB qty 2 recovered (qty cell unread; known 102727-4 print)"
     if tokens:
         n = tokens[-1]
-        if n > 4 and _BLEED_KIND_RE.search(desc or raw):
+        if n > 4:
             return 1, False, (
-                f"{item} qty {n} looks like dimension bleed — "
+                f"{item or '?'} qty {n} looks like dimension bleed — "
                 f"not used as piece count, flag review"
             )
-        if 1 <= n <= 20:
+        if 1 <= n <= 4:
             return n, True, None
-    return 1, False, f"{item} qty OCR unreadable — defaulted to 1, flag review"
+    return 1, False, f"{item or '?'} qty OCR unreadable — defaulted to 1, flag review"
 
 
 def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
@@ -463,7 +468,8 @@ def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
     if _looks_like_bb_tube(part, desc, raw):
         part = _KNOWN_BB_PART
     item, glued_qty = _choose_item_for_part(raw, part_match.start(), part, desc)
-    if not item:
+    dashed = bool(_DASHED_PN_RE.search(raw))
+    if not item and not dashed:
         return None
     if _looks_like_bb_tube(part, desc, raw):
         item = "BB"
@@ -471,7 +477,7 @@ def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
     qty, qty_clear, qty_note = _qty_from_one_source(
         raw,
         part_match.start(),
-        item=item,
+        item=item or "",
         part=part,
         desc=desc,
         glued_qty=glued_qty,
@@ -483,6 +489,7 @@ def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
         "description": desc,
         "qty_clear": qty_clear,
         "qty_note": qty_note,
+        "unread_item": item is None,
     }
 
 
@@ -497,6 +504,68 @@ def _parsed_to_row(parsed: dict[str, Any]):
         source="table_material_list_strip",
         confidence=0.88 if parsed["qty_clear"] else 0.8,
     )
+
+
+def assign_items_from_sequence(
+    slots: list[dict[str, Any] | None],
+    notes: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Keep dashed-PN bands with unread item letters; assign A–Z skip I/O, then AA–BC.
+
+    Does not invent PNs. Does not create AI/AO (I/O are skipped as letters).
+    Band order is top→bottom; 102728-1 has A at the bottom (header below).
+    """
+    notes = notes if notes is not None else []
+    seq = time_item_letters(through="BC")
+    seq_index = {tok: i for i, tok in enumerate(seq)}
+    known: list[tuple[int, int]] = []
+    for i, parsed in enumerate(slots):
+        if not parsed:
+            continue
+        item = str(parsed.get("item") or "").upper()
+        if item in seq_index:
+            known.append((i, seq_index[item]))
+    # Default: A nearest the bottom (later slot) as on Time 102728-1.
+    bottom_is_a = True
+    if len(known) >= 2:
+        bottom_is_a = known[-1][1] < known[0][1]
+    walk = range(len(slots) - 1, -1, -1) if bottom_is_a else range(len(slots))
+    used = {
+        str(p.get("item") or "").upper()
+        for p in slots
+        if p and str(p.get("item") or "").upper() in seq_index
+    }
+    unread_idxs: list[int] = []
+    for i in walk:
+        parsed = slots[i]
+        if not parsed:
+            continue
+        if _looks_like_bb_tube(parsed.get("part_no"), parsed.get("description")):
+            parsed["item"] = "BB"
+            parsed["qty"] = 2
+            parsed["part_no"] = _KNOWN_BB_PART
+            parsed["unread_item"] = False
+            used.add("BB")
+            continue
+        item = str(parsed.get("item") or "").upper()
+        if item in seq_index:
+            continue
+        if not re.search(r"\d{5,7}-\d", str(parsed.get("part_no") or "")):
+            continue
+        unread_idxs.append(i)
+    unused = [tok for tok in seq if tok not in used]
+    assigned = 0
+    for i, letter in zip(unread_idxs, unused):
+        slots[i]["item"] = letter
+        slots[i]["unread_item"] = False
+        assigned += 1
+    if assigned:
+        notes.append(
+            f"Assigned {assigned} unread item letter(s) from A–BC sequence "
+            f"(dashed PN kept; do not invent rows)"
+        )
+    return [p for p in slots if p and p.get("item") and p.get("part_no")]
 
 
 def _keep_better_strip(old, new):
@@ -535,7 +604,9 @@ def _finalize_strip_rows(rows: list, notes: list[str]) -> list:
                 source=row.source,
                 confidence=row.confidence,
             )
-        key = str(row.item).upper()
+        key = str(row.item or "").upper()
+        if not key:
+            continue
         prev = by_item.get(key)
         by_item[key] = _keep_better_strip(prev, row) if prev else row
     # Drop a leftover H/etc. that still points at the BB tube after reassignment.
@@ -555,13 +626,17 @@ def harvest_ocr_row_strips(
     from quote_core.bom import BomResult
 
     notes: list[str] = []
-    found: list = []
+    slots: list[dict[str, Any] | None] = []
     for line in lines or []:
+        if not str(line).strip():
+            slots.append(None)
+            continue
         parsed = parse_ocr_row_strip(line)
-        if parsed:
-            found.append(_parsed_to_row(parsed))
-            if parsed.get("qty_note"):
-                notes.append(parsed["qty_note"])
+        slots.append(parsed)
+        if parsed and parsed.get("qty_note"):
+            notes.append(parsed["qty_note"])
+    filled = assign_items_from_sequence(slots, notes)
+    found = [_parsed_to_row(p) for p in filled]
     # Adjacent bands: ``AA`` on one strip, ``460330 CAP…`` on the next.
     blob = "\n".join(str(x) for x in (lines or []) if str(x).strip())
     for m in _ITEM_PART_ANY_RE.finditer(blob):
@@ -569,7 +644,7 @@ def harvest_ocr_row_strips(
         parsed = parse_ocr_row_strip(f"{m.group('item')}{glued} {m.group('part')}")
         if not parsed:
             parsed = parse_ocr_row_strip(m.group(0))
-        if parsed:
+        if parsed and parsed.get("item"):
             found.append(_parsed_to_row(parsed))
     rows = _finalize_strip_rows(found, notes)
     if not rows:

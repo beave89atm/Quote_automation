@@ -233,9 +233,12 @@ def extract_bom_from_table_image(
                         text = _ocr_row_strip(strip)
                 else:
                     text = _ocr_row_strip(strip)
-                if text and text.strip():
-                    lines.append(text.strip())
-            notes.append(f"OCR'd {len(lines)} row strips (not a whole-page dump)")
+                # Keep empty bands as holes so A–BC sequence fill stays aligned.
+                lines.append((text or "").strip())
+            notes.append(
+                f"OCR'd {sum(1 for t in lines if t)}/{len(lines)} row strips "
+                f"(empty bands kept as sequence holes)"
+            )
         elif not ocr_available():
             notes.append(
                 "Tesseract unavailable — grid segmented but cells not read. "

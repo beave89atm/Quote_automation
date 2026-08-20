@@ -12,8 +12,10 @@ from PIL import Image, ImageDraw, ImageFont
 from quote_core.bom import BomResult, extract_bom
 from quote_core.bom_table import (
     harvest_material_list_lines,
+    harvest_ocr_row_strips,
     parse_ocr_row_strip,
     pick_best_material_list,
+    recover_time_part_no,
     time_item_letters,
 )
 from quote_core.bom_table_image import (
@@ -291,6 +293,46 @@ def test_exact_live_strips_harvest_51ish_and_bb():
     assert len(harvested.rows) >= 48
     hbb = next(r for r in harvested.rows if r.item == "BB")
     assert hbb.qty == 2 and hbb.part_no == _BB_PART
+
+
+def test_unread_single_letter_dashed_pn_assigned_from_sequence():
+    """Live 1b1302f miss: keep dashed PNs when A–Y letters are unread."""
+    seq = time_item_letters(through="BC")
+    known = {"A", "F", "H", "M", "S", "Z", "AA", "BB"}
+    # Top→bottom = BC…A (header at bottom).
+    lines = ["TEM | PART NO. | DESCRIPTION"]
+    for item in reversed(seq):
+        if item == "BB":
+            lines.append("BBD 02727-4 TUBE, ROUND")
+        elif item in known:
+            lines.append(f"{item} 1028{seq.index(item):02d}-1 DESC")
+        else:
+            lines.append(f"1028{seq.index(item):02d}-1 SUPPORT")
+    bom = harvest_ocr_row_strips(lines)
+    items = {r.item for r in bom.rows}
+    for letter in "BCDEGJKLNPQRTUVWXY":
+        assert letter in items, letter
+    for tok in ("AJ", "AU", "BA"):
+        assert tok in items, tok
+    assert "AI" not in items and "AO" not in items
+    bb = next(r for r in bom.rows if r.item == "BB")
+    assert bb.qty == 2 and bb.part_no == _BB_PART
+    assert len(bom.rows) >= 48
+
+
+def test_leading_1_only_on_5digit_0_stem():
+    assert recover_time_part_no("00177-2") == "100177-2"
+    assert recover_time_part_no("02727-4") == "102727-4"
+    assert recover_time_part_no("33688-10") == "33688-10"
+    assert recover_time_part_no("432670") == "432670"
+    assert recover_time_part_no("1432670") == "432670"
+
+
+def test_qty_7_on_s_is_dimension_bleed():
+    row = parse_ocr_row_strip("7 S 100200-1 RAIL, HORIZONTAL")
+    assert row["item"] == "S" and row["qty"] == 1
+    av = parse_ocr_row_strip("7 AV 100210-1 TUBE")
+    assert av["item"] == "AV" and av["qty"] == 1
 
 
 def test_pick_best_does_not_invent_rows_for_unread_tall_grid():
