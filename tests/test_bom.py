@@ -279,7 +279,7 @@ def test_fitup_piece_count_follows_time_bom_25(tmp_path: Path):
     pdf = tmp_path / "1004335-1.pdf"
     doc = fitz.open()
     page = doc.new_page()
-    page.insert_text((40, 40), _BASKET_1004335_BOM)
+    page.insert_textbox(fitz.Rect(40, 40, 560, 780), _BASKET_1004335_BOM)
     doc.save(str(pdf))
     doc.close()
 

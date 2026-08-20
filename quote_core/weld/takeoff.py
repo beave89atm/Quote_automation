@@ -1206,6 +1206,7 @@ def estimate_fitup_drivers(
     if (
         method.startswith("pdf_bom")
         or method.startswith("ocr_time")
+        or method.startswith("native_time")
         or method.startswith("native_mac")
         or method.startswith("native_parts_list")
     ):
@@ -1255,6 +1256,7 @@ def estimate_fitup_drivers(
     if bom_piece_count > 0 and (
         method.startswith("pdf_bom")
         or method.startswith("ocr_time")
+        or method.startswith("native_time")
         or method.startswith("native_mac")
         or method.startswith("native_parts_list")
         or "qty_only" in method
