@@ -196,7 +196,7 @@ def _live_page1_strips() -> list[str]:
         if item in overrides:
             lines.append(overrides[item])
         else:
-            lines.append(f"{item} 1027{i:02d}-1 COMPONENT {item}")
+            lines.append(f"{item} 1028{i:02d}-1 COMPONENT {item}")
     return lines
 
 
