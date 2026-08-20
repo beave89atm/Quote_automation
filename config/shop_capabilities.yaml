@@ -1,7 +1,8 @@
 # Kannon in-house + outsourced capabilities (Kyle, July 2026).
 # Source: "Equipment and Capabilities - Kannon Manufacturing - 7_27_26.docx"
 # Times here are shop defaults / lesson placeholders — flag for review when unknown.
-# Do not invent mill/lathe run times (machining is PARKED).
+# Mill/lathe inventory is listed for shop context only. Times stay PARKED —
+# machining is a parallel project; this app does not estimate those ops.
 
 source: "Equipment and Capabilities - Kannon Manufacturing - 7_27_26.docx"
 as_of: "2026-07-27"

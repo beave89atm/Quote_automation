@@ -1,7 +1,8 @@
-"""Propose shop operations + setup/run times from drawings and capabilities.
+"""Propose fab operations + setup/run times from drawings and capabilities.
 
-Conservative: flag unknowns instead of inventing mill/lathe geometry times.
-Outsourced tube laser and powder coating always appear on the proposal.
+Conservative: flag unknowns. Mill/lathe is a parallel project — never invent
+those times or emit mill/lathe ops. Outsourced tube laser and powder coating
+always appear on the proposal.
 """
 
 from __future__ import annotations
@@ -106,7 +107,7 @@ def propose_operations(
     Propose operations from drawings + the capabilities list.
 
     Tube laser and powder coating are always listed (outsourced). Mill/lathe
-    times stay parked — detected machining is flagged, not estimated.
+    is a parallel project — never propose those ops or invent their times.
     """
     caps = capabilities if capabilities is not None else load_shop_capabilities(capabilities_path)
     ph = _placeholders(caps)
@@ -337,52 +338,13 @@ def propose_operations(
         )
     )
 
-    # --- Machining PARKED ---
-    mill_hits = []
-    if _has(blob, _MILL_RE):
-        mill_hits.append("mill / machining keyword")
-    lathe_hits = []
-    if _has(blob, _LATHE_RE):
-        lathe_hits.append("lathe / turning keyword")
-    if mill_hits or lathe_hits:
+    # Machining is a parallel project — do not propose mill/lathe ops or times.
+    if _has(blob, _MILL_RE) or _has(blob, _LATHE_RE):
         flags.append(
-            "Machining hinted on drawing — times PARKED (no mill/lathe estimate). "
-            "Kyle must add ops in SecturaFAB."
+            "Machining hinted on drawing — mill/lathe is a parallel project "
+            "(PARKED). This app does not estimate those times; Kyle adds ops "
+            "in SecturaFAB if needed."
         )
-    ops.append(
-        ProposedOperation(
-            code="mill",
-            name="CNC mill",
-            location="in_house",
-            detected=bool(mill_hits),
-            setup_minutes=None,
-            run_minutes=None,
-            time_status="parked",
-            needs_review=bool(mill_hits),
-            confidence="low" if mill_hits else "n/a",
-            evidence=mill_hits,
-            notes=["PARKED — do not invent mill time"]
-            if mill_hits
-            else ["Not indicated; machining times stay parked"],
-        )
-    )
-    ops.append(
-        ProposedOperation(
-            code="lathe",
-            name="CNC lathe",
-            location="in_house",
-            detected=bool(lathe_hits),
-            setup_minutes=None,
-            run_minutes=None,
-            time_status="parked",
-            needs_review=bool(lathe_hits),
-            confidence="low" if lathe_hits else "n/a",
-            evidence=lathe_hits,
-            notes=["PARKED — do not invent lathe time"]
-            if lathe_hits
-            else ["Not indicated; machining times stay parked"],
-        )
-    )
 
     # --- Outsourced: always listed ---
     tl_hits: list[str] = []
@@ -435,7 +397,7 @@ def propose_operations(
         )
     )
 
-    if not any(o.detected for o in ops if o.location == "in_house" and o.code not in {"mill", "lathe"}):
+    if not any(o.detected for o in ops if o.location == "in_house"):
         flags.append(
             "No in-house cut/bend/weld ops confidently detected — review drawings in SecturaFAB"
         )

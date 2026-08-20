@@ -435,6 +435,8 @@ def _weld_memo(times: dict[str, Any] | None, takeoff: dict[str, Any] | None) -> 
     ops_root = takeoff.get("operations") or {}
     op_bits: list[str] = []
     for op in ops_root.get("operations") or []:
+        if str(op.get("code") or "") in {"mill", "lathe"}:
+            continue
         if not op.get("detected") and op.get("location") != "outsourced":
             continue
         label = str(op.get("name") or op.get("code") or "op")

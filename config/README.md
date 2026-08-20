@@ -3,9 +3,9 @@
 ## `shop_capabilities.yaml`
 
 In-house equipment + outsourced processes from Kyle’s July 2026 capabilities
-doc. Used to propose operations and to always list **tube laser** and
-**powder coating** (vendor times are placeholders). Mill/lathe times stay
-parked.
+doc. Used to propose fab operations and to always list **tube laser** and
+**powder coating** (vendor times are placeholders). Mill/lathe is a
+parallel project — not estimated in this app.
 
 ## `shop_rates.yaml`
 

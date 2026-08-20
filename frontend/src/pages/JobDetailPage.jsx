@@ -683,15 +683,17 @@ export default function JobDetailPage() {
       </details>
 
       {(() => {
-        const ops = job.takeoff?.operations?.operations || [];
+        const ops = (job.takeoff?.operations?.operations || []).filter(
+          (op) => op.code !== "mill" && op.code !== "lathe"
+        );
         if (!ops.length) return null;
         return (
           <div className="ops-block">
             <h2>Proposed operations</h2>
             <p className="muted" style={{ marginTop: 0 }}>
-              From drawings + Kannon capabilities (July 2026). Unknowns are flagged —
-              mill/lathe times stay parked. Tube laser and powder coating always appear
-              (outsourced; confirm vendor times).
+              Laser / bend / weld / fit-up from this takeoff. Tube laser and powder
+              coating always appear (outsourced; confirm vendor times). Mill/lathe is
+              a parallel project — this app does not estimate those times.
             </p>
             <table className="takeoff-table">
               <thead>

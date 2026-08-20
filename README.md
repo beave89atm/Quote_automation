@@ -67,10 +67,10 @@ Open http://localhost:5173
      Sibling library PDFs are **not** treated as that part’s BOM.
 2. **Quote number = part number.** Repeat / ongoing parts — not a project-style
    number.
-3. App proposes operations (laser, bend, weld/fit-up, saw, outsourced tube laser +
-   powder coating, …) and setup/run times it can compute. Unknowns and mill/lathe
-   are flagged — not invented. Extra PDF / DXF / STP files are for when those
-   files are **not** already in the library.
+3. App proposes fab operations (laser, bend, weld/fit-up, saw, outsourced tube
+   laser + powder coating) and the setup/run times this takeoff can compute.
+   Mill/lathe is a **parallel project** — not estimated here. Extra PDF / DXF /
+   STP files are for when those files are **not** already in the library.
 4. Review flags + weld inches + BOM, then **Push to SecturaFAB** (one quote per
    part number).
 5. Kyle reviews the live quote in SecturaFAB (Profile / Weld / memo / ItemList)

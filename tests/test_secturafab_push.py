@@ -86,6 +86,15 @@ def test_weld_memo_includes_operations():
                         "run_minutes": None,
                         "time_status": "confirm",
                     },
+                    {
+                        "code": "mill",
+                        "name": "CNC mill",
+                        "location": "in_house",
+                        "detected": True,
+                        "setup_minutes": 45,
+                        "run_minutes": 12,
+                        "time_status": "parked",
+                    },
                 ]
             },
         },
@@ -93,6 +102,8 @@ def test_weld_memo_includes_operations():
     assert "Tube laser" in memo
     assert "Powder coating" in memo
     assert "confirm" in memo
+    assert "CNC mill" not in memo
+    assert "setup 45" not in memo
 
 
 def test_push_job_creates_quote_and_uploads():

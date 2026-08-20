@@ -68,20 +68,17 @@ def test_propose_powder_and_tube_laser_from_notes():
     assert powder.setup_minutes == 20
 
 
-def test_propose_machining_parked_no_times():
+def test_propose_machining_not_in_this_workstream():
     proposal = propose_operations(
         title="housing",
         pdf_notes=["CNC MILL POCKET", "LATHE TURN OD"],
         has_pdf=True,
     )
-    mill = next(o for o in proposal.operations if o.code == "mill")
-    lathe = next(o for o in proposal.operations if o.code == "lathe")
-    assert mill.detected
-    assert lathe.detected
-    assert mill.run_minutes is None
-    assert lathe.run_minutes is None
-    assert mill.time_status == "parked"
-    assert any("PARKED" in f for f in proposal.flags)
+    codes = [o.code for o in proposal.operations]
+    assert "mill" not in codes
+    assert "lathe" not in codes
+    assert all(o.setup_minutes is None or o.code != "mill" for o in proposal.operations)
+    assert any("parallel project" in f for f in proposal.flags)
 
 
 def test_extract_dxf_text(tmp_path: Path):

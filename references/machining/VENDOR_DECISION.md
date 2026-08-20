@@ -1,7 +1,7 @@
 # Vendor decision: mill/lathe geometry engine
 
 **Date:** 2026-08-06  
-**Status:** **PARKED** (2026-08-07) — Kyle deferred machining until a better shop plan exists. Do not resume Paperless Parts trial or wire machining into Quote Automation until un-parked.
+**Status:** **PARKED** (2026-08-20) — Kyle split machining onto a **parallel workstream**. Do not invent mill/lathe/setup/run times or a machining calculator in Quote Automation. Do not resume Paperless Parts trial or wire machining into this app until un-parked.
 
 ## Decision
 

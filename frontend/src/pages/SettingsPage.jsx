@@ -147,7 +147,7 @@ export default function SettingsPage() {
             <li>Lasers: 2 Amada (9kW / 3kW), 5×10 sheet, 18ga–3/4&quot; CS</li>
             <li>Brake: Accurpress + Safan, max 250 ton</li>
             <li>Weld: 30 manual bays + 3 OTC robots</li>
-            <li>CNC mill/lathe: listed, times PARKED until Kyle un-parks machining</li>
+            <li>CNC mill/lathe: parallel project — not quoted in this app</li>
           </ul>
         </>
       ) : null}
