@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import shutil
 import threading
 from pathlib import Path
@@ -18,6 +17,7 @@ from .auth import login, require_auth
 from .batch import pair_upload_files, paired_part_summary
 from .db import Job, SessionLocal, init_db
 from .paths import FRONTEND_DIST, RATES_PATH, UPLOAD_DIR, ensure_data_dirs
+from .quote_html import render_quote_html
 from .services import process_job, push_jobs_secturafab_batch, recompute_from_items
 
 app = FastAPI(title="Kannon Quote App", version="0.1.0")
@@ -68,6 +68,21 @@ def api_login(body: LoginBody) -> dict[str, Any]:
     }
 
 
+def _secturafab_public_status() -> dict[str, Any]:
+    from secturafab.config import SecturaFabConfig
+
+    return SecturaFabConfig.from_env().public_status()
+
+
+def _require_secturafab_credentials() -> None:
+    from secturafab.config import SecturaFabConfig
+
+    try:
+        SecturaFabConfig.from_env().require_credentials()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.get("/api/rates")
 def get_rates(_: str = Depends(require_auth)) -> dict[str, Any]:
     rates = load_shop_rates(RATES_PATH)
@@ -76,6 +91,9 @@ def get_rates(_: str = Depends(require_auth)) -> dict[str, Any]:
         "weld_process": rates.weld_process,
         "weld_ipm": rates.weld_ipm,
         "default_ipm": rates.default_ipm,
+        "labor_rate_per_hour": rates.labor_rate_per_hour,
+        "labor_placeholder": rates.labor_placeholder,
+        "labor_notes": rates.labor_notes,
         "fitup": {
             "default_band_id": rates.fitup.default_band_id,
             "formula": "fitup = sum(per-piece minutes for each physical piece by its weight band)",
@@ -97,6 +115,7 @@ def get_rates(_: str = Depends(require_auth)) -> dict[str, Any]:
             ],
         },
         "always_ask": rates.always_ask,
+        "secturafab": _secturafab_public_status(),
         "config_path": str(RATES_PATH),
         "help": "Edit config/shop_rates.yaml and restart the server to apply changes.",
     }
@@ -274,6 +293,19 @@ def batch_push_secturafab(
 
     queued: list[int] = []
     rejected: list[dict[str, Any]] = []
+
+    from secturafab.config import SecturaFabConfig
+
+    try:
+        SecturaFabConfig.from_env().require_credentials()
+    except ValueError as exc:
+        return {
+            "queued": [],
+            "queued_count": 0,
+            "rejected": [
+                {"job_id": job_id, "reason": str(exc)} for job_id in job_ids
+            ],
+        }
 
     db = SessionLocal()
     try:
@@ -474,6 +506,8 @@ def push_job_to_secturafab(job_id: int, _: str = Depends(require_auth)) -> dict[
         if job.status in {"uploaded", "processing"}:
             raise HTTPException(400, "Wait for takeoff to finish before pushing")
 
+        _require_secturafab_credentials()
+
         readiness = job_push_readiness(job)
         if not readiness["ready"]:
             raise HTTPException(
@@ -534,39 +568,7 @@ def export_job_html(job_id: int, _: str = Depends(require_auth)) -> str:
     finally:
         db.close()
 
-    times = data.get("times") or {}
-    rows = "".join(
-        f"<tr><td>{s.get('size')}</td><td>{s.get('inches')}</td>"
-        f"<td>{s.get('ipm')}</td><td>{round(s.get('weld_minutes', 0), 2)}</td></tr>"
-        for s in times.get("by_size") or []
-    )
-    flags = "".join(f"<li>{f}</li>" for f in data.get("flags") or [])
-    return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Job {job.id} — {job.title}</title>
-<style>
-body{{font-family:Segoe UI,sans-serif;margin:2rem;color:#1a1a1a}}
-table{{border-collapse:collapse;width:100%;margin:1rem 0}}
-th,td{{border:1px solid #ccc;padding:.5rem;text-align:left}}
-h1{{margin-bottom:.25rem}} .meta{{color:#555}}
-</style></head><body>
-<h1>{job.title}</h1>
-<p class="meta">Job #{job.id} · Status: {job.status} · Efficiency: {job.efficiency_pct}%</p>
-<h2>Weld inches by size</h2>
-<table><thead><tr><th>Size</th><th>Inches</th><th>IPM</th><th>Weld min</th></tr></thead>
-<tbody>{rows or '<tr><td colspan="4">No lines</td></tr>'}</tbody></table>
-<h2>Times</h2>
-<ul>
-<li>Total inches: {times.get('total_inches', 0)}</li>
-<li>Weld minutes: {round(times.get('weld_minutes', 0), 2)}</li>
-<li><strong>No fixture: {times.get('quoted_no_fixture_hours', 0)} hr</strong>
- (includes {round(times.get('fitup_no_fixture_minutes', 0), 0):.0f} min fit-up)</li>
-<li><strong>With fixture: {times.get('quoted_with_fixture_hours', 0)} hr</strong>
- (includes {round(times.get('fitup_with_fixture_minutes', 0), 0):.0f} min fit-up)</li>
-</ul>
-<h2>Review flags</h2>
-<ul>{flags or '<li>None</li>'}</ul>
-<pre style="background:#f6f6f6;padding:1rem;overflow:auto">{json.dumps(data, indent=2)}</pre>
-</body></html>"""
+    return render_quote_html(data)
 
 
 # Serve React/static build with SPA fallback for client-side routes.
@@ -581,3 +583,23 @@ if FRONTEND_DIST.exists():
         if full_path and candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(FRONTEND_DIST / "index.html")
+
+
+else:
+
+    @app.get("/")
+    def ui_not_built() -> HTMLResponse:
+        return HTMLResponse(
+            """<!doctype html>
+<html><head><meta charset="utf-8"><title>Kannon Quote</title></head>
+<body style="font-family:Segoe UI,sans-serif;margin:2rem;max-width:40rem">
+<h1>Kannon Quote API is running</h1>
+<p>The web UI is not built yet. From the repo:</p>
+<pre>cd frontend
+npm install
+npm run build</pre>
+<p>Then restart this server. API health: <a href="/api/health">/api/health</a></p>
+<p>Printable quotes still work after login via
+<code>/api/jobs/{id}/export.html?token=…</code></p>
+</body></html>"""
+        )

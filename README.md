@@ -1,8 +1,8 @@
 # Quote automation — Kannon standalone app (weld-first)
 
-Team web app for drawing drop → weld takeoff → weld/fit-up times → human review.
+Team web app for drawing drop → weld takeoff → weld/fit-up times → printable shop-labor quote → optional SecturaFAB push.
 
-SecturaFAB client code remains in `secturafab/` for a later integration phase.
+SecturaFAB push is implemented in `secturafab/` and needs API keys in `.env`. Without those keys the local quote path still works.
 
 ## Quick start
 
@@ -56,8 +56,10 @@ Open http://localhost:5173
 1. Drag/drop a **PDF** (required) and optional **STP/STEP**
 2. App extracts weld sizes + estimates lengths (STP when present)
 3. Review inches by size, efficiency %, flags
-4. Recalculate → Accept or Needs info
-5. Export printable HTML or JSON
+4. Recalculate → **Print quote** (hours + $ at `labor.shop_rate_per_hour`) → Accept
+5. Optional: **Push to SecturaFAB** when `SECTURAFAB_CLIENT_ID` / `SECTURAFAB_CLIENT_SECRET` are in `.env`
+
+The printable quote is weld + fit-up shop labor only. Laser, nest, material, and purchased parts stay in SecturaFAB.
 
 ## Tests
 
@@ -65,7 +67,7 @@ Open http://localhost:5173
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-## SecturaFAB (paused)
+## SecturaFAB (optional live push)
 
 Auth uses **client credentials** per SecturaFAB support:
 

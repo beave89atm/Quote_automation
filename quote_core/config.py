@@ -68,6 +68,9 @@ class ShopRates:
     weld_ipm: dict[str, float] = field(default_factory=dict)
     default_ipm: float = 5.0
     fitup: FitupConfig = field(default_factory=FitupConfig)
+    labor_rate_per_hour: float = 95.0
+    labor_placeholder: bool = True
+    labor_notes: str = ""
     always_ask: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -116,6 +119,7 @@ def load_shop_rates(path: Path | str | None = None) -> ShopRates:
 
     app = raw.get("app") or {}
     weld = raw.get("weld") or {}
+    labor = raw.get("labor") or {}
     ipm = {str(k): float(v) for k, v in (weld.get("ipm") or {}).items()}
 
     return ShopRates(
@@ -125,6 +129,9 @@ def load_shop_rates(path: Path | str | None = None) -> ShopRates:
         weld_ipm=ipm,
         default_ipm=float(weld.get("default_ipm", 5.0)),
         fitup=_fitup_from(raw.get("fitup")),
+        labor_rate_per_hour=float(labor.get("shop_rate_per_hour", 95.0)),
+        labor_placeholder=bool(labor.get("placeholder", True)),
+        labor_notes=str(labor.get("notes") or ""),
         always_ask=list(raw.get("always_ask") or []),
         raw=raw,
     )

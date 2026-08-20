@@ -37,9 +37,14 @@ class TimeBreakdown:
     total_with_fixture_minutes: float
     quoted_no_fixture_minutes: float
     quoted_with_fixture_minutes: float
+    labor_rate_per_hour: float
+    labor_placeholder: bool
     fitup_notes: list[str]
 
     def to_dict(self) -> dict:
+        no_hr = round(self.quoted_no_fixture_minutes / 60.0, 2)
+        yes_hr = round(self.quoted_with_fixture_minutes / 60.0, 2)
+        rate = float(self.labor_rate_per_hour or 0)
         return {
             "by_size": [asdict(s) for s in self.by_size],
             "total_inches": self.total_inches,
@@ -60,8 +65,12 @@ class TimeBreakdown:
             "total_with_fixture_minutes": self.total_with_fixture_minutes,
             "quoted_no_fixture_minutes": self.quoted_no_fixture_minutes,
             "quoted_with_fixture_minutes": self.quoted_with_fixture_minutes,
-            "quoted_no_fixture_hours": round(self.quoted_no_fixture_minutes / 60.0, 2),
-            "quoted_with_fixture_hours": round(self.quoted_with_fixture_minutes / 60.0, 2),
+            "quoted_no_fixture_hours": no_hr,
+            "quoted_with_fixture_hours": yes_hr,
+            "labor_rate_per_hour": rate,
+            "labor_placeholder": bool(self.labor_placeholder),
+            "quoted_no_fixture_labor": round(no_hr * rate, 2),
+            "quoted_with_fixture_labor": round(yes_hr * rate, 2),
             "fitup_notes": self.fitup_notes,
         }
 
@@ -183,6 +192,8 @@ def compute_weld_times(
             total_with_fixture_minutes=0.0,
             quoted_no_fixture_minutes=0.0,
             quoted_with_fixture_minutes=0.0,
+            labor_rate_per_hour=float(rates.labor_rate_per_hour or 0),
+            labor_placeholder=bool(rates.labor_placeholder),
             fitup_notes=notes,
         )
 
@@ -245,5 +256,7 @@ def compute_weld_times(
         total_with_fixture_minutes=total_yes,
         quoted_no_fixture_minutes=total_no * factor,
         quoted_with_fixture_minutes=total_yes * factor,
+        labor_rate_per_hour=float(rates.labor_rate_per_hour or 0),
+        labor_placeholder=bool(rates.labor_placeholder),
         fitup_notes=notes,
     )
