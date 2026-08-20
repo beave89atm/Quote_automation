@@ -4,13 +4,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from quote_core.bom import extract_bom, extract_bom_from_ocr_time_style
+from quote_core.bom import (
+    _parse_qty_item_part_hits,
+    _vote_bom_rows,
+    extract_bom,
+    extract_bom_from_ocr_time_style,
+)
 from quote_core.bom_table import (
+    harvest_material_list_lines,
+    harvest_ocr_row_strips,
     is_material_list_item,
     material_list_header_seen,
     parse_material_list_cells,
     parse_material_list_text,
     parse_material_list_words,
+    parse_ocr_row_strip,
+    pick_best_material_list,
     text_has_material_list_grid,
     time_item_letters,
 )
@@ -428,3 +437,102 @@ def test_prefers_tall_right_side_table_over_short_decoy_lom(tmp_path: Path):
     assert "102709-1" not in parts
     assert "100585-23" not in parts
     assert not any(r.item == "SE" for r in bom.rows)
+
+
+def test_p_prefix_weldment_pn_is_not_a_native_false_hit():
+    """P904225-1 is a title-block weldment PN, not item P + 904225-1."""
+    title = (
+        "WELDMENT, PLATFORM\n"
+        "P904225-1\n"
+        "TIME MANUFACTURING\n"
+        "DWG NO P904225-1\n"
+        "SHEET 1 OF 1\n"
+    )
+    bom = extract_bom(text=title)
+    parts = {r.part_no for r in bom.rows}
+    assert "904225-1" not in parts
+    assert "P904225-1" not in parts
+    assert not any(r.item == "P" for r in bom.rows)
+
+    hits = _parse_qty_item_part_hits([title], set())
+    assert not any(str(h.get("part_no") or "") in {"904225-1", "P904225-1"} for h in hits)
+    assert not any(h.get("item") == "P" and "904225" in str(h.get("part_no") or "") for h in hits)
+    voted = _vote_bom_rows(hits, set())
+    assert not any(r.part_no in {"904225-1", "P904225-1"} for r in voted)
+
+    assert parse_ocr_row_strip("P904225-1 WELDMENT") is None
+    harvested = harvest_ocr_row_strips(["P904225-1 WELDMENT", "DWG NO P904225-1"])
+    assert not any(r.part_no in {"904225-1", "P904225-1"} for r in harvested.rows)
+    # Spaced item P + part is a real balloon, not the glued drawing number.
+    real_p = parse_ocr_row_strip("1 P 904225-1 TUBE")
+    assert real_p is not None
+    assert real_p["item"] == "P" and real_p["part_no"] == "904225-1"
+
+
+def test_qty_over_20_is_junk_unless_glued_item_qty():
+    """99 is OCR junk; 7 on a rail is dimension bleed; BB2/AX2 glued qty 2 stays."""
+    huge = parse_ocr_row_strip("99 A 100177-2 PLATE")
+    assert huge is not None
+    assert huge["item"] == "A"
+    assert huge["qty"] != 99
+    assert huge["qty"] <= 20
+    bleed = parse_ocr_row_strip("7 S 100200-1 RAIL, HORIZONTAL")
+    assert bleed["qty"] == 1
+    bb = parse_ocr_row_strip("BB2 102727-4 TUBE, ROUND")
+    assert bb["item"] == "BB" and bb["qty"] == 2 and bb["part_no"] == _BB_PART
+    ax = parse_ocr_row_strip("AX2 1102726-1 HOOK")
+    assert ax["item"] == "AX" and ax["qty"] == 2
+    lines = harvest_material_list_lines(
+        "LIST OF MATERIAL\nQTY ITEM PART NO. DESCRIPTION\n99 A 100177-2 PLATE\n"
+        "2 BB 102727-4 TUBE, ROUND\n"
+    )
+    by_item = {r.item: r for r in lines.rows}
+    if "A" in by_item:
+        assert by_item["A"].qty != 99
+        assert by_item["A"].qty <= 20
+    assert by_item["BB"].qty == 2
+
+
+def test_time_ten_set_layout_fixtures_do_not_regress():
+    """Synthetic 10-weldment layouts. Do not claim live 10-set passed."""
+    items = time_item_letters(through="BC")
+    assert len(items) == 51
+    assert "I" not in items and "O" not in items
+    assert "AI" not in items and "AO" not in items
+    assert items[items.index("Z") + 1] == "AA"
+    assert items[-3:] == ["BA", "BB", "BC"]
+
+    dash = """
+LIST OF MATERIAL
+-2 | -1 | ITEM | PART NO. | DESCRIPTION
+1 | - | A | 16697-1 | TUBE, SHORT
+- | 1 | B | 16697-2 | TUBE, LONG
+2 | 1 | C | 15864-2 | STIFFENER
+"""
+    dash1 = parse_material_list_text(dash, bom_config="1")
+    assert {r.item for r in dash1.rows} == {"B", "C"}
+    assert next(r for r in dash1.rows if r.item == "C").qty == 1
+    dash2 = parse_material_list_text(dash, bom_config="2")
+    assert {r.item for r in dash2.rows} == {"A", "C"}
+    assert next(r for r in dash2.rows if r.item == "C").qty == 2
+
+    tall = parse_material_list_cells(_platform_cell_rows())
+    decoy = parse_material_list_cells(
+        [
+            ["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
+            ["1", "B", "102709-1", "DECOY"],
+            ["1", "C", "100585-23", "DECOY"],
+            ["1", "D", "102711-1", "CABLE"],
+        ]
+    )
+    best = pick_best_material_list([decoy, tall])
+    assert best is tall
+    assert len(best.rows) == 51
+    bb = next(r for r in best.rows if r.item == "BB")
+    assert bb.qty == 2 and bb.part_no == _BB_PART
+    assert "102709-1" not in {r.part_no for r in best.rows}
+
+    gapped = parse_material_list_cells(_platform_cell_rows(drop={"C", "AA"}))
+    joined = " ".join(gapped.notes).lower()
+    assert "do not pad" in joined
+    assert not any(r.item in {"C", "AA"} for r in gapped.rows)

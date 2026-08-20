@@ -801,10 +801,16 @@ def _parse_qty_item_part_hits(texts: list[str], bases: set[str]) -> list[dict[st
             variants = [norm, soft, re.sub(r"\s+", "", soft)]
 
             for variant in variants:
+                glued_p_prefix = bool(
+                    re.search(r"(?<![A-Za-z0-9])P\d{5,7}", variant, flags=re.I)
+                    and not re.search(r"(?<![A-Za-z0-9])P\s+\d{5,7}", variant, flags=re.I)
+                )
                 for rx in (_LINE_QTY_ITEM_PART, _LINE_ITEM_GLUED_PART):
                     for m in rx.finditer(variant):
                         qty = int(m.group(1))
                         item = m.group(2).upper()
+                        if glued_p_prefix and item == "P":
+                            continue
                         base = _fix_leading_digit_glue(m.group(3), bases)
                         suffix = re.sub(r"[^0-9A-Z]", "", m.group(4).upper())
                         if not suffix:
@@ -823,6 +829,8 @@ def _parse_qty_item_part_hits(texts: list[str], bases: set[str]) -> list[dict[st
 
                 for m in _LINE_ITEM_PART.finditer(variant):
                     item = m.group(1).upper()
+                    if glued_p_prefix and item == "P":
+                        continue
                     base = _fix_leading_digit_glue(m.group(2), bases)
                     suffix = re.sub(r"[^0-9A-Z]", "", m.group(3).upper())
                     if not suffix:
@@ -842,6 +850,8 @@ def _parse_qty_item_part_hits(texts: list[str], bases: set[str]) -> list[dict[st
                 for m in _LINE_QTY_ITEM_PARTBASE.finditer(variant):
                     qty = int(m.group(1))
                     item = m.group(2).upper()
+                    if glued_p_prefix and item == "P":
+                        continue
                     base = _fix_leading_digit_glue(m.group(3), bases)
                     if bases and base not in bases:
                         if not any(
@@ -862,6 +872,8 @@ def _parse_qty_item_part_hits(texts: list[str], bases: set[str]) -> list[dict[st
 
                 for m in _LINE_ITEM_PARTBASE.finditer(variant):
                     item = m.group(1).upper()
+                    if glued_p_prefix and item == "P":
+                        continue
                     base = _fix_leading_digit_glue(m.group(2), bases)
                     if bases and base not in bases:
                         if not any(

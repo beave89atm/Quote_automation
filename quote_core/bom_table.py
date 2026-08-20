@@ -95,6 +95,11 @@ _GLUED_ITEM_PN_RE = re.compile(
     r"(?:\s*[-–—=]\s*(?P<suf>\d{1,3}[A-Za-z]?))?",
 )
 _KNOWN_BB_PART = "102727-4"
+# Title-block weldment drawing numbers (P904225-1) — not item P + 904225-1.
+_P_PREFIX_WELDMENT_PN_RE = re.compile(
+    r"(?<![A-Za-z0-9])P\d{5,7}(?:\s*[-–—=]\s*\d{1,3}[A-Za-z]?)?\b",
+    re.IGNORECASE,
+)
 _ITEM_WORD_RE = re.compile(
     r"(?<![A-Za-z0-9])([A-Za-z]{2}[2-9Dd]|[A-Za-z]{1,2}[2-9]|[A-Za-z]{1,3})(?![A-Za-z0-9])"
 )
@@ -370,6 +375,14 @@ def recover_time_part_no(raw: str | None, *, item: str | None = None) -> str | N
     return normalize_part_no(text)
 
 
+def is_glued_p_prefix_weldment_pn(raw: str | None) -> bool:
+    """True for ``P904225-1`` (drawing number), not ``P 904225-1`` (item P)."""
+    text = str(raw or "")
+    if not _P_PREFIX_WELDMENT_PN_RE.search(text):
+        return False
+    return not re.search(r"(?<![A-Za-z0-9])P\s+\d{5,7}", text, flags=re.IGNORECASE)
+
+
 def _is_time_like_part(part: str | None) -> bool:
     text = str(part or "").strip()
     if re.search(r"\d{5,7}-\d", text):
@@ -525,6 +538,8 @@ def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
     """
     raw = str(line or "").replace("|", " ").strip()
     if not raw:
+        return None
+    if is_glued_p_prefix_weldment_pn(raw):
         return None
     found = find_time_like_pn(raw)
     if found:
@@ -727,6 +742,8 @@ def harvest_ocr_row_strips(
     # Adjacent bands: ``AA`` on one strip, ``460330 CAP…`` on the next.
     blob = "\n".join(str(x) for x in (lines or []) if str(x).strip())
     for m in _ITEM_PART_ANY_RE.finditer(blob):
+        if is_glued_p_prefix_weldment_pn(m.group(0)):
+            continue
         glued = m.group("glued") or ""
         parsed = parse_ocr_row_strip(f"{m.group('item')}{glued} {m.group('part')}")
         if not parsed:
