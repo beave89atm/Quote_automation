@@ -1572,6 +1572,13 @@ def run_weld_takeoff(
         confirm_flag = confirm_flag_text(stp_bom_confirm)
     if confirm_flag and confirm_flag not in flags:
         flags.append(confirm_flag)
+    elif (
+        stp_path
+        and stp_bom_confirm.get("skipped")
+        and stp_bom_confirm.get("reason")
+        and "No STP" not in str(stp_bom_confirm.get("reason"))
+    ):
+        flags.append(str(stp_bom_confirm["reason"]))
     for n in stp_bom_confirm.get("notes") or []:
         if n and n not in flags:
             flags.append(n)

@@ -634,6 +634,11 @@ export default function JobDetailPage() {
         </details>
       </details>
 
+      {job.takeoff?.stp_bom_confirm?.skipped && job.stp_filename ? (
+        <p className="muted">
+          STP BOM confirm skipped: {job.takeoff.stp_bom_confirm.reason || "see takeoff notes"}
+        </p>
+      ) : null}
       {job.takeoff?.stp_bom_confirm && !job.takeoff.stp_bom_confirm.skipped ? (
         <div
           className={
