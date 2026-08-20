@@ -8,6 +8,8 @@ DATA_DIR = Path(os.environ.get("KANNON_DATA_DIR", ROOT / "data"))
 UPLOAD_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "jobs.db"
 RATES_PATH = ROOT / "config" / "shop_rates.yaml"
+MACHINES_PATH = ROOT / "config" / "machines.yaml"
+MACHINING_PATH = ROOT / "config" / "machining.yaml"
 FRONTEND_DIST = ROOT / "frontend" / "dist"
 
 

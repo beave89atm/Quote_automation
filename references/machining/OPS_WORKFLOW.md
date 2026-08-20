@@ -81,19 +81,23 @@ Ask for more info when any of these are missing and needed for time:
 
 Prefer: component drawings, STP/STEP, or a marked-up print.
 
-## 5. Machine capability match (pending)
+## 5. Machine capability match (named roster + July 2026 shop gates)
 
-Placeholder until Kannon provides:
-- Machine list (lathes, mills, capacities)
-- Travels / chuck size / bar capacity / HP / RPM
-- Available tooling (live tooling, 4th axis, probes)
-- Preferred ops per machine
+Named machines live in `config/machines.yaml`. Shop gates (xlsx travels were empty — do not invent):
 
-Then: drawing ops ? capable machines only ? time at that machine�s realistic feeds.
+- Lathe: 3/8–14" diameter × 12–14" long; chucks to 26"
+- Mill: cube 20" × 40"; 4th-axis to 20" diameter
+
+The reviewable calculator is `/machine` (API: `POST /api/machining/mill` and `/lathe`). Out-of-envelope parts are flagged and `ok_to_quote` is false.
+
+Still TBD (no inventing):
+- Per-machine travels / OD / length / max RPM
+- Tooling crib / real SFM tables
+- Per-machine setup and 2026 burden rates
 
 ## 6. Commercial plug-ins (geometry engines)
 
-Do **not** invent mill/lathe times from PDF geometry alone in Quote Automation.
+Do **not** invent mill/lathe times from PDF geometry alone. Use the calculator with drawing metadata + human feature inputs. Commercial geometry engines stay parked — see [VENDOR_DECISION.md](VENDOR_DECISION.md).
 
 See:
 - [PLUGINS_AND_TRIAL.md](PLUGINS_AND_TRIAL.md) � vendors and Paperless Parts trial protocol

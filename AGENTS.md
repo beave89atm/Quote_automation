@@ -24,7 +24,7 @@ SecturaFAB: copy `.env.example` → `.env`, then `.\.venv\Scripts\python.exe -m 
 .\.venv\Scripts\python.exe -m pytest -q
 
 # Smoke (fast local regression net)
-.\.venv\Scripts\python.exe -m pytest -q tests/test_smoke_api.py tests/test_batch.py tests/test_time_engine.py tests/test_bom_config.py tests/test_secturafab_push.py tests/test_imperial_ops.py
+.\.venv\Scripts\python.exe -m pytest -q tests/test_smoke_api.py tests/test_batch.py tests/test_time_engine.py tests/test_bom_config.py tests/test_secturafab_push.py tests/test_imperial_ops.py tests/test_machining.py
 
 # Frontend when UI changed
 cd frontend; npm run build
@@ -52,7 +52,7 @@ No lint or typecheck scripts are configured (no ruff/mypy/eslint/tsc).
 - Quoting behavior: prefer `docs/quoting/*.md` before inventing shortcuts.
 - Prefer imperial labels on SecturaFAB line items; do not casually rewrite STEP geometry for units.
 - Imperial cleanup must run **last** in finalize (after settle). Delayed CAD can rewrite Descriptions back to `mm X` if skipped on the success path.
-- Machining: **PARKED** — do not invent mill/lathe times or wire geometry engines until Kyle un-parks (`references/machining/VENDOR_DECISION.md`).
+- Machining: **UN-PARKED** (Kyle via CoS, 2026-08-20). Named v0 roster is in `config/machines.yaml`; July 2026 envelopes are shop-level gates. Do **not** invent travels, max RPM, or shop-specific SFM. Placeholder SFM bands are not Kannon-tooling-validated. Do **not** auto-push mill/lathe to SecturaFAB. Do **not** wire Paperless Parts. See `references/machining/VENDOR_DECISION.md`.
 
 ## Definition of done
 

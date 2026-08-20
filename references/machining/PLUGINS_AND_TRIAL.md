@@ -80,4 +80,4 @@ Complete this on the five [calibration jobs](calibration_jobs.md). Live account 
 | Fail notes | _ |
 | Recommend integrate? | See [VENDOR_DECISION.md](VENDOR_DECISION.md) |
 
-Until the live trial is scored, treat outcome as **not yet validated** — decision doc still chooses PP as first vendor and **blocks** app wiring.
+Until the live trial is scored, treat outcome as **not yet validated** — decision doc still chooses PP as first vendor and **blocks vendor wiring**. The in-app calculator + machine roster (2026-08-20) is a separate track.

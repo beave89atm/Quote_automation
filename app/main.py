@@ -13,11 +13,26 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from quote_core.config import load_shop_rates
+from quote_core.machining import (
+    LatheQuoteInput,
+    MillQuoteInput,
+    load_machine_roster,
+    load_machining_config,
+    quote_lathe,
+    quote_mill,
+)
 
 from .auth import login, require_auth
 from .batch import pair_upload_files, paired_part_summary
 from .db import Job, SessionLocal, init_db
-from .paths import FRONTEND_DIST, RATES_PATH, UPLOAD_DIR, ensure_data_dirs
+from .paths import (
+    FRONTEND_DIST,
+    MACHINES_PATH,
+    MACHINING_PATH,
+    RATES_PATH,
+    UPLOAD_DIR,
+    ensure_data_dirs,
+)
 from .services import process_job, push_jobs_secturafab_batch, recompute_from_items
 
 app = FastAPI(title="Kannon Quote App", version="0.1.0")
@@ -100,6 +115,96 @@ def get_rates(_: str = Depends(require_auth)) -> dict[str, Any]:
         "config_path": str(RATES_PATH),
         "help": "Edit config/shop_rates.yaml and restart the server to apply changes.",
     }
+
+
+class MillQuoteBody(BaseModel):
+    material: str = "carbon_steel"
+    qty: int = 1
+    length_in: float
+    width_in: float
+    height_in: float
+    face_area_in2: float | None = None
+    pocket_volume_in3: float | None = None
+    contour_length_in: float | None = None
+    hole_count: int = 0
+    hole_diameter_in: float | None = None
+    hole_depth_in: float | None = None
+    needs_4th_axis: bool = False
+    fourth_axis_diameter_in: float | None = None
+    tool_diameter_in: float | None = None
+    flutes: int | None = None
+    doc_in: float | None = None
+    woc_in: float | None = None
+    setups: int = 1
+    sfm: float | None = None
+    ipt: float | None = None
+
+
+class LatheQuoteBody(BaseModel):
+    material: str = "carbon_steel"
+    qty: int = 1
+    diameter_in: float
+    length_in: float
+    stock_diameter_in: float | None = None
+    turn_length_in: float | None = None
+    radial_stock_in: float | None = None
+    bore_length_in: float | None = None
+    bore_diameter_in: float | None = None
+    face: bool = True
+    needs_live_tooling: bool = False
+    setups: int = 1
+    doc_in: float | None = None
+    ipr: float | None = None
+    sfm: float | None = None
+    finish: bool = True
+
+
+@app.get("/api/machines")
+def get_machines(_: str = Depends(require_auth)) -> dict[str, Any]:
+    roster = load_machine_roster(MACHINES_PATH)
+    payload = roster.to_dict()
+    payload["config_path"] = str(MACHINES_PATH)
+    payload["help"] = (
+        "Edit config/machines.yaml to add models, HP, max RPM, taper, envelope, "
+        "and tooling. Restart the API to apply."
+    )
+    return payload
+
+
+@app.get("/api/machining")
+def get_machining_meta(_: str = Depends(require_auth)) -> dict[str, Any]:
+    cfg = load_machining_config(MACHINING_PATH)
+    payload = cfg.to_public_dict()
+    payload["config_path"] = str(MACHINING_PATH)
+    payload["help"] = (
+        "Reviewable mill/lathe calculator. Rates are catalog placeholders until "
+        "Kyle supplies tooling and shop setup times. Does not push to SecturaFAB."
+    )
+    return payload
+
+
+@app.post("/api/machining/mill")
+def api_quote_mill(body: MillQuoteBody, _: str = Depends(require_auth)) -> dict[str, Any]:
+    try:
+        return quote_mill(
+            MillQuoteInput(**body.model_dump()),
+            roster=load_machine_roster(MACHINES_PATH),
+            config=load_machining_config(MACHINING_PATH),
+        )
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/machining/lathe")
+def api_quote_lathe(body: LatheQuoteBody, _: str = Depends(require_auth)) -> dict[str, Any]:
+    try:
+        return quote_lathe(
+            LatheQuoteInput(**body.model_dump()),
+            roster=load_machine_roster(MACHINES_PATH),
+            config=load_machining_config(MACHINING_PATH),
+        )
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/jobs")

@@ -36,17 +36,17 @@ See `references/machining/OPS_WORKFLOW.md`.
 
 **Plug-ins / commercial engines:** see `references/machining/PLUGINS_AND_TRIAL.md`.  
 **Calibration set + scorecard:** `references/machining/calibration_jobs.md`, `trial_scorecard.csv`.  
-**Buy-vs-build decision:** `references/machining/VENDOR_DECISION.md` (Paperless Parts trial first; do not auto-wire yet).
+**Buy-vs-build decision:** `references/machining/VENDOR_DECISION.md` (in-app calculator is live; Paperless Parts geometry-engine trial still parked). See `docs/machining.md`.
 
 ## Reference library
 
 | File | Content |
 |------|---------|
 | `references/miller-welding-symbol-chart.pdf` | AWS weld symbol shop chart |
-| `references/machining/OPS_WORKFLOW.md` | Feature?op map, time rules, machine placeholder |
+| `references/machining/OPS_WORKFLOW.md` | Feature→op map, time rules, July 27 machine roster |
 | `references/machining/PLUGINS_AND_TRIAL.md` | Commercial plug-in catalog + Paperless Parts trial protocol |
 | `references/machining/calibration_jobs.md` | Five calibration parts for vendor scoring |
 | `references/machining/trial_scorecard.csv` | Trial results template |
-| `references/machining/VENDOR_DECISION.md` | Do not integrate until trial passes |
+| `references/machining/VENDOR_DECISION.md` | Calculator live; Paperless Parts trial still parked |
 | `references/machining/nims-turning-level-I.pdf` | Turning ops / process fundamentals |
 | `references/machining/manual-process-planning.pdf` | Manual process planning / feature ops |

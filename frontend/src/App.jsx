@@ -5,6 +5,7 @@ import UploadPage from "./pages/UploadPage";
 import JobsPage from "./pages/JobsPage";
 import JobDetailPage from "./pages/JobDetailPage";
 import SettingsPage from "./pages/SettingsPage";
+import MachiningPage from "./pages/MachiningPage";
 
 function Shell({ children }) {
   const { logout } = useAuth();
@@ -19,6 +20,7 @@ function Shell({ children }) {
             Upload
           </NavLink>
           <NavLink to="/jobs">Jobs</NavLink>
+          <NavLink to="/machine">Machine</NavLink>
           <NavLink to="/settings">Rates</NavLink>
           <button className="linkish" onClick={logout} type="button">
             Log out
@@ -61,6 +63,14 @@ export default function App() {
         element={
           <Private>
             <JobDetailPage />
+          </Private>
+        }
+      />
+      <Route
+        path="/machine"
+        element={
+          <Private>
+            <MachiningPage />
           </Private>
         }
       />

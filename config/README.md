@@ -18,6 +18,21 @@ Fill these before trusting quote times:
 
 Set `KANNON_DRAWING_LIBRARY` to override roots (semicolon-separated) on each office PC.
 
+## `machines.yaml`
+
+Named CNC / manual roster from *Mills and Lathes Equipment.xlsx* (plus asset-list Hwacheon / Victor). Per-machine travels and `max_rpm` are **null** — the xlsx columns were empty; do not invent them. Shop-level gates (14" lathe, 20×40 mill, 20" 4th-axis) live under `shop_envelopes`. Add rows or fill HP, RPM, envelope, and tooling without a code change.
+
+## `machining.yaml`
+
+Published-formula calculator rates. **Placeholder** until Kyle supplies the tooling crib and shop setup times:
+
+- Published formulas: RPM = (SFM × 3.82) / D; mill IPM = RPM × flutes × chip load; turn IPM = RPM × IPR; mill MRR = WOC × DOC × IPM; SFM check = 0.262 × D × RPM
+- Placeholder SFM bands (not Kannon-tooling-validated): 1018 300–400, 6061 800–1000, 304 200–300, Ti 100–150
+- Placeholder setup minutes and 1.20 non-cutting factor
+- `coating` stub (powder / zinc not quoted in v0)
+
+See `docs/machining.md`.
+
 ### Fit-up formula
 
 ```

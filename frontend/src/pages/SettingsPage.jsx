@@ -96,6 +96,14 @@ export default function SettingsPage() {
         </tbody>
       </table>
 
+      <h2>Machining (parallel workstream)</h2>
+      <p className="muted">
+        Mill/lathe calculator is on the Machine page. Roster:{" "}
+        <span className="mono">config/machines.yaml</span>. Catalog SFM / placeholder
+        setup: <span className="mono">config/machining.yaml</span>. Not pushed to
+        SecturaFAB.
+      </p>
+
       <h2>Always ask</h2>
       <ul>
         {(rates.always_ask || []).map((r) => (

@@ -1,0 +1,285 @@
+# Machining calculator rates and tooling hooks.
+# SFM / chip-load numbers below are published CATALOG STARTING POINTS, not
+# Kannon shop times. Replace when Kyle supplies the tooling crib and insert grades.
+#
+# Setup minutes and non-cutting allowance are PLACEHOLDERS.
+
+status: placeholder_catalog
+placeholder: true
+notes:
+  - "Do not treat these minutes as shop-standard until Kyle replaces them."
+  - "Formulas are public (Kennametal, CNC Optimization, Harvey Tool). SFM bands are placeholders — not Kannon-tooling-validated."
+
+formulas:
+  rpm: "RPM = (SFM × 3.82) / D   (D = tool Ø mill, workpiece Ø turn)"
+  milling_ipm: "IPM = RPM × flutes × chip load"
+  turning_ipm: "IPM = RPM × IPR   (no flute multiply)"
+  milling_mrr: "MRR (in³/min) = WOC × DOC × IPM"
+  turning_sfm_check: "SFM = 0.262 × part diameter × RPM"
+  milling_time_path: "cut_min = path_length_in / IPM"
+  milling_time_volume: "cut_min = volume_in3 / MRR"
+  turning_time: "T (min) = L / (RPM × IPR)"
+  quoted: "total_min = setup_min + (cut_min × non_cutting_factor × qty)"
+
+sources:
+  - name: Kennametal Speeds and Feeds Calculator
+    url: https://www.kennametal.com/us/en/resources/engineering-calculators/miscellaneous/speed-and-feed.html
+    used_for:
+      - "RPM = (SFM × 3.82) / D"
+      - "Mill feed = RPM × chip load × teeth"
+      - "Turning SFM = 0.262 × part diameter × RPM"
+  - name: CNC Optimization — CNC cutting speed and feed formulas
+    url: https://www.cncoptimization.com/resources/guides/cnc-cutting-speed-feed-formulas/
+    used_for:
+      - "RPM = (SFM × 3.82) / diameter"
+      - "Feed rate = RPM × flutes × chip load"
+      - "Mill MRR = WOC × DOC × IPM"
+  - name: Harvey Tool General Machining Guidelines
+    url: https://www.harveytool.com/resources/general-machining-guidelines
+    used_for:
+      - "Same RPM and mill IPM formulas; IPT-by-diameter chip-load table"
+
+# Default tools until the crib is filled. Kyle can add rows under tooling.* later.
+defaults:
+  mill:
+    tool_id: em_050_4f
+    tool_diameter_in: 0.5
+    flutes: 4
+    doc_fraction_of_d: 0.25   # axial DOC = 0.25 × D unless overridden
+    woc_fraction_of_d: 0.50   # radial WOC = 0.50 × D unless overridden
+    face_woc_fraction_of_d: 0.80
+  lathe:
+    rough_doc_in: 0.100
+    finish_doc_in: 0.020
+    finish_passes: 1
+  drill:
+    pecks_per_inch: 1.0       # placeholder; extra retracts not modeled yet
+
+# Mill setup 20 min is STALE 2021 Sectura book (optional default only).
+# Per-machine setup and 2026 burden rates are TODO — do not invent.
+setup_minutes:
+  placeholder: true
+  mill_setup_source: stale_2021_sectura_book
+  cnc_lathe: 20
+  cnc_lathe_live_tooling: 30
+  cnc_mill_3axis: 20
+  cnc_mill_4axis: 20
+  cnc_mill_horizontal: 20
+  robodrill: 20
+  manual_mill: 20
+  manual_lathe: 25
+
+# STALE 2021 Sectura book — optional default sell rate only. Not 2026 burden.
+sectura_book_2021:
+  status: stale
+  label: STALE 2021 Sectura book — optional default sell rate only
+  mill_sell_usd_per_hr: 90
+  mill_setup_min: 20
+  powdercoat_setup_usd_per_hr: 5
+  lathe_op: null
+  coating_usd_per_sqft: null
+  notes:
+    - "Do not treat as 2026 burden rates."
+    - "No lathe operation in Sectura."
+    - "No powder/zinc $/ft² on the laptop."
+
+# PLACEHOLDER allowance for rapids / toolchange / approach. Not a shop measurement.
+non_cutting_factor:
+  placeholder: true
+  value: 1.20
+  notes: "cut_min is multiplied by this. Replace after time studies."
+
+# PLACEHOLDER SFM bands — not Kannon-tooling-validated. Midpoint is used.
+# 1018 300–400, 6061 800–1000, 304 200–300, Ti 100–150.
+# Chip-load IPT table is Harvey Tool public carbide-end-mill starting IPT vs Ø.
+# Turning IPR is placeholder until Kyle supplies insert grades.
+materials:
+  carbon_steel:
+    label: Carbon / mild steel (1018, A36) — placeholder 300–400 SFM
+    aliases: [a36, carbon_steel, "1018", "1018_crs", a572_gr50, a572_gr42, a572_gr55, a572_gr65, a656_gr60, a656_gr70, a656_gr80, a992, a500, a516_gr70]
+    kannon_tooling_validated: false
+    mill:
+      source: placeholder_sfm_band
+      sfm_min: 300
+      sfm_max: 400
+      sfm: 350
+      ipt_by_diameter_in:
+        0.125: 0.0005
+        0.1875: 0.001
+        0.25: 0.0015
+        0.375: 0.002
+        0.5: 0.003
+        0.625: 0.004
+        0.75: 0.005
+        1.0: 0.006
+    lathe:
+      source: placeholder_sfm_band
+      sfm: 350
+      rough_ipr: 0.012
+      finish_ipr: 0.006
+    drill:
+      source: placeholder_catalog
+      sfm: 80
+      ipr: 0.006
+
+  alloy_steel:
+    label: Alloy / high-strength steel (4340, A514, AR plate) — placeholder
+    aliases: [alloy_steel, ar400, ar450, ar500, a514]
+    kannon_tooling_validated: false
+    mill:
+      source: harvey_tool_carbide_endmill
+      sfm_min: 50
+      sfm_max: 250
+      sfm: 150
+      ipt_by_diameter_in:
+        0.125: 0.0005
+        0.1875: 0.0005
+        0.25: 0.001
+        0.375: 0.001
+        0.5: 0.001
+        0.625: 0.0015
+        0.75: 0.002
+        1.0: 0.004
+    lathe:
+      source: placeholder_catalog
+      sfm: 250
+      rough_ipr: 0.010
+      finish_ipr: 0.005
+    drill:
+      source: placeholder_catalog
+      sfm: 60
+      ipr: 0.004
+
+  stainless:
+    label: Austenitic stainless (304 / 316) — placeholder 200–300 SFM
+    aliases: [stainless, stainless_304, stainless_316, stainless_300, "304", "304ss", "316", "316ss"]
+    kannon_tooling_validated: false
+    mill:
+      source: placeholder_sfm_band
+      sfm_min: 200
+      sfm_max: 300
+      sfm: 250
+      ipt_by_diameter_in:
+        0.125: 0.0001
+        0.1875: 0.0002
+        0.25: 0.0005
+        0.375: 0.001
+        0.5: 0.0015
+        0.625: 0.002
+        0.75: 0.003
+        1.0: 0.004
+    lathe:
+      source: placeholder_sfm_band
+      sfm: 250
+      rough_ipr: 0.008
+      finish_ipr: 0.004
+    drill:
+      source: placeholder_catalog
+      sfm: 50
+      ipr: 0.004
+
+  aluminum:
+    label: Aluminum 6061 — placeholder 800–1000 SFM
+    aliases: [aluminum, aluminum_6061, aluminum_5052, "6061", "6061_t6", "5052"]
+    kannon_tooling_validated: false
+    mill:
+      source: placeholder_sfm_band
+      sfm_min: 800
+      sfm_max: 1000
+      sfm: 900
+      ipt_by_diameter_in:
+        0.125: 0.001
+        0.1875: 0.002
+        0.25: 0.002
+        0.375: 0.003
+        0.5: 0.004
+        0.625: 0.005
+        0.75: 0.006
+        1.0: 0.007
+    lathe:
+      source: placeholder_sfm_band
+      sfm: 900
+      rough_ipr: 0.014
+      finish_ipr: 0.006
+    drill:
+      source: placeholder_catalog
+      sfm: 200
+      ipr: 0.008
+
+  titanium:
+    label: Titanium (Ti-6Al-4V) — placeholder 100–150 SFM
+    aliases: [titanium, ti, ti6al4v, "6al4v"]
+    kannon_tooling_validated: false
+    mill:
+      source: placeholder_sfm_band
+      sfm_min: 100
+      sfm_max: 150
+      sfm: 125
+      ipt_by_diameter_in:
+        0.125: 0.0005
+        0.1875: 0.0005
+        0.25: 0.0005
+        0.375: 0.001
+        0.5: 0.001
+        0.625: 0.0015
+        0.75: 0.002
+        1.0: 0.004
+    lathe:
+      source: placeholder_sfm_band
+      sfm: 125
+      rough_ipr: 0.006
+      finish_ipr: 0.003
+    drill:
+      source: placeholder_catalog
+      sfm: 40
+      ipr: 0.003
+
+  cast_iron:
+    label: Gray / ductile cast iron — placeholder
+    aliases: [cast_iron, gray_iron]
+    kannon_tooling_validated: false
+    mill:
+      source: harvey_tool_carbide_endmill
+      sfm_min: 100
+      sfm_max: 400
+      sfm: 250
+      ipt_by_diameter_in:
+        0.125: 0.0005
+        0.1875: 0.001
+        0.25: 0.002
+        0.375: 0.003
+        0.5: 0.004
+        0.625: 0.005
+        0.75: 0.006
+        1.0: 0.008
+    lathe:
+      source: placeholder_catalog
+      sfm: 300
+      rough_ipr: 0.012
+      finish_ipr: 0.006
+    drill:
+      source: placeholder_catalog
+      sfm: 80
+      ipr: 0.006
+
+# Tooling crib hook — empty until Kyle sends it. Shape is stable so he can add rows.
+tooling:
+  status: placeholder
+  notes: "Add tools here (id, type, diameter, flutes, material, holder, machines). Calculator falls back to defaults.mill / defaults.lathe until then."
+  mills: []
+  lathes: []
+  drills: []
+
+# Coating is a later slice. Hook only — no engine in this PR.
+coating:
+  status: stub
+  enabled: false
+  notes: "Powder/zinc $/ft² not on the laptop. STALE 2021 Sectura has PowderCoat-Setup $5/hr only."
+  processes:
+    powder:
+      enabled: false
+      minutes_placeholder: null
+      setup_usd_per_hr_stale_2021: 5
+    zinc:
+      enabled: false
+      minutes_placeholder: null
