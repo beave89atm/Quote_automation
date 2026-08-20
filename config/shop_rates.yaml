@@ -63,6 +63,13 @@ fitup:
   # When piece weights are unknown, use this band and flag for review.
   default_band_id: "20_50"
 
+# Shop labor for the printable weld/fit-up quote (not laser, nest, material, or buyouts).
+# Confirm this rate before sending a quote to a customer.
+labor:
+  shop_rate_per_hour: 95.0
+  placeholder: true
+  notes: "Weld + fit-up shop labor only. Laser, nest, material, and purchased parts are not included."
+
 # Rules the takeoff engine should never invent — flag for human review instead.
 always_ask:
   - cover_plate_welds_not_named_in_notes

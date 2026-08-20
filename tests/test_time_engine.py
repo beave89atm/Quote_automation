@@ -6,6 +6,8 @@ from quote_core.weld.takeoff import WeldLineItem
 def test_load_shop_rates():
     rates = load_shop_rates()
     assert rates.ipm_for("1/4") == 3.5
+    assert rates.labor_rate_per_hour == 95.0
+    assert rates.labor_placeholder is True
     band = rates.fitup.band_for_weight(75)
     assert band.id == "50_200"
     assert band.with_fixture.per_piece_minutes == 7.0
@@ -66,3 +68,20 @@ def test_fitup_uses_each_piece_when_qty_expanded():
     assert times.part_count == 13
     assert times.fitup_with_fixture_minutes == 39
     assert times.fitup_no_fixture_minutes == 66
+
+
+def test_quoted_labor_uses_shop_rate():
+    rates = load_shop_rates()
+    items = [WeldLineItem("1/4", 210.0, "test", "high", "manual")]
+    times = compute_weld_times(
+        items,
+        rates,
+        efficiency_pct=100,
+        component_weights_lb=[25.0],
+    )
+    payload = times.to_dict()
+    # 210 in / 3.5 ipm = 60 weld min + 4 fit-up with fixture = 64 min = 1.07 hr
+    assert payload["quoted_with_fixture_hours"] == 1.07
+    assert payload["labor_rate_per_hour"] == 95.0
+    assert payload["quoted_with_fixture_labor"] == 101.65
+    assert payload["labor_placeholder"] is True

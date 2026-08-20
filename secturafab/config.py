@@ -47,6 +47,34 @@ class SecturaFabConfig:
             "(preferred), or SECTURAFAB_USERNAME / SECTURAFAB_PASSWORD."
         )
 
+    def public_status(self) -> dict[str, str | bool | None]:
+        """Safe status for the UI — never includes secrets."""
+        if self.uses_client_credentials:
+            return {
+                "configured": True,
+                "mode": "client_credentials",
+                "message": (
+                    "SecturaFAB client id/secret are set. Push will call the live API."
+                ),
+            }
+        if self.username and self.password:
+            return {
+                "configured": True,
+                "mode": "password",
+                "message": (
+                    "SecturaFAB username/password are set. Push will call the live API."
+                ),
+            }
+        return {
+            "configured": False,
+            "mode": None,
+            "message": (
+                "SecturaFAB keys are not set. Local weld/fit-up quotes still work. "
+                "To push, add SECTURAFAB_CLIENT_ID and SECTURAFAB_CLIENT_SECRET "
+                "to .env from https://secturafab.com/apikey."
+            ),
+        }
+
     @classmethod
     def from_env(cls, env_file: str | None = ".env") -> "SecturaFabConfig":
         if env_file:
