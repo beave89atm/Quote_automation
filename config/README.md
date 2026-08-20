@@ -18,6 +18,21 @@ Fill these before trusting quote times:
 
 Set `KANNON_DRAWING_LIBRARY` to override roots (semicolon-separated) on each office PC.
 
+## `machines.yaml`
+
+Starting CNC / manual roster from the July 27 2026 capabilities list. Add rows or fill `model`, `horsepower`, `max_rpm`, `taper`, `envelope`, and `tooling` without a code change. Shop-level gates (14" lathe, 20×40 mill, 20" 4th-axis) live under `shop_envelopes`.
+
+## `machining.yaml`
+
+Published-formula calculator rates. **Placeholder** until Kyle supplies the tooling crib and shop setup times:
+
+- Harvey Tool carbide SFM / IPT for milling
+- Placeholder turning SFM / IPR (replace with insert-box data)
+- Placeholder setup minutes and 1.20 non-cutting factor
+- `coating` stub (powder / zinc not quoted in v0)
+
+See `docs/machining.md`.
+
 ### Fit-up formula
 
 ```

@@ -140,3 +140,49 @@ def test_batch_push_post_is_not_method_not_allowed(
     )
     assert res.status_code != 405, res.text
     assert res.status_code in {400, 422}
+
+
+def test_openapi_includes_machining_routes(client: TestClient) -> None:
+    res = client.get("/openapi.json")
+    assert res.status_code == 200
+    paths = res.json().get("paths") or {}
+    assert "/api/machines" in paths
+    assert "/api/machining" in paths
+    assert "/api/machining/mill" in paths
+    assert "/api/machining/lathe" in paths
+    assert "post" in paths["/api/machining/mill"]
+    assert "post" in paths["/api/machining/lathe"]
+
+
+def test_machines_with_token(client: TestClient, token: str) -> None:
+    res = client.get("/api/machines", headers={"X-App-Token": token})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["counts"]["cnc_lathes"] == 10
+    assert body["counts"]["cnc_mills"] == 12
+
+
+def test_machining_mill_post_not_405(client: TestClient, token: str) -> None:
+    res = client.post(
+        "/api/machining/mill",
+        headers={"X-App-Token": token},
+        json={"length_in": 8, "width_in": 6, "height_in": 1.5, "face_area_in2": 48},
+    )
+    assert res.status_code != 405, res.text
+    assert res.status_code == 200
+    body = res.json()
+    assert body["process"] == "mill"
+    assert "times" in body
+    assert "flags" in body
+
+
+def test_machining_lathe_over_envelope_flagged(client: TestClient, token: str) -> None:
+    res = client.post(
+        "/api/machining/lathe",
+        headers={"X-App-Token": token},
+        json={"diameter_in": 16, "length_in": 6, "qty": 1},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok_to_quote"] is False
+    assert body["outside_envelope"] is True

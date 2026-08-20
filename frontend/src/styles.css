@@ -218,6 +218,23 @@ a { color: var(--brand); text-decoration: none; }
   font-weight: 600;
   font-size: 0.9rem;
 }
+.calc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.35rem 0.75rem;
+  margin-top: 1rem;
+}
+.calc-grid .field {
+  margin: 0.35rem 0;
+}
+.calc-grid select,
+.field select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.4rem 0.5rem;
+  background: white;
+}
 .error { color: var(--err); margin-top: 0.75rem; }
 
 .muted { color: var(--muted); }
