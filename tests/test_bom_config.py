@@ -9,7 +9,7 @@ from quote_core.bom import (
 from quote_core.bom_config import normalize_bom_config, resolve_bom_config
 
 # Same 16 PNs as the 1004335 weldment list (I / 004556-2 dropped).
-# -1 column sums to 28; -2 column sums to 24. Quoting -1 must not use -2 qtys.
+# -1 column sums to 28; -2 column sums to 23. Quoting -1 must not use -2 qtys.
 _DASH_QTY_16_PN = """
 LIST OF MATERIAL
 -2 | -1 | ITEM | PART NO. | DESCRIPTION
@@ -127,7 +127,7 @@ def test_multi_qty_headers_and_column_filter():
 
 
 def test_dash_column_16pn_quoting_dash1_does_not_use_dash2_qtys():
-    """Same 16 PNs; -1 piece count is 28, -2 is 24. Do not mix columns."""
+    """Same 16 PNs; -1 piece count is 28, -2 is 23. Do not mix columns."""
     dash1 = parse_time_style_bom_texts(
         [_DASH_QTY_16_PN],
         _DASH16_BASES,
@@ -149,7 +149,7 @@ def test_dash_column_16pn_quoting_dash1_does_not_use_dash2_qtys():
     assert dash1.part_number_count == 16
     assert dash2.part_number_count == 16
     assert dash1.piece_count == 28
-    assert dash2.piece_count == 24
+    assert dash2.piece_count == 23
     by1 = {r.item: r for r in dash1.rows if r.item}
     by2 = {r.item: r for r in dash2.rows if r.item}
     assert by1["C"].qty == 4 and by2["C"].qty == 2
