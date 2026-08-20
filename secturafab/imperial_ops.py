@@ -71,8 +71,14 @@ def description_has_metric_dims(desc: str) -> bool:
 def ensure_imperial_item_units(
     client: SecturaFabClient,
     quote_id: str,
+    *,
+    descriptions_only: bool = False,
 ) -> list[str]:
-    """Rewrite mm/m Length/Width + description labels to inch."""
+    """Rewrite mm/m Length/Width + description labels to inch.
+
+    ``descriptions_only`` (re-push): leftover ``mm X`` labels only — do not
+    touch Length/Width/Data Kyle may have edited.
+    """
     detail = client.get_json(f"v1/quote/{quote_id}")
     items = list(detail.get("ItemList") or [])
     if not items:
@@ -80,14 +86,20 @@ def ensure_imperial_item_units(
 
     changed = 0
     for it in items:
+        desc = str(it.get("Description") or "")
+        desc_has_mm = description_has_metric_dims(desc)
+        if descriptions_only:
+            if desc_has_mm:
+                it["Description"] = rewrite_description_dims_to_inch(desc)
+                changed += 1
+            continue
+
         units = str(it.get("Length_Units") or "")
         try:
             length = float(it.get("Length") or 0)
             width = float(it.get("Width") or 0)
         except (TypeError, ValueError):
             continue
-        desc = str(it.get("Description") or "")
-        desc_has_mm = description_has_metric_dims(desc)
         dims_mm = _looks_like_mm(length, width, units)
         if not dims_mm and not desc_has_mm:
             if units.lower().startswith("mill") or units.lower() in {"meter", "metre"}:
@@ -136,4 +148,6 @@ def ensure_imperial_item_units(
     save = safe_quote_post(client, quote_id, detail)
     if save.status_code >= 400:
         return [f"Imperial unit cleanup save failed ({save.status_code})"]
+    if descriptions_only:
+        return [f"Normalized {changed} leftover metric Description label(s)"]
     return [f"Normalized {changed} item(s) to inch (imperial) labels/dims"]

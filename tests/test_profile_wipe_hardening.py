@@ -233,6 +233,157 @@ def test_attachment_drawings_stp_drops_library_children(tmp_path: Path):
     assert child not in attached
 
 
+def test_merge_ops_onto_live_keeps_kyle_qty_and_price():
+    from secturafab.quote_update import merge_ops_onto_live_quote, safe_quote_post
+
+    client = MagicMock()
+    live = {
+        "ID": "q1",
+        "OrganizationName": "Time Manufacturing",
+        "ItemList": [
+            {
+                "ID": "p1",
+                "Description": "Kyle edited label",
+                "Quantity": 7,
+                "UnitCost": 99.0,
+                "UnitPrice": 150.0,
+                "OperationCostList": [{"OperationName": "Weld", "UnitTime": 0.4}],
+            }
+        ],
+    }
+    stale_outbound = {
+        "ID": "q1",
+        "OrganizationName": "Wrong Org",
+        "ItemList": [
+            {
+                "ID": "p1",
+                "Description": "stale",
+                "Quantity": 1,
+                "UnitCost": 1.0,
+                "UnitPrice": 1.0,
+                "OperationCostList": [
+                    {"OperationName": "Weld", "UnitTime": 9.9},
+                    {"OperationName": "Profile", "UnitTime": 0.2},
+                ],
+            }
+        ],
+    }
+    client.get_json.return_value = live
+    out = merge_ops_onto_live_quote(client, "q1", stale_outbound)
+    item = out["ItemList"][0]
+    assert item["Quantity"] == 7
+    assert item["UnitCost"] == 99.0
+    assert item["Description"] == "Kyle edited label"
+    assert out["OrganizationName"] == "Time Manufacturing"
+    names = [o.get("OperationName") for o in item["OperationCostList"]]
+    assert names.count("Weld") == 1
+    assert item["OperationCostList"][0]["UnitTime"] == 0.4
+    assert "Profile" in names
+
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    safe_quote_post(client, "q1", stale_outbound, additive=True)
+    posted = client.request.call_args.kwargs["json"]
+    assert posted["ItemList"][0]["Quantity"] == 7
+    assert posted["OrganizationName"] == "Time Manufacturing"
+
+
+def test_finalize_protect_existing_skips_rollup_qty_and_settle():
+    from secturafab.finalize_ops import finalize_quote_ops
+
+    client = MagicMock()
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "p1",
+                "ProductType": 100,
+                "IsPart": True,
+                "Machine": "Laser",
+                "Quantity": 5,
+                "OperationCostList": [{"OperationName": "Profile"}],
+            }
+        ]
+    }
+
+    with (
+        patch("secturafab.finalize_ops.wait_for_quote_settle") as settle,
+        patch("secturafab.finalize_ops.time.sleep") as sleep,
+        patch(
+            "secturafab.finalize_ops.ensure_laser_profile_ops",
+            return_value=[],
+        ) as profile,
+        patch(
+            "secturafab.finalize_ops.ensure_weld_ops",
+            return_value=[],
+        ) as weld,
+        patch(
+            "secturafab.finalize_ops.ensure_imperial_item_units",
+            return_value=["leftover mm"],
+        ) as imperial,
+        patch(
+            "secturafab.finalize_ops.rollup_assembly_costs",
+            return_value=["SHOULD NOT RUN"],
+        ) as rollup,
+        patch(
+            "secturafab.finalize_ops.apply_bom_quantities",
+            return_value=["SHOULD NOT RUN"],
+        ) as qty,
+        patch(
+            "secturafab.finalize_ops.resolve_weld_times",
+            return_value=(0.1, 0.1, 0.25),
+        ),
+        patch(
+            "secturafab.finalize_ops.assembly_has_weld",
+            return_value=True,
+        ),
+    ):
+        notes = finalize_quote_ops(
+            client,
+            "quote-repush",
+            material="A36",
+            thickness="0.25",
+            times={"weld_minutes": 10},
+            part_key="21678-1",
+            bom_rows=[{"part_no": "p1", "qty": 2}],
+            protect_existing=True,
+        )
+
+    settle.assert_not_called()
+    sleep.assert_not_called()
+    profile.assert_not_called()
+    weld.assert_not_called()
+    rollup.assert_not_called()
+    qty.assert_not_called()
+    imperial.assert_called()
+    assert imperial.call_args.kwargs.get("descriptions_only") is True
+    assert any("fill-empty" in n for n in notes)
+
+
+def test_imperial_descriptions_only_leaves_length_width():
+    from secturafab.imperial_ops import ensure_imperial_item_units
+
+    client = MagicMock()
+    item = {
+        "ID": "p1",
+        "Description": '73476505 - 1/4" A36 1114.425 mm X 920.6665 mm',
+        "Length": 99.0,
+        "Width": 88.0,
+        "Length_Units": "inch",
+        "OperationCostList": [{"OperationName": "Profile"}],
+    }
+    client.get_json.return_value = {"ItemList": [item]}
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+
+    notes = ensure_imperial_item_units(client, "q1", descriptions_only=True)
+    assert any("leftover metric Description" in n for n in notes)
+    assert item["Length"] == 99.0
+    assert item["Width"] == 88.0
+    assert "mm" not in item["Description"].lower()
+
+
 def test_attachment_drawings_pdf_only_keeps_children(tmp_path: Path):
     job = tmp_path / "21678-1.pdf"
     child = tmp_path / "21679.pdf"

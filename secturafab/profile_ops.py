@@ -589,7 +589,8 @@ def _attach_laser_profile_ops_once(
     if changed:
         from .quote_update import safe_quote_post
 
-        save = safe_quote_post(client, quote_id, detail)
+        # Additive: live qty/org/labels/prices win; only missing Profile is added.
+        save = safe_quote_post(client, quote_id, detail, additive=True)
         if save.status_code >= 400:
             notes.append(f"Saving Profile ops failed ({save.status_code})")
         else:

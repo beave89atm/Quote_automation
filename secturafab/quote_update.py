@@ -18,6 +18,23 @@ from .weld_ops import _desc_token, pick_weld_target_item
 _ASSEMBLY_TYPE = 300
 
 
+def _merge_ops_live_wins(
+    live_ops: list[dict[str, Any]],
+    outbound_ops: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep every live op; outbound may only add OperationNames the server lacks."""
+    live_names = {
+        str(o.get("OperationName") or "") for o in live_ops if o.get("OperationName")
+    }
+    merged = list(live_ops)
+    for op in outbound_ops:
+        name = str(op.get("OperationName") or "")
+        if name and name not in live_names:
+            merged.append(op)
+            live_names.add(name)
+    return merged
+
+
 def preserve_operation_cost_lists(
     client: SecturaFabClient,
     quote_id: str,
@@ -46,15 +63,9 @@ def preserve_operation_cost_lists(
             continue
         live_ops = list(src.get("OperationCostList") or [])
         outbound_ops = list(it.get("OperationCostList") or [])
-        live_names = {str(o.get("OperationName") or "") for o in live_ops if o.get("OperationName")}
         # Live ops win for the same OperationName (Kyle's edits / CAD attach).
         # Outbound may only add names the server does not already have.
-        merged = list(live_ops)
-        for op in outbound_ops:
-            name = str(op.get("OperationName") or "")
-            if name and name not in live_names:
-                merged.append(op)
-                live_names.add(name)
+        merged = _merge_ops_live_wins(live_ops, outbound_ops)
         if merged:
             it["OperationCostList"] = merged
         if live_ops:
@@ -68,13 +79,80 @@ def preserve_operation_cost_lists(
     return detail
 
 
+def merge_ops_onto_live_quote(
+    client: SecturaFabClient,
+    quote_id: str,
+    detail: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Build a POST payload from the live quote, adding only missing op names.
+
+    Re-push must not POST a stale snapshot of qty / org / labels / prices.
+    Start from the server copy (Kyle's edits) and attach ops the outbound
+    payload has that the live quote does not.
+    """
+    try:
+        live = client.get_json(f"v1/quote/{quote_id}")
+    except Exception:  # noqa: BLE001
+        return preserve_operation_cost_lists(client, quote_id, detail)
+    if not isinstance(live, dict):
+        return preserve_operation_cost_lists(client, quote_id, detail)
+
+    outbound_by_id = {
+        str(it.get("ID") or ""): it
+        for it in (detail.get("ItemList") or [])
+        if it.get("ID")
+    }
+    for live_it in live.get("ItemList") or []:
+        iid = str(live_it.get("ID") or "")
+        out_it = outbound_by_id.get(iid)
+        if not out_it:
+            continue
+        live_ops = list(live_it.get("OperationCostList") or [])
+        outbound_ops = list(out_it.get("OperationCostList") or [])
+        live_names = {
+            str(o.get("OperationName") or "")
+            for o in live_ops
+            if o.get("OperationName")
+        }
+        merged = _merge_ops_live_wins(live_ops, outbound_ops)
+        added = any(
+            str(o.get("OperationName") or "")
+            and str(o.get("OperationName") or "") not in live_names
+            for o in outbound_ops
+        )
+        if merged:
+            live_it["OperationCostList"] = merged
+        # Fill empty PrimaryTime / badge only when we just attached Profile.
+        if added or not live_it.get("PrimaryTime"):
+            if not live_it.get("PrimaryTime") and out_it.get("PrimaryTime") is not None:
+                live_it["PrimaryTime"] = out_it.get("PrimaryTime")
+            if (
+                not live_it.get("UnitPrimaryTime")
+                and out_it.get("UnitPrimaryTime") is not None
+            ):
+                live_it["UnitPrimaryTime"] = out_it.get("UnitPrimaryTime")
+            if not live_it.get("BadgeString") and out_it.get("BadgeString"):
+                live_it["BadgeString"] = out_it.get("BadgeString")
+    return live
+
+
 def safe_quote_post(
     client: SecturaFabClient,
     quote_id: str,
     detail: dict[str, Any],
+    *,
+    additive: bool = False,
 ) -> Any:
-    """POST v1/quote after merging live OperationCostList so ops are not wiped."""
-    payload = preserve_operation_cost_lists(client, quote_id, detail)
+    """POST v1/quote after merging live OperationCostList so ops are not wiped.
+
+    ``additive=True`` posts the live quote (Kyle's qty/org/labels/prices) and
+    only adds OperationNames the server does not already have.
+    """
+    if additive:
+        payload = merge_ops_onto_live_quote(client, quote_id, detail)
+    else:
+        payload = preserve_operation_cost_lists(client, quote_id, detail)
     return client.request("POST", "v1/quote", json=payload)
 
 

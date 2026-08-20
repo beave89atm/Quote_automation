@@ -982,12 +982,13 @@ class SecturaFabPushService:
           ItemList via STEP/CAD when a STEP exists, else PDF assembly / single PDF;
           Profile ops on laser plates that have none; Weld ops if none;
           BOM qty on first populate only; Organization if the quote has none;
-          imperial leftover ``mm X`` labels; QuoteNumber = part number.
+          leftover metric ``mm X`` Description labels; QuoteNumber = part number.
+          UnitCost / UnitPrice rollup on first-populate finalize only.
 
         App never overwrites on later push:
           existing ItemList, OperationCostList (Kyle's Profile/Weld edits),
           Quantity / AssemblyQty already set, Organization, ItemType/Category,
-          non-metric Descriptions, UnitCost / UnitPrice.
+          non-metric Descriptions, Length/Width/Data, UnitCost / UnitPrice.
         """
         notes: list[str] = []
         uploaded: list[str] = []

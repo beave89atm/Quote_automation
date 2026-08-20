@@ -25,11 +25,16 @@ def _finish_with_imperial_and_rollup(
     part_key: str | None,
     bom_rows: list[dict[str, Any]] | None,
     reapply_qty: bool = False,
+    protect_existing: bool = False,
 ) -> list[str]:
     """Imperial cleanup last so delayed CAD cannot leave mm Descriptions."""
     notes: list[str] = []
-    notes.extend(ensure_imperial_item_units(client, quote_id))
-    if reapply_qty:
+    notes.extend(
+        ensure_imperial_item_units(
+            client, quote_id, descriptions_only=protect_existing
+        )
+    )
+    if reapply_qty and not protect_existing:
         notes.extend(
             apply_bom_quantities(
                 client,
@@ -39,8 +44,10 @@ def _finish_with_imperial_and_rollup(
                 fill_empty_only=False,
             )
         )
-    notes.extend(rollup_assembly_costs(client, quote_id, part_key=part_key))
-    if reapply_qty:
+    # Re-push must not overwrite UnitCost / UnitPrice Kyle set in SecturaFAB.
+    if not protect_existing:
+        notes.extend(rollup_assembly_costs(client, quote_id, part_key=part_key))
+    if reapply_qty and not protect_existing:
         # Rollup should not touch qty; verify once more and re-apply if needed.
         qty_bad = bom_qty_mismatches(
             client.get_json(f"v1/quote/{quote_id}"), bom_rows, part_key=part_key
@@ -75,6 +82,43 @@ def finalize_quote_ops(
     """
     notes: list[str] = []
     want_weld = resolve_weld_times(times) is not None
+
+    if protect_existing:
+        # No CAD this pass — do not wait for settle or rewrite qty/cost/dims.
+        notes.append(
+            "Re-push protect: fill-empty Profile/Weld only; "
+            "qty, org, costs, and labels left as-is"
+        )
+        detail = client.get_json(f"v1/quote/{quote_id}")
+        missing_profiles = laser_plates_missing_profile(detail)
+        has_weld = assembly_has_weld(detail, part_key=part_key)
+        if missing_profiles:
+            notes.extend(
+                ensure_laser_profile_ops(
+                    client, quote_id, material=material, thickness=thickness
+                )
+            )
+        if want_weld and not has_weld:
+            notes.extend(
+                ensure_weld_ops(
+                    client,
+                    quote_id,
+                    times=times,
+                    part_key=part_key,
+                    force=False,
+                )
+            )
+        notes.extend(
+            _finish_with_imperial_and_rollup(
+                client,
+                quote_id,
+                part_key=part_key,
+                bom_rows=bom_rows,
+                reapply_qty=False,
+                protect_existing=True,
+            )
+        )
+        return notes
 
     for attempt in range(1, max(1, attempts) + 1):
         notes.extend(
