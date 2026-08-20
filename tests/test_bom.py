@@ -341,6 +341,161 @@ LIST OF MATERIAL
     assert any(r.source == "library_child" and r.qty == 1 for r in bom.rows)
 
 
+def _time_assembly_51_items() -> list[str]:
+    """A–Z except I, then AA–AZ except AI, then BA — 51 item tokens."""
+    letters = [chr(c) for c in range(ord("A"), ord("Z") + 1) if chr(c) != "I"]
+    items = list(letters)
+    for letter in letters:
+        items.append("A" + letter)
+        if len(items) == 51:
+            break
+    if len(items) < 51:
+        items.append("BA")
+    return items[:51]
+
+
+def _time_assembly_51_table() -> tuple[str, list[str]]:
+    """Shared 51-PN list; -1 qty is 1 on every row; -2 is 2 on every 3rd row."""
+    items = _time_assembly_51_items()
+    parts: list[str] = []
+    lines = ["LIST OF MATERIAL", "-2 | -1 | ITEM | PART NO. | DESCRIPTION"]
+    for i, item in enumerate(items, start=1):
+        part = f"{1028000 + i}-1"
+        parts.append(part)
+        qty2 = 2 if i % 3 == 0 else 1
+        lines.append(f"{qty2} | 1 | {item} |{part} | DETAIL")
+    lines.append("0 | 0 | I |004556-2 |")
+    return "\n".join(lines), parts
+
+
+def _time_assembly_library(tmp_path: Path) -> Path:
+    """102728-1 packet with nested SUB-WELDMENT sheets (not the 51 detail PNs)."""
+    lib = tmp_path / "102728-1 TURRET"
+    sub = lib / "102730-1 SUB-WELDMENT"
+    sub.mkdir(parents=True)
+    for name in (
+        "102728.pdf",
+        "102730-1 SUB-WELDMENT.pdf",
+        "102731-1 SUB-WELDMENT.pdf",
+        "102732.pdf",
+        "102733.pdf",
+    ):
+        (lib / name).write_bytes(b"%PDF-1.4\n")
+    for name in ("102740.pdf", "102741-1 SUB-WELDMENT.pdf", "102742.pdf"):
+        (sub / name).write_bytes(b"%PDF-1.4\n")
+    return lib
+
+
+def test_time_assembly_51_pns_from_table_not_subweldment_padding(tmp_path: Path):
+    """Quoting 102728-1 uses the 51-PN top-level table, not folder-stem qty-1."""
+    lib = _time_assembly_library(tmp_path)
+    bases = library_part_bases(lib)
+    assert "102730" not in bases
+    assert "102731" not in bases
+    assert "102740" not in bases
+    assert "102741" not in bases
+    assert "102742" not in bases
+
+    table, expected = _time_assembly_51_table()
+    dash1 = parse_time_style_bom_texts(
+        [table],
+        bases,
+        bom_config="1",
+        primary_base="102728",
+        source="native_time",
+        fill_library_stems=True,
+    )
+    dash2 = parse_time_style_bom_texts(
+        [table],
+        bases,
+        bom_config="2",
+        primary_base="102728",
+        source="native_time",
+        fill_library_stems=True,
+    )
+    assert dash1.part_number_count == 51
+    assert set(r.part_no for r in dash1.rows) == set(expected)
+    assert dash1.piece_count == 51
+    assert all(r.source != "library_child" for r in dash1.rows)
+    assert all(r.part_no != "004556-2" for r in dash1.rows)
+    for stem in ("102730-1", "102731-1", "102732-1", "102733-1", "102740-1"):
+        assert stem not in {r.part_no for r in dash1.rows}
+    assert dash2.part_number_count == 51
+    assert dash2.piece_count != dash1.piece_count
+    assert "multi_qty" in (dash1.method or "")
+
+    extracted = extract_bom(
+        pdf_path=lib / "102728.pdf",
+        text=table,
+        library_folder=lib,
+        related_pdf_names=["102730-1 SUB-WELDMENT.pdf", "102731-1 SUB-WELDMENT.pdf"],
+        bom_config="1",
+    )
+    assert extracted.part_number_count == 51
+    assert set(r.part_no for r in extracted.rows) == set(expected)
+    assert all(r.source != "library_child" for r in extracted.rows)
+
+
+def test_truncated_time_assembly_does_not_pad_to_fake_51(tmp_path: Path):
+    """5 drawing PNs + sub-weldment stems is not a 51-PN BOM (no qty-1 padding)."""
+    lib = _time_assembly_library(tmp_path)
+    table, expected = _time_assembly_51_table()
+    short = "\n".join(
+        [
+            "LIST OF MATERIAL",
+            f"1 | A | {expected[0]} | DETAIL",
+            f"1 | B | {expected[1]} | DETAIL",
+            f"2 | E | {expected[4]} | DETAIL",
+            f"1 | P | {expected[14]} | DETAIL",
+            f"1 | R | {expected[16]} | DETAIL",
+        ]
+    )
+    bom = extract_bom(
+        pdf_path=lib / "102728.pdf",
+        text=short,
+        library_folder=lib,
+        related_pdf_names=["102730-1 SUB-WELDMENT.pdf"],
+        bom_config="1",
+    )
+    parts = {r.part_no for r in bom.rows}
+    assert bom.part_number_count == 5
+    assert expected[0] in parts and expected[16] in parts
+    assert all(r.source != "library_child" for r in bom.rows)
+    assert "102732-1" not in parts
+    assert any("review" in n.lower() for n in bom.notes)
+    assert any("51" in n or "sub-weldment" in n.lower() or "padding" in n.lower() for n in bom.notes)
+
+
+def test_synthetic_ocr_51_or_review_flag(tmp_path: Path):
+    """Multi-page clip: prefer 51 PNs; if OCR can't, leave a review flag."""
+    import fitz
+
+    from quote_core.ocr import ocr_available
+
+    if not ocr_available():
+        pytest.skip("OCR unavailable")
+
+    table, expected = _time_assembly_51_table()
+    rows = [ln for ln in table.splitlines() if ln.strip()]
+    mid = max(3, len(rows) // 2)
+    pdf = tmp_path / "102728.pdf"
+    doc = fitz.open()
+    for chunk in (rows[:mid], rows[mid:]):
+        page = doc.new_page()
+        page.insert_textbox(fitz.Rect(40, 20, 580, 800), "\n".join(chunk), fontsize=7)
+    doc.save(str(pdf))
+    doc.close()
+
+    bom = extract_bom_from_ocr_time_style(
+        pdf, library_folder=tmp_path, bom_config="1"
+    )
+    if bom.part_number_count >= 51:
+        assert set(r.part_no for r in bom.rows) >= set(expected)
+        return
+    assert any("review" in n.lower() for n in bom.notes)
+    assert all(r.source != "library_child" for r in bom.rows)
+
+
 def test_fitup_piece_count_follows_kept_bom_qtys(tmp_path: Path):
     """Fit-up uses sum of kept drawing qtys (28), not a truncated 10-pc OCR tally."""
     import fitz
