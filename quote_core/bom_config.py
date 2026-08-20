@@ -1,7 +1,8 @@
 """BOM configuration / dash selection for multi-option Time drawings.
 
-Time weldments often print qty columns ``-4 | -3 | -2 | -1``. Quoting
-``28106-1`` means use the ``-1`` column only.
+Time weldments often print qty columns ``-4 | -3 | -2 | -1`` (or ``-2 | -1``).
+Quoting ``28106-1`` / ``1004335-1`` means use the ``-1`` column only — never
+sum dash columns or pick another dash.
 """
 
 from __future__ import annotations

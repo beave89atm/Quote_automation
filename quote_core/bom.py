@@ -53,11 +53,43 @@ _MULTI_QTY_LINE_RE = re.compile(
     r"(\d{4,7})\s*[-–—=]?\s*(\d{1,3}[A-Za-z]?)",
     re.IGNORECASE,
 )
-_MULTI_QTY_HEADERS_RE = re.compile(
-    r"(?:\[?-4\]?[^\n]{0,20}\[?-3\]?[^\n]{0,20}\[?-2\]?[^\n]{0,20}\[?-1\]?)"
-    r"|(?:-4\s*[|\]]\s*-3\s*[|\]]\s*-2\s*[|\]]\s*-1)",
+# Three-dash sheets: qty(-3) | qty(-2) | qty(-1) | ITEM | PART
+_THREE_QTY_LINE_RE = re.compile(
+    r"(?<!\d)(-|\d{1,2})\s*[|\]Il/]\s*(-|\d{1,2})\s*[|\]Il/]\s*"
+    r"(-|\d{1,2})\s*[|\]Il/]\s*"
+    r"([A-Za-z])\s*[|\]Il/]?\s*"
+    r"(\d{4,7})\s*[-–—=]?\s*(\d{1,3}[A-Za-z]?)",
     re.IGNORECASE,
 )
+# Two-dash sheets: qty(-2) | qty(-1) | ITEM | PART
+_TWO_QTY_LINE_RE = re.compile(
+    r"(?<!\d)(-|\d{1,2})\s*[|\]Il/]\s*(-|\d{1,2})\s*[|\]Il/]\s*"
+    r"([A-Za-z])\s*[|\]Il/]?\s*"
+    r"(\d{4,7})\s*[-–—=]?\s*(\d{1,3}[A-Za-z]?)",
+    re.IGNORECASE,
+)
+# Space-separated OCR (no pipes): ``2 1 A 1004336-1`` / ``0 0 0 1 A 16697-2``
+_FOUR_QTY_SPACE_RE = re.compile(
+    r"(?<!\d)(-|\d{1,2})\s+(-|\d{1,2})\s+(-|\d{1,2})\s+(-|\d{1,2})\s+"
+    r"([A-Za-z])\s+(\d{4,7})\s*[-–—=]\s*(\d{1,3}[A-Za-z]?)",
+    re.IGNORECASE,
+)
+_TWO_QTY_SPACE_RE = re.compile(
+    r"(?<!\d)(-|\d{1,2})\s+(-|\d{1,2})\s+([A-Za-z])\s+"
+    r"(\d{4,7})\s*[-–—=]\s*(\d{1,3}[A-Za-z]?)",
+    re.IGNORECASE,
+)
+_MULTI_QTY_HEADERS_RE = re.compile(
+    r"(?:\[?-4\]?[^\n]{0,20}\[?-3\]?[^\n]{0,20}\[?-2\]?[^\n]{0,20}\[?-1\]?)"
+    r"|(?:-4\s*[|\]]\s*-3\s*[|\]]\s*-2\s*[|\]]\s*-1)"
+    r"|(?:-3\s*[|\]]\s*-2\s*[|\]]\s*-1)"
+    r"|(?:-2\s*[|\]]\s*-1)"
+    r"|(?:\[?-2\]?[^\n]{0,12}\[?-1\]?)",
+    re.IGNORECASE,
+)
+# Time lettered rows almost never exceed this; 77 is OCR of a length.
+_MAX_TIME_ITEM_QTY = 20
+
 
 @dataclass
 class BomRow:
@@ -387,6 +419,8 @@ def _drop_invalid_time_rows(rows: list[BomRow], bases: set[str]) -> list[BomRow]
         item = row.item.upper() if isinstance(row.item, str) else row.item
         if qty <= 0:
             continue
+        if qty > _MAX_TIME_ITEM_QTY:
+            continue
         if _is_garbage_time_part(part, bases):
             continue
         if item == "I" and (qty <= 0 or _is_garbage_time_part(part, bases)):
@@ -497,16 +531,30 @@ def _library_weldment_texts(
     return texts
 
 
+def _is_multi_qty_method(method: str | None) -> bool:
+    return bool(method and "multi_qty" in str(method))
+
+
 def merge_time_bom_results(primary: BomResult, secondary: BomResult) -> BomResult:
     """
     Keep primary rows; add missing item/part lines from a second Time source.
 
     Used when the uploaded sheet OCR-cuts the middle of the BOM (J–N, Q) but a
     library weldment PDF has the full letter list. Does not replace a good row.
+
+    A dash-column (multi-qty) parse is never mixed with a single-qty parse —
+    those flattened qtys are the wrong column or a sum of columns.
     """
     if not secondary.rows:
         return primary
     if not primary.rows:
+        return secondary
+
+    pri_multi = _is_multi_qty_method(primary.method)
+    sec_multi = _is_multi_qty_method(secondary.method)
+    if pri_multi and not sec_multi:
+        return primary
+    if sec_multi and not pri_multi:
         return secondary
 
     by_item = {r.item: r for r in primary.rows if isinstance(r.item, str)}
@@ -628,6 +676,10 @@ def _supplement_from_library_weldment(
                     secondary = ocr
     if secondary.rows:
         primary = merge_time_bom_results(primary, secondary)
+    # Sparse dash-column BOMs are complete for that weldment. Qty-1 library
+    # fillers must not invent a second BOM or override a real column qty.
+    if _is_multi_qty_method(primary.method):
+        return primary
     folder = Path(library_folder) if library_folder else None
     extra = _supplement_library_children(
         primary.rows,
@@ -716,7 +768,9 @@ def parse_time_style_bom_texts(
     Shared Time LIST OF MATERIAL parser for native PDF text and OCR strings.
 
     Drops qty-0 / letter-I OCR ghosts and leading-zero junk PNs. ``bom_config``
-    only selects a dash column when multi-qty headers are actually present.
+    selects the matching dash qty column whenever the sheet has those columns
+    (headers or enough ``-2|-1`` / ``-4|-3|-2|-1`` rows). A folder dash alone
+    does not drop rows on a true single-qty sheet.
     """
     from quote_core.bom_config import format_bom_config_label, normalize_bom_config
 
@@ -730,20 +784,21 @@ def parse_time_style_bom_texts(
     multi_raw = (
         _parse_multi_qty_time_hits(blob_list, bases, bom_config=config) if config else []
     )
-    used_multi = bool(config and has_headers and multi_raw)
+    multi_items = {str(h.get("item") or "") for h in multi_raw if h.get("item")}
+    # Kyle: if dash qty columns exist, use the column for the quoted weldment.
+    # OCR often misses the ``-4|-3|-2|-1`` header row; enough multi-col lines
+    # are sufficient. Do not require headers to activate the column.
+    used_multi = bool(config and multi_raw and (has_headers or len(multi_items) >= 3))
     zero_parts: set[str] = set()
     if used_multi:
         zero_parts = _zero_qty_parts_for_config(blob_list, bases, bom_config=config)
         hits = [h for h in multi_raw if int(h.get("qty") or 0) > 0]
-        for h in _parse_qty_item_part_hits(blob_list, bases):
-            part = str(h.get("part_no") or "")
-            if part and part not in zero_parts:
-                hits.append(h)
+        # Do not merge single-qty / stacked hits — those mix dash columns
+        # (F×77 length OCR, 83-pc inflated counts).
     else:
         hits = _parse_qty_item_part_hits(blob_list, bases)
-
-    for blob in blob_list:
-        hits.extend(_parse_stacked_time_hits(blob, bases))
+        for blob in blob_list:
+            hits.extend(_parse_stacked_time_hits(blob, bases))
 
     rows = _vote_bom_rows(hits, bases)
     if used_multi:
@@ -1060,6 +1115,144 @@ def _parse_multi_qty_cell(raw: str) -> int:
         return 0
 
 
+def _qty_from_dash_columns(qtys: list[int], dash_n: int) -> int | None:
+    """Rightmost qty column is ``-1``; columns run left→right ``-N … -1``."""
+    n = len(qtys)
+    if n < 2 or dash_n < 1 or dash_n > n:
+        return None
+    return qtys[n - dash_n]
+
+
+def _multi_qty_hit(
+    *,
+    qty: int,
+    item: str,
+    part: str,
+    line: str,
+    qtys: list[int],
+    dash: str,
+) -> dict[str, Any]:
+    return {
+        "qty": qty,
+        "item": item,
+        "part_no": part,
+        "has_qty": True,
+        "has_suffix": True,
+        "raw": line,
+        "multi_qty": qtys,
+        "bom_config": dash,
+    }
+
+
+def _hits_from_qty_groups(
+    cells: list[str],
+    item: str,
+    base_raw: str,
+    suffix_raw: str,
+    *,
+    bases: set[str],
+    dash_n: int,
+    dash: str,
+    line: str,
+) -> list[dict[str, Any]]:
+    suffix = re.sub(r"[^0-9A-Z]", "", (suffix_raw or "").upper())
+    if not suffix:
+        return []
+    qtys = [_parse_multi_qty_cell(c) for c in cells]
+    qty = _qty_from_dash_columns(qtys, dash_n)
+    if qty is None:
+        return []
+    base = _fix_leading_digit_glue(base_raw, bases)
+    part = _correct_part_with_library(f"{base}-{suffix}", bases)
+    return [
+        _multi_qty_hit(
+            qty=qty,
+            item=item.upper(),
+            part=part,
+            line=line,
+            qtys=qtys,
+            dash=dash,
+        )
+    ]
+
+
+def _parse_multi_qty_line(
+    variant: str,
+    *,
+    bases: set[str],
+    dash_n: int,
+    dash: str,
+    line: str,
+) -> list[dict[str, Any]]:
+    """Prefer 4-col, then 3-col, then 2-col so a 4-col row is not read as 2-col."""
+    for m in _MULTI_QTY_LINE_RE.finditer(variant):
+        found = _hits_from_qty_groups(
+            [m.group(1), m.group(2), m.group(3), m.group(4)],
+            m.group(5),
+            m.group(6),
+            m.group(7),
+            bases=bases,
+            dash_n=dash_n,
+            dash=dash,
+            line=line,
+        )
+        if found:
+            return found
+    for m in _FOUR_QTY_SPACE_RE.finditer(variant):
+        found = _hits_from_qty_groups(
+            [m.group(1), m.group(2), m.group(3), m.group(4)],
+            m.group(5),
+            m.group(6),
+            m.group(7),
+            bases=bases,
+            dash_n=dash_n,
+            dash=dash,
+            line=line,
+        )
+        if found:
+            return found
+    for m in _THREE_QTY_LINE_RE.finditer(variant):
+        found = _hits_from_qty_groups(
+            [m.group(1), m.group(2), m.group(3)],
+            m.group(4),
+            m.group(5),
+            m.group(6),
+            bases=bases,
+            dash_n=dash_n,
+            dash=dash,
+            line=line,
+        )
+        if found:
+            return found
+    for m in _TWO_QTY_LINE_RE.finditer(variant):
+        found = _hits_from_qty_groups(
+            [m.group(1), m.group(2)],
+            m.group(3),
+            m.group(4),
+            m.group(5),
+            bases=bases,
+            dash_n=dash_n,
+            dash=dash,
+            line=line,
+        )
+        if found:
+            return found
+    for m in _TWO_QTY_SPACE_RE.finditer(variant):
+        found = _hits_from_qty_groups(
+            [m.group(1), m.group(2)],
+            m.group(3),
+            m.group(4),
+            m.group(5),
+            bases=bases,
+            dash_n=dash_n,
+            dash=dash,
+            line=line,
+        )
+        if found:
+            return found
+    return []
+
+
 def _parse_multi_qty_time_hits(
     texts: list[str],
     bases: set[str],
@@ -1067,9 +1260,10 @@ def _parse_multi_qty_time_hits(
     bom_config: str,
 ) -> list[dict[str, Any]]:
     """
-    Parse Time multi-column qty tables (``-4 | -3 | -2 | -1 | ITEM | PART``).
+    Parse Time multi-column qty tables (``-4|-3|-2|-1`` or ``-2|-1``).
 
-    ``bom_config`` is the dash suffix to keep (e.g. ``\"1\"`` → use the ``-1`` column).
+    ``bom_config`` is the dash suffix to keep (e.g. ``\"1\"`` → use the ``-1``
+    column only — do not sum columns).
     """
     dash = str(bom_config or "").strip().lstrip("-").upper()
     try:
@@ -1079,8 +1273,6 @@ def _parse_multi_qty_time_hits(
     if dash_n < 1 or dash_n > 4:
         return []
 
-    # Capture groups are left→right -4,-3,-2,-1 → index 0..3; dash 1 → index 3.
-    col_index = 4 - dash_n
     hits: list[dict[str, Any]] = []
     for blob in texts:
         for raw_line in blob.splitlines():
@@ -1102,32 +1294,16 @@ def _parse_multi_qty_time_hits(
                 norm,
             )
             for variant in (norm, soft):
-                for m in _MULTI_QTY_LINE_RE.finditer(variant):
-                    qtys = [
-                        _parse_multi_qty_cell(m.group(1)),
-                        _parse_multi_qty_cell(m.group(2)),
-                        _parse_multi_qty_cell(m.group(3)),
-                        _parse_multi_qty_cell(m.group(4)),
-                    ]
-                    qty = qtys[col_index]
-                    item = m.group(5).upper()
-                    base = _fix_leading_digit_glue(m.group(6), bases)
-                    suffix = re.sub(r"[^0-9A-Z]", "", m.group(7).upper())
-                    if not suffix:
-                        continue
-                    part = _correct_part_with_library(f"{base}-{suffix}", bases)
-                    hits.append(
-                        {
-                            "qty": qty,
-                            "item": item,
-                            "part_no": part,
-                            "has_qty": True,
-                            "has_suffix": True,
-                            "raw": line,
-                            "multi_qty": qtys,
-                            "bom_config": dash,
-                        }
-                    )
+                found = _parse_multi_qty_line(
+                    variant,
+                    bases=bases,
+                    dash_n=dash_n,
+                    dash=dash,
+                    line=line,
+                )
+                if found:
+                    hits.extend(found)
+                    break
     return hits
 
 
@@ -1155,112 +1331,33 @@ def _supplement_multi_config_bom(
     bom_config: str,
 ) -> list[str]:
     """
-    Recover BOM rows OCR missed on multi-qty tables.
+    Re-attach dash-column rows that voting dropped.
 
-    Dense Time sheets often drop qty columns for some lines (hose guard, end cap,
-    cutout stiffener). If the part/item appears in OCR and is not qty-0 for this
-    dash, add it at qty 1 (or the multi-qty value when known).
+    Only uses qty already parsed from the selected dash column. Does not invent
+    qty-1 library fillers for a sparse column.
     """
     from quote_core.bom_config import format_bom_config_label
 
     notes: list[str] = []
-    if not bom_config or not bases:
+    if not bom_config:
         return notes
 
     multi_all = _parse_multi_qty_time_hits(texts, bases, bom_config=bom_config)
-    multi_by_item = {
-        str(h["item"]): h for h in multi_all if h.get("item") and int(h.get("qty") or 0) > 0
-    }
-    multi_by_part = {
-        str(h["part_no"]): h for h in multi_all if h.get("has_suffix") and int(h.get("qty") or 0) > 0
-    }
-    zero_parts = _zero_qty_parts_for_config(texts, bases, bom_config=bom_config)
-
-    # Item + part hits without requiring qty columns.
-    loose_hits = _parse_qty_item_part_hits(texts, bases)
-    # Also harvest bare library part numbers from OCR (E/F/H rows often lose item+qty).
-    blob = "\n".join(texts)
-    soft = re.sub(
-        r"(\d[0-9A-Za-z]*\d|\d+)",
-        lambda m: _ocr_digit_cleanup(m.group(0).upper()),
-        blob.replace("—", "-").replace("–", "-").replace("=", "-"),
-    )
-    for base in sorted(bases):
-        if len(base) < 4:
-            continue
-        for m in re.finditer(
-            rf"(?<!\d)({base})\s*[-–—=]?\s*(\d{{1,2}}[A-Za-z]?)\b",
-            soft,
-            flags=re.IGNORECASE,
-        ):
-            suffix = re.sub(r"[^0-9A-Z]", "", m.group(2).upper())
-            if not suffix:
-                continue
-            part = _correct_part_with_library(f"{base}-{suffix}", bases)
-            loose_hits.append(
-                {
-                    "qty": None,
-                    "item": None,
-                    "part_no": part,
-                    "has_qty": False,
-                    "has_suffix": True,
-                    "raw": m.group(0),
-                }
-            )
-
     existing_items = {r.item for r in rows if isinstance(r.item, str)}
     existing_parts = {r.part_no for r in rows}
-    existing_bases_with_suffix: dict[str, set[str]] = defaultdict(set)
-    for pn in existing_parts:
-        b, _, s = pn.partition("-")
-        if s:
-            existing_bases_with_suffix[b].add(s)
-
     added = 0
-    for h in loose_hits:
-        if not h.get("has_suffix"):
+    for h in multi_all:
+        qty = int(h.get("qty") or 0)
+        if qty <= 0:
             continue
         part = str(h.get("part_no") or "")
-        if not part or part.endswith("-?") or part in existing_parts:
-            continue
-        base, _, suf = part.partition("-")
-        if bases and base not in bases:
-            continue
-        # Skip parts that multi-qty marks empty for this dash (other boom tubes).
-        if part in zero_parts:
-            continue
-        # If another suffix of this base is already selected (16697-2), skip siblings.
-        if suf and existing_bases_with_suffix.get(base) and suf not in existing_bases_with_suffix[base]:
-            continue
         item = h.get("item")
+        if not part or part in existing_parts:
+            continue
+        if _is_garbage_time_part(part, bases):
+            continue
         if isinstance(item, str) and item in existing_items:
             continue
-
-        qty = 1
-        if part in multi_by_part:
-            qty = max(1, int(multi_by_part[part]["qty"]))
-            item = item or multi_by_part[part].get("item")
-        elif isinstance(item, str) and item in multi_by_item:
-            qty = max(1, int(multi_by_item[item]["qty"]))
-            part = str(multi_by_item[item]["part_no"])
-            if part in existing_parts:
-                continue
-
-        # Heuristic: hose-guard / stiffener boom pivot often qty 2 when OCR lost columns.
-        # Prefer explicit multi-qty; only guess when description/name hints and qty still 1
-        # from a lone part sighting — use multi text ``2 | 2 | 2 | 2`` near the part.
-        if qty == 1 and part not in multi_by_part:
-            near = ""
-            for blob2 in texts:
-                if base in blob2.replace(" ", ""):
-                    near += "\n" + blob2
-            if re.search(
-                rf"(?:\|\s*)?2\s*[|\]]\s*2\s*[|\]]\s*2\s*[|\]]\s*2\s*[|\]][^\n]{{0,40}}{base}",
-                near.replace("—", "-"),
-                flags=re.I,
-            ):
-                qty = 2
-
         rows.append(
             BomRow(
                 item=item if isinstance(item, str) else None,
@@ -1275,53 +1372,13 @@ def _supplement_multi_config_bom(
         existing_parts.add(part)
         if isinstance(item, str):
             existing_items.add(item)
-        if suf:
-            existing_bases_with_suffix[base].add(suf)
         added += 1
 
     if added:
         notes.append(
-            f"Supplemented {added} BOM part(s) from OCR + library stems "
-            f"(multi-qty column {format_bom_config_label(bom_config)})"
+            f"Supplemented {added} BOM part(s) from dash column "
+            f"{format_bom_config_label(bom_config)}"
         )
-
-    # Dedicated weldment folders (few PDFs) may still miss a garbled PN in OCR
-    # (e.g. 10187 → \"rote7\"). If almost all library stems are already on the BOM,
-    # add the remaining stem(s) at qty 1 with suffix -1.
-    present_bases = {r.part_no.partition("-")[0] for r in rows}
-    missing_bases = sorted(b for b in bases if b not in present_bases)
-    if (
-        5 <= len(rows) <= 20
-        and 1 <= len(missing_bases) <= 3
-        and len(bases) <= 16
-    ):
-        for base in missing_bases:
-            part = f"{base}-1"
-            if part in zero_parts:
-                continue
-            # Prefer a suffix actually seen in OCR for this base.
-            for h in loose_hits:
-                pn = str(h.get("part_no") or "")
-                if pn.startswith(base + "-") and h.get("has_suffix"):
-                    if pn not in zero_parts:
-                        part = pn
-                        break
-            if any(r.part_no == part for r in rows):
-                continue
-            rows.append(
-                BomRow(
-                    item=None,
-                    qty=1,
-                    part_no=part,
-                    description="",
-                    unit_weight_lb=None,
-                    source="ocr_time_multi_qty_lib",
-                    confidence=0.72,
-                )
-            )
-            notes.append(
-                f"Added library component {part} (OCR missed PN; folder stem present)"
-            )
     return notes
 
 
