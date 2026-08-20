@@ -190,7 +190,15 @@ def pick_best_material_list(candidates: Sequence[Any], *, min_rows: int = TALL_T
     if mid:
         mid.sort(key=score_material_list, reverse=True)
         return mid[0]
-    scored.sort(key=score_material_list, reverse=True)
+    scored.sort(
+        key=lambda c: (
+            score_material_list(c),
+            1 if material_list_header_seen(c) else 0,
+            parsed_n(c),
+            grid_n(c),
+        ),
+        reverse=True,
+    )
     return scored[0]
 
 

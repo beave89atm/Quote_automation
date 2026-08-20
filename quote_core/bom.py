@@ -1144,6 +1144,7 @@ def extract_bom_from_material_list_table(
     ``library_folder`` is unused on purpose — nested PDFs are not the BOM.
     """
     from quote_core.bom_table import (
+        SHORT_TABLE_REJECT,
         TALL_TABLE_MIN_ROWS,
         harvest_material_list_lines,
         material_list_header_seen,
@@ -1209,7 +1210,12 @@ def extract_bom_from_material_list_table(
                     f"({rendered.grid_row_count} grid bands, {len(rendered.rows)} parsed)",
                     *list(rendered.notes),
                 ]
-                candidates.append(rendered)
+                if (
+                    rendered.rows
+                    or rendered.grid_row_count >= SHORT_TABLE_REJECT
+                    or material_list_header_seen(rendered)
+                ):
+                    candidates.append(rendered)
             except Exception as exc:  # noqa: BLE001
                 notes.append(f"Right-side render page {idx + 1} failed: {exc}")
             parsed = _parse_material_list_on_page(page, bom_config=bom_config)
