@@ -1057,6 +1057,124 @@ def _repair_suffix_ocr(rows: list[BomRow], hits: list[dict[str, Any]], bases: se
                 row.part_no = _correct_part_with_library(best, bases)
 
 
+def _native_page_words(page) -> list[dict[str, Any]]:
+    words: list[dict[str, Any]] = []
+    for x0, y0, x1, y1, text, *_rest in page.get_text("words") or []:
+        token = (text or "").strip()
+        if not token:
+            continue
+        words.append(
+            {
+                "text": token,
+                "x0": float(x0),
+                "y0": float(y0),
+                "x1": float(x1),
+                "y1": float(y1),
+                "conf": 100,
+            }
+        )
+    return words
+
+
+def _material_list_ocr_clips(page) -> list[Any]:
+    """Tall right-side / full-page clips — 51-row Time grids are not 7-row crops."""
+    import fitz
+
+    rect = page.rect
+    return [
+        fitz.Rect(rect.width * 0.45, rect.height * 0.04, rect.width * 0.995, rect.height * 0.98),
+        fitz.Rect(rect.width * 0.55, rect.height * 0.08, rect.width * 0.995, rect.height * 0.96),
+        fitz.Rect(rect.width * 0.08, rect.height * 0.08, rect.width * 0.995, rect.height * 0.96),
+    ]
+
+
+def extract_bom_from_material_list_table(
+    pdf_path: Path | str | None = None,
+    *,
+    text: str | None = None,
+    library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
+    bom_config: str | None = None,
+    page_index: int | None = None,
+) -> BomResult:
+    """
+    Prefer a detected LIST OF MATERIAL / PARTS LIST / BOM **grid**.
+
+    Reads cells (native word boxes, then OCR word boxes). Does **not** pad
+    missing rows from drawing-library child files or nested sub-weldments.
+    ``library_folder`` is unused on purpose — nested PDFs are not the BOM.
+    """
+    from quote_core.bom_table import (
+        parse_material_list_text,
+        parse_material_list_words,
+        text_has_material_list_grid,
+    )
+
+    del library_folder, related_pdf_names  # nested folder files are not the BOM
+    notes: list[str] = []
+    if text:
+        parsed = parse_material_list_text(text, bom_config=bom_config)
+        if parsed.rows:
+            return parsed
+        notes.extend(parsed.notes)
+
+    if not pdf_path:
+        return BomResult(method=None, confidence=0.0, notes=notes or ["No PDF for table BOM"])
+
+    import fitz
+
+    from quote_core.ocr import ocr_available
+
+    pdf_path = Path(pdf_path)
+    best = BomResult(method=None, confidence=0.0, notes=notes)
+    doc = fitz.open(str(pdf_path))
+    try:
+        pages = list(doc)
+        if page_index is not None:
+            pages = [doc[min(page_index, len(doc) - 1)]]
+        else:
+            pages = pages[:2]
+        for page in pages:
+            native_text = page.get_text("text") or ""
+            native_words = _native_page_words(page)
+            if native_words:
+                parsed = parse_material_list_words(native_words, bom_config=bom_config)
+                if parsed.rows:
+                    return parsed
+                notes.extend(parsed.notes)
+            if text_has_material_list_grid(native_text):
+                parsed = parse_material_list_text(native_text, bom_config=bom_config)
+                if parsed.rows:
+                    return parsed
+                notes.extend(parsed.notes)
+            header_hint = text_has_material_list_grid(native_text) or any(
+                str(w.get("text") or "").upper() in {"QTY", "ITEM", "PART", "DESCRIPTION"}
+                or str(w.get("text") or "").strip() in {"-4", "-3", "-2", "-1"}
+                for w in native_words
+            )
+            # Vector CAD sheets have almost no native text — still try cell OCR.
+            sparse_native = len(native_text.strip()) < 200
+            if not ocr_available() or not (header_hint or sparse_native):
+                continue
+            ocr_words: list[dict[str, Any]] = []
+            for clip in _material_list_ocr_clips(page):
+                ocr_words.extend(_ocr_words_in_clip(page, clip, dpi=320))
+            if ocr_words:
+                parsed = parse_material_list_words(ocr_words, bom_config=bom_config, y_tol=10.0)
+                if parsed.rows:
+                    if parsed.method == "table_material_list":
+                        parsed.method = "table_material_list"
+                    return parsed
+                notes.extend(parsed.notes)
+                if len(parsed.rows) > len(best.rows):
+                    best = parsed
+    finally:
+        doc.close()
+
+    best.notes = notes + list(best.notes)
+    return best
+
+
 def extract_bom_from_ocr_time_style(
     pdf_path: Path | str,
     *,
@@ -1068,12 +1186,25 @@ def extract_bom_from_ocr_time_style(
     """
     Parse Time Manufacturing LIST OF MATERIAL tables.
 
+    Table-first: when a QTY / ITEM / PART NO. / DESCRIPTION grid header is
+    found, read cells (not the whole-page OCR blob). Fallback is the older
+    multi-pass OCR + single-letter regex vote.
+
     These tables often have column headers at the *bottom* of the grid
     (QTY | ITEM | PART NO. | DESCRIPTION) with data rows stacked above.
     Multi-option sheets use ``-4 | -3 | -2 | -1`` qty columns — pass
     ``bom_config=\"1\"`` to keep only the ``-1`` column.
-    Uses multi-pass OCR + voting for qty/item/part accuracy on vector CAD.
     """
+    table = extract_bom_from_material_list_table(
+        pdf_path,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+        bom_config=bom_config,
+        page_index=page_index,
+    )
+    if table.rows:
+        return table
+
     import fitz
 
     from quote_core.bom_config import format_bom_config_label, normalize_bom_config
@@ -1081,7 +1212,9 @@ def extract_bom_from_ocr_time_style(
 
     pdf_path = Path(pdf_path)
     if not ocr_available():
-        return BomResult(notes=["OCR unavailable for Time-style BOM"], confidence=0.0)
+        notes = list(table.notes) if table.notes else []
+        notes.append("OCR unavailable for Time-style BOM")
+        return BomResult(notes=notes, confidence=0.0)
 
     config = normalize_bom_config(bom_config)
     bases = library_part_bases(
@@ -1230,7 +1363,8 @@ def extract_bom(
 
     1) Native MAC text/blocks (high confidence when present)
     2) Native PARTS LIST (Cummins / NGFS style)
-    3) OCR Time-style LIST OF MATERIAL (vector CAD drawings)
+    3) Table-first LIST OF MATERIAL / BOM grid (cells, not page regex)
+    4) OCR Time-style whole-page regex (fallback when no grid header)
     """
     notes: list[str] = []
     native = extract_bom_from_native_mac(pdf_path, text=text)
@@ -1245,6 +1379,16 @@ def extract_bom(
         return parts_list
     if parts_list.notes:
         notes.extend(parts_list.notes)
+
+    if text:
+        from quote_core.bom_table import parse_material_list_text, text_has_material_list_grid
+
+        if text_has_material_list_grid(text):
+            table = parse_material_list_text(text, bom_config=bom_config)
+            if table.rows and table.piece_count > 0:
+                table.notes = notes + list(table.notes)
+                return table
+            notes.extend(table.notes)
 
     if pdf_path:
         ocr = extract_bom_from_ocr_time_style(

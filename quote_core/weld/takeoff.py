@@ -1200,6 +1200,7 @@ def estimate_fitup_drivers(
         or method.startswith("ocr_time")
         or method.startswith("native_mac")
         or method.startswith("native_parts_list")
+        or method.startswith("table_")
     ):
         if bom_piece_count > 0:
             part_count = bom_piece_count
@@ -1249,6 +1250,7 @@ def estimate_fitup_drivers(
         or method.startswith("ocr_time")
         or method.startswith("native_mac")
         or method.startswith("native_parts_list")
+        or method.startswith("table_")
         or "qty_only" in method
     ):
         part_count = bom_piece_count
