@@ -20,8 +20,8 @@ Fill these before trusting quote times:
 | `fitup.weight_bands` | Minutes per **piece** by weight band (`per_piece_minutes`) |
 | `fitup.default_band_id` | Band used when component weights are unknown |
 | `always_ask` | Situations the engine must flag instead of guessing |
-| `drawing_library.roots` | Shared-drive folders to search for STP / component PDFs |
-| `drawing_library.auto_attach_stp` | If true, auto-copy matching STP when upload has none |
+| `drawing_library.roots` | Shared-drive folders to search for STP / component PDFs. Happy path: drop only the top-level weldment; the app finds BOM children + STP here. |
+| `drawing_library.auto_attach_stp` | If true, auto-copy matching STP when upload has none. Do not disable for v1. |
 
 Set `KANNON_DRAWING_LIBRARY` to override roots (semicolon-separated) on each office PC.
 

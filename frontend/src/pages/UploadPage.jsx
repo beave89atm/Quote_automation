@@ -138,10 +138,13 @@ export default function UploadPage() {
     <div className="panel">
       <h1 style={{ marginTop: 0 }}>New quote job</h1>
       <p className="muted">
-        Drop <strong>all</strong> files the customer sent — PDF, DXF, and/or STP/STEP
-        (any subset). Matching filename stems become one job. Review ops here, then
-        push the quote into <strong>SecturaFAB</strong> (that is the review surface).
-        Printable shop-labor HTML is a fallback only.
+        Happy path: drop only the <strong>top-level weldment</strong>. The app looks
+        up BOM child drawings and STP in the office drawing library (SharePoint /
+        OneDrive — <span className="mono">drawing_library.roots</span>). You do not
+        need to upload each child. Extra PDF / DXF / STP files are for when those
+        files are <em>not</em> already in the library. Review ops here, then push
+        into <strong>SecturaFAB</strong> (the review surface). Printable HTML is a
+        fallback only.
       </p>
 
       <div
@@ -163,7 +166,7 @@ export default function UploadPage() {
         onClick={() => document.getElementById("file-input").click()}
       >
         <h2>Drag & drop drawings</h2>
-        <p>PDF · DXF · STP/STEP — any combination per part stem</p>
+        <p>Top-level weldment is enough when the library has the children</p>
         <div className="file-chips">
           {pairs.length ? (
             <span className="chip">

@@ -494,6 +494,12 @@ export default function JobDetailPage() {
             <p className="error" style={{ marginTop: "0.5rem" }}>
               No drawing files on this job.
             </p>
+          ) : !job.stp_filename && !job.takeoff?.library?.folder ? (
+            <p className="muted" style={{ marginTop: "0.5rem" }}>
+              No STP yet — use Find on shared drive if this is a top-level weldment
+              (library should attach children + STP). Attach files only when they are
+              not already in the drawing library.
+            </p>
           ) : null}
         </div>
         <div className="row">

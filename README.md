@@ -57,7 +57,11 @@ Open http://localhost:5173
 
 ## Workflow
 
-1. Drag/drop **all** customer files: PDF and/or DXF and/or STP/STEP (any subset)
+1. **Happy path:** drop only the **top-level weldment**. The app searches
+   `drawing_library.roots` (typically Fort Worth Engineering\\Customer Drawings)
+   and auto-attaches the matching STP plus BOM child PDFs so you do not upload
+   each child. Multi-file drop (PDF / DXF / STP, any subset) is for files that
+   are **not** already in that library.
 2. App proposes operations (laser, bend, weld/fit-up, saw, outsourced tube laser +
    powder coating, …) and setup/run times it can compute. Unknowns and mill/lathe
    are flagged — not invented.
