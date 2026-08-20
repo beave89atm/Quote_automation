@@ -34,6 +34,10 @@ _MULTI_QTY_HEADER_RE = re.compile(
     r"-4.{0,16}-3.{0,16}-2.{0,16}-1.{0,24}ITEM.{0,24}PART",
     re.IGNORECASE | re.DOTALL,
 )
+_DASH_QTY_HEADER_RE = re.compile(
+    r"-2.{0,20}-1.{0,24}ITEM.{0,24}PART",
+    re.IGNORECASE | re.DOTALL,
+)
 
 _HEADER_QTY = frozenset({"QTY", "QTY.", "QUANTITY"})
 _HEADER_ITEM = frozenset({"ITEM", "ITEM.", "BALLOON", "ID", "FIND"})
@@ -553,6 +557,12 @@ def harvest_material_list_lines(text: str | None, *, bom_config: str | None = No
 
     if not text:
         return BomResult(method=None, confidence=0.0, notes=["No text to harvest"])
+    if _MULTI_QTY_HEADER_RE.search(text) or _DASH_QTY_HEADER_RE.search(text):
+        return BomResult(
+            method=None,
+            confidence=0.0,
+            notes=["Multi-qty dash columns — leave to cell parser (do not strip-harvest)"],
+        )
     blob = (
         str(text)
         .replace("|", " ")
