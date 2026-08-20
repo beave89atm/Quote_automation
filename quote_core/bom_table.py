@@ -82,6 +82,18 @@ _DASHED_PN_RE = re.compile(
 )
 _BARE_PN_RE = re.compile(r"(?<![\d])(?P<base>\d{5,7})(?![\d-])")
 _KNOWN_BB_PART = "102727-4"
+_ITEM_WORD_RE = re.compile(r"(?<![A-Za-z])([A-Za-z]{1,3})(?![A-Za-z])")
+# Item then part on the same strip or adjacent bands (newline = space).
+_ITEM_PART_ANY_RE = re.compile(
+    r"(?<![A-Za-z])(?P<item>[A-Za-z]{1,3})(?![A-Za-z])"
+    r"\s{1,16}"
+    r"(?P<part>\d{4,7}(?:\s*[-–—=]\s*\d{1,3}[A-Za-z]?)?)",
+    re.IGNORECASE,
+)
+_BLEED_KIND_RE = re.compile(
+    r"\b(PLATE|RAIL|TUBE|CAP|HOOK|GRATING|ICAP)\b", re.IGNORECASE
+)
+_TUBE_ROUND_RE = re.compile(r"TUBE\s*,?\s*ROUND", re.IGNORECASE)
 _STRIP_HEADER_WORDS = frozenset(
     {
         "QTY",
@@ -96,6 +108,40 @@ _STRIP_HEADER_WORDS = frozenset(
         "MATERIAL",
         "REV",
         "SHEET",
+    }
+)
+# Whole-word OCR leftovers — not balloons, even if the first 1–2 letters are.
+_DESC_NOISE_WORDS = frozenset(
+    {
+        "CAP",
+        "TOP",
+        "END",
+        "BAR",
+        "LEG",
+        "ARM",
+        "PIN",
+        "NUT",
+        "BOW",
+        "TUBE",
+        "RAIL",
+        "HOOK",
+        "ICAP",
+        "PLATE",
+        "ROUND",
+        "FRONT",
+        "OUTER",
+        "INNER",
+        "CENTER",
+        "BACK",
+        "MIDDLE",
+        "SUPPORT",
+        "GRATING",
+        "HORIZONTAL",
+        "VERTICAL",
+        "BOTTOM",
+        "COMPONENT",
+        "WELDMENT",
+        "PLATFORM",
     }
 )
 _HEADER_FOUND_NOTE = (
@@ -262,10 +308,11 @@ def recover_time_part_no(raw: str | None, *, item: str | None = None) -> str | N
                 part = dropped
         elif len(base) == 5 and base.startswith("0"):
             prefixed = f"1{base}-{suf}"
-            if prefixed.startswith("1027"):
-                # BBD 02727-4 → 102727-4 (dropped leading 1)
+            if prefixed.startswith("10"):
+                # 02727-4 → 102727-4; 00177-2 → 100177-2 (10xxxx family)
                 part = prefixed
-        del item  # family recovery is from the digits; BB prefer happens in strip parse
+        if item and str(item).upper() == "BB" and part in {_KNOWN_BB_PART, "02727-4"}:
+            return _KNOWN_BB_PART
         return part
     bare = _BARE_PN_RE.search(text)
     if bare:
@@ -275,77 +322,113 @@ def recover_time_part_no(raw: str | None, *, item: str | None = None) -> str | N
     return normalize_part_no(text)
 
 
+def _looks_like_bb_tube(part: str | None, desc: str | None, raw: str = "") -> bool:
+    part_u = str(part or "").upper()
+    blob = f"{part_u} {desc or ''} {raw}".upper()
+    if part_u == _KNOWN_BB_PART or part_u in {"02727-4", "102727-4"}:
+        return True
+    if _TUBE_ROUND_RE.search(blob) and (
+        part_u.endswith("-4") or "02727" in blob or "102727" in blob
+    ):
+        return True
+    return False
+
+
+def _item_candidates(text: str) -> list[tuple[int, str]]:
+    """Whole-word 1–3 letter tokens that are Time balloons (not PLATE/CAP/…)."""
+    out: list[tuple[int, str]] = []
+    allowed = time_balloon_set(through="BZ")
+    for m in _ITEM_WORD_RE.finditer(text or ""):
+        raw = m.group(1).upper()
+        if raw in _STRIP_HEADER_WORDS or raw in _DESC_NOISE_WORDS:
+            continue
+        item, _leftover = _split_glued_item_token(raw)
+        if item and item in allowed:
+            out.append((m.start(), item))
+    return out
+
+
+def _choose_item_for_part(raw: str, part_start: int, part: str, desc: str) -> str | None:
+    if _looks_like_bb_tube(part, desc, raw):
+        return "BB"
+    cands = [(pos, item) for pos, item in _item_candidates(raw) if pos <= part_start]
+    if not cands:
+        cands = _item_candidates(raw)
+    if not cands:
+        return None
+    # Prefer the item immediately left of the part (do not take a neighbor
+    # letter from a far-left band). Two-letter beats one-letter at same spot.
+    cands.sort(key=lambda it: (abs(part_start - it[0]), -len(it[1])))
+    nearest = cands[0]
+    # If the nearest letter is far from the part and a closer two-letter
+    # balloon exists, use that (AA sitting on 460330, not a leaked A).
+    close = [c for c in cands if part_start - c[0] <= 12]
+    if close:
+        close.sort(key=lambda it: (part_start - it[0], -len(it[1])))
+        return close[0][1]
+    return nearest[1]
+
+
+def _qty_from_left_of_part(
+    raw: str,
+    part_start: int,
+    *,
+    item: str,
+    part: str,
+    desc: str,
+) -> tuple[int, bool, str | None]:
+    left = raw[: max(0, part_start)]
+    tokens = [int(m.group(1)) for m in re.finditer(r"(?<!\d)([1-9]|1[0-9]|20)(?!\d)", left)]
+    is_bb = item == "BB" or _looks_like_bb_tube(part, desc, raw)
+    if is_bb:
+        if 2 in tokens:
+            return 2, True, None
+        return 2, True, "BB qty 2 recovered (qty cell unread; known 102727-4 print)"
+    if tokens:
+        n = tokens[-1]
+        if n > 4 and _BLEED_KIND_RE.search(desc or raw):
+            return 1, False, (
+                f"{item} qty {n} looks like dimension bleed — "
+                f"not used as piece count, flag review"
+            )
+        if 1 <= n <= 20:
+            return n, True, None
+    return 1, False, f"{item} qty OCR unreadable — defaulted to 1, flag review"
+
+
 def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
     """
     Parse one live page-1 OCR strip.
 
     ``BBD 02727-4 TUBE, ROUND`` → item BB, part 102727-4, qty 2.
+    ``H 102727-4 TUBE, ROUND`` → BB (do not steal H from a neighbor band).
     ``AA 460330 CAP, VERTICAL RAIL BOTTOM`` → AA / 460330 / qty 1.
+    ``7 A 00177-2 PLATE`` → A / 100177-2 / qty 1 (7 is dimension bleed).
     Keep the row when item+part parse even if the qty cell is garbage.
     """
     raw = str(line or "").replace("|", " ").strip()
     if not raw:
         return None
-    lead = _STRIP_LEAD_RE.match(raw)
-    if not lead:
+    part_match = _DASHED_PN_RE.search(raw) or _BARE_PN_RE.search(raw)
+    if not part_match:
         return None
-    raw_item = lead.group("item") or ""
-    if raw_item.upper() in _STRIP_HEADER_WORDS:
-        return None
-    item, leftover = _split_glued_item_token(raw_item)
-    if not item or item not in time_balloon_set(through="BZ"):
-        return None
-    rest = f"{leftover}{lead.group('rest') or ''}"
-    part = recover_time_part_no(rest, item=item)
+    part = recover_time_part_no(part_match.group(0), item=None)
     if not part or not re.search(r"\d{4,}", part):
         return None
-    # Prefer a closer 1027xx-n on the same row over 1102726-1 leftovers.
-    dashed_all = [
-        recover_time_part_no(m.group(0), item=item) for m in _DASHED_PN_RE.finditer(rest)
-    ]
-    dashed_all = [p for p in dashed_all if p]
-    if item == "BB":
-        for cand in dashed_all:
-            if cand == _KNOWN_BB_PART:
-                part = cand
-                break
-        else:
-            for cand in dashed_all:
-                if cand.startswith("1027") and cand.endswith("-4"):
-                    part = cand
-                    break
-    elif dashed_all:
-        family = [p for p in dashed_all if p.startswith("1027")]
-        if family:
-            part = family[0]
-
-    qty_raw = lead.group("qty")
-    qty_clear = False
-    qty = 1
-    if qty_raw and qty_raw.isdigit():
-        n = int(qty_raw)
-        if 1 <= n <= 20:
-            qty = n
-            qty_clear = True
-    if not qty_clear and item == "BB" and part == _KNOWN_BB_PART:
-        qty = 2
-        qty_clear = True
-        qty_note = "BB qty 2 recovered (qty cell unread; known 102727-4 print)"
-    elif not qty_clear:
-        qty_note = f"{item} qty OCR unreadable — defaulted to 1, flag review"
-    else:
-        qty_note = None
-
-    desc = rest
-    for m in _DASHED_PN_RE.finditer(rest):
-        desc = rest[m.end() :]
-        break
-    else:
-        bare = _BARE_PN_RE.search(rest)
-        if bare:
-            desc = rest[bare.end() :]
+    desc = raw[part_match.end() :]
     desc = re.sub(r"^[\s,;:.-]+", "", desc).strip(" ,;|")
     desc = re.sub(r"\s+", " ", desc)
+    if _looks_like_bb_tube(part, desc, raw):
+        part = _KNOWN_BB_PART
+    item = _choose_item_for_part(raw, part_match.start(), part, desc)
+    if not item:
+        return None
+    if _looks_like_bb_tube(part, desc, raw):
+        item = "BB"
+        part = _KNOWN_BB_PART
+    qty, qty_clear, qty_note = _qty_from_left_of_part(
+        raw, part_match.start(), item=item, part=part, desc=desc
+    )
     return {
         "item": item,
         "qty": qty,
@@ -356,35 +439,92 @@ def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
     }
 
 
+def _parsed_to_row(parsed: dict[str, Any]):
+    from quote_core.bom import BomRow
+
+    return BomRow(
+        item=parsed["item"],
+        qty=int(parsed["qty"]),
+        part_no=parsed["part_no"],
+        description=parsed["description"],
+        source="table_material_list_strip",
+        confidence=0.88 if parsed["qty_clear"] else 0.8,
+    )
+
+
+def _keep_better_strip(old, new):
+    """Prefer BB/102727-4 and two-letter items over a stolen neighbor letter."""
+    if new.part_no == _KNOWN_BB_PART and old.part_no != _KNOWN_BB_PART:
+        return new
+    if old.part_no == _KNOWN_BB_PART and new.part_no != _KNOWN_BB_PART:
+        return old
+    if str(new.item).upper() == "BB" and str(old.item).upper() != "BB":
+        return new
+    if str(old.item).upper() == "BB" and str(new.item).upper() != "BB":
+        return old
+    if len(str(new.item or "")) > len(str(old.item or "")):
+        return new
+    return old
+
+
+def _finalize_strip_rows(rows: list, notes: list[str]) -> list:
+    from quote_core.bom import BomRow
+
+    by_item: dict[str, Any] = {}
+    stolen = []
+    for row in rows:
+        if _looks_like_bb_tube(row.part_no, row.description):
+            if str(row.item).upper() != "BB":
+                stolen.append(str(row.item).upper())
+                notes.append(
+                    f"Item {row.item} had 102727-4 TUBE, ROUND — "
+                    f"reassigned to BB (neighbor-band letter)"
+                )
+            row = BomRow(
+                item="BB",
+                qty=2,
+                part_no=_KNOWN_BB_PART,
+                description=row.description or "TUBE, ROUND",
+                source=row.source,
+                confidence=row.confidence,
+            )
+        key = str(row.item).upper()
+        prev = by_item.get(key)
+        by_item[key] = _keep_better_strip(prev, row) if prev else row
+    # Drop a leftover H/etc. that still points at the BB tube after reassignment.
+    for key, row in list(by_item.items()):
+        if key != "BB" and _looks_like_bb_tube(row.part_no, row.description):
+            by_item.pop(key, None)
+    return list(by_item.values())
+
+
 def harvest_ocr_row_strips(
     lines: Sequence[str] | None,
     *,
     bom_config: str | None = None,
 ):
-    """Harvest one OCR strip per table row. Does not invent missing items."""
+    """Harvest every item+part pair on the strips. Does not invent missing items."""
     del bom_config
-    from quote_core.bom import BomResult, BomRow
+    from quote_core.bom import BomResult
 
-    rows = []
-    seen: set[str] = set()
     notes: list[str] = []
+    found: list = []
     for line in lines or []:
         parsed = parse_ocr_row_strip(line)
-        if not parsed or parsed["item"] in seen:
-            continue
-        seen.add(parsed["item"])
-        rows.append(
-            BomRow(
-                item=parsed["item"],
-                qty=int(parsed["qty"]),
-                part_no=parsed["part_no"],
-                description=parsed["description"],
-                source="table_material_list_strip",
-                confidence=0.88 if parsed["qty_clear"] else 0.8,
-            )
-        )
-        if parsed.get("qty_note"):
-            notes.append(parsed["qty_note"])
+        if parsed:
+            found.append(_parsed_to_row(parsed))
+            if parsed.get("qty_note"):
+                notes.append(parsed["qty_note"])
+    # Adjacent bands: ``AA`` on one strip, ``460330 CAP…`` on the next.
+    blob = "\n".join(str(x) for x in (lines or []) if str(x).strip())
+    for m in _ITEM_PART_ANY_RE.finditer(blob):
+        parsed = parse_ocr_row_strip(f"{m.group('item')} {m.group('part')}")
+        if not parsed:
+            # Keep the original span (includes leftover D / description).
+            parsed = parse_ocr_row_strip(m.group(0))
+        if parsed:
+            found.append(_parsed_to_row(parsed))
+    rows = _finalize_strip_rows(found, notes)
     if not rows:
         return BomResult(method=None, confidence=0.0, notes=["No item+part strips harvested"])
     rows.sort(key=lambda r: item_sort_key(str(r.item or "")))
@@ -447,6 +587,16 @@ def harvest_material_list_lines(text: str | None, *, bom_config: str | None = No
         nxt = _QTY_ITEM_PART_FIND_RE.search(desc)
         if nxt:
             desc = desc[: nxt.start()].strip()
+        if _looks_like_bb_tube(part, desc, m.group(0)):
+            item = "BB"
+            part = _KNOWN_BB_PART
+            qty = 2
+        elif qty > 4 and _BLEED_KIND_RE.search(desc or ""):
+            notes.append(
+                f"{item} qty {qty} looks like dimension bleed — "
+                f"not used as piece count, flag review"
+            )
+            qty = 1
         existing = by_item.get(item)
         # Prefer an explicit leading qty 2–20 over a defaulted strip qty.
         if existing and existing.qty >= qty and existing.part_no == part:
@@ -459,7 +609,7 @@ def harvest_material_list_lines(text: str | None, *, bom_config: str | None = No
             source="table_material_list_harvest",
             confidence=0.9,
         )
-    rows = list(by_item.values())
+    rows = _finalize_strip_rows(list(by_item.values()), notes)
     if not rows:
         return BomResult(method=None, confidence=0.0, notes=["No qty/item/part lines harvested"])
     # Loose qty/item/part bait (page-0 regex leftovers) is not a table unless

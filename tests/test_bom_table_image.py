@@ -183,18 +183,26 @@ def test_extract_bom_sibling_crop_beats_short_pdf_lom(tmp_path: Path):
 
 
 def _live_page1_strips() -> list[str]:
-    """Exact live page-1 OCR strips (cec69a0 dump) plus the rest of A…BC."""
-    overrides = {
-        "A": "A 460200 PLATE",
-        "Z": "Z 460320 ICAP, VERTICAL RAIL TOP",
-        "AA": "AA 460330 CAP, VERTICAL RAIL BOTTOM",
-        "AX": "AX 1102726-1 HOOK pO",
-        "BB": "BBD 02727-4 TUBE, ROUND",
-    }
-    lines = ["TEM | PART NO. | DESCRIPTION"]
+    """a49dcad live five + older cec69a0 strips + the rest of A…BC."""
+    lines = [
+        "TEM | PART NO. | DESCRIPTION",
+        "7 A 00177-2 PLATE",
+        "F 432650 RAIL, HORIZONTAL CENTER BACK",
+        "H 102727-4 TUBE, ROUND",
+        "M 464460 RAIL, HORIZONTAL FRONT OUTER",
+        "7 P 100350-1 TUBE, GRATING SUPPORT MIDDLE",
+        "BBD 02727-4 TUBE, ROUND",
+        "AA 460330 CAP, VERTICAL RAIL BOTTOM",
+        "Z 460320 ICAP, VERTICAL RAIL TOP",
+    ]
+    taken = {"A", "F", "M", "P", "AA", "Z", "BB"}
     for i, item in enumerate(_platform_items()):
-        if item in overrides:
-            lines.append(overrides[item])
+        if item in taken:
+            continue
+        if item == "AX":
+            lines.append("AX 1102726-1 HOOK pO")
+        elif item == "H":
+            lines.append("H 102840-1 COMPONENT H")
         else:
             lines.append(f"{item} 1028{i:02d}-1 COMPONENT {item}")
     return lines
@@ -209,6 +217,9 @@ def test_live_strips_parse_bbd_aa_z_and_ax():
     assert "TUBE" in bb["description"].upper()
     assert "ROUND" in bb["description"].upper()
 
+    stolen = parse_ocr_row_strip("H 102727-4 TUBE, ROUND")
+    assert stolen["item"] == "BB" and stolen["part_no"] == _BB_PART and stolen["qty"] == 2
+
     aa = parse_ocr_row_strip("AA 460330 CAP, VERTICAL RAIL BOTTOM")
     assert aa["item"] == "AA" and aa["part_no"] == "460330" and aa["qty"] == 1
     assert "VERTICAL RAIL BOTTOM" in aa["description"].upper()
@@ -220,6 +231,13 @@ def test_live_strips_parse_bbd_aa_z_and_ax():
     assert ax["item"] == "AX"
     assert ax["part_no"] == "102726-1"
     assert ax["part_no"] != "1102726-1"
+
+    plate = parse_ocr_row_strip("7 A 00177-2 PLATE")
+    assert plate["item"] == "A" and plate["part_no"] == "100177-2"
+    assert plate["qty"] == 1
+
+    mid = parse_ocr_row_strip("7 P 100350-1 TUBE, GRATING SUPPORT MIDDLE")
+    assert mid["item"] == "P" and mid["part_no"] == "100350-1" and mid["qty"] == 1
 
     assert parse_ocr_row_strip("TEM | PART NO. | DESCRIPTION") is None
 
@@ -254,6 +272,12 @@ def test_exact_live_strips_harvest_51ish_and_bb():
     by_item = {r.item: r for r in bom.rows}
     assert by_item["AA"].part_no == "460330"
     assert by_item["Z"].part_no == "460320"
+    assert by_item["A"].part_no == "100177-2"
+    assert by_item["A"].qty == 1
+    assert by_item["P"].qty == 1
+    assert by_item["F"].part_no == "432650"
+    if "H" in by_item:
+        assert by_item["H"].part_no != _BB_PART
 
     harvested = harvest_material_list_lines("\n".join(strips))
     assert len(harvested.rows) >= 48
