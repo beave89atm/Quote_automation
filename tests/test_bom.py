@@ -12,6 +12,7 @@ from quote_core.bom import (
     extract_bom,
     extract_bom_from_ocr_time_style,
     library_part_bases,
+    merge_time_bom_results,
     normalize_part_no,
     parse_time_style_bom_texts,
 )
@@ -117,87 +118,156 @@ PLATE
     assert bom.part_number_count == 2
 
 
-# Reconstruct Job 84 / 1004335 Time 32x32 basket: 16 PNs, 25 pcs.
-# Includes multi-dash OCR noise, qty-0 letter I, and junk PN 004556-2.
-_BASKET_1004335_BOM = """
+# Live library ``1004335 Weldment.pdf`` OCR (Kyle Job 84). Time skips O.
+# I / 004556-2 is OCR garbage. Drawing qty sum without I = 28 (not invented 25).
+_WELDMENT_1004335_BOM = """
 LIST OF MATERIAL
-2 | Q | 1004344-1 | SLAT
+2 | R | 1004344-1 | SLAT
+1 | Q | 15064-1 | TUBE
 2 | P | 1004343-1 | SLAT
-1 | O | 15064-1 | TUBE
-1 | N | 1004342-1 | RAIL
+4 | N | 1004342-1 | RAIL
 1 | M | 1004341-1 | RAIL
-2 | L | 1004340-1 | RAIL
-2 | K | 1004339-1 | RAIL
-1 | J | 1004338-1 | BRACE
-0 | I | 004556-2 |
-2 | H | 1004213-1 | SIDE
-2 | G | 1004212-1 | SIDE
+1 | L | 1004213-1 | SIDE
+1 | K | 1004212-1 | SIDE
+4 | J | 1004340-1 | RAIL
+1 | I | 004556-2 |
+1 | H | 1004339-1 | BRACE
+1 | G | 1004338-1 | BRACE
 1 | F | 1004208-1 | PLATE
 2 | E | 1004067-1 | BRACKET
-2 | D | 1004337-1 | POST
-2 | C | 1004336-1 | POST
-1 | B | 1004335-2 | FRAME
-| - | - | - | 1 | A |1004335-1 | FRAME
+1 | D | 1004337-2 | POST
+4 | C | 1004337-1 | POST
+1 | B | 1004336-2 | FRAME
+1 | A | 1004336-1 | FRAME
 QTY ITEM PART NO. DESCRIPTION
 """
 
-_BASKET_1004335_EXPECTED = {
-    ("A", "1004335-1", 1),
-    ("B", "1004335-2", 1),
-    ("C", "1004336-1", 2),
-    ("D", "1004337-1", 2),
+# Uploaded job ``1004335.pdf``: first-page OCR cut (A–H + P,R). Loses J–N and Q.
+_UPLOAD_1004335_TRUNCATED = """
+LIST OF MATERIAL
+2 | R | 1004344-1 | SLAT
+2 | P | 1004343-1 | SLAT
+0 | I | 004556-2 |
+1 | H | 1004339-1 | BRACE
+1 | G | 1004338-1 | BRACE
+1 | F | 1004208-1 | PLATE
+2 | E | 1004067-1 | BRACKET
+1 | D | 1004337-2 | POST
+4 | C | 1004337-1 | POST
+1 | B | 1004336-2 | FRAME
+1 | A | 1004336-1 | FRAME
+QTY ITEM PART NO. DESCRIPTION
+"""
+
+_WELDMENT_1004335_EXPECTED = {
+    ("A", "1004336-1", 1),
+    ("B", "1004336-2", 1),
+    ("C", "1004337-1", 4),
+    ("D", "1004337-2", 1),
     ("E", "1004067-1", 2),
     ("F", "1004208-1", 1),
-    ("G", "1004212-1", 2),
-    ("H", "1004213-1", 2),
-    ("J", "1004338-1", 1),
-    ("K", "1004339-1", 2),
-    ("L", "1004340-1", 2),
+    ("G", "1004338-1", 1),
+    ("H", "1004339-1", 1),
+    ("J", "1004340-1", 4),
+    ("K", "1004212-1", 1),
+    ("L", "1004213-1", 1),
     ("M", "1004341-1", 1),
-    ("N", "1004342-1", 1),
-    ("O", "15064-1", 1),
+    ("N", "1004342-1", 4),
     ("P", "1004343-1", 2),
-    ("Q", "1004344-1", 2),
+    ("Q", "15064-1", 1),
+    ("R", "1004344-1", 2),
+}
+
+_BASKET_BASES = {
+    "1004067",
+    "1004208",
+    "1004212",
+    "1004213",
+    "1004336",
+    "1004337",
+    "1004338",
+    "1004339",
+    "1004340",
+    "1004341",
+    "1004342",
+    "15064",
 }
 
 
-def test_time_basket_16_line_25_piece_recovers_from_ocr_noise():
-    """Job 84 ground truth: 16 part numbers / 25 pieces; drop I / 004556-2."""
-    bases = {
-        "1004067",
-        "1004208",
-        "1004212",
-        "1004213",
-        "1004335",
-        "1004336",
-        "1004337",
-        "1004338",
-        "1004339",
-        "1004340",
-        "1004341",
-        "1004342",
-        "15064",
-    }
-    # Folder dash -1 must not discard the rest of a single-qty Time table.
+def test_weldment_pdf_drops_i_and_keeps_16_parts():
+    """Library weldment OCR: 16 PNs after dropping I/004556-2; drawing qtys sum to 28."""
     bom = parse_time_style_bom_texts(
-        [_BASKET_1004335_BOM],
-        bases,
+        [_WELDMENT_1004335_BOM],
+        _BASKET_BASES,
         bom_config="1",
         primary_base="1004335",
         source="native_time",
     )
     got = {(r.item, r.part_no, r.qty) for r in bom.rows if r.item}
-    assert got == _BASKET_1004335_EXPECTED
+    assert got == _WELDMENT_1004335_EXPECTED
     assert bom.part_number_count == 16
-    assert bom.piece_count == 25
+    assert bom.piece_count == 28
     assert all(r.part_no != "004556-2" for r in bom.rows)
     assert all(r.item != "I" for r in bom.rows)
-    assert all(int(r.qty) > 0 for r in bom.rows)
 
-    via_extract = extract_bom(text=_BASKET_1004335_BOM, bom_config="1")
-    assert via_extract.part_number_count == 16
-    assert via_extract.piece_count == 25
-    assert via_extract.method and via_extract.method.startswith("native_time")
+
+def test_truncated_upload_plus_weldment_fills_j_through_q():
+    """Uploaded 1004335.pdf loses J–N/Q; library weldment supplies those rows."""
+    upload = parse_time_style_bom_texts(
+        [_UPLOAD_1004335_TRUNCATED],
+        _BASKET_BASES,
+        bom_config="1",
+        primary_base="1004335",
+        source="ocr_time",
+    )
+    assert {r.item for r in upload.rows} == {"A", "B", "C", "D", "E", "F", "G", "H", "P", "R"}
+    assert upload.piece_count == 16
+    assert all(r.item != "I" for r in upload.rows)
+
+    weldment = parse_time_style_bom_texts(
+        [_WELDMENT_1004335_BOM],
+        _BASKET_BASES,
+        source="ocr_time",
+    )
+    merged = merge_time_bom_results(upload, weldment)
+    got = {(r.item, r.part_no, r.qty) for r in merged.rows if r.item}
+    assert got == _WELDMENT_1004335_EXPECTED
+    assert merged.part_number_count == 16
+    assert merged.piece_count == 28
+    by_item = {r.item: r for r in merged.rows}
+    assert by_item["J"].part_no == "1004340-1" and by_item["J"].qty == 4
+    assert by_item["K"].part_no == "1004212-1" and by_item["K"].qty == 1
+    assert by_item["L"].part_no == "1004213-1" and by_item["L"].qty == 1
+    assert by_item["M"].part_no == "1004341-1" and by_item["M"].qty == 1
+    assert by_item["N"].part_no == "1004342-1" and by_item["N"].qty == 4
+    assert by_item["Q"].part_no == "15064-1" and by_item["Q"].qty == 1
+    assert any("Filled 6 missing BOM row(s) from library weldment" in n for n in merged.notes)
+
+
+def test_extract_bom_uses_library_weldment_pdf(tmp_path: Path):
+    """extract_bom on a truncated upload must pull J–N/Q from 1004335 Weldment.pdf."""
+    import fitz
+
+    lib = tmp_path / "1004335-1 32X32 BASKET"
+    lib.mkdir()
+    weld = lib / "1004335 Weldment.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_textbox(fitz.Rect(40, 40, 560, 780), _WELDMENT_1004335_BOM)
+    doc.save(str(weld))
+    doc.close()
+
+    bom = extract_bom(
+        text=_UPLOAD_1004335_TRUNCATED,
+        library_folder=lib,
+        related_pdf_names=["1004335 Weldment.pdf"],
+        bom_config="1",
+    )
+    parts = {r.part_no for r in bom.rows}
+    assert "1004340-1" in parts and "15064-1" in parts
+    assert "004556-2" not in parts
+    assert bom.part_number_count == 16
+    assert bom.piece_count == 28
 
 
 def test_time_second_letter_qty_pattern_drops_i_garbage():
@@ -260,6 +330,7 @@ LIST OF MATERIAL
         bom_config="1",
         primary_base="1004335",
         source="native_time",
+        fill_library_stems=True,
     )
     parts = {r.part_no for r in bom.rows}
     assert "1004212-1" in parts
@@ -270,23 +341,23 @@ LIST OF MATERIAL
     assert any(r.source == "library_child" and r.qty == 1 for r in bom.rows)
 
 
-def test_fitup_piece_count_follows_time_bom_25(tmp_path: Path):
-    """Fit-up part_count uses recovered BOM piece count (25), not a short OCR tally."""
+def test_fitup_piece_count_follows_kept_bom_qtys(tmp_path: Path):
+    """Fit-up uses sum of kept drawing qtys (28), not a truncated 10-pc OCR tally."""
     import fitz
 
     from quote_core.weld.takeoff import estimate_fitup_drivers
 
-    pdf = tmp_path / "1004335-1.pdf"
+    pdf = tmp_path / "1004335 Weldment.pdf"
     doc = fitz.open()
     page = doc.new_page()
-    page.insert_textbox(fitz.Rect(40, 40, 560, 780), _BASKET_1004335_BOM)
+    page.insert_textbox(fitz.Rect(40, 40, 560, 780), _WELDMENT_1004335_BOM)
     doc.save(str(pdf))
     doc.close()
 
     drivers = estimate_fitup_drivers({}, [], pdf_path=pdf, bom_config="1")
-    assert drivers["part_count"] == 25
-    assert drivers["piece_count"] == 25
-    assert any("25 pieces" in n and "16 part numbers" in n for n in drivers["notes"])
+    assert drivers["part_count"] == 28
+    assert drivers["piece_count"] == 28
+    assert any("28 pieces" in n and "16 part numbers" in n for n in drivers["notes"])
 
 
 @pytest.mark.skipif(not _JIB_PDF.exists(), reason="Job 30 jib arm PDF not present")

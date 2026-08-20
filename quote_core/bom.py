@@ -178,6 +178,10 @@ def _base_from_pdf_stem(stem: str) -> str | None:
     stem_u = stem.upper().strip()
     if stem_u in {"CT", "PL", "BOM", "NOTES", "RD"}:
         return None
+    # Assembly/weldment sheets are not component stems (1004335 Weldment.pdf
+    # must not Hamming-snap 1004336/1004337 onto 1004335).
+    if "WELDMENT" in stem_u or "WELDMENT" in stem_u.replace(" ", ""):
+        return None
     m = re.match(r"^(\d{4,7})(?:-\d+)?(?:\b|$)", stem_u)
     return m.group(1) if m else None
 
@@ -233,12 +237,18 @@ def library_part_bases(
     return _collapse_truncated_bases(bases)
 
 
-def _correct_part_with_library(part_no: str, bases: set[str]) -> str:
+def _correct_part_with_library(
+    part_no: str,
+    bases: set[str],
+    *,
+    primary_base: str | None = None,
+) -> str:
     """Fix common OCR digit errors using known library part bases.
 
     Only snaps to a library base when exactly one neighbor is Hamming-distance 1.
     Dense Time families (21684/21688/21689) are otherwise left as OCR-read —
     rewriting 21689→21684 was dropping a real hose-guard line.
+    Never snap onto the weldment/assembly stem (1004336 ↛ 1004335).
     """
     norm = normalize_part_no(part_no)
     if not norm:
@@ -246,10 +256,13 @@ def _correct_part_with_library(part_no: str, bases: set[str]) -> str:
     base, _, suffix = norm.partition("-")
     if not bases or base in bases:
         return norm
+    skip = {b for b in (primary_base,) if b}
     near = [
         lib
         for lib in bases
-        if len(lib) == len(base) and sum(a != b for a, b in zip(lib, base)) == 1
+        if lib not in skip
+        and len(lib) == len(base)
+        and sum(a != b for a, b in zip(lib, base)) == 1
     ]
     if len(near) == 1:
         return f"{near[0]}-{suffix}"
@@ -385,6 +398,247 @@ def _drop_invalid_time_rows(rows: list[BomRow], bases: set[str]) -> list[BomRow]
     return kept
 
 
+def _time_item_letters(rows: list[BomRow]) -> set[str]:
+    return {
+        r.item.upper()
+        for r in rows
+        if isinstance(r.item, str) and r.item.isalpha()
+    }
+
+
+def _missing_time_letters(rows: list[BomRow]) -> list[str]:
+    """Letters between the first and last seen item, skipping Time's usual I."""
+    letters = sorted(_time_item_letters(rows))
+    if len(letters) < 2:
+        return []
+    have = set(letters)
+    skip = {"I"}
+    return [
+        chr(c)
+        for c in range(ord(letters[0]), ord(letters[-1]) + 1)
+        if chr(c) not in have and chr(c) not in skip
+    ]
+
+
+def _is_weldment_pdf_name(name: str) -> bool:
+    return "weldment" in Path(str(name)).stem.lower()
+
+
+def _resolve_library_pdf(folder: Path | None, name: str) -> Path | None:
+    if not folder or not name:
+        return None
+    direct = Path(folder) / name
+    if direct.is_file():
+        return direct
+    try:
+        for child in Path(folder).iterdir():
+            if child.is_dir():
+                nested = child / name
+                if nested.is_file():
+                    return nested
+    except OSError:
+        pass
+    return None
+
+
+def _library_weldment_pdfs(
+    folder: Path | None,
+    related_pdf_names: list[str] | None = None,
+    *,
+    skip: Path | None = None,
+) -> list[Path]:
+    """Assembly/weldment sheets in the library (e.g. ``1004335 Weldment.pdf``)."""
+    found: list[Path] = []
+    seen: set[str] = set()
+    skip_key = str(Path(skip).resolve()).lower() if skip and Path(skip).exists() else ""
+
+    def add(path: Path | None) -> None:
+        if not path or not path.is_file() or path.suffix.lower() != ".pdf":
+            return
+        if not _is_weldment_pdf_name(path.name):
+            return
+        try:
+            key = str(path.resolve()).lower()
+        except OSError:
+            key = str(path).lower()
+        if skip_key and key == skip_key:
+            return
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(path)
+
+    if folder and Path(folder).exists():
+        for p in _iter_library_pdfs(Path(folder)):
+            add(p)
+    for name in related_pdf_names or []:
+        add(_resolve_library_pdf(Path(folder) if folder else None, str(name)))
+        if _is_weldment_pdf_name(str(name)) and folder:
+            add(Path(folder) / Path(str(name)).name)
+    return found
+
+
+def _library_weldment_texts(
+    folder: Path | None,
+    related_pdf_names: list[str] | None = None,
+    *,
+    skip: Path | None = None,
+) -> list[str]:
+    from quote_core.weight import _read_pdf_text
+
+    texts: list[str] = []
+    for pdf in _library_weldment_pdfs(folder, related_pdf_names, skip=skip):
+        try:
+            blob = _read_pdf_text(pdf) or ""
+        except Exception:  # noqa: BLE001
+            continue
+        if _looks_like_time_bom_text(blob):
+            texts.append(blob)
+    return texts
+
+
+def merge_time_bom_results(primary: BomResult, secondary: BomResult) -> BomResult:
+    """
+    Keep primary rows; add missing item/part lines from a second Time source.
+
+    Used when the uploaded sheet OCR-cuts the middle of the BOM (J–N, Q) but a
+    library weldment PDF has the full letter list. Does not replace a good row.
+    """
+    if not secondary.rows:
+        return primary
+    if not primary.rows:
+        return secondary
+
+    by_item = {r.item: r for r in primary.rows if isinstance(r.item, str)}
+    by_part = {r.part_no: r for r in primary.rows}
+    merged = list(primary.rows)
+    filled: list[BomRow] = []
+    qty_flags: list[str] = []
+
+    for row in secondary.rows:
+        if _is_garbage_time_part(row.part_no) or int(row.qty or 0) <= 0:
+            continue
+        item = row.item if isinstance(row.item, str) else None
+        if item == "I" and _is_garbage_time_part(row.part_no):
+            continue
+        existing = (by_item.get(item) if item else None) or by_part.get(row.part_no)
+        if existing:
+            placeholder = (
+                existing.source == "library_child"
+                or not isinstance(existing.item, str)
+            )
+            if placeholder:
+                merged = [r for r in merged if r is not existing]
+                filled.append(row)
+                merged.append(row)
+                if item:
+                    by_item[item] = row
+                by_part.pop(existing.part_no, None)
+                by_part[row.part_no] = row
+                continue
+            if int(existing.qty) != int(row.qty):
+                qty_flags.append(
+                    f"Item {item or row.part_no} qty ambiguous "
+                    f"({existing.qty} vs {row.qty}) — kept {existing.qty}"
+                )
+            continue
+        filled.append(row)
+        merged.append(row)
+        if item:
+            by_item[item] = row
+        by_part[row.part_no] = row
+
+    notes = list(primary.notes)
+    if filled:
+        labels = ", ".join(
+            f"{r.item or '?'} {r.part_no}×{r.qty}" for r in filled
+        )
+        notes.append(
+            f"Filled {len(filled)} missing BOM row(s) from library weldment: {labels}"
+        )
+    notes.extend(qty_flags)
+    notes.extend(n for n in secondary.notes if n not in notes)
+
+    dedup: dict[str, BomRow] = {}
+    for r in merged:
+        prev = dedup.get(r.part_no)
+        if prev is None or (r.item and not prev.item) or r.qty > prev.qty:
+            dedup[r.part_no] = r
+    rows = list(dedup.values())
+    rows.sort(
+        key=lambda r: (0, r.item) if isinstance(r.item, str) and r.item.isalpha() else (1, str(r.part_no))
+    )
+    method = primary.method or secondary.method
+    if filled and method and "library" not in str(method):
+        method = f"{method}+library_weldment"
+    conf = (
+        sum(r.confidence for r in rows) / max(1, len(rows)) if rows else primary.confidence
+    )
+    return BomResult(rows=rows, method=method, confidence=conf, notes=notes)
+
+
+def _supplement_from_library_weldment(
+    primary: BomResult,
+    *,
+    library_folder: Path | str | None,
+    related_pdf_names: list[str] | None,
+    bom_config: str | None,
+    primary_base: str | None,
+    skip_pdf: Path | None = None,
+    allow_ocr: bool = True,
+) -> BomResult:
+    """Fill letter gaps from ``*Weldment*.pdf`` native text (OCR as fallback)."""
+    if not primary.rows:
+        return primary
+    missing = _missing_time_letters(primary.rows)
+    if not missing:
+        return primary
+    folder = Path(library_folder) if library_folder else None
+    extra_texts = _library_weldment_texts(
+        folder, related_pdf_names, skip=skip_pdf
+    )
+    secondary = BomResult()
+    if extra_texts:
+        secondary = parse_time_style_bom_texts(
+            extra_texts,
+            library_part_bases(folder, related_pdf_names),
+            bom_config=bom_config,
+            primary_base=primary_base,
+            source="native_time",
+        )
+    if (
+        allow_ocr
+        and (not secondary.rows or _missing_time_letters(secondary.rows))
+    ):
+        from quote_core.ocr import ocr_available
+
+        if ocr_available():
+            for pdf in _library_weldment_pdfs(folder, related_pdf_names, skip=skip_pdf):
+                ocr = extract_bom_from_ocr_time_style(
+                    pdf,
+                    library_folder=folder,
+                    related_pdf_names=related_pdf_names,
+                    bom_config=bom_config,
+                    include_library_sources=False,
+                )
+                if ocr.rows and (
+                    not secondary.rows
+                    or ocr.part_number_count > secondary.part_number_count
+                ):
+                    secondary = ocr
+    if secondary.rows:
+        primary = merge_time_bom_results(primary, secondary)
+    folder = Path(library_folder) if library_folder else None
+    extra = _supplement_library_children(
+        primary.rows,
+        library_part_bases(folder, related_pdf_names),
+        primary_base=primary_base,
+        zero_parts=set(),
+    )
+    primary.notes.extend(extra)
+    return primary
+
+
 def _supplement_library_children(
     rows: list[BomRow],
     bases: set[str],
@@ -456,6 +710,7 @@ def parse_time_style_bom_texts(
     bom_config: str | None = None,
     primary_base: str | None = None,
     source: str = "native_time",
+    fill_library_stems: bool = False,
 ) -> BomResult:
     """
     Shared Time LIST OF MATERIAL parser for native PDF text and OCR strings.
@@ -515,7 +770,7 @@ def parse_time_style_bom_texts(
             f"not detected — used single-qty parse (did not drop other dashes)"
         )
 
-    if not used_multi:
+    if fill_library_stems and not used_multi:
         notes.extend(
             _supplement_library_children(
                 rows,
@@ -1378,6 +1633,7 @@ def extract_bom_from_ocr_time_style(
     related_pdf_names: list[str] | None = None,
     page_index: int = 0,
     bom_config: str | None = None,
+    include_library_sources: bool = True,
 ) -> BomResult:
     """
     Parse Time Manufacturing LIST OF MATERIAL tables.
@@ -1429,6 +1685,13 @@ def extract_bom_from_ocr_time_style(
             rect.width * 0.88,
             rect.height * 0.92,
         )
+        # Mid-band: uploaded 1004335.pdf kept A–H and P,R but dropped J–N / Q.
+        mid_band_clip = fitz.Rect(
+            rect.width * 0.62,
+            rect.height * 0.28,
+            rect.width * 0.92,
+            rect.height * 0.68,
+        )
         wide_clip = fitz.Rect(
             rect.width * 0.58,
             rect.height * 0.16,
@@ -1446,6 +1709,7 @@ def extract_bom_from_ocr_time_style(
         for clip, dpi in (
             (left_clip, 500),
             (mid_clip, 500),
+            (mid_band_clip, 480),
             (tall_clip, 480),
             (wide_clip, 420),
             (left_clip, 420),
@@ -1464,6 +1728,16 @@ def extract_bom_from_ocr_time_style(
             primary_base=primary_base,
             source="ocr_time",
         )
+        if include_library_sources:
+            parsed = _supplement_from_library_weldment(
+                parsed,
+                library_folder=library_folder,
+                related_pdf_names=related_pdf_names,
+                bom_config=config,
+                primary_base=primary_base,
+                skip_pdf=pdf_path,
+                allow_ocr=True,
+            )
         bom_rows = list(parsed.rows)
         used_multi = bool(parsed.method and "multi_qty" in parsed.method)
         if bom_rows:
@@ -1511,12 +1785,21 @@ def extract_bom_from_native_time_style(
         m_pri = re.match(r"^(\d{4,7})", Path(pdf_path).stem.upper().replace(" ", ""))
         if m_pri:
             primary_base = m_pri.group(1)
-    return parse_time_style_bom_texts(
+    parsed = parse_time_style_bom_texts(
         [text or ""],
         bases,
         bom_config=bom_config,
         primary_base=primary_base,
         source="native_time",
+    )
+    return _supplement_from_library_weldment(
+        parsed,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+        bom_config=bom_config,
+        primary_base=primary_base,
+        skip_pdf=Path(pdf_path) if pdf_path else None,
+        allow_ocr=True,
     )
 
 
