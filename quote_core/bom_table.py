@@ -607,6 +607,7 @@ def _parsed_to_row(parsed: dict[str, Any]):
 def assign_items_from_sequence(
     slots: list[dict[str, Any] | None],
     notes: list[str] | None = None,
+    lines: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Keep Time-like PN bands (dashed or not) with unread item letters;
@@ -647,24 +648,39 @@ def assign_items_from_sequence(
             parsed["unread_item"] = False
             used.add("BB")
             continue
-        item = str(parsed.get("item") or "").upper()
-        if item in seq_index:
+        item = str(parsed.get("item") or "").strip().upper()
+        if item:
+            # Already harvested an item token — do not re-letter (sticky).
+            # AI/AO are not real balloons; drop later, do not replace.
             continue
         if not _is_time_like_part(parsed.get("part_no")):
             continue
         unread_idxs.append(i)
-    unused = [tok for tok in seq if tok not in used]
+    header_idxs = _header_band_indexes(lines)
+    expected = expected_letters_for_bands(
+        len(slots), bottom_is_a=bottom_is_a, header_idxs=header_idxs
+    )
     assigned = 0
-    for i, letter in zip(unread_idxs, unused):
+    for i in unread_idxs:
+        letter = expected[i]
+        if not letter or letter in used:
+            continue
         slots[i]["item"] = letter
         slots[i]["unread_item"] = False
+        used.add(letter)
         assigned += 1
     if assigned:
         notes.append(
             f"Assigned {assigned} unread item letter(s) from A–BC sequence "
             f"(Time-like PN kept, dashed or not; do not invent rows)"
         )
-    return [p for p in slots if p and p.get("item") and p.get("part_no")]
+    return [
+        p
+        for p in slots
+        if p
+        and p.get("part_no")
+        and is_material_list_item(str(p.get("item") or ""))
+    ]
 
 
 def expected_letters_for_bands(
@@ -720,7 +736,7 @@ def _note_sequence_holes(
 
 
 def _keep_better_strip(old, new):
-    """Prefer BB/102727-4 and two-letter items over a stolen neighbor letter."""
+    """First successful harvest per item is sticky. BB / 102727-4 still wins."""
     if new.part_no == _KNOWN_BB_PART and old.part_no != _KNOWN_BB_PART:
         return new
     if old.part_no == _KNOWN_BB_PART and new.part_no != _KNOWN_BB_PART:
@@ -729,9 +745,61 @@ def _keep_better_strip(old, new):
         return new
     if str(old.item).upper() == "BB" and str(new.item).upper() != "BB":
         return old
-    if len(str(new.item or "")) > len(str(old.item or "")):
-        return new
     return old
+
+
+def union_sticky_harvest(primary, extra):
+    """Keep primary rows; add extra items only when item and PN are both new."""
+    from quote_core.bom import BomResult
+
+    by_item: dict[str, Any] = {}
+    parts: set[str] = set()
+    notes = list(getattr(primary, "notes", None) or [])
+    for row in list(getattr(primary, "rows", None) or []):
+        key = str(row.item or "").upper()
+        if not is_material_list_item(key):
+            continue
+        by_item[key] = row
+        parts.add(str(row.part_no))
+    added = 0
+    for row in list(getattr(extra, "rows", None) or []):
+        key = str(row.item or "").upper()
+        if key in {"AI", "AO"} or not is_material_list_item(key):
+            continue
+        pn = str(row.part_no or "")
+        if key in by_item:
+            continue
+        if pn and pn in parts:
+            notes.append(
+                f"Hole union ignored neighbor PN {pn} for item {key} "
+                f"(already harvested; do not copy onto a hole)"
+            )
+            continue
+        by_item[key] = row
+        if pn:
+            parts.add(pn)
+        added += 1
+    if added:
+        notes.append(f"Unioned {added} retry-band part(s) onto first harvest (sticky)")
+    rows = list(by_item.values())
+    rows.sort(key=lambda r: item_sort_key(str(r.item or "")))
+    extra_notes = [
+        n
+        for n in (getattr(extra, "notes", None) or [])
+        if n.startswith("Hole band") or n.startswith("Re-OCR") or n.startswith("Page re-clip")
+    ]
+    method = getattr(primary, "method", None) or getattr(extra, "method", None)
+    result = BomResult(
+        rows=rows,
+        method=method,
+        confidence=max(float(getattr(primary, "confidence", 0) or 0), float(getattr(extra, "confidence", 0) or 0)),
+        notes=notes + extra_notes,
+        grid_row_count=max(
+            int(getattr(primary, "grid_row_count", 0) or 0),
+            int(getattr(extra, "grid_row_count", 0) or 0),
+        ),
+    )
+    return result
 
 
 def _finalize_strip_rows(rows: list, notes: list[str]) -> list:
@@ -802,7 +870,7 @@ def harvest_ocr_row_strips(
             notes.append(f"Skipped band {index}: item-ish={itemish} raw={strip}")
         elif parsed.get("qty_note"):
             notes.append(parsed["qty_note"])
-    filled = assign_items_from_sequence(slots, notes)
+    filled = assign_items_from_sequence(slots, notes, lines=lines)
     bottom_is_a = True
     known_items = [
         str(p.get("item") or "").upper()
@@ -826,17 +894,19 @@ def harvest_ocr_row_strips(
         ]
     _note_sequence_holes(slots, lines or [], notes, bottom_is_a=bottom_is_a)
     found = [_parsed_to_row(p) for p in filled]
-    # Adjacent bands: ``AA`` on one strip, ``460330 CAP…`` on the next.
-    blob = "\n".join(str(x) for x in (lines or []) if str(x).strip())
-    for m in _ITEM_PART_ANY_RE.finditer(blob):
-        if is_glued_p_prefix_weldment_pn(m.group(0)):
+    # Same-line item+part only. Do not join bands — that copies a neighbor PN onto a hole.
+    for line in lines or []:
+        if not str(line).strip():
             continue
-        glued = m.group("glued") or ""
-        parsed = parse_ocr_row_strip(f"{m.group('item')}{glued} {m.group('part')}")
-        if not parsed:
-            parsed = parse_ocr_row_strip(m.group(0))
-        if parsed and parsed.get("item"):
-            found.append(_parsed_to_row(parsed))
+        for m in _ITEM_PART_ANY_RE.finditer(str(line)):
+            if is_glued_p_prefix_weldment_pn(m.group(0)):
+                continue
+            glued = m.group("glued") or ""
+            parsed = parse_ocr_row_strip(f"{m.group('item')}{glued} {m.group('part')}")
+            if not parsed:
+                parsed = parse_ocr_row_strip(m.group(0))
+            if parsed and is_material_list_item(str(parsed.get("item") or "")):
+                found.append(_parsed_to_row(parsed))
     rows = _finalize_strip_rows(found, notes)
     if not rows:
         return BomResult(method=None, confidence=0.0, notes=["No item+part strips harvested"])

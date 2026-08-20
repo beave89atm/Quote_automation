@@ -19,6 +19,7 @@ from quote_core.bom_table import (
     pick_best_material_list,
     recover_time_part_no,
     time_item_letters,
+    union_sticky_harvest,
 )
 from quote_core.bom_table_image import (
     TABLE_CROP_FILENAME,
@@ -513,6 +514,79 @@ def test_empty_p_to_y_holes_are_dumped_not_invented():
     by_item = {r.item: r for r in recovered.rows}
     assert by_item["P"].part_no == "102813-1"
     assert "Q" not in by_item
+
+
+def test_sticky_first_harvest_union_keeps_tail_and_p_y():
+    """6c4fc51 lost Z/AY/AZ/BC; union first harvest with empty-band recoveries."""
+    first_lines = [
+        "BC 102727-5 CAP",
+        "BBD 02727-4 TUBE, ROUND",
+        "BA",
+        "AZ 102727-2 TUBE",
+        "AY 102727-1 TUBE",
+        "AX 102726-1 HOOK",
+        "Z 460320 ICAP, VERTICAL RAIL TOP",
+        "S 33688-9 EXPANDED METAL PLATE",
+        "M 94560 GATE",
+        "A 100177-2 PLATE",
+    ]
+    first = harvest_ocr_row_strips(first_lines)
+    by_first = {r.item: r for r in first.rows}
+    assert by_first["Z"].part_no == "460320"
+    assert by_first["AY"].part_no == "102727-1"
+    assert by_first["AZ"].part_no == "102727-2"
+    assert by_first["BC"].part_no == "102727-5"
+    assert by_first["BB"].qty == 2 and by_first["BB"].part_no == _BB_PART
+
+    # Retry harvest dropped the tail and cross-assigned neighbor PNs onto holes.
+    retry_lines = [
+        "P 33688-9 FXPANDED METAL PLATE",  # neighbor S PN — must not win
+        "Q 102840-1 SUPPORT",
+        "R 102841-1 SUPPORT",
+        "U 102842-1 SUPPORT",
+        "V 102843-1 RAIL",
+        "X 102844-1 RAIL",
+        "Y 102845-1 RAIL",
+        "AQ 33688-9 FXPANDED METAL PLATE",
+        "S 94560 GATE",
+        "BBD 02727-4 TUBE, ROUND",
+    ]
+    retry = harvest_ocr_row_strips(retry_lines)
+    united = union_sticky_harvest(first, retry)
+    by_item = {r.item: r for r in united.rows}
+    assert by_item["Z"].part_no == "460320"
+    assert by_item["AY"].part_no == "102727-1"
+    assert by_item["AZ"].part_no == "102727-2"
+    assert by_item["BC"].part_no == "102727-5"
+    assert by_item["BB"].qty == 2 and by_item["BB"].part_no == _BB_PART
+    assert by_item["S"].part_no == "33688-9"
+    for tok in ("Q", "R", "U", "V", "X", "Y"):
+        assert tok in by_item, tok
+    assert by_item["P"].part_no != "33688-9" if "P" in by_item else True
+    assert "AI" not in by_item and "AO" not in by_item
+    assert not any(r.qty == 7 for r in united.rows)
+
+
+def test_do_not_reletter_or_copy_neighbor_pn_onto_hole():
+    z_line = "Z 460320 ICAP, VERTICAL RAIL TOP"
+    hole = ""
+    s_line = "S 33688-9 EXPANDED METAL PLATE"
+    bb = "BBD 02727-4 TUBE, ROUND"
+    bom = harvest_ocr_row_strips([z_line, hole, s_line, bb])
+    by_item = {r.item: r for r in bom.rows}
+    assert by_item["Z"].part_no == "460320"
+    assert by_item["S"].part_no == "33688-9"
+    assert by_item["BB"].qty == 2
+    # Empty hole must not inherit Z or S.
+    hole_notes = [n for n in bom.notes if n.startswith("Hole band")]
+    assert any("raw=(empty)" in n for n in hole_notes)
+    assert list(by_item).count("Z") == 1
+
+    # Item token is sticky — do not sequence-reletter Z.
+    sticky = parse_ocr_row_strip(z_line)
+    assert sticky["item"] == "Z"
+    assigned = harvest_ocr_row_strips([z_line, "102899-1 SUPPORT", bb])
+    assert next(r for r in assigned.rows if r.part_no == "460320").item == "Z"
 
 
 def test_pick_best_does_not_invent_rows_for_unread_tall_grid():

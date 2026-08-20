@@ -18,6 +18,7 @@ from quote_core.bom_table import (
     harvest_material_list_lines,
     harvest_ocr_row_strips,
     pick_best_material_list,
+    union_sticky_harvest,
 )
 
 # Desktop / API crop saved next to the job PDF (not committed customer files).
@@ -187,13 +188,11 @@ def _tesseract_string(row_im, *, psm: int) -> str:
 
 
 def _ocr_row_strip(row_im) -> str:
-    h = getattr(row_im, "height", 16) or 16
-    scale = 3.0 if h < 18 else 2.0 if h < 28 else 1.5
-    prepared = _prepare_ocr_strip(row_im, scale=scale)
-    text = _tesseract_string(prepared, psm=7)
+    """First-pass line OCR. Keep this conservative so a successful band stays sticky."""
+    text = _tesseract_string(row_im, psm=7)
     if find_time_like_pn(text):
         return text
-    alt = _tesseract_string(prepared, psm=6)
+    alt = _tesseract_string(row_im, psm=6)
     if find_time_like_pn(alt):
         return alt
     return text or alt
@@ -223,9 +222,9 @@ def _expand_band_box(
 
 
 def _ocr_band_retry(im, box: tuple[int, int, int, int], v_lines: list[int]) -> str:
-    """Wider / higher-scale clip for an empty band. Does not invent a PN."""
+    """Tight higher-scale clip for a truly empty band. Do not bleed into neighbors."""
     w, h = im.size
-    x0, y0, x1, y1 = _expand_band_box(box, (w, h), pad_x=8, pad_y=max(4, (box[3] - box[1]) // 2))
+    x0, y0, x1, y1 = _expand_band_box(box, (w, h), pad_x=4, pad_y=1)
     clips = [
         im.crop((x0, y0, x1, y1)),
         im.crop((max(0, int(w * 0.28)), y0, x1, y1)),  # PART + DESC
@@ -244,8 +243,8 @@ def _ocr_band_retry(im, box: tuple[int, int, int, int], v_lines: list[int]) -> s
     return best
 
 
-def _ocr_table_lines(im, seg: dict[str, Any], notes: list[str]) -> list[str]:
-    """OCR each band; re-clip empty/unread holes only."""
+def _ocr_first_pass_lines(im, seg: dict[str, Any], notes: list[str]) -> list[str]:
+    """Conservative per-band OCR. A non-empty strip is sticky."""
     v_lines = seg.get("v_lines") or []
     use_cells = len(v_lines) >= 4
     lines: list[str] = []
@@ -271,6 +270,22 @@ def _ocr_table_lines(im, seg: dict[str, Any], notes: list[str]) -> list[str]:
         f"OCR'd {sum(1 for t in lines if t)}/{len(lines)} row strips "
         f"(empty bands kept as sequence holes)"
     )
+    return lines
+
+
+def _fill_empty_band_texts(
+    im,
+    seg: dict[str, Any],
+    lines: list[str],
+    notes: list[str],
+    *,
+    known_parts: set[str] | None = None,
+) -> list[str]:
+    """Re-clip truly empty bands only. Do not overwrite a harvested strip."""
+    from quote_core.bom_table import parse_ocr_row_strip
+
+    known = set(known_parts or ())
+    v_lines = seg.get("v_lines") or []
     header_idxs = set()
     for i, raw in enumerate(lines):
         blob = str(raw or "").upper()
@@ -279,27 +294,29 @@ def _ocr_table_lines(im, seg: dict[str, Any], notes: list[str]) -> list[str]:
     expected = expected_letters_for_bands(
         len(lines), bottom_is_a=True, header_idxs=header_idxs
     )
+    out = list(lines)
     retried = 0
-    for i, text in enumerate(lines):
-        if find_time_like_pn(text):
+    for i, text in enumerate(out):
+        if str(text or "").strip() or i in header_idxs:
             continue
-        if i in header_idxs:
-            continue
-        retry = _ocr_band_retry(im, seg["row_bands"][i], v_lines)
-        retry = (retry or "").strip()
-        if retry and retry != text:
-            lines[i] = retry
-            retried += 1
-            letter = expected[i] or "?"
+        retry = (_ocr_band_retry(im, seg["row_bands"][i], v_lines) or "").strip()
+        letter = expected[i] or "?"
+        parsed = parse_ocr_row_strip(retry) if retry else None
+        pn = str(parsed.get("part_no") or "") if parsed else ""
+        if pn and pn in known:
             notes.append(
-                f"Re-OCR band {i} letter={letter}: raw={retry if retry else '(empty)'}"
+                f"Re-OCR band {i} letter={letter}: ignored neighbor PN {pn} raw={retry}"
             )
-        elif not text:
-            letter = expected[i] or "?"
-            notes.append(f"Re-OCR band {i} letter={letter}: raw=(empty)")
+            continue
+        notes.append(f"Re-OCR band {i} letter={letter}: raw={retry or '(empty)'}")
+        if retry:
+            out[i] = retry
+            retried += 1
+            if pn:
+                known.add(pn)
     if retried:
-        notes.append(f"Re-clipped {retried} empty/unread band(s) at higher scale")
-    return lines
+        notes.append(f"Re-clipped {retried} empty band(s) at higher scale")
+    return out
 
 
 def _retry_empty_bands_from_page(
@@ -311,8 +328,12 @@ def _retry_empty_bands_from_page(
     *,
     top_frac: float = 0.03,
     bottom_frac: float = 0.92,
+    known_parts: set[str] | None = None,
 ) -> list[str]:
-    """Re-render unread bands from the PDF at 320 DPI / wider left edge."""
+    """Re-render truly empty bands from the PDF. Do not overwrite a sticky strip."""
+    from quote_core.bom_table import parse_ocr_row_strip
+
+    known = set(known_parts or ())
     h = max(1, im.height)
     header_idxs = set()
     for i, raw in enumerate(lines):
@@ -323,7 +344,7 @@ def _retry_empty_bands_from_page(
         len(lines), bottom_is_a=True, header_idxs=header_idxs
     )
     for i, text in enumerate(lines):
-        if find_time_like_pn(text) or i in header_idxs:
+        if str(text or "").strip() or i in header_idxs:
             continue
         if i >= len(seg["row_bands"]):
             continue
@@ -335,9 +356,18 @@ def _retry_empty_bands_from_page(
         )
         retry = (_ocr_band_retry(band_im, (0, 0, band_im.width, band_im.height), []) or "").strip()
         letter = expected[i] or "?"
+        parsed = parse_ocr_row_strip(retry) if retry else None
+        pn = str(parsed.get("part_no") or "") if parsed else ""
+        if pn and pn in known:
+            notes.append(
+                f"Page re-clip band {i} letter={letter}: ignored neighbor PN {pn} raw={retry}"
+            )
+            continue
         notes.append(f"Page re-clip band {i} letter={letter}: raw={retry or '(empty)'}")
         if find_time_like_pn(retry):
             lines[i] = retry
+            if pn:
+                known.add(pn)
     return lines
 
 
@@ -364,35 +394,44 @@ def extract_bom_from_table_image(
         f"{seg['grid_col_count']} column bands"
     ]
     lines: list[str] = []
+    parsed = None
     if row_texts is not None:
         lines = [str(t or "") for t in row_texts]
         notes.append("Used supplied row texts (table-image fixture / desktop crop)")
+        parsed = harvest_ocr_row_strips(lines, bom_config=bom_config)
     else:
         from quote_core.ocr import ocr_available
 
         if ocr_available() and seg["row_bands"]:
-            # Keep empty bands as holes so A–BC sequence fill stays aligned.
-            # Empty P–Y / AJ / BA bands get a wider, higher-scale re-clip.
-            lines = _ocr_table_lines(im, seg, notes)
+            first_lines = _ocr_first_pass_lines(im, seg, notes)
+            first = harvest_ocr_row_strips(first_lines, bom_config=bom_config)
+            known = {str(r.part_no) for r in first.rows if r.part_no}
+            filled = _fill_empty_band_texts(
+                im, seg, first_lines, notes, known_parts=known
+            )
             if retry_page is not None:
                 clip = retry_clip or {}
-                lines = _retry_empty_bands_from_page(
+                filled = _retry_empty_bands_from_page(
                     retry_page,
                     im,
                     seg,
-                    lines,
+                    filled,
                     notes,
                     top_frac=float(clip.get("top_frac", 0.03)),
                     bottom_frac=float(clip.get("bottom_frac", 0.92)),
+                    known_parts=known,
                 )
-        elif not ocr_available():
-            notes.append(
-                "Tesseract unavailable — grid segmented but cells not read. "
-                "Feed a table image crop via POST /api/jobs/{id}/bom-table-crop "
-                "or POST /api/bom/table-image"
-            )
-
-    parsed = harvest_ocr_row_strips(lines, bom_config=bom_config)
+            second = harvest_ocr_row_strips(filled, bom_config=bom_config)
+            parsed = union_sticky_harvest(first, second)
+            lines = filled
+        else:
+            if not ocr_available():
+                notes.append(
+                    "Tesseract unavailable — grid segmented but cells not read. "
+                    "Feed a table image crop via POST /api/jobs/{id}/bom-table-crop "
+                    "or POST /api/bom/table-image"
+                )
+            parsed = harvest_ocr_row_strips(lines, bom_config=bom_config)
     if not parsed.rows and lines:
         blob = "LIST OF MATERIAL\nQTY ITEM PART NO. DESCRIPTION\n" + "\n".join(lines)
         parsed = harvest_material_list_lines(blob, bom_config=bom_config)
