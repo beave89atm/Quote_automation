@@ -85,6 +85,15 @@ _DASHED_PN_RE = re.compile(
     r"(?P<base>\d{5,7})\s*[-–—=]\s*(?P<suf>\d{1,3}[A-Za-z]?)"
 )
 _BARE_PN_RE = re.compile(r"(?<![\d])(?P<base>\d{5,7})(?![\d-])")
+# Broken OCR: spaces in the stem, O/I as digits, missing dash.
+_MANGLED_DASHED_PN_RE = re.compile(
+    r"(?P<base>[\dOIl]{4,7}(?:\s+[\dOIl]{1,3})*)\s*[-–—=]\s*(?P<suf>[\dOIl]{1,3}[A-Za-z]?)",
+    re.IGNORECASE,
+)
+_GLUED_ITEM_PN_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?P<item>[A-Za-z]{1,2})(?P<base>\d{5,7})"
+    r"(?:\s*[-–—=]\s*(?P<suf>\d{1,3}[A-Za-z]?))?",
+)
 _KNOWN_BB_PART = "102727-4"
 _ITEM_WORD_RE = re.compile(
     r"(?<![A-Za-z0-9])([A-Za-z]{2}[2-9Dd]|[A-Za-z]{1,2}[2-9]|[A-Za-z]{1,3})(?![A-Za-z0-9])"
@@ -337,11 +346,12 @@ def recover_time_part_no(raw: str | None, *, item: str | None = None) -> str | N
             # Only when the result is a 6-digit 10xxxx Time PN (00177-2, 02727-4).
             if prefixed.startswith("10") and len(prefixed.split("-")[0]) == 6:
                 part = prefixed
-        elif len(base) == 7 and base.startswith("11"):
-            dropped = f"{base[1:]}-{suf}"
-            if dropped.startswith("1027"):
-                # AX 1102726-1 HOOK pO → 102726-1 (extra leading 1)
-                part = dropped
+        elif len(base) == 7 and base.startswith("11") and base[1:].startswith("10"):
+            # 1100373-2 → 100373-2; 1102726-1 → 102726-1 (extra leading 1)
+            part = f"{base[1:]}-{suf}"
+        elif len(base) == 6 and base.startswith("1") and not base.startswith("10"):
+            # 133688-10 → 33688-10 (digits already complete; extra 1)
+            part = f"{base[1:]}-{suf}"
         elif len(base) == 7 and base.startswith("1") and not base.startswith("10"):
             # 1432670-n — extra 1 on an already-complete 6-digit stem.
             part = f"{base[1:]}-{suf}"
@@ -351,11 +361,60 @@ def recover_time_part_no(raw: str | None, *, item: str | None = None) -> str | N
     bare = _BARE_PN_RE.search(text)
     if bare:
         base = bare.group("base")
+        if len(base) == 7 and base.startswith("11") and base[1:].startswith("10"):
+            return base[1:]
         if len(base) == 7 and base.startswith("1") and not base.startswith("10"):
             return base[1:]
         # Do not invent a dash on 460330 / 460320. Do not prefix complete stems.
         return base
     return normalize_part_no(text)
+
+
+def _is_time_like_part(part: str | None) -> bool:
+    text = str(part or "").strip()
+    if re.search(r"\d{5,7}-\d", text):
+        return True
+    return bool(re.fullmatch(r"\d{5,7}", text))
+
+
+def find_time_like_pn(raw: str | None) -> tuple[int, int, str] | None:
+    """
+    Find a Time-like PN even when the dash is broken or digits are glued.
+
+    Does not invent a PN that is not in the strip.
+    """
+    from quote_core.bom import _ocr_digit_cleanup
+
+    text = str(raw or "")
+    if not text.strip():
+        return None
+    mangled = _MANGLED_DASHED_PN_RE.search(text)
+    if mangled:
+        base = _ocr_digit_cleanup(re.sub(r"\s+", "", mangled.group("base")))
+        suf = _ocr_digit_cleanup(mangled.group("suf"))
+        if base.isdigit() and 5 <= len(base) <= 7:
+            part = recover_time_part_no(f"{base}-{suf}")
+            if part:
+                return mangled.start(), mangled.end(), part
+    dashed = _DASHED_PN_RE.search(text)
+    if dashed:
+        part = recover_time_part_no(dashed.group(0))
+        if part:
+            return dashed.start(), dashed.end(), part
+    glued = _GLUED_ITEM_PN_RE.search(text)
+    if glued:
+        base = glued.group("base")
+        suf = glued.group("suf")
+        token = f"{base}-{suf}" if suf else base
+        part = recover_time_part_no(token) or (base if len(base) >= 5 else None)
+        if part:
+            return glued.start("base"), glued.end(), part
+    bare = _BARE_PN_RE.search(text)
+    if bare:
+        part = recover_time_part_no(bare.group(0))
+        if part:
+            return bare.start(), bare.end(), part
+    return None
 
 
 def _looks_like_bb_tube(part: str | None, desc: str | None, raw: str = "") -> bool:
@@ -433,14 +492,24 @@ def _qty_from_one_source(
         return 2, True, "BB qty 2 recovered (qty cell unread; known 102727-4 print)"
     if tokens:
         n = tokens[-1]
-        if n > 4:
+        if n > 4 and _looks_like_dimension_qty(n, desc, raw):
             return 1, False, (
                 f"{item or '?'} qty {n} looks like dimension bleed — "
                 f"not used as piece count, flag review"
             )
-        if 1 <= n <= 4:
+        if 1 <= n <= 20:
             return n, True, None
     return 1, False, f"{item or '?'} qty OCR unreadable — defaulted to 1, flag review"
+
+
+def _looks_like_dimension_qty(qty: int, desc: str | None, raw: str = "") -> bool:
+    """qty>4 is bleed only when the cell looks like a dimension, not a real qty 2."""
+    if qty <= 4:
+        return False
+    blob = f"{desc or ''} {raw}"
+    if _BLEED_KIND_RE.search(blob):
+        return True
+    return bool(re.search(r"\d+\s*[xX×]\s*\d+", blob))
 
 
 def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
@@ -451,32 +520,45 @@ def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
     ``H 102727-4 TUBE, ROUND`` → BB (do not steal H from a neighbor band).
     ``AA 460330 CAP, VERTICAL RAIL BOTTOM`` → AA / 460330 / qty 1.
     ``7 A 00177-2 PLATE`` → A / 100177-2 / qty 1 (7 is dimension bleed).
-    Keep the row when item+part parse even if the qty cell is garbage.
+    Keep the band when OCR has a Time-like PN, dashed or not. Do not invent
+    a PN that is not in the strip.
     """
     raw = str(line or "").replace("|", " ").strip()
     if not raw:
         return None
-    part_match = _DASHED_PN_RE.search(raw) or _BARE_PN_RE.search(raw)
-    if not part_match:
-        return None
-    part = recover_time_part_no(part_match.group(0), item=None)
+    found = find_time_like_pn(raw)
+    if found:
+        part_start, part_end, part = found
+    else:
+        part_match = _DASHED_PN_RE.search(raw) or _BARE_PN_RE.search(raw)
+        if not part_match:
+            return None
+        part_start, part_end = part_match.start(), part_match.end()
+        part = recover_time_part_no(part_match.group(0), item=None)
     if not part or not re.search(r"\d{4,}", part):
         return None
-    desc = raw[part_match.end() :]
+    desc = raw[part_end:]
     desc = re.sub(r"^[\s,;:.-]+", "", desc).strip(" ,;|")
     desc = re.sub(r"\s+", " ", desc)
     if _looks_like_bb_tube(part, desc, raw):
         part = _KNOWN_BB_PART
-    item, glued_qty = _choose_item_for_part(raw, part_match.start(), part, desc)
-    dashed = bool(_DASHED_PN_RE.search(raw))
-    if not item and not dashed:
+    item, glued_qty = _choose_item_for_part(raw, part_start, part, desc)
+    if not item:
+        glued = _GLUED_ITEM_PN_RE.search(raw)
+        if glued:
+            letters, gqty = _split_glued_item_qty(glued.group("item").upper())
+            if letters and is_material_list_item(letters):
+                item = letters
+                if glued_qty is None:
+                    glued_qty = gqty
+    if not item and not _is_time_like_part(part):
         return None
     if _looks_like_bb_tube(part, desc, raw):
         item = "BB"
         part = _KNOWN_BB_PART
     qty, qty_clear, qty_note = _qty_from_one_source(
         raw,
-        part_match.start(),
+        part_start,
         item=item or "",
         part=part,
         desc=desc,
@@ -511,7 +593,8 @@ def assign_items_from_sequence(
     notes: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Keep dashed-PN bands with unread item letters; assign A–Z skip I/O, then AA–BC.
+    Keep Time-like PN bands (dashed or not) with unread item letters;
+    assign A–Z skip I/O, then AA–BC.
 
     Does not invent PNs. Does not create AI/AO (I/O are skipped as letters).
     Band order is top→bottom; 102728-1 has A at the bottom (header below).
@@ -551,7 +634,7 @@ def assign_items_from_sequence(
         item = str(parsed.get("item") or "").upper()
         if item in seq_index:
             continue
-        if not re.search(r"\d{5,7}-\d", str(parsed.get("part_no") or "")):
+        if not _is_time_like_part(parsed.get("part_no")):
             continue
         unread_idxs.append(i)
     unused = [tok for tok in seq if tok not in used]
@@ -563,7 +646,7 @@ def assign_items_from_sequence(
     if assigned:
         notes.append(
             f"Assigned {assigned} unread item letter(s) from A–BC sequence "
-            f"(dashed PN kept; do not invent rows)"
+            f"(Time-like PN kept, dashed or not; do not invent rows)"
         )
     return [p for p in slots if p and p.get("item") and p.get("part_no")]
 
@@ -627,13 +710,17 @@ def harvest_ocr_row_strips(
 
     notes: list[str] = []
     slots: list[dict[str, Any] | None] = []
-    for line in lines or []:
+    for index, line in enumerate(lines or []):
         if not str(line).strip():
             slots.append(None)
             continue
         parsed = parse_ocr_row_strip(line)
         slots.append(parsed)
-        if parsed and parsed.get("qty_note"):
+        if parsed is None:
+            strip = re.sub(r"\s+", " ", str(line)).strip()
+            itemish = strip.split(" ", 1)[0]
+            notes.append(f"Skipped band {index}: item-ish={itemish} raw={strip}")
+        elif parsed.get("qty_note"):
             notes.append(parsed["qty_note"])
     filled = assign_items_from_sequence(slots, notes)
     found = [_parsed_to_row(p) for p in filled]
@@ -719,7 +806,7 @@ def harvest_material_list_lines(text: str | None, *, bom_config: str | None = No
             item = "BB"
             part = _KNOWN_BB_PART
             qty = 2
-        elif qty > 4 and _BLEED_KIND_RE.search(desc or ""):
+        elif qty > 4 and _looks_like_dimension_qty(qty, desc, m.group(0)):
             notes.append(
                 f"{item} qty {qty} looks like dimension bleed — "
                 f"not used as piece count, flag review"

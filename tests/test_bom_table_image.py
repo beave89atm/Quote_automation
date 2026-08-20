@@ -5,6 +5,7 @@ No customer PDF. The 51-row image is a drawn fixture (Time 102728-1 shape).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -320,12 +321,120 @@ def test_unread_single_letter_dashed_pn_assigned_from_sequence():
     assert len(bom.rows) >= 48
 
 
+def test_unread_bare_and_mangled_pns_kept_and_sequenced():
+    """0449bfa hole: keep Time-like PNs with broken dashes / no dash / extra 1."""
+    seq = time_item_letters(through="BC")
+    known = {"A", "C", "F", "H", "M", "S", "Z", "AA"}
+    lines = ["TEM | PART NO. | DESCRIPTION"]
+    for item in reversed(seq):
+        i = seq.index(item)
+        if item == "BB":
+            lines.append("BBD 02727-4 TUBE, ROUND")
+        elif item == "B":
+            lines.append("1100373-2 PLATE")
+        elif item == "AR":
+            lines.append("133688-10 TUBE")
+        elif item == "AX":
+            lines.append("AX2 1102726-1 HOOK")
+        elif item == "D":
+            lines.append("1028 03-1 SUPPORT")
+        elif item == "E":
+            lines.append("432650 RAIL")
+        elif item == "G":
+            lines.append("94560 PLATE")
+        elif item == "J":
+            lines.append("460300 CAP")
+        elif item == "AJ":
+            lines.append("1O28 27-1 ANGLE")
+        elif item == "AU":
+            lines.append("1028 44-1 CLIP")
+        elif item == "BA":
+            lines.append("1028 48-1 BASE")
+        elif item in known:
+            lines.append(f"{item} 1028{i:02d}-1 DESC")
+        elif i % 2 == 0:
+            lines.append(f"1028 {i:02d}-1 SUPPORT")
+        else:
+            lines.append(f"46{i:04d} RAIL")
+    bom = harvest_ocr_row_strips(lines)
+    items = {r.item for r in bom.rows}
+    by_item = {r.item: r for r in bom.rows}
+    for letter in "BCDEGJKLNPQRTUVWXY":
+        assert letter in items, letter
+    for tok in ("AJ", "AU", "BA"):
+        assert tok in items, tok
+    assert "AI" not in items and "AO" not in items
+    bb = by_item["BB"]
+    assert bb.qty == 2 and bb.part_no == _BB_PART
+    assert by_item["B"].part_no == "100373-2"
+    assert by_item["AR"].part_no == "33688-10"
+    assert by_item["AX"].qty == 2
+    assert by_item["AX"].part_no == "102726-1"
+    assert by_item["E"].part_no == "432650"
+    assert by_item["G"].part_no == "94560"
+    assert by_item["J"].part_no == "460300"
+    assert by_item["D"].part_no == "102803-1"
+    assert by_item["AJ"].part_no == "102827-1"
+    assert len(bom.rows) >= 48
+    invented = {r.part_no for r in bom.rows} - {
+        "100373-2",
+        "33688-10",
+        "102726-1",
+        _BB_PART,
+        "432650",
+        "94560",
+        "460300",
+        "102803-1",
+        "102827-1",
+        "102844-1",
+        "102848-1",
+    }
+    for part in invented:
+        assert re.search(r"\d{5,7}(?:-\d+)?", part), part
+        assert "99999" not in part
+
+
+def test_parse_keeps_unread_time_like_and_does_not_invent():
+    bare = parse_ocr_row_strip("432650 RAIL, HORIZONTAL")
+    assert bare is not None and bare["part_no"] == "432650" and bare["item"] is None
+    spaced = parse_ocr_row_strip("1028 01-1 SUPPORT")
+    assert spaced is not None and spaced["part_no"] == "102801-1"
+    extra_b = parse_ocr_row_strip("1100373-2 PLATE")
+    assert extra_b["part_no"] == "100373-2"
+    extra_ar = parse_ocr_row_strip("133688-10 TUBE")
+    assert extra_ar["part_no"] == "33688-10"
+    ax2 = parse_ocr_row_strip("AX2 1102726-1 HOOK")
+    assert ax2["item"] == "AX" and ax2["qty"] == 2 and ax2["part_no"] == "102726-1"
+    assert parse_ocr_row_strip("SECTION B-B SCALE") is None
+    assert parse_ocr_row_strip("7.50 x 3.00 PLATE") is None
+    assert parse_ocr_row_strip("TEM | PART NO. | DESCRIPTION") is None
+
+
+def test_skipped_band_notes_include_itemish_and_raw_strip():
+    bom = harvest_ocr_row_strips(
+        [
+            "SECTION B-B",
+            "BBD 02727-4 TUBE, ROUND",
+            "no part here at all",
+        ]
+    )
+    skipped = [n for n in bom.notes if n.startswith("Skipped band")]
+    assert any("item-ish=SECTION" in n and "raw=SECTION B-B" in n for n in skipped)
+    assert any("item-ish=no" in n and "raw=no part here at all" in n for n in skipped)
+    bb = next(r for r in bom.rows if r.item == "BB")
+    assert bb.qty == 2 and bb.part_no == _BB_PART
+
+
 def test_leading_1_only_on_5digit_0_stem():
     assert recover_time_part_no("00177-2") == "100177-2"
     assert recover_time_part_no("02727-4") == "102727-4"
+    assert recover_time_part_no("1100373-2") == "100373-2"
+    assert recover_time_part_no("133688-10") == "33688-10"
     assert recover_time_part_no("33688-10") == "33688-10"
     assert recover_time_part_no("432670") == "432670"
     assert recover_time_part_no("1432670") == "432670"
+    assert recover_time_part_no("100177-2") == "100177-2"
+    assert recover_time_part_no("102727-4") == "102727-4"
 
 
 def test_qty_7_on_s_is_dimension_bleed():
