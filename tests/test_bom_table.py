@@ -364,3 +364,67 @@ def test_lom_header_found_does_not_fallback_to_regex(tmp_path: Path):
     assert "35122-1" not in parts
     joined = " ".join(bom.notes).lower()
     assert "not falling back" in joined or "header found" in joined or "flag review" in joined
+
+
+def _write_right_side_lom_bottom_header(page, rows: list[list[str]]) -> None:
+    """102728-1 visual spec: tall right-hand grid, header at the BOTTOM, data up."""
+    xs = [560, 600, 640, 720]
+    # Title block / LOM title at the bottom; column headers just above; A at bottom.
+    page.insert_text((560, 1180), "LIST OF MATERIAL", fontsize=8)
+    y = 1164
+    for i, cell in enumerate(["QTY", "ITEM", "PART NO.", "DESCRIPTION"]):
+        page.insert_text((xs[i], y), cell, fontsize=7)
+    # Data stacks upward: A nearest the header, BC at the top.
+    y = 1150
+    for row in rows:
+        for i, cell in enumerate(row):
+            page.insert_text((xs[i], y), str(cell), fontsize=7)
+        y -= 11
+    # Decoy single-cell "-1" above the top row (item BC), as on the real sheet.
+    page.insert_text((560, y - 4), "-1", fontsize=7)
+
+
+def test_prefers_tall_right_side_table_over_short_decoy_lom(tmp_path: Path):
+    """A 3-row LOM on a later page must not beat the 51-row right-side grid."""
+    import fitz
+
+    items = _platform_items()
+    # Bottom-up write: first appended row is A (nearest header).
+    data_rows = []
+    for i, item in enumerate(items):
+        if item == "BB":
+            data_rows.append(["2", "BB", _BB_PART, _BB_DESC])
+        else:
+            data_rows.append(["1", item, f"1028{i:02d}-1", f"COMPONENT {item}"])
+
+    pdf = tmp_path / "Time 102728- Weldment decoy.pdf"
+    doc = fitz.open()
+    # Pages 1-3: empty / iso (no table).
+    for i in range(3):
+        doc.new_page(width=792, height=1224).insert_text(
+            (72, 72), f"ISO VIEW {i + 1}"
+        )
+    # Page 4 (index 3): the real tall right-side LIST OF MATERIAL.
+    weld = doc.new_page(width=792, height=1224)
+    weld.insert_text((40, 40), "WELDMENT, PLATFORM  102728-1  TIME MANUFACTURING")
+    _write_right_side_lom_bottom_header(weld, data_rows)
+    # Page 5 (index 4): short decoy LOM matching the live 3-row miss.
+    decoy = doc.new_page(width=792, height=1224)
+    decoy.insert_text((400, 200), "LIST OF MATERIAL", fontsize=10)
+    decoy.insert_text((400, 220), "QTY | ITEM | PART NO. | DESCRIPTION", fontsize=8)
+    decoy.insert_text((400, 236), "1 | B | 102709-1 | DECOY", fontsize=8)
+    decoy.insert_text((400, 252), "1 | C | 100585-23 | DECOY", fontsize=8)
+    decoy.insert_text((400, 268), "1 | SE | TAS | GARBAGE", fontsize=8)
+    assert len(doc) == 5
+    doc.save(pdf)
+    doc.close()
+
+    bom = extract_bom(pdf_path=pdf, bom_config="1")
+    assert bom.method and bom.method.startswith("table_"), bom.notes
+    assert bom.part_number_count == 51, [f"{r.item}:{r.part_no}" for r in bom.rows]
+    bb = next(r for r in bom.rows if r.item == "BB")
+    assert bb.qty == 2 and bb.part_no == _BB_PART
+    parts = {r.part_no for r in bom.rows}
+    assert "102709-1" not in parts
+    assert "100585-23" not in parts
+    assert not any(r.item == "SE" for r in bom.rows)

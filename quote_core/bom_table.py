@@ -63,10 +63,19 @@ _ROW_BLOB_RE = re.compile(
     r"(?P<part>\d{4,7}(?:\s*[-–—=]\s*\d{1,3}[A-Za-z]?)?)\s*"
     r"(?P<desc>.*)$",
 )
+# finditer: harvest every qty/item/part even when OCR glues several rows together
+_QTY_ITEM_PART_FIND_RE = re.compile(
+    r"(?<!\d)(?P<qty>\d{1,3})\s+"
+    r"(?P<item>[A-Za-z]{1,2})\s+"
+    r"(?P<part>\d{4,7}(?:\s*[-–—=]\s*\d{1,3}[A-Za-z]?)?)",
+    re.IGNORECASE,
+)
 _HEADER_FOUND_NOTE = (
     "LIST OF MATERIAL header found but no table rows parsed "
     "— flag review; do not use whole-page regex or pad from nested files"
 )
+# Time 102728-1 is 51 rows. A 3-row decoy LOM must not win.
+TALL_TABLE_MIN_ROWS = 40
 
 
 def time_item_letters(*, through: str = "BC") -> list[str]:
@@ -113,6 +122,117 @@ def text_has_material_list_grid(text: str | None) -> bool:
     ):
         return True
     return False
+
+
+def time_balloon_set(*, through: str = "BC") -> set[str]:
+    return set(time_item_letters(through=through))
+
+
+def score_material_list(bom: Any) -> tuple[int, int, int, int, int]:
+    """
+    Higher is better. Prefer many Time balloons (A, AA, BB), not a 3-row decoy.
+
+    Order: sequence hits through BC, two-letter balloons, BB present,
+    102727-4 present, total pieces.
+    """
+    rows = list(getattr(bom, "rows", None) or [])
+    seq = time_balloon_set(through="BC")
+    items = [str(r.item).upper() for r in rows if r.item]
+    seq_hits = sum(1 for i in items if i in seq)
+    two_letter = sum(1 for i in items if len(i) == 2 and i in seq)
+    has_bb = 1 if "BB" in items else 0
+    has_pn = 1 if any(str(r.part_no) == "102727-4" for r in rows) else 0
+    pieces = int(getattr(bom, "piece_count", 0) or 0)
+    return (seq_hits, two_letter, has_bb, has_pn, pieces)
+
+
+def pick_best_material_list(candidates: Sequence[Any], *, min_rows: int = TALL_TABLE_MIN_ROWS):
+    """Choose the tall Time grid over a short decoy LOM. Does not invent rows."""
+    scored = [c for c in candidates if c is not None]
+    if not scored:
+        return None
+    scored.sort(key=score_material_list, reverse=True)
+    best = scored[0]
+    tall = [c for c in scored if len(getattr(c, "rows", None) or []) >= min_rows]
+    if tall:
+        tall.sort(key=score_material_list, reverse=True)
+        return tall[0]
+    return best
+
+
+def harvest_material_list_lines(text: str | None, *, bom_config: str | None = None):
+    """
+    Line-by-line / finditer parse of ``2 BB 102727-4 TUBE, ROUND``.
+
+    Used when word-box columns fail but the right-side grid is readable.
+    ``bom_config`` is accepted for API symmetry (single-qty printed cells).
+    """
+    from quote_core.bom import BomResult, BomRow, normalize_part_no
+
+    del bom_config
+    if not text:
+        return BomResult(method=None, confidence=0.0, notes=["No text to harvest"])
+    blob = (
+        str(text)
+        .replace("|", " ")
+        .replace("—", "-")
+        .replace("–", "-")
+        .replace("=", "-")
+    )
+    rows = []
+    seen: set[str] = set()
+    for m in _QTY_ITEM_PART_FIND_RE.finditer(blob):
+        item = m.group("item").upper()
+        if not is_material_list_item(item) or item in seen:
+            continue
+        # Time balloons through BZ (A–Z skip I/O, AA–AZ, BA–BZ). Drops "SE TAS".
+        if item not in time_balloon_set(through="BZ"):
+            continue
+        part_raw = re.sub(r"\s+", "", m.group("part"))
+        part = normalize_part_no(part_raw) or part_raw.upper()
+        if not part or not re.search(r"\d{4,}", part):
+            continue
+        qty = max(1, int(m.group("qty")))
+        tail = blob[m.end() : m.end() + 48]
+        desc_m = re.match(r"\s*([^|\n]{0,40})", tail)
+        desc = (desc_m.group(1) if desc_m else "").strip(" ,;|")
+        # Cut desc at the next qty/item/part
+        nxt = _QTY_ITEM_PART_FIND_RE.search(desc)
+        if nxt:
+            desc = desc[: nxt.start()].strip()
+        seen.add(item)
+        rows.append(
+            BomRow(
+                item=item,
+                qty=qty,
+                part_no=part,
+                description=desc,
+                source="table_material_list_harvest",
+                confidence=0.9,
+            )
+        )
+    if not rows:
+        return BomResult(method=None, confidence=0.0, notes=["No qty/item/part lines harvested"])
+    # Loose qty/item/part bait (page-0 regex leftovers) is not a table unless
+    # a LOM header is present or the harvest is a tall Time list.
+    if len(rows) < TALL_TABLE_MIN_ROWS and not text_has_material_list_grid(text):
+        return BomResult(
+            method=None,
+            confidence=0.0,
+            notes=["Harvested lines ignored — no LIST OF MATERIAL header and not a tall grid"],
+        )
+    rows.sort(key=lambda r: item_sort_key(str(r.item or "")))
+    notes = [
+        f"Harvested LIST OF MATERIAL lines: {len(rows)} part numbers, "
+        f"{sum(r.qty for r in rows)} pieces"
+    ]
+    notes.extend(_incomplete_sequence_notes([str(r.item) for r in rows if r.item]))
+    return BomResult(
+        rows=rows,
+        method="table_material_list",
+        confidence=0.9,
+        notes=notes,
+    )
 
 
 @dataclass
@@ -184,6 +304,9 @@ def detect_material_list_header(cells: Sequence[str]) -> MaterialListLayout | No
     if not qty_cols and not _MULTI_QTY_HEADER_RE.search(joined):
         # Still accept ITEM + PART with an implicit single qty column.
         qty_cols = ["QTY"]
+    # 102728-1 prints a lone ``-1`` above item BC — not a qty-column header.
+    if qty_cols == ["-1"] and "QTY" not in joined and "DESC" not in joined:
+        return None
     return MaterialListLayout(qty_cols=qty_cols, headers=tokens)
 
 
@@ -452,7 +575,12 @@ def parse_material_list_text(text: str | None, *, bom_config: str | None = None)
     """Parse pipe/tab/spaced LIST OF MATERIAL text into BomResult."""
     from quote_core.bom import BomResult
 
-    if not text or not text_has_material_list_grid(text):
+    if not text:
+        return BomResult(method=None, confidence=0.0, notes=["No LIST OF MATERIAL grid header"])
+    harvested_early = harvest_material_list_lines(text, bom_config=bom_config)
+    if not text_has_material_list_grid(text):
+        if len(harvested_early.rows) >= TALL_TABLE_MIN_ROWS:
+            return harvested_early
         return BomResult(method=None, confidence=0.0, notes=["No LIST OF MATERIAL grid header"])
 
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
@@ -465,7 +593,10 @@ def parse_material_list_text(text: str | None, *, bom_config: str | None = None)
         if layout:
             header_idx = i
             break
+    harvested = harvest_material_list_lines(text, bom_config=bom_config)
     if layout is None or header_idx is None:
+        if harvested.rows:
+            return harvested
         return BomResult(
             method="table_material_list" if _TITLE_RE.search(text or "") else None,
             confidence=0.0,
@@ -475,9 +606,9 @@ def parse_material_list_text(text: str | None, *, bom_config: str | None = None)
     below = cell_rows[header_idx + 1 :]
     parsed_below = parse_material_list_cells(below, bom_config=bom_config, header=cell_rows[header_idx])
     parsed_above = parse_material_list_cells(above, bom_config=bom_config, header=cell_rows[header_idx])
-    if len(parsed_above.rows) > len(parsed_below.rows):
-        return parsed_above
-    return parsed_below
+    structured = parsed_above if len(parsed_above.rows) > len(parsed_below.rows) else parsed_below
+    best = pick_best_material_list([structured, harvested])
+    return best or structured
 
 
 def _merge_header_words(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -678,6 +809,10 @@ def parse_material_list_words(
         return BomResult(method=None, confidence=0.0, notes=["No words for LIST OF MATERIAL table"])
 
     rows = cluster_word_rows(words, y_tol=y_tol)
+    line_blob = "\n".join(
+        " ".join(str(w.get("text") or "") for w in row) for row in rows
+    )
+    harvested = harvest_material_list_lines(line_blob, bom_config=bom_config)
     header_idx = None
     header_words: list[dict[str, Any]] = []
     if layout is None:
@@ -685,6 +820,8 @@ def parse_material_list_words(
         if found:
             header_idx, layout, header_words = found
         else:
+            if harvested.rows:
+                return harvested
             return BomResult(
                 method=None,
                 confidence=0.0,
@@ -721,6 +858,7 @@ def parse_material_list_words(
             bom_config=bom_config,
             header=header_cells,
         )
+    chosen = pick_best_material_list([chosen, harvested]) or chosen
     if chosen.rows:
         chosen.notes = [
             "Read LIST OF MATERIAL as table cells (not whole-page regex)",

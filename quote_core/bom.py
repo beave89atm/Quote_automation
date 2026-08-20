@@ -1085,14 +1085,19 @@ def _native_page_words(page) -> list[dict[str, Any]]:
 
 
 def _material_list_ocr_clips(page) -> list[Any]:
-    """Right-side clips first — Time LIST OF MATERIAL sits on the weldment sheet."""
+    """
+    Tall right-hand LIST OF MATERIAL (102728-1) sits above the title block.
+
+    Prefer a narrow right strip so drawing balloons are not in the clip.
+    """
     import fitz
 
     rect = page.rect
     return [
-        fitz.Rect(rect.width * 0.50, rect.height * 0.02, rect.width * 0.998, rect.height * 0.99),
-        fitz.Rect(rect.width * 0.58, rect.height * 0.02, rect.width * 0.998, rect.height * 0.99),
-        fitz.Rect(rect.width * 0.42, rect.height * 0.02, rect.width * 0.998, rect.height * 0.99),
+        # Narrow right strip above title block — the usable 51-row grid.
+        fitz.Rect(rect.width * 0.70, rect.height * 0.06, rect.width * 0.995, rect.height * 0.84),
+        fitz.Rect(rect.width * 0.64, rect.height * 0.04, rect.width * 0.998, rect.height * 0.88),
+        fitz.Rect(rect.width * 0.50, rect.height * 0.02, rect.width * 0.998, rect.height * 0.92),
     ]
 
 
@@ -1135,75 +1140,73 @@ def extract_bom_from_material_list_table(
     ``library_folder`` is unused on purpose — nested PDFs are not the BOM.
     """
     from quote_core.bom_table import (
+        TALL_TABLE_MIN_ROWS,
+        harvest_material_list_lines,
         material_list_header_seen,
         parse_material_list_text,
-        parse_material_list_words,
-        text_has_material_list_grid,
+        pick_best_material_list,
+        score_material_list,
     )
 
     del library_folder, related_pdf_names  # nested folder files are not the BOM
     notes: list[str] = []
+    candidates: list[BomResult] = []
     if text:
         parsed = parse_material_list_text(text, bom_config=bom_config)
-        if parsed.rows:
-            return parsed
-        notes.extend(parsed.notes)
-        if material_list_header_seen(parsed) and not pdf_path:
-            parsed.notes = notes
-            return parsed
+        harvested = harvest_material_list_lines(text, bom_config=bom_config)
+        candidates.extend([parsed, harvested])
+        if not pdf_path:
+            best = pick_best_material_list(candidates)
+            if best and (best.rows or material_list_header_seen(best)):
+                return best
+            return BomResult(
+                method=None,
+                confidence=0.0,
+                notes=notes + list(parsed.notes),
+            )
 
     if not pdf_path:
         return BomResult(method=None, confidence=0.0, notes=notes or ["No PDF for table BOM"])
 
     import fitz
 
-    from quote_core.ocr import ocr_available
-
     pdf_path = Path(pdf_path)
-    header_best = BomResult(method=None, confidence=0.0, notes=notes)
     doc = fitz.open(str(pdf_path))
     try:
         n_pages = len(doc)
         if page_index is not None:
             indexes = [min(max(0, page_index), n_pages - 1)]
         else:
-            # Time LOM is often on the last large sheet (e.g. 102728-1 page index 4).
-            indexes = list(range(n_pages - 1, -1, -1))
+            indexes = list(range(n_pages))
         for idx in indexes:
             page = doc[idx]
             parsed = _parse_material_list_on_page(page, bom_config=bom_config)
-            if parsed.rows:
-                extras: list[BomResult] = []
-                # Overflow: table may continue on the next sheet.
-                if page_index is None and idx + 1 < n_pages:
-                    nxt = _parse_material_list_on_page(
-                        doc[idx + 1], bom_config=bom_config, continuation=True
-                    )
-                    if nxt.rows:
-                        extras.append(nxt)
+            if parsed.rows or material_list_header_seen(parsed):
                 parsed.notes = [
-                    f"LIST OF MATERIAL grid on page {idx + 1} of {n_pages}",
+                    f"LIST OF MATERIAL candidate on page {idx + 1} of {n_pages} "
+                    f"({len(parsed.rows)} rows, score={score_material_list(parsed)})",
                     *list(parsed.notes),
                 ]
-                if extras:
-                    parsed = _merge_table_bom_results([parsed, *extras])
-                return parsed
-            notes.extend(parsed.notes)
-            if material_list_header_seen(parsed):
-                parsed.notes = [
-                    f"LIST OF MATERIAL header on page {idx + 1} of {n_pages}",
-                    *list(parsed.notes),
-                ]
-                if not header_best.rows:
-                    header_best = parsed
+                candidates.append(parsed)
+            else:
+                notes.extend(parsed.notes)
+            # Keep looking when this hit is a short decoy (< 40 rows).
+            if len(parsed.rows) >= TALL_TABLE_MIN_ROWS:
+                # Still scan remaining pages; a later page might be taller.
+                continue
     finally:
         doc.close()
 
-    if material_list_header_seen(header_best):
-        header_best.notes = notes + list(header_best.notes)
-        return header_best
-    header_best.notes = notes + list(header_best.notes)
-    return header_best
+    best = pick_best_material_list(candidates)
+    if best is None:
+        return BomResult(method=None, confidence=0.0, notes=notes or ["No LIST OF MATERIAL grid"])
+    if len(best.rows) < TALL_TABLE_MIN_ROWS and material_list_header_seen(best):
+        best.notes.append(
+            f"Best LIST OF MATERIAL hit has {len(best.rows)} rows "
+            f"(< {TALL_TABLE_MIN_ROWS}) — flag review; do not pad from nested files"
+        )
+    best.notes = notes + list(best.notes)
+    return best
 
 
 def _parse_material_list_on_page(
@@ -1213,42 +1216,35 @@ def _parse_material_list_on_page(
     continuation: bool = False,
 ) -> BomResult:
     from quote_core.bom_table import (
-        material_list_header_seen,
+        harvest_material_list_lines,
         parse_material_list_text,
         parse_material_list_words,
+        pick_best_material_list,
         text_has_material_list_grid,
     )
     from quote_core.ocr import ocr_available
 
+    hits: list[BomResult] = []
     native_text = page.get_text("text") or ""
     native_words = _native_page_words(page)
     if native_words:
-        parsed = parse_material_list_words(native_words, bom_config=bom_config)
-        if parsed.rows or (material_list_header_seen(parsed) and not continuation):
-            if parsed.rows:
-                return parsed
-    else:
-        parsed = BomResult(method=None, confidence=0.0, notes=[])
-    if native_text and text_has_material_list_grid(native_text):
-        text_parsed = parse_material_list_text(native_text, bom_config=bom_config)
-        if text_parsed.rows:
-            return text_parsed
-        if material_list_header_seen(text_parsed):
-            parsed = text_parsed
-    if continuation and native_words and not parsed.rows:
-        # Next page may have data rows without repeating the header.
+        hits.append(parse_material_list_words(native_words, bom_config=bom_config))
+    if native_text:
+        hits.append(parse_material_list_text(native_text, bom_config=bom_config))
+        hits.append(harvest_material_list_lines(native_text, bom_config=bom_config))
+    if continuation and native_words:
         from quote_core.bom_table import MaterialListLayout
 
-        cont = parse_material_list_words(
-            native_words,
-            bom_config=bom_config,
-            layout=MaterialListLayout(
-                qty_cols=["QTY"],
-                headers=["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
-            ),
+        hits.append(
+            parse_material_list_words(
+                native_words,
+                bom_config=bom_config,
+                layout=MaterialListLayout(
+                    qty_cols=["QTY"],
+                    headers=["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
+                ),
+            )
         )
-        if cont.rows:
-            return cont
 
     header_hint = text_has_material_list_grid(native_text) or any(
         str(w.get("text") or "").upper() in {"QTY", "ITEM", "PART", "DESCRIPTION"}
@@ -1256,29 +1252,28 @@ def _parse_material_list_on_page(
         for w in native_words
     )
     sparse_native = len(native_text.strip()) < 200
-    if not ocr_available() or not (header_hint or sparse_native or continuation):
-        return parsed
+    if ocr_available() and (header_hint or sparse_native or continuation):
+        for clip in _material_list_ocr_clips(page):
+            ocr_words = _ocr_words_in_clip(page, clip, dpi=360, min_conf=5)
+            if ocr_words:
+                hits.append(
+                    parse_material_list_words(
+                        ocr_words, bom_config=bom_config, y_tol=6.0
+                    )
+                )
+                line_blob = " ".join(str(w.get("text") or "") for w in ocr_words)
+                hits.append(harvest_material_list_lines(line_blob, bom_config=bom_config))
+            images = _render_clip_images(page, clip, 360)
+            blobs = _ocr_strings(images, psms=(4, 6), use_letter_whitelist=False)
+            if blobs:
+                joined = "\n".join(blobs)
+                hits.append(parse_material_list_text(joined, bom_config=bom_config))
+                hits.append(harvest_material_list_lines(joined, bom_config=bom_config))
 
-    best = parsed
-    for clip in _material_list_ocr_clips(page):
-        ocr_words = _ocr_words_in_clip(page, clip, dpi=360, min_conf=5)
-        if ocr_words:
-            word_parsed = parse_material_list_words(
-                ocr_words, bom_config=bom_config, y_tol=7.0
-            )
-            if word_parsed.rows:
-                return word_parsed
-            if material_list_header_seen(word_parsed):
-                best = word_parsed
-        images = _render_clip_images(page, clip, 360)
-        blobs = _ocr_strings(images, psms=(4, 6), use_letter_whitelist=False)
-        if blobs:
-            text_parsed = parse_material_list_text("\n".join(blobs), bom_config=bom_config)
-            if text_parsed.rows:
-                return text_parsed
-            if material_list_header_seen(text_parsed):
-                best = text_parsed
-    return best
+    best = pick_best_material_list(hits)
+    if best is not None:
+        return best
+    return BomResult(method=None, confidence=0.0, notes=["No LIST OF MATERIAL on page"])
 
 
 def extract_bom_from_ocr_time_style(
