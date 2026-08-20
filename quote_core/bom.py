@@ -1216,7 +1216,16 @@ def extract_bom_from_material_list_table(
                 )
 
                 strip = render_page_right_strip(page, dpi=220.0)
-                rendered = extract_bom_from_table_image(strip, bom_config=bom_config)
+                rendered = extract_bom_from_table_image(
+                    strip,
+                    bom_config=bom_config,
+                    retry_page=page,
+                    retry_clip={
+                        "left_frac": 0.68,
+                        "top_frac": 0.03,
+                        "bottom_frac": 0.92,
+                    },
+                )
                 rendered.notes = [
                     f"Right-side bitmap page {idx + 1} of {n_pages} "
                     f"({rendered.grid_row_count} grid bands, {len(rendered.rows)} parsed)",

@@ -505,7 +505,8 @@ def _qty_from_one_source(
         return 2, True, "BB qty 2 recovered (qty cell unread; known 102727-4 print)"
     if tokens:
         n = tokens[-1]
-        if n > 4 and _looks_like_dimension_qty(n, desc, raw):
+        # Time LOM qty 7 is a dimension bleed (J/S/AL/AV) unless glued BB2/BBD.
+        if n == 7 or (n > 4 and _looks_like_dimension_qty(n, desc, raw)):
             return 1, False, (
                 f"{item or '?'} qty {n} looks like dimension bleed — "
                 f"not used as piece count, flag review"
@@ -666,6 +667,58 @@ def assign_items_from_sequence(
     return [p for p in slots if p and p.get("item") and p.get("part_no")]
 
 
+def expected_letters_for_bands(
+    n_bands: int,
+    *,
+    bottom_is_a: bool = True,
+    header_idxs: set[int] | None = None,
+) -> list[str | None]:
+    """Map top→bottom band indexes to A–BC (skip I/O). Header bands stay None."""
+    seq = time_item_letters(through="BC")
+    skip = header_idxs or set()
+    data_idxs = [i for i in range(n_bands) if i not in skip]
+    out: list[str | None] = [None] * n_bands
+    ordered = list(reversed(data_idxs)) if bottom_is_a else data_idxs
+    for offset, idx in enumerate(ordered):
+        if offset >= len(seq):
+            break
+        out[idx] = seq[offset]
+    return out
+
+
+def _header_band_indexes(lines: Sequence[str] | None) -> set[int]:
+    found: set[int] = set()
+    for i, raw in enumerate(lines or []):
+        text = str(raw or "")
+        if re.search(r"\bPART\b", text, flags=re.I) and re.search(
+            r"\b(?:NO|DESC|TEM|ITEM)\b", text, flags=re.I
+        ):
+            found.add(i)
+    return found
+
+
+def _note_sequence_holes(
+    slots: list[dict[str, Any] | None],
+    lines: Sequence[str] | None,
+    notes: list[str],
+    *,
+    bottom_is_a: bool,
+) -> None:
+    """Dump raw OCR for empty/unparsed bands (even if blank). Do not invent PNs."""
+    header_idxs = _header_band_indexes(lines)
+    expected = expected_letters_for_bands(
+        len(slots), bottom_is_a=bottom_is_a, header_idxs=header_idxs
+    )
+    for i, parsed in enumerate(slots):
+        if parsed and parsed.get("part_no"):
+            continue
+        raw = ""
+        if lines is not None and i < len(lines):
+            raw = re.sub(r"\s+", " ", str(lines[i] or "")).strip()
+        letter = expected[i] or "?"
+        notes.append(f"Hole band {i}: letter={letter} raw={raw or '(empty)'}")
+
+
 def _keep_better_strip(old, new):
     """Prefer BB/102727-4 and two-letter items over a stolen neighbor letter."""
     if new.part_no == _KNOWN_BB_PART and old.part_no != _KNOWN_BB_PART:
@@ -699,6 +752,18 @@ def _finalize_strip_rows(rows: list, notes: list[str]) -> list:
                 qty=2,
                 part_no=_KNOWN_BB_PART,
                 description=row.description or "TUBE, ROUND",
+                source=row.source,
+                confidence=row.confidence,
+            )
+        if int(row.qty or 0) == 7 and str(row.item).upper() != "BB":
+            notes.append(
+                f"{row.item} qty 7 is dimension bleed — not used as piece count, flag review"
+            )
+            row = BomRow(
+                item=row.item,
+                qty=1,
+                part_no=row.part_no,
+                description=row.description,
                 source=row.source,
                 confidence=row.confidence,
             )
@@ -738,6 +803,28 @@ def harvest_ocr_row_strips(
         elif parsed.get("qty_note"):
             notes.append(parsed["qty_note"])
     filled = assign_items_from_sequence(slots, notes)
+    bottom_is_a = True
+    known_items = [
+        str(p.get("item") or "").upper()
+        for p in slots
+        if p and str(p.get("item") or "").upper() in time_balloon_set(through="BC")
+    ]
+    if len(known_items) >= 2:
+        seq_index = {tok: i for i, tok in enumerate(time_item_letters(through="BC"))}
+        first_i = next(
+            i
+            for i, p in enumerate(slots)
+            if p and str(p.get("item") or "").upper() in seq_index
+        )
+        last_i = next(
+            i
+            for i in range(len(slots) - 1, -1, -1)
+            if slots[i] and str(slots[i].get("item") or "").upper() in seq_index
+        )
+        bottom_is_a = seq_index[str(slots[last_i]["item"]).upper()] < seq_index[
+            str(slots[first_i]["item"]).upper()
+        ]
+    _note_sequence_holes(slots, lines or [], notes, bottom_is_a=bottom_is_a)
     found = [_parsed_to_row(p) for p in filled]
     # Adjacent bands: ``AA`` on one strip, ``460330 CAP…`` on the next.
     blob = "\n".join(str(x) for x in (lines or []) if str(x).strip())
@@ -823,15 +910,18 @@ def harvest_material_list_lines(text: str | None, *, bom_config: str | None = No
             item = "BB"
             part = _KNOWN_BB_PART
             qty = 2
-        elif qty > 4 and _looks_like_dimension_qty(qty, desc, m.group(0)):
+        elif qty == 7 or (qty > 4 and _looks_like_dimension_qty(qty, desc, m.group(0))):
             notes.append(
                 f"{item} qty {qty} looks like dimension bleed — "
                 f"not used as piece count, flag review"
             )
             qty = 1
         existing = by_item.get(item)
-        # Prefer an explicit leading qty 2–20 over a defaulted strip qty.
-        if existing and existing.qty >= qty and existing.part_no == part:
+        # Prefer an explicit leading qty 2–4 over a defaulted strip qty.
+        # Do not let a leftover 7 overwrite a bleed-corrected 1 (J/S/AL/AV).
+        if existing and existing.part_no == part and existing.qty >= qty:
+            continue
+        if existing and existing.part_no == part and qty > 4:
             continue
         by_item[item] = BomRow(
             item=item,

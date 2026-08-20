@@ -13,6 +13,8 @@ from typing import Any
 from quote_core.bom_table import (
     SHORT_TABLE_REJECT,
     TALL_TABLE_MIN_ROWS,
+    expected_letters_for_bands,
+    find_time_like_pn,
     harvest_material_list_lines,
     harvest_ocr_row_strips,
     pick_best_material_list,
@@ -154,7 +156,23 @@ def segment_table_bands(
     }
 
 
-def _ocr_row_strip(row_im) -> str:
+def _prepare_ocr_strip(row_im, *, scale: float = 1.0, invert: bool = False):
+    from PIL import Image, ImageFilter, ImageOps
+
+    im = row_im.convert("L")
+    im = ImageOps.autocontrast(im)
+    if invert:
+        im = ImageOps.invert(im)
+    if scale and scale != 1.0:
+        w = max(1, int(im.width * scale))
+        h = max(1, int(im.height * scale))
+        im = im.resize((w, h), Image.Resampling.LANCZOS)
+    im = im.filter(ImageFilter.SHARPEN)
+    # Tesseract reads a thin strip more reliably with a white border.
+    return ImageOps.expand(im, border=6, fill=255)
+
+
+def _tesseract_string(row_im, *, psm: int) -> str:
     from quote_core.ocr import ocr_available, tesseract_cmd
 
     if not ocr_available():
@@ -162,28 +180,165 @@ def _ocr_row_strip(row_im) -> str:
     import pytesseract
 
     pytesseract.pytesseract.tesseract_cmd = tesseract_cmd()
-    # psm 7 = single text line (one BOM row).
     try:
-        return pytesseract.image_to_string(row_im, config="--oem 3 --psm 7") or ""
+        return pytesseract.image_to_string(row_im, config=f"--oem 3 --psm {psm}") or ""
     except Exception:  # noqa: BLE001
-        try:
-            return pytesseract.image_to_string(row_im, config="--oem 3 --psm 6") or ""
-        except Exception:  # noqa: BLE001
-            return ""
+        return ""
+
+
+def _ocr_row_strip(row_im) -> str:
+    h = getattr(row_im, "height", 16) or 16
+    scale = 3.0 if h < 18 else 2.0 if h < 28 else 1.5
+    prepared = _prepare_ocr_strip(row_im, scale=scale)
+    text = _tesseract_string(prepared, psm=7)
+    if find_time_like_pn(text):
+        return text
+    alt = _tesseract_string(prepared, psm=6)
+    if find_time_like_pn(alt):
+        return alt
+    return text or alt
 
 
 def _ocr_cell_strip(cell_im) -> str:
-    from quote_core.ocr import ocr_available, tesseract_cmd
+    h = getattr(cell_im, "height", 16) or 16
+    scale = 3.0 if h < 20 else 2.0
+    return _tesseract_string(_prepare_ocr_strip(cell_im, scale=scale), psm=8)
 
-    if not ocr_available():
-        return ""
-    import pytesseract
 
-    pytesseract.pytesseract.tesseract_cmd = tesseract_cmd()
-    try:
-        return pytesseract.image_to_string(cell_im, config="--oem 3 --psm 8") or ""
-    except Exception:  # noqa: BLE001
-        return ""
+def _expand_band_box(
+    box: tuple[int, int, int, int],
+    im_size: tuple[int, int],
+    *,
+    pad_x: int = 0,
+    pad_y: int = 4,
+) -> tuple[int, int, int, int]:
+    x0, y0, x1, y1 = box
+    w, h = im_size
+    return (
+        max(0, x0 - pad_x),
+        max(0, y0 - pad_y),
+        min(w, x1 + pad_x),
+        min(h, y1 + pad_y),
+    )
+
+
+def _ocr_band_retry(im, box: tuple[int, int, int, int], v_lines: list[int]) -> str:
+    """Wider / higher-scale clip for an empty band. Does not invent a PN."""
+    w, h = im.size
+    x0, y0, x1, y1 = _expand_band_box(box, (w, h), pad_x=8, pad_y=max(4, (box[3] - box[1]) // 2))
+    clips = [
+        im.crop((x0, y0, x1, y1)),
+        im.crop((max(0, int(w * 0.28)), y0, x1, y1)),  # PART + DESC
+        im.crop((max(0, int(w * 0.12)), y0, min(w, int(w * 0.78)), y1)),
+    ]
+    best = ""
+    for clip in clips:
+        for invert in (False, True):
+            prepared = _prepare_ocr_strip(clip, scale=4.0, invert=invert)
+            for psm in (7, 6, 13):
+                text = _tesseract_string(prepared, psm=psm)
+                if find_time_like_pn(text):
+                    return text
+                if len(text.strip()) > len(best.strip()):
+                    best = text
+    return best
+
+
+def _ocr_table_lines(im, seg: dict[str, Any], notes: list[str]) -> list[str]:
+    """OCR each band; re-clip empty/unread holes only."""
+    v_lines = seg.get("v_lines") or []
+    use_cells = len(v_lines) >= 4
+    lines: list[str] = []
+    for x0, y0, x1, y1 in seg["row_bands"]:
+        pad = 1
+        strip = im.crop((x0, max(0, y0 - pad), x1, min(im.height, y1 + pad)))
+        if use_cells:
+            parts: list[str] = []
+            xs = [0] + list(v_lines) + [im.width]
+            xs = sorted({x for x in xs if 0 <= x <= im.width})
+            for a, b in zip(xs, xs[1:]):
+                if b - a < 6:
+                    continue
+                cell = im.crop((a + 1, max(0, y0), b, min(im.height, y1)))
+                parts.append(_ocr_cell_strip(cell).strip())
+            text = " ".join(p for p in parts if p)
+            if not text:
+                text = _ocr_row_strip(strip)
+        else:
+            text = _ocr_row_strip(strip)
+        lines.append((text or "").strip())
+    notes.append(
+        f"OCR'd {sum(1 for t in lines if t)}/{len(lines)} row strips "
+        f"(empty bands kept as sequence holes)"
+    )
+    header_idxs = set()
+    for i, raw in enumerate(lines):
+        blob = str(raw or "").upper()
+        if "PART" in blob and ("NO" in blob or "DESC" in blob or "TEM" in blob):
+            header_idxs.add(i)
+    expected = expected_letters_for_bands(
+        len(lines), bottom_is_a=True, header_idxs=header_idxs
+    )
+    retried = 0
+    for i, text in enumerate(lines):
+        if find_time_like_pn(text):
+            continue
+        if i in header_idxs:
+            continue
+        retry = _ocr_band_retry(im, seg["row_bands"][i], v_lines)
+        retry = (retry or "").strip()
+        if retry and retry != text:
+            lines[i] = retry
+            retried += 1
+            letter = expected[i] or "?"
+            notes.append(
+                f"Re-OCR band {i} letter={letter}: raw={retry if retry else '(empty)'}"
+            )
+        elif not text:
+            letter = expected[i] or "?"
+            notes.append(f"Re-OCR band {i} letter={letter}: raw=(empty)")
+    if retried:
+        notes.append(f"Re-clipped {retried} empty/unread band(s) at higher scale")
+    return lines
+
+
+def _retry_empty_bands_from_page(
+    page,
+    im,
+    seg: dict[str, Any],
+    lines: list[str],
+    notes: list[str],
+    *,
+    top_frac: float = 0.03,
+    bottom_frac: float = 0.92,
+) -> list[str]:
+    """Re-render unread bands from the PDF at 320 DPI / wider left edge."""
+    h = max(1, im.height)
+    header_idxs = set()
+    for i, raw in enumerate(lines):
+        blob = str(raw or "").upper()
+        if "PART" in blob and ("NO" in blob or "DESC" in blob or "TEM" in blob):
+            header_idxs.add(i)
+    expected = expected_letters_for_bands(
+        len(lines), bottom_is_a=True, header_idxs=header_idxs
+    )
+    for i, text in enumerate(lines):
+        if find_time_like_pn(text) or i in header_idxs:
+            continue
+        if i >= len(seg["row_bands"]):
+            continue
+        _x0, y0, _x1, y1 = seg["row_bands"][i]
+        y0_frac = top_frac + (y0 / h) * (bottom_frac - top_frac)
+        y1_frac = top_frac + (y1 / h) * (bottom_frac - top_frac)
+        band_im = render_page_row_band(
+            page, y0_frac=y0_frac, y1_frac=y1_frac, dpi=320.0, left_frac=0.58
+        )
+        retry = (_ocr_band_retry(band_im, (0, 0, band_im.width, band_im.height), []) or "").strip()
+        letter = expected[i] or "?"
+        notes.append(f"Page re-clip band {i} letter={letter}: raw={retry or '(empty)'}")
+        if find_time_like_pn(retry):
+            lines[i] = retry
+    return lines
 
 
 def extract_bom_from_table_image(
@@ -191,6 +346,8 @@ def extract_bom_from_table_image(
     *,
     bom_config: str | None = None,
     row_texts: list[str] | None = None,
+    retry_page: Any | None = None,
+    retry_clip: dict[str, float] | None = None,
 ) -> Any:
     """
     Segment a rendered LIST OF MATERIAL crop, then OCR each row (or use row_texts).
@@ -208,37 +365,26 @@ def extract_bom_from_table_image(
     ]
     lines: list[str] = []
     if row_texts is not None:
-        lines = [str(t) for t in row_texts if str(t).strip()]
+        lines = [str(t or "") for t in row_texts]
         notes.append("Used supplied row texts (table-image fixture / desktop crop)")
     else:
         from quote_core.ocr import ocr_available
 
         if ocr_available() and seg["row_bands"]:
-            v_lines = seg["v_lines"]
-            use_cells = len(v_lines) >= 4
-            for x0, y0, x1, y1 in seg["row_bands"]:
-                pad = 1
-                strip = im.crop((x0, max(0, y0 - pad), x1, min(im.height, y1 + pad)))
-                if use_cells:
-                    parts: list[str] = []
-                    xs = [0] + v_lines + [im.width]
-                    xs = sorted({x for x in xs if 0 <= x <= im.width})
-                    for a, b in zip(xs, xs[1:]):
-                        if b - a < 6:
-                            continue
-                        cell = im.crop((a + 1, max(0, y0), b, min(im.height, y1)))
-                        parts.append(_ocr_cell_strip(cell).strip())
-                    text = " ".join(p for p in parts if p)
-                    if not text:
-                        text = _ocr_row_strip(strip)
-                else:
-                    text = _ocr_row_strip(strip)
-                # Keep empty bands as holes so A–BC sequence fill stays aligned.
-                lines.append((text or "").strip())
-            notes.append(
-                f"OCR'd {sum(1 for t in lines if t)}/{len(lines)} row strips "
-                f"(empty bands kept as sequence holes)"
-            )
+            # Keep empty bands as holes so A–BC sequence fill stays aligned.
+            # Empty P–Y / AJ / BA bands get a wider, higher-scale re-clip.
+            lines = _ocr_table_lines(im, seg, notes)
+            if retry_page is not None:
+                clip = retry_clip or {}
+                lines = _retry_empty_bands_from_page(
+                    retry_page,
+                    im,
+                    seg,
+                    lines,
+                    notes,
+                    top_frac=float(clip.get("top_frac", 0.03)),
+                    bottom_frac=float(clip.get("bottom_frac", 0.92)),
+                )
         elif not ocr_available():
             notes.append(
                 "Tesseract unavailable — grid segmented but cells not read. "
@@ -296,7 +442,14 @@ def extract_bom_from_table_images(
     return best
 
 
-def render_page_right_strip(page, *, dpi: float = 220.0, left_frac: float = 0.68):
+def render_page_right_strip(
+    page,
+    *,
+    dpi: float = 220.0,
+    left_frac: float = 0.68,
+    top_frac: float = 0.03,
+    bottom_frac: float = 0.92,
+):
     """High-DPI right-side render (table lives on the weldment sheet)."""
     import fitz
     from PIL import Image
@@ -304,9 +457,35 @@ def render_page_right_strip(page, *, dpi: float = 220.0, left_frac: float = 0.68
     rect = page.rect
     clip = fitz.Rect(
         rect.width * left_frac,
-        rect.height * 0.03,
+        rect.height * top_frac,
         rect.width * 0.998,
-        rect.height * 0.92,
+        rect.height * bottom_frac,
+    )
+    pix = page.get_pixmap(
+        matrix=fitz.Matrix(dpi / 72.0, dpi / 72.0), clip=clip, alpha=False
+    )
+    return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+
+def render_page_row_band(
+    page,
+    *,
+    y0_frac: float,
+    y1_frac: float,
+    dpi: float = 320.0,
+    left_frac: float = 0.58,
+) -> Any:
+    """Higher-DPI, slightly wider clip of one table band (P–Y holes)."""
+    import fitz
+    from PIL import Image
+
+    rect = page.rect
+    pad = 0.003
+    clip = fitz.Rect(
+        rect.width * left_frac,
+        rect.height * max(0.0, y0_frac - pad),
+        rect.width * 0.998,
+        rect.height * min(1.0, y1_frac + pad),
     )
     pix = page.get_pixmap(
         matrix=fitz.Matrix(dpi / 72.0, dpi / 72.0), clip=clip, alpha=False

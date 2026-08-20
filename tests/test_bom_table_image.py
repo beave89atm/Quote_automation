@@ -12,6 +12,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from quote_core.bom import BomResult, extract_bom
 from quote_core.bom_table import (
+    expected_letters_for_bands,
     harvest_material_list_lines,
     harvest_ocr_row_strips,
     parse_ocr_row_strip,
@@ -442,6 +443,76 @@ def test_qty_7_on_s_is_dimension_bleed():
     assert row["item"] == "S" and row["qty"] == 1
     av = parse_ocr_row_strip("7 AV 100210-1 TUBE")
     assert av["item"] == "AV" and av["qty"] == 1
+
+
+def test_qty_7_jsalav_forced_to_1_bb_stays_2():
+    """b1487d7 live: J/S/AL/AV landed at 7; qty 7 is bleed unless glued BB2/BBD."""
+    lines = [
+        "7 J 100340-1 SUPPORT",
+        "7 S 100200-1 RAIL",
+        "7 AL 100220-1 TUBE",
+        "7 AV 100210-1 TUBE",
+        "BBD 02727-4 TUBE, ROUND",
+        "AX2 1102726-1 HOOK",
+    ]
+    bom = harvest_ocr_row_strips(lines)
+    by_item = {r.item: r for r in bom.rows}
+    for tok in ("J", "S", "AL", "AV"):
+        assert by_item[tok].qty == 1, tok
+    assert by_item["BB"].qty == 2 and by_item["BB"].part_no == _BB_PART
+    assert by_item["AX"].qty == 2
+    assert sum(r.qty for r in bom.rows) == 8  # 4×1 + BB2 + AX2
+
+    overwritten = harvest_material_list_lines(
+        "LIST OF MATERIAL\nQTY ITEM PART NO. DESCRIPTION\n"
+        + "\n".join(lines)
+    )
+    by2 = {r.item: r for r in overwritten.rows}
+    for tok in ("J", "S", "AL", "AV"):
+        assert by2[tok].qty == 1, tok
+    assert by2["BB"].qty == 2
+
+
+def test_empty_p_to_y_holes_are_dumped_not_invented():
+    """b1487d7: P–Y / AJ / BA were empty sequence holes, not Skipped-band text."""
+    seq = time_item_letters(through="BC")
+    holes = {"P", "Q", "R", "T", "U", "V", "W", "X", "Y", "AJ", "BA"}
+    lines = []
+    for item in reversed(seq):
+        if item in holes:
+            lines.append("")
+        elif item == "BB":
+            lines.append("BBD 02727-4 TUBE, ROUND")
+        else:
+            lines.append(f"{item} 1028{seq.index(item):02d}-1 DESC")
+    lines.append("TEM | PART NO. | DESCRIPTION")
+    expected = expected_letters_for_bands(len(lines), bottom_is_a=True, header_idxs={51})
+    assert expected[0] == "BC"
+    assert expected[50] == "A"
+    assert expected[51] is None
+    bom = harvest_ocr_row_strips(lines)
+    items = {r.item for r in bom.rows}
+    for tok in holes:
+        assert tok not in items, tok
+    bb = next(r for r in bom.rows if r.item == "BB")
+    assert bb.qty == 2 and bb.part_no == _BB_PART
+    hole_notes = [n for n in bom.notes if n.startswith("Hole band")]
+    dumped = {n.split("letter=", 1)[1].split(" ", 1)[0] for n in hole_notes}
+    for tok in holes:
+        assert tok in dumped, tok
+        assert any(
+            f"letter={tok} raw=(empty)" in n for n in hole_notes
+        ), tok
+    assert not any("102999" in (r.part_no or "") for r in bom.rows)
+
+    # Digits in a hole strip are recovered; empty stays empty.
+    filled = list(lines)
+    p_idx = next(i for i, letter in enumerate(expected) if letter == "P")
+    filled[p_idx] = "1028 13-1 SUPPORT"
+    recovered = harvest_ocr_row_strips(filled)
+    by_item = {r.item: r for r in recovered.rows}
+    assert by_item["P"].part_no == "102813-1"
+    assert "Q" not in by_item
 
 
 def test_pick_best_does_not_invent_rows_for_unread_tall_grid():
