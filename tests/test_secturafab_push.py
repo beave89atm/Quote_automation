@@ -55,6 +55,46 @@ def test_collect_job_files(tmp_path: Path):
     assert cad == [stp]
 
 
+def test_collect_job_files_includes_dxf(tmp_path: Path):
+    dxf = tmp_path / "35145-1.dxf"
+    dxf.write_bytes(b"0\nSECTION\n")
+    drawings, cad = collect_job_files(pdf_path=None, stp_path=None, dxf_path=dxf)
+    assert drawings == [dxf]
+    assert cad == []
+
+
+def test_weld_memo_includes_operations():
+    memo = _weld_memo(
+        {"total_inches": 10, "weld_minutes": 3},
+        {
+            "sizes_found": ["1/4"],
+            "operations": {
+                "operations": [
+                    {
+                        "name": "Tube laser (outsourced)",
+                        "location": "outsourced",
+                        "detected": True,
+                        "setup_minutes": 30,
+                        "run_minutes": None,
+                        "time_status": "confirm",
+                    },
+                    {
+                        "name": "Powder coating (outsourced)",
+                        "location": "outsourced",
+                        "detected": False,
+                        "setup_minutes": None,
+                        "run_minutes": None,
+                        "time_status": "confirm",
+                    },
+                ]
+            },
+        },
+    )
+    assert "Tube laser" in memo
+    assert "Powder coating" in memo
+    assert "confirm" in memo
+
+
 def test_push_job_creates_quote_and_uploads():
     client = MagicMock()
     client.get_json.return_value = {"QuoteNumber": "35145-1", "ItemCount": 3, "ItemList": [{}, {}, {}]}
@@ -480,7 +520,19 @@ def test_push_readiness_pdf_only_not_ready(tmp_path: Path):
 
     r = evaluate_push_readiness(stp_path=None, pdf_path=None, takeoff={"library": {}})
     assert r["ready"] is False
-    assert "PDF" in (r["reason"] or "") or "STEP" in (r["reason"] or "")
+    assert "PDF" in (r["reason"] or "") or "STEP" in (r["reason"] or "") or "DXF" in (
+        r["reason"] or ""
+    )
+
+
+def test_push_readiness_with_job_dxf_ready(tmp_path: Path):
+    from app.push_readiness import evaluate_push_readiness
+
+    dxf = tmp_path / "only.dxf"
+    dxf.write_bytes(b"0\nSECTION\n")
+    r = evaluate_push_readiness(stp_path=None, pdf_path=None, dxf_path=dxf, takeoff={})
+    assert r["ready"] is True
+    assert r["has_dxf"] is True
 
 
 def test_push_readiness_with_job_pdf_ready(tmp_path: Path):

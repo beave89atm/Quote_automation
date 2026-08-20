@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Any
 
 from quote_core.config import load_shop_rates
+from quote_core.dxf_text import extract_dxf_text
+from quote_core.operations import propose_operations
 from quote_core.time_engine import compute_weld_times
 from quote_core.weld.takeoff import WeldLineItem, run_weld_takeoff
 
@@ -58,7 +60,7 @@ def process_job(job_id: int) -> None:
 
         rates = load_shop_rates(RATES_PATH)
         result = run_weld_takeoff(
-            pdf_path=Path(job.pdf_path),
+            pdf_path=Path(job.pdf_path) if job.pdf_path else None,
             stp_path=Path(job.stp_path) if job.stp_path else None,
             library_folder=library_info.get("folder"),
             related_pdf_names=list(library_info.get("related_pdfs") or []),
@@ -68,6 +70,8 @@ def process_job(job_id: int) -> None:
         takeoff = result.to_dict()
         takeoff["library"] = library_info
         takeoff["bom_config"] = bom_config
+        if job.dxf_filename:
+            takeoff["dxf_filename"] = job.dxf_filename
         drivers = _drivers_from_takeoff(takeoff)
         times = compute_weld_times(
             items,
@@ -78,8 +82,25 @@ def process_job(job_id: int) -> None:
             assembly_weight_lb=drivers["assembly_weight_lb"],
             component_weights_lb=drivers.get("component_weights_lb"),
         )
+        dxf_text = extract_dxf_text(job.dxf_path) if job.dxf_path else ""
+        ops = propose_operations(
+            title=job.title or "",
+            filenames=[job.pdf_filename, job.dxf_filename or "", job.stp_filename or ""],
+            pdf_notes=list(takeoff.get("notes") or []),
+            dxf_text=dxf_text,
+            has_pdf=bool(job.pdf_path and Path(job.pdf_path).is_file()),
+            has_dxf=bool(job.dxf_path and Path(job.dxf_path).is_file()),
+            has_stp=bool(job.stp_path and Path(job.stp_path).is_file()),
+            weld_items=[i.to_dict() for i in items],
+            times=times.to_dict(),
+            stp_summary=takeoff.get("stp_summary") or {},
+        )
+        takeoff["operations"] = ops.to_dict()
 
         flags = list(result.flags)
+        for flag in ops.flags:
+            if flag not in flags:
+                flags.append(flag)
         if bom_config:
             flags.insert(
                 0,
@@ -170,8 +191,31 @@ def recompute_from_items(
         component_weights_lb=drivers.get("component_weights_lb")
         or (drivers.get("weight_calc") or {}).get("component_weights_lb"),
     )
+    dxf_text = extract_dxf_text(job.dxf_path) if getattr(job, "dxf_path", None) else ""
+    ops = propose_operations(
+        title=job.title or "",
+        filenames=[
+            job.pdf_filename,
+            getattr(job, "dxf_filename", None) or "",
+            job.stp_filename or "",
+        ],
+        pdf_notes=list(takeoff.get("notes") or []),
+        dxf_text=dxf_text,
+        has_pdf=bool(job.pdf_path and Path(job.pdf_path).is_file()),
+        has_dxf=bool(getattr(job, "dxf_path", None) and Path(job.dxf_path).is_file()),
+        has_stp=bool(job.stp_path and Path(job.stp_path).is_file()),
+        weld_items=[i.to_dict() for i in items],
+        times=times.to_dict(),
+        stp_summary=takeoff.get("stp_summary") or {},
+    )
+    takeoff["operations"] = ops.to_dict()
     job.set_takeoff(takeoff)
     job.set_times(times.to_dict())
+    flags = job.flags()
+    for flag in ops.flags:
+        if flag not in flags:
+            flags.append(flag)
+    job.set_flags(flags)
 
 
 _PUSH_IN_FLIGHT = {"pushing", "retrying_createfile"}
@@ -214,9 +258,10 @@ def push_job_secturafab(job_id: int) -> None:
             return
         takeoff = job.takeoff()
         times = job.times()
-        title = job.title or job.pdf_filename or ""
+        title = job.title or job.pdf_filename or job.dxf_filename or job.stp_filename or ""
         pdf_filename = job.pdf_filename
         pdf_path = Path(job.pdf_path) if job.pdf_path else None
+        dxf_path = Path(job.dxf_path) if job.dxf_path else None
         stp_path = Path(job.stp_path) if job.stp_path else None
     finally:
         db.close()
@@ -230,6 +275,7 @@ def push_job_secturafab(job_id: int) -> None:
             title=title,
             pdf_filename=pdf_filename,
             pdf_path=pdf_path,
+            dxf_path=dxf_path,
             stp_path=stp_path,
             takeoff=takeoff,
             times=times,

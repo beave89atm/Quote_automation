@@ -29,7 +29,7 @@ export default function LoginPage() {
     <div className="login-wrap">
       <form className="panel login-card" onSubmit={onSubmit}>
         <h1>Kannon Quote</h1>
-        <p>Team access for weld takeoff and time estimates.</p>
+        <p>Team access for drawing drop → ops + times → SecturaFAB quote.</p>
         <div className="field">
           <label htmlFor="password">App password</label>
           <input

@@ -1,0 +1,80 @@
+# Kannon in-house + outsourced capabilities (Kyle, July 2026).
+# Source: "Equipment and Capabilities - Kannon Manufacturing - 7_27_26.docx"
+# Times here are shop defaults / lesson placeholders — flag for review when unknown.
+# Do not invent mill/lathe run times (machining is PARKED).
+
+source: "Equipment and Capabilities - Kannon Manufacturing - 7_27_26.docx"
+as_of: "2026-07-27"
+
+in_house:
+  cnc_lathe:
+    count: 10
+    diameter_in: [0.375, 14]
+    length_in: [12, 14]
+    chuck_max_in: 26
+    times: parked
+  cnc_mill:
+    count: 12
+    fourth_axis_dia_in: 20
+    cube_in: [20, 40]
+    tooling: "mostly Cat 50"
+    times: parked
+  manual:
+    bridgeports: 3
+    engine_lathe: 1
+    times: parked
+  laser:
+    machines:
+      - {name: "Amada 9kW", power_kw: 9}
+      - {name: "Amada 3kW", power_kw: 3}
+    sheet_ft: [5, 10]
+    thickness_cs_in: [0.0478, 0.75]   # 18ga–3/4"
+    thickness_ss_al_in: [0.0478, 0.5] # 18ga–1/2"
+    max_od_in: 8
+    expanded_metal: true
+  saw:
+    hyd_mech: 3
+    shear: 1
+  brake:
+    machines: ["Accurpress", "Safan"]
+    max_ton: 250
+  weld_robot:
+    otc_robots: 3
+    times: later
+  weld_manual:
+    bays: 30
+    processes: ["MIG", "TIG"]
+    materials: ["CS", "Al", "SS", "Ti"]
+    thickness_in: [0.0478, 2]
+    codes: ["D1.1", "D1.3"]
+  tube_bend:
+    type: manual
+    shapes: ["square", "round", "rect"]
+  plate_roll:
+    max_width_in: 48
+    max_thickness_in: 0.1875
+    min_dia_in: 4
+
+outsourced:
+  tube_laser:
+    vendor: confirm
+    times: placeholder
+  powder_coating:
+    vendor: confirm
+    times: placeholder
+
+# Setup/run placeholders Kyle can overwrite in shop_rates later.
+placeholders:
+  laser_setup_minutes: 15
+  laser_run_minutes: null          # nest/cut time — SecturaFAB Profile or Kyle
+  bend_setup_minutes: 30           # lesson 01
+  bend_seconds_per_bend: 90        # lesson 01 (long part)
+  saw_setup_minutes: 10
+  saw_run_minutes: null
+  weld_setup_minutes: 15           # existing SecturaFAB Weld-Time setup
+  tube_laser_setup_minutes: 30
+  tube_laser_run_minutes: null
+  powder_setup_minutes: 20
+  powder_run_minutes: null
+  tube_bend_setup_minutes: 15
+  roll_setup_minutes: 20

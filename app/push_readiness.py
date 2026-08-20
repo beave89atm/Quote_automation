@@ -6,13 +6,14 @@ from pathlib import Path
 from typing import Any
 
 
-NOT_READY_REASON = "needs PDF, STEP, or library match"
+NOT_READY_REASON = "needs PDF, DXF, STEP, or library match"
 
 
 def evaluate_push_readiness(
     *,
     stp_path: str | Path | None = None,
     pdf_path: str | Path | None = None,
+    dxf_path: str | Path | None = None,
     takeoff: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
@@ -20,7 +21,8 @@ def evaluate_push_readiness(
 
     - STEP on disk, or
     - Engineering library folder (lesson 04 BOM PDFs), or
-    - Job PDF on disk (single-PDF shell / quickAddCAD path)
+    - Job PDF on disk (single-PDF shell / quickAddCAD path), or
+    - Job DXF on disk (same single-drawing shell)
     """
     takeoff = takeoff or {}
     library = takeoff.get("library") or {}
@@ -34,14 +36,19 @@ def evaluate_push_readiness(
     if pdf_path:
         has_pdf = Path(pdf_path).is_file()
 
+    has_dxf = False
+    if dxf_path:
+        has_dxf = Path(dxf_path).is_file()
+
     has_library = bool(folder and str(folder).strip())
-    ready = has_stp or has_library or has_pdf
+    ready = has_stp or has_library or has_pdf or has_dxf
     return {
         "ready": ready,
         "reason": None if ready else NOT_READY_REASON,
         "has_stp": has_stp,
         "has_library": has_library,
         "has_pdf": has_pdf,
+        "has_dxf": has_dxf,
     }
 
 
@@ -50,5 +57,6 @@ def job_push_readiness(job: Any) -> dict[str, Any]:
     return evaluate_push_readiness(
         stp_path=getattr(job, "stp_path", None),
         pdf_path=getattr(job, "pdf_path", None),
+        dxf_path=getattr(job, "dxf_path", None),
         takeoff=job.takeoff() if hasattr(job, "takeoff") else {},
     )

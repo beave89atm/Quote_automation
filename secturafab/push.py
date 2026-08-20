@@ -432,6 +432,28 @@ def _weld_memo(times: dict[str, Any] | None, takeoff: dict[str, Any] | None) -> 
     ]
     if sizes:
         parts.append("Sizes: " + ", ".join(str(s) for s in sizes if s))
+    ops_root = takeoff.get("operations") or {}
+    op_bits: list[str] = []
+    for op in ops_root.get("operations") or []:
+        if not op.get("detected") and op.get("location") != "outsourced":
+            continue
+        label = str(op.get("name") or op.get("code") or "op")
+        loc = "OS" if op.get("location") == "outsourced" else "IH"
+        setup = op.get("setup_minutes")
+        run = op.get("run_minutes")
+        status = op.get("time_status") or ""
+        bit = f"{label} [{loc}]"
+        if setup is not None:
+            bit += f" setup {setup}m"
+        if run is not None:
+            bit += f" run {run}m"
+        if status in {"placeholder", "confirm", "parked"}:
+            bit += f" ({status})"
+        if not op.get("detected") and op.get("location") == "outsourced":
+            bit += " (not seen on drawing — confirm)"
+        op_bits.append(bit)
+    if op_bits:
+        parts.append("Ops: " + "; ".join(op_bits))
     return " | ".join(parts)
 
 
@@ -516,8 +538,9 @@ def collect_job_files(
     pdf_path: Path | None,
     stp_path: Path | None,
     library: dict[str, Any] | None = None,
+    dxf_path: Path | None = None,
 ) -> tuple[list[Path], list[Path]]:
-    """Return (drawing_pdfs, cad_files)."""
+    """Return (drawing_files, cad_files). Drawings include PDF and DXF."""
     drawings: list[Path] = []
     cad: list[Path] = []
     seen: set[str] = set()
@@ -535,6 +558,7 @@ def collect_job_files(
         bucket.append(path)
 
     add(pdf_path, drawings)
+    add(dxf_path, drawings)
     add(stp_path, cad)
 
     folder = Path(library["folder"]) if library and library.get("folder") else None
@@ -852,6 +876,7 @@ class SecturaFabPushService:
         pdf_filename: str | None,
         pdf_path: Path | None,
         stp_path: Path | None,
+        dxf_path: Path | None = None,
         takeoff: dict[str, Any] | None,
         times: dict[str, Any] | None,
         qty: int = 1,
@@ -868,9 +893,13 @@ class SecturaFabPushService:
         quote_number: str | None = None
         quote_request_id: str | None = None
         try:
+            self.client.config.require_credentials()
+            dxf = Path(dxf_path) if dxf_path else None
             part_key = _resolve_part_key(
                 title=title,
-                pdf_filename=pdf_filename,
+                pdf_filename=pdf_filename
+                or (dxf.name if dxf else None)
+                or (Path(stp_path).name if stp_path else None),
                 library=(takeoff or {}).get("library") or {},
                 bom_config=(takeoff or {}).get("bom_config"),
                 pdf_path=pdf_path,
@@ -895,6 +924,7 @@ class SecturaFabPushService:
                 pdf_path=Path(pdf_path) if pdf_path else None,
                 stp_path=stp,
                 library=library,
+                dxf_path=dxf,
             )
             # STEP/STP is the CAD source of truth for SecturaFAB part import.
             if stp and stp.exists():
@@ -905,7 +935,7 @@ class SecturaFabPushService:
             if not drawings and not cad:
                 return PushResult(
                     ok=False,
-                    error="No PDF or STEP files found to push",
+                    error="No PDF, DXF, or STEP files found to push",
                     status="failed",
                 )
             if stp and stp.exists() and not cad:
@@ -917,12 +947,13 @@ class SecturaFabPushService:
 
             job_pdf = Path(pdf_path) if pdf_path else None
             has_job_pdf = bool(job_pdf and job_pdf.is_file())
+            has_job_dxf = bool(dxf and dxf.is_file())
             can_populate_items = bool(cad) or (
                 bool(bom_rows) and bool(library.get("folder"))
-            ) or has_job_pdf
+            ) or has_job_pdf or has_job_dxf
             if not can_populate_items:
                 msg = (
-                    "Cannot push: no STEP/STP, no library BOM path, and no job PDF "
+                    "Cannot push: no STEP/STP, no library BOM path, and no job PDF/DXF "
                     "on disk to build ItemList."
                 )
                 notes.append(msg)
@@ -1180,9 +1211,31 @@ class SecturaFabPushService:
                     )
                 )
                 uploaded.append(job_pdf.name)
+            elif has_job_dxf:
+                from .pdf_assembly_ops import build_single_pdf_quote
+
+                used_pdf_shell = True
+                notes.append(
+                    "Building single-DXF quote (no STEP / no library BOM / no PDF) from "
+                    f"{dxf.name}"
+                )
+                notes.extend(
+                    build_single_pdf_quote(
+                        self.client,
+                        quote_id=quote_id,
+                        part_key=part_key,
+                        pdf_path=dxf,
+                        material=material,
+                        thickness=thickness,
+                        machine=machine,
+                        qty=qty,
+                        description=quote_description or title,
+                    )
+                )
+                uploaded.append(dxf.name)
             else:
                 msg = (
-                    "No STEP/STP, no BOM/library PDF assembly, and no job PDF — "
+                    "No STEP/STP, no BOM/library PDF assembly, and no job PDF/DXF — "
                     "refusing empty drawings-only quote"
                 )
                 notes.append(msg)

@@ -26,8 +26,10 @@ class Job(Base):
     status: Mapped[str] = mapped_column(String(64), default="uploaded")
     # uploaded | processing | review | accepted | needs_info | error
     pdf_filename: Mapped[str] = mapped_column(String(512), default="")
+    dxf_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
     stp_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
     pdf_path: Mapped[str] = mapped_column(String(1024), default="")
+    dxf_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     stp_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     # Time multi-option BOM column: "1" means use the -1 qty column on 28106.
     bom_config: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -67,7 +69,9 @@ class Job(Base):
             "title": self.title,
             "status": self.status,
             "pdf_filename": self.pdf_filename,
+            "dxf_filename": self.dxf_filename,
             "stp_filename": self.stp_filename,
+            "dxf_path": self.dxf_path,
             "stp_path": self.stp_path,
             "bom_config": self.bom_config,
             "efficiency_pct": self.efficiency_pct,
@@ -99,3 +103,5 @@ def init_db() -> None:
     ensure_data_dirs()
     Base.metadata.create_all(bind=engine)
     _ensure_column("jobs", "bom_config", "bom_config VARCHAR(32)")
+    _ensure_column("jobs", "dxf_filename", "dxf_filename VARCHAR(512)")
+    _ensure_column("jobs", "dxf_path", "dxf_path VARCHAR(1024)")

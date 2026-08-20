@@ -118,6 +118,8 @@ def test_openapi_includes_batch_routes(client: TestClient) -> None:
     assert "post" in paths["/api/jobs/batch"]
     assert "/api/jobs/batch-push" in paths
     assert "post" in paths["/api/jobs/batch-push"]
+    assert "/api/capabilities" in paths
+    assert "/api/secturafab/status" in paths
 
 
 def test_batch_post_is_not_method_not_allowed(client: TestClient, token: str) -> None:
@@ -140,3 +142,19 @@ def test_batch_push_post_is_not_method_not_allowed(
     )
     assert res.status_code != 405, res.text
     assert res.status_code in {400, 422}
+
+
+def test_capabilities_with_token(client: TestClient, token: str) -> None:
+    res = client.get("/api/capabilities", headers={"X-App-Token": token})
+    assert res.status_code == 200
+    body = res.json()
+    assert "tube_laser" in (body.get("outsourced") or {})
+    assert "powder_coating" in (body.get("outsourced") or {})
+
+
+def test_secturafab_status_without_keys(client: TestClient, token: str) -> None:
+    res = client.get("/api/secturafab/status", headers={"X-App-Token": token})
+    assert res.status_code == 200
+    body = res.json()
+    assert "configured" in body
+    assert body.get("message")

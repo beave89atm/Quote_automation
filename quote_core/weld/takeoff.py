@@ -1279,14 +1279,26 @@ def estimate_fitup_drivers(
 
 
 def run_weld_takeoff(
-    pdf_path: Path | str,
+    pdf_path: Path | str | None = None,
     stp_path: Path | str | None = None,
     library_folder: Path | str | None = None,
     related_pdf_names: list[str] | None = None,
     bom_config: str | None = None,
 ) -> WeldTakeoffResult:
-    pdf_path = Path(pdf_path)
-    sizes, notes, page_hits, pdf_dimensions, pdf_meta = _parse_pdf_text(pdf_path)
+    sizes: list[str] = []
+    notes: list[str] = []
+    page_hits: list[dict[str, Any]] = []
+    pdf_dimensions: list[float] = []
+    pdf_meta: dict[str, Any] = {}
+    pdf_file: Path | None = None
+    if pdf_path:
+        candidate = Path(pdf_path)
+        if candidate.is_file():
+            pdf_file = candidate
+            sizes, notes, page_hits, pdf_dimensions, pdf_meta = _parse_pdf_text(candidate)
+        else:
+            notes.append(f"PDF path not found: {candidate}")
+
     stp_summary: dict[str, Any] = {}
     if stp_path:
         try:
@@ -1300,12 +1312,14 @@ def run_weld_takeoff(
         notes=notes,
         page_hits=page_hits,
         stp_summary=stp_summary,
-        pdf_name=pdf_path.name,
+        pdf_name=pdf_file.name if pdf_file else "",
         pdf_dimensions=pdf_dimensions,
-        pdf_path=pdf_path,
+        pdf_path=pdf_file,
         library_folder=library_folder,
         related_pdf_names=related_pdf_names,
     )
+    if not pdf_file:
+        flags.insert(0, "No PDF on this job — weld symbols were not read from a drawing sheet")
     if pdf_meta.get("ocr_used"):
         flags.insert(0, "OCR used to read weld callouts from vector PDF pages")
     elif pdf_meta.get("vector_heavy"):

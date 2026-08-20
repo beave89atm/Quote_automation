@@ -222,7 +222,7 @@ export default function JobsPage() {
           {!jobs.length ? (
             <tr>
               <td colSpan={8} className="muted">
-                No jobs yet. Upload a PDF (or a batch) to start.
+                No jobs yet. Upload PDF / DXF / STP (any subset) to start.
               </td>
             </tr>
           ) : null}

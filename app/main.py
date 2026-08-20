@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from quote_core.capabilities import load_shop_capabilities
 from quote_core.config import load_shop_rates
 
 from .auth import login, require_auth
@@ -118,8 +119,10 @@ class BatchPushBody(BaseModel):
 
 def _persist_new_job(
     *,
-    pdf_filename: str,
-    pdf_bytes: bytes,
+    pdf_filename: str | None = None,
+    pdf_bytes: bytes | None = None,
+    dxf_filename: str | None = None,
+    dxf_bytes: bytes | None = None,
     stp_filename: str | None = None,
     stp_bytes: bytes | None = None,
     title: str = "",
@@ -128,20 +131,28 @@ def _persist_new_job(
     """Create a job row, write files, return to_dict (caller starts process_job)."""
     from quote_core.bom_config import resolve_bom_config
 
+    has_pdf = bool(pdf_filename and pdf_bytes is not None)
+    has_dxf = bool(dxf_filename and dxf_bytes is not None)
+    has_stp = bool(stp_filename and stp_bytes is not None)
+    if not (has_pdf or has_dxf or has_stp):
+        raise HTTPException(400, "Need at least one PDF, DXF, or STP/STEP file")
+
     ensure_data_dirs()
     db = SessionLocal()
     try:
         rates = load_shop_rates(RATES_PATH)
-        job_title = (title or "").strip() or Path(pdf_filename).stem
+        fallback_name = pdf_filename or dxf_filename or stp_filename or "job"
+        job_title = (title or "").strip() or Path(fallback_name).stem
         resolved_config = resolve_bom_config(
             explicit=bom_config,
             title=job_title,
-            pdf_filename=pdf_filename,
+            pdf_filename=pdf_filename or dxf_filename or stp_filename or "",
         )
         job = Job(
             title=job_title,
             status="uploaded",
-            pdf_filename=pdf_filename,
+            pdf_filename=pdf_filename or "",
+            dxf_filename=dxf_filename,
             stp_filename=stp_filename,
             bom_config=resolved_config,
             efficiency_pct=rates.default_efficiency_pct,
@@ -152,18 +163,32 @@ def _persist_new_job(
 
         job_dir = UPLOAD_DIR / str(job.id)
         job_dir.mkdir(parents=True, exist_ok=True)
-        pdf_dest = job_dir / pdf_filename
-        pdf_dest.write_bytes(pdf_bytes)
-        job.pdf_path = str(pdf_dest)
 
-        if stp_filename and stp_bytes is not None:
-            suffix = Path(stp_filename).suffix.lower()
+        if has_pdf:
+            if not str(pdf_filename).lower().endswith(".pdf"):
+                raise HTTPException(400, f"Invalid PDF: {pdf_filename}")
+            pdf_dest = job_dir / str(pdf_filename)
+            pdf_dest.write_bytes(pdf_bytes or b"")
+            job.pdf_path = str(pdf_dest)
+            job.pdf_filename = str(pdf_filename)
+
+        if has_dxf:
+            suffix = Path(str(dxf_filename)).suffix.lower()
+            if suffix != ".dxf":
+                raise HTTPException(400, f"Invalid DXF: {dxf_filename}")
+            dxf_dest = job_dir / str(dxf_filename)
+            dxf_dest.write_bytes(dxf_bytes or b"")
+            job.dxf_path = str(dxf_dest)
+            job.dxf_filename = str(dxf_filename)
+
+        if has_stp:
+            suffix = Path(str(stp_filename)).suffix.lower()
             if suffix not in {".stp", ".step"}:
-                raise HTTPException(400, f"Invalid STP for {pdf_filename}")
-            stp_dest = job_dir / stp_filename
-            stp_dest.write_bytes(stp_bytes)
+                raise HTTPException(400, f"Invalid STP: {stp_filename}")
+            stp_dest = job_dir / str(stp_filename)
+            stp_dest.write_bytes(stp_bytes or b"")
             job.stp_path = str(stp_dest)
-            job.stp_filename = stp_filename
+            job.stp_filename = str(stp_filename)
 
         db.commit()
         db.refresh(job)
@@ -172,27 +197,68 @@ def _persist_new_job(
         db.close()
 
 
+@app.get("/api/capabilities")
+def get_capabilities(_: str = Depends(require_auth)) -> dict[str, Any]:
+    caps = load_shop_capabilities()
+    return {
+        "source": caps.get("source"),
+        "as_of": caps.get("as_of"),
+        "in_house": caps.get("in_house") or {},
+        "outsourced": caps.get("outsourced") or {},
+        "placeholders": caps.get("placeholders") or {},
+    }
+
+
+@app.get("/api/secturafab/status")
+def secturafab_status(_: str = Depends(require_auth)) -> dict[str, Any]:
+    from secturafab.config import SecturaFabConfig
+
+    cfg = SecturaFabConfig.from_env()
+    try:
+        cfg.require_credentials()
+        return {
+            "configured": True,
+            "auth_mode": "client_credentials" if cfg.uses_client_credentials else "password",
+            "message": "Keys present in local .env — push can authenticate.",
+        }
+    except ValueError as exc:
+        return {
+            "configured": False,
+            "auth_mode": None,
+            "message": str(exc),
+        }
+
+
 @app.post("/api/jobs")
 async def create_job(
-    pdf: UploadFile = File(...),
+    pdf: UploadFile | None = File(None),
+    dxf: UploadFile | None = File(None),
     stp: UploadFile | None = File(None),
     title: str = Form(""),
     bom_config: str = Form(""),
     _: str = Depends(require_auth),
 ) -> dict[str, Any]:
-    if not pdf.filename or not pdf.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "PDF file is required")
+    pdf_name = pdf.filename if pdf and pdf.filename else None
+    pdf_bytes = await pdf.read() if pdf and pdf.filename else None
+    dxf_name = dxf.filename if dxf and dxf.filename else None
+    dxf_bytes = await dxf.read() if dxf and dxf.filename else None
+    stp_name = stp.filename if stp and stp.filename else None
+    stp_bytes = await stp.read() if stp and stp.filename else None
 
-    pdf_bytes = await pdf.read()
-    stp_name = None
-    stp_bytes = None
-    if stp and stp.filename:
-        stp_name = stp.filename
-        stp_bytes = await stp.read()
+    if pdf_name and not pdf_name.lower().endswith(".pdf"):
+        raise HTTPException(400, "pdf field must be a .pdf file")
+    if dxf_name and not dxf_name.lower().endswith(".dxf"):
+        raise HTTPException(400, "dxf field must be a .dxf file")
+    if stp_name and Path(stp_name).suffix.lower() not in {".stp", ".step"}:
+        raise HTTPException(400, "stp field must be a .stp/.step file")
+    if not (pdf_name or dxf_name or stp_name):
+        raise HTTPException(400, "Need at least one PDF, DXF, or STP/STEP file")
 
     payload = _persist_new_job(
-        pdf_filename=pdf.filename,
+        pdf_filename=pdf_name,
         pdf_bytes=pdf_bytes,
+        dxf_filename=dxf_name,
+        dxf_bytes=dxf_bytes,
         stp_filename=stp_name,
         stp_bytes=stp_bytes,
         title=title,
@@ -208,8 +274,8 @@ async def create_jobs_batch(
     _: str = Depends(require_auth),
 ) -> dict[str, Any]:
     """
-    Create one job per PDF stem. Pair optional STP/STEP by matching filename stem.
-    Orphan STPs are skipped. Starts takeoff for each created job.
+    Create one job per filename stem. Pair PDF / DXF / STP(STEP) by stem.
+    Any non-empty subset is a job. Starts takeoff for each created job.
     """
     if not files:
         raise HTTPException(400, "No files uploaded")
@@ -224,7 +290,7 @@ async def create_jobs_batch(
     if not paired:
         raise HTTPException(
             400,
-            "No PDF files found to create jobs. "
+            "No PDF, DXF, or STP/STEP files found to create jobs. "
             + ("; ".join(skipped) if skipped else ""),
         )
 
@@ -235,6 +301,8 @@ async def create_jobs_batch(
             payload = _persist_new_job(
                 pdf_filename=part.pdf_name,
                 pdf_bytes=part.pdf_bytes,
+                dxf_filename=part.dxf_name,
+                dxf_bytes=part.dxf_bytes,
                 stp_filename=part.stp_name,
                 stp_bytes=part.stp_bytes,
             )
@@ -245,9 +313,9 @@ async def create_jobs_batch(
             row["pair"] = paired_part_summary(part)
             created.append(row)
         except HTTPException as exc:
-            errors.append(f"{part.pdf_name}: {exc.detail}")
+            errors.append(f"{part.stem}: {exc.detail}")
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"{part.pdf_name}: {exc}")
+            errors.append(f"{part.stem}: {exc}")
 
     return {
         "jobs": created,
@@ -265,8 +333,15 @@ def batch_push_secturafab(
     Queue sequential SecturaFAB pushes for ready jobs.
     Returns immediately; poll each job's takeoff.secturafab.status.
     """
+    from secturafab.config import SecturaFabConfig
+
     from .push_readiness import job_push_readiness
     from .services import _PUSH_IN_FLIGHT
+
+    try:
+        SecturaFabConfig.from_env().require_credentials()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     job_ids = [int(x) for x in (body.job_ids or []) if int(x) > 0]
     if not job_ids:
@@ -407,9 +482,6 @@ async def attach_stp(
         job = db.get(Job, job_id)
         if not job:
             raise HTTPException(404, "Job not found")
-        if not job.pdf_path:
-            raise HTTPException(400, "Job has no PDF")
-
         job_dir = UPLOAD_DIR / str(job.id)
         job_dir.mkdir(parents=True, exist_ok=True)
         stp_dest = job_dir / stp.filename
@@ -417,6 +489,39 @@ async def attach_stp(
             shutil.copyfileobj(stp.file, f)
         job.stp_filename = stp.filename
         job.stp_path = str(stp_dest)
+        db.commit()
+        db.refresh(job)
+        job_id_out = job.id
+        payload = job.to_dict()
+    finally:
+        db.close()
+
+    threading.Thread(target=process_job, args=(job_id_out,), daemon=True).start()
+    return payload
+
+
+@app.post("/api/jobs/{job_id}/dxf")
+async def attach_dxf(
+    job_id: int, dxf: UploadFile = File(...), _: str = Depends(require_auth)
+) -> dict[str, Any]:
+    if not dxf.filename:
+        raise HTTPException(400, "DXF file is required")
+    if Path(dxf.filename).suffix.lower() != ".dxf":
+        raise HTTPException(400, "DXF file required")
+
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+
+        job_dir = UPLOAD_DIR / str(job.id)
+        job_dir.mkdir(parents=True, exist_ok=True)
+        dxf_dest = job_dir / dxf.filename
+        with dxf_dest.open("wb") as f:
+            shutil.copyfileobj(dxf.file, f)
+        job.dxf_filename = dxf.filename
+        job.dxf_path = str(dxf_dest)
         db.commit()
         db.refresh(job)
         job_id_out = job.id
@@ -463,8 +568,15 @@ def push_job_to_secturafab(job_id: int, _: str = Depends(require_auth)) -> dict[
     Returns immediately with ``takeoff.secturafab.status`` of ``pushing``;
     poll ``GET /api/jobs/{id}`` until status is ``complete`` or ``failed``.
     """
+    from secturafab.config import SecturaFabConfig
+
     from .push_readiness import job_push_readiness
     from .services import _PUSH_IN_FLIGHT, push_job_secturafab
+
+    try:
+        SecturaFabConfig.from_env().require_credentials()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     db = SessionLocal()
     try:

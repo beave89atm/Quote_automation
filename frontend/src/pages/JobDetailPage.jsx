@@ -109,6 +109,7 @@ export default function JobDetailPage() {
   const [message, setMessage] = useState("");
   const [pushReady, setPushReady] = useState(false);
   const [pushElapsed, setPushElapsed] = useState(0);
+  const [sfStatus, setSfStatus] = useState(null);
 
   function applyDrivers(data) {
     const d = data.takeoff?.fitup_drivers || {};
@@ -126,6 +127,12 @@ export default function JobDetailPage() {
         if (alive) setRates(data);
       } catch {
         /* rates optional for chart fallback */
+      }
+      try {
+        const sf = await api("/api/secturafab/status");
+        if (alive) setSfStatus(sf);
+      } catch {
+        /* status optional */
       }
     })();
     return () => {
@@ -244,6 +251,24 @@ export default function JobDetailPage() {
       await api(`/api/jobs/${id}/reprocess`, { method: "POST" });
       const data = await pollUntilReady();
       setMessage(data ? "Takeoff refreshed" : "Still processing — refresh shortly");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function attachDxf(file) {
+    if (!file) return;
+    setBusy(true);
+    setError("");
+    setMessage("Attaching DXF and re-running takeoff…");
+    try {
+      const body = new FormData();
+      body.append("dxf", file);
+      await api(`/api/jobs/${id}/dxf`, { method: "POST", body });
+      const data = await pollUntilReady();
+      setMessage(data ? "DXF attached — takeoff refreshed" : "Still processing — refresh shortly");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -450,13 +475,24 @@ export default function JobDetailPage() {
           <h1 style={{ margin: "0.35rem 0 0" }}>{job.title}</h1>
           <p className="muted">
             #{job.id} · <span className={`status ${job.status}`}>{job.status}</span>
-            {job.pdf_filename ? ` · ${job.pdf_filename}` : ""}
+            {job.pdf_filename ? ` · ${job.pdf_filename}` : " · No PDF"}
+            {job.dxf_filename ? ` · ${job.dxf_filename}` : " · No DXF"}
             {job.stp_filename ? ` · ${job.stp_filename}` : " · No STP"}
             {job.bom_config ? ` · BOM -${String(job.bom_config).replace(/^-/, "")}` : ""}
           </p>
-          {!job.stp_filename ? (
+          <p className="muted" style={{ marginTop: "0.35rem", fontSize: "0.85rem" }}>
+            Review destination is <strong>SecturaFAB</strong>. Printable HTML is a local
+            fallback only.
+          </p>
+          {sfStatus && sfStatus.configured === false ? (
             <p className="error" style={{ marginTop: "0.5rem" }}>
-              No STP on this job — use Find on shared drive, or attach an STP manually.
+              SecturaFAB keys are not in this machine&apos;s .env — push will fail until
+              SECTURAFAB_CLIENT_ID / SECTURAFAB_CLIENT_SECRET are set locally.
+            </p>
+          ) : null}
+          {!job.stp_filename && !job.dxf_filename && !job.pdf_filename ? (
+            <p className="error" style={{ marginTop: "0.5rem" }}>
+              No drawing files on this job.
             </p>
           ) : null}
         </div>
@@ -634,6 +670,59 @@ export default function JobDetailPage() {
         </details>
       </details>
 
+      {(() => {
+        const ops = job.takeoff?.operations?.operations || [];
+        if (!ops.length) return null;
+        return (
+          <div className="ops-block">
+            <h2>Proposed operations</h2>
+            <p className="muted" style={{ marginTop: 0 }}>
+              From drawings + Kannon capabilities (July 2026). Unknowns are flagged —
+              mill/lathe times stay parked. Tube laser and powder coating always appear
+              (outsourced; confirm vendor times).
+            </p>
+            <table className="takeoff-table">
+              <thead>
+                <tr>
+                  <th>Operation</th>
+                  <th>Where</th>
+                  <th>Detected</th>
+                  <th>Setup</th>
+                  <th>Run</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ops.map((op) => (
+                  <tr key={op.code} className={op.needs_review ? "needs-review" : ""}>
+                    <td>
+                      {op.name}
+                      {op.evidence?.length ? (
+                        <div className="muted" style={{ fontSize: "0.8rem" }}>
+                          {op.evidence.join("; ")}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td>{op.location === "outsourced" ? "Outsourced" : "In-house"}</td>
+                    <td>{op.detected ? "Yes" : "No"}</td>
+                    <td className="mono">
+                      {op.setup_minutes != null ? `${op.setup_minutes} min` : "—"}
+                    </td>
+                    <td className="mono">
+                      {op.run_minutes != null ? `${op.run_minutes} min` : "—"}
+                    </td>
+                    <td>
+                      {op.time_status}
+                      {op.needs_review ? " · review" : ""}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
+
       <h2>Takeoff lines</h2>
       <table className="takeoff-table">
         <thead>
@@ -723,22 +812,43 @@ export default function JobDetailPage() {
             busy ||
             ["uploaded", "processing"].includes(job.status) ||
             ["pushing", "retrying_createfile"].includes(job.takeoff?.secturafab?.status) ||
-            job.push_readiness?.ready === false
+            job.push_readiness?.ready === false ||
+            sfStatus?.configured === false
           }
           onClick={pushSecturaFab}
             title={
-            job.push_readiness?.ready === false
-              ? job.push_readiness.reason || "needs PDF, STEP, or library match"
+            sfStatus && sfStatus.configured === false
+              ? sfStatus.message
+              : job.push_readiness?.ready === false
+              ? job.push_readiness.reason || "needs PDF, DXF, STEP, or library match"
               : "Always create a new SecturaFAB quote; uses part number (date suffix if that number is taken)"
           }
         >
           Push to SecturaFAB
         </button>
-        {job.push_readiness?.ready === false ? (
+        {sfStatus && sfStatus.configured === false ? (
           <span className="muted" style={{ alignSelf: "center" }}>
-            {job.push_readiness.reason || "needs PDF, STEP, or library match"}
+            {sfStatus.message}
+          </span>
+        ) : job.push_readiness?.ready === false ? (
+          <span className="muted" style={{ alignSelf: "center" }}>
+            {job.push_readiness.reason || "needs PDF, DXF, STEP, or library match"}
           </span>
         ) : null}
+        <label className="btn ghost" style={{ cursor: busy ? "default" : "pointer" }}>
+          {job.dxf_filename ? "Replace DXF" : "Attach DXF"}
+          <input
+            type="file"
+            accept=".dxf"
+            hidden
+            disabled={busy}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = "";
+              attachDxf(f);
+            }}
+          />
+        </label>
         <label className="btn ghost" style={{ cursor: busy ? "default" : "pointer" }}>
           {job.stp_filename ? "Replace STP" : "Attach STP"}
           <input

@@ -8,34 +8,34 @@ function stemKey(name) {
   return (i >= 0 ? base.slice(0, i) : base).trim().toLowerCase();
 }
 
+function fileKind(name) {
+  const lower = String(name || "").toLowerCase();
+  if (lower.endsWith(".pdf")) return "pdf";
+  if (lower.endsWith(".dxf")) return "dxf";
+  if (lower.endsWith(".stp") || lower.endsWith(".step")) return "stp";
+  return "other";
+}
+
 function pairLocalFiles(fileList) {
-  const pdfs = new Map();
-  const stps = new Map();
+  const groups = new Map();
   const skipped = [];
 
   for (const f of Array.from(fileList || [])) {
-    const lower = f.name.toLowerCase();
+    const kind = fileKind(f.name);
     const key = stemKey(f.name);
-    if (lower.endsWith(".pdf")) pdfs.set(key, f);
-    else if (lower.endsWith(".stp") || lower.endsWith(".step")) stps.set(key, f);
-    else skipped.push(`Skipped unsupported: ${f.name}`);
+    if (kind === "other") {
+      skipped.push(`Skipped unsupported: ${f.name}`);
+      continue;
+    }
+    const current = groups.get(key) || { stem: f.name.replace(/\.[^.]+$/, ""), pdf: null, dxf: null, stp: null };
+    current[kind] = f;
+    if (!current.stem) current.stem = f.name.replace(/\.[^.]+$/, "");
+    groups.set(key, current);
   }
 
-  const pairs = [];
-  for (const [key, pdf] of [...pdfs.entries()].sort((a, b) =>
-    a[1].name.localeCompare(b[1].name, undefined, { sensitivity: "base" })
-  )) {
-    const stp = stps.get(key) || null;
-    if (stp) stps.delete(key);
-    pairs.push({
-      stem: pdf.name.replace(/\.pdf$/i, ""),
-      pdf,
-      stp,
-    });
-  }
-  for (const stp of stps.values()) {
-    skipped.push(`Skipped STP without matching PDF: ${stp.name}`);
-  }
+  const pairs = [...groups.values()].sort((a, b) =>
+    a.stem.localeCompare(b.stem, undefined, { sensitivity: "base" })
+  );
   return { pairs, skipped };
 }
 
@@ -57,21 +57,13 @@ export default function UploadPage() {
     setFiles((prev) => {
       const byKey = new Map();
       for (const f of prev) {
-        const lower = f.name.toLowerCase();
-        const kind = lower.endsWith(".pdf")
-          ? "pdf"
-          : lower.endsWith(".stp") || lower.endsWith(".step")
-            ? "stp"
-            : "other";
+        const kind = fileKind(f.name);
+        if (kind === "other") continue;
         byKey.set(`${stemKey(f.name)}:${kind}`, f);
       }
       for (const f of incoming) {
-        const lower = f.name.toLowerCase();
-        const kind = lower.endsWith(".pdf")
-          ? "pdf"
-          : lower.endsWith(".stp") || lower.endsWith(".step")
-            ? "stp"
-            : "other";
+        const kind = fileKind(f.name);
+        if (kind === "other") continue;
         byKey.set(`${stemKey(f.name)}:${kind}`, f);
       }
       return [...byKey.values()];
@@ -82,8 +74,8 @@ export default function UploadPage() {
 
   async function submitSingle() {
     const pair = pairs[0];
-    if (!pair) {
-      setError("PDF is required");
+    if (!pair || (!pair.pdf && !pair.dxf && !pair.stp)) {
+      setError("Drop at least one PDF, DXF, or STP/STEP");
       return;
     }
     setBusy(true);
@@ -91,7 +83,8 @@ export default function UploadPage() {
     setInfo("");
     try {
       const body = new FormData();
-      body.append("pdf", pair.pdf);
+      if (pair.pdf) body.append("pdf", pair.pdf);
+      if (pair.dxf) body.append("dxf", pair.dxf);
       if (pair.stp) body.append("stp", pair.stp);
       if (title.trim()) body.append("title", title.trim());
       if (bomConfig.trim()) body.append("bom_config", bomConfig.trim());
@@ -106,7 +99,7 @@ export default function UploadPage() {
 
   async function submitBatch() {
     if (!pairs.length) {
-      setError("Add at least one PDF");
+      setError("Add at least one PDF, DXF, or STP/STEP");
       return;
     }
     setBusy(true);
@@ -115,16 +108,15 @@ export default function UploadPage() {
     try {
       const body = new FormData();
       for (const p of pairs) {
-        body.append("files", p.pdf);
+        if (p.pdf) body.append("files", p.pdf);
+        if (p.dxf) body.append("files", p.dxf);
         if (p.stp) body.append("files", p.stp);
       }
       const result = await api("/api/jobs/batch", { method: "POST", body });
       const n = result.created_count ?? (result.jobs || []).length;
       const skipNotes = [...(result.skipped || []), ...(result.errors || [])];
       if (skipNotes.length) {
-        setInfo(
-          `Created ${n} job(s). Notes: ${skipNotes.join("; ")}`
-        );
+        setInfo(`Created ${n} job(s). Notes: ${skipNotes.join("; ")}`);
       }
       navigate("/jobs", {
         state: {
@@ -144,11 +136,12 @@ export default function UploadPage() {
 
   return (
     <div className="panel">
-      <h1 style={{ marginTop: 0 }}>New weld takeoff</h1>
+      <h1 style={{ marginTop: 0 }}>New quote job</h1>
       <p className="muted">
-        Drop one drawing, or up to ~20 unrelated PDFs (optional matching STEPs by
-        filename). Each PDF stem becomes its own job and can be pushed to its own
-        SecturaFAB quote after review. Orphan STPs without a PDF are skipped.
+        Drop <strong>all</strong> files the customer sent — PDF, DXF, and/or STP/STEP
+        (any subset). Matching filename stems become one job. Review ops here, then
+        push the quote into <strong>SecturaFAB</strong> (that is the review surface).
+        Printable shop-labor HTML is a fallback only.
       </p>
 
       <div
@@ -170,20 +163,20 @@ export default function UploadPage() {
         onClick={() => document.getElementById("file-input").click()}
       >
         <h2>Drag & drop drawings</h2>
-        <p>PDF required per part · STP/STEP optional (same filename stem)</p>
+        <p>PDF · DXF · STP/STEP — any combination per part stem</p>
         <div className="file-chips">
           {pairs.length ? (
             <span className="chip">
               {pairs.length} part{pairs.length === 1 ? "" : "s"} ready
             </span>
           ) : (
-            <span className="chip">No PDF yet</span>
+            <span className="chip">No drawings yet</span>
           )}
         </div>
         <input
           id="file-input"
           type="file"
-          accept=".pdf,.stp,.step"
+          accept=".pdf,.dxf,.stp,.step"
           multiple
           hidden
           onChange={(e) => {
@@ -199,6 +192,7 @@ export default function UploadPage() {
             <tr>
               <th>Stem</th>
               <th>PDF</th>
+              <th>DXF</th>
               <th>STP</th>
             </tr>
           </thead>
@@ -206,13 +200,14 @@ export default function UploadPage() {
             {pairs.map((p) => (
               <tr key={p.stem}>
                 <td className="mono">{p.stem}</td>
-                <td>{p.pdf.name}</td>
+                <td>{p.pdf ? p.pdf.name : <span className="muted">—</span>}</td>
+                <td>{p.dxf ? p.dxf.name : <span className="muted">—</span>}</td>
                 <td>{p.stp ? p.stp.name : <span className="muted">— (library lookup)</span>}</td>
               </tr>
             ))}
             {skipped.map((msg) => (
               <tr key={msg}>
-                <td colSpan={3} className="muted">
+                <td colSpan={4} className="muted">
                   {msg}
                 </td>
               </tr>
@@ -254,8 +249,8 @@ export default function UploadPage() {
         </>
       ) : (
         <p className="muted" style={{ marginTop: "1rem" }}>
-          Batch mode: each part uses its PDF stem as the job title. Open a job later to
-          set BOM config if needed.
+          Batch mode: each stem becomes its own job and its own SecturaFAB quote after
+          review.
         </p>
       )}
 
