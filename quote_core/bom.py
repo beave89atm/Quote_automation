@@ -13,12 +13,15 @@ _PART_NO_RE = re.compile(
     re.IGNORECASE,
 )
 _ITEM_LETTER_RE = re.compile(r"^[A-Z]$")
+# Large Time assemblies continue past Z with AA, AB, … (skip I).
+_ITEM_TOKEN_RE = re.compile(r"^[A-Z]{1,2}$")
 _QTY_RE = re.compile(r"^\d{1,3}$")
+_ITEM_TOKEN = r"[A-Za-z]{1,2}"
 
 # qty | item | part  (dash required so 35122 is not split into 3512-2)
-# Item balloons are A–Z (Time often skips I); previously A–G only dropped H+.
+# Item balloons are A–Z or AA–AZ (Time often skips I).
 _LINE_QTY_ITEM_PART = re.compile(
-    r"(?<!\d)(\d{1,2})\s*[|Il/]?\s*([A-Za-z])\s*[|Il/]?\s*"
+    rf"(?<!\d)(\d{{1,2}})\s*[|Il/]?\s*({_ITEM_TOKEN})\s*[|Il/]?\s*"
     r"(\d{4,7})\s*[-–—=]\s*(\d{1,3}[A-Za-z]?)",
     re.IGNORECASE,
 )
@@ -29,18 +32,18 @@ _LINE_ITEM_GLUED_PART = re.compile(
 )
 # item | part without qty
 _LINE_ITEM_PART = re.compile(
-    r"(?<![A-Za-z0-9])([A-Za-z])\s*[|Il/]?\s*"
+    rf"(?<![A-Za-z0-9])({_ITEM_TOKEN})\s*[|Il/]?\s*"
     r"(\d{4,7})\s*[-–—=]\s*(\d{1,2}[A-Za-z]?)",
     re.IGNORECASE,
 )
 # qty | item with truncated part base only
 _LINE_QTY_ITEM_PARTBASE = re.compile(
-    r"(?<!\d)(\d{1,2})\s*[|Il/]?\s*([A-Za-z])\s*[|Il/]?\s*(\d{4,7})\s*[-–—=]?",
+    rf"(?<!\d)(\d{{1,2}})\s*[|Il/]?\s*({_ITEM_TOKEN})\s*[|Il/]?\s*(\d{{4,7}})\s*[-–—=]?",
     re.IGNORECASE,
 )
 # qty | item | truncated part base (no qty, no suffix) — common on dense Time BOMs
 _LINE_ITEM_PARTBASE = re.compile(
-    r"(?<![A-Za-z0-9])([A-Za-z])\s*[|Il/]?\s*(\d{4,7})\s*[-–—=]?(?!\d)",
+    rf"(?<![A-Za-z0-9])({_ITEM_TOKEN})\s*[|Il/]?\s*(\d{{4,7}})\s*[-–—=]?(?!\d)",
     re.IGNORECASE,
 )
 
@@ -49,15 +52,57 @@ _LINE_ITEM_PARTBASE = re.compile(
 _MULTI_QTY_LINE_RE = re.compile(
     r"(?<!\d)(-|\d{1,2})\s*[|\]Il/]\s*(-|\d{1,2})\s*[|\]Il/]\s*"
     r"(-|\d{1,2})\s*[|\]Il/]\s*(-|\d{1,2})\s*[|\]Il/]\s*"
-    r"([A-Za-z])\s*[|\]Il/]?\s*"
+    rf"({_ITEM_TOKEN})\s*[|\]Il/]?\s*"
     r"(\d{4,7})\s*[-–—=]?\s*(\d{1,3}[A-Za-z]?)",
+    re.IGNORECASE,
+)
+# Three-dash sheets: qty(-3) | qty(-2) | qty(-1) | ITEM | PART
+_THREE_QTY_LINE_RE = re.compile(
+    r"(?<!\d)(-|\d{1,2})\s*[|\]Il/]\s*(-|\d{1,2})\s*[|\]Il/]\s*"
+    r"(-|\d{1,2})\s*[|\]Il/]\s*"
+    rf"({_ITEM_TOKEN})\s*[|\]Il/]?\s*"
+    r"(\d{4,7})\s*[-–—=]?\s*(\d{1,3}[A-Za-z]?)",
+    re.IGNORECASE,
+)
+# Two-dash sheets: qty(-2) | qty(-1) | ITEM | PART
+_TWO_QTY_LINE_RE = re.compile(
+    r"(?<!\d)(-|\d{1,2})\s*[|\]Il/]\s*(-|\d{1,2})\s*[|\]Il/]\s*"
+    rf"({_ITEM_TOKEN})\s*[|\]Il/]?\s*"
+    r"(\d{4,7})\s*[-–—=]?\s*(\d{1,3}[A-Za-z]?)",
+    re.IGNORECASE,
+)
+# Space-separated OCR (no pipes): ``2 1 A 1004336-1`` / ``0 0 0 1 A 16697-2``
+_FOUR_QTY_SPACE_RE = re.compile(
+    r"(?<!\d)(-|\d{1,2})\s+(-|\d{1,2})\s+(-|\d{1,2})\s+(-|\d{1,2})\s+"
+    rf"({_ITEM_TOKEN})\s+(\d{{4,7}})\s*[-–—=]\s*(\d{{1,3}}[A-Za-z]?)",
+    re.IGNORECASE,
+)
+_TWO_QTY_SPACE_RE = re.compile(
+    r"(?<!\d)(-|\d{1,2})\s+(-|\d{1,2})\s+"
+    rf"({_ITEM_TOKEN})\s+"
+    r"(\d{4,7})\s*[-–—=]\s*(\d{1,3}[A-Za-z]?)",
     re.IGNORECASE,
 )
 _MULTI_QTY_HEADERS_RE = re.compile(
     r"(?:\[?-4\]?[^\n]{0,20}\[?-3\]?[^\n]{0,20}\[?-2\]?[^\n]{0,20}\[?-1\]?)"
-    r"|(?:-4\s*[|\]]\s*-3\s*[|\]]\s*-2\s*[|\]]\s*-1)",
+    r"|(?:-4\s*[|\]]\s*-3\s*[|\]]\s*-2\s*[|\]]\s*-1)"
+    r"|(?:-3\s*[|\]]\s*-2\s*[|\]]\s*-1)"
+    r"|(?:-2\s*[|\]]\s*-1)"
+    r"|(?:\[?-2\]?[^\n]{0,12}\[?-1\]?)",
     re.IGNORECASE,
 )
+# Time lettered rows almost never exceed this; 77 is OCR of a length.
+_MAX_TIME_ITEM_QTY = 20
+# A large top-level LIST OF MATERIAL is the BOM; folder stems are not.
+_LARGE_TIME_BOM_PN_FLOOR = 20
+# Kyle-confirmed top-level PN counts (not piece qty) for Time assemblies.
+_TIME_ASSEMBLY_PN_HINTS = {
+    "102728": 51,
+}
+_SUB_WELDMENT_RE = re.compile(r"SUB[\s_-]*WELDMENT", re.IGNORECASE)
+_WELDMENT_NAME_RE = re.compile(r"WELDMENT", re.IGNORECASE)
+_ASSEMBLY_NAME_RE = re.compile(r"\bASSEMBLY\b", re.IGNORECASE)
+
 
 @dataclass
 class BomRow:
@@ -83,7 +128,8 @@ class BomResult:
 
     @property
     def piece_count(self) -> int:
-        return sum(max(1, int(r.qty)) for r in self.rows)
+        """Physical pieces: sum of positive BOM qtys (qty 0 / OCR-I rows do not count)."""
+        return sum(int(r.qty) for r in self.rows if int(r.qty) > 0)
 
     @property
     def part_number_count(self) -> int:
@@ -173,44 +219,101 @@ def normalize_part_no(raw: str) -> str | None:
     return f"{m.group(1)}-{m.group(2)}"
 
 
+def _is_sub_weldment_name(name: str) -> bool:
+    """Child SUB-WELDMENT sheets are assemblies, not detail BOM rows."""
+    stem = Path(str(name)).stem
+    return bool(_SUB_WELDMENT_RE.search(stem))
+
+
+def _is_assembly_sheet_name(name: str) -> bool:
+    stem = Path(str(name)).stem
+    if _SUB_WELDMENT_RE.search(stem) or _ASSEMBLY_NAME_RE.search(stem):
+        return True
+    return bool(_WELDMENT_NAME_RE.search(stem))
+
+
+def _parent_is_sub_weldment(path: Path) -> bool:
+    return _is_sub_weldment_name(path.parent.name)
+
+
 def _base_from_pdf_stem(stem: str) -> str | None:
     stem_u = stem.upper().strip()
     if stem_u in {"CT", "PL", "BOM", "NOTES", "RD"}:
         return None
+    # Assembly/weldment sheets are not component stems (1004335 Weldment.pdf
+    # must not Hamming-snap 1004336/1004337 onto 1004335). Nested
+    # SUB-WELDMENT drawings are child assemblies, not the 51-PN top list.
+    if _is_assembly_sheet_name(stem_u):
+        return None
     m = re.match(r"^(\d{4,7})(?:-\d+)?(?:\b|$)", stem_u)
     return m.group(1) if m else None
+
+
+def _iter_library_pdfs(folder: Path, *, max_depth: int = 2) -> list[Path]:
+    """PDFs in a weldment folder and one child packet folder (Time layout)."""
+    found: list[Path] = []
+    if not folder or not folder.exists():
+        return found
+
+    def walk(cur: Path, depth: int) -> None:
+        try:
+            entries = list(cur.iterdir())
+        except OSError:
+            return
+        for p in entries:
+            if p.is_file() and p.suffix.lower() == ".pdf":
+                found.append(p)
+            elif p.is_dir() and depth < max_depth:
+                walk(p, depth + 1)
+
+    walk(folder, 0)
+    return found
+
+
+def _collapse_truncated_bases(bases: set[str]) -> set[str]:
+    """Drop stems that are prefixes of a longer sibling (100433 vs 1004335)."""
+    if len(bases) < 2:
+        return set(bases)
+    return {
+        b
+        for b in bases
+        if not any(other != b and other.startswith(b) and other[len(b) :].isdigit() for other in bases)
+    }
 
 
 def library_part_bases(
     folder: Path | None,
     related_pdf_names: list[str] | None = None,
 ) -> set[str]:
-    """Part number bases from sibling drawing PDFs (e.g. 35121.pdf → 35121)."""
+    """Part number bases from sibling/child drawing PDFs (e.g. 35121.pdf → 35121)."""
     bases: set[str] = set()
     if folder and folder.exists():
-        try:
-            for p in folder.iterdir():
-                if not p.is_file() or p.suffix.lower() != ".pdf":
-                    continue
-                base = _base_from_pdf_stem(p.stem)
-                if base:
-                    bases.add(base)
-        except OSError:
-            pass
+        for p in _iter_library_pdfs(Path(folder)):
+            if _parent_is_sub_weldment(p):
+                continue
+            base = _base_from_pdf_stem(p.stem)
+            if base:
+                bases.add(base)
     for name in related_pdf_names or []:
         stem = Path(str(name)).stem
         base = _base_from_pdf_stem(stem)
         if base:
             bases.add(base)
-    return bases
+    return _collapse_truncated_bases(bases)
 
 
-def _correct_part_with_library(part_no: str, bases: set[str]) -> str:
+def _correct_part_with_library(
+    part_no: str,
+    bases: set[str],
+    *,
+    primary_base: str | None = None,
+) -> str:
     """Fix common OCR digit errors using known library part bases.
 
     Only snaps to a library base when exactly one neighbor is Hamming-distance 1.
     Dense Time families (21684/21688/21689) are otherwise left as OCR-read —
     rewriting 21689→21684 was dropping a real hose-guard line.
+    Never snap onto the weldment/assembly stem (1004336 ↛ 1004335).
     """
     norm = normalize_part_no(part_no)
     if not norm:
@@ -218,10 +321,13 @@ def _correct_part_with_library(part_no: str, bases: set[str]) -> str:
     base, _, suffix = norm.partition("-")
     if not bases or base in bases:
         return norm
+    skip = {b for b in (primary_base,) if b}
     near = [
         lib
         for lib in bases
-        if len(lib) == len(base) and sum(a != b for a, b in zip(lib, base)) == 1
+        if lib not in skip
+        and len(lib) == len(base)
+        and sum(a != b for a, b in zip(lib, base)) == 1
     ]
     if len(near) == 1:
         return f"{near[0]}-{suffix}"
@@ -239,6 +345,727 @@ def _fix_leading_digit_glue(base: str, bases: set[str]) -> str:
             if base.endswith(lib) and len(base) - len(lib) <= 1:
                 return lib
     return base
+
+
+_TIME_BOM_HINT_RE = re.compile(
+    r"LIST\s+OF\s+MATERIAL|\bPART\s*NO\.?\b|\bITEM\b.*\bQTY\b|\bQTY\b.*\bITEM\b",
+    re.IGNORECASE,
+)
+_TIME_HEADER_SKIP = {
+    "QTY",
+    "ITEM",
+    "PART",
+    "NO",
+    "NO.",
+    "DESCRIPTION",
+    "LIST",
+    "OF",
+    "MATERIAL",
+    "REV",
+    "WEIGHT",
+    "STAMP",
+    "SHEET",
+}
+
+
+def _is_garbage_time_part(part_no: str, bases: set[str] | None = None) -> bool:
+    """OCR junk: leading-zero bases (004556-2), empty, or unknown when library is known."""
+    if not part_no or str(part_no).endswith("-?"):
+        return True
+    norm = normalize_part_no(part_no) or str(part_no).upper()
+    base, _, _suf = norm.partition("-")
+    if not base.isdigit():
+        return True
+    if base.startswith("0"):
+        return True
+    if len(base) < 4:
+        return True
+    return False
+
+
+def _looks_like_time_bom_text(text: str) -> bool:
+    if not text or not text.strip():
+        return False
+    if _TIME_BOM_HINT_RE.search(text):
+        return True
+    # Lettered Time rows: ``1 A 1004335-1`` or ``| 2 | E |1004067-1``
+    hits = list(_LINE_QTY_ITEM_PART.finditer(text)) + list(_LINE_ITEM_PART.finditer(text))
+    return len(hits) >= 3
+
+
+def _parse_stacked_time_hits(text: str, bases: set[str]) -> list[dict[str, Any]]:
+    """CAD native text often emits QTY / ITEM / PART as consecutive tokens."""
+    if not text:
+        return []
+    tokens = re.findall(r"[A-Za-z0-9./\-]+", text)
+    hits: list[dict[str, Any]] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.upper().rstrip(".") in _TIME_HEADER_SKIP:
+            i += 1
+            continue
+        if (
+            i + 2 < len(tokens)
+            and _QTY_RE.match(tok)
+            and _ITEM_TOKEN_RE.match(tokens[i + 1].upper())
+        ):
+            part = normalize_part_no(tokens[i + 2])
+            if part and not _is_garbage_time_part(part, bases):
+                hits.append(
+                    {
+                        "qty": int(tok),
+                        "item": tokens[i + 1].upper(),
+                        "part_no": _correct_part_with_library(part, bases),
+                        "has_qty": True,
+                        "has_suffix": True,
+                        "raw": " ".join(tokens[i : i + 3]),
+                    }
+                )
+                i += 3
+                continue
+        if i + 1 < len(tokens) and _ITEM_TOKEN_RE.match(tok.upper()):
+            part = normalize_part_no(tokens[i + 1])
+            if part and not _is_garbage_time_part(part, bases):
+                hits.append(
+                    {
+                        "qty": None,
+                        "item": tok.upper(),
+                        "part_no": _correct_part_with_library(part, bases),
+                        "has_qty": False,
+                        "has_suffix": True,
+                        "raw": " ".join(tokens[i : i + 2]),
+                    }
+                )
+                i += 2
+                continue
+        i += 1
+    return hits
+
+
+def _drop_invalid_time_rows(rows: list[BomRow], bases: set[str]) -> list[BomRow]:
+    """Drop qty-0 I rows and OCR garbage PNs (Time skips letter I)."""
+    kept: list[BomRow] = []
+    for row in rows:
+        qty = int(row.qty or 0)
+        part = str(row.part_no or "")
+        item = row.item.upper() if isinstance(row.item, str) else row.item
+        if qty <= 0:
+            continue
+        if qty > _MAX_TIME_ITEM_QTY:
+            continue
+        if _is_garbage_time_part(part, bases):
+            continue
+        if item == "I" and (qty <= 0 or _is_garbage_time_part(part, bases)):
+            continue
+        if item == "I" and bases and part.partition("-")[0] not in bases:
+            # Time almost never uses I; keep only a library-confirmed PN.
+            continue
+        kept.append(row)
+    return kept
+
+
+def _time_item_letters(rows: list[BomRow]) -> set[str]:
+    return {
+        r.item.upper()
+        for r in rows
+        if isinstance(r.item, str) and len(r.item) == 1 and r.item.isalpha()
+    }
+
+
+def _missing_time_letters(rows: list[BomRow]) -> list[str]:
+    """Letters between the first and last seen item, skipping Time's usual I."""
+    letters = sorted(_time_item_letters(rows))
+    if len(letters) < 2:
+        return []
+    have = set(letters)
+    skip = {"I"}
+    return [
+        chr(c)
+        for c in range(ord(letters[0]), ord(letters[-1]) + 1)
+        if chr(c) not in have and chr(c) not in skip
+    ]
+
+
+def _is_weldment_pdf_name(name: str) -> bool:
+    return "weldment" in Path(str(name)).stem.lower()
+
+
+def _is_top_level_weldment_pdf(name: str, primary_base: str | None) -> bool:
+    """``1004335 Weldment.pdf`` yes; nested ``102730-1 SUB-WELDMENT.pdf`` no."""
+    if not _is_weldment_pdf_name(name):
+        return False
+    if _is_sub_weldment_name(name):
+        return False
+    stem = Path(str(name)).stem.upper()
+    if primary_base and primary_base not in stem:
+        return False
+    return True
+
+
+def library_has_sub_weldments(
+    folder: Path | None,
+    related_pdf_names: list[str] | None = None,
+) -> bool:
+    """True when the packet contains child SUB-WELDMENT / assembly sheets."""
+    names: list[str] = []
+    if folder and Path(folder).exists():
+        for p in _iter_library_pdfs(Path(folder)):
+            names.append(p.name)
+            names.append(p.parent.name)
+    for raw in related_pdf_names or []:
+        names.append(Path(str(raw)).name)
+    return sum(1 for n in names if _is_sub_weldment_name(n) or _is_assembly_sheet_name(n)) >= 2
+
+
+def _resolve_library_pdf(folder: Path | None, name: str) -> Path | None:
+    if not folder or not name:
+        return None
+    direct = Path(folder) / name
+    if direct.is_file():
+        return direct
+    try:
+        for child in Path(folder).iterdir():
+            if child.is_dir():
+                nested = child / name
+                if nested.is_file():
+                    return nested
+    except OSError:
+        pass
+    return None
+
+
+def _library_weldment_pdfs(
+    folder: Path | None,
+    related_pdf_names: list[str] | None = None,
+    *,
+    skip: Path | None = None,
+    primary_base: str | None = None,
+) -> list[Path]:
+    """Top-level ``*Weldment*.pdf`` only — not nested SUB-WELDMENT children."""
+    found: list[Path] = []
+    seen: set[str] = set()
+    skip_key = str(Path(skip).resolve()).lower() if skip and Path(skip).exists() else ""
+
+    def add(path: Path | None) -> None:
+        if not path or not path.is_file() or path.suffix.lower() != ".pdf":
+            return
+        if not _is_top_level_weldment_pdf(path.name, primary_base):
+            return
+        try:
+            key = str(path.resolve()).lower()
+        except OSError:
+            key = str(path).lower()
+        if skip_key and key == skip_key:
+            return
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(path)
+
+    if folder and Path(folder).exists():
+        for p in _iter_library_pdfs(Path(folder)):
+            add(p)
+    for name in related_pdf_names or []:
+        add(_resolve_library_pdf(Path(folder) if folder else None, str(name)))
+        if _is_weldment_pdf_name(str(name)) and folder:
+            add(Path(folder) / Path(str(name)).name)
+    return found
+
+
+def _library_weldment_texts(
+    folder: Path | None,
+    related_pdf_names: list[str] | None = None,
+    *,
+    skip: Path | None = None,
+    primary_base: str | None = None,
+) -> list[str]:
+    from quote_core.weight import _read_pdf_text
+
+    texts: list[str] = []
+    for pdf in _library_weldment_pdfs(
+        folder, related_pdf_names, skip=skip, primary_base=primary_base
+    ):
+        try:
+            blob = _read_pdf_text(pdf) or ""
+        except Exception:  # noqa: BLE001
+            continue
+        if _looks_like_time_bom_text(blob):
+            texts.append(blob)
+    return texts
+
+
+def _is_multi_qty_method(method: str | None) -> bool:
+    return bool(method and "multi_qty" in str(method))
+
+
+def merge_time_bom_results(primary: BomResult, secondary: BomResult) -> BomResult:
+    """
+    Keep primary rows; add missing item/part lines from a second Time source.
+
+    Used when the uploaded sheet OCR-cuts the middle of the BOM (J–N, Q) but a
+    library weldment PDF has the full letter list. Does not replace a good row.
+
+    A dash-column (multi-qty) parse is never mixed with a single-qty parse —
+    those flattened qtys are the wrong column or a sum of columns.
+    """
+    if not secondary.rows:
+        return primary
+    if not primary.rows:
+        return secondary
+
+    pri_multi = _is_multi_qty_method(primary.method)
+    sec_multi = _is_multi_qty_method(secondary.method)
+    if pri_multi and not sec_multi:
+        return primary
+    if sec_multi and not pri_multi:
+        return secondary
+
+    by_item = {r.item: r for r in primary.rows if isinstance(r.item, str)}
+    by_part = {r.part_no: r for r in primary.rows}
+    merged = list(primary.rows)
+    filled: list[BomRow] = []
+    qty_flags: list[str] = []
+
+    for row in secondary.rows:
+        if _is_garbage_time_part(row.part_no) or int(row.qty or 0) <= 0:
+            continue
+        item = row.item if isinstance(row.item, str) else None
+        if item == "I" and _is_garbage_time_part(row.part_no):
+            continue
+        existing = (by_item.get(item) if item else None) or by_part.get(row.part_no)
+        if existing:
+            placeholder = (
+                existing.source == "library_child"
+                or not isinstance(existing.item, str)
+            )
+            if placeholder:
+                merged = [r for r in merged if r is not existing]
+                filled.append(row)
+                merged.append(row)
+                if item:
+                    by_item[item] = row
+                by_part.pop(existing.part_no, None)
+                by_part[row.part_no] = row
+                continue
+            if int(existing.qty) != int(row.qty):
+                qty_flags.append(
+                    f"Item {item or row.part_no} qty ambiguous "
+                    f"({existing.qty} vs {row.qty}) — kept {existing.qty}"
+                )
+            continue
+        filled.append(row)
+        merged.append(row)
+        if item:
+            by_item[item] = row
+        by_part[row.part_no] = row
+
+    notes = list(primary.notes)
+    if filled:
+        labels = ", ".join(
+            f"{r.item or '?'} {r.part_no}×{r.qty}" for r in filled
+        )
+        notes.append(
+            f"Filled {len(filled)} missing BOM row(s) from library weldment: {labels}"
+        )
+    notes.extend(qty_flags)
+    notes.extend(n for n in secondary.notes if n not in notes)
+
+    dedup: dict[str, BomRow] = {}
+    for r in merged:
+        prev = dedup.get(r.part_no)
+        if prev is None or (r.item and not prev.item) or r.qty > prev.qty:
+            dedup[r.part_no] = r
+    rows = list(dedup.values())
+    rows.sort(
+        key=lambda r: (0, r.item) if isinstance(r.item, str) and r.item.isalpha() else (1, str(r.part_no))
+    )
+    method = primary.method or secondary.method
+    if filled and method and "library" not in str(method):
+        method = f"{method}+library_weldment"
+    conf = (
+        sum(r.confidence for r in rows) / max(1, len(rows)) if rows else primary.confidence
+    )
+    return BomResult(rows=rows, method=method, confidence=conf, notes=notes)
+
+
+def _supplement_from_library_weldment(
+    primary: BomResult,
+    *,
+    library_folder: Path | str | None,
+    related_pdf_names: list[str] | None,
+    bom_config: str | None,
+    primary_base: str | None,
+    skip_pdf: Path | None = None,
+    allow_ocr: bool = True,
+) -> BomResult:
+    """Fill letter gaps from the top-level ``*Weldment*.pdf`` only."""
+    if not primary.rows:
+        return primary
+    # A large top-level LIST OF MATERIAL is complete; do not merge children.
+    if primary.part_number_count >= _LARGE_TIME_BOM_PN_FLOOR:
+        return primary
+    missing = _missing_time_letters(primary.rows)
+    if not missing:
+        return primary
+    folder = Path(library_folder) if library_folder else None
+    extra_texts = _library_weldment_texts(
+        folder, related_pdf_names, skip=skip_pdf, primary_base=primary_base
+    )
+    secondary = BomResult()
+    if extra_texts:
+        secondary = parse_time_style_bom_texts(
+            extra_texts,
+            library_part_bases(folder, related_pdf_names),
+            bom_config=bom_config,
+            primary_base=primary_base,
+            source="native_time",
+        )
+    if (
+        allow_ocr
+        and (not secondary.rows or _missing_time_letters(secondary.rows))
+    ):
+        from quote_core.ocr import ocr_available
+
+        if ocr_available():
+            for pdf in _library_weldment_pdfs(
+                folder, related_pdf_names, skip=skip_pdf, primary_base=primary_base
+            ):
+                ocr = extract_bom_from_ocr_time_style(
+                    pdf,
+                    library_folder=folder,
+                    related_pdf_names=related_pdf_names,
+                    bom_config=bom_config,
+                    include_library_sources=False,
+                )
+                if ocr.rows and (
+                    not secondary.rows
+                    or ocr.part_number_count > secondary.part_number_count
+                ):
+                    secondary = ocr
+    if secondary.rows:
+        primary = merge_time_bom_results(primary, secondary)
+    # Sparse dash-column BOMs are complete for that weldment. Qty-1 library
+    # fillers must not invent a second BOM or override a real column qty.
+    if _is_multi_qty_method(primary.method):
+        return primary
+    folder = Path(library_folder) if library_folder else None
+    extra = _supplement_library_children(
+        primary.rows,
+        library_part_bases(folder, related_pdf_names),
+        primary_base=primary_base,
+        zero_parts=set(),
+        assembly_packet=library_has_sub_weldments(folder, related_pdf_names),
+    )
+    primary.notes.extend(extra)
+    return primary
+
+
+def _supplement_library_children(
+    rows: list[BomRow],
+    bases: set[str],
+    *,
+    primary_base: str | None = None,
+    zero_parts: set[str] | None = None,
+    assembly_packet: bool = False,
+) -> list[str]:
+    """
+    Completeness backstop: missing *detail* library stems become qty-1 rows.
+
+    Sub-weldment / assembly sheets are children, not BOM rows. A short OCR
+    plus dozens of folder stems is not a 51-PN Time BOM.
+    """
+    notes: list[str] = []
+    drawing_n = len({r.part_no for r in rows if r.part_no})
+    skip = {b for b in (primary_base,) if b}
+    zero_parts = zero_parts or set()
+    present = {r.part_no.partition("-")[0] for r in rows if r.part_no}
+    component_bases = sorted(b for b in (bases or set()) if b not in skip)
+    missing = [b for b in component_bases if b not in present]
+
+    if assembly_packet:
+        notes.append(
+            f"Library has sub-weldment/assembly sheets — not qty-1 filling "
+            f"folder stems as BOM rows. Drawing has {drawing_n} PN(s); review "
+            f"if the top-level LIST OF MATERIAL is incomplete."
+        )
+        return notes
+    if drawing_n >= _LARGE_TIME_BOM_PN_FLOOR:
+        return notes
+    if not bases:
+        return notes
+    if len(component_bases) < 3:
+        return notes
+    if not missing:
+        return notes
+    if len(present) >= len(component_bases):
+        return notes
+    # 5 drawing PNs + 39 folder stems is not a 51-PN BOM.
+    if missing and len(missing) >= max(8, len(present) or 0):
+        notes.append(
+            f"Drawing BOM has {drawing_n} PN(s) vs {len(component_bases)} library "
+            f"stems; not treating folder-stem padding as a complete BOM — review"
+        )
+        return notes
+
+    added = 0
+    existing_parts = {r.part_no for r in rows}
+    for base in missing:
+        part = f"{base}-1"
+        if part in existing_parts or part in zero_parts:
+            continue
+        if any(pn.startswith(base + "-") for pn in existing_parts):
+            continue
+        rows.append(
+            BomRow(
+                item=None,
+                qty=1,
+                part_no=part,
+                description="",
+                unit_weight_lb=None,
+                source="library_child",
+                confidence=0.6,
+            )
+        )
+        existing_parts.add(part)
+        added += 1
+
+    if added:
+        notes.append(
+            f"BOM incomplete vs library ({len(present)} parts on drawing vs "
+            f"{len(component_bases)} files); added {added} missing stem(s) at "
+            f"qty 1 — review"
+        )
+    elif missing:
+        notes.append(
+            f"BOM incomplete vs library ({len(present)} parts on drawing vs "
+            f"{len(component_bases)} files)"
+        )
+    return notes
+
+
+def _unique_time_part_tokens(
+    texts: list[str],
+    *,
+    primary_base: str | None = None,
+) -> list[str]:
+    """Distinct dashed PNs in Time BOM text (skip the assembly stem)."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for blob in texts or []:
+        for m in _PART_NO_RE.finditer(blob):
+            pn = normalize_part_no(m.group(0))
+            if not pn or _is_garbage_time_part(pn):
+                continue
+            if primary_base and pn.partition("-")[0] == primary_base:
+                continue
+            if pn in seen:
+                continue
+            seen.add(pn)
+            found.append(pn)
+    return found
+
+
+def _harvest_missing_time_parts(
+    rows: list[BomRow],
+    texts: list[str],
+    *,
+    primary_base: str | None,
+    used_multi: bool,
+    multi_raw: list[dict[str, Any]],
+    source: str,
+) -> list[str]:
+    """Add table PNs that voting dropped. Does not invent folder-stem rows."""
+    notes: list[str] = []
+    tokens = _unique_time_part_tokens(texts, primary_base=primary_base)
+    if len(tokens) < 8:
+        return notes
+    existing = {r.part_no for r in rows}
+    multi_qty = {
+        str(h.get("part_no")): int(h.get("qty") or 0)
+        for h in (multi_raw or [])
+        if h.get("part_no")
+    }
+    added = 0
+    for pn in tokens:
+        if pn in existing:
+            continue
+        if used_multi:
+            if pn not in multi_qty or multi_qty[pn] <= 0:
+                continue
+            qty = multi_qty[pn]
+        else:
+            qty = 1
+        if qty > _MAX_TIME_ITEM_QTY:
+            continue
+        rows.append(
+            BomRow(
+                item=None,
+                qty=qty,
+                part_no=pn,
+                description="",
+                unit_weight_lb=None,
+                source=f"{source}_harvest",
+                confidence=0.7,
+            )
+        )
+        existing.add(pn)
+        added += 1
+    if added:
+        notes.append(
+            f"Harvested {added} LIST OF MATERIAL part number(s) not in the voted rows"
+        )
+    return notes
+
+
+def _short_time_bom_review_notes(
+    rows: list[BomRow],
+    texts: list[str],
+    *,
+    primary_base: str | None,
+) -> list[str]:
+    notes: list[str] = []
+    got = len({r.part_no for r in rows if r.part_no})
+    seen = len(_unique_time_part_tokens(texts, primary_base=primary_base))
+    expected = _TIME_ASSEMBLY_PN_HINTS.get(str(primary_base or ""))
+    if expected and got < expected:
+        notes.append(
+            f"Time BOM has {got} PN(s); expected at least {expected} on the "
+            f"top-level LIST OF MATERIAL for {primary_base} — review"
+        )
+    if seen >= 15 and got < max(8, int(seen * 0.6)):
+        notes.append(
+            f"Time BOM parsed {got} PN(s) but drawing text shows {seen} distinct "
+            f"part numbers — review (not treating folder fillers as success)"
+        )
+    elif got <= 8 and expected and expected >= 20:
+        notes.append(
+            f"Time BOM parsed {got} PN(s) — far below the {expected}-PN top-level "
+            f"table; do not treat library_child padding as complete — review"
+        )
+    return notes
+
+
+def parse_time_style_bom_texts(
+    texts: list[str],
+    bases: set[str] | None = None,
+    *,
+    bom_config: str | None = None,
+    primary_base: str | None = None,
+    source: str = "native_time",
+    fill_library_stems: bool = False,
+) -> BomResult:
+    """
+    Shared Time LIST OF MATERIAL parser for native PDF text and OCR strings.
+
+    Drops qty-0 / letter-I OCR ghosts and leading-zero junk PNs. ``bom_config``
+    selects the matching dash qty column whenever the sheet has those columns
+    (headers or enough ``-2|-1`` / ``-4|-3|-2|-1`` rows). A folder dash alone
+    does not drop rows on a true single-qty sheet.
+    """
+    from quote_core.bom_config import format_bom_config_label, normalize_bom_config
+
+    bases = set(bases or [])
+    config = normalize_bom_config(bom_config)
+    blob_list = [t for t in (texts or []) if t and str(t).strip()]
+    if not blob_list:
+        return BomResult(notes=["No Time-style BOM text"], confidence=0.0)
+
+    has_headers = texts_have_multi_qty_headers(blob_list)
+    multi_raw = (
+        _parse_multi_qty_time_hits(blob_list, bases, bom_config=config) if config else []
+    )
+    multi_items = {str(h.get("item") or "") for h in multi_raw if h.get("item")}
+    # Kyle: if dash qty columns exist, use the column for the quoted weldment.
+    # OCR often misses the ``-4|-3|-2|-1`` header row; enough multi-col lines
+    # are sufficient. Do not require headers to activate the column.
+    used_multi = bool(config and multi_raw and (has_headers or len(multi_items) >= 3))
+    zero_parts: set[str] = set()
+    if used_multi:
+        zero_parts = _zero_qty_parts_for_config(blob_list, bases, bom_config=config)
+        hits = [h for h in multi_raw if int(h.get("qty") or 0) > 0]
+        # Do not merge single-qty / stacked hits — those mix dash columns
+        # (F×77 length OCR, 83-pc inflated counts).
+    else:
+        hits = _parse_qty_item_part_hits(blob_list, bases)
+        for blob in blob_list:
+            hits.extend(_parse_stacked_time_hits(blob, bases))
+
+    rows = _vote_bom_rows(hits, bases)
+    if used_multi:
+        for row in rows:
+            row.source = "ocr_time_multi_qty" if source.startswith("ocr") else "native_time_multi_qty"
+    rows = _drop_invalid_time_rows(rows, bases)
+    _repair_suffix_ocr(rows, hits, bases)
+
+    notes: list[str] = []
+    notes.extend(
+        _harvest_missing_time_parts(
+            rows,
+            blob_list,
+            primary_base=primary_base,
+            used_multi=used_multi,
+            multi_raw=multi_raw,
+            source=source,
+        )
+    )
+    rows = _drop_invalid_time_rows(rows, bases)
+    if used_multi and config:
+        notes.append(
+            f"Used BOM qty column {format_bom_config_label(config)} "
+            f"(multi-option Time drawing)"
+        )
+        supp_bases = {b for b in bases if b != primary_base}
+        notes.extend(
+            _supplement_multi_config_bom(
+                rows, blob_list, supp_bases, bom_config=config or ""
+            )
+        )
+    elif config and not used_multi:
+        notes.append(
+            f"BOM config {format_bom_config_label(config)} set but multi-qty columns "
+            f"not detected — used single-qty parse (did not drop other dashes)"
+        )
+
+    if fill_library_stems and not used_multi:
+        notes.extend(
+            _supplement_library_children(
+                rows,
+                bases,
+                primary_base=primary_base,
+                zero_parts=zero_parts,
+            )
+        )
+    notes.extend(
+        _short_time_bom_review_notes(rows, blob_list, primary_base=primary_base)
+    )
+
+    dedup: dict[str, BomRow] = {}
+    for r in rows:
+        prev = dedup.get(r.part_no)
+        if prev is None or (r.item and not prev.item) or r.qty > prev.qty:
+            dedup[r.part_no] = r
+    rows = list(dedup.values())
+
+    def sort_key(r: BomRow):
+        if isinstance(r.item, str) and r.item.isalpha():
+            return (0, r.item)
+        return (1, str(r.part_no))
+
+    rows.sort(key=sort_key)
+    if not rows:
+        return BomResult(notes=notes or ["Time-style BOM found no part rows"], confidence=0.0)
+
+    avg_conf = sum(r.confidence for r in rows) / max(1, len(rows))
+    notes.insert(
+        0,
+        f"{'OCR' if source.startswith('ocr') else 'Native'} Time-style BOM: "
+        f"{len(rows)} part numbers, {sum(int(r.qty) for r in rows if int(r.qty) > 0)} pieces",
+    )
+    method = source
+    if used_multi and not method.endswith("multi_qty"):
+        method = f"{source}_multi_qty"
+    return BomResult(rows=rows, method=method, confidence=avg_conf, notes=notes)
 
 
 def extract_bom_from_native_mac(pdf_path: Path | str | None, text: str | None = None) -> BomResult:
@@ -408,7 +1235,7 @@ def _ocr_strings(images: list[tuple[str, Any]], *, psms: tuple[int, ...] = (4, 6
     pytesseract.pytesseract.tesseract_cmd = cmd
 
     texts: list[str] = []
-    whitelist = "0123456789ABCDEFGabcdefg|-—– "
+    whitelist = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz|-—– "
     for _label, im in images:
         for psm in psms:
             for cfg in (
@@ -493,6 +1320,144 @@ def _parse_multi_qty_cell(raw: str) -> int:
         return 0
 
 
+def _qty_from_dash_columns(qtys: list[int], dash_n: int) -> int | None:
+    """Rightmost qty column is ``-1``; columns run left→right ``-N … -1``."""
+    n = len(qtys)
+    if n < 2 or dash_n < 1 or dash_n > n:
+        return None
+    return qtys[n - dash_n]
+
+
+def _multi_qty_hit(
+    *,
+    qty: int,
+    item: str,
+    part: str,
+    line: str,
+    qtys: list[int],
+    dash: str,
+) -> dict[str, Any]:
+    return {
+        "qty": qty,
+        "item": item,
+        "part_no": part,
+        "has_qty": True,
+        "has_suffix": True,
+        "raw": line,
+        "multi_qty": qtys,
+        "bom_config": dash,
+    }
+
+
+def _hits_from_qty_groups(
+    cells: list[str],
+    item: str,
+    base_raw: str,
+    suffix_raw: str,
+    *,
+    bases: set[str],
+    dash_n: int,
+    dash: str,
+    line: str,
+) -> list[dict[str, Any]]:
+    suffix = re.sub(r"[^0-9A-Z]", "", (suffix_raw or "").upper())
+    if not suffix:
+        return []
+    qtys = [_parse_multi_qty_cell(c) for c in cells]
+    qty = _qty_from_dash_columns(qtys, dash_n)
+    if qty is None:
+        return []
+    base = _fix_leading_digit_glue(base_raw, bases)
+    part = _correct_part_with_library(f"{base}-{suffix}", bases)
+    return [
+        _multi_qty_hit(
+            qty=qty,
+            item=item.upper(),
+            part=part,
+            line=line,
+            qtys=qtys,
+            dash=dash,
+        )
+    ]
+
+
+def _parse_multi_qty_line(
+    variant: str,
+    *,
+    bases: set[str],
+    dash_n: int,
+    dash: str,
+    line: str,
+) -> list[dict[str, Any]]:
+    """Prefer 4-col, then 3-col, then 2-col so a 4-col row is not read as 2-col."""
+    for m in _MULTI_QTY_LINE_RE.finditer(variant):
+        found = _hits_from_qty_groups(
+            [m.group(1), m.group(2), m.group(3), m.group(4)],
+            m.group(5),
+            m.group(6),
+            m.group(7),
+            bases=bases,
+            dash_n=dash_n,
+            dash=dash,
+            line=line,
+        )
+        if found:
+            return found
+    for m in _FOUR_QTY_SPACE_RE.finditer(variant):
+        found = _hits_from_qty_groups(
+            [m.group(1), m.group(2), m.group(3), m.group(4)],
+            m.group(5),
+            m.group(6),
+            m.group(7),
+            bases=bases,
+            dash_n=dash_n,
+            dash=dash,
+            line=line,
+        )
+        if found:
+            return found
+    for m in _THREE_QTY_LINE_RE.finditer(variant):
+        found = _hits_from_qty_groups(
+            [m.group(1), m.group(2), m.group(3)],
+            m.group(4),
+            m.group(5),
+            m.group(6),
+            bases=bases,
+            dash_n=dash_n,
+            dash=dash,
+            line=line,
+        )
+        if found:
+            return found
+    for m in _TWO_QTY_LINE_RE.finditer(variant):
+        found = _hits_from_qty_groups(
+            [m.group(1), m.group(2)],
+            m.group(3),
+            m.group(4),
+            m.group(5),
+            bases=bases,
+            dash_n=dash_n,
+            dash=dash,
+            line=line,
+        )
+        if found:
+            return found
+    for m in _TWO_QTY_SPACE_RE.finditer(variant):
+        found = _hits_from_qty_groups(
+            [m.group(1), m.group(2)],
+            m.group(3),
+            m.group(4),
+            m.group(5),
+            bases=bases,
+            dash_n=dash_n,
+            dash=dash,
+            line=line,
+        )
+        if found:
+            return found
+    return []
+
+
 def _parse_multi_qty_time_hits(
     texts: list[str],
     bases: set[str],
@@ -500,9 +1465,10 @@ def _parse_multi_qty_time_hits(
     bom_config: str,
 ) -> list[dict[str, Any]]:
     """
-    Parse Time multi-column qty tables (``-4 | -3 | -2 | -1 | ITEM | PART``).
+    Parse Time multi-column qty tables (``-4|-3|-2|-1`` or ``-2|-1``).
 
-    ``bom_config`` is the dash suffix to keep (e.g. ``\"1\"`` → use the ``-1`` column).
+    ``bom_config`` is the dash suffix to keep (e.g. ``\"1\"`` → use the ``-1``
+    column only — do not sum columns).
     """
     dash = str(bom_config or "").strip().lstrip("-").upper()
     try:
@@ -512,8 +1478,6 @@ def _parse_multi_qty_time_hits(
     if dash_n < 1 or dash_n > 4:
         return []
 
-    # Capture groups are left→right -4,-3,-2,-1 → index 0..3; dash 1 → index 3.
-    col_index = 4 - dash_n
     hits: list[dict[str, Any]] = []
     for blob in texts:
         for raw_line in blob.splitlines():
@@ -535,32 +1499,16 @@ def _parse_multi_qty_time_hits(
                 norm,
             )
             for variant in (norm, soft):
-                for m in _MULTI_QTY_LINE_RE.finditer(variant):
-                    qtys = [
-                        _parse_multi_qty_cell(m.group(1)),
-                        _parse_multi_qty_cell(m.group(2)),
-                        _parse_multi_qty_cell(m.group(3)),
-                        _parse_multi_qty_cell(m.group(4)),
-                    ]
-                    qty = qtys[col_index]
-                    item = m.group(5).upper()
-                    base = _fix_leading_digit_glue(m.group(6), bases)
-                    suffix = re.sub(r"[^0-9A-Z]", "", m.group(7).upper())
-                    if not suffix:
-                        continue
-                    part = _correct_part_with_library(f"{base}-{suffix}", bases)
-                    hits.append(
-                        {
-                            "qty": qty,
-                            "item": item,
-                            "part_no": part,
-                            "has_qty": True,
-                            "has_suffix": True,
-                            "raw": line,
-                            "multi_qty": qtys,
-                            "bom_config": dash,
-                        }
-                    )
+                found = _parse_multi_qty_line(
+                    variant,
+                    bases=bases,
+                    dash_n=dash_n,
+                    dash=dash,
+                    line=line,
+                )
+                if found:
+                    hits.extend(found)
+                    break
     return hits
 
 
@@ -588,112 +1536,33 @@ def _supplement_multi_config_bom(
     bom_config: str,
 ) -> list[str]:
     """
-    Recover BOM rows OCR missed on multi-qty tables.
+    Re-attach dash-column rows that voting dropped.
 
-    Dense Time sheets often drop qty columns for some lines (hose guard, end cap,
-    cutout stiffener). If the part/item appears in OCR and is not qty-0 for this
-    dash, add it at qty 1 (or the multi-qty value when known).
+    Only uses qty already parsed from the selected dash column. Does not invent
+    qty-1 library fillers for a sparse column.
     """
     from quote_core.bom_config import format_bom_config_label
 
     notes: list[str] = []
-    if not bom_config or not bases:
+    if not bom_config:
         return notes
 
     multi_all = _parse_multi_qty_time_hits(texts, bases, bom_config=bom_config)
-    multi_by_item = {
-        str(h["item"]): h for h in multi_all if h.get("item") and int(h.get("qty") or 0) > 0
-    }
-    multi_by_part = {
-        str(h["part_no"]): h for h in multi_all if h.get("has_suffix") and int(h.get("qty") or 0) > 0
-    }
-    zero_parts = _zero_qty_parts_for_config(texts, bases, bom_config=bom_config)
-
-    # Item + part hits without requiring qty columns.
-    loose_hits = _parse_qty_item_part_hits(texts, bases)
-    # Also harvest bare library part numbers from OCR (E/F/H rows often lose item+qty).
-    blob = "\n".join(texts)
-    soft = re.sub(
-        r"(\d[0-9A-Za-z]*\d|\d+)",
-        lambda m: _ocr_digit_cleanup(m.group(0).upper()),
-        blob.replace("—", "-").replace("–", "-").replace("=", "-"),
-    )
-    for base in sorted(bases):
-        if len(base) < 4:
-            continue
-        for m in re.finditer(
-            rf"(?<!\d)({base})\s*[-–—=]?\s*(\d{{1,2}}[A-Za-z]?)\b",
-            soft,
-            flags=re.IGNORECASE,
-        ):
-            suffix = re.sub(r"[^0-9A-Z]", "", m.group(2).upper())
-            if not suffix:
-                continue
-            part = _correct_part_with_library(f"{base}-{suffix}", bases)
-            loose_hits.append(
-                {
-                    "qty": None,
-                    "item": None,
-                    "part_no": part,
-                    "has_qty": False,
-                    "has_suffix": True,
-                    "raw": m.group(0),
-                }
-            )
-
     existing_items = {r.item for r in rows if isinstance(r.item, str)}
     existing_parts = {r.part_no for r in rows}
-    existing_bases_with_suffix: dict[str, set[str]] = defaultdict(set)
-    for pn in existing_parts:
-        b, _, s = pn.partition("-")
-        if s:
-            existing_bases_with_suffix[b].add(s)
-
     added = 0
-    for h in loose_hits:
-        if not h.get("has_suffix"):
+    for h in multi_all:
+        qty = int(h.get("qty") or 0)
+        if qty <= 0:
             continue
         part = str(h.get("part_no") or "")
-        if not part or part.endswith("-?") or part in existing_parts:
-            continue
-        base, _, suf = part.partition("-")
-        if bases and base not in bases:
-            continue
-        # Skip parts that multi-qty marks empty for this dash (other boom tubes).
-        if part in zero_parts:
-            continue
-        # If another suffix of this base is already selected (16697-2), skip siblings.
-        if suf and existing_bases_with_suffix.get(base) and suf not in existing_bases_with_suffix[base]:
-            continue
         item = h.get("item")
+        if not part or part in existing_parts:
+            continue
+        if _is_garbage_time_part(part, bases):
+            continue
         if isinstance(item, str) and item in existing_items:
             continue
-
-        qty = 1
-        if part in multi_by_part:
-            qty = max(1, int(multi_by_part[part]["qty"]))
-            item = item or multi_by_part[part].get("item")
-        elif isinstance(item, str) and item in multi_by_item:
-            qty = max(1, int(multi_by_item[item]["qty"]))
-            part = str(multi_by_item[item]["part_no"])
-            if part in existing_parts:
-                continue
-
-        # Heuristic: hose-guard / stiffener boom pivot often qty 2 when OCR lost columns.
-        # Prefer explicit multi-qty; only guess when description/name hints and qty still 1
-        # from a lone part sighting — use multi text ``2 | 2 | 2 | 2`` near the part.
-        if qty == 1 and part not in multi_by_part:
-            near = ""
-            for blob2 in texts:
-                if base in blob2.replace(" ", ""):
-                    near += "\n" + blob2
-            if re.search(
-                rf"(?:\|\s*)?2\s*[|\]]\s*2\s*[|\]]\s*2\s*[|\]]\s*2\s*[|\]][^\n]{{0,40}}{base}",
-                near.replace("—", "-"),
-                flags=re.I,
-            ):
-                qty = 2
-
         rows.append(
             BomRow(
                 item=item if isinstance(item, str) else None,
@@ -708,53 +1577,13 @@ def _supplement_multi_config_bom(
         existing_parts.add(part)
         if isinstance(item, str):
             existing_items.add(item)
-        if suf:
-            existing_bases_with_suffix[base].add(suf)
         added += 1
 
     if added:
         notes.append(
-            f"Supplemented {added} BOM part(s) from OCR + library stems "
-            f"(multi-qty column {format_bom_config_label(bom_config)})"
+            f"Supplemented {added} BOM part(s) from dash column "
+            f"{format_bom_config_label(bom_config)}"
         )
-
-    # Dedicated weldment folders (few PDFs) may still miss a garbled PN in OCR
-    # (e.g. 10187 → \"rote7\"). If almost all library stems are already on the BOM,
-    # add the remaining stem(s) at qty 1 with suffix -1.
-    present_bases = {r.part_no.partition("-")[0] for r in rows}
-    missing_bases = sorted(b for b in bases if b not in present_bases)
-    if (
-        5 <= len(rows) <= 20
-        and 1 <= len(missing_bases) <= 3
-        and len(bases) <= 16
-    ):
-        for base in missing_bases:
-            part = f"{base}-1"
-            if part in zero_parts:
-                continue
-            # Prefer a suffix actually seen in OCR for this base.
-            for h in loose_hits:
-                pn = str(h.get("part_no") or "")
-                if pn.startswith(base + "-") and h.get("has_suffix"):
-                    if pn not in zero_parts:
-                        part = pn
-                        break
-            if any(r.part_no == part for r in rows):
-                continue
-            rows.append(
-                BomRow(
-                    item=None,
-                    qty=1,
-                    part_no=part,
-                    description="",
-                    unit_weight_lb=None,
-                    source="ocr_time_multi_qty_lib",
-                    confidence=0.72,
-                )
-            )
-            notes.append(
-                f"Added library component {part} (OCR missed PN; folder stem present)"
-            )
     return notes
 
 
@@ -889,6 +1718,8 @@ def _vote_bom_rows(hits: list[dict[str, Any]], bases: set[str]) -> list[BomRow]:
         group = by_item[item]
         qty_votes = [int(h["qty"]) for h in group if h.get("has_qty") and h.get("qty") is not None]
         qty = Counter(qty_votes).most_common(1)[0][0] if qty_votes else 1
+        if int(qty) <= 0:
+            continue
 
         part_votes = [
             h["part_no"]
@@ -1064,6 +1895,7 @@ def extract_bom_from_ocr_time_style(
     related_pdf_names: list[str] | None = None,
     page_index: int = 0,
     bom_config: str | None = None,
+    include_library_sources: bool = True,
 ) -> BomResult:
     """
     Parse Time Manufacturing LIST OF MATERIAL tables.
@@ -1076,7 +1908,7 @@ def extract_bom_from_ocr_time_style(
     """
     import fitz
 
-    from quote_core.bom_config import format_bom_config_label, normalize_bom_config
+    from quote_core.bom_config import normalize_bom_config
     from quote_core.ocr import ocr_available
 
     pdf_path = Path(pdf_path)
@@ -1089,132 +1921,161 @@ def extract_bom_from_ocr_time_style(
         related_pdf_names=related_pdf_names,
     )
     used_multi = False
-    supp_notes: list[str] = []
     bom_rows: list[BomRow] = []
     doc = fitz.open(str(pdf_path))
     try:
-        page = doc[min(page_index, len(doc) - 1)]
-        rect = page.rect
-        # Qty/Item/Part columns — right-side crops. Tall clip needed when BOM
-        # has 10+ rows (e.g. 21678 knuckle); short clip stays cleaner for 7-row sheets.
-        left_clip = fitz.Rect(
-            rect.width * 0.70,
-            rect.height * 0.62,
-            rect.width * 0.82,
-            rect.height * 0.87,
-        )
-        mid_clip = fitz.Rect(
-            rect.width * 0.695,
-            rect.height * 0.615,
-            rect.width * 0.835,
-            rect.height * 0.875,
-        )
-        tall_clip = fitz.Rect(
-            rect.width * 0.68,
-            rect.height * 0.42,
-            rect.width * 0.88,
-            rect.height * 0.90,
-        )
-        wide_clip = fitz.Rect(
-            rect.width * 0.60,
-            rect.height * 0.40,
-            rect.width * 0.995,
-            rect.height * 0.92,
-        )
-        desc_clip = fitz.Rect(
-            rect.width * 0.68,
-            rect.height * 0.40,
-            rect.width * 0.995,
-            rect.height * 0.90,
-        )
+        primary_base = None
+        m_pri = re.match(r"^(\d{4,7})", pdf_path.stem.upper().replace(" ", ""))
+        if m_pri:
+            primary_base = m_pri.group(1)
 
         texts: list[str] = []
-        for clip, dpi in (
-            (left_clip, 500),
-            (mid_clip, 500),
-            (tall_clip, 480),
-            (wide_clip, 420),
-            (left_clip, 420),
-        ):
-            images = _render_clip_images(page, clip, dpi)
-            texts.extend(_ocr_strings(images, psms=(4, 6, 11)))
+        desc_clip = None
+        page = doc[min(page_index, len(doc) - 1)]
+        pages_to_read = list(range(min(len(doc), 4)))
+        if page_index < len(doc) and page_index not in pages_to_read:
+            pages_to_read.insert(0, page_index)
 
-        multi_hits: list[dict[str, Any]] = []
-        texts_for_supp: list[str] = []
-        if config and (
-            texts_have_multi_qty_headers(texts)
-            or _parse_multi_qty_time_hits(texts, bases, bom_config=config)
-        ):
-            multi_hits = _parse_multi_qty_time_hits(texts, bases, bom_config=config)
-            # Keep rows with qty>0 for this dash; also keep qty=0 hits out of vote.
-            multi_hits = [h for h in multi_hits if int(h.get("qty") or 0) > 0]
-            if multi_hits:
-                used_multi = True
-                hits = multi_hits
-                texts_for_supp = texts
-            else:
-                hits = _parse_qty_item_part_hits(texts, bases)
-        else:
-            hits = _parse_qty_item_part_hits(texts, bases)
-        bom_rows = _vote_bom_rows(hits, bases)
-        if used_multi:
-            for row in bom_rows:
-                row.source = "ocr_time_multi_qty"
-            # Don't treat the weldment PDF itself as a component (28106.pdf → 28106).
-            primary_base = None
-            m_pri = re.match(r"^(\d{4,7})", pdf_path.stem.upper().replace(" ", ""))
-            if m_pri:
-                primary_base = m_pri.group(1)
-            supp_bases = {b for b in bases if b != primary_base}
-            supp_notes = _supplement_multi_config_bom(
-                bom_rows,
-                texts_for_supp or texts,
-                supp_bases,
-                bom_config=config or "",
+        for pi in pages_to_read:
+            page = doc[pi]
+            rect = page.rect
+            left_clip = fitz.Rect(
+                rect.width * 0.70,
+                rect.height * 0.62,
+                rect.width * 0.82,
+                rect.height * 0.87,
             )
-        _repair_suffix_ocr(bom_rows, hits, bases)
-        _attach_descriptions(bom_rows, page, desc_clip)
+            mid_clip = fitz.Rect(
+                rect.width * 0.695,
+                rect.height * 0.615,
+                rect.width * 0.835,
+                rect.height * 0.875,
+            )
+            tall_clip = fitz.Rect(
+                rect.width * 0.68,
+                rect.height * 0.22,
+                rect.width * 0.88,
+                rect.height * 0.92,
+            )
+            mid_band_clip = fitz.Rect(
+                rect.width * 0.62,
+                rect.height * 0.28,
+                rect.width * 0.92,
+                rect.height * 0.68,
+            )
+            wide_clip = fitz.Rect(
+                rect.width * 0.58,
+                rect.height * 0.16,
+                rect.width * 0.995,
+                rect.height * 0.94,
+            )
+            full_clip = fitz.Rect(
+                rect.width * 0.36,
+                rect.height * 0.02,
+                rect.width * 0.995,
+                rect.height * 0.98,
+            )
+            desc_clip = fitz.Rect(
+                rect.width * 0.68,
+                rect.height * 0.40,
+                rect.width * 0.995,
+                rect.height * 0.90,
+            )
+            clips: list[tuple[Any, int]] = [(full_clip, 340)]
+            if pi == pages_to_read[0]:
+                clips = [
+                    (left_clip, 500),
+                    (mid_clip, 500),
+                    (mid_band_clip, 480),
+                    (tall_clip, 480),
+                    (wide_clip, 420),
+                    (left_clip, 420),
+                    (full_clip, 340),
+                ]
+            for clip, dpi in clips:
+                images = _render_clip_images(page, clip, dpi)
+                texts.extend(_ocr_strings(images, psms=(4, 6, 11)))
+
+        parsed = parse_time_style_bom_texts(
+            texts,
+            bases,
+            bom_config=config,
+            primary_base=primary_base,
+            source="ocr_time",
+        )
+        if include_library_sources:
+            parsed = _supplement_from_library_weldment(
+                parsed,
+                library_folder=library_folder,
+                related_pdf_names=related_pdf_names,
+                bom_config=config,
+                primary_base=primary_base,
+                skip_pdf=pdf_path,
+                allow_ocr=True,
+            )
+        bom_rows = list(parsed.rows)
+        used_multi = bool(parsed.method and "multi_qty" in parsed.method)
+        if bom_rows and desc_clip is not None:
+            _attach_descriptions(bom_rows, page, desc_clip)
     finally:
         doc.close()
 
     if not bom_rows:
         return BomResult(notes=["OCR Time-style BOM found no part rows"], confidence=0.0)
 
-    # Drop duplicate part numbers keeping higher-qty / lettered item
-    dedup: dict[str, BomRow] = {}
-    for r in bom_rows:
-        prev = dedup.get(r.part_no)
-        if prev is None or (r.item and not prev.item) or r.qty > prev.qty:
-            dedup[r.part_no] = r
-    bom_rows = list(dedup.values())
-
-    def sort_key(r: BomRow):
-        if isinstance(r.item, str) and r.item.isalpha():
-            return (0, r.item)
-        return (1, str(r.part_no))
-
-    bom_rows.sort(key=sort_key)
-    avg_conf = sum(r.confidence for r in bom_rows) / max(1, len(bom_rows))
-    notes = [
-        f"OCR Time-style BOM: {len(bom_rows)} part numbers, {sum(r.qty for r in bom_rows)} pieces"
-    ]
-    if used_multi and config:
-        notes.insert(
-            0,
-            f"Used BOM qty column {format_bom_config_label(config)} "
-            f"(multi-option Time drawing)",
-        )
-        notes.extend(supp_notes)
-        avg_conf = min(0.96, avg_conf + 0.03)
-    elif config and not used_multi:
-        notes.append(
-            f"BOM config {format_bom_config_label(config)} set but multi-qty columns "
-            f"not detected — used single-qty OCR"
-        )
+    notes = list(parsed.notes)
     if bases:
         notes.append(f"Validated part bases against library folder ({len(bases)} PDF stems)")
-    method = "ocr_time_multi_qty" if used_multi else "ocr_time"
+    method = parsed.method or ("ocr_time_multi_qty" if used_multi else "ocr_time")
+    avg_conf = parsed.confidence
+    if used_multi:
+        avg_conf = min(0.96, avg_conf + 0.03)
     return BomResult(rows=bom_rows, method=method, confidence=avg_conf, notes=notes)
+
+
+def extract_bom_from_native_time_style(
+    pdf_path: Path | str | None = None,
+    text: str | None = None,
+    *,
+    library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
+    bom_config: str | None = None,
+) -> BomResult:
+    """Parse Time LIST OF MATERIAL from extractable PDF text (before OCR)."""
+    if text is None:
+        if not pdf_path:
+            return BomResult(method=None, confidence=0.0, notes=["No PDF text for Time BOM"])
+        from quote_core.weight import _read_pdf_text
+
+        text = _read_pdf_text(Path(pdf_path))
+    if not _looks_like_time_bom_text(text or ""):
+        return BomResult(method=None, confidence=0.0, notes=["No native Time-style BOM text"])
+
+    bases = library_part_bases(
+        Path(library_folder) if library_folder else None,
+        related_pdf_names=related_pdf_names,
+    )
+    primary_base = None
+    if pdf_path:
+        m_pri = re.match(r"^(\d{4,7})", Path(pdf_path).stem.upper().replace(" ", ""))
+        if m_pri:
+            primary_base = m_pri.group(1)
+    parsed = parse_time_style_bom_texts(
+        [text or ""],
+        bases,
+        bom_config=bom_config,
+        primary_base=primary_base,
+        source="native_time",
+    )
+    return _supplement_from_library_weldment(
+        parsed,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+        bom_config=bom_config,
+        primary_base=primary_base,
+        skip_pdf=Path(pdf_path) if pdf_path else None,
+        allow_ocr=True,
+    )
 
 
 def extract_bom(
@@ -1230,7 +2091,8 @@ def extract_bom(
 
     1) Native MAC text/blocks (high confidence when present)
     2) Native PARTS LIST (Cummins / NGFS style)
-    3) OCR Time-style LIST OF MATERIAL (vector CAD drawings)
+    3) Native Time-style LIST OF MATERIAL (prefer text before OCR)
+    4) OCR Time-style LIST OF MATERIAL (vector CAD drawings)
     """
     notes: list[str] = []
     native = extract_bom_from_native_mac(pdf_path, text=text)
@@ -1245,6 +2107,19 @@ def extract_bom(
         return parts_list
     if parts_list.notes:
         notes.extend(parts_list.notes)
+
+    native_time = extract_bom_from_native_time_style(
+        pdf_path,
+        text=text,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+        bom_config=bom_config,
+    )
+    if native_time.rows and native_time.piece_count > 0:
+        native_time.notes = notes + list(native_time.notes)
+        return native_time
+    if native_time.notes:
+        notes.extend(native_time.notes)
 
     if pdf_path:
         ocr = extract_bom_from_ocr_time_style(

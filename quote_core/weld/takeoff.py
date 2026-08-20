@@ -427,6 +427,10 @@ def _component_pdf_search_dirs(
         p = Path(library_folder)
         if p.is_dir():
             dirs.append(p)
+            try:
+                dirs.extend(c for c in p.iterdir() if c.is_dir())
+            except OSError:
+                pass
     if pdf_path:
         parent = Path(pdf_path).parent
         if parent.is_dir() and parent not in dirs:
@@ -1194,10 +1198,15 @@ def estimate_fitup_drivers(
     method = str(weight_info.get("method") or "")
     bom_piece_count = int(weight_info.get("piece_count") or 0)
     bom_part_numbers = int(weight_info.get("part_number_count") or 0)
+    bom_notes = list((weight_info.get("pdf_bom") or {}).get("notes") or [])
+    for n in bom_notes:
+        if "incomplete vs library" in n.lower() or n.startswith("Added library") or "qty 1 — review" in n:
+            notes_out.append(n)
 
     if (
         method.startswith("pdf_bom")
         or method.startswith("ocr_time")
+        or method.startswith("native_time")
         or method.startswith("native_mac")
         or method.startswith("native_parts_list")
     ):
@@ -1247,6 +1256,7 @@ def estimate_fitup_drivers(
     if bom_piece_count > 0 and (
         method.startswith("pdf_bom")
         or method.startswith("ocr_time")
+        or method.startswith("native_time")
         or method.startswith("native_mac")
         or method.startswith("native_parts_list")
         or "qty_only" in method

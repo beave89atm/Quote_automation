@@ -266,17 +266,25 @@ def _find_stp_near_folder(folder: Path, part_key: str) -> Path | None:
 
 
 def _related_pdfs(folder: Path, primary_pdf_name: str | None = None) -> list[Path]:
+    """PDFs in the part folder and one child packet folder (Time weldment layout)."""
+    pdfs: list[Path] = []
     try:
-        pdfs = sorted(
-            (
-                p
-                for p in folder.iterdir()
-                if p.is_file() and p.suffix.lower() == ".pdf"
-            ),
-            key=lambda p: p.name.lower(),
-        )
+        entries = list(folder.iterdir())
     except OSError:
         return []
+    for p in entries:
+        if p.is_file() and p.suffix.lower() == ".pdf":
+            pdfs.append(p)
+        elif p.is_dir():
+            try:
+                pdfs.extend(
+                    c
+                    for c in p.iterdir()
+                    if c.is_file() and c.suffix.lower() == ".pdf"
+                )
+            except OSError:
+                continue
+    pdfs.sort(key=lambda p: p.name.lower())
     if primary_pdf_name:
         primary = primary_pdf_name.lower()
         pdfs = [p for p in pdfs if p.name.lower() != primary]
@@ -423,5 +431,7 @@ def find_drawings(
     else:
         match.notes.append(f"Found folder {folder.name} but no STP/STEP inside or beside it")
     if match.related_pdfs:
-        match.notes.append(f"{len(match.related_pdfs)} related PDF(s) in same folder")
+        match.notes.append(
+            f"{len(match.related_pdfs)} related PDF(s) in folder / child folders"
+        )
     return match

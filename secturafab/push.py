@@ -480,10 +480,18 @@ def _resolve_part_key(
 
 
 def _resolve_related_pdf(folder: Path, name: str) -> Path | None:
-    """Find a related PDF in the primary folder or sibling part folders."""
+    """Find a related PDF in the primary folder, a child packet, or sibling part folders."""
     direct = folder / name
     if direct.is_file():
         return direct
+    try:
+        for child in folder.iterdir():
+            if child.is_dir():
+                nested = child / name
+                if nested.is_file():
+                    return nested
+    except OSError:
+        pass
     parent = folder.parent
     if not parent.exists():
         return None

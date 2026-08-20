@@ -3,6 +3,25 @@ from pathlib import Path
 from quote_core.drawing_library import extract_part_key, find_drawings, library_roots_from_config
 
 
+def test_related_pdfs_include_child_packet_folder(tmp_path: Path):
+    """Time weldment packet: children live under 1004335-1\\, not the parent folder."""
+    from quote_core.drawing_library import _related_pdfs
+
+    packet = tmp_path / "1004335-1 32X32 BASKET"
+    child = packet / "1004335-1"
+    child.mkdir(parents=True)
+    (packet / "1004335.pdf").write_bytes(b"%PDF-1.4\n")
+    (child / "1004067.pdf").write_bytes(b"%PDF-1.4\n")
+    (child / "1004212.pdf").write_bytes(b"%PDF-1.4\n")
+    (child / "PL.pdf").write_bytes(b"%PDF-1.4\n")
+
+    names = {p.name for p in _related_pdfs(packet, primary_pdf_name="1004335.pdf")}
+    assert "1004067.pdf" in names
+    assert "1004212.pdf" in names
+    assert "PL.pdf" in names
+    assert "1004335.pdf" not in names
+
+
 def test_extract_part_key_from_pdf_names():
     assert extract_part_key("80341805.pdf") == "80341805"
     assert extract_part_key("73476047-FAB Packet.pdf") == "73476047"
