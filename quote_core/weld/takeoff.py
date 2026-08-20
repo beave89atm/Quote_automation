@@ -70,6 +70,7 @@ class WeldTakeoffResult:
     stp_summary: dict[str, Any] = field(default_factory=dict)
 
     fitup_drivers: dict[str, Any] = field(default_factory=dict)
+    stp_bom_confirm: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +80,7 @@ class WeldTakeoffResult:
             "notes": self.notes,
             "stp_summary": self.stp_summary,
             "fitup_drivers": self.fitup_drivers,
+            "stp_bom_confirm": self.stp_bom_confirm,
             "total_inches": sum(i.inches for i in self.items),
         }
 
@@ -537,16 +539,228 @@ def _estimate_gusset_all_around_segments(
     return segments, notes
 
 
-def _parse_stp_boxes(stp_path: Path) -> dict[str, Any]:
-    """Extract solid bounding boxes, assembly qty, and weld-relevant geometry."""
+def _parse_step_entities(stp_path: Path) -> tuple[dict[int, str], str]:
+    """Shared ISO-10303-21 entity importer (geometry takeoff + BOM confirm)."""
     raw = stp_path.read_text(errors="ignore")
     text = re.sub(r",\s*\n\s*", ",", raw)
     ents = {
         int(m.group(1)): m.group(2).strip()
         for m in re.finditer(r"^#(\d+)\s*=\s*(.+?);\s*$", text, re.M)
     }
+    return ents, text
+
+
+def _step_quoted_strings(body: str) -> list[str]:
+    return [s.replace("''", "'") for s in re.findall(r"'((?:[^']|'')*)'", body or "")]
+
+
+def _step_refs(body: str) -> list[int]:
+    return [int(x) for x in re.findall(r"#(\d+)", body or "")]
+
+
+def _normalize_step_part_no(raw: str | None) -> str | None:
+    """Pull a shop PN from a STEP PRODUCT / occurrence name."""
+    from quote_core.bom import normalize_part_no
+
+    if not raw:
+        return None
+    cleaned = str(raw).strip()
+    for suf in (".SLDPRT", ".SLDASM", ".IPT", ".IAM", ".STP", ".STEP", ".PAR"):
+        if cleaned.upper().endswith(suf):
+            cleaned = cleaned[: -len(suf)]
+            break
+    cleaned = cleaned.replace("—", "-").replace("–", "-").replace("=", "-").strip()
+    if not cleaned:
+        return None
+    token = cleaned.split()[0].strip(" ,;|/\\")
+    dashed = normalize_part_no(token)
+    if dashed:
+        return dashed
+    token_u = re.sub(r"[^A-Z0-9-]", "", token.upper())
+    if re.fullmatch(r"[A-Z]{1,3}\d{2}-\d{3,5}", token_u):
+        return token_u
+    if re.fullmatch(r"\d{5,}", token_u):
+        return token_u
+    # Name like ``102727-4 TUBE, ROUND`` — search the whole string.
+    dashed = normalize_part_no(cleaned)
+    if dashed:
+        return dashed
+    m = re.search(r"\b([A-Z]{1,3}\d{2}-\d{3,5})\b", cleaned.upper())
+    if m:
+        return m.group(1)
+    return None
+
+
+def _pn_from_product_fields(prod_id: str, prod_name: str) -> str | None:
+    for raw in (prod_id, prod_name):
+        pn = _normalize_step_part_no(raw)
+        if pn:
+            return pn
+    return None
+
+
+def extract_step_assembly_part_counts(
+    stp_path: Path | str | None = None,
+    *,
+    ents: dict[int, str] | None = None,
+    source_name: str | None = None,
+) -> dict[str, Any]:
+    """
+    Count direct child part numbers in a STEP assembly.
+
+    Uses PRODUCT → PRODUCT_DEFINITION_FORMATION → PRODUCT_DEFINITION
+    plus NEXT_ASSEMBLY_USAGE_OCCURRENCE instance rows (same entity map as
+    ``_parse_stp_boxes``). Nested children of a sub-assembly in the same file
+    are not exploded — only direct children of the top-level product.
+    """
+    from quote_core.drawing_library import extract_part_key
+
+    notes: list[str] = []
+    if ents is None:
+        if not stp_path:
+            return {
+                "counts": {},
+                "piece_count": 0,
+                "part_number_count": 0,
+                "assembly_pn": None,
+                "method": None,
+                "notes": ["No STEP path"],
+            }
+        ents, _text = _parse_step_entities(Path(stp_path))
+        source_name = source_name or Path(stp_path).name
     if not ents:
-        return {"error": "no entities", "solids": [], "segments": []}
+        return {
+            "counts": {},
+            "piece_count": 0,
+            "part_number_count": 0,
+            "assembly_pn": extract_part_key(source_name) if source_name else None,
+            "method": None,
+            "notes": ["STEP has no entities"],
+        }
+
+    products: dict[int, tuple[str, str]] = {}
+    formations: dict[int, int] = {}
+    definitions: dict[int, int] = {}
+    nauos: list[tuple[int, int, str]] = []
+
+    for _eid, body in ents.items():
+        if body.startswith("PRODUCT("):
+            strs = _step_quoted_strings(body)
+            products[_eid] = (strs[0] if strs else "", strs[1] if len(strs) > 1 else "")
+        elif body.startswith("PRODUCT_DEFINITION_FORMATION("):
+            refs = _step_refs(body)
+            if refs:
+                formations[_eid] = refs[0]
+        elif body.startswith("PRODUCT_DEFINITION("):
+            refs = _step_refs(body)
+            if not refs:
+                continue
+            formation = refs[0]
+            if formation in formations:
+                definitions[_eid] = formations[formation]
+            elif formation in products:
+                definitions[_eid] = formation
+
+    for _eid, body in ents.items():
+        if not body.startswith("NEXT_ASSEMBLY_USAGE_OCCURRENCE"):
+            continue
+        refs = _step_refs(body)
+        if len(refs) < 2:
+            continue
+        parent_pd, child_pd = refs[0], refs[1]
+        strs = _step_quoted_strings(body)
+        nauo_name = strs[1] if len(strs) > 1 else (strs[0] if strs else "")
+        if parent_pd in definitions and child_pd in definitions:
+            nauos.append((definitions[parent_pd], definitions[child_pd], nauo_name))
+
+    assembly_pn = extract_part_key(source_name) if source_name else None
+
+    def product_pn(product_eid: int) -> str | None:
+        if product_eid not in products:
+            return None
+        pid, pname = products[product_eid]
+        return _pn_from_product_fields(pid, pname)
+
+    if not nauos:
+        # Single-solid / no occurrence graph: unique PRODUCT PNs (minus assembly).
+        counts: Counter[str] = Counter()
+        for eid in products:
+            pn = product_pn(eid)
+            if not pn or (assembly_pn and pn == assembly_pn):
+                continue
+            counts[pn] += 1
+        if not counts and assembly_pn:
+            # Part-only STEP named after itself.
+            for eid in products:
+                pn = product_pn(eid)
+                if pn == assembly_pn:
+                    counts[pn] += 1
+                    break
+            if not counts:
+                counts[assembly_pn] = 1
+        notes.append(
+            "STEP has no NEXT_ASSEMBLY_USAGE_OCCURRENCE — "
+            "using PRODUCT names at qty 1 each"
+        )
+        return {
+            "counts": dict(counts),
+            "piece_count": int(sum(counts.values())),
+            "part_number_count": len(counts),
+            "assembly_pn": assembly_pn,
+            "method": "product_names" if counts else None,
+            "notes": notes,
+        }
+
+    child_ids = {child for _parent, child, _name in nauos}
+    parent_ids = {parent for parent, _child, _name in nauos}
+    roots = [p for p in parent_ids if p not in child_ids]
+    if assembly_pn:
+        named = [p for p in roots if product_pn(p) == assembly_pn]
+        if named:
+            roots = named
+        elif not roots:
+            roots = [p for p in parent_ids if product_pn(p) == assembly_pn]
+    if not roots:
+        roots = list(parent_ids)
+        notes.append("Could not isolate a single top-level STEP product — used all NAUO parents")
+
+    root_set = set(roots)
+    counts = Counter()
+    for parent, child, nauo_name in nauos:
+        if parent not in root_set:
+            continue
+        pn = product_pn(child) or _normalize_step_part_no(nauo_name)
+        if not pn:
+            notes.append(f"Skipped NAUO child #{child} (no parseable part number)")
+            continue
+        if assembly_pn and pn == assembly_pn:
+            continue
+        counts[pn] += 1
+
+    return {
+        "counts": dict(counts),
+        "piece_count": int(sum(counts.values())),
+        "part_number_count": len(counts),
+        "assembly_pn": assembly_pn or (product_pn(roots[0]) if roots else None),
+        "method": "next_assembly_usage_occurrence",
+        "notes": notes,
+    }
+
+
+def _parse_stp_boxes(stp_path: Path) -> dict[str, Any]:
+    """Extract solid bounding boxes, assembly qty, and weld-relevant geometry."""
+    ents, text = _parse_step_entities(stp_path)
+    assembly_parts = extract_step_assembly_part_counts(
+        ents=ents,
+        source_name=stp_path.name,
+    )
+    if not ents:
+        return {
+            "error": "no entities",
+            "solids": [],
+            "segments": [],
+            "assembly_parts": assembly_parts,
+        }
 
     unit_scale = 1.0
     if re.search(r"CONVERSION_BASED_UNIT\s*\(\s*'INCH'", text, re.I):
@@ -692,6 +906,7 @@ def _parse_stp_boxes(stp_path: Path) -> dict[str, Any]:
         "solids": solids[:40],
         "qty_by_name": dict(qty_by_name),
         "circle_diameters": sorted({round(2 * r, 3) for r in circle_radii if r > 0.2}),
+        "assembly_parts": assembly_parts,
     }
 
 
@@ -1341,12 +1556,33 @@ def run_weld_takeoff(
         if n not in flags:
             flags.append(n)
 
+    stp_bom_confirm = _confirm_pdf_bom_with_stp(
+        stp_path=Path(stp_path) if stp_path else None,
+        stp_summary=stp_summary,
+        fitup_drivers=fitup_drivers,
+        pdf_path=pdf_path,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+        bom_config=bom_config,
+    )
+    confirm_flag = None
+    if stp_bom_confirm:
+        from quote_core.bom_confirm import confirm_flag_text
+
+        confirm_flag = confirm_flag_text(stp_bom_confirm)
+    if confirm_flag and confirm_flag not in flags:
+        flags.append(confirm_flag)
+    for n in stp_bom_confirm.get("notes") or []:
+        if n and n not in flags:
+            flags.append(n)
+
     return WeldTakeoffResult(
         items=items,
         flags=flags,
         sizes_found=sorted(set(sizes)),
         notes=notes[:40],
         fitup_drivers=fitup_drivers,
+        stp_bom_confirm=stp_bom_confirm,
         stp_summary={
             "solid_count": stp_summary.get("solid_count", 0),
             "unit_scale": stp_summary.get("unit_scale"),
@@ -1364,5 +1600,60 @@ def run_weld_takeoff(
             "pdf_vector_heavy": pdf_meta.get("vector_heavy"),
             "ocr_used": pdf_meta.get("ocr_used"),
             "ocr_error": pdf_meta.get("ocr_error"),
+            "assembly_parts": stp_summary.get("assembly_parts") or {},
         },
     )
+
+
+def _confirm_pdf_bom_with_stp(
+    *,
+    stp_path: Path | None,
+    stp_summary: dict[str, Any],
+    fitup_drivers: dict[str, Any],
+    pdf_path: Path | str | None,
+    library_folder: Path | str | None,
+    related_pdf_names: list[str] | None,
+    bom_config: str | None,
+) -> dict[str, Any]:
+    """Compare PDF BOM to STEP PNs when an STP is on the job. Never mutates BOM rows."""
+    from quote_core.bom_confirm import confirm_pdf_bom_against_stp, skipped_stp_bom_confirm
+    from quote_core.drawing_library import extract_part_key
+
+    if not stp_path:
+        return skipped_stp_bom_confirm("No STP on this job — PDF BOM only")
+
+    if stp_summary.get("error"):
+        return skipped_stp_bom_confirm(f"STEP parse error: {stp_summary.get('error')}")
+
+    weight_calc = (fitup_drivers or {}).get("weight_calc") or {}
+    pdf_bom = dict(weight_calc.get("bom") or weight_calc.get("pdf_bom") or {})
+    pdf_rows = list(pdf_bom.get("rows") or pdf_bom.get("bom_rows") or [])
+    if not pdf_rows and pdf_path and Path(pdf_path).is_file():
+        from quote_core.bom import extract_bom
+
+        extracted = extract_bom(
+            pdf_path,
+            library_folder=library_folder,
+            related_pdf_names=related_pdf_names,
+            bom_config=bom_config,
+        )
+        pdf_bom = extracted.to_dict()
+        pdf_rows = list(pdf_bom.get("rows") or pdf_bom.get("bom_rows") or [])
+
+    assembly_parts = dict(stp_summary.get("assembly_parts") or {})
+    if not assembly_parts.get("counts") and not assembly_parts.get("method"):
+        assembly_parts = extract_step_assembly_part_counts(
+            stp_path,
+            source_name=stp_path.name,
+        )
+
+    snapshot = [dict(r) if isinstance(r, dict) else r for r in pdf_rows]
+    confirm = confirm_pdf_bom_against_stp(
+        pdf_rows,
+        assembly_parts,
+        assembly_pn=assembly_parts.get("assembly_pn") or extract_part_key(stp_path.name),
+    )
+    # Guard: confirmation must not rewrite the PDF takeoff rows.
+    if snapshot != pdf_rows:
+        confirm.setdefault("notes", []).append("PDF BOM rows changed during STP confirm — unexpected")
+    return confirm

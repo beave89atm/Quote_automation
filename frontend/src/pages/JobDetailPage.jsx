@@ -634,6 +634,69 @@ export default function JobDetailPage() {
         </details>
       </details>
 
+      {job.takeoff?.stp_bom_confirm && !job.takeoff.stp_bom_confirm.skipped ? (
+        <div
+          className={
+            job.takeoff.stp_bom_confirm.mismatch
+              ? "stp-bom-confirm mismatch"
+              : "stp-bom-confirm ok"
+          }
+        >
+          <h2>STP vs PDF BOM</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            STEP confirms the drawing BOM — it does not replace or pad PDF rows.
+          </p>
+          <p>
+            Matched {job.takeoff.stp_bom_confirm.matched?.length || 0} PN
+            {job.takeoff.stp_bom_confirm.matched?.length === 1 ? "" : "s"}
+            {" · "}
+            PDF-only {job.takeoff.stp_bom_confirm.pdf_only?.length || 0}
+            {" · "}
+            STP-only {job.takeoff.stp_bom_confirm.stp_only?.length || 0}
+          </p>
+          <p className="mono" style={{ fontSize: "0.9rem" }}>
+            Piece count {job.takeoff.stp_bom_confirm.pdf_piece_count ?? "—"}
+            {job.takeoff.stp_bom_confirm.piece_count_agree ? " = " : " ≠ "}
+            {job.takeoff.stp_bom_confirm.stp_piece_count ?? "—"}
+            {" · "}
+            Unique PNs {job.takeoff.stp_bom_confirm.pdf_unique_pn_count ?? "—"}
+            {job.takeoff.stp_bom_confirm.unique_pn_count_agree ? " = " : " ≠ "}
+            {job.takeoff.stp_bom_confirm.stp_unique_pn_count ?? "—"}
+          </p>
+          {job.takeoff.stp_bom_confirm.mismatch ? (
+            <p className="error" style={{ marginTop: "0.35rem" }}>
+              Mismatch — review PDF-only / STP-only PNs and qty differences before accepting.
+            </p>
+          ) : (
+            <p className="muted">PDF BOM and STEP assembly counts agree.</p>
+          )}
+          {job.takeoff.stp_bom_confirm.pdf_only?.length ? (
+            <p className="mono" style={{ fontSize: "0.85rem" }}>
+              PDF-only:{" "}
+              {job.takeoff.stp_bom_confirm.pdf_only
+                .map((r) => `${r.part_no}×${r.qty}`)
+                .join(", ")}
+            </p>
+          ) : null}
+          {job.takeoff.stp_bom_confirm.stp_only?.length ? (
+            <p className="mono" style={{ fontSize: "0.85rem" }}>
+              STP-only:{" "}
+              {job.takeoff.stp_bom_confirm.stp_only
+                .map((r) => `${r.part_no}×${r.qty}`)
+                .join(", ")}
+            </p>
+          ) : null}
+          {job.takeoff.stp_bom_confirm.qty_mismatches?.length ? (
+            <p className="mono" style={{ fontSize: "0.85rem" }}>
+              Qty mismatch:{" "}
+              {job.takeoff.stp_bom_confirm.qty_mismatches
+                .map((r) => `${r.part_no} PDF ${r.pdf_qty} vs STP ${r.stp_qty}`)
+                .join("; ")}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       <h2>Takeoff lines</h2>
       <table className="takeoff-table">
         <thead>
