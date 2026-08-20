@@ -76,6 +76,8 @@ _HEADER_FOUND_NOTE = (
 )
 # Time 102728-1 is 51 rows. A 3-row decoy LOM must not win.
 TALL_TABLE_MIN_ROWS = 40
+# Reject a nested 3-row LOM when another page rendered a taller grid.
+SHORT_TABLE_REJECT = 10
 
 
 def time_item_letters(*, through: str = "BC") -> list[str]:
@@ -147,17 +149,49 @@ def score_material_list(bom: Any) -> tuple[int, int, int, int, int]:
 
 
 def pick_best_material_list(candidates: Sequence[Any], *, min_rows: int = TALL_TABLE_MIN_ROWS):
-    """Choose the tall Time grid over a short decoy LOM. Does not invent rows."""
+    """
+    Choose the tall Time grid over a short decoy LOM. Does not invent rows.
+
+    A nested 3-row LIST OF MATERIAL (e.g. 102711-1 cable tube) must not win
+    when another page's render has a taller QTY/ITEM/PART grid.
+    """
     scored = [c for c in candidates if c is not None]
     if not scored:
         return None
-    scored.sort(key=score_material_list, reverse=True)
-    best = scored[0]
-    tall = [c for c in scored if len(getattr(c, "rows", None) or []) >= min_rows]
+
+    def parsed_n(c: Any) -> int:
+        return len(getattr(c, "rows", None) or [])
+
+    def grid_n(c: Any) -> int:
+        return int(getattr(c, "grid_row_count", 0) or 0)
+
+    tall = [c for c in scored if parsed_n(c) >= min_rows]
     if tall:
         tall.sort(key=score_material_list, reverse=True)
         return tall[0]
-    return best
+
+    max_grid = max(grid_n(c) for c in scored)
+    if max_grid >= SHORT_TABLE_REJECT:
+        grid_cands = [c for c in scored if grid_n(c) >= max(SHORT_TABLE_REJECT, max_grid)]
+        if not grid_cands:
+            grid_cands = [c for c in scored if grid_n(c) == max_grid]
+        grid_cands.sort(key=lambda c: (grid_n(c), score_material_list(c)), reverse=True)
+        chosen = grid_cands[0]
+        short = [c for c in scored if 0 < parsed_n(c) < SHORT_TABLE_REJECT]
+        if short and parsed_n(chosen) < SHORT_TABLE_REJECT:
+            chosen.notes = list(chosen.notes) + [
+                f"Rejected {parsed_n(short[0])}-row LOM (nested sheet) because "
+                f"another page has a taller QTY/ITEM/PART grid "
+                f"({max_grid} row bands) — flag review; do not invent rows"
+            ]
+        return chosen
+
+    mid = [c for c in scored if parsed_n(c) >= SHORT_TABLE_REJECT]
+    if mid:
+        mid.sort(key=score_material_list, reverse=True)
+        return mid[0]
+    scored.sort(key=score_material_list, reverse=True)
+    return scored[0]
 
 
 def harvest_material_list_lines(text: str | None, *, bom_config: str | None = None):

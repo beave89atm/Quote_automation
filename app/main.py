@@ -330,6 +330,78 @@ def batch_push_secturafab(
     }
 
 
+_TABLE_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+
+
+def _require_table_image_upload(upload: UploadFile) -> None:
+    if not upload.filename:
+        raise HTTPException(400, "Table image is required")
+    suffix = Path(upload.filename).suffix.lower()
+    if suffix not in _TABLE_IMAGE_SUFFIXES:
+        raise HTTPException(400, "PNG/JPEG table crop required")
+
+
+@app.post("/api/bom/table-image")
+async def parse_bom_table_image(
+    image: UploadFile = File(...),
+    bom_config: str = Form(""),
+    _: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """Parse a desktop LIST OF MATERIAL crop (grid bands, then per-row OCR)."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    from quote_core.bom_table_image import extract_bom_from_table_image
+
+    _require_table_image_upload(image)
+    data = await image.read()
+    if not data:
+        raise HTTPException(400, "Empty table image")
+    im = Image.open(BytesIO(data)).convert("RGB")
+    bom = extract_bom_from_table_image(im, bom_config=bom_config or None)
+    return bom.to_dict()
+
+
+@app.post("/api/jobs/{job_id}/bom-table-crop")
+async def attach_bom_table_crop(
+    job_id: int,
+    image: UploadFile = File(...),
+    _: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """Save a right-side LOM crop next to the job PDF and re-run takeoff."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    from quote_core.bom_table_image import TABLE_CROP_FILENAME
+
+    _require_table_image_upload(image)
+    data = await image.read()
+    if not data:
+        raise HTTPException(400, "Empty table image")
+
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        if not job.pdf_path:
+            raise HTTPException(400, "Job has no PDF")
+        job_dir = UPLOAD_DIR / str(job.id)
+        job_dir.mkdir(parents=True, exist_ok=True)
+        dest = job_dir / TABLE_CROP_FILENAME
+        im = Image.open(BytesIO(data)).convert("RGB")
+        im.save(dest, "PNG")
+        payload = job.to_dict()
+        job_id_out = job.id
+    finally:
+        db.close()
+
+    threading.Thread(target=process_job, args=(job_id_out,), daemon=True).start()
+    return payload
+
+
 # Parameterized job routes after static /batch paths so "batch" is never treated as job_id.
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: int, _: str = Depends(require_auth)) -> dict[str, Any]:

@@ -80,6 +80,8 @@ class BomResult:
     confidence: float = 0.0
     notes: list[str] = field(default_factory=list)
     assembly_weight_lb: float | None = None
+    # Bitmap grid bands on a rendered right-side clip (0 if not segmented).
+    grid_row_count: int = 0
 
     @property
     def piece_count(self) -> int:
@@ -105,6 +107,7 @@ class BomResult:
             "confidence": self.confidence,
             "notes": self.notes,
             "assembly_weight_lb": self.assembly_weight_lb,
+            "grid_row_count": self.grid_row_count,
             "piece_count": self.piece_count,
             "part_number_count": self.part_number_count,
             "component_weights_lb": self.component_weights_lb(),
@@ -1131,6 +1134,7 @@ def extract_bom_from_material_list_table(
     related_pdf_names: list[str] | None = None,
     bom_config: str | None = None,
     page_index: int | None = None,
+    table_image: Path | str | None = None,
 ) -> BomResult:
     """
     Prefer a detected LIST OF MATERIAL / PARTS LIST / BOM **grid**.
@@ -1151,6 +1155,15 @@ def extract_bom_from_material_list_table(
     del library_folder, related_pdf_names  # nested folder files are not the BOM
     notes: list[str] = []
     candidates: list[BomResult] = []
+    from quote_core.bom_table_image import extract_bom_from_table_image, resolve_table_crop
+
+    crop = resolve_table_crop(pdf_path, table_image)
+    if crop:
+        crop_bom = extract_bom_from_table_image(crop, bom_config=bom_config)
+        crop_bom.notes = [f"Used table image crop {crop.name}", *list(crop_bom.notes)]
+        candidates.append(crop_bom)
+        if len(crop_bom.rows) >= TALL_TABLE_MIN_ROWS:
+            return crop_bom
     if text:
         parsed = parse_material_list_text(text, bom_config=bom_config)
         harvested = harvest_material_list_lines(text, bom_config=bom_config)
@@ -1166,6 +1179,9 @@ def extract_bom_from_material_list_table(
             )
 
     if not pdf_path:
+        best = pick_best_material_list(candidates)
+        if best and (best.rows or material_list_header_seen(best)):
+            return best
         return BomResult(method=None, confidence=0.0, notes=notes or ["No PDF for table BOM"])
 
     import fitz
@@ -1180,6 +1196,22 @@ def extract_bom_from_material_list_table(
             indexes = list(range(n_pages))
         for idx in indexes:
             page = doc[idx]
+            try:
+                from quote_core.bom_table_image import (
+                    extract_bom_from_table_image,
+                    render_page_right_strip,
+                )
+
+                strip = render_page_right_strip(page, dpi=220.0)
+                rendered = extract_bom_from_table_image(strip, bom_config=bom_config)
+                rendered.notes = [
+                    f"Right-side bitmap page {idx + 1} of {n_pages} "
+                    f"({rendered.grid_row_count} grid bands, {len(rendered.rows)} parsed)",
+                    *list(rendered.notes),
+                ]
+                candidates.append(rendered)
+            except Exception as exc:  # noqa: BLE001
+                notes.append(f"Right-side render page {idx + 1} failed: {exc}")
             parsed = _parse_material_list_on_page(page, bom_config=bom_config)
             if parsed.rows or material_list_header_seen(parsed):
                 parsed.notes = [
@@ -1283,6 +1315,7 @@ def extract_bom_from_ocr_time_style(
     related_pdf_names: list[str] | None = None,
     page_index: int | None = None,
     bom_config: str | None = None,
+    table_image: Path | str | None = None,
 ) -> BomResult:
     """
     Parse Time Manufacturing LIST OF MATERIAL tables.
@@ -1304,6 +1337,7 @@ def extract_bom_from_ocr_time_style(
         related_pdf_names=related_pdf_names,
         bom_config=bom_config,
         page_index=page_index,
+        table_image=table_image,
     )
     if table.rows:
         return table
@@ -1469,14 +1503,16 @@ def extract_bom(
     library_folder: Path | str | None = None,
     related_pdf_names: list[str] | None = None,
     bom_config: str | None = None,
+    table_image: Path | str | None = None,
 ) -> BomResult:
     """
     Multi-strategy BOM extraction.
 
     1) Native MAC text/blocks (high confidence when present)
     2) Native PARTS LIST (Cummins / NGFS style)
-    3) Table-first LIST OF MATERIAL / BOM grid (all pages; cells, not page regex)
-    4) OCR Time-style whole-page regex (only when no grid header on any page)
+    3) Table-first LIST OF MATERIAL / BOM grid (all pages; bitmap row/cell OCR;
+       optional ``table_image`` / sibling ``bom_table_crop.png``)
+    4) OCR Time-style whole-page regex (only when no grid header / tall grid)
     """
     notes: list[str] = []
     native = extract_bom_from_native_mac(pdf_path, text=text)
@@ -1502,12 +1538,25 @@ def extract_bom(
                 return table
             notes.extend(table.notes)
 
+    if table_image and not pdf_path:
+        from quote_core.bom_table import material_list_header_seen
+
+        crop_only = extract_bom_from_material_list_table(
+            table_image=table_image,
+            bom_config=bom_config,
+        )
+        if crop_only.rows or material_list_header_seen(crop_only):
+            crop_only.notes = notes + list(crop_only.notes)
+            return crop_only
+        notes.extend(crop_only.notes)
+
     if pdf_path:
         ocr = extract_bom_from_ocr_time_style(
             pdf_path,
             library_folder=library_folder,
             related_pdf_names=related_pdf_names,
             bom_config=bom_config,
+            table_image=table_image,
         )
         notes.extend(ocr.notes)
         from quote_core.bom_table import material_list_header_seen
