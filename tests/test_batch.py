@@ -244,11 +244,15 @@ def test_create_job_stp_only(batch_client: TestClient, batch_token: str | None):
 def test_batch_push_without_keys_fails_clearly(
     batch_client: TestClient, batch_token: str | None
 ):
+    from secturafab.config import SecturaFabConfig
+
     headers = {"X-App-Token": batch_token} if batch_token else {}
-    res = batch_client.post(
-        "/api/jobs/batch-push",
-        headers=headers,
-        json={"job_ids": [1]},
-    )
+    empty = SecturaFabConfig(client_id="", client_secret="", username="", password="")
+    with patch("secturafab.config.SecturaFabConfig.from_env", return_value=empty):
+        res = batch_client.post(
+            "/api/jobs/batch-push",
+            headers=headers,
+            json={"job_ids": [1]},
+        )
     assert res.status_code == 400
     assert "SECTURAFAB_CLIENT_ID" in res.text
