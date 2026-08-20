@@ -1,14 +1,18 @@
 """Published imperial machining formulas (no shop-specific rates).
 
 Sources (public pages, not paywalled catalogs):
-- Harvey Tool: RPM = (3.82 × SFM) / D ; IPM = RPM × IPT × T
+- Kennametal Speeds and Feeds Calculator
+  https://www.kennametal.com/us/en/resources/engineering-calculators/miscellaneous/speed-and-feed.html
+  RPM = (SFM × 3.82) / D
+  Mill feed = RPM × chip load × teeth
+  Turning SFM = 0.262 × part diameter × RPM
+- CNC Optimization — CNC cutting speed & feed formulas
+  https://www.cncoptimization.com/resources/guides/cnc-cutting-speed-feed-formulas/
+  RPM = (SFM × 3.82) / diameter
+  Feed rate = RPM × flutes × chip load
+  MRR (mill) = ap × ae × vf  →  WOC × DOC × IPM
+- Harvey Tool General Machining Guidelines (same RPM / mill IPM)
   https://www.harveytool.com/resources/general-machining-guidelines
-- Kennametal: MRR = DOC × WOC × IPM
-  https://www1.mscdirect.com/images/solutions/kennametal/millingTechInfoFormulas.pdf
-- MachiningDoctor turning: n = 12×Vc/(π×d) ; T = L/(n×Fn) ; Q = 12×Vc×Fn×ap
-  https://www.machiningdoctor.com/calculators/turning-calculators-2/
-
-3.82 is the shop rounding of 12/π.
 """
 
 from __future__ import annotations
@@ -16,16 +20,31 @@ from __future__ import annotations
 import math
 from typing import Iterable
 
-RPM_SFM_FACTOR = 12.0 / math.pi  # ≈ 3.8197; Harvey/Kennametal publish 3.82
+# Kennametal / CNC Optimization / Harvey publish 3.82 (shop rounding of 12/π).
+RPM_SFM_FACTOR = 3.82
+# Kennametal turning check: SFM = 0.262 × part diameter × RPM  (≈ 1/3.82).
+SFM_FROM_RPM_FACTOR = 0.262
 
 
 def rpm_from_sfm(sfm: float, diameter_in: float) -> float:
-    """Spindle speed. Harvey Tool / Kennametal: RPM = (SFM × 3.82) / D."""
+    """Spindle speed. RPM = (SFM × 3.82) / D.
+
+    D is tool diameter (mill) or workpiece diameter (turn).
+    """
     if diameter_in <= 0:
         raise ValueError("diameter_in must be > 0")
     if sfm <= 0:
         raise ValueError("sfm must be > 0")
     return (sfm * RPM_SFM_FACTOR) / diameter_in
+
+
+def sfm_from_rpm(diameter_in: float, rpm: float) -> float:
+    """Turning SFM check. Kennametal: SFM = 0.262 × part diameter × RPM."""
+    if diameter_in <= 0:
+        raise ValueError("diameter_in must be > 0")
+    if rpm <= 0:
+        raise ValueError("rpm must be > 0")
+    return SFM_FROM_RPM_FACTOR * diameter_in * rpm
 
 
 def clamp_rpm(rpm: float, max_rpm: float | None) -> tuple[float, bool]:
@@ -38,21 +57,28 @@ def clamp_rpm(rpm: float, max_rpm: float | None) -> tuple[float, bool]:
 
 
 def milling_ipm(rpm: float, ipt: float, flutes: int) -> float:
-    """Table feed. Harvey Tool: IPM = RPM × IPT × T."""
+    """Mill table feed. IPM = RPM × flutes × chip load."""
     if flutes <= 0:
         raise ValueError("flutes must be > 0")
     if ipt <= 0:
         raise ValueError("ipt must be > 0")
     if rpm <= 0:
         raise ValueError("rpm must be > 0")
-    return rpm * ipt * flutes
+    return rpm * flutes * ipt
+
+
+def turning_ipm(rpm: float, ipr: float) -> float:
+    """Turn feed. IPM = RPM × IPR (no flute multiply)."""
+    if rpm <= 0 or ipr <= 0:
+        raise ValueError("rpm and ipr must be > 0")
+    return rpm * ipr
 
 
 def milling_mrr(doc_in: float, woc_in: float, ipm: float) -> float:
-    """Metal removal rate in³/min. Kennametal: MRR = DOC × WOC × IPM."""
+    """Mill metal removal rate in³/min. MRR = WOC × DOC × IPM."""
     if doc_in <= 0 or woc_in <= 0 or ipm <= 0:
         raise ValueError("doc_in, woc_in, and ipm must be > 0")
-    return doc_in * woc_in * ipm
+    return woc_in * doc_in * ipm
 
 
 def time_from_path(length_in: float, ipm: float) -> float:
@@ -74,21 +100,14 @@ def time_from_volume(volume_in3: float, mrr: float) -> float:
 
 
 def turning_time_min(length_in: float, rpm: float, ipr: float) -> float:
-    """One turning pass. MachiningDoctor: T = L / (n × Fn)."""
-    if rpm <= 0 or ipr <= 0:
-        raise ValueError("rpm and ipr must be > 0")
-    if length_in < 0:
-        raise ValueError("length_in must be >= 0")
-    return length_in / (rpm * ipr)
+    """One turning pass. T = L / IPM with IPM = RPM × IPR."""
+    return time_from_path(length_in, turning_ipm(rpm, ipr))
 
 
 def turning_time_from_sfm(length_in: float, diameter_in: float, sfm: float, ipr: float) -> float:
-    """One turning pass from SFM. MachiningDoctor: T = (L × π × D) / (12 × Fn × Vc)."""
-    if diameter_in <= 0 or sfm <= 0 or ipr <= 0:
-        raise ValueError("diameter_in, sfm, and ipr must be > 0")
-    if length_in < 0:
-        raise ValueError("length_in must be >= 0")
-    return (length_in * math.pi * diameter_in) / (12.0 * ipr * sfm)
+    """One turning pass from SFM via published RPM = (SFM × 3.82) / D."""
+    rpm = rpm_from_sfm(sfm, diameter_in)
+    return turning_time_min(length_in, rpm, ipr)
 
 
 def turning_mrr(sfm: float, ipr: float, doc_in: float) -> float:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from quote_core.machining import (
@@ -16,12 +14,15 @@ from quote_core.machining import (
 )
 from quote_core.machining.formulas import (
     RPM_SFM_FACTOR,
+    SFM_FROM_RPM_FACTOR,
     interpolate_ipt,
     milling_ipm,
     milling_mrr,
     rpm_from_sfm,
+    sfm_from_rpm,
     time_from_path,
     time_from_volume,
+    turning_ipm,
     turning_mrr,
     turning_time_from_sfm,
     turning_time_min,
@@ -47,33 +48,44 @@ def test_roster_july_27_counts():
     assert mill_env.fourth_axis_diameter_in == 20.0
 
 
-def test_harvey_rpm_formula():
-    # Harvey / Kennametal publish RPM = (SFM × 3.82) / D
-    # Implementation uses 12/π (the exact factor 3.82 approximates).
+def test_published_rpm_uses_3_82():
+    # Kennametal + CNC Optimization: RPM = (SFM × 3.82) / D
     rpm = rpm_from_sfm(200, 0.5)
-    assert rpm == pytest.approx((200 * 12) / (math.pi * 0.5))
-    harvey = (200 * 3.82) / 0.5
-    assert rpm == pytest.approx(harvey, rel=0.001)
-    assert RPM_SFM_FACTOR == pytest.approx(3.82, rel=0.001)
+    assert rpm == pytest.approx((200 * 3.82) / 0.5)
+    assert RPM_SFM_FACTOR == 3.82
+    # CNC Optimization worked example: 6061 SFM 800, 0.5" EM → 6112 RPM
+    assert rpm_from_sfm(800, 0.5) == pytest.approx(6112)
 
 
 def test_milling_ipm_and_mrr_formulas():
     rpm = rpm_from_sfm(200, 0.5)
     ipm = milling_ipm(rpm, 0.003, 4)
-    assert ipm == pytest.approx(rpm * 0.003 * 4)
+    assert ipm == pytest.approx(rpm * 4 * 0.003)
     mrr = milling_mrr(0.125, 0.25, ipm)
-    assert mrr == pytest.approx(0.125 * 0.25 * ipm)
+    assert mrr == pytest.approx(0.25 * 0.125 * ipm)
     assert time_from_path(10, 20) == 0.5
     assert time_from_volume(10, 5) == 2.0
 
 
-def test_turning_formulas_machiningdoctor():
-    # T = L / (n × Fn); also T = (L × π × D) / (12 × Fn × Vc)
-    n = rpm_from_sfm(400, 4.0)
-    t = turning_time_min(6.0, n, 0.012)
-    t2 = turning_time_from_sfm(6.0, 4.0, 400, 0.012)
-    assert t == pytest.approx(t2, rel=1e-9)
-    assert turning_mrr(400, 0.012, 0.100) == pytest.approx(12 * 400 * 0.012 * 0.100)
+def test_turning_ipm_has_no_flute_multiply():
+    rpm = rpm_from_sfm(350, 4.0)
+    ipm = turning_ipm(rpm, 0.012)
+    assert ipm == pytest.approx(rpm * 0.012)
+    assert ipm != pytest.approx(rpm * 0.012 * 4)
+    t = turning_time_min(6.0, rpm, 0.012)
+    assert t == pytest.approx(6.0 / ipm)
+    assert turning_time_from_sfm(6.0, 4.0, 350, 0.012) == pytest.approx(t)
+    assert turning_mrr(350, 0.012, 0.100) == pytest.approx(12 * 350 * 0.012 * 0.100)
+
+
+def test_turning_sfm_check_0_262():
+    # Kennametal: SFM = 0.262 × part diameter × RPM
+    rpm = rpm_from_sfm(350, 4.0)
+    check = sfm_from_rpm(4.0, rpm)
+    assert SFM_FROM_RPM_FACTOR == 0.262
+    assert check == pytest.approx(0.262 * 4.0 * rpm)
+    # Inverse of 3.82 lands within 0.3% of the requested SFM
+    assert check == pytest.approx(350, rel=0.003)
 
 
 def test_ipt_interpolates_harvey_table():
@@ -113,7 +125,9 @@ def test_mill_in_envelope_quote():
     assert result["coating"]["quoted"] is False
     assert any(op["op"] == "face" for op in result["ops"])
     assert any(op["op"] == "drill" for op in result["ops"])
-    assert any(f["code"] == "RATES_PLACEHOLDER" for f in result["flags"])
+    assert any(f["code"] == "SFM_NOT_KANNON_VALIDATED" for f in result["flags"])
+    assert result["material"]["kannon_tooling_validated"] is False
+    assert result["material"]["sfm"] == 350
     blocking = [f for f in result["flags"] if f["blocking"]]
     assert blocking == []
 
@@ -182,6 +196,13 @@ def test_lathe_in_envelope_quote():
     assert result["outside_envelope"] is False
     assert result["machine"]["suggested_class"] == "cnc_lathe"
     assert result["times"]["setup_minutes"] == 20
+    assert result["tool"]["ipm"] == pytest.approx(
+        result["tool"]["rpm"] * result["tool"]["rough_ipr"], abs=0.01
+    )
+    assert result["tool"]["sfm_check"] == pytest.approx(
+        0.262 * 3.5 * result["tool"]["rpm"], abs=0.05
+    )
+    assert any(f["code"] == "SFM_NOT_KANNON_VALIDATED" for f in result["flags"])
     assert any(op["op"] == "rough_turn" for op in result["ops"])
     assert any(op["op"] == "face" for op in result["ops"])
     # 0.25" radial / 0.100" DOC → 3 rough passes
@@ -242,12 +263,25 @@ def test_unknown_material_raises():
         )
 
 
+def test_placeholder_sfm_bands():
+    cfg = load_machining_config()
+    assert cfg.materials["carbon_steel"].mill_sfm == 350
+    assert cfg.materials["carbon_steel"].mill_sfm_min == 300
+    assert cfg.materials["carbon_steel"].mill_sfm_max == 400
+    assert cfg.resolve_material("1018").key == "carbon_steel"
+    assert cfg.materials["aluminum"].mill_sfm == 900
+    assert (cfg.materials["aluminum"].mill_sfm_min, cfg.materials["aluminum"].mill_sfm_max) == (800, 1000)
+    assert cfg.materials["stainless"].mill_sfm == 250
+    assert (cfg.materials["stainless"].mill_sfm_min, cfg.materials["stainless"].mill_sfm_max) == (200, 300)
+    assert cfg.materials["titanium"].mill_sfm == 125
+    assert (cfg.materials["titanium"].mill_sfm_min, cfg.materials["titanium"].mill_sfm_max) == (100, 150)
+
+
 def test_machining_config_sources_are_public():
     cfg = load_machining_config()
     assert cfg.placeholder is True
     urls = [s.get("url") for s in cfg.sources]
-    assert any("harveytool.com" in (u or "") for u in urls)
-    assert any("machiningdoctor.com" in (u or "") for u in urls)
-    assert any("kennametal" in (u or "").lower() for u in urls)
+    assert any("kennametal.com" in (u or "") for u in urls)
+    assert any("cncoptimization.com" in (u or "") for u in urls)
     assert cfg.coating.get("status") == "stub"
     assert cfg.coating.get("enabled") is False

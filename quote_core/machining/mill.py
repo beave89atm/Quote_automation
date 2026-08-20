@@ -211,9 +211,10 @@ def quote_mill(
     if config.placeholder:
         flags.append(
             {
-                "code": "RATES_PLACEHOLDER",
-                "message": "SFM/IPT are Harvey Tool catalog starting points; setup and "
-                "non-cutting factor are placeholders — not Kannon shop times.",
+                "code": "SFM_NOT_KANNON_VALIDATED",
+                "message": "SFM bands are placeholders (1018 300–400, 6061 800–1000, "
+                "304 200–300, Ti 100–150) — not Kannon-tooling-validated. "
+                "Setup minutes and chip-load IPT are also placeholders.",
                 "blocking": False,
             }
         )
@@ -230,6 +231,7 @@ def quote_mill(
             "requested": inp.material,
             "sfm": sfm,
             "sfm_source": mat.mill_source,
+            "kannon_tooling_validated": False,
         },
         "qty": inp.qty,
         "envelope": {
@@ -245,8 +247,11 @@ def quote_mill(
             "ipt": ipt,
             "sfm": sfm,
             "rpm": round(rpm, 2),
+            "rpm_formula": "RPM = (SFM × 3.82) / D",
             "ipm": round(ipm, 4),
+            "ipm_formula": "IPM = RPM × flutes × chip load",
             "mrr_in3_per_min": round(mrr, 4),
+            "mrr_formula": "MRR = WOC × DOC × IPM",
         },
         "ops": ops,
         "times": {

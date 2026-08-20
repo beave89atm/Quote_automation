@@ -26,8 +26,8 @@ Starting CNC / manual roster from the July 27 2026 capabilities list. Add rows o
 
 Published-formula calculator rates. **Placeholder** until Kyle supplies the tooling crib and shop setup times:
 
-- Harvey Tool carbide SFM / IPT for milling
-- Placeholder turning SFM / IPR (replace with insert-box data)
+- Published formulas: RPM = (SFM × 3.82) / D; mill IPM = RPM × flutes × chip load; turn IPM = RPM × IPR; mill MRR = WOC × DOC × IPM; SFM check = 0.262 × D × RPM
+- Placeholder SFM bands (not Kannon-tooling-validated): 1018 300–400, 6061 800–1000, 304 200–300, Ti 100–150
 - Placeholder setup minutes and 1.20 non-cutting factor
 - `coating` stub (powder / zinc not quoted in v0)
 

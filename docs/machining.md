@@ -48,21 +48,29 @@ Example lathe body:
 }
 ```
 
-## Formulas (public)
+## Formulas (public — do not invent shop-specific SFM)
+
+Implemented exactly as published (imperial). D = tool Ø for mill, workpiece Ø for turn.
 
 | Name | Formula | Source |
 |------|---------|--------|
-| RPM | `(SFM × 3.82) / D`  (implemented as `12/π`) | [Harvey Tool](https://www.harveytool.com/resources/general-machining-guidelines), [Kennametal](https://www.kennametal.com/us/en/resources/engineering-calculators/miscellaneous/speed-and-feed.html) |
-| Mill feed | `IPM = RPM × IPT × flutes` | Harvey Tool |
-| Mill MRR | `DOC × WOC × IPM` | [Kennametal milling formulas](https://www1.mscdirect.com/images/solutions/kennametal/millingTechInfoFormulas.pdf) |
-| Mill time | `path / IPM` or `volume / MRR` | same |
-| Turning RPM | `n = 12 × SFM / (π × D)` | [MachiningDoctor](https://www.machiningdoctor.com/calculators/turning-calculators-2/) |
-| Turning time | `T = L / (n × IPR)` | MachiningDoctor |
-| Turning MRR | `12 × SFM × IPR × DOC` | MachiningDoctor |
+| RPM | `RPM = (SFM × 3.82) / D` | [Kennametal Speeds and Feeds](https://www.kennametal.com/us/en/resources/engineering-calculators/miscellaneous/speed-and-feed.html), [CNC Optimization](https://www.cncoptimization.com/resources/guides/cnc-cutting-speed-feed-formulas/) |
+| Mill feed | `IPM = RPM × flutes × chip load` | same two pages |
+| Turn feed | `IPM = RPM × IPR` (no flute multiply) | Kennametal / same chain |
+| Mill MRR | `WOC × DOC × IPM` | CNC Optimization (ap × ae × vf); Kennametal mill MRR |
+| Turning SFM check | `SFM = 0.262 × part diameter × RPM` | Kennametal |
+| Time | mill: `path / IPM` or `volume / MRR`; turn: `L / IPM` | same |
 
-Sandvik is cited for **method** only (material-family turning practice). Grade-specific `vc` stays on the insert box — we did not scrape paywalled catalogs.
+No paywalled catalogs were scraped.
 
-Milling SFM / IPT midpoints come from Harvey Tool’s public carbide end-mill tables. Turning SFM / IPR and all **setup minutes** are labeled **placeholder** in `config/machining.yaml`.
+**Placeholder SFM bands** (not Kannon-tooling-validated; midpoint used until Kyle sends crib data):
+
+| Material | SFM |
+|----------|-----|
+| 1018 / mild steel | 300–400 |
+| 6061 | 800–1000 |
+| 304 | 200–300 |
+| Titanium | 100–150 |
 
 Quoted time:
 

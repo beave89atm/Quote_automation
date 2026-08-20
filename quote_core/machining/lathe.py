@@ -8,6 +8,8 @@ from .formulas import (
     clamp_rpm,
     passes_for_stock,
     rpm_from_sfm,
+    sfm_from_rpm,
+    turning_ipm,
     turning_mrr,
     turning_time_min,
 )
@@ -79,6 +81,8 @@ def quote_lathe(
 
     work_d = max(stock_d, inp.diameter_in)
     rpm, rpm_clamped = clamp_rpm(rpm_from_sfm(sfm, work_d), max_rpm)
+    ipm = turning_ipm(rpm, rough_ipr)
+    sfm_check = sfm_from_rpm(work_d, rpm)
     mrr = turning_mrr(sfm, rough_ipr, rough_doc) if rough_doc > 0 else 0.0
 
     ops: list[dict[str, Any]] = []
@@ -94,8 +98,9 @@ def quote_lathe(
                 "travel_in": round(face_travel, 4),
                 "rpm": round(rpm, 2),
                 "ipr": rough_ipr,
+                "ipm": round(ipm, 4),
                 "cut_minutes": round(t, 4),
-                "formula": "T = (D/2) / (n × IPR)",
+                "formula": "IPM = RPM × IPR; T = (D/2) / IPM",
             }
         )
 
@@ -113,9 +118,10 @@ def quote_lathe(
                 "passes": rough_passes,
                 "rpm": round(rpm, 2),
                 "ipr": rough_ipr,
+                "ipm": round(ipm, 4),
                 "mrr_in3_per_min": round(mrr, 4),
                 "cut_minutes": round(t, 4),
-                "formula": "T = passes × L / (n × IPR)",
+                "formula": "IPM = RPM × IPR (no flute multiply); T = passes × L / IPM",
             }
         )
 
@@ -193,12 +199,13 @@ def quote_lathe(
                 "blocking": False,
             }
         )
-    if mat.lathe_source == "placeholder_catalog" or config.placeholder:
+    if config.placeholder:
         flags.append(
             {
-                "code": "RATES_PLACEHOLDER",
-                "message": "Turning SFM/IPR and setup minutes are placeholder catalog values "
-                "until Kyle supplies insert grades and shop setup times. Not Kannon shop times.",
+                "code": "SFM_NOT_KANNON_VALIDATED",
+                "message": "SFM bands are placeholders (1018 300–400, 6061 800–1000, "
+                "304 200–300, Ti 100–150) — not Kannon-tooling-validated. "
+                "Setup minutes are also placeholders.",
                 "blocking": False,
             }
         )
@@ -215,6 +222,7 @@ def quote_lathe(
             "requested": inp.material,
             "sfm": sfm,
             "sfm_source": mat.lathe_source,
+            "kannon_tooling_validated": False,
         },
         "qty": inp.qty,
         "envelope": {
@@ -224,10 +232,14 @@ def quote_lathe(
         },
         "tool": {
             "sfm": sfm,
+            "sfm_check": round(sfm_check, 2),
+            "sfm_check_formula": "SFM = 0.262 × part diameter × RPM",
             "rough_ipr": rough_ipr,
             "finish_ipr": finish_ipr,
             "rough_doc_in": rough_doc,
             "rpm": round(rpm, 2),
+            "ipm": round(ipm, 4),
+            "ipm_formula": "IPM = RPM × IPR",
             "mrr_in3_per_min": round(mrr, 4),
         },
         "ops": ops,

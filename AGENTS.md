@@ -52,7 +52,7 @@ No lint or typecheck scripts are configured (no ruff/mypy/eslint/tsc).
 - Quoting behavior: prefer `docs/quoting/*.md` before inventing shortcuts.
 - Prefer imperial labels on SecturaFAB line items; do not casually rewrite STEP geometry for units.
 - Imperial cleanup must run **last** in finalize (after settle). Delayed CAD can rewrite Descriptions back to `mm X` if skipped on the success path.
-- Machining calculator: **live** (machine roster + published SFM/RPM/IPM/MRR). Do **not** invent shop-specific times — catalog SFM and setup minutes are placeholders in `config/machining.yaml` until Kyle supplies tooling/rates. Do **not** auto-push mill/lathe lines to SecturaFAB. Do **not** wire Paperless Parts / a geometry engine (`references/machining/VENDOR_DECISION.md`).
+- Machining: **UN-PARKED** (Kyle via CoS, 2026-08-20). July 2026 machine roster is v0; fuller list coming from Kyle. Use published formulas in `quote_core/machining/formulas.py` — do **not** invent shop-specific SFM. Placeholder SFM bands in `config/machining.yaml` are not Kannon-tooling-validated. Do **not** auto-push mill/lathe to SecturaFAB. Do **not** wire Paperless Parts. See `references/machining/VENDOR_DECISION.md`.
 
 ## Definition of done
 

@@ -209,6 +209,7 @@ class MachiningConfig:
                     "mill_sfm": v.mill_sfm,
                     "mill_sfm_range": [v.mill_sfm_min, v.mill_sfm_max],
                     "mill_source": v.mill_source,
+                    "kannon_tooling_validated": False,
                     "lathe_sfm": v.lathe_sfm,
                     "lathe_source": v.lathe_source,
                     "rough_ipr": v.rough_ipr,
