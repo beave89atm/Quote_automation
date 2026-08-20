@@ -10,7 +10,12 @@ from quote_core.bom_confirm import (
     confirm_pdf_bom_against_stp,
     skipped_stp_bom_confirm,
 )
-from quote_core.weld.takeoff import extract_step_assembly_part_counts, run_weld_takeoff
+from quote_core.weld.takeoff import (
+    _normalize_step_part_no,
+    _step_keyword,
+    extract_step_assembly_part_counts,
+    run_weld_takeoff,
+)
 
 
 def _write_minimal_pdf(path: Path, text: str = 'WELDMENT\n1/4" FILLET\n') -> Path:
@@ -91,6 +96,89 @@ def write_synthetic_assembly_step(
         for _i in range(qty):
             lines.append(
                 f"#{nauo}=NEXT_ASSEMBLY_USAGE_OCCURRENCE('NAUO{nauo}','{child_pn}','',#{pdef},#{cdef},$);"
+            )
+            nauo += 1
+
+    lines.extend(["ENDSEC;", "END-ISO-10303-21;"])
+    path.write_text("\n".join(lines) + "\n", encoding="ascii")
+    return path
+
+
+def write_synthetic_solidworks_step(
+    path: Path,
+    *,
+    assembly: str = "102728-1",
+    children: list[tuple[str, int, str]] | None = None,
+    nested: list[tuple[str, str, int, str]] | None = None,
+) -> Path:
+    """
+    SolidWorks-style ISO-10303-21: ``PRODUCT (`` space, FORMATION_WITH_SPECIFIED_SOURCE,
+    and Time names like ``102727 Tube, Round -20744_102727-4``.
+    """
+    children = list(
+        children
+        or [
+            ("102727-4", 2, "102727 Tube, Round -20744_102727-4"),
+            ("102726-1", 1, "102726 Plate -1_102726-1"),
+        ]
+    )
+    nested = list(nested or [])
+    lines = [
+        "ISO-10303-21;",
+        "HEADER;",
+        "FILE_DESCRIPTION(('synthetic solidworks assembly'),'2;1');",
+        f"FILE_NAME('{path.name}','2026-08-20T00:00:00',('test'),('test'),"
+        f"'SolidWorks','','');",
+        "FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));",
+        "ENDSEC;",
+        "DATA;",
+        "#1=APPLICATION_CONTEXT('automotive design');",
+        "#2=APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#1);",
+        "#3=PRODUCT_CONTEXT('',#1,'mechanical');",
+        "#4=PRODUCT_DEFINITION_CONTEXT('part definition',#1,'design');",
+    ]
+    products: dict[str, tuple[int, int]] = {}
+    eid = 10
+
+    def add_product(pn: str, sw_name: str) -> tuple[int, int]:
+        nonlocal eid
+        if pn in products:
+            return products[pn]
+        prod, form, defin = eid, eid + 1, eid + 2
+        eid += 10
+        lines.append(f"#{prod}=PRODUCT ('{sw_name}','{sw_name}','',(#3));")
+        lines.append(
+            f"#{form}=PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE "
+            f"('','',#{prod},.MADE.);"
+        )
+        lines.append(f"#{defin}=PRODUCT_DEFINITION ('design','',#{form},#4);")
+        products[pn] = (prod, defin)
+        return products[pn]
+
+    add_product(assembly, f"102728 Weldment -1_{assembly}")
+    for pn, _qty, sw_name in children:
+        add_product(pn, sw_name)
+    for parent_pn, child_pn, _qty, sw_name in nested:
+        add_product(parent_pn, f"{parent_pn} Sub -1_{parent_pn}")
+        add_product(child_pn, sw_name)
+
+    nauo = 100
+    _asm_prod, asm_def = products[assembly]
+    for pn, qty, sw_name in children:
+        _cprod, cdef = products[pn]
+        for _i in range(qty):
+            lines.append(
+                f"#{nauo}=NEXT_ASSEMBLY_USAGE_OCCURRENCE "
+                f"('NAUO{nauo}','{sw_name}','',#{asm_def},#{cdef},$);"
+            )
+            nauo += 1
+    for parent_pn, child_pn, qty, sw_name in nested:
+        _pprod, pdef = products[parent_pn]
+        _cprod, cdef = products[child_pn]
+        for _i in range(qty):
+            lines.append(
+                f"#{nauo}=NEXT_ASSEMBLY_USAGE_OCCURRENCE "
+                f"('NAUO{nauo}','{sw_name}','',#{pdef},#{cdef},$);"
             )
             nauo += 1
 
@@ -219,3 +307,64 @@ def test_takeoff_with_stp_surfaces_confirm(tmp_path: Path):
     assert confirm.get("mismatch") is True
     assert any("STP/PDF BOM mismatch" in f for f in result.flags)
     assert result.to_dict()["stp_bom_confirm"]["stp_only"]
+
+
+def test_normalize_time_solidworks_product_name():
+    assert (
+        _normalize_step_part_no("102727 Tube, Round -20744_102727-4") == "102727-4"
+    )
+    assert _normalize_step_part_no("P102727-4") == "102727-4"
+    assert _normalize_step_part_no("102728 Weldment -1_102728-1") == "102728-1"
+    # Do not invent a dash from the leading word.
+    assert _normalize_step_part_no("102727") == "102727"
+    assert _normalize_step_part_no("102727") != "10272-7"
+
+
+def test_step_keyword_allows_space_before_paren():
+    assert _step_keyword("PRODUCT ('102727 Tube, Round -20744_102727-4','x','',(#3))") == "PRODUCT"
+    assert _step_keyword("PRODUCT('102727-4','102727-4','',(#3))") == "PRODUCT"
+    assert (
+        _step_keyword(
+            "PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE ('','',#20,.MADE.)"
+        )
+        == "PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE"
+    )
+    assert _step_keyword("PRODUCT_CONTEXT('',#1,'mechanical')") == "PRODUCT_CONTEXT"
+    assert _step_keyword("NEXT_ASSEMBLY_USAGE_OCCURRENCE ('NAUO1','x','',#12,#22,$)") == (
+        "NEXT_ASSEMBLY_USAGE_OCCURRENCE"
+    )
+
+
+def test_solidworks_spaced_product_and_formation_counts_children(tmp_path: Path):
+    stp = write_synthetic_solidworks_step(
+        tmp_path / "102728-1.STEP",
+        children=[
+            ("102727-4", 2, "102727 Tube, Round -20744_102727-4"),
+            ("102726-1", 1, "102726 Plate -1_102726-1"),
+            ("99999-1", 1, "99999 Sub -1_99999-1"),
+        ],
+        nested=[("99999-1", "88888-1", 4, "88888 Nested -1_88888-1")],
+    )
+    parsed = extract_step_assembly_part_counts(stp)
+    assert parsed["method"] == "next_assembly_usage_occurrence"
+    assert parsed["counts"].get("102727-4") == 2
+    assert parsed["counts"].get("102726-1") == 1
+    assert parsed["counts"].get("99999-1") == 1
+    assert "88888-1" not in parsed["counts"]
+    assert "102728-1" not in parsed["counts"]
+    assert parsed["part_number_count"] == 3
+    assert parsed["piece_count"] == 4
+    # Must not collapse to filename-only product_names with 0 children.
+    assert parsed["part_number_count"] > 0
+    assert "10272-7" not in parsed["counts"]
+
+
+def test_solidworks_step_confirm_does_not_pad_pdf(tmp_path: Path):
+    stp = write_synthetic_solidworks_step(tmp_path / "102728-1.STEP")
+    pdf = _rows(("102727-4", 2), ("102726-1", 1))
+    snapshot = [(r.part_no, r.qty) for r in pdf]
+    result = confirm_pdf_bom_against_stp(pdf, extract_step_assembly_part_counts(stp))
+    assert result["skipped"] is False
+    assert {r["part_no"] for r in result["matched"]} == {"102727-4", "102726-1"}
+    assert [(r.part_no, r.qty) for r in pdf] == snapshot
+    assert not any(r.part_no == "88888-1" for r in pdf)

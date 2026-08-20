@@ -550,6 +550,25 @@ def _parse_step_entities(stp_path: Path) -> tuple[dict[int, str], str]:
     return ents, text
 
 
+_STEP_KEYWORD_RE = re.compile(r"^([A-Z][A-Z0-9_]*)\s*\(", re.IGNORECASE)
+# Time / SolidWorks: ``102727 Tube, Round -20744_102727-4`` or ``P102727-4``.
+_STEP_TRAILING_PN_RE = re.compile(
+    r"(?:^|[^A-Z0-9])P?(\d{4,7})\s*[-–—=]\s*(\d{1,3}[A-Z]?)\b",
+    re.IGNORECASE,
+)
+_STEP_ALPHA_PN_RE = re.compile(r"\b([A-Z]{1,3}\d{2}-\d{3,5})\b", re.IGNORECASE)
+_STEP_FORMATION_KWS = {
+    "PRODUCT_DEFINITION_FORMATION",
+    "PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE",
+}
+
+
+def _step_keyword(body: str) -> str:
+    """Entity type, allowing SolidWorks ``PRODUCT (`` spacing."""
+    m = _STEP_KEYWORD_RE.match((body or "").lstrip())
+    return m.group(1).upper() if m else ""
+
+
 def _step_quoted_strings(body: str) -> list[str]:
     return [s.replace("''", "'") for s in re.findall(r"'((?:[^']|'')*)'", body or "")]
 
@@ -559,7 +578,12 @@ def _step_refs(body: str) -> list[int]:
 
 
 def _normalize_step_part_no(raw: str | None) -> str | None:
-    """Pull a shop PN from a STEP PRODUCT / occurrence name."""
+    """Pull a shop PN from a STEP PRODUCT / occurrence name.
+
+    Time SolidWorks names put the dash PN at the end
+    (``102727 Tube, Round -20744_102727-4`` → ``102727-4``). Do not invent a
+    dash from the leading word (``102727`` must not become ``10272-7``).
+    """
     from quote_core.bom import normalize_part_no
 
     if not raw:
@@ -572,22 +596,20 @@ def _normalize_step_part_no(raw: str | None) -> str | None:
     cleaned = cleaned.replace("—", "-").replace("–", "-").replace("=", "-").strip()
     if not cleaned:
         return None
-    token = cleaned.split()[0].strip(" ,;|/\\")
-    dashed = normalize_part_no(token)
-    if dashed:
-        return dashed
-    token_u = re.sub(r"[^A-Z0-9-]", "", token.upper())
-    if re.fullmatch(r"[A-Z]{1,3}\d{2}-\d{3,5}", token_u):
-        return token_u
-    if re.fullmatch(r"\d{5,}", token_u):
-        return token_u
-    # Name like ``102727-4 TUBE, ROUND`` — search the whole string.
-    dashed = normalize_part_no(cleaned)
-    if dashed:
-        return dashed
-    m = re.search(r"\b([A-Z]{1,3}\d{2}-\d{3,5})\b", cleaned.upper())
-    if m:
-        return m.group(1)
+
+    dashed_hits = _STEP_TRAILING_PN_RE.findall(cleaned)
+    if dashed_hits:
+        base, suffix = dashed_hits[-1]
+        token = f"{base}-{suffix.upper()}"
+        return normalize_part_no(token) or token.upper()
+
+    alpha_hits = _STEP_ALPHA_PN_RE.findall(cleaned)
+    if alpha_hits:
+        return alpha_hits[-1].upper()
+
+    compact = re.sub(r"[^A-Z0-9]", "", cleaned.upper())
+    if re.fullmatch(r"\d{5,}", compact):
+        return compact
     return None
 
 
@@ -643,15 +665,17 @@ def extract_step_assembly_part_counts(
     definitions: dict[int, int] = {}
     nauos: list[tuple[int, int, str]] = []
 
+    raw_nauo = 0
     for _eid, body in ents.items():
-        if body.startswith("PRODUCT("):
+        kw = _step_keyword(body)
+        if kw == "PRODUCT":
             strs = _step_quoted_strings(body)
             products[_eid] = (strs[0] if strs else "", strs[1] if len(strs) > 1 else "")
-        elif body.startswith("PRODUCT_DEFINITION_FORMATION("):
+        elif kw in _STEP_FORMATION_KWS:
             refs = _step_refs(body)
             if refs:
                 formations[_eid] = refs[0]
-        elif body.startswith("PRODUCT_DEFINITION("):
+        elif kw == "PRODUCT_DEFINITION":
             refs = _step_refs(body)
             if not refs:
                 continue
@@ -662,8 +686,9 @@ def extract_step_assembly_part_counts(
                 definitions[_eid] = formation
 
     for _eid, body in ents.items():
-        if not body.startswith("NEXT_ASSEMBLY_USAGE_OCCURRENCE"):
+        if _step_keyword(body) != "NEXT_ASSEMBLY_USAGE_OCCURRENCE":
             continue
+        raw_nauo += 1
         refs = _step_refs(body)
         if len(refs) < 2:
             continue
@@ -672,6 +697,12 @@ def extract_step_assembly_part_counts(
         nauo_name = strs[1] if len(strs) > 1 else (strs[0] if strs else "")
         if parent_pd in definitions and child_pd in definitions:
             nauos.append((definitions[parent_pd], definitions[child_pd], nauo_name))
+
+    if raw_nauo and not nauos:
+        notes.append(
+            f"STEP has {raw_nauo} NEXT_ASSEMBLY_USAGE_OCCURRENCE row(s) "
+            "but none linked to PRODUCT via formation — check PRODUCT / FORMATION parse"
+        )
 
     assembly_pn = extract_part_key(source_name) if source_name else None
 
@@ -698,10 +729,16 @@ def extract_step_assembly_part_counts(
                     break
             if not counts:
                 counts[assembly_pn] = 1
-        notes.append(
-            "STEP has no NEXT_ASSEMBLY_USAGE_OCCURRENCE — "
-            "using PRODUCT names at qty 1 each"
-        )
+        if raw_nauo:
+            notes.append(
+                "Falling back to PRODUCT names at qty 1 each "
+                f"(NAUO rows={raw_nauo} were not linked)"
+            )
+        else:
+            notes.append(
+                "STEP has no NEXT_ASSEMBLY_USAGE_OCCURRENCE — "
+                "using PRODUCT names at qty 1 each"
+            )
         return {
             "counts": dict(counts),
             "piece_count": int(sum(counts.values())),
