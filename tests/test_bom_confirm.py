@@ -206,10 +206,14 @@ def test_step_reads_direct_nauo_counts_not_nested(tmp_path: Path):
     )
     parsed = extract_step_assembly_part_counts(stp)
     assert parsed["method"] == "next_assembly_usage_occurrence"
-    assert parsed["counts"] == {"102727-4": 2, "102726-1": 1, "99999-1": 1}
-    assert parsed["piece_count"] == 4
-    assert parsed["part_number_count"] == 3
-    assert "88888-1" not in parsed["counts"]
+    assert parsed["counts"]["102727-4"] == 2
+    assert parsed["counts"]["102726-1"] == 1
+    # 99999-1 is a same-file sub-weldment — keep it and count Time-PN children once.
+    assert parsed["counts"]["99999-1"] == 1
+    assert parsed["counts"]["88888-1"] == 4
+    assert parsed["piece_count"] == 8
+    assert parsed["part_number_count"] == 4
+    assert {r["part_no"] for r in parsed.get("nested") or []} == {"88888-1"}
 
 
 def test_confirm_match_passes(tmp_path: Path):
@@ -315,9 +319,11 @@ def test_normalize_time_solidworks_product_name():
     )
     assert _normalize_step_part_no("P102727-4") == "102727-4"
     assert _normalize_step_part_no("102728 Weldment -1_102728-1") == "102728-1"
+    assert _normalize_step_part_no("Tube, Round -20744_102727_4") == "102727-4"
+    assert _normalize_step_part_no("102727 - 4") == "102727-4"
     # Do not invent a dash from the leading word.
-    assert _normalize_step_part_no("102727") == "102727"
     assert _normalize_step_part_no("102727") != "10272-7"
+    assert _normalize_step_part_no("HEX BOLT 1/2-13") is None
 
 
 def test_step_keyword_allows_space_before_paren():
@@ -350,13 +356,91 @@ def test_solidworks_spaced_product_and_formation_counts_children(tmp_path: Path)
     assert parsed["counts"].get("102727-4") == 2
     assert parsed["counts"].get("102726-1") == 1
     assert parsed["counts"].get("99999-1") == 1
-    assert "88888-1" not in parsed["counts"]
+    assert parsed["counts"].get("88888-1") == 4
     assert "102728-1" not in parsed["counts"]
-    assert parsed["part_number_count"] == 3
-    assert parsed["piece_count"] == 4
+    assert parsed["part_number_count"] == 4
+    assert parsed["piece_count"] == 8
+    assert {r["part_no"] for r in parsed.get("nested") or []} == {"88888-1"}
     # Must not collapse to filename-only product_names with 0 children.
     assert parsed["part_number_count"] > 0
     assert "10272-7" not in parsed["counts"]
+
+
+def test_skipped_name_recovery_underscore_and_shape(tmp_path: Path):
+    """Recover Time PNs from underscore / SHAPE_REPRESENTATION names; dump skips."""
+    lines = [
+        "ISO-10303-21;",
+        "HEADER;",
+        "FILE_DESCRIPTION(('synthetic'),'2;1');",
+        "FILE_NAME('102728-1.STEP','2026-08-20T00:00:00',('t'),('t'),'SolidWorks','','');",
+        "FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));",
+        "ENDSEC;",
+        "DATA;",
+        "#1=APPLICATION_CONTEXT('automotive design');",
+        "#2=APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#1);",
+        "#3=PRODUCT_CONTEXT('',#1,'mechanical');",
+        "#4=PRODUCT_DEFINITION_CONTEXT('part definition',#1,'design');",
+        "#10=PRODUCT ('102728 Weldment -1_102728-1','102728 Weldment -1_102728-1','',(#3));",
+        "#11=PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE ('','',#10,.MADE.);",
+        "#12=PRODUCT_DEFINITION ('design','',#11,#4);",
+        # Underscore PN — previously unparseable if dash form is missing.
+        "#20=PRODUCT ('Tube, Round -20744_102727_4','Tube, Round -20744_102727_4','',(#3));",
+        "#21=PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE ('','',#20,.MADE.);",
+        "#22=PRODUCT_DEFINITION ('design','',#21,#4);",
+        # PRODUCT strings have no PN; SHAPE_REPRESENTATION holds the Time name.
+        "#30=PRODUCT ('Imported1','Imported1','',(#3));",
+        "#31=PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE ('','',#30,.MADE.);",
+        "#32=PRODUCT_DEFINITION ('design','',#31,#4);",
+        "#33=PRODUCT_DEFINITION_SHAPE ('','',#32);",
+        "#34=SHAPE_REPRESENTATION ('102725 Plate -9_102725-1',(#1),#1);",
+        "#35=SHAPE_DEFINITION_REPRESENTATION (#33,#34);",
+        # Hardware — must stay skipped, not invented.
+        "#40=PRODUCT ('HEX BOLT 1/2-13','HEX BOLT 1/2-13','',(#3));",
+        "#41=PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE ('','',#40,.MADE.);",
+        "#42=PRODUCT_DEFINITION ('design','',#41,#4);",
+        "#100=NEXT_ASSEMBLY_USAGE_OCCURRENCE ('NAUO1','Tube, Round -20744_102727_4','',#12,#22,$);",
+        "#101=NEXT_ASSEMBLY_USAGE_OCCURRENCE ('NAUO2','Tube, Round -20744_102727_4','',#12,#22,$);",
+        "#102=NEXT_ASSEMBLY_USAGE_OCCURRENCE ('NAUO3','Imported1','',#12,#32,$);",
+        "#103=NEXT_ASSEMBLY_USAGE_OCCURRENCE ('NAUO4','HEX BOLT 1/2-13','',#12,#42,$);",
+        "ENDSEC;",
+        "END-ISO-10303-21;",
+    ]
+    stp = tmp_path / "102728-1.STEP"
+    stp.write_text("\n".join(lines) + "\n", encoding="ascii")
+    parsed = extract_step_assembly_part_counts(stp)
+    assert parsed["method"] == "next_assembly_usage_occurrence"
+    assert parsed["counts"].get("102727-4") == 2
+    assert parsed["counts"].get("102725-1") == 1
+    assert "10272-7" not in parsed["counts"]
+    assert parsed["skipped_count"] == 1
+    raw = parsed["skipped_names"][0]
+    assert "HEX BOLT" in (raw.get("product_name") or raw.get("nauo_name") or "")
+
+
+def test_nested_weldment_children_not_vanished_or_double_counted(tmp_path: Path):
+    stp = write_synthetic_solidworks_step(
+        tmp_path / "102728-1.STEP",
+        children=[
+            ("102727-4", 2, "102727 Tube, Round -20744_102727-4"),
+            ("102711-1", 1, "102711 Weldment -1_102711-1"),
+        ],
+        nested=[
+            ("102711-1", "102712-1", 2, "102712 Plate -1_102712-1"),
+            ("102711-1", "102713-1", 1, "102713 Gusset -1_102713-1"),
+        ],
+    )
+    parsed = extract_step_assembly_part_counts(stp)
+    assert parsed["counts"].get("102727-4") == 2
+    assert parsed["counts"].get("102711-1") == 1
+    assert parsed["counts"].get("102712-1") == 2
+    assert parsed["counts"].get("102713-1") == 1
+    assert parsed["piece_count"] == 6
+    assert parsed["part_number_count"] == 4
+    nested_pns = {r["part_no"] for r in parsed.get("nested") or []}
+    assert nested_pns == {"102712-1", "102713-1"}
+    assert all(r["parent"] == "102711-1" for r in parsed["nested"])
+    # Do not treat nested qty as a second copy of the weldment itself.
+    assert parsed["counts"]["102711-1"] == 1
 
 
 def test_solidworks_step_confirm_does_not_pad_pdf(tmp_path: Path):

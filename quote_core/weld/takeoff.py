@@ -551,9 +551,10 @@ def _parse_step_entities(stp_path: Path) -> tuple[dict[int, str], str]:
 
 
 _STEP_KEYWORD_RE = re.compile(r"^([A-Z][A-Z0-9_]*)\s*\(", re.IGNORECASE)
-# Time / SolidWorks: ``102727 Tube, Round -20744_102727-4`` or ``P102727-4``.
+# Time / SolidWorks: ``102727 Tube, Round -20744_102727-4``, ``P102727-4``,
+# spaces around the dash, or a trailing underscore PN ``..._102727_4``.
 _STEP_TRAILING_PN_RE = re.compile(
-    r"(?:^|[^A-Z0-9])P?(\d{4,7})\s*[-–—=]\s*(\d{1,3}[A-Z]?)\b",
+    r"(?:^|[^A-Z0-9])P?(\d{4,7})\s*[-–—=_]\s*(\d{1,3}[A-Z]?)\b",
     re.IGNORECASE,
 )
 _STEP_ALPHA_PN_RE = re.compile(r"\b([A-Z]{1,3}\d{2}-\d{3,5})\b", re.IGNORECASE)
@@ -561,6 +562,15 @@ _STEP_FORMATION_KWS = {
     "PRODUCT_DEFINITION_FORMATION",
     "PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE",
 }
+_STEP_SHAPE_KWS = {
+    "SHAPE_REPRESENTATION",
+    "ADVANCED_BREP_SHAPE_REPRESENTATION",
+    "MANIFOLD_SURFACE_SHAPE_REPRESENTATION",
+}
+_ASSEMBLY_NAME_RE = re.compile(
+    r"\b(WELDMENTS?|ASSEMBL(?:Y|IES)|ASSY|ASSEM)\b",
+    re.IGNORECASE,
+)
 
 
 def _step_keyword(body: str) -> str:
@@ -607,18 +617,78 @@ def _normalize_step_part_no(raw: str | None) -> str | None:
     if alpha_hits:
         return alpha_hits[-1].upper()
 
+    # Entire string is already a bare shop PN (MAC 80341690). Do not dash-invent
+    # a leading word from a long SolidWorks title.
     compact = re.sub(r"[^A-Z0-9]", "", cleaned.upper())
-    if re.fullmatch(r"\d{5,}", compact):
-        return compact
+    if cleaned.strip() and compact == re.sub(r"[^A-Z0-9]", "", cleaned.upper()):
+        if re.fullmatch(r"\d{5,}", compact) and re.fullmatch(r"\d+", cleaned.strip()):
+            return compact
     return None
 
 
-def _pn_from_product_fields(prod_id: str, prod_name: str) -> str | None:
-    for raw in (prod_id, prod_name):
+def _pn_from_strings(*raws: str | None) -> str | None:
+    for raw in raws:
+        if not raw:
+            continue
+        pn = _normalize_step_part_no(raw)
+        if pn and "-" in pn:
+            return pn
+        if pn and re.fullmatch(r"[A-Z]{1,3}\d{2}-\d{3,5}", pn):
+            return pn
+    for raw in raws:
+        if not raw:
+            continue
         pn = _normalize_step_part_no(raw)
         if pn:
             return pn
     return None
+
+
+def _pn_from_product_fields(prod_id: str, prod_name: str) -> str | None:
+    return _pn_from_strings(prod_id, prod_name)
+
+
+def _looks_like_named_assembly(*raws: str | None) -> bool:
+    blob = " ".join(str(r) for r in raws if r)
+    return bool(_ASSEMBLY_NAME_RE.search(blob))
+
+
+def _shape_names_by_product(ents: dict[int, str], definitions: dict[int, int]) -> dict[int, list[str]]:
+    """PRODUCT eid → SHAPE_REPRESENTATION names (SolidWorks often stores the PN here)."""
+    pds_to_pd: dict[int, int] = {}
+    rep_names: dict[int, str] = {}
+    for eid, body in ents.items():
+        kw = _step_keyword(body)
+        if kw == "PRODUCT_DEFINITION_SHAPE":
+            refs = _step_refs(body)
+            if refs:
+                pds_to_pd[eid] = refs[-1]
+        elif kw in _STEP_SHAPE_KWS:
+            strs = _step_quoted_strings(body)
+            if strs and strs[0]:
+                rep_names[eid] = strs[0]
+
+    out: dict[int, list[str]] = {}
+    for _eid, body in ents.items():
+        if _step_keyword(body) != "SHAPE_DEFINITION_REPRESENTATION":
+            continue
+        refs = _step_refs(body)
+        if len(refs) < 2:
+            continue
+        pds, rep = refs[0], refs[1]
+        pd = pds_to_pd.get(pds)
+        name = rep_names.get(rep)
+        if not name:
+            continue
+        product_eid = definitions.get(pd) if pd else None
+        if product_eid is None and pd in definitions:
+            product_eid = definitions[pd]
+        if product_eid is None:
+            continue
+        out.setdefault(product_eid, [])
+        if name not in out[product_eid]:
+            out[product_eid].append(name)
+    return out
 
 
 def extract_step_assembly_part_counts(
@@ -632,8 +702,10 @@ def extract_step_assembly_part_counts(
 
     Uses PRODUCT → PRODUCT_DEFINITION_FORMATION → PRODUCT_DEFINITION
     plus NEXT_ASSEMBLY_USAGE_OCCURRENCE instance rows (same entity map as
-    ``_parse_stp_boxes``). Nested children of a sub-assembly in the same file
-    are not exploded — only direct children of the top-level product.
+    ``_parse_stp_boxes``). Direct children of the quoted top-level product
+    are counted. A same-file child that is itself a named weldment/assembly
+    is exploded one level when its children have Time PNs (labeled nested;
+    parent is kept; each NAUO edge is counted once).
     """
     from quote_core.drawing_library import extract_part_key
 
@@ -660,7 +732,7 @@ def extract_step_assembly_part_counts(
             "notes": ["STEP has no entities"],
         }
 
-    products: dict[int, tuple[str, str]] = {}
+    products: dict[int, tuple[str, str, str]] = {}
     formations: dict[int, int] = {}
     definitions: dict[int, int] = {}
     nauos: list[tuple[int, int, str]] = []
@@ -670,7 +742,11 @@ def extract_step_assembly_part_counts(
         kw = _step_keyword(body)
         if kw == "PRODUCT":
             strs = _step_quoted_strings(body)
-            products[_eid] = (strs[0] if strs else "", strs[1] if len(strs) > 1 else "")
+            products[_eid] = (
+                strs[0] if strs else "",
+                strs[1] if len(strs) > 1 else "",
+                strs[2] if len(strs) > 2 else "",
+            )
         elif kw in _STEP_FORMATION_KWS:
             refs = _step_refs(body)
             if refs:
@@ -705,12 +781,18 @@ def extract_step_assembly_part_counts(
         )
 
     assembly_pn = extract_part_key(source_name) if source_name else None
+    shape_names = _shape_names_by_product(ents, definitions)
 
-    def product_pn(product_eid: int) -> str | None:
-        if product_eid not in products:
-            return None
-        pid, pname = products[product_eid]
-        return _pn_from_product_fields(pid, pname)
+    def product_strings(product_eid: int) -> list[str]:
+        out: list[str] = []
+        if product_eid in products:
+            pid, pname, pdesc = products[product_eid]
+            out.extend([pid, pname, pdesc])
+        out.extend(shape_names.get(product_eid) or [])
+        return [s for s in out if s]
+
+    def product_pn(product_eid: int, *extra: str | None) -> str | None:
+        return _pn_from_strings(*product_strings(product_eid), *extra)
 
     if not nauos:
         # Single-solid / no occurrence graph: unique PRODUCT PNs (minus assembly).
@@ -746,6 +828,9 @@ def extract_step_assembly_part_counts(
             "assembly_pn": assembly_pn,
             "method": "product_names" if counts else None,
             "notes": notes,
+            "skipped_names": [],
+            "skipped_count": 0,
+            "nested": [],
         }
 
     child_ids = {child for _parent, child, _name in nauos}
@@ -762,17 +847,68 @@ def extract_step_assembly_part_counts(
         notes.append("Could not isolate a single top-level STEP product — used all NAUO parents")
 
     root_set = set(roots)
-    counts = Counter()
+    children_of: dict[int, list[tuple[int, str]]] = {}
+    for parent, child, nauo_name in nauos:
+        children_of.setdefault(parent, []).append((child, nauo_name))
+
+    counts: Counter[str] = Counter()
+    nested_rows: list[dict[str, Any]] = []
+    skipped_names: list[dict[str, str]] = []
+
+    def add_count(pn: str, qty: int = 1, *, parent_pn: str | None = None) -> None:
+        if not pn or (assembly_pn and pn == assembly_pn):
+            return
+        counts[pn] += qty
+        if parent_pn:
+            nested_rows.append(
+                {"part_no": pn, "qty": qty, "parent": parent_pn, "nested": True}
+            )
+
+    def skip_record(child: int, nauo_name: str) -> None:
+        pid, pname, pdesc = products.get(child) or ("", "", "")
+        skipped_names.append(
+            {
+                "product_id": pid,
+                "product_name": pname,
+                "product_desc": pdesc,
+                "nauo_name": nauo_name or "",
+                "shape_names": "; ".join(shape_names.get(child) or []),
+            }
+        )
+
+    def child_time_instances(parent_eid: int) -> list[str]:
+        found: list[str] = []
+        for grand, gname in children_of.get(parent_eid) or []:
+            gpn = product_pn(grand, gname)
+            if gpn and not (assembly_pn and gpn == assembly_pn):
+                found.append(gpn)
+        return found
+
     for parent, child, nauo_name in nauos:
         if parent not in root_set:
             continue
-        pn = product_pn(child) or _normalize_step_part_no(nauo_name)
+        pn = product_pn(child, nauo_name)
+        child_names = product_strings(child) + [nauo_name]
+        kids = child_time_instances(child)
+        if kids and (_looks_like_named_assembly(*child_names) or bool(pn)):
+            parent_label = pn or next((n for n in child_names if n), f"#{child}")
+            if pn:
+                add_count(pn, 1)
+            else:
+                skip_record(child, nauo_name)
+            for gpn in kids:
+                add_count(gpn, 1, parent_pn=parent_label)
+            continue
         if not pn:
-            notes.append(f"Skipped NAUO child #{child} (no parseable part number)")
+            skip_record(child, nauo_name)
             continue
-        if assembly_pn and pn == assembly_pn:
-            continue
-        counts[pn] += 1
+        add_count(pn, 1)
+
+    if skipped_names:
+        notes.append(
+            f"Skipped {len(skipped_names)} top-level NAUO child instance(s) "
+            "(no parseable Time PN)"
+        )
 
     return {
         "counts": dict(counts),
@@ -781,6 +917,9 @@ def extract_step_assembly_part_counts(
         "assembly_pn": assembly_pn or (product_pn(roots[0]) if roots else None),
         "method": "next_assembly_usage_occurrence",
         "notes": notes,
+        "skipped_names": skipped_names,
+        "skipped_count": len(skipped_names),
+        "nested": nested_rows,
     }
 
 

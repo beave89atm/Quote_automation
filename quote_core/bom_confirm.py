@@ -80,6 +80,9 @@ def skipped_stp_bom_confirm(reason: str) -> dict[str, Any]:
         "piece_count_agree": False,
         "unique_pn_count_agree": False,
         "mismatch": False,
+        "skipped_names": [],
+        "skipped_count": 0,
+        "nested": [],
     }
 
 
@@ -164,6 +167,23 @@ def confirm_pdf_bom_against_stp(
         for n in stp_counts.get("notes") or []:
             if n and n not in notes:
                 notes.append(n)
+        skipped = list(stp_counts.get("skipped_names") or [])
+        if skipped:
+            shown = []
+            for row in skipped[:24]:
+                if not isinstance(row, dict):
+                    continue
+                label = (
+                    row.get("product_name")
+                    or row.get("nauo_name")
+                    or row.get("shape_names")
+                    or row.get("product_id")
+                    or ""
+                )
+                if label:
+                    shown.append(str(label))
+            if shown:
+                notes.append("Skipped NAUO/PRODUCT names: " + " | ".join(shown))
     if not pdf_map and stp_map:
         notes.append(
             f"PDF BOM empty — STP listed {len(stp_map)} PN(s) (not applied to the drawing BOM)"
@@ -187,4 +207,13 @@ def confirm_pdf_bom_against_stp(
         "mismatch": mismatch,
         "notes": notes,
         "stp_method": (stp_counts or {}).get("method") if isinstance(stp_counts, dict) else None,
+        "skipped_names": list((stp_counts or {}).get("skipped_names") or [])
+        if isinstance(stp_counts, dict)
+        else [],
+        "skipped_count": int((stp_counts or {}).get("skipped_count") or 0)
+        if isinstance(stp_counts, dict)
+        else 0,
+        "nested": list((stp_counts or {}).get("nested") or [])
+        if isinstance(stp_counts, dict)
+        else [],
     }
