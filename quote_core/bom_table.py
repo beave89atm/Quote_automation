@@ -56,6 +56,18 @@ _HEADER_SKIP = frozenset(
     }
 )
 
+# OCR / native lines with no pipes: ``2 BB 102727-4 TUBE, ROUND``
+_ROW_BLOB_RE = re.compile(
+    r"^(?:(?P<qty>\d{1,3})\s+)?"
+    r"(?P<item>[A-Za-z]{1,2})\s+"
+    r"(?P<part>\d{4,7}(?:\s*[-–—=]\s*\d{1,3}[A-Za-z]?)?)\s*"
+    r"(?P<desc>.*)$",
+)
+_HEADER_FOUND_NOTE = (
+    "LIST OF MATERIAL header found but no table rows parsed "
+    "— flag review; do not use whole-page regex or pad from nested files"
+)
+
 
 def time_item_letters(*, through: str = "BC") -> list[str]:
     """A–Z skipping I/O, then AA–AZ skipping I/O, then BA, BB, BC, …"""
@@ -121,12 +133,32 @@ class MaterialListLayout:
         return len(self.qty_cols) > 1 or bool(dashes)
 
 
+def material_list_header_seen(bom: Any) -> bool:
+    """True when a LOM / QTY+ITEM+PART grid header was found (even if 0 rows)."""
+    if bom is None:
+        return False
+    method = getattr(bom, "method", None)
+    if method and str(method).startswith("table_"):
+        return True
+    blob = " ".join(getattr(bom, "notes", None) or []).lower()
+    if "header found" in blob and "list of material" in blob:
+        return True
+    if "qty/item/part header" in blob:
+        return True
+    return False
+
+
 def detect_material_list_header(cells: Sequence[str]) -> MaterialListLayout | None:
     """
     Detect a header row such as ``QTY | ITEM | PART NO. | DESCRIPTION``
     or ``-4 | -3 | -2 | -1 | ITEM | PART NO. | DESCRIPTION``.
     """
-    tokens = [_norm_header_token(c) for c in cells if str(c or "").strip()]
+    raw = [str(c or "").strip() for c in cells if str(c or "").strip()]
+    if len(raw) == 1 and re.search(r"\bQTY\b", raw[0], re.I) and re.search(
+        r"\bITEM\b", raw[0], re.I
+    ):
+        raw = raw[0].split()
+    tokens = [_norm_header_token(c) for c in raw if c]
     if not tokens:
         return None
     joined = " ".join(tokens)
@@ -218,6 +250,25 @@ def _selected_qty(
     return max(1, qty), True
 
 
+def _tokenize_row_blob(blob: str) -> list[str]:
+    """Split an undelimited OCR/native line into qty / item / part / description."""
+    raw = str(blob or "").strip()
+    if not raw:
+        return []
+    m = _ROW_BLOB_RE.match(raw)
+    if not m:
+        return raw.split()
+    out: list[str] = []
+    if m.group("qty"):
+        out.append(m.group("qty"))
+    out.append(m.group("item"))
+    out.append(re.sub(r"\s+", "", m.group("part")))
+    desc = (m.group("desc") or "").strip()
+    if desc:
+        out.append(desc)
+    return out
+
+
 def _split_row_fields(
     cells: Sequence[str],
     layout: MaterialListLayout,
@@ -226,6 +277,12 @@ def _split_row_fields(
     tokens = [str(c or "").strip() for c in cells if str(c or "").strip()]
     if not tokens:
         return [], "", "", ""
+    if len(tokens) == 1:
+        tokens = _tokenize_row_blob(tokens[0])
+        if not tokens:
+            return [], "", "", ""
+
+    from quote_core.bom import normalize_part_no
 
     # Prefer finding ITEM then PART, with qty cells to the left of ITEM.
     item_idx = None
@@ -236,14 +293,25 @@ def _split_row_fields(
     if item_idx is None:
         return [], "", "", ""
 
-    qty_cells = tokens[:item_idx]
-    rest = tokens[item_idx + 1 :]
     item = tokens[item_idx].upper()
+    rest = tokens[item_idx + 1 :]
+    # OCR often splits BB into B | B before the part number.
+    if (
+        len(item) == 1
+        and rest
+        and is_material_list_item(rest[0])
+        and len(str(rest[0])) == 1
+        and len(rest) >= 2
+        and (normalize_part_no(rest[1]) or re.match(r"^\d{4,7}", rest[1]))
+    ):
+        glued_item = item + str(rest[0]).upper()
+        if is_material_list_item(glued_item):
+            item = glued_item
+            rest = rest[1:]
+    qty_cells = tokens[:item_idx]
     part = ""
     desc_parts: list[str] = []
     if rest:
-        from quote_core.bom import normalize_part_no
-
         part = normalize_part_no(rest[0]) or rest[0]
         desc_parts = rest[1:]
         # PART NO sometimes split: 102727 / -4
@@ -323,9 +391,9 @@ def parse_material_list_cells(
     )
     if not parsed:
         return BomResult(
-            method=None,
+            method="table_material_list",
             confidence=0.0,
-            notes=notes or ["LIST OF MATERIAL header found but no table rows parsed"],
+            notes=notes or [_HEADER_FOUND_NOTE],
         )
     from quote_core.bom_config import format_bom_config_label
 
@@ -374,6 +442,9 @@ def _split_delimited_line(line: str) -> list[str]:
     # Two-or-more spaces as cell boundary (structured text fixture).
     if re.search(r"\s{2,}", raw):
         return [c.strip() for c in re.split(r"\s{2,}", raw) if c.strip()]
+    blob = _tokenize_row_blob(raw)
+    if len(blob) >= 3 and is_material_list_item(blob[0] if not blob[0].isdigit() else blob[1]):
+        return blob
     return [raw]
 
 
@@ -396,7 +467,7 @@ def parse_material_list_text(text: str | None, *, bom_config: str | None = None)
             break
     if layout is None or header_idx is None:
         return BomResult(
-            method=None,
+            method="table_material_list" if _TITLE_RE.search(text or "") else None,
             confidence=0.0,
             notes=["LIST OF MATERIAL title found but no QTY/ITEM/PART header row"],
         )
@@ -539,11 +610,66 @@ def _assign_row_cells(
     return qty_cells + [item, part, desc]
 
 
+def _find_header_in_word_rows(
+    rows: list[list[dict[str, Any]]],
+) -> tuple[int, MaterialListLayout, list[dict[str, Any]]] | None:
+    for i, row in enumerate(rows):
+        layout = _layout_from_header_words(row)
+        if layout:
+            return i, layout, row
+    # Stacked Time headers can sit on two consecutive y-clusters.
+    for i in range(len(rows) - 1):
+        combined = list(rows[i]) + list(rows[i + 1])
+        layout = _layout_from_header_words(combined)
+        if layout:
+            return i, layout, combined
+    return None
+
+
+def _table_band_words(
+    words: list[dict[str, Any]],
+    layout: MaterialListLayout,
+) -> list[dict[str, Any]]:
+    """Keep words in the QTY…DESCRIPTION x-range (right-side Time grid)."""
+    xs = list(layout.qty_xs)
+    for extra in (layout.item_x, layout.part_x, layout.desc_x):
+        if extra is not None:
+            xs.append(float(extra))
+    if not xs:
+        return words
+    x_min = min(xs) - 36.0
+    x_max = max(xs) + 220.0
+    band = [
+        w
+        for w in words
+        if x_min <= (float(w.get("x0", 0)) + float(w.get("x1", 0))) / 2.0 <= x_max
+    ]
+    return band or words
+
+
+def _cells_from_word_row(
+    row: list[dict[str, Any]],
+    layout: MaterialListLayout,
+) -> list[str]:
+    assigned = _assign_row_cells(row, layout)
+    qty_cells, item, part, desc = _split_row_fields(assigned, layout)
+    if item and part:
+        return list(qty_cells) + [item, part, desc]
+    # Loose: ignore column x and read left-to-right tokens on this y-row.
+    tokens = [str(w.get("text") or "").strip() for w in sorted(row, key=lambda z: z["x0"])]
+    tokens = [t for t in tokens if t]
+    qty_cells, item, part, desc = _split_row_fields(tokens, layout)
+    if item:
+        return list(qty_cells) + [item, part, desc]
+    return tokens
+
+
 def parse_material_list_words(
     words: list[dict[str, Any]],
     *,
     bom_config: str | None = None,
     y_tol: float = 8.0,
+    layout: MaterialListLayout | None = None,
 ) -> Any:
     """Cluster positioned words into cells, then parse the grid."""
     from quote_core.bom import BomResult
@@ -553,21 +679,48 @@ def parse_material_list_words(
 
     rows = cluster_word_rows(words, y_tol=y_tol)
     header_idx = None
-    layout = None
-    for i, row in enumerate(rows):
-        layout = _layout_from_header_words(row)
-        if layout:
-            header_idx = i
-            break
-    if layout is None or header_idx is None:
-        return BomResult(method=None, confidence=0.0, notes=["No QTY/ITEM/PART header in word grid"])
+    header_words: list[dict[str, Any]] = []
+    if layout is None:
+        found = _find_header_in_word_rows(rows)
+        if found:
+            header_idx, layout, header_words = found
+        else:
+            return BomResult(
+                method=None,
+                confidence=0.0,
+                notes=["No QTY/ITEM/PART header in word grid"],
+            )
+        band = _table_band_words(words, layout)
+        if len(band) < len(words):
+            # Dense 51-row Time grids need a tighter y cluster inside the band.
+            rows = cluster_word_rows(band, y_tol=min(y_tol, 6.5))
+            found = _find_header_in_word_rows(rows)
+            if found:
+                header_idx, layout, header_words = found
+    else:
+        header_idx = -1
+        rows = cluster_word_rows(_table_band_words(words, layout), y_tol=min(y_tol, 6.5))
 
-    header_cells = [str(w.get("text") or "") for w in _merge_header_words(rows[header_idx])]
-    above_cells = [_assign_row_cells(r, layout) for r in rows[:header_idx]]
-    below_cells = [_assign_row_cells(r, layout) for r in rows[header_idx + 1 :]]
-    parsed_below = parse_material_list_cells(below_cells, bom_config=bom_config, header=header_cells)
-    parsed_above = parse_material_list_cells(above_cells, bom_config=bom_config, header=header_cells)
-    chosen = parsed_above if len(parsed_above.rows) > len(parsed_below.rows) else parsed_below
+    header_cells = [str(w.get("text") or "") for w in _merge_header_words(header_words)]
+    if not header_cells:
+        header_cells = list(layout.headers) or ["QTY", "ITEM", "PART NO.", "DESCRIPTION"]
+    data_rows = rows if header_idx < 0 else rows[:header_idx] + rows[header_idx + 1 :]
+    if header_idx >= 0:
+        above_cells = [_cells_from_word_row(r, layout) for r in rows[:header_idx]]
+        below_cells = [_cells_from_word_row(r, layout) for r in rows[header_idx + 1 :]]
+        parsed_below = parse_material_list_cells(
+            below_cells, bom_config=bom_config, header=header_cells
+        )
+        parsed_above = parse_material_list_cells(
+            above_cells, bom_config=bom_config, header=header_cells
+        )
+        chosen = parsed_above if len(parsed_above.rows) > len(parsed_below.rows) else parsed_below
+    else:
+        chosen = parse_material_list_cells(
+            [_cells_from_word_row(r, layout) for r in data_rows],
+            bom_config=bom_config,
+            header=header_cells,
+        )
     if chosen.rows:
         chosen.notes = [
             "Read LIST OF MATERIAL as table cells (not whole-page regex)",
@@ -576,4 +729,6 @@ def parse_material_list_words(
         for row in chosen.rows:
             if row.source == "table_material_list":
                 row.source = "table_material_list_cells"
+    elif not chosen.notes:
+        chosen.notes = [_HEADER_FOUND_NOTE]
     return chosen

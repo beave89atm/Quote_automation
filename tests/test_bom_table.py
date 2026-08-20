@@ -7,6 +7,7 @@ from pathlib import Path
 from quote_core.bom import extract_bom, extract_bom_from_ocr_time_style
 from quote_core.bom_table import (
     is_material_list_item,
+    material_list_header_seen,
     parse_material_list_cells,
     parse_material_list_text,
     parse_material_list_words,
@@ -254,3 +255,112 @@ def test_pdf_dash_columns_quote_minus_1_only(tmp_path: Path):
     assert by_item["C"].qty == 1
     assert by_item["B"].part_no == "16697-2"
     assert bom.piece_count == 2
+
+
+def test_undelimited_ocr_line_reads_bb_cells():
+    """Live OCR often emits a row as one blob, not pipe-delimited cells."""
+    text = (
+        "LIST OF MATERIAL\n"
+        "QTY ITEM PART NO. DESCRIPTION\n"
+        "1 A 102800-1 PLATE\n"
+        "2 BB 102727-4 TUBE, ROUND\n"
+        "1 BC 102850-1 CAP\n"
+    )
+    bom = parse_material_list_text(text)
+    by_item = {r.item: r for r in bom.rows}
+    assert by_item["BB"].qty == 2
+    assert by_item["BB"].part_no == _BB_PART
+    assert "TUBE" in by_item["BB"].description.upper()
+
+
+def _write_lom_page(doc, headers: list[str], rows: list[list[str]], *, title: str) -> None:
+    import fitz
+
+    row_h = 11
+    height = 80 + (len(rows) + 2) * row_h + 40
+    page = doc.new_page(width=792, height=max(1224, height))
+    page.insert_text((40, 28), title, fontsize=10)
+    page.insert_text((40, 42), "LIST OF MATERIAL", fontsize=10)
+    xs = [360, 410, 460, 560]
+    if len(headers) == 5:
+        xs = [320, 370, 420, 480, 580]
+    y = 64
+    for i, cell in enumerate(headers):
+        page.insert_text((xs[i], y), cell, fontsize=8)
+    for row in rows:
+        y += row_h
+        for i, cell in enumerate(row):
+            page.insert_text((xs[i], y), str(cell), fontsize=8)
+
+
+def test_lom_header_on_page_4_of_five_page_pdf(tmp_path: Path):
+    """102728-1 live PDF: LOM is on a later sheet, not page 0 / first two."""
+    import fitz
+
+    items = _platform_items()
+    data_rows = []
+    for i, item in enumerate(items):
+        if item == "BB":
+            data_rows.append(["2", "BB", _BB_PART, _BB_DESC])
+        else:
+            data_rows.append(["1", item, f"1028{i:02d}-1", f"COMPONENT {item}"])
+
+    pdf = tmp_path / "Time 102728- Weldment.pdf"
+    doc = fitz.open()
+    for i in range(4):
+        page = doc.new_page(width=792, height=612)
+        page.insert_text((72, 72), f"ISO VIEW SHEET {i + 1}  WELDMENT PLATFORM  NO BOM HERE")
+        # Page-0 bait the old single-letter regex would keep (A,D,E,O,P).
+        if i == 0:
+            page.insert_text((72, 120), "2 | A | 35122-1\n1 | D | 29754-2\n2 | E | 29754-3")
+            page.insert_text((72, 160), "1 | O | 99999-1\n1 | P | 88888-1")
+    _write_lom_page(
+        doc,
+        ["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
+        data_rows,
+        title="WELDMENT, PLATFORM  102728-1  TIME MANUFACTURING  SHEET 1 OF 2",
+    )
+    assert len(doc) == 5
+    doc.save(pdf)
+    doc.close()
+
+    bom = extract_bom(pdf_path=pdf, bom_config="1")
+    assert bom.method and bom.method.startswith("table_"), bom.notes
+    assert bom.part_number_count == 51, [f"{r.item}:{r.part_no}" for r in bom.rows]
+    bb = next(r for r in bom.rows if r.item == "BB")
+    assert bb.qty == 2 and bb.part_no == _BB_PART
+    assert not any(r.part_no in {"99999-1", "88888-1", "35122-1"} for r in bom.rows)
+
+
+def test_lom_header_found_does_not_fallback_to_regex(tmp_path: Path):
+    """If the grid header is found, do not return 10 junk single-letter PNs."""
+    import fitz
+
+    pdf = tmp_path / "header_only_later_page.pdf"
+    doc = fitz.open()
+    for i in range(3):
+        page = doc.new_page(width=792, height=612)
+        if i == 0:
+            page.insert_text((72, 72), "2 | A | 35122-1")
+            page.insert_text((72, 90), "1 | D | 29754-2")
+            page.insert_text((72, 108), "2 | E | 29754-3")
+            page.insert_text((72, 126), "1 | O | 99999-1")
+            page.insert_text((72, 144), "1 | P | 88888-1")
+    page = doc.new_page(width=792, height=612)
+    page.insert_text((400, 500), "LIST OF MATERIAL", fontsize=10)
+    page.insert_text((400, 520), "QTY", fontsize=8)
+    page.insert_text((440, 520), "ITEM", fontsize=8)
+    page.insert_text((490, 520), "PART NO.", fontsize=8)
+    page.insert_text((580, 520), "DESCRIPTION", fontsize=8)
+    doc.save(pdf)
+    doc.close()
+
+    bom = extract_bom(pdf_path=pdf)
+    assert material_list_header_seen(bom)
+    assert not (bom.method or "").startswith("ocr_time")
+    parts = {r.part_no for r in bom.rows}
+    assert "99999-1" not in parts
+    assert "88888-1" not in parts
+    assert "35122-1" not in parts
+    joined = " ".join(bom.notes).lower()
+    assert "not falling back" in joined or "header found" in joined or "flag review" in joined
