@@ -117,6 +117,15 @@ class BatchPushBody(BaseModel):
     job_ids: list[int] = Field(default_factory=list)
 
 
+def _normalize_intake_mode(raw: str | None, *, default: str = "weldment") -> str:
+    val = (raw or default).strip().lower().replace("-", "_").replace(" ", "_")
+    if val in {"loose", "loose_piece", "loosepiece", "batch"}:
+        return "loose_piece"
+    if val in {"weldment", "weld", "assembly"}:
+        return "weldment"
+    return default
+
+
 def _persist_new_job(
     *,
     pdf_filename: str | None = None,
@@ -127,9 +136,11 @@ def _persist_new_job(
     stp_bytes: bytes | None = None,
     title: str = "",
     bom_config: str = "",
+    intake_mode: str = "weldment",
 ) -> dict[str, Any]:
     """Create a job row, write files, return to_dict (caller starts process_job)."""
     from quote_core.bom_config import resolve_bom_config
+    from quote_core.drawing_library import extract_part_key
 
     has_pdf = bool(pdf_filename and pdf_bytes is not None)
     has_dxf = bool(dxf_filename and dxf_bytes is not None)
@@ -148,6 +159,9 @@ def _persist_new_job(
             title=job_title,
             pdf_filename=pdf_filename or dxf_filename or stp_filename or "",
         )
+        part_number = extract_part_key(
+            pdf_filename, dxf_filename, stp_filename, job_title
+        )
         job = Job(
             title=job_title,
             status="uploaded",
@@ -155,6 +169,8 @@ def _persist_new_job(
             dxf_filename=dxf_filename,
             stp_filename=stp_filename,
             bom_config=resolved_config,
+            intake_mode=_normalize_intake_mode(intake_mode),
+            part_number=part_number,
             efficiency_pct=rates.default_efficiency_pct,
         )
         db.add(job)
@@ -236,6 +252,7 @@ async def create_job(
     stp: UploadFile | None = File(None),
     title: str = Form(""),
     bom_config: str = Form(""),
+    intake_mode: str = Form("weldment"),
     _: str = Depends(require_auth),
 ) -> dict[str, Any]:
     pdf_name = pdf.filename if pdf and pdf.filename else None
@@ -263,6 +280,7 @@ async def create_job(
         stp_bytes=stp_bytes,
         title=title,
         bom_config=bom_config,
+        intake_mode=intake_mode,
     )
     threading.Thread(target=process_job, args=(payload["id"],), daemon=True).start()
     return payload
@@ -305,6 +323,7 @@ async def create_jobs_batch(
                 dxf_bytes=part.dxf_bytes,
                 stp_filename=part.stp_name,
                 stp_bytes=part.stp_bytes,
+                intake_mode="loose_piece",
             )
             threading.Thread(
                 target=process_job, args=(payload["id"],), daemon=True
@@ -322,6 +341,8 @@ async def create_jobs_batch(
         "created_count": len(created),
         "skipped": skipped,
         "errors": errors,
+        "intake_mode": "loose_piece",
+        "quote_identity": "part_number",
     }
 
 

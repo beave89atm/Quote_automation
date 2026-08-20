@@ -46,6 +46,17 @@ def process_job(job_id: int) -> None:
         db.commit()
 
         from quote_core.bom_config import format_bom_config_label, resolve_bom_config
+        from quote_core.drawing_library import extract_part_key
+
+        intake_mode = (getattr(job, "intake_mode", None) or "weldment").strip().lower()
+        if intake_mode not in {"weldment", "loose_piece"}:
+            intake_mode = "weldment"
+        # Loose-piece: still attach this part's STP, but never treat sibling PDFs as BOM.
+        related_pdf_names = (
+            []
+            if intake_mode == "loose_piece"
+            else list(library_info.get("related_pdfs") or [])
+        )
 
         bom_config = resolve_bom_config(
             explicit=job.bom_config,
@@ -63,13 +74,29 @@ def process_job(job_id: int) -> None:
             pdf_path=Path(job.pdf_path) if job.pdf_path else None,
             stp_path=Path(job.stp_path) if job.stp_path else None,
             library_folder=library_info.get("folder"),
-            related_pdf_names=list(library_info.get("related_pdfs") or []),
+            related_pdf_names=related_pdf_names,
             bom_config=bom_config,
         )
         items = result.items
         takeoff = result.to_dict()
         takeoff["library"] = library_info
         takeoff["bom_config"] = bom_config
+        takeoff["intake_mode"] = intake_mode
+        part_number = (
+            result.part_number
+            or extract_part_key(
+                job.pdf_filename,
+                job.dxf_filename,
+                job.stp_filename,
+                job.title,
+            )
+        )
+        if part_number:
+            takeoff["part_number"] = part_number
+            takeoff["quote_number"] = part_number
+            job.part_number = part_number
+        if result.pdf_bom:
+            takeoff["bom"] = result.pdf_bom
         if job.dxf_filename:
             takeoff["dxf_filename"] = job.dxf_filename
         drivers = _drivers_from_takeoff(takeoff)
@@ -113,7 +140,7 @@ def process_job(job_id: int) -> None:
         for note in times.fitup_notes:
             if note not in flags:
                 flags.append(note)
-        if library_info.get("related_pdf_count"):
+        if intake_mode == "weldment" and library_info.get("related_pdf_count"):
             names = ", ".join((library_info.get("related_pdfs") or [])[:8])
             more = library_info["related_pdf_count"] - min(8, len(library_info.get("related_pdfs") or []))
             related_flag = f"Related drawings in shared folder: {names}"
@@ -121,6 +148,13 @@ def process_job(job_id: int) -> None:
                 related_flag += f" (+{more} more)"
             if related_flag not in flags:
                 flags.append(related_flag)
+        elif intake_mode == "loose_piece":
+            loose_flag = (
+                "Loose-piece mode: this job is one part number / one SecturaFAB quote. "
+                "Sibling drawings in the library folder are not this BOM."
+            )
+            if loose_flag not in flags:
+                flags.append(loose_flag)
 
         job.set_takeoff(takeoff)
         job.set_times(times.to_dict())

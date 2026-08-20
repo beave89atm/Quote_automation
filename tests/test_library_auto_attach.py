@@ -108,6 +108,8 @@ def test_top_level_pdf_only_auto_attaches_library_stp_and_children(
         res = library_client.post("/api/jobs", files=files, headers=headers)
     assert res.status_code == 200, res.text
     job_id = res.json()["id"]
+    assert res.json().get("intake_mode") == "weldment"
+    assert res.json().get("quote_number") == "21678-1"
     assert not res.json().get("stp_filename")
 
     db = SessionLocal()
@@ -168,5 +170,52 @@ def test_process_job_still_runs_library_lookup_before_takeoff(
         flags = job.flags()
         assert any("Related drawings in shared folder" in f for f in flags)
         assert any("21679.pdf" in f for f in flags)
+        assert (job.intake_mode or "weldment") == "weldment"
+    finally:
+        db.close()
+
+
+def test_loose_piece_does_not_inherit_sibling_bom(
+    library_client: TestClient, library_token: str | None
+):
+    """Batch / loose-piece: 21679 must not pick up 21680/21681 as its BOM."""
+    from app.db import Job, SessionLocal
+    from app.services import process_job
+
+    headers = {"X-App-Token": library_token} if library_token else {}
+    import fitz
+
+    buf = io.BytesIO()
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "21679 TUBE")
+    doc.save(buf)
+    doc.close()
+    files = [("files", ("21679.pdf", io.BytesIO(buf.getvalue()), "application/pdf"))]
+    with patch("app.main.process_job"):
+        res = library_client.post("/api/jobs/batch", files=files, headers=headers)
+    assert res.status_code == 200, res.text
+    job = res.json()["jobs"][0]
+    assert job["intake_mode"] == "loose_piece"
+    assert job["quote_number"] == "21679"
+
+    process_job(job["id"])
+
+    db = SessionLocal()
+    try:
+        row = db.get(Job, job["id"])
+        assert row
+        assert row.intake_mode == "loose_piece"
+        takeoff = row.takeoff()
+        bom = takeoff.get("bom") or takeoff.get("pdf_bom") or {}
+        parts = {
+            str(r.get("part_no") or r.get("part_number") or "").upper()
+            for r in (bom.get("rows") or bom.get("bom_rows") or [])
+        }
+        assert "21680" not in parts
+        assert "21681-1" not in parts
+        flags = row.flags()
+        assert any("Loose-piece mode" in f for f in flags)
+        assert not any("Related drawings in shared folder" in f for f in flags)
     finally:
         db.close()

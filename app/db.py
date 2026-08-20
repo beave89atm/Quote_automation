@@ -33,6 +33,9 @@ class Job(Base):
     stp_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     # Time multi-option BOM column: "1" means use the -1 qty column on 28106.
     bom_config: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # weldment = one top-level drawing + library children; loose_piece = this part only
+    intake_mode: Mapped[str] = mapped_column(String(32), default="weldment")
+    part_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     efficiency_pct: Mapped[float] = mapped_column(Float, default=85.0)
     takeoff_json: Mapped[str] = mapped_column(Text, default="{}")
     times_json: Mapped[str] = mapped_column(Text, default="{}")
@@ -61,9 +64,25 @@ class Job(Base):
     def set_flags(self, flags: list[str]) -> None:
         self.flags_json = json.dumps(flags)
 
+    def resolved_part_number(self) -> str | None:
+        if self.part_number:
+            return self.part_number
+        takeoff = self.takeoff()
+        if takeoff.get("part_number"):
+            return str(takeoff["part_number"])
+        from quote_core.drawing_library import extract_part_key
+
+        return extract_part_key(
+            self.pdf_filename,
+            getattr(self, "dxf_filename", None),
+            self.stp_filename,
+            self.title,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         from .push_readiness import job_push_readiness
 
+        part_number = self.resolved_part_number()
         return {
             "id": self.id,
             "title": self.title,
@@ -74,6 +93,9 @@ class Job(Base):
             "dxf_path": self.dxf_path,
             "stp_path": self.stp_path,
             "bom_config": self.bom_config,
+            "intake_mode": self.intake_mode or "weldment",
+            "part_number": part_number,
+            "quote_number": part_number,
             "efficiency_pct": self.efficiency_pct,
             "takeoff": self.takeoff(),
             "times": self.times(),
@@ -105,3 +127,5 @@ def init_db() -> None:
     _ensure_column("jobs", "bom_config", "bom_config VARCHAR(32)")
     _ensure_column("jobs", "dxf_filename", "dxf_filename VARCHAR(512)")
     _ensure_column("jobs", "dxf_path", "dxf_path VARCHAR(1024)")
+    _ensure_column("jobs", "intake_mode", "intake_mode VARCHAR(32) DEFAULT 'weldment'")
+    _ensure_column("jobs", "part_number", "part_number VARCHAR(64)")

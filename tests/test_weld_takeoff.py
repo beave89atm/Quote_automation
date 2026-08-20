@@ -32,6 +32,50 @@ def test_takeoff_73476047_if_present():
     assert result.to_dict()["total_inches"] >= 0
 
 
+def test_labeled_fillet_harvested_without_weld_sheet_keywords():
+    from quote_core.weld.takeoff import _ingest_page_text
+
+    sizes, _notes, hits, _dims = _ingest_page_text(1, "WELD SZ: 5/16 TYP AT JOINT")
+    assert "5/16" in sizes
+    assert any(h.get("explicit_label") for h in hits)
+
+
+def test_laser_only_pdf_keeps_zero_fitup(tmp_path: Path):
+    import fitz
+
+    path = tmp_path / "laser.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "LASER CUT PLATE 12 X 24 A36")
+    doc.save(path)
+    doc.close()
+    result = run_weld_takeoff(pdf_path=path)
+    assert result.items == []
+    assert result.fitup_drivers.get("part_count") == 0
+    assert result.fitup_drivers.get("joint_count") == 0
+    assert any("No weld symbols" in f for f in result.flags)
+
+
+def test_pdf_bom_without_fillets_still_drives_fitup(tmp_path: Path):
+    import fitz
+
+    path = tmp_path / "21678-1.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text(
+        (72, 72),
+        "21678-1 WELDMENT\n1 A 21679-1 TUBE\n1 B 21680-1 PLATE\n2 C 21681-1 GUSSET",
+    )
+    doc.save(path)
+    doc.close()
+    result = run_weld_takeoff(pdf_path=path)
+    assert result.items == []
+    assert result.fitup_drivers.get("part_count") == 4
+    assert result.pdf_bom.get("piece_count") == 4
+    assert any("fillet" in f.lower() or "Fit-up uses PDF BOM" in f for f in result.flags)
+    assert result.part_number == "21678-1"
+
+
 def test_tycrop_electrode_note_is_not_a_weld_symbol():
     """Title-block 'MINIMUM WELD ELECTRODE' + plate 3/16 must not invent weld time."""
     from quote_core.weld.takeoff import _ingest_page_text, _build_items_from_signals

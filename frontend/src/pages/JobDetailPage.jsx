@@ -475,10 +475,16 @@ export default function JobDetailPage() {
           <h1 style={{ margin: "0.35rem 0 0" }}>{job.title}</h1>
           <p className="muted">
             #{job.id} · <span className={`status ${job.status}`}>{job.status}</span>
+            {` · ${job.intake_mode === "loose_piece" ? "Loose piece" : "Weldment"}`}
             {job.pdf_filename ? ` · ${job.pdf_filename}` : " · No PDF"}
             {job.dxf_filename ? ` · ${job.dxf_filename}` : " · No DXF"}
             {job.stp_filename ? ` · ${job.stp_filename}` : " · No STP"}
             {job.bom_config ? ` · BOM -${String(job.bom_config).replace(/^-/, "")}` : ""}
+          </p>
+          <p className="muted" style={{ marginTop: "0.35rem" }}>
+            SecturaFAB quote number:{" "}
+            <strong className="mono">{job.quote_number || job.part_number || "—"}</strong>
+            {" "}(part number — not a project number)
           </p>
           <p className="muted" style={{ marginTop: "0.35rem", fontSize: "0.85rem" }}>
             Review destination is <strong>SecturaFAB</strong>. Printable HTML is a local
@@ -729,6 +735,55 @@ export default function JobDetailPage() {
         );
       })()}
 
+      {(() => {
+        const bom =
+          job.takeoff?.bom ||
+          job.takeoff?.pdf_bom ||
+          drivers?.weight_calc?.bom ||
+          drivers?.weight_calc?.pdf_bom ||
+          {};
+        const rows = bom.rows || bom.bom_rows || [];
+        if (!rows.length) return null;
+        return (
+          <div className="bom-block">
+            <h2>BOM</h2>
+            <p className="muted" style={{ marginTop: 0 }}>
+              {bom.method ? `Source: ${bom.method}. ` : ""}
+              {bom.piece_count != null ? `${bom.piece_count} pieces` : `${rows.length} rows`}
+              {job.intake_mode === "weldment"
+                ? " · weldment mode uses library children when the PDF table is incomplete"
+                : " · loose-piece mode does not inherit sibling drawings"}
+            </p>
+            <table className="takeoff-table">
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th>Qty</th>
+                  <th>Part</th>
+                  <th>Description</th>
+                  <th>Weight</th>
+                  <th>Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, idx) => (
+                  <tr key={`${row.part_no || "row"}-${idx}`}>
+                    <td className="mono">{row.item ?? "—"}</td>
+                    <td className="mono">{row.qty ?? "—"}</td>
+                    <td className="mono">{row.part_no || row.part_number || "—"}</td>
+                    <td>{row.description || "—"}</td>
+                    <td className="mono">
+                      {row.unit_weight_lb != null ? `${row.unit_weight_lb} lb` : "—"}
+                    </td>
+                    <td className="muted">{row.source || bom.method || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
+
       <h2>Takeoff lines</h2>
       <table className="takeoff-table">
         <thead>
@@ -827,10 +882,12 @@ export default function JobDetailPage() {
               ? sfStatus.message
               : job.push_readiness?.ready === false
               ? job.push_readiness.reason || "needs PDF, DXF, STEP, or library match"
-              : "Always create a new SecturaFAB quote; uses part number (date suffix if that number is taken)"
+              : "Create a SecturaFAB quote whose number is this part number"
           }
         >
-          Push to SecturaFAB
+          {job.quote_number || job.part_number
+            ? `Push ${job.quote_number || job.part_number} to SecturaFAB`
+            : "Push to SecturaFAB"}
         </button>
         {sfStatus && sfStatus.configured === false ? (
           <span className="muted" style={{ alignSelf: "center" }}>

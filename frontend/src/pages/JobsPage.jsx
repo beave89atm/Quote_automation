@@ -45,8 +45,9 @@ export default function JobsPage() {
     if (st?.batchCreated != null) {
       const notes = [...(st.batchSkipped || []), ...(st.batchErrors || [])];
       setBanner(
-        `Batch created ${st.batchCreated} job(s).` +
-          (notes.length ? ` ${notes.join("; ")}` : " Review takeoffs, then push selected.")
+        `Loose-piece batch created ${st.batchCreated} individual quote(s). ` +
+          "Quote number = part number. Review each, then push to SecturaFAB." +
+          (notes.length ? ` ${notes.join("; ")}` : "")
       );
       window.history.replaceState({}, document.title);
     }
@@ -173,7 +174,9 @@ export default function JobsPage() {
           <tr>
             <th></th>
             <th>ID</th>
+            <th>Part #</th>
             <th>Title</th>
+            <th>Mode</th>
             <th>Status</th>
             <th>SecturaFAB</th>
             <th>Inches</th>
@@ -197,7 +200,13 @@ export default function JobsPage() {
                   />
                 </td>
                 <td className="mono">{j.id}</td>
+                <td className="mono">{j.quote_number || j.part_number || "—"}</td>
                 <td>{j.title}</td>
+                <td>
+                  <span className={`chip ${j.intake_mode === "loose_piece" ? "chip-loose" : "chip-weld"}`}>
+                    {j.intake_mode === "loose_piece" ? "Loose piece" : "Weldment"}
+                  </span>
+                </td>
                 <td>
                   <span className={`status ${j.status}`}>{j.status}</span>
                 </td>
@@ -221,8 +230,8 @@ export default function JobsPage() {
           })}
           {!jobs.length ? (
             <tr>
-              <td colSpan={8} className="muted">
-                No jobs yet. Upload PDF / DXF / STP (any subset) to start.
+              <td colSpan={10} className="muted">
+                No jobs yet. Upload a weldment or a loose-piece batch to start.
               </td>
             </tr>
           ) : null}

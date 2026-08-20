@@ -57,17 +57,24 @@ Open http://localhost:5173
 
 ## Workflow
 
-1. **Happy path:** drop only the **top-level weldment**. The app searches
-   `drawing_library.roots` (typically Fort Worth Engineering\\Customer Drawings)
-   and auto-attaches the matching STP plus BOM child PDFs so you do not upload
-   each child. Multi-file drop (PDF / DXF / STP, any subset) is for files that
-   are **not** already in that library.
-2. App proposes operations (laser, bend, weld/fit-up, saw, outsourced tube laser +
+1. **Two intake modes (both required):**
+   - **Weldment (happy path):** drop only the **top-level weldment**. The app
+     searches `drawing_library.roots` (typically Fort Worth Engineering\\Customer
+     Drawings) and auto-attaches the matching STP plus BOM child PDFs so you do
+     not upload each child.
+   - **Loose-piece batch:** drag-and-drop ~30 individual piece-part drawings at
+     once. Each stem becomes its own job and later its own SecturaFAB quote.
+     Sibling library PDFs are **not** treated as that part’s BOM.
+2. **Quote number = part number.** Repeat / ongoing parts — not a project-style
+   number.
+3. App proposes operations (laser, bend, weld/fit-up, saw, outsourced tube laser +
    powder coating, …) and setup/run times it can compute. Unknowns and mill/lathe
-   are flagged — not invented.
-3. Review flags + weld inches, then **Push to SecturaFAB**
-4. Kyle reviews the live quote in SecturaFAB (Profile / Weld / memo / ItemList)
-5. Printable HTML / JSON remain available as a local fallback
+   are flagged — not invented. Extra PDF / DXF / STP files are for when those
+   files are **not** already in the library.
+4. Review flags + weld inches + BOM, then **Push to SecturaFAB** (one quote per
+   part number).
+5. Kyle reviews the live quote in SecturaFAB (Profile / Weld / memo / ItemList)
+6. Printable HTML / JSON remain available as a local fallback
 
 ## Tests
 

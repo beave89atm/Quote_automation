@@ -156,6 +156,23 @@ def test_batch_create_returns_n_jobs(batch_client: TestClient, batch_token: str 
     jobs_o = [j for j in body["jobs"] if j["title"] == "orphan"][0]
     assert jobs_o.get("stp_filename") == "orphan.stp"
     assert not jobs_o.get("pdf_filename")
+    assert all(j.get("intake_mode") == "loose_piece" for j in body["jobs"])
+    assert body.get("quote_identity") == "part_number"
+
+
+def test_batch_quote_number_is_part_number(batch_client: TestClient, batch_token: str | None):
+    headers = {"X-App-Token": batch_token} if batch_token else {}
+    files = [
+        ("files", ("21679.pdf", io.BytesIO(b"%PDF-a"), "application/pdf")),
+        ("files", ("35121-1.pdf", io.BytesIO(b"%PDF-b"), "application/pdf")),
+    ]
+    with patch("app.main.process_job"):
+        res = batch_client.post("/api/jobs/batch", files=files, headers=headers)
+    assert res.status_code == 200, res.text
+    by_title = {j["title"]: j for j in res.json()["jobs"]}
+    assert by_title["21679"]["quote_number"] == "21679"
+    assert by_title["21679"]["part_number"] == "21679"
+    assert by_title["35121-1"]["quote_number"] == "35121-1"
 
 
 def test_batch_push_rejects_processing(batch_client: TestClient, batch_token: str | None):

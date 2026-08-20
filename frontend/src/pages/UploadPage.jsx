@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 
@@ -48,8 +48,24 @@ export default function UploadPage() {
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState("weldment");
+  const [pinMode, setPinMode] = useState(false);
 
   const { pairs, skipped } = useMemo(() => pairLocalFiles(files), [files]);
+  const multi = pairs.length > 1;
+
+  useEffect(() => {
+    if (pinMode) return;
+    if (multi && mode !== "loose_piece") setMode("loose_piece");
+    if (!multi && files.length === 0 && mode !== "weldment") setMode("weldment");
+  }, [multi, files.length, mode, pinMode]);
+
+  function chooseMode(next) {
+    setPinMode(true);
+    setMode(next);
+    setError("");
+    setInfo("");
+  }
 
   const onFiles = useCallback((fileList) => {
     const incoming = Array.from(fileList || []);
@@ -88,6 +104,7 @@ export default function UploadPage() {
       if (pair.stp) body.append("stp", pair.stp);
       if (title.trim()) body.append("title", title.trim());
       if (bomConfig.trim()) body.append("bom_config", bomConfig.trim());
+      body.append("intake_mode", "weldment");
       const job = await api("/api/jobs", { method: "POST", body });
       navigate(`/jobs/${job.id}`);
     } catch (err) {
@@ -123,6 +140,7 @@ export default function UploadPage() {
           batchCreated: n,
           batchSkipped: result.skipped || [],
           batchErrors: result.errors || [],
+          intakeMode: "loose_piece",
         },
       });
     } catch (err) {
@@ -132,20 +150,53 @@ export default function UploadPage() {
     }
   }
 
-  const multi = pairs.length > 1;
+  const weldmentBlocked = mode === "weldment" && multi;
 
   return (
     <div className="panel">
       <h1 style={{ marginTop: 0 }}>New quote job</h1>
       <p className="muted">
-        Happy path: drop only the <strong>top-level weldment</strong>. The app looks
-        up BOM child drawings and STP in the office drawing library (SharePoint /
-        OneDrive — <span className="mono">drawing_library.roots</span>). You do not
-        need to upload each child. Extra PDF / DXF / STP files are for when those
-        files are <em>not</em> already in the library. Review ops here, then push
-        into <strong>SecturaFAB</strong> (the review surface). Printable HTML is a
-        fallback only.
+        Two intake modes. Quote number is the <strong>part number</strong> (repeat
+        parts — not a project number). Review here, then push each part into{" "}
+        <strong>SecturaFAB</strong>. Printable HTML is a fallback only.
       </p>
+      <div className="mode-toggle" role="tablist" aria-label="Intake mode">
+        <button
+          type="button"
+          className={`mode-btn ${mode === "weldment" ? "active" : ""}`}
+          onClick={() => chooseMode("weldment")}
+        >
+          Weldment
+        </button>
+        <button
+          type="button"
+          className={`mode-btn ${mode === "loose_piece" ? "active" : ""}`}
+          onClick={() => chooseMode("loose_piece")}
+        >
+          Loose-piece batch
+        </button>
+      </div>
+      {mode === "weldment" ? (
+        <p className="muted">
+          Drop <strong>one top-level weldment</strong>. The app looks up BOM child
+          drawings and STP in the office drawing library (
+          <span className="mono">drawing_library.roots</span> — typically Fort Worth
+          Engineering Customer Drawings). You do not upload each child. Extra files
+          only if they are <em>not</em> already in the library.
+        </p>
+      ) : (
+        <p className="muted">
+          Drag all piece-part drawings at once (~30 is fine). Each stem becomes its
+          own job and later its own SecturaFAB quote. Sibling library PDFs are not
+          this part&apos;s BOM. That part&apos;s STP is still auto-attached when found.
+        </p>
+      )}
+      {weldmentBlocked ? (
+        <div className="error">
+          Weldment mode is one top-level drawing. Switch to Loose-piece batch to
+          drop {pairs.length} parts, or clear extras and keep one weldment.
+        </div>
+      ) : null}
 
       <div
         className={`dropzone ${active ? "active" : ""}`}
@@ -166,7 +217,11 @@ export default function UploadPage() {
         onClick={() => document.getElementById("file-input").click()}
       >
         <h2>Drag & drop drawings</h2>
-        <p>Top-level weldment is enough when the library has the children</p>
+        <p>
+          {mode === "loose_piece"
+            ? "Drop all piece-part PDFs / DXF / STP at once"
+            : "Top-level weldment is enough when the library has the children"}
+        </p>
         <div className="file-chips">
           {pairs.length ? (
             <span className="chip">
@@ -219,7 +274,7 @@ export default function UploadPage() {
         </table>
       ) : null}
 
-      {!multi ? (
+      {mode === "weldment" && !multi ? (
         <>
           <div className="field" style={{ marginTop: "1rem" }}>
             <label htmlFor="title">Job title (optional)</label>
@@ -258,36 +313,26 @@ export default function UploadPage() {
       )}
 
       <div className="row">
-        {multi ? (
+        {mode === "loose_piece" ? (
           <button
             className="btn"
             type="button"
             disabled={busy || !pairs.length}
             onClick={submitBatch}
           >
-            {busy ? "Starting batch…" : `Start batch (${pairs.length})`}
+            {busy
+              ? "Starting batch…"
+              : `Start ${pairs.length} individual quote${pairs.length === 1 ? "" : "s"}`}
           </button>
         ) : (
-          <>
-            <button
-              className="btn"
-              type="button"
-              disabled={busy || !pairs.length}
-              onClick={submitSingle}
-            >
-              {busy ? "Uploading…" : "Start takeoff"}
-            </button>
-            {pairs.length === 1 ? (
-              <button
-                className="btn secondary"
-                type="button"
-                disabled={busy}
-                onClick={submitBatch}
-              >
-                Start as batch of 1
-              </button>
-            ) : null}
-          </>
+          <button
+            className="btn"
+            type="button"
+            disabled={busy || !pairs.length || weldmentBlocked}
+            onClick={submitSingle}
+          >
+            {busy ? "Uploading…" : "Start weldment takeoff"}
+          </button>
         )}
         <button
           className="btn ghost"
@@ -298,6 +343,8 @@ export default function UploadPage() {
             setBomConfig("");
             setError("");
             setInfo("");
+            setPinMode(false);
+            setMode("weldment");
           }}
         >
           Clear
