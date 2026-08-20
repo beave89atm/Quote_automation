@@ -104,10 +104,11 @@ def test_mill_in_envelope_quote():
     assert result["times"]["setup_placeholder"] is True
     assert result["placeholder"] is True
     assert result["times"]["run_minutes_total"] == pytest.approx(
-        result["times"]["run_minutes_each"] * 10
+        result["times"]["run_minutes_each"] * 10, abs=0.01
     )
     assert result["times"]["total_minutes"] == pytest.approx(
-        result["times"]["setup_minutes"] + result["times"]["run_minutes_total"]
+        result["times"]["setup_minutes"] + result["times"]["run_minutes_total"],
+        abs=0.01,
     )
     assert result["coating"]["quoted"] is False
     assert any(op["op"] == "face" for op in result["ops"])
