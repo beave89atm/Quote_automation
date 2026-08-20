@@ -20,6 +20,25 @@ def test_resolve_from_folder_name():
     assert cfg == "1"
 
 
+def test_bom_config_without_multi_headers_does_not_drop_rows():
+    """Folder dash 1004335-1 must not treat a single-qty Time BOM as column -1 only."""
+    from quote_core.bom import parse_time_style_bom_texts
+
+    texts = [
+        "LIST OF MATERIAL\n"
+        "1 | A |1004335-1 |FRAME\n"
+        "2 | E |1004067-1 |BRACKET\n"
+        "1 | F |1004208-1 |PLATE\n"
+        "2 | P |1004343-1 |SLAT\n"
+    ]
+    bom = parse_time_style_bom_texts(
+        texts, bases={"1004335", "1004067", "1004208"}, bom_config="1"
+    )
+    assert bom.part_number_count == 4
+    assert bom.piece_count == 6
+    assert any("did not drop other dashes" in n or "single-qty" in n for n in bom.notes)
+
+
 def test_multi_qty_headers_and_column_filter():
     texts = [
         "[-4 [-3 [-2 [-1 |",
