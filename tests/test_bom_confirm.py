@@ -321,6 +321,12 @@ def test_normalize_time_solidworks_product_name():
     assert _normalize_step_part_no("102728 Weldment -1_102728-1") == "102728-1"
     assert _normalize_step_part_no("Tube, Round -20744_102727_4") == "102727-4"
     assert _normalize_step_part_no("102727 - 4") == "102727-4"
+    assert _normalize_step_part_no("FRONT RIGHT KICK RAIL-4213_460270") == "460270"
+    assert _normalize_step_part_no("94560 Gate, Fabrication -20752_94560") == "94560"
+    assert _normalize_step_part_no("TUBE CAP 2X1-4229_432710") == "432710"
+    # SolidWorks feature ids are not the PN.
+    assert _normalize_step_part_no("FRONT RIGHT KICK RAIL-4213_460270") != "4213"
+    assert _normalize_step_part_no("94560 Gate, Fabrication -20752_94560") != "20752"
     # Do not invent a dash from the leading word.
     assert _normalize_step_part_no("102727") != "10272-7"
     assert _normalize_step_part_no("HEX BOLT 1/2-13") is None
@@ -441,6 +447,30 @@ def test_nested_weldment_children_not_vanished_or_double_counted(tmp_path: Path)
     assert all(r["parent"] == "102711-1" for r in parsed["nested"])
     # Do not treat nested qty as a second copy of the weldment itself.
     assert parsed["counts"]["102711-1"] == 1
+
+
+def test_trailing_underscore_time_pn_from_live_name_forms(tmp_path: Path):
+    """``_460270`` / ``_94560`` are Time PNs; SolidWorks ``-4213`` is not."""
+    stp = write_synthetic_solidworks_step(
+        tmp_path / "102728-1.STEP",
+        children=[
+            ("102727-4", 2, "102727 Tube, Round -20744_102727-4"),
+            ("460270", 1, "FRONT RIGHT KICK RAIL-4213_460270"),
+            ("94560", 2, "94560 Gate, Fabrication -20752_94560"),
+        ],
+    )
+    parsed = extract_step_assembly_part_counts(stp)
+    assert parsed["counts"].get("102727-4") == 2
+    assert parsed["counts"].get("460270") == 1
+    assert parsed["counts"].get("94560") == 2
+    assert "4213" not in parsed["counts"]
+    assert "20752" not in parsed["counts"]
+    assert parsed["skipped_count"] == 0
+    pdf = _rows(("102727-4", 2), ("460270", 1), ("94560", 2))
+    snapshot = [(r.part_no, r.qty) for r in pdf]
+    result = confirm_pdf_bom_against_stp(pdf, parsed)
+    assert result["mismatch"] is False
+    assert [(r.part_no, r.qty) for r in pdf] == snapshot
 
 
 def test_solidworks_step_confirm_does_not_pad_pdf(tmp_path: Path):

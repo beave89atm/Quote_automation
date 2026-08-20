@@ -551,10 +551,15 @@ def _parse_step_entities(stp_path: Path) -> tuple[dict[int, str], str]:
 
 
 _STEP_KEYWORD_RE = re.compile(r"^([A-Z][A-Z0-9_]*)\s*\(", re.IGNORECASE)
-# Time / SolidWorks: ``102727 Tube, Round -20744_102727-4``, ``P102727-4``,
-# spaces around the dash, or a trailing underscore PN ``..._102727_4``.
+# Time / SolidWorks trailing token: ``..._460270``, ``..._102727-4``, ``..._102727_4``.
+# Do not use the SolidWorks feature id (``-4213`` / ``-20594``) as the PN.
+_STEP_UNDERSCORE_PN_RE = re.compile(
+    r"_(\d{5,7})(?:[-–—_](\d{1,3}[A-Z]?))?\s*$",
+    re.IGNORECASE,
+)
+# Dashed shop PN when there is no trailing underscore token.
 _STEP_TRAILING_PN_RE = re.compile(
-    r"(?:^|[^A-Z0-9])P?(\d{4,7})\s*[-–—=_]\s*(\d{1,3}[A-Z]?)\b",
+    r"(?:^|[^A-Z0-9])P?(\d{4,7})\s*[-–—=]\s*(\d{1,3}[A-Z]?)\b",
     re.IGNORECASE,
 )
 _STEP_ALPHA_PN_RE = re.compile(r"\b([A-Z]{1,3}\d{2}-\d{3,5})\b", re.IGNORECASE)
@@ -606,6 +611,16 @@ def _normalize_step_part_no(raw: str | None) -> str | None:
     cleaned = cleaned.replace("—", "-").replace("–", "-").replace("=", "-").strip()
     if not cleaned:
         return None
+
+    # Prefer trailing ``_######`` / ``_######-#`` (Time SW export). Never the
+    # mid-name SolidWorks id (``RAIL-4213_460270`` → 460270, not 4213).
+    u = _STEP_UNDERSCORE_PN_RE.search(cleaned)
+    if u:
+        base, suffix = u.group(1), u.group(2)
+        if suffix:
+            token = f"{base}-{suffix.upper()}"
+            return normalize_part_no(token) or token.upper()
+        return base
 
     dashed_hits = _STEP_TRAILING_PN_RE.findall(cleaned)
     if dashed_hits:
