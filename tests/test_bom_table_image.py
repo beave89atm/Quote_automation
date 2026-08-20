@@ -206,8 +206,6 @@ def _live_page1_strips() -> list[str]:
             continue
         if item == "AX":
             lines.append("AX 1102726-1 HOOK pO")
-        elif item == "H":
-            lines.append("H 102840-1 COMPONENT H")
         else:
             lines.append(f"{item} 1028{i:02d}-1 COMPONENT {item}")
     return lines
@@ -350,6 +348,9 @@ def test_unread_bare_and_mangled_pns_kept_and_sequenced():
             lines.append("1O28 27-1 ANGLE")
         elif item == "AU":
             lines.append("1028 44-1 CLIP")
+        elif item == "AW":
+            # Keep AU's 102844-1 unique (even-i default would also emit 1028 44-1).
+            lines.append("461044 RAIL")
         elif item == "BA":
             lines.append("1028 48-1 BASE")
         elif item in known:
@@ -377,6 +378,7 @@ def test_unread_bare_and_mangled_pns_kept_and_sequenced():
     assert by_item["J"].part_no == "460300"
     assert by_item["D"].part_no == "102803-1"
     assert by_item["AJ"].part_no == "102827-1"
+    assert by_item["AU"].part_no == "102844-1"
     assert len(bom.rows) >= 48
     invented = {r.part_no for r in bom.rows} - {
         "100373-2",
@@ -553,16 +555,17 @@ def test_sticky_first_harvest_union_keeps_tail_and_p_y():
     ]
     retry = harvest_ocr_row_strips(retry_lines)
     united = union_sticky_harvest(first, retry)
+    parts = {r.part_no for r in united.rows}
     by_item = {r.item: r for r in united.rows}
-    assert by_item["Z"].part_no == "460320"
-    assert by_item["AY"].part_no == "102727-1"
-    assert by_item["AZ"].part_no == "102727-2"
-    assert by_item["BC"].part_no == "102727-5"
-    assert by_item["BB"].qty == 2 and by_item["BB"].part_no == _BB_PART
-    assert by_item["S"].part_no == "33688-9"
-    for tok in ("Q", "R", "U", "V", "X", "Y"):
-        assert tok in by_item, tok
-    assert by_item["P"].part_no != "33688-9" if "P" in by_item else True
+    assert "460320" in parts
+    assert "102727-1" in parts and "102727-2" in parts and "102727-5" in parts
+    bb = next(r for r in united.rows if r.part_no == _BB_PART)
+    assert bb.qty == 2 and bb.item == "BB"
+    assert "33688-9" in parts
+    assert "94560" in parts
+    for pn in ("102840-1", "102841-1", "102842-1", "102843-1", "102844-1", "102845-1"):
+        assert pn in parts, pn
+    assert sum(1 for r in united.rows if r.part_no == "33688-9") == 1
     assert "AI" not in by_item and "AO" not in by_item
     assert not any(r.qty == 7 for r in united.rows)
 
@@ -587,6 +590,92 @@ def test_do_not_reletter_or_copy_neighbor_pn_onto_hole():
     assert sticky["item"] == "Z"
     assigned = harvest_ocr_row_strips([z_line, "102899-1 SUPPORT", bb])
     assert next(r for r in assigned.rows if r.part_no == "460320").item == "Z"
+
+
+_LIVE_B1487D7_PNS = [
+    "432670", "460200", "460270", "100373-2", "100351-1", "432650", "102733-1",
+    "432640", "460230", "460340", "432660", "460300", "464100", "94560",
+    "460320", "460330", "464450", "100177-2", "100351-2", "436010", "464460",
+    "100350-2", "100373-1", "100351-3", "100738-1", "33688-6", "33688-7",
+    "33688-8", "33688-9", "33688-10", "100267-1", "100366-27", "102711-1",
+    "102712-1", "102725-1", "102726-1", "102727-1", "102727-2", "102727-4",
+    "102727-5",
+]
+_LIVE_6C4FC51_PNS = [
+    "460320", "460270", "460280", "432580", "460230", "432650", "100373-2",
+    "100351-1", "460300", "432640", "100362-1", "94560", "460340", "100350-1",
+    "464100", "432660", "33688-9", "298540", "432710", "432670", "100363-1",
+    "460330", "464450", "100177-2", "464440", "436010", "464460", "100350-2",
+    "100373-1", "100351-3", "100738-1", "33688-6", "33688-7", "33688-8",
+    "33688-10", "100267-1", "100366-27", "102711-1", "102712-1", "102725-1",
+    "102726-1", "102727-4",
+]
+
+
+def test_union_live_pn_lists_keeps_tail_and_retry_only():
+    """Success bar: unique PNs ≥ union of the two live harvests; BB qty 2."""
+    first = harvest_ocr_row_strips(
+        [f"{pn} COMPONENT" for pn in _LIVE_B1487D7_PNS] + ["BBD 02727-4 TUBE, ROUND"]
+    )
+    extra = harvest_ocr_row_strips(
+        [f"{pn} COMPONENT" for pn in _LIVE_6C4FC51_PNS] + ["BBD 02727-4 TUBE, ROUND"]
+    )
+    united = union_sticky_harvest(first, extra)
+    parts = {r.part_no for r in united.rows}
+    want = set(_LIVE_B1487D7_PNS) | set(_LIVE_6C4FC51_PNS)
+    missing = sorted(want - parts)
+    assert not missing, missing
+    assert len(parts) >= len(want)
+    bb = next(r for r in united.rows if r.part_no == _BB_PART)
+    assert bb.qty == 2 and bb.item == "BB"
+    assert "102727-1" in parts and "102727-2" in parts and "102727-5" in parts
+    assert not any(r.item in {"AI", "AO"} for r in united.rows)
+    assert not any(r.qty == 7 for r in united.rows)
+
+
+def test_102727_siblings_are_not_swallowed_by_bb():
+    """BB is 102727-4 only. AY/AZ/BC stay in the unique PN set."""
+    bom = harvest_ocr_row_strips(
+        [
+            "AY 102727-1 TUBE, ROUND",
+            "AZ 102727-2 TUBE",
+            "BBD 02727-4 TUBE, ROUND",
+            "BC 102727-5 CAP",
+        ]
+    )
+    parts = {r.part_no for r in bom.rows}
+    assert "102727-1" in parts
+    assert "102727-2" in parts
+    assert "102727-5" in parts
+    bb = next(r for r in bom.rows if r.item == "BB")
+    assert bb.qty == 2 and bb.part_no == _BB_PART
+    assert next(r for r in bom.rows if r.part_no == "102727-1").item != "BB"
+
+
+def test_letter_collision_does_not_drop_a_pn():
+    bom = harvest_ocr_row_strips(
+        ["A 460200 RAIL", "A 460280 RAIL", "BBD 02727-4 TUBE, ROUND"]
+    )
+    parts = {r.part_no for r in bom.rows}
+    assert "460200" in parts and "460280" in parts
+    assert _BB_PART in parts
+    assert next(r for r in bom.rows if r.part_no == _BB_PART).qty == 2
+
+
+def test_live_dropped_strips_recover_time_pns():
+    aq = parse_ocr_row_strip('AQ" [3688-9 JEXPANDED METAL PLATE')
+    assert aq is not None and aq["part_no"] == "33688-9"
+    gate = parse_ocr_row_strip("o4560 |GATE, FABRICATION")
+    assert gate is not None and gate["part_no"] == "94560"
+    bom = harvest_ocr_row_strips(
+        [
+            'AQ" [3688-9 JEXPANDED METAL PLATE',
+            "o4560 |GATE, FABRICATION",
+            "BBD 02727-4 TUBE, ROUND",
+        ]
+    )
+    parts = {r.part_no for r in bom.rows}
+    assert "33688-9" in parts and "94560" in parts and _BB_PART in parts
 
 
 def test_pick_best_does_not_invent_rows_for_unread_tall_grid():

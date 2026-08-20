@@ -224,12 +224,13 @@ def time_balloon_set(*, through: str = "BC") -> set[str]:
     return set(time_item_letters(through=through))
 
 
-def score_material_list(bom: Any) -> tuple[int, int, int, int, int]:
+def score_material_list(bom: Any) -> tuple:
     """
     Higher is better. Prefer many Time balloons (A, AA, BB), not a 3-row decoy.
 
-    Order: sequence hits through BC, two-letter balloons, BB present,
-    102727-4 present, total pieces.
+    A complete cell table (51-ish + BB) beats a strip harvest that picked up
+    title-block / page-bait PNs. Live OCR strips all score complete_cell=0,
+    so first+retry union still wins on unique Time PNs.
     """
     rows = list(getattr(bom, "rows", None) or [])
     seq = time_balloon_set(through="BC")
@@ -239,7 +240,14 @@ def score_material_list(bom: Any) -> tuple[int, int, int, int, int]:
     has_bb = 1 if "BB" in items else 0
     has_pn = 1 if any(str(r.part_no) == "102727-4" for r in rows) else 0
     pieces = int(getattr(bom, "piece_count", 0) or 0)
-    return (seq_hits, two_letter, has_bb, has_pn, pieces)
+    cellish = sum(
+        1
+        for r in rows
+        if "strip" not in str(getattr(r, "source", ""))
+        and "harvest" not in str(getattr(r, "source", ""))
+    )
+    complete_cell = 1 if cellish >= TALL_TABLE_MIN_ROWS and has_bb and has_pn else 0
+    return (complete_cell, seq_hits, two_letter, has_bb, has_pn, cellish, pieces)
 
 
 def pick_best_material_list(candidates: Sequence[Any], *, min_rows: int = TALL_TABLE_MIN_ROWS):
@@ -390,17 +398,34 @@ def _is_time_like_part(part: str | None) -> bool:
     return bool(re.fullmatch(r"\d{5,7}", text))
 
 
-def find_time_like_pn(raw: str | None) -> tuple[int, int, str] | None:
-    """
-    Find a Time-like PN even when the dash is broken or digits are glued.
+_TITLE_BLOCK_CTX_RE = re.compile(
+    r"\b(?:WELDMENT|SHEET|TIME\s+MANUFACTURING|DWG|DRAWING\s+NO)\b",
+    re.IGNORECASE,
+)
 
-    Does not invent a PN that is not in the strip.
+
+def _is_title_block_drawing_line(raw: str, window: str = "") -> bool:
+    """True for the drawing number in a title block — not a LOM row.
+
+    ``102728-1`` between WELDMENT / TIME, or
+    ``WELDMENT, PLATFORM  102728-1  TIME MANUFACTURING``.
+    A BOM description that merely says WELDMENT is kept.
     """
+    text = str(raw or "").strip()
+    if not re.search(r"\d{5,7}-\d{1,3}", text):
+        return False
+    if re.fullmatch(r"\d{5,7}-\d{1,3}", text):
+        return bool(_TITLE_BLOCK_CTX_RE.search(window or text))
+    has_weldment = bool(re.search(r"\bWELDMENT\b", text, flags=re.I))
+    has_shop = bool(
+        re.search(r"\bTIME\s+MANUFACTURING\b|\bSHEET\s+\d|\bDWG(?:\s+NO)?\b", text, flags=re.I)
+    )
+    return has_weldment and has_shop
+
+
+def _find_time_like_pn_once(text: str) -> tuple[int, int, str] | None:
     from quote_core.bom import _ocr_digit_cleanup
 
-    text = str(raw or "")
-    if not text.strip():
-        return None
     mangled = _MANGLED_DASHED_PN_RE.search(text)
     if mangled:
         base = _ocr_digit_cleanup(re.sub(r"\s+", "", mangled.group("base")))
@@ -430,13 +455,37 @@ def find_time_like_pn(raw: str | None) -> tuple[int, int, str] | None:
     return None
 
 
+def find_time_like_pn(raw: str | None) -> tuple[int, int, str] | None:
+    """
+    Find a Time-like PN even when the dash is broken or digits are glued.
+
+    Does not invent a PN that is not in the strip. ``[3688-9`` is OCR of
+    ``33688-9``; ``o4560 GATE`` is OCR of ``94560``.
+    """
+    text = str(raw or "")
+    if not text.strip():
+        return None
+    variants = [text]
+    if "[" in text:
+        variants.append(text.replace("[", "3"))
+    o_as_nine = re.sub(r"(?<![A-Za-z0-9])[oO](\d{4})\b", r"9\1", text)
+    if o_as_nine != text:
+        variants.append(o_as_nine)
+    for variant in variants:
+        hit = _find_time_like_pn_once(variant)
+        if hit:
+            return hit
+    return None
+
+
 def _looks_like_bb_tube(part: str | None, desc: str | None, raw: str = "") -> bool:
+    """BB only. Do not swallow AY 102727-1 / AZ 102727-2 / BC 102727-5."""
     part_u = str(part or "").upper()
-    blob = f"{part_u} {desc or ''} {raw}".upper()
-    if part_u == _KNOWN_BB_PART or part_u in {"02727-4", "102727-4"}:
+    if part_u in {_KNOWN_BB_PART, "02727-4"}:
         return True
+    blob = f"{desc or ''} {raw}".upper()
     if _TUBE_ROUND_RE.search(blob) and (
-        part_u.endswith("-4") or "02727" in blob or "102727" in blob
+        part_u.endswith("02727-4") or "02727-4" in blob or "102727-4" in blob
     ):
         return True
     return False
@@ -674,13 +723,8 @@ def assign_items_from_sequence(
             f"Assigned {assigned} unread item letter(s) from A–BC sequence "
             f"(Time-like PN kept, dashed or not; do not invent rows)"
         )
-    return [
-        p
-        for p in slots
-        if p
-        and p.get("part_no")
-        and is_material_list_item(str(p.get("item") or ""))
-    ]
+    # Keep every Time-like PN. Letters are labels; do not delete a PN here.
+    return [p for p in slots if p and _is_time_like_part(p.get("part_no"))]
 
 
 def expected_letters_for_bands(
@@ -735,8 +779,8 @@ def _note_sequence_holes(
         notes.append(f"Hole band {i}: letter={letter} raw={raw or '(empty)'}")
 
 
-def _keep_better_strip(old, new):
-    """First successful harvest per item is sticky. BB / 102727-4 still wins."""
+def _keep_better_pn_row(old, new):
+    """Same PN: prefer BB qty 2, then a valid item token, then the first harvest."""
     if new.part_no == _KNOWN_BB_PART and old.part_no != _KNOWN_BB_PART:
         return new
     if old.part_no == _KNOWN_BB_PART and new.part_no != _KNOWN_BB_PART:
@@ -745,44 +789,71 @@ def _keep_better_strip(old, new):
         return new
     if str(old.item).upper() == "BB" and str(new.item).upper() != "BB":
         return old
+    if is_material_list_item(str(old.item or "")) and not is_material_list_item(str(new.item or "")):
+        return old
+    if is_material_list_item(str(new.item or "")) and not is_material_list_item(str(old.item or "")):
+        return new
     return old
 
 
+def label_letters_after_pn_set(rows: list, notes: list[str] | None = None) -> list:
+    """Letters are labels on a unique-PN set. Never drop a PN to resolve a clash."""
+    notes = notes if notes is not None else []
+    seq = time_item_letters(through="BZ")
+    used: set[str] = set()
+    for row in rows:
+        if row.part_no == _KNOWN_BB_PART or _looks_like_bb_tube(row.part_no, row.description):
+            row.item = "BB"
+            row.qty = 2
+            used.add("BB")
+    for row in rows:
+        if str(row.item or "").upper() == "BB":
+            continue
+        item = str(row.item or "").strip().upper()
+        if item in {"AI", "AO"} or not is_material_list_item(item) or item in used:
+            row.item = ""
+            continue
+        used.add(item)
+        row.item = item
+    unused = [tok for tok in seq if tok not in used]
+    for row in rows:
+        if str(row.item or "").strip():
+            continue
+        if unused:
+            row.item = unused.pop(0)
+        else:
+            row.item = str(row.part_no)
+    notes.append(
+        f"Labeled {len(rows)} unique Time PNs "
+        f"(letters after PN set; do not drop PNs)"
+    )
+    return rows
+
+
 def union_sticky_harvest(primary, extra):
-    """Keep primary rows; add extra items only when item and PN are both new."""
+    """Union unique Time PNs. First harvest wins a PN; extra adds new PNs only."""
     from quote_core.bom import BomResult
 
-    by_item: dict[str, Any] = {}
-    parts: set[str] = set()
     notes = list(getattr(primary, "notes", None) or [])
+    by_pn: dict[str, Any] = {}
     for row in list(getattr(primary, "rows", None) or []):
-        key = str(row.item or "").upper()
-        if not is_material_list_item(key):
+        pn = str(row.part_no or "")
+        if not _is_time_like_part(pn):
             continue
-        by_item[key] = row
-        parts.add(str(row.part_no))
+        by_pn[pn] = row
     added = 0
     for row in list(getattr(extra, "rows", None) or []):
-        key = str(row.item or "").upper()
-        if key in {"AI", "AO"} or not is_material_list_item(key):
-            continue
         pn = str(row.part_no or "")
-        if key in by_item:
+        if not _is_time_like_part(pn):
             continue
-        if pn and pn in parts:
-            notes.append(
-                f"Hole union ignored neighbor PN {pn} for item {key} "
-                f"(already harvested; do not copy onto a hole)"
-            )
+        if pn in by_pn:
+            by_pn[pn] = _keep_better_pn_row(by_pn[pn], row)
             continue
-        by_item[key] = row
-        if pn:
-            parts.add(pn)
+        by_pn[pn] = row
         added += 1
     if added:
-        notes.append(f"Unioned {added} retry-band part(s) onto first harvest (sticky)")
-    rows = list(by_item.values())
-    rows.sort(key=lambda r: item_sort_key(str(r.item or "")))
+        notes.append(f"Unioned {added} unique Time PN(s) from retry (keyed by PN, not letter)")
+    rows = label_letters_after_pn_set(list(by_pn.values()), notes)
     extra_notes = [
         n
         for n in (getattr(extra, "notes", None) or [])
@@ -805,12 +876,10 @@ def union_sticky_harvest(primary, extra):
 def _finalize_strip_rows(rows: list, notes: list[str]) -> list:
     from quote_core.bom import BomRow
 
-    by_item: dict[str, Any] = {}
-    stolen = []
+    by_pn: dict[str, Any] = {}
     for row in rows:
         if _looks_like_bb_tube(row.part_no, row.description):
             if str(row.item).upper() != "BB":
-                stolen.append(str(row.item).upper())
                 notes.append(
                     f"Item {row.item} had 102727-4 TUBE, ROUND — "
                     f"reassigned to BB (neighbor-band letter)"
@@ -835,16 +904,12 @@ def _finalize_strip_rows(rows: list, notes: list[str]) -> list:
                 source=row.source,
                 confidence=row.confidence,
             )
-        key = str(row.item or "").upper()
-        if not key:
+        pn = str(row.part_no or "")
+        if not _is_time_like_part(pn):
             continue
-        prev = by_item.get(key)
-        by_item[key] = _keep_better_strip(prev, row) if prev else row
-    # Drop a leftover H/etc. that still points at the BB tube after reassignment.
-    for key, row in list(by_item.items()):
-        if key != "BB" and _looks_like_bb_tube(row.part_no, row.description):
-            by_item.pop(key, None)
-    return list(by_item.values())
+        prev = by_pn.get(pn)
+        by_pn[pn] = _keep_better_pn_row(prev, row) if prev else row
+    return label_letters_after_pn_set(list(by_pn.values()), notes)
 
 
 def harvest_ocr_row_strips(
@@ -858,9 +923,19 @@ def harvest_ocr_row_strips(
 
     notes: list[str] = []
     slots: list[dict[str, Any] | None] = []
-    for index, line in enumerate(lines or []):
+    line_list = list(lines or [])
+    for index, line in enumerate(line_list):
         if not str(line).strip():
             slots.append(None)
+            continue
+        raw_only = str(line).strip()
+        window = " ".join(
+            str(line_list[j] or "")
+            for j in range(max(0, index - 2), min(len(line_list), index + 3))
+        )
+        if _is_title_block_drawing_line(raw_only, window):
+            slots.append(None)
+            notes.append(f"Skipped title-block drawing number on: {raw_only[:48]}")
             continue
         parsed = parse_ocr_row_strip(line)
         slots.append(parsed)
@@ -949,11 +1024,9 @@ def harvest_material_list_lines(text: str | None, *, bom_config: str | None = No
         .replace("–", "-")
         .replace("=", "-")
     )
-    by_item: dict[str, BomRow] = {}
     notes: list[str] = []
     strip_hit = harvest_ocr_row_strips(blob.splitlines(), bom_config=bom_config)
-    for row in strip_hit.rows:
-        by_item[str(row.item).upper()] = row
+    collected = list(strip_hit.rows)
     notes.extend(n for n in strip_hit.notes if "qty" in n.lower() or "unreadable" in n.lower() or "recovered" in n.lower())
 
     for m in _QTY_ITEM_PART_FIND_RE.finditer(blob):
@@ -986,22 +1059,17 @@ def harvest_material_list_lines(text: str | None, *, bom_config: str | None = No
                 f"not used as piece count, flag review"
             )
             qty = 1
-        existing = by_item.get(item)
-        # Prefer an explicit leading qty 2–4 over a defaulted strip qty.
-        # Do not let a leftover 7 overwrite a bleed-corrected 1 (J/S/AL/AV).
-        if existing and existing.part_no == part and existing.qty >= qty:
-            continue
-        if existing and existing.part_no == part and qty > 4:
-            continue
-        by_item[item] = BomRow(
-            item=item,
-            qty=qty,
-            part_no=part,
-            description=desc or (existing.description if existing else ""),
-            source="table_material_list_harvest",
-            confidence=0.9,
+        collected.append(
+            BomRow(
+                item=item,
+                qty=qty,
+                part_no=part,
+                description=desc,
+                source="table_material_list_harvest",
+                confidence=0.9,
+            )
         )
-    rows = _finalize_strip_rows(list(by_item.values()), notes)
+    rows = _finalize_strip_rows(collected, notes)
     if not rows:
         return BomResult(method=None, confidence=0.0, notes=["No qty/item/part lines harvested"])
     # Loose qty/item/part bait (page-0 regex leftovers) is not a table unless
