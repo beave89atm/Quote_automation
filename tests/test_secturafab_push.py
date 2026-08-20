@@ -11,7 +11,6 @@ from secturafab.push import (
     _weld_memo,
     classify_sectura_item,
     collect_job_files,
-    attachment_drawings_for_push,
 )
 
 
@@ -500,8 +499,10 @@ def test_ensure_laser_profile_ops_retries_when_missing_after_save():
         "PrimaryTime": 0.02,
     }
     client = MagicMock()
-    # 1) first attach read  2) verify missing  3) retry attach read  4) verify ok
+    # attach + preserve POST, verify missing, retry attach + preserve POST, verify ok
     client.get_json.side_effect = [
+        {"ItemList": [dict(laser_item)]},
+        {"ItemList": [dict(laser_item)]},
         {"ItemList": [dict(laser_item)]},
         {"ItemList": [dict(laser_item)]},
         {"ItemList": [dict(laser_item)]},

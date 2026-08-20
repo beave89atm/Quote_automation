@@ -627,7 +627,11 @@ class SecturaFabPushService:
 
     def find_quote_by_number(self, quote_number: str) -> dict[str, Any] | None:
         response = self.client.request("GET", f"v1/quote/byName/{quote_number}")
-        if response.status_code >= 400:
+        try:
+            code = int(getattr(response, "status_code", 599) or 599)
+        except (TypeError, ValueError):
+            return None
+        if code >= 400:
             return None
         payload = self.client._parse_or_raise(response)
         if isinstance(payload, dict) and payload.get("ID"):
@@ -1408,7 +1412,9 @@ class SecturaFabPushService:
 
             # Late CAD recalcs can wipe Profile/Weld/Qty after first attach — verify
             # and re-apply until stable (no more UpdateItem_Part here).
-            if used_step or used_pdf_shell or (bom_rows and library.get("folder")):
+            if used_step or used_pdf_shell or reuse_populated or (
+                bom_rows and library.get("folder")
+            ):
                 try:
                     notes.extend(
                         finalize_quote_ops(
@@ -1434,7 +1440,9 @@ class SecturaFabPushService:
                         raise
 
             # Profile last: finalize / settle POSTs have wiped ops more than once.
-            if used_pdf_shell or used_step or (bom_rows and library.get("folder")):
+            if used_pdf_shell or used_step or reuse_populated or (
+                bom_rows and library.get("folder")
+            ):
                 notes.extend(
                     ensure_laser_profile_ops(
                         self.client,
