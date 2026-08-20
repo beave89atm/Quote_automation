@@ -82,7 +82,7 @@ _STRIP_LEAD_RE = re.compile(
     r"(?P<rest>.*)$"
 )
 _DASHED_PN_RE = re.compile(
-    r"(?P<base>\d{5,7})\s*[-–—=]\s*(?P<suf>\d{1,3}[A-Za-z]?)"
+    r"(?P<base>\d{4,7})\s*[-–—=]\s*(?P<suf>\d{1,3}[A-Za-z]?)"
 )
 _BARE_PN_RE = re.compile(r"(?<![\d])(?P<base>\d{5,7})(?![\d-])")
 # Broken OCR: spaces in the stem, O/I as digits, missing dash.
@@ -384,22 +384,55 @@ def recover_time_part_no(raw: str | None, *, item: str | None = None) -> str | N
 
 
 def is_glued_p_prefix_weldment_pn(raw: str | None) -> bool:
-    """True for ``P904225-1`` (drawing number), not ``P 904225-1`` (item P)."""
+    """True for title-block ``P904225-1``, not item G + child ``P904226-1``."""
     text = str(raw or "")
-    if not _P_PREFIX_WELDMENT_PN_RE.search(text):
+    m = _P_PREFIX_WELDMENT_PN_RE.search(text)
+    if not m:
         return False
-    return not re.search(r"(?<![A-Za-z0-9])P\s+\d{5,7}", text, flags=re.IGNORECASE)
+    if re.search(r"(?<![A-Za-z0-9])P\s+\d{5,7}", text, flags=re.IGNORECASE):
+        return False
+    before = text[: m.start()]
+    for token in re.findall(r"(?<![A-Za-z0-9])([A-Za-z]{1,2})(?![A-Za-z0-9])", before):
+        if is_material_list_item(token):
+            return False
+    return True
 
 
 def _is_time_like_part(part: str | None) -> bool:
     text = str(part or "").strip()
-    if re.search(r"\d{5,7}-\d", text):
+    if re.search(r"\d{4,7}-\d", text):
         return True
     return bool(re.fullmatch(r"\d{5,7}", text))
 
 
+def _is_eco_or_title_block_row(part: str | None, desc: str | None, raw: str = "") -> bool:
+    """Drop revision / ECO / PROPERTY OF TIME rows. Do not invent replacements."""
+    blob = f"{part or ''} {desc or ''} {raw}"
+    if _TITLE_ECO_NOISE_RE.search(blob):
+        return True
+    if raw and _is_title_block_drawing_line(raw, raw):
+        return True
+    return False
+
+
+def _looks_like_column_index_qty(qty: int) -> bool:
+    """2-digit qty 10–20 is dash-column / grid-index bleed unless glued item+qty."""
+    return 10 <= int(qty) <= 20
+
+
 _TITLE_BLOCK_CTX_RE = re.compile(
     r"\b(?:WELDMENT|SHEET|TIME\s+MANUFACTURING|DWG|DRAWING\s+NO)\b",
+    re.IGNORECASE,
+)
+# ECO / revision / title-block notes — not weld parts (28106 C=72143, AN=89176-1).
+_TITLE_ECO_NOISE_RE = re.compile(
+    r"PROPERTY\s+OF\s+TIME"
+    r"|THIS\s+DRAWING\s+IS\s+THE\s+PROPERTY"
+    r"|ADDED\s+[—\-]*\s*4(?:\s+AND\s+ITEM)?"
+    r"|ADDED\s+(?:AND\s+)?ITEM"
+    r"|\bECO\b"
+    r"|REV(?:ISION)?\s*(?:NOTE|:)"
+    r"|CONFIG(?:URATION)?\s*(?:NOTE|:)",
     re.IGNORECASE,
 )
 
@@ -471,11 +504,16 @@ def find_time_like_pn(raw: str | None) -> tuple[int, int, str] | None:
     o_as_nine = re.sub(r"(?<![A-Za-z0-9])[oO](\d{4})\b", r"9\1", text)
     if o_as_nine != text:
         variants.append(o_as_nine)
+    hits = []
     for variant in variants:
         hit = _find_time_like_pn_once(variant)
         if hit:
-            return hit
-    return None
+            hits.append(hit)
+    if not hits:
+        return None
+    # `[3688-9` is 33688-9, not the 4-digit 3688-9 the widened dash regex sees first.
+    hits.sort(key=lambda h: (len(h[2]), h[2].count("-")), reverse=True)
+    return hits[0]
 
 
 def _looks_like_bb_tube(part: str | None, desc: str | None, raw: str = "") -> bool:
@@ -554,10 +592,15 @@ def _qty_from_one_source(
         return 2, True, "BB qty 2 recovered (qty cell unread; known 102727-4 print)"
     if tokens:
         n = tokens[-1]
-        # Time LOM qty 7 is a dimension bleed (J/S/AL/AV) unless glued BB2/BBD.
-        if n == 7 or (n > 4 and _looks_like_dimension_qty(n, desc, raw)):
+        # Qty 7 is dimension bleed; 2-digit 10–20 is column-index bleed.
+        # Neither is a piece count unless glued item+qty (BB2/BBD).
+        if (
+            n == 7
+            or _looks_like_column_index_qty(n)
+            or (n > 4 and _looks_like_dimension_qty(n, desc, raw))
+        ):
             return 1, False, (
-                f"{item or '?'} qty {n} looks like dimension bleed — "
+                f"{item or '?'} qty {n} looks like dimension/column-index bleed — "
                 f"not used as piece count, flag review"
             )
         if 1 <= n <= 20:
@@ -621,6 +664,8 @@ def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
     if _looks_like_bb_tube(part, desc, raw):
         item = "BB"
         part = _KNOWN_BB_PART
+    if _is_eco_or_title_block_row(part, desc, raw):
+        return None
     qty, qty_clear, qty_note = _qty_from_one_source(
         raw,
         part_start,
@@ -892,9 +937,19 @@ def _finalize_strip_rows(rows: list, notes: list[str]) -> list:
                 source=row.source,
                 confidence=row.confidence,
             )
-        if int(row.qty or 0) == 7 and str(row.item).upper() != "BB":
+        if _is_eco_or_title_block_row(row.part_no, row.description):
             notes.append(
-                f"{row.item} qty 7 is dimension bleed — not used as piece count, flag review"
+                f"Dropped ECO/title-block row {row.item} {row.part_no} — not a weld part"
+            )
+            continue
+        qn = int(row.qty or 0)
+        if (
+            str(row.item).upper() != "BB"
+            and (qn == 7 or _looks_like_column_index_qty(qn))
+        ):
+            notes.append(
+                f"{row.item} qty {qn} is dimension/column-index bleed — "
+                f"not used as piece count, flag review"
             )
             row = BomRow(
                 item=row.item,
@@ -973,13 +1028,16 @@ def harvest_ocr_row_strips(
     for line in lines or []:
         if not str(line).strip():
             continue
+        if _is_eco_or_title_block_row(None, None, str(line)):
+            continue
         for m in _ITEM_PART_ANY_RE.finditer(str(line)):
             if is_glued_p_prefix_weldment_pn(m.group(0)):
                 continue
             glued = m.group("glued") or ""
-            parsed = parse_ocr_row_strip(f"{m.group('item')}{glued} {m.group('part')}")
+            # Re-parse the whole strip so ECO/title-block text is not stripped off.
+            parsed = parse_ocr_row_strip(str(line))
             if not parsed:
-                parsed = parse_ocr_row_strip(m.group(0))
+                parsed = parse_ocr_row_strip(f"{m.group('item')}{glued} {m.group('part')}")
             if parsed and is_material_list_item(str(parsed.get("item") or "")):
                 found.append(_parsed_to_row(parsed))
     rows = _finalize_strip_rows(found, notes)
@@ -1049,11 +1107,17 @@ def harvest_material_list_lines(text: str | None, *, bom_config: str | None = No
         nxt = _QTY_ITEM_PART_FIND_RE.search(desc)
         if nxt:
             desc = desc[: nxt.start()].strip()
+        if _is_eco_or_title_block_row(part, desc, m.group(0)):
+            continue
         if _looks_like_bb_tube(part, desc, m.group(0)):
             item = "BB"
             part = _KNOWN_BB_PART
             qty = 2
-        elif qty == 7 or (qty > 4 and _looks_like_dimension_qty(qty, desc, m.group(0))):
+        elif (
+            qty == 7
+            or _looks_like_column_index_qty(qty)
+            or (qty > 4 and _looks_like_dimension_qty(qty, desc, m.group(0)))
+        ):
             notes.append(
                 f"{item} qty {qty} looks like dimension bleed — "
                 f"not used as piece count, flag review"
@@ -1224,9 +1288,13 @@ def _selected_qty(
             return 0, False
         raw = qty_cells[idx] if idx < len(qty_cells) else ""
         qty = _parse_qty_cell(raw)
+        if _looks_like_column_index_qty(qty):
+            return 1, True
         return qty, qty > 0
     raw = qty_cells[0] if qty_cells else (cells[0] if cells else "")
     qty = _parse_qty_cell(raw)
+    if _looks_like_column_index_qty(qty):
+        qty = 1
     if qty <= 0 and len(cells) > n_qty:
         # Sometimes QTY is omitted and the first cell is the item letter.
         qty = 1
@@ -1355,6 +1423,11 @@ def parse_material_list_cells(
         part = normalize_part_no(part_raw) or str(part_raw or "").upper()
         if not part or part in {"-", "PART", "PART NO."}:
             continue
+        if _is_eco_or_title_block_row(part, desc, " ".join(cells)):
+            notes.append(f"Dropped ECO/title-block row {item} {part} — not a weld part")
+            continue
+        if _looks_like_column_index_qty(int(qty)):
+            qty = 1
         seen_items.add(item)
         parsed.append(
             BomRow(

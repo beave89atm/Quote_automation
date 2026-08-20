@@ -469,6 +469,148 @@ def test_p_prefix_weldment_pn_is_not_a_native_false_hit():
     assert real_p["item"] == "P" and real_p["part_no"] == "904225-1"
 
 
+def test_dash_column_index_qty_bleed_is_not_piece_count():
+    """103516 live: 13/14/17/18/20 are column-index bleed, not 121 pcs."""
+    letters = [c for c in "ABCDEFGHJKLMNPQRSTUVW"]
+    assert len(letters) == 21
+    bleed = {"A": 13, "B": 14, "D": 17, "E": 18, "F": 20}
+    lines = [
+        "LIST OF MATERIAL",
+        "-4 | -3 | -2 | -1 | ITEM | PART NO. | DESCRIPTION",
+    ]
+    for i, item in enumerate(letters):
+        q = bleed.get(item, 1)
+        lines.append(f"- | - | - | {q} | {item} | 1035{i:02d}-1 | TUBE")
+    bom = parse_material_list_text("\n".join(lines), bom_config="1")
+    assert len(bom.rows) == 21
+    assert bom.piece_count == 21
+    assert not any(r.qty >= 10 for r in bom.rows)
+
+    strips = harvest_ocr_row_strips(
+        [f"{bleed.get(item, 1)} {item} 1035{i:02d}-1 TUBE" for i, item in enumerate(letters)]
+    )
+    assert len(strips.rows) == 21
+    assert sum(r.qty for r in strips.rows) == 21
+    thirteen = parse_ocr_row_strip("13 A 103500-1 TUBE")
+    assert thirteen is not None and thirteen["qty"] == 1
+    glued = parse_ocr_row_strip("BB2 102727-4 TUBE, ROUND")
+    assert glued["qty"] == 2 and glued["part_no"] == _BB_PART
+
+
+def test_eco_and_title_block_rows_are_dropped():
+    """28106 / 33612 / 21727 / 1007922 / P904225: ECO and title-block are not parts."""
+    lines = [
+        "A 16697-1 TUBE, SHORT",
+        "B 16697-2 TUBE, LONG",
+        "C 72143 ADDED —4 AND ITEM P",
+        "E 61358 REVISION NOTE",
+        "S 73207 CONFIG NOTE",
+        "AN 89176-1 PROPERTY OF TIME MANUFACTURING",
+        "B 56657 PROPERTY OF TIME",
+        "BT 97879 THIS DRAWING IS THE PROPERTY OF TIME",
+        "BBD 02727-4 TUBE, ROUND",
+    ]
+    bom = harvest_ocr_row_strips(lines)
+    parts = {r.part_no for r in bom.rows}
+    assert "16697-1" in parts and "16697-2" in parts
+    assert _BB_PART in parts
+    for junk in ("72143", "61358", "73207", "89176-1", "56657", "97879"):
+        assert junk not in parts, junk
+    bb = next(r for r in bom.rows if r.item == "BB")
+    assert bb.qty == 2 and bb.part_no == _BB_PART
+    assert parse_ocr_row_strip("C 72143 ADDED —4 AND ITEM P") is None
+    assert parse_ocr_row_strip("AN 89176-1 PROPERTY OF TIME MANUFACTURING") is None
+
+    cells = parse_material_list_text(
+        "LIST OF MATERIAL\n"
+        "QTY | ITEM | PART NO. | DESCRIPTION\n"
+        "1 | A | 16697-1 | TUBE, SHORT\n"
+        "1 | C | 72143 | ADDED —4 AND ITEM P\n"
+        "2 | BB | 102727-4 | TUBE, ROUND\n"
+    )
+    cell_parts = {r.part_no for r in cells.rows}
+    assert "16697-1" in cell_parts
+    assert "72143" not in cell_parts
+    assert _BB_PART in cell_parts
+
+
+def test_unread_band_keeps_time_pn_and_4digit_hose_guide():
+    """1004611 / 1004747-1: keep unread Time PNs; 6993-1 hose guide; drop AE/BE/BS junk."""
+    lines = [
+        "A 100100-1 TUBE",
+        "B 100101-1 PLATE",
+        "",
+        "100102-1 SUPPORT",
+        "6993-1 HOSE GUIDE",
+        "AE 56657 PROPERTY OF TIME",
+        "BE 97879 THIS DRAWING IS THE PROPERTY OF TIME",
+        "BS 72143 ADDED ITEM C",
+    ]
+    bom = harvest_ocr_row_strips(lines)
+    parts = {r.part_no for r in bom.rows}
+    assert "100100-1" in parts
+    assert "100101-1" in parts
+    assert "100102-1" in parts
+    assert "6993-1" in parts
+    assert "56657" not in parts
+    assert "97879" not in parts
+    assert "72143" not in parts
+    hose = parse_ocr_row_strip("6993-1 HOSE GUIDE")
+    assert hose is not None and hose["part_no"] == "6993-1"
+
+
+def test_p904225_drops_property_row_keeps_table_child_not_folder(tmp_path: Path):
+    """P904225-1 is not a BOM row; AN=89176-1 PROPERTY OF TIME drops; table child stays."""
+    text = (
+        "WELDMENT, PLATFORM\n"
+        "P904225-1\n"
+        "TIME MANUFACTURING\n"
+        "DWG NO P904225-1\n"
+        "LIST OF MATERIAL\n"
+        "QTY | ITEM | PART NO. | DESCRIPTION\n"
+        "1 | A | 89100-1 | TUBE\n"
+        "1 | G | P904226-1 | SUPPORT\n"
+        "1 | AN | 89176-1 | PROPERTY OF TIME MANUFACTURING\n"
+    )
+    bom = extract_bom(text=text)
+    parts = {r.part_no for r in bom.rows}
+    assert "P904225-1" not in parts
+    assert "904225-1" not in parts
+    assert "89100-1" in parts
+    assert "89176-1" not in parts
+    assert "904226-1" in parts or "P904226-1" in parts
+    assert bom.method and bom.method.startswith("table_")
+
+    child = parse_ocr_row_strip("1 G P904226-1 SUPPORT")
+    assert child is not None
+    assert child["item"] == "G"
+    assert "904226" in child["part_no"]
+
+    # Folder children that are not in the table must not be padded.
+    pdf = tmp_path / "P904225-1.pdf"
+    _write_lom_pdf(
+        pdf,
+        ["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
+        [
+            ["1", "A", "89100-1", "TUBE"],
+            ["1", "G", "89101-1", "PLATE"],
+        ],
+        title="WELDMENT, PLATFORM  P904225-1  TIME MANUFACTURING",
+    )
+    lib = tmp_path / "library"
+    lib.mkdir()
+    for extra in ("P904226-1.pdf", "P904230-1.pdf", "P904231-1.pdf", "P904245-1.pdf"):
+        (lib / extra).write_bytes(b"%PDF-1.4\n%\n")
+    padded = extract_bom(pdf_path=pdf, library_folder=lib, bom_config="1")
+    pad_parts = {r.part_no for r in padded.rows}
+    assert padded.method and padded.method.startswith("table_")
+    assert "89100-1" in pad_parts
+    assert "89101-1" in pad_parts
+    assert not any("904226" in p or "904230" in p or "904231" in p or "904245" in p for p in pad_parts)
+    assert "P904225-1" not in pad_parts
+    assert "904225-1" not in pad_parts
+
+
 def test_qty_over_20_is_junk_unless_glued_item_qty():
     """99 is OCR junk; 7 on a rail is dimension bleed; BB2/AX2 glued qty 2 stays."""
     huge = parse_ocr_row_strip("99 A 100177-2 PLATE")
