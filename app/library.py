@@ -21,7 +21,15 @@ from .paths import RATES_PATH, UPLOAD_DIR
 def lookup_for_job(job: Job) -> DrawingMatch:
     rates = load_shop_rates(RATES_PATH)
     roots = library_roots_from_config(rates.raw)
-    part_key = extract_part_key(job.pdf_filename, job.title) or ""
+    part_key = (
+        extract_part_key(
+            job.pdf_filename,
+            getattr(job, "dxf_filename", None),
+            job.stp_filename,
+            job.title,
+        )
+        or ""
+    )
     return find_drawings(
         part_key,
         roots,

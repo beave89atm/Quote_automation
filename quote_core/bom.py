@@ -1217,6 +1217,230 @@ def extract_bom_from_ocr_time_style(
     return BomResult(rows=bom_rows, method=method, confidence=avg_conf, notes=notes)
 
 
+def _compact_part_key(key: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", (key or "").upper())
+
+
+def upload_is_assembly_drawing(
+    pdf_path: Path | str | None,
+    library_folder: Path | str | None,
+) -> bool:
+    """True when the uploaded PDF is the top-level weldment for this library folder.
+
+    Loose child uploads (``21679.pdf`` living under ``21678-1/``) must not inherit
+    sibling PDFs as their BOM.
+    """
+    if not pdf_path or not library_folder:
+        return False
+    from quote_core.drawing_library import extract_part_key
+
+    upload_key = extract_part_key(Path(pdf_path).name, Path(pdf_path).stem)
+    folder_key = extract_part_key(Path(library_folder).name)
+    if not upload_key or not folder_key:
+        return False
+    return _compact_part_key(upload_key) == _compact_part_key(folder_key)
+
+
+def _part_base_token(part_no: str) -> str:
+    return str(part_no or "").upper().split("-", 1)[0]
+
+
+def _supplement_library_children(
+    rows: list[BomRow],
+    related_pdf_names: list[str] | None,
+) -> list[str]:
+    """Add missing assembly children from the drawing-library folder (qty 1, review)."""
+    from quote_core.drawing_library import extract_part_key
+
+    notes: list[str] = []
+    if not related_pdf_names:
+        return notes
+    existing_parts = {str(r.part_no).upper() for r in rows if r.part_no}
+    existing_bases = {_part_base_token(r.part_no) for r in rows if r.part_no}
+    added = 0
+    for name in related_pdf_names:
+        key = extract_part_key(name) or Path(str(name)).stem
+        if not key:
+            continue
+        if key.upper() in existing_parts or _part_base_token(key) in existing_bases:
+            continue
+        rows.append(
+            BomRow(
+                item=None,
+                qty=1,
+                part_no=key,
+                description="",
+                source="library_folder",
+                confidence=0.35,
+            )
+        )
+        added += 1
+    if added:
+        notes.append(
+            f"Added {added} BOM child(ren) from drawing-library folder "
+            "(qty 1, review — PDF table was incomplete)"
+        )
+    return notes
+
+
+def _finalize_bom(
+    result: BomResult,
+    pdf_path: Path | str | None,
+    library_folder: Path | str | None,
+    related_pdf_names: list[str] | None,
+) -> BomResult:
+    if upload_is_assembly_drawing(pdf_path, library_folder):
+        extra = _supplement_library_children(result.rows, related_pdf_names)
+        result.notes = list(result.notes) + extra
+        if extra and not result.method:
+            result.method = "library_folder"
+            result.confidence = max(result.confidence, 0.35)
+        elif extra:
+            result.confidence = min(result.confidence, 0.85)
+    if not result.rows and not result.notes:
+        result.notes = ["No BOM rows detected"]
+    return result
+
+
+def _native_pdf_texts(pdf_path: Path) -> list[str]:
+    """Native PDF text plus word-reconstructed lines (Time CAD often splits cells)."""
+    import fitz
+
+    texts: list[str] = []
+    doc = fitz.open(str(pdf_path))
+    try:
+        for page in doc:
+            raw = page.get_text("text") or ""
+            if raw.strip():
+                texts.append(raw)
+            words = page.get_text("words") or []
+            if not words:
+                continue
+            lines: dict[int, list[tuple[float, str]]] = defaultdict(list)
+            for w in words:
+                if len(w) < 5:
+                    continue
+                y = int(round(float(w[1]) / 3.0) * 3)
+                lines[y].append((float(w[0]), str(w[4])))
+            rebuilt = [
+                " ".join(t for _, t in sorted(parts, key=lambda it: it[0]))
+                for _, parts in sorted(lines.items())
+            ]
+            if rebuilt:
+                texts.append("\n".join(rebuilt))
+    finally:
+        doc.close()
+    return texts
+
+
+def extract_bom_from_native_time_style(
+    pdf_path: Path | str | None = None,
+    *,
+    text: str | None = None,
+    library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
+    bom_config: str | None = None,
+) -> BomResult:
+    """
+    Time-style LIST OF MATERIAL from selectable PDF text (no Tesseract).
+
+    PDF-only weldments often have native qty/item/part strings even when OCR
+    is unavailable. Run this before the OCR path.
+    """
+    from quote_core.bom_config import format_bom_config_label, normalize_bom_config
+
+    texts: list[str] = []
+    if text and str(text).strip():
+        texts.append(str(text))
+    if pdf_path:
+        candidate = Path(pdf_path)
+        if candidate.is_file():
+            try:
+                texts.extend(_native_pdf_texts(candidate))
+            except Exception as exc:  # noqa: BLE001
+                return BomResult(
+                    notes=[f"Native Time-style text read failed: {exc}"],
+                    confidence=0.0,
+                )
+    if not texts:
+        return BomResult(notes=["No native PDF text for Time-style BOM"], confidence=0.0)
+
+    config = normalize_bom_config(bom_config)
+    bases = library_part_bases(
+        Path(library_folder) if library_folder else None,
+        related_pdf_names=related_pdf_names,
+    )
+    used_multi = False
+    supp_notes: list[str] = []
+    if config and (
+        texts_have_multi_qty_headers(texts)
+        or _parse_multi_qty_time_hits(texts, bases, bom_config=config)
+    ):
+        multi_hits = [
+            h
+            for h in _parse_multi_qty_time_hits(texts, bases, bom_config=config)
+            if int(h.get("qty") or 0) > 0
+        ]
+        if multi_hits:
+            used_multi = True
+            hits = multi_hits
+        else:
+            hits = _parse_qty_item_part_hits(texts, bases)
+    else:
+        hits = _parse_qty_item_part_hits(texts, bases)
+
+    bom_rows = _vote_bom_rows(hits, bases)
+    for row in bom_rows:
+        row.source = "native_time_multi_qty" if used_multi else "native_time"
+    if used_multi:
+        primary_base = None
+        if pdf_path:
+            m_pri = re.match(r"^(\d{4,7})", Path(pdf_path).stem.upper().replace(" ", ""))
+            if m_pri:
+                primary_base = m_pri.group(1)
+        supp_bases = {b for b in bases if b != primary_base}
+        supp_notes = _supplement_multi_config_bom(
+            bom_rows,
+            texts,
+            supp_bases,
+            bom_config=config or "",
+        )
+
+    if not bom_rows:
+        return BomResult(notes=["Native Time-style BOM found no part rows"], confidence=0.0)
+
+    dedup: dict[str, BomRow] = {}
+    for r in bom_rows:
+        prev = dedup.get(r.part_no)
+        if prev is None or (r.item and not prev.item) or r.qty > prev.qty:
+            dedup[r.part_no] = r
+    bom_rows = list(dedup.values())
+
+    def sort_key(r: BomRow):
+        if isinstance(r.item, str) and r.item.isalpha():
+            return (0, r.item)
+        return (1, str(r.part_no))
+
+    bom_rows.sort(key=sort_key)
+    avg_conf = sum(r.confidence for r in bom_rows) / max(1, len(bom_rows))
+    notes = [
+        f"Native Time-style BOM: {len(bom_rows)} part numbers, "
+        f"{sum(r.qty for r in bom_rows)} pieces"
+    ]
+    if used_multi and config:
+        notes.insert(
+            0,
+            f"Used BOM qty column {format_bom_config_label(config)} "
+            f"(multi-option Time drawing, native text)",
+        )
+        notes.extend(supp_notes)
+        avg_conf = min(0.96, avg_conf + 0.03)
+    if bases:
+        notes.append(f"Validated part bases against library folder ({len(bases)} PDF stems)")
+    method = "native_time_multi_qty" if used_multi else "native_time"
+    return BomResult(rows=bom_rows, method=method, confidence=avg_conf, notes=notes)
+
+
 def extract_bom(
     pdf_path: Path | str | None = None,
     *,
@@ -1230,21 +1454,37 @@ def extract_bom(
 
     1) Native MAC text/blocks (high confidence when present)
     2) Native PARTS LIST (Cummins / NGFS style)
-    3) OCR Time-style LIST OF MATERIAL (vector CAD drawings)
+    3) Native Time-style LIST OF MATERIAL (selectable text; no OCR)
+    4) OCR Time-style LIST OF MATERIAL (vector CAD drawings)
+    5) Assembly-only: missing children from the drawing-library folder
     """
     notes: list[str] = []
     native = extract_bom_from_native_mac(pdf_path, text=text)
     if native.rows and native.piece_count > 0 and native.confidence >= 0.9:
-        return native
+        native.notes = notes + list(native.notes)
+        return _finalize_bom(native, pdf_path, library_folder, related_pdf_names)
     if native.notes:
         notes.extend(native.notes)
 
     parts_list = extract_bom_from_parts_list(pdf_path, text=text)
     if parts_list.rows and parts_list.piece_count > 0:
         parts_list.notes = notes + list(parts_list.notes)
-        return parts_list
+        return _finalize_bom(parts_list, pdf_path, library_folder, related_pdf_names)
     if parts_list.notes:
         notes.extend(parts_list.notes)
+
+    if pdf_path or (text and str(text).strip()):
+        native_time = extract_bom_from_native_time_style(
+            pdf_path,
+            text=text,
+            library_folder=library_folder,
+            related_pdf_names=related_pdf_names,
+            bom_config=bom_config,
+        )
+        if native_time.rows and native_time.piece_count > 0:
+            native_time.notes = notes + list(native_time.notes)
+            return _finalize_bom(native_time, pdf_path, library_folder, related_pdf_names)
+        notes.extend(native_time.notes)
 
     if pdf_path:
         ocr = extract_bom_from_ocr_time_style(
@@ -1256,10 +1496,15 @@ def extract_bom(
         notes.extend(ocr.notes)
         if ocr.rows:
             ocr.notes = notes + list(ocr.notes)
-            return ocr
+            return _finalize_bom(ocr, pdf_path, library_folder, related_pdf_names)
 
     if native.rows:
         native.notes = notes + native.notes
-        return native
+        return _finalize_bom(native, pdf_path, library_folder, related_pdf_names)
 
-    return BomResult(method=None, confidence=0.0, notes=notes or ["No BOM rows detected"])
+    return _finalize_bom(
+        BomResult(method=None, confidence=0.0, notes=notes or ["No BOM rows detected"]),
+        pdf_path,
+        library_folder,
+        related_pdf_names,
+    )

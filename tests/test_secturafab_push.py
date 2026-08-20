@@ -55,6 +55,57 @@ def test_collect_job_files(tmp_path: Path):
     assert cad == [stp]
 
 
+def test_collect_job_files_includes_dxf(tmp_path: Path):
+    dxf = tmp_path / "35145-1.dxf"
+    dxf.write_bytes(b"0\nSECTION\n")
+    drawings, cad = collect_job_files(pdf_path=None, stp_path=None, dxf_path=dxf)
+    assert drawings == [dxf]
+    assert cad == []
+
+
+def test_weld_memo_includes_operations():
+    memo = _weld_memo(
+        {"total_inches": 10, "weld_minutes": 3},
+        {
+            "sizes_found": ["1/4"],
+            "operations": {
+                "operations": [
+                    {
+                        "name": "Tube laser (outsourced)",
+                        "location": "outsourced",
+                        "detected": True,
+                        "setup_minutes": 30,
+                        "run_minutes": None,
+                        "time_status": "confirm",
+                    },
+                    {
+                        "name": "Powder coating (outsourced)",
+                        "location": "outsourced",
+                        "detected": False,
+                        "setup_minutes": None,
+                        "run_minutes": None,
+                        "time_status": "confirm",
+                    },
+                    {
+                        "code": "mill",
+                        "name": "CNC mill",
+                        "location": "in_house",
+                        "detected": True,
+                        "setup_minutes": 45,
+                        "run_minutes": 12,
+                        "time_status": "parked",
+                    },
+                ]
+            },
+        },
+    )
+    assert "Tube laser" in memo
+    assert "Powder coating" in memo
+    assert "confirm" in memo
+    assert "CNC mill" not in memo
+    assert "setup 45" not in memo
+
+
 def test_push_job_creates_quote_and_uploads():
     client = MagicMock()
     client.get_json.return_value = {"QuoteNumber": "35145-1", "ItemCount": 3, "ItemList": [{}, {}, {}]}
@@ -126,41 +177,111 @@ def test_allocate_quote_number_is_bare_part():
     assert service.allocate_quote_number("PN 21678-1") == "21678-1"
 
 
-def test_repush_always_creates_new_quote_and_imports_cad():
-    client = MagicMock()
-    client.get_json.return_value = {
+def test_repush_reuses_existing_quote_and_skips_cad_reimport(tmp_path: Path):
+    pdf = tmp_path / "21678-1.pdf"
+    stp = tmp_path / "21678-1.stp"
+    pdf.write_bytes(b"%PDF")
+    stp.write_bytes(b"ISO")
+    existing = {
+        "ID": "existing-qid",
         "QuoteNumber": "21678-1",
         "QuoteAndRevNumber": "21678-1",
-        "RevNumber": None,
-        "ItemCount": 12,
+        "ItemCount": 2,
         "ItemList": [
-            {"Description": "21680 PLATE"},
-            {"Description": "21679 TUBE SUPPORT"},
+            {
+                "ID": "i1",
+                "Description": "21680 PLATE",
+                "Quantity": 2,
+                "OperationCostList": [{"OperationName": "Profile"}],
+            },
+            {
+                "ID": "i2",
+                "Description": "21679 TUBE SUPPORT",
+                "Quantity": 1,
+                "OperationCostList": [{"OperationName": "Weld"}],
+            },
         ],
+        "OrganizationName": "Time Manufacturing",
     }
-    create = MagicMock()
-    create.status_code = 200
-    create.json.return_value = "new-id"
-    create.text = '"new-id"'
-    strip = MagicMock()
-    strip.status_code = 200
-    client.request.side_effect = [create, strip]
-    client._parse_or_raise.side_effect = lambda r: "new-id"
-
+    client = MagicMock()
+    client.get_json.return_value = existing
     service = SecturaFabPushService(client=client)
-    pdf = Path("data/uploads/41/21678-1.pdf")
-    stp = Path("data/uploads/41/21678-1.STEP")
-    if not pdf.exists() or not stp.exists():
-        pdf = Path("data/uploads/40/21678-1.pdf")
-        stp = Path("data/uploads/40/21678-1.STEP")
-    if not pdf.exists() or not stp.exists():
-        return
 
-    with patch.object(service, "upload_drawings_quote_request", return_value="qr-uuid"), patch.object(
-        service, "quick_add_cad", return_value={"ok": True}
-    ) as up_c, patch.object(
-        service, "apply_item_categories", return_value=["Categorized items — Cad: 1, Linear: 1, Component: 0"]
-    ), patch("secturafab.push.ensure_assembly_root", return_value=["Assembly root"]), patch(
+    with patch.object(service, "load_existing_quote", return_value=existing), patch.object(
+        service, "upload_drawings_quote_request"
+    ) as up_d, patch.object(service, "quick_add_cad") as up_c, patch.object(
+        service, "create_quote"
+    ) as create_q, patch.object(
+        service, "allocate_quote_number", return_value="21678-1"
+    ), patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ), patch(
+        "secturafab.push.apply_quote_organization"
+    ) as org, patch(
+        "secturafab.push.ensure_weld_ops", return_value=["Weld ops already present"]
+    ), patch(
+        "secturafab.push.finalize_quote_ops", return_value=["Verified"]
+    ) as finalize, patch(
+        "secturafab.push.ensure_laser_profile_ops", return_value=["Laser plate items already had Profile ops"]
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value=None
+    ), patch(
+        "secturafab.pdf_assembly_ops.build_pdf_only_assembly"
+    ) as build_pdf, patch(
+        "secturafab.pdf_assembly_ops.build_single_pdf_quote"
+    ) as build_single:
+        result = service.push_job(
+            title="21678-1",
+            pdf_filename="21678-1.pdf",
+            pdf_path=pdf,
+            stp_path=stp,
+            takeoff={"library": {"part_key": "21678-1"}},
+            times={},
+            job_id=41,
+        )
+
+    assert result.ok
+    assert result.created_new_quote is False
+    assert result.quote_id == "existing-qid"
+    assert result.quote_number == "21678-1"
+    create_q.assert_not_called()
+    up_c.assert_not_called()
+    up_d.assert_not_called()
+    org.assert_not_called()
+    build_pdf.assert_not_called()
+    build_single.assert_not_called()
+    finalize.assert_called()
+    assert finalize.call_args.kwargs.get("protect_existing") is True
+    assert any("Re-using existing" in n for n in result.notes)
+
+
+def test_first_push_with_stp_skips_library_child_pdf_upload(tmp_path: Path):
+    folder = tmp_path / "21678-1"
+    folder.mkdir()
+    child = folder / "21679.pdf"
+    child.write_bytes(b"%PDF-child")
+    job = tmp_path / "21678-1.pdf"
+    stp = tmp_path / "21678-1.stp"
+    job.write_bytes(b"%PDF-job")
+    stp.write_bytes(b"ISO")
+    client = MagicMock()
+    client.get_json.return_value = {
+        "ID": "new-qid",
+        "QuoteNumber": "21678-1",
+        "ItemCount": 1,
+        "ItemList": [{"ID": "i1", "Description": "21678-1"}],
+    }
+    service = SecturaFabPushService(client=client)
+
+    with patch.object(service, "load_existing_quote", return_value=None), patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ) as up_d, patch.object(service, "quick_add_cad", return_value={"ok": True}) as up_c, patch.object(
+        service, "create_quote", return_value="new-qid"
+    ), patch.object(service, "allocate_quote_number", return_value="21678-1"), patch.object(
+        service, "apply_item_categories", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_assembly_root", return_value=[]
+    ), patch(
         "secturafab.push.relink_assembly_children", return_value=[]
     ), patch(
         "secturafab.push.ensure_purchased_components", return_value=[]
@@ -171,23 +292,71 @@ def test_repush_always_creates_new_quote_and_imports_cad():
     ), patch(
         "secturafab.push.apply_bom_quantities", return_value=[]
     ), patch(
-        "secturafab.push.ensure_laser_profile_ops", return_value=["Attached Profile"]
-    ), patch("secturafab.push.ensure_weld_ops", return_value=["Attached Weld"]), patch(
-        "secturafab.push.finalize_quote_ops", return_value=["Verified"]
+        "secturafab.push.ensure_laser_profile_ops", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_weld_ops", return_value=[]
+    ), patch(
+        "secturafab.push.finalize_quote_ops", return_value=[]
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value=None
+    ), patch(
+        "secturafab.push.apply_quote_organization", return_value=[]
+    ), patch(
+        "secturafab.push.needs_assembly_structure", return_value=False
     ):
         result = service.push_job(
             title="21678-1",
             pdf_filename="21678-1.pdf",
-            pdf_path=pdf,
+            pdf_path=job,
             stp_path=stp,
-            takeoff={"library": {"part_key": "21678-1"}},
+            takeoff={
+                "library": {
+                    "part_key": "21678-1",
+                    "folder": str(folder),
+                    "related_pdfs": ["21679.pdf"],
+                }
+            },
             times={},
-            job_id=41,
         )
+
     assert result.ok
-    assert result.created_new_quote
-    assert result.quote_number == "21678-1"
+    assert result.created_new_quote is True
     up_c.assert_called_once()
+    uploaded = up_d.call_args[0][0]
+    names = [p.name for p in uploaded]
+    assert "21678-1.pdf" in names
+    assert "21679.pdf" not in names
+    assert any("library child PDFs not uploaded" in n for n in result.notes)
+
+
+def test_apply_bom_quantities_fill_empty_does_not_overwrite():
+    from secturafab.qty_ops import apply_bom_quantities
+
+    client = MagicMock()
+    client.get_json.return_value = {
+        "ItemList": [
+            {"ID": "root", "IsAssembly": True, "ProductType": 300, "Quantity": 1},
+            {"ID": "c1", "Description": "21680-1 PLATE", "Quantity": 7, "AssemblyQty": 7},
+        ]
+    }
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    notes = apply_bom_quantities(
+        client,
+        "qid",
+        bom_rows=[{"part_no": "21680-1", "qty": 2}],
+        part_key="21678-1",
+        fill_empty_only=True,
+    )
+    assert any("already matched" in n or "Applied" not in n for n in notes)
+    # Must not POST a qty overwrite when Kyle already set 7.
+    if client.request.called:
+        posted = client.request.call_args.kwargs.get("json") or {}
+        items = posted.get("ItemList") or []
+        child = next((i for i in items if i.get("ID") == "c1"), None)
+        if child:
+            assert child.get("Quantity") == 7
 
 
 def test_collect_related_pdf_from_sibling_folder(tmp_path: Path):
@@ -341,8 +510,10 @@ def test_ensure_laser_profile_ops_retries_when_missing_after_save():
         "PrimaryTime": 0.02,
     }
     client = MagicMock()
-    # 1) first attach read  2) verify missing  3) retry attach read  4) verify ok
+    # attach + preserve POST, verify missing, retry attach + preserve POST, verify ok
     client.get_json.side_effect = [
+        {"ItemList": [dict(laser_item)]},
+        {"ItemList": [dict(laser_item)]},
         {"ItemList": [dict(laser_item)]},
         {"ItemList": [dict(laser_item)]},
         {"ItemList": [dict(laser_item)]},
@@ -480,7 +651,19 @@ def test_push_readiness_pdf_only_not_ready(tmp_path: Path):
 
     r = evaluate_push_readiness(stp_path=None, pdf_path=None, takeoff={"library": {}})
     assert r["ready"] is False
-    assert "PDF" in (r["reason"] or "") or "STEP" in (r["reason"] or "")
+    assert "PDF" in (r["reason"] or "") or "STEP" in (r["reason"] or "") or "DXF" in (
+        r["reason"] or ""
+    )
+
+
+def test_push_readiness_with_job_dxf_ready(tmp_path: Path):
+    from app.push_readiness import evaluate_push_readiness
+
+    dxf = tmp_path / "only.dxf"
+    dxf.write_bytes(b"0\nSECTION\n")
+    r = evaluate_push_readiness(stp_path=None, pdf_path=None, dxf_path=dxf, takeoff={})
+    assert r["ready"] is True
+    assert r["has_dxf"] is True
 
 
 def test_push_readiness_with_job_pdf_ready(tmp_path: Path):

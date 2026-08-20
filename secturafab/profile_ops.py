@@ -510,15 +510,28 @@ def apply_part_materials(
     return notes
 
 
+def _item_has_profile(it: dict[str, Any]) -> bool:
+    ops = it.get("OperationCostList") or []
+    return any(o.get("OperationName") == "Profile" for o in ops)
+
+
 def count_profile_items(detail: dict[str, Any]) -> int:
     n = 0
     for it in detail.get("ItemList") or []:
         if not _is_laser_plate(it):
             continue
-        ops = it.get("OperationCostList") or []
-        if any(o.get("OperationName") == "Profile" for o in ops):
+        if _item_has_profile(it):
             n += 1
     return n
+
+
+def laser_plates_missing_profile(detail: dict[str, Any]) -> list[dict[str, Any]]:
+    """Laser plate ItemList rows that do not currently have a Profile op."""
+    return [
+        it
+        for it in (detail.get("ItemList") or [])
+        if _is_laser_plate(it) and not _item_has_profile(it)
+    ]
 
 
 def _attach_laser_profile_ops_once(
@@ -574,7 +587,10 @@ def _attach_laser_profile_ops_once(
         patched += 1
 
     if changed:
-        save = client.request("POST", "v1/quote", json=detail)
+        from .quote_update import safe_quote_post
+
+        # Additive: live qty/org/labels/prices win; only missing Profile is added.
+        save = safe_quote_post(client, quote_id, detail, additive=True)
         if save.status_code >= 400:
             notes.append(f"Saving Profile ops failed ({save.status_code})")
         else:
@@ -619,15 +635,7 @@ def ensure_laser_profile_ops(
         return notes
 
     check = client.get_json(f"v1/quote/{quote_id}")
-    missing = [
-        it
-        for it in (check.get("ItemList") or [])
-        if _is_laser_plate(it)
-        and not any(
-            o.get("OperationName") == "Profile"
-            for o in (it.get("OperationCostList") or [])
-        )
-    ]
+    missing = laser_plates_missing_profile(check)
     if not missing:
         return notes
 
@@ -640,15 +648,7 @@ def ensure_laser_profile_ops(
         )
     )
     check2 = client.get_json(f"v1/quote/{quote_id}")
-    still = sum(
-        1
-        for it in (check2.get("ItemList") or [])
-        if _is_laser_plate(it)
-        and not any(
-            o.get("OperationName") == "Profile"
-            for o in (it.get("OperationCostList") or [])
-        )
-    )
+    still = len(laser_plates_missing_profile(check2))
     if still:
         notes.append(
             f"WARNING: Profile still missing on {still} laser item(s) after retry"

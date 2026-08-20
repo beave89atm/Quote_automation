@@ -46,12 +46,31 @@ def test_pair_upload_files_by_stem():
     ]
     paired, skipped = pair_upload_files(files)
     by_stem = {p.stem.lower(): p for p in paired}
-    assert set(by_stem) == {"80341687", "laseronly", "dup"}
+    assert set(by_stem) == {"80341687", "laseronly", "dup", "orphan"}
     assert by_stem["80341687"].stp_name == "80341687.stp"
     assert by_stem["laseronly"].stp_name is None
     assert by_stem["dup"].stp_bytes == b"stp-last"
-    assert any("orphan.STEP" in s for s in skipped)
+    assert by_stem["orphan"].stp_name == "orphan.STEP"
+    assert by_stem["orphan"].pdf_name is None
     assert any("notes.txt" in s for s in skipped)
+
+
+def test_pair_upload_files_dxf_only_and_mixed():
+    files = [
+        ("flat.dxf", b"0\nSECTION\n"),
+        ("assy.pdf", b"%PDF"),
+        ("assy.dxf", b"0\nTEXT\n1\nPOWDER\n"),
+        ("assy.stp", b"ISO"),
+    ]
+    paired, skipped = pair_upload_files(files)
+    assert skipped == []
+    by_stem = {p.stem.lower(): p for p in paired}
+    assert set(by_stem) == {"flat", "assy"}
+    assert by_stem["flat"].dxf_name == "flat.dxf"
+    assert by_stem["flat"].pdf_name is None
+    assert by_stem["assy"].pdf_name == "assy.pdf"
+    assert by_stem["assy"].dxf_name == "assy.dxf"
+    assert by_stem["assy"].stp_name == "assy.stp"
 
 
 def test_no_weld_symbols_empty_items_and_zero_fitup():
@@ -123,17 +142,37 @@ def test_batch_create_returns_n_jobs(batch_client: TestClient, batch_token: str 
         res = batch_client.post("/api/jobs/batch", files=files, headers=headers)
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["created_count"] == 2
-    assert len(body["jobs"]) == 2
+    assert body["created_count"] == 3
+    assert len(body["jobs"]) == 3
     titles = {j["title"] for j in body["jobs"]}
     assert "part-a" in titles
     assert "part-b" in titles
-    assert any("orphan" in s.lower() for s in body["skipped"])
+    assert "orphan" in titles
 
     jobs_a = [j for j in body["jobs"] if j["title"] == "part-a"][0]
     assert jobs_a.get("stp_filename") == "part-a.stp"
     jobs_b = [j for j in body["jobs"] if j["title"] == "part-b"][0]
     assert not jobs_b.get("stp_filename")
+    jobs_o = [j for j in body["jobs"] if j["title"] == "orphan"][0]
+    assert jobs_o.get("stp_filename") == "orphan.stp"
+    assert not jobs_o.get("pdf_filename")
+    assert all(j.get("intake_mode") == "loose_piece" for j in body["jobs"])
+    assert body.get("quote_identity") == "part_number"
+
+
+def test_batch_quote_number_is_part_number(batch_client: TestClient, batch_token: str | None):
+    headers = {"X-App-Token": batch_token} if batch_token else {}
+    files = [
+        ("files", ("21679.pdf", io.BytesIO(b"%PDF-a"), "application/pdf")),
+        ("files", ("35121-1.pdf", io.BytesIO(b"%PDF-b"), "application/pdf")),
+    ]
+    with patch("app.main.process_job"):
+        res = batch_client.post("/api/jobs/batch", files=files, headers=headers)
+    assert res.status_code == 200, res.text
+    by_title = {j["title"]: j for j in res.json()["jobs"]}
+    assert by_title["21679"]["quote_number"] == "21679"
+    assert by_title["21679"]["part_number"] == "21679"
+    assert by_title["35121-1"]["quote_number"] == "35121-1"
 
 
 def test_batch_push_rejects_processing(batch_client: TestClient, batch_token: str | None):
@@ -145,11 +184,12 @@ def test_batch_push_rejects_processing(batch_client: TestClient, batch_token: st
     job_id = created.json()["jobs"][0]["id"]
 
     # Leave status as uploaded/processing-equivalent
-    res = batch_client.post(
-        "/api/jobs/batch-push",
-        headers=headers,
-        json={"job_ids": [job_id]},
-    )
+    with patch("secturafab.config.SecturaFabConfig.require_credentials"):
+        res = batch_client.post(
+            "/api/jobs/batch-push",
+            headers=headers,
+            json={"job_ids": [job_id]},
+        )
     assert res.status_code == 200
     body = res.json()
     assert body["queued_count"] == 0
@@ -179,7 +219,9 @@ def test_batch_push_queues_pdf_only_without_library(
     finally:
         db.close()
 
-    with patch("app.main.push_jobs_secturafab_batch"):
+    with patch("app.main.push_jobs_secturafab_batch"), patch(
+        "secturafab.config.SecturaFabConfig.require_credentials"
+    ):
         res = batch_client.post(
             "/api/jobs/batch-push",
             headers=headers,
@@ -189,3 +231,45 @@ def test_batch_push_queues_pdf_only_without_library(
     body = res.json()
     assert body["queued_count"] == 1
     assert job_id in body["queued"]
+
+
+def test_batch_creates_dxf_only_job(batch_client: TestClient, batch_token: str | None):
+    headers = {"X-App-Token": batch_token} if batch_token else {}
+    files = [("files", ("nest.dxf", io.BytesIO(b"0\nSECTION\n"), "application/dxf"))]
+    with patch("app.main.process_job"):
+        res = batch_client.post("/api/jobs/batch", files=files, headers=headers)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["created_count"] == 1
+    job = body["jobs"][0]
+    assert job["title"] == "nest"
+    assert job.get("dxf_filename") == "nest.dxf"
+    assert not job.get("pdf_filename")
+
+
+def test_create_job_stp_only(batch_client: TestClient, batch_token: str | None):
+    headers = {"X-App-Token": batch_token} if batch_token else {}
+    files = {"stp": ("solo.step", io.BytesIO(b"ISO-10303"), "application/octet-stream")}
+    with patch("app.main.process_job"):
+        res = batch_client.post("/api/jobs", files=files, headers=headers)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body.get("stp_filename") == "solo.step"
+    assert not body.get("pdf_filename")
+
+
+def test_batch_push_without_keys_fails_clearly(
+    batch_client: TestClient, batch_token: str | None
+):
+    from secturafab.config import SecturaFabConfig
+
+    headers = {"X-App-Token": batch_token} if batch_token else {}
+    empty = SecturaFabConfig(client_id="", client_secret="", username="", password="")
+    with patch("secturafab.config.SecturaFabConfig.from_env", return_value=empty):
+        res = batch_client.post(
+            "/api/jobs/batch-push",
+            headers=headers,
+            json={"job_ids": [1]},
+        )
+    assert res.status_code == 400
+    assert "SECTURAFAB_CLIENT_ID" in res.text

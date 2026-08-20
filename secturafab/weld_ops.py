@@ -365,7 +365,11 @@ def ensure_weld_ops(
             it["OperationCostList"] = target["OperationCostList"]
             break
 
-    save = client.request("POST", "v1/quote", json=detail)
+    from .quote_update import safe_quote_post
+
+    # force=True is wipe-recovery on first populate (live usually has no Weld).
+    # Re-push / fill-empty posts the live quote so qty/org/labels stay Kyle's.
+    save = safe_quote_post(client, quote_id, detail, additive=not force)
     if save.status_code >= 400:
         return [f"Saving Weld ops failed ({save.status_code})"]
 

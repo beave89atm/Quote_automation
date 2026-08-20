@@ -177,6 +177,7 @@ def apply_bom_quantities(
     *,
     bom_rows: list[dict[str, Any]] | None,
     part_key: str | None = None,
+    fill_empty_only: bool = False,
 ) -> list[str]:
     """
     Set each child line's Quantity / AssemblyQty from the PDF BOM.
@@ -217,8 +218,10 @@ def apply_bom_quantities(
             continue
         per = qty_by_pn[key]
         total = per * root_qty
-        prev_q = int(it.get("Quantity") or it.get("Qty") or 1)
+        prev_q = int(it.get("Quantity") or it.get("Qty") or 0)
         prev_a = int(it.get("AssemblyQty") or 0)
+        if fill_empty_only and (prev_q or prev_a):
+            continue
         if prev_q == total and prev_a == per:
             continue
         it["Quantity"] = total
@@ -241,7 +244,9 @@ def apply_bom_quantities(
         return ["BOM quantities already matched quote lines"]
 
     detail["ItemList"] = items
-    save = client.request("POST", "v1/quote", json=detail)
+    from .quote_update import safe_quote_post
+
+    save = safe_quote_post(client, quote_id, detail)
     if save.status_code >= 400:
         return [f"Saving BOM quantities failed ({save.status_code})"]
     return [f"Applied BOM quantities on {len(updated)} item(s): " + ", ".join(updated)]

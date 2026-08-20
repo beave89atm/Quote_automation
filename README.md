@@ -1,8 +1,12 @@
-# Quote automation — Kannon standalone app (weld-first)
+# Quote automation — Kannon Manufacturing
 
-Team web app for drawing drop → weld takeoff → weld/fit-up times → human review.
+Team web app: drop customer drawings (PDF / DXF / STP) → propose operations +
+setup/run times from the shop capabilities list → push a quote into
+**SecturaFAB** for Kyle to review. Local printable shop-labor HTML is a
+fallback only — SecturaFAB is the v1 review surface.
 
-SecturaFAB client code remains in `secturafab/` for a later integration phase.
+The SecturaFAB client (`secturafab/`) stays in the repo even if the shop later
+drops that ERP. No inbox / RFQ email intake.
 
 ## Quick start
 
@@ -53,11 +57,24 @@ Open http://localhost:5173
 
 ## Workflow
 
-1. Drag/drop a **PDF** (required) and optional **STP/STEP**
-2. App extracts weld sizes + estimates lengths (STP when present)
-3. Review inches by size, efficiency %, flags
-4. Recalculate → Accept or Needs info
-5. Export printable HTML or JSON
+1. **Two intake modes (both required):**
+   - **Weldment (happy path):** drop only the **top-level weldment**. The app
+     searches `drawing_library.roots` (typically Fort Worth Engineering\\Customer
+     Drawings) and auto-attaches the matching STP plus BOM child PDFs so you do
+     not upload each child.
+   - **Loose-piece batch:** drag-and-drop ~30 individual piece-part drawings at
+     once. Each stem becomes its own job and later its own SecturaFAB quote.
+     Sibling library PDFs are **not** treated as that part’s BOM.
+2. **Quote number = part number.** Repeat / ongoing parts — not a project-style
+   number.
+3. App proposes fab operations (laser, bend, weld/fit-up, saw, outsourced tube
+   laser + powder coating) and the setup/run times this takeoff can compute.
+   Mill/lathe is a **parallel project** — not estimated here. Extra PDF / DXF /
+   STP files are for when those files are **not** already in the library.
+4. Review flags + weld inches + BOM, then **Push to SecturaFAB** (one quote per
+   part number).
+5. Kyle reviews the live quote in SecturaFAB (Profile / Weld / memo / ItemList)
+6. Printable HTML / JSON remain available as a local fallback
 
 ## Tests
 
@@ -65,7 +82,10 @@ Open http://localhost:5173
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-## SecturaFAB (paused)
+## SecturaFAB (local keys only)
+
+Push already exists. It needs Kyle’s laptop `.env` — **this cloud VM does not
+have production credentials** and must not.
 
 Auth uses **client credentials** per SecturaFAB support:
 
@@ -73,9 +93,12 @@ Auth uses **client credentials** per SecturaFAB support:
 2. Put them in `.env` as `SECTURAFAB_CLIENT_ID` / `SECTURAFAB_CLIENT_SECRET`
 3. Token URL: `https://www.secturafab.com/token` (form body) · API base: `https://api.secturafab.com`  
    Note: bare `https://secturafab.com/token` (no `www`) returns `unsupported_grant_type` in our tests.
+4. `GET /api/secturafab/status` reports whether keys are present (never returns the secret)
+5. Without keys, push returns **400** with a clear “set SECTURAFAB_CLIENT_ID…” message
 
 ```powershell
 .\.venv\Scripts\python.exe -m secturafab auth-check
 ```
 
-See `.env.example`.
+See `.env.example`. Capabilities live in [`config/shop_capabilities.yaml`](config/shop_capabilities.yaml)
+(from Kyle’s July 2026 equipment list).

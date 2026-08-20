@@ -1,5 +1,12 @@
 # Shop configuration
 
+## `shop_capabilities.yaml`
+
+In-house equipment + outsourced processes from Kyle’s July 2026 capabilities
+doc. Used to propose fab operations and to always list **tube laser** and
+**powder coating** (vendor times are placeholders). Mill/lathe is a
+parallel project — not estimated in this app.
+
 ## `shop_rates.yaml`
 
 Fill these before trusting quote times:
@@ -13,8 +20,8 @@ Fill these before trusting quote times:
 | `fitup.weight_bands` | Minutes per **piece** by weight band (`per_piece_minutes`) |
 | `fitup.default_band_id` | Band used when component weights are unknown |
 | `always_ask` | Situations the engine must flag instead of guessing |
-| `drawing_library.roots` | Shared-drive folders to search for STP / component PDFs |
-| `drawing_library.auto_attach_stp` | If true, auto-copy matching STP when upload has none |
+| `drawing_library.roots` | Shared-drive folders to search for STP / component PDFs. Weldment mode: drop only the top-level weldment; the app finds BOM children + STP here. Loose-piece batch still auto-attaches that part’s STP only. |
+| `drawing_library.auto_attach_stp` | If true, auto-copy matching STP when upload has none. Do not disable for v1. |
 
 Set `KANNON_DRAWING_LIBRARY` to override roots (semicolon-separated) on each office PC.
 

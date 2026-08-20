@@ -3,12 +3,24 @@ import { api } from "../api";
 
 export default function SettingsPage() {
   const [rates, setRates] = useState(null);
+  const [caps, setCaps] = useState(null);
+  const [sfStatus, setSfStatus] = useState(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     (async () => {
       try {
         setRates(await api("/api/rates"));
+        try {
+          setCaps(await api("/api/capabilities"));
+        } catch {
+          /* optional */
+        }
+        try {
+          setSfStatus(await api("/api/secturafab/status"));
+        } catch {
+          /* optional */
+        }
       } catch (err) {
         setError(err.message);
       }
@@ -102,6 +114,43 @@ export default function SettingsPage() {
           <li key={r}>{r}</li>
         ))}
       </ul>
+
+      <h2>SecturaFAB</h2>
+      {sfStatus ? (
+        <p className={sfStatus.configured ? "muted" : "error"}>
+          {sfStatus.configured
+            ? `Configured (${sfStatus.auth_mode}). Keys stay in local .env — never commit them.`
+            : sfStatus.message}
+        </p>
+      ) : (
+        <p className="muted">Status unavailable.</p>
+      )}
+
+      {caps ? (
+        <>
+          <h2>Shop capabilities</h2>
+          <p className="muted">
+            {caps.source || "Kannon capabilities"} {caps.as_of ? `· ${caps.as_of}` : ""}
+          </p>
+          <h3>Outsourced (always represented on quotes)</h3>
+          <ul>
+            {Object.entries(caps.outsourced || {}).map(([key, val]) => (
+              <li key={key}>
+                <strong>{key.replace(/_/g, " ")}</strong>
+                {val?.times ? ` — times ${val.times}` : ""}
+                {val?.vendor ? ` · vendor ${val.vendor}` : ""}
+              </li>
+            ))}
+          </ul>
+          <h3>In-house snapshot</h3>
+          <ul>
+            <li>Lasers: 2 Amada (9kW / 3kW), 5×10 sheet, 18ga–3/4&quot; CS</li>
+            <li>Brake: Accurpress + Safan, max 250 ton</li>
+            <li>Weld: 30 manual bays + 3 OTC robots</li>
+            <li>CNC mill/lathe: parallel project — not quoted in this app</li>
+          </ul>
+        </>
+      ) : null}
     </div>
   );
 }

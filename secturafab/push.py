@@ -432,6 +432,30 @@ def _weld_memo(times: dict[str, Any] | None, takeoff: dict[str, Any] | None) -> 
     ]
     if sizes:
         parts.append("Sizes: " + ", ".join(str(s) for s in sizes if s))
+    ops_root = takeoff.get("operations") or {}
+    op_bits: list[str] = []
+    for op in ops_root.get("operations") or []:
+        if str(op.get("code") or "") in {"mill", "lathe"}:
+            continue
+        if not op.get("detected") and op.get("location") != "outsourced":
+            continue
+        label = str(op.get("name") or op.get("code") or "op")
+        loc = "OS" if op.get("location") == "outsourced" else "IH"
+        setup = op.get("setup_minutes")
+        run = op.get("run_minutes")
+        status = op.get("time_status") or ""
+        bit = f"{label} [{loc}]"
+        if setup is not None:
+            bit += f" setup {setup}m"
+        if run is not None:
+            bit += f" run {run}m"
+        if status in {"placeholder", "confirm", "parked"}:
+            bit += f" ({status})"
+        if not op.get("detected") and op.get("location") == "outsourced":
+            bit += " (not seen on drawing — confirm)"
+        op_bits.append(bit)
+    if op_bits:
+        parts.append("Ops: " + "; ".join(op_bits))
     return " | ".join(parts)
 
 
@@ -516,8 +540,9 @@ def collect_job_files(
     pdf_path: Path | None,
     stp_path: Path | None,
     library: dict[str, Any] | None = None,
+    dxf_path: Path | None = None,
 ) -> tuple[list[Path], list[Path]]:
-    """Return (drawing_pdfs, cad_files)."""
+    """Return (drawing_files, cad_files). Drawings include PDF and DXF."""
     drawings: list[Path] = []
     cad: list[Path] = []
     seen: set[str] = set()
@@ -535,6 +560,7 @@ def collect_job_files(
         bucket.append(path)
 
     add(pdf_path, drawings)
+    add(dxf_path, drawings)
     add(stp_path, cad)
 
     folder = Path(library["folder"]) if library and library.get("folder") else None
@@ -554,6 +580,48 @@ def collect_job_files(
     return drawings, cad
 
 
+def attachment_drawings_for_push(
+    *,
+    job_pdf: Path | None,
+    dxf_path: Path | None,
+    all_drawings: list[Path],
+    cad: list[Path],
+) -> list[Path]:
+    """
+    Files to attach as Quote Request drawings.
+
+    When a STEP exists, ItemList comes from CAD — do not also upload the
+    library child-PDF set (that was a second, shakier import path). Keep the
+    top-level job PDF/DXF as a shop reference only.
+    PDF-only jobs still attach every drawing (library children included).
+    """
+    if not cad:
+        return list(all_drawings)
+    out: list[Path] = []
+    seen: set[str] = set()
+    for path in (job_pdf, dxf_path):
+        if not path or not path.is_file():
+            continue
+        key = str(path.resolve()).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+def _quote_line_count(detail: dict[str, Any] | None) -> int:
+    if not detail:
+        return 0
+    items = list(detail.get("ItemList") or [])
+    if items:
+        return len(items)
+    try:
+        return int(detail.get("ItemCount") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 class SecturaFabPushService:
     def __init__(self, client: SecturaFabClient | None = None) -> None:
         self.client = client or SecturaFabClient()
@@ -561,12 +629,45 @@ class SecturaFabPushService:
 
     def find_quote_by_number(self, quote_number: str) -> dict[str, Any] | None:
         response = self.client.request("GET", f"v1/quote/byName/{quote_number}")
-        if response.status_code >= 400:
+        try:
+            code = int(getattr(response, "status_code", 599) or 599)
+        except (TypeError, ValueError):
+            return None
+        if code >= 400:
             return None
         payload = self.client._parse_or_raise(response)
         if isinstance(payload, dict) and payload.get("ID"):
             return payload
         return None
+
+    def load_existing_quote(
+        self,
+        *,
+        quote_number: str,
+        takeoff: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Return a live quote Kyle already has (by stored id, then part number)."""
+        prior = ((takeoff or {}).get("secturafab") or {})
+        prior_id = str(prior.get("quote_id") or "").strip()
+        if prior_id:
+            try:
+                detail = self.client.get_json(f"v1/quote/{prior_id}")
+                if isinstance(detail, dict) and detail.get("ID"):
+                    return detail
+            except Exception:  # noqa: BLE001
+                pass
+        found = self.find_quote_by_number(quote_number)
+        if not found or not found.get("ID"):
+            return None
+        if found.get("ItemList"):
+            return found
+        try:
+            full = self.client.get_json(f"v1/quote/{found['ID']}")
+            if isinstance(full, dict) and full.get("ID"):
+                return full
+        except Exception:  # noqa: BLE001
+            return found
+        return found
 
     def allocate_quote_number(self, part_key: str) -> str:
         """Display QuoteNumber: bare part key (no PN prefix, no date/job/rev suffix)."""
@@ -645,9 +746,16 @@ class SecturaFabPushService:
             return ["No items to categorize"]
 
         counts = {"Cad": 0, "Linear": 0, "Component": 0}
+        changed = False
         for it in items:
+            already = str(it.get("ItemType") or it.get("Category") or "").strip()
+            if already:
+                bucket = already if already in counts else "Cad"
+                counts[bucket] = counts.get(bucket, 0) + 1
+                continue
             cat = classify_sectura_item(str(it.get("Description") or ""))
             counts[cat] = counts.get(cat, 0) + 1
+            changed = True
             it["ItemType"] = cat
             it["Category"] = cat
             if cat == "Linear":
@@ -663,8 +771,13 @@ class SecturaFabPushService:
                 it["IsPlate"] = True
                 it["IsPart"] = True
 
+        if not changed:
+            return ["Item categories already set — left unchanged"]
+
         # Best-effort save (Sectura may ignore some flags on API-created drafts).
-        save = self.client.request("POST", "v1/quote", json=detail)
+        from .quote_update import safe_quote_post
+
+        save = safe_quote_post(self.client, quote_id, detail)
         notes = [
             f"Categorized items — Cad: {counts['Cad']}, Linear: {counts['Linear']}, "
             f"Component: {counts['Component']}"
@@ -852,6 +965,7 @@ class SecturaFabPushService:
         pdf_filename: str | None,
         pdf_path: Path | None,
         stp_path: Path | None,
+        dxf_path: Path | None = None,
         takeoff: dict[str, Any] | None,
         times: dict[str, Any] | None,
         qty: int = 1,
@@ -861,16 +975,38 @@ class SecturaFabPushService:
         createfile_retry_interval_s: float = CREATEFILE_RETRY_INTERVAL_S,
         createfile_retry_max_s: float = CREATEFILE_RETRY_MAX_S,
     ) -> PushResult:
+        """
+        Push or update one SecturaFAB quote.
+
+        Field ownership
+        ---------------
+        App writes (first populate, or fill-empty on re-push):
+          ItemList via STEP/CAD when a STEP exists, else PDF assembly / single PDF;
+          Profile ops on laser plates that have none; Weld ops if none;
+          BOM qty on first populate only; Organization if the quote has none;
+          leftover metric ``mm X`` Description labels; QuoteNumber = part number.
+          UnitCost / UnitPrice rollup on first-populate finalize only.
+
+        App never overwrites on later push:
+          existing ItemList, OperationCostList (Kyle's Profile/Weld edits),
+          Quantity / AssemblyQty already set, Organization, ItemType/Category,
+          non-metric Descriptions, Length/Width/Data, UnitCost / UnitPrice.
+        """
         notes: list[str] = []
         uploaded: list[str] = []
         createfile_attempts = 0
         quote_id: str | None = None
         quote_number: str | None = None
         quote_request_id: str | None = None
+        created_new_quote = False
         try:
+            self.client.config.require_credentials()
+            dxf = Path(dxf_path) if dxf_path else None
             part_key = _resolve_part_key(
                 title=title,
-                pdf_filename=pdf_filename,
+                pdf_filename=pdf_filename
+                or (dxf.name if dxf else None)
+                or (Path(stp_path).name if stp_path else None),
                 library=(takeoff or {}).get("library") or {},
                 bom_config=(takeoff or {}).get("bom_config"),
                 pdf_path=pdf_path,
@@ -895,6 +1031,7 @@ class SecturaFabPushService:
                 pdf_path=Path(pdf_path) if pdf_path else None,
                 stp_path=stp,
                 library=library,
+                dxf_path=dxf,
             )
             # STEP/STP is the CAD source of truth for SecturaFAB part import.
             if stp and stp.exists():
@@ -905,7 +1042,7 @@ class SecturaFabPushService:
             if not drawings and not cad:
                 return PushResult(
                     ok=False,
-                    error="No PDF or STEP files found to push",
+                    error="No PDF, DXF, or STEP files found to push",
                     status="failed",
                 )
             if stp and stp.exists() and not cad:
@@ -917,12 +1054,13 @@ class SecturaFabPushService:
 
             job_pdf = Path(pdf_path) if pdf_path else None
             has_job_pdf = bool(job_pdf and job_pdf.is_file())
+            has_job_dxf = bool(dxf and dxf.is_file())
             can_populate_items = bool(cad) or (
                 bool(bom_rows) and bool(library.get("folder"))
-            ) or has_job_pdf
+            ) or has_job_pdf or has_job_dxf
             if not can_populate_items:
                 msg = (
-                    "Cannot push: no STEP/STP, no library BOM path, and no job PDF "
+                    "Cannot push: no STEP/STP, no library BOM path, and no job PDF/DXF "
                     "on disk to build ItemList."
                 )
                 notes.append(msg)
@@ -954,12 +1092,61 @@ class SecturaFabPushService:
                 )
 
             quote_request_id = None
+            created_new_quote = False
+            reuse_populated = False
             # TYCROP → Propell; Cummins Clean Fuel → Cummins Clean Fuel Technologies.
             organization_name = detect_organization(
                 pdf_path=job_pdf,
                 library_folder=library.get("folder"),
             )
-            if drawings:
+            quote_number = self.allocate_quote_number(part_key)
+            existing_quote = self.load_existing_quote(
+                quote_number=quote_number, takeoff=takeoff
+            )
+            quote_description = extract_assembly_description(
+                part_key=part_key,
+                pdf_path=Path(pdf_path) if pdf_path else None,
+                library_folder=library.get("folder"),
+                related_pdf_names=list(library.get("related_pdfs") or []),
+            )
+            if quote_description:
+                desc_note = f"Quote Description from assembly drawing: {quote_description}"
+            else:
+                quote_description = (title or "").strip() or part_key
+                desc_note = f"Quote Description from job title: {quote_description}"
+
+            if existing_quote and existing_quote.get("ID"):
+                quote_id = str(existing_quote["ID"])
+                quote_number = str(existing_quote.get("QuoteNumber") or quote_number)
+                reuse_populated = _quote_line_count(existing_quote) > 0
+                notes.append(
+                    f"Re-using existing SecturaFAB quote {quote_number} — "
+                    "additive update only (will not replace ItemList, ops, qty, "
+                    "org, or labels already on the quote)"
+                )
+                if not reuse_populated:
+                    notes.append(
+                        "Existing quote has 0 ItemList lines — populating "
+                        "(STP if present, else PDF)"
+                    )
+            else:
+                created_new_quote = True
+
+            attach_drawings = attachment_drawings_for_push(
+                job_pdf=job_pdf,
+                dxf_path=dxf,
+                all_drawings=drawings,
+                cad=cad,
+            )
+            if cad and attach_drawings != drawings:
+                notes.append(
+                    "STEP present — ItemList from CAD import; "
+                    "library child PDFs not uploaded as a second import path"
+                )
+
+            # Do not CreateFile / create a new quote when Kyle already has one
+            # with lines — that path replaces shop edits.
+            if attach_drawings and not reuse_populated:
 
                 def _createfile_progress(info: dict[str, Any]) -> None:
                     nonlocal createfile_attempts
@@ -972,7 +1159,7 @@ class SecturaFabPushService:
                         on_progress(merged)
 
                 quote_request_id = self.upload_drawings_quote_request(
-                    drawings,
+                    attach_drawings,
                     memo=memo,
                     organization=organization_name,
                     on_progress=_createfile_progress,
@@ -980,9 +1167,9 @@ class SecturaFabPushService:
                     retry_interval_s=createfile_retry_interval_s,
                     retry_max_s=createfile_retry_max_s,
                 )
-                uploaded.extend(p.name for p in drawings)
+                uploaded.extend(p.name for p in attach_drawings)
                 notes.append(
-                    f"Uploaded {len(drawings)} drawing file(s) as Quote Request attachments"
+                    f"Uploaded {len(attach_drawings)} drawing file(s) as Quote Request attachments"
                 )
                 if on_progress:
                     on_progress(
@@ -994,30 +1181,17 @@ class SecturaFabPushService:
                         }
                     )
 
-            # Always create a brand-new quote. Display number is bare part key
-            # (no "PN " prefix; temp RevNumber is cleared so the UI stays clean).
-            quote_number = self.allocate_quote_number(part_key)
-            quote_description = extract_assembly_description(
-                part_key=part_key,
-                pdf_path=Path(pdf_path) if pdf_path else None,
-                library_folder=library.get("folder"),
-                related_pdf_names=list(library.get("related_pdfs") or []),
-            )
-            if quote_description:
-                desc_note = f"Quote Description from assembly drawing: {quote_description}"
-            else:
-                quote_description = (title or "").strip() or part_key
-                desc_note = f"Quote Description from job title: {quote_description}"
-            quote_id = self.create_quote(
-                quote_number=quote_number,
-                description=quote_description or "",
-                memo="",
-                quote_request_id=quote_request_id,
-            )
-            notes.append(f"Created SecturaFAB quote {quote_number}")
-            notes.append(desc_note)
-            # Organization before CAD/Profile — later full-quote POSTs can wipe ops.
-            if organization_name:
+            if created_new_quote:
+                quote_id = self.create_quote(
+                    quote_number=quote_number,
+                    description=quote_description or "",
+                    memo="",
+                    quote_request_id=quote_request_id,
+                )
+                notes.append(f"Created SecturaFAB quote {quote_number}")
+                notes.append(desc_note)
+            # Organization only when empty — never overwrite Kyle's customer.
+            if organization_name and not reuse_populated:
                 notes.extend(
                     apply_quote_organization(
                         self.client,
@@ -1028,7 +1202,11 @@ class SecturaFabPushService:
 
             used_step = False
             used_pdf_shell = False
-            if cad:
+            if reuse_populated:
+                notes.append(
+                    "Skipped CAD/PDF re-import — existing ItemList left intact"
+                )
+            elif cad:
                 try:
                     self.quick_add_cad(
                         quote_id=quote_id,
@@ -1134,6 +1312,8 @@ class SecturaFabPushService:
                     )
                 )
                 notes.extend(ensure_imperial_item_units(self.client, quote_id))
+            elif reuse_populated:
+                pass
             elif bom_rows and library.get("folder"):
                 from .pdf_assembly_ops import build_pdf_only_assembly
 
@@ -1180,9 +1360,31 @@ class SecturaFabPushService:
                     )
                 )
                 uploaded.append(job_pdf.name)
+            elif has_job_dxf:
+                from .pdf_assembly_ops import build_single_pdf_quote
+
+                used_pdf_shell = True
+                notes.append(
+                    "Building single-DXF quote (no STEP / no library BOM / no PDF) from "
+                    f"{dxf.name}"
+                )
+                notes.extend(
+                    build_single_pdf_quote(
+                        self.client,
+                        quote_id=quote_id,
+                        part_key=part_key,
+                        pdf_path=dxf,
+                        material=material,
+                        thickness=thickness,
+                        machine=machine,
+                        qty=qty,
+                        description=quote_description or title,
+                    )
+                )
+                uploaded.append(dxf.name)
             else:
                 msg = (
-                    "No STEP/STP, no BOM/library PDF assembly, and no job PDF — "
+                    "No STEP/STP, no BOM/library PDF assembly, and no job PDF/DXF — "
                     "refusing empty drawings-only quote"
                 )
                 notes.append(msg)
@@ -1193,7 +1395,7 @@ class SecturaFabPushService:
                     quote_id=quote_id,
                     quote_number=quote_number,
                     quote_request_id=quote_request_id,
-                    created_new_quote=True,
+                    created_new_quote=created_new_quote,
                     uploaded_files=uploaded,
                     item_count=0,
                     status="failed",
@@ -1213,7 +1415,9 @@ class SecturaFabPushService:
 
             # Late CAD recalcs can wipe Profile/Weld/Qty after first attach — verify
             # and re-apply until stable (no more UpdateItem_Part here).
-            if used_step or used_pdf_shell or (bom_rows and library.get("folder")):
+            if used_step or used_pdf_shell or reuse_populated or (
+                bom_rows and library.get("folder")
+            ):
                 try:
                     notes.extend(
                         finalize_quote_ops(
@@ -1224,6 +1428,7 @@ class SecturaFabPushService:
                             times=times,
                             part_key=part_key,
                             bom_rows=bom_rows,
+                            protect_existing=reuse_populated,
                         )
                     )
                 except SecturaFabApiError as exc:
@@ -1238,7 +1443,9 @@ class SecturaFabPushService:
                         raise
 
             # Profile last: finalize / settle POSTs have wiped ops more than once.
-            if used_pdf_shell or used_step or (bom_rows and library.get("folder")):
+            if used_pdf_shell or used_step or reuse_populated or (
+                bom_rows and library.get("folder")
+            ):
                 notes.extend(
                     ensure_laser_profile_ops(
                         self.client,
@@ -1287,7 +1494,7 @@ class SecturaFabPushService:
                     quote_id=quote_id,
                     quote_number=stored_number,
                     quote_request_id=quote_request_id,
-                    created_new_quote=True,
+                    created_new_quote=created_new_quote,
                     uploaded_files=uploaded,
                     item_count=0,
                     ready=False,
@@ -1301,7 +1508,7 @@ class SecturaFabPushService:
                 quote_id=quote_id,
                 quote_number=stored_number,
                 quote_request_id=quote_request_id,
-                created_new_quote=True,
+                created_new_quote=created_new_quote,
                 uploaded_files=uploaded,
                 item_count=final_count,
                 notes=notes,
@@ -1332,7 +1539,7 @@ class SecturaFabPushService:
                 quote_id=quote_id,
                 quote_number=quote_number,
                 quote_request_id=quote_request_id,
-                created_new_quote=bool(quote_id),
+                created_new_quote=created_new_quote,
                 status="failed",
                 attempts=createfile_attempts,
                 last_error=err,

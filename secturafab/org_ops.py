@@ -59,6 +59,14 @@ def apply_quote_organization(
 
     org_id = str(org["ID"])
     detail = client.get_json(f"v1/quote/{quote_id}")
+    already = str(detail.get("OrganizationName") or "").strip()
+    already_id = str(detail.get("PrimaryOrganizationID") or "").strip()
+    if already or (
+        already_id and already_id not in {"", "00000000-0000-0000-0000-000000000000"}
+    ):
+        return [
+            f"Organization already set ({already or already_id}) — left unchanged"
+        ]
     entry = {
         "ID": org_id,
         "OrganizationName": org.get("OrganizationName") or name,
@@ -77,7 +85,9 @@ def apply_quote_organization(
     ):
         detail["PrimaryContactID"] = contact_id
 
-    save = client.request("POST", "v1/quote", json=detail)
+    from .quote_update import safe_quote_post
+
+    save = safe_quote_post(client, quote_id, detail)
     if save.status_code >= 400:
         notes.append(
             f"WARNING: Setting Organization '{name}' failed ({save.status_code})"

@@ -155,10 +155,12 @@ def quick_add_component_pdf(
         "memo": (memo or pdf_path.stem)[:240],
         "partMode": "Cad",
     }
+    suffix = pdf_path.suffix.lower()
+    mime = "application/pdf" if suffix == ".pdf" else "application/octet-stream"
     with pdf_path.open("rb") as fh:
         return client.post_multipart(
             "v1/quoteOnline/quickAddCAD",
-            files=[("files", (pdf_path.name, fh, "application/pdf"))],
+            files=[("files", (pdf_path.name, fh, mime))],
             params=params,
         )
 
@@ -481,8 +483,7 @@ def build_pdf_only_assembly(
             thickness=thickness,
         )
     )
-    # Re-link after qty/material settle — CAD rebuild can drop AssemblyID.
-    notes.extend(relink_assembly_children(client, quote_id, part_key=part_key))
+    # Profile last — do not relink / full-quote POST after this (wipes ops).
     notes.append(
         "PDF weldment built per lesson 04 — review Linear tubes/stock and any missing BOM rows"
     )

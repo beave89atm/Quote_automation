@@ -158,7 +158,9 @@ def ensure_assembly_root(
     )
     detail["ItemList"] = items
 
-    save = client.request("POST", "v1/quote", json=detail)
+    from .quote_update import safe_quote_post
+
+    save = safe_quote_post(client, quote_id, detail)
     if save.status_code >= 400:
         return [f"Saving assembly root / child links failed ({save.status_code})"]
 
@@ -207,7 +209,9 @@ def relink_assembly_children(
     if not linked:
         return []
     detail["ItemList"] = items
-    save = client.request("POST", "v1/quote", json=detail)
+    from .quote_update import safe_quote_post
+
+    save = safe_quote_post(client, quote_id, detail)
     if save.status_code >= 400:
         return [f"Re-linking assembly children failed ({save.status_code})"]
     return [f"Re-linked {linked} child item(s) under Assembly"]

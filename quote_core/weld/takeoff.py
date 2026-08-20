@@ -11,6 +11,12 @@ WELD_SIZE_RE = re.compile(
     r"(?<![\d/])(1/2|5/16|3/8|3/16|1/4|1/8)\s*[\"″']?",
     re.IGNORECASE,
 )
+# Explicit labels on pages that are not classified as a weld sheet.
+_LABELED_FILLET_RE = re.compile(
+    r"(?:fillet|weld\s*(?:size|sz)|fil\.?\s*weld)\s*[:\-]?\s*"
+    r"(1/8|3/16|1/4|5/16|3/8|1/2)",
+    re.IGNORECASE,
+)
 # Mixed number: 34-3/8" or 34 3/8" ; proper fraction 3/8" ; decimal 32.75"
 DIM_MIXED_RE = re.compile(
     r"(?<![\d.])(\d{1,3})\s*-\s*(\d{1,2})/(\d{1,2})\s*[\"″']?",
@@ -70,6 +76,8 @@ class WeldTakeoffResult:
     stp_summary: dict[str, Any] = field(default_factory=dict)
 
     fitup_drivers: dict[str, Any] = field(default_factory=dict)
+    part_number: str | None = None
+    pdf_bom: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -80,6 +88,9 @@ class WeldTakeoffResult:
             "stp_summary": self.stp_summary,
             "fitup_drivers": self.fitup_drivers,
             "total_inches": sum(i.inches for i in self.items),
+            "part_number": self.part_number,
+            "quote_number": self.part_number,
+            "pdf_bom": self.pdf_bom,
         }
 
 
@@ -246,6 +257,12 @@ def _ingest_page_text(
         for s in page_sizes:
             sizes.append(s)
             page_hits.append({"page": page_no, "size": s, "weld_sheet": True})
+
+    for m in _LABELED_FILLET_RE.finditer(probe):
+        s = _normalize_size(m.group(1))
+        if s not in sizes:
+            sizes.append(s)
+        page_hits.append({"page": page_no, "size": s, "explicit_label": True})
 
     for line in text.splitlines():
         if FULL_WELD_NOTE_RE.search(line) or TRACE_RE.search(line) or MIRROR_RE.search(line):
@@ -1200,6 +1217,8 @@ def estimate_fitup_drivers(
         or method.startswith("ocr_time")
         or method.startswith("native_mac")
         or method.startswith("native_parts_list")
+        or method.startswith("native_time")
+        or method.startswith("library_folder")
     ):
         if bom_piece_count > 0:
             part_count = bom_piece_count
@@ -1249,6 +1268,8 @@ def estimate_fitup_drivers(
         or method.startswith("ocr_time")
         or method.startswith("native_mac")
         or method.startswith("native_parts_list")
+        or method.startswith("native_time")
+        or method.startswith("library_folder")
         or "qty_only" in method
     ):
         part_count = bom_piece_count
@@ -1279,14 +1300,26 @@ def estimate_fitup_drivers(
 
 
 def run_weld_takeoff(
-    pdf_path: Path | str,
+    pdf_path: Path | str | None = None,
     stp_path: Path | str | None = None,
     library_folder: Path | str | None = None,
     related_pdf_names: list[str] | None = None,
     bom_config: str | None = None,
 ) -> WeldTakeoffResult:
-    pdf_path = Path(pdf_path)
-    sizes, notes, page_hits, pdf_dimensions, pdf_meta = _parse_pdf_text(pdf_path)
+    sizes: list[str] = []
+    notes: list[str] = []
+    page_hits: list[dict[str, Any]] = []
+    pdf_dimensions: list[float] = []
+    pdf_meta: dict[str, Any] = {}
+    pdf_file: Path | None = None
+    if pdf_path:
+        candidate = Path(pdf_path)
+        if candidate.is_file():
+            pdf_file = candidate
+            sizes, notes, page_hits, pdf_dimensions, pdf_meta = _parse_pdf_text(candidate)
+        else:
+            notes.append(f"PDF path not found: {candidate}")
+
     stp_summary: dict[str, Any] = {}
     if stp_path:
         try:
@@ -1300,12 +1333,14 @@ def run_weld_takeoff(
         notes=notes,
         page_hits=page_hits,
         stp_summary=stp_summary,
-        pdf_name=pdf_path.name,
+        pdf_name=pdf_file.name if pdf_file else "",
         pdf_dimensions=pdf_dimensions,
-        pdf_path=pdf_path,
+        pdf_path=pdf_file,
         library_folder=library_folder,
         related_pdf_names=related_pdf_names,
     )
+    if not pdf_file:
+        flags.insert(0, "No PDF on this job — weld symbols were not read from a drawing sheet")
     if pdf_meta.get("ocr_used"):
         flags.insert(0, "OCR used to read weld callouts from vector PDF pages")
     elif pdf_meta.get("vector_heavy"):
@@ -1319,27 +1354,44 @@ def run_weld_takeoff(
             msg += " Attach STEP for geometry when available."
         flags.insert(0, msg)
 
+    fitup_drivers = estimate_fitup_drivers(
+        stp_summary,
+        notes,
+        pdf_path=pdf_path,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+        bom_config=bom_config,
+    )
+    weight_calc = fitup_drivers.get("weight_calc") or {}
+    pdf_bom = dict(weight_calc.get("bom") or weight_calc.get("pdf_bom") or {})
+    bom_pieces = int(weight_calc.get("piece_count") or pdf_bom.get("piece_count") or 0)
+    has_bom = bom_pieces > 0 and bool(pdf_bom.get("rows") or pdf_bom.get("bom_rows"))
     if not items:
-        fitup_drivers = {
-            "part_count": 0,
-            "joint_count": 0,
-            "assembly_weight_lb": None,
-            "component_weights_lb": [],
-            "source": "no_weld",
-            "notes": ["No weld symbols — weld and fit-up left at 0"],
-        }
-    else:
-        fitup_drivers = estimate_fitup_drivers(
-            stp_summary,
-            notes,
-            pdf_path=pdf_path,
-            library_folder=library_folder,
-            related_pdf_names=related_pdf_names,
-            bom_config=bom_config,
-        )
+        if has_bom:
+            flags.append(
+                "No weld symbols / fillet OCR — weld inches left at 0; enter fillet sizes. "
+                "Fit-up uses PDF BOM piece count."
+            )
+        else:
+            fitup_drivers = {
+                "part_count": 0,
+                "piece_count": 0,
+                "joint_count": 0,
+                "assembly_weight_lb": None,
+                "component_weights_lb": [],
+                "weight_calc": weight_calc,
+                "source": "no_weld",
+                "notes": ["No weld symbols — weld and fit-up left at 0"],
+            }
     for n in fitup_drivers.get("notes") or []:
         if n not in flags:
             flags.append(n)
+
+    part_number = None
+    if pdf_file:
+        from quote_core.drawing_library import extract_part_key
+
+        part_number = extract_part_key(pdf_file.name, pdf_file.stem)
 
     return WeldTakeoffResult(
         items=items,
@@ -1347,6 +1399,8 @@ def run_weld_takeoff(
         sizes_found=sorted(set(sizes)),
         notes=notes[:40],
         fitup_drivers=fitup_drivers,
+        part_number=part_number,
+        pdf_bom=pdf_bom,
         stp_summary={
             "solid_count": stp_summary.get("solid_count", 0),
             "unit_scale": stp_summary.get("unit_scale"),
