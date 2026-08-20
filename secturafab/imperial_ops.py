@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 from .client import SecturaFabClient
+from .quote_update import safe_quote_post
 
 _MM_DIM_RE = re.compile(
     r"([\d.]+)\s*mm\s*[Xx×]\s*([\d.]+)\s*mm",
@@ -132,7 +133,7 @@ def ensure_imperial_item_units(
     if not changed:
         return ["Quote items already look imperial"]
 
-    save = client.request("POST", "v1/quote", json=detail)
+    save = safe_quote_post(client, quote_id, detail)
     if save.status_code >= 400:
         return [f"Imperial unit cleanup save failed ({save.status_code})"]
     return [f"Normalized {changed} item(s) to inch (imperial) labels/dims"]

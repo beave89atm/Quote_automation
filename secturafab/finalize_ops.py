@@ -10,6 +10,7 @@ from .imperial_ops import ensure_imperial_item_units
 from .profile_ops import (
     count_profile_items,
     ensure_laser_profile_ops,
+    laser_plates_missing_profile,
     wait_for_quote_settle,
 )
 from .qty_ops import apply_bom_quantities, bom_qty_mismatches
@@ -31,7 +32,11 @@ def _finish_with_imperial_and_rollup(
     if reapply_qty:
         notes.extend(
             apply_bom_quantities(
-                client, quote_id, bom_rows=bom_rows, part_key=part_key
+                client,
+                quote_id,
+                bom_rows=bom_rows,
+                part_key=part_key,
+                fill_empty_only=False,
             )
         )
     notes.extend(rollup_assembly_costs(client, quote_id, part_key=part_key))
@@ -59,6 +64,7 @@ def finalize_quote_ops(
     part_key: str | None,
     bom_rows: list[dict[str, Any]] | None,
     attempts: int = 3,
+    protect_existing: bool = False,
 ) -> list[str]:
     """
     Attach/verify Profile + Weld + BOM qty until stable, then roll up assembly costs.
@@ -82,13 +88,15 @@ def finalize_quote_ops(
             )
         )
         detail = client.get_json(f"v1/quote/{quote_id}")
+        missing_profiles = laser_plates_missing_profile(detail)
         profiles = count_profile_items(detail)
         has_weld = assembly_has_weld(detail, part_key=part_key)
         qty_bad = bom_qty_mismatches(detail, bom_rows, part_key=part_key)
 
-        need_profile = profiles == 0
+        need_profile = bool(missing_profiles)
         need_weld = want_weld and not has_weld
-        need_qty = bool(qty_bad)
+        # Re-push must not overwrite qty Kyle already set in SecturaFAB.
+        need_qty = bool(qty_bad) and not protect_existing
 
         if not need_profile and not need_weld and not need_qty:
             notes.append(
@@ -99,17 +107,20 @@ def finalize_quote_ops(
                 notes.append("Post-verify delay 45s to catch delayed CAD wipe…")
                 time.sleep(45)
                 detail = client.get_json(f"v1/quote/{quote_id}")
+                missing_profiles = laser_plates_missing_profile(detail)
                 profiles = count_profile_items(detail)
                 has_weld = assembly_has_weld(detail, part_key=part_key)
                 qty_bad = bom_qty_mismatches(detail, bom_rows, part_key=part_key)
-                if profiles == 0 or (want_weld and not has_weld) or qty_bad:
+                if missing_profiles or (want_weld and not has_weld) or (
+                    qty_bad and not protect_existing
+                ):
                     notes.append(
                         "Delayed wipe detected after verify — re-attaching"
                     )
                     # fall through to re-attach on next loop iteration logic below
-                    need_profile = profiles == 0
+                    need_profile = bool(missing_profiles)
                     need_weld = want_weld and not has_weld
-                    need_qty = bool(qty_bad)
+                    need_qty = bool(qty_bad) and not protect_existing
                 else:
                     notes.extend(
                         _finish_with_imperial_and_rollup(
@@ -135,7 +146,7 @@ def finalize_quote_ops(
 
         notes.append(
             f"Finalize attempt {attempt}/{attempts}: "
-            f"profile={'OK' if not need_profile else 'MISSING'} "
+            f"profile={'OK' if not need_profile else f'MISSING×{len(missing_profiles)}'} "
             f"weld={'OK' if not need_weld else 'MISSING'} "
             f"bom_qty={'OK' if not need_qty else 'MISSING ' + ','.join(qty_bad)}"
         )
@@ -160,7 +171,7 @@ def finalize_quote_ops(
                     quote_id,
                     times=times,
                     part_key=part_key,
-                    force=True,
+                    force=not protect_existing,
                 )
             )
 
@@ -172,17 +183,21 @@ def finalize_quote_ops(
             quote_id,
             part_key=part_key,
             bom_rows=bom_rows,
-            reapply_qty=True,
+            reapply_qty=not protect_existing,
         )
     )
     detail = client.get_json(f"v1/quote/{quote_id}")
+    missing_profiles = laser_plates_missing_profile(detail)
     profiles = count_profile_items(detail)
     has_weld = assembly_has_weld(detail, part_key=part_key)
     qty_bad = bom_qty_mismatches(detail, bom_rows, part_key=part_key)
-    if profiles == 0 or (want_weld and not has_weld) or qty_bad:
+    if missing_profiles or (want_weld and not has_weld) or (
+        qty_bad and not protect_existing
+    ):
         notes.append(
             f"WARNING: after {attempts} finalize attempts still "
-            f"profile={profiles} weld={has_weld} bom_mismatch={qty_bad}"
+            f"profile={profiles} missing={len(missing_profiles)} "
+            f"weld={has_weld} bom_mismatch={qty_bad}"
         )
     else:
         notes.append("Verified Profile/Weld/BOM qty after finalize retries")

@@ -882,7 +882,7 @@ export default function JobDetailPage() {
               ? sfStatus.message
               : job.push_readiness?.ready === false
               ? job.push_readiness.reason || "needs PDF, DXF, STEP, or library match"
-              : "Create a SecturaFAB quote whose number is this part number"
+              : "Push this part number. Re-push is additive — it will not wipe SecturaFAB edits."
           }
         >
           {job.quote_number || job.part_number

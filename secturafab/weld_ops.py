@@ -365,7 +365,9 @@ def ensure_weld_ops(
             it["OperationCostList"] = target["OperationCostList"]
             break
 
-    save = client.request("POST", "v1/quote", json=detail)
+    from .quote_update import safe_quote_post
+
+    save = safe_quote_post(client, quote_id, detail)
     if save.status_code >= 400:
         return [f"Saving Weld ops failed ({save.status_code})"]
 

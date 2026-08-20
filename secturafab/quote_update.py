@@ -2,6 +2,10 @@
 
 Material/Thickness updates go through UpdateItem_Part and wipe Profile.
 UnitCost / UnitPrice / Quantity updates via this endpoint do not.
+
+Full-quote ``POST v1/quote`` with a stale ItemList has wiped Profile / Weld /
+qty more than once. Use ``preserve_operation_cost_lists`` + ``safe_quote_post``
+when the payload must not replace live ops.
 """
 
 from __future__ import annotations
@@ -12,6 +16,66 @@ from .client import SecturaFabClient
 from .weld_ops import _desc_token, pick_weld_target_item
 
 _ASSEMBLY_TYPE = 300
+
+
+def preserve_operation_cost_lists(
+    client: SecturaFabClient,
+    quote_id: str,
+    detail: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Copy current server OperationCostList onto an outbound quote payload by item ID.
+
+    Full-quote POSTs with a stale ItemList (missing Profile/Weld) have wiped ops
+    more than once. Call this immediately before ``POST v1/quote`` when the
+    payload should not intentionally replace ops.
+    """
+    try:
+        fresh = client.get_json(f"v1/quote/{quote_id}")
+    except Exception:  # noqa: BLE001
+        return detail
+    by_id = {
+        str(it.get("ID") or ""): it
+        for it in (fresh.get("ItemList") or [])
+        if it.get("ID")
+    }
+    for it in detail.get("ItemList") or []:
+        iid = str(it.get("ID") or "")
+        src = by_id.get(iid)
+        if not src:
+            continue
+        live_ops = list(src.get("OperationCostList") or [])
+        outbound_ops = list(it.get("OperationCostList") or [])
+        live_names = {str(o.get("OperationName") or "") for o in live_ops if o.get("OperationName")}
+        # Live ops win for the same OperationName (Kyle's edits / CAD attach).
+        # Outbound may only add names the server does not already have.
+        merged = list(live_ops)
+        for op in outbound_ops:
+            name = str(op.get("OperationName") or "")
+            if name and name not in live_names:
+                merged.append(op)
+                live_names.add(name)
+        if merged:
+            it["OperationCostList"] = merged
+        if live_ops:
+            if src.get("PrimaryTime") is not None:
+                it["PrimaryTime"] = src.get("PrimaryTime")
+            if src.get("UnitPrimaryTime") is not None:
+                it["UnitPrimaryTime"] = src.get("UnitPrimaryTime")
+            badge = src.get("BadgeString")
+            if badge:
+                it["BadgeString"] = badge
+    return detail
+
+
+def safe_quote_post(
+    client: SecturaFabClient,
+    quote_id: str,
+    detail: dict[str, Any],
+) -> Any:
+    """POST v1/quote after merging live OperationCostList so ops are not wiped."""
+    payload = preserve_operation_cost_lists(client, quote_id, detail)
+    return client.request("POST", "v1/quote", json=payload)
 
 
 def quote_online_update(
