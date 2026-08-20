@@ -86,11 +86,13 @@ _DASHED_PN_RE = re.compile(
 )
 _BARE_PN_RE = re.compile(r"(?<![\d])(?P<base>\d{5,7})(?![\d-])")
 _KNOWN_BB_PART = "102727-4"
-_ITEM_WORD_RE = re.compile(r"(?<![A-Za-z])([A-Za-z]{1,3})(?![A-Za-z])")
-# Item then part on the same strip or adjacent bands (newline = space).
+_ITEM_WORD_RE = re.compile(
+    r"(?<![A-Za-z0-9])([A-Za-z]{2}[2-9Dd]|[A-Za-z]{1,2}[2-9]|[A-Za-z]{1,3})(?![A-Za-z0-9])"
+)
+# Item (optional glued qty) then part on the same strip or adjacent bands.
 _ITEM_PART_ANY_RE = re.compile(
-    r"(?<![A-Za-z])(?P<item>[A-Za-z]{1,3})(?![A-Za-z])"
-    r"\s{1,16}"
+    r"(?<![A-Za-z0-9])(?P<item>[A-Za-z]{1,2})(?P<glued>[2-9Dd])?"
+    r"(?![A-Za-z])\s{0,16}"
     r"(?P<part>\d{4,7}(?:\s*[-–—=]\s*\d{1,3}[A-Za-z]?)?)",
     re.IGNORECASE,
 )
@@ -281,13 +283,38 @@ def pick_best_material_list(candidates: Sequence[Any], *, min_rows: int = TALL_T
 
 
 def _split_glued_item_token(raw_item: str) -> tuple[str, str]:
-    """``BBD`` → (``BB``, ``D`` leftover from 102727). Skip I/O."""
+    """``BBD`` / ``BB2`` → (``BB``, leftover). Prefer ``_split_glued_item_qty``."""
+    item, _qty = _split_glued_item_qty(raw_item)
+    token = str(raw_item or "").strip().upper()
+    if not item:
+        return "", ""
+    leftover = token[len(item) :] if token.startswith(item) else ""
+    if leftover in {"2", "3", "4", "5", "6", "7", "8", "9", "D"}:
+        leftover = ""
+    return item, leftover
+
+
+def _split_glued_item_qty(raw_item: str) -> tuple[str, int | None]:
+    """
+    Glued item+qty: ``BB2`` → (BB, 2), ``BBD`` → (BB, 2).
+
+    ``D`` is the live OCR of qty 2 on ``BBD 02727-4``. ``BD`` stays item BD
+    (valid two-letter balloon), not B + D.
+    """
     token = str(raw_item or "").strip().upper()
     if is_material_list_item(token):
-        return token, ""
+        return token, None
+    m = re.fullmatch(r"([A-Z]{1,2})([2-9])", token)
+    if m and is_material_list_item(m.group(1)):
+        qty = int(m.group(2))
+        if qty <= 20:
+            return m.group(1), qty
+    m = re.fullmatch(r"([A-Z]{2})D", token)
+    if m and is_material_list_item(m.group(1)):
+        return m.group(1), 2
     if len(token) == 3 and is_material_list_item(token[:2]):
-        return token[:2], token[2]
-    return "", ""
+        return token[:2], None
+    return "", None
 
 
 def recover_time_part_no(raw: str | None, *, item: str | None = None) -> str | None:
@@ -310,10 +337,10 @@ def recover_time_part_no(raw: str | None, *, item: str | None = None) -> str | N
             if dropped.startswith("1027"):
                 # AX 1102726-1 HOOK pO → 102726-1 (extra leading 1)
                 part = dropped
-        elif len(base) == 5 and base.startswith("0"):
+        elif len(base) >= 5 and base.startswith("0"):
             prefixed = f"1{base}-{suf}"
             if prefixed.startswith("10"):
-                # 02727-4 → 102727-4; 00177-2 → 100177-2 (10xxxx family)
+                # 02727-4 → 102727-4; 00177-2 → 100177-2 (dropped leading 1)
                 part = prefixed
         if item and str(item).upper() == "BB" and part in {_KNOWN_BB_PART, "02727-4"}:
             return _KNOWN_BB_PART
@@ -338,52 +365,63 @@ def _looks_like_bb_tube(part: str | None, desc: str | None, raw: str = "") -> bo
     return False
 
 
-def _item_candidates(text: str) -> list[tuple[int, str]]:
-    """Whole-word 1–3 letter tokens that are Time balloons (not PLATE/CAP/…)."""
-    out: list[tuple[int, str]] = []
+def _item_candidates(text: str) -> list[tuple[int, str, int | None]]:
+    """Whole-word balloons, including glued ``BB2`` / ``BBD``."""
+    out: list[tuple[int, str, int | None]] = []
     allowed = time_balloon_set(through="BZ")
     for m in _ITEM_WORD_RE.finditer(text or ""):
         raw = m.group(1).upper()
         if raw in _STRIP_HEADER_WORDS or raw in _DESC_NOISE_WORDS:
             continue
-        item, _leftover = _split_glued_item_token(raw)
+        item, glued_qty = _split_glued_item_qty(raw)
         if item and item in allowed:
-            out.append((m.start(), item))
+            out.append((m.start(), item, glued_qty))
     return out
 
 
-def _choose_item_for_part(raw: str, part_start: int, part: str, desc: str) -> str | None:
+def _choose_item_for_part(
+    raw: str, part_start: int, part: str, desc: str
+) -> tuple[str | None, int | None]:
     if _looks_like_bb_tube(part, desc, raw):
-        return "BB"
-    cands = [(pos, item) for pos, item in _item_candidates(raw) if pos <= part_start]
+        glued = None
+        for pos, item, q in _item_candidates(raw):
+            if item == "BB" and q is not None:
+                glued = q
+                break
+        return "BB", glued
+    cands = [c for c in _item_candidates(raw) if c[0] <= part_start]
     if not cands:
         cands = _item_candidates(raw)
     if not cands:
-        return None
-    # Prefer the item immediately left of the part (do not take a neighbor
-    # letter from a far-left band). Two-letter beats one-letter at same spot.
-    cands.sort(key=lambda it: (abs(part_start - it[0]), -len(it[1])))
-    nearest = cands[0]
-    # If the nearest letter is far from the part and a closer two-letter
-    # balloon exists, use that (AA sitting on 460330, not a leaked A).
+        return None, None
     close = [c for c in cands if part_start - c[0] <= 12]
-    if close:
-        close.sort(key=lambda it: (part_start - it[0], -len(it[1])))
-        return close[0][1]
-    return nearest[1]
+    pool = close or cands
+    # Two-letter balloons (AA–BC) beat a leaked single letter on the same part.
+    pool.sort(key=lambda it: (abs(part_start - it[0]), -len(it[1])))
+    _pos, item, glued = pool[0]
+    return item, glued
 
 
-def _qty_from_left_of_part(
+def _qty_from_one_source(
     raw: str,
     part_start: int,
     *,
     item: str,
     part: str,
     desc: str,
+    glued_qty: int | None,
 ) -> tuple[int, bool, str | None]:
+    """One qty source only. Do not mix glued / left-cell / known-BB. qty>20 is junk."""
+    is_bb = item == "BB" or _looks_like_bb_tube(part, desc, raw)
+    if glued_qty is not None:
+        if 2 <= glued_qty <= 20:
+            return glued_qty, True, f"{item} qty {glued_qty} from glued item+qty token"
+        if glued_qty == 1:
+            return 1, True, None
+        # qty>20 (or 0) is OCR junk — fall through, do not mix with another source
     left = raw[: max(0, part_start)]
     tokens = [int(m.group(1)) for m in re.finditer(r"(?<!\d)([1-9]|1[0-9]|20)(?!\d)", left)]
-    is_bb = item == "BB" or _looks_like_bb_tube(part, desc, raw)
+    tokens = [n for n in tokens if n <= 20]
     if is_bb:
         if 2 in tokens:
             return 2, True, None
@@ -424,14 +462,19 @@ def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
     desc = re.sub(r"\s+", " ", desc)
     if _looks_like_bb_tube(part, desc, raw):
         part = _KNOWN_BB_PART
-    item = _choose_item_for_part(raw, part_match.start(), part, desc)
+    item, glued_qty = _choose_item_for_part(raw, part_match.start(), part, desc)
     if not item:
         return None
     if _looks_like_bb_tube(part, desc, raw):
         item = "BB"
         part = _KNOWN_BB_PART
-    qty, qty_clear, qty_note = _qty_from_left_of_part(
-        raw, part_match.start(), item=item, part=part, desc=desc
+    qty, qty_clear, qty_note = _qty_from_one_source(
+        raw,
+        part_match.start(),
+        item=item,
+        part=part,
+        desc=desc,
+        glued_qty=glued_qty,
     )
     return {
         "item": item,
@@ -522,9 +565,9 @@ def harvest_ocr_row_strips(
     # Adjacent bands: ``AA`` on one strip, ``460330 CAP…`` on the next.
     blob = "\n".join(str(x) for x in (lines or []) if str(x).strip())
     for m in _ITEM_PART_ANY_RE.finditer(blob):
-        parsed = parse_ocr_row_strip(f"{m.group('item')} {m.group('part')}")
+        glued = m.group("glued") or ""
+        parsed = parse_ocr_row_strip(f"{m.group('item')}{glued} {m.group('part')}")
         if not parsed:
-            # Keep the original span (includes leftover D / description).
             parsed = parse_ocr_row_strip(m.group(0))
         if parsed:
             found.append(_parsed_to_row(parsed))

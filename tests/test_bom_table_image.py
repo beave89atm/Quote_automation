@@ -220,6 +220,10 @@ def test_live_strips_parse_bbd_aa_z_and_ax():
     stolen = parse_ocr_row_strip("H 102727-4 TUBE, ROUND")
     assert stolen["item"] == "BB" and stolen["part_no"] == _BB_PART and stolen["qty"] == 2
 
+    bb2 = parse_ocr_row_strip("BB2 02727-4 TUBE, ROUND")
+    assert bb2["item"] == "BB" and bb2["part_no"] == _BB_PART and bb2["qty"] == 2
+    assert bb2["item"] != "H"
+
     aa = parse_ocr_row_strip("AA 460330 CAP, VERTICAL RAIL BOTTOM")
     assert aa["item"] == "AA" and aa["part_no"] == "460330" and aa["qty"] == 1
     assert "VERTICAL RAIL BOTTOM" in aa["description"].upper()
@@ -278,6 +282,10 @@ def test_exact_live_strips_harvest_51ish_and_bb():
     assert by_item["F"].part_no == "432650"
     if "H" in by_item:
         assert by_item["H"].part_no != _BB_PART
+    two_letter = time_item_letters(through="BC")[24:]  # AA–BC
+    for tok in two_letter:
+        assert tok in by_item, tok
+    assert not any(r.qty > 20 for r in bom.rows)
 
     harvested = harvest_material_list_lines("\n".join(strips))
     assert len(harvested.rows) >= 48
