@@ -10,7 +10,12 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from quote_core.bom import BomResult, extract_bom
-from quote_core.bom_table import pick_best_material_list, time_item_letters
+from quote_core.bom_table import (
+    harvest_material_list_lines,
+    parse_ocr_row_strip,
+    pick_best_material_list,
+    time_item_letters,
+)
 from quote_core.bom_table_image import (
     TABLE_CROP_FILENAME,
     extract_bom_from_table_image,
@@ -175,6 +180,85 @@ def test_extract_bom_sibling_crop_beats_short_pdf_lom(tmp_path: Path):
     else:
         assert len(bom.rows) < 10
         assert "flag review" in joined or "unread" in joined or "rejected" in joined
+
+
+def _live_page1_strips() -> list[str]:
+    """Exact live page-1 OCR strips (cec69a0 dump) plus the rest of A…BC."""
+    overrides = {
+        "A": "A 460200 PLATE",
+        "Z": "Z 460320 ICAP, VERTICAL RAIL TOP",
+        "AA": "AA 460330 CAP, VERTICAL RAIL BOTTOM",
+        "AX": "AX 1102726-1 HOOK pO",
+        "BB": "BBD 02727-4 TUBE, ROUND",
+    }
+    lines = ["TEM | PART NO. | DESCRIPTION"]
+    for i, item in enumerate(_platform_items()):
+        if item in overrides:
+            lines.append(overrides[item])
+        else:
+            lines.append(f"{item} 1027{i:02d}-1 COMPONENT {item}")
+    return lines
+
+
+def test_live_strips_parse_bbd_aa_z_and_ax():
+    bb = parse_ocr_row_strip("BBD 02727-4 TUBE, ROUND")
+    assert bb is not None
+    assert bb["item"] == "BB"
+    assert bb["part_no"] == _BB_PART
+    assert bb["qty"] == 2
+    assert "TUBE" in bb["description"].upper()
+    assert "ROUND" in bb["description"].upper()
+
+    aa = parse_ocr_row_strip("AA 460330 CAP, VERTICAL RAIL BOTTOM")
+    assert aa["item"] == "AA" and aa["part_no"] == "460330" and aa["qty"] == 1
+    assert "VERTICAL RAIL BOTTOM" in aa["description"].upper()
+
+    z = parse_ocr_row_strip("Z 460320 ICAP, VERTICAL RAIL TOP")
+    assert z["item"] == "Z" and z["part_no"] == "460320" and z["qty"] == 1
+
+    ax = parse_ocr_row_strip("AX 1102726-1 HOOK pO")
+    assert ax["item"] == "AX"
+    assert ax["part_no"] == "102726-1"
+    assert ax["part_no"] != "1102726-1"
+
+    assert parse_ocr_row_strip("TEM | PART NO. | DESCRIPTION") is None
+
+
+def test_exact_live_strips_harvest_51ish_and_bb():
+    """Required fixture: exact live strips → 51-ish rows, BB = 2 × 102727-4."""
+    strips = _live_page1_strips()
+    decoy = [
+        "LIST OF MATERIAL",
+        "QTY | ITEM | PART NO. | DESCRIPTION",
+        "1 B 102709-1 DECOY",
+        "1 C 100585-23 DECOY",
+        "1 D 102711-1 CABLE TUBE",
+    ]
+    tall = _draw_lom_table(["x"] * 51)
+    short = _draw_lom_table(["x"] * 3)
+    bom = extract_bom_from_table_images(
+        [short, tall],
+        row_texts_by_image=[decoy, strips],
+    )
+    assert bom.method and bom.method.startswith("table_")
+    assert len(bom.rows) >= 48, [f"{r.item}:{r.part_no}" for r in bom.rows]
+    assert len(bom.rows) <= 51
+    bb = next(r for r in bom.rows if r.item == "BB")
+    assert bb.qty == 2 and bb.part_no == _BB_PART
+    assert "TUBE" in (bb.description or "").upper()
+    parts = {r.part_no for r in bom.rows}
+    assert "102709-1" not in parts
+    assert "100585-23" not in parts
+    assert "102711-1" not in parts
+    assert "1102726-1" not in parts
+    by_item = {r.item: r for r in bom.rows}
+    assert by_item["AA"].part_no == "460330"
+    assert by_item["Z"].part_no == "460320"
+
+    harvested = harvest_material_list_lines("\n".join(strips))
+    assert len(harvested.rows) >= 48
+    hbb = next(r for r in harvested.rows if r.item == "BB")
+    assert hbb.qty == 2 and hbb.part_no == _BB_PART
 
 
 def test_pick_best_does_not_invent_rows_for_unread_tall_grid():

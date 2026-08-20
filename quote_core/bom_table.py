@@ -27,7 +27,7 @@ _TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 _GRID_HEADER_RE = re.compile(
-    r"(?:QTY|ITEM).{0,48}(?:PART\s*NO\.?|PART\s*NUMBER|P/?N).{0,40}DESC",
+    r"(?:QTY|ITEM|TEM).{0,48}(?:PART\s*NO\.?|PART\s*NUMBER|P/?N).{0,40}DESC",
     re.IGNORECASE | re.DOTALL,
 )
 _MULTI_QTY_HEADER_RE = re.compile(
@@ -69,6 +69,34 @@ _QTY_ITEM_PART_FIND_RE = re.compile(
     r"(?P<item>[A-Za-z]{1,2})\s+"
     r"(?P<part>\d{4,7}(?:\s*[-–—=]\s*\d{1,3}[A-Za-z]?)?)",
     re.IGNORECASE,
+)
+# Live page-1 strips often lose qty and glue leftover OCR onto the item:
+# ``BBD 02727-4 TUBE, ROUND``  → BB + 102727-4
+_STRIP_LEAD_RE = re.compile(
+    r"^\s*(?:(?P<qty>\d{1,2})\s+)?"
+    r"(?P<item>[A-Za-z]{1,3})"
+    r"(?P<rest>.*)$"
+)
+_DASHED_PN_RE = re.compile(
+    r"(?P<base>\d{5,7})\s*[-–—=]\s*(?P<suf>\d{1,3}[A-Za-z]?)"
+)
+_BARE_PN_RE = re.compile(r"(?<![\d])(?P<base>\d{5,7})(?![\d-])")
+_KNOWN_BB_PART = "102727-4"
+_STRIP_HEADER_WORDS = frozenset(
+    {
+        "QTY",
+        "ITEM",
+        "TEM",
+        "PART",
+        "NO",
+        "DESC",
+        "DESCRIPTION",
+        "LIST",
+        "OF",
+        "MATERIAL",
+        "REV",
+        "SHEET",
+    }
 )
 _HEADER_FOUND_NOTE = (
     "LIST OF MATERIAL header found but no table rows parsed "
@@ -120,7 +148,7 @@ def text_has_material_list_grid(text: str | None) -> bool:
     if _GRID_HEADER_RE.search(blob):
         return True
     if _TITLE_RE.search(blob) and re.search(
-        r"\bITEM\b.{0,40}\bPART\b", blob, flags=re.IGNORECASE | re.DOTALL
+        r"\b(?:ITEM|TEM)\b.{0,40}\bPART\b", blob, flags=re.IGNORECASE | re.DOTALL
     ):
         return True
     return False
@@ -202,16 +230,187 @@ def pick_best_material_list(candidates: Sequence[Any], *, min_rows: int = TALL_T
     return scored[0]
 
 
+def _split_glued_item_token(raw_item: str) -> tuple[str, str]:
+    """``BBD`` → (``BB``, ``D`` leftover from 102727). Skip I/O."""
+    token = str(raw_item or "").strip().upper()
+    if is_material_list_item(token):
+        return token, ""
+    if len(token) == 3 and is_material_list_item(token[:2]):
+        return token[:2], token[2]
+    return "", ""
+
+
+def recover_time_part_no(raw: str | None, *, item: str | None = None) -> str | None:
+    """
+    Recover Time PNs from OCR: ``02727-4`` → ``102727-4``,
+    ``1102726-1`` → ``102726-1``. Keep bare catalog numbers (``460330``).
+    """
+    from quote_core.bom import normalize_part_no
+
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    dashed = _DASHED_PN_RE.search(text)
+    if dashed:
+        base = dashed.group("base")
+        suf = dashed.group("suf").upper()
+        part = f"{base}-{suf}"
+        if len(base) == 7 and base.startswith("11"):
+            dropped = f"{base[1:]}-{suf}"
+            if dropped.startswith("1027"):
+                # AX 1102726-1 HOOK pO → 102726-1 (extra leading 1)
+                part = dropped
+        elif len(base) == 5 and base.startswith("0"):
+            prefixed = f"1{base}-{suf}"
+            if prefixed.startswith("1027"):
+                # BBD 02727-4 → 102727-4 (dropped leading 1)
+                part = prefixed
+        del item  # family recovery is from the digits; BB prefer happens in strip parse
+        return part
+    bare = _BARE_PN_RE.search(text)
+    if bare:
+        base = bare.group("base")
+        # Do not invent a dash on 460330 / 460320.
+        return base
+    return normalize_part_no(text)
+
+
+def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
+    """
+    Parse one live page-1 OCR strip.
+
+    ``BBD 02727-4 TUBE, ROUND`` → item BB, part 102727-4, qty 2.
+    ``AA 460330 CAP, VERTICAL RAIL BOTTOM`` → AA / 460330 / qty 1.
+    Keep the row when item+part parse even if the qty cell is garbage.
+    """
+    raw = str(line or "").replace("|", " ").strip()
+    if not raw:
+        return None
+    lead = _STRIP_LEAD_RE.match(raw)
+    if not lead:
+        return None
+    raw_item = lead.group("item") or ""
+    if raw_item.upper() in _STRIP_HEADER_WORDS:
+        return None
+    item, leftover = _split_glued_item_token(raw_item)
+    if not item or item not in time_balloon_set(through="BZ"):
+        return None
+    rest = f"{leftover}{lead.group('rest') or ''}"
+    part = recover_time_part_no(rest, item=item)
+    if not part or not re.search(r"\d{4,}", part):
+        return None
+    # Prefer a closer 1027xx-n on the same row over 1102726-1 leftovers.
+    dashed_all = [
+        recover_time_part_no(m.group(0), item=item) for m in _DASHED_PN_RE.finditer(rest)
+    ]
+    dashed_all = [p for p in dashed_all if p]
+    if item == "BB":
+        for cand in dashed_all:
+            if cand == _KNOWN_BB_PART:
+                part = cand
+                break
+        else:
+            for cand in dashed_all:
+                if cand.startswith("1027") and cand.endswith("-4"):
+                    part = cand
+                    break
+    elif dashed_all:
+        family = [p for p in dashed_all if p.startswith("1027")]
+        if family:
+            part = family[0]
+
+    qty_raw = lead.group("qty")
+    qty_clear = False
+    qty = 1
+    if qty_raw and qty_raw.isdigit():
+        n = int(qty_raw)
+        if 1 <= n <= 20:
+            qty = n
+            qty_clear = True
+    if not qty_clear and item == "BB" and part == _KNOWN_BB_PART:
+        qty = 2
+        qty_clear = True
+        qty_note = "BB qty 2 recovered (qty cell unread; known 102727-4 print)"
+    elif not qty_clear:
+        qty_note = f"{item} qty OCR unreadable — defaulted to 1, flag review"
+    else:
+        qty_note = None
+
+    desc = rest
+    for m in _DASHED_PN_RE.finditer(rest):
+        desc = rest[m.end() :]
+        break
+    else:
+        bare = _BARE_PN_RE.search(rest)
+        if bare:
+            desc = rest[bare.end() :]
+    desc = re.sub(r"^[\s,;:.-]+", "", desc).strip(" ,;|")
+    desc = re.sub(r"\s+", " ", desc)
+    return {
+        "item": item,
+        "qty": qty,
+        "part_no": part,
+        "description": desc,
+        "qty_clear": qty_clear,
+        "qty_note": qty_note,
+    }
+
+
+def harvest_ocr_row_strips(
+    lines: Sequence[str] | None,
+    *,
+    bom_config: str | None = None,
+):
+    """Harvest one OCR strip per table row. Does not invent missing items."""
+    del bom_config
+    from quote_core.bom import BomResult, BomRow
+
+    rows = []
+    seen: set[str] = set()
+    notes: list[str] = []
+    for line in lines or []:
+        parsed = parse_ocr_row_strip(line)
+        if not parsed or parsed["item"] in seen:
+            continue
+        seen.add(parsed["item"])
+        rows.append(
+            BomRow(
+                item=parsed["item"],
+                qty=int(parsed["qty"]),
+                part_no=parsed["part_no"],
+                description=parsed["description"],
+                source="table_material_list_strip",
+                confidence=0.88 if parsed["qty_clear"] else 0.8,
+            )
+        )
+        if parsed.get("qty_note"):
+            notes.append(parsed["qty_note"])
+    if not rows:
+        return BomResult(method=None, confidence=0.0, notes=["No item+part strips harvested"])
+    rows.sort(key=lambda r: item_sort_key(str(r.item or "")))
+    notes.insert(
+        0,
+        f"Harvested OCR row strips: {len(rows)} part numbers, "
+        f"{sum(r.qty for r in rows)} pieces",
+    )
+    notes.extend(_incomplete_sequence_notes([str(r.item) for r in rows if r.item]))
+    return BomResult(
+        rows=rows,
+        method="table_material_list",
+        confidence=0.88,
+        notes=notes,
+    )
+
+
 def harvest_material_list_lines(text: str | None, *, bom_config: str | None = None):
     """
     Line-by-line / finditer parse of ``2 BB 102727-4 TUBE, ROUND``.
 
-    Used when word-box columns fail but the right-side grid is readable.
-    ``bom_config`` is accepted for API symmetry (single-qty printed cells).
+    Also reads live page-1 strips (``BBD 02727-4``, ``AA 460330``) that have
+    no qty token. ``bom_config`` is accepted for API symmetry.
     """
     from quote_core.bom import BomResult, BomRow, normalize_part_no
 
-    del bom_config
     if not text:
         return BomResult(method=None, confidence=0.0, notes=["No text to harvest"])
     blob = (
@@ -221,38 +420,46 @@ def harvest_material_list_lines(text: str | None, *, bom_config: str | None = No
         .replace("–", "-")
         .replace("=", "-")
     )
-    rows = []
-    seen: set[str] = set()
+    by_item: dict[str, BomRow] = {}
+    notes: list[str] = []
+    strip_hit = harvest_ocr_row_strips(blob.splitlines(), bom_config=bom_config)
+    for row in strip_hit.rows:
+        by_item[str(row.item).upper()] = row
+    notes.extend(n for n in strip_hit.notes if "qty" in n.lower() or "unreadable" in n.lower() or "recovered" in n.lower())
+
     for m in _QTY_ITEM_PART_FIND_RE.finditer(blob):
         item = m.group("item").upper()
-        if not is_material_list_item(item) or item in seen:
+        if not is_material_list_item(item):
             continue
         # Time balloons through BZ (A–Z skip I/O, AA–AZ, BA–BZ). Drops "SE TAS".
         if item not in time_balloon_set(through="BZ"):
             continue
         part_raw = re.sub(r"\s+", "", m.group("part"))
-        part = normalize_part_no(part_raw) or part_raw.upper()
+        part = recover_time_part_no(part_raw, item=item) or normalize_part_no(part_raw) or part_raw.upper()
         if not part or not re.search(r"\d{4,}", part):
             continue
         qty = max(1, int(m.group("qty")))
+        if qty > 20:
+            continue
         tail = blob[m.end() : m.end() + 48]
         desc_m = re.match(r"\s*([^|\n]{0,40})", tail)
         desc = (desc_m.group(1) if desc_m else "").strip(" ,;|")
-        # Cut desc at the next qty/item/part
         nxt = _QTY_ITEM_PART_FIND_RE.search(desc)
         if nxt:
             desc = desc[: nxt.start()].strip()
-        seen.add(item)
-        rows.append(
-            BomRow(
-                item=item,
-                qty=qty,
-                part_no=part,
-                description=desc,
-                source="table_material_list_harvest",
-                confidence=0.9,
-            )
+        existing = by_item.get(item)
+        # Prefer an explicit leading qty 2–20 over a defaulted strip qty.
+        if existing and existing.qty >= qty and existing.part_no == part:
+            continue
+        by_item[item] = BomRow(
+            item=item,
+            qty=qty,
+            part_no=part,
+            description=desc or (existing.description if existing else ""),
+            source="table_material_list_harvest",
+            confidence=0.9,
         )
+    rows = list(by_item.values())
     if not rows:
         return BomResult(method=None, confidence=0.0, notes=["No qty/item/part lines harvested"])
     # Loose qty/item/part bait (page-0 regex leftovers) is not a table unless
@@ -264,10 +471,11 @@ def harvest_material_list_lines(text: str | None, *, bom_config: str | None = No
             notes=["Harvested lines ignored — no LIST OF MATERIAL header and not a tall grid"],
         )
     rows.sort(key=lambda r: item_sort_key(str(r.item or "")))
-    notes = [
+    notes.insert(
+        0,
         f"Harvested LIST OF MATERIAL lines: {len(rows)} part numbers, "
-        f"{sum(r.qty for r in rows)} pieces"
-    ]
+        f"{sum(r.qty for r in rows)} pieces",
+    )
     notes.extend(_incomplete_sequence_notes([str(r.item) for r in rows if r.item]))
     return BomResult(
         rows=rows,

@@ -14,6 +14,7 @@ from quote_core.bom_table import (
     SHORT_TABLE_REJECT,
     TALL_TABLE_MIN_ROWS,
     harvest_material_list_lines,
+    harvest_ocr_row_strips,
     pick_best_material_list,
 )
 
@@ -242,14 +243,10 @@ def extract_bom_from_table_image(
                 "or POST /api/bom/table-image"
             )
 
-    blob = "LIST OF MATERIAL\nQTY ITEM PART NO. DESCRIPTION\n" + "\n".join(lines)
-    parsed = harvest_material_list_lines(blob, bom_config=bom_config)
-    # harvest may ignore short texts without header — we prefixed a header.
+    parsed = harvest_ocr_row_strips(lines, bom_config=bom_config)
     if not parsed.rows and lines:
-        parsed = harvest_material_list_lines(
-            "LIST OF MATERIAL\nQTY ITEM PART NO.\n" + "\n".join(lines),
-            bom_config=bom_config,
-        )
+        blob = "LIST OF MATERIAL\nQTY ITEM PART NO. DESCRIPTION\n" + "\n".join(lines)
+        parsed = harvest_material_list_lines(blob, bom_config=bom_config)
     parsed.grid_row_count = int(seg["grid_row_count"])
     parsed.notes = notes + list(parsed.notes)
     if parsed.rows:
