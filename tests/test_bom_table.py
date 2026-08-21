@@ -1782,9 +1782,10 @@ def test_later_zero_text_page_does_not_replace_page1_lom(tmp_path: Path):
     )
     doc = fitz.open(pdf)
     doc.new_page()
-    doc.save(pdf)
+    two = tmp_path / "Time 102728- Weldment-2p.pdf"
+    doc.save(two)
     doc.close()
-    bom = extract_bom(pdf_path=pdf)
+    bom = extract_bom(pdf_path=two)
     _assert_kyle_102728_1(bom)
     assert any("zero-text page" in n for n in bom.notes)
 
