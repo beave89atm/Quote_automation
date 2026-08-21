@@ -10,7 +10,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from quote_core.bom import BomResult, BomRow, bom_from_lom_xlsx, extract_bom
-from quote_core.bom_xlsx import apply_lom_xlsx_to_takeoff, read_lom_xlsx
+from quote_core.bom_xlsx import (
+    PARENT_SHEET_NAME,
+    apply_lom_xlsx_to_takeoff,
+    bom_tabs_for_import,
+    list_lom_sheet_names,
+    read_lom_xlsx,
+)
 from quote_core.nested_lom import (
     is_weldment_or_assembly_desc,
     nested_child_rows,
@@ -116,21 +122,28 @@ def test_clip_child_lom_from_library_does_not_merge_parent(tmp_path: Path):
     assert {str(r.part_no) for r in bom.rows} == parent_pns
 
     parent_xlsx = job / "103516-1-LOM.xlsx"
-    child_xlsx = job / "103535-1-LOM.xlsx"
     assert parent_xlsx.is_file()
-    assert child_xlsx.is_file()
-    _header, child_sheet = read_lom_xlsx(child_xlsx)
+    assert not (job / "103535-1-LOM.xlsx").exists()
+    names = list_lom_sheet_names(parent_xlsx)
+    assert names[0] == PARENT_SHEET_NAME
+    assert "103535-1" in names
+    _header, child_sheet = read_lom_xlsx(parent_xlsx, sheet="103535-1")
     child_pns = {r["PART NO"] for r in child_sheet}
     assert child_pns == {"555010", "555011"}
     _header, parent_sheet = read_lom_xlsx(parent_xlsx)
     parent_sheet_pns = {r["PART NO"] for r in parent_sheet}
     assert "555010" not in parent_sheet_pns
     assert "103535-1" in parent_sheet_pns
+    import_tabs = bom_tabs_for_import(parent_xlsx)
+    assert [name for name, _rows in import_tabs] == names
+    assert {r["part_no"] for r in import_tabs[0][1]} == parent_sheet_pns
+    assert {r["part_no"] for r in import_tabs[1][1]} == {"555010", "555011"}
 
     clipped = [c for c in bom.nested_children if c.get("part_no") == "103535-1"]
     assert clipped and clipped[0]["status"] == "clipped"
-    assert clipped[0]["lom_xlsx"] == "103535-1-LOM.xlsx"
-    assert any("Clipped child LOM 103535-1" in n for n in bom.notes)
+    assert clipped[0]["lom_xlsx"] == "103516-1-LOM.xlsx"
+    assert clipped[0]["lom_sheet"] == "103535-1"
+    assert any("tab 103535-1 on 103516-1-LOM.xlsx" in n for n in bom.notes)
     assert (job / "103535-1.pdf").is_file()
     assert not (lib / "Time" / "103535-1" / "103535-1-LOM.xlsx").exists()
 
@@ -201,16 +214,27 @@ def test_recurse_one_extra_child_level(tmp_path: Path):
     assert "40002-2" in parts
     assert "555012-1" not in parts
     assert "555099" not in parts
-    assert (job / "103535-1-LOM.xlsx").is_file()
-    assert (job / "555012-1-LOM.xlsx").is_file()
-    _header, lock_sheet = read_lom_xlsx(job / "555012-1-LOM.xlsx")
+    parent_xlsx = job / "103516-1-LOM.xlsx"
+    assert parent_xlsx.is_file()
+    assert not (job / "103535-1-LOM.xlsx").exists()
+    assert not (job / "555012-1-LOM.xlsx").exists()
+    names = list_lom_sheet_names(parent_xlsx)
+    assert names[0] == PARENT_SHEET_NAME
+    assert "103535-1" in names
+    assert "555012-1" in names
+    _header, lock_sheet = read_lom_xlsx(parent_xlsx, sheet="555012-1")
     lock_pns = {r["PART NO"] for r in lock_sheet}
     assert {"555099", "555098"} <= lock_pns
+    _header, parent_sheet = read_lom_xlsx(parent_xlsx)
+    parent_pns = {r["PART NO"] for r in parent_sheet}
     assert "555099" not in parts
     assert "555098" not in parts
+    assert "555099" not in parent_pns
     gate = next(c for c in bom.nested_children if c["part_no"] == "103535-1")
     inner = [c for c in (gate.get("nested_children") or []) if c.get("part_no") == "555012-1"]
     assert inner and inner[0]["status"] == "clipped"
+    assert inner[0]["lom_sheet"] == "555012-1"
+    assert inner[0]["lom_xlsx"] == "103516-1-LOM.xlsx"
 
 
 def test_102728_1_extract_without_library_stays_51_97(tmp_path: Path):
@@ -226,6 +250,8 @@ def test_102728_1_extract_without_library_stays_51_97(tmp_path: Path):
     _assert_kyle_102728_1(bom)
     assert "102711-1" in {r.part_no for r in bom.rows}
     assert not (tmp_path / "102711-1-LOM.xlsx").exists()
+    xlsx = pdf.with_name(f"{pdf.stem}-LOM.xlsx")
+    assert list_lom_sheet_names(xlsx) == [PARENT_SHEET_NAME]
     assert any("102711-1" in n and "extra upload" in n.lower() for n in bom.notes)
     au = next(r for r in bom.rows if r.item == "AU")
     assert au.qty == 1 and au.part_no == "102711-1"
@@ -286,10 +312,11 @@ def test_lom_xlsx_reread_keeps_nested_children(tmp_path: Path):
                 "item": "20",
                 "part_no": "103535-1",
                 "status": "clipped",
-                "lom_xlsx": "103535-1-LOM.xlsx",
+                "lom_xlsx": "103516-1-LOM.xlsx",
+                "lom_sheet": "103535-1",
             }
         ],
-        notes=["Clipped child LOM 103535-1 from library → 103535-1-LOM.xlsx"],
+        notes=["Clipped child LOM 103535-1 from library → tab 103535-1 on 103516-1-LOM.xlsx"],
     )
     sourced = bom_from_lom_xlsx(path, prior=prior)
     assert sourced.nested_children[0]["part_no"] == "103535-1"

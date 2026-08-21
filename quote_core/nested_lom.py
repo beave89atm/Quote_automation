@@ -160,11 +160,15 @@ def clip_nested_child_loms(
             nested_seen=seen,
             nested_depth=depth + 1,
         )
+        from quote_core.bom_xlsx import lom_sheet_name, row_as_lom_dict
+
+        child_rows = [row_as_lom_dict(r) for r in (child.rows or [])]
         xlsx_name = child.lom_xlsx
-        status = "clipped" if xlsx_name else "no_lom"
+        sheet_name = lom_sheet_name(part_no)
+        status = "clipped" if child_rows else "no_lom"
         note = (
-            f"Clipped child LOM {part_no} from library → {xlsx_name}"
-            if xlsx_name
+            f"Clipped child LOM {part_no} from library"
+            if child_rows
             else f"Child {part_no} found in library but has no LIST OF MATERIAL"
         )
         if note not in notes:
@@ -176,6 +180,8 @@ def clip_nested_child_loms(
                 "description": desc,
                 "status": status,
                 "lom_xlsx": xlsx_name,
+                "lom_sheet": sheet_name,
+                "rows": child_rows,
                 "pdf": dest_pdf.name,
                 "piece_count": child.piece_count,
                 "part_number_count": child.part_number_count,

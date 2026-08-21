@@ -1468,9 +1468,9 @@ def extract_bom(
     and no library-folder padding. When ``pdf_path`` is set and a LIST OF
     MATERIAL grid is found, write ``{stem}-LOM.xlsx`` next to the PDF, then
     **re-read that sheet** as the quote BOM. Weldment/assembly descriptions
-    recurse into Customer Drawings and clip each child's LOM next to the job
-    copy — child rows are **not** merged into this BOM. No LOM on the sheet →
-    one-part quote, no LOM.xlsx, do not invent a BOM.
+    recurse into Customer Drawings; each child's LOM is an extra tab on the
+    parent workbook — child rows are **not** merged onto the parent tab. No
+    LOM on the sheet → one-part quote, no LOM.xlsx, do not invent a BOM.
     """
     notes: list[str] = []
 
@@ -1568,7 +1568,7 @@ def extract_bom(
 
 def bom_from_lom_xlsx(path: Path | str, *, prior: BomResult | None = None) -> BomResult:
     """Quote BOM is the written sheet. Do not keep a parallel parse."""
-    from quote_core.bom_xlsx import read_lom_xlsx
+    from quote_core.bom_xlsx import read_lom_xlsx, refresh_nested_children_from_xlsx
 
     dest = Path(path)
     _header, data = read_lom_xlsx(dest)
@@ -1609,7 +1609,9 @@ def bom_from_lom_xlsx(path: Path | str, *, prior: BomResult | None = None) -> Bo
         assembly_weight_lb=getattr(prior, "assembly_weight_lb", None),
         grid_row_count=int(getattr(prior, "grid_row_count", 0) or 0),
         lom_xlsx=dest.name,
-        nested_children=list(getattr(prior, "nested_children", None) or []),
+        nested_children=refresh_nested_children_from_xlsx(
+            dest, list(getattr(prior, "nested_children", None) or [])
+        ),
     )
 
 
@@ -1648,7 +1650,7 @@ def _with_lom_xlsx(
     from quote_core.nested_lom import clip_nested_child_loms
 
     pdf = Path(pdf_path)
-    return clip_nested_child_loms(
+    sourced = clip_nested_child_loms(
         sourced,
         dest_dir=pdf.parent,
         library_folder=library_folder,
@@ -1658,3 +1660,8 @@ def _with_lom_xlsx(
         parent_part=extract_part_key(pdf.name, pdf.stem),
         depth=nested_depth,
     )
+    if nested_depth == 0 and sourced.nested_children:
+        from quote_core.bom_xlsx import write_parent_lom_with_nested_tabs
+
+        write_parent_lom_with_nested_tabs(dest, sourced)
+    return sourced

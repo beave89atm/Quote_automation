@@ -6,7 +6,10 @@ from pathlib import Path
 
 from quote_core.bom import BomResult, BomRow, bom_from_lom_xlsx, extract_bom
 from quote_core.bom_xlsx import (
+    PARENT_SHEET_NAME,
     apply_lom_xlsx_to_takeoff,
+    bom_tabs_for_import,
+    list_lom_sheet_names,
     read_lom_xlsx,
     write_lom_xlsx,
 )
@@ -139,6 +142,32 @@ def test_extract_bom_quote_matches_written_102728_xlsx(tmp_path: Path):
     for item, (qty, pn) in _PROOF_QTY.items():
         assert int(by_sheet[item]["QTY"]) == qty
         assert by_sheet[item]["PART NO"] == pn
+
+
+def test_child_lom_tab_is_not_merged_into_parent_takeoff(tmp_path: Path):
+    """102728 qty stays 97. Child weldment LOM is an extra tab, not parent rows."""
+    path = write_lom_xlsx(
+        tmp_path / "102728-1-LOM.xlsx",
+        _kyle_rows(),
+        extra_sheets=[
+            (
+                "102711-1",
+                [
+                    BomRow(item="A", qty=1, part_no="555010", description="PLATE"),
+                    BomRow(item="B", qty=2, part_no="555011", description="TUBE, ROUND"),
+                ],
+            )
+        ],
+    )
+    assert list_lom_sheet_names(path) == [PARENT_SHEET_NAME, "102711-1"]
+    sourced = bom_from_lom_xlsx(path)
+    _assert_kyle_102728_1(sourced)
+    assert "555010" not in {r.part_no for r in sourced.rows}
+    _header, child = read_lom_xlsx(path, sheet="102711-1")
+    assert {r["PART NO"] for r in child} == {"555010", "555011"}
+    tabs = bom_tabs_for_import(path)
+    assert [name for name, _rows in tabs] == [PARENT_SHEET_NAME, "102711-1"]
+    assert sum(int(r["qty"]) for r in tabs[0][1]) == 97
 
 
 def test_piece_part_without_lom_does_not_invent_bom_or_xlsx(tmp_path: Path):
