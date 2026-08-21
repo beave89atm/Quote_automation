@@ -212,7 +212,7 @@ def test_table_image_cell_texts_match_kyle_102728_1():
     ]
     texts.append("QTY | ITEM | PART NO. | DESCRIPTION")
     im = _draw_lom_table(_platform_row_texts())
-    bom = extract_bom_from_table_image(im, row_texts=texts, bom_config="-1")
+    bom = extract_bom_from_table_image(im, row_texts=texts)
     assert bom.method and bom.method.startswith("table_")
     assert not (bom.method or "").startswith("ocr_time")
     _assert_kyle_102728_1(bom)

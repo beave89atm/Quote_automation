@@ -11,13 +11,25 @@ def test_normalize_bom_config():
     assert normalize_bom_config("") is None
 
 
-def test_resolve_from_folder_name():
-    cfg = resolve_bom_config(
-        title="28106",
-        pdf_filename="28106.pdf",
-        library_folder=r"C:\drawings\Time\Lower Boom Weldment - 28106-1",
+def test_blank_dash_does_not_invent_from_title_or_folder():
+    """Blank upload field = single-BOM. 102728-1 in the title is not a qty column."""
+    assert (
+        resolve_bom_config(
+            explicit="",
+            title="WELDMENT, PLATFORM 102728-1",
+            pdf_filename="102728- Weldment.pdf",
+            library_folder=r"C:\drawings\Time\Weldment, Platform - 102728-1",
+        )
+        is None
     )
-    assert cfg == "1"
+    assert (
+        resolve_bom_config(
+            title="28106-1",
+            pdf_filename="28106-1.pdf",
+            library_folder=r"C:\drawings\Time\Lower Boom Weldment - 28106-1",
+        )
+        is None
+    )
 
 
 def test_uploaded_dash_wins_over_title_and_folder():

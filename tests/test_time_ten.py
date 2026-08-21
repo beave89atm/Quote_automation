@@ -101,7 +101,7 @@ def _specs() -> dict[str, TimeTenSpec]:
         "102728-1": TimeTenSpec(
             key="102728-1",
             title="WELDMENT, PLATFORM  102728-1  TIME MANUFACTURING",
-            bom_config="-1",
+            bom_config="",
             kyle_locked=True,
             header=["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
             rows=list(_KYLE_102728_1),
@@ -145,7 +145,7 @@ def _specs() -> dict[str, TimeTenSpec]:
         "1004611": TimeTenSpec(
             key="1004611",
             title="WELDMENT, PLATFORM  1004611-1  TIME MANUFACTURING",
-            bom_config="-1",
+            bom_config="",
             kyle_locked=False,
             header=["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
             rows=[("A", 1, "6993-1", "HOSE GUIDE")],
@@ -155,7 +155,7 @@ def _specs() -> dict[str, TimeTenSpec]:
         "103516": TimeTenSpec(
             key="103516",
             title="WELDMENT, PLATFORM  103516-1  TIME MANUFACTURING",
-            bom_config="-1",
+            bom_config="",
             kyle_locked=False,
             header=["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
             rows=list(_103516),
@@ -165,7 +165,7 @@ def _specs() -> dict[str, TimeTenSpec]:
         "105098-1": TimeTenSpec(
             key="105098-1",
             title="WELDMENT, PLATFORM  105098-1  TIME MANUFACTURING",
-            bom_config="-1",
+            bom_config="",
             kyle_locked=False,
             header=["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
             rows=[("M", 1, "94560", "GATE, FABRICATION")],
@@ -175,7 +175,7 @@ def _specs() -> dict[str, TimeTenSpec]:
         "33612-1": TimeTenSpec(
             key="33612-1",
             title="WELDMENT, PLATFORM  33612-1  TIME MANUFACTURING",
-            bom_config="-1",
+            bom_config="",
             kyle_locked=False,
             header=["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
             rows=[
@@ -188,7 +188,7 @@ def _specs() -> dict[str, TimeTenSpec]:
         "21727-1": TimeTenSpec(
             key="21727-1",
             title="WELDMENT, PLATFORM  21727-1  TIME MANUFACTURING",
-            bom_config="-1",
+            bom_config="",
             kyle_locked=False,
             header=["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
             rows=[
@@ -201,7 +201,7 @@ def _specs() -> dict[str, TimeTenSpec]:
         "1007922-1": TimeTenSpec(
             key="1007922-1",
             title="WELDMENT, PLATFORM  1007922-1  TIME MANUFACTURING",
-            bom_config="-1",
+            bom_config="",
             kyle_locked=False,
             header=["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
             rows=list(_1007922_1),
@@ -212,7 +212,7 @@ def _specs() -> dict[str, TimeTenSpec]:
         "P904225-1": TimeTenSpec(
             key="P904225-1",
             title="WELDMENT, PLATFORM  P904225-1  TIME MANUFACTURING",
-            bom_config="-1",
+            bom_config="",
             kyle_locked=False,
             header=["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
             rows=list(_P904225_1),
@@ -378,6 +378,9 @@ def test_time_ten_is_not_live_done():
     assert specs["102728-1"].rows[0] == ("A", 1, "460200", "RAIL, BOTTOM FRONT MIDDLE")
     assert specs["102728-1"].rows[-2][2] == "102727-4"
     assert sum(q for _i, q, _p, _d in specs["102728-1"].rows) == 97
+    assert specs["102728-1"].bom_config == ""
+    assert specs["28106-1"].bom_config == "-1"
+    assert specs["1004747-1"].bom_config == "-1"
     assert sum(q for _i, q, _p, _d in specs["28106-1"].rows) == 13
     assert len(specs["1004747-1"].rows) == 14
     assert sum(q for _i, q, _p, _d in specs["1004747-1"].rows) == 18

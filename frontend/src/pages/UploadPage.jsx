@@ -243,14 +243,14 @@ export default function UploadPage() {
               id="bom-config"
               value={bomConfig}
               onChange={(e) => setBomConfig(e.target.value)}
-              placeholder="-1"
+              placeholder="blank = one qty column"
             />
             <p className="muted" style={{ margin: "0.35rem 0 0", fontSize: "0.85rem" }}>
-              Which LIST OF MATERIAL qty column to read. Time-style only:{" "}
-              <code>-1</code> of -4/-3/-2/-1, or the <code>1004747-1</code> column
-              of two. Most drawings are a single QTY column — this does not invent
-              extra dash columns. Blank / <code>-</code> cells in the chosen column
-              are omitted. Columns are never summed.
+              Leave blank when the drawing has one QTY column (102728-style).
+              Fill only for Time multi-option sheets: <code>-1</code> of
+              -4/-3/-2/-1, or the <code>1004747-1</code> column of two. A blank
+              field does not invent dash columns. A filled field uses that
+              column only; blank / <code>-</code> cells are omitted.
             </p>
           </div>
         </>

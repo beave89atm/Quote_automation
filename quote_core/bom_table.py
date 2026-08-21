@@ -1704,11 +1704,11 @@ def _selected_qty(
     """
     Return (qty, keep_row).
 
-    ``bom_config`` is the uploaded/typed dash. On a multi-qty Time LOM it
-    selects that printed column only — never the sum, never another dash,
-    never a part-number suffix. Blank / ``-`` in the chosen column omits
-    the row. Single-BOM sheets have one QTY column; bom_config does not
-    invent extra dash columns there.
+    ``bom_config`` is the uploaded/typed dash. Blank means single-BOM:
+    read the one QTY column and do not invent -1/-2. A filled dash on a
+    multi-qty Time LOM selects that printed column only — never the sum,
+    never another dash, never a part-number suffix. Blank / ``-`` in the
+    chosen column omits the row. 102728-style tables do not require ``-1``.
     """
     from quote_core.bom_config import normalize_bom_config
 

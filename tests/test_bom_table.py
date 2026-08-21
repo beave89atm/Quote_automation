@@ -332,7 +332,9 @@ def test_kyle_102728_1_a_at_bottom_51_pn_97_pcs():
     ]
     for item, qty, pn, desc in _KYLE_102728_1:
         text_lines.append(f"{qty} | {item} | {pn} | {desc}")
-    _assert_kyle_102728_1(parse_material_list_text("\n".join(text_lines), bom_config="-1"))
+    _assert_kyle_102728_1(parse_material_list_text("\n".join(text_lines)))
+    _assert_kyle_102728_1(extract_bom(text="\n".join(text_lines)))
+    # Filled -1 is harmless on a single QTY column; it is not required.
     _assert_kyle_102728_1(extract_bom(text="\n".join(text_lines), bom_config="-1"))
 
     # Page-1 clip: BC at the top, A at the bottom, header below.
@@ -516,7 +518,7 @@ RAIL
     ]
     for item, qty, pn, desc in _KYLE_102728_1:
         lines.append(f"{qty} | {item} | {pn} | {desc}")
-    bom = extract_bom(text="\n".join(lines), bom_config="-1")
+    bom = extract_bom(text="\n".join(lines))
     assert bom.method and bom.method.startswith("table_"), bom.notes
     assert not (bom.method or "").startswith("ocr_time")
     _assert_kyle_102728_1(bom)
@@ -638,15 +640,22 @@ def test_bom_config_reads_printed_qty_column_only():
     assert two.is_multi_qty is True
     assert two.numeric_items is True
 
-    # 102728-1: one QTY column even when the job dash is -1.
-    kyle = parse_material_list_cells(
-        [["QTY", "ITEM", "PART NO.", "DESCRIPTION"]]
-        + [[str(qty), item, pn, desc] for item, qty, pn, desc in _KYLE_102728_1],
-        bom_config="-1",
-    )
-    _assert_kyle_102728_1(kyle)
-    assert kyle.method == "table_material_list"
-    assert "multi_qty" not in (kyle.method or "")
+    # 102728-1: one QTY column. Blank dash required; filled -1 is not.
+    cells_102728 = [["QTY", "ITEM", "PART NO.", "DESCRIPTION"]] + [
+        [str(qty), item, pn, desc] for item, qty, pn, desc in _KYLE_102728_1
+    ]
+    blank = parse_material_list_cells(cells_102728)
+    _assert_kyle_102728_1(blank)
+    assert blank.method == "table_material_list"
+    assert "multi_qty" not in (blank.method or "")
+    filled = parse_material_list_cells(cells_102728, bom_config="-1")
+    _assert_kyle_102728_1(filled)
+
+    # Multi-qty + blank dash: do not invent -1 (28106 would leak L/N/P or all 14).
+    four_blank = parse_material_list_cells(_kyle_28106_cell_rows())
+    assert four_blank.rows == []
+    four_dash = parse_material_list_cells(_kyle_28106_cell_rows(), bom_config="-1")
+    _assert_kyle_28106_1(four_dash)
 
 
 def test_dash_columns_quoting_minus_1_does_not_use_minus_2():
@@ -869,7 +878,7 @@ def test_kyle_102728_1_pdf_extract_bom_matches_grid(tmp_path: Path):
         data_rows,
         title="WELDMENT, PLATFORM  102728-1  TIME MANUFACTURING",
     )
-    bom = extract_bom(pdf_path=pdf, bom_config="-1")
+    bom = extract_bom(pdf_path=pdf)
     assert bom.method and bom.method.startswith("table_"), bom.notes
     assert not (bom.method or "").startswith("ocr_time")
     _assert_kyle_102728_1(bom)
