@@ -1269,7 +1269,8 @@ def extract_bom_from_material_list_table(
                 continue
             try:
                 from quote_core.bom_table_image import (
-                    LOM_SCAN_DPI,
+                    LOM_QTY_LEFT_FRAC,
+                    LOM_QTY_RIGHT_FRAC,
                     LOM_STRIP_BOTTOM_FRAC,
                     LOM_STRIP_DPI,
                     LOM_STRIP_LEFT_FRAC,
@@ -1278,11 +1279,10 @@ def extract_bom_from_material_list_table(
                     render_page_right_strip,
                 )
 
-                # 0.68 / 0.92 cut QTY and the header under A on live 102728 scans.
-                dpi = LOM_SCAN_DPI if zero_text else LOM_STRIP_DPI
+                # Table find = 35eae54 clip (51 PNs). Do not widen/trim it.
                 strip = render_page_right_strip(
                     page,
-                    dpi=dpi,
+                    dpi=LOM_STRIP_DPI,
                     left_frac=LOM_STRIP_LEFT_FRAC,
                     top_frac=LOM_STRIP_TOP_FRAC,
                     bottom_frac=LOM_STRIP_BOTTOM_FRAC,
@@ -1295,7 +1295,8 @@ def extract_bom_from_material_list_table(
                         "left_frac": LOM_STRIP_LEFT_FRAC,
                         "top_frac": LOM_STRIP_TOP_FRAC,
                         "bottom_frac": LOM_STRIP_BOTTOM_FRAC,
-                        "strip_width": strip.width,
+                        "qty_left_frac": LOM_QTY_LEFT_FRAC,
+                        "qty_right_frac": LOM_QTY_RIGHT_FRAC,
                     },
                     page_text=page.get_text("text") or "",
                 )

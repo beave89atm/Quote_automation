@@ -24,15 +24,17 @@ from quote_core.bom_table import (
 # Desktop / API crop saved next to the job PDF (not committed customer files).
 TABLE_CROP_FILENAME = "bom_table_crop.png"
 
-# Live 35eae54 102728-1 scan: left_frac 0.68 cut the QTY column (51 PN / 47 pcs,
-# A qty 0). Bottom 0.92 cut the header under A so letters were not assigned.
-LOM_STRIP_LEFT_FRAC = 0.55
-LOM_STRIP_TOP_FRAC = 0.02
-LOM_STRIP_BOTTOM_FRAC = 0.98
-LOM_STRIP_DPI = 260.0
-LOM_SCAN_DPI = 320.0
+# Table find must stay the 35eae54 clip (51 PNs). 037f309's 0.55×0.98
+# pixmap plus a 1390px trim collapsed banding to 1 row. Do not trim.
+LOM_STRIP_LEFT_FRAC = 0.68
+LOM_STRIP_TOP_FRAC = 0.03
+LOM_STRIP_BOTTOM_FRAC = 0.92
+LOM_STRIP_DPI = 220.0
+# QTY sits left of that strip on the 102728 scan. Read it from a sliver
+# that does not re-segment the grid. Unread stays 0.
+LOM_QTY_LEFT_FRAC = 0.55
+LOM_QTY_RIGHT_FRAC = 0.74
 LOM_QTY_DPI = 480.0
-LOM_QTY_WIDTH_FRAC = 0.055
 
 
 def resolve_table_crop(
@@ -165,32 +167,6 @@ def segment_table_bands(
         "grid_row_count": len(row_bands),
         "grid_col_count": max(0, len(col_xs) - 1),
     }
-
-
-def trim_strip_to_lom_qty(im) -> tuple[Any, int]:
-    """Crop drawing left of QTY so x=0 is the qty column.
-
-    Cannot restore a column that was never in the pixmap — the page clip
-    must include QTY (``LOM_STRIP_LEFT_FRAC``). This only drops weldment
-    geometry when the clip was wider than the table.
-    """
-    raw = _as_pil(im)
-    w, h = raw.size
-    seg = segment_table_bands(raw)
-    xs = sorted(int(x) for x in (seg.get("v_lines") or []) if 0 <= int(x) <= w)
-    if len(xs) < 3:
-        return raw, 0
-    cluster = [x for x in xs if x >= int(w * 0.20)]
-    if len(cluster) < 3:
-        cluster = xs
-    table_left = cluster[0]
-    qty_w = max(16, min(int(w * 0.06), 40))
-    x0 = max(0, table_left - qty_w)
-    if len(cluster) >= 2 and 4 <= (cluster[1] - cluster[0]) <= 28:
-        x0 = max(0, cluster[0] - 2)
-    if x0 <= 4:
-        return raw, 0
-    return raw.crop((x0, 0, w, h)), x0
 
 
 def _prepare_ocr_strip(row_im, *, scale: float = 1.0, invert: bool = False):
@@ -674,20 +650,6 @@ def _ocr_first_pass_lines(im, seg: dict[str, Any], notes: list[str]) -> list[str
     return lines
 
 
-def _page_frac_from_strip_x(
-    x: float,
-    clip: dict[str, float],
-    *,
-    im_width: int,
-) -> float:
-    left = float(clip.get("left_frac", LOM_STRIP_LEFT_FRAC))
-    right = float(clip.get("right_frac", 0.998))
-    orig_w = float(clip.get("strip_width") or im_width or 1)
-    trim_x0 = float(clip.get("trim_x0") or 0)
-    span = max(0.001, right - left)
-    return left + ((trim_x0 + x) / orig_w) * span
-
-
 def _reread_qty_from_page(
     page,
     im,
@@ -696,42 +658,43 @@ def _reread_qty_from_page(
     clip: dict[str, float],
     v_lines: list[int] | None = None,
 ) -> str:
-    """480-DPI QTY column, then qty+item pipe. Do not default unread to 1."""
+    """480-DPI QTY sliver left of the table strip. Do not re-crop the grid.
+
+    Y comes from the 0.68×0.92 table bands (51-PN find). X is a wider
+    sliver so the scan's QTY column is actually in the pixmap. Unread
+    stays 0. Never default to 1.
+    """
+    del v_lines
     height = max(1, im.height)
-    width = max(1, getattr(im, "width", 1) or 1)
     top = float(clip.get("top_frac", LOM_STRIP_TOP_FRAC))
     bot = float(clip.get("bottom_frac", LOM_STRIP_BOTTOM_FRAC))
     y0_frac = top + (y0 / height) * (bot - top)
     y1_frac = top + (y1 / height) * (bot - top)
-    xs = [0] + [int(x) for x in (v_lines or []) if 0 <= int(x) <= width] + [width]
-    qty_right_px = xs[1] if len(xs) >= 2 else max(18, int(width * 0.08))
-    if qty_right_px < 12:
-        qty_right_px = max(18, int(width * LOM_QTY_WIDTH_FRAC))
-    qty_left = _page_frac_from_strip_x(0, clip, im_width=width)
-    qty_right = _page_frac_from_strip_x(qty_right_px, clip, im_width=width)
-    if qty_right <= qty_left + 0.008:
-        qty_right = qty_left + LOM_QTY_WIDTH_FRAC
+    # A is the bottom data row. Reach its qty without changing table bands.
+    y0_frac = max(0.0, y0_frac - 0.003)
+    y1_frac = min(1.0, y1_frac + 0.012)
+    qty_left = float(clip.get("qty_left_frac", LOM_QTY_LEFT_FRAC))
+    qty_right = float(clip.get("qty_right_frac", LOM_QTY_RIGHT_FRAC))
+    if qty_right <= qty_left + 0.01:
+        qty_right = qty_left + 0.12
     col = render_page_qty_column_band(
         page,
         y0_frac=y0_frac,
         y1_frac=y1_frac,
         left_frac=qty_left,
-        right_frac=min(0.998, qty_right),
+        right_frac=min(0.85, qty_left + 0.06),
         dpi=LOM_QTY_DPI,
     )
     digit = _accept_qty_token(_ocr_qty_digit(col)) or _ocr_qty_via_pipe(col)
     if digit:
         return digit
-    item_right = _page_frac_from_strip_x(
-        max(qty_right_px + 24, int(width * 0.22)), clip, im_width=width
-    )
     band = render_page_qty_item_band(
         page,
         y0_frac=y0_frac,
         y1_frac=y1_frac,
         dpi=LOM_QTY_DPI,
         left_frac=qty_left,
-        right_frac=min(0.998, max(item_right, qty_right + 0.04)),
+        right_frac=min(0.998, qty_right),
     )
     return _ocr_qty_via_pipe(band) or _accept_qty_token(_ocr_qty_digit(band))
 
@@ -954,25 +917,15 @@ def extract_bom_from_table_image(
     """
     from quote_core.bom import BomResult
 
-    raw = _as_pil(image)
-    orig_w = raw.width
-    if row_texts is None:
-        im, trim_x0 = trim_strip_to_lom_qty(raw)
-    else:
-        im, trim_x0 = raw, 0
+    im = _as_pil(image)
+    # Do not trim the table strip. 037f309's 1390px trim left 1 band / 0 PNs.
     if retry_clip is not None:
-        retry_clip = {
-            **retry_clip,
-            "trim_x0": trim_x0,
-            "strip_width": float(retry_clip.get("strip_width") or orig_w),
-        }
+        retry_clip = dict(retry_clip)
     seg = segment_table_bands(im)
     notes = [
         f"Bitmap table: {seg['grid_row_count']} row bands, "
         f"{seg['grid_col_count']} column bands"
     ]
-    if trim_x0:
-        notes.append(f"Trimmed {trim_x0}px left of QTY column")
     lines: list[str] = []
     parsed = None
     if row_texts is not None:
@@ -1141,10 +1094,10 @@ def render_page_qty_item_band(
     y0_frac: float,
     y1_frac: float,
     dpi: float = LOM_QTY_DPI,
-    left_frac: float = LOM_STRIP_LEFT_FRAC,
-    right_frac: float = 0.78,
+    left_frac: float = LOM_QTY_LEFT_FRAC,
+    right_frac: float = LOM_QTY_RIGHT_FRAC,
 ) -> Any:
-    """High-DPI qty+item sliver. Used only to re-read an unread QTY cell."""
+    """High-DPI qty+item sliver left of the table strip. Does not re-band."""
     import fitz
     from PIL import Image
 
