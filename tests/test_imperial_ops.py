@@ -42,6 +42,7 @@ def test_ensure_imperial_rewrites_desc_without_double_converting_length():
     """Already-inch Length + mm Description → fix label only."""
     client = MagicMock()
     item = {
+        "ID": "p1",
         "Description": '73476505 - 1/4" A36 1114.425 mm X 920.6665 mm',
         "Length": 43.875,
         "Width": 36.247,
@@ -50,6 +51,7 @@ def test_ensure_imperial_rewrites_desc_without_double_converting_length():
     client.get_json.return_value = {"ItemList": [item]}
     save = MagicMock()
     save.status_code = 200
+    save.text = "true"
     client.request.return_value = save
 
     notes = ensure_imperial_item_units(client, "quote-1")
@@ -59,11 +61,14 @@ def test_ensure_imperial_rewrites_desc_without_double_converting_length():
     assert "mm" not in item["Description"].lower()
     assert "43.875 in X" in item["Description"]
     client.request.assert_called_once()
+    assert client.request.call_args.args[0] == "PUT"
+    assert "quoteOnline/update" in client.request.call_args.args[1]
 
 
 def test_ensure_imperial_converts_mm_length_and_description():
     client = MagicMock()
     item = {
+        "ID": "p2",
         "Description": '80341689 - 1/4" A36 1114.425 mm X 80.7276 mm',
         "Length": 1114.425,
         "Width": 80.7276,
@@ -72,6 +77,7 @@ def test_ensure_imperial_converts_mm_length_and_description():
     client.get_json.return_value = {"ItemList": [item]}
     save = MagicMock()
     save.status_code = 200
+    save.text = "true"
     client.request.return_value = save
 
     notes = ensure_imperial_item_units(client, "quote-2")
@@ -80,6 +86,8 @@ def test_ensure_imperial_converts_mm_length_and_description():
     assert abs(item["Width"] - 80.7276 / 25.4) < 1e-6
     assert item["Length_Units"] == "inch"
     assert not description_has_metric_dims(item["Description"])
+    assert client.request.call_args.args[0] == "PUT"
+    assert "quoteOnline/update" in client.request.call_args.args[1]
 
 
 def test_finalize_success_path_calls_imperial():
@@ -135,8 +143,8 @@ def test_finalize_success_path_calls_imperial():
             return_value=True,
         ),
         patch(
-            "secturafab.finalize_ops.resolve_weld_times",
-            return_value={"weld_minutes": 10},
+            "secturafab.finalize_ops.takeoff_wants_weld",
+            return_value=True,
         ),
     ):
         notes = finalize_quote_ops(

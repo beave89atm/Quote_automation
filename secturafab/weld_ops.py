@@ -216,6 +216,31 @@ def minutes_to_hours(minutes: float) -> float:
     return float(minutes or 0.0) / 60.0
 
 
+def takeoff_wants_weld(
+    times: dict[str, Any] | None,
+    takeoff: dict[str, Any] | None = None,
+) -> bool:
+    """
+    True only when Cursor times include weld minutes *and* takeoff did not
+    explicitly say there are no weld symbols.
+
+    Prevents inventing Weld/fit-up on laser-only or no-symbol jobs.
+    """
+    if resolve_weld_times(times) is None:
+        return False
+    takeoff = takeoff or {}
+    drivers = takeoff.get("fitup_drivers") or {}
+    if str(drivers.get("source") or "").strip().lower() == "no_weld":
+        return False
+    blobs: list[str] = []
+    for key in ("flags", "notes"):
+        blobs.extend(str(x) for x in (takeoff.get(key) or []))
+    blobs.extend(str(x) for x in (drivers.get("notes") or []))
+    if any("no weld symbols" in b.lower() for b in blobs):
+        return False
+    return True
+
+
 def resolve_weld_times(times: dict[str, Any] | None) -> tuple[float, float, float] | None:
     """
     Return (weld_hours, fitup_hours, setup_hours) or None if nothing to add.
@@ -251,25 +276,15 @@ def pick_weld_target_item(
     *,
     part_key: str | None = None,
 ) -> dict[str, Any] | None:
-    """Prefer assembly line; else item matching part_key; else first item."""
+    """Weld only on an assembly root (ProductType 300). Never on Cad/plate."""
+    del part_key  # assemblies only — do not fall back to a matching Cad line
     if not items:
         return None
     for it in items:
         pt = it.get("ProductType")
         if pt in (300, "300", "assembly") or it.get("IsAssembly"):
             return it
-    key = (part_key or "").strip()
-    if key.upper().startswith("PN "):
-        key = key[3:].strip()
-    if key:
-        for it in items:
-            if _desc_token(str(it.get("Description") or "")) == key:
-                return it
-        # softer: description startswith
-        for it in items:
-            if str(it.get("Description") or "").startswith(key):
-                return it
-    return items[0]
+    return None
 
 
 def build_weld_ops(
@@ -322,13 +337,17 @@ def ensure_weld_ops(
     times: dict[str, Any] | None,
     part_key: str | None = None,
     force: bool = False,
+    takeoff: dict[str, Any] | None = None,
 ) -> list[str]:
     """
     Attach Weld secondary ops from Cursor times onto the assembly / top part.
 
-    Does nothing when weld_minutes is missing or zero.
+    Does nothing when weld_minutes is missing or zero, or when takeoff says
+    there are no weld symbols.
     When ``force`` is True, replace existing Weld ops (used after CAD wipe recovery).
     """
+    if takeoff is not None and not takeoff_wants_weld(times, takeoff):
+        return ["No weld symbols / times on takeoff — skipped SecturaFAB Weld ops"]
     resolved = resolve_weld_times(times)
     if not resolved:
         return ["No weld minutes on job — skipped SecturaFAB Weld ops"]
@@ -338,7 +357,7 @@ def ensure_weld_ops(
     items = list(detail.get("ItemList") or [])
     target = pick_weld_target_item(items, part_key=part_key)
     if not target or not target.get("ID"):
-        return ["No quote item found to attach Weld ops"]
+        return ["No assembly item for Weld ops — skipped (Cad/plate only)"]
 
     existing = list(target.get("OperationCostList") or [])
     has_weld = any(o.get("OperationName") == "Weld" for o in existing)
@@ -359,15 +378,25 @@ def ensure_weld_ops(
     kept = [o for o in existing if o.get("OperationName") != "Weld"]
     target["OperationCostList"] = kept + weld_ops
 
-    # Write back via full quote POST (same pattern as Profile attach).
-    for it in detail.get("ItemList") or []:
-        if it.get("ID") == target["ID"]:
-            it["OperationCostList"] = target["OperationCostList"]
-            break
+    # Item-level only — full POST v1/quote after add-part wipes Cad Profile.
+    from .quote_update import quote_online_update
 
-    save = client.request("POST", "v1/quote", json=detail)
-    if save.status_code >= 400:
-        return [f"Saving Weld ops failed ({save.status_code})"]
+    ok = quote_online_update(
+        client,
+        quote_id,
+        [
+            {
+                "ID": str(target["ID"]),
+                "ParamName": "OperationCostList",
+                "Value": target["OperationCostList"],
+            }
+        ],
+    )
+    if not ok:
+        return [
+            "WARNING: Saving Weld ops via item-level update failed — "
+            "not falling back to POST v1/quote (that wipes Cad Profile)"
+        ]
 
     fit_label = "with fixture"
     mode = (os.getenv("SECTURAFAB_FITUP_MODE") or "with").strip().lower()

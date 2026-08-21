@@ -132,7 +132,17 @@ def ensure_imperial_item_units(
     if not changed:
         return ["Quote items already look imperial"]
 
-    save = client.request("POST", "v1/quote", json=detail)
-    if save.status_code >= 400:
-        return [f"Imperial unit cleanup save failed ({save.status_code})"]
+    from .quote_update import update_item_fields
+
+    ok = update_item_fields(
+        client,
+        quote_id,
+        items,
+        fields=["Length", "Width", "Length_Units", "Description", "Data"],
+    )
+    if not ok:
+        return [
+            "WARNING: Imperial unit cleanup via item-level update failed — "
+            "not falling back to POST v1/quote (that wipes Cad Profile)"
+        ]
     return [f"Normalized {changed} item(s) to inch (imperial) labels/dims"]

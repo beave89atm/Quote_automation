@@ -14,7 +14,7 @@ from .profile_ops import (
 )
 from .qty_ops import apply_bom_quantities, bom_qty_mismatches
 from .quote_update import rollup_assembly_costs
-from .weld_ops import assembly_has_weld, ensure_weld_ops, resolve_weld_times
+from .weld_ops import assembly_has_weld, ensure_weld_ops, takeoff_wants_weld
 
 
 def _finish_with_imperial_and_rollup(
@@ -59,16 +59,18 @@ def finalize_quote_ops(
     part_key: str | None,
     bom_rows: list[dict[str, Any]] | None,
     attempts: int = 3,
+    takeoff: dict[str, Any] | None = None,
 ) -> list[str]:
     """
-    Attach/verify Profile + Weld + BOM qty until stable, then roll up assembly costs.
+    Verify Profile + Weld + BOM qty until stable, then roll up assembly costs.
+    Never grafts a fake Profile 5-pack (Laser stays 0).
 
     Late ``UpdateItem_Part`` recalcs can wipe ops ~30–60s after HTTP 200. We wait
     after each attach before declaring success, and re-apply without UpdateItem.
     Always runs imperial cleanup on every exit so Descriptions stay inch-labeled.
     """
     notes: list[str] = []
-    want_weld = resolve_weld_times(times) is not None
+    want_weld = takeoff_wants_weld(times, takeoff)
 
     for attempt in range(1, max(1, attempts) + 1):
         notes.extend(
@@ -148,6 +150,7 @@ def finalize_quote_ops(
                 )
             )
         if need_profile or need_qty:
+            # Verify only — never graft a fake Profile 5-pack (Laser stays 0).
             notes.extend(
                 ensure_laser_profile_ops(
                     client, quote_id, material=material, thickness=thickness
@@ -161,6 +164,7 @@ def finalize_quote_ops(
                     times=times,
                     part_key=part_key,
                     force=True,
+                    takeoff=takeoff,
                 )
             )
 

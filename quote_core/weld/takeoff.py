@@ -1352,6 +1352,7 @@ def run_weld_takeoff(
             "unit_scale": stp_summary.get("unit_scale"),
             "error": stp_summary.get("error"),
             "top_solids": (stp_summary.get("solids") or [])[:8],
+            "circle_diameters": list(stp_summary.get("circle_diameters") or [])[:40],
             "pdf_dimension_count": len(pdf_dimensions),
             "pdf_dimensions_sample": sorted(set(round(d, 2) for d in pdf_dimensions), reverse=True)[
                 :12

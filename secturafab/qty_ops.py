@@ -240,8 +240,27 @@ def apply_bom_quantities(
     if not updated:
         return ["BOM quantities already matched quote lines"]
 
-    detail["ItemList"] = items
-    save = client.request("POST", "v1/quote", json=detail)
-    if save.status_code >= 400:
-        return [f"Saving BOM quantities failed ({save.status_code})"]
+    from .quote_update import update_item_fields
+
+    changed = [it for it in items if it.get("ID") and it.get("ID") != root_id]
+    ok = update_item_fields(
+        client,
+        quote_id,
+        changed,
+        fields=[
+            "Quantity",
+            "Qty",
+            "BaseQty",
+            "AssemblyQty",
+            "isAssemblyItem",
+            "AssemblyID",
+            "AssemblyLevel",
+            "AssemblyName",
+        ],
+    )
+    if not ok:
+        return [
+            "WARNING: Saving BOM quantities via item-level update failed — "
+            "not falling back to POST v1/quote (that wipes Cad Profile)"
+        ]
     return [f"Applied BOM quantities on {len(updated)} item(s): " + ", ".join(updated)]

@@ -1,9 +1,8 @@
-"""Attach SecturaFAB Profile (laser primary) ops after quickAddCAD.
+"""Verify SecturaFAB Profile / laser calculator results after Cad add-part.
 
-API CAD import computes DataPart cut time but only attaches Bend (secondary).
-Kyle's UI quotes get Profile ops with Drafting/Setup UnitTimes that drive
-PrimaryTime. Nest/quote is broken on their API (optional IDList binder), so we
-clone the shop's Profile template onto laser plate items and set PrimaryTime.
+Kyle (2026-08-21): do **not** POST a fake Profile 5-pack. STEP upload + PDF
+add-part (L×W×qty×holes) must trigger Sectura's own primary ops and laser
+calculator. Cad + Profile + Laser=0 is a fail.
 """
 
 from __future__ import annotations
@@ -15,6 +14,12 @@ import uuid
 from typing import Any
 
 from .client import SecturaFabClient
+
+# Kyle Time 28106-2 / 1007922-2 Profile 5-pack (job times, amortized per Cad line).
+_DRAFTING_JOB_HOURS = 0.25  # 15 min
+_SETUP_JOB_HOURS = 0.25  # 15 min
+_SHEET_LOAD_JOB_HOURS = 4.0 / 60.0  # ~4 min
+PROFILE_5PACK_CALCS = ("Laser", "Drafting", "Laser-Setup", "Sheet Loading", "Deburr")
 
 # Captured from a good Kyle UI quote (21678-1). Shop rates / calculators.
 _PROFILE_OP_TEMPLATES: list[dict[str, Any]] = [
@@ -104,8 +109,8 @@ _PROFILE_OP_TEMPLATES: list[dict[str, Any]] = [
         "MinimumCost": 0.0,
         "MinimumPrice": 0.0,
         "MinUnitPrice": 0.0,
-        "UnitCost": 7.5,
-        "UnitPrice": 16.25,
+        "UnitCost": 0.0,
+        "UnitPrice": 0.0,
         "LeadTime": 0.0,
         "Memo": "",
         "Description": "",
@@ -152,8 +157,8 @@ _PROFILE_OP_TEMPLATES: list[dict[str, Any]] = [
         "MinimumCost": 0.0,
         "MinimumPrice": 0.0,
         "MinUnitPrice": 0.0,
-        "UnitCost": 7.5,
-        "UnitPrice": 50.0,
+        "UnitCost": 0.0,
+        "UnitPrice": 0.0,
         "LeadTime": 0.0,
         "Memo": "",
         "Description": "",
@@ -200,8 +205,8 @@ _PROFILE_OP_TEMPLATES: list[dict[str, Any]] = [
         "MinimumCost": 0.0,
         "MinimumPrice": 0.0,
         "MinUnitPrice": 0.0,
-        "UnitCost": 2.0,
-        "UnitPrice": 13.33333333333334,
+        "UnitCost": 0.0,
+        "UnitPrice": 0.0,
         "LeadTime": 0.0,
         "Memo": "",
         "Description": "",
@@ -279,6 +284,23 @@ def _is_laser_machine(machine: str | None) -> bool:
     return not m or m == "laser" or m.startswith("laser")
 
 
+def _is_cad_plate(item: dict[str, Any]) -> bool:
+    """Cad / plate / sheet line (ProductType 100) that must have shop Profile + Laser time."""
+    pt = item.get("ProductType")
+    if pt in (300, "300", "assembly") or item.get("IsAssembly"):
+        return False
+    if pt in (200, "200", "component"):
+        return False
+    if pt in (50, "50"):  # addplate-as-new Plate — never create these
+        return False
+    cat = str(item.get("Category") or item.get("ItemType") or "").strip().lower()
+    if cat in {"component", "linear"} or item.get("IsLinear"):
+        return False
+    if pt in (100, "100"):
+        return True
+    return cat == "cad" or bool(item.get("IsPlate"))
+
+
 def _is_laser_plate(item: dict[str, Any]) -> bool:
     pt = item.get("ProductType")
     if pt in (300, "300", "assembly") or item.get("IsAssembly"):
@@ -310,25 +332,368 @@ def _is_laser_plate(item: dict[str, Any]) -> bool:
     return _is_laser_machine(machine) and bool(machine)
 
 
-def _build_profile_ops(item_id: str, cut_time_hours: float) -> list[dict[str, Any]]:
+def _item_area_sqin(item: dict[str, Any] | None) -> float:
+    if not item:
+        return 0.0
+    dp = parse_datapart(item.get("Data"))
+    for src in (item, dp):
+        for key in ("NestedArea", "Area", "PartArea"):
+            try:
+                val = float(src.get(key) or 0)
+            except (TypeError, ValueError):
+                val = 0.0
+            if val > 0:
+                # SecturaFAB sometimes stores mm² after a metric CAD import.
+                if val > 5000:
+                    val = val / (25.4 * 25.4)
+                return val
+    length, width, _thk = _flat_dims(item, default_thk=None)
+    if length and width and length > 0 and width > 0:
+        return float(length) * float(width)
+    return 0.0
+
+
+def _deburr_hours_from_area(item: dict[str, Any] | None) -> float:
+    """Per-part Deburr time from flat area. 0 if area is unknown (do not invent)."""
+    area = _item_area_sqin(item)
+    if area <= 0:
+        return 0.0
+    # Shop Deburr calculator is area-based (CostCalcType 19). Seed minutes from
+    # sq ft so the row is not blank; leave UnitPrice at 0 for the calculator.
+    sq_ft = area / 144.0
+    minutes = min(30.0, max(0.25, sq_ft * 0.75))
+    return minutes / 60.0
+
+
+def _as_float(raw: Any) -> float | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if val <= 0:
+        return None
+    return val
+
+
+def _flat_dims(
+    item: dict[str, Any],
+    *,
+    default_thk: str | float | None,
+) -> tuple[float | None, float | None, str]:
+    """Length × width × thickness in inches for in-place addplate."""
+    dp = parse_datapart(item.get("Data"))
+    length = None
+    width = None
+    thk = None
+    for src in (item, dp):
+        if length is None:
+            length = _as_float(src.get("Length")) or _as_float(src.get("PartLength"))
+        if width is None:
+            width = _as_float(src.get("Width")) or _as_float(src.get("PartWidth"))
+        if thk is None:
+            thk = _as_float(src.get("Thickness")) or _as_float(src.get("PartThickness"))
+    box = dp.get("box") or item.get("box") or []
+    if isinstance(box, (list, tuple)) and len(box) >= 2:
+        axes = sorted(_as_float(x) or 0.0 for x in box[:3])
+        if width is None and axes:
+            width = axes[0] or None
+        if length is None and len(axes) > 1:
+            length = axes[-1] or None
+        if thk is None and len(axes) >= 3 and axes[0] > 0:
+            thk = axes[0]
+    thk_text = "0.25"
+    if default_thk is not None:
+        thk_text = str(default_thk).strip() or "0.25"
+    if thk is not None:
+        thk_text = f"{thk:.4f}".rstrip("0").rstrip(".")
+    return length, width, thk_text
+
+
+def _build_profile_ops(
+    item_id: str,
+    cut_time_hours: float,
+    *,
+    cad_count: int = 1,
+    item: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Profile 5-pack. Laser cut minutes stay 0 unless Nest/CAD already computed one.
+    Drafting / Laser-Setup / Sheet Loading are job times amortized across Cad lines.
+    Deburr is per-part from flat area. UnitPrice is left 0 (shop calculator).
+    """
+    n = max(1, int(cad_count or 1))
+    drafting_h = _DRAFTING_JOB_HOURS / n
+    setup_h = _SETUP_JOB_HOURS / n
+    load_h = _SHEET_LOAD_JOB_HOURS / n
+    deburr_h = _deburr_hours_from_area(item)
     ops: list[dict[str, Any]] = []
-    laser_cut_filled = False
     for tmpl in _PROFILE_OP_TEMPLATES:
         op = copy.deepcopy(tmpl)
         op["ID"] = str(uuid.uuid4())
         op["QuoteOperationID"] = str(uuid.uuid4())
         op["ItemID"] = item_id
-        # Put Nest/CAD cut time on the primary Laser calculator row.
-        if (
-            not laser_cut_filled
-            and op.get("CalculatorName") == "Laser"
-            and float(op.get("UnitTime") or 0) == 0.0
-        ):
-            op["UnitTime"] = float(cut_time_hours or 0.0)
-            op["Value"] = float(cut_time_hours or 0.0)
-            laser_cut_filled = True
+        calc = op.get("CalculatorName")
+        if calc == "Laser":
+            # Do not invent cut minutes — 0 is OK until the shop calculator has a time.
+            cut = float(cut_time_hours or 0.0)
+            op["UnitTime"] = cut
+            op["Value"] = cut
+        elif calc == "Drafting":
+            op["UnitTime"] = drafting_h
+            op["Value"] = drafting_h
+        elif calc == "Laser-Setup":
+            op["UnitTime"] = setup_h
+            op["Value"] = setup_h
+        elif calc == "Sheet Loading":
+            op["UnitTime"] = load_h
+            op["Value"] = load_h
+        elif calc == "Deburr":
+            op["UnitTime"] = deburr_h
+            op["Value"] = deburr_h
+        op["UnitCost"] = 0.0
+        op["UnitPrice"] = 0.0
         ops.append(op)
     return ops
+
+
+def profile_5pack_names(item: dict[str, Any]) -> set[str]:
+    return {
+        str(o.get("CalculatorName") or "")
+        for o in (item.get("OperationCostList") or [])
+        if o.get("OperationName") == "Profile"
+    }
+
+
+def profile_5pack_present(item: dict[str, Any]) -> bool:
+    names = profile_5pack_names(item)
+    return all(calc in names for calc in PROFILE_5PACK_CALCS)
+
+
+def laser_cut_hours(item: dict[str, Any]) -> float:
+    """Shop-calculated Laser time on Profile (never invented)."""
+    for o in item.get("OperationCostList") or []:
+        if o.get("OperationName") != "Profile":
+            continue
+        calc = str(o.get("CalculatorName") or "")
+        if calc == "Laser" or (o.get("PrimaryOperation") and not calc):
+            try:
+                hours = float(o.get("UnitTime") or 0.0)
+            except (TypeError, ValueError):
+                hours = 0.0
+            if hours > 0:
+                return hours
+    dp = parse_datapart(item.get("Data"))
+    try:
+        return float(dp.get("Time") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def cad_plate_ready(item: dict[str, Any]) -> bool:
+    """
+    Cad is ready only when the *shop* add-part path ran:
+
+    - Profile primary ops exist (auto-attached by STEP/PDF add-part)
+    - Laser time is shop-calculated (>0 when there is real perimeter/holes)
+    - MaterialCost > 0
+
+    Grafted Profile ops with Laser=0 are a **fail**.
+    """
+    if not _is_cad_plate(item):
+        return True
+    has_profile = any(
+        o.get("OperationName") == "Profile" for o in (item.get("OperationCostList") or [])
+    )
+    try:
+        mat_cost = float(item.get("MaterialCost") or 0)
+    except (TypeError, ValueError):
+        mat_cost = 0.0
+    return has_profile and laser_cut_hours(item) > 0 and mat_cost > 0
+
+
+_ZERO_ITEM_ID = "00000000-0000-0000-0000-000000000000"
+
+_HOLE_CALL_OUT_RE = re.compile(
+    r"(?ix)"
+    r"(?:w/\s*)?(?P<frac>\d+\s*/\s*\d+|\d+(?:\.\d+)?)\s*(?:\"|in|inch)?\s*holes?\b"
+    r"|"
+    r"holes?\s*(?:w/|:)?\s*(?P<frac2>\d+\s*/\s*\d+|\d+(?:\.\d+)?)"
+    r"|"
+    r"(?:ø|dia\.?)\s*(?P<dia>\d+\s*/\s*\d+|\d+(?:\.\d+)?)"
+)
+
+
+def _hole_token_to_inches(raw: str) -> float | None:
+    text = (raw or "").replace(" ", "")
+    if not text:
+        return None
+    if "/" in text:
+        num, den = text.split("/", 1)
+        try:
+            val = float(num) / float(den)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return None
+    else:
+        try:
+            val = float(text)
+        except (TypeError, ValueError):
+            return None
+    if 0.05 <= val <= 6.0:
+        return val
+    return None
+
+
+def hole_sizes_from_text(text: str) -> list[float]:
+    """Parse hole diameters (inches) from a drawing/BOM callout."""
+    found: list[float] = []
+    for m in _HOLE_CALL_OUT_RE.finditer(text or ""):
+        token = m.group("frac") or m.group("frac2") or m.group("dia") or ""
+        val = _hole_token_to_inches(token)
+        if val is not None:
+            found.append(val)
+    return found
+
+
+def hole_sizes_from_takeoff(takeoff: dict[str, Any] | None) -> list[float]:
+    """Hole diameters from STEP circles and PDF/BOM callouts. Never invent."""
+    holes: list[float] = []
+    blob = takeoff if isinstance(takeoff, dict) else {}
+    stp = blob.get("stp_summary") or {}
+    for raw in stp.get("circle_diameters") or []:
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if 0.2 <= val <= 3.0:
+            holes.append(val)
+    for src in (
+        " ".join(str(n) for n in (blob.get("notes") or [])),
+        " ".join(str(n) for n in (blob.get("flags") or [])),
+        " ".join(str(n) for n in (blob.get("sizes_found") or [])),
+    ):
+        holes.extend(hole_sizes_from_text(src))
+    seen: set[float] = set()
+    out: list[float] = []
+    for h in holes:
+        key = round(h, 4)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(h)
+    return out
+
+
+def plate_dims_from_takeoff(
+    takeoff: dict[str, Any] | None,
+) -> tuple[float | None, float | None]:
+    """Best-effort flat L×W (inches) from takeoff. None if unknown — do not invent."""
+    blob = takeoff if isinstance(takeoff, dict) else {}
+    stp = blob.get("stp_summary") or {}
+    sample = [float(d) for d in (stp.get("pdf_dimensions_sample") or []) if d]
+    plate = [d for d in sample if d > 3.0]
+    if len(plate) >= 2:
+        return plate[0], plate[1]
+    for solid in stp.get("top_solids") or []:
+        box = [float(x) for x in (solid.get("box") or [])[:3] if x]
+        if len(box) < 2:
+            continue
+        axes = sorted(box)
+        length, width = axes[-1], axes[-2]
+        if length > 3.0 and width > 0.05:
+            return length, width
+    return None, None
+
+
+def format_hole_sizes(holes: list[float] | None) -> str:
+    parts: list[str] = []
+    for raw in holes or []:
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if 0.05 < val <= 6.0:
+            parts.append(f"{val:.4f}".rstrip("0").rstrip("."))
+    return ",".join(parts)
+
+
+def add_cad_plate_part(
+    client: SecturaFabClient,
+    quote_id: str,
+    *,
+    material: str,
+    thickness: str,
+    length: float,
+    width: float,
+    qty: int = 1,
+    holes: list[float] | None = None,
+    machine: str = "Laser",
+    memo: str = "",
+) -> list[str]:
+    """Create a Cad line via addplate/addShape so Sectura attaches Profile + laser calc.
+
+    Uses itemID zeros (new Cad line). Never POSTs OperationCostList.
+    Never invents Laser minutes or UnitPrice.
+    """
+    notes: list[str] = []
+    hole_s = format_hole_sizes(holes)
+    params: dict[str, Any] = {
+        "quoteID": quote_id,
+        "itemID": _ZERO_ITEM_ID,
+        "material": (material or "A36").strip() or "A36",
+        "thickness": str(thickness or "0.25").strip() or "0.25",
+        "length": float(length),
+        "width": float(width),
+        "qty": max(1, int(qty)),
+        "units": "inch",
+        "thickness_Units": "inch",
+        "machine": machine or "Laser",
+        "partMode": "Cad",
+        "memo": (memo or "")[:240],
+    }
+    if hole_s:
+        params["holes"] = hole_s
+        params["holeSizes"] = hole_s
+
+    endpoint = "addplate"
+    addp = client.request("POST", "v1/quoteOnline/addplate", params=params)
+    try:
+        status = int(getattr(addp, "status_code", 500) or 500)
+    except (TypeError, ValueError):
+        status = 500
+    if status >= 400:
+        endpoint = "addShape"
+        addp = client.request("POST", "v1/quoteOnline/addShape", params=params)
+        try:
+            status = int(getattr(addp, "status_code", 500) or 500)
+        except (TypeError, ValueError):
+            status = 500
+    if status >= 400:
+        notes.append(
+            f"WARNING: add-part {endpoint} failed ({status}) — "
+            f"not grafting Profile ops (Laser would stay 0)"
+        )
+        return notes
+
+    hole_note = f", holes={hole_s}" if hole_s else ", no hole sizes"
+    notes.append(
+        f"Added Cad part via {endpoint} "
+        f"({float(length):g}×{float(width):g} in × qty {max(1, int(qty))}{hole_note}) "
+        f"— shop Profile/laser calculators must attach themselves"
+    )
+    try:
+        fresh = client.get_json(f"v1/quote/{quote_id}")
+    except Exception:  # noqa: BLE001 — verify is best-effort
+        return notes
+    for it in fresh.get("ItemList") or []:
+        if it.get("ProductType") in (50, "50"):
+            notes.append(
+                "WARNING: add-part created ProductType 50 Plate — "
+                "not a Cad calculator line"
+            )
+            break
+    return notes
 
 
 def _ops_fingerprint(detail: dict[str, Any]) -> str:
@@ -521,70 +886,65 @@ def count_profile_items(detail: dict[str, Any]) -> int:
     return n
 
 
-def _attach_laser_profile_ops_once(
+def verify_shop_profile_ops(
     client: SecturaFabClient,
     quote_id: str,
     *,
-    material: str,
-    thickness: str,
+    material: str = "A36",
+    thickness: str = "0.25",
 ) -> list[str]:
+    """Read-only: Profile primary ops + shop Laser time + MaterialCost.
+
+    Never POSTs OperationCostList. Cad + Profile + Laser=0 is a fail.
+    ``material`` / ``thickness`` are kept for call-site compatibility.
+    """
+    del material, thickness
     notes: list[str] = []
-    detail = client.get_json(f"v1/quote/{quote_id}")
-    targets = [it for it in (detail.get("ItemList") or []) if _is_laser_plate(it)]
-    if not targets:
-        return ["No laser plate items found for Profile ops"]
-
-    patched = 0
-    changed = False
-    for it in detail.get("ItemList") or []:
-        if not _is_laser_plate(it):
-            continue
-        iid = str(it.get("ID") or "")
-        existing = list(it.get("OperationCostList") or [])
-        has_profile = any(o.get("OperationName") == "Profile" for o in existing)
-        dp = parse_datapart(it.get("Data"))
-        cut = float(dp.get("Time") or 0.0)
-
-        if has_profile:
-            primary_sum = sum(
-                float(o.get("UnitTime") or 0.0)
-                for o in existing
-                if o.get("PrimaryOperation")
-            )
-            if float(it.get("PrimaryTime") or 0) <= 0 and primary_sum > 0:
-                it["PrimaryTime"] = primary_sum
-                it["UnitPrimaryTime"] = primary_sum
-                changed = True
-                patched += 1
-            continue
-
-        profile_ops = _build_profile_ops(iid, cut)
-        other = [o for o in existing if o.get("OperationName") != "Profile"]
-        new_ops = profile_ops + other
-        primary_sum = sum(
-            float(o.get("UnitTime") or 0.0) for o in new_ops if o.get("PrimaryOperation")
+    fresh = client.get_json(f"v1/quote/{quote_id}")
+    laser_items = [it for it in (fresh.get("ItemList") or []) if _is_laser_plate(it)]
+    if not laser_items:
+        notes.append("No laser plate items found for Profile verify")
+        return notes
+    n_profile = 0
+    n_ready = 0
+    n_zero_laser = 0
+    n_no_mat = 0
+    for it in laser_items:
+        has_profile = any(
+            o.get("OperationName") == "Profile"
+            for o in (it.get("OperationCostList") or [])
         )
-        it["OperationCostList"] = new_ops
-        it["PrimaryTime"] = primary_sum
-        it["UnitPrimaryTime"] = primary_sum
-        badge = str(it.get("BadgeString") or "")
-        if "Profile" not in badge:
-            it["BadgeString"] = ("Profile " + badge).strip()
-        changed = True
-        patched += 1
-
-    if changed:
-        save = client.request("POST", "v1/quote", json=detail)
-        if save.status_code >= 400:
-            notes.append(f"Saving Profile ops failed ({save.status_code})")
-        else:
-            notes.append(
-                f"Attached Profile primary ops on {patched} laser plate item(s) "
-                f"(default material {material} @ {thickness})"
-            )
-    elif patched == 0:
-        notes.append("Laser plate items already had Profile ops")
-
+        if has_profile:
+            n_profile += 1
+        cut = laser_cut_hours(it)
+        try:
+            mat_cost = float(it.get("MaterialCost") or 0)
+        except (TypeError, ValueError):
+            mat_cost = 0.0
+        if has_profile and cut > 0 and mat_cost > 0:
+            n_ready += 1
+        elif has_profile and cut <= 0:
+            n_zero_laser += 1
+        if mat_cost <= 0:
+            n_no_mat += 1
+    if n_ready:
+        notes.append(
+            f"Verified shop Profile + Laser time on {n_ready} laser item(s)"
+        )
+    if n_zero_laser:
+        notes.append(
+            f"WARNING: {n_zero_laser} Cad item(s) have Profile ops with Laser=0 "
+            f"(grafted/fake — not shop-calculated)"
+        )
+    if n_profile == 0:
+        notes.append(
+            "WARNING: Profile primary ops missing — add-part path did not "
+            "trigger Sectura calculators (do not graft OperationCostList)"
+        )
+    if n_no_mat:
+        notes.append(
+            f"WARNING: {n_no_mat} laser item(s) have MaterialCost=0"
+        )
     return notes
 
 
@@ -592,67 +952,38 @@ def ensure_laser_profile_ops(
     client: SecturaFabClient,
     quote_id: str,
     *,
-    material: str,
-    thickness: str,
+    material: str = "A36",
+    thickness: str = "0.25",
     part_materials: dict[str, Any] | None = None,
     verify: bool = True,
 ) -> list[str]:
-    """
-    Ensure laser plate items have Profile primary ops and PrimaryTime.
-
-    Does **not** call UpdateItem_Part (that wipes ops). Apply materials via
-    ``apply_part_materials`` + ``wait_for_quote_settle`` first.
-
-    After save, optionally re-reads the quote and retries once if Profile is missing
-    (stale full-quote POSTs have wiped ops more than once).
-
-    ``part_materials`` is accepted for API compatibility but ignored here.
-    """
-    del part_materials  # materials must be applied earlier — see apply_part_materials
-    notes: list[str] = []
-    notes.extend(
-        _attach_laser_profile_ops_once(
-            client, quote_id, material=material, thickness=thickness
-        )
+    """Verify shop Profile/Laser after Cad add-part. Never grafts ops."""
+    del part_materials, verify
+    return verify_shop_profile_ops(
+        client, quote_id, material=material, thickness=thickness
     )
-    if not verify:
-        return notes
 
-    check = client.get_json(f"v1/quote/{quote_id}")
-    missing = [
-        it
-        for it in (check.get("ItemList") or [])
-        if _is_laser_plate(it)
-        and not any(
-            o.get("OperationName") == "Profile"
-            for o in (it.get("OperationCostList") or [])
-        )
+
+def addplate_bind_and_restore_profile(
+    client: SecturaFabClient,
+    quote_id: str,
+    *,
+    material: str = "A36",
+    thickness: str = "0.25",
+) -> list[str]:
+    """Deprecated: addplate-on-existing-Cad + restore-5-pack is inverted.
+
+    Kyle (2026-08-21): that path wipes Profile and Laser stays 0. Do nothing;
+    verify only. Callers should use ``add_cad_plate_part`` (new Cad line) instead.
+    """
+    notes = [
+        "Skipping addplate-on-existing-Cad + Profile restore "
+        "(Laser=0 graft is a fail)"
     ]
-    if not missing:
-        return notes
-
-    notes.append(
-        f"WARNING: Profile missing on {len(missing)} laser item(s) after save — retrying"
-    )
     notes.extend(
-        _attach_laser_profile_ops_once(
+        verify_shop_profile_ops(
             client, quote_id, material=material, thickness=thickness
         )
     )
-    check2 = client.get_json(f"v1/quote/{quote_id}")
-    still = sum(
-        1
-        for it in (check2.get("ItemList") or [])
-        if _is_laser_plate(it)
-        and not any(
-            o.get("OperationName") == "Profile"
-            for o in (it.get("OperationCostList") or [])
-        )
-    )
-    if still:
-        notes.append(
-            f"WARNING: Profile still missing on {still} laser item(s) after retry"
-        )
-    else:
-        notes.append("Profile verified on laser plate item(s) after retry")
     return notes
+

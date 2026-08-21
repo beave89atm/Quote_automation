@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 from quote_core.customer_org import detect_organization
 from quote_core.drawing_library import extract_part_key
@@ -18,7 +19,7 @@ from quote_core.drawing_title import (
 )
 
 from .assembly_ops import (
-    ensure_assembly_root,
+    ensure_assembly_root,  # imported for tests; never call after add-part
     needs_assembly_structure,
     relink_assembly_children,
 )
@@ -27,12 +28,16 @@ from .component_ops import ensure_purchased_components, find_purchased_part_keys
 from .finalize_ops import finalize_quote_ops
 from .imperial_ops import ensure_imperial_item_units
 from .org_ops import apply_quote_organization
+from .linear_ops import bind_linear_products
 from .profile_ops import (
+    cad_plate_ready,
     ensure_laser_profile_ops,
+    laser_cut_hours,
+    _is_cad_plate,
 )
 from .qty_ops import apply_bom_quantities, refresh_bom_rows_for_push
 from .quotes import QuoteService
-from .weld_ops import ensure_weld_ops
+from .weld_ops import ensure_weld_ops, takeoff_wants_weld
 
 # CreateFile outage retry (SecturaFAB DB "underlying provider failed on Open").
 CREATEFILE_RETRY_INTERVAL_S = 300.0
@@ -42,6 +47,69 @@ ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 _QUOTE_REV_SUFFIX_RE = re.compile(r"(?i)[\s_-]*R\d{2}$")
+
+
+def quote_number_lookup_names(quote_number: str) -> list[str]:
+    """Bare part key plus legacy ``PN ``-prefixed names used by older API pushes."""
+    bare = _pn_quote_number(quote_number) or (quote_number or "").strip()
+    if not bare:
+        return []
+    names: list[str] = []
+    for raw in (bare, f"PN {bare}", f"PN{bare}", (quote_number or "").strip()):
+        key = raw.strip()
+        if key and key.lower() not in {n.lower() for n in names}:
+            names.append(key)
+    return names
+
+
+def _entered_by_name(detail: dict[str, Any] | None) -> str:
+    """Best-effort EnteredBy / CreatedBy display name from a quote payload."""
+    if not isinstance(detail, dict):
+        return ""
+    for key in (
+        "EnteredBy",
+        "EnteredByName",
+        "CreatedBy",
+        "CreatedByName",
+        "CreatedByUserName",
+        "UserName",
+    ):
+        val = str(detail.get(key) or "").strip()
+        if val:
+            return val
+    for key in ("EnteredByUser", "CreatedByUser", "User"):
+        obj = detail.get(key)
+        if not isinstance(obj, dict):
+            continue
+        for inner in ("Name", "UserName", "DisplayName", "FullName"):
+            val = str(obj.get(inner) or "").strip()
+            if val:
+                return val
+    return ""
+
+
+def _is_automation_user(name: str) -> bool:
+    n = (name or "").strip().lower()
+    if not n:
+        return False
+    compact = n.replace(" ", "")
+    return (
+        n in {"api user", "apiuser"}
+        or "api user" in n
+        or "quoteautomation" in compact
+    )
+
+
+def existing_quote_action(detail: dict[str, Any] | None) -> str:
+    """
+    Decide what to do when a quote with this number already exists.
+
+    Always ``refuse`` — never edit or reuse an existing quote, including empty
+    api-user drafts. Only ``create`` when no quote row is present.
+    """
+    if not isinstance(detail, dict) or not detail.get("ID"):
+        return "create"
+    return "refuse"
 
 
 def _pn_quote_number(part_key: str) -> str:
@@ -233,10 +301,21 @@ def _default_machine() -> str:
     return os.getenv("SECTURAFAB_DEFAULT_MACHINE", "Laser").strip() or "Laser"
 
 
+def _shop_material(raw: str | None, default: str = "A36") -> str:
+    """A36 only when the drawing names no grade. Never fall back to A569."""
+    text = str(raw or "").strip()
+    if not text:
+        return default
+    compact = text.split()[0].upper().replace("-", "").replace(" ", "")
+    if compact in {"A569", "SAEA569", "CQ", "COMMERCIALQUALITY"}:
+        return default
+    return text.split()[0]
+
+
 def _default_material(takeoff: dict[str, Any] | None) -> str:
     env = os.getenv("SECTURAFAB_DEFAULT_MATERIAL", "").strip()
     if env:
-        return env
+        return _shop_material(env)
     drivers = (takeoff or {}).get("fitup_drivers") or {}
     weight = drivers.get("weight_calc") or {}
     key = str(weight.get("material_key") or "").strip().lower()
@@ -246,8 +325,7 @@ def _default_material(takeoff: dict[str, Any] | None) -> str:
     if key in {"aluminum", "aluminium"} or "aluminum" in label.lower():
         return "A36"
     if label:
-        # SecturaFAB grades are typically bare codes like A36 / A572.
-        return label.split()[0]
+        return _shop_material(label.split()[0])
     return "A36"
 
 
@@ -279,10 +357,10 @@ def _resolve_push_material_thickness(
             pm = None
         if pm:
             if pm.material:
-                material = pm.material
+                material = _shop_material(pm.material)
                 known_from_pdf = True
                 notes.append(
-                    f"Material from drawing: {pm.material} ({pm.source})"
+                    f"Material from drawing: {material} ({pm.source})"
                 )
             if pm.thickness_in is not None:
                 thickness = _sanitize_thickness_param(pm.thickness_param() or pm.thickness_in)
@@ -560,13 +638,43 @@ class SecturaFabPushService:
         self.quotes = QuoteService(self.client)
 
     def find_quote_by_number(self, quote_number: str) -> dict[str, Any] | None:
-        response = self.client.request("GET", f"v1/quote/byName/{quote_number}")
-        if response.status_code >= 400:
+        name = (quote_number or "").strip()
+        if not name:
+            return None
+        encoded = quote(name, safe="-_.")
+        response = self.client.request("GET", f"v1/quote/byName/{encoded}")
+        try:
+            status = int(getattr(response, "status_code", 404) or 404)
+        except (TypeError, ValueError):
+            return None
+        if status >= 400:
             return None
         payload = self.client._parse_or_raise(response)
         if isinstance(payload, dict) and payload.get("ID"):
             return payload
         return None
+
+    def find_existing_quote(self, quote_number: str) -> dict[str, Any] | None:
+        """Find a live quote by bare part number or legacy ``PN `` prefix."""
+        for name in quote_number_lookup_names(quote_number):
+            found = self.find_quote_by_number(name)
+            if found:
+                return found
+        return None
+
+    def load_quote_detail(self, quote_id: str, seed: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Full quote GET; falls back to ``seed`` when the read fails."""
+        try:
+            detail = self.client.get_json(f"v1/quote/{quote_id}")
+        except SecturaFabApiError:
+            return dict(seed or {})
+        if isinstance(detail, dict) and detail.get("ID"):
+            if seed:
+                for key in ("EnteredBy", "EnteredByName", "CreatedBy", "QuoteStatus"):
+                    if not detail.get(key) and seed.get(key):
+                        detail[key] = seed[key]
+            return detail
+        return dict(seed or {})
 
     def allocate_quote_number(self, part_key: str) -> str:
         """Display QuoteNumber: bare part key (no PN prefix, no date/job/rev suffix)."""
@@ -592,7 +700,7 @@ class SecturaFabPushService:
         payload: dict[str, Any] = {
             "QuoteNumber": display,
             "RevNumber": temp_rev,
-            "QuoteStatus": "OPEN-DRAFT",
+            "QuoteStatus": "OPEN-NEW",
         }
         if description:
             payload["Description"] = description[:500]
@@ -663,24 +771,29 @@ class SecturaFabPushService:
                 it["IsPlate"] = True
                 it["IsPart"] = True
 
-        # Best-effort save (Sectura may ignore some flags on API-created drafts).
-        save = self.client.request("POST", "v1/quote", json=detail)
+        from .quote_update import update_item_fields
+
+        ok = update_item_fields(
+            self.client,
+            quote_id,
+            items,
+            fields=["ItemType", "Category", "IsLinear", "IsPlate", "IsPart"],
+        )
         notes = [
             f"Categorized items — Cad: {counts['Cad']}, Linear: {counts['Linear']}, "
             f"Component: {counts['Component']}"
         ]
-        if save.status_code >= 400:
+        if not ok:
             notes.append(
-                f"Category save returned {save.status_code}; set Cad/Linear/Component "
-                f"manually in SecturaFAB if the dropdown is still blank"
+                "WARNING: Category save via item-level update failed — "
+                "not falling back to POST v1/quote (that wipes Cad Profile)"
             )
-        else:
-            # Verify one linear flag if we expected any
+        elif counts["Linear"]:
             check = self.client.get_json(f"v1/quote/{quote_id}")
             linear_ok = sum(
                 1 for it in (check.get("ItemList") or []) if it.get("IsLinear")
             )
-            if counts["Linear"] and not linear_ok:
+            if not linear_ok:
                 notes.append(
                     "SecturaFAB kept items as Cad after save — open each Linear row "
                     "(tube/bar/channel) and set the category dropdown manually"
@@ -867,6 +980,7 @@ class SecturaFabPushService:
         quote_id: str | None = None
         quote_number: str | None = None
         quote_request_id: str | None = None
+        created_new_quote = False
         try:
             part_key = _resolve_part_key(
                 title=title,
@@ -954,11 +1068,54 @@ class SecturaFabPushService:
                 )
 
             quote_request_id = None
-            # TYCROP → Propell; Cummins Clean Fuel → Cummins Clean Fuel Technologies.
+            created_new_quote = False
+            # Time → Time Manufacturing; TYCROP → Propell; Cummins Clean Fuel → …
             organization_name = detect_organization(
                 pdf_path=job_pdf,
                 library_folder=library.get("folder"),
+                title=title,
             )
+            quote_number = self.allocate_quote_number(part_key)
+            quote_description = extract_assembly_description(
+                part_key=part_key,
+                pdf_path=Path(pdf_path) if pdf_path else None,
+                library_folder=library.get("folder"),
+                related_pdf_names=list(library.get("related_pdfs") or []),
+            )
+            if quote_description:
+                desc_note = f"Quote Description from assembly drawing: {quote_description}"
+            else:
+                quote_description = (title or "").strip() or part_key
+                desc_note = f"Quote Description from job title: {quote_description}"
+
+            existing = self.find_existing_quote(quote_number)
+            if existing and existing.get("ID"):
+                existing_detail = self.load_quote_detail(
+                    str(existing["ID"]), seed=existing
+                )
+                action = existing_quote_action(existing_detail)
+                if action != "create":
+                    entered = _entered_by_name(existing_detail) or "another user"
+                    status = str(existing_detail.get("QuoteStatus") or "?")
+                    msg = (
+                        f"Quote {quote_number} already exists "
+                        f"(EnteredBy {entered}, status {status}) — "
+                        f"refused to create a duplicate or edit an existing quote"
+                    )
+                    notes.append(msg)
+                    return PushResult(
+                        ok=False,
+                        error=msg,
+                        notes=notes,
+                        quote_id=str(existing_detail.get("ID") or existing.get("ID")),
+                        quote_number=str(
+                            existing_detail.get("QuoteNumber") or quote_number
+                        ),
+                        created_new_quote=False,
+                        status="failed",
+                        last_error=msg,
+                    )
+
             if drawings:
 
                 def _createfile_progress(info: dict[str, Any]) -> None:
@@ -994,27 +1151,16 @@ class SecturaFabPushService:
                         }
                     )
 
-            # Always create a brand-new quote. Display number is bare part key
-            # (no "PN " prefix; temp RevNumber is cleared so the UI stays clean).
-            quote_number = self.allocate_quote_number(part_key)
-            quote_description = extract_assembly_description(
-                part_key=part_key,
-                pdf_path=Path(pdf_path) if pdf_path else None,
-                library_folder=library.get("folder"),
-                related_pdf_names=list(library.get("related_pdfs") or []),
-            )
-            if quote_description:
-                desc_note = f"Quote Description from assembly drawing: {quote_description}"
-            else:
-                quote_description = (title or "").strip() or part_key
-                desc_note = f"Quote Description from job title: {quote_description}"
-            quote_id = self.create_quote(
-                quote_number=quote_number,
-                description=quote_description or "",
-                memo="",
-                quote_request_id=quote_request_id,
-            )
-            notes.append(f"Created SecturaFAB quote {quote_number}")
+            if not quote_id:
+                # Display number is bare part key (no "PN " prefix).
+                quote_id = self.create_quote(
+                    quote_number=quote_number,
+                    description=quote_description or "",
+                    memo="",
+                    quote_request_id=quote_request_id,
+                )
+                created_new_quote = True
+                notes.append(f"Created SecturaFAB quote {quote_number}")
             notes.append(desc_note)
             # Organization before CAD/Profile — later full-quote POSTs can wipe ops.
             if organization_name:
@@ -1025,9 +1171,40 @@ class SecturaFabPushService:
                         organization_name=organization_name,
                     )
                 )
+            elif library.get("folder") and re.search(
+                r"(?:^|[\\/])Time(?:[\\/]|$)",
+                str(library.get("folder")),
+                re.IGNORECASE,
+            ):
+                notes.append(
+                    "WARNING: Time library folder detected but Organization "
+                    "was not resolved — set Time Manufacturing manually"
+                )
 
             used_step = False
             used_pdf_shell = False
+            # Kyle (102728-1 R3): assembly tree + addLinear BEFORE add-part.
+            # A full POST v1/quote after quickAddCAD wipes Cad OperationCostList.
+            stp_summary = (takeoff or {}).get("stp_summary") or {}
+            try:
+                solid_count = int(stp_summary.get("solid_count") or 0)
+            except (TypeError, ValueError):
+                solid_count = 0
+            need_assembly = needs_assembly_structure([], bom_rows) or solid_count > 1
+            if need_assembly:
+                from .pdf_assembly_ops import create_assembly_shell
+
+                notes.extend(
+                    create_assembly_shell(
+                        self.client,
+                        quote_id,
+                        part_key=part_key,
+                        qty=qty,
+                        description=quote_description or title,
+                    )
+                )
+            notes.extend(bind_linear_products(self.client, quote_id))
+
             if cad:
                 try:
                     self.quick_add_cad(
@@ -1042,7 +1219,7 @@ class SecturaFabPushService:
                     used_step = True
                     uploaded.extend(p.name for p in cad)
                     notes.append(
-                        f"Imported STEP/STP via quickAddCAD: {cad[0].name} "
+                        f"Imported STEP/STP via quickAddCAD last: {cad[0].name} "
                         f"({machine}, {material}, {thickness}\", units=inch)"
                     )
                 except SecturaFabApiError as exc:
@@ -1064,17 +1241,9 @@ class SecturaFabPushService:
                         ) from exc
 
             if used_step:
+                # After add-part: item-level updates only. Never POST v1/quote.
                 notes.extend(self.apply_item_categories(quote_id))
-                step_detail = self.client.get_json(f"v1/quote/{quote_id}")
-                step_items = list(step_detail.get("ItemList") or [])
-                use_assembly = needs_assembly_structure(step_items, bom_rows)
-                if use_assembly:
-                    # Multi-body / multi-BOM weldment — lesson 02 Assembly root.
-                    notes.extend(
-                        ensure_assembly_root(
-                            self.client, quote_id, part_key=part_key
-                        )
-                    )
+                if need_assembly:
                     purchased = find_purchased_part_keys(
                         library_folder=library.get("folder"),
                         related_pdf_names=list(library.get("related_pdfs") or []),
@@ -1085,15 +1254,11 @@ class SecturaFabPushService:
                             self.client, quote_id, purchased_keys=purchased
                         )
                     )
-                    # Component conversion can drop links — re-attach under assembly.
                     notes.extend(
                         relink_assembly_children(
                             self.client, quote_id, part_key=part_key
                         )
                     )
-                    # Do NOT call UpdateItem_Part on STEP assemblies.
-                    # On multi-body welds (e.g. 80341687) its delayed CAD rebuild can wipe
-                    # the entire ItemList ~1–2 minutes later.
                     notes.append(
                         f"Skipped UpdateItem_Part on STEP assembly (seed {material} @ "
                         f"{thickness}\") — avoids delayed CAD wipe of ItemList"
@@ -1115,7 +1280,7 @@ class SecturaFabPushService:
                         part_key=part_key,
                     )
                 )
-                # quickAddCAD computes cut time in DataPart but only attaches Bend.
+                notes.extend(bind_linear_products(self.client, quote_id))
                 notes.extend(
                     ensure_laser_profile_ops(
                         self.client,
@@ -1124,16 +1289,6 @@ class SecturaFabPushService:
                         thickness=thickness,
                     )
                 )
-                # Profile/Weld quote POSTs can reset child Qty to 1 — re-apply now.
-                notes.extend(
-                    apply_bom_quantities(
-                        self.client,
-                        quote_id,
-                        bom_rows=bom_rows,
-                        part_key=part_key,
-                    )
-                )
-                notes.extend(ensure_imperial_item_units(self.client, quote_id))
             elif bom_rows and library.get("folder"):
                 from .pdf_assembly_ops import build_pdf_only_assembly
 
@@ -1156,6 +1311,7 @@ class SecturaFabPushService:
                         qty=qty,
                         times=times,
                         extra_pdfs=[Path(pdf_path)] if pdf_path else None,
+                        takeoff=takeoff,
                     )
                 )
             elif has_job_pdf:
@@ -1177,6 +1333,7 @@ class SecturaFabPushService:
                         machine=machine,
                         qty=qty,
                         description=quote_description or title,
+                        takeoff=takeoff,
                     )
                 )
                 uploaded.append(job_pdf.name)
@@ -1193,7 +1350,7 @@ class SecturaFabPushService:
                     quote_id=quote_id,
                     quote_number=quote_number,
                     quote_request_id=quote_request_id,
-                    created_new_quote=True,
+                    created_new_quote=created_new_quote,
                     uploaded_files=uploaded,
                     item_count=0,
                     status="failed",
@@ -1201,15 +1358,20 @@ class SecturaFabPushService:
                     attempts=createfile_attempts,
                 )
 
-            # Lesson 02: Weld is not auto-added by STEP — push Cursor weld + fit-up minutes.
+            # Lesson 02: Weld is not auto-added by STEP — only when takeoff has symbols/times.
             notes.extend(
                 ensure_weld_ops(
                     self.client,
                     quote_id,
                     times=times,
                     part_key=part_key,
+                    takeoff=takeoff,
                 )
             )
+            if not takeoff_wants_weld(times, takeoff):
+                notes.append(
+                    "Skipped inventing Weld/fit-up — takeoff has no weld symbols/times"
+                )
 
             # Late CAD recalcs can wipe Profile/Weld/Qty after first attach — verify
             # and re-apply until stable (no more UpdateItem_Part here).
@@ -1224,6 +1386,7 @@ class SecturaFabPushService:
                             times=times,
                             part_key=part_key,
                             bom_rows=bom_rows,
+                            takeoff=takeoff,
                         )
                     )
                 except SecturaFabApiError as exc:
@@ -1237,8 +1400,9 @@ class SecturaFabPushService:
                     else:
                         raise
 
-            # Profile last: finalize / settle POSTs have wiped ops more than once.
+            # Profile last: verify shop calculators only — never graft a 5-pack.
             if used_pdf_shell or used_step or (bom_rows and library.get("folder")):
+                notes.extend(bind_linear_products(self.client, quote_id))
                 notes.extend(
                     ensure_laser_profile_ops(
                         self.client,
@@ -1267,6 +1431,34 @@ class SecturaFabPushService:
                     f"(display {and_rev})"
                 )
 
+            cad_incomplete = [
+                it
+                for it in item_list
+                if _is_cad_plate(it) and not cad_plate_ready(it)
+            ]
+            for it in cad_incomplete:
+                ops = [
+                    o
+                    for o in (it.get("OperationCostList") or [])
+                    if o.get("OperationName") == "Profile"
+                ]
+                if not ops:
+                    notes.append(
+                        f"WARNING: Cad item left at 0 ops after push "
+                        f"({(it.get('Description') or '')[:40]!r})"
+                    )
+                elif laser_cut_hours(it) <= 0:
+                    notes.append(
+                        f"WARNING: Cad item has Profile ops with Laser=0 "
+                        f"({(it.get('Description') or '')[:40]!r}) — "
+                        f"shop calculator did not run (grafted ops are a fail)"
+                    )
+                else:
+                    notes.append(
+                        f"WARNING: Cad item missing MaterialCost "
+                        f"({(it.get('Description') or '')[:40]!r})"
+                    )
+
             ready = not any(n.startswith("WARNING:") for n in notes)
 
             final_count = (
@@ -1287,7 +1479,7 @@ class SecturaFabPushService:
                     quote_id=quote_id,
                     quote_number=stored_number,
                     quote_request_id=quote_request_id,
-                    created_new_quote=True,
+                    created_new_quote=created_new_quote,
                     uploaded_files=uploaded,
                     item_count=0,
                     ready=False,
@@ -1301,7 +1493,7 @@ class SecturaFabPushService:
                 quote_id=quote_id,
                 quote_number=stored_number,
                 quote_request_id=quote_request_id,
-                created_new_quote=True,
+                created_new_quote=created_new_quote,
                 uploaded_files=uploaded,
                 item_count=final_count,
                 notes=notes,
@@ -1332,7 +1524,7 @@ class SecturaFabPushService:
                 quote_id=quote_id,
                 quote_number=quote_number,
                 quote_request_id=quote_request_id,
-                created_new_quote=bool(quote_id),
+                created_new_quote=created_new_quote,
                 status="failed",
                 attempts=createfile_attempts,
                 last_error=err,

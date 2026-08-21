@@ -38,6 +38,32 @@ PANEL - BACK, UPPER, 604 SERIES SM, 60
     )
 
 
+def test_detect_time_manufacturing_from_text_and_folder():
+    text = """
+TIME MANUFACTURING INC.
+LIST OF MATERIAL
+28106-1
+LOWER BOOM WELDMENT
+"""
+    assert detect_organization_from_text(text) == "Time Manufacturing"
+    folder = (
+        r"C:\Users\Kyle\Kannon Manufacturing Inc\Fort Worth - Documents"
+        r"\Engineering\Customer Drawings\Time\Lower Boom Weldment - 28106-1"
+    )
+    assert detect_organization_from_folder(folder) == "Time Manufacturing"
+    assert (
+        detect_organization(pdf_path=None, library_folder=folder)
+        == "Time Manufacturing"
+    )
+    assert (
+        detect_organization(pdf_path=None, library_folder=None, title="Time Manufacturing 1007922-1")
+        == "Time Manufacturing"
+    )
+    # Do not match unrelated "time" words or Lifetime folders.
+    assert detect_organization_from_text("cycle time 12 min") is None
+    assert detect_organization_from_folder(r"C:\drawings\Lifetime\part") is None
+
+
 def test_detect_organization_from_library_folder():
     folder = (
         r"C:\Users\Kyle\Kannon Manufacturing Inc\Fort Worth - Documents"
