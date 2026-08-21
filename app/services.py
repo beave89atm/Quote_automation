@@ -69,15 +69,28 @@ def process_job(job_id: int) -> None:
         takeoff["library"] = library_info
         takeoff["bom_config"] = bom_config
         drivers = _drivers_from_takeoff(takeoff)
-        times = compute_weld_times(
-            items,
-            rates,
-            efficiency_pct=job.efficiency_pct,
-            part_count=drivers["part_count"],
-            joint_count=drivers["joint_count"],
-            assembly_weight_lb=drivers["assembly_weight_lb"],
-            component_weights_lb=drivers.get("component_weights_lb"),
-        )
+        # Weld / fit-up times run only when weld symbols produced items.
+        # LOM.xlsx piece count must not turn those fields on.
+        if not items:
+            times = compute_weld_times(
+                items,
+                rates,
+                efficiency_pct=job.efficiency_pct,
+                part_count=0,
+                joint_count=0,
+                assembly_weight_lb=None,
+                component_weights_lb=[],
+            )
+        else:
+            times = compute_weld_times(
+                items,
+                rates,
+                efficiency_pct=job.efficiency_pct,
+                part_count=drivers["part_count"],
+                joint_count=drivers["joint_count"],
+                assembly_weight_lb=drivers["assembly_weight_lb"],
+                component_weights_lb=drivers.get("component_weights_lb"),
+            )
 
         flags = list(result.flags)
         if bom_config:
@@ -100,6 +113,30 @@ def process_job(job_id: int) -> None:
                 related_flag += f" (+{more} more)"
             if related_flag not in flags:
                 flags.append(related_flag)
+
+        from quote_core.bom_xlsx import apply_lom_xlsx_to_takeoff, write_lom_xlsx_for_job
+        from quote_core.nested_lom import nested_review_notes, notes_from_takeoff
+
+        xlsx = write_lom_xlsx_for_job(job.pdf_path, takeoff)
+        if xlsx is not None:
+            takeoff = apply_lom_xlsx_to_takeoff(takeoff, xlsx, bom_config=bom_config)
+            flag = f"LIST OF MATERIAL spreadsheet: {xlsx.name}"
+            if flag not in flags:
+                flags.append(flag)
+            sourced = f"Quote BOM sourced from {xlsx.name}"
+            if sourced not in flags:
+                flags.append(sourced)
+        else:
+            takeoff.pop("lom_xlsx", None)
+            from quote_core.bom_xlsx import rows_from_takeoff
+
+            if not rows_from_takeoff(takeoff):
+                one = "No LIST OF MATERIAL — one-part quote, no LOM.xlsx"
+                if one not in flags:
+                    flags.append(one)
+        for note in nested_review_notes(notes_from_takeoff(takeoff)):
+            if note not in flags:
+                flags.append(note)
 
         job.set_takeoff(takeoff)
         job.set_times(times.to_dict())

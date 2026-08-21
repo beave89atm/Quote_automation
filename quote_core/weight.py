@@ -400,7 +400,7 @@ def estimate_assembly_weight(
     Otherwise calculate: net sq-in × thickness × grade (plates), bbox fill (open sections).
     OCR Time-style BOMs may supply piece counts without unit weights.
     """
-    from quote_core.bom import extract_bom
+    from quote_core.bom import bom_from_lom_xlsx, extract_bom, quote_from_existing_lom_xlsx
 
     cfg = load_materials(str(materials_path) if materials_path else None)
     raw_pdf = pdf_text if pdf_text is not None else _read_pdf_text(pdf_path)
@@ -421,17 +421,47 @@ def estimate_assembly_weight(
         plate_psf = {}
     note_thicknesses = extract_plate_thicknesses_in(notes or [])
 
-    bom = extract_bom(
-        pdf_path=pdf_path,
-        text=raw_pdf or None,
-        library_folder=library_folder,
-        related_pdf_names=related_pdf_names,
-        bom_config=bom_config,
-    )
+    # Existing LOM.xlsx is the quote. Do not re-OCR over Desktop / job sheets.
+    existing = quote_from_existing_lom_xlsx(pdf_path, bom_config=bom_config)
+    if existing is not None:
+        clipped = existing
+    else:
+        clipped = extract_bom(
+            pdf_path=pdf_path,
+            text=raw_pdf or None,
+            library_folder=library_folder,
+            related_pdf_names=related_pdf_names,
+            bom_config=bom_config,
+        )
+    bom = clipped
+    if pdf_path:
+        from quote_core.bom_xlsx import bom_tabs_for_import, find_existing_lom_xlsx
+
+        xlsx = find_existing_lom_xlsx(pdf_path)
+        if xlsx is not None:
+            bom = bom_from_lom_xlsx(xlsx, prior=clipped, bom_config=bom_config)
+            tabs = bom_tabs_for_import(xlsx, bom_config=bom_config)
+            if tabs:
+                note = (
+                    f"Quote read {xlsx.name} "
+                    f"({len(tabs)} tab(s) for Sectura import: "
+                    f"{', '.join(name for name, _rows in tabs)})"
+                )
+                if note not in bom.notes:
+                    bom.notes.append(note)
     pdf_bom = bom.to_dict()
     # Keep legacy lbm-hit fallback when structured BOM rows are absent.
+    # Once a LIST OF MATERIAL exists, do not run a second parser.
     if not bom.rows:
-        pdf_bom = extract_pdf_bom_weights(pdf_path=pdf_path, text=raw_pdf or None)
+        from quote_core.bom_table import (
+            looks_like_time_material_list,
+            material_list_header_seen,
+        )
+
+        if not (
+            looks_like_time_material_list(raw_pdf) or material_list_header_seen(bom)
+        ):
+            pdf_bom = extract_pdf_bom_weights(pdf_path=pdf_path, text=raw_pdf or None)
 
     comps = [float(w) for w in (pdf_bom.get("component_weights_lb") or [])]
     bom_rows = list(pdf_bom.get("bom_rows") or [])
@@ -441,9 +471,9 @@ def estimate_assembly_weight(
                 {
                     "name": row.get("description") or row.get("part_no") or f"BOM item {row.get('item')}",
                     "kind": "pdf_bom",
-                    "qty": int(row.get("qty") or 1),
+                    "qty": int(row.get("qty") or 0),
                     "unit_weight_lb": float(row["unit_weight_lb"]),
-                    "weight_lb": round(float(row["unit_weight_lb"]) * int(row.get("qty") or 1), 2),
+                    "weight_lb": round(float(row["unit_weight_lb"]) * int(row.get("qty") or 0), 2),
                     "part_no": row.get("part_no"),
                 }
                 for row in bom_rows
@@ -480,7 +510,7 @@ def estimate_assembly_weight(
             {
                 "name": row.get("description") or row.get("part_no") or f"BOM item {row.get('item')}",
                 "kind": "pdf_bom",
-                "qty": int(row.get("qty") or 1),
+                "qty": int(row.get("qty") or 0),
                 "unit_weight_lb": None,
                 "weight_lb": None,
                 "part_no": row.get("part_no"),

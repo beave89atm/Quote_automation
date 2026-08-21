@@ -208,6 +208,38 @@ def _extract_dimensions_from_text(text: str) -> list[float]:
     return [d for d in dims if 6.0 <= d <= 120.0]
 
 
+_WELD_SYMBOL_HINTS = (
+    "fillet",
+    "trace weld",
+    "corner weld",
+    "full weld",
+    "weld beads",
+    "pre-heat kingpin",
+    "preheat kingpin",
+)
+# ``weld`` / ``welds`` / ``welded`` — not the title noun WELDMENT, not WELDING WIRE.
+_WELD_SYMBOL_WORD_RE = re.compile(r"\bweld(?:s|ed)?\b", re.IGNORECASE)
+_WELDING_WIRE_RE = re.compile(r"\bweld(?:ing)?\s+wire\b", re.IGNORECASE)
+
+
+def page_has_weld_symbols(text: str | None) -> bool:
+    """True only for fillet / weld-symbol language. A BOM is not a weld.
+
+    LIST OF MATERIAL, item letters, and a title that says WELDMENT do not
+    count. ``weld`` as a substring of ``weldment`` does not count.
+    """
+    probe = _scrub_weld_boilerplate(text or "")
+    probe = _WELDING_WIRE_RE.sub(" ", probe)
+    lower = probe.lower()
+    if any(k in lower for k in _WELD_SYMBOL_HINTS):
+        return True
+    if _WELD_SYMBOL_WORD_RE.search(lower) and any(
+        s in lower for s in ("1/4", "5/16", "3/8", "1/2", "3/16", "1/8")
+    ):
+        return True
+    return False
+
+
 def _ingest_page_text(
     page_no: int,
     text: str,
@@ -221,24 +253,7 @@ def _ingest_page_text(
     dimensions = _extract_dimensions_from_text(text)
     # Ignore title-block "MINIMUM WELD ELECTRODE STRENGTH" — not a weld symbol.
     probe = _scrub_weld_boilerplate(text)
-    lower = probe.lower()
-
-    is_weld_sheet = force_weld_sheet or any(
-        k in lower
-        for k in (
-            "fillet",
-            "trace weld",
-            "corner weld",
-            "full weld",
-            "weld beads",
-            "pre-heat kingpin",
-            "preheat kingpin",
-            "weldment",
-        )
-    ) or (
-        "weld" in lower
-        and any(s in lower for s in ("1/4", "5/16", "3/8", "1/2", "3/16", "1/8"))
-    )
+    is_weld_sheet = force_weld_sheet or page_has_weld_symbols(probe)
 
     if is_weld_sheet:
         weld_text = _scrub_non_weld_fraction_context(probe)
@@ -285,14 +300,14 @@ def _parse_pdf_text(
     dimensions: list[float] = []
     text_chars = 0
     drawing_count = 0
-    name_hint = "weld" in pdf_path.name.lower() or "weldment" in pdf_path.name.lower()
-    saw_weldment_keyword = name_hint
+    # Filename / title ``Weldment.pdf`` is not a weld symbol.
+    saw_weld_symbol = False
 
     for i, page in enumerate(doc):
         text = page.get_text("text") or ""
         text_chars += len(text.strip())
-        if "weldment" in text.lower() or "fillet" in text.lower():
-            saw_weldment_keyword = True
+        if page_has_weld_symbols(text):
+            saw_weld_symbol = True
         try:
             drawing_count += len(page.get_drawings() or [])
         except Exception:  # noqa: BLE001
@@ -318,7 +333,7 @@ def _parse_pdf_text(
                 s, n, h, d = _ingest_page_text(
                     pno,
                     otext,
-                    force_weld_sheet=name_hint or vector_heavy,
+                    force_weld_sheet=False,
                 )
                 sizes.extend(s)
                 notes.extend(n)
@@ -327,11 +342,11 @@ def _parse_pdf_text(
             text_chars = max(text_chars, len(str(ocr_info.get("text") or "")))
 
     counts = Counter(sizes)
-    # Vector CAD / OCR packs often only print a size once; keep single hits when text is scarce.
-    # Weldment sheets frequently show one fillet callout (e.g. lone 1/4") — keep it.
+    # Vector CAD / OCR packs often only print a size once; keep single hits
+    # only when a real weld-symbol word is present — not a WELDMENT title.
     min_hits = (
         1
-        if (vector_heavy or ocr_info.get("used") or text_chars < 400 or saw_weldment_keyword)
+        if (vector_heavy or ocr_info.get("used") or text_chars < 400 or saw_weld_symbol)
         else 2
     )
     sizes = [s for s in sizes if counts[s] >= min_hits]
@@ -1200,6 +1215,9 @@ def estimate_fitup_drivers(
         or method.startswith("ocr_time")
         or method.startswith("native_mac")
         or method.startswith("native_parts_list")
+        or method.startswith("table_")
+        or method.endswith("lom_xlsx")
+        or (weight_info.get("pdf_bom") or {}).get("source") == "lom_xlsx"
     ):
         if bom_piece_count > 0:
             part_count = bom_piece_count
@@ -1249,10 +1267,17 @@ def estimate_fitup_drivers(
         or method.startswith("ocr_time")
         or method.startswith("native_mac")
         or method.startswith("native_parts_list")
+        or method.startswith("table_")
         or "qty_only" in method
     ):
         part_count = bom_piece_count
         defaulted_part_count = False
+
+    from quote_core.nested_lom import nested_review_notes
+
+    for note in nested_review_notes((weight_info.get("pdf_bom") or {}).get("notes")):
+        if note not in notes_out:
+            notes_out.append(note)
 
     if defaulted_part_count:
         notes_out.insert(0, "Part count defaulted to 1 — enter actual part count")
@@ -1319,6 +1344,16 @@ def run_weld_takeoff(
             msg += " Attach STEP for geometry when available."
         flags.insert(0, msg)
 
+    # LOM.xlsx / BOM piece counts still run. Weld inches and fit-up time do not
+    # — a LIST OF MATERIAL or title WELDMENT is not a weld symbol.
+    weight_drivers = estimate_fitup_drivers(
+        stp_summary,
+        notes,
+        pdf_path=pdf_path,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+        bom_config=bom_config,
+    )
     if not items:
         fitup_drivers = {
             "part_count": 0,
@@ -1326,17 +1361,15 @@ def run_weld_takeoff(
             "assembly_weight_lb": None,
             "component_weights_lb": [],
             "source": "no_weld",
-            "notes": ["No weld symbols — weld and fit-up left at 0"],
+            "notes": [
+                "No weld symbols — weld and fit-up left at 0",
+                "A BOM does not imply weld",
+            ],
+            "weight_calc": weight_drivers.get("weight_calc") or {},
+            "piece_count": int(weight_drivers.get("piece_count") or 0),
         }
     else:
-        fitup_drivers = estimate_fitup_drivers(
-            stp_summary,
-            notes,
-            pdf_path=pdf_path,
-            library_folder=library_folder,
-            related_pdf_names=related_pdf_names,
-            bom_config=bom_config,
-        )
+        fitup_drivers = weight_drivers
     for n in fitup_drivers.get("notes") or []:
         if n not in flags:
             flags.append(n)

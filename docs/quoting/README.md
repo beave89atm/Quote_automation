@@ -22,6 +22,7 @@ docs/quoting/
   02-73476004-manual-quote.md ← STEP assembly + weld from Cursor
   03-basic-laser-only-and-nest.md ← PDF laser-only + nest / Keep Remnant
   04-entering-weldment-components-from-pdfs.md ← no-STEP weldment from component PDFs
+  05-nested-child-lom-from-library.md ← child weldment/assembly LOM from Customer Drawings
   videos/                   ← optional MP4 downloads
   screens/                  ← optional stills (name like 01-step-03-bends.png)
 ```
@@ -40,3 +41,4 @@ docs/quoting/
 | 02 | `02-73476004-manual-quote.md` | STEP assembly; Component; Weld from Cursor |
 | 03 | `03-basic-laser-only-and-nest.md` | PDF laser-only; nest; Keep Remnant |
 | 04 | `04-entering-weldment-components-from-pdfs.md` | No STEP; Image/PDF components → Assembly |
+| 05 | `05-nested-child-lom-from-library.md` | Child weldment/assembly LOM from the library; no merge |

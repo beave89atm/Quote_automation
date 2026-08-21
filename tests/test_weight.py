@@ -240,3 +240,66 @@ def test_real_80341805_pdf_bom_qty_if_present():
     assert bom["method"] == "pdf_bom_qty"
     assert bom["piece_count"] == 13
     assert bom["part_number_count"] == 8
+
+
+def test_estimate_assembly_weight_quotes_from_lom_xlsx(tmp_path: Path):
+    """Quote path reads the written LOM.xlsx — not extract JSON."""
+    from tests.test_bom_table import _KYLE_102728_1, _write_lom_pdf
+
+    data_rows = [
+        [str(qty), item, pn, desc] for item, qty, pn, desc in _KYLE_102728_1
+    ]
+    pdf = tmp_path / "Time 102728- Weldment.pdf"
+    _write_lom_pdf(
+        pdf,
+        ["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
+        data_rows,
+        title="WELDMENT, PLATFORM  102728-1  TIME MANUFACTURING",
+    )
+    result = estimate_assembly_weight([], notes=[], pdf_path=pdf)
+    pdf_bom = result.get("pdf_bom") or result.get("bom") or {}
+    assert pdf_bom.get("source") == "lom_xlsx"
+    assert pdf_bom.get("lom_xlsx") == f"{pdf.stem}-LOM.xlsx"
+    assert int(result.get("piece_count") or 0) == 97
+    assert int(result.get("part_number_count") or 0) == 51
+    by_item = {str(r.get("item")): r for r in (pdf_bom.get("rows") or [])}
+    assert int(by_item["A"]["qty"]) == 1
+    assert by_item["A"]["part_no"] == "460200"
+    assert int(by_item["BB"]["qty"]) == 2
+    assert by_item["BB"]["part_no"] == "102727-4"
+
+
+def test_weight_unread_qty_stays_zero_not_one(monkeypatch):
+    """Unread qty 0 must not become 1 in the quote weight rows."""
+    from quote_core.bom import BomResult, BomRow
+
+    def fake_quote(**_kwargs):
+        return BomResult(
+            rows=[
+                BomRow(
+                    item="A",
+                    qty=0,
+                    part_no="460200",
+                    description="RAIL",
+                    unit_weight_lb=10.0,
+                    source="lom_xlsx",
+                ),
+                BomRow(
+                    item="BB",
+                    qty=2,
+                    part_no="102727-4",
+                    description="TUBE, ROUND",
+                    unit_weight_lb=5.0,
+                    source="lom_xlsx",
+                ),
+            ],
+            method="table_lom_xlsx",
+            lom_xlsx="102728-1-LOM.xlsx",
+        )
+
+    monkeypatch.setattr("quote_core.bom.extract_bom", fake_quote)
+    result = estimate_assembly_weight([], notes=[])
+    by_pn = {r.get("part_no"): r for r in result["part_weights"]}
+    assert by_pn["460200"]["qty"] == 0
+    assert by_pn["102727-4"]["qty"] == 2
+    assert result["pdf_bom"]["source"] == "lom_xlsx"

@@ -1,7 +1,15 @@
-"""BOM configuration / dash selection for multi-option Time drawings.
+"""BOM dash from the upload UI — which LIST OF MATERIAL qty column to read.
 
-Time weldments often print qty columns ``-4 | -3 | -2 | -1``. Quoting
-``28106-1`` means use the ``-1`` column only.
+Only a few customers (Time-style) print multiple dash qty columns on one
+drawing (``-4 | -3 | -2 | -1``, or ``1004747-1 | 1004747-2``). Most
+drawings are single-BOM with one QTY column — do not invent dash columns
+there. 102728-1 is a single qty column.
+
+A **blank** upload dash means the drawing is single-BOM — read the one
+QTY column. Do not invent dash columns and do not require ``-1`` on
+102728-style tables. A **filled** dash (``-1``, ``-2``, …) selects that
+printed column only; blank / ``-`` cells in it are omitted. Do not sum
+or mix columns.
 """
 
 from __future__ import annotations
@@ -57,23 +65,13 @@ def resolve_bom_config(
     part_key: str | None = None,
 ) -> str | None:
     """
-    Resolve which BOM qty column to use.
+    The upload/typed dash field only.
 
-    Priority: explicit form field → title → PDF name → library folder name →
-    dashed part_key.
+    Blank means single-BOM (one QTY column). Title, filename, folder, and
+    part_key must not invent a dash — 102728-1 in the title is not a
+    second qty column.
     """
-    for candidate in (
-        normalize_bom_config(explicit),
-        extract_bom_config_from_names(title),
-        extract_bom_config_from_names(pdf_filename),
-        extract_bom_config_from_names(
-            Path(library_folder).name if library_folder else None
-        ),
-        normalize_bom_config(part_key),
-    ):
-        if candidate:
-            return candidate
-    return None
+    return normalize_bom_config(explicit)
 
 
 def format_bom_config_label(config: str | None) -> str:

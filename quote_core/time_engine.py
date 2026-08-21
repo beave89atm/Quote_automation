@@ -159,8 +159,9 @@ def compute_weld_times(
         parts = len(components) or (1 if by_size else 0)
     joints = int(joint_count) if joint_count is not None else 0
 
-    if parts <= 0 and not by_size:
-        notes.append("No weld takeoff — weld and fit-up left at 0")
+    if not by_size:
+        # BOM piece count (e.g. 102728-1 = 97) is not weld. No symbols → times off.
+        notes.append("No weld symbols — weld and fit-up left at 0")
         return TimeBreakdown(
             by_size=[],
             total_inches=0.0,

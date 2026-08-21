@@ -425,3 +425,85 @@ def find_drawings(
     if match.related_pdfs:
         match.notes.append(f"{len(match.related_pdfs)} related PDF(s) in same folder")
     return match
+
+
+def _pdf_stem_matches_part(path: Path, part_no: str) -> bool:
+    part_u = (part_no or "").upper().strip()
+    if not part_u:
+        return False
+    stem_u = path.stem.upper()
+    if stem_u == part_u or stem_u.startswith(part_u + " ") or stem_u.startswith(part_u + "-"):
+        return True
+    compact_part = re.sub(r"[^A-Z0-9]", "", part_u)
+    compact_stem = re.sub(r"[^A-Z0-9]", "", stem_u)
+    return bool(compact_part) and (
+        compact_stem == compact_part or compact_stem.startswith(compact_part)
+    )
+
+
+def find_part_pdf(
+    part_no: str,
+    roots: list[Path] | None = None,
+    *,
+    library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
+) -> Path | None:
+    """Locate a child drawing PDF in the Fort Worth Engineering library.
+
+    Kyle drops only the top-level file. Nested weldment/assembly PNs are
+    retrieved from Customer Drawings — extra upload only if missing.
+    """
+    part_u = (part_no or "").upper().strip()
+    if not part_u:
+        return None
+    search_dirs: list[Path] = []
+    if library_folder:
+        folder = Path(library_folder)
+        if folder.is_dir():
+            search_dirs.append(folder)
+    name_hints = [n for n in (related_pdf_names or []) if part_u in n.upper()]
+    for d in search_dirs:
+        for hint in name_hints:
+            cand = d / hint
+            if cand.is_file() and cand.suffix.lower() == ".pdf":
+                return cand
+        for name in (f"{part_no}.pdf", f"{part_u}.pdf"):
+            cand = d / name
+            if cand.is_file():
+                return cand
+        try:
+            for p in d.iterdir():
+                if p.suffix.lower() == ".pdf" and _pdf_stem_matches_part(p, part_no):
+                    return p
+        except OSError:
+            continue
+
+    search_roots = [Path(r) for r in (roots or []) if r]
+    if library_folder:
+        p = Path(library_folder)
+        if p.is_dir():
+            for extra in (p, p.parent, p.parent.parent):
+                if extra and extra.is_dir() and extra not in search_roots:
+                    search_roots.append(extra)
+    existing = [r for r in search_roots if r.exists()]
+    if not existing:
+        return None
+    match = find_drawings(part_no, existing)
+    folder = match.folder
+    if folder and folder.is_dir():
+        try:
+            pdfs = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"]
+        except OSError:
+            pdfs = []
+        exact = [p for p in pdfs if _pdf_stem_matches_part(p, part_no)]
+        if exact:
+            exact.sort(key=lambda p: (0 if p.stem.upper() == part_u else 1, len(p.name)))
+            return exact[0]
+        if pdfs:
+            pdfs.sort(key=lambda p: (0 if part_u in p.name.upper() else 1, len(p.name)))
+            if part_u in pdfs[0].name.upper():
+                return pdfs[0]
+    for p in match.related_pdfs:
+        if _pdf_stem_matches_part(p, part_no):
+            return p
+    return None

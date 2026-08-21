@@ -330,6 +330,78 @@ def batch_push_secturafab(
     }
 
 
+_TABLE_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+
+
+def _require_table_image_upload(upload: UploadFile) -> None:
+    if not upload.filename:
+        raise HTTPException(400, "Table image is required")
+    suffix = Path(upload.filename).suffix.lower()
+    if suffix not in _TABLE_IMAGE_SUFFIXES:
+        raise HTTPException(400, "PNG/JPEG table crop required")
+
+
+@app.post("/api/bom/table-image")
+async def parse_bom_table_image(
+    image: UploadFile = File(...),
+    bom_config: str = Form(""),
+    _: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """Parse a desktop LIST OF MATERIAL crop (grid bands, then per-row OCR)."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    from quote_core.bom_table_image import extract_bom_from_table_image
+
+    _require_table_image_upload(image)
+    data = await image.read()
+    if not data:
+        raise HTTPException(400, "Empty table image")
+    im = Image.open(BytesIO(data)).convert("RGB")
+    bom = extract_bom_from_table_image(im, bom_config=bom_config or None)
+    return bom.to_dict()
+
+
+@app.post("/api/jobs/{job_id}/bom-table-crop")
+async def attach_bom_table_crop(
+    job_id: int,
+    image: UploadFile = File(...),
+    _: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """Save a right-side LOM crop next to the job PDF and re-run takeoff."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    from quote_core.bom_table_image import TABLE_CROP_FILENAME
+
+    _require_table_image_upload(image)
+    data = await image.read()
+    if not data:
+        raise HTTPException(400, "Empty table image")
+
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        if not job.pdf_path:
+            raise HTTPException(400, "Job has no PDF")
+        job_dir = UPLOAD_DIR / str(job.id)
+        job_dir.mkdir(parents=True, exist_ok=True)
+        dest = job_dir / TABLE_CROP_FILENAME
+        im = Image.open(BytesIO(data)).convert("RGB")
+        im.save(dest, "PNG")
+        payload = job.to_dict()
+        job_id_out = job.id
+    finally:
+        db.close()
+
+    threading.Thread(target=process_job, args=(job_id_out,), daemon=True).start()
+    return payload
+
+
 # Parameterized job routes after static /batch paths so "batch" is never treated as job_id.
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: int, _: str = Depends(require_auth)) -> dict[str, Any]:
@@ -509,6 +581,48 @@ def push_job_to_secturafab(job_id: int, _: str = Depends(require_auth)) -> dict[
 
     threading.Thread(target=push_job_secturafab, args=(job_id,), daemon=True).start()
     return payload
+
+
+@app.get("/api/jobs/{job_id}/lom.xlsx")
+def download_lom_xlsx(job_id: int, _: str = Depends(require_auth)) -> FileResponse:
+    """Four-column LIST OF MATERIAL spreadsheet (QTY / ITEM / PART NO / DESCRIPTION)."""
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        takeoff = job.takeoff()
+        pdf_path = Path(job.pdf_path) if job.pdf_path else None
+        candidates: list[Path] = []
+        if takeoff.get("lom_xlsx"):
+            name = Path(str(takeoff["lom_xlsx"])).name
+            if pdf_path:
+                candidates.append(pdf_path.parent / name)
+            candidates.append(UPLOAD_DIR / str(job.id) / name)
+        if pdf_path:
+            candidates.append(pdf_path.with_name(f"{pdf_path.stem}-LOM.xlsx"))
+        job_dir = UPLOAD_DIR / str(job.id)
+        if job_dir.is_dir():
+            candidates.extend(sorted(job_dir.glob("*LOM.xlsx")))
+            candidates.append(job_dir / "LOM.xlsx")
+        seen: set[Path] = set()
+        for path in candidates:
+            resolved = path.resolve() if path.exists() else path
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            if path.is_file():
+                return FileResponse(
+                    path,
+                    filename=path.name,
+                    media_type=(
+                        "application/vnd.openxmlformats-officedocument"
+                        ".spreadsheetml.sheet"
+                    ),
+                )
+        raise HTTPException(404, "LOM spreadsheet not found")
+    finally:
+        db.close()
 
 
 @app.get("/api/jobs/{job_id}/export")
