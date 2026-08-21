@@ -212,6 +212,31 @@ def item_sort_key(item: str) -> tuple[int, str]:
     return (len(text), text)
 
 
+def flag_unread_qty_column(bom: Any) -> Any:
+    """Do not ship a tall Time grid when the QTY column is mostly unread."""
+    if bom is None:
+        return bom
+    rows = list(getattr(bom, "rows", None) or [])
+    if len(rows) < SHORT_TABLE_REJECT:
+        return bom
+    unread = [r for r in rows if int(getattr(r, "qty", 0) or 0) <= 0]
+    if len(unread) < 8:
+        return bom
+    readable = sum(max(0, int(getattr(r, "qty", 0) or 0)) for r in rows)
+    note = (
+        f"QTY column unread on {len(unread)}/{len(rows)} rows "
+        f"(sum(row.qty)={readable}) — takeoff FAIL; re-read qty cells. "
+        f"Do not ship. Unique PN count is not proof. "
+        f"Do not hide behind piece_count."
+    )
+    notes = list(getattr(bom, "notes", None) or [])
+    if note not in notes:
+        notes.append(note)
+    bom.notes = notes
+    bom.confidence = min(float(getattr(bom, "confidence", 0) or 0), 0.45)
+    return bom
+
+
 def looks_like_time_material_list(text: str | None) -> bool:
     """Time (and similar) LIST OF MATERIAL — cell-grid only, not native MAC."""
     blob = text or ""
@@ -1411,24 +1436,19 @@ def harvest_ocr_row_strips(
     if not rows:
         return BomResult(method=None, confidence=0.0, notes=["No item+part strips harvested"])
     rows.sort(key=lambda r: item_sort_key(str(r.item or "")))
-    unread_qty = sum(1 for r in rows if int(r.qty or 0) <= 0)
     notes.insert(
         0,
         f"Harvested OCR row strips: {len(rows)} part numbers, "
-        f"{sum(max(0, int(r.qty or 0)) for r in rows)} pieces",
+        f"sum(row.qty)={sum(max(0, int(r.qty or 0)) for r in rows)}",
     )
-    if unread_qty:
-        notes.append(
-            f"{unread_qty} row(s) have unread qty — unique PN count is not proof; "
-            f"piece_count is readable qty only (51 PNs / 65 pcs is a fail)"
-        )
     notes.extend(_incomplete_sequence_notes([str(r.item) for r in rows if r.item]))
-    return BomResult(
+    result = BomResult(
         rows=rows,
         method="table_material_list",
         confidence=0.88,
         notes=notes,
     )
+    return flag_unread_qty_column(result)
 
 
 def harvest_material_list_lines(text: str | None, *, bom_config: str | None = None):
@@ -1832,12 +1852,6 @@ def parse_material_list_cells(
     _drop_hyphenless_dupes(by_pn)
     parsed = list(by_pn.values())
     parsed.sort(key=lambda r: item_sort_key(str(r.item or "")))
-    unread_qty = sum(1 for r in parsed if int(r.qty or 0) <= 0)
-    if unread_qty:
-        notes.append(
-            f"{unread_qty} row(s) have unread qty — unique PN count is not proof; "
-            f"piece_count is readable qty only (51 PNs / 65 pcs is a fail)"
-        )
     notes.extend(_incomplete_sequence_notes([str(r.item) for r in parsed if r.item]))
     method = (
         "table_material_list_multi_qty" if layout.is_multi_qty else "table_material_list"
@@ -1859,10 +1873,12 @@ def parse_material_list_cells(
     notes.insert(
         0,
         f"Table LIST OF MATERIAL: {len(parsed)} part numbers, "
-        f"{sum(r.qty for r in parsed)} pieces",
+        f"sum(row.qty)={sum(max(0, int(r.qty or 0)) for r in parsed)}",
     )
     avg = sum(r.confidence for r in parsed) / max(1, len(parsed))
-    return BomResult(rows=parsed, method=method, confidence=avg, notes=notes)
+    return flag_unread_qty_column(
+        BomResult(rows=parsed, method=method, confidence=avg, notes=notes)
+    )
 
 
 def _incomplete_sequence_notes(items: list[str]) -> list[str]:
@@ -1896,13 +1912,14 @@ def _split_delimited_line(line: str) -> list[str]:
         if cells and cells[-1] == "":
             cells.pop()
         # Decorative leading pipe on QTY|ITEM|PN|DESC: "| 2 | A | pn | desc".
-        # One leading empty + a filled next cell, 3–5 columns. Multi-qty
-        # blank dash cells start with two or more empties — keep those.
+        # Keep a leading empty when the next cell is the item letter
+        # (" | A | 460200 | RAIL" — unread QTY, live 791587b).
         if (
             len(cells) >= 2
             and cells[0] == ""
             and cells[1] != ""
             and len(cells) <= 5
+            and not is_material_list_item(cells[1])
         ):
             cells = cells[1:]
         return cells

@@ -333,6 +333,57 @@ def test_fedf06b_live_mismatch_recovers_kyle_grid():
     assert united.piece_count == 97
 
 
+# Live 791587b on 102728- Weldment.pdf: letters+PNs perfect, qty column mostly unread.
+_791587B_EXACT_QTY2 = frozenset({"P", "AH", "AN", "AP", "AQ", "AT", "AZ", "BB"})
+_791587B_WRONG_QTY = {"V": 4, "W": 1, "X": 1, "AC": 2, "AL": 2, "BA": 4}
+
+
+def _791587b_live_qty_strips() -> list[str]:
+    """Cell strips as the laptop actually read them. Empty qty stays blank."""
+    lines: list[str] = []
+    for item, _qty, pn, desc in reversed(_KYLE_102728_1):
+        if item in _791587B_EXACT_QTY2:
+            q = "2"
+        elif item in _791587B_WRONG_QTY:
+            q = str(_791587B_WRONG_QTY[item])
+        else:
+            q = ""
+        lines.append(f"{q} | {item} | {pn} | {desc}")
+    lines.append("QTY | ITEM | PART NO. | DESCRIPTION")
+    return lines
+
+
+def test_791587b_live_qty_column_unread_is_takeoff_fail():
+    """Letters/PNs 51; sum(row.qty)=30 not 97. Do not ship. Do not count 0 as 1."""
+    live = harvest_ocr_row_strips(_791587b_live_qty_strips())
+    assert len(live.rows) == 51
+    by_item = {r.item: r for r in live.rows}
+    assert by_item["A"].part_no == "460200" and by_item["A"].qty == 0
+    assert by_item["BB"].part_no == _BB_PART and by_item["BB"].qty == 2
+    for item in _791587B_EXACT_QTY2:
+        assert by_item[item].qty == 2, item
+    raw_sum = sum(int(r.qty or 0) for r in live.rows)
+    assert raw_sum == 30
+    assert live.piece_count == 30
+    assert live.piece_count != 67
+    assert live.piece_count != 97
+    joined = " ".join(live.notes).lower()
+    assert "takeoff fail" in joined
+    assert "not proof" in joined
+    assert live.confidence <= 0.45
+
+    cells = [
+        f"{qty} | {item} | {pn} | {desc}"
+        for item, qty, pn, desc in reversed(_KYLE_102728_1)
+    ]
+    cells.append("QTY | ITEM | PART NO. | DESCRIPTION")
+    recovered = harvest_ocr_row_strips(cells)
+    _assert_kyle_102728_1(recovered)
+    assert recovered.piece_count == 97
+    assert recovered.confidence > 0.45
+    assert "takeoff fail" not in " ".join(recovered.notes).lower()
+
+
 def test_fifty_one_pns_sixty_five_pcs_is_not_kyle_done():
     """fedf06b live: 51 unique / 65 pcs is a fail. Unread qty 0 is not a piece."""
     budget = 14

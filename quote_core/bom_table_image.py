@@ -15,6 +15,7 @@ from quote_core.bom_table import (
     TALL_TABLE_MIN_ROWS,
     expected_letters_for_bands,
     find_time_like_pn,
+    flag_unread_qty_column,
     harvest_material_list_lines,
     harvest_ocr_row_strips,
     pick_best_material_list,
@@ -204,26 +205,87 @@ def _ocr_cell_strip(cell_im) -> str:
     return _tesseract_string(_prepare_ocr_strip(cell_im, scale=scale), psm=8)
 
 
+def left_qty_column_bounds(xs: list[int], width: int) -> list[tuple[int, int]]:
+    """Candidate [x0, x1) windows for the left QTY column.
+
+    Live 791587b missed most 1s and the 4/5/6/8s: the qty band is a small
+    digit. Keep a thin first band (do not drop it for width < 6).
+    """
+    xs = sorted({int(x) for x in xs if 0 <= int(x) <= width})
+    windows: list[tuple[int, int]] = []
+    if not xs:
+        return [(0, max(12, int(width * 0.12)))]
+    first = xs[0] if xs[0] > 2 else (xs[1] if len(xs) > 1 else max(12, int(width * 0.12)))
+    windows.append((0, max(first, 10)))
+    if len(xs) >= 2:
+        a, b = xs[0], xs[1]
+        windows.append((max(0, a), max(b, a + 10)))
+        if (b - a) > max(36, int(width * 0.12)):
+            windows.append((max(0, a), a + max(14, int((b - a) * 0.32))))
+    windows.append((0, max(14, int(width * 0.10))))
+    out: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for a, b in windows:
+        key = (max(0, a), min(width, max(b, a + 8)))
+        if key in seen or key[1] <= key[0]:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
 def _ocr_qty_digit(cell_im) -> str:
     """Isolated QTY cell — digits only. Do not default unread to 1."""
-    h = getattr(cell_im, "height", 16) or 16
-    scale = 4.0 if h < 22 else 3.0
-    prepared = _prepare_ocr_strip(cell_im, scale=scale)
     from quote_core.ocr import ocr_available, tesseract_cmd
 
-    if not ocr_available():
+    if not ocr_available() or cell_im is None:
         return ""
     import pytesseract
 
     pytesseract.pytesseract.tesseract_cmd = tesseract_cmd()
-    try:
-        text = pytesseract.image_to_string(
-            prepared,
-            config="--oem 3 --psm 10 -c tessedit_char_whitelist=0123456789",
-        ) or ""
-    except Exception:  # noqa: BLE001
-        text = _tesseract_string(prepared, psm=10)
-    return "".join(ch for ch in text if ch.isdigit())
+    votes: list[str] = []
+    h = getattr(cell_im, "height", 16) or 16
+    scales = (6.0, 4.0, 3.0) if h < 24 else (4.0, 3.0)
+    for invert in (False, True):
+        for scale in scales:
+            prepared = _prepare_ocr_strip(cell_im, scale=scale, invert=invert)
+            for psm in (10, 8, 7, 13):
+                try:
+                    text = pytesseract.image_to_string(
+                        prepared,
+                        config=(
+                            f"--oem 3 --psm {psm} "
+                            "-c tessedit_char_whitelist=0123456789"
+                        ),
+                    ) or ""
+                except Exception:  # noqa: BLE001
+                    text = _tesseract_string(prepared, psm=psm)
+                digits = "".join(ch for ch in text if ch.isdigit())
+                if digits:
+                    votes.append(digits)
+    singles = [d for d in votes if len(d) == 1 and d != "0"]
+    if singles:
+        from collections import Counter
+
+        return Counter(singles).most_common(1)[0][0]
+    if votes:
+        best = min(votes, key=len)
+        return "".join(ch for ch in best if ch.isdigit())
+    return ""
+
+
+def _crop_qty_windows(im, y0: int, y1: int, v_lines: list[int]):
+    w, h = im.size
+    xs = [0] + list(v_lines or []) + [w]
+    out = []
+    for a, b in left_qty_column_bounds(xs, w):
+        x0 = max(0, a - 2)
+        x1 = min(w, b + 2)
+        yy0 = max(0, y0 - 2)
+        yy1 = min(h, y1 + 2)
+        if x1 - x0 >= 3 and yy1 - yy0 >= 4:
+            out.append(im.crop((x0, yy0, x1, yy1)))
+    return out
 
 
 def _expand_band_box(
@@ -279,12 +341,20 @@ def _ocr_first_pass_lines(im, seg: dict[str, Any], notes: list[str]) -> list[str
             xs = sorted({x for x in xs if 0 <= x <= im.width})
             first_cell = True
             for a, b in zip(xs, xs[1:]):
-                if b - a < 6:
+                # Live 791587b: thin QTY band was skipped (b-a < 6) and the
+                # item letter became the "qty" cell. Keep the leftmost band.
+                if b - a < 6 and not first_cell:
                     continue
-                cell = im.crop((a + 1, max(0, y0), b, min(im.height, y1)))
+                cell = im.crop((a, max(0, y0), max(b, a + 8), min(im.height, y1)))
                 if first_cell:
                     first_cell = False
-                    digit = _ocr_qty_digit(cell)
+                    digit = ""
+                    for clip in _crop_qty_windows(im, y0, y1, v_lines):
+                        digit = _ocr_qty_digit(clip)
+                        if digit:
+                            break
+                    if not digit:
+                        digit = _ocr_qty_digit(cell)
                     parts.append(digit if digit else _ocr_cell_strip(cell).strip())
                     continue
                 parts.append(_ocr_cell_strip(cell).strip())
@@ -314,29 +384,30 @@ def _reread_unread_qty_cells(
     from quote_core.bom_table import parse_ocr_row_strip
 
     v_lines = seg.get("v_lines") or []
-    if len(v_lines) < 3:
-        return lines
-    xs = [0] + list(v_lines) + [im.width]
-    xs = sorted({x for x in xs if 0 <= x <= im.width})
-    if len(xs) < 2:
-        return lines
     out = list(lines)
     reread = 0
+    still_unread = 0
     for i, text in enumerate(out):
         if not str(text or "").strip() or i >= len(seg.get("row_bands") or []):
             continue
         parsed = parse_ocr_row_strip(text)
-        if not parsed or parsed.get("qty_clear"):
+        if not parsed:
+            continue
+        if parsed.get("qty_clear") and int(parsed.get("qty") or 0) > 0:
             continue
         _x0, y0, _x1, y1 = seg["row_bands"][i]
-        a, b = xs[0], xs[1]
-        cell = im.crop((a + 1, max(0, y0), b, min(im.height, y1)))
-        digit = _ocr_qty_digit(cell)
+        digit = ""
+        for clip in _crop_qty_windows(im, y0, y1, v_lines):
+            digit = _ocr_qty_digit(clip)
+            if digit and digit.isdigit():
+                break
         if not digit or not digit.isdigit():
+            still_unread += 1
             continue
         n = int(digit)
         if n == 7 or 10 <= n <= 20:
             notes.append(f"Re-read qty cell band {i}: {n} looks like bleed — left unread")
+            still_unread += 1
             continue
         if " | " in text:
             cells = text.split(" | ")
@@ -348,6 +419,11 @@ def _reread_unread_qty_cells(
         reread += 1
     if reread:
         notes.append(f"Re-read {reread} unread QTY cell(s)")
+    if still_unread:
+        notes.append(
+            f"{still_unread} QTY cell(s) still unread after re-read — "
+            f"takeoff FAIL until digits match the grid (do not default to 1)"
+        )
     return out
 
 
@@ -524,6 +600,7 @@ def extract_bom_from_table_image(
         parsed = harvest_material_list_lines(blob, bom_config=bom_config)
     parsed.grid_row_count = int(seg["grid_row_count"])
     parsed.notes = notes + list(parsed.notes)
+    parsed = flag_unread_qty_column(parsed)
     if parsed.rows:
         parsed.method = "table_material_list_image"
     elif parsed.grid_row_count >= SHORT_TABLE_REJECT:

@@ -31,6 +31,7 @@ from quote_core.bom_table_image import (
     TABLE_CROP_FILENAME,
     extract_bom_from_table_image,
     extract_bom_from_table_images,
+    left_qty_column_bounds,
     segment_table_bands,
 )
 
@@ -191,6 +192,16 @@ def test_extract_bom_sibling_crop_beats_short_pdf_lom(tmp_path: Path):
     else:
         assert len(bom.rows) < 10
         assert "flag review" in joined or "unread" in joined or "rejected" in joined
+
+
+def test_left_qty_column_keeps_thin_first_band():
+    """791587b hunch: do not drop a 4–8 px QTY column (small digit)."""
+    # v-lines after a 5 px qty band, then item / part.
+    windows = left_qty_column_bounds([5, 40, 140, 300], 400)
+    assert any(b - a <= 12 for a, b in windows)
+    assert any(a == 0 and b >= 5 for a, b in windows)
+    wide = left_qty_column_bounds([0, 120, 200], 400)
+    assert any(b - a <= 50 for a, b in wide)
 
 
 def test_table_image_cell_texts_match_kyle_102728_1():
