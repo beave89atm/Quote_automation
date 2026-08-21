@@ -566,6 +566,51 @@ def test_live_surviving_eco_and_stripped_weldment_pn_are_dropped():
     assert bb.qty == 2 and bb.part_no == _BB_PART
 
 
+def test_first_release_added_config_and_page_property_drop_junk():
+    """ae1b8e7 leftovers: FIRST RELEASE, ADDED CONFIGURATION, 89176-1 via page stamp."""
+    assert parse_ocr_row_strip("B 56657 FIRST RELEASE TO PRODUCTION") is None
+    assert parse_ocr_row_strip("8 S 73207 ADDED CONFIGURATION") is None
+
+    # PROPERTY is only on the page title block, not the LOM strip (live P904225).
+    far = harvest_ocr_row_strips(
+        [
+            "A 89176-1",
+            "G 89100-1 TUBE",
+            "M 94560 GATE, FABRICATION",
+            "C 103522-1 PLATE",
+            "BBD 02727-4 TUBE, ROUND",
+        ],
+        page_text="WELDMENT P904225-1\nTHIS DRAWING IS THE PROPERTY OF TIME MANUFACTURING",
+    )
+    parts = {r.part_no for r in far.rows}
+    assert "89176-1" not in parts
+    assert "89100-1" in parts
+    assert "94560" in parts
+    assert "103522-1" in parts
+    assert _BB_PART in parts
+
+    # Same page stamp must not drop real dashed 1035xx parts.
+    page = harvest_ocr_row_strips(
+        [
+            "B 56657 FIRST RELEASE TO PRODUCTION",
+            "BT 97879",
+            "8 S 73207",
+            "A 103500-1 TUBE",
+            "C 103522-1 PLATE",
+            "M 94560 GATE, FABRICATION",
+            "6993-1 HOSE GUIDE",
+        ]
+    )
+    parts2 = {r.part_no for r in page.rows}
+    assert "56657" not in parts2
+    assert "97879" not in parts2
+    assert "73207" not in parts2
+    assert "103500-1" in parts2
+    assert "103522-1" in parts2
+    assert "94560" in parts2
+    assert "6993-1" in parts2
+
+
 def test_hyphenless_dashed_dupes_are_dropped():
     """103516 live: 1035371 / 1035221 / 1035281 are 103537-1 etc. without the hyphen."""
     bom = harvest_ocr_row_strips(

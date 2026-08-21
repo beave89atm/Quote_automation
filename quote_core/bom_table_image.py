@@ -378,6 +378,7 @@ def extract_bom_from_table_image(
     row_texts: list[str] | None = None,
     retry_page: Any | None = None,
     retry_clip: dict[str, float] | None = None,
+    page_text: str | None = None,
 ) -> Any:
     """
     Segment a rendered LIST OF MATERIAL crop, then OCR each row (or use row_texts).
@@ -398,13 +399,15 @@ def extract_bom_from_table_image(
     if row_texts is not None:
         lines = [str(t or "") for t in row_texts]
         notes.append("Used supplied row texts (table-image fixture / desktop crop)")
-        parsed = harvest_ocr_row_strips(lines, bom_config=bom_config)
+        parsed = harvest_ocr_row_strips(lines, bom_config=bom_config, page_text=page_text)
     else:
         from quote_core.ocr import ocr_available
 
         if ocr_available() and seg["row_bands"]:
             first_lines = _ocr_first_pass_lines(im, seg, notes)
-            first = harvest_ocr_row_strips(first_lines, bom_config=bom_config)
+            first = harvest_ocr_row_strips(
+                first_lines, bom_config=bom_config, page_text=page_text
+            )
             known = {str(r.part_no) for r in first.rows if r.part_no}
             filled = _fill_empty_band_texts(
                 im, seg, first_lines, notes, known_parts=known
@@ -421,7 +424,9 @@ def extract_bom_from_table_image(
                     bottom_frac=float(clip.get("bottom_frac", 0.92)),
                     known_parts=known,
                 )
-            second = harvest_ocr_row_strips(filled, bom_config=bom_config)
+            second = harvest_ocr_row_strips(
+                filled, bom_config=bom_config, page_text=page_text
+            )
             parsed = union_sticky_harvest(first, second)
             lines = filled
         else:
@@ -431,7 +436,9 @@ def extract_bom_from_table_image(
                     "Feed a table image crop via POST /api/jobs/{id}/bom-table-crop "
                     "or POST /api/bom/table-image"
                 )
-            parsed = harvest_ocr_row_strips(lines, bom_config=bom_config)
+            parsed = harvest_ocr_row_strips(
+                lines, bom_config=bom_config, page_text=page_text
+            )
     if not parsed.rows and lines:
         blob = "LIST OF MATERIAL\nQTY ITEM PART NO. DESCRIPTION\n" + "\n".join(lines)
         parsed = harvest_material_list_lines(blob, bom_config=bom_config)

@@ -1225,6 +1225,7 @@ def extract_bom_from_material_list_table(
                         "top_frac": 0.03,
                         "bottom_frac": 0.92,
                     },
+                    page_text=page.get_text("text") or "",
                 )
                 rendered.notes = [
                     f"Right-side bitmap page {idx + 1} of {n_pages} "

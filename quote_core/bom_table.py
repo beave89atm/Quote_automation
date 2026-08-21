@@ -455,6 +455,21 @@ def _is_eco_or_title_block_row(
     return False
 
 
+def _page_has_title_block_stamp(lines: Sequence[str] | None) -> bool:
+    blob = "\n".join(str(x or "") for x in (lines or []))
+    return bool(_PAGE_TITLE_STAMP_RE.search(blob))
+
+
+def _is_title_stamp_junk_pn(part: str | None, desc: str | None, raw: str = "") -> bool:
+    """5-digit bare or dashed PN with no TUBE/GATE noun — title-block / ECO, not a weld part."""
+    same = f"{part or ''} {desc or ''} {raw}"
+    if _PART_KIND_NOUN_RE.search(same):
+        return False
+    if _is_five_digit_bare_pn(part):
+        return True
+    return bool(re.fullmatch(r"\d{5,7}-\d{1,3}", str(part or "").strip()))
+
+
 def _looks_like_column_index_qty(qty: int) -> bool:
     """2-digit qty 10–20 is dash-column / grid-index bleed unless glued item+qty."""
     return 10 <= int(qty) <= 20
@@ -468,11 +483,21 @@ _TITLE_BLOCK_CTX_RE = re.compile(
 _TITLE_ECO_NOISE_RE = re.compile(
     r"PROPERTY(?:\s+OF(?:\s+TIME)?)?"
     r"|THIS\s+DRAWING\s+IS\s+THE\s+PROPERTY"
+    r"|FIRST\s+RELEASE"
+    r"|ADDED\s+CONFIG(?:URATION)?"
     r"|ADDED\s+[—\-]*\s*4(?:\s+AND\s+ITEM)?"
     r"|ADDED\s+(?:AND\s+)?ITEM"
     r"|\bECO\b"
     r"|\bREV(?:ISION)?\b"
     r"|\bCONFIG(?:URATION)?\b",
+    re.IGNORECASE,
+)
+# Page title-block stamp — not a neighbor-band guess.
+_PAGE_TITLE_STAMP_RE = re.compile(
+    r"PROPERTY\s+OF\s+TIME"
+    r"|THIS\s+DRAWING\s+IS\s+THE\s+PROPERTY"
+    r"|FIRST\s+RELEASE"
+    r"|ADDED\s+CONFIG(?:URATION)?",
     re.IGNORECASE,
 )
 
@@ -1025,6 +1050,7 @@ def _finalize_strip_rows(
     from quote_core.bom import BomRow
 
     reject = _drawing_numbers_to_reject(lines)
+    page_stamp = _page_has_title_block_stamp(lines)
     by_pn: dict[str, Any] = {}
     for row in rows:
         if _looks_like_bb_tube(row.part_no, row.description):
@@ -1044,6 +1070,12 @@ def _finalize_strip_rows(
         if _is_eco_or_title_block_row(row.part_no, row.description):
             notes.append(
                 f"Dropped ECO/title-block row {row.item} {row.part_no} — not a weld part"
+            )
+            continue
+        if page_stamp and _is_title_stamp_junk_pn(row.part_no, row.description):
+            notes.append(
+                f"Dropped title-block/ECO PN {row.part_no} "
+                f"(PROPERTY/FIRST RELEASE/ADDED CONFIG on this page; no part noun)"
             )
             continue
         qn = int(row.qty or 0)
@@ -1083,6 +1115,7 @@ def harvest_ocr_row_strips(
     lines: Sequence[str] | None,
     *,
     bom_config: str | None = None,
+    page_text: str | None = None,
 ):
     """Harvest every item+part pair on the strips. Does not invent missing items."""
     del bom_config
@@ -1091,7 +1124,10 @@ def harvest_ocr_row_strips(
     notes: list[str] = []
     slots: list[dict[str, Any] | None] = []
     line_list = list(lines or [])
-    reject = _drawing_numbers_to_reject(line_list)
+    stamp_lines = list(line_list)
+    if page_text:
+        stamp_lines.append(str(page_text))
+    reject = _drawing_numbers_to_reject(stamp_lines)
     for index, line in enumerate(line_list):
         if not str(line).strip():
             slots.append(None)
@@ -1172,7 +1208,7 @@ def harvest_ocr_row_strips(
             ):
                 continue
             found.append(_parsed_to_row(parsed))
-    rows = _finalize_strip_rows(found, notes, lines=line_list)
+    rows = _finalize_strip_rows(found, notes, lines=stamp_lines)
     if not rows:
         return BomResult(method=None, confidence=0.0, notes=["No item+part strips harvested"])
     rows.sort(key=lambda r: item_sort_key(str(r.item or "")))
@@ -1686,13 +1722,16 @@ def _strip_junk_pns_from_result(bom: Any, lines: Sequence[str] | None) -> Any:
     if not rows:
         return bom
     reject = _drawing_numbers_to_reject(lines)
-    window = "\n".join(str(x or "") for x in (lines or []))
+    page_stamp = _page_has_title_block_stamp(lines)
     kept = []
     for row in rows:
         pn = str(row.part_no or "")
         if pn in reject:
             continue
-        if _is_eco_or_title_block_row(pn, getattr(row, "description", ""), ""):
+        desc = getattr(row, "description", "")
+        if _is_eco_or_title_block_row(pn, desc, ""):
+            continue
+        if page_stamp and _is_title_stamp_junk_pn(pn, desc):
             continue
         kept.append(row)
     by_pn = {str(r.part_no): r for r in kept}
