@@ -1719,13 +1719,19 @@ def material_list_header_seen(bom: Any) -> bool:
     """True when a LOM / QTY+ITEM+PART grid header was found (even if 0 rows)."""
     if bom is None:
         return False
-    method = getattr(bom, "method", None)
-    if method and str(method).startswith("table_"):
-        return True
     blob = " ".join(getattr(bom, "notes", None) or []).lower()
+    if "no qty/item/part header" in blob:
+        # Do not treat the negative note as a header hit.
+        pass
+    elif "qty/item/part header" in blob:
+        return True
     if "header found" in blob and "list of material" in blob:
         return True
-    if "qty/item/part header" in blob:
+    method = getattr(bom, "method", None)
+    rows = list(getattr(bom, "rows", None) or [])
+    # A table_* parse with rows is a real clip. method=table_ + 0 rows is not
+    # enough — piece-part pages must not become an invented LOM.
+    if method and str(method).startswith("table_") and rows:
         return True
     return False
 
