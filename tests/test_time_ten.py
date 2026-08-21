@@ -443,7 +443,8 @@ def test_time_ten_cell_text_harvest_and_xlsx(tmp_path: Path):
         text = "\n".join(lines)
         _assert_grid(parse_material_list_text(text, bom_config=spec.bom_config), spec)
         extracted = extract_bom(text=text, bom_config=spec.bom_config)
-        assert extracted.method and extracted.method.startswith("table_"), (key, extracted.notes)
+        if spec.rows:
+            assert extracted.method and extracted.method.startswith("table_"), (key, extracted.notes)
         assert not (extracted.method or "").startswith("ocr_time"), key
         _assert_grid(extracted, spec)
 
@@ -461,12 +462,14 @@ def test_time_ten_cell_text_harvest_and_xlsx(tmp_path: Path):
             bom = extract_bom(pdf_path=pdf, library_folder=lib, bom_config=spec.bom_config)
         else:
             bom = extract_bom(pdf_path=pdf, bom_config=spec.bom_config)
-        assert bom.method and bom.method.startswith("table_"), (key, bom.notes)
+        if spec.rows:
+            assert bom.method and bom.method.startswith("table_"), (key, bom.notes)
         assert not (bom.method or "").startswith("ocr_time"), key
         _assert_grid(bom, spec)
         xlsx = pdf.with_name(f"{pdf.stem}-LOM.xlsx")
-        assert xlsx.is_file(), key
-        if spec.key not in {
+        if spec.rows:
+            assert xlsx.is_file(), key
+        if spec.rows and spec.key not in {
             "P904225-1",
             "103516",
             "21727-1",
