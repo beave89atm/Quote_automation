@@ -305,11 +305,11 @@ def test_first_pass_qty_uses_isolated_fallback(monkeypatch):
 
 def test_reread_does_not_skip_isolated_one():
     """A first-pass isolated 1 must not block a later pipe 6 (V)."""
-    assert _qty_band_needs_reread({"qty": 0, "qty_clear": False}) is True
-    assert _qty_band_needs_reread({"qty": 1, "qty_clear": True}) is True
-    assert _qty_band_needs_reread({"qty": 6, "qty_clear": True}) is False
-    assert _qty_band_needs_reread({"qty": 4, "qty_clear": True}) is False
-    assert _qty_band_needs_reread({"qty": 8, "qty_clear": True}) is False
+    assert _qty_band_needs_reread({"part_no": "432710", "qty": 0}) is True
+    assert _qty_band_needs_reread({"part_no": "432710", "qty": 1}) is True
+    assert _qty_band_needs_reread({"part_no": "432710", "qty": 4}) is True
+    assert _qty_band_needs_reread({"part_no": "432710", "qty": 6}) is True
+    assert _qty_band_needs_reread({}) is False
     if not ocr_available():
         pytest.skip("tesseract not installed")
     im = _draw_qty_item_pn(6, "V", "432710")
@@ -317,6 +317,22 @@ def test_reread_does_not_skip_isolated_one():
     notes: list[str] = []
     out = _reread_unread_qty_cells(
         im, seg, ["1 | V | 432710 | CAP"], notes
+    )
+    parsed = parse_ocr_row_strip(out[0])
+    assert parsed is not None
+    assert parsed["part_no"] == "432710"
+    assert parsed["qty"] == 6
+
+
+def test_stamp_replaces_wrong_first_pass_qty_with_pipe():
+    """791587b V=4 stuck because qty>1 skipped the cell. Pipe 6 must win."""
+    if not ocr_available():
+        pytest.skip("tesseract not installed")
+    im = _draw_qty_item_pn(6, "V", "432710")
+    seg = {"row_bands": [(0, 0, im.width, im.height)], "v_lines": [16, 40, 100]}
+    notes: list[str] = []
+    out = _reread_unread_qty_cells(
+        im, seg, ["4 | V | 432710 | CAP"], notes
     )
     parsed = parse_ocr_row_strip(out[0])
     assert parsed is not None

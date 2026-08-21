@@ -84,6 +84,8 @@ class BomResult:
     grid_row_count: int = 0
     # Sibling ``{stem}-LOM.xlsx`` the quote rows were read from (if any).
     lom_xlsx: str | None = None
+    # Workbook tab names (parent first). Sectura import uses every tab.
+    lom_sheets: list[str] = field(default_factory=list)
     # Child weldment/assembly LOM clips from the Engineering library.
     nested_children: list[dict[str, Any]] = field(default_factory=list)
 
@@ -117,6 +119,7 @@ class BomResult:
             "assembly_weight_lb": self.assembly_weight_lb,
             "grid_row_count": self.grid_row_count,
             "lom_xlsx": self.lom_xlsx,
+            "lom_sheets": self.lom_sheets,
             "nested_children": self.nested_children,
             "source": "lom_xlsx" if self.lom_xlsx else None,
             "piece_count": self.piece_count,
@@ -1593,10 +1596,15 @@ def quote_bom_from_drawing(
 
 def bom_from_lom_xlsx(path: Path | str, *, prior: BomResult | None = None) -> BomResult:
     """Quote BOM is the written sheet. Do not keep a parallel parse."""
-    from quote_core.bom_xlsx import read_lom_xlsx, refresh_nested_children_from_xlsx
+    from quote_core.bom_xlsx import (
+        list_lom_sheet_names,
+        read_lom_xlsx,
+        refresh_nested_children_from_xlsx,
+    )
 
     dest = Path(path)
     _header, data = read_lom_xlsx(dest)
+    sheets = list_lom_sheet_names(dest)
     prior_rows = list(getattr(prior, "rows", None) or [])
     by_key: dict[tuple[str, str], BomRow] = {}
     for row in prior_rows:
@@ -1634,6 +1642,7 @@ def bom_from_lom_xlsx(path: Path | str, *, prior: BomResult | None = None) -> Bo
         assembly_weight_lb=getattr(prior, "assembly_weight_lb", None),
         grid_row_count=int(getattr(prior, "grid_row_count", 0) or 0),
         lom_xlsx=dest.name,
+        lom_sheets=sheets,
         nested_children=refresh_nested_children_from_xlsx(
             dest, list(getattr(prior, "nested_children", None) or [])
         ),

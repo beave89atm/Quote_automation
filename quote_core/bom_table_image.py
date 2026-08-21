@@ -611,7 +611,13 @@ def _ocr_first_pass_lines(im, seg: dict[str, Any], notes: list[str]) -> list[str
             if not find_time_like_pn(text):
                 blob = _ocr_row_strip(strip)
                 if find_time_like_pn(blob):
-                    text = blob
+                    qty = parts[0] if parts else ""
+                    if qty:
+                        text = f"{qty} | {blob}"
+                    else:
+                        # Keep the empty QTY slot so harvest does not
+                        # invent a digit from the strip.
+                        text = f" | {blob}"
         else:
             text = _ocr_row_strip(strip)
             digit = read_qty_cell(im, y0, y1, v_lines, isolated=True)
@@ -652,18 +658,38 @@ def _reread_qty_from_page(
 
 
 def _qty_band_needs_reread(parsed: dict[str, Any] | None) -> bool:
-    """Re-read unread 0 and first-pass isolated 1. Real 2–8 stay."""
-    if not parsed:
-        return False
-    existing = int(parsed.get("qty") or 0)
-    if parsed.get("qty_clear") and existing > 1:
-        return False
-    return True
+    """Every PN row's QTY cell is read. A sticky wrong 4 must not skip V=6."""
+    return bool(parsed and parsed.get("part_no"))
 
 
 def _would_downgrade_qty(existing: int, new: int) -> bool:
     """Isolated 1 must not overwrite a real 2–8 (V6/W4/Y4/AA5/AC4/AD8)."""
     return int(existing or 0) > 1 and int(new or 0) == 1
+
+
+def _read_qty_for_band(
+    im,
+    y0: int,
+    y1: int,
+    v_lines: list[int],
+    *,
+    retry_page: Any | None = None,
+    retry_clip: dict[str, float] | None = None,
+) -> str:
+    """Pipe on the clip, then 420-DPI page pipe, then isolated. Never default 1."""
+    height = getattr(im, "height", y1) or y1
+    yy0 = max(0, int(y0) - 2)
+    yy1 = min(int(height), int(y1) + 2)
+    pipe = read_qty_cell(im, yy0, yy1, v_lines, isolated=False)
+    if pipe:
+        return pipe
+    if retry_page is not None:
+        page = _accept_qty_token(
+            _reread_qty_from_page(retry_page, im, yy0, yy1, retry_clip or {})
+        )
+        if page:
+            return page
+    return read_qty_cell(im, yy0, yy1, v_lines, isolated=True)
 
 
 def _reread_unread_qty_cells(
@@ -675,9 +701,11 @@ def _reread_unread_qty_cells(
     retry_page: Any | None = None,
     retry_clip: dict[str, float] | None = None,
 ) -> list[str]:
-    """Re-read QTY when the row has a PN but no clear qty digit.
+    """Read every QTY cell on the clipped grid. Unread stays 0.
 
-    Isolate + threshold + higher-DPI / pipe QTY|ITEM|PN. Unread stays 0.
+    Live 791587b left V=4 / AC=2 because a first-pass digit > 1 skipped
+    the cell. Pipe QTY|ITEM|PN is the read; isolated 1 is fallback only
+    and must not downgrade a real 4–8.
     """
     from quote_core.bom_table import parse_ocr_row_strip
 
@@ -689,23 +717,27 @@ def _reread_unread_qty_cells(
         if not str(text or "").strip() or i >= len(seg.get("row_bands") or []):
             continue
         parsed = parse_ocr_row_strip(text)
-        if not parsed:
+        if not parsed or not parsed.get("part_no"):
             continue
         existing = int(parsed.get("qty") or 0)
-        if not _qty_band_needs_reread(parsed):
-            continue
         _x0, y0, _x1, y1 = seg["row_bands"][i]
-        digit = read_qty_cell(im, y0, y1, v_lines)
-        if not digit and retry_page is not None:
-            digit = _reread_qty_from_page(retry_page, im, y0, y1, retry_clip or {})
-            if digit:
-                notes.append(f"Re-read qty cell band {i} at 420 DPI: {digit}")
+        digit = _read_qty_for_band(
+            im,
+            y0,
+            y1,
+            v_lines,
+            retry_page=retry_page,
+            retry_clip=retry_clip,
+        )
         digit = _accept_qty_token(digit)
         if not digit:
-            still_unread += 1
+            if existing <= 0:
+                still_unread += 1
             continue
         n = int(digit)
         if _would_downgrade_qty(existing, n):
+            continue
+        if n == existing:
             continue
         if " | " in text:
             cells = text.split(" | ")
@@ -716,7 +748,7 @@ def _reread_unread_qty_cells(
         notes.append(f"Re-read qty cell band {i}: {n}")
         reread += 1
     if reread:
-        notes.append(f"Re-read {reread} unread QTY cell(s)")
+        notes.append(f"Re-read {reread} QTY cell(s)")
     if still_unread:
         notes.append(
             f"{still_unread} QTY cell(s) still unread after re-read — "

@@ -139,6 +139,8 @@ def test_quote_bom_from_drawing_reads_written_xlsx(tmp_path: Path):
     assert blob["source"] == "lom_xlsx"
     assert blob["piece_count"] == 97
     assert blob["part_number_count"] == 51
+    assert blob.get("lom_sheets")
+    assert blob["lom_sheets"][0] == PARENT_SHEET_NAME
     assert all(r.source == "lom_xlsx" for r in bom.rows)
     assert any("Quote read" in n and xlsx.name in n for n in bom.notes)
     bb = next(r for r in bom.rows if r.item == "BB")

@@ -1040,7 +1040,16 @@ def _qty_from_one_source(
                     f"not used as piece count, flag review"
                 ), True
         elif first in _EMPTY_QTY:
-            from_cells = True
+            # Blank QTY cell: unread. Do not take a digit from DESC / PN.
+            if is_bb:
+                return 2, True, "BB qty 2 recovered (qty cell unread; known 102727-4 print)", True
+            if glued_qty is not None and _qty_token_ok(glued_qty, glued=True) and glued_qty <= 20:
+                if glued_qty == 1:
+                    return 1, True, None, True
+                return glued_qty, True, f"{item} qty {glued_qty} from glued item+qty token", True
+            return None, False, (
+                f"{item or '?'} qty OCR unreadable — not defaulted to 1, re-read qty cell"
+            ), True
     if glued_qty is not None:
         if _qty_token_ok(glued_qty, glued=True) and glued_qty <= 20:
             if glued_qty == 1:

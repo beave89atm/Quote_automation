@@ -297,7 +297,7 @@ def test_weight_unread_qty_stays_zero_not_one(monkeypatch):
             lom_xlsx="102728-1-LOM.xlsx",
         )
 
-    monkeypatch.setattr("quote_core.bom.quote_bom_from_drawing", fake_quote)
+    monkeypatch.setattr("quote_core.bom.extract_bom", fake_quote)
     result = estimate_assembly_weight([], notes=[])
     by_pn = {r.get("part_no"): r for r in result["part_weights"]}
     assert by_pn["460200"]["qty"] == 0

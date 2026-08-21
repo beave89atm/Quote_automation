@@ -938,6 +938,11 @@ def test_readable_4_5_6_8_qty_is_not_dimension_bleed():
     assert unread["qty"] != 1
     cell = parse_ocr_row_strip("5 | AA | 460330 | CAP, VERTICAL RAIL BOTTOM")
     assert cell is not None and cell["qty"] == 5 and cell["from_cells"] is True
+    blank = parse_ocr_row_strip(" | A | 460200 | RAIL, BOTTOM FRONT MIDDLE")
+    assert blank is not None and blank["part_no"] == "460200"
+    assert blank["qty"] == 0
+    assert blank["qty_clear"] is False
+    assert blank["qty"] != 1
 
 
 def test_time_item_letters_skip_i_and_o_and_reach_bc():
