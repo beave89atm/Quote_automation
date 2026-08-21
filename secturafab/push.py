@@ -30,9 +30,9 @@ from .imperial_ops import ensure_imperial_item_units
 from .org_ops import apply_quote_organization
 from .linear_ops import bind_linear_products
 from .profile_ops import (
-    addplate_bind_and_restore_profile,
     cad_plate_ready,
     ensure_laser_profile_ops,
+    laser_cut_hours,
     _is_cad_plate,
 )
 from .qty_ops import apply_bom_quantities, refresh_bom_rows_for_push
@@ -1266,10 +1266,10 @@ class SecturaFabPushService:
                     )
                 )
                 notes.extend(bind_linear_products(self.client, quote_id))
-                # addplate binds MaterialCost then immediately restores Profile.
-                # Never stop after addplate — it wipes the 5-pack.
+                # STEP: Sectura runs primary ops + laser calculator after Cad import.
+                # Never graft OperationCostList / addplate-on-existing (Laser stays 0).
                 notes.extend(
-                    addplate_bind_and_restore_profile(
+                    ensure_laser_profile_ops(
                         self.client,
                         quote_id,
                         material=material,
@@ -1308,6 +1308,7 @@ class SecturaFabPushService:
                         qty=qty,
                         times=times,
                         extra_pdfs=[Path(pdf_path)] if pdf_path else None,
+                        takeoff=takeoff,
                     )
                 )
             elif has_job_pdf:
@@ -1329,6 +1330,7 @@ class SecturaFabPushService:
                         machine=machine,
                         qty=qty,
                         description=quote_description or title,
+                        takeoff=takeoff,
                     )
                 )
                 uploaded.append(job_pdf.name)
@@ -1395,17 +1397,9 @@ class SecturaFabPushService:
                     else:
                         raise
 
-            # Profile last: addplate then immediately restore the 5-pack.
+            # Profile last: verify shop calculators only — never graft a 5-pack.
             if used_pdf_shell or used_step or (bom_rows and library.get("folder")):
                 notes.extend(bind_linear_products(self.client, quote_id))
-                notes.extend(
-                    addplate_bind_and_restore_profile(
-                        self.client,
-                        quote_id,
-                        material=material,
-                        thickness=thickness,
-                    )
-                )
                 notes.extend(
                     ensure_laser_profile_ops(
                         self.client,
@@ -1450,9 +1444,15 @@ class SecturaFabPushService:
                         f"WARNING: Cad item left at 0 ops after push "
                         f"({(it.get('Description') or '')[:40]!r})"
                     )
+                elif laser_cut_hours(it) <= 0:
+                    notes.append(
+                        f"WARNING: Cad item has Profile ops with Laser=0 "
+                        f"({(it.get('Description') or '')[:40]!r}) — "
+                        f"shop calculator did not run (grafted ops are a fail)"
+                    )
                 else:
                     notes.append(
-                        f"WARNING: Cad item missing MaterialCost or Profile 5-pack "
+                        f"WARNING: Cad item missing MaterialCost "
                         f"({(it.get('Description') or '')[:40]!r})"
                     )
 

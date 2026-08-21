@@ -284,21 +284,28 @@ def test_collect_related_pdf_from_sibling_folder(tmp_path: Path):
     assert drawings[0].name == "21689.pdf"
 
 
-def test_parse_datapart_and_build_profile_ops():
-    from secturafab.profile_ops import _build_profile_ops, parse_datapart
+def test_parse_datapart_and_hole_sizes():
+    from secturafab.profile_ops import (
+        hole_sizes_from_takeoff,
+        hole_sizes_from_text,
+        parse_datapart,
+        plate_dims_from_takeoff,
+    )
 
     raw = 'DataPart:{"Time":0.01,"CuttingLength":12.5,"PartLength":1}'
     dp = parse_datapart(raw)
     assert dp["Time"] == 0.01
     assert dp["CuttingLength"] == 12.5
 
-    ops = _build_profile_ops("item-uuid", 0.01)
-    assert len(ops) == 5
-    assert all(o["OperationName"] == "Profile" for o in ops)
-    laser = next(o for o in ops if o["CalculatorName"] == "Laser")
-    assert laser["UnitTime"] == 0.01
-    drafting = next(o for o in ops if o["CalculatorName"] == "Drafting")
-    assert drafting["UnitTime"] == 0.25
+    assert hole_sizes_from_text("CYLINDER MOUNT PLATE W/ 3/8 HOLES") == [0.375]
+    takeoff = {
+        "stp_summary": {
+            "circle_diameters": [0.375, 8.0, 0.5],
+            "pdf_dimensions_sample": [18.0, 6.0, 0.25],
+        }
+    }
+    assert hole_sizes_from_takeoff(takeoff) == [0.375, 0.5]
+    assert plate_dims_from_takeoff(takeoff) == (18.0, 6.0)
 
 
 def test_is_laser_plate_accepts_laser_bay1():
@@ -402,8 +409,8 @@ def test_push_single_solid_step_skips_assembly_root(tmp_path: Path):
     assert any("left as Part" in n for n in (result.notes or []))
 
 
-def test_ensure_laser_profile_ops_retries_when_missing_after_save():
-    """If Profile is wiped after first save, verify path retries once."""
+def test_ensure_laser_profile_ops_does_not_post_grafted_ops():
+    """Verify-only: never POST a fake Profile 5-pack."""
     from secturafab.profile_ops import ensure_laser_profile_ops
 
     laser_item = {
@@ -412,31 +419,18 @@ def test_ensure_laser_profile_ops_retries_when_missing_after_save():
         "IsPart": True,
         "Machine": "Laser - Bay1",
         "Data": 'DataPart:{"Time":0.02,"CuttingLength":10}',
+        "MaterialCost": 0,
         "OperationCostList": [],
     }
-    with_profile = {
-        **laser_item,
-        "OperationCostList": [{"OperationName": "Profile", "PrimaryOperation": True}],
-        "PrimaryTime": 0.02,
-    }
     client = MagicMock()
-    # 1) first attach read  2) verify missing  3) retry attach read  4) verify ok
-    client.get_json.side_effect = [
-        {"ItemList": [dict(laser_item)]},
-        {"ItemList": [dict(laser_item)]},
-        {"ItemList": [dict(laser_item)]},
-        {"ItemList": [dict(with_profile)]},
-    ]
-    save = MagicMock()
-    save.status_code = 200
-    client.request.return_value = save
+    client.get_json.return_value = {"ItemList": [dict(laser_item)]}
 
     notes = ensure_laser_profile_ops(
         client, "qid", material="A36", thickness="0.1046", verify=True
     )
-    assert client.request.call_count == 2
-    assert any("Profile missing" in n and "retrying" in n for n in notes)
-    assert any("Profile verified" in n for n in notes)
+    assert client.request.call_count == 0
+    assert any("Profile primary ops missing" in n for n in notes)
+    assert not any("Attached Profile" in n for n in notes)
 
 
 def test_build_weld_ops_from_cursor_minutes():
@@ -687,6 +681,78 @@ def test_build_single_pdf_quote_skips_assembly_shell(tmp_path: Path):
     qadd.assert_called_once()
     profile.assert_called_once()
     assert any("no Assembly shell" in n for n in notes)
+
+
+def test_build_single_pdf_quote_uses_add_part_when_dims_known(tmp_path: Path):
+    from secturafab.pdf_assembly_ops import build_single_pdf_quote
+
+    pdf = tmp_path / "plate.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.get_json.return_value = {"ItemList": []}
+
+    with patch(
+        "secturafab.pdf_assembly_ops.quick_add_component_pdf"
+    ) as qadd, patch(
+        "secturafab.pdf_assembly_ops.add_cad_plate_part",
+        return_value=["Added Cad part via addplate (18×6 in × qty 1, holes=0.375)"],
+    ) as addp, patch(
+        "secturafab.pdf_assembly_ops.wait_for_quote_settle", return_value=["settled"]
+    ), patch(
+        "secturafab.pdf_assembly_ops.ensure_laser_profile_ops",
+        return_value=["Verified shop Profile + Laser time on 1 laser item(s)"],
+    ):
+        notes = build_single_pdf_quote(
+            client,
+            quote_id="qid",
+            part_key="102728-1",
+            pdf_path=pdf,
+            material="A36",
+            thickness="0.25",
+            takeoff={
+                "stp_summary": {
+                    "pdf_dimensions_sample": [18.0, 6.0],
+                    "circle_diameters": [0.375],
+                }
+            },
+        )
+
+    qadd.assert_not_called()
+    addp.assert_called_once()
+    kwargs = addp.call_args.kwargs
+    assert kwargs["length"] == 18.0
+    assert kwargs["width"] == 6.0
+    assert kwargs["holes"] == [0.375]
+    assert any("add-part" in n for n in notes)
+
+
+def test_quick_add_component_pdf_includes_holes(tmp_path: Path):
+    from secturafab.pdf_assembly_ops import quick_add_component_pdf
+
+    pdf = tmp_path / "15864-2.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.post_multipart.return_value = {"ok": True}
+
+    quick_add_component_pdf(
+        client,
+        quote_id="qid",
+        pdf_path=pdf,
+        material="A36",
+        thickness="0.25",
+        qty=2,
+        memo="15864-2",
+        length=10.0,
+        width=4.0,
+        holes=[0.375],
+    )
+    params = client.post_multipart.call_args.kwargs["params"]
+    assert params["partMode"] == "Cad"
+    assert params["fileType"] == "prt_pdf"
+    assert params["length"] == 10.0
+    assert params["width"] == 4.0
+    assert params["holes"] == "0.375"
+    assert params["qty"] == 2
 
 
 def test_push_ok_requires_nonzero_item_count(tmp_path: Path):
@@ -1086,8 +1152,8 @@ def test_default_material_never_a569():
     ) == "A36"
 
 
-def test_cad_plate_ready_addplate_then_done_fails():
-    """addplate fills MaterialCost but wipes ops — that state is not done."""
+def test_cad_plate_ready_grafted_five_pack_laser_zero_fails():
+    """Grafted Profile 5-pack with Laser=0 is a fail, not success."""
     from secturafab.profile_ops import _build_profile_ops, cad_plate_ready
 
     wiped = {
@@ -1103,20 +1169,28 @@ def test_cad_plate_ready_addplate_then_done_fails():
     assert cad_plate_ready(wiped) is False
 
     ops = _build_profile_ops("c1", 0.0, cad_count=1, item=wiped)
-    assert [o["CalculatorName"] for o in ops] == [
-        "Laser",
-        "Drafting",
-        "Laser-Setup",
-        "Sheet Loading",
-        "Deburr",
-    ]
+    assert ops[0]["CalculatorName"] == "Laser"
     assert ops[0]["UnitTime"] == 0.0  # do not invent laser minutes
     assert all(float(o.get("UnitPrice") or 0) == 0 for o in ops)
-    complete = {**wiped, "OperationCostList": ops}
-    assert cad_plate_ready(complete) is True
+    grafted = {**wiped, "OperationCostList": ops}
+    assert cad_plate_ready(grafted) is False
+
+    shop = {
+        **wiped,
+        "MaterialCost": 12.5,
+        "OperationCostList": [
+            {
+                "OperationName": "Profile",
+                "CalculatorName": "Laser",
+                "PrimaryOperation": True,
+                "UnitTime": 0.04,
+            }
+        ],
+    }
+    assert cad_plate_ready(shop) is True
 
 
-def test_addplate_then_restore_profile_never_leaves_zero_ops():
+def test_addplate_bind_no_longer_grafts_or_posts_ops():
     from secturafab.profile_ops import addplate_bind_and_restore_profile
 
     seed = {
@@ -1125,59 +1199,56 @@ def test_addplate_then_restore_profile_never_leaves_zero_ops():
         "Description": "102728-1 plate",
         "Length": 18.0,
         "Width": 6.0,
-        "Thickness": 0.25,
-        "Quantity": 1,
-        "MaterialCost": 0,
+        "MaterialCost": 14.2,
         "OperationCostList": [
-            {"OperationName": "Profile", "CalculatorName": "Laser"},
+            {"OperationName": "Profile", "CalculatorName": "Laser", "UnitTime": 0.0},
         ],
     }
-    after_addplate = {
-        **seed,
-        "MaterialCost": 14.2,
-        "OperationCostList": [],  # wipe
-    }
-    restored_ops = [
-        {"OperationName": "Profile", "CalculatorName": name}
-        for name in ("Laser", "Drafting", "Laser-Setup", "Sheet Loading", "Deburr")
-    ]
-    after_restore = {**after_addplate, "OperationCostList": restored_ops}
+    client = MagicMock()
+    client.get_json.return_value = {"ItemList": [dict(seed)]}
+
+    notes = addplate_bind_and_restore_profile(
+        client, "qid", material="A36", thickness="0.25"
+    )
+    assert client.request.call_count == 0
+    assert any("Skipping addplate-on-existing-Cad" in n for n in notes)
+    assert any("Laser=0" in n for n in notes)
+    assert not any("restored Profile 5-pack" in n for n in notes)
+
+
+def test_add_cad_plate_part_sends_holes_on_new_item():
+    from secturafab.profile_ops import add_cad_plate_part
 
     client = MagicMock()
-    client.get_json.side_effect = [
-        {"ItemList": [dict(seed)]},  # initial
-        {"ItemList": [dict(after_addplate)]},  # after addplate
-        {"ItemList": [dict(after_restore)]},  # persist verify
-        {"ItemList": [dict(after_restore)]},  # final check
-    ]
-    addp = MagicMock()
-    addp.status_code = 200
-    upd = MagicMock()
-    upd.status_code = 200
-    upd.text = "true"
-    client.request.return_value = addp
+    ok = MagicMock()
+    ok.status_code = 200
+    client.request.return_value = ok
+    client.get_json.return_value = {
+        "ItemList": [{"ID": "new", "ProductType": 100, "MaterialCost": 10}]
+    }
 
-    from unittest.mock import patch as _patch
-
-    with _patch(
-        "secturafab.profile_ops.quote_online_update", return_value=True
-    ):
-        notes = addplate_bind_and_restore_profile(
-            client, "qid", material="A36", thickness="0.25"
-        )
-
-    add_calls = [
-        c
-        for c in client.request.call_args_list
-        if len(c.args) >= 2 and "addplate" in str(c.args[1])
-    ]
-    assert add_calls, notes
-    params = add_calls[0].kwargs.get("params") or {}
-    assert params.get("itemID") == "c1"
-    assert params.get("length") == 18.0
-    assert params.get("width") == 6.0
-    assert any("restored Profile 5-pack" in n for n in notes)
-    assert not any("left at 0 ops" in n for n in notes)
+    notes = add_cad_plate_part(
+        client,
+        "qid",
+        material="A36",
+        thickness="0.25",
+        length=18.0,
+        width=6.0,
+        qty=2,
+        holes=[0.375, 0.5],
+    )
+    assert client.request.call_count == 1
+    path = client.request.call_args.args[1]
+    assert "addplate" in path
+    params = client.request.call_args.kwargs["params"]
+    assert params["itemID"] == "00000000-0000-0000-0000-000000000000"
+    assert params["partMode"] == "Cad"
+    assert params["length"] == 18.0
+    assert params["width"] == 6.0
+    assert params["qty"] == 2
+    assert params["holes"] == "0.375,0.5"
+    assert any("holes=0.375,0.5" in n for n in notes)
+    assert not any("OperationCostList" in str(c) for c in client.request.call_args_list)
 
 
 def test_linear_bind_uses_ids_not_product_name():

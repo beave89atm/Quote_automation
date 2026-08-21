@@ -8,7 +8,6 @@ from typing import Any
 from .client import SecturaFabClient
 from .imperial_ops import ensure_imperial_item_units
 from .profile_ops import (
-    addplate_bind_and_restore_profile,
     count_profile_items,
     ensure_laser_profile_ops,
     wait_for_quote_settle,
@@ -63,7 +62,8 @@ def finalize_quote_ops(
     takeoff: dict[str, Any] | None = None,
 ) -> list[str]:
     """
-    Attach/verify Profile + Weld + BOM qty until stable, then roll up assembly costs.
+    Verify Profile + Weld + BOM qty until stable, then roll up assembly costs.
+    Never grafts a fake Profile 5-pack (Laser stays 0).
 
     Late ``UpdateItem_Part`` recalcs can wipe ops ~30–60s after HTTP 200. We wait
     after each attach before declaring success, and re-apply without UpdateItem.
@@ -150,11 +150,7 @@ def finalize_quote_ops(
                 )
             )
         if need_profile or need_qty:
-            notes.extend(
-                addplate_bind_and_restore_profile(
-                    client, quote_id, material=material, thickness=thickness
-                )
-            )
+            # Verify only — never graft a fake Profile 5-pack (Laser stays 0).
             notes.extend(
                 ensure_laser_profile_ops(
                     client, quote_id, material=material, thickness=thickness

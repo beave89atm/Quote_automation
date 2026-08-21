@@ -16,7 +16,16 @@ from quote_core.part_materials import PartMaterial, build_part_material_map, loo
 from .assembly_ops import ensure_assembly_root, relink_assembly_children
 from .client import SecturaFabApiError, SecturaFabClient
 from .component_ops import ensure_purchased_components, find_purchased_part_keys
-from .profile_ops import apply_part_materials, ensure_laser_profile_ops, wait_for_quote_settle
+from .profile_ops import (
+    add_cad_plate_part,
+    apply_part_materials,
+    ensure_laser_profile_ops,
+    format_hole_sizes,
+    hole_sizes_from_takeoff,
+    hole_sizes_from_text,
+    plate_dims_from_takeoff,
+    wait_for_quote_settle,
+)
 from .qty_ops import apply_bom_quantities, normalize_part_key
 from .weld_ops import _desc_token
 
@@ -137,9 +146,16 @@ def quick_add_component_pdf(
     machine: str = "Laser",
     qty: int = 1,
     memo: str = "",
+    length: float | None = None,
+    width: float | None = None,
+    holes: list[float] | None = None,
 ) -> Any:
-    """Import one component drawing via quickAddCAD (works with PDF as well as STEP)."""
-    params = {
+    """Import one component drawing via quickAddCAD (PDF / prt_pdf path).
+
+    Pass length × width × hole sizes when known so Sectura's add-part
+    calculators can attach Profile + laser time. Never graft ops after.
+    """
+    params: dict[str, Any] = {
         "quoteID": quote_id,
         "itemID": "00000000-0000-0000-0000-000000000000",
         "machine": machine,
@@ -154,7 +170,16 @@ def quick_add_component_pdf(
         "units": "inch",
         "memo": (memo or pdf_path.stem)[:240],
         "partMode": "Cad",
+        "fileType": "prt_pdf",
     }
+    if length:
+        params["length"] = float(length)
+    if width:
+        params["width"] = float(width)
+    hole_s = format_hole_sizes(holes)
+    if hole_s:
+        params["holes"] = hole_s
+        params["holeSizes"] = hole_s
     with pdf_path.open("rb") as fh:
         return client.post_multipart(
             "v1/quoteOnline/quickAddCAD",
@@ -321,6 +346,7 @@ def build_pdf_only_assembly(
     qty: int = 1,
     times: dict[str, Any] | None = None,
     extra_pdfs: list[Path] | None = None,
+    takeoff: dict[str, Any] | None = None,
 ) -> list[str]:
     """
     Create assembly + import each BOM component PDF, then link under weldment.
@@ -358,6 +384,9 @@ def build_pdf_only_assembly(
         pm = lookup_part_material(part_materials, part_no)
         use_mat = pm.material if pm else material
         use_thk = (pm.thickness_param() if pm else None) or thickness
+        row_holes = hole_sizes_from_text(str(row.get("description") or ""))
+        if not row_holes and len(rows) == 1:
+            row_holes = hole_sizes_from_takeoff(takeoff)
         try:
             quick_add_component_pdf(
                 client,
@@ -368,6 +397,7 @@ def build_pdf_only_assembly(
                 machine=machine,
                 qty=bom_q,
                 memo=part_no,
+                holes=row_holes or None,
             )
             imported.append(f"{part_no}←{pdf.name}×{bom_q}")
         except SecturaFabApiError as exc:
@@ -527,13 +557,17 @@ def build_single_pdf_quote(
     machine: str = "Laser",
     qty: int = 1,
     description: str | None = None,
+    takeoff: dict[str, Any] | None = None,
+    length: float | None = None,
+    width: float | None = None,
+    holes: list[float] | None = None,
 ) -> list[str]:
     """
-    Single-component PDF job (no STEP / no library BOM): one part line via
-    quickAddCAD — lesson 01/03 Image Files path. No Assembly parent row.
+    Single-component PDF job (no STEP / no library BOM): one Cad line via the
+    real add-part path (L×W×qty×holes) so Sectura attaches Profile + laser time.
 
-    Leave CAD Description on the part (e.g. ``PN - 12 Ga A36 …``). Quote-level
-    Description is set separately in push.create_quote.
+    Falls back to quickAddCAD / prt_pdf when flat size is unknown. Never grafts
+    OperationCostList. No Assembly parent row.
     """
     del description  # quote title only; do not overwrite CAD part Description
     notes: list[str] = []
@@ -546,26 +580,57 @@ def build_single_pdf_quote(
     thk = re.sub(r"(?i)\s*(inches|inch|in)\s*$", "", str(thickness or "").strip())
     thk = thk.replace('"', "").replace("″", "").strip() or "0.25"
 
-    try:
-        quick_add_component_pdf(
-            client,
-            quote_id=quote_id,
-            pdf_path=path,
-            material=material,
-            thickness=thk,
-            machine=machine,
-            qty=qty,
-            memo=key or path.stem,
+    if length is None or width is None:
+        tl, tw = plate_dims_from_takeoff(takeoff)
+        if length is None:
+            length = tl
+        if width is None:
+            width = tw
+    hole_list = list(holes or []) or hole_sizes_from_takeoff(takeoff)
+
+    used_add_part = False
+    if length and width:
+        notes.extend(
+            add_cad_plate_part(
+                client,
+                quote_id,
+                material=material,
+                thickness=thk,
+                length=float(length),
+                width=float(width),
+                qty=qty,
+                holes=hole_list or None,
+                machine=machine,
+                memo=key or path.stem,
+            )
         )
+        used_add_part = True
         notes.append(
-            f"Imported job PDF via quickAddCAD: {path.name} "
-            f"({machine}, {material}, {thk}) — single-part / no Assembly shell"
+            f"PDF add-part used job drawing {path.name} as reference "
+            f"(CreateFile already uploaded) — single-part / no Assembly shell"
         )
-    except SecturaFabApiError as exc:
-        notes.append(
-            f"WARNING: quickAddCAD failed for job PDF ({path.name}): {exc}"
-        )
-        return notes
+    else:
+        try:
+            quick_add_component_pdf(
+                client,
+                quote_id=quote_id,
+                pdf_path=path,
+                material=material,
+                thickness=thk,
+                machine=machine,
+                qty=qty,
+                memo=key or path.stem,
+                holes=hole_list or None,
+            )
+            notes.append(
+                f"Imported job PDF via quickAddCAD/prt_pdf: {path.name} "
+                f"({machine}, {material}, {thk}) — single-part / no Assembly shell"
+            )
+        except SecturaFabApiError as exc:
+            notes.append(
+                f"WARNING: quickAddCAD failed for job PDF ({path.name}): {exc}"
+            )
+            return notes
 
     notes.extend(
         wait_for_quote_settle(
@@ -576,7 +641,7 @@ def build_single_pdf_quote(
             min_wait_s=8.0,
         )
     )
-    # Profile last — never relink/POST structure after this (wipes ops).
+    # Verify shop Profile/Laser — never graft OperationCostList.
     notes.extend(
         ensure_laser_profile_ops(
             client,
@@ -587,6 +652,7 @@ def build_single_pdf_quote(
         )
     )
     notes.append(
-        "Single-PDF part quote built (no Assembly shell) — confirm Profile + dims"
+        "Single-PDF part quote built (no Assembly shell) — confirm Profile + Laser time"
+        + (" via add-part" if used_add_part else " via PDF import")
     )
     return notes
