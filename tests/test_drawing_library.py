@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from quote_core.drawing_library import extract_part_key, find_drawings, library_roots_from_config
+from quote_core.drawing_library import (
+    extract_part_key,
+    find_drawings,
+    find_part_pdf,
+    library_roots_from_config,
+)
 
 
 def test_extract_part_key_from_pdf_names():
@@ -118,3 +123,17 @@ def test_find_time_jib_step_beside_folder():
     assert match.stp_path.name.lower() == "35145-1.step"
     assert match.folder is not None
     assert "35145-1" in match.folder.name
+
+
+def test_find_part_pdf_sibling_folder_under_customer(tmp_path: Path):
+    """Kyle drops the top-level file. Child PN lives under Time/{child}."""
+    root = tmp_path / "Customer Drawings"
+    child_dir = root / "Time" / "103535-1"
+    child_dir.mkdir(parents=True)
+    child_pdf = child_dir / "103535-1.pdf"
+    child_pdf.write_bytes(b"%PDF-1.4")
+    parent_folder = root / "Time" / "103516-1"
+    parent_folder.mkdir(parents=True)
+    found = find_part_pdf("103535-1", [root], library_folder=parent_folder)
+    assert found == child_pdf
+    assert find_part_pdf("999999-1", [root], library_folder=parent_folder) is None

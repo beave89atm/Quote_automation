@@ -115,6 +115,7 @@ def process_job(job_id: int) -> None:
                 flags.append(related_flag)
 
         from quote_core.bom_xlsx import apply_lom_xlsx_to_takeoff, write_lom_xlsx_for_job
+        from quote_core.nested_lom import nested_review_notes, notes_from_takeoff
 
         xlsx = write_lom_xlsx_for_job(job.pdf_path, takeoff)
         if xlsx is not None:
@@ -133,6 +134,9 @@ def process_job(job_id: int) -> None:
                 one = "No LIST OF MATERIAL — one-part quote, no LOM.xlsx"
                 if one not in flags:
                     flags.append(one)
+        for note in nested_review_notes(notes_from_takeoff(takeoff)):
+            if note not in flags:
+                flags.append(note)
 
         job.set_takeoff(takeoff)
         job.set_times(times.to_dict())

@@ -84,6 +84,8 @@ class BomResult:
     grid_row_count: int = 0
     # Sibling ``{stem}-LOM.xlsx`` the quote rows were read from (if any).
     lom_xlsx: str | None = None
+    # Child weldment/assembly LOM clips from the Engineering library.
+    nested_children: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def piece_count(self) -> int:
@@ -112,6 +114,7 @@ class BomResult:
             "assembly_weight_lb": self.assembly_weight_lb,
             "grid_row_count": self.grid_row_count,
             "lom_xlsx": self.lom_xlsx,
+            "nested_children": self.nested_children,
             "source": "lom_xlsx" if self.lom_xlsx else None,
             "piece_count": self.piece_count,
             "part_number_count": self.part_number_count,
@@ -1450,6 +1453,8 @@ def extract_bom(
     related_pdf_names: list[str] | None = None,
     bom_config: str | None = None,
     table_image: Path | str | None = None,
+    nested_seen: set[str] | None = None,
+    nested_depth: int = 0,
 ) -> BomResult:
     """
     Multi-strategy BOM extraction.
@@ -1462,10 +1467,23 @@ def extract_bom(
     Time (and similar) LOM is **cell-grid only** — no whole-page OCR/regex
     and no library-folder padding. When ``pdf_path`` is set and a LIST OF
     MATERIAL grid is found, write ``{stem}-LOM.xlsx`` next to the PDF, then
-    **re-read that sheet** as the quote BOM. No LOM on the sheet → one-part
-    quote, no LOM.xlsx, do not invent a BOM.
+    **re-read that sheet** as the quote BOM. Weldment/assembly descriptions
+    recurse into Customer Drawings and clip each child's LOM next to the job
+    copy — child rows are **not** merged into this BOM. No LOM on the sheet →
+    one-part quote, no LOM.xlsx, do not invent a BOM.
     """
     notes: list[str] = []
+
+    def finish(result: BomResult) -> BomResult:
+        return _with_lom_xlsx(
+            result,
+            pdf_path,
+            library_folder=library_folder,
+            related_pdf_names=related_pdf_names,
+            nested_seen=nested_seen,
+            nested_depth=nested_depth,
+        )
+
     probe = text
     if probe is None and pdf_path:
         from quote_core.weight import _read_pdf_text
@@ -1480,7 +1498,7 @@ def extract_bom(
 
     native = extract_bom_from_native_mac(pdf_path, text=text)
     if (not time_lom) and native.rows and native.piece_count > 0 and native.confidence >= 0.9:
-        return _with_lom_xlsx(native, pdf_path)
+        return finish(native)
     if native.notes:
         notes.extend(native.notes)
     if time_lom and native.rows:
@@ -1492,7 +1510,7 @@ def extract_bom(
     parts_list = extract_bom_from_parts_list(pdf_path, text=text)
     if (not time_lom) and parts_list.rows and parts_list.piece_count > 0:
         parts_list.notes = notes + list(parts_list.notes)
-        return _with_lom_xlsx(parts_list, pdf_path)
+        return finish(parts_list)
     if parts_list.notes:
         notes.extend(parts_list.notes)
 
@@ -1503,7 +1521,7 @@ def extract_bom(
             table = parse_material_list_text(text, bom_config=bom_config)
             if table.rows and table.piece_count > 0:
                 table.notes = notes + list(table.notes)
-                return _with_lom_xlsx(table, pdf_path)
+                return finish(table)
             notes.extend(table.notes)
 
     if table_image and not pdf_path:
@@ -1515,7 +1533,7 @@ def extract_bom(
         )
         if crop_only.rows or material_list_header_seen(crop_only):
             crop_only.notes = notes + list(crop_only.notes)
-            return _with_lom_xlsx(crop_only, pdf_path)
+            return finish(crop_only)
         notes.extend(crop_only.notes)
 
     if pdf_path:
@@ -1531,11 +1549,11 @@ def extract_bom(
 
         if ocr.rows or material_list_header_seen(ocr):
             ocr.notes = notes + list(ocr.notes)
-            return _with_lom_xlsx(ocr, pdf_path)
+            return finish(ocr)
 
     if native.rows and not time_lom:
         native.notes = notes + native.notes
-        return _with_lom_xlsx(native, pdf_path)
+        return finish(native)
 
     if not time_lom:
         extra = "No LIST OF MATERIAL — one-part quote, no LOM.xlsx"
@@ -1591,10 +1609,19 @@ def bom_from_lom_xlsx(path: Path | str, *, prior: BomResult | None = None) -> Bo
         assembly_weight_lb=getattr(prior, "assembly_weight_lb", None),
         grid_row_count=int(getattr(prior, "grid_row_count", 0) or 0),
         lom_xlsx=dest.name,
+        nested_children=list(getattr(prior, "nested_children", None) or []),
     )
 
 
-def _with_lom_xlsx(bom: BomResult, pdf_path: Path | str | None) -> BomResult:
+def _with_lom_xlsx(
+    bom: BomResult,
+    pdf_path: Path | str | None,
+    *,
+    library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
+    nested_seen: set[str] | None = None,
+    nested_depth: int = 0,
+) -> BomResult:
     """Clip-to-Excel only for a real LIST OF MATERIAL. Piece parts stay one-part."""
     if not pdf_path or not bom.rows:
         return bom
@@ -1612,4 +1639,22 @@ def _with_lom_xlsx(bom: BomResult, pdf_path: Path | str | None) -> BomResult:
     note = f"Wrote {dest.name}"
     if note not in bom.notes:
         bom.notes.append(note)
-    return bom_from_lom_xlsx(dest, prior=bom)
+    sourced = bom_from_lom_xlsx(dest, prior=bom)
+    from quote_core.bom_xlsx import bom_is_lom_clip
+
+    if not bom_is_lom_clip(sourced):
+        return sourced
+    from quote_core.drawing_library import extract_part_key, library_roots_from_config
+    from quote_core.nested_lom import clip_nested_child_loms
+
+    pdf = Path(pdf_path)
+    return clip_nested_child_loms(
+        sourced,
+        dest_dir=pdf.parent,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+        library_roots=library_roots_from_config(None),
+        nested_seen=nested_seen,
+        parent_part=extract_part_key(pdf.name, pdf.stem),
+        depth=nested_depth,
+    )

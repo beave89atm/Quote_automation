@@ -1271,6 +1271,12 @@ def estimate_fitup_drivers(
         part_count = bom_piece_count
         defaulted_part_count = False
 
+    from quote_core.nested_lom import nested_review_notes
+
+    for note in nested_review_notes((weight_info.get("pdf_bom") or {}).get("notes")):
+        if note not in notes_out:
+            notes_out.append(note)
+
     if defaulted_part_count:
         notes_out.insert(0, "Part count defaulted to 1 — enter actual part count")
     if joint_estimated and bom_piece_count <= 0:

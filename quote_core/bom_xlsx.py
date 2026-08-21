@@ -276,6 +276,7 @@ def apply_lom_xlsx_to_takeoff(
     sourced = f"Quote BOM sourced from {dest.name}"
     if sourced not in notes:
         notes.append(sourced)
+    nested_children = list((existing or {}).get("nested_children") or [])
     bom_blob = {
         "rows": rows,
         "bom_rows": bom_rows,
@@ -289,6 +290,7 @@ def apply_lom_xlsx_to_takeoff(
         "piece_count": piece,
         "part_number_count": part_count,
         "component_weights_lb": (existing or {}).get("component_weights_lb") or [],
+        "nested_children": nested_children,
     }
     weight["bom"] = bom_blob
     weight["pdf_bom"] = bom_blob
