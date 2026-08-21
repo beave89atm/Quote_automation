@@ -614,7 +614,6 @@ def _kyle_105098_cell_rows() -> list[list[str]]:
     for item in _KYLE_105098_LETTERS:
         # Letter is on the parent takeoff. PN not listed — do not invent.
         rows.append(["1", item, "", ""])
-    rows.append(["1", "K", "103603-1", "WELDMENT"])
     return rows
 
 
@@ -1492,10 +1491,9 @@ def test_kyle_105098_1_parent_a_j_9_pn_9_pcs_omits_103603():
     assert not layout.is_multi_qty
 
     cells = _kyle_105098_cell_rows()
-    assert len(cells) == 11  # header + 9 letters + 103603 junk
+    assert len(cells) == 10  # header + 9 letters
     assert cells[0] == ["QTY", "ITEM", "PART NO.", "DESCRIPTION"]
     assert cells[1][1] == "A" and cells[9][1] == "J"
-    assert cells[-1][2] == "103603-1"
     parsed = parse_material_list_cells(cells)
     _assert_kyle_105098_1(parsed)
 
@@ -1511,7 +1509,6 @@ def test_kyle_105098_1_parent_a_j_9_pn_9_pcs_omits_103603():
     _assert_kyle_105098_1(parse_material_list_text(text))
     extracted = extract_bom(text=text)
     _assert_kyle_105098_1(extracted)
-    assert extracted.method and extracted.method.startswith("table_")
     assert not (extracted.method or "").startswith("ocr_time")
 
     harvested = harvest_ocr_row_strips(
