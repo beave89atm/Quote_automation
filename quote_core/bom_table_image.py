@@ -715,10 +715,10 @@ def _pick_qty_token(pipes: list[str], isolated: list[str]) -> str:
         return ""
     low = [p for p in pipes if p in {"1", "2"}]
     if low:
-        return Counter(low).most_common(1)[0]
+        return Counter(low).most_common(1)[0][0]
     high = [p for p in pipes if p in left and p not in {"1", "2"}]
     if high:
-        return Counter(high).most_common(1)[0]
+        return Counter(high).most_common(1)[0][0]
     return ""
 
 
