@@ -38,6 +38,13 @@ _DASH_QTY_HEADER_RE = re.compile(
     r"-2.{0,20}-1.{0,24}ITEM.{0,24}PART",
     re.IGNORECASE | re.DOTALL,
 )
+# Time LOM whose qty columns are the dash PNs themselves (1004747-1 /
+# 1004747-2), not "QTY" / "-1". Items on that shape are numbers 1–17.
+_PN_LABELED_QTY_HEADER_RE = re.compile(
+    r"\d{5,7}-[1-4].{0,40}\d{5,7}-[1-4].{0,40}ITEM.{0,40}PART",
+    re.IGNORECASE | re.DOTALL,
+)
+_PN_DASH_QTY_COL_RE = re.compile(r"^(\d{5,7})-([1-4])$")
 
 _HEADER_QTY = frozenset({"QTY", "QTY.", "QUANTITY"})
 _HEADER_ITEM = frozenset({"ITEM", "ITEM.", "BALLOON", "ID", "FIND"})
@@ -199,17 +206,36 @@ def _iter_item_letters() -> Iterable[str]:
             yield first + second
 
 
-def is_material_list_item(token: str | None) -> bool:
-    """True for A, Z, AA, BB, BC — never I or O in any position."""
+def is_material_list_item(token: str | None, *, numeric: bool = False) -> bool:
+    """True for A, Z, AA, BB, BC — never I or O in any position.
+
+    Digits 1–999 are items only on numbered Time LOMs (1004747-1). Never
+    treat ``2`` as an item on lettered ``| 2 | A | pn |`` rows — that is qty.
+    """
     text = str(token or "").strip().upper()
+    if numeric and re.fullmatch(r"[1-9]\d{0,2}", text):
+        return True
     if not _ITEM_TOKEN_RE.fullmatch(text):
         return False
     return all(ch not in _SKIP_ITEM_LETTERS for ch in text)
 
 
-def item_sort_key(item: str) -> tuple[int, str]:
+def item_sort_key(item: str) -> tuple[int, int, str]:
     text = str(item or "").strip().upper()
-    return (len(text), text)
+    if not text:
+        return (10_000, 0, "")
+    if text.isdigit():
+        return (0, int(text), text)
+    return (len(text), 0, text)
+
+
+def _is_structured_multi_qty_header(blob: str | None) -> bool:
+    text = blob or ""
+    return bool(
+        _MULTI_QTY_HEADER_RE.search(text)
+        or _DASH_QTY_HEADER_RE.search(text)
+        or _PN_LABELED_QTY_HEADER_RE.search(text)
+    )
 
 
 def flag_unread_qty_column(bom: Any) -> Any:
@@ -247,7 +273,7 @@ def looks_like_time_material_list(text: str | None) -> bool:
 
 def text_has_material_list_grid(text: str | None) -> bool:
     blob = text or ""
-    if _MULTI_QTY_HEADER_RE.search(blob):
+    if _is_structured_multi_qty_header(blob):
         return True
     if _GRID_HEADER_RE.search(blob):
         return True
@@ -1362,7 +1388,7 @@ def harvest_ocr_row_strips(
     if page_text:
         stamp.append(str(page_text))
     header_blob = "\n".join(stamp)
-    if _MULTI_QTY_HEADER_RE.search(header_blob) or _DASH_QTY_HEADER_RE.search(header_blob):
+    if _is_structured_multi_qty_header(header_blob):
         parsed = parse_material_list_text(
             "LIST OF MATERIAL\n" + header_blob, bom_config=bom_config
         )
@@ -1462,7 +1488,7 @@ def harvest_material_list_lines(text: str | None, *, bom_config: str | None = No
 
     if not text:
         return BomResult(method=None, confidence=0.0, notes=["No text to harvest"])
-    if _MULTI_QTY_HEADER_RE.search(text) or _DASH_QTY_HEADER_RE.search(text):
+    if _is_structured_multi_qty_header(text):
         return BomResult(
             method=None,
             confidence=0.0,
@@ -1559,6 +1585,8 @@ class MaterialListLayout:
     desc_x: float | None = None
     header_y: float | None = None
     headers: list[str] = field(default_factory=list)
+    # 1004747-1: ITEM is 1–17, not A–Z. Opt-in only — "2" stays a qty elsewhere.
+    numeric_items: bool = False
 
     @property
     def is_multi_qty(self) -> bool:
@@ -1587,8 +1615,11 @@ def detect_material_list_header(cells: Sequence[str]) -> MaterialListLayout | No
     or ``-4 | -3 | -2 | -1 | ITEM | PART NO. | DESCRIPTION``.
     """
     raw = [str(c or "").strip() for c in cells if str(c or "").strip()]
-    if len(raw) == 1 and re.search(r"\bQTY\b", raw[0], re.I) and re.search(
-        r"\bITEM\b", raw[0], re.I
+    if len(raw) == 1 and re.search(r"\bITEM\b", raw[0], re.I) and re.search(
+        r"\bPART\b", raw[0], re.I
+    ) and (
+        re.search(r"\bQTY\b", raw[0], re.I) or _PN_LABELED_QTY_HEADER_RE.search(raw[0])
+        or re.search(r"-2.{0,24}-1.{0,24}ITEM", raw[0], re.I)
     ):
         raw = raw[0].split()
     tokens = [_norm_header_token(c) for c in raw if c]
@@ -1601,7 +1632,13 @@ def detect_material_list_header(cells: Sequence[str]) -> MaterialListLayout | No
         # Allow "LIST OF MATERIAL" title rows to fail (not a column header).
         return None
     qty_cols: list[str] = []
+    pn_labeled = False
     for t in tokens:
+        pn_qty = _PN_DASH_QTY_COL_RE.fullmatch(t)
+        if pn_qty:
+            qty_cols.append(f"-{pn_qty.group(2)}")
+            pn_labeled = True
+            continue
         dash = _DASH_COL_RE.match(t) or (
             _BARE_DASH_RE.fullmatch(t) if t.lstrip("-").isdigit() and len(t) <= 3 else None
         )
@@ -1620,7 +1657,9 @@ def detect_material_list_header(cells: Sequence[str]) -> MaterialListLayout | No
     # 102728-1 prints a lone ``-1`` above item BC — not a qty-column header.
     if qty_cols == ["-1"] and "QTY" not in joined and "DESC" not in joined:
         return None
-    return MaterialListLayout(qty_cols=qty_cols, headers=tokens)
+    return MaterialListLayout(
+        qty_cols=qty_cols, headers=tokens, numeric_items=pn_labeled
+    )
 
 
 def _norm_header_token(raw: str) -> str:
@@ -1735,6 +1774,9 @@ def _split_row_fields(
 
     from quote_core.bom import normalize_part_no
 
+    if layout.numeric_items:
+        return _split_numeric_item_row(tokens, layout)
+
     # Prefer finding ITEM then PART, with qty cells to the left of ITEM.
     item_idx = None
     for i, tok in enumerate(tokens):
@@ -1787,6 +1829,65 @@ def _split_row_fields(
     return qty_cells, item, part, " ".join(desc_parts).strip(" ,;|")
 
 
+def _split_numeric_item_row(
+    tokens: list[str],
+    layout: MaterialListLayout,
+) -> tuple[list[str], str, str, str]:
+    """Numbered ITEM (1–17) after the dash qty columns. Do not treat qty 2 as item 2."""
+    from quote_core.bom import normalize_part_no
+
+    part_idx = None
+    for i, tok in enumerate(tokens):
+        if is_material_list_item(tok, numeric=True):
+            continue
+        if _is_dashed_time_pn(tok) or re.fullmatch(r"\d{4,7}", str(tok or "").strip()):
+            part_idx = i
+            break
+        recovered = recover_time_part_no(tok)
+        if recovered and _is_time_like_part(recovered):
+            part_idx = i
+            break
+    if part_idx is None:
+        return [], "", "", ""
+    before = tokens[:part_idx]
+    n_qty = len(layout.qty_cols)
+    while before and before[0] == "" and len(before) > n_qty + 1:
+        before = before[1:]
+    item = ""
+    qty_cells: list[str] = []
+    if len(before) >= n_qty + 1 and is_material_list_item(before[n_qty], numeric=True):
+        qty_cells = list(before[:n_qty])
+        item = before[n_qty]
+    else:
+        item_at = None
+        for i in range(len(before) - 1, -1, -1):
+            if is_material_list_item(before[i], numeric=True):
+                item_at = i
+                break
+        if item_at is None:
+            return [], "", "", ""
+        item = before[item_at]
+        qty_cells = list(before[:item_at])
+    rest = tokens[part_idx:]
+    part = recover_time_part_no(rest[0]) or rest[0]
+    desc_parts = rest[1:]
+    if len(rest) >= 2 and re.match(r"^[-–—=]\s*\d", str(rest[1])):
+        glued = recover_time_part_no(rest[0] + rest[1]) or normalize_part_no(
+            rest[0] + rest[1]
+        )
+        if glued:
+            part = glued
+            desc_parts = rest[2:]
+    if not qty_cells and n_qty:
+        qty_cells = [""] * n_qty if layout.is_multi_qty else ["1"]
+    if layout.is_multi_qty and n_qty > 1:
+        if len(qty_cells) < n_qty:
+            qty_cells = list(qty_cells) + [""] * (n_qty - len(qty_cells))
+        elif len(qty_cells) > n_qty:
+            qty_cells = qty_cells[:n_qty]
+    return qty_cells, str(item), part, " ".join(desc_parts).strip(" ,;|")
+
+
 def parse_material_list_cells(
     rows: Sequence[Sequence[str]],
     *,
@@ -1816,7 +1917,7 @@ def parse_material_list_cells(
         if detect_material_list_header(cells):
             continue
         qty_cells, item, part_raw, desc = _split_row_fields(cells, layout)
-        if not item or not is_material_list_item(item):
+        if not item or not is_material_list_item(item, numeric=layout.numeric_items):
             continue
         if item in seen_items:
             continue
@@ -1884,6 +1985,8 @@ def parse_material_list_cells(
 def _incomplete_sequence_notes(items: list[str]) -> list[str]:
     if not items:
         return []
+    if all(str(i).strip().isdigit() for i in items):
+        return []
     last = max(items, key=item_sort_key)
     expected = time_item_letters(through=last)
     found = {i.upper() for i in items}
@@ -1914,12 +2017,15 @@ def _split_delimited_line(line: str) -> list[str]:
         # Decorative leading pipe on QTY|ITEM|PN|DESC: "| 2 | A | pn | desc".
         # Keep a leading empty when the next cell is the item letter
         # (" | A | 460200 | RAIL" — unread QTY, live 791587b).
+        # Do not drop a blank first dash qty on numbered LOM
+        # (" | 1 | 16 | 1004806-2" is -2-only, not qty 1 on -1).
         if (
-            len(cells) >= 2
+            len(cells) >= 3
             and cells[0] == ""
             and cells[1] != ""
             and len(cells) <= 5
             and not is_material_list_item(cells[1])
+            and is_material_list_item(cells[2])
         ):
             cells = cells[1:]
         return cells
@@ -2060,8 +2166,12 @@ def _layout_from_header_words(row: list[dict[str, Any]]) -> MaterialListLayout |
     for w in merged:
         token = _norm_header_token(str(w.get("text") or ""))
         x = (float(w.get("x0", 0)) + float(w.get("x1", 0))) / 2.0
-        dash = _DASH_COL_RE.match(str(w.get("text") or "").strip())
-        if dash or token in _HEADER_QTY:
+        raw_txt = str(w.get("text") or "").strip()
+        dash = _DASH_COL_RE.match(raw_txt)
+        pn_qty = _PN_DASH_QTY_COL_RE.fullmatch(token) or _PN_DASH_QTY_COL_RE.fullmatch(
+            raw_txt
+        )
+        if dash or pn_qty or token in _HEADER_QTY:
             qty_xs.append(x)
         elif token in _HEADER_ITEM:
             item_x = x
@@ -2120,9 +2230,11 @@ def _assign_row_cells(
     qty_cells = [" ".join(buckets.get(c, [])).strip() or "-" for c in layout.qty_cols]
     item = "".join(buckets.get("ITEM", [])).replace(" ", "").upper()
     # Two OCR words "B" "B" in the item column → BB.
-    if not is_material_list_item(item) and buckets.get("ITEM"):
+    if not is_material_list_item(item, numeric=layout.numeric_items) and buckets.get(
+        "ITEM"
+    ):
         glued = "".join(t.strip().upper() for t in buckets["ITEM"] if t.strip())
-        if is_material_list_item(glued):
+        if is_material_list_item(glued, numeric=layout.numeric_items):
             item = glued
     part = " ".join(buckets.get("PART", [])).strip()
     desc = " ".join(buckets.get("DESC", [])).strip()

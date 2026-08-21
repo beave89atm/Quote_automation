@@ -3,8 +3,9 @@
 Kyle order: 102728-1 → 28106-1 → 1004747-1 → 1004611 → 103516 →
 105098-1 → 33612-1 → 21727-1 → 1007922-1 → P904225-1.
 
-102728-1 and 28106-1 are Kyle-locked (letter / PN / qty). The rest use only
-PNs already documented in this repo. Live proof is the laptop clip → xlsx.
+102728-1 and 28106-1 are Kyle-locked (letter / PN / qty). 1004747-1 is a
+working numbered 1–17 grid (14 PN / 18 pcs; not Kyle Excel). The rest use
+only PNs already documented in this repo. Live proof is the laptop clip → xlsx.
 Do not merge until all 10 live sheets match.
 """
 
@@ -21,8 +22,11 @@ from quote_core.bom_table import (
 )
 
 from tests.test_bom_table import (
+    _1004747_cell_rows,
     _KYLE_102728_1,
     _KYLE_28106_1,
+    _WORKING_1004747_1,
+    _assert_1004747_1,
     _assert_kyle_102728_1,
     _assert_kyle_28106_1,
     _assert_kyle_xlsx,
@@ -58,25 +62,9 @@ class TimeTenSpec:
     status: str = "working_fixture"
 
 
-# Live 74f3ab3 PASS 15 unique PNs. Letters from leftover strips; 6993-1 letter
-# Q is the next Time balloon after P (not Kyle Excel). Qty 1 on this sheet only.
-_1004747_1: list[tuple[str, int, str, str]] = [
-    ("A", 1, "1004806-1", "HOSE"),
-    ("B", 1, "1004806-2", "HOSE"),
-    ("C", 1, "11694-2", "TUBE"),
-    ("D", 1, "1004738-1", "TUBE"),
-    ("E", 1, "1004739-1", "TUBE"),
-    ("F", 1, "1004711-1", "TUBE"),
-    ("G", 1, "1004740-1", "TUBE"),
-    ("H", 1, "1004741-1", "TUBE"),
-    ("J", 1, "1004744-1", "TUBE"),
-    ("K", 1, "1004744-2", "TUBE"),
-    ("L", 1, "1004737-1", "TUBE"),
-    ("M", 1, "25060-6", "PLATE"),
-    ("N", 1, "28275-1", "TUBE"),
-    ("P", 1, "28275-2", "TUBE"),
-    ("Q", 1, "6993-1", "HOSE GUIDE"),
-]
+# Working numbered grid (not Kyle Excel). 14 unique / 18 pcs. Live 74f3ab3
+# reported 15 — it leaked 1004806-2 / 11694-2 / 25009-2 and missed
+# 1004773-1 / 1004743-1.
 
 _103516: list[tuple[str, int, str, str]] = [
     ("A", 1, "103537-1", "TUBE"),
@@ -135,14 +123,25 @@ def _specs() -> dict[str, TimeTenSpec]:
         ),
         "1004747-1": TimeTenSpec(
             key="1004747-1",
-            title="WELDMENT, PLATFORM  1004747-1  TIME MANUFACTURING  SHEET 1 OF 2",
+            title="OUTER BOOM WELDMENT - 1004747-1  TIME MANUFACTURING",
             bom_config="-1",
             kyle_locked=False,
-            header=["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
-            rows=list(_1004747_1),
-            reject_pns=frozenset({"1004747-1", "56657", "97879", "73207"}),
+            header=["1004747-1", "1004747-2", "ITEM", "PART NO.", "DESCRIPTION", "NOTES"],
+            rows=list(_WORKING_1004747_1),
+            reject_pns=frozenset(
+                {
+                    "1004747-1",
+                    "1004806-2",
+                    "11694-2",
+                    "25009-2",
+                    "56657",
+                    "97879",
+                    "73207",
+                }
+            ),
+            extra_cells=_1004747_cell_rows()[1:],
             library_bait=("1004748-1.pdf",),
-            status="live_pass_15_pns_qtys_unconfirmed",
+            status="working_numbered_14_18",
         ),
         "1004611": TimeTenSpec(
             key="1004611",
@@ -228,6 +227,8 @@ def _specs() -> dict[str, TimeTenSpec]:
 def _cells_for(spec: TimeTenSpec) -> list[list[str]]:
     if spec.key == "28106-1":
         return _kyle_28106_cell_rows()
+    if spec.key == "1004747-1":
+        return _1004747_cell_rows()
     cells = [list(spec.header)]
     cells.extend([str(qty), item, pn, desc] for item, qty, pn, desc in spec.rows)
     cells.extend(spec.extra_cells)
@@ -240,6 +241,9 @@ def _assert_grid(bom, spec: TimeTenSpec) -> None:
         return
     if spec.key == "28106-1":
         _assert_kyle_28106_1(bom)
+        return
+    if spec.key == "1004747-1":
+        _assert_1004747_1(bom)
         return
     by_item = {r.item: r for r in bom.rows}
     assert len(bom.rows) == len(spec.rows), [f"{r.item}:{r.part_no}×{r.qty}" for r in bom.rows]
@@ -277,8 +281,8 @@ def test_time_ten_order_is_kyle_order():
     assert list(specs) == list(TIME_TEN_ORDER)
     assert specs["102728-1"].kyle_locked and specs["28106-1"].kyle_locked
     assert not any(specs[k].kyle_locked for k in TIME_TEN_ORDER[2:])
-    assert len(_1004747_1) == 15
-    assert sum(q for _i, q, _p, _d in _1004747_1) == 15
+    assert len(_WORKING_1004747_1) == 14
+    assert sum(q for _i, q, _p, _d in _WORKING_1004747_1) == 18
 
 
 def test_time_ten_cell_text_harvest_and_xlsx(tmp_path: Path):
@@ -332,15 +336,20 @@ def test_time_ten_cell_text_harvest_and_xlsx(tmp_path: Path):
 def test_1004747_1_does_not_drop_siblings_or_hose_guide():
     spec = _specs()["1004747-1"]
     cells = _cells_for(spec)
-    cells.append(["1", "S", "73207", "ADDED CONFIGURATION"])
-    cells.append(["1", "B", "56657", "FIRST RELEASE TO PRODUCTION"])
+    cells.append(["1", "", "99", "73207", "ADDED CONFIGURATION", ""])
+    cells.append(["1", "", "98", "56657", "FIRST RELEASE TO PRODUCTION", ""])
     bom = parse_material_list_cells(cells, bom_config="-1")
     parts = {r.part_no for r in bom.rows}
     assert "6993-1" in parts
     assert "1004806-1" in parts and "1004711-1" in parts
+    assert "1004773-1" in parts and "1004743-1" in parts
     assert "1004747-1" not in parts
+    assert "1004806-2" not in parts
+    assert "11694-2" not in parts
+    assert "25009-2" not in parts
     assert "73207" not in parts and "56657" not in parts
-    assert len(bom.rows) == 15
+    assert len(bom.rows) == 14
+    assert sum(r.qty for r in bom.rows) == 18
 
 
 def test_103516_hyphenless_dupes_and_column_index_are_not_pieces():
@@ -366,5 +375,7 @@ def test_time_ten_is_not_live_done():
     assert specs["102728-1"].rows[-2][2] == "102727-4"
     assert sum(q for _i, q, _p, _d in specs["102728-1"].rows) == 97
     assert sum(q for _i, q, _p, _d in specs["28106-1"].rows) == 13
+    assert len(specs["1004747-1"].rows) == 14
+    assert sum(q for _i, q, _p, _d in specs["1004747-1"].rows) == 18
     waiting = [k for k, s in specs.items() if not s.kyle_locked]
     assert waiting == list(TIME_TEN_ORDER[2:])

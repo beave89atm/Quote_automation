@@ -75,7 +75,7 @@ def _row_fields(row: Any) -> tuple[Any, Any, Any, Any]:
 
 
 def _sort_rows(rows: list[Any]) -> list[Any]:
-    def key(row: Any) -> tuple[int, str]:
+    def key(row: Any) -> tuple:
         item = row.item if hasattr(row, "item") else (row or {}).get("item")
         return item_sort_key(str(item or ""))
 
