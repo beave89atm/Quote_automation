@@ -407,6 +407,7 @@ def test_push_single_solid_step_skips_assembly_root(tmp_path: Path):
     relink.assert_not_called()
     profile.assert_called()
     assert any("left as Part" in n for n in (result.notes or []))
+    assert any("quickAddCAD last" in n for n in (result.notes or []))
 
 
 def test_ensure_laser_profile_ops_does_not_post_grafted_ops():
@@ -1282,3 +1283,219 @@ def test_linear_bind_uses_ids_not_product_name():
     assert params["sku"] == "DOM-2.00x0.25"
     assert "productName" not in {k.lower() for k in params}
     assert any("addLinear bound" in n for n in notes)
+
+
+def _ok_update():
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.text = "true"
+    return resp
+
+
+def test_ensure_weld_ops_uses_item_level_update_not_full_quote_post():
+    from secturafab.weld_ops import ensure_weld_ops
+
+    client = MagicMock()
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "asm",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "Description": "102728-1",
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+            {
+                "ID": "cad",
+                "ProductType": 100,
+                "Description": "plate",
+                "OperationCostList": [
+                    {
+                        "OperationName": "Profile",
+                        "CalculatorName": "Laser",
+                        "UnitTime": 0.04,
+                    }
+                ],
+            },
+        ]
+    }
+    client.request.return_value = _ok_update()
+
+    notes = ensure_weld_ops(
+        client,
+        "qid",
+        times={"weld_minutes": 12, "fitup_with_fixture_minutes": 5},
+        part_key="102728-1",
+        takeoff={"items": [{"size": "1/4", "inches": 10}]},
+    )
+    assert client.request.call_count == 1
+    assert client.request.call_args.args[0] == "PUT"
+    assert "quoteOnline/update" in client.request.call_args.args[1]
+    assert not any(
+        len(c.args) >= 2 and c.args[0] == "POST" and str(c.args[1]).rstrip("/") == "v1/quote"
+        for c in client.request.call_args_list
+    )
+    body = client.request.call_args.kwargs["json"]
+    assert body[0]["ParamName"] == "OperationCostList"
+    assert body[0]["ID"] == "asm"
+    assert any("Attached Weld" in n for n in notes)
+
+
+def test_apply_item_categories_never_posts_full_quote():
+    client = MagicMock()
+    client.get_json.return_value = {
+        "ItemList": [
+            {"ID": "c1", "Description": "PLATE GUSSET", "ProductType": 100},
+        ]
+    }
+    client.request.return_value = _ok_update()
+    service = SecturaFabPushService(client=client)
+    notes = service.apply_item_categories("qid")
+    assert client.request.call_count == 1
+    assert client.request.call_args.args[0] == "PUT"
+    assert "quoteOnline/update" in client.request.call_args.args[1]
+    assert any("Categorized items" in n for n in notes)
+
+
+def test_apply_bom_quantities_never_posts_full_quote():
+    from secturafab.qty_ops import apply_bom_quantities
+
+    client = MagicMock()
+    client.get_json.return_value = {
+        "ItemList": [
+            {"ID": "asm", "ProductType": 300, "IsAssembly": True, "Quantity": 1},
+            {
+                "ID": "c1",
+                "Description": "15864-2",
+                "ProductType": 100,
+                "Quantity": 1,
+                "AssemblyQty": 1,
+            },
+        ]
+    }
+    client.request.return_value = _ok_update()
+    notes = apply_bom_quantities(
+        client,
+        "qid",
+        bom_rows=[{"part_no": "15864-2", "qty": 2}],
+        part_key="28106-1",
+    )
+    assert client.request.call_count == 1
+    assert client.request.call_args.args[0] == "PUT"
+    assert "quoteOnline/update" in client.request.call_args.args[1]
+    assert any("Applied BOM quantities" in n for n in notes)
+
+
+def test_cad_still_ready_requires_profile_after_item_level_weld():
+    """Weld on the assembly must not be treated as Cad success if Profile is gone."""
+    from secturafab.profile_ops import cad_plate_ready
+
+    wiped_cad = {
+        "ID": "cad",
+        "ProductType": 100,
+        "Description": "102728-1 plate",
+        "MaterialCost": 12.5,
+        "FileID": "prt",
+        "Data": 'DataPart:{"Time":0.05}',
+        "OperationCostList": [],
+    }
+    assert cad_plate_ready(wiped_cad) is False
+    shop = {
+        **wiped_cad,
+        "OperationCostList": [
+            {
+                "OperationName": "Profile",
+                "CalculatorName": "Laser",
+                "PrimaryOperation": True,
+                "UnitTime": 0.05,
+            }
+        ],
+    }
+    assert cad_plate_ready(shop) is True
+
+
+def test_push_creates_assembly_tree_before_cad_when_multi_bom(tmp_path: Path):
+    """Assembly shell + addLinear happen before quickAddCAD."""
+    pdf = tmp_path / "28106-1.pdf"
+    stp = tmp_path / "28106-1.stp"
+    pdf.write_bytes(b"%PDF")
+    stp.write_bytes(b"ISO")
+    client = MagicMock()
+    client.get_json.return_value = {
+        "QuoteNumber": "28106-1",
+        "ItemCount": 2,
+        "ItemList": [
+            {"ID": "asm", "ProductType": 300, "IsAssembly": True},
+            {
+                "ID": "p1",
+                "ProductType": 100,
+                "Description": "15864-2",
+                "MaterialCost": 10,
+                "OperationCostList": [
+                    {
+                        "OperationName": "Profile",
+                        "CalculatorName": "Laser",
+                        "UnitTime": 0.04,
+                    }
+                ],
+            },
+        ],
+    }
+    service = SecturaFabPushService(client=client)
+    order: list[str] = []
+
+    def _mark(name, value):
+        def _inner(*_a, **_k):
+            order.append(name)
+            return value
+
+        return _inner
+
+    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "quick_add_cad", side_effect=_mark("cad", {"ok": True})
+    ), patch.object(service, "create_quote", return_value="qid"), patch.object(
+        service, "find_existing_quote", return_value=None
+    ), patch.object(service, "apply_item_categories", return_value=[]), patch(
+        "secturafab.pdf_assembly_ops.create_assembly_shell",
+        side_effect=_mark("shell", ["Created Assembly shell"]),
+    ), patch(
+        "secturafab.push.bind_linear_products",
+        side_effect=_mark("linear", ["addLinear bound"]),
+    ), patch(
+        "secturafab.push.relink_assembly_children", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_purchased_components", return_value=[]
+    ), patch(
+        "secturafab.push.find_purchased_part_keys", return_value={}
+    ), patch(
+        "secturafab.push.refresh_bom_rows_for_push",
+        return_value=([{"part_no": "A", "qty": 1}, {"part_no": "B", "qty": 1}], []),
+    ), patch(
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_laser_profile_ops", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_weld_ops", return_value=["Attached Weld"]
+    ), patch(
+        "secturafab.push.finalize_quote_ops", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value=None
+    ):
+        result = service.push_job(
+            title="28106-1",
+            pdf_filename="28106-1.pdf",
+            pdf_path=pdf,
+            stp_path=stp,
+            takeoff={"library": {"part_key": "28106-1", "folder": r"C:\drawings\Time"}},
+            times={"weld_minutes": 10, "fitup_with_fixture_minutes": 5},
+            job_id=80,
+        )
+
+    assert result.ok is True
+    assert "shell" in order
+    assert "cad" in order
+    assert order.index("shell") < order.index("cad")
+    assert order.index("linear") < order.index("cad")

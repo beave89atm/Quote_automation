@@ -185,9 +185,35 @@ def ensure_purchased_components(
     if not changed:
         return ["No purchased/hardware lines matched for Component"]
 
-    save = client.request("POST", "v1/quote", json=detail)
-    if save.status_code >= 400:
-        return [f"Saving Component lines failed ({save.status_code})"]
+    from .quote_update import update_item_fields
+
+    ok = update_item_fields(
+        client,
+        quote_id,
+        items,
+        fields=[
+            "ProductType",
+            "ItemType",
+            "Category",
+            "IsPlate",
+            "IsPart",
+            "IsLinear",
+            "Machine",
+            "ProductSubType",
+            "OperationCostList",
+            "BadgeString",
+            "PrimaryTime",
+            "UnitPrimaryTime",
+            "WeightCategory",
+            "Data",
+            "Description",
+        ],
+    )
+    if not ok:
+        return [
+            "WARNING: Saving Component lines via item-level update failed — "
+            "not falling back to POST v1/quote (that wipes Cad Profile)"
+        ]
     return [
         f"Set Component (purchased) on {changed} item(s): " + ", ".join(names[:8])
         + ("…" if len(names) > 8 else "")

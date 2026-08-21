@@ -1,17 +1,30 @@
 """Safe property updates via PUT quoteOnline/update (no CAD rebuild).
 
 Material/Thickness updates go through UpdateItem_Part and wipe Profile.
-UnitCost / UnitPrice / Quantity updates via this endpoint do not.
+A full ``POST v1/quote`` after add-part also wipes OperationCostList
+(Kyle / 102728-1 R3, 2026-08-21). Use this module for every item write
+after quickAddCAD / addplate / addShape.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .client import SecturaFabClient
 from .weld_ops import _desc_token, pick_weld_target_item
 
 _ASSEMBLY_TYPE = 300
+
+
+def _update_value(val: Any) -> str:
+    if val is None:
+        return ""
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    if isinstance(val, (dict, list)):
+        return json.dumps(val)
+    return str(val)
 
 
 def quote_online_update(
@@ -30,7 +43,7 @@ def quote_online_update(
             row["ParentID"] = quote_id
         # Values must be strings per OpenAPI.
         if "Value" in row and row["Value"] is not None and not isinstance(row["Value"], str):
-            row["Value"] = str(row["Value"])
+            row["Value"] = _update_value(row["Value"])
         body.append(row)
     resp = client.request("PUT", "v1/quoteOnline/update", json=body)
     try:
@@ -41,6 +54,26 @@ def quote_online_update(
         "true",
         '"true"',
     }
+
+
+def update_item_fields(
+    client: SecturaFabClient,
+    quote_id: str,
+    items: list[dict[str, Any]],
+    *,
+    fields: list[str],
+) -> bool:
+    """Item-level PUT of named fields. Never ``POST v1/quote``."""
+    params: list[dict[str, Any]] = []
+    for it in items:
+        iid = str(it.get("ID") or "")
+        if not iid:
+            continue
+        for name in fields:
+            if name not in it:
+                continue
+            params.append({"ID": iid, "ParamName": name, "Value": it[name]})
+    return quote_online_update(client, quote_id, params)
 
 
 def rollup_assembly_costs(

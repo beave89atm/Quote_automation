@@ -19,7 +19,7 @@ from quote_core.drawing_title import (
 )
 
 from .assembly_ops import (
-    ensure_assembly_root,
+    ensure_assembly_root,  # imported for tests; never call after add-part
     needs_assembly_structure,
     relink_assembly_children,
 )
@@ -771,24 +771,29 @@ class SecturaFabPushService:
                 it["IsPlate"] = True
                 it["IsPart"] = True
 
-        # Best-effort save (Sectura may ignore some flags on API-created drafts).
-        save = self.client.request("POST", "v1/quote", json=detail)
+        from .quote_update import update_item_fields
+
+        ok = update_item_fields(
+            self.client,
+            quote_id,
+            items,
+            fields=["ItemType", "Category", "IsLinear", "IsPlate", "IsPart"],
+        )
         notes = [
             f"Categorized items — Cad: {counts['Cad']}, Linear: {counts['Linear']}, "
             f"Component: {counts['Component']}"
         ]
-        if save.status_code >= 400:
+        if not ok:
             notes.append(
-                f"Category save returned {save.status_code}; set Cad/Linear/Component "
-                f"manually in SecturaFAB if the dropdown is still blank"
+                "WARNING: Category save via item-level update failed — "
+                "not falling back to POST v1/quote (that wipes Cad Profile)"
             )
-        else:
-            # Verify one linear flag if we expected any
+        elif counts["Linear"]:
             check = self.client.get_json(f"v1/quote/{quote_id}")
             linear_ok = sum(
                 1 for it in (check.get("ItemList") or []) if it.get("IsLinear")
             )
-            if counts["Linear"] and not linear_ok:
+            if not linear_ok:
                 notes.append(
                     "SecturaFAB kept items as Cad after save — open each Linear row "
                     "(tube/bar/channel) and set the category dropdown manually"
@@ -1178,6 +1183,28 @@ class SecturaFabPushService:
 
             used_step = False
             used_pdf_shell = False
+            # Kyle (102728-1 R3): assembly tree + addLinear BEFORE add-part.
+            # A full POST v1/quote after quickAddCAD wipes Cad OperationCostList.
+            stp_summary = (takeoff or {}).get("stp_summary") or {}
+            try:
+                solid_count = int(stp_summary.get("solid_count") or 0)
+            except (TypeError, ValueError):
+                solid_count = 0
+            need_assembly = needs_assembly_structure([], bom_rows) or solid_count > 1
+            if need_assembly:
+                from .pdf_assembly_ops import create_assembly_shell
+
+                notes.extend(
+                    create_assembly_shell(
+                        self.client,
+                        quote_id,
+                        part_key=part_key,
+                        qty=qty,
+                        description=quote_description or title,
+                    )
+                )
+            notes.extend(bind_linear_products(self.client, quote_id))
+
             if cad:
                 try:
                     self.quick_add_cad(
@@ -1192,7 +1219,7 @@ class SecturaFabPushService:
                     used_step = True
                     uploaded.extend(p.name for p in cad)
                     notes.append(
-                        f"Imported STEP/STP via quickAddCAD: {cad[0].name} "
+                        f"Imported STEP/STP via quickAddCAD last: {cad[0].name} "
                         f"({machine}, {material}, {thickness}\", units=inch)"
                     )
                 except SecturaFabApiError as exc:
@@ -1214,17 +1241,9 @@ class SecturaFabPushService:
                         ) from exc
 
             if used_step:
+                # After add-part: item-level updates only. Never POST v1/quote.
                 notes.extend(self.apply_item_categories(quote_id))
-                step_detail = self.client.get_json(f"v1/quote/{quote_id}")
-                step_items = list(step_detail.get("ItemList") or [])
-                use_assembly = needs_assembly_structure(step_items, bom_rows)
-                if use_assembly:
-                    # Multi-body / multi-BOM weldment — lesson 02 Assembly root.
-                    notes.extend(
-                        ensure_assembly_root(
-                            self.client, quote_id, part_key=part_key
-                        )
-                    )
+                if need_assembly:
                     purchased = find_purchased_part_keys(
                         library_folder=library.get("folder"),
                         related_pdf_names=list(library.get("related_pdfs") or []),
@@ -1235,15 +1254,11 @@ class SecturaFabPushService:
                             self.client, quote_id, purchased_keys=purchased
                         )
                     )
-                    # Component conversion can drop links — re-attach under assembly.
                     notes.extend(
                         relink_assembly_children(
                             self.client, quote_id, part_key=part_key
                         )
                     )
-                    # Do NOT call UpdateItem_Part on STEP assemblies.
-                    # On multi-body welds (e.g. 80341687) its delayed CAD rebuild can wipe
-                    # the entire ItemList ~1–2 minutes later.
                     notes.append(
                         f"Skipped UpdateItem_Part on STEP assembly (seed {material} @ "
                         f"{thickness}\") — avoids delayed CAD wipe of ItemList"
@@ -1266,8 +1281,6 @@ class SecturaFabPushService:
                     )
                 )
                 notes.extend(bind_linear_products(self.client, quote_id))
-                # STEP: Sectura runs primary ops + laser calculator after Cad import.
-                # Never graft OperationCostList / addplate-on-existing (Laser stays 0).
                 notes.extend(
                     ensure_laser_profile_ops(
                         self.client,
@@ -1276,16 +1289,6 @@ class SecturaFabPushService:
                         thickness=thickness,
                     )
                 )
-                # Profile/Weld quote POSTs can reset child Qty to 1 — re-apply now.
-                notes.extend(
-                    apply_bom_quantities(
-                        self.client,
-                        quote_id,
-                        bom_rows=bom_rows,
-                        part_key=part_key,
-                    )
-                )
-                notes.extend(ensure_imperial_item_units(self.client, quote_id))
             elif bom_rows and library.get("folder"):
                 from .pdf_assembly_ops import build_pdf_only_assembly
 

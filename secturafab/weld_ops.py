@@ -378,15 +378,25 @@ def ensure_weld_ops(
     kept = [o for o in existing if o.get("OperationName") != "Weld"]
     target["OperationCostList"] = kept + weld_ops
 
-    # Write back via full quote POST (same pattern as Profile attach).
-    for it in detail.get("ItemList") or []:
-        if it.get("ID") == target["ID"]:
-            it["OperationCostList"] = target["OperationCostList"]
-            break
+    # Item-level only — full POST v1/quote after add-part wipes Cad Profile.
+    from .quote_update import quote_online_update
 
-    save = client.request("POST", "v1/quote", json=detail)
-    if save.status_code >= 400:
-        return [f"Saving Weld ops failed ({save.status_code})"]
+    ok = quote_online_update(
+        client,
+        quote_id,
+        [
+            {
+                "ID": str(target["ID"]),
+                "ParamName": "OperationCostList",
+                "Value": target["OperationCostList"],
+            }
+        ],
+    )
+    if not ok:
+        return [
+            "WARNING: Saving Weld ops via item-level update failed — "
+            "not falling back to POST v1/quote (that wipes Cad Profile)"
+        ]
 
     fit_label = "with fixture"
     mode = (os.getenv("SECTURAFAB_FITUP_MODE") or "with").strip().lower()

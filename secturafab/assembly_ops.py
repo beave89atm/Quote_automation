@@ -158,9 +158,38 @@ def ensure_assembly_root(
     )
     detail["ItemList"] = items
 
-    save = client.request("POST", "v1/quote", json=detail)
-    if save.status_code >= 400:
-        return [f"Saving assembly root / child links failed ({save.status_code})"]
+    from .quote_update import update_item_fields
+
+    ok = update_item_fields(
+        client,
+        quote_id,
+        items,
+        fields=[
+            "ProductType",
+            "Description",
+            "Machine",
+            "IsPlate",
+            "IsPart",
+            "IsLinear",
+            "IsAssembly",
+            "ProductSubType",
+            "Thickness",
+            "WeightCategory",
+            "BadgeString",
+            "PrimaryTime",
+            "UnitPrimaryTime",
+            "AssemblyID",
+            "AssemblyLevel",
+            "AssemblyName",
+            "AssemblyQty",
+            "isAssemblyItem",
+        ],
+    )
+    if not ok:
+        return [
+            "WARNING: Saving assembly root / child links via item-level update failed — "
+            "not falling back to POST v1/quote (that wipes Cad Profile)"
+        ]
 
     # Verify links stuck
     check = client.get_json(f"v1/quote/{quote_id}")
@@ -207,7 +236,23 @@ def relink_assembly_children(
     if not linked:
         return []
     detail["ItemList"] = items
-    save = client.request("POST", "v1/quote", json=detail)
-    if save.status_code >= 400:
-        return [f"Re-linking assembly children failed ({save.status_code})"]
+    from .quote_update import update_item_fields
+
+    ok = update_item_fields(
+        client,
+        quote_id,
+        items,
+        fields=[
+            "AssemblyID",
+            "AssemblyLevel",
+            "AssemblyName",
+            "AssemblyQty",
+            "isAssemblyItem",
+        ],
+    )
+    if not ok:
+        return [
+            "WARNING: Re-linking assembly children via item-level update failed — "
+            "not falling back to POST v1/quote (that wipes Cad Profile)"
+        ]
     return [f"Re-linked {linked} child item(s) under Assembly"]

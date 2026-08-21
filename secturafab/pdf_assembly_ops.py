@@ -13,12 +13,11 @@ from typing import Any
 
 from quote_core.part_materials import PartMaterial, build_part_material_map, lookup_part_material
 
-from .assembly_ops import ensure_assembly_root, relink_assembly_children
+from .assembly_ops import ensure_assembly_root, relink_assembly_children  # noqa: F401
 from .client import SecturaFabApiError, SecturaFabClient
 from .component_ops import ensure_purchased_components, find_purchased_part_keys
 from .profile_ops import (
     add_cad_plate_part,
-    apply_part_materials,
     ensure_laser_profile_ops,
     format_hole_sizes,
     hole_sizes_from_takeoff,
@@ -222,9 +221,14 @@ def _rename_imported_descriptions(
             changed += 1
     if not changed:
         return []
-    save = client.request("POST", "v1/quote", json=detail)
-    if save.status_code >= 400:
-        return [f"Renaming PDF import descriptions failed ({save.status_code})"]
+    from .quote_update import update_item_fields
+
+    ok = update_item_fields(client, quote_id, items, fields=["Description"])
+    if not ok:
+        return [
+            "WARNING: Renaming PDF import descriptions via item-level update failed — "
+            "not falling back to POST v1/quote (that wipes Cad Profile)"
+        ]
     return [f"Set Description to BOM part number on {changed} PDF-imported item(s)"]
 
 
@@ -315,15 +319,22 @@ def categorize_pdf_imported_items(
             it["IsPlate"] = True
             it["IsPart"] = True
 
-    save = client.request("POST", "v1/quote", json=detail)
+    from .quote_update import update_item_fields
+
+    ok = update_item_fields(
+        client,
+        quote_id,
+        items,
+        fields=["ItemType", "Category", "IsLinear", "IsPlate", "IsPart"],
+    )
     notes = [
         f"Categorized PDF imports — Cad: {counts['Cad']}, Linear: {counts['Linear']}, "
         f"Component: {counts['Component']} (lesson 04)"
     ]
-    if save.status_code >= 400:
+    if not ok:
         notes.append(
-            f"Category save returned {save.status_code}; set Cad/Linear/Component "
-            f"manually in SecturaFAB if needed"
+            "WARNING: Category save via item-level update failed — "
+            "not falling back to POST v1/quote (that wipes Cad Profile)"
         )
     elif counts["Linear"]:
         notes.append(
@@ -442,8 +453,8 @@ def build_pdf_only_assembly(
         library_folder=library_folder,
         related_pdf_names=related_pdf_names,
     ))
-    notes.extend(ensure_assembly_root(client, quote_id, part_key=part_key))
-
+    # Shell was created before add-part. Do not convert a Cad line to Assembly
+    # after quickAddCAD — that rewrite wipes Profile.
     purchased = find_purchased_part_keys(
         library_folder=library_folder,
         related_pdf_names=list(related_pdf_names or []),
@@ -452,49 +463,12 @@ def build_pdf_only_assembly(
     notes.extend(
         ensure_purchased_components(client, quote_id, purchased_keys=purchased)
     )
-    # Same as UI "Update Assembly" — children under top-level weldment.
     notes.extend(relink_assembly_children(client, quote_id, part_key=part_key))
-
     if part_materials:
-        notes.append(f"Read material/thickness from {len(part_materials)} component PDF(s)")
-    notes.extend(
-        apply_part_materials(
-            client,
-            quote_id,
-            material=material,
-            thickness=thickness,
-            part_materials=part_materials,
-            bom_rows=rows,
+        notes.append(
+            f"Read material/thickness from {len(part_materials)} component PDF(s) "
+            f"(seeded on quickAddCAD — skipped UpdateItem_Part after add-part)"
         )
-    )
-    notes.extend(
-        wait_for_quote_settle(
-            client,
-            quote_id,
-            timeout_s=120.0,
-            stable_s=15.0,
-            min_wait_s=45.0,
-        )
-    )
-    # UpdateItem_Part CAD rebuild resets Description to ``15644  - 1/4" A36 …``
-    # — restore BOM PNs / categories / assembly links before qty + Profile.
-    notes.extend(
-        _rename_imported_descriptions(
-            client,
-            quote_id,
-            part_nos=[str(r.get("part_no") or "") for r in rows],
-        )
-    )
-    notes.extend(
-        categorize_pdf_imported_items(
-            client,
-            quote_id,
-            bom_rows=rows,
-            library_folder=library_folder,
-            related_pdf_names=related_pdf_names,
-        )
-    )
-    notes.extend(relink_assembly_children(client, quote_id, part_key=part_key))
     notes.extend(
         apply_bom_quantities(
             client,
@@ -540,9 +514,14 @@ def _apply_item_descriptions(
             changed += 1
     if not changed:
         return []
-    save = client.request("POST", "v1/quote", json=detail)
-    if save.status_code >= 400:
-        return [f"Setting item Descriptions failed ({save.status_code})"]
+    from .quote_update import update_item_fields
+
+    ok = update_item_fields(client, quote_id, items, fields=["Description"])
+    if not ok:
+        return [
+            "WARNING: Setting item Descriptions via item-level update failed — "
+            "not falling back to POST v1/quote (that wipes Cad Profile)"
+        ]
     return [f"Set ItemList Description from drawing: {desc[:80]}"]
 
 
