@@ -233,8 +233,10 @@ def left_qty_column_bounds(xs: list[int], width: int) -> list[tuple[int, int]]:
     windows.append((0, max(first, 10)))
     if len(xs) >= 2:
         a, b = xs[0], xs[1]
-        windows.append((max(0, a), max(b, a + 10)))
-        if (b - a) > max(36, int(width * 0.12)):
+        # Isolated digit OCR must not eat the ITEM column (V/W/AD).
+        if 3 <= (b - a) <= 24:
+            windows.append((max(0, a), b))
+        elif (b - a) > max(36, int(width * 0.12)):
             windows.append((max(0, a), a + max(14, int((b - a) * 0.32))))
     windows.append((0, max(14, int(width * 0.10))))
     return _dedupe_windows(windows, width)
@@ -367,11 +369,38 @@ def _ink_bbox(im, *, thresh: int = 150, pad: int = 2):
 
 
 def _isolate_qty_ink(cell_im):
+    """Leftmost digit-sized ink only. Stop before the item letter."""
     trimmed = _trim_rule_ink(cell_im)
-    box = _ink_bbox(trimmed)
-    if box is None:
+    gray = trimmed.convert("L")
+    width, height = gray.size
+    if width < 3 or height < 4:
         return trimmed
-    return trimmed.crop(box)
+    pix = gray.load()
+    min_ink = max(2, int(0.12 * height))
+    col = [sum(1 for y in range(height) if pix[x, y] < 145) for x in range(width)]
+    i = 0
+    while i < width and col[i] < min_ink:
+        i += 1
+    if i >= width:
+        return trimmed
+    j = i
+    while j < width and col[j] >= min_ink:
+        j += 1
+    k = j
+    while k < width and k - j <= 3:
+        if col[k] >= min_ink:
+            j = k + 1
+            while j < width and col[j] >= min_ink:
+                j += 1
+            k = j
+            continue
+        k += 1
+    if (j - i) <= 2 and max(col[i:j] or [0]) >= 0.80 * height:
+        rest = trimmed.crop((j, 0, width, height))
+        return _isolate_qty_ink(rest) if rest.size[0] >= 3 else trimmed
+    crop = trimmed.crop((max(0, i - 2), 0, min(width, j + 2), height))
+    box = _ink_bbox(crop)
+    return crop.crop(box) if box else crop
 
 
 def _accept_qty_token(raw: str) -> str:
@@ -396,65 +425,64 @@ def _accept_qty_token(raw: str) -> str:
 
 def _ocr_qty_digit(cell_im) -> str:
     """Isolated QTY cell — digits only. Do not default unread to 1."""
-    from collections import Counter
-
     from quote_core.ocr import ocr_available
 
     if not ocr_available() or cell_im is None:
         return ""
     isolated = _isolate_qty_ink(cell_im)
-    sources = [isolated, _threshold_clip(isolated, 140), _threshold_clip(isolated, 175)]
-    plain: list[str] = []
-    invert_only: list[str] = []
+    if _ink_bbox(isolated) is None:
+        return ""
     h = getattr(isolated, "height", 16) or 16
-    scales = (8.0, 5.0) if h < 20 else (5.0, 3.0)
-    for src in sources:
-        for invert in (False, True):
-            for scale in scales:
-                prepared = _prepare_ocr_strip(src, scale=scale, invert=invert)
-                for psm in (10, 8):
-                    token = _accept_qty_token(
-                        _tesseract_whitelisted(
-                            prepared, psm=psm, whitelist="0123456789"
-                        )
-                    )
-                    if not token:
-                        continue
-                    if invert:
-                        invert_only.append(token)
-                    else:
-                        plain.append(token)
-    if plain:
-        return Counter(plain).most_common(1)[0][0]
-    # Invert-only 3 is the live 8→3 hallucination. Do not ship it.
-    invert_ok = [d for d in invert_only if d != "3"]
-    if invert_ok:
-        return Counter(invert_ok).most_common(1)[0][0]
+    scale = 8.0 if h < 20 else 5.0
+    attempts = (
+        (isolated, scale, False, 10),
+        (_threshold_clip(isolated, 160), scale, False, 8),
+        (isolated, scale, True, 10),
+    )
+    for src, sc, invert, psm in attempts:
+        token = _accept_qty_token(
+            _tesseract_whitelisted(
+                _prepare_ocr_strip(src, scale=sc, invert=invert),
+                psm=psm,
+                whitelist="0123456789",
+            )
+        )
+        if not token:
+            continue
+        if invert and token == "3":
+            # Invert-only 3 is the live 8→3 hallucination.
+            continue
+        return token
     return ""
 
 
 def _ocr_qty_via_pipe(clip) -> str:
     """QTY|ITEM|PN clip. Take a leading 1–8 only when an item letter follows."""
-    from collections import Counter
+    import re
 
     from quote_core.ocr import ocr_available
 
     if not ocr_available() or clip is None:
         return ""
-    votes: list[str] = []
     whitelist = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-| "
-    sources = [clip, _threshold_clip(clip, 160)]
-    for src in sources:
-        for scale in (3.0, 5.0):
-            prepared = _prepare_ocr_strip(src, scale=scale, invert=False)
-            for psm in (7, 6):
-                token = leading_qty_before_item(
-                    _tesseract_whitelisted(prepared, psm=psm, whitelist=whitelist)
-                )
-                if token:
-                    votes.append(token)
-    if votes:
-        return Counter(votes).most_common(1)[0][0]
+    attempts = (
+        (clip, 4.0, 7),
+        (_threshold_clip(clip, 160), 5.0, 7),
+        (clip, 5.0, 6),
+    )
+    for src, scale, psm in attempts:
+        text = _tesseract_whitelisted(
+            _prepare_ocr_strip(src, scale=scale, invert=False),
+            psm=psm,
+            whitelist=whitelist,
+        )
+        token = leading_qty_before_item(text)
+        if token:
+            return token
+        compact = re.sub(r"[^0-9A-Z]+", "", str(text or "").upper())
+        # Item letter then PN, no qty digit — cell is blank, stop.
+        if re.match(r"[A-Z]{1,2}\d{4,}", compact):
+            return ""
     return ""
 
 
@@ -489,11 +517,11 @@ def read_qty_cell(im, y0: int, y1: int, v_lines: list[int] | None = None) -> str
     thin-band OCR is fallback only. Real 4–8 stay; 7 and 10–20 stay unread.
     """
     lines = list(v_lines or [])
-    for clip in _crop_qty_item_windows(im, y0, y1, lines):
+    for clip in _crop_qty_item_windows(im, y0, y1, lines)[:2]:
         token = _ocr_qty_via_pipe(clip)
         if token:
             return token
-    for clip in _crop_qty_windows(im, y0, y1, lines):
+    for clip in _crop_qty_windows(im, y0, y1, lines)[:2]:
         token = _accept_qty_token(_ocr_qty_digit(clip))
         if token:
             return token
