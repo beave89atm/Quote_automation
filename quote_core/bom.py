@@ -1301,6 +1301,10 @@ def _native_cell_table_is_complete(bom: BomResult | None) -> bool:
     # still render so a tall grid on the same page can win.
     if method.endswith("multi_qty") and rows:
         return True
+    # P904225-1: one PN-labeled qty column, numbered items. Do not
+    # letter-harvest ``P904226-1`` as item P over the native cells.
+    if method.endswith("numeric") and rows:
+        return True
     return len(rows) >= SHORT_TABLE_REJECT
 
 

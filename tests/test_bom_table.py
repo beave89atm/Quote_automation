@@ -336,6 +336,51 @@ def _assert_kyle_1004611_1(bom) -> None:
     assert "80054-1" in parts
 
 
+# Kyle P904225-1 confirmed against P904225-1-LOM.xlsx.
+# 11 numeric items (not A–Z). Item 1 at the bottom.
+# Qty header is P904225-1 (also the title DWG) — not a BOM row.
+# 11 PNs / 23 pcs. 89176-1 is a welding-wire note — omit.
+# Documented children 89100-1 / P904226-1 stay. Remaining PNs were not
+# listed — do not invent them. Live bar is 11/23. Item numbers on the
+# documented pair are fixture slots, not a live Excel claim.
+_KYLE_P904225_1_PN_COUNT = 11
+_KYLE_P904225_1_PCS = 23
+_KYLE_P904225_1: list[tuple[str, int, str, str]] = [
+    ("1", 1, "89100-1", "TUBE"),
+    ("2", 1, "P904226-1", "SUPPORT"),
+]
+
+
+def _kyle_p904225_cell_rows() -> list[list[str]]:
+    """11-row numbered grid. Item 1 at the bottom. Header PN is not a row."""
+    named = {item: (qty, pn, desc) for item, qty, pn, desc in _KYLE_P904225_1}
+    rows = [["P904225-1", "ITEM", "PART NO.", "DESCRIPTION"]]
+    for n in range(11, 0, -1):
+        item = str(n)
+        if item in named:
+            qty, pn, desc = named[item]
+            rows.append([str(qty), item, pn, desc])
+        else:
+            # Item is on the takeoff. PN not listed — do not invent.
+            rows.append(["1", item, "", ""])
+    rows.append(["1", "12", "89176-1", "WELDING WIRE"])
+    rows.append(["1", "13", "P904225-1", "WELDMENT"])
+    return rows
+
+
+def _assert_kyle_p904225_1(bom) -> None:
+    parts = {str(r.part_no or "") for r in bom.rows}
+    by_item = {str(r.item): r for r in bom.rows}
+    assert "P904225-1" not in parts
+    assert "904225-1" not in parts
+    assert "89176-1" not in parts
+    assert all(str(r.item).isdigit() for r in bom.rows)
+    assert all(1 <= int(r.item) <= 11 for r in bom.rows)
+    assert "12" not in by_item and "13" not in by_item
+    assert "89100-1" in parts
+    assert any("904226" in p for p in parts)
+
+
 def test_kyle_grid_writes_four_column_xlsx(tmp_path: Path):
     """Same 51-row grid Kyle confirmed — QTY / ITEM / PART NO / DESCRIPTION."""
     from quote_core.bom import BomResult, BomRow
@@ -877,6 +922,52 @@ def test_multi_qty_printed_qty_10_stays_ten():
     assert sum(r.qty for r in bom.rows) == 11
 
 
+def test_kyle_p904225_1_numeric_omits_title_and_welding_wire():
+    """Kyle-confirmed P904225-1-LOM.xlsx. 11 numeric items; quote the grid only."""
+    layout = detect_material_list_header(
+        ["P904225-1", "ITEM", "PART NO.", "DESCRIPTION"]
+    )
+    assert layout is not None
+    assert layout.numeric_items is True
+    assert layout.qty_cols == ["-1"]
+    assert "P904225-1" in layout.qty_header_pns
+
+    cells = _kyle_p904225_cell_rows()
+    assert len(cells) == 14  # header + 11 + wire note + title PN
+    assert cells[0][0] == "P904225-1" and cells[0][1] == "ITEM"
+    assert cells[1][1] == "11" and cells[11][1] == "1"
+    _assert_kyle_p904225_1(parse_material_list_cells(cells, bom_config=""))
+
+    lines = [
+        "WELDMENT, PLATFORM",
+        "P904225-1",
+        "TIME MANUFACTURING",
+        "LIST OF MATERIAL",
+    ]
+    for row in cells:
+        lines.append(" | ".join(row))
+    text = "\n".join(lines)
+    _assert_kyle_p904225_1(parse_material_list_text(text, bom_config=""))
+    _assert_kyle_p904225_1(extract_bom(text=text, bom_config=""))
+
+    strips = [" | ".join(row) for row in reversed(cells)]
+    assert cells[11][1] == "1" and cells[11][2] == "89100-1"
+    harvested = harvest_ocr_row_strips(
+        strips,
+        bom_config="",
+        page_text="WELDMENT, PLATFORM  P904225-1",
+    )
+    _assert_kyle_p904225_1(harvested)
+
+    wire = parse_ocr_row_strip("1 | 12 | 89176-1 | WELDING WIRE")
+    assert wire is None
+    title = parse_ocr_row_strip("P904225-1 WELDMENT")
+    assert title is None
+    child = parse_ocr_row_strip("1 | 2 | P904226-1 | SUPPORT")
+    assert child is not None
+    assert "904226" in child["part_no"]
+
+
 def test_kyle_1004747_1_pdf_extract_bom_and_xlsx(tmp_path: Path):
     cells = _kyle_1004747_cell_rows()
     pdf = tmp_path / "1004747.pdf"
@@ -974,6 +1065,10 @@ def _write_lom_pdf(path: Path, headers: list[str], rows: list[list[str]], *, tit
     page.insert_text((40, 28), title, fontsize=10)
     page.insert_text((40, 42), "LIST OF MATERIAL", fontsize=10)
     xs = [360, 410, 460, 560]
+    first = str(headers[0] or "").strip().upper()
+    if len(headers) == 4 and first.startswith("P") and first[1:2].isdigit():
+        # P904225-1 qty header is wider than QTY — keep ITEM from merging.
+        xs = [240, 400, 460, 580]
     if len(headers) == 5:
         xs = [320, 370, 420, 480, 580]
     elif len(headers) >= 6:

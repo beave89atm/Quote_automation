@@ -40,11 +40,20 @@ _DASH_QTY_HEADER_RE = re.compile(
 )
 # Time LOM whose qty columns are the dash PNs themselves (1004747-1 /
 # 1004747-2), not "QTY" / "-1". Items on that shape are numbers 1–17.
+# P904225-1 is the same idea with a P-prefix and one printed qty column.
 _PN_LABELED_QTY_HEADER_RE = re.compile(
-    r"\d{5,7}-[1-4].{0,40}\d{5,7}-[1-4].{0,40}ITEM.{0,40}PART",
+    r"P?\d{5,7}-[1-4].{0,40}P?\d{5,7}-[1-4].{0,40}ITEM.{0,40}PART",
     re.IGNORECASE | re.DOTALL,
 )
-_PN_DASH_QTY_COL_RE = re.compile(r"^(\d{5,7})-([1-4])$")
+_P_PREFIX_QTY_HEADER_RE = re.compile(
+    r"P\d{5,7}-[1-4].{0,32}ITEM.{0,32}PART",
+    re.IGNORECASE | re.DOTALL,
+)
+_PN_DASH_QTY_COL_RE = re.compile(r"^P?(\d{5,7})-([1-4])$", re.IGNORECASE)
+_WELDING_WIRE_NOTE_RE = re.compile(
+    r"\bWELDING[\s\-]+WIRES?\b|\bWELD[\s\-]+WIRES?\b",
+    re.IGNORECASE,
+)
 
 _HEADER_QTY = frozenset({"QTY", "QTY.", "QUANTITY"})
 _HEADER_ITEM = frozenset({"ITEM", "ITEM.", "BALLOON", "ID", "FIND"})
@@ -240,6 +249,7 @@ def _is_structured_multi_qty_header(blob: str | None) -> bool:
         _MULTI_QTY_HEADER_RE.search(text)
         or _DASH_QTY_HEADER_RE.search(text)
         or _PN_LABELED_QTY_HEADER_RE.search(text)
+        or _P_PREFIX_QTY_HEADER_RE.search(text)
     )
 
 
@@ -470,9 +480,12 @@ def is_glued_p_prefix_weldment_pn(raw: str | None) -> bool:
         else:
             before = text[: m.start()]
             for token in re.findall(
-                r"(?<![A-Za-z0-9])([A-Za-z]{1,2})(?![A-Za-z0-9])", before
+                r"(?<![A-Za-z0-9])([A-Za-z]{1,2}|[1-9]\d{0,2})(?![A-Za-z0-9])",
+                before,
             ):
-                if is_material_list_item(token):
+                if is_material_list_item(token) or is_material_list_item(
+                    token, numeric=True
+                ):
                     return False
             return True
     # Spaced title OCR ``P 904225-1 WELDMENT`` — not a real balloon.
@@ -505,7 +518,7 @@ def _is_dashed_time_pn(part: str | None) -> bool:
     text = str(part or "").strip()
     if re.fullmatch(r"\d{4,7}-DWG", text, flags=re.IGNORECASE):
         return True
-    return bool(re.fullmatch(r"\d{4,7}-\d{1,3}", text))
+    return bool(re.fullmatch(r"P?\d{4,7}-\d{1,3}", text, flags=re.IGNORECASE))
 
 
 def _looks_like_garbled_eco(text: str | None) -> bool:
@@ -543,6 +556,14 @@ def _is_eco_or_title_block_row(
     """
     if raw and _is_title_block_drawing_line(raw, raw):
         return True
+    # Qty-header / title DWG row ``13 | P904225-1 | WELDMENT`` — not a child.
+    desc_u = str(desc or "").strip()
+    if (
+        re.fullmatch(r"P?\d{5,7}-\d{1,3}", str(part or "").strip(), flags=re.I)
+        and re.match(r"^WELDMENT\b", desc_u, flags=re.I)
+        and not _PART_KIND_NOUN_RE.search(desc_u)
+    ):
+        return True
     if _is_dashed_time_pn(part):
         return False
     if not _is_five_digit_bare_pn(part):
@@ -563,6 +584,29 @@ def _is_eco_or_title_block_row(
     ):
         return True
     return False
+
+
+def _is_welding_wire_note(
+    part: str | None,
+    desc: str | None,
+    raw: str = "",
+) -> bool:
+    """P904225-1 89176-1 is a welding-wire note, not a weld part."""
+    blob = f"{desc or ''} {raw or ''}"
+    return bool(_WELDING_WIRE_NOTE_RE.search(blob))
+
+
+def _part_is_qty_header_pn(part: str | None, layout: MaterialListLayout | None) -> bool:
+    """True when the PART cell is the printed qty-header PN (P904225-1)."""
+    if layout is None:
+        return False
+    token = str(part or "").strip().upper()
+    if not token:
+        return False
+    aliases: set[str] = set()
+    for header_pn in getattr(layout, "qty_header_pns", None) or []:
+        aliases.update(_weldment_pn_reject_aliases(header_pn))
+    return token in aliases
 
 
 def _looks_like_column_index_qty(qty: int) -> bool:
@@ -685,10 +729,13 @@ def _weldment_pn_reject_aliases(token: str) -> set[str]:
 
 
 def _immediate_item_before(text: str, index: int) -> bool:
-    """True for ``G P904226-1`` / ``G | P904226-1`` — a LOM balloon, not the title."""
+    """True for ``G P904226-1`` / ``2 | P904226-1`` — a LOM balloon, not the title."""
     before = text[max(0, index - 12) : index]
     m = re.search(r"(?<![A-Za-z0-9])([A-Za-z]{1,2})\s*[|:]?\s*$", before)
-    return bool(m and is_material_list_item(m.group(1)))
+    if m and is_material_list_item(m.group(1)):
+        return True
+    n = re.search(r"(?<![A-Za-z0-9])([1-9]\d{0,2})\s*[|:]?\s*$", before)
+    return bool(n and is_material_list_item(n.group(1), numeric=True))
 
 
 def _standalone_is_title_drawing_pn(line_list: Sequence[str], index: int) -> bool:
@@ -1052,6 +1099,8 @@ def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
         part = _KNOWN_BB_PART
     if _is_eco_or_title_block_row(part, desc, raw):
         return None
+    if _is_welding_wire_note(part, desc, raw):
+        return None
     qty, qty_clear, qty_note, from_cells = _qty_from_one_source(
         original or raw,
         part_start,
@@ -1358,6 +1407,11 @@ def _finalize_strip_rows(
                 f"Dropped ECO/title-block row {row.item} {row.part_no} — not a weld part"
             )
             continue
+        if _is_welding_wire_note(row.part_no, row.description):
+            notes.append(
+                f"Dropped welding-wire note {row.item} {row.part_no} — not a weld part"
+            )
+            continue
         qn = int(row.qty or 0)
         if (
             str(row.item).upper() != "BB"
@@ -1410,6 +1464,12 @@ def harvest_ocr_row_strips(
             "LIST OF MATERIAL\n" + header_blob, bom_config=bom_config
         )
         if parsed.rows:
+            return parsed
+        # PN-labeled / P-prefix qty headers are numbered items. Do not
+        # letter-harvest ``2 | P904226-1`` as item P.
+        if _PN_LABELED_QTY_HEADER_RE.search(header_blob) or _P_PREFIX_QTY_HEADER_RE.search(
+            header_blob
+        ):
             return parsed
 
     notes: list[str] = []
@@ -1545,6 +1605,8 @@ def harvest_material_list_lines(text: str | None, *, bom_config: str | None = No
             desc = desc[: nxt.start()].strip()
         if _is_eco_or_title_block_row(part, desc, m.group(0)):
             continue
+        if _is_welding_wire_note(part, desc, m.group(0)):
+            continue
         if _looks_like_bb_tube(part, desc, m.group(0)):
             item = "BB"
             part = _KNOWN_BB_PART
@@ -1604,6 +1666,8 @@ class MaterialListLayout:
     headers: list[str] = field(default_factory=list)
     # 1004747-1: ITEM is 1–17, not A–Z. Opt-in only — "2" stays a qty elsewhere.
     numeric_items: bool = False
+    # Printed qty-header PNs (P904225-1 / 1004747-1) — not BOM rows.
+    qty_header_pns: list[str] = field(default_factory=list)
 
     @property
     def is_multi_qty(self) -> bool:
@@ -1636,6 +1700,7 @@ def detect_material_list_header(cells: Sequence[str]) -> MaterialListLayout | No
         r"\bPART\b", raw[0], re.I
     ) and (
         re.search(r"\bQTY\b", raw[0], re.I) or _PN_LABELED_QTY_HEADER_RE.search(raw[0])
+        or _P_PREFIX_QTY_HEADER_RE.search(raw[0])
         or re.search(r"-2.{0,24}-1.{0,24}ITEM", raw[0], re.I)
     ):
         raw = raw[0].split()
@@ -1649,12 +1714,14 @@ def detect_material_list_header(cells: Sequence[str]) -> MaterialListLayout | No
         # Allow "LIST OF MATERIAL" title rows to fail (not a column header).
         return None
     qty_cols: list[str] = []
+    qty_header_pns: list[str] = []
     pn_labeled = False
     for t in tokens:
         pn_qty = _PN_DASH_QTY_COL_RE.fullmatch(t)
         if pn_qty:
             qty_cols.append(f"-{pn_qty.group(2)}")
             pn_labeled = True
+            qty_header_pns.append(str(t).strip().upper())
             continue
         dash = _DASH_COL_RE.match(t) or (
             _BARE_DASH_RE.fullmatch(t) if t.lstrip("-").isdigit() and len(t) <= 3 else None
@@ -1684,7 +1751,10 @@ def detect_material_list_header(cells: Sequence[str]) -> MaterialListLayout | No
     elif qty_cols == ["-1"] and "QTY" not in joined and "DESC" not in joined:
         return None
     return MaterialListLayout(
-        qty_cols=qty_cols, headers=tokens, numeric_items=pn_labeled
+        qty_cols=qty_cols,
+        headers=tokens,
+        numeric_items=pn_labeled,
+        qty_header_pns=qty_header_pns,
     )
 
 
@@ -1965,9 +2035,20 @@ def parse_material_list_cells(
         if _is_eco_or_title_block_row(part, desc, " ".join(cells)):
             notes.append(f"Dropped ECO/title-block row {item} {part} — not a weld part")
             continue
+        if _is_welding_wire_note(part, desc, " ".join(cells)):
+            notes.append(f"Dropped welding-wire note {item} {part} — not a weld part")
+            continue
+        if _part_is_qty_header_pn(part, layout):
+            notes.append(f"Dropped qty-header / title DWG {item} {part} — not a weld part")
+            continue
         # 10–20 is column-index bleed on single-QTY (103516). A printed
         # dash-column 10 on -2|-1 (1004611) is a real piece count.
-        if not layout.is_multi_qty and _looks_like_column_index_qty(int(qty)):
+        # PN-labeled numeric LOM (P904225-1) keeps a printed 10.
+        if (
+            not layout.is_multi_qty
+            and not layout.numeric_items
+            and _looks_like_column_index_qty(int(qty))
+        ):
             qty = 1
         seen_items.add(item)
         parsed.append(
@@ -1987,7 +2068,11 @@ def parse_material_list_cells(
     parsed.sort(key=lambda r: item_sort_key(str(r.item or "")))
     notes.extend(_incomplete_sequence_notes([str(r.item) for r in parsed if r.item]))
     method = (
-        "table_material_list_multi_qty" if layout.is_multi_qty else "table_material_list"
+        "table_material_list_multi_qty"
+        if layout.is_multi_qty
+        else "table_material_list_numeric"
+        if layout.numeric_items
+        else "table_material_list"
     )
     if not parsed:
         return BomResult(
@@ -2135,6 +2220,8 @@ def _strip_junk_pns_from_result(bom: Any, lines: Sequence[str] | None) -> Any:
             continue
         desc = getattr(row, "description", "")
         if _is_eco_or_title_block_row(pn, desc, ""):
+            continue
+        if _is_welding_wire_note(pn, desc, ""):
             continue
         kept.append(row)
     by_pn = {str(r.part_no): r for r in kept}
