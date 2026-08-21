@@ -102,7 +102,10 @@ class BomResult:
         for row in self.rows:
             if row.unit_weight_lb is None:
                 continue
-            out.extend([float(row.unit_weight_lb)] * max(1, int(row.qty)))
+            n = max(0, int(row.qty or 0))
+            if n <= 0:
+                continue
+            out.extend([float(row.unit_weight_lb)] * n)
         return out
 
     def to_dict(self) -> dict[str, Any]:
@@ -1546,6 +1549,46 @@ def extract_bom(
         confidence=0.0,
         notes=notes or ["No LIST OF MATERIAL — one-part quote, no LOM.xlsx"],
     )
+
+
+def quote_bom_from_drawing(
+    pdf_path: Path | str | None = None,
+    *,
+    text: str | None = None,
+    library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
+    bom_config: str | None = None,
+    table_image: Path | str | None = None,
+) -> BomResult:
+    """Clip LOM → write LOM.xlsx → the quote is that workbook.
+
+    Parent takeoff is the first sheet only. Nested weldment/assembly
+    descriptions stay as extra tabs on the same file — they are not
+    merged into the quote rows. No LIST OF MATERIAL → piece part; do
+    not invent a table or LOM.xlsx.
+    """
+    clipped = extract_bom(
+        pdf_path=pdf_path,
+        text=text,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+        bom_config=bom_config,
+        table_image=table_image,
+    )
+    if not pdf_path:
+        return clipped
+    from quote_core.bom_xlsx import list_lom_sheet_names, lom_xlsx_path_for_pdf
+
+    xlsx = lom_xlsx_path_for_pdf(pdf_path)
+    if not xlsx.is_file():
+        return clipped
+    sourced = bom_from_lom_xlsx(xlsx, prior=clipped)
+    tabs = list_lom_sheet_names(xlsx)
+    if tabs:
+        note = f"Quote read {xlsx.name} tabs: {', '.join(tabs)}"
+        if note not in sourced.notes:
+            sourced.notes.append(note)
+    return sourced
 
 
 def bom_from_lom_xlsx(path: Path | str, *, prior: BomResult | None = None) -> BomResult:

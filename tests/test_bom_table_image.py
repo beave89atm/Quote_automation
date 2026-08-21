@@ -45,7 +45,10 @@ from tests.test_bom_table import (
 )
 from quote_core.bom_table_image import (
     TABLE_CROP_FILENAME,
+    _ocr_first_pass_lines,
+    _qty_band_needs_reread,
     _reread_unread_qty_cells,
+    _would_downgrade_qty,
     extract_bom_from_table_image,
     extract_bom_from_table_images,
     leading_qty_before_item,
@@ -279,6 +282,66 @@ def test_pipe_qty_cell_reads_kyle_1_through_8():
         im = _draw_qty_item_pn(qty, item, pn)
         got = read_qty_cell(im, 0, im.height, [16, 40, 100])
         assert got == str(qty), (item, qty, got)
+
+
+def test_first_pass_qty_uses_isolated_fallback(monkeypatch):
+    """Pipe first, then isolated — A=1 must be read on the first pass."""
+    seen: list[bool] = []
+
+    def fake_read(im, y0, y1, v_lines=None, *, isolated=True):
+        seen.append(isolated)
+        return "1"
+
+    monkeypatch.setattr("quote_core.bom_table_image.read_qty_cell", fake_read)
+    im = Image.new("RGB", (200, 20), "white")
+    seg = {
+        "row_bands": [(0, 0, im.width, im.height)],
+        "v_lines": [16, 40, 100, 160],
+    }
+    _ocr_first_pass_lines(im, seg, [])
+    assert seen
+    assert all(flag is True for flag in seen)
+
+
+def test_reread_does_not_skip_isolated_one():
+    """A first-pass isolated 1 must not block a later pipe 6 (V)."""
+    assert _qty_band_needs_reread({"qty": 0, "qty_clear": False}) is True
+    assert _qty_band_needs_reread({"qty": 1, "qty_clear": True}) is True
+    assert _qty_band_needs_reread({"qty": 6, "qty_clear": True}) is False
+    assert _qty_band_needs_reread({"qty": 4, "qty_clear": True}) is False
+    assert _qty_band_needs_reread({"qty": 8, "qty_clear": True}) is False
+    if not ocr_available():
+        pytest.skip("tesseract not installed")
+    im = _draw_qty_item_pn(6, "V", "432710")
+    seg = {"row_bands": [(0, 0, im.width, im.height)], "v_lines": [16, 40, 100]}
+    notes: list[str] = []
+    out = _reread_unread_qty_cells(
+        im, seg, ["1 | V | 432710 | CAP"], notes
+    )
+    parsed = parse_ocr_row_strip(out[0])
+    assert parsed is not None
+    assert parsed["part_no"] == "432710"
+    assert parsed["qty"] == 6
+
+
+def test_reread_does_not_downgrade_real_4_to_8():
+    """Real 4–8 stay. Isolated 1 must not overwrite them."""
+    assert _would_downgrade_qty(6, 1) is True
+    assert _would_downgrade_qty(4, 1) is True
+    assert _would_downgrade_qty(8, 1) is True
+    assert _would_downgrade_qty(1, 6) is False
+    assert _would_downgrade_qty(0, 1) is False
+    if not ocr_available():
+        pytest.skip("tesseract not installed")
+    im = _draw_qty_item_pn(6, "V", "432710")
+    seg = {"row_bands": [(0, 0, im.width, im.height)], "v_lines": [16, 40, 100]}
+    notes: list[str] = []
+    out = _reread_unread_qty_cells(
+        im, seg, ["6 | V | 432710 | CAP"], notes
+    )
+    parsed = parse_ocr_row_strip(out[0])
+    assert parsed is not None
+    assert parsed["qty"] == 6
 
 
 def test_unread_qty_cell_stays_zero_not_one():

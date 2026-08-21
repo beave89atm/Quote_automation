@@ -1216,6 +1216,8 @@ def estimate_fitup_drivers(
         or method.startswith("native_mac")
         or method.startswith("native_parts_list")
         or method.startswith("table_")
+        or method.endswith("lom_xlsx")
+        or (weight_info.get("pdf_bom") or {}).get("source") == "lom_xlsx"
     ):
         if bom_piece_count > 0:
             part_count = bom_piece_count

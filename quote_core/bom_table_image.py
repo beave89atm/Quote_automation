@@ -518,10 +518,11 @@ def read_qty_cell(
 ) -> str:
     """Read one row's QTY digit. Empty if unread. Never defaults to 1.
 
-    Pipe-delimited QTY|ITEM|PN (digit glued to the item letter) is the
-    read that actually recovers live 1/2 and V6/W4/Y4/AA5/AC4/AD8. Isolated
-    thin-band OCR is last-pass only — a first-pass 1 must not stick and
-    block a later pipe 4. Real 4–8 stay; 7 and 10–20 stay unread.
+    Pipe-delimited QTY|ITEM|PN (digit glued to the item letter) is first —
+    that recovers live 1/2 and V6/W4/Y4/AA5/AC4/AD8. Isolated thin-band
+    OCR is the fallback so A=1 is actually read when pipe misses. A
+    first-pass isolated 1 must not stick and block a later pipe 4–8
+    (reread re-checks qty==1). Real 4–8 stay; 7 and 10–20 stay unread.
     """
     lines = list(v_lines or [])
     for clip in _crop_qty_item_windows(im, y0, y1, lines)[:2]:
@@ -601,7 +602,7 @@ def _ocr_first_pass_lines(im, seg: dict[str, Any], notes: list[str]) -> list[str
                     # shipped live 0s as unread, or a defaulted 1). Blank
                     # stays blank until read_qty_cell sees a real digit.
                     parts.append(
-                        read_qty_cell(im, y0, y1, v_lines, isolated=False)
+                        read_qty_cell(im, y0, y1, v_lines, isolated=True)
                     )
                     continue
                 parts.append(_ocr_cell_strip(cell).strip())
@@ -613,7 +614,7 @@ def _ocr_first_pass_lines(im, seg: dict[str, Any], notes: list[str]) -> list[str
                     text = blob
         else:
             text = _ocr_row_strip(strip)
-            digit = read_qty_cell(im, y0, y1, v_lines, isolated=False)
+            digit = read_qty_cell(im, y0, y1, v_lines, isolated=True)
             if digit:
                 glued = leading_qty_before_item(text)
                 if not glued:
@@ -650,6 +651,21 @@ def _reread_qty_from_page(
     return _ocr_qty_via_pipe(band) or _accept_qty_token(_ocr_qty_digit(band))
 
 
+def _qty_band_needs_reread(parsed: dict[str, Any] | None) -> bool:
+    """Re-read unread 0 and first-pass isolated 1. Real 2–8 stay."""
+    if not parsed:
+        return False
+    existing = int(parsed.get("qty") or 0)
+    if parsed.get("qty_clear") and existing > 1:
+        return False
+    return True
+
+
+def _would_downgrade_qty(existing: int, new: int) -> bool:
+    """Isolated 1 must not overwrite a real 2–8 (V6/W4/Y4/AA5/AC4/AD8)."""
+    return int(existing or 0) > 1 and int(new or 0) == 1
+
+
 def _reread_unread_qty_cells(
     im,
     seg: dict[str, Any],
@@ -675,7 +691,8 @@ def _reread_unread_qty_cells(
         parsed = parse_ocr_row_strip(text)
         if not parsed:
             continue
-        if parsed.get("qty_clear") and int(parsed.get("qty") or 0) > 0:
+        existing = int(parsed.get("qty") or 0)
+        if not _qty_band_needs_reread(parsed):
             continue
         _x0, y0, _x1, y1 = seg["row_bands"][i]
         digit = read_qty_cell(im, y0, y1, v_lines)
@@ -688,6 +705,8 @@ def _reread_unread_qty_cells(
             still_unread += 1
             continue
         n = int(digit)
+        if _would_downgrade_qty(existing, n):
+            continue
         if " | " in text:
             cells = text.split(" | ")
             cells[0] = str(n)

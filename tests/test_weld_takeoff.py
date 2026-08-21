@@ -119,7 +119,7 @@ def test_lom_and_weldment_title_are_not_weld_symbols():
 
 def test_102728_lom_xlsx_stays_97_pcs_without_inventing_weld(tmp_path: Path):
     """LOM.xlsx-as-takeoff stays. Weld inches / times stay off without symbols."""
-    from quote_core.bom import extract_bom
+    from quote_core.bom import quote_bom_from_drawing
     from quote_core.config import load_shop_rates
     from quote_core.time_engine import compute_weld_times
 
@@ -140,12 +140,14 @@ def test_102728_lom_xlsx_stays_97_pcs_without_inventing_weld(tmp_path: Path):
         data_rows,
         title="WELDMENT, PLATFORM  102728-1  TIME MANUFACTURING  SCALE 1/4",
     )
-    bom = extract_bom(pdf_path=pdf)
+    bom = quote_bom_from_drawing(pdf_path=pdf)
     _assert_kyle_102728_1(bom)
     xlsx = pdf.with_name(f"{pdf.stem}-LOM.xlsx")
     assert xlsx.is_file()
     _assert_kyle_xlsx(xlsx, _KYLE_102728_1)
     assert bom.piece_count == 97
+    assert bom.to_dict()["source"] == "lom_xlsx"
+    assert all(r.source == "lom_xlsx" for r in bom.rows)
 
     result = run_weld_takeoff(pdf)
     assert result.items == []
@@ -155,6 +157,8 @@ def test_102728_lom_xlsx_stays_97_pcs_without_inventing_weld(tmp_path: Path):
     weight = (result.fitup_drivers or {}).get("weight_calc") or {}
     pdf_bom = weight.get("pdf_bom") or weight.get("bom") or {}
     assert int(pdf_bom.get("piece_count") or result.fitup_drivers.get("piece_count") or 0) == 97
+    assert pdf_bom.get("source") == "lom_xlsx"
+    assert pdf_bom.get("lom_xlsx") == xlsx.name
 
     times = compute_weld_times(
         result.items,

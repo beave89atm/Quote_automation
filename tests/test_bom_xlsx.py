@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from quote_core.bom import BomResult, BomRow, bom_from_lom_xlsx, extract_bom
+from quote_core.bom import (
+    BomResult,
+    BomRow,
+    bom_from_lom_xlsx,
+    extract_bom,
+    quote_bom_from_drawing,
+)
 from quote_core.bom_xlsx import (
     PARENT_SHEET_NAME,
     apply_lom_xlsx_to_takeoff,
@@ -112,6 +118,35 @@ def test_takeoff_json_cannot_diverge_from_lom_xlsx(tmp_path: Path):
         assert by_item[item]["source"] == "lom_xlsx"
 
 
+def test_quote_bom_from_drawing_reads_written_xlsx(tmp_path: Path):
+    """Product path: clip → write LOM.xlsx → quote is that workbook."""
+    data_rows = [
+        [str(qty), item, pn, desc] for item, qty, pn, desc in _KYLE_102728_1
+    ]
+    pdf = tmp_path / "Time 102728- Weldment.pdf"
+    _write_lom_pdf(
+        pdf,
+        ["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
+        data_rows,
+        title="WELDMENT, PLATFORM  102728-1  TIME MANUFACTURING",
+    )
+    bom = quote_bom_from_drawing(pdf_path=pdf)
+    _assert_kyle_102728_1(bom)
+    xlsx = pdf.with_name(f"{pdf.stem}-LOM.xlsx")
+    assert xlsx.is_file()
+    assert bom.lom_xlsx == xlsx.name
+    blob = bom.to_dict()
+    assert blob["source"] == "lom_xlsx"
+    assert blob["piece_count"] == 97
+    assert blob["part_number_count"] == 51
+    assert all(r.source == "lom_xlsx" for r in bom.rows)
+    assert any("Quote read" in n and xlsx.name in n for n in bom.notes)
+    bb = next(r for r in bom.rows if r.item == "BB")
+    assert bb.qty == 2 and bb.part_no == "102727-4"
+    a = next(r for r in bom.rows if r.item == "A")
+    assert a.qty == 1 and a.part_no == "460200"
+
+
 def test_extract_bom_quote_matches_written_102728_xlsx(tmp_path: Path):
     data_rows = [
         [str(qty), item, pn, desc] for item, qty, pn, desc in _KYLE_102728_1
@@ -212,4 +247,8 @@ def test_piece_part_without_lom_does_not_invent_bom_or_xlsx(tmp_path: Path):
         }
     }
     assert write_lom_xlsx_for_job(pdf, native_takeoff) is None
+    assert not xlsx.is_file()
+    quoted = quote_bom_from_drawing(pdf_path=pdf)
+    assert quoted.lom_xlsx is None
+    assert not (quoted.method or "").startswith("table_")
     assert not xlsx.is_file()

@@ -400,7 +400,7 @@ def estimate_assembly_weight(
     Otherwise calculate: net sq-in × thickness × grade (plates), bbox fill (open sections).
     OCR Time-style BOMs may supply piece counts without unit weights.
     """
-    from quote_core.bom import bom_from_lom_xlsx, extract_bom
+    from quote_core.bom import quote_bom_from_drawing
 
     cfg = load_materials(str(materials_path) if materials_path else None)
     raw_pdf = pdf_text if pdf_text is not None else _read_pdf_text(pdf_path)
@@ -421,19 +421,13 @@ def estimate_assembly_weight(
         plate_psf = {}
     note_thicknesses = extract_plate_thicknesses_in(notes or [])
 
-    bom = extract_bom(
+    bom = quote_bom_from_drawing(
         pdf_path=pdf_path,
         text=raw_pdf or None,
         library_folder=library_folder,
         related_pdf_names=related_pdf_names,
         bom_config=bom_config,
     )
-    if pdf_path:
-        from quote_core.bom_xlsx import lom_xlsx_path_for_pdf
-
-        xlsx = lom_xlsx_path_for_pdf(pdf_path)
-        if xlsx.is_file():
-            bom = bom_from_lom_xlsx(xlsx, prior=bom)
     pdf_bom = bom.to_dict()
     # Keep legacy lbm-hit fallback when structured BOM rows are absent.
     # Once a LIST OF MATERIAL exists, do not run a second parser.
@@ -456,9 +450,9 @@ def estimate_assembly_weight(
                 {
                     "name": row.get("description") or row.get("part_no") or f"BOM item {row.get('item')}",
                     "kind": "pdf_bom",
-                    "qty": int(row.get("qty") or 1),
+                    "qty": int(row.get("qty") or 0),
                     "unit_weight_lb": float(row["unit_weight_lb"]),
-                    "weight_lb": round(float(row["unit_weight_lb"]) * int(row.get("qty") or 1), 2),
+                    "weight_lb": round(float(row["unit_weight_lb"]) * int(row.get("qty") or 0), 2),
                     "part_no": row.get("part_no"),
                 }
                 for row in bom_rows
@@ -495,7 +489,7 @@ def estimate_assembly_weight(
             {
                 "name": row.get("description") or row.get("part_no") or f"BOM item {row.get('item')}",
                 "kind": "pdf_bom",
-                "qty": int(row.get("qty") or 1),
+                "qty": int(row.get("qty") or 0),
                 "unit_weight_lb": None,
                 "weight_lb": None,
                 "part_no": row.get("part_no"),
