@@ -381,6 +381,53 @@ def _assert_kyle_p904225_1(bom) -> None:
     assert any("904226" in p for p in parts)
 
 
+# Kyle 103516 confirmed against 103516-LOM.xlsx.
+# 27 numeric items (not A–Z). Item 1 at the bottom. Qty cols left=-2 right=-1.
+# Dash -1: 27 PNs / 45 pcs including 103535-1 GATE WELDMENT.
+# Item 27 40002-2 is on -1 only. Remaining PNs were not listed — do not invent.
+# Live bar is 27/45. Item number on 103535-1 is a fixture slot, not a live claim.
+_KYLE_103516_PN_COUNT = 27
+_KYLE_103516_PCS = 45
+_KYLE_103516: list[tuple[str, int, str, str]] = [
+    ("1", 1, "103535-1", "GATE WELDMENT"),
+    ("27", 1, "40002-2", ""),
+]
+
+
+def _kyle_103516_cell_rows() -> list[list[str]]:
+    """27-row numbered -2|-1 grid. Item 27 is -1 only. Empty PN not invented."""
+    named = {item: (qty, pn, desc) for item, qty, pn, desc in _KYLE_103516}
+    rows = [["-2", "-1", "ITEM", "PART NO.", "DESCRIPTION"]]
+    for n in range(27, 0, -1):
+        item = str(n)
+        q2 = q1 = ""
+        pn = desc = ""
+        if item in named:
+            qty, pn, desc = named[item]
+            q1 = str(qty)
+        else:
+            q1 = "1"
+        rows.append([q2, q1, item, pn, desc])
+    return rows
+
+
+def _assert_kyle_103516(bom) -> None:
+    parts = {str(r.part_no or "") for r in bom.rows}
+    by_item = {str(r.item): r for r in bom.rows}
+    assert "103516-1" not in parts
+    assert "103516" not in parts
+    assert "1035371" not in parts
+    assert "103535-1" in parts
+    assert "GATE" in by_item["1"].description.upper()
+    assert "WELDMENT" in by_item["1"].description.upper()
+    assert by_item["1"].part_no == "103535-1"
+    assert "27" in by_item
+    assert by_item["27"].part_no == "40002-2"
+    assert by_item["27"].qty == 1
+    assert all(str(r.item).isdigit() for r in bom.rows)
+    assert all(1 <= int(r.item) <= 27 for r in bom.rows)
+
+
 def test_kyle_grid_writes_four_column_xlsx(tmp_path: Path):
     """Same 51-row grid Kyle confirmed — QTY / ITEM / PART NO / DESCRIPTION."""
     from quote_core.bom import BomResult, BomRow
@@ -966,6 +1013,47 @@ def test_kyle_p904225_1_numeric_omits_title_and_welding_wire():
     child = parse_ocr_row_strip("1 | 2 | P904226-1 | SUPPORT")
     assert child is not None
     assert "904226" in child["part_no"]
+
+
+def test_kyle_103516_numeric_keeps_gate_weldment_and_item_27():
+    """Kyle-confirmed 103516-LOM.xlsx. 27 numeric items; quote -1 only."""
+    assert _KYLE_103516_PN_COUNT == 27
+    assert _KYLE_103516_PCS == 45
+    assert _KYLE_103516_PCS != 121
+
+    cells = _kyle_103516_cell_rows()
+    assert len(cells) == 28  # header + 27
+    assert cells[0][:3] == ["-2", "-1", "ITEM"]
+    assert cells[1][2] == "27" and cells[-1][2] == "1"
+    assert cells[1][3] == "40002-2"
+    assert cells[1][0] == "" and cells[1][1] == "1"
+    _assert_kyle_103516(parse_material_list_cells(cells, bom_config="-1"))
+
+    lines = [
+        "WELDMENT, PLATFORM",
+        "103516-1",
+        "TIME MANUFACTURING",
+        "LIST OF MATERIAL",
+    ]
+    for row in cells:
+        lines.append(" | ".join(row))
+    text = "\n".join(lines)
+    _assert_kyle_103516(parse_material_list_text(text, bom_config="-1"))
+    _assert_kyle_103516(extract_bom(text=text, bom_config="-1"))
+
+    strips = [" | ".join(row) for row in reversed(cells)]
+    harvested = harvest_ocr_row_strips(
+        strips,
+        bom_config="-1",
+        page_text="WELDMENT, PLATFORM  103516-1",
+    )
+    _assert_kyle_103516(harvested)
+
+    dash2 = parse_material_list_cells(cells, bom_config="2")
+    parts2 = {r.part_no for r in dash2.rows}
+    assert "40002-2" not in parts2
+    assert "103535-1" not in parts2
+    assert dash2.rows == []
 
 
 def test_kyle_1004747_1_pdf_extract_bom_and_xlsx(tmp_path: Path):

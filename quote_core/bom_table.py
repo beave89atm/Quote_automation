@@ -1988,6 +1988,44 @@ def _split_numeric_item_row(
     return qty_cells, str(item), part, " ".join(desc_parts).strip(" ,;|")
 
 
+def _rows_look_like_numeric_items(
+    rows: Sequence[Sequence[str]],
+    layout: MaterialListLayout,
+) -> bool:
+    """True when the ITEM column is 1–99 (103516), not A–Z (1004611)."""
+    n_qty = max(1, len(layout.qty_cols))
+    numeric = 0
+    lettered = 0
+    for raw in rows:
+        cells = [str(c or "").strip() for c in raw]
+        if not any(cells) or detect_material_list_header(cells):
+            continue
+        filled = [c for c in cells if c]
+        item_tok = ""
+        for i, tok in enumerate(filled):
+            if _is_dashed_time_pn(tok) or (
+                recover_time_part_no(tok) and not str(tok).isdigit()
+            ):
+                if i > 0:
+                    item_tok = filled[i - 1]
+                break
+        if not item_tok and len(cells) > n_qty:
+            item_tok = cells[n_qty]
+        if not item_tok:
+            cands = [
+                t
+                for t in filled
+                if is_material_list_item(t, numeric=True) and str(t).isdigit()
+            ]
+            if cands:
+                item_tok = cands[-1]
+        if is_material_list_item(item_tok, numeric=True) and str(item_tok).isdigit():
+            numeric += 1
+        elif is_material_list_item(item_tok):
+            lettered += 1
+    return numeric >= 3 and lettered == 0
+
+
 def parse_material_list_cells(
     rows: Sequence[Sequence[str]],
     *,
@@ -2007,6 +2045,9 @@ def parse_material_list_cells(
             body = body[1:]
     if layout is None:
         layout = MaterialListLayout(qty_cols=["QTY"], headers=list(header or []))
+    if not layout.numeric_items and _rows_look_like_numeric_items(body, layout):
+        # 103516: -2|-1 with items 1–27, not A–Z. 1004611 stays lettered.
+        layout.numeric_items = True
 
     parsed: list[BomRow] = []
     seen_items: set[str] = set()
@@ -2041,8 +2082,8 @@ def parse_material_list_cells(
         if _part_is_qty_header_pn(part, layout):
             notes.append(f"Dropped qty-header / title DWG {item} {part} — not a weld part")
             continue
-        # 10–20 is column-index bleed on single-QTY (103516). A printed
-        # dash-column 10 on -2|-1 (1004611) is a real piece count.
+        # 10–20 is column-index bleed on lettered single-QTY. A printed
+        # dash-column 10 on -2|-1 (1004611 / 103516) is a real piece count.
         # PN-labeled numeric LOM (P904225-1) keeps a printed 10.
         if (
             not layout.is_multi_qty
@@ -2467,6 +2508,13 @@ def parse_material_list_words(
     if not header_cells:
         header_cells = list(layout.headers) or ["QTY", "ITEM", "PART NO.", "DESCRIPTION"]
     data_rows = rows if header_idx < 0 else rows[:header_idx] + rows[header_idx + 1 :]
+    if layout is not None and not layout.numeric_items:
+        peek = [
+            [str(w.get("text") or "").strip() for w in sorted(r, key=lambda z: z["x0"])]
+            for r in data_rows
+        ]
+        if _rows_look_like_numeric_items(peek, layout):
+            layout.numeric_items = True
     if header_idx >= 0:
         above_cells = [_cells_from_word_row(r, layout) for r in rows[:header_idx]]
         below_cells = [_cells_from_word_row(r, layout) for r in rows[header_idx + 1 :]]
