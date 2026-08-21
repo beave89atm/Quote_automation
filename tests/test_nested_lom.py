@@ -25,8 +25,6 @@ from tests.test_bom_table import (
     _assert_kyle_102728_1,
     _assert_kyle_103516,
     _assert_kyle_105098_1,
-    _kyle_103516_cell_rows,
-    _kyle_105098_cell_rows,
     _write_lom_pdf,
 )
 
@@ -36,6 +34,7 @@ _CHILD_LOM: list[tuple[str, int, str, str]] = [
 ]
 _GRANDCHILD_LOM: list[tuple[str, int, str, str]] = [
     ("A", 1, "555099", "PIN"),
+    ("B", 1, "555098", "WASHER"),
 ]
 
 
@@ -149,7 +148,7 @@ def test_missing_child_drawing_flags_extra_upload(tmp_path: Path):
         ],
         title="WELDMENT, PLATFORM  103516-1  TIME MANUFACTURING",
     )
-    bom = extract_bom(pdf_path=parent, library_folder=tmp_path / "empty-lib")
+    bom = extract_bom(pdf_path=parent)
     parts = {str(r.part_no or "") for r in bom.rows}
     assert "103535-1" in parts
     assert "555010" not in parts
@@ -186,7 +185,11 @@ def test_recurse_one_extra_child_level(tmp_path: Path):
     _write_lom_pdf(
         parent,
         ["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
-        [["1", "20", "103535-1", "GATE WELDMENT"]],
+        [
+            ["1", "20", "103535-1", "GATE WELDMENT"],
+            ["1", "27", "40002-2", ""],
+            ["2", "21", "111001", "TUBE, ROUND"],
+        ],
         title="WELDMENT, PLATFORM  103516-1",
     )
     bom = extract_bom(
@@ -194,13 +197,17 @@ def test_recurse_one_extra_child_level(tmp_path: Path):
         library_folder=lib / "Time" / "103516-1",
     )
     parts = {str(r.part_no or "") for r in bom.rows}
-    assert parts == {"103535-1"}
+    assert "103535-1" in parts
+    assert "40002-2" in parts
     assert "555012-1" not in parts
     assert "555099" not in parts
     assert (job / "103535-1-LOM.xlsx").is_file()
     assert (job / "555012-1-LOM.xlsx").is_file()
     _header, lock_sheet = read_lom_xlsx(job / "555012-1-LOM.xlsx")
-    assert {r["PART NO"] for r in lock_sheet} == {"555099"}
+    lock_pns = {r["PART NO"] for r in lock_sheet}
+    assert {"555099", "555098"} <= lock_pns
+    assert "555099" not in parts
+    assert "555098" not in parts
     gate = next(c for c in bom.nested_children if c["part_no"] == "103535-1")
     inner = [c for c in (gate.get("nested_children") or []) if c.get("part_no") == "555012-1"]
     assert inner and inner[0]["status"] == "clipped"
@@ -229,18 +236,25 @@ def test_105098_later_sheet_child_table_is_not_nested_merge(tmp_path: Path):
     import fitz
 
     pdf = tmp_path / "105098-1.pdf"
-    cells = _kyle_105098_cell_rows()
-    _write_lom_pdf(
-        pdf,
-        cells[0],
-        cells[1:],
-        title="WELDMENT, PLATFORM  105098-1  TIME MANUFACTURING",
+    parent = (
+        "WELDMENT, PLATFORM  105098-1  TIME MANUFACTURING\n"
+        "LIST OF MATERIAL\n"
+        "QTY | ITEM | PART NO. | DESCRIPTION\n"
+        "1 | A | | \n"
+        "1 | J | | \n"
     )
-    doc = fitz.open(pdf)
-    page = doc.new_page()
-    page.insert_text((40, 40), "WELDMENT, PLATFORM  103603-1  TIME MANUFACTURING")
-    page.insert_text((40, 56), "LIST OF MATERIAL")
-    page.insert_text((40, 72), "1 | A | 103603-2 | TUBE")
+    child = (
+        "WELDMENT, PLATFORM  103603-1  TIME MANUFACTURING\n"
+        "LIST OF MATERIAL\n"
+        "QTY | ITEM | PART NO. | DESCRIPTION\n"
+        "1 | A | 103603-2 | TUBE\n"
+        "1 | B | 103604-1 | PLATE\n"
+    )
+    doc = fitz.open()
+    p1 = doc.new_page()
+    p1.insert_text((40, 40), parent)
+    p2 = doc.new_page()
+    p2.insert_text((40, 40), child)
     doc.save(pdf)
     doc.close()
 
@@ -248,6 +262,7 @@ def test_105098_later_sheet_child_table_is_not_nested_merge(tmp_path: Path):
     parts = {str(r.part_no or "") for r in bom.rows}
     assert "103603-1" not in parts
     assert "103603-2" not in parts
+    assert "103604-1" not in parts
     _assert_kyle_105098_1(bom)
     assert not (tmp_path / "103603-1-LOM.xlsx").exists()
     assert not any(c.get("part_no") == "103603-1" for c in bom.nested_children)

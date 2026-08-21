@@ -481,9 +481,10 @@ def find_part_pdf(
     search_roots = [Path(r) for r in (roots or []) if r]
     if library_folder:
         p = Path(library_folder)
-        for extra in (p, p.parent, p.parent.parent):
-            if extra and extra not in search_roots:
-                search_roots.append(extra)
+        if p.is_dir():
+            for extra in (p, p.parent, p.parent.parent):
+                if extra and extra.is_dir() and extra not in search_roots:
+                    search_roots.append(extra)
     existing = [r for r in search_roots if r.exists()]
     if not existing:
         return None
