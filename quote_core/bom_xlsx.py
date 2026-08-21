@@ -84,6 +84,7 @@ def lom_xlsx_names_for_pdf(pdf_path: Path | str) -> list[str]:
 
 
 def _desktop_dirs() -> list[Path]:
+    """USERPROFILE Desktop plus OneDrive / OneDriveCommercial / ``OneDrive - *``."""
     homes: list[Path] = []
     for key in ("USERPROFILE", "HOME"):
         raw = os.environ.get(key)
@@ -92,13 +93,26 @@ def _desktop_dirs() -> list[Path]:
     homes.append(Path.home())
     out: list[Path] = []
     seen: set[Path] = set()
+
+    def _add(folder: Path) -> None:
+        if folder in seen:
+            return
+        seen.add(folder)
+        out.append(folder)
+
+    for key in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
+        raw = os.environ.get(key)
+        if raw:
+            _add(Path(raw) / "Desktop")
     for home in homes:
-        for rel in (Path("Desktop"), Path("OneDrive") / "Desktop"):
-            folder = home / rel
-            if folder in seen:
-                continue
-            seen.add(folder)
-            out.append(folder)
+        _add(home / "Desktop")
+        _add(home / "OneDrive" / "Desktop")
+        try:
+            for folder in home.glob("OneDrive*"):
+                if folder.is_dir():
+                    _add(folder / "Desktop")
+        except OSError:
+            continue
     return out
 
 
@@ -648,35 +662,117 @@ def _sheet_part_paths(zf: zipfile.ZipFile) -> list[tuple[str, str]]:
     return out or [(PARENT_SHEET_NAME, "xl/worksheets/sheet1.xml")]
 
 
-def _parse_sheet_xml(raw: bytes) -> tuple[list[str], list[dict[str, Any]]]:
+def _col_index_from_ref(ref: str) -> int | None:
+    letters = "".join(ch for ch in str(ref or "") if ch.isalpha())
+    if not letters:
+        return None
+    n = 0
+    for ch in letters.upper():
+        n = n * 26 + (ord(ch) - 64)
+    return max(0, n - 1)
+
+
+def _canon_header_token(cell: str) -> str | None:
+    raw = str(cell or "").strip().upper()
+    compact = re.sub(r"[^A-Z0-9]+", "", raw)
+    if compact in {"QTY", "QTYS", "QUANTITY"}:
+        return "QTY"
+    if compact in {"ITEM", "ITEMNO", "BALLOON", "FIND"}:
+        return "ITEM"
+    if compact in {"PARTNO", "PARTNUMBER", "PN"} or raw.startswith("PART NO"):
+        return "PART NO"
+    if compact in {"DESC", "DESCRIPTION", "DESCR"}:
+        return "DESCRIPTION"
+    return None
+
+
+def _header_column_map(row: list[str]) -> dict[str, int] | None:
+    """ITEM/QTY/PART NO/DESCRIPTION in any order. QTY is not assumed col 0."""
+    found: dict[str, int] = {}
+    for i, cell in enumerate(row):
+        canon = _canon_header_token(cell)
+        if canon and canon not in found:
+            found[canon] = i
+    if "QTY" in found and "PART NO" in found:
+        return found
+    return None
+
+
+def _shared_strings(zf: zipfile.ZipFile) -> list[str]:
+    for name in ("xl/sharedStrings.xml", "xl/SharedStrings.xml"):
+        if name in zf.namelist():
+            raw = zf.read(name)
+            break
+    else:
+        return []
+    root = ET.fromstring(raw)
+    out: list[str] = []
+    for si in root.findall(f"{{{_NS_MAIN}}}si"):
+        out.append("".join(t.text or "" for t in si.iter(f"{{{_NS_MAIN}}}t")))
+    return out
+
+
+def _cell_value(cell: ET.Element, sst: list[str] | None) -> str:
+    texts = [t.text or "" for t in cell.findall(f"{{{_NS_MAIN}}}is/{{{_NS_MAIN}}}t")]
+    if texts:
+        return "".join(texts)
+    val_el = cell.find(f"{{{_NS_MAIN}}}v")
+    if val_el is None or val_el.text is None:
+        return ""
+    if cell.get("t") == "s" and sst:
+        try:
+            return sst[int(val_el.text)]
+        except (TypeError, ValueError, IndexError):
+            return ""
+    return val_el.text
+
+
+def _parse_sheet_xml(
+    raw: bytes, sst: list[str] | None = None
+) -> tuple[list[str], list[dict[str, Any]]]:
     root = ET.fromstring(raw)
     rows_el = list(root.findall(f"{{{_NS_MAIN}}}sheetData/{{{_NS_MAIN}}}row"))
     parsed: list[list[str]] = []
     for row_el in rows_el:
-        values: dict[str, str] = {}
+        values: dict[int, str] = {}
+        widest = 3
         for cell in row_el.findall(f"{{{_NS_MAIN}}}c"):
-            ref = (cell.get("r") or "")[:1]
-            text_el = cell.find(f"{{{_NS_MAIN}}}is/{{{_NS_MAIN}}}t")
-            val_el = cell.find(f"{{{_NS_MAIN}}}v")
-            if text_el is not None and text_el.text is not None:
-                values[ref] = text_el.text
-            elif val_el is not None and val_el.text is not None:
-                values[ref] = val_el.text
-            else:
-                values[ref] = ""
-        parsed.append([values.get(col, "") for col in "ABCD"])
+            idx = _col_index_from_ref(cell.get("r") or "")
+            if idx is None:
+                continue
+            values[idx] = _cell_value(cell, sst)
+            if idx > widest:
+                widest = idx
+        parsed.append([values.get(i, "") for i in range(widest + 1)])
     if not parsed:
         return list(LOM_COLUMNS), []
-    header = parsed[0]
-    data = [
-        {
-            "QTY": cols[0],
-            "ITEM": cols[1],
-            "PART NO": cols[2],
-            "DESCRIPTION": cols[3],
+    header_idx = 0
+    colmap = None
+    for i, row in enumerate(parsed[:16]):
+        colmap = _header_column_map(row)
+        if colmap:
+            header_idx = i
+            break
+    if colmap is None:
+        colmap = {"QTY": 0, "ITEM": 1, "PART NO": 2, "DESCRIPTION": 3}
+    header = parsed[header_idx]
+    data: list[dict[str, Any]] = []
+    for cols in parsed[header_idx + 1 :]:
+        def _get(name: str) -> str:
+            idx = colmap.get(name)
+            if idx is None or idx >= len(cols):
+                return ""
+            return str(cols[idx] or "")
+
+        rec = {
+            "QTY": _get("QTY"),
+            "ITEM": _get("ITEM"),
+            "PART NO": _get("PART NO"),
+            "DESCRIPTION": _get("DESCRIPTION"),
         }
-        for cols in parsed[1:]
-    ]
+        if not str(rec["PART NO"]).strip() and not str(rec["ITEM"]).strip():
+            continue
+        data.append(rec)
     return header, data
 
 
@@ -701,7 +797,8 @@ def read_lom_xlsx(
             else:
                 return list(LOM_COLUMNS), []
         raw = zf.read(zip_path)
-    return _parse_sheet_xml(raw)
+        sst = _shared_strings(zf)
+    return _parse_sheet_xml(raw, sst)
 
 
 def bom_tabs_for_import(path: Path | str) -> list[tuple[str, list[dict[str, Any]]]]:
@@ -716,8 +813,9 @@ def read_lom_sheets(path: Path | str) -> dict[str, list[dict[str, Any]]]:
     """Every BOM tab. Parent takeoff is the first name (LIST OF MATERIAL)."""
     out: dict[str, list[dict[str, Any]]] = {}
     with zipfile.ZipFile(Path(path)) as zf:
+        sst = _shared_strings(zf)
         for name, part in _sheet_part_paths(zf):
-            _header, data = _parse_sheet_xml(zf.read(part))
+            _header, data = _parse_sheet_xml(zf.read(part), sst)
             out[name] = data
     return out
 

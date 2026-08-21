@@ -13,8 +13,17 @@ from quote_core.bom import (
 )
 from quote_core.bom_xlsx import (
     PARENT_SHEET_NAME,
+    _CONTENT_TYPES,
+    _NS_MAIN,
+    _ROOT_RELS,
+    _WORKBOOK,
+    _WORKBOOK_RELS,
+    _inline_cell,
+    _qty_cell,
+    _sort_rows,
     apply_lom_xlsx_to_takeoff,
     bom_tabs_for_import,
+    find_existing_lom_xlsx,
     list_lom_sheet_names,
     read_lom_xlsx,
     write_lom_xlsx,
@@ -39,6 +48,41 @@ _PROOF_QTY = {
     "AD": (8, "464440"),
     "AX": (2, "102726-1"),
 }
+
+
+def _write_item_qty_xlsx(path: Path, rows: list[BomRow]) -> Path:
+    """Kyle Time sheet order: ITEM | QTY | PART NO | DESCRIPTION."""
+    import zipfile
+
+    dest = Path(path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        f'<worksheet xmlns="{_NS_MAIN}"><sheetData>',
+        "<row r=\"1\">"
+        f"{_inline_cell('A1', 'ITEM')}"
+        f"{_inline_cell('B1', 'QTY')}"
+        f"{_inline_cell('C1', 'PART NO')}"
+        f"{_inline_cell('D1', 'DESCRIPTION')}"
+        "</row>",
+    ]
+    for i, row in enumerate(_sort_rows(rows), start=2):
+        parts.append(
+            f'<row r="{i}">'
+            f"{_inline_cell(f'A{i}', row.item)}"
+            f"{_qty_cell(f'B{i}', row.qty)}"
+            f"{_inline_cell(f'C{i}', row.part_no)}"
+            f"{_inline_cell(f'D{i}', row.description)}"
+            "</row>"
+        )
+    parts.append("</sheetData></worksheet>")
+    with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", _CONTENT_TYPES)
+        zf.writestr("_rels/.rels", _ROOT_RELS)
+        zf.writestr("xl/workbook.xml", _WORKBOOK)
+        zf.writestr("xl/_rels/workbook.xml.rels", _WORKBOOK_RELS)
+        zf.writestr("xl/worksheets/sheet1.xml", "".join(parts))
+    return dest
 
 
 def _kyle_rows() -> list[BomRow]:
@@ -271,6 +315,49 @@ def test_desktop_xlsx_is_read_and_not_overwritten(tmp_path: Path, monkeypatch):
     assert confirmed.read_bytes() == before
     sibling = pdf.with_name(f"{pdf.stem}-LOM.xlsx")
     assert not sibling.is_file()
+
+
+def test_reads_item_qty_header_order_as_51_97(tmp_path: Path):
+    """Live 311b7ab: Desktop Time sheets are ITEM|QTY|PART|DESC. QTY is not col 0."""
+    path = _write_item_qty_xlsx(tmp_path / "102728-1-LOM.xlsx", _kyle_rows())
+    header, sheet = read_lom_xlsx(path)
+    assert "ITEM" in {str(h).upper() for h in header}
+    assert "QTY" in {str(h).upper() for h in header}
+    sourced = bom_from_lom_xlsx(path)
+    _assert_kyle_102728_1(sourced)
+    assert sourced.piece_count == 97
+    assert sourced.part_number_count == 51
+    by_item = {r.item: r for r in sourced.rows}
+    assert by_item["A"].qty == 1 and by_item["A"].part_no == "460200"
+    assert by_item["BB"].qty == 2 and by_item["BB"].part_no == "102727-4"
+
+
+def test_onedrive_company_desktop_is_found(tmp_path: Path, monkeypatch):
+    """Laptop Desktop is ``OneDrive - Kannon Manufacturing Inc\\Desktop``."""
+    home = tmp_path / "Users" / "Kyle"
+    desktop = home / "OneDrive - Kannon Manufacturing Inc" / "Desktop"
+    desktop.mkdir(parents=True)
+    path = _write_item_qty_xlsx(desktop / "102728-1-LOM.xlsx", _kyle_rows())
+    before = path.read_bytes()
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("OneDrive", str(desktop.parent))
+    monkeypatch.setenv("OneDriveCommercial", str(desktop.parent))
+
+    job = tmp_path / "job"
+    job.mkdir()
+    pdf = job / "Time 102728- Weldment.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%\n")
+
+    found = find_existing_lom_xlsx(pdf)
+    assert found == path
+    quoted = quote_bom_from_drawing(pdf_path=pdf)
+    _assert_kyle_102728_1(quoted)
+    assert quoted.to_dict()["source"] == "lom_xlsx"
+    assert quoted.lom_xlsx == "102728-1-LOM.xlsx"
+    assert path.read_bytes() == before
+    assert not (job / f"{pdf.stem}-LOM.xlsx").is_file()
+    assert any("did not re-OCR" in n for n in quoted.notes)
 
 
 def test_unread_qty_in_existing_xlsx_stays_zero(tmp_path: Path):
