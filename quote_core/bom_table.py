@@ -930,11 +930,12 @@ def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
     ``BBD 02727-4 TUBE, ROUND`` → item BB, part 102727-4, qty 2.
     ``H 102727-4 TUBE, ROUND`` → BB (do not steal H from a neighbor band).
     ``5 AA 460330 CAP, VERTICAL RAIL BOTTOM`` → AA / 460330 / qty 5.
-    ``7 A 00177-2 PLATE`` → A / 100177-2 / qty 1 (7 is dimension bleed).
+    ``7 A 00177-2 PLATE`` → A / 100177-2 / qty unread (7 is bleed, not 1).
     Keep the band when OCR has a Time-like PN, dashed or not. Do not invent
     a PN that is not in the strip.
     """
-    raw = str(line or "").replace("|", " ").strip()
+    original = str(line or "").strip()
+    raw = original.replace("|", " ").strip()
     if not raw:
         return None
     if is_glued_p_prefix_weldment_pn(raw):
@@ -972,7 +973,7 @@ def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
     if _is_eco_or_title_block_row(part, desc, raw):
         return None
     qty, qty_clear, qty_note, from_cells = _qty_from_one_source(
-        raw,
+        original or raw,
         part_start,
         item=item or "",
         part=part,
@@ -1033,11 +1034,11 @@ def assign_items_from_sequence(
     data_n = sum(
         1 for p in slots if p and _is_time_like_part(p.get("part_no"))
     )
-    # Tall / headered LOM: band index is the letter. Do not keep a misread
-    # "A" on the top row (live 460320). Short lists keep a read token.
-    force_grid = data_n >= TALL_TABLE_MIN_ROWS or (
-        bool(header_idxs) and data_n >= SHORT_TABLE_REJECT
-    )
+    # Time LOM prints the header under the rows. Only then is band index
+    # the letter (override a misread "A" on the top PN). A-first fixtures
+    # without a bottom header keep a read item token.
+    header_below = bool(header_idxs) and max(header_idxs) >= max(0, len(slots) - 4)
+    force_grid = header_below and data_n >= SHORT_TABLE_REJECT
     used: set[str] = set()
     assigned = 0
     overridden = 0

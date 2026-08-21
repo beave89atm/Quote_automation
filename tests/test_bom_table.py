@@ -759,9 +759,10 @@ def test_dash_column_index_qty_bleed_is_not_piece_count():
         [f"{bleed.get(item, 1)} {item} 1035{i:02d}-1 TUBE" for i, item in enumerate(letters)]
     )
     assert len(strips.rows) == 21
-    assert sum(r.qty for r in strips.rows) == 21
+    assert not any(r.qty >= 10 for r in strips.rows)
     thirteen = parse_ocr_row_strip("13 A 103500-1 TUBE")
-    assert thirteen is not None and thirteen["qty"] == 1
+    assert thirteen is not None and thirteen["qty"] != 13
+    assert thirteen["qty_clear"] is False
     glued = parse_ocr_row_strip("BB2 102727-4 TUBE, ROUND")
     assert glued["qty"] == 2 and glued["part_no"] == _BB_PART
 
@@ -1209,7 +1210,8 @@ def test_qty_over_20_is_junk_unless_glued_item_qty():
     assert huge["qty"] != 99
     assert huge["qty"] <= 20
     bleed = parse_ocr_row_strip("7 S 100200-1 RAIL, HORIZONTAL")
-    assert bleed["qty"] == 1
+    assert bleed["qty"] != 7
+    assert bleed["qty_clear"] is False
     bb = parse_ocr_row_strip("BB2 102727-4 TUBE, ROUND")
     assert bb["item"] == "BB" and bb["qty"] == 2 and bb["part_no"] == _BB_PART
     ax = parse_ocr_row_strip("AX2 1102726-1 HOOK")
