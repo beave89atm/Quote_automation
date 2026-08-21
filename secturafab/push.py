@@ -645,7 +645,11 @@ class SecturaFabPushService:
             return None
         encoded = quote(name, safe="-_.")
         response = self.client.request("GET", f"v1/quote/byName/{encoded}")
-        if response.status_code >= 400:
+        try:
+            status = int(getattr(response, "status_code", 404) or 404)
+        except (TypeError, ValueError):
+            return None
+        if status >= 400:
             return None
         payload = self.client._parse_or_raise(response)
         if isinstance(payload, dict) and payload.get("ID"):
