@@ -680,6 +680,99 @@ def test_hyphenless_dashed_dupes_are_dropped():
     assert "94560" in parts
 
 
+def test_weldment_pn_reject_is_exact_not_10047_prefix():
+    """1004747-1 title must not drop 10047xx / 1004806 / 11694-2 LOM siblings."""
+    keep = [
+        "1004711-1",
+        "1004737-1",
+        "1004738-1",
+        "1004739-1",
+        "1004740-1",
+        "1004741-1",
+        "1004744-1",
+        "1004744-2",
+        "1004806-1",
+        "1004806-2",
+        "11694-2",
+        "25060-6",
+        "6993-1",
+    ]
+    strips = [
+        f"{pn} {'HOSE GUIDE' if pn == '6993-1' else 'TUBE'}" for pn in keep
+    ]
+    strips.extend(
+        [
+            "N 28275-1",
+            "P 28275-2",
+            "8 S 73207 avoeos'conricuranon",
+            "B 56657 FIRST RELEASE TO PRODUCTION",
+            "BT 97879",
+        ]
+    )
+    blob = (
+        "WELDMENT, PLATFORM 1004747-1 TIME MANUFACTURING SHEET 1 OF 2 "
+        + " ".join(f"{pn} TUBE" for pn in keep)
+        + " THIS DRAWING IS THE PROPERTY OF TIME MANUFACTURING"
+    )
+    bom = harvest_ocr_row_strips(strips, page_text=blob)
+    parts = {r.part_no for r in bom.rows}
+    for pn in keep:
+        assert pn in parts, pn
+    assert "28275-1" in parts and "28275-2" in parts
+    assert "1004747-1" not in parts
+    assert "73207" not in parts
+    assert "56657" not in parts
+    assert "97879" not in parts
+    assert len([p for p in parts if p in keep]) == 13
+
+
+def test_bracket_three_only_for_4digit_stem_not_25009():
+    """`[3688-9` → 33688-9. Do not turn `[25009-2` / `[32259-1` into 3xxxxx."""
+    aq = parse_ocr_row_strip('AQ" [3688-9 JEXPANDED METAL PLATE')
+    assert aq is not None and aq["part_no"] == "33688-9"
+    two = parse_ocr_row_strip("A [25009-2 TUBE")
+    assert two is not None and two["part_no"] == "25009-2"
+    three = parse_ocr_row_strip("B [32259-1 PLATE")
+    assert three is not None and three["part_no"] == "32259-1"
+    assert parse_ocr_row_strip("C 325009-2 TUBE")["part_no"] == "325009-2"
+
+
+def test_p904225_no_dash_title_rejects_904225_1_only():
+    """P904225 weldment title — reject exact / P-stripped, not other dashed PNs."""
+    bom = harvest_ocr_row_strips(
+        [
+            "A 89100-1 TUBE",
+            "B 904225-1",
+            "AN 89176-1",
+            "M 94560 GATE, FABRICATION",
+            "G 1004738-1 TUBE",
+        ],
+        page_text="WELDMENT, PLATFORM P904225 TIME MANUFACTURING",
+    )
+    parts = {r.part_no for r in bom.rows}
+    assert "904225-1" not in parts
+    assert "P904225" not in parts
+    assert "89100-1" in parts
+    assert "89176-1" in parts
+    assert "94560" in parts
+    assert "1004738-1" in parts
+
+
+def test_97879_no_noun_is_junk_94560_gate_stays():
+    assert parse_ocr_row_strip("BT 97879") is None
+    bom = harvest_ocr_row_strips(
+        [
+            "A 16697-1 TUBE",
+            "BT 97879",
+            "M 94560 GATE, FABRICATION",
+        ]
+    )
+    parts = {r.part_no for r in bom.rows}
+    assert "97879" not in parts
+    assert "94560" in parts
+    assert "16697-1" in parts
+
+
 def test_unread_band_keeps_time_pn_and_4digit_hose_guide():
     """1004611 / 1004747-1: keep unread Time PNs; 6993-1 hose guide; drop AE/BE/BS junk."""
     lines = [

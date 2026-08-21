@@ -461,6 +461,9 @@ def _is_eco_or_title_block_row(
         return False
     same = f"{part or ''} {desc or ''} {raw}"
     has_kind = bool(_PART_KIND_NOUN_RE.search(same))
+    # 97879 with no TUBE/GATE/… is title-block noise. 94560 GATE stays.
+    if not has_kind:
+        return True
     if _TITLE_ECO_NOISE_RE.search(same) or _looks_like_garbled_eco(same):
         return True
     if (
@@ -483,6 +486,22 @@ _TITLE_BLOCK_CTX_RE = re.compile(
     r"\b(?:WELDMENT|SHEET|TIME\s+MANUFACTURING|DWG|DRAWING\s+NO)\b",
     re.IGNORECASE,
 )
+# Exact title drawing number — not every dashed PN on a titleish page blob.
+_TITLE_DWG_NO_PN_RE = re.compile(
+    r"(?:DWG(?:\s+NO)?\.?|DRAWING\s+NO\.?)\s*:?\s*"
+    r"(P?\d{5,7}(?:\s*[-–—=]\s*\d{1,3}[A-Za-z]?)?)",
+    re.IGNORECASE,
+)
+_WELDMENT_TITLE_PN_RE = re.compile(
+    r"\bWELDMENT\b.{0,48}?(P?\d{5,7}(?:\s*[-–—=]\s*\d{1,3}[A-Za-z]?)?)",
+    re.IGNORECASE | re.DOTALL,
+)
+_STANDALONE_DRAWING_PN_RE = re.compile(
+    r"^P?\d{5,7}(?:\s*[-–—=]\s*\d{1,3}[A-Za-z]?)?$",
+    re.IGNORECASE,
+)
+# `[3688-9` is OCR of 33688-9. Do not fire on `[25009-2` (5-digit stem).
+_BRACKET_AS_THREE_RE = re.compile(r"\[(?=\d{4}\s*[-–—=]\s*\d)")
 # ECO / revision / title-block notes — not weld parts (28106 C=72143, AN=89176-1).
 _TITLE_ECO_NOISE_RE = re.compile(
     r"PROPERTY(?:\s+OF(?:\s+TIME)?)?"
@@ -524,10 +543,73 @@ def _band_window(lines: Sequence[str], index: int, *, radius: int = 2) -> str:
     )
 
 
+def _expand_stamp_lines(lines: Sequence[str] | None) -> list[str]:
+    """Split page.get_text blobs so a titleish page is not one mega-line."""
+    out: list[str] = []
+    for line in lines or []:
+        text = str(line or "")
+        out.extend(text.splitlines() if "\n" in text else [text])
+    return out
+
+
+def _normalize_drawing_pn_token(raw: str) -> str:
+    token = re.sub(r"\s+", "", str(raw or "").upper())
+    return re.sub(r"[=–—]", "-", token)
+
+
+def _weldment_pn_reject_aliases(token: str) -> set[str]:
+    """Exact weldment PN and its P-stripped form. Not 10047xx prefix siblings."""
+    t = _normalize_drawing_pn_token(token)
+    if not t or not re.fullmatch(r"P?\d{5,7}(?:-\d{1,3})?", t):
+        return set()
+    out = {t}
+    if t.startswith("P") and re.match(r"P\d{5,7}", t):
+        out.add(t[1:])
+    stem = t[1:] if t.startswith("P") and len(t) > 1 and t[1].isdigit() else t
+    if "-" in stem:
+        base = stem.split("-", 1)[0]
+        out.update({stem, f"P{stem}", base, f"P{base}"})
+    else:
+        # P904225 (no dash) still rejects 904225-1 — same title, not a sibling.
+        out.update({stem, f"P{stem}", f"{stem}-1", f"P{stem}-1"})
+    return {x for x in out if re.fullmatch(r"P?\d{5,7}(?:-\d{1,3})?", x)}
+
+
+def _title_drawing_tokens(text: str, window: str) -> list[str]:
+    """The title drawing number only — never every dashed PN on the page."""
+    found: list[str] = []
+    for m in _TITLE_DWG_NO_PN_RE.finditer(text):
+        found.append(m.group(1))
+    m = _WELDMENT_TITLE_PN_RE.search(text)
+    if m:
+        found.append(m.group(1))
+    stripped = text.strip()
+    if _STANDALONE_DRAWING_PN_RE.fullmatch(stripped) and _TITLE_BLOCK_CTX_RE.search(
+        window or text
+    ):
+        found.append(stripped)
+    for m in _P_PREFIX_WELDMENT_PN_RE.finditer(text):
+        before = text[: m.start()]
+        if any(
+            is_material_list_item(tok)
+            for tok in re.findall(
+                r"(?<![A-Za-z0-9])([A-Za-z]{1,2})(?![A-Za-z0-9])", before
+            )
+        ):
+            continue
+        found.append(m.group(0))
+    return found
+
+
 def _drawing_numbers_to_reject(lines: Sequence[str] | None) -> set[str]:
-    """P904225-1 in the title block → also reject stripped 904225-1 as a BOM row."""
+    """Reject the exact title-block weldment PN (and its P-stripped form).
+
+    A titleish page blob that also lists LOM children must not dump every
+    ``\\d{5,7}-\\d`` into the reject set. ``1004738-1`` is a sibling of
+    weldment ``1004747-1``, not the drawing number.
+    """
     out: set[str] = set()
-    line_list = list(lines or [])
+    line_list = _expand_stamp_lines(lines)
     for index, line in enumerate(line_list):
         text = str(line or "").strip()
         if not text:
@@ -536,24 +618,14 @@ def _drawing_numbers_to_reject(lines: Sequence[str] | None) -> set[str]:
         titleish = bool(
             _TITLE_BLOCK_CTX_RE.search(text) or _is_title_block_drawing_line(text, window)
         )
-        if not titleish:
+        standalone = bool(
+            _STANDALONE_DRAWING_PN_RE.fullmatch(text)
+            and _TITLE_BLOCK_CTX_RE.search(window or text)
+        )
+        if not titleish and not standalone:
             continue
-        for m in _P_PREFIX_WELDMENT_PN_RE.finditer(text):
-            before = text[: m.start()]
-            if any(
-                is_material_list_item(tok)
-                for tok in re.findall(
-                    r"(?<![A-Za-z0-9])([A-Za-z]{1,2})(?![A-Za-z0-9])", before
-                )
-            ):
-                continue
-            token = re.sub(r"\s+", "", m.group(0).upper())
-            out.add(token)
-            if token.startswith("P") and re.match(r"P\d{5,7}", token):
-                out.add(token[1:])
-        if _is_title_block_drawing_line(text, window):
-            for m in re.finditer(r"\b(\d{5,7}-\d{1,3})\b", text):
-                out.add(m.group(1).upper())
+        for token in _title_drawing_tokens(text, window):
+            out.update(_weldment_pn_reject_aliases(token))
     return out
 
 
@@ -612,14 +684,17 @@ def find_time_like_pn(raw: str | None) -> tuple[int, int, str] | None:
     Find a Time-like PN even when the dash is broken or digits are glued.
 
     Does not invent a PN that is not in the strip. ``[3688-9`` is OCR of
-    ``33688-9``; ``o4560 GATE`` is OCR of ``94560``.
+    ``33688-9``; ``o4560 GATE`` is OCR of ``94560``. Do not turn
+    ``[25009-2`` into ``325009-2`` — only ``[`` + 4-digit stem is a 3.
     """
     text = str(raw or "")
     if not text.strip():
         return None
     variants = [text]
     if "[" in text:
-        variants.append(text.replace("[", "3"))
+        bracket_three = _BRACKET_AS_THREE_RE.sub("3", text)
+        if bracket_three != text:
+            variants.append(bracket_three)
     o_as_nine = re.sub(r"(?<![A-Za-z0-9])[oO](\d{4})\b", r"9\1", text)
     if o_as_nine != text:
         variants.append(o_as_nine)

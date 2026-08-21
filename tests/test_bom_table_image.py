@@ -615,10 +615,18 @@ _LIVE_6C4FC51_PNS = [
 def test_union_live_pn_lists_keeps_tail_and_retry_only():
     """Success bar: unique PNs ≥ union of the two live harvests; BB qty 2."""
     first = harvest_ocr_row_strips(
-        [f"{pn} COMPONENT" for pn in _LIVE_B1487D7_PNS] + ["BBD 02727-4 TUBE, ROUND"]
+        [
+            f"{pn} {'GATE' if pn == '94560' else 'COMPONENT'}"
+            for pn in _LIVE_B1487D7_PNS
+        ]
+        + ["BBD 02727-4 TUBE, ROUND"]
     )
     extra = harvest_ocr_row_strips(
-        [f"{pn} COMPONENT" for pn in _LIVE_6C4FC51_PNS] + ["BBD 02727-4 TUBE, ROUND"]
+        [
+            f"{pn} {'GATE' if pn == '94560' else 'COMPONENT'}"
+            for pn in _LIVE_6C4FC51_PNS
+        ]
+        + ["BBD 02727-4 TUBE, ROUND"]
     )
     united = union_sticky_harvest(first, extra)
     parts = {r.part_no for r in united.rows}
@@ -665,6 +673,8 @@ def test_letter_collision_does_not_drop_a_pn():
 def test_live_dropped_strips_recover_time_pns():
     aq = parse_ocr_row_strip('AQ" [3688-9 JEXPANDED METAL PLATE')
     assert aq is not None and aq["part_no"] == "33688-9"
+    assert parse_ocr_row_strip("A [25009-2 TUBE")["part_no"] == "25009-2"
+    assert parse_ocr_row_strip("B [32259-1 PLATE")["part_no"] == "32259-1"
     gate = parse_ocr_row_strip("o4560 |GATE, FABRICATION")
     assert gate is not None and gate["part_no"] == "94560"
     bom = harvest_ocr_row_strips(
