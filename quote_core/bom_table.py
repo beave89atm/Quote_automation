@@ -113,6 +113,11 @@ _ITEM_PART_ANY_RE = re.compile(
 _BLEED_KIND_RE = re.compile(
     r"\b(PLATE|RAIL|TUBE|CAP|HOOK|GRATING|ICAP)\b", re.IGNORECASE
 )
+_PART_KIND_NOUN_RE = re.compile(
+    r"\b(PLATE|RAIL|TUBE|CAP|HOOK|GRATING|ICAP|GATE|HOSE|SUPPORT|GUIDE|"
+    r"ANGLE|CLIP|FABRICATION)\b",
+    re.IGNORECASE,
+)
 _TUBE_ROUND_RE = re.compile(r"TUBE\s*,?\s*ROUND", re.IGNORECASE)
 _STRIP_HEADER_WORDS = frozenset(
     {
@@ -405,12 +410,47 @@ def _is_time_like_part(part: str | None) -> bool:
     return bool(re.fullmatch(r"\d{5,7}", text))
 
 
-def _is_eco_or_title_block_row(part: str | None, desc: str | None, raw: str = "") -> bool:
-    """Drop revision / ECO / PROPERTY OF TIME rows. Do not invent replacements."""
-    blob = f"{part or ''} {desc or ''} {raw}"
-    if _TITLE_ECO_NOISE_RE.search(blob):
+def _is_five_digit_bare_pn(part: str | None) -> bool:
+    """56657 / 73049 class — not a dashed Time PN (94560 GATE still has a noun)."""
+    return bool(re.fullmatch(r"\d{5}", str(part or "").strip()))
+
+
+def _is_eco_or_title_block_row(
+    part: str | None,
+    desc: str | None,
+    raw: str = "",
+    window: str = "",
+) -> bool:
+    """Drop revision / ECO / PROPERTY OF TIME rows. Do not invent replacements.
+
+    5-digit bare PNs also drop when PROPERTY / REV / ECO / ADDED / CONFIG
+    sits on a neighboring band (live 33612 B=56657, 103516 D=73049).
+    """
+    same = f"{part or ''} {desc or ''} {raw}"
+    if _TITLE_ECO_NOISE_RE.search(same):
         return True
     if raw and _is_title_block_drawing_line(raw, raw):
+        return True
+    # Neighbor-band keywords only drop rows that have no part noun
+    # (TUBE/GATE/…). Do not wipe 16697-1 TUBE because a nearby ECO line.
+    has_kind = bool(_PART_KIND_NOUN_RE.search(same))
+    if (
+        window
+        and not has_kind
+        and _is_five_digit_bare_pn(part)
+        and _TITLE_ECO_NOISE_RE.search(window)
+    ):
+        return True
+    if (
+        window
+        and not has_kind
+        and re.fullmatch(r"\d{5,7}-\d{1,3}", str(part or "").strip())
+        and re.search(
+            r"PROPERTY(?:\s+OF(?:\s+TIME)?)?|\bECO\b|ADDED\s+(?:ITEM|[—\-]*\s*4)",
+            window,
+            flags=re.I,
+        )
+    ):
         return True
     return False
 
@@ -426,13 +466,13 @@ _TITLE_BLOCK_CTX_RE = re.compile(
 )
 # ECO / revision / title-block notes — not weld parts (28106 C=72143, AN=89176-1).
 _TITLE_ECO_NOISE_RE = re.compile(
-    r"PROPERTY\s+OF\s+TIME"
+    r"PROPERTY(?:\s+OF(?:\s+TIME)?)?"
     r"|THIS\s+DRAWING\s+IS\s+THE\s+PROPERTY"
     r"|ADDED\s+[—\-]*\s*4(?:\s+AND\s+ITEM)?"
     r"|ADDED\s+(?:AND\s+)?ITEM"
     r"|\bECO\b"
-    r"|REV(?:ISION)?\s*(?:NOTE|:)"
-    r"|CONFIG(?:URATION)?\s*(?:NOTE|:)",
+    r"|\bREV(?:ISION)?\b"
+    r"|\bCONFIG(?:URATION)?\b",
     re.IGNORECASE,
 )
 
@@ -445,15 +485,73 @@ def _is_title_block_drawing_line(raw: str, window: str = "") -> bool:
     A BOM description that merely says WELDMENT is kept.
     """
     text = str(raw or "").strip()
-    if not re.search(r"\d{5,7}-\d{1,3}", text):
+    if not re.search(r"P?\d{5,7}-\d{1,3}", text, flags=re.I):
         return False
-    if re.fullmatch(r"\d{5,7}-\d{1,3}", text):
+    if re.fullmatch(r"P?\d{5,7}-\d{1,3}", text, flags=re.I):
         return bool(_TITLE_BLOCK_CTX_RE.search(window or text))
     has_weldment = bool(re.search(r"\bWELDMENT\b", text, flags=re.I))
     has_shop = bool(
         re.search(r"\bTIME\s+MANUFACTURING\b|\bSHEET\s+\d|\bDWG(?:\s+NO)?\b", text, flags=re.I)
     )
     return has_weldment and has_shop
+
+
+def _band_window(lines: Sequence[str], index: int, *, radius: int = 2) -> str:
+    return " ".join(
+        str(lines[j] or "")
+        for j in range(max(0, index - radius), min(len(lines), index + radius + 1))
+    )
+
+
+def _drawing_numbers_to_reject(lines: Sequence[str] | None) -> set[str]:
+    """P904225-1 in the title block → also reject stripped 904225-1 as a BOM row."""
+    out: set[str] = set()
+    line_list = list(lines or [])
+    for index, line in enumerate(line_list):
+        text = str(line or "").strip()
+        if not text:
+            continue
+        window = _band_window(line_list, index)
+        titleish = bool(
+            _TITLE_BLOCK_CTX_RE.search(text) or _is_title_block_drawing_line(text, window)
+        )
+        if not titleish:
+            continue
+        for m in _P_PREFIX_WELDMENT_PN_RE.finditer(text):
+            before = text[: m.start()]
+            if any(
+                is_material_list_item(tok)
+                for tok in re.findall(
+                    r"(?<![A-Za-z0-9])([A-Za-z]{1,2})(?![A-Za-z0-9])", before
+                )
+            ):
+                continue
+            token = re.sub(r"\s+", "", m.group(0).upper())
+            out.add(token)
+            if token.startswith("P") and re.match(r"P\d{5,7}", token):
+                out.add(token[1:])
+        if _is_title_block_drawing_line(text, window):
+            for m in re.finditer(r"\b(\d{5,7}-\d{1,3})\b", text):
+                out.add(m.group(1).upper())
+    return out
+
+
+def _drop_hyphenless_dupes(by_pn: dict) -> dict:
+    """1035371 is 103537-1 with the hyphen missing — keep the dashed PN only."""
+    dashed = {p for p in by_pn if "-" in str(p)}
+    drop: set[str] = set()
+    for p in by_pn:
+        raw = str(p)
+        if "-" in raw or not re.fullmatch(r"\d{6,8}", raw):
+            continue
+        for suf_len in (1, 2):
+            cand = f"{raw[:-suf_len]}-{raw[-suf_len:]}"
+            if cand in dashed:
+                drop.add(p)
+                break
+    for p in drop:
+        by_pn.pop(p, None)
+    return by_pn
 
 
 def _find_time_like_pn_once(text: str) -> tuple[int, int, str] | None:
@@ -918,9 +1016,15 @@ def union_sticky_harvest(primary, extra):
     return result
 
 
-def _finalize_strip_rows(rows: list, notes: list[str]) -> list:
+def _finalize_strip_rows(
+    rows: list,
+    notes: list[str],
+    *,
+    lines: Sequence[str] | None = None,
+) -> list:
     from quote_core.bom import BomRow
 
+    reject = _drawing_numbers_to_reject(lines)
     by_pn: dict[str, Any] = {}
     for row in rows:
         if _looks_like_bb_tube(row.part_no, row.description):
@@ -962,8 +1066,16 @@ def _finalize_strip_rows(rows: list, notes: list[str]) -> list:
         pn = str(row.part_no or "")
         if not _is_time_like_part(pn):
             continue
+        if pn in reject:
+            notes.append(f"Dropped weldment drawing PN {pn} — not a BOM row")
+            continue
         prev = by_pn.get(pn)
         by_pn[pn] = _keep_better_pn_row(prev, row) if prev else row
+    dropped_dupes = [p for p in list(by_pn) if "-" not in str(p)]
+    _drop_hyphenless_dupes(by_pn)
+    for p in dropped_dupes:
+        if p not in by_pn:
+            notes.append(f"Dropped hyphen-less dupe {p} (dashed sibling kept)")
     return label_letters_after_pn_set(list(by_pn.values()), notes)
 
 
@@ -979,20 +1091,33 @@ def harvest_ocr_row_strips(
     notes: list[str] = []
     slots: list[dict[str, Any] | None] = []
     line_list = list(lines or [])
+    reject = _drawing_numbers_to_reject(line_list)
     for index, line in enumerate(line_list):
         if not str(line).strip():
             slots.append(None)
             continue
         raw_only = str(line).strip()
-        window = " ".join(
-            str(line_list[j] or "")
-            for j in range(max(0, index - 2), min(len(line_list), index + 3))
-        )
+        window = _band_window(line_list, index)
         if _is_title_block_drawing_line(raw_only, window):
             slots.append(None)
             notes.append(f"Skipped title-block drawing number on: {raw_only[:48]}")
             continue
         parsed = parse_ocr_row_strip(line)
+        if parsed and (
+            str(parsed.get("part_no") or "") in reject
+            or _is_eco_or_title_block_row(
+                parsed.get("part_no"),
+                parsed.get("description"),
+                raw_only,
+                window,
+            )
+        ):
+            notes.append(
+                f"Dropped ECO/title-block/weldment PN "
+                f"{parsed.get('part_no')} on: {raw_only[:48]}"
+            )
+            slots.append(None)
+            continue
         slots.append(parsed)
         if parsed is None:
             strip = re.sub(r"\s+", " ", str(line)).strip()
@@ -1025,10 +1150,11 @@ def harvest_ocr_row_strips(
     _note_sequence_holes(slots, lines or [], notes, bottom_is_a=bottom_is_a)
     found = [_parsed_to_row(p) for p in filled]
     # Same-line item+part only. Do not join bands — that copies a neighbor PN onto a hole.
-    for line in lines or []:
+    for index, line in enumerate(line_list):
         if not str(line).strip():
             continue
-        if _is_eco_or_title_block_row(None, None, str(line)):
+        window = _band_window(line_list, index)
+        if _is_eco_or_title_block_row(None, None, str(line), window):
             continue
         for m in _ITEM_PART_ANY_RE.finditer(str(line)):
             if is_glued_p_prefix_weldment_pn(m.group(0)):
@@ -1038,9 +1164,15 @@ def harvest_ocr_row_strips(
             parsed = parse_ocr_row_strip(str(line))
             if not parsed:
                 parsed = parse_ocr_row_strip(f"{m.group('item')}{glued} {m.group('part')}")
-            if parsed and is_material_list_item(str(parsed.get("item") or "")):
-                found.append(_parsed_to_row(parsed))
-    rows = _finalize_strip_rows(found, notes)
+            if not parsed or not is_material_list_item(str(parsed.get("item") or "")):
+                continue
+            pn = str(parsed.get("part_no") or "")
+            if pn in reject or _is_eco_or_title_block_row(
+                pn, parsed.get("description"), str(line), window
+            ):
+                continue
+            found.append(_parsed_to_row(parsed))
+    rows = _finalize_strip_rows(found, notes, lines=line_list)
     if not rows:
         return BomResult(method=None, confidence=0.0, notes=["No item+part strips harvested"])
     rows.sort(key=lambda r: item_sort_key(str(r.item or "")))
@@ -1133,7 +1265,7 @@ def harvest_material_list_lines(text: str | None, *, bom_config: str | None = No
                 confidence=0.9,
             )
         )
-    rows = _finalize_strip_rows(collected, notes)
+    rows = _finalize_strip_rows(collected, notes, lines=blob.splitlines())
     if not rows:
         return BomResult(method=None, confidence=0.0, notes=["No qty/item/part lines harvested"])
     # Loose qty/item/part bait (page-0 regex leftovers) is not a table unless
@@ -1540,8 +1672,33 @@ def parse_material_list_text(text: str | None, *, bom_config: str | None = None)
     parsed_below = parse_material_list_cells(below, bom_config=bom_config, header=cell_rows[header_idx])
     parsed_above = parse_material_list_cells(above, bom_config=bom_config, header=cell_rows[header_idx])
     structured = parsed_above if len(parsed_above.rows) > len(parsed_below.rows) else parsed_below
+    _strip_junk_pns_from_result(structured, text.splitlines())
+    _strip_junk_pns_from_result(harvested, text.splitlines())
     best = pick_best_material_list([structured, harvested])
     return best or structured
+
+
+def _strip_junk_pns_from_result(bom: Any, lines: Sequence[str] | None) -> Any:
+    """Drop weldment drawing PNs, ECO/title-block, and hyphen-less dupes."""
+    if bom is None:
+        return bom
+    rows = list(getattr(bom, "rows", None) or [])
+    if not rows:
+        return bom
+    reject = _drawing_numbers_to_reject(lines)
+    window = "\n".join(str(x or "") for x in (lines or []))
+    kept = []
+    for row in rows:
+        pn = str(row.part_no or "")
+        if pn in reject:
+            continue
+        if _is_eco_or_title_block_row(pn, getattr(row, "description", ""), ""):
+            continue
+        kept.append(row)
+    by_pn = {str(r.part_no): r for r in kept}
+    _drop_hyphenless_dupes(by_pn)
+    bom.rows = list(by_pn.values())
+    return bom
 
 
 def _merge_header_words(words: list[dict[str, Any]]) -> list[dict[str, Any]]:

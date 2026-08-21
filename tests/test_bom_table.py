@@ -534,6 +534,58 @@ def test_eco_and_title_block_rows_are_dropped():
     assert _BB_PART in cell_parts
 
 
+def test_live_surviving_eco_and_stripped_weldment_pn_are_dropped():
+    """4725929 live leftovers: 5-digit bare + neighbor REV/ECO/PROPERTY; 904225-1."""
+    lines = [
+        "WELDMENT, PLATFORM",
+        "P904225-1",
+        "TIME MANUFACTURING",
+        "A 89100-1 TUBE",
+        "B 56657",
+        "PROPERTY OF TIME",
+        "BT 97879",
+        "REV",
+        "E 61358 REV",
+        "S 73207 CONFIG",
+        "D 73049",
+        "ECO",
+        "AN 89176-1",
+        "PROPERTY OF TIME MANUFACTURING",
+        "B 904225-1",
+        "M 94560 GATE, FABRICATION",
+        "BBD 02727-4 TUBE, ROUND",
+    ]
+    bom = harvest_ocr_row_strips(lines)
+    parts = {r.part_no for r in bom.rows}
+    assert "89100-1" in parts
+    assert "94560" in parts
+    assert _BB_PART in parts
+    for junk in ("56657", "97879", "61358", "73207", "73049", "89176-1", "904225-1", "P904225-1"):
+        assert junk not in parts, junk
+    bb = next(r for r in bom.rows if r.item == "BB")
+    assert bb.qty == 2 and bb.part_no == _BB_PART
+
+
+def test_hyphenless_dashed_dupes_are_dropped():
+    """103516 live: 1035371 / 1035221 / 1035281 are 103537-1 etc. without the hyphen."""
+    bom = harvest_ocr_row_strips(
+        [
+            "A 103537-1 TUBE",
+            "1035371 TUBE",
+            "B 103522-1 PLATE",
+            "1035221",
+            "C 103528-1 RAIL",
+            "1035281 RAIL",
+            "M 94560 GATE, FABRICATION",
+        ]
+    )
+    parts = {r.part_no for r in bom.rows}
+    assert "103537-1" in parts and "1035371" not in parts
+    assert "103522-1" in parts and "1035221" not in parts
+    assert "103528-1" in parts and "1035281" not in parts
+    assert "94560" in parts
+
+
 def test_unread_band_keeps_time_pn_and_4digit_hose_guide():
     """1004611 / 1004747-1: keep unread Time PNs; 6993-1 hose guide; drop AE/BE/BS junk."""
     lines = [
