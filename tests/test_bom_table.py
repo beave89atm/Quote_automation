@@ -758,6 +758,88 @@ def test_p904225_no_dash_title_rejects_904225_1_only():
     assert "1004738-1" in parts
 
 
+def test_1007922_keeps_filler_and_outrigger_not_weldment():
+    """1007922-1 is the weldment. 14149-1 FILLER and 1007830-1 stay."""
+    strips = [
+        "14149-1",
+        "FILLER",
+        "1007830-1 OUTRIGGER LEG",
+        "A 1007800-1 TUBE",
+        "6993-1 HOSE GUIDE",
+        "N 28275-1",
+    ]
+    page = (
+        "SHEET 1 OF 2\n"
+        "LIST OF MATERIAL\n"
+        "14149-1\n"
+        "FILLER\n"
+        "1007830-1\n"
+        "OUTRIGGER LEG\n"
+        "WELDMENT, PLATFORM\n"
+        "1007922-1\n"
+        "TIME MANUFACTURING\n"
+        "SHEET 1 OF 2\n"
+    )
+    bom = harvest_ocr_row_strips(strips, page_text=page)
+    parts = {r.part_no for r in bom.rows}
+    assert "14149-1" in parts
+    assert "1007830-1" in parts
+    assert "1007800-1" in parts
+    assert "6993-1" in parts
+    assert "28275-1" in parts
+    assert "1007922-1" not in parts
+
+
+def test_103516_keeps_dashed_103535_not_hyphenless_dupe():
+    """103535-1 is a real dashed 1035xx row, not a hyphen-less dupe of the title."""
+    strips = [
+        "A 103537-1 TUBE",
+        "1035371 TUBE",
+        "B 103535-1 PLATE",
+        "103535-1",
+        "C 103522-1 RAIL",
+        "1035221",
+    ]
+    page = (
+        "WELDMENT, PLATFORM 103516-1 TIME MANUFACTURING\n"
+        "SHEET 1 OF 2\n"
+        "103535-1\n"
+        "PLATE\n"
+        "103537-1 TUBE\n"
+    )
+    bom = harvest_ocr_row_strips(strips, page_text=page)
+    parts = {r.part_no for r in bom.rows}
+    assert "103535-1" in parts
+    assert "103537-1" in parts and "1035371" not in parts
+    assert "103522-1" in parts and "1035221" not in parts
+    assert "103516-1" not in parts
+
+
+def test_p904225_spaced_and_trailing_title_still_drops_904225_1():
+    """Live P904225-1: spaced title OCR and title-after-LOM blob still reject 904225-1."""
+    assert parse_ocr_row_strip("P 904225-1 WELDMENT") is None
+    trailing = (
+        "A 89100-1 TUBE AN 89176-1 28275-1 "
+        "WELDMENT, PLATFORM P 904225-1 TIME MANUFACTURING SHEET 1 OF 1"
+    )
+    bom = harvest_ocr_row_strips(
+        [
+            "A 89100-1 TUBE",
+            "B 904225-1",
+            "P 904225-1 WELDMENT",
+            "AN 89176-1",
+            "G P904226-1 SUPPORT",
+        ],
+        page_text=trailing,
+    )
+    parts = {r.part_no for r in bom.rows}
+    assert "904225-1" not in parts
+    assert "P904225-1" not in parts
+    assert "89100-1" in parts
+    assert "89176-1" in parts
+    assert "904226-1" in parts or "P904226-1" in parts
+
+
 def test_97879_no_noun_is_junk_94560_gate_stays():
     assert parse_ocr_row_strip("BT 97879") is None
     bom = harvest_ocr_row_strips(

@@ -392,15 +392,26 @@ def is_glued_p_prefix_weldment_pn(raw: str | None) -> bool:
     """True for title-block ``P904225-1``, not item G + child ``P904226-1``."""
     text = str(raw or "")
     m = _P_PREFIX_WELDMENT_PN_RE.search(text)
-    if not m:
-        return False
-    if re.search(r"(?<![A-Za-z0-9])P\s+\d{5,7}", text, flags=re.IGNORECASE):
-        return False
-    before = text[: m.start()]
-    for token in re.findall(r"(?<![A-Za-z0-9])([A-Za-z]{1,2})(?![A-Za-z0-9])", before):
-        if is_material_list_item(token):
-            return False
-    return True
+    if m:
+        if re.search(r"(?<![A-Za-z0-9])P\s+\d{5,7}", text, flags=re.IGNORECASE):
+            m = None
+        else:
+            before = text[: m.start()]
+            for token in re.findall(
+                r"(?<![A-Za-z0-9])([A-Za-z]{1,2})(?![A-Za-z0-9])", before
+            ):
+                if is_material_list_item(token):
+                    return False
+            return True
+    # Spaced title OCR ``P 904225-1 WELDMENT`` — not a real balloon.
+    spaced = re.search(
+        r"(?<![A-Za-z0-9])P\s+(\d{5,7}(?:\s*[-–—=]\s*\d{1,3})?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if spaced and _TITLE_DRAWING_CTX_RE.search(text):
+        return True
+    return False
 
 
 def _is_time_like_part(part: str | None) -> bool:
@@ -486,6 +497,22 @@ _TITLE_BLOCK_CTX_RE = re.compile(
     r"\b(?:WELDMENT|SHEET|TIME\s+MANUFACTURING|DWG|DRAWING\s+NO)\b",
     re.IGNORECASE,
 )
+# SHEET sits next to the LOM (14149-1 / 103535-1). Do not treat it as the title.
+_TITLE_DRAWING_CTX_RE = re.compile(
+    r"\b(?:WELDMENT|TIME\s+MANUFACTURING|DWG|DRAWING\s+NO)\b",
+    re.IGNORECASE,
+)
+# P904225-1 or spaced title OCR ``P 904225-1``.
+_SPACED_P_PREFIX_PN_RE = re.compile(
+    r"(?<![A-Za-z0-9])P\s*(\d{5,7}(?:\s*[-–—=]\s*\d{1,3}[A-Za-z]?)?)\b",
+    re.IGNORECASE,
+)
+# Title line: WELDMENT … PN … TIME / DWG — not a LOM desc that says WELDMENT.
+_TITLE_WELDMENT_SHOP_PN_RE = re.compile(
+    r"\bWELDMENT\b.{0,40}?(P?\d{5,7}(?:\s*[-–—=]\s*\d{1,3}[A-Za-z]?)?)"
+    r".{0,32}(?:TIME\s+MANUFACTURING|DWG(?:\s+NO)?)",
+    re.IGNORECASE | re.DOTALL,
+)
 # Exact title drawing number — not every dashed PN on a titleish page blob.
 _TITLE_DWG_NO_PN_RE = re.compile(
     r"(?:DWG(?:\s+NO)?\.?|DRAWING\s+NO\.?)\s*:?\s*"
@@ -528,7 +555,12 @@ def _is_title_block_drawing_line(raw: str, window: str = "") -> bool:
     if not re.search(r"P?\d{5,7}-\d{1,3}", text, flags=re.I):
         return False
     if re.fullmatch(r"P?\d{5,7}-\d{1,3}", text, flags=re.I):
-        return bool(_TITLE_BLOCK_CTX_RE.search(window or text))
+        # Need WELDMENT and TIME/DWG. SHEET or a neighbor WELDMENT desc is not enough.
+        ctx = window or text
+        return bool(
+            re.search(r"\bWELDMENT\b", ctx, flags=re.I)
+            and re.search(r"\bTIME\s+MANUFACTURING\b|\bDWG(?:\s+NO)?\b", ctx, flags=re.I)
+        )
     has_weldment = bool(re.search(r"\bWELDMENT\b", text, flags=re.I))
     has_shop = bool(
         re.search(r"\bTIME\s+MANUFACTURING\b|\bSHEET\s+\d|\bDWG(?:\s+NO)?\b", text, flags=re.I)
@@ -575,29 +607,50 @@ def _weldment_pn_reject_aliases(token: str) -> set[str]:
     return {x for x in out if re.fullmatch(r"P?\d{5,7}(?:-\d{1,3})?", x)}
 
 
+def _immediate_item_before(text: str, index: int) -> bool:
+    """True for ``G P904226-1`` / ``G | P904226-1`` — a LOM balloon, not the title."""
+    before = text[max(0, index - 12) : index]
+    m = re.search(r"(?<![A-Za-z0-9])([A-Za-z]{1,2})\s*[|:]?\s*$", before)
+    return bool(m and is_material_list_item(m.group(1)))
+
+
+def _standalone_is_title_drawing_pn(line_list: Sequence[str], index: int) -> bool:
+    """True only for the title stack ``WELDMENT / 1007922-1 / TIME``, not LOM PNs."""
+    text = str(line_list[index] or "").strip()
+    if not _STANDALONE_DRAWING_PN_RE.fullmatch(text):
+        return False
+    prev = " ".join(str(line_list[j] or "") for j in range(max(0, index - 2), index))
+    nxt = " ".join(
+        str(line_list[j] or "")
+        for j in range(index + 1, min(len(line_list), index + 3))
+    )
+    above_weldment = bool(re.search(r"\bWELDMENT\b|\bDWG(?:\s+NO)?\b", prev, flags=re.I))
+    below_shop = bool(
+        re.search(r"\bTIME\s+MANUFACTURING\b|\bDWG(?:\s+NO)?\b", nxt, flags=re.I)
+    )
+    above_shop = bool(
+        re.search(r"\bTIME\s+MANUFACTURING\b|\bDWG(?:\s+NO)?\b", prev, flags=re.I)
+    )
+    below_weldment = bool(re.search(r"\bWELDMENT\b", nxt, flags=re.I))
+    return (above_weldment and below_shop) or (above_shop and below_weldment)
+
+
 def _title_drawing_tokens(text: str, window: str) -> list[str]:
     """The title drawing number only — never every dashed PN on the page."""
     found: list[str] = []
     for m in _TITLE_DWG_NO_PN_RE.finditer(text):
         found.append(m.group(1))
-    m = _WELDMENT_TITLE_PN_RE.search(text)
-    if m:
-        found.append(m.group(1))
-    stripped = text.strip()
-    if _STANDALONE_DRAWING_PN_RE.fullmatch(stripped) and _TITLE_BLOCK_CTX_RE.search(
-        window or text
-    ):
-        found.append(stripped)
-    for m in _P_PREFIX_WELDMENT_PN_RE.finditer(text):
-        before = text[: m.start()]
-        if any(
-            is_material_list_item(tok)
-            for tok in re.findall(
-                r"(?<![A-Za-z0-9])([A-Za-z]{1,2})(?![A-Za-z0-9])", before
-            )
-        ):
-            continue
-        found.append(m.group(0))
+    shop_here = bool(
+        re.search(r"\bTIME\s+MANUFACTURING\b|\bDWG(?:\s+NO)?\b", text, flags=re.I)
+    )
+    if shop_here:
+        m = _TITLE_WELDMENT_SHOP_PN_RE.search(text) or _WELDMENT_TITLE_PN_RE.search(text)
+        if m:
+            found.append(m.group(1))
+        for m in _SPACED_P_PREFIX_PN_RE.finditer(text):
+            if _immediate_item_before(text, m.start()):
+                continue
+            found.append("P" + m.group(1))
     return found
 
 
@@ -605,27 +658,40 @@ def _drawing_numbers_to_reject(lines: Sequence[str] | None) -> set[str]:
     """Reject the exact title-block weldment PN (and its P-stripped form).
 
     A titleish page blob that also lists LOM children must not dump every
-    ``\\d{5,7}-\\d`` into the reject set. ``1004738-1`` is a sibling of
-    weldment ``1004747-1``, not the drawing number.
+    ``\\d{5,7}-\\d`` into the reject set. ``14149-1`` / ``1007830-1`` are not
+    weldment ``1007922-1``. Standalone PNs next to SHEET are LOM, not the title.
     """
     out: set[str] = set()
     line_list = _expand_stamp_lines(lines)
+    blob = "\n".join(line_list)
     for index, line in enumerate(line_list):
         text = str(line or "").strip()
         if not text:
             continue
         window = _band_window(line_list, index)
         titleish = bool(
-            _TITLE_BLOCK_CTX_RE.search(text) or _is_title_block_drawing_line(text, window)
+            _TITLE_DRAWING_CTX_RE.search(text)
+            or _is_title_block_drawing_line(text, window)
         )
-        standalone = bool(
-            _STANDALONE_DRAWING_PN_RE.fullmatch(text)
-            and _TITLE_BLOCK_CTX_RE.search(window or text)
-        )
+        standalone = _standalone_is_title_drawing_pn(line_list, index)
+        if standalone:
+            out.update(_weldment_pn_reject_aliases(text))
         if not titleish and not standalone:
             continue
         for token in _title_drawing_tokens(text, window):
             out.update(_weldment_pn_reject_aliases(token))
+    for m in _TITLE_DWG_NO_PN_RE.finditer(blob):
+        out.update(_weldment_pn_reject_aliases(m.group(1)))
+    for m in _TITLE_WELDMENT_SHOP_PN_RE.finditer(blob):
+        out.update(_weldment_pn_reject_aliases(m.group(1)))
+    for m in _SPACED_P_PREFIX_PN_RE.finditer(blob):
+        lo, hi = max(0, m.start() - 80), min(len(blob), m.end() + 80)
+        local = blob[lo:hi]
+        if not re.search(r"\b(?:WELDMENT|TIME\s+MANUFACTURING)\b", local, flags=re.I):
+            continue
+        if _immediate_item_before(blob, m.start()):
+            continue
+        out.update(_weldment_pn_reject_aliases("P" + m.group(1)))
     return out
 
 
@@ -643,6 +709,8 @@ def _drop_hyphenless_dupes(by_pn: dict) -> dict:
                 drop.add(p)
                 break
     for p in drop:
+        if "-" in str(p):
+            continue
         by_pn.pop(p, None)
     return by_pn
 
