@@ -1210,6 +1210,21 @@ def extract_bom_from_material_list_table(
             indexes = list(range(n_pages))
         for idx in indexes:
             page = doc[idx]
+            parsed = _parse_material_list_on_page(page, bom_config=bom_config)
+            if parsed.rows or material_list_header_seen(parsed):
+                parsed.notes = [
+                    f"LIST OF MATERIAL candidate on page {idx + 1} of {n_pages} "
+                    f"({len(parsed.rows)} rows, score={score_material_list(parsed)})",
+                    *list(parsed.notes),
+                ]
+                candidates.append(parsed)
+            else:
+                notes.extend(parsed.notes)
+            # Native cells already complete (1004747 / 28106 / synthetic
+            # 102728). Do not bitmap-OCR over them. Live Time CAD has no
+            # native cells, so it still renders the right-side grid.
+            if _native_cell_table_is_complete(parsed):
+                continue
             try:
                 from quote_core.bom_table_image import (
                     extract_bom_from_table_image,
@@ -1241,19 +1256,8 @@ def extract_bom_from_material_list_table(
                     candidates.append(rendered)
             except Exception as exc:  # noqa: BLE001
                 notes.append(f"Right-side render page {idx + 1} failed: {exc}")
-            parsed = _parse_material_list_on_page(page, bom_config=bom_config)
-            if parsed.rows or material_list_header_seen(parsed):
-                parsed.notes = [
-                    f"LIST OF MATERIAL candidate on page {idx + 1} of {n_pages} "
-                    f"({len(parsed.rows)} rows, score={score_material_list(parsed)})",
-                    *list(parsed.notes),
-                ]
-                candidates.append(parsed)
-            else:
-                notes.extend(parsed.notes)
             # Keep looking when this hit is a short decoy (< 40 rows).
             if len(parsed.rows) >= TALL_TABLE_MIN_ROWS:
-                # Still scan remaining pages; a later page might be taller.
                 continue
     finally:
         doc.close()
@@ -1268,6 +1272,28 @@ def extract_bom_from_material_list_table(
         )
     best.notes = notes + list(best.notes)
     return best
+
+
+def _native_cell_table_is_complete(bom: BomResult | None) -> bool:
+    """Printed cells already have letters/PNs/qty. Do not bitmap-OCR over them.
+
+    Live Time CAD (102728-1) has no native cells, so this stays false and
+    the right-side grid still renders. A 3-row decoy is not complete.
+    """
+    from quote_core.bom_table import SHORT_TABLE_REJECT
+
+    if bom is None:
+        return False
+    rows = list(getattr(bom, "rows", None) or [])
+    if len(rows) < SHORT_TABLE_REJECT:
+        return False
+    method = str(getattr(bom, "method", "") or "")
+    if not method.startswith("table_"):
+        return False
+    if float(getattr(bom, "confidence", 0) or 0) <= 0.45:
+        return False
+    unread = sum(1 for r in rows if int(getattr(r, "qty", 0) or 0) <= 0)
+    return unread < 8
 
 
 def _parse_material_list_on_page(
@@ -1313,6 +1339,9 @@ def _parse_material_list_on_page(
         for w in native_words
     )
     sparse_native = len(native_text.strip()) < 200
+    native_best = pick_best_material_list(hits) if hits else None
+    if _native_cell_table_is_complete(native_best):
+        return native_best
     if ocr_available() and (header_hint or sparse_native or continuation):
         for clip in _material_list_ocr_clips(page):
             ocr_words = _ocr_words_in_clip(page, clip, dpi=360, min_conf=5)
