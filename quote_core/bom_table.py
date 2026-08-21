@@ -855,12 +855,8 @@ def _qty_from_one_source(
     if tokens:
         n = tokens[-1]
         # Qty 7 is dimension bleed; 2-digit 10–20 is column-index bleed.
-        # Neither is a piece count unless glued item+qty (BB2/BBD).
-        if (
-            n == 7
-            or _looks_like_column_index_qty(n)
-            or (n > 4 and _looks_like_dimension_qty(n, desc, raw))
-        ):
+        # Readable 2–6 / 8–9 (V=6, AA=5, AD=8, W=4) are piece counts.
+        if n == 7 or _looks_like_column_index_qty(n):
             return 1, False, (
                 f"{item or '?'} qty {n} looks like dimension/column-index bleed — "
                 f"not used as piece count, flag review"
@@ -886,7 +882,7 @@ def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
 
     ``BBD 02727-4 TUBE, ROUND`` → item BB, part 102727-4, qty 2.
     ``H 102727-4 TUBE, ROUND`` → BB (do not steal H from a neighbor band).
-    ``AA 460330 CAP, VERTICAL RAIL BOTTOM`` → AA / 460330 / qty 1.
+    ``5 AA 460330 CAP, VERTICAL RAIL BOTTOM`` → AA / 460330 / qty 5.
     ``7 A 00177-2 PLATE`` → A / 100177-2 / qty 1 (7 is dimension bleed).
     Keep the band when OCR has a Time-like PN, dashed or not. Do not invent
     a PN that is not in the strip.
@@ -975,18 +971,10 @@ def assign_items_from_sequence(
     notes = notes if notes is not None else []
     seq = time_item_letters(through="BC")
     seq_index = {tok: i for i, tok in enumerate(seq)}
-    known: list[tuple[int, int]] = []
-    for i, parsed in enumerate(slots):
-        if not parsed:
-            continue
-        item = str(parsed.get("item") or "").upper()
-        if item in seq_index:
-            known.append((i, seq_index[item]))
-    # Default: A nearest the bottom (later slot) as on Time 102728-1.
+    # Time LOM prints A at the bottom (header below). Do not flip to
+    # top-down from two noisy OCR letters — that assigned A=460320 (Z).
     bottom_is_a = True
-    if len(known) >= 2:
-        bottom_is_a = known[-1][1] < known[0][1]
-    walk = range(len(slots) - 1, -1, -1) if bottom_is_a else range(len(slots))
+    walk = range(len(slots) - 1, -1, -1)
     used = {
         str(p.get("item") or "").upper()
         for p in slots
@@ -1100,6 +1088,14 @@ def _keep_better_pn_row(old, new):
         return old
     if is_material_list_item(str(new.item or "")) and not is_material_list_item(str(old.item or "")):
         return new
+    # Prefer a readable qty digit (2–9 except 7) over an unread default of 1.
+    old_q, new_q = int(old.qty or 0), int(new.qty or 0)
+    old_clear = float(getattr(old, "confidence", 0) or 0) >= 0.88
+    new_clear = float(getattr(new, "confidence", 0) or 0) >= 0.88
+    if new_clear and not old_clear and 2 <= new_q <= 9 and new_q != 7:
+        return new
+    if old_clear and not new_clear and 2 <= old_q <= 9 and old_q != 7:
+        return old
     return old
 
 
@@ -1123,7 +1119,9 @@ def label_letters_after_pn_set(rows: list, notes: list[str] | None = None) -> li
         used.add(item)
         row.item = item
     unused = [tok for tok in seq if tok not in used]
-    for row in rows:
+    # Harvest order is top→bottom. Time A is at the bottom — fill empties
+    # from the bottom so the first unread PN is not labeled A.
+    for row in reversed(rows):
         if str(row.item or "").strip():
             continue
         if unused:
@@ -1294,28 +1292,7 @@ def harvest_ocr_row_strips(
         elif parsed.get("qty_note"):
             notes.append(parsed["qty_note"])
     filled = assign_items_from_sequence(slots, notes, lines=lines)
-    bottom_is_a = True
-    known_items = [
-        str(p.get("item") or "").upper()
-        for p in slots
-        if p and str(p.get("item") or "").upper() in time_balloon_set(through="BC")
-    ]
-    if len(known_items) >= 2:
-        seq_index = {tok: i for i, tok in enumerate(time_item_letters(through="BC"))}
-        first_i = next(
-            i
-            for i, p in enumerate(slots)
-            if p and str(p.get("item") or "").upper() in seq_index
-        )
-        last_i = next(
-            i
-            for i in range(len(slots) - 1, -1, -1)
-            if slots[i] and str(slots[i].get("item") or "").upper() in seq_index
-        )
-        bottom_is_a = seq_index[str(slots[last_i]["item"]).upper()] < seq_index[
-            str(slots[first_i]["item"]).upper()
-        ]
-    _note_sequence_holes(slots, lines or [], notes, bottom_is_a=bottom_is_a)
+    _note_sequence_holes(slots, lines or [], notes, bottom_is_a=True)
     found = [_parsed_to_row(p) for p in filled]
     # Same-line item+part only. Do not join bands — that copies a neighbor PN onto a hole.
     for index, line in enumerate(line_list):
@@ -1413,11 +1390,7 @@ def harvest_material_list_lines(text: str | None, *, bom_config: str | None = No
             item = "BB"
             part = _KNOWN_BB_PART
             qty = 2
-        elif (
-            qty == 7
-            or _looks_like_column_index_qty(qty)
-            or (qty > 4 and _looks_like_dimension_qty(qty, desc, m.group(0)))
-        ):
+        elif qty == 7 or _looks_like_column_index_qty(qty):
             notes.append(
                 f"{item} qty {qty} looks like dimension bleed — "
                 f"not used as piece count, flag review"
@@ -1663,11 +1636,14 @@ def _split_row_fields(
     part = ""
     desc_parts: list[str] = []
     if rest:
-        part = normalize_part_no(rest[0]) or rest[0]
+        # Do not invent a dash on 460200 / 460320. recover keeps 6-digit catalog PNs.
+        part = recover_time_part_no(rest[0]) or rest[0]
         desc_parts = rest[1:]
         # PART NO sometimes split: 102727 / -4
-        if len(rest) >= 2 and not normalize_part_no(rest[0]):
-            glued = normalize_part_no(rest[0] + rest[1])
+        if len(rest) >= 2 and re.match(r"^[-–—=]\s*\d", str(rest[1])):
+            glued = recover_time_part_no(rest[0] + rest[1]) or normalize_part_no(
+                rest[0] + rest[1]
+            )
             if glued:
                 part = glued
                 desc_parts = rest[2:]
@@ -1720,7 +1696,11 @@ def parse_material_list_cells(
         qty, keep = _selected_qty(work_cells, layout, bom_config=bom_config)
         if not keep:
             continue
-        part = normalize_part_no(part_raw) or str(part_raw or "").upper()
+        part = (
+            recover_time_part_no(part_raw, item=item)
+            or normalize_part_no(part_raw)
+            or str(part_raw or "").upper()
+        )
         if not part or part in {"-", "PART", "PART NO."}:
             continue
         if _is_eco_or_title_block_row(part, desc, " ".join(cells)):

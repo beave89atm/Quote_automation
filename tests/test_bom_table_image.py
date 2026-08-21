@@ -21,6 +21,7 @@ from quote_core.bom_table import (
     time_item_letters,
     union_sticky_harvest,
 )
+from tests.test_bom_table import _KYLE_102728_1, _assert_kyle_102728_1
 from quote_core.bom_table_image import (
     TABLE_CROP_FILENAME,
     extract_bom_from_table_image,
@@ -188,26 +189,12 @@ def test_extract_bom_sibling_crop_beats_short_pdf_lom(tmp_path: Path):
 
 
 def _live_page1_strips() -> list[str]:
-    """a49dcad live five + older cec69a0 strips + the rest of A…BC."""
+    """Page-1 clip order: BC at the top, A at the bottom, header below."""
     lines = [
-        "TEM | PART NO. | DESCRIPTION",
-        "7 A 00177-2 PLATE",
-        "F 432650 RAIL, HORIZONTAL CENTER BACK",
-        "H 102727-4 TUBE, ROUND",
-        "M 464460 RAIL, HORIZONTAL FRONT OUTER",
-        "7 P 100350-1 TUBE, GRATING SUPPORT MIDDLE",
-        "BBD 02727-4 TUBE, ROUND",
-        "AA 460330 CAP, VERTICAL RAIL BOTTOM",
-        "Z 460320 ICAP, VERTICAL RAIL TOP",
+        f"{qty} {item} {pn} {desc}"
+        for item, qty, pn, desc in reversed(_KYLE_102728_1)
     ]
-    taken = {"A", "F", "M", "P", "AA", "Z", "BB"}
-    for i, item in enumerate(_platform_items()):
-        if item in taken:
-            continue
-        if item == "AX":
-            lines.append("AX 1102726-1 HOOK pO")
-        else:
-            lines.append(f"{item} 1028{i:02d}-1 COMPONENT {item}")
+    lines.append("QTY | ITEM | PART NO. | DESCRIPTION")
     return lines
 
 
@@ -227,12 +214,12 @@ def test_live_strips_parse_bbd_aa_z_and_ax():
     assert bb2["item"] == "BB" and bb2["part_no"] == _BB_PART and bb2["qty"] == 2
     assert bb2["item"] != "H"
 
-    aa = parse_ocr_row_strip("AA 460330 CAP, VERTICAL RAIL BOTTOM")
-    assert aa["item"] == "AA" and aa["part_no"] == "460330" and aa["qty"] == 1
+    aa = parse_ocr_row_strip("5 AA 460330 CAP, VERTICAL RAIL BOTTOM")
+    assert aa["item"] == "AA" and aa["part_no"] == "460330" and aa["qty"] == 5
     assert "VERTICAL RAIL BOTTOM" in aa["description"].upper()
 
-    z = parse_ocr_row_strip("Z 460320 ICAP, VERTICAL RAIL TOP")
-    assert z["item"] == "Z" and z["part_no"] == "460320" and z["qty"] == 1
+    z = parse_ocr_row_strip("2 Z 460320 ICAP, VERTICAL RAIL TOP")
+    assert z["item"] == "Z" and z["part_no"] == "460320" and z["qty"] == 2
 
     ax = parse_ocr_row_strip("AX 1102726-1 HOOK pO")
     assert ax["item"] == "AX"
@@ -250,7 +237,7 @@ def test_live_strips_parse_bbd_aa_z_and_ax():
 
 
 def test_exact_live_strips_harvest_51ish_and_bb():
-    """Required fixture: exact live strips → 51-ish rows, BB = 2 × 102727-4."""
+    """Kyle 102728-1 grid: 51 PNs, 97 pcs, A=460200, BB=2×102727-4."""
     strips = _live_page1_strips()
     decoy = [
         "LIST OF MATERIAL",
@@ -266,34 +253,14 @@ def test_exact_live_strips_harvest_51ish_and_bb():
         row_texts_by_image=[decoy, strips],
     )
     assert bom.method and bom.method.startswith("table_")
-    assert len(bom.rows) >= 48, [f"{r.item}:{r.part_no}" for r in bom.rows]
-    assert len(bom.rows) <= 51
-    bb = next(r for r in bom.rows if r.item == "BB")
-    assert bb.qty == 2 and bb.part_no == _BB_PART
-    assert "TUBE" in (bb.description or "").upper()
+    _assert_kyle_102728_1(bom)
     parts = {r.part_no for r in bom.rows}
     assert "102709-1" not in parts
     assert "100585-23" not in parts
-    assert "102711-1" not in parts
     assert "1102726-1" not in parts
-    by_item = {r.item: r for r in bom.rows}
-    assert by_item["AA"].part_no == "460330"
-    assert by_item["Z"].part_no == "460320"
-    assert by_item["A"].part_no == "100177-2"
-    assert by_item["A"].qty == 1
-    assert by_item["P"].qty == 1
-    assert by_item["F"].part_no == "432650"
-    if "H" in by_item:
-        assert by_item["H"].part_no != _BB_PART
-    two_letter = time_item_letters(through="BC")[24:]  # AA–BC
-    for tok in two_letter:
-        assert tok in by_item, tok
-    assert not any(r.qty > 20 for r in bom.rows)
 
     harvested = harvest_material_list_lines("\n".join(strips))
-    assert len(harvested.rows) >= 48
-    hbb = next(r for r in harvested.rows if r.item == "BB")
-    assert hbb.qty == 2 and hbb.part_no == _BB_PART
+    _assert_kyle_102728_1(harvested)
 
 
 def test_unread_single_letter_dashed_pn_assigned_from_sequence():

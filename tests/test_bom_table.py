@@ -29,6 +29,62 @@ _THROUGH = "BC"
 _BB_PART = "102727-4"
 _BB_DESC = "TUBE, ROUND"
 
+# Kyle 102728-1 working truth (A at bottom on the page). 51 PNs, 97 pcs.
+# Treat as truth until Kyle corrects a qty.
+_KYLE_102728_1: list[tuple[str, int, str, str]] = [
+    ("A", 1, "460200", "RAIL, BOTTOM FRONT MIDDLE"),
+    ("B", 1, "460270", "RAIL, BOTTOM FRONT RIGHT HAND"),
+    ("C", 1, "460280", "RAIL, BOTTOM FRONT LEFT HAND"),
+    ("D", 1, "432580", "RAIL, BOTTOM BACK"),
+    ("E", 2, "432600", "RAIL, BOTTOM SIDE"),
+    ("F", 1, "100350-1", "TUBE, GRATING SUPPORT MIDDLE"),
+    ("G", 2, "100373-2", "TUBE, GRATING SUPPORT SIDES"),
+    ("H", 1, "100351-1", "RECTANGLE TUBE"),
+    ("J", 1, "102733-1", "GRATING"),
+    ("K", 2, "432640", "RAIL, VERTICAL MIDDLE BACK"),
+    ("L", 1, "460230", "RAIL, VERTICAL MIDDLE FRONT"),
+    ("M", 2, "460300", "RAIL, BOTTOM RIGHT HAND"),
+    ("N", 1, "460340", "TUBE, TOP RAIL"),
+    ("P", 2, "100362-1", "ROUND TUBE"),
+    ("Q", 1, "432650", "RAIL, HORIZONTAL CENTER BACK"),
+    ("R", 1, "432660", "RAIL, BACK TOP"),
+    ("S", 2, "94560", "GATE, FABRICATION"),
+    ("T", 2, "464100", "PIN, PLATFORM SHOCK"),
+    ("U", 2, "298540", "CAP, TUBE RAIL"),
+    ("V", 6, "432710", "CAP, 2 x 1 TUBE"),
+    ("W", 4, "432690", "RAIL, CORNER VERTICAL"),
+    ("X", 2, "432670", "RAIL, HORIZONTAL BACK OUTER"),
+    ("Y", 4, "100363-1", "ANGLE"),
+    ("Z", 2, "460320", "CAP, VERTICAL RAIL TOP"),
+    ("AA", 5, "460330", "CAP, VERTICAL RAIL BOTTOM"),
+    ("AB", 1, "464450", "RAIL TOP FRONT"),
+    ("AC", 4, "100177-2", "PLATE"),
+    ("AD", 8, "464440", "PLATE, SUPPORT"),
+    ("AE", 2, "436010", "RAIL, SIDE TOP"),
+    ("AF", 2, "464460", "RAIL, HORIZONTAL FRONT OUTER"),
+    ("AG", 1, "100350-2", "TUBE, GRATING SUPPORT MIDDLE"),
+    ("AH", 2, "100373-1", "TUBE, GRATING SUPPORT SIDES"),
+    ("AJ", 1, "100351-2", "RECTANGLE TUBE"),
+    ("AK", 1, "100351-3", "RECTANGLE TUBE"),
+    ("AL", 1, "100738-1", "RAIL, VERTICAL MIDDLE FRONT"),
+    ("AM", 1, "33688-6", "EXPANDED METAL PLATE"),
+    ("AN", 2, "33688-7", "EXPANDED METAL PLATE"),
+    ("AP", 2, "33688-8", "EXPANDED METAL PLATE"),
+    ("AQ", 2, "33688-9", "EXPANDED METAL PLATE"),
+    ("AR", 1, "33688-10", "EXPANDED METAL PLATE"),
+    ("AS", 1, "100267-1", "CONTROL BOX PLATFORM MT."),
+    ("AT", 2, "100366-27", "PLATE"),
+    ("AU", 1, "102711-1", "CABLE TUBE WELDMENT"),
+    ("AV", 1, "102712-1", "CABLE ENCLOSURE"),
+    ("AW", 1, "102725-1", "PLATE, FRONT"),
+    ("AX", 2, "102726-1", "HOOK"),
+    ("AY", 1, "102727-1", "TUBE, ROUND"),
+    ("AZ", 2, "102727-2", "TUBE, ROUND"),
+    ("BA", 2, "102727-3", "TUBE, ROUND"),
+    ("BB", 2, "102727-4", "TUBE, ROUND"),
+    ("BC", 1, "102727-5", "TUBE, ROUND"),
+]
+
 
 def _platform_items() -> list[str]:
     items = time_item_letters(through=_THROUGH)
@@ -60,6 +116,79 @@ def _platform_table_text(*, drop: set[str] | None = None) -> str:
     for row in _platform_cell_rows(drop=drop):
         lines.append(" | ".join(row))
     return "\n".join(lines)
+
+
+def _assert_kyle_102728_1(bom) -> None:
+    assert len(bom.rows) == 51, [f"{r.item}:{r.part_no}×{r.qty}" for r in bom.rows]
+    assert sum(r.qty for r in bom.rows) == 97
+    assert bom.piece_count == 97
+    by_item = {r.item: r for r in bom.rows}
+    for item, qty, pn, _desc in _KYLE_102728_1:
+        assert item in by_item, item
+        assert by_item[item].part_no == pn, (item, by_item[item].part_no, pn)
+        assert by_item[item].qty == qty, (item, by_item[item].qty, qty)
+    assert by_item["A"].part_no == "460200"
+    assert by_item["Z"].part_no == "460320"
+    assert by_item["BB"].part_no == _BB_PART and by_item["BB"].qty == 2
+
+
+def test_kyle_102728_1_a_at_bottom_51_pn_97_pcs():
+    """Working truth until Kyle corrects a qty. A is at the bottom of the clip."""
+    assert len(_KYLE_102728_1) == 51
+    assert sum(q for _i, q, _p, _d in _KYLE_102728_1) == 97
+
+    cells = [["QTY", "ITEM", "PART NO.", "DESCRIPTION"]]
+    for item, qty, pn, desc in _KYLE_102728_1:
+        cells.append([str(qty), item, pn, desc])
+    _assert_kyle_102728_1(parse_material_list_cells(cells))
+
+    text_lines = [
+        "WELDMENT, PLATFORM",
+        "102728-1",
+        "TIME MANUFACTURING",
+        "LIST OF MATERIAL",
+        "QTY | ITEM | PART NO. | DESCRIPTION",
+    ]
+    for item, qty, pn, desc in _KYLE_102728_1:
+        text_lines.append(f"{qty} | {item} | {pn} | {desc}")
+    _assert_kyle_102728_1(parse_material_list_text("\n".join(text_lines), bom_config="-1"))
+    _assert_kyle_102728_1(extract_bom(text="\n".join(text_lines), bom_config="-1"))
+
+    # Page-1 clip: BC at the top, A at the bottom, header below.
+    strips = [
+        f"{qty} {item} {pn} {desc}"
+        for item, qty, pn, desc in reversed(_KYLE_102728_1)
+    ]
+    strips.append("QTY | ITEM | PART NO. | DESCRIPTION")
+    harvested = harvest_ocr_row_strips(strips)
+    _assert_kyle_102728_1(harvested)
+
+    # Unread letters: do not label the top PN as A (that was Z=460320).
+    unread = [
+        f"{qty} {pn} {desc}" for item, qty, pn, desc in reversed(_KYLE_102728_1)
+    ]
+    unread_bom = harvest_ocr_row_strips(unread)
+    by_item = {r.item: r for r in unread_bom.rows}
+    assert by_item["A"].part_no == "460200"
+    assert by_item["Z"].part_no == "460320"
+    assert by_item["BB"].part_no == _BB_PART and by_item["BB"].qty == 2
+    assert sum(r.qty for r in unread_bom.rows) == 97
+
+
+def test_readable_4_5_6_8_qty_is_not_dimension_bleed():
+    """V=6 / AA=5 / AD=8 / W=4 stay. Qty 7 is still bleed."""
+    four = parse_ocr_row_strip("4 AC 100177-2 PLATE")
+    assert four is not None and four["part_no"] == "100177-2" and four["qty"] == 4
+    five = parse_ocr_row_strip("5 AA 460330 CAP, VERTICAL RAIL BOTTOM")
+    assert five is not None and five["part_no"] == "460330" and five["qty"] == 5
+    six = parse_ocr_row_strip("6 V 432710 CAP, 2 x 1 TUBE")
+    assert six is not None and six["part_no"] == "432710" and six["qty"] == 6
+    eight = parse_ocr_row_strip("8 AD 464440 PLATE, SUPPORT")
+    assert eight is not None and eight["part_no"] == "464440" and eight["qty"] == 8
+    two = parse_ocr_row_strip("2 Z 460320 CAP, VERTICAL RAIL TOP")
+    assert two is not None and two["part_no"] == "460320" and two["qty"] == 2
+    bleed = parse_ocr_row_strip("7 A 00177-2 PLATE")
+    assert bleed is not None and bleed["part_no"] == "100177-2" and bleed["qty"] == 1
 
 
 def test_time_item_letters_skip_i_and_o_and_reach_bc():
@@ -207,6 +336,23 @@ def _write_lom_pdf(path: Path, headers: list[str], rows: list[list[str]], *, tit
             page.insert_text((xs[i], y), str(cell), fontsize=8)
     doc.save(path)
     doc.close()
+
+
+def test_kyle_102728_1_pdf_extract_bom_matches_grid(tmp_path: Path):
+    """Synthetic 102728- Weldment.pdf — no customer file. ITEM+PN+QTY = Kyle grid."""
+    data_rows = [
+        [str(qty), item, pn, desc] for item, qty, pn, desc in _KYLE_102728_1
+    ]
+    pdf = tmp_path / "Time 102728- Weldment.pdf"
+    _write_lom_pdf(
+        pdf,
+        ["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
+        data_rows,
+        title="WELDMENT, PLATFORM  102728-1  TIME MANUFACTURING",
+    )
+    bom = extract_bom(pdf_path=pdf, bom_config="-1")
+    assert bom.method and bom.method.startswith("table_"), bom.notes
+    _assert_kyle_102728_1(bom)
 
 
 def test_pdf_table_path_does_not_pad_library_subweldments(tmp_path: Path):
