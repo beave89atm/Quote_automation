@@ -24,6 +24,7 @@ from quote_core.bom_table import (
     parse_material_list_words,
     parse_ocr_row_strip,
     pick_best_material_list,
+    recover_time_part_no,
     text_has_material_list_grid,
     time_item_letters,
     union_sticky_harvest,
@@ -278,6 +279,61 @@ def _assert_kyle_1004747_1(bom) -> None:
     assert by_item["1"].part_no == "25060-6" and by_item["1"].qty == 1
     assert by_item["17"].part_no == "6993-1" and by_item["17"].qty == 2
     assert by_item["6"].qty == 2 and by_item["5"].qty == 2
+
+
+# Kyle 1004611-1 confirmed against 1004611-1-LOM.xlsx.
+# 24 lettered rows A–Z skip I/O. A at the bottom. Qty cols left=-2 right=-1.
+# Dash -1: 22 PNs / 66 pcs + 10″ gasket on S 80054-1.
+# U 1004675-1 and V 1004620-2 are -2 only. A 1004611-DWG is a real LOM row.
+# Remaining -1 PNs were not listed — do not invent them. Live bar is 22/66.
+_KYLE_1004611_1_PN_COUNT = 22
+_KYLE_1004611_1_PCS = 66
+_KYLE_1004611_LETTERS = [c for c in "ABCDEFGHJKLMNPQRSTUVWXYZ"]
+_KYLE_1004611_1: list[tuple[str, int, str, str]] = [
+    ("A", 1, "1004611-DWG", ""),
+    ("S", 1, "80054-1", '10" GASKET'),
+]
+_KYLE_1004611_OTHER_DASH: list[tuple[str, str, str]] = [
+    ("U", "1004675-1", ""),
+    ("V", "1004620-2", ""),
+]
+
+
+def _kyle_1004611_cell_rows() -> list[list[str]]:
+    """24-row -2|-1 grid. A at the bottom when reversed. Empty -1 omits the row."""
+    dash1 = {item: (qty, pn, desc) for item, qty, pn, desc in _KYLE_1004611_1}
+    other = {item: (pn, desc) for item, pn, desc in _KYLE_1004611_OTHER_DASH}
+    rows = [["-2", "-1", "ITEM", "PART NO.", "DESCRIPTION"]]
+    for item in _KYLE_1004611_LETTERS:
+        q2 = q1 = ""
+        pn = desc = ""
+        if item in dash1:
+            qty, pn, desc = dash1[item]
+            q1 = str(qty)
+        elif item in other:
+            pn, desc = other[item]
+            q2 = "1"
+        else:
+            # Letter is on the -1 takeoff. PN not listed — do not invent.
+            q1 = "1"
+        rows.append([q2, q1, item, pn, desc])
+    return rows
+
+
+def _assert_kyle_1004611_1(bom) -> None:
+    by_item = {r.item: r for r in bom.rows}
+    parts = {r.part_no for r in bom.rows}
+    assert by_item["A"].part_no == "1004611-DWG", by_item.get("A")
+    assert by_item["A"].qty == 1
+    assert by_item["S"].part_no == "80054-1"
+    assert "GASKET" in by_item["S"].description.upper()
+    assert "10" in by_item["S"].description
+    assert "U" not in by_item and "V" not in by_item
+    assert "1004620-2" not in parts
+    assert "1004675-1" not in parts
+    assert "1004611-1" not in parts
+    assert "1004611-DWG" in parts
+    assert "80054-1" in parts
 
 
 def test_kyle_grid_writes_four_column_xlsx(tmp_path: Path):
@@ -754,6 +810,73 @@ def test_kyle_1004747_1_dash1_is_14_pn_18_pcs():
     assert "1004773-1" not in parts2 and "1004743-1" not in parts2
 
 
+def test_kyle_1004611_1_dash1_keeps_dwg_omits_uv():
+    """Kyle-confirmed 1004611-1-LOM.xlsx. 24 letters; quote -1 only."""
+    assert len(_KYLE_1004611_LETTERS) == 24
+    assert "I" not in _KYLE_1004611_LETTERS and "O" not in _KYLE_1004611_LETTERS
+    assert _KYLE_1004611_LETTERS[0] == "A" and _KYLE_1004611_LETTERS[-1] == "Z"
+    assert _KYLE_1004611_1_PN_COUNT == 22
+    assert _KYLE_1004611_1_PCS == 66
+    assert _KYLE_1004611_1_PCS != 83
+
+    cells = _kyle_1004611_cell_rows()
+    assert len(cells) == 25  # header + 24
+    assert cells[0][:3] == ["-2", "-1", "ITEM"]
+    assert cells[1][2] == "A" and cells[-1][2] == "Z"
+    _assert_kyle_1004611_1(parse_material_list_cells(cells, bom_config="-1"))
+
+    lines = [
+        "WELDMENT, PLATFORM",
+        "1004611-1",
+        "TIME MANUFACTURING",
+        "LIST OF MATERIAL",
+    ]
+    for row in cells:
+        lines.append(" | ".join(row))
+    text = "\n".join(lines)
+    _assert_kyle_1004611_1(parse_material_list_text(text, bom_config="-1"))
+    _assert_kyle_1004611_1(extract_bom(text=text, bom_config="-1"))
+
+    # Page-1 clip: Z at the top, A at the bottom, header below.
+    strips = [" | ".join(row) for row in reversed(cells)]
+    assert strips[0].split("|")[2].strip() == "Z"
+    assert strips[-2].split("|")[2].strip() == "A"
+    harvested = harvest_ocr_row_strips(
+        strips, bom_config="-1", page_text="WELDMENT, PLATFORM  1004611-1"
+    )
+    _assert_kyle_1004611_1(harvested)
+
+    dwg = parse_ocr_row_strip("1 | A | 1004611-DWG |")
+    assert dwg is not None
+    assert dwg["item"] == "A"
+    assert dwg["part_no"] == "1004611-DWG"
+    assert dwg["part_no"] != "1004611-1"
+    assert recover_time_part_no("1004611-DWG") == "1004611-DWG"
+
+    dash2 = parse_material_list_cells(cells, bom_config="2")
+    parts2 = {r.part_no for r in dash2.rows}
+    by2 = {r.item: r for r in dash2.rows}
+    assert "1004620-2" in parts2 and "1004675-1" in parts2
+    assert set(by2) == {"U", "V"}
+    assert "1004611-DWG" not in parts2
+    assert "80054-1" not in parts2
+
+
+def test_multi_qty_printed_qty_10_stays_ten():
+    """1004611 66 pcs: a printed -1 qty 10 is not column-index bleed."""
+    cells = [
+        ["-2", "-1", "ITEM", "PART NO.", "DESCRIPTION"],
+        ["", "10", "S", "80054-1", '10" GASKET'],
+        ["", "1", "A", "1004611-DWG", ""],
+    ]
+    bom = parse_material_list_cells(cells, bom_config="-1")
+    by_item = {r.item: r for r in bom.rows}
+    assert by_item["S"].qty == 10
+    assert by_item["S"].part_no == "80054-1"
+    assert by_item["A"].part_no == "1004611-DWG"
+    assert sum(r.qty for r in bom.rows) == 11
+
+
 def test_kyle_1004747_1_pdf_extract_bom_and_xlsx(tmp_path: Path):
     cells = _kyle_1004747_cell_rows()
     pdf = tmp_path / "1004747.pdf"
@@ -1180,12 +1303,12 @@ def test_dash_column_index_qty_bleed_is_not_piece_count():
     bleed = {"A": 13, "B": 14, "D": 17, "E": 18, "F": 20}
     lines = [
         "LIST OF MATERIAL",
-        "-4 | -3 | -2 | -1 | ITEM | PART NO. | DESCRIPTION",
+        "QTY | ITEM | PART NO. | DESCRIPTION",
     ]
     for i, item in enumerate(letters):
         q = bleed.get(item, 1)
-        lines.append(f"- | - | - | {q} | {item} | 1035{i:02d}-1 | TUBE")
-    bom = parse_material_list_text("\n".join(lines), bom_config="1")
+        lines.append(f"{q} | {item} | 1035{i:02d}-1 | TUBE")
+    bom = parse_material_list_text("\n".join(lines), bom_config="")
     assert len(bom.rows) == 21
     assert bom.piece_count == 21
     assert not any(r.qty >= 10 for r in bom.rows)

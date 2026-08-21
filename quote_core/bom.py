@@ -154,6 +154,9 @@ def normalize_part_no(raw: str) -> str | None:
         .replace(" ", "")
     )
     cleaned = re.sub(r"[^0-9A-Z-]", "", cleaned)
+    dwg = re.match(r"^(\d{4,7})-DWG$", cleaned)
+    if dwg:
+        return f"{dwg.group(1)}-DWG"
     # If dash missing but looks like ###### + suffix (351211 → 35121-1)
     m = re.match(r"^(\d{4,7})-(\d{1,3}[A-Z]?)$", cleaned)
     if not m:

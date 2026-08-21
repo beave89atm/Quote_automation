@@ -91,6 +91,11 @@ _STRIP_LEAD_RE = re.compile(
 _DASHED_PN_RE = re.compile(
     r"(?P<base>\d{4,7})\s*[-–—=]\s*(?P<suf>\d{1,3}[A-Za-z]?)"
 )
+# 1004611-1 item A is ``1004611-DWG`` — a real LOM row, not title-block 1004611-1.
+_DWG_PN_RE = re.compile(
+    r"(?P<base>\d{4,7})\s*[-–—=]\s*(?P<suf>DWG)\b",
+    re.IGNORECASE,
+)
 _BARE_PN_RE = re.compile(r"(?<![\d])(?P<base>\d{5,7})(?![\d-])")
 # Broken OCR: spaces in the stem, O/I as digits, missing dash.
 _MANGLED_DASHED_PN_RE = re.compile(
@@ -411,12 +416,16 @@ def recover_time_part_no(raw: str | None, *, item: str | None = None) -> str | N
     """
     Recover Time PNs from OCR: ``02727-4`` → ``102727-4``,
     ``1102726-1`` → ``102726-1``. Keep bare catalog numbers (``460330``).
+    ``1004611-DWG`` stays ``1004611-DWG`` (do not strip to the title 1004611-1).
     """
     from quote_core.bom import normalize_part_no
 
     text = str(raw or "").strip()
     if not text:
         return None
+    dwg = _DWG_PN_RE.search(text)
+    if dwg:
+        return f"{dwg.group('base')}-DWG"
     dashed = _DASHED_PN_RE.search(text)
     if dashed:
         base = dashed.group("base")
@@ -479,6 +488,8 @@ def is_glued_p_prefix_weldment_pn(raw: str | None) -> bool:
 
 def _is_time_like_part(part: str | None) -> bool:
     text = str(part or "").strip()
+    if re.search(r"\d{4,7}-DWG\b", text, flags=re.IGNORECASE):
+        return True
     if re.search(r"\d{4,7}-\d", text):
         return True
     return bool(re.fullmatch(r"\d{5,7}", text))
@@ -490,8 +501,11 @@ def _is_five_digit_bare_pn(part: str | None) -> bool:
 
 
 def _is_dashed_time_pn(part: str | None) -> bool:
-    """LOM part numbers like 1004806-1 / 28275-2 / 6993-1. Always keep these."""
-    return bool(re.fullmatch(r"\d{4,7}-\d{1,3}", str(part or "").strip()))
+    """LOM part numbers like 1004806-1 / 28275-2 / 6993-1 / 1004611-DWG."""
+    text = str(part or "").strip()
+    if re.fullmatch(r"\d{4,7}-DWG", text, flags=re.IGNORECASE):
+        return True
+    return bool(re.fullmatch(r"\d{4,7}-\d{1,3}", text))
 
 
 def _looks_like_garbled_eco(text: str | None) -> bool:
@@ -781,6 +795,9 @@ def _drop_hyphenless_dupes(by_pn: dict) -> dict:
 def _find_time_like_pn_once(text: str) -> tuple[int, int, str] | None:
     from quote_core.bom import _ocr_digit_cleanup
 
+    dwg = _DWG_PN_RE.search(text)
+    if dwg:
+        return dwg.start(), dwg.end(), f"{dwg.group('base')}-DWG"
     mangled = _MANGLED_DASHED_PN_RE.search(text)
     if mangled:
         base = _ocr_digit_cleanup(re.sub(r"\s+", "", mangled.group("base")))
@@ -1729,8 +1746,8 @@ def _selected_qty(
             return 0, False
         raw = qty_cells[idx] if idx < len(qty_cells) else ""
         qty = _parse_qty_cell(raw)
-        if _looks_like_column_index_qty(qty):
-            return 1, True
+        # Printed dash-column cell. Keep 1–20 (1004611 66 pcs can be a
+        # real 10). 10–20 is column-index bleed only on undelimited strips.
         return qty, qty > 0
     raw = qty_cells[0] if qty_cells else (cells[0] if cells else "")
     qty = _parse_qty_cell(raw)
@@ -1948,7 +1965,9 @@ def parse_material_list_cells(
         if _is_eco_or_title_block_row(part, desc, " ".join(cells)):
             notes.append(f"Dropped ECO/title-block row {item} {part} — not a weld part")
             continue
-        if _looks_like_column_index_qty(int(qty)):
+        # 10–20 is column-index bleed on single-QTY (103516). A printed
+        # dash-column 10 on -2|-1 (1004611) is a real piece count.
+        if not layout.is_multi_qty and _looks_like_column_index_qty(int(qty)):
             qty = 1
         seen_items.add(item)
         parsed.append(
@@ -2016,7 +2035,7 @@ def _incomplete_sequence_notes(items: list[str]) -> list[str]:
     ]
 
 
-def _split_delimited_line(line: str) -> list[str]:
+def _split_delimited_line(line: str, *, keep_leading_empty: bool = False) -> list[str]:
     raw = line.strip()
     if not raw:
         return []
@@ -2032,6 +2051,8 @@ def _split_delimited_line(line: str) -> list[str]:
         # (" | A | 460200 | RAIL" — unread QTY, live 791587b).
         # Do not drop a blank first dash qty on numbered LOM
         # (" | 1 | 16 | 1004806-2" is -2-only, not qty 1 on -1).
+        # Do not drop it on lettered -2|-1 either
+        # (" | 1 | A | 1004611-DWG" is blank -2, not a decorative pipe).
         if (
             len(cells) >= 3
             and cells[0] == ""
@@ -2039,6 +2060,7 @@ def _split_delimited_line(line: str) -> list[str]:
             and len(cells) <= 5
             and not is_material_list_item(cells[1])
             and is_material_list_item(cells[2])
+            and not keep_leading_empty
         ):
             cells = cells[1:]
         return cells
@@ -2066,7 +2088,10 @@ def parse_material_list_text(text: str | None, *, bom_config: str | None = None)
         return BomResult(method=None, confidence=0.0, notes=["No LIST OF MATERIAL grid header"])
 
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    cell_rows = [_split_delimited_line(ln) for ln in lines]
+    keep_leading = _is_structured_multi_qty_header(text)
+    cell_rows = [
+        _split_delimited_line(ln, keep_leading_empty=keep_leading) for ln in lines
+    ]
     cell_rows = [r for r in cell_rows if r and not _TITLE_RE.fullmatch(" ".join(r))]
     header_idx = None
     layout = None
