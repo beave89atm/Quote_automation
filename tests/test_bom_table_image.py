@@ -286,6 +286,8 @@ def test_isolated_sliver_digit_does_not_invent_qty():
     assert _pick_qty_token(["4"], []) == ""
     assert _pick_qty_token(["4", "4"], []) == ""
     assert _pick_qty_token(["4"], ["4"]) == "4"
+    assert _pick_qty_token(["1"], []) == "1"
+    assert _pick_qty_token(["1", "4"], ["4"]) == "1"
     assert _pick_qty_token(["1", "4"], ["1"]) == "1"
     assert _pick_qty_token(["6"], ["6"]) == "6"
     assert _would_invent_qty(0, 4) is True

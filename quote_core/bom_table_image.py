@@ -700,24 +700,26 @@ def _crop_sliver_row(
 
 
 def _pick_qty_token(pipes: list[str], isolated: list[str]) -> str:
-    """Pipe stamps only when a left-qty digit agrees. Isolated-only stays unread.
+    """Pipe 1–2 wins (A/BB). Pipe 4–8 only if a left digit agrees.
 
-    Live 5e454ac isolated slivers invented A=4 / B=8 / U=8 / AB=6 / Q=4
-    from ITEM letters and PN stems (460200). Unread is better than that.
+    Live 5e454ac isolated slivers invented A=4 / B=8 from ITEM/PN.
+    Isolated-only stays unread. Isolated 4 must not overwrite pipe 1.
     Never default to 1.
     """
     from collections import Counter
 
     pipes = [t for t in pipes if t]
     isolated = [t for t in isolated if t]
+    left = set(isolated)
     if not pipes:
         return ""
-    left = set(isolated)
-    agree = [p for p in pipes if p in left]
-    if not agree:
-        return ""
-    tok, _n = Counter(agree).most_common(1)[0]
-    return tok
+    low = [p for p in pipes if p in {"1", "2"}]
+    if low:
+        return Counter(low).most_common(1)[0]
+    high = [p for p in pipes if p in left and p not in {"1", "2"}]
+    if high:
+        return Counter(high).most_common(1)[0]
+    return ""
 
 
 def _qty_sliver_bundle(page, clip: dict[str, Any]) -> dict[str, Any]:
