@@ -682,13 +682,20 @@ def _crop_sliver_row(
     sliver_top: float,
     sliver_bot: float,
     *,
-    pad_px: int = 3,
+    pad_px: int = 6,
 ):
     height = max(1, im.height)
     sy0 = _sliver_y_from_page_frac(y0_frac, sliver_top, sliver_bot, height)
     sy1 = _sliver_y_from_page_frac(y1_frac, sliver_top, sliver_bot, height)
-    sy0 = max(0, min(sy0, sy1) - pad_px)
-    sy1 = min(height, max(sy1, sy0 + 8) + pad_px)
+    sy0, sy1 = min(sy0, sy1), max(sy0, sy1)
+    # A 16px band around the baseline clips 6/8 into a 0. Keep a
+    # digit-tall window without re-banding the table.
+    min_h = 48
+    if sy1 - sy0 < min_h:
+        extra = min_h - (sy1 - sy0)
+        sy0 -= extra
+    sy0 = max(0, sy0 - pad_px)
+    sy1 = min(height, max(sy1, sy0 + min_h) + pad_px)
     return im.crop((0, sy0, im.width, sy1))
 
 

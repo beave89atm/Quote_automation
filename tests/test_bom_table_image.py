@@ -51,6 +51,7 @@ from quote_core.bom_table_image import (
     LOM_QTY_REACH_BOTTOM_FRAC,
     LOM_STRIP_BOTTOM_FRAC,
     LOM_STRIP_LEFT_FRAC,
+    LOM_STRIP_TOP_FRAC,
     TABLE_CROP_FILENAME,
     _ocr_first_pass_lines,
     _qty_band_needs_reread,
@@ -260,16 +261,20 @@ def _qty_left_of_strip_page():
     for y_frac, qty, item, pn in rows:
         y = 792 * y_frac
         if qty:
-            page.insert_text((612 * 0.60, y), qty, fontsize=11)
-        page.insert_text((612 * 0.70, y), item, fontsize=11)
-        page.insert_text((612 * 0.78, y), pn, fontsize=11)
+            # Just left of the 0.68 table strip (live QTY vs ITEM).
+            page.insert_text((612 * 0.635, y), qty, fontsize=14)
+        page.insert_text((612 * 0.70, y), item, fontsize=14)
+        page.insert_text((612 * 0.78, y), pn, fontsize=14)
     return doc, page, rows
 
 
-def _strip_y_for_page_frac(y_frac: float, strip_h: int) -> int:
+def _strip_band_for_page_frac(y_frac: float, strip_h: int) -> tuple[int, int]:
+    """Full-row band. insert_text y is the baseline; the glyph sits above it."""
     top = LOM_STRIP_TOP_FRAC
     bot = LOM_STRIP_BOTTOM_FRAC
-    return int(round((y_frac - top) / (bot - top) * strip_h))
+    mid = int(round((y_frac - top) / (bot - top) * strip_h))
+    row_h = max(36, strip_h // 40)
+    return max(0, mid - row_h), min(strip_h, mid + 8)
 
 
 def test_qty_sliver_reads_digit_left_of_068_strip():
@@ -286,10 +291,8 @@ def test_qty_sliver_reads_digit_left_of_068_strip():
             "qty_left_frac": LOM_QTY_LEFT_FRAC,
         }
         for y_frac, qty, _item, _pn in rows:
-            mid = _strip_y_for_page_frac(y_frac, strip.height)
-            got = _reread_qty_from_page(
-                page, strip, max(0, mid - 8), min(strip.height, mid + 8), clip
-            )
+            y0, y1 = _strip_band_for_page_frac(y_frac, strip.height)
+            got = _reread_qty_from_page(page, strip, y0, y1, clip)
             assert got == qty, (y_frac, qty, got)
     finally:
         doc.close()
@@ -311,9 +314,7 @@ def test_sliver_fills_unread_qty_when_strip_has_no_digit():
         lines = []
         bands = []
         for y_frac, _qty, item, pn in rows:
-            mid = _strip_y_for_page_frac(y_frac, strip.height)
-            y0 = max(0, mid - 8)
-            y1 = min(strip.height, mid + 8)
+            y0, y1 = _strip_band_for_page_frac(y_frac, strip.height)
             bands.append((0, y0, strip.width, y1))
             lines.append(f" | {item} | {pn} | CAP")
         notes: list[str] = []
