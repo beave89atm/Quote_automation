@@ -125,6 +125,14 @@ def process_job(job_id: int) -> None:
             sourced = f"Quote BOM sourced from {xlsx.name}"
             if sourced not in flags:
                 flags.append(sourced)
+        else:
+            takeoff.pop("lom_xlsx", None)
+            from quote_core.bom_xlsx import rows_from_takeoff
+
+            if not rows_from_takeoff(takeoff):
+                one = "No LIST OF MATERIAL — one-part quote, no LOM.xlsx"
+                if one not in flags:
+                    flags.append(one)
 
         job.set_takeoff(takeoff)
         job.set_times(times.to_dict())

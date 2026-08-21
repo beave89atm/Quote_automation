@@ -133,8 +133,45 @@ def write_lom_xlsx(path: Path | str, rows: list[Any]) -> Path:
     return dest
 
 
+def bom_is_lom_clip(bom: Any) -> bool:
+    """True when rows came from a LIST OF MATERIAL grid clip, not a guessed BOM."""
+    if bom is None:
+        return False
+    method = str(getattr(bom, "method", None) or "")
+    source = str(getattr(bom, "source", None) or "")
+    lom = getattr(bom, "lom_xlsx", None)
+    if isinstance(bom, dict):
+        method = str(bom.get("method") or method)
+        source = str(bom.get("source") or source)
+        lom = bom.get("lom_xlsx") or lom
+    if lom:
+        return True
+    if source == "lom_xlsx":
+        return True
+    return method.startswith("table_")
+
+
+def takeoff_has_lom_clip(takeoff: dict[str, Any] | None) -> bool:
+    blob = takeoff or {}
+    if blob.get("lom_xlsx"):
+        return True
+    drivers = blob.get("fitup_drivers") or {}
+    weight = drivers.get("weight_calc") or {}
+    for source in (
+        weight.get("bom"),
+        weight.get("pdf_bom"),
+        blob.get("bom"),
+        blob.get("pdf_bom"),
+    ):
+        if bom_is_lom_clip(source):
+            return True
+    return False
+
+
 def write_lom_xlsx_for_bom(pdf_path: Path | str | None, bom: Any) -> Path | None:
     if not pdf_path:
+        return None
+    if not bom_is_lom_clip(bom):
         return None
     rows = getattr(bom, "rows", None)
     if rows is None and isinstance(bom, dict):
@@ -164,11 +201,14 @@ def rows_from_takeoff(takeoff: dict[str, Any] | None) -> list[Any]:
 
 
 def write_lom_xlsx_for_job(pdf_path: Path | str | None, takeoff: dict[str, Any] | None) -> Path | None:
+    """Write only when a LIST OF MATERIAL was clipped. No LOM → no xlsx."""
     if not pdf_path:
         return None
     dest = lom_xlsx_path_for_pdf(pdf_path)
     if dest.is_file():
         return dest
+    if not takeoff_has_lom_clip(takeoff):
+        return None
     rows = rows_from_takeoff(takeoff)
     if not rows:
         return None

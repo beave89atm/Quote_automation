@@ -1536,7 +1536,15 @@ def extract_bom(
         native.notes = notes + native.notes
         return _with_lom_xlsx(native, pdf_path)
 
-    return BomResult(method=None, confidence=0.0, notes=notes or ["No BOM rows detected"])
+    if not time_lom:
+        extra = "No LIST OF MATERIAL — one-part quote, no LOM.xlsx"
+        if extra not in notes:
+            notes.append(extra)
+    return BomResult(
+        method=None,
+        confidence=0.0,
+        notes=notes or ["No LIST OF MATERIAL — one-part quote, no LOM.xlsx"],
+    )
 
 
 def bom_from_lom_xlsx(path: Path | str, *, prior: BomResult | None = None) -> BomResult:
@@ -1586,6 +1594,7 @@ def bom_from_lom_xlsx(path: Path | str, *, prior: BomResult | None = None) -> Bo
 
 
 def _with_lom_xlsx(bom: BomResult, pdf_path: Path | str | None) -> BomResult:
+    """Clip-to-Excel only for a real LIST OF MATERIAL. Piece parts stay one-part."""
     if not pdf_path or not bom.rows:
         return bom
     try:

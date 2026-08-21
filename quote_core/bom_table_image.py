@@ -16,7 +16,6 @@ from quote_core.bom_table import (
     expected_letters_for_bands,
     find_time_like_pn,
     flag_unread_qty_column,
-    harvest_material_list_lines,
     harvest_ocr_row_strips,
     pick_best_material_list,
     union_sticky_harvest,
@@ -889,9 +888,7 @@ def extract_bom_from_table_image(
             parsed = harvest_ocr_row_strips(
                 lines, bom_config=bom_config, page_text=page_text
             )
-    if not parsed.rows and lines:
-        blob = "LIST OF MATERIAL\nQTY ITEM PART NO. DESCRIPTION\n" + "\n".join(lines)
-        parsed = harvest_material_list_lines(blob, bom_config=bom_config)
+    # Do not invent a LIST OF MATERIAL header. No LOM on the sheet → no BOM.
     parsed.grid_row_count = int(seg["grid_row_count"])
     parsed.notes = notes + list(parsed.notes)
     parsed = flag_unread_qty_column(parsed)

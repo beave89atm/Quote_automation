@@ -139,3 +139,48 @@ def test_extract_bom_quote_matches_written_102728_xlsx(tmp_path: Path):
     for item, (qty, pn) in _PROOF_QTY.items():
         assert int(by_sheet[item]["QTY"]) == qty
         assert by_sheet[item]["PART NO"] == pn
+
+
+def test_piece_part_without_lom_does_not_invent_bom_or_xlsx(tmp_path: Path):
+    """No LIST OF MATERIAL → one-part quote. Do not invent a BOM or LOM.xlsx."""
+    import fitz
+
+    from quote_core.bom_xlsx import write_lom_xlsx_for_job
+
+    pdf = tmp_path / "100350-1 PLATE.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "PLATE  100350-1")
+    page.insert_text((72, 96), "A36  1/4 THK")
+    page.insert_text((72, 120), "SCALE 1/4")
+    doc.save(pdf)
+    doc.close()
+
+    bom = extract_bom(pdf_path=pdf)
+    assert not (bom.method or "").startswith("table_")
+    assert not (bom.method or "").startswith("ocr_time")
+    xlsx = pdf.with_name(f"{pdf.stem}-LOM.xlsx")
+    assert not xlsx.is_file()
+    assert bom.lom_xlsx is None
+    assert any("one-part quote" in n.lower() for n in bom.notes)
+
+    native_takeoff = {
+        "fitup_drivers": {
+            "weight_calc": {
+                "method": "pdf_bom_qty",
+                "bom": {
+                    "method": "pdf_bom_qty",
+                    "rows": [
+                        {
+                            "item": "1",
+                            "qty": 1,
+                            "part_no": "100350-1",
+                            "description": "PLATE",
+                        }
+                    ],
+                },
+            }
+        }
+    }
+    assert write_lom_xlsx_for_job(pdf, native_takeoff) is None
+    assert not xlsx.is_file()
