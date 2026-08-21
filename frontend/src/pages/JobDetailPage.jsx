@@ -2,6 +2,21 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api";
 
+function pushDisabledReason(job, busy) {
+  if (!job) return "Loading job…";
+  const pushStatus = job.takeoff?.secturafab?.status;
+  if (busy || ["pushing", "retrying_createfile"].includes(pushStatus)) {
+    return "Push already in progress — wait for it to finish";
+  }
+  if (["uploaded", "processing"].includes(job.status)) {
+    return "Wait for takeoff to finish before pushing";
+  }
+  if (job.push_readiness?.ready === false) {
+    return job.push_readiness.reason || "needs PDF, STEP, or library match";
+  }
+  return null;
+}
+
 function emptyItem() {
   return {
     size: "1/4",
@@ -719,24 +734,18 @@ export default function JobDetailPage() {
         <button
           className="btn"
           type="button"
-          disabled={
-            busy ||
-            ["uploaded", "processing"].includes(job.status) ||
-            ["pushing", "retrying_createfile"].includes(job.takeoff?.secturafab?.status) ||
-            job.push_readiness?.ready === false
-          }
+          disabled={Boolean(pushDisabledReason(job, busy))}
           onClick={pushSecturaFab}
-            title={
-            job.push_readiness?.ready === false
-              ? job.push_readiness.reason || "needs PDF, STEP, or library match"
-              : "Always create a new SecturaFAB quote; uses part number (date suffix if that number is taken)"
+          title={
+            pushDisabledReason(job, busy) ||
+            "Push or update the SecturaFAB quote using the bare part number (reuses an existing quote with that number)"
           }
         >
           Push to SecturaFAB
         </button>
-        {job.push_readiness?.ready === false ? (
+        {pushDisabledReason(job, busy) ? (
           <span className="muted" style={{ alignSelf: "center" }}>
-            {job.push_readiness.reason || "needs PDF, STEP, or library match"}
+            {pushDisabledReason(job, busy)}
           </span>
         ) : null}
         <label className="btn ghost" style={{ cursor: busy ? "default" : "pointer" }}>

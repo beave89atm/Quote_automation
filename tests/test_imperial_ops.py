@@ -135,8 +135,8 @@ def test_finalize_success_path_calls_imperial():
             return_value=True,
         ),
         patch(
-            "secturafab.finalize_ops.resolve_weld_times",
-            return_value={"weld_minutes": 10},
+            "secturafab.finalize_ops.takeoff_wants_weld",
+            return_value=True,
         ),
     ):
         notes = finalize_quote_ops(

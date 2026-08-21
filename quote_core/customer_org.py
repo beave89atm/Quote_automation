@@ -18,15 +18,29 @@ _DRAWING_TO_ORGANIZATION: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"\bNATURAL\s+GAS\s+FUEL\s+SYSTEMS\b", re.IGNORECASE),
         "Cummins Clean Fuel Technologies",
     ),
+    (
+        re.compile(r"\bTIME\s+MANUFACTURING\b", re.IGNORECASE),
+        "Time Manufacturing",
+    ),
 ]
 
 # Library folder path segments → Organization (when PDF text is thin).
+# Time drawings are often scanned (no native text) — folder "Time" is the signal.
 _FOLDER_TO_ORGANIZATION: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(r"Cummins\s+Clean\s+Fuel\s+Technologies", re.IGNORECASE),
         "Cummins Clean Fuel Technologies",
     ),
     (re.compile(r"\bTYCROP\b", re.IGNORECASE), "Propell"),
+    (
+        re.compile(r"Time\s+Manufacturing", re.IGNORECASE),
+        "Time Manufacturing",
+    ),
+    # Path segment exactly "Time" (Customer Drawings\Time\28106-1), not "Lifetime".
+    (
+        re.compile(r"(?:^|[\\/])Time(?:[\\/]|$)", re.IGNORECASE),
+        "Time Manufacturing",
+    ),
 ]
 
 
@@ -69,8 +83,11 @@ def detect_organization(
     *,
     pdf_path: Path | str | None = None,
     library_folder: Path | str | None = None,
+    title: str | None = None,
 ) -> str | None:
-    """Prefer PDF brand text; fall back to drawing-library folder path."""
-    return detect_organization_from_pdf(pdf_path) or detect_organization_from_folder(
-        library_folder
+    """Prefer PDF brand text; fall back to drawing-library folder, then job title."""
+    return (
+        detect_organization_from_pdf(pdf_path)
+        or detect_organization_from_folder(library_folder)
+        or detect_organization_from_text(title)
     )

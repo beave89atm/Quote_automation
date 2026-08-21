@@ -216,6 +216,31 @@ def minutes_to_hours(minutes: float) -> float:
     return float(minutes or 0.0) / 60.0
 
 
+def takeoff_wants_weld(
+    times: dict[str, Any] | None,
+    takeoff: dict[str, Any] | None = None,
+) -> bool:
+    """
+    True only when Cursor times include weld minutes *and* takeoff did not
+    explicitly say there are no weld symbols.
+
+    Prevents inventing Weld/fit-up on laser-only or no-symbol jobs.
+    """
+    if resolve_weld_times(times) is None:
+        return False
+    takeoff = takeoff or {}
+    drivers = takeoff.get("fitup_drivers") or {}
+    if str(drivers.get("source") or "").strip().lower() == "no_weld":
+        return False
+    blobs: list[str] = []
+    for key in ("flags", "notes"):
+        blobs.extend(str(x) for x in (takeoff.get(key) or []))
+    blobs.extend(str(x) for x in (drivers.get("notes") or []))
+    if any("no weld symbols" in b.lower() for b in blobs):
+        return False
+    return True
+
+
 def resolve_weld_times(times: dict[str, Any] | None) -> tuple[float, float, float] | None:
     """
     Return (weld_hours, fitup_hours, setup_hours) or None if nothing to add.
@@ -322,13 +347,17 @@ def ensure_weld_ops(
     times: dict[str, Any] | None,
     part_key: str | None = None,
     force: bool = False,
+    takeoff: dict[str, Any] | None = None,
 ) -> list[str]:
     """
     Attach Weld secondary ops from Cursor times onto the assembly / top part.
 
-    Does nothing when weld_minutes is missing or zero.
+    Does nothing when weld_minutes is missing or zero, or when takeoff says
+    there are no weld symbols.
     When ``force`` is True, replace existing Weld ops (used after CAD wipe recovery).
     """
+    if takeoff is not None and not takeoff_wants_weld(times, takeoff):
+        return ["No weld symbols / times on takeoff — skipped SecturaFAB Weld ops"]
     resolved = resolve_weld_times(times)
     if not resolved:
         return ["No weld minutes on job — skipped SecturaFAB Weld ops"]
