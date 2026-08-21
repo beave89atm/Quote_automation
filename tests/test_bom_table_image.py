@@ -54,10 +54,12 @@ from quote_core.bom_table_image import (
     LOM_STRIP_TOP_FRAC,
     TABLE_CROP_FILENAME,
     _ocr_first_pass_lines,
+    _pick_qty_token,
     _qty_band_needs_reread,
     _reread_qty_from_page,
     _reread_unread_qty_cells,
     _would_downgrade_qty,
+    _would_invent_qty,
     extract_bom_from_table_image,
     extract_bom_from_table_images,
     leading_qty_before_item,
@@ -240,7 +242,7 @@ def test_table_find_clip_is_not_the_037f309_regression():
     assert LOM_QTY_LEFT_FRAC < LOM_STRIP_LEFT_FRAC
     assert LOM_QTY_DPI >= 420
     assert LOM_QTY_REACH_BOTTOM_FRAC > LOM_STRIP_BOTTOM_FRAC
-    assert any(left >= 0.60 and right <= 0.72 for left, right in LOM_QTY_COLUMN_WINDOWS)
+    assert all(right <= LOM_STRIP_LEFT_FRAC for _left, right in LOM_QTY_COLUMN_WINDOWS)
     assert any(left <= 0.55 and right >= 0.74 for left, right in LOM_QTY_PIPE_WINDOWS)
     assert "trim_strip_to_lom_qty" not in dir(__import__("quote_core.bom_table_image", fromlist=["*"]))
 
@@ -275,6 +277,23 @@ def _strip_band_for_page_frac(y_frac: float, strip_h: int) -> tuple[int, int]:
     mid = int(round((y_frac - top) / (bot - top) * strip_h))
     row_h = max(36, strip_h // 40)
     return max(0, mid - row_h), min(strip_h, mid + 8)
+
+
+def test_isolated_sliver_digit_does_not_invent_qty():
+    """Live 5e454ac: isolated sliver A=4 / B=8. Unread beats an invented 4–8."""
+    assert _pick_qty_token([], ["4"]) == ""
+    assert _pick_qty_token([], ["8", "8"]) == ""
+    assert _pick_qty_token(["4"], []) == ""
+    assert _pick_qty_token(["4", "4"], []) == ""
+    assert _pick_qty_token(["4"], ["4"]) == "4"
+    assert _pick_qty_token(["1", "4"], ["1"]) == "1"
+    assert _pick_qty_token(["6"], ["6"]) == "6"
+    assert _would_invent_qty(0, 4) is True
+    assert _would_invent_qty(1, 8) is True
+    assert _would_invent_qty(2, 6) is True
+    assert _would_invent_qty(0, 1) is False
+    assert _would_invent_qty(6, 1) is False
+    assert _would_downgrade_qty(6, 1) is True
 
 
 def test_qty_sliver_reads_digit_left_of_068_strip():
@@ -334,6 +353,46 @@ def test_sliver_fills_unread_qty_when_strip_has_no_digit():
             if not qty:
                 assert parsed["qty"] != 1
                 assert parsed["qty_clear"] is False
+    finally:
+        doc.close()
+
+
+def test_sliver_does_not_stamp_a_as_4_from_460200():
+    """A at the bottom is 1. Isolated/PN-stem 4 from 460200 must stay unread."""
+    if not ocr_available():
+        pytest.skip("tesseract not installed")
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    y = 792 * 0.88
+    page.insert_text((612 * 0.70, y), "A", fontsize=14)
+    page.insert_text((612 * 0.78, y), "460200", fontsize=14)
+    try:
+        strip = render_page_right_strip(page)
+        clip = {
+            "left_frac": LOM_STRIP_LEFT_FRAC,
+            "top_frac": LOM_STRIP_TOP_FRAC,
+            "bottom_frac": LOM_STRIP_BOTTOM_FRAC,
+        }
+        y0, y1 = _strip_band_for_page_frac(0.88, strip.height)
+        got = _reread_qty_from_page(page, strip, y0, y1, clip)
+        assert got == ""
+        notes: list[str] = []
+        out = _reread_unread_qty_cells(
+            strip,
+            {"row_bands": [(0, y0, strip.width, y1)], "v_lines": [16, 40, 100]},
+            [" | A | 460200 | RAIL"],
+            notes,
+            retry_page=page,
+            retry_clip=clip,
+        )
+        parsed = parse_ocr_row_strip(out[0])
+        assert parsed is not None
+        assert parsed["part_no"] == "460200"
+        assert parsed["qty"] == 0
+        assert parsed["qty"] != 4
+        assert parsed["qty"] != 1
     finally:
         doc.close()
 

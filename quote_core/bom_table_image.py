@@ -38,12 +38,12 @@ LOM_QTY_DPI = 480.0
 # A + the header under A sit below the 0.92 table clip. Reach them on
 # the sliver only — do not widen table find (that is the 037f309 miss).
 LOM_QTY_REACH_BOTTOM_FRAC = 0.97
-# Thin qty windows walk toward 0.68. 0.55–0.61 alone misses a digit
-# that sits just left of ITEM. Pipe windows keep the item letter.
+# Left-only windows stay left of ITEM (0.68). 0.62–0.70 on 5e454ac
+# isolated A→4 / B→8 from the letter and PN stem. Pipe windows keep
+# the item letter so 1A / 6V / 8AD can confirm a left digit.
 LOM_QTY_COLUMN_WINDOWS = (
-    (0.58, 0.66),
-    (0.62, 0.70),
     (0.55, 0.62),
+    (0.58, 0.66),
 )
 LOM_QTY_PIPE_WINDOWS = (
     (0.55, 0.74),
@@ -688,9 +688,9 @@ def _crop_sliver_row(
     sy0 = _sliver_y_from_page_frac(y0_frac, sliver_top, sliver_bot, height)
     sy1 = _sliver_y_from_page_frac(y1_frac, sliver_top, sliver_bot, height)
     sy0, sy1 = min(sy0, sy1), max(sy0, sy1)
-    # A 16px band around the baseline clips 6/8 into a 0. Keep a
-    # digit-tall window without re-banding the table.
-    min_h = 48
+    # Keep a digit-tall window without re-banding. Do not grow so
+    # much that the row above bleeds a 4–8 into A.
+    min_h = 36
     if sy1 - sy0 < min_h:
         extra = min_h - (sy1 - sy0)
         sy0 -= extra
@@ -700,21 +700,24 @@ def _crop_sliver_row(
 
 
 def _pick_qty_token(pipes: list[str], isolated: list[str]) -> str:
-    """Prefer pipe (digit+letter). Isolated only when windows agree. Never invent 1."""
+    """Pipe stamps only when a left-qty digit agrees. Isolated-only stays unread.
+
+    Live 5e454ac isolated slivers invented A=4 / B=8 / U=8 / AB=6 / Q=4
+    from ITEM letters and PN stems (460200). Unread is better than that.
+    Never default to 1.
+    """
     from collections import Counter
 
     pipes = [t for t in pipes if t]
     isolated = [t for t in isolated if t]
-    if pipes:
-        tok, n = Counter(pipes).most_common(1)[0]
-        if n >= 2 or len(set(pipes)) == 1:
-            return tok
+    if not pipes:
         return ""
-    if isolated:
-        tok, n = Counter(isolated).most_common(1)[0]
-        if n >= 2 or len(set(isolated)) == 1:
-            return tok
-    return ""
+    left = set(isolated)
+    agree = [p for p in pipes if p in left]
+    if not agree:
+        return ""
+    tok, _n = Counter(agree).most_common(1)[0]
+    return tok
 
 
 def _qty_sliver_bundle(page, clip: dict[str, Any]) -> dict[str, Any]:
@@ -811,6 +814,11 @@ def _would_downgrade_qty(existing: int, new: int) -> bool:
     return int(existing or 0) > 1 and int(new or 0) == 1
 
 
+def _would_invent_qty(existing: int, new: int) -> bool:
+    """Isolated 4–8 must not overwrite unread or a real 1–2 (A=4 from 460200)."""
+    return int(existing or 0) in {0, 1, 2} and int(new or 0) >= 4
+
+
 def _read_qty_for_band(
     im,
     y0: int,
@@ -820,13 +828,12 @@ def _read_qty_for_band(
     retry_page: Any | None = None,
     retry_clip: dict[str, float] | None = None,
 ) -> str:
-    """Sliver (QTY is left of 0.68), then strip pipe, then isolated. Never default 1."""
+    """Confirmed sliver pipe, then strip pipe. Isolated 4–8 never stamps."""
     height = getattr(im, "height", y1) or y1
     yy0 = max(0, int(y0) - 2)
     yy1 = min(int(height), int(y1) + 2)
     clip = retry_clip if retry_clip is not None else {}
-    # The 0.68 table pixmap does not contain QTY. A strip pipe can
-    # false-hit a PN stem (live V=4) and skip the sliver — try sliver first.
+    # Sliver is pipe+left-digit only (5e454ac isolated A=4 is not a read).
     if retry_page is not None:
         page = _accept_qty_token(
             _reread_qty_from_page(retry_page, im, yy0, yy1, clip, v_lines)
@@ -835,8 +842,19 @@ def _read_qty_for_band(
             return page
     pipe = read_qty_cell(im, yy0, yy1, v_lines, isolated=False)
     if pipe:
-        return pipe
-    return read_qty_cell(im, yy0, yy1, v_lines, isolated=True)
+        # QTY is left of the 0.68 strip. A strip pipe 4–8 after an empty
+        # sliver is the PN stem (live A=4 from 460200 / V=4). Glued 1–2
+        # (BB2) may still sit in the ITEM cell.
+        if retry_page is None or pipe in {"1", "2"}:
+            return pipe
+    if retry_page is not None:
+        # Sliver already ran. Isolated on ITEM/PN invented A=4 / B=8.
+        return ""
+    iso = read_qty_cell(im, yy0, yy1, v_lines, isolated=True)
+    # Isolated 1–2 may fill A/BB on a crop with no page. Isolated 4–8 no.
+    if iso in {"1", "2"}:
+        return iso
+    return ""
 
 
 def _reread_unread_qty_cells(
