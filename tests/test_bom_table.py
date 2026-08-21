@@ -514,12 +514,15 @@ def test_eco_and_title_block_rows_are_dropped():
     parts = {r.part_no for r in bom.rows}
     assert "16697-1" in parts and "16697-2" in parts
     assert _BB_PART in parts
-    for junk in ("72143", "61358", "73207", "89176-1", "56657", "97879"):
+    for junk in ("72143", "61358", "73207", "56657", "97879"):
         assert junk not in parts, junk
+    # Dashed Time PNs stay even next to PROPERTY (page-title stamp is too wide).
+    assert "16697-1" in parts
     bb = next(r for r in bom.rows if r.item == "BB")
     assert bb.qty == 2 and bb.part_no == _BB_PART
     assert parse_ocr_row_strip("C 72143 ADDED —4 AND ITEM P") is None
-    assert parse_ocr_row_strip("AN 89176-1 PROPERTY OF TIME MANUFACTURING") is None
+    dashed_prop = parse_ocr_row_strip("AN 89176-1 PROPERTY OF TIME MANUFACTURING")
+    assert dashed_prop is not None and dashed_prop["part_no"] == "89176-1"
 
     cells = parse_material_list_text(
         "LIST OF MATERIAL\n"
@@ -560,41 +563,87 @@ def test_live_surviving_eco_and_stripped_weldment_pn_are_dropped():
     assert "89100-1" in parts
     assert "94560" in parts
     assert _BB_PART in parts
-    for junk in ("56657", "97879", "61358", "73207", "73049", "89176-1", "904225-1", "P904225-1"):
+    for junk in ("56657", "97879", "61358", "73207", "73049", "904225-1", "P904225-1"):
         assert junk not in parts, junk
+    # 89176-1 is dashed — do not drop it for PROPERTY on a neighbor/title band.
     bb = next(r for r in bom.rows if r.item == "BB")
     assert bb.qty == 2 and bb.part_no == _BB_PART
 
 
-def test_first_release_added_config_and_page_property_drop_junk():
-    """ae1b8e7 leftovers: FIRST RELEASE, ADDED CONFIGURATION, 89176-1 via page stamp."""
+def test_first_release_added_config_and_garbled_eco_drop_five_digit_only():
+    """5-digit bare junk drops; dashed Time PNs stay even if the page says PROPERTY."""
     assert parse_ocr_row_strip("B 56657 FIRST RELEASE TO PRODUCTION") is None
     assert parse_ocr_row_strip("8 S 73207 ADDED CONFIGURATION") is None
+    garbled = parse_ocr_row_strip("8 S 73207 avoeos'conricuranon")
+    assert garbled is None
 
-    # PROPERTY is only on the page title block, not the LOM strip (live P904225).
+    # Page-title PROPERTY must not wipe dashed LOM rows (1004747 / 33612 regression).
     far = harvest_ocr_row_strips(
         [
+            "A 1004806-1 HOSE",
+            "B 1004806-2",
+            "C 11694-2 TUBE",
+            "D 1004738-1",
+            "E 1004739-1",
+            "F 1004711-1",
+            "G 1004740-1",
+            "H 1004741-1",
+            "J 1004744-1",
+            "K 1004744-2",
+            "L 1004737-1",
+            "M 25060-6",
+            "6993-1 HOSE GUIDE",
             "A 89176-1",
             "G 89100-1 TUBE",
-            "M 94560 GATE, FABRICATION",
+            "N 28275-1",
+            "P 28275-2",
+            "Q 28275-3",
+            "R 28276-1",
+            "S 28281-1",
+            "T 28282-1",
+            "U 28283-1",
+            "V 33638-1",
             "C 103522-1 PLATE",
             "BBD 02727-4 TUBE, ROUND",
         ],
-        page_text="WELDMENT P904225-1\nTHIS DRAWING IS THE PROPERTY OF TIME MANUFACTURING",
+        page_text="WELDMENT P904225-1\nTHIS DRAWING IS THE PROPERTY OF TIME MANUFACTURING\nFIRST RELEASE",
     )
     parts = {r.part_no for r in far.rows}
-    assert "89176-1" not in parts
-    assert "89100-1" in parts
-    assert "94560" in parts
-    assert "103522-1" in parts
-    assert _BB_PART in parts
+    for keep in (
+        "1004806-1",
+        "1004806-2",
+        "11694-2",
+        "1004738-1",
+        "1004739-1",
+        "1004711-1",
+        "1004740-1",
+        "1004741-1",
+        "1004744-1",
+        "1004744-2",
+        "1004737-1",
+        "25060-6",
+        "6993-1",
+        "89176-1",
+        "89100-1",
+        "28275-1",
+        "28275-2",
+        "28275-3",
+        "28276-1",
+        "28281-1",
+        "28282-1",
+        "28283-1",
+        "33638-1",
+        "103522-1",
+        _BB_PART,
+    ):
+        assert keep in parts, keep
+    assert len(parts) >= 15
 
-    # Same page stamp must not drop real dashed 1035xx parts.
     page = harvest_ocr_row_strips(
         [
             "B 56657 FIRST RELEASE TO PRODUCTION",
             "BT 97879",
-            "8 S 73207",
+            "8 S 73207 avoeos'conricuranon",
             "A 103500-1 TUBE",
             "C 103522-1 PLATE",
             "M 94560 GATE, FABRICATION",
@@ -674,7 +723,7 @@ def test_p904225_drops_property_row_keeps_table_child_not_folder(tmp_path: Path)
     assert "P904225-1" not in parts
     assert "904225-1" not in parts
     assert "89100-1" in parts
-    assert "89176-1" not in parts
+    # 89176-1 is dashed; page/cell PROPERTY must not over-drop dashed LOM PNs.
     assert "904226-1" in parts or "P904226-1" in parts
     assert bom.method and bom.method.startswith("table_")
 
