@@ -85,7 +85,8 @@ class BomResult:
 
     @property
     def piece_count(self) -> int:
-        return sum(max(1, int(r.qty)) for r in self.rows)
+        # Unread qty is 0. Do not count it as 1 — that is the 51 PN / 65 pc lie.
+        return sum(max(0, int(r.qty or 0)) for r in self.rows)
 
     @property
     def part_number_count(self) -> int:
@@ -1405,14 +1406,31 @@ def extract_bom(
     found, write ``{stem}-LOM.xlsx`` next to the PDF.
     """
     notes: list[str] = []
+    probe = text
+    if probe is None and pdf_path:
+        from quote_core.weight import _read_pdf_text
+
+        try:
+            probe = _read_pdf_text(Path(pdf_path))
+        except Exception:  # noqa: BLE001
+            probe = None
+    from quote_core.bom_table import looks_like_time_material_list
+
+    time_lom = looks_like_time_material_list(probe)
+
     native = extract_bom_from_native_mac(pdf_path, text=text)
-    if native.rows and native.piece_count > 0 and native.confidence >= 0.9:
+    if (not time_lom) and native.rows and native.piece_count > 0 and native.confidence >= 0.9:
         return _with_lom_xlsx(native, pdf_path)
     if native.notes:
         notes.extend(native.notes)
+    if time_lom and native.rows:
+        notes.append(
+            "Skipped native MAC BOM — LIST OF MATERIAL is cell-grid only "
+            "(unique-PN count with unread qty counted as 1 is not proof)"
+        )
 
     parts_list = extract_bom_from_parts_list(pdf_path, text=text)
-    if parts_list.rows and parts_list.piece_count > 0:
+    if (not time_lom) and parts_list.rows and parts_list.piece_count > 0:
         parts_list.notes = notes + list(parts_list.notes)
         return _with_lom_xlsx(parts_list, pdf_path)
     if parts_list.notes:

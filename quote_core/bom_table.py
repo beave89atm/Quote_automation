@@ -212,6 +212,14 @@ def item_sort_key(item: str) -> tuple[int, str]:
     return (len(text), text)
 
 
+def looks_like_time_material_list(text: str | None) -> bool:
+    """Time (and similar) LIST OF MATERIAL — cell-grid only, not native MAC."""
+    blob = text or ""
+    if text_has_material_list_grid(blob):
+        return True
+    return bool(re.search(r"\bLIST\s+OF\s+MATERIAL\b", blob, flags=re.IGNORECASE))
+
+
 def text_has_material_list_grid(text: str | None) -> bool:
     blob = text or ""
     if _MULTI_QTY_HEADER_RE.search(blob):
@@ -1399,11 +1407,17 @@ def harvest_ocr_row_strips(
     if not rows:
         return BomResult(method=None, confidence=0.0, notes=["No item+part strips harvested"])
     rows.sort(key=lambda r: item_sort_key(str(r.item or "")))
+    unread_qty = sum(1 for r in rows if int(r.qty or 0) <= 0)
     notes.insert(
         0,
         f"Harvested OCR row strips: {len(rows)} part numbers, "
-        f"{sum(r.qty for r in rows)} pieces",
+        f"{sum(max(0, int(r.qty or 0)) for r in rows)} pieces",
     )
+    if unread_qty:
+        notes.append(
+            f"{unread_qty} row(s) have unread qty — unique PN count is not proof; "
+            f"piece_count is readable qty only (51 PNs / 65 pcs is a fail)"
+        )
     notes.extend(_incomplete_sequence_notes([str(r.item) for r in rows if r.item]))
     return BomResult(
         rows=rows,
@@ -1646,10 +1660,16 @@ def _selected_qty(
     qty = _parse_qty_cell(raw)
     if _looks_like_column_index_qty(qty):
         qty = 1
-    if qty <= 0 and len(cells) > n_qty:
-        # Sometimes QTY is omitted and the first cell is the item letter.
-        qty = 1
-    return max(1, qty), True
+    if qty <= 0:
+        empty = str(raw or "").strip() in _EMPTY_QTY
+        if empty and qty_cells:
+            # Explicit blank QTY cell: unread. Do not invent 1.
+            return 0, True
+        if len(cells) > n_qty:
+            # QTY column omitted; first cell is the item letter.
+            return 1, True
+        return 0, True
+    return qty, True
 
 
 def _tokenize_row_blob(blob: str) -> list[str]:
@@ -1684,10 +1704,10 @@ def _split_row_fields(
         tokens = _tokenize_row_blob(tokens[0])
         if not tokens:
             return [], "", "", ""
-    # Multi-qty: keep blank dash cells. Stripping them left-pads another
-    # dash's "1" into the -1 column (L/N/P leak on a 28106-1 takeoff).
-    if layout.is_multi_qty and len(raw_cells) >= 4:
-        tokens = raw_cells if any(not c for c in raw_cells[:4]) else tokens
+    # Keep blank qty cells. Stripping them invents qty 1 (51 PN / 65 pc
+    # live miss) or left-pads another dash's "1" into -1 (L/N/P leak).
+    if any(not c for c in raw_cells[: max(1, len(layout.qty_cols), 4)]):
+        tokens = raw_cells
 
     from quote_core.bom import normalize_part_no
 
@@ -1805,6 +1825,12 @@ def parse_material_list_cells(
         )
 
     parsed.sort(key=lambda r: item_sort_key(str(r.item or "")))
+    unread_qty = sum(1 for r in parsed if int(r.qty or 0) <= 0)
+    if unread_qty:
+        notes.append(
+            f"{unread_qty} row(s) have unread qty — unique PN count is not proof; "
+            f"piece_count is readable qty only (51 PNs / 65 pcs is a fail)"
+        )
     notes.extend(_incomplete_sequence_notes([str(r.item) for r in parsed if r.item]))
     method = (
         "table_material_list_multi_qty" if layout.is_multi_qty else "table_material_list"

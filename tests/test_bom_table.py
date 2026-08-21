@@ -5,9 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from quote_core.bom import (
+    BomResult,
+    BomRow,
     _parse_qty_item_part_hits,
     _vote_bom_rows,
     extract_bom,
+    extract_bom_from_native_mac,
     extract_bom_from_ocr_time_style,
 )
 from quote_core.bom_table import (
@@ -131,6 +134,21 @@ def _assert_kyle_102728_1(bom) -> None:
     assert by_item["A"].part_no == "460200"
     assert by_item["Z"].part_no == "460320"
     assert by_item["BB"].part_no == _BB_PART and by_item["BB"].qty == 2
+
+
+def _assert_kyle_xlsx(path: Path, expected: list[tuple[str, int, str, str]]) -> None:
+    """Proof method: the emitted sheet must match every letter, PN, and qty."""
+    from quote_core.bom_xlsx import read_lom_xlsx
+
+    header, sheet = read_lom_xlsx(path)
+    assert header == ["QTY", "ITEM", "PART NO", "DESCRIPTION"]
+    assert len(sheet) == len(expected)
+    assert sum(int(r["QTY"]) for r in sheet) == sum(q for _i, q, _p, _d in expected)
+    by_item = {r["ITEM"]: r for r in sheet}
+    for item, qty, pn, _desc in expected:
+        assert item in by_item, item
+        assert by_item[item]["PART NO"] == pn, (item, by_item[item]["PART NO"], pn)
+        assert int(by_item[item]["QTY"]) == qty, (item, by_item[item]["QTY"], qty)
 
 
 # Kyle 28106-1 working truth (A at bottom; quote -1 only). 11 PNs, 13 pcs.
@@ -315,6 +333,78 @@ def test_fedf06b_live_mismatch_recovers_kyle_grid():
     assert united.piece_count == 97
 
 
+def test_fifty_one_pns_sixty_five_pcs_is_not_kyle_done():
+    """fedf06b live: 51 unique / 65 pcs is a fail. Unread qty 0 is not a piece."""
+    budget = 14
+    rows: list[BomRow] = []
+    for item, qty, pn, desc in _KYLE_102728_1:
+        if qty > 1 and budget > 0:
+            add = min(qty - 1, budget)
+            rows.append(BomRow(item=item, qty=1 + add, part_no=pn, description=desc))
+            budget -= add
+        else:
+            rows.append(BomRow(item=item, qty=1, part_no=pn, description=desc))
+    fake = BomResult(rows=rows)
+    assert fake.part_number_count == 51
+    assert fake.piece_count == 65
+    assert fake.piece_count != 97
+    by_item = {r.item: r for r in fake.rows}
+    assert by_item["BB"].qty != 2 or by_item["AD"].qty != 8
+
+    unread = BomResult(
+        rows=[
+            BomRow(item=item, qty=0 if qty > 1 else qty, part_no=pn, description=desc)
+            for item, qty, pn, desc in _KYLE_102728_1
+        ]
+    )
+    ones = sum(1 for _i, q, _p, _d in _KYLE_102728_1 if q == 1)
+    assert unread.part_number_count == 51
+    assert unread.piece_count == ones
+    assert unread.piece_count not in {65, 97}
+
+    cells = [["QTY", "ITEM", "PART NO.", "DESCRIPTION"]]
+    for item, qty, pn, desc in _KYLE_102728_1:
+        cells.append(["" if qty > 1 else str(qty), item, pn, desc])
+    parsed = parse_material_list_cells(cells)
+    assert parsed.part_number_count == 51
+    assert parsed.piece_count == ones
+    assert any("not proof" in n.lower() for n in parsed.notes)
+
+
+def test_list_of_material_does_not_yield_to_native_mac():
+    """Native MAC qty→1 must not win when LIST OF MATERIAL is on the sheet."""
+    mac = """
+WEIGHT:
+10.0 lbm
+1
+2
+460320
+CAP
+5.0 lbm
+1
+1
+460200
+RAIL
+5.0 lbm
+"""
+    native = extract_bom_from_native_mac(None, text=mac)
+    assert native.rows and native.method == "pdf_bom_qty"
+    lines = [
+        mac,
+        "WELDMENT, PLATFORM",
+        "102728-1",
+        "TIME MANUFACTURING",
+        "LIST OF MATERIAL",
+        "QTY | ITEM | PART NO. | DESCRIPTION",
+    ]
+    for item, qty, pn, desc in _KYLE_102728_1:
+        lines.append(f"{qty} | {item} | {pn} | {desc}")
+    bom = extract_bom(text="\n".join(lines), bom_config="-1")
+    assert bom.method and bom.method.startswith("table_"), bom.notes
+    assert not (bom.method or "").startswith("ocr_time")
+    _assert_kyle_102728_1(bom)
+
+
 def test_readable_4_5_6_8_qty_is_not_dimension_bleed():
     """V=6 / AA=5 / AD=8 / W=4 stay. Qty 7 is bleed — not defaulted to 1."""
     four = parse_ocr_row_strip("4 AC 100177-2 PLATE")
@@ -475,15 +565,12 @@ def test_kyle_28106_1_pdf_extract_bom_and_xlsx(tmp_path: Path):
     assert bom.method and bom.method.startswith("table_"), bom.notes
     assert not (bom.method or "").startswith("ocr_time")
     _assert_kyle_28106_1(bom)
-    from quote_core.bom_xlsx import read_lom_xlsx
-
     xlsx = pdf.with_name(f"{pdf.stem}-LOM.xlsx")
     assert xlsx.is_file()
-    header, sheet = read_lom_xlsx(xlsx)
-    assert header == ["QTY", "ITEM", "PART NO", "DESCRIPTION"]
-    assert len(sheet) == 11
-    assert sum(int(r["QTY"]) for r in sheet) == 13
-    assert sheet[0]["ITEM"] == "A" and sheet[0]["PART NO"] == "16697-2"
+    _assert_kyle_xlsx(xlsx, _KYLE_28106_1)
+    from quote_core.bom_xlsx import read_lom_xlsx
+
+    _header, sheet = read_lom_xlsx(xlsx)
     parts = {r["PART NO"] for r in sheet}
     assert "16697-1" not in parts and "16697-3" not in parts and "16697-4" not in parts
 
@@ -567,19 +654,9 @@ def test_kyle_102728_1_pdf_extract_bom_matches_grid(tmp_path: Path):
     assert bom.method and bom.method.startswith("table_"), bom.notes
     assert not (bom.method or "").startswith("ocr_time")
     _assert_kyle_102728_1(bom)
-    from quote_core.bom_xlsx import read_lom_xlsx
-
     xlsx = pdf.with_name(f"{pdf.stem}-LOM.xlsx")
     assert xlsx.is_file(), "extract_bom must emit sibling LOM.xlsx"
-    header, sheet = read_lom_xlsx(xlsx)
-    assert header == ["QTY", "ITEM", "PART NO", "DESCRIPTION"]
-    assert len(sheet) == 51
-    assert sum(int(r["QTY"]) for r in sheet) == 97
-    assert sheet[0]["ITEM"] == "A"
-    assert sheet[0]["PART NO"] == "460200"
-    assert int(sheet[0]["QTY"]) == 1
-    bb = next(r for r in sheet if r["ITEM"] == "BB")
-    assert bb["PART NO"] == _BB_PART and int(bb["QTY"]) == 2
+    _assert_kyle_xlsx(xlsx, _KYLE_102728_1)
 
 
 def test_pdf_table_path_does_not_pad_library_subweldments(tmp_path: Path):
