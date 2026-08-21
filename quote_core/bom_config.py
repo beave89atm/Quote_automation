@@ -1,7 +1,12 @@
-"""BOM configuration / dash selection for multi-option Time drawings.
+"""BOM dash from the upload UI — which LIST OF MATERIAL qty column to read.
 
-Time weldments often print qty columns ``-4 | -3 | -2 | -1``. Quoting
-``28106-1`` means use the ``-1`` column only.
+Only a few customers (Time-style) print multiple dash qty columns on one
+drawing (``-4 | -3 | -2 | -1``, or ``1004747-1 | 1004747-2``). Most
+drawings are single-BOM with one QTY column — do not invent dash columns
+there. 102728-1 is a single qty column.
+
+The uploaded/typed value is ``bom_config``. Do not sum or mix qty
+columns. Rows whose chosen-dash qty is blank / ``-`` are omitted.
 """
 
 from __future__ import annotations
@@ -57,10 +62,10 @@ def resolve_bom_config(
     part_key: str | None = None,
 ) -> str | None:
     """
-    Resolve which BOM qty column to use.
+    Resolve the dash the job will use as ``bom_config``.
 
-    Priority: explicit form field → title → PDF name → library folder name →
-    dashed part_key.
+    The upload/typed field wins. Title / filename / folder only fill the
+    field when it was left blank — they never invent LOM qty columns.
     """
     for candidate in (
         normalize_bom_config(explicit),

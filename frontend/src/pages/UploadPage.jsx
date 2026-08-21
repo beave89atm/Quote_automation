@@ -232,13 +232,13 @@ export default function UploadPage() {
               placeholder="e.g. 28106-1 Lower Boom Weldment"
             />
             <p className="muted" style={{ margin: "0.35rem 0 0", fontSize: "0.85rem" }}>
-              For Time multi-option BOMs, put the dash in the title (28106-1) or use the
-              field below so the app reads the correct qty column.
+              Job name only. Use the dash field below to pick a LIST OF MATERIAL qty
+              column on Time-style multi-option drawings.
             </p>
           </div>
 
           <div className="field" style={{ marginTop: "1rem" }}>
-            <label htmlFor="bom-config">BOM config / dash (optional)</label>
+            <label htmlFor="bom-config">BOM dash (qty column)</label>
             <input
               id="bom-config"
               value={bomConfig}
@@ -246,9 +246,11 @@ export default function UploadPage() {
               placeholder="-1"
             />
             <p className="muted" style={{ margin: "0.35rem 0 0", fontSize: "0.85rem" }}>
-              Example: <code>-1</code> or <code>1</code> selects the <strong>-1</strong> column
-              on drawings with -4/-3/-2/-1 qty options. Also auto-detected from titles like
-              28106-1 or folders named …28106-1.
+              Which LIST OF MATERIAL qty column to read. Time-style only:{" "}
+              <code>-1</code> of -4/-3/-2/-1, or the <code>1004747-1</code> column
+              of two. Most drawings are a single QTY column — this does not invent
+              extra dash columns. Blank / <code>-</code> cells in the chosen column
+              are omitted. Columns are never summed.
             </p>
           </div>
         </>

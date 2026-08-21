@@ -1590,8 +1590,8 @@ class MaterialListLayout:
 
     @property
     def is_multi_qty(self) -> bool:
-        dashes = [c for c in self.qty_cols if _DASH_COL_RE.match(c) or c.lstrip("-").isdigit()]
-        return len(self.qty_cols) > 1 or bool(dashes)
+        """True only when the drawing printed more than one qty column."""
+        return len(self.qty_cols) > 1
 
 
 def material_list_header_seen(bom: Any) -> bool:
@@ -1654,8 +1654,17 @@ def detect_material_list_header(cells: Sequence[str]) -> MaterialListLayout | No
     if not qty_cols and not _MULTI_QTY_HEADER_RE.search(joined):
         # Still accept ITEM + PART with an implicit single qty column.
         qty_cols = ["QTY"]
+    dash_cols = [c for c in qty_cols if str(c).startswith("-")]
+    # Most drawings are single-BOM (one QTY). Do not invent -1/-2 columns
+    # from a weldment dash or a decorative ``-1`` next to QTY. Time-style
+    # multi-option tables print two or more dash / dash-PN qty headers.
+    if len(dash_cols) >= 2:
+        qty_cols = dash_cols
+    elif any(c == "QTY" for c in qty_cols):
+        qty_cols = ["QTY"]
+        pn_labeled = False
     # 102728-1 prints a lone ``-1`` above item BC — not a qty-column header.
-    if qty_cols == ["-1"] and "QTY" not in joined and "DESC" not in joined:
+    elif qty_cols == ["-1"] and "QTY" not in joined and "DESC" not in joined:
         return None
     return MaterialListLayout(
         qty_cols=qty_cols, headers=tokens, numeric_items=pn_labeled
@@ -1695,7 +1704,11 @@ def _selected_qty(
     """
     Return (qty, keep_row).
 
-    Multi-qty tables use only the dash column being quoted — never the sum.
+    ``bom_config`` is the uploaded/typed dash. On a multi-qty Time LOM it
+    selects that printed column only — never the sum, never another dash,
+    never a part-number suffix. Blank / ``-`` in the chosen column omits
+    the row. Single-BOM sheets have one QTY column; bom_config does not
+    invent extra dash columns there.
     """
     from quote_core.bom_config import normalize_bom_config
 

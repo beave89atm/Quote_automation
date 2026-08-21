@@ -14,6 +14,7 @@ from quote_core.bom import (
     extract_bom_from_ocr_time_style,
 )
 from quote_core.bom_table import (
+    detect_material_list_header,
     harvest_material_list_lines,
     harvest_ocr_row_strips,
     is_material_list_item,
@@ -609,6 +610,43 @@ def test_extract_bom_prefers_table_over_page_regex():
     assert "BB" in items
     assert "O" not in items
     assert not any(r.part_no == "99999-1" for r in bom.rows)
+
+
+def test_bom_config_reads_printed_qty_column_only():
+    """Uploaded dash selects a printed column. Single-BOM does not invent dashes."""
+    single = detect_material_list_header(["QTY", "ITEM", "PART NO.", "DESCRIPTION"])
+    assert single is not None
+    assert single.qty_cols == ["QTY"]
+    assert single.is_multi_qty is False
+    decoy = detect_material_list_header(
+        ["QTY", "-1", "ITEM", "PART NO.", "DESCRIPTION"]
+    )
+    assert decoy is not None
+    assert decoy.qty_cols == ["QTY"]
+    assert decoy.is_multi_qty is False
+
+    four = detect_material_list_header(
+        ["-4", "-3", "-2", "-1", "ITEM", "PART NO.", "DESCRIPTION"]
+    )
+    assert four is not None and four.qty_cols == ["-4", "-3", "-2", "-1"]
+    assert four.is_multi_qty is True
+
+    two = detect_material_list_header(
+        ["1004747-1", "1004747-2", "ITEM", "PART NO.", "DESCRIPTION", "NOTES"]
+    )
+    assert two is not None and two.qty_cols == ["-1", "-2"]
+    assert two.is_multi_qty is True
+    assert two.numeric_items is True
+
+    # 102728-1: one QTY column even when the job dash is -1.
+    kyle = parse_material_list_cells(
+        [["QTY", "ITEM", "PART NO.", "DESCRIPTION"]]
+        + [[str(qty), item, pn, desc] for item, qty, pn, desc in _KYLE_102728_1],
+        bom_config="-1",
+    )
+    _assert_kyle_102728_1(kyle)
+    assert kyle.method == "table_material_list"
+    assert "multi_qty" not in (kyle.method or "")
 
 
 def test_dash_columns_quoting_minus_1_does_not_use_minus_2():
