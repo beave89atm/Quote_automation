@@ -1339,9 +1339,7 @@ def _parse_material_list_on_page(
         parse_material_list_text,
         parse_material_list_words,
         pick_best_material_list,
-        text_has_material_list_grid,
     )
-    from quote_core.ocr import ocr_available
 
     hits: list[BomResult] = []
     native_text = page.get_text("text") or ""
@@ -1365,37 +1363,21 @@ def _parse_material_list_on_page(
             )
         )
 
-    header_hint = text_has_material_list_grid(native_text) or any(
-        str(w.get("text") or "").upper() in {"QTY", "ITEM", "PART", "DESCRIPTION"}
-        or str(w.get("text") or "").strip() in {"-4", "-3", "-2", "-1"}
-        for w in native_words
-    )
-    sparse_native = len(native_text.strip()) < 200
     native_best = pick_best_material_list(hits) if hits else None
     if _native_cell_table_is_complete(native_best):
         return native_best
-    if ocr_available() and (header_hint or sparse_native or continuation):
-        for clip in _material_list_ocr_clips(page):
-            ocr_words = _ocr_words_in_clip(page, clip, dpi=360, min_conf=5)
-            if ocr_words:
-                hits.append(
-                    parse_material_list_words(
-                        ocr_words, bom_config=bom_config, y_tol=6.0
-                    )
-                )
-                line_blob = " ".join(str(w.get("text") or "") for w in ocr_words)
-                hits.append(harvest_material_list_lines(line_blob, bom_config=bom_config))
-            images = _render_clip_images(page, clip, 360)
-            blobs = _ocr_strings(images, psms=(4, 6), use_letter_whitelist=False)
-            if blobs:
-                joined = "\n".join(blobs)
-                hits.append(parse_material_list_text(joined, bom_config=bom_config))
-                hits.append(harvest_material_list_lines(joined, bom_config=bom_config))
-
-    best = pick_best_material_list(hits)
-    if best is not None:
-        return best
-    return BomResult(method=None, confidence=0.0, notes=["No LIST OF MATERIAL on page"])
+    # Qty-OCR short-circuit. Printed cells already returned above. Do not
+    # whole-clip OCR/harvest: that is live 791587b (51 PN / 30 pcs, A qty 0,
+    # unread=0 not 1). Caller reads each QTY cell on the right-side grid —
+    # pipe QTY|ITEM|PN first, isolated single-char fallback only.
+    return BomResult(
+        method=None,
+        confidence=0.0,
+        notes=[
+            "LIST OF MATERIAL — qty-OCR short-circuit: cell-by-cell QTY "
+            "(pipe first; isolated single-char fallback only)"
+        ],
+    )
 
 
 def extract_bom_from_ocr_time_style(

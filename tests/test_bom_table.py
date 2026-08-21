@@ -7,6 +7,8 @@ from pathlib import Path
 from quote_core.bom import (
     BomResult,
     BomRow,
+    _native_cell_table_is_complete,
+    _parse_material_list_on_page,
     _parse_qty_item_part_hits,
     _vote_bom_rows,
     extract_bom,
@@ -804,6 +806,42 @@ def test_791587b_live_qty_column_unread_is_takeoff_fail():
     best = pick_best_material_list([live, recovered])
     assert best.piece_count == 97
     _assert_kyle_102728_1(best)
+
+
+def test_qty_ocr_short_circuit_when_native_qty_unread():
+    """791587b shape: 51/30 is not complete. Do not whole-clip harvest it."""
+    unread = BomResult(
+        rows=[
+            BomRow(
+                item=item,
+                qty=0 if item not in _791587B_EXACT_QTY2 else 2,
+                part_no=pn,
+                description=desc,
+            )
+            for item, _qty, pn, desc in _KYLE_102728_1
+        ],
+        method="table_cells",
+        confidence=0.9,
+    )
+    assert unread.part_number_count == 51
+    assert sum(int(r.qty or 0) for r in unread.rows) == 16
+    assert _native_cell_table_is_complete(unread) is False
+
+
+def test_qty_ocr_short_circuit_skips_whole_clip_on_sparse_page(tmp_path: Path):
+    import fitz
+
+    pdf = tmp_path / "sparse-lom.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((40, 40), "LIST OF MATERIAL")
+    doc.save(pdf)
+    doc.close()
+    doc = fitz.open(pdf)
+    bom = _parse_material_list_on_page(doc[0])
+    doc.close()
+    assert not bom.rows
+    assert any("qty-OCR short-circuit" in n for n in bom.notes)
 
 
 def test_fifty_one_pns_sixty_five_pcs_is_not_kyle_done():
