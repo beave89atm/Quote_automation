@@ -33,7 +33,11 @@ def quote_online_update(
             row["Value"] = str(row["Value"])
         body.append(row)
     resp = client.request("PUT", "v1/quoteOnline/update", json=body)
-    return resp.status_code < 400 and str(resp.text).strip().lower() in {
+    try:
+        status = int(getattr(resp, "status_code", 500) or 500)
+    except (TypeError, ValueError):
+        return False
+    return status < 400 and str(getattr(resp, "text", "")).strip().lower() in {
         "true",
         '"true"',
     }

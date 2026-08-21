@@ -28,8 +28,12 @@ from .component_ops import ensure_purchased_components, find_purchased_part_keys
 from .finalize_ops import finalize_quote_ops
 from .imperial_ops import ensure_imperial_item_units
 from .org_ops import apply_quote_organization
+from .linear_ops import bind_linear_products
 from .profile_ops import (
+    addplate_bind_and_restore_profile,
+    cad_plate_ready,
     ensure_laser_profile_ops,
+    _is_cad_plate,
 )
 from .qty_ops import apply_bom_quantities, refresh_bom_rows_for_push
 from .quotes import QuoteService
@@ -100,28 +104,12 @@ def existing_quote_action(detail: dict[str, Any] | None) -> str:
     """
     Decide what to do when a quote with this number already exists.
 
-    ``reuse`` — update the existing row (api-user / empty draft).
-    ``refuse`` — do not create a duplicate and do not overwrite a live human quote.
+    Always ``refuse`` — never edit or reuse an existing quote, including empty
+    api-user drafts. Only ``create`` when no quote row is present.
     """
     if not isinstance(detail, dict) or not detail.get("ID"):
         return "create"
-    entered = _entered_by_name(detail)
-    items = list(detail.get("ItemList") or [])
-    try:
-        item_count = int(detail.get("ItemCount") or 0)
-    except (TypeError, ValueError):
-        item_count = 0
-    has_items = bool(items) or item_count > 0
-    status = str(detail.get("QuoteStatus") or "").strip().upper()
-
-    if entered and not _is_automation_user(entered):
-        return "refuse"
-    if _is_automation_user(entered):
-        return "reuse"
-    # Unknown author: refuse populated live quotes; reuse empty / OPEN-DRAFT leftovers.
-    if has_items and status not in {"", "OPEN-DRAFT"}:
-        return "refuse"
-    return "reuse"
+    return "refuse"
 
 
 def _pn_quote_number(part_key: str) -> str:
@@ -313,10 +301,21 @@ def _default_machine() -> str:
     return os.getenv("SECTURAFAB_DEFAULT_MACHINE", "Laser").strip() or "Laser"
 
 
+def _shop_material(raw: str | None, default: str = "A36") -> str:
+    """A36 only when the drawing names no grade. Never fall back to A569."""
+    text = str(raw or "").strip()
+    if not text:
+        return default
+    compact = text.split()[0].upper().replace("-", "").replace(" ", "")
+    if compact in {"A569", "SAEA569", "CQ", "COMMERCIALQUALITY"}:
+        return default
+    return text.split()[0]
+
+
 def _default_material(takeoff: dict[str, Any] | None) -> str:
     env = os.getenv("SECTURAFAB_DEFAULT_MATERIAL", "").strip()
     if env:
-        return env
+        return _shop_material(env)
     drivers = (takeoff or {}).get("fitup_drivers") or {}
     weight = drivers.get("weight_calc") or {}
     key = str(weight.get("material_key") or "").strip().lower()
@@ -326,8 +325,7 @@ def _default_material(takeoff: dict[str, Any] | None) -> str:
     if key in {"aluminum", "aluminium"} or "aluminum" in label.lower():
         return "A36"
     if label:
-        # SecturaFAB grades are typically bare codes like A36 / A572.
-        return label.split()[0]
+        return _shop_material(label.split()[0])
     return "A36"
 
 
@@ -359,10 +357,10 @@ def _resolve_push_material_thickness(
             pm = None
         if pm:
             if pm.material:
-                material = pm.material
+                material = _shop_material(pm.material)
                 known_from_pdf = True
                 notes.append(
-                    f"Material from drawing: {pm.material} ({pm.source})"
+                    f"Material from drawing: {material} ({pm.source})"
                 )
             if pm.thickness_in is not None:
                 thickness = _sanitize_thickness_param(pm.thickness_param() or pm.thickness_in)
@@ -1066,7 +1064,6 @@ class SecturaFabPushService:
 
             quote_request_id = None
             created_new_quote = False
-            reuse_existing_items = False
             # Time → Time Manufacturing; TYCROP → Propell; Cummins Clean Fuel → …
             organization_name = detect_organization(
                 pdf_path=job_pdf,
@@ -1092,13 +1089,13 @@ class SecturaFabPushService:
                     str(existing["ID"]), seed=existing
                 )
                 action = existing_quote_action(existing_detail)
-                if action == "refuse":
+                if action != "create":
                     entered = _entered_by_name(existing_detail) or "another user"
                     status = str(existing_detail.get("QuoteStatus") or "?")
                     msg = (
                         f"Quote {quote_number} already exists "
                         f"(EnteredBy {entered}, status {status}) — "
-                        f"refused to create a duplicate or overwrite a live quote"
+                        f"refused to create a duplicate or edit an existing quote"
                     )
                     notes.append(msg)
                     return PushResult(
@@ -1113,24 +1110,8 @@ class SecturaFabPushService:
                         status="failed",
                         last_error=msg,
                     )
-                quote_id = str(existing_detail.get("ID") or existing["ID"])
-                existing_items = list(existing_detail.get("ItemList") or [])
-                try:
-                    existing_count = int(existing_detail.get("ItemCount") or 0)
-                except (TypeError, ValueError):
-                    existing_count = 0
-                reuse_existing_items = bool(existing_items) or existing_count > 0
-                notes.append(
-                    f"Reusing existing SecturaFAB quote {quote_number} ({quote_id}"
-                    + (
-                        "; skipping CAD re-import"
-                        if reuse_existing_items
-                        else "; empty — will import"
-                    )
-                    + ")"
-                )
 
-            if drawings and not reuse_existing_items:
+            if drawings:
 
                 def _createfile_progress(info: dict[str, Any]) -> None:
                     nonlocal createfile_attempts
@@ -1197,37 +1178,7 @@ class SecturaFabPushService:
 
             used_step = False
             used_pdf_shell = False
-            if reuse_existing_items:
-                notes.append(
-                    "Skipped STEP/PDF re-import on existing quote — "
-                    "re-applying Profile / Weld / BOM qty without UpdateItem_Part"
-                )
-                notes.extend(
-                    apply_bom_quantities(
-                        self.client,
-                        quote_id,
-                        bom_rows=bom_rows,
-                        part_key=part_key,
-                    )
-                )
-                notes.extend(
-                    ensure_laser_profile_ops(
-                        self.client,
-                        quote_id,
-                        material=material,
-                        thickness=thickness,
-                    )
-                )
-                notes.extend(
-                    apply_bom_quantities(
-                        self.client,
-                        quote_id,
-                        bom_rows=bom_rows,
-                        part_key=part_key,
-                    )
-                )
-                notes.extend(ensure_imperial_item_units(self.client, quote_id))
-            elif cad:
+            if cad:
                 try:
                     self.quick_add_cad(
                         quote_id=quote_id,
@@ -1314,9 +1265,11 @@ class SecturaFabPushService:
                         part_key=part_key,
                     )
                 )
-                # quickAddCAD computes cut time in DataPart but only attaches Bend.
+                notes.extend(bind_linear_products(self.client, quote_id))
+                # addplate binds MaterialCost then immediately restores Profile.
+                # Never stop after addplate — it wipes the 5-pack.
                 notes.extend(
-                    ensure_laser_profile_ops(
+                    addplate_bind_and_restore_profile(
                         self.client,
                         quote_id,
                         material=material,
@@ -1417,12 +1370,7 @@ class SecturaFabPushService:
 
             # Late CAD recalcs can wipe Profile/Weld/Qty after first attach — verify
             # and re-apply until stable (no more UpdateItem_Part here).
-            if (
-                used_step
-                or used_pdf_shell
-                or reuse_existing_items
-                or (bom_rows and library.get("folder"))
-            ):
+            if used_step or used_pdf_shell or (bom_rows and library.get("folder")):
                 try:
                     notes.extend(
                         finalize_quote_ops(
@@ -1447,13 +1395,17 @@ class SecturaFabPushService:
                     else:
                         raise
 
-            # Profile last: finalize / settle POSTs have wiped ops more than once.
-            if (
-                used_pdf_shell
-                or used_step
-                or reuse_existing_items
-                or (bom_rows and library.get("folder"))
-            ):
+            # Profile last: addplate then immediately restore the 5-pack.
+            if used_pdf_shell or used_step or (bom_rows and library.get("folder")):
+                notes.extend(bind_linear_products(self.client, quote_id))
+                notes.extend(
+                    addplate_bind_and_restore_profile(
+                        self.client,
+                        quote_id,
+                        material=material,
+                        thickness=thickness,
+                    )
+                )
                 notes.extend(
                     ensure_laser_profile_ops(
                         self.client,
@@ -1481,6 +1433,28 @@ class SecturaFabPushService:
                     f"Warning: quote still has RevNumber={detail.get('RevNumber')!r} "
                     f"(display {and_rev})"
                 )
+
+            cad_incomplete = [
+                it
+                for it in item_list
+                if _is_cad_plate(it) and not cad_plate_ready(it)
+            ]
+            for it in cad_incomplete:
+                ops = [
+                    o
+                    for o in (it.get("OperationCostList") or [])
+                    if o.get("OperationName") == "Profile"
+                ]
+                if not ops:
+                    notes.append(
+                        f"WARNING: Cad item left at 0 ops after push "
+                        f"({(it.get('Description') or '')[:40]!r})"
+                    )
+                else:
+                    notes.append(
+                        f"WARNING: Cad item missing MaterialCost or Profile 5-pack "
+                        f"({(it.get('Description') or '')[:40]!r})"
+                    )
 
             ready = not any(n.startswith("WARNING:") for n in notes)
 

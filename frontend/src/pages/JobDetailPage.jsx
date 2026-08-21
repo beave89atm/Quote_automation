@@ -738,7 +738,7 @@ export default function JobDetailPage() {
           onClick={pushSecturaFab}
           title={
             pushDisabledReason(job, busy) ||
-            "Push or update the SecturaFAB quote using the bare part number (reuses an existing quote with that number)"
+            "Push a new SecturaFAB quote using the bare part number (refuses if that number already exists)"
           }
         >
           Push to SecturaFAB

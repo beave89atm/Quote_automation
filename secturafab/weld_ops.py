@@ -276,25 +276,15 @@ def pick_weld_target_item(
     *,
     part_key: str | None = None,
 ) -> dict[str, Any] | None:
-    """Prefer assembly line; else item matching part_key; else first item."""
+    """Weld only on an assembly root (ProductType 300). Never on Cad/plate."""
+    del part_key  # assemblies only — do not fall back to a matching Cad line
     if not items:
         return None
     for it in items:
         pt = it.get("ProductType")
         if pt in (300, "300", "assembly") or it.get("IsAssembly"):
             return it
-    key = (part_key or "").strip()
-    if key.upper().startswith("PN "):
-        key = key[3:].strip()
-    if key:
-        for it in items:
-            if _desc_token(str(it.get("Description") or "")) == key:
-                return it
-        # softer: description startswith
-        for it in items:
-            if str(it.get("Description") or "").startswith(key):
-                return it
-    return items[0]
+    return None
 
 
 def build_weld_ops(
@@ -367,7 +357,7 @@ def ensure_weld_ops(
     items = list(detail.get("ItemList") or [])
     target = pick_weld_target_item(items, part_key=part_key)
     if not target or not target.get("ID"):
-        return ["No quote item found to attach Weld ops"]
+        return ["No assembly item for Weld ops — skipped (Cad/plate only)"]
 
     existing = list(target.get("OperationCostList") or [])
     has_weld = any(o.get("OperationName") == "Weld" for o in existing)

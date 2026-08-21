@@ -8,6 +8,7 @@ from typing import Any
 from .client import SecturaFabClient
 from .imperial_ops import ensure_imperial_item_units
 from .profile_ops import (
+    addplate_bind_and_restore_profile,
     count_profile_items,
     ensure_laser_profile_ops,
     wait_for_quote_settle,
@@ -149,6 +150,11 @@ def finalize_quote_ops(
                 )
             )
         if need_profile or need_qty:
+            notes.extend(
+                addplate_bind_and_restore_profile(
+                    client, quote_id, material=material, thickness=thickness
+                )
+            )
             notes.extend(
                 ensure_laser_profile_ops(
                     client, quote_id, material=material, thickness=thickness

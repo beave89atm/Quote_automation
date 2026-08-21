@@ -151,7 +151,7 @@ def test_quote_number_lookup_includes_legacy_pn_prefix():
     assert "PN 28106-1" in names
 
 
-def test_existing_quote_action_reuses_api_user_and_refuses_human():
+def test_existing_quote_action_never_reuses_including_api_drafts():
     assert (
         existing_quote_action(
             {
@@ -188,11 +188,13 @@ def test_existing_quote_action_reuses_api_user_and_refuses_human():
                 "ItemList": [],
             }
         )
-        == "reuse"
+        == "refuse"
     )
+    assert existing_quote_action(None) == "create"
+    assert existing_quote_action({}) == "create"
 
 
-def test_repush_reuses_empty_api_quote_instead_of_creating(tmp_path: Path):
+def test_repush_refuses_empty_api_quote_instead_of_creating(tmp_path: Path):
     pdf = tmp_path / "28106-1.pdf"
     stp = tmp_path / "28106-1.STEP"
     pdf.write_bytes(b"%PDF")
@@ -258,13 +260,13 @@ def test_repush_reuses_empty_api_quote_instead_of_creating(tmp_path: Path):
             times={},
             job_id=41,
         )
-    assert result.ok
+    assert result.ok is False
     assert result.created_new_quote is False
     assert result.quote_id == "api-id"
-    assert result.quote_number == "28106-1"
+    assert "already exists" in (result.error or "")
     create_q.assert_not_called()
-    up_c.assert_called_once()
-    up_d.assert_called_once()
+    up_c.assert_not_called()
+    up_d.assert_not_called()
 
 
 def test_collect_related_pdf_from_sibling_folder(tmp_path: Path):
@@ -465,6 +467,10 @@ def test_build_weld_ops_from_cursor_minutes():
         {"ID": "b", "Description": "73476004", "ProductType": 300},
     ]
     assert pick_weld_target_item(items, part_key="73476004")["ID"] == "b"
+    assert pick_weld_target_item(
+        [{"ID": "a", "Description": "plate", "ProductType": 100}],
+        part_key="plate",
+    ) is None
 
 
 def test_extract_bom_rows_and_qty_map():
@@ -1067,3 +1073,141 @@ def test_push_skips_weld_ops_when_takeoff_has_no_symbols(tmp_path: Path):
     weld.assert_called()
     assert weld.call_args.kwargs.get("takeoff") is not None
     assert any("no weld symbols" in n.lower() for n in (result.notes or []))
+
+
+def test_default_material_never_a569():
+    from secturafab.push import _shop_material
+
+    assert _shop_material("A569") == "A36"
+    assert _shop_material("A572") == "A572"
+    assert _shop_material(None) == "A36"
+    assert _default_material(
+        {"fitup_drivers": {"weight_calc": {"material_label": "A569 HR"}}}
+    ) == "A36"
+
+
+def test_cad_plate_ready_addplate_then_done_fails():
+    """addplate fills MaterialCost but wipes ops — that state is not done."""
+    from secturafab.profile_ops import _build_profile_ops, cad_plate_ready
+
+    wiped = {
+        "ID": "c1",
+        "ProductType": 100,
+        "Description": "102728-1 plate",
+        "MaterialCost": 12.5,
+        "Length": 10,
+        "Width": 8,
+        "Thickness": 0.25,
+        "OperationCostList": [],
+    }
+    assert cad_plate_ready(wiped) is False
+
+    ops = _build_profile_ops("c1", 0.0, cad_count=1, item=wiped)
+    assert [o["CalculatorName"] for o in ops] == [
+        "Laser",
+        "Drafting",
+        "Laser-Setup",
+        "Sheet Loading",
+        "Deburr",
+    ]
+    assert ops[0]["UnitTime"] == 0.0  # do not invent laser minutes
+    assert all(float(o.get("UnitPrice") or 0) == 0 for o in ops)
+    complete = {**wiped, "OperationCostList": ops}
+    assert cad_plate_ready(complete) is True
+
+
+def test_addplate_then_restore_profile_never_leaves_zero_ops():
+    from secturafab.profile_ops import addplate_bind_and_restore_profile
+
+    seed = {
+        "ID": "c1",
+        "ProductType": 100,
+        "Description": "102728-1 plate",
+        "Length": 18.0,
+        "Width": 6.0,
+        "Thickness": 0.25,
+        "Quantity": 1,
+        "MaterialCost": 0,
+        "OperationCostList": [
+            {"OperationName": "Profile", "CalculatorName": "Laser"},
+        ],
+    }
+    after_addplate = {
+        **seed,
+        "MaterialCost": 14.2,
+        "OperationCostList": [],  # wipe
+    }
+    restored_ops = [
+        {"OperationName": "Profile", "CalculatorName": name}
+        for name in ("Laser", "Drafting", "Laser-Setup", "Sheet Loading", "Deburr")
+    ]
+    after_restore = {**after_addplate, "OperationCostList": restored_ops}
+
+    client = MagicMock()
+    client.get_json.side_effect = [
+        {"ItemList": [dict(seed)]},  # initial
+        {"ItemList": [dict(after_addplate)]},  # after addplate
+        {"ItemList": [dict(after_restore)]},  # persist verify
+        {"ItemList": [dict(after_restore)]},  # final check
+    ]
+    addp = MagicMock()
+    addp.status_code = 200
+    upd = MagicMock()
+    upd.status_code = 200
+    upd.text = "true"
+    client.request.return_value = addp
+
+    from unittest.mock import patch as _patch
+
+    with _patch(
+        "secturafab.profile_ops.quote_online_update", return_value=True
+    ):
+        notes = addplate_bind_and_restore_profile(
+            client, "qid", material="A36", thickness="0.25"
+        )
+
+    add_calls = [
+        c
+        for c in client.request.call_args_list
+        if len(c.args) >= 2 and "addplate" in str(c.args[1])
+    ]
+    assert add_calls, notes
+    params = add_calls[0].kwargs.get("params") or {}
+    assert params.get("itemID") == "c1"
+    assert params.get("length") == 18.0
+    assert params.get("width") == 6.0
+    assert any("restored Profile 5-pack" in n for n in notes)
+    assert not any("left at 0 ops" in n for n in notes)
+
+
+def test_linear_bind_uses_ids_not_product_name():
+    from secturafab.linear_ops import bind_linear_products
+
+    client = MagicMock()
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "lin1",
+                "IsLinear": True,
+                "Description": "15863 PIVOT TUBE",
+                "ProductID": "prod-1",
+                "ProductConfigID": "cfg-1",
+                "SKU": "DOM-2.00x0.25",
+                "ProductName": "should-not-be-sent",
+            }
+        ]
+    }
+    ok = MagicMock()
+    ok.status_code = 200
+    client.request.return_value = ok
+
+    notes = bind_linear_products(client, "qid")
+    assert client.request.call_count == 1
+    path = client.request.call_args.args[1]
+    assert "addLinear" in path
+    params = client.request.call_args.kwargs["params"]
+    assert params["productID"] == "prod-1"
+    assert params["productConfigID"] == "cfg-1"
+    assert params["sku"] == "DOM-2.00x0.25"
+    assert "productName" not in {k.lower() for k in params}
+    assert any("addLinear bound" in n for n in notes)
