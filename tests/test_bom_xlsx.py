@@ -207,6 +207,88 @@ def test_child_lom_tab_is_not_merged_into_parent_takeoff(tmp_path: Path):
     assert sum(int(r["qty"]) for r in tabs[0][1]) == 97
 
 
+def test_existing_job_folder_xlsx_is_quote_without_reocr(tmp_path: Path, monkeypatch):
+    """Locked: sibling / job-key LOM.xlsx is the quote. Do not re-OCR over it."""
+    from quote_core.bom_xlsx import find_existing_lom_xlsx
+
+    pdf = tmp_path / "Time 102728- Weldment.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%\n")
+    path = write_lom_xlsx(tmp_path / "102728-1-LOM.xlsx", _kyle_rows())
+    assert find_existing_lom_xlsx(pdf) == path
+
+    def fail_ocr(**_kwargs):
+        raise AssertionError("must not re-OCR when LOM.xlsx exists")
+
+    monkeypatch.setattr("quote_core.bom.extract_bom_from_ocr_time_style", fail_ocr)
+    bom = extract_bom(pdf_path=pdf)
+    _assert_kyle_102728_1(bom)
+    assert bom.to_dict()["source"] == "lom_xlsx"
+    assert bom.lom_xlsx == "102728-1-LOM.xlsx"
+    assert any("did not re-OCR" in n for n in bom.notes)
+    a = next(r for r in bom.rows if r.item == "A")
+    assert a.qty == 1 and a.part_no == "460200"
+    bb = next(r for r in bom.rows if r.item == "BB")
+    assert bb.qty == 2 and bb.part_no == "102727-4"
+    assert int(bom.piece_count) == 97
+
+
+def test_desktop_xlsx_is_read_and_not_overwritten(tmp_path: Path, monkeypatch):
+    """Desktop 102728-1-LOM.xlsx is confirmed 51/97. Never overwrite it."""
+    from quote_core.bom_xlsx import (
+        find_existing_lom_xlsx,
+        is_desktop_lom_path,
+        write_lom_xlsx_for_bom,
+    )
+
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    confirmed = write_lom_xlsx(desktop / "102728-1-LOM.xlsx", _kyle_rows())
+    before = confirmed.read_bytes()
+    monkeypatch.setattr("quote_core.bom_xlsx._desktop_dirs", lambda: [desktop])
+
+    job = tmp_path / "job"
+    job.mkdir()
+    pdf = job / "Time 102728- Weldment.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%\n")
+
+    assert is_desktop_lom_path(confirmed) is True
+    assert find_existing_lom_xlsx(pdf) == confirmed
+
+    stale = BomResult(
+        rows=[
+            BomRow(item="A", qty=0, part_no="460200", description="RAIL"),
+            BomRow(item="BB", qty=2, part_no="102727-4", description="TUBE"),
+        ]
+    )
+    written = write_lom_xlsx_for_bom(pdf, stale)
+    assert written == confirmed
+    assert confirmed.read_bytes() == before
+
+    quoted = quote_bom_from_drawing(pdf_path=pdf)
+    _assert_kyle_102728_1(quoted)
+    assert quoted.to_dict()["source"] == "lom_xlsx"
+    assert quoted.lom_xlsx == "102728-1-LOM.xlsx"
+    assert confirmed.read_bytes() == before
+    sibling = pdf.with_name(f"{pdf.stem}-LOM.xlsx")
+    assert not sibling.is_file()
+
+
+def test_unread_qty_in_existing_xlsx_stays_zero(tmp_path: Path):
+    pdf = tmp_path / "102728- Weldment.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%\n")
+    rows = [
+        BomRow(item="A", qty=0, part_no="460200", description="RAIL"),
+        BomRow(item="BB", qty=2, part_no="102727-4", description="TUBE, ROUND"),
+    ]
+    write_lom_xlsx(tmp_path / "102728-1-LOM.xlsx", rows)
+    bom = quote_bom_from_drawing(pdf_path=pdf)
+    by_item = {r.item: r for r in bom.rows}
+    assert by_item["A"].qty == 0
+    assert by_item["A"].qty != 1
+    assert by_item["BB"].qty == 2
+    assert bom.to_dict()["source"] == "lom_xlsx"
+
+
 def test_piece_part_without_lom_does_not_invent_bom_or_xlsx(tmp_path: Path):
     """No LIST OF MATERIAL → one-part quote. Do not invent a BOM or LOM.xlsx."""
     import fitz

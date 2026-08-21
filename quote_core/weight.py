@@ -400,7 +400,7 @@ def estimate_assembly_weight(
     Otherwise calculate: net sq-in × thickness × grade (plates), bbox fill (open sections).
     OCR Time-style BOMs may supply piece counts without unit weights.
     """
-    from quote_core.bom import bom_from_lom_xlsx, extract_bom
+    from quote_core.bom import bom_from_lom_xlsx, extract_bom, quote_from_existing_lom_xlsx
 
     cfg = load_materials(str(materials_path) if materials_path else None)
     raw_pdf = pdf_text if pdf_text is not None else _read_pdf_text(pdf_path)
@@ -421,20 +421,24 @@ def estimate_assembly_weight(
         plate_psf = {}
     note_thicknesses = extract_plate_thicknesses_in(notes or [])
 
-    # Clip writes {stem}-LOM.xlsx. The quote is that workbook — no second parser.
-    clipped = extract_bom(
-        pdf_path=pdf_path,
-        text=raw_pdf or None,
-        library_folder=library_folder,
-        related_pdf_names=related_pdf_names,
-        bom_config=bom_config,
-    )
+    # Existing LOM.xlsx is the quote. Do not re-OCR over Desktop / job sheets.
+    existing = quote_from_existing_lom_xlsx(pdf_path)
+    if existing is not None:
+        clipped = existing
+    else:
+        clipped = extract_bom(
+            pdf_path=pdf_path,
+            text=raw_pdf or None,
+            library_folder=library_folder,
+            related_pdf_names=related_pdf_names,
+            bom_config=bom_config,
+        )
     bom = clipped
     if pdf_path:
-        from quote_core.bom_xlsx import bom_tabs_for_import, lom_xlsx_path_for_pdf
+        from quote_core.bom_xlsx import bom_tabs_for_import, find_existing_lom_xlsx
 
-        xlsx = lom_xlsx_path_for_pdf(pdf_path)
-        if xlsx.is_file():
+        xlsx = find_existing_lom_xlsx(pdf_path)
+        if xlsx is not None:
             bom = bom_from_lom_xlsx(xlsx, prior=clipped)
             tabs = bom_tabs_for_import(xlsx)
             if tabs:

@@ -5,6 +5,7 @@ Minimal OOXML via zipfile — no openpyxl. Same four columns as 102728-1-LOM.xls
 
 from __future__ import annotations
 
+import os
 import re
 import zipfile
 from pathlib import Path
@@ -60,6 +61,106 @@ def lom_xlsx_name_for_pdf(pdf_path: Path | str) -> str:
 def lom_xlsx_path_for_pdf(pdf_path: Path | str) -> Path:
     path = Path(pdf_path)
     return path.with_name(lom_xlsx_name_for_pdf(path))
+
+
+def lom_xlsx_names_for_pdf(pdf_path: Path | str) -> list[str]:
+    """``Time 102728- Weldment.pdf`` → stem-LOM.xlsx and ``102728-1-LOM.xlsx``."""
+    path = Path(pdf_path)
+    names = [lom_xlsx_name_for_pdf(path)]
+    from quote_core.bom_table import job_weldment_key_from_path
+
+    key = job_weldment_key_from_path(path)
+    if key:
+        names.append(f"{key}-1{LOM_SUFFIX}")
+        names.append(f"{key}{LOM_SUFFIX}")
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def _desktop_dirs() -> list[Path]:
+    homes: list[Path] = []
+    for key in ("USERPROFILE", "HOME"):
+        raw = os.environ.get(key)
+        if raw:
+            homes.append(Path(raw))
+    homes.append(Path.home())
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for home in homes:
+        for rel in (Path("Desktop"), Path("OneDrive") / "Desktop"):
+            folder = home / rel
+            if folder in seen:
+                continue
+            seen.add(folder)
+            out.append(folder)
+    return out
+
+
+def is_desktop_lom_path(path: Path | str) -> bool:
+    """Never write Kyle's Desktop sheets (102728-1-LOM.xlsx)."""
+    dest = Path(path)
+    try:
+        resolved = dest.resolve()
+    except OSError:
+        resolved = dest
+    if dest.parent.name.lower() == "desktop":
+        return True
+    for folder in _desktop_dirs():
+        try:
+            root = folder.resolve()
+        except OSError:
+            root = folder
+        try:
+            if resolved.is_relative_to(root):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _workbook_has_lom_rows(path: Path) -> bool:
+    try:
+        _header, data = read_lom_xlsx(path)
+    except Exception:  # noqa: BLE001
+        return False
+    return any(str(rec.get("PART NO") or "").strip() for rec in data)
+
+
+def find_existing_lom_xlsx(pdf_path: Path | str | None) -> Path | None:
+    """Desktop / job folder / prior extract. Do not invent a workbook."""
+    if not pdf_path:
+        return None
+    pdf = Path(pdf_path)
+    names = lom_xlsx_names_for_pdf(pdf)
+    stem_name = lom_xlsx_name_for_pdf(pdf)
+    key_names = [n for n in names if n != stem_name]
+    desktop = [d for d in _desktop_dirs() if d.is_dir()]
+    ordered: list[Path] = []
+    # Confirmed Desktop ``102728-1-LOM.xlsx`` beats a TEMP sibling from OCR.
+    for folder in desktop:
+        ordered.extend(folder / name for name in key_names)
+    if pdf.parent:
+        ordered.extend(pdf.parent / name for name in names)
+    for folder in desktop:
+        ordered.append(folder / stem_name)
+    seen: set[Path] = set()
+    for cand in ordered:
+        try:
+            key = cand.resolve()
+        except OSError:
+            key = cand
+        if key in seen:
+            continue
+        seen.add(key)
+        if cand.is_file() and _workbook_has_lom_rows(cand):
+            return cand
+    return None
 
 
 def _xml_text(value: Any) -> str:
@@ -362,6 +463,12 @@ def takeoff_has_lom_clip(takeoff: dict[str, Any] | None) -> bool:
 def write_lom_xlsx_for_bom(pdf_path: Path | str | None, bom: Any) -> Path | None:
     if not pdf_path:
         return None
+    existing = find_existing_lom_xlsx(pdf_path)
+    if existing:
+        return existing
+    dest = lom_xlsx_path_for_pdf(pdf_path)
+    if dest.is_file() or is_desktop_lom_path(dest):
+        return dest if dest.is_file() else None
     if not bom_is_lom_clip(bom):
         return None
     rows = getattr(bom, "rows", None)
@@ -369,7 +476,7 @@ def write_lom_xlsx_for_bom(pdf_path: Path | str | None, bom: Any) -> Path | None
         rows = bom.get("rows") or bom.get("bom_rows")
     if not rows:
         return None
-    return write_lom_xlsx(lom_xlsx_path_for_pdf(pdf_path), rows)
+    return write_lom_xlsx(dest, rows)
 
 
 def rows_from_takeoff(takeoff: dict[str, Any] | None) -> list[Any]:
@@ -392,12 +499,20 @@ def rows_from_takeoff(takeoff: dict[str, Any] | None) -> list[Any]:
 
 
 def write_lom_xlsx_for_job(pdf_path: Path | str | None, takeoff: dict[str, Any] | None) -> Path | None:
-    """Write only when a LIST OF MATERIAL was clipped. No LOM → no xlsx."""
+    """Write only when a LIST OF MATERIAL was clipped. No LOM → no xlsx.
+
+    An existing Desktop / job-folder workbook is the quote. Do not overwrite.
+    """
     if not pdf_path:
         return None
+    existing = find_existing_lom_xlsx(pdf_path)
+    if existing:
+        return existing
     dest = lom_xlsx_path_for_pdf(pdf_path)
     if dest.is_file():
         return dest
+    if is_desktop_lom_path(dest):
+        return None
     if not takeoff_has_lom_clip(takeoff):
         return None
     rows = rows_from_takeoff(takeoff)

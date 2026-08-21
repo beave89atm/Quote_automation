@@ -1481,14 +1481,18 @@ def extract_bom(
        optional ``table_image`` / sibling ``bom_table_crop.png``)
 
     Time (and similar) LOM is **cell-grid only** — no whole-page OCR/regex
-    and no library-folder padding. When ``pdf_path`` is set and a LIST OF
-    MATERIAL grid is found, write ``{stem}-LOM.xlsx`` next to the PDF, then
-    **re-read that sheet** as the quote BOM. Weldment/assembly descriptions
-    recurse into Customer Drawings; each child's LOM is an extra tab on the
-    parent workbook — child rows are **not** merged onto the parent tab. No
-    LOM on the sheet → one-part quote, no LOM.xlsx, do not invent a BOM.
+    and no library-folder padding. If a LOM.xlsx already exists for the job
+    (Desktop / job folder / prior extract), **read that file** and do not
+    re-OCR over it. Otherwise clip a LIST OF MATERIAL and write
+    ``{stem}-LOM.xlsx`` next to the PDF (never onto Desktop). Nested
+    weldment tabs stay on the same workbook — not merged. No LOM →
+    one-part quote, no invented table.
     """
     notes: list[str] = []
+    if pdf_path:
+        existing = quote_from_existing_lom_xlsx(pdf_path)
+        if existing is not None:
+            return existing
 
     def finish(result: BomResult) -> BomResult:
         return _with_lom_xlsx(
@@ -1582,6 +1586,31 @@ def extract_bom(
     )
 
 
+def quote_from_existing_lom_xlsx(
+    pdf_path: Path | str | None,
+    *,
+    prior: BomResult | None = None,
+) -> BomResult | None:
+    """Locked: existing LOM.xlsx is the quote. Do not re-OCR or overwrite."""
+    from quote_core.bom_xlsx import find_existing_lom_xlsx, list_lom_sheet_names
+
+    existing = find_existing_lom_xlsx(pdf_path)
+    if existing is None:
+        return None
+    sourced = bom_from_lom_xlsx(existing, prior=prior)
+    if not sourced.rows:
+        return None
+    note = f"Quote read existing {existing.name} — did not re-OCR"
+    if note not in sourced.notes:
+        sourced.notes.append(note)
+    tabs = list_lom_sheet_names(existing)
+    if tabs:
+        tab_note = f"Quote read {existing.name} tabs: {', '.join(tabs)}"
+        if tab_note not in sourced.notes:
+            sourced.notes.append(tab_note)
+    return sourced
+
+
 def quote_bom_from_drawing(
     pdf_path: Path | str | None = None,
     *,
@@ -1591,13 +1620,16 @@ def quote_bom_from_drawing(
     bom_config: str | None = None,
     table_image: Path | str | None = None,
 ) -> BomResult:
-    """Clip LOM → write LOM.xlsx → the quote is that workbook.
+    """Existing LOM.xlsx is the quote. Else clip → write → read that workbook.
 
     Parent takeoff is the first sheet only. Nested weldment/assembly
     descriptions stay as extra tabs on the same file — they are not
     merged into the quote rows. No LIST OF MATERIAL → piece part; do
-    not invent a table or LOM.xlsx.
+    not invent a table or LOM.xlsx. Never overwrite Desktop sheets.
     """
+    existing = quote_from_existing_lom_xlsx(pdf_path)
+    if existing is not None:
+        return existing
     clipped = extract_bom(
         pdf_path=pdf_path,
         text=text,
@@ -1686,12 +1718,24 @@ def _with_lom_xlsx(
     nested_seen: set[str] | None = None,
     nested_depth: int = 0,
 ) -> BomResult:
-    """Clip-to-Excel only for a real LIST OF MATERIAL. Piece parts stay one-part."""
+    """Clip-to-Excel only for a real LIST OF MATERIAL. Piece parts stay one-part.
+
+    An existing Desktop / job-folder workbook is the quote. Do not overwrite.
+    """
     if not pdf_path or not bom.rows:
         return bom
+    existing = quote_from_existing_lom_xlsx(pdf_path, prior=bom)
+    if existing is not None:
+        return existing
     try:
-        from quote_core.bom_xlsx import write_lom_xlsx_for_bom
+        from quote_core.bom_xlsx import is_desktop_lom_path, lom_xlsx_path_for_pdf, write_lom_xlsx_for_bom
 
+        dest_path = lom_xlsx_path_for_pdf(pdf_path)
+        if is_desktop_lom_path(dest_path):
+            note = f"Refused to write {dest_path.name} onto Desktop"
+            if note not in bom.notes:
+                bom.notes.append(note)
+            return bom
         dest = write_lom_xlsx_for_bom(pdf_path, bom)
     except OSError as exc:
         dest = None
