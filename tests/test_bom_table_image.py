@@ -21,7 +21,12 @@ from quote_core.bom_table import (
     time_item_letters,
     union_sticky_harvest,
 )
-from tests.test_bom_table import _KYLE_102728_1, _assert_kyle_102728_1
+from tests.test_bom_table import (
+    _KYLE_102728_1,
+    _assert_kyle_102728_1,
+    _assert_kyle_28106_1,
+    _kyle_28106_cell_rows,
+)
 from quote_core.bom_table_image import (
     TABLE_CROP_FILENAME,
     extract_bom_from_table_image,
@@ -201,6 +206,17 @@ def test_table_image_cell_texts_match_kyle_102728_1():
     assert not (bom.method or "").startswith("ocr_time")
     _assert_kyle_102728_1(bom)
     assert bom.piece_count == 97
+
+
+def test_table_image_cell_texts_match_kyle_28106_1():
+    """28106-1: four dash columns, A at the bottom, quote -1 only."""
+    cells = _kyle_28106_cell_rows()
+    texts = [" | ".join(row) for row in reversed(cells)]
+    im = _draw_lom_table(["1 A 16697-2 TUBE"] * 14)
+    bom = extract_bom_from_table_image(im, row_texts=texts, bom_config="-1")
+    assert bom.method and bom.method.startswith("table_")
+    assert not (bom.method or "").startswith("ocr_time")
+    _assert_kyle_28106_1(bom)
 
 
 def _live_page1_strips() -> list[str]:

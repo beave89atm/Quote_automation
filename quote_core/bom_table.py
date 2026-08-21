@@ -1318,15 +1318,23 @@ def harvest_ocr_row_strips(
     page_text: str | None = None,
 ):
     """Harvest every item+part pair on the strips. Does not invent missing items."""
-    del bom_config
     from quote_core.bom import BomResult
+
+    line_list = list(lines or [])
+    stamp = list(line_list)
+    if page_text:
+        stamp.append(str(page_text))
+    header_blob = "\n".join(stamp)
+    if _MULTI_QTY_HEADER_RE.search(header_blob) or _DASH_QTY_HEADER_RE.search(header_blob):
+        parsed = parse_material_list_text(
+            "LIST OF MATERIAL\n" + header_blob, bom_config=bom_config
+        )
+        if parsed.rows:
+            return parsed
 
     notes: list[str] = []
     slots: list[dict[str, Any] | None] = []
-    line_list = list(lines or [])
-    stamp_lines = list(line_list)
-    if page_text:
-        stamp_lines.append(str(page_text))
+    stamp_lines = stamp
     reject = _drawing_numbers_to_reject(stamp_lines)
     for index, line in enumerate(line_list):
         if not str(line).strip():
@@ -1668,13 +1676,18 @@ def _split_row_fields(
     layout: MaterialListLayout,
 ) -> tuple[list[str], str, str, str]:
     """Return qty_cells, item, part, description from a data row."""
-    tokens = [str(c or "").strip() for c in cells if str(c or "").strip()]
+    raw_cells = [str(c or "").strip() for c in cells]
+    tokens = [c for c in raw_cells if c]
     if not tokens:
         return [], "", "", ""
     if len(tokens) == 1:
         tokens = _tokenize_row_blob(tokens[0])
         if not tokens:
             return [], "", "", ""
+    # Multi-qty: keep blank dash cells. Stripping them left-pads another
+    # dash's "1" into the -1 column (L/N/P leak on a 28106-1 takeoff).
+    if layout.is_multi_qty and len(raw_cells) >= 4:
+        tokens = raw_cells if any(not c for c in raw_cells[:4]) else tokens
 
     from quote_core.bom import normalize_part_no
 
@@ -1719,13 +1732,14 @@ def _split_row_fields(
                 desc_parts = rest[2:]
     n_qty = len(layout.qty_cols)
     if not qty_cells and n_qty:
-        qty_cells = ["1"]
+        qty_cells = [""] * n_qty if layout.is_multi_qty else ["1"]
     # Pad / trim qty cells to layout width when the row used explicit columns.
+    # Right-pad blanks so a lone other-dash digit is not treated as -1.
     if layout.is_multi_qty and n_qty > 1:
         if len(qty_cells) < n_qty:
-            qty_cells = (["-"] * (n_qty - len(qty_cells))) + qty_cells
+            qty_cells = list(qty_cells) + [""] * (n_qty - len(qty_cells))
         elif len(qty_cells) > n_qty:
-            qty_cells = qty_cells[-n_qty:]
+            qty_cells = qty_cells[:n_qty]
     return qty_cells, item, part, " ".join(desc_parts).strip(" ,;|")
 
 
@@ -1842,7 +1856,23 @@ def _split_delimited_line(line: str) -> list[str]:
     if not raw:
         return []
     if "|" in raw:
-        return [c.strip() for c in raw.strip("|").split("|")]
+        # Do not strip("|"): " |  |  | 1 | A | pn | desc" (28106-1 A, qty
+        # only on -1) would lose the leading blank -4/-3/-2 cells and shift
+        # the -1 "1" into the -2 column.
+        cells = [c.strip() for c in raw.split("|")]
+        if cells and cells[-1] == "":
+            cells.pop()
+        # Decorative leading pipe on QTY|ITEM|PN|DESC: "| 2 | A | pn | desc".
+        # One leading empty + a filled next cell, 3–5 columns. Multi-qty
+        # blank dash cells start with two or more empties — keep those.
+        if (
+            len(cells) >= 2
+            and cells[0] == ""
+            and cells[1] != ""
+            and len(cells) <= 5
+        ):
+            cells = cells[1:]
+        return cells
     if "\t" in raw:
         return [c.strip() for c in raw.split("\t")]
     # Two-or-more spaces as cell boundary (structured text fixture).

@@ -133,6 +133,69 @@ def _assert_kyle_102728_1(bom) -> None:
     assert by_item["BB"].part_no == _BB_PART and by_item["BB"].qty == 2
 
 
+# Kyle 28106-1 working truth (A at bottom; quote -1 only). 11 PNs, 13 pcs.
+# Other-dash tubes L/N/P must not appear on a -1 takeoff.
+_KYLE_28106_1: list[tuple[str, int, str, str]] = [
+    ("A", 1, "16697-2", "LOWER BOOM TUBE 91 1/8 LG."),
+    ("B", 1, "26732-1", "CYLINDER MOUNT PLATE W/ 3/8 HOLES."),
+    ("C", 1, "26732-2", "CYLINDER MOUNT PLATE"),
+    ("D", 1, "15644-1", "STIFFENER, CYLINDER MOUNT"),
+    ("E", 1, "16694-1", "STIFFENER, CUTOUT"),
+    ("F", 1, "15890-1", "END CAP, BOOM"),
+    ("G", 2, "15891-1", "HOSE GUARD"),
+    ("H", 1, "10187-1", "HOSE RETAINER"),
+    ("J", 2, "15864-2", "STIFFENER, BOOM PIVOT"),
+    ("K", 1, "15863-1", "PIVOT TUBE, LOWER BOOM"),
+    ("M", 1, "15654-1", "STIFFENER PLATE"),
+]
+_KYLE_28106_OTHER_DASH: list[tuple[str, str, str, str]] = [
+    ("L", "-2", "16697-1", "LOWER BOOM TUBE 55 LG."),
+    ("N", "-3", "16697-3", "LOWER BOOM TUBE"),
+    ("P", "-4", "16697-4", "LOWER BOOM TUBE"),
+]
+_KYLE_28106_LETTERS = [c for c in "ABCDEFGHJKLMNP"]  # A–P skip I and O
+
+
+def _kyle_28106_cell_rows() -> list[list[str]]:
+    """14-row -4|-3|-2|-1 grid. Empty qty cells stay blank."""
+    dash1 = {item: (qty, pn, desc) for item, qty, pn, desc in _KYLE_28106_1}
+    other = {item: (dash, pn, desc) for item, dash, pn, desc in _KYLE_28106_OTHER_DASH}
+    rows = [["-4", "-3", "-2", "-1", "ITEM", "PART NO.", "DESCRIPTION"]]
+    for item in _KYLE_28106_LETTERS:
+        q4 = q3 = q2 = q1 = ""
+        if item in dash1:
+            qty, pn, desc = dash1[item]
+            q1 = str(qty)
+        else:
+            dash, pn, desc = other[item]
+            if dash == "-4":
+                q4 = "1"
+            elif dash == "-3":
+                q3 = "1"
+            elif dash == "-2":
+                q2 = "1"
+        rows.append([q4, q3, q2, q1, item, pn, desc])
+    return rows
+
+
+def _assert_kyle_28106_1(bom) -> None:
+    assert len(bom.rows) == 11, [f"{r.item}:{r.part_no}×{r.qty}" for r in bom.rows]
+    assert sum(r.qty for r in bom.rows) == 13
+    assert bom.piece_count == 13
+    by_item = {r.item: r for r in bom.rows}
+    for item, qty, pn, _desc in _KYLE_28106_1:
+        assert item in by_item, item
+        assert by_item[item].part_no == pn, (item, by_item[item].part_no, pn)
+        assert by_item[item].qty == qty, (item, by_item[item].qty, qty)
+    parts = {r.part_no for r in bom.rows}
+    assert "16697-1" not in parts
+    assert "16697-3" not in parts
+    assert "16697-4" not in parts
+    assert "L" not in by_item and "N" not in by_item and "P" not in by_item
+    assert by_item["A"].part_no == "16697-2" and by_item["A"].qty == 1
+    assert by_item["G"].qty == 2 and by_item["J"].qty == 2
+
+
 def test_kyle_grid_writes_four_column_xlsx(tmp_path: Path):
     """Same 51-row grid Kyle confirmed — QTY / ITEM / PART NO / DESCRIPTION."""
     from quote_core.bom import BomResult, BomRow
@@ -362,6 +425,69 @@ LIST OF MATERIAL
     assert "B" not in by2
 
 
+def test_kyle_28106_1_dash1_is_11_pn_13_pcs():
+    """Kyle-confirmed 28106-1. 14 rows A–P; quote -1 only. L/N/P stay off the takeoff."""
+    assert len(_KYLE_28106_LETTERS) == 14
+    assert "I" not in _KYLE_28106_LETTERS and "O" not in _KYLE_28106_LETTERS
+    assert len(_KYLE_28106_1) == 11
+    assert sum(q for _i, q, _p, _d in _KYLE_28106_1) == 13
+
+    cells = _kyle_28106_cell_rows()
+    assert len(cells) == 15  # header + 14
+    _assert_kyle_28106_1(parse_material_list_cells(cells, bom_config="-1"))
+
+    lines = [
+        "WELDMENT, LOWER BOOM",
+        "28106-1",
+        "TIME MANUFACTURING",
+        "LIST OF MATERIAL",
+    ]
+    for row in cells:
+        lines.append(" | ".join(row))
+    text = "\n".join(lines)
+    _assert_kyle_28106_1(parse_material_list_text(text, bom_config="-1"))
+    _assert_kyle_28106_1(extract_bom(text=text, bom_config="-1"))
+
+    # Page-1 clip: P at the top, A at the bottom, header below.
+    strips = [" | ".join(row) for row in reversed(cells)]
+    harvested = harvest_ocr_row_strips(strips, bom_config="-1")
+    _assert_kyle_28106_1(harvested)
+
+    dash2 = parse_material_list_cells(cells, bom_config="2")
+    parts2 = {r.part_no for r in dash2.rows}
+    assert "16697-1" in parts2 and "16697-2" not in parts2
+    dash3 = parse_material_list_cells(cells, bom_config="3")
+    assert "16697-3" in {r.part_no for r in dash3.rows}
+    dash4 = parse_material_list_cells(cells, bom_config="4")
+    assert "16697-4" in {r.part_no for r in dash4.rows}
+
+
+def test_kyle_28106_1_pdf_extract_bom_and_xlsx(tmp_path: Path):
+    cells = _kyle_28106_cell_rows()
+    pdf = tmp_path / "28106.pdf"
+    _write_lom_pdf(
+        pdf,
+        cells[0],
+        cells[1:],
+        title="LOWER BOOM WELDMENT  28106-1  TIME MANUFACTURING",
+    )
+    bom = extract_bom(pdf_path=pdf, bom_config="-1")
+    assert bom.method and bom.method.startswith("table_"), bom.notes
+    assert not (bom.method or "").startswith("ocr_time")
+    _assert_kyle_28106_1(bom)
+    from quote_core.bom_xlsx import read_lom_xlsx
+
+    xlsx = pdf.with_name(f"{pdf.stem}-LOM.xlsx")
+    assert xlsx.is_file()
+    header, sheet = read_lom_xlsx(xlsx)
+    assert header == ["QTY", "ITEM", "PART NO", "DESCRIPTION"]
+    assert len(sheet) == 11
+    assert sum(int(r["QTY"]) for r in sheet) == 13
+    assert sheet[0]["ITEM"] == "A" and sheet[0]["PART NO"] == "16697-2"
+    parts = {r["PART NO"] for r in sheet}
+    assert "16697-1" not in parts and "16697-3" not in parts and "16697-4" not in parts
+
+
 def test_incomplete_tall_list_flags_review_without_padding():
     bom = parse_material_list_cells(_platform_cell_rows(drop={"C", "AA", "AZ"}))
     assert len(bom.rows) == 48
@@ -412,6 +538,8 @@ def _write_lom_pdf(path: Path, headers: list[str], rows: list[list[str]], *, tit
     xs = [360, 410, 460, 560]
     if len(headers) == 5:
         xs = [320, 370, 420, 480, 580]
+    elif len(headers) >= 6:
+        xs = [260, 300, 340, 380, 430, 500, 600][: len(headers)]
     y = 64
     for i, cell in enumerate(headers):
         page.insert_text((xs[i], y), cell, fontsize=8)
@@ -538,6 +666,8 @@ def _write_lom_page(doc, headers: list[str], rows: list[list[str]], *, title: st
     xs = [360, 410, 460, 560]
     if len(headers) == 5:
         xs = [320, 370, 420, 480, 580]
+    elif len(headers) >= 6:
+        xs = [260, 300, 340, 380, 430, 500, 600][: len(headers)]
     y = 64
     for i, cell in enumerate(headers):
         page.insert_text((xs[i], y), cell, fontsize=8)
