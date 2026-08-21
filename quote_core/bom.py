@@ -1460,9 +1460,10 @@ def extract_bom(
        optional ``table_image`` / sibling ``bom_table_crop.png``)
 
     Time (and similar) LOM is **cell-grid only** — no whole-page OCR/regex
-    and no library-folder padding. When ``pdf_path`` is set and rows are
-    found, write ``{stem}-LOM.xlsx`` next to the PDF, then **re-read that
-    sheet** as the quote BOM. There is no side-channel JSON.
+    and no library-folder padding. When ``pdf_path`` is set and a LIST OF
+    MATERIAL grid is found, write ``{stem}-LOM.xlsx`` next to the PDF, then
+    **re-read that sheet** as the quote BOM. No LOM on the sheet → one-part
+    quote, no LOM.xlsx, do not invent a BOM.
     """
     notes: list[str] = []
     probe = text
