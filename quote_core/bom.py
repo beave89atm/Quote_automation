@@ -1285,15 +1285,20 @@ def _native_cell_table_is_complete(bom: BomResult | None) -> bool:
     if bom is None:
         return False
     rows = list(getattr(bom, "rows", None) or [])
-    if len(rows) < SHORT_TABLE_REJECT:
-        return False
     method = str(getattr(bom, "method", "") or "")
     if not method.startswith("table_"):
         return False
     if float(getattr(bom, "confidence", 0) or 0) <= 0.45:
         return False
     unread = sum(1 for r in rows if int(getattr(r, "qty", 0) or 0) <= 0)
-    return unread < 8
+    if unread >= 8:
+        return False
+    # Multi-qty native already picked the uploaded dash. A bitmap re-read
+    # mixes columns (A from -2 leaking into -1). Single-QTY 3-row decoys
+    # still render so a tall grid on the same page can win.
+    if method.endswith("multi_qty") and rows:
+        return True
+    return len(rows) >= SHORT_TABLE_REJECT
 
 
 def _parse_material_list_on_page(
