@@ -428,6 +428,54 @@ def _assert_kyle_103516(bom) -> None:
     assert all(1 <= int(r.item) <= 27 for r in bom.rows)
 
 
+# Kyle 21727-1 confirmed against 21727-1-LOM.xlsx.
+# Single QTY column (blank dash). Letters A–L skip I (11 letters; O is after L).
+# 11 PNs / 16 pcs. 61358 is not a weld part. Remaining PNs were not listed —
+# do not invent them. Live bar is 11/16. Item letters on the documented pair
+# are fixture slots, not a live Excel claim.
+_KYLE_21727_1_PN_COUNT = 11
+_KYLE_21727_1_PCS = 16
+_KYLE_21727_LETTERS = [c for c in "ABCDEFGHJKL"]
+_KYLE_21727_1: list[tuple[str, int, str, str]] = [
+    ("A", 1, "16697-1", "TUBE, SHORT"),
+    ("B", 1, "16697-2", "TUBE, LONG"),
+]
+
+
+def _kyle_21727_cell_rows() -> list[list[str]]:
+    """11-row QTY|ITEM|PN grid. A at the bottom when reversed. 61358 is extra junk."""
+    named = {item: (qty, pn, desc) for item, qty, pn, desc in _KYLE_21727_1}
+    rows = [["QTY", "ITEM", "PART NO.", "DESCRIPTION"]]
+    for item in _KYLE_21727_LETTERS:
+        if item in named:
+            qty, pn, desc = named[item]
+            rows.append([str(qty), item, pn, desc])
+        else:
+            # Letter is on the takeoff. PN not listed — do not invent.
+            rows.append(["1", item, "", ""])
+    rows.append(["1", "M", "61358", "REVISION NOTE"])
+    return rows
+
+
+def _assert_kyle_21727_1(bom) -> None:
+    parts = {str(r.part_no or "") for r in bom.rows}
+    by_item = {str(r.item): r for r in bom.rows}
+    assert by_item["A"].part_no == "16697-1"
+    assert by_item["A"].qty == 1
+    assert "TUBE" in by_item["A"].description.upper()
+    assert "SHORT" in by_item["A"].description.upper()
+    assert by_item["B"].part_no == "16697-2"
+    assert by_item["B"].qty == 1
+    assert "LONG" in by_item["B"].description.upper()
+    assert "61358" not in parts
+    assert "21727-1" not in parts
+    assert "21727" not in parts
+    assert "I" not in by_item
+    assert "M" not in by_item
+    assert all(str(r.item) in _KYLE_21727_LETTERS for r in bom.rows)
+    assert "16697-1" in parts and "16697-2" in parts
+
+
 def test_kyle_grid_writes_four_column_xlsx(tmp_path: Path):
     """Same 51-row grid Kyle confirmed — QTY / ITEM / PART NO / DESCRIPTION."""
     from quote_core.bom import BomResult, BomRow
@@ -1054,6 +1102,77 @@ def test_kyle_103516_numeric_keeps_gate_weldment_and_item_27():
     assert "40002-2" not in parts2
     assert "103535-1" not in parts2
     assert dash2.rows == []
+
+
+def test_kyle_21727_1_single_qty_letters_a_l_skip_i():
+    """Kyle-confirmed 21727-1-LOM.xlsx. A–L skip I; single QTY; omit 61358."""
+    assert _KYLE_21727_LETTERS == list("ABCDEFGHJKL")
+    assert len(_KYLE_21727_LETTERS) == 11
+    assert "I" not in _KYLE_21727_LETTERS
+    assert "M" not in _KYLE_21727_LETTERS
+    assert _KYLE_21727_1_PN_COUNT == 11
+    assert _KYLE_21727_1_PCS == 16
+    assert {pn for _i, _q, pn, _d in _KYLE_21727_1} == {"16697-1", "16697-2"}
+    assert "61358" not in {pn for _i, _q, pn, _d in _KYLE_21727_1}
+
+    layout = detect_material_list_header(["QTY", "ITEM", "PART NO.", "DESCRIPTION"])
+    assert layout is not None
+    assert layout.qty_cols == ["QTY"]
+    assert not layout.is_multi_qty
+    assert layout.numeric_items is False
+
+    cells = _kyle_21727_cell_rows()
+    assert len(cells) == 13  # header + 11 letters + 61358 junk
+    assert cells[0] == ["QTY", "ITEM", "PART NO.", "DESCRIPTION"]
+    assert cells[1][1] == "A" and cells[11][1] == "L"
+    assert cells[-1][2] == "61358"
+    parsed = parse_material_list_cells(cells)
+    _assert_kyle_21727_1(parsed)
+    assert parsed.method == "table_material_list"
+
+    lines = [
+        "WELDMENT, PLATFORM",
+        "21727-1",
+        "TIME MANUFACTURING",
+        "LIST OF MATERIAL",
+    ]
+    for row in cells:
+        lines.append(" | ".join(row))
+    text = "\n".join(lines)
+    _assert_kyle_21727_1(parse_material_list_text(text))
+    extracted = extract_bom(text=text)
+    _assert_kyle_21727_1(extracted)
+    assert extracted.method and extracted.method.startswith("table_")
+    assert not (extracted.method or "").startswith("ocr_time")
+
+    # Page-1 clip: L at the top, A at the bottom, header below. 61358 first.
+    strips = [" | ".join(row) for row in reversed(cells)]
+    assert strips[0].split("|")[2].strip() == "61358"
+    assert strips[-2].split("|")[1].strip() == "A"
+    harvested = harvest_ocr_row_strips(
+        strips,
+        bom_config="",
+        page_text="WELDMENT, PLATFORM  21727-1",
+    )
+    _assert_kyle_21727_1(harvested)
+    assert "61358" not in {r.part_no for r in harvested.rows}
+
+
+def test_kyle_21727_1_omits_61358_and_title_dwg():
+    parsed = parse_material_list_cells(
+        [
+            ["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
+            ["1", "A", "16697-1", "TUBE, SHORT"],
+            ["1", "B", "16697-2", "TUBE, LONG"],
+            ["1", "", "21727-1", "WELDMENT"],
+            ["1", "M", "61358", "REVISION NOTE"],
+        ]
+    )
+    pns = {r.part_no for r in parsed.rows}
+    assert "16697-1" in pns
+    assert "16697-2" in pns
+    assert "61358" not in pns
+    assert "21727-1" not in pns
 
 
 def test_kyle_1004747_1_pdf_extract_bom_and_xlsx(tmp_path: Path):
