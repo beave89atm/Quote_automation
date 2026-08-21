@@ -204,6 +204,28 @@ def _ocr_cell_strip(cell_im) -> str:
     return _tesseract_string(_prepare_ocr_strip(cell_im, scale=scale), psm=8)
 
 
+def _ocr_qty_digit(cell_im) -> str:
+    """Isolated QTY cell — digits only. Do not default unread to 1."""
+    h = getattr(cell_im, "height", 16) or 16
+    scale = 4.0 if h < 22 else 3.0
+    prepared = _prepare_ocr_strip(cell_im, scale=scale)
+    from quote_core.ocr import ocr_available, tesseract_cmd
+
+    if not ocr_available():
+        return ""
+    import pytesseract
+
+    pytesseract.pytesseract.tesseract_cmd = tesseract_cmd()
+    try:
+        text = pytesseract.image_to_string(
+            prepared,
+            config="--oem 3 --psm 10 -c tessedit_char_whitelist=0123456789",
+        ) or ""
+    except Exception:  # noqa: BLE001
+        text = _tesseract_string(prepared, psm=10)
+    return "".join(ch for ch in text if ch.isdigit())
+
+
 def _expand_band_box(
     box: tuple[int, int, int, int],
     im_size: tuple[int, int],
@@ -255,14 +277,23 @@ def _ocr_first_pass_lines(im, seg: dict[str, Any], notes: list[str]) -> list[str
             parts: list[str] = []
             xs = [0] + list(v_lines) + [im.width]
             xs = sorted({x for x in xs if 0 <= x <= im.width})
+            first_cell = True
             for a, b in zip(xs, xs[1:]):
                 if b - a < 6:
                     continue
                 cell = im.crop((a + 1, max(0, y0), b, min(im.height, y1)))
+                if first_cell:
+                    first_cell = False
+                    digit = _ocr_qty_digit(cell)
+                    parts.append(digit if digit else _ocr_cell_strip(cell).strip())
+                    continue
                 parts.append(_ocr_cell_strip(cell).strip())
-            text = " ".join(p for p in parts if p)
-            if not text:
-                text = _ocr_row_strip(strip)
+            # Keep empty QTY so parse sees a blank cell, not a default 1.
+            text = " | ".join(parts)
+            if not find_time_like_pn(text):
+                blob = _ocr_row_strip(strip)
+                if find_time_like_pn(blob):
+                    text = blob
         else:
             text = _ocr_row_strip(strip)
         lines.append((text or "").strip())
@@ -271,6 +302,53 @@ def _ocr_first_pass_lines(im, seg: dict[str, Any], notes: list[str]) -> list[str
         f"(empty bands kept as sequence holes)"
     )
     return lines
+
+
+def _reread_unread_qty_cells(
+    im,
+    seg: dict[str, Any],
+    lines: list[str],
+    notes: list[str],
+) -> list[str]:
+    """Re-read the isolated QTY cell when the row has a PN but no clear qty digit."""
+    from quote_core.bom_table import parse_ocr_row_strip
+
+    v_lines = seg.get("v_lines") or []
+    if len(v_lines) < 3:
+        return lines
+    xs = [0] + list(v_lines) + [im.width]
+    xs = sorted({x for x in xs if 0 <= x <= im.width})
+    if len(xs) < 2:
+        return lines
+    out = list(lines)
+    reread = 0
+    for i, text in enumerate(out):
+        if not str(text or "").strip() or i >= len(seg.get("row_bands") or []):
+            continue
+        parsed = parse_ocr_row_strip(text)
+        if not parsed or parsed.get("qty_clear"):
+            continue
+        _x0, y0, _x1, y1 = seg["row_bands"][i]
+        a, b = xs[0], xs[1]
+        cell = im.crop((a + 1, max(0, y0), b, min(im.height, y1)))
+        digit = _ocr_qty_digit(cell)
+        if not digit or not digit.isdigit():
+            continue
+        n = int(digit)
+        if n == 7 or 10 <= n <= 20:
+            notes.append(f"Re-read qty cell band {i}: {n} looks like bleed — left unread")
+            continue
+        if " | " in text:
+            cells = text.split(" | ")
+            cells[0] = str(n)
+            out[i] = " | ".join(cells)
+        else:
+            out[i] = f"{n} {text}"
+        notes.append(f"Re-read qty cell band {i}: {n}")
+        reread += 1
+    if reread:
+        notes.append(f"Re-read {reread} unread QTY cell(s)")
+    return out
 
 
 def _fill_empty_band_texts(
@@ -405,6 +483,7 @@ def extract_bom_from_table_image(
 
         if ocr_available() and seg["row_bands"]:
             first_lines = _ocr_first_pass_lines(im, seg, notes)
+            first_lines = _reread_unread_qty_cells(im, seg, first_lines, notes)
             first = harvest_ocr_row_strips(
                 first_lines, bom_config=bom_config, page_text=page_text
             )
@@ -424,6 +503,7 @@ def extract_bom_from_table_image(
                     bottom_frac=float(clip.get("bottom_frac", 0.92)),
                     known_parts=known,
                 )
+            filled = _reread_unread_qty_cells(im, seg, filled, notes)
             second = harvest_ocr_row_strips(
                 filled, bom_config=bom_config, page_text=page_text
             )

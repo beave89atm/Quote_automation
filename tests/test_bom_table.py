@@ -22,6 +22,7 @@ from quote_core.bom_table import (
     pick_best_material_list,
     text_has_material_list_grid,
     time_item_letters,
+    union_sticky_harvest,
 )
 
 # Ground truth: Time 102728-1 WELDMENT, PLATFORM — 51 balloons, skip I/O.
@@ -206,10 +207,53 @@ def test_kyle_102728_1_a_at_bottom_51_pn_97_pcs():
     assert by_item["Z"].part_no == "460320"
     assert by_item["BB"].part_no == _BB_PART and by_item["BB"].qty == 2
     assert sum(r.qty for r in unread_bom.rows) == 97
+    assert not any("after PN set" in n and "letters after" in n for n in unread_bom.notes)
+
+
+def test_fedf06b_live_mismatch_recovers_kyle_grid():
+    """fedf06b laptop: 51 PNs / 65 pcs, A=460320. Grid letters + qty cells → 97."""
+    unread_letters = {"A", "F", "J", "Q"}
+    missing_qty = {
+        "E", "G", "K", "M", "P", "S", "T", "U", "V", "W", "X", "Y", "Z",
+        "AA", "AC", "AD", "AE", "AF", "AL", "AX",
+    }
+    blob_strips: list[str] = []
+    cell_strips: list[str] = []
+    for item, qty, pn, desc in reversed(_KYLE_102728_1):
+        cell_strips.append(f"{qty} | {item} | {pn} | {desc}")
+        if item == "Z":
+            blob_strips.append(f"A {pn} {desc}")
+        elif item in unread_letters:
+            blob_strips.append(f"{pn} {desc}")
+        elif item in missing_qty:
+            blob_strips.append(f"{item} {pn} {desc}")
+        else:
+            blob_strips.append(f"{qty} {item} {pn} {desc}")
+    blob_strips.append("QTY | ITEM | PART NO. | DESCRIPTION")
+    cell_strips.append("QTY | ITEM | PART NO. | DESCRIPTION")
+
+    first = harvest_ocr_row_strips(blob_strips)
+    by_first = {r.item: r for r in first.rows}
+    assert len(first.rows) == 51
+    assert by_first["A"].part_no == "460200"
+    assert by_first["Z"].part_no == "460320"
+    assert by_first["BB"].part_no == _BB_PART and by_first["BB"].qty == 2
+    assert any("A at bottom" in n or "grid bands" in n for n in first.notes)
+    assert not any("letters after PN set" in n for n in first.notes)
+    aa = next(r for r in first.rows if r.part_no == "460330")
+    assert int(aa.qty) != 5
+
+    cells = harvest_ocr_row_strips(cell_strips)
+    _assert_kyle_102728_1(cells)
+    assert cells.piece_count == 97
+
+    united = union_sticky_harvest(first, cells)
+    _assert_kyle_102728_1(united)
+    assert united.piece_count == 97
 
 
 def test_readable_4_5_6_8_qty_is_not_dimension_bleed():
-    """V=6 / AA=5 / AD=8 / W=4 stay. Qty 7 is still bleed."""
+    """V=6 / AA=5 / AD=8 / W=4 stay. Qty 7 is bleed — not defaulted to 1."""
     four = parse_ocr_row_strip("4 AC 100177-2 PLATE")
     assert four is not None and four["part_no"] == "100177-2" and four["qty"] == 4
     five = parse_ocr_row_strip("5 AA 460330 CAP, VERTICAL RAIL BOTTOM")
@@ -221,7 +265,15 @@ def test_readable_4_5_6_8_qty_is_not_dimension_bleed():
     two = parse_ocr_row_strip("2 Z 460320 CAP, VERTICAL RAIL TOP")
     assert two is not None and two["part_no"] == "460320" and two["qty"] == 2
     bleed = parse_ocr_row_strip("7 A 00177-2 PLATE")
-    assert bleed is not None and bleed["part_no"] == "100177-2" and bleed["qty"] == 1
+    assert bleed is not None and bleed["part_no"] == "100177-2"
+    assert bleed["qty"] != 7
+    assert bleed["qty_clear"] is False
+    unread = parse_ocr_row_strip("AA 460330 CAP, VERTICAL RAIL BOTTOM")
+    assert unread is not None and unread["part_no"] == "460330"
+    assert unread["qty_clear"] is False
+    assert unread["qty"] != 1
+    cell = parse_ocr_row_strip("5 | AA | 460330 | CAP, VERTICAL RAIL BOTTOM")
+    assert cell is not None and cell["qty"] == 5 and cell["from_cells"] is True
 
 
 def test_time_item_letters_skip_i_and_o_and_reach_bc():

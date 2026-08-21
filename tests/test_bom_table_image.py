@@ -188,6 +188,21 @@ def test_extract_bom_sibling_crop_beats_short_pdf_lom(tmp_path: Path):
         assert "flag review" in joined or "unread" in joined or "rejected" in joined
 
 
+def test_table_image_cell_texts_match_kyle_102728_1():
+    """Product path: cell-delimited QTY|ITEM|PART|DESC, A at the bottom."""
+    texts = [
+        f"{qty} | {item} | {pn} | {desc}"
+        for item, qty, pn, desc in reversed(_KYLE_102728_1)
+    ]
+    texts.append("QTY | ITEM | PART NO. | DESCRIPTION")
+    im = _draw_lom_table(_platform_row_texts())
+    bom = extract_bom_from_table_image(im, row_texts=texts, bom_config="-1")
+    assert bom.method and bom.method.startswith("table_")
+    assert not (bom.method or "").startswith("ocr_time")
+    _assert_kyle_102728_1(bom)
+    assert bom.piece_count == 97
+
+
 def _live_page1_strips() -> list[str]:
     """Page-1 clip order: BC at the top, A at the bottom, header below."""
     lines = [

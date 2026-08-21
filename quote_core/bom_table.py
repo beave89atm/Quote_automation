@@ -828,6 +828,26 @@ def _choose_item_for_part(
     return item, glued
 
 
+def _split_lom_cells(raw: str) -> list[str] | None:
+    """QTY | ITEM | PART NO | DESCRIPTION when the clip is cell-delimited."""
+    text = str(raw or "")
+    if "|" in text:
+        return [c.strip() for c in text.split("|")]
+    if "\t" in text:
+        return [c.strip() for c in text.split("\t")]
+    return None
+
+
+def _qty_token_ok(n: int, *, glued: bool = False) -> bool:
+    if n < 1 or n > 20:
+        return False
+    if glued:
+        return True
+    if n == 7 or _looks_like_column_index_qty(n):
+        return False
+    return True
+
+
 def _qty_from_one_source(
     raw: str,
     part_start: int,
@@ -836,34 +856,61 @@ def _qty_from_one_source(
     part: str,
     desc: str,
     glued_qty: int | None,
-) -> tuple[int, bool, str | None]:
-    """One qty source only. Do not mix glued / left-cell / known-BB. qty>20 is junk."""
+) -> tuple[int | None, bool, str | None, bool]:
+    """One qty source. Never default unread to 1. Real 4–8 stay (7 is bleed unless glued)."""
     is_bb = item == "BB" or _looks_like_bb_tube(part, desc, raw)
+    cells = _split_lom_cells(raw)
+    from_cells = False
+    if cells:
+        first = cells[0].strip()
+        if re.fullmatch(r"[1-9]|1[0-9]|20", first):
+            n = int(first)
+            if _qty_token_ok(n):
+                return n, True, None, True
+            if n == 7 or _looks_like_column_index_qty(n):
+                return None, False, (
+                    f"{item or '?'} qty {n} looks like dimension/column-index bleed — "
+                    f"not used as piece count, flag review"
+                ), True
+        elif first in _EMPTY_QTY:
+            from_cells = True
     if glued_qty is not None:
-        if 2 <= glued_qty <= 20:
-            return glued_qty, True, f"{item} qty {glued_qty} from glued item+qty token"
-        if glued_qty == 1:
-            return 1, True, None
-        # qty>20 (or 0) is OCR junk — fall through, do not mix with another source
+        if _qty_token_ok(glued_qty, glued=True) and glued_qty <= 20:
+            if glued_qty == 1:
+                return 1, True, None, from_cells
+            if 2 <= glued_qty <= 20:
+                return glued_qty, True, f"{item} qty {glued_qty} from glued item+qty token", from_cells
     left = raw[: max(0, part_start)]
+    # Digit immediately before the item balloon beats a stray later/earlier token.
+    n_before_item: int | None = None
+    if item:
+        m_before = re.search(
+            rf"(?<!\d)([1-9]|1[0-9]|20)\s+{re.escape(item)}\b",
+            left + (item or ""),
+            flags=re.IGNORECASE,
+        )
+        if m_before:
+            n_before_item = int(m_before.group(1))
     tokens = [int(m.group(1)) for m in re.finditer(r"(?<!\d)([1-9]|1[0-9]|20)(?!\d)", left)]
     tokens = [n for n in tokens if n <= 20]
     if is_bb:
-        if 2 in tokens:
-            return 2, True, None
-        return 2, True, "BB qty 2 recovered (qty cell unread; known 102727-4 print)"
-    if tokens:
-        n = tokens[-1]
+        if n_before_item == 2 or 2 in tokens:
+            return 2, True, None, from_cells
+        return 2, True, "BB qty 2 recovered (qty cell unread; known 102727-4 print)", from_cells
+    n = n_before_item if n_before_item is not None else (tokens[-1] if tokens else None)
+    if n is not None:
         # Qty 7 is dimension bleed; 2-digit 10–20 is column-index bleed.
         # Readable 2–6 / 8–9 (V=6, AA=5, AD=8, W=4) are piece counts.
         if n == 7 or _looks_like_column_index_qty(n):
-            return 1, False, (
+            return None, False, (
                 f"{item or '?'} qty {n} looks like dimension/column-index bleed — "
                 f"not used as piece count, flag review"
-            )
+            ), from_cells
         if 1 <= n <= 20:
-            return n, True, None
-    return 1, False, f"{item or '?'} qty OCR unreadable — defaulted to 1, flag review"
+            return n, True, None, from_cells
+    return None, False, (
+        f"{item or '?'} qty OCR unreadable — not defaulted to 1, re-read qty cell"
+    ), from_cells
 
 
 def _looks_like_dimension_qty(qty: int, desc: str | None, raw: str = "") -> bool:
@@ -924,7 +971,7 @@ def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
         part = _KNOWN_BB_PART
     if _is_eco_or_title_block_row(part, desc, raw):
         return None
-    qty, qty_clear, qty_note = _qty_from_one_source(
+    qty, qty_clear, qty_note, from_cells = _qty_from_one_source(
         raw,
         part_start,
         item=item or "",
@@ -934,25 +981,30 @@ def parse_ocr_row_strip(line: str | None) -> dict[str, Any] | None:
     )
     return {
         "item": item,
-        "qty": qty,
+        "qty": 0 if qty is None else qty,
         "part_no": part,
         "description": desc,
         "qty_clear": qty_clear,
         "qty_note": qty_note,
         "unread_item": item is None,
+        "from_cells": from_cells or bool(_split_lom_cells(raw)),
+        "qty_unread": qty is None,
     }
 
 
 def _parsed_to_row(parsed: dict[str, Any]):
     from quote_core.bom import BomRow
 
+    cellish = bool(parsed.get("from_cells"))
     return BomRow(
         item=parsed["item"],
-        qty=int(parsed["qty"]),
+        qty=int(parsed["qty"] or 0),
         part_no=parsed["part_no"],
         description=parsed["description"],
-        source="table_material_list_strip",
-        confidence=0.88 if parsed["qty_clear"] else 0.8,
+        source="table_material_list_cell" if cellish else "table_material_list_strip",
+        confidence=0.92 if (parsed.get("qty_clear") and cellish) else (
+            0.88 if parsed.get("qty_clear") else 0.72
+        ),
     )
 
 
@@ -974,49 +1026,66 @@ def assign_items_from_sequence(
     # Time LOM prints A at the bottom (header below). Do not flip to
     # top-down from two noisy OCR letters — that assigned A=460320 (Z).
     bottom_is_a = True
+    header_idxs = _header_band_indexes(lines)
+    expected = expected_letters_for_bands(
+        len(slots), bottom_is_a=bottom_is_a, header_idxs=header_idxs
+    )
+    data_n = sum(
+        1 for p in slots if p and _is_time_like_part(p.get("part_no"))
+    )
+    # Tall / headered LOM: band index is the letter. Do not keep a misread
+    # "A" on the top row (live 460320). Short lists keep a read token.
+    force_grid = data_n >= TALL_TABLE_MIN_ROWS or (
+        bool(header_idxs) and data_n >= SHORT_TABLE_REJECT
+    )
+    used: set[str] = set()
+    assigned = 0
+    overridden = 0
     walk = range(len(slots) - 1, -1, -1)
-    used = {
-        str(p.get("item") or "").upper()
-        for p in slots
-        if p and str(p.get("item") or "").upper() in seq_index
-    }
-    unread_idxs: list[int] = []
     for i in walk:
         parsed = slots[i]
         if not parsed:
             continue
         if _looks_like_bb_tube(parsed.get("part_no"), parsed.get("description")):
             parsed["item"] = "BB"
-            parsed["qty"] = 2
+            if not parsed.get("qty_clear") or int(parsed.get("qty") or 0) in {0, 7}:
+                parsed["qty"] = 2
+                parsed["qty_clear"] = True
             parsed["part_no"] = _KNOWN_BB_PART
             parsed["unread_item"] = False
             used.add("BB")
             continue
-        item = str(parsed.get("item") or "").strip().upper()
-        if item:
-            # Already harvested an item token — do not re-letter (sticky).
-            # AI/AO are not real balloons; drop later, do not replace.
-            continue
         if not _is_time_like_part(parsed.get("part_no")):
             continue
-        unread_idxs.append(i)
-    header_idxs = _header_band_indexes(lines)
-    expected = expected_letters_for_bands(
-        len(slots), bottom_is_a=bottom_is_a, header_idxs=header_idxs
-    )
-    assigned = 0
-    for i in unread_idxs:
+        ocr_item = str(parsed.get("item") or "").strip().upper()
         letter = expected[i]
+        if force_grid and letter:
+            if ocr_item and ocr_item != letter:
+                overridden += 1
+            parsed["item"] = letter
+            parsed["unread_item"] = False
+            used.add(letter)
+            assigned += 1
+            continue
+        if ocr_item and ocr_item in seq_index:
+            used.add(ocr_item)
+            continue
         if not letter or letter in used:
             continue
-        slots[i]["item"] = letter
-        slots[i]["unread_item"] = False
+        parsed["item"] = letter
+        parsed["unread_item"] = False
         used.add(letter)
         assigned += 1
-    if assigned:
+    if force_grid:
+        notes.append(
+            f"Assigned letters from grid bands (A at bottom; {data_n} PNs"
+            f"{f', overrode {overridden} OCR letter(s)' if overridden else ''}"
+            f"; not after PN set)"
+        )
+    elif assigned:
         notes.append(
             f"Assigned {assigned} unread item letter(s) from A–BC sequence "
-            f"(Time-like PN kept, dashed or not; do not invent rows)"
+            f"(Time-like PN kept, dashed or not; A at bottom)"
         )
     # Keep every Time-like PN. Letters are labels; do not delete a PN here.
     return [p for p in slots if p and _is_time_like_part(p.get("part_no"))]
@@ -1075,7 +1144,7 @@ def _note_sequence_holes(
 
 
 def _keep_better_pn_row(old, new):
-    """Same PN: prefer BB qty 2, then a valid item token, then the first harvest."""
+    """Same PN: prefer BB qty 2, then a cell-grid qty, then a valid item token."""
     if new.part_no == _KNOWN_BB_PART and old.part_no != _KNOWN_BB_PART:
         return new
     if old.part_no == _KNOWN_BB_PART and new.part_no != _KNOWN_BB_PART:
@@ -1084,25 +1153,33 @@ def _keep_better_pn_row(old, new):
         return new
     if str(old.item).upper() == "BB" and str(new.item).upper() != "BB":
         return old
+    old_cell = "cell" in str(getattr(old, "source", "") or "")
+    new_cell = "cell" in str(getattr(new, "source", "") or "")
+    old_q, new_q = int(old.qty or 0), int(new.qty or 0)
+    old_clear = float(getattr(old, "confidence", 0) or 0) >= 0.88 and old_q > 0
+    new_clear = float(getattr(new, "confidence", 0) or 0) >= 0.88 and new_q > 0
+    # Isolated QTY/ITEM/PART/DESC cells beat a whole-row blob (live half-reads).
+    if new_cell and new_clear and not old_cell:
+        return new
+    if old_cell and old_clear and not new_cell:
+        return old
     if is_material_list_item(str(old.item or "")) and not is_material_list_item(str(new.item or "")):
         return old
     if is_material_list_item(str(new.item or "")) and not is_material_list_item(str(old.item or "")):
         return new
-    # Prefer a readable qty digit (2–9 except 7) over an unread default of 1.
-    old_q, new_q = int(old.qty or 0), int(new.qty or 0)
-    old_clear = float(getattr(old, "confidence", 0) or 0) >= 0.88
-    new_clear = float(getattr(new, "confidence", 0) or 0) >= 0.88
-    if new_clear and not old_clear and 2 <= new_q <= 9 and new_q != 7:
+    # Prefer a readable qty digit (1–9 except 7) over unread 0 / defaulted 1.
+    if new_clear and not old_clear and 1 <= new_q <= 9 and new_q != 7:
         return new
-    if old_clear and not new_clear and 2 <= old_q <= 9 and old_q != 7:
+    if old_clear and not new_clear and 1 <= old_q <= 9 and old_q != 7:
         return old
+    if new_cell and old_cell and new_clear and old_clear and new_q > old_q and new_q != 7:
+        return new
     return old
 
 
 def label_letters_after_pn_set(rows: list, notes: list[str] | None = None) -> list:
     """Letters are labels on a unique-PN set. Never drop a PN to resolve a clash."""
     notes = notes if notes is not None else []
-    seq = time_item_letters(through="BZ")
     used: set[str] = set()
     for row in rows:
         if row.part_no == _KNOWN_BB_PART or _looks_like_bb_tube(row.part_no, row.description):
@@ -1118,19 +1195,11 @@ def label_letters_after_pn_set(rows: list, notes: list[str] | None = None) -> li
             continue
         used.add(item)
         row.item = item
-    unused = [tok for tok in seq if tok not in used]
-    # Harvest order is top→bottom. Time A is at the bottom — fill empties
-    # from the bottom so the first unread PN is not labeled A.
-    for row in reversed(rows):
-        if str(row.item or "").strip():
-            continue
-        if unused:
-            row.item = unused.pop(0)
-        else:
-            row.item = str(row.part_no)
+    # Do not invent A–BC from unique-PN dict order. That labeled live A=460320.
+    # Band/grid assign already ran. Empty letters stay empty.
     notes.append(
-        f"Labeled {len(rows)} unique Time PNs "
-        f"(letters after PN set; do not drop PNs)"
+        f"Kept {len(rows)} unique Time PNs "
+        f"(grid letters; A at bottom; do not reletter after PN set)"
     )
     return rows
 
@@ -1219,11 +1288,11 @@ def _finalize_strip_rows(
             )
             row = BomRow(
                 item=row.item,
-                qty=1,
+                qty=0,
                 part_no=row.part_no,
                 description=row.description,
                 source=row.source,
-                confidence=row.confidence,
+                confidence=min(float(row.confidence or 0), 0.72),
             )
         pn = str(row.part_no or "")
         if not _is_time_like_part(pn):
@@ -1395,7 +1464,7 @@ def harvest_material_list_lines(text: str | None, *, bom_config: str | None = No
                 f"{item} qty {qty} looks like dimension bleed — "
                 f"not used as piece count, flag review"
             )
-            qty = 1
+            qty = 0
         collected.append(
             BomRow(
                 item=item,
