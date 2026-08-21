@@ -119,7 +119,7 @@ def process_job(job_id: int) -> None:
 
         xlsx = write_lom_xlsx_for_job(job.pdf_path, takeoff)
         if xlsx is not None:
-            takeoff = apply_lom_xlsx_to_takeoff(takeoff, xlsx)
+            takeoff = apply_lom_xlsx_to_takeoff(takeoff, xlsx, bom_config=bom_config)
             flag = f"LIST OF MATERIAL spreadsheet: {xlsx.name}"
             if flag not in flags:
                 flags.append(flag)

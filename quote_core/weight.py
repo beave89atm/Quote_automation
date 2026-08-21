@@ -422,7 +422,7 @@ def estimate_assembly_weight(
     note_thicknesses = extract_plate_thicknesses_in(notes or [])
 
     # Existing LOM.xlsx is the quote. Do not re-OCR over Desktop / job sheets.
-    existing = quote_from_existing_lom_xlsx(pdf_path)
+    existing = quote_from_existing_lom_xlsx(pdf_path, bom_config=bom_config)
     if existing is not None:
         clipped = existing
     else:
@@ -439,8 +439,8 @@ def estimate_assembly_weight(
 
         xlsx = find_existing_lom_xlsx(pdf_path)
         if xlsx is not None:
-            bom = bom_from_lom_xlsx(xlsx, prior=clipped)
-            tabs = bom_tabs_for_import(xlsx)
+            bom = bom_from_lom_xlsx(xlsx, prior=clipped, bom_config=bom_config)
+            tabs = bom_tabs_for_import(xlsx, bom_config=bom_config)
             if tabs:
                 note = (
                     f"Quote read {xlsx.name} "

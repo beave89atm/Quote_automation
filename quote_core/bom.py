@@ -1490,7 +1490,7 @@ def extract_bom(
     """
     notes: list[str] = []
     if pdf_path:
-        existing = quote_from_existing_lom_xlsx(pdf_path)
+        existing = quote_from_existing_lom_xlsx(pdf_path, bom_config=bom_config)
         if existing is not None:
             return existing
 
@@ -1502,6 +1502,7 @@ def extract_bom(
             related_pdf_names=related_pdf_names,
             nested_seen=nested_seen,
             nested_depth=nested_depth,
+            bom_config=bom_config,
         )
 
     probe = text
@@ -1590,6 +1591,7 @@ def quote_from_existing_lom_xlsx(
     pdf_path: Path | str | None,
     *,
     prior: BomResult | None = None,
+    bom_config: str | None = None,
 ) -> BomResult | None:
     """Locked: existing LOM.xlsx is the quote. Do not re-OCR or overwrite."""
     from quote_core.bom_xlsx import find_existing_lom_xlsx, list_lom_sheet_names
@@ -1597,9 +1599,7 @@ def quote_from_existing_lom_xlsx(
     existing = find_existing_lom_xlsx(pdf_path)
     if existing is None:
         return None
-    sourced = bom_from_lom_xlsx(existing, prior=prior)
-    if not sourced.rows:
-        return None
+    sourced = bom_from_lom_xlsx(existing, prior=prior, bom_config=bom_config)
     note = f"Quote read existing {existing.name} — did not re-OCR"
     if note not in sourced.notes:
         sourced.notes.append(note)
@@ -1627,7 +1627,7 @@ def quote_bom_from_drawing(
     merged into the quote rows. No LIST OF MATERIAL → piece part; do
     not invent a table or LOM.xlsx. Never overwrite Desktop sheets.
     """
-    existing = quote_from_existing_lom_xlsx(pdf_path)
+    existing = quote_from_existing_lom_xlsx(pdf_path, bom_config=bom_config)
     if existing is not None:
         return existing
     clipped = extract_bom(
@@ -1645,7 +1645,7 @@ def quote_bom_from_drawing(
     xlsx = lom_xlsx_path_for_pdf(pdf_path)
     if not xlsx.is_file():
         return clipped
-    sourced = bom_from_lom_xlsx(xlsx, prior=clipped)
+    sourced = bom_from_lom_xlsx(xlsx, prior=clipped, bom_config=bom_config)
     tabs = list_lom_sheet_names(xlsx)
     if tabs:
         note = f"Quote read {xlsx.name} tabs: {', '.join(tabs)}"
@@ -1654,7 +1654,12 @@ def quote_bom_from_drawing(
     return sourced
 
 
-def bom_from_lom_xlsx(path: Path | str, *, prior: BomResult | None = None) -> BomResult:
+def bom_from_lom_xlsx(
+    path: Path | str,
+    *,
+    prior: BomResult | None = None,
+    bom_config: str | None = None,
+) -> BomResult:
     """Quote BOM is the written sheet. Do not keep a parallel parse."""
     from quote_core.bom_xlsx import (
         list_lom_sheet_names,
@@ -1663,7 +1668,7 @@ def bom_from_lom_xlsx(path: Path | str, *, prior: BomResult | None = None) -> Bo
     )
 
     dest = Path(path)
-    _header, data = read_lom_xlsx(dest)
+    _header, data = read_lom_xlsx(dest, bom_config=bom_config)
     sheets = list_lom_sheet_names(dest)
     prior_rows = list(getattr(prior, "rows", None) or [])
     by_key: dict[tuple[str, str], BomRow] = {}
@@ -1704,7 +1709,9 @@ def bom_from_lom_xlsx(path: Path | str, *, prior: BomResult | None = None) -> Bo
         lom_xlsx=dest.name,
         lom_sheets=sheets,
         nested_children=refresh_nested_children_from_xlsx(
-            dest, list(getattr(prior, "nested_children", None) or [])
+            dest,
+            list(getattr(prior, "nested_children", None) or []),
+            bom_config=bom_config,
         ),
     )
 
@@ -1717,6 +1724,7 @@ def _with_lom_xlsx(
     related_pdf_names: list[str] | None = None,
     nested_seen: set[str] | None = None,
     nested_depth: int = 0,
+    bom_config: str | None = None,
 ) -> BomResult:
     """Clip-to-Excel only for a real LIST OF MATERIAL. Piece parts stay one-part.
 
@@ -1724,7 +1732,7 @@ def _with_lom_xlsx(
     """
     if not pdf_path or not bom.rows:
         return bom
-    existing = quote_from_existing_lom_xlsx(pdf_path, prior=bom)
+    existing = quote_from_existing_lom_xlsx(pdf_path, prior=bom, bom_config=bom_config)
     if existing is not None:
         return existing
     try:
@@ -1747,7 +1755,7 @@ def _with_lom_xlsx(
     note = f"Wrote {dest.name}"
     if note not in bom.notes:
         bom.notes.append(note)
-    sourced = bom_from_lom_xlsx(dest, prior=bom)
+    sourced = bom_from_lom_xlsx(dest, prior=bom, bom_config=bom_config)
     from quote_core.bom_xlsx import bom_is_lom_clip
 
     if not bom_is_lom_clip(sourced):

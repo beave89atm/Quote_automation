@@ -31,8 +31,13 @@ from quote_core.bom_xlsx import (
 
 from tests.test_bom_table import (
     _KYLE_102728_1,
+    _assert_kyle_1004747_1,
     _assert_kyle_102728_1,
+    _assert_kyle_28106_1,
     _assert_kyle_xlsx,
+    _kyle_1004747_cell_rows,
+    _kyle_28106_cell_rows,
+    _kyle_p904225_cell_rows,
     _write_lom_pdf,
 )
 
@@ -423,3 +428,182 @@ def test_piece_part_without_lom_does_not_invent_bom_or_xlsx(tmp_path: Path):
     assert quoted.lom_xlsx is None
     assert not (quoted.method or "").startswith("table_")
     assert not xlsx.is_file()
+
+
+def _col_letter(index: int) -> str:
+    n = index + 1
+    out = ""
+    while n:
+        n, rem = divmod(n - 1, 26)
+        out = chr(65 + rem) + out
+    return out
+
+
+def _write_grid_xlsx(path: Path, rows: list[list[str]]) -> Path:
+    """As-drawn Time tab: whatever headers the sheet printed, not ITEM|QTY only."""
+    import zipfile
+
+    dest = Path(path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        f'<worksheet xmlns="{_NS_MAIN}"><sheetData>',
+    ]
+    for r_i, row in enumerate(rows, start=1):
+        cells = []
+        for c_i, value in enumerate(row):
+            ref = f"{_col_letter(c_i)}{r_i}"
+            if r_i > 1 and str(value).isdigit():
+                cells.append(_qty_cell(ref, value))
+            else:
+                cells.append(_inline_cell(ref, value))
+        parts.append(f'<row r="{r_i}">{"".join(cells)}</row>')
+    parts.append("</sheetData></worksheet>")
+    with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", _CONTENT_TYPES)
+        zf.writestr("_rels/.rels", _ROOT_RELS)
+        zf.writestr("xl/workbook.xml", _WORKBOOK)
+        zf.writestr("xl/_rels/workbook.xml.rels", _WORKBOOK_RELS)
+        zf.writestr("xl/worksheets/sheet1.xml", "".join(parts))
+    return dest
+
+
+def test_qty_header_variants_are_quantity_columns():
+    from quote_core.bom_xlsx import _header_column_map, _qty_header_info
+
+    assert _qty_header_info("QTY") == (True, None, None)
+    assert _qty_header_info("QTY -1") == (True, "1", None)
+    assert _qty_header_info("QTY-1") == (True, "1", None)
+    assert _qty_header_info("QTY -2") == (True, "2", None)
+    assert _qty_header_info("-1") == (True, "1", None)
+    assert _qty_header_info("1004747-1") == (True, "1", "1004747-1")
+    assert _qty_header_info("P904225-1") == (True, "1", "P904225-1")
+    assert _qty_header_info("1")[0] is False
+    assert _qty_header_info("ITEM")[0] is False
+
+    mapped = _header_column_map(
+        ["ITEM", "QTY -1", "QTY -2", "PART NO", "DESCRIPTION"]
+    )
+    assert mapped is not None
+    assert mapped["QTY_COLS"] == [(1, "1"), (2, "2")]
+    assert mapped["ITEM"] == 0
+    assert mapped["PART NO"] == 3
+
+
+def test_qty_dash_headers_select_filled_dash_only(tmp_path: Path):
+    """Workspace as-drawn first tab is QTY -1 / QTY -2, not a bare QTY."""
+    cells = _kyle_28106_cell_rows()
+    cells[0] = ["QTY -4", "QTY -3", "QTY -2", "QTY -1", "ITEM", "PART NO.", "DESCRIPTION"]
+    path = _write_grid_xlsx(tmp_path / "28106-1-LOM.xlsx", cells)
+    sourced = bom_from_lom_xlsx(path, bom_config="-1")
+    _assert_kyle_28106_1(sourced)
+    compact = [list(row) for row in cells]
+    compact[0] = ["QTY-4", "QTY-3", "QTY-2", "QTY-1", "ITEM", "PART NO.", "DESCRIPTION"]
+    compact_path = _write_grid_xlsx(tmp_path / "28106-1-compact-LOM.xlsx", compact)
+    _assert_kyle_28106_1(bom_from_lom_xlsx(compact_path, bom_config="-1"))
+
+
+def test_pn_named_qty_column_is_the_dash(tmp_path: Path):
+    path = _write_grid_xlsx(tmp_path / "1004747-1-LOM.xlsx", _kyle_1004747_cell_rows())
+    sourced = bom_from_lom_xlsx(path, bom_config="-1")
+    _assert_kyle_1004747_1(sourced)
+
+
+def test_blank_dash_uses_one_qty_column_not_the_sum(tmp_path: Path):
+    """33612 live 94/47 was both dash columns added. Blank dash is one column."""
+    rows = [
+        ["ITEM", "QTY -1", "QTY -2", "PART NO", "DESCRIPTION"],
+        ["A", "2", "2", "28275-1", "TUBE, ROUND"],
+        ["B", "4", "4", "28276-1", "PLATE"],
+        ["C", "1", "1", "28277-1", "STIFFENER"],
+        ["D", "1", "1", "56657", ""],
+        ["E", "1", "1", "97879", ""],
+        ["F", "1", "8", "28278-1", "BRACKET"],
+    ]
+    path = _write_grid_xlsx(tmp_path / "33612-1-LOM.xlsx", rows)
+    blank = bom_from_lom_xlsx(path, bom_config="")
+    parts = {r.part_no for r in blank.rows}
+    assert "56657" not in parts
+    assert "97879" not in parts
+    assert blank.piece_count == 8
+    assert blank.part_number_count == 4
+    assert blank.piece_count != 16
+    dash1 = bom_from_lom_xlsx(path, bom_config="-1")
+    assert dash1.piece_count == 8
+    dash2 = bom_from_lom_xlsx(path, bom_config="-2")
+    assert dash2.piece_count == 15
+    by_item = {r.item: r for r in dash2.rows}
+    assert by_item["F"].qty == 8
+
+
+def test_skips_title_block_welding_wire_and_revision_pns(tmp_path: Path):
+    cells = _kyle_p904225_cell_rows()
+    cells.append(["1", "14", "61358", ""])
+    cells.append(["1", "15", "73207", ""])
+    path = _write_grid_xlsx(tmp_path / "P904225-1-LOM.xlsx", cells)
+    sourced = bom_from_lom_xlsx(path, bom_config="")
+    parts = {str(r.part_no or "") for r in sourced.rows}
+    assert "P904225-1" not in parts
+    assert "904225-1" not in parts
+    assert "89176-1" not in parts
+    assert "61358" not in parts
+    assert "73207" not in parts
+    assert "89100-1" in parts
+    assert any("904226" in p for p in parts)
+    assert all(str(r.item).isdigit() for r in sourced.rows)
+    assert "12" not in {str(r.item) for r in sourced.rows}
+    assert "13" not in {str(r.item) for r in sourced.rows}
+
+
+def test_existing_qty_dash_xlsx_is_quote_without_reocr(tmp_path: Path, monkeypatch):
+    pdf = tmp_path / "Time 28106- Weldment.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%\n")
+    cells = _kyle_28106_cell_rows()
+    cells[0] = ["QTY -4", "QTY -3", "QTY -2", "QTY -1", "ITEM", "PART NO.", "DESCRIPTION"]
+    path = _write_grid_xlsx(tmp_path / "28106-1-LOM.xlsx", cells)
+    from quote_core.bom_xlsx import find_existing_lom_xlsx
+
+    assert find_existing_lom_xlsx(pdf) == path
+
+    def fail_ocr(**_kwargs):
+        raise AssertionError("must not re-OCR when LOM.xlsx exists")
+
+    monkeypatch.setattr("quote_core.bom.extract_bom_from_ocr_time_style", fail_ocr)
+    bom = extract_bom(pdf_path=pdf, bom_config="-1")
+    _assert_kyle_28106_1(bom)
+    assert bom.to_dict()["source"] == "lom_xlsx"
+    assert any("did not re-OCR" in n for n in bom.notes)
+
+
+def test_desktop_qty_dash_xlsx_is_not_overwritten(tmp_path: Path, monkeypatch):
+    from quote_core.bom_xlsx import (
+        find_existing_lom_xlsx,
+        is_desktop_lom_path,
+        write_lom_xlsx_for_bom,
+    )
+
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    cells = _kyle_28106_cell_rows()
+    cells[0] = ["QTY -4", "QTY -3", "QTY -2", "QTY -1", "ITEM", "PART NO.", "DESCRIPTION"]
+    confirmed = _write_grid_xlsx(desktop / "28106-1-LOM.xlsx", cells)
+    before = confirmed.read_bytes()
+    monkeypatch.setattr("quote_core.bom_xlsx._desktop_dirs", lambda: [desktop])
+
+    job = tmp_path / "job"
+    job.mkdir()
+    pdf = job / "Time 28106- Weldment.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%\n")
+
+    assert is_desktop_lom_path(confirmed) is True
+    assert find_existing_lom_xlsx(pdf) == confirmed
+    written = write_lom_xlsx_for_bom(
+        pdf,
+        BomResult(rows=[BomRow(item="A", qty=0, part_no="16697-2", description="TUBE")]),
+    )
+    assert written == confirmed
+    assert confirmed.read_bytes() == before
+    quoted = quote_bom_from_drawing(pdf_path=pdf, bom_config="-1")
+    _assert_kyle_28106_1(quoted)
+    assert confirmed.read_bytes() == before
+    assert not (job / f"{pdf.stem}-LOM.xlsx").is_file()

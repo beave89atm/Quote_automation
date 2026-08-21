@@ -140,7 +140,7 @@ def is_desktop_lom_path(path: Path | str) -> bool:
 
 def _workbook_has_lom_rows(path: Path) -> bool:
     try:
-        _header, data = read_lom_xlsx(path)
+        _header, data = read_lom_xlsx(path, drop_junk=False)
     except Exception:  # noqa: BLE001
         return False
     return any(str(rec.get("PART NO") or "").strip() for rec in data)
@@ -542,9 +542,9 @@ def _qty_int(value: Any) -> int:
         return 0
 
 
-def sheet_records(path: Path | str) -> list[dict[str, Any]]:
+def sheet_records(path: Path | str, *, bom_config: str | None = None) -> list[dict[str, Any]]:
     """Four-column LOM.xlsx as quote rows. Qty unread/blank is 0."""
-    _header, data = read_lom_xlsx(path)
+    _header, data = read_lom_xlsx(path, bom_config=bom_config)
     return [
         {
             "item": rec.get("ITEM") or "",
@@ -557,12 +557,16 @@ def sheet_records(path: Path | str) -> list[dict[str, Any]]:
 
 
 def apply_lom_xlsx_to_takeoff(
-    takeoff: dict[str, Any] | None, path: Path | str
+    takeoff: dict[str, Any] | None,
+    path: Path | str,
+    *,
+    bom_config: str | None = None,
 ) -> dict[str, Any]:
     """Replace takeoff BOM JSON with the written sheet. No side channel."""
     dest = Path(path)
-    records = sheet_records(dest)
     blob = dict(takeoff or {})
+    dash = bom_config if bom_config is not None else blob.get("bom_config")
+    records = sheet_records(dest, bom_config=dash)
     prior = rows_from_takeoff(blob)
     weights: dict[tuple[str, str], Any] = {}
     for row in prior:
@@ -672,6 +676,40 @@ def _col_index_from_ref(ref: str) -> int | None:
     return max(0, n - 1)
 
 
+# Time as-drawn tabs: ``QTY -1``, ``QTY-1``, ``-1``, or the dash PN itself.
+_QTY_DASH_HEADER_RE = re.compile(
+    r"^(?:QTY|QTY\.|QTYS|QUANTITY)[\s.\-–—]*([1-4])$",
+    re.IGNORECASE,
+)
+_BARE_DASH_QTY_RE = re.compile(r"^\[?-([1-4])\]?$")
+_PN_DASH_QTY_RE = re.compile(r"^P?(\d{5,7})-([1-4])$", re.IGNORECASE)
+
+
+def _qty_header_info(cell: str) -> tuple[bool, str | None, str | None]:
+    """Qty header → (is_qty, dash or None, header PN or None).
+
+    ``QTY`` / ``QUANTITY`` is the single qty column (dash is None).
+    ``QTY -1``, ``QTY-1``, ``-1``, and ``1004747-1`` / ``P904225-1`` are
+    dash columns. A bare ``1`` is an ITEM index, not a qty header.
+    """
+    raw = str(cell or "").strip()
+    if not raw:
+        return False, None, None
+    compact = re.sub(r"[^A-Z0-9]+", "", raw.upper())
+    if compact in {"QTY", "QTYS", "QUANTITY"}:
+        return True, None, None
+    dashed = _QTY_DASH_HEADER_RE.fullmatch(raw)
+    if dashed:
+        return True, dashed.group(1), None
+    bare = _BARE_DASH_QTY_RE.fullmatch(raw)
+    if bare:
+        return True, bare.group(1), None
+    pn_col = _PN_DASH_QTY_RE.fullmatch(raw)
+    if pn_col:
+        return True, pn_col.group(2), raw.strip().upper()
+    return False, None, None
+
+
 def _canon_header_token(cell: str) -> str | None:
     raw = str(cell or "").strip().upper()
     compact = re.sub(r"[^A-Z0-9]+", "", raw)
@@ -686,16 +724,110 @@ def _canon_header_token(cell: str) -> str | None:
     return None
 
 
-def _header_column_map(row: list[str]) -> dict[str, int] | None:
-    """ITEM/QTY/PART NO/DESCRIPTION in any order. QTY is not assumed col 0."""
-    found: dict[str, int] = {}
+def _header_column_map(row: list[str]) -> dict[str, Any] | None:
+    """ITEM / PART / DESC plus every qty-like column. QTY is not assumed col 0.
+
+    Treat ``QTY``, ``QTY -1``, ``QTY-1``, ``-1``, and a column named like
+    the dash (``1004747-1``) as quantity headers.
+    """
+    found: dict[str, Any] = {"QTY_COLS": [], "QTY_HEADER_PNS": []}
     for i, cell in enumerate(row):
+        is_qty, dash, header_pn = _qty_header_info(cell)
+        if is_qty:
+            found["QTY_COLS"].append((i, dash))
+            if header_pn and header_pn not in found["QTY_HEADER_PNS"]:
+                found["QTY_HEADER_PNS"].append(header_pn)
+            continue
         canon = _canon_header_token(cell)
-        if canon and canon not in found:
+        if canon and canon != "QTY" and canon not in found:
             found[canon] = i
-    if "QTY" in found and "PART NO" in found:
+    if found["QTY_COLS"] and "PART NO" in found:
         return found
     return None
+
+
+def _pick_xlsx_qty_col(
+    qty_cols: list[tuple[int, str | None]],
+    bom_config: str | None,
+) -> tuple[int | None, bool]:
+    """Return (column index, omit blank qty).
+
+    Filled dash → that printed column only. Blank dash → the single QTY
+    column (bare ``QTY``, else the first qty column — never the sum).
+    A decorative lone ``-1`` next to ``QTY`` (102728) is not a second column.
+    """
+    from quote_core.bom_config import normalize_bom_config
+
+    if not qty_cols:
+        return None, False
+    dash = normalize_bom_config(bom_config)
+    bare = [col for col in qty_cols if col[1] is None]
+    dashed = [col for col in qty_cols if col[1] is not None]
+    work = bare if bare and len(dashed) < 2 else qty_cols
+    if dash:
+        want = dash.lstrip("-")
+        for idx, col_dash in work:
+            if col_dash and col_dash.lstrip("-") == want:
+                return idx, True
+        if bare:
+            return bare[0][0], False
+        return work[0][0], False
+    if bare:
+        return bare[0][0], False
+    return work[0][0], False
+
+
+def _title_pns_from_xlsx_path(path: Path | str) -> set[str]:
+    """``1004611-1-LOM.xlsx`` / ``P904225-1-LOM.xlsx`` title DWG — not a BOM row."""
+    from quote_core.bom_table import _weldment_pn_reject_aliases, job_weldment_key_from_path
+
+    dest = Path(path)
+    key = job_weldment_key_from_path(dest)
+    if not key:
+        stem = dest.stem
+        if stem.upper().endswith("-LOM"):
+            key = job_weldment_key_from_path(stem[:-4])
+    if not key:
+        return set()
+    out = set(_weldment_pn_reject_aliases(key))
+    out.update(_weldment_pn_reject_aliases(f"{key}-1"))
+    return {token.upper() for token in out if token}
+
+
+def _is_xlsx_junk_row(
+    part: str,
+    desc: str,
+    cols: list[str],
+    colmap: dict[str, Any],
+    reject_pns: set[str] | None,
+) -> bool:
+    """Skip title-block / qty-header PNs, welding-wire notes, revision marks."""
+    from quote_core.bom_table import (
+        MaterialListLayout,
+        _is_eco_or_title_block_row,
+        _is_welding_wire_note,
+        _part_is_qty_header_pn,
+        _weldment_pn_reject_aliases,
+    )
+
+    raw = " ".join(str(c or "") for c in cols)
+    if _is_eco_or_title_block_row(part, desc, raw):
+        return True
+    if _is_welding_wire_note(part, desc, raw):
+        return True
+    layout = MaterialListLayout(
+        qty_header_pns=list(colmap.get("QTY_HEADER_PNS") or [])
+    )
+    if _part_is_qty_header_pn(part, layout):
+        return True
+    token = str(part or "").strip().upper()
+    if not token:
+        return False
+    aliases: set[str] = set()
+    for pn in reject_pns or []:
+        aliases.add(str(pn).strip().upper())
+        aliases.update(_weldment_pn_reject_aliases(pn))
+    return token in aliases
 
 
 def _shared_strings(zf: zipfile.ZipFile) -> list[str]:
@@ -728,7 +860,12 @@ def _cell_value(cell: ET.Element, sst: list[str] | None) -> str:
 
 
 def _parse_sheet_xml(
-    raw: bytes, sst: list[str] | None = None
+    raw: bytes,
+    sst: list[str] | None = None,
+    *,
+    bom_config: str | None = None,
+    reject_pns: set[str] | None = None,
+    drop_junk: bool = True,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     root = ET.fromstring(raw)
     rows_el = list(root.findall(f"{{{_NS_MAIN}}}sheetData/{{{_NS_MAIN}}}row"))
@@ -754,23 +891,49 @@ def _parse_sheet_xml(
             header_idx = i
             break
     if colmap is None:
-        colmap = {"QTY": 0, "ITEM": 1, "PART NO": 2, "DESCRIPTION": 3}
+        colmap = {
+            "QTY_COLS": [(0, None)],
+            "ITEM": 1,
+            "PART NO": 2,
+            "DESCRIPTION": 3,
+            "QTY_HEADER_PNS": [],
+        }
     header = parsed[header_idx]
+    qty_idx, omit_blank = _pick_xlsx_qty_col(
+        list(colmap.get("QTY_COLS") or []),
+        bom_config,
+    )
+    if qty_idx is None:
+        qty_idx = 0
+        omit_blank = False
+
+    def _get(cols: list[str], name: str) -> str:
+        idx = colmap.get(name)
+        if name == "QTY":
+            idx = qty_idx
+        if idx is None or int(idx) >= len(cols):
+            return ""
+        return str(cols[int(idx)] or "")
+
     data: list[dict[str, Any]] = []
     for cols in parsed[header_idx + 1 :]:
-        def _get(name: str) -> str:
-            idx = colmap.get(name)
-            if idx is None or idx >= len(cols):
-                return ""
-            return str(cols[idx] or "")
-
         rec = {
-            "QTY": _get("QTY"),
-            "ITEM": _get("ITEM"),
-            "PART NO": _get("PART NO"),
-            "DESCRIPTION": _get("DESCRIPTION"),
+            "QTY": _get(cols, "QTY"),
+            "ITEM": _get(cols, "ITEM"),
+            "PART NO": _get(cols, "PART NO"),
+            "DESCRIPTION": _get(cols, "DESCRIPTION"),
         }
         if not str(rec["PART NO"]).strip() and not str(rec["ITEM"]).strip():
+            continue
+        if drop_junk and _is_xlsx_junk_row(
+            str(rec["PART NO"] or ""),
+            str(rec["DESCRIPTION"] or ""),
+            cols,
+            colmap,
+            reject_pns,
+        ):
+            continue
+        if omit_blank and _qty_int(rec["QTY"]) <= 0:
             continue
         data.append(rec)
     return header, data
@@ -782,10 +945,16 @@ def list_lom_sheet_names(path: Path | str) -> list[str]:
 
 
 def read_lom_xlsx(
-    path: Path | str, sheet: str | None = None
+    path: Path | str,
+    sheet: str | None = None,
+    *,
+    bom_config: str | None = None,
+    drop_junk: bool = True,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """Read header + data rows. Default is the parent LIST OF MATERIAL tab."""
-    with zipfile.ZipFile(Path(path)) as zf:
+    dest = Path(path)
+    reject = _title_pns_from_xlsx_path(dest) if drop_junk else set()
+    with zipfile.ZipFile(dest) as zf:
         parts = _sheet_part_paths(zf)
         zip_path = parts[0][1]
         if sheet:
@@ -798,24 +967,41 @@ def read_lom_xlsx(
                 return list(LOM_COLUMNS), []
         raw = zf.read(zip_path)
         sst = _shared_strings(zf)
-    return _parse_sheet_xml(raw, sst)
+    return _parse_sheet_xml(
+        raw,
+        sst,
+        bom_config=bom_config,
+        reject_pns=reject,
+        drop_junk=drop_junk,
+    )
 
 
-def bom_tabs_for_import(path: Path | str) -> list[tuple[str, list[dict[str, Any]]]]:
+def bom_tabs_for_import(
+    path: Path | str, *, bom_config: str | None = None
+) -> list[tuple[str, list[dict[str, Any]]]]:
     """Every BOM tab for SecturaFAB import. Parent first. Do not merge rows."""
     return [
         (name, _records_to_rows(data))
-        for name, data in read_lom_sheets(path).items()
+        for name, data in read_lom_sheets(path, bom_config=bom_config).items()
     ]
 
 
-def read_lom_sheets(path: Path | str) -> dict[str, list[dict[str, Any]]]:
+def read_lom_sheets(
+    path: Path | str, *, bom_config: str | None = None
+) -> dict[str, list[dict[str, Any]]]:
     """Every BOM tab. Parent takeoff is the first name (LIST OF MATERIAL)."""
+    dest = Path(path)
+    reject = _title_pns_from_xlsx_path(dest)
     out: dict[str, list[dict[str, Any]]] = {}
-    with zipfile.ZipFile(Path(path)) as zf:
+    with zipfile.ZipFile(dest) as zf:
         sst = _shared_strings(zf)
         for name, part in _sheet_part_paths(zf):
-            _header, data = _parse_sheet_xml(zf.read(part), sst)
+            _header, data = _parse_sheet_xml(
+                zf.read(part),
+                sst,
+                bom_config=bom_config,
+                reject_pns=reject,
+            )
             out[name] = data
     return out
 
@@ -833,13 +1019,16 @@ def _records_to_rows(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def refresh_nested_children_from_xlsx(
-    path: Path | str, children: list[dict[str, Any]]
+    path: Path | str,
+    children: list[dict[str, Any]],
+    *,
+    bom_config: str | None = None,
 ) -> list[dict[str, Any]]:
     """Re-read child tabs from the parent workbook. Parent sheet is not merged."""
     if not children:
         return children
     try:
-        sheets = read_lom_sheets(path)
+        sheets = read_lom_sheets(path, bom_config=bom_config)
     except (OSError, KeyError, ET.ParseError):
         return children
     dest = Path(path)
