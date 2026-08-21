@@ -1163,7 +1163,10 @@ def extract_bom_from_material_list_table(
         SHORT_TABLE_REJECT,
         TALL_TABLE_MIN_ROWS,
         harvest_material_list_lines,
+        is_later_sheet_child_weldment,
+        job_weldment_key_from_path,
         material_list_header_seen,
+        page_title_weldment_key,
         parse_material_list_text,
         pick_best_material_list,
         score_material_list,
@@ -1211,8 +1214,18 @@ def extract_bom_from_material_list_table(
             indexes = [min(max(0, page_index), n_pages - 1)]
         else:
             indexes = list(range(n_pages))
+        job_key = job_weldment_key_from_path(pdf_path)
         for idx in indexes:
             page = doc[idx]
+            page_text = page.get_text("text") or ""
+            if idx == 0 and not job_key:
+                job_key = page_title_weldment_key(page_text)
+            if idx > 0 and is_later_sheet_child_weldment(page_text, job_key):
+                notes.append(
+                    f"Skipped later-sheet child LOM on page {idx + 1} "
+                    f"({page_title_weldment_key(page_text)}) — not this job's BOM"
+                )
+                continue
             parsed = _parse_material_list_on_page(page, bom_config=bom_config)
             if parsed.rows or material_list_header_seen(parsed):
                 parsed.notes = [

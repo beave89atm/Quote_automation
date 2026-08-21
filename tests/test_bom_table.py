@@ -598,6 +598,39 @@ def _assert_kyle_33612_1(bom) -> None:
     assert all(str(r.item) in _KYLE_33612_LETTERS for r in bom.rows)
 
 
+# Kyle 105098-1 confirmed against 105098-1-LOM.xlsx.
+# Parent LOM only: letters A–J skip I (9 letters). 9 PNs / 9 pcs.
+# Do not ingest later-sheet 103603-1 child tables as this job's BOM.
+# Remaining PNs were not listed — do not invent them. Live bar is 9/9.
+_KYLE_105098_1_PN_COUNT = 9
+_KYLE_105098_1_PCS = 9
+_KYLE_105098_LETTERS = [c for c in "ABCDEFGHJ"]
+_KYLE_105098_1: list[tuple[str, int, str, str]] = []
+
+
+def _kyle_105098_cell_rows() -> list[list[str]]:
+    """9-row QTY|ITEM|PN parent grid. A at the bottom when reversed."""
+    rows = [["QTY", "ITEM", "PART NO.", "DESCRIPTION"]]
+    for item in _KYLE_105098_LETTERS:
+        # Letter is on the parent takeoff. PN not listed — do not invent.
+        rows.append(["1", item, "", ""])
+    rows.append(["1", "K", "103603-1", "WELDMENT"])
+    return rows
+
+
+def _assert_kyle_105098_1(bom) -> None:
+    parts = {str(r.part_no or "") for r in bom.rows}
+    by_item = {str(r.item): r for r in bom.rows}
+    assert "103603-1" not in parts
+    assert "103603" not in parts
+    assert "105098-1" not in parts
+    assert "105098" not in parts
+    assert "I" not in by_item
+    assert "K" not in by_item
+    assert "M" not in by_item
+    assert all(str(r.item) in _KYLE_105098_LETTERS for r in bom.rows)
+
+
 def test_kyle_grid_writes_four_column_xlsx(tmp_path: Path):
     """Same 51-row grid Kyle confirmed — QTY / ITEM / PART NO / DESCRIPTION."""
     from quote_core.bom import BomResult, BomRow
@@ -768,6 +801,10 @@ def test_791587b_live_qty_column_unread_is_takeoff_fail():
     assert recovered.piece_count == 97
     assert recovered.confidence > 0.45
     assert "takeoff fail" not in " ".join(recovered.notes).lower()
+    # 51/30 unread must not beat 51/97 when both candidates exist.
+    best = pick_best_material_list([live, recovered])
+    assert best.piece_count == 97
+    _assert_kyle_102728_1(best)
 
 
 def test_fifty_one_pns_sixty_five_pcs_is_not_kyle_done():
@@ -1436,6 +1473,118 @@ def test_kyle_33612_1_omits_56657_97879_keeps_282xx():
     assert "56657" not in pns
     assert "97879" not in pns
     assert "33612-1" not in pns
+
+
+def test_kyle_105098_1_parent_a_j_9_pn_9_pcs_omits_103603():
+    """Kyle-confirmed 105098-1-LOM.xlsx. A–J skip I; parent only; no 103603-1."""
+    assert _KYLE_105098_LETTERS == list("ABCDEFGHJ")
+    assert len(_KYLE_105098_LETTERS) == 9
+    assert "I" not in _KYLE_105098_LETTERS
+    assert _KYLE_105098_LETTERS[0] == "A" and _KYLE_105098_LETTERS[-1] == "J"
+    assert _KYLE_105098_1_PN_COUNT == 9
+    assert _KYLE_105098_1_PCS == 9
+    assert _KYLE_105098_1 == []
+    assert "103603-1" not in {pn for _i, _q, pn, _d in _KYLE_105098_1}
+
+    layout = detect_material_list_header(["QTY", "ITEM", "PART NO.", "DESCRIPTION"])
+    assert layout is not None
+    assert layout.qty_cols == ["QTY"]
+    assert not layout.is_multi_qty
+
+    cells = _kyle_105098_cell_rows()
+    assert len(cells) == 11  # header + 9 letters + 103603 junk
+    assert cells[0] == ["QTY", "ITEM", "PART NO.", "DESCRIPTION"]
+    assert cells[1][1] == "A" and cells[9][1] == "J"
+    assert cells[-1][2] == "103603-1"
+    parsed = parse_material_list_cells(cells)
+    _assert_kyle_105098_1(parsed)
+
+    lines = [
+        "WELDMENT, PLATFORM",
+        "105098-1",
+        "TIME MANUFACTURING",
+        "LIST OF MATERIAL",
+    ]
+    for row in cells:
+        lines.append(" | ".join(row))
+    text = "\n".join(lines)
+    _assert_kyle_105098_1(parse_material_list_text(text))
+    extracted = extract_bom(text=text)
+    _assert_kyle_105098_1(extracted)
+    assert extracted.method and extracted.method.startswith("table_")
+    assert not (extracted.method or "").startswith("ocr_time")
+
+    harvested = harvest_ocr_row_strips(
+        [" | ".join(row) for row in reversed(cells)],
+        bom_config="",
+        page_text="WELDMENT, PLATFORM  105098-1",
+    )
+    _assert_kyle_105098_1(harvested)
+
+
+def test_later_sheet_103603_1_is_not_105098_parent_bom(tmp_path: Path):
+    """Parent A–J on sheet 1. Later 103603-1 child LOM must not become this job."""
+    from quote_core.bom_table import (
+        is_later_sheet_child_weldment,
+        job_weldment_key_from_path,
+        page_title_weldment_key,
+    )
+
+    import fitz
+
+    parent = (
+        "WELDMENT, PLATFORM  105098-1  TIME MANUFACTURING\n"
+        "LIST OF MATERIAL\n"
+        "QTY | ITEM | PART NO. | DESCRIPTION\n"
+        "1 | A | | \n"
+        "1 | J | | \n"
+    )
+    child = (
+        "WELDMENT, PLATFORM  103603-1  TIME MANUFACTURING\n"
+        "LIST OF MATERIAL\n"
+        "QTY | ITEM | PART NO. | DESCRIPTION\n"
+        "1 | A | 103603-2 | TUBE\n"
+        "1 | B | 103604-1 | PLATE\n"
+        "1 | C | 103605-1 | RAIL\n"
+        "1 | D | 103606-1 | CAP\n"
+        "1 | E | 103607-1 | ANGLE\n"
+        "1 | F | 103608-1 | GATE\n"
+        "1 | G | 103609-1 | PIN\n"
+        "1 | H | 103610-1 | HOOK\n"
+        "1 | J | 103611-1 | BAR\n"
+        "1 | K | 103612-1 | PLATE\n"
+        "1 | L | 103613-1 | TUBE\n"
+    )
+    assert page_title_weldment_key(parent) == "105098"
+    assert page_title_weldment_key(child) == "103603"
+    assert is_later_sheet_child_weldment(child, "105098")
+    assert not is_later_sheet_child_weldment(parent, "105098")
+    same_sheet_gate = (
+        "WELDMENT, PLATFORM  103516-1  TIME MANUFACTURING\n"
+        "1 | 1 | 103535-1 | GATE WELDMENT\n"
+    )
+    assert page_title_weldment_key(same_sheet_gate) == "103516"
+    assert not is_later_sheet_child_weldment(same_sheet_gate, "103516")
+
+    pdf = tmp_path / "105098-1.pdf"
+    assert job_weldment_key_from_path(pdf) == "105098"
+    doc = fitz.open()
+    p1 = doc.new_page()
+    p1.insert_text((40, 40), parent)
+    p2 = doc.new_page()
+    p2.insert_text((40, 40), child)
+    doc.save(pdf)
+    doc.close()
+
+    bom = extract_bom(pdf_path=pdf, bom_config="")
+    parts = {str(r.part_no or "") for r in bom.rows}
+    assert "103603-1" not in parts
+    assert "103603-2" not in parts
+    assert "103604-1" not in parts
+    assert "103611-1" not in parts
+    _assert_kyle_105098_1(bom)
+    joined = " ".join(bom.notes).lower()
+    assert "child" in joined or "103603" in joined
 
 
 def test_kyle_1004747_1_pdf_extract_bom_and_xlsx(tmp_path: Path):

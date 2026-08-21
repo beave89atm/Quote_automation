@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 # Time-style balloons skip I and O in every position (A–Z, AA–AZ, BA…).
@@ -648,6 +649,11 @@ _STANDALONE_DRAWING_PN_RE = re.compile(
     r"^P?\d{5,7}(?:\s*[-–—=]\s*\d{1,3}[A-Za-z]?)?$",
     re.IGNORECASE,
 )
+# Filename ``105098-1.pdf`` / ``Time 102728- Weldment.pdf``.
+_JOB_PN_STEM_RE = re.compile(
+    r"(P?\d{5,7})(?:\s*[-–—_]\s*\d{1,3})?",
+    re.IGNORECASE,
+)
 # `[3688-9` is OCR of 33688-9. Do not fire on `[25009-2` (5-digit stem).
 _BRACKET_AS_THREE_RE = re.compile(r"\[(?=\d{4}\s*[-–—=]\s*\d)")
 # ECO / revision / title-block notes — not weld parts (28106 C=72143, AN=89176-1).
@@ -726,6 +732,40 @@ def _weldment_pn_reject_aliases(token: str) -> set[str]:
         # P904225 (no dash) still rejects 904225-1 — same title, not a sibling.
         out.update({stem, f"P{stem}", f"{stem}-1", f"P{stem}-1"})
     return {x for x in out if re.fullmatch(r"P?\d{5,7}(?:-\d{1,3})?", x)}
+
+
+def weldment_job_key(token: str | None) -> str:
+    """``105098-1`` / ``P904225-1`` → ``105098`` / ``904225``. Empty if not a PN."""
+    raw = str(token or "").strip().upper().replace(" ", "")
+    raw = raw.replace("–", "-").replace("—", "-").replace("=", "-")
+    match = re.match(r"P?(\d{5,7})(?:-\d{1,3}[A-Z]?)?", raw)
+    return match.group(1) if match else ""
+
+
+def job_weldment_key_from_path(path: Path | str | None) -> str:
+    """Job weldment base from a PDF stem. ``Time 102728- Weldment`` → ``102728``."""
+    if not path:
+        return ""
+    found = _JOB_PN_STEM_RE.search(Path(path).stem)
+    return weldment_job_key(found.group(0) if found else "")
+
+
+def page_title_weldment_key(text: str | None) -> str:
+    """Title-stack weldment PN only — not a LOM row like ``103535-1 GATE WELDMENT``."""
+    blob = str(text or "")
+    match = _TITLE_WELDMENT_SHOP_PN_RE.search(blob)
+    if match:
+        return weldment_job_key(match.group(1))
+    return ""
+
+
+def is_later_sheet_child_weldment(page_text: str | None, job_key: str | None) -> bool:
+    """True when this page is a different weldment (105098 must not ingest 103603-1)."""
+    job = weldment_job_key(job_key) or str(job_key or "").strip()
+    if job and not job.isdigit():
+        job = weldment_job_key(job)
+    page = page_title_weldment_key(page_text)
+    return bool(job and page and page != job)
 
 
 def _immediate_item_before(text: str, index: int) -> bool:
