@@ -132,6 +132,39 @@ def _assert_kyle_102728_1(bom) -> None:
     assert by_item["BB"].part_no == _BB_PART and by_item["BB"].qty == 2
 
 
+def test_kyle_grid_writes_four_column_xlsx(tmp_path: Path):
+    """Same 51-row grid Kyle confirmed — QTY / ITEM / PART NO / DESCRIPTION."""
+    from quote_core.bom import BomResult, BomRow
+    from quote_core.bom_xlsx import read_lom_xlsx, write_lom_xlsx
+
+    rows = [
+        BomRow(item=item, qty=qty, part_no=pn, description=desc)
+        for item, qty, pn, desc in reversed(_KYLE_102728_1)
+    ]
+    path = write_lom_xlsx(tmp_path / "102728-1-LOM.xlsx", rows)
+    header, sheet = read_lom_xlsx(path)
+    assert header == ["QTY", "ITEM", "PART NO", "DESCRIPTION"]
+    assert len(sheet) == 51
+    assert sum(int(r["QTY"]) for r in sheet) == 97
+    assert sheet[0]["ITEM"] == "A" and sheet[0]["PART NO"] == "460200"
+    assert int(sheet[0]["QTY"]) == 1
+    bb = next(r for r in sheet if r["ITEM"] == "BB")
+    assert bb["PART NO"] == _BB_PART and int(bb["QTY"]) == 2
+    _assert_kyle_102728_1(
+        BomResult(
+            rows=[
+                BomRow(
+                    item=r["ITEM"],
+                    qty=int(r["QTY"]),
+                    part_no=r["PART NO"],
+                    description=r["DESCRIPTION"],
+                )
+                for r in sheet
+            ]
+        )
+    )
+
+
 def test_kyle_102728_1_a_at_bottom_51_pn_97_pcs():
     """Working truth until Kyle corrects a qty. A is at the bottom of the clip."""
     assert len(_KYLE_102728_1) == 51
@@ -352,7 +385,21 @@ def test_kyle_102728_1_pdf_extract_bom_matches_grid(tmp_path: Path):
     )
     bom = extract_bom(pdf_path=pdf, bom_config="-1")
     assert bom.method and bom.method.startswith("table_"), bom.notes
+    assert not (bom.method or "").startswith("ocr_time")
     _assert_kyle_102728_1(bom)
+    from quote_core.bom_xlsx import read_lom_xlsx
+
+    xlsx = pdf.with_name(f"{pdf.stem}-LOM.xlsx")
+    assert xlsx.is_file(), "extract_bom must emit sibling LOM.xlsx"
+    header, sheet = read_lom_xlsx(xlsx)
+    assert header == ["QTY", "ITEM", "PART NO", "DESCRIPTION"]
+    assert len(sheet) == 51
+    assert sum(int(r["QTY"]) for r in sheet) == 97
+    assert sheet[0]["ITEM"] == "A"
+    assert sheet[0]["PART NO"] == "460200"
+    assert int(sheet[0]["QTY"]) == 1
+    bb = next(r for r in sheet if r["ITEM"] == "BB")
+    assert bb["PART NO"] == _BB_PART and int(bb["QTY"]) == 2
 
 
 def test_pdf_table_path_does_not_pad_library_subweldments(tmp_path: Path):
@@ -519,6 +566,30 @@ def test_lom_header_found_does_not_fallback_to_regex(tmp_path: Path):
     assert "35122-1" not in parts
     joined = " ".join(bom.notes).lower()
     assert "not falling back" in joined or "header found" in joined or "flag review" in joined
+
+
+def test_ocr_time_style_never_uses_whole_page_regex(tmp_path: Path):
+    """No LOM grid → empty table result, never ocr_time whole-page regex."""
+    import fitz
+
+    pdf = tmp_path / "bait_only.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=792, height=612)
+    page.insert_text((72, 72), "2 | A | 35122-1")
+    page.insert_text((72, 90), "1 | D | 29754-2")
+    page.insert_text((72, 108), "2 | E | 29754-3")
+    page.insert_text((72, 126), "1 | O | 99999-1")
+    page.insert_text((72, 144), "1 | P | 88888-1")
+    doc.save(pdf)
+    doc.close()
+
+    ocr = extract_bom_from_ocr_time_style(pdf)
+    assert not (ocr.method or "").startswith("ocr_time")
+    parts = {r.part_no for r in ocr.rows}
+    assert "35122-1" not in parts
+    assert "99999-1" not in parts
+    assert "88888-1" not in parts
+    assert "not falling back" in " ".join(ocr.notes).lower()
 
 
 def _write_right_side_lom_bottom_header(page, rows: list[list[str]]) -> None:

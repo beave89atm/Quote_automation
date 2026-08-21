@@ -583,6 +583,48 @@ def push_job_to_secturafab(job_id: int, _: str = Depends(require_auth)) -> dict[
     return payload
 
 
+@app.get("/api/jobs/{job_id}/lom.xlsx")
+def download_lom_xlsx(job_id: int, _: str = Depends(require_auth)) -> FileResponse:
+    """Four-column LIST OF MATERIAL spreadsheet (QTY / ITEM / PART NO / DESCRIPTION)."""
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        takeoff = job.takeoff()
+        pdf_path = Path(job.pdf_path) if job.pdf_path else None
+        candidates: list[Path] = []
+        if takeoff.get("lom_xlsx"):
+            name = Path(str(takeoff["lom_xlsx"])).name
+            if pdf_path:
+                candidates.append(pdf_path.parent / name)
+            candidates.append(UPLOAD_DIR / str(job.id) / name)
+        if pdf_path:
+            candidates.append(pdf_path.with_name(f"{pdf_path.stem}-LOM.xlsx"))
+        job_dir = UPLOAD_DIR / str(job.id)
+        if job_dir.is_dir():
+            candidates.extend(sorted(job_dir.glob("*LOM.xlsx")))
+            candidates.append(job_dir / "LOM.xlsx")
+        seen: set[Path] = set()
+        for path in candidates:
+            resolved = path.resolve() if path.exists() else path
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            if path.is_file():
+                return FileResponse(
+                    path,
+                    filename=path.name,
+                    media_type=(
+                        "application/vnd.openxmlformats-officedocument"
+                        ".spreadsheetml.sheet"
+                    ),
+                )
+        raise HTTPException(404, "LOM spreadsheet not found")
+    finally:
+        db.close()
+
+
 @app.get("/api/jobs/{job_id}/export")
 def export_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
     db = SessionLocal()

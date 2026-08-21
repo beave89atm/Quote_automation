@@ -481,6 +481,18 @@ export default function JobDetailPage() {
           >
             JSON
           </a>
+          {job.takeoff?.lom_xlsx ||
+          drivers?.weight_calc?.bom?.rows?.length ||
+          drivers?.weight_calc?.pdf_bom?.rows?.length ? (
+            <a
+              className="btn ghost"
+              href={`/api/jobs/${id}/lom.xlsx?token=${encodeURIComponent(
+                localStorage.getItem("kannon_quote_token") || ""
+              )}`}
+            >
+              LOM.xlsx
+            </a>
+          ) : null}
         </div>
       </div>
 

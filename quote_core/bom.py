@@ -1348,9 +1348,9 @@ def extract_bom_from_ocr_time_style(
     """
     Parse Time Manufacturing LIST OF MATERIAL tables.
 
-    Table-first: scan **all pages** for a QTY / ITEM / PART NO. / DESCRIPTION
-    grid (not just page 0 / the first two). When that header is found, read
-    cells and do **not** fall back to whole-page single-letter regex.
+    Product path: clip the QTY / ITEM / PART NO. / DESCRIPTION grid and read
+    **cell-by-cell**. Scan all pages. Never fall back to whole-page
+    single-letter OCR/regex, even when the header is missing.
 
     These tables often have column headers at the *bottom* of the grid
     (QTY | ITEM | PART NO. | DESCRIPTION) with data rows stacked above.
@@ -1369,159 +1369,18 @@ def extract_bom_from_ocr_time_style(
     )
     if table.rows:
         return table
-    if material_list_header_seen(table):
-        extra = (
-            "Incomplete LIST OF MATERIAL table — not falling back to "
+    extra = (
+        "Incomplete LIST OF MATERIAL table — not falling back to "
+        "whole-page single-letter regex"
+        if material_list_header_seen(table)
+        else (
+            "Time LIST OF MATERIAL is cell-grid only — not falling back to "
             "whole-page single-letter regex"
         )
-        if extra not in table.notes:
-            table.notes.append(extra)
-        return table
-
-    import fitz
-
-    from quote_core.bom_config import format_bom_config_label, normalize_bom_config
-    from quote_core.ocr import ocr_available
-
-    pdf_path = Path(pdf_path)
-    if not ocr_available():
-        notes = list(table.notes) if table.notes else []
-        notes.append("OCR unavailable for Time-style BOM")
-        return BomResult(notes=notes, confidence=0.0)
-
-    config = normalize_bom_config(bom_config)
-    bases = library_part_bases(
-        Path(library_folder) if library_folder else None,
-        related_pdf_names=related_pdf_names,
     )
-    used_multi = False
-    supp_notes: list[str] = []
-    bom_rows: list[BomRow] = []
-    doc = fitz.open(str(pdf_path))
-    try:
-        regex_page = 0 if page_index is None else page_index
-        page = doc[min(regex_page, len(doc) - 1)]
-        rect = page.rect
-        # Qty/Item/Part columns — right-side crops. Tall clip needed when BOM
-        # has 10+ rows (e.g. 21678 knuckle); short clip stays cleaner for 7-row sheets.
-        left_clip = fitz.Rect(
-            rect.width * 0.70,
-            rect.height * 0.62,
-            rect.width * 0.82,
-            rect.height * 0.87,
-        )
-        mid_clip = fitz.Rect(
-            rect.width * 0.695,
-            rect.height * 0.615,
-            rect.width * 0.835,
-            rect.height * 0.875,
-        )
-        tall_clip = fitz.Rect(
-            rect.width * 0.68,
-            rect.height * 0.42,
-            rect.width * 0.88,
-            rect.height * 0.90,
-        )
-        wide_clip = fitz.Rect(
-            rect.width * 0.60,
-            rect.height * 0.40,
-            rect.width * 0.995,
-            rect.height * 0.92,
-        )
-        desc_clip = fitz.Rect(
-            rect.width * 0.68,
-            rect.height * 0.40,
-            rect.width * 0.995,
-            rect.height * 0.90,
-        )
-
-        texts: list[str] = []
-        for clip, dpi in (
-            (left_clip, 500),
-            (mid_clip, 500),
-            (tall_clip, 480),
-            (wide_clip, 420),
-            (left_clip, 420),
-        ):
-            images = _render_clip_images(page, clip, dpi)
-            texts.extend(_ocr_strings(images, psms=(4, 6, 11)))
-
-        multi_hits: list[dict[str, Any]] = []
-        texts_for_supp: list[str] = []
-        if config and (
-            texts_have_multi_qty_headers(texts)
-            or _parse_multi_qty_time_hits(texts, bases, bom_config=config)
-        ):
-            multi_hits = _parse_multi_qty_time_hits(texts, bases, bom_config=config)
-            # Keep rows with qty>0 for this dash; also keep qty=0 hits out of vote.
-            multi_hits = [h for h in multi_hits if int(h.get("qty") or 0) > 0]
-            if multi_hits:
-                used_multi = True
-                hits = multi_hits
-                texts_for_supp = texts
-            else:
-                hits = _parse_qty_item_part_hits(texts, bases)
-        else:
-            hits = _parse_qty_item_part_hits(texts, bases)
-        bom_rows = _vote_bom_rows(hits, bases)
-        if used_multi:
-            for row in bom_rows:
-                row.source = "ocr_time_multi_qty"
-            # Don't treat the weldment PDF itself as a component (28106.pdf → 28106).
-            primary_base = None
-            m_pri = re.match(r"^(\d{4,7})", pdf_path.stem.upper().replace(" ", ""))
-            if m_pri:
-                primary_base = m_pri.group(1)
-            supp_bases = {b for b in bases if b != primary_base}
-            supp_notes = _supplement_multi_config_bom(
-                bom_rows,
-                texts_for_supp or texts,
-                supp_bases,
-                bom_config=config or "",
-            )
-        _repair_suffix_ocr(bom_rows, hits, bases)
-        _attach_descriptions(bom_rows, page, desc_clip)
-    finally:
-        doc.close()
-
-    if not bom_rows:
-        return BomResult(notes=["OCR Time-style BOM found no part rows"], confidence=0.0)
-
-    # Drop duplicate part numbers keeping higher-qty / lettered item
-    dedup: dict[str, BomRow] = {}
-    for r in bom_rows:
-        prev = dedup.get(r.part_no)
-        if prev is None or (r.item and not prev.item) or r.qty > prev.qty:
-            dedup[r.part_no] = r
-    bom_rows = list(dedup.values())
-
-    def sort_key(r: BomRow):
-        if isinstance(r.item, str) and r.item.isalpha():
-            return (0, r.item)
-        return (1, str(r.part_no))
-
-    bom_rows.sort(key=sort_key)
-    avg_conf = sum(r.confidence for r in bom_rows) / max(1, len(bom_rows))
-    notes = [
-        f"OCR Time-style BOM: {len(bom_rows)} part numbers, {sum(r.qty for r in bom_rows)} pieces"
-    ]
-    if used_multi and config:
-        notes.insert(
-            0,
-            f"Used BOM qty column {format_bom_config_label(config)} "
-            f"(multi-option Time drawing)",
-        )
-        notes.extend(supp_notes)
-        avg_conf = min(0.96, avg_conf + 0.03)
-    elif config and not used_multi:
-        notes.append(
-            f"BOM config {format_bom_config_label(config)} set but multi-qty columns "
-            f"not detected — used single-qty OCR"
-        )
-    if bases:
-        notes.append(f"Validated part bases against library folder ({len(bases)} PDF stems)")
-    method = "ocr_time_multi_qty" if used_multi else "ocr_time"
-    return BomResult(rows=bom_rows, method=method, confidence=avg_conf, notes=notes)
+    if extra not in table.notes:
+        table.notes.append(extra)
+    return table
 
 
 def extract_bom(
@@ -1540,19 +1399,22 @@ def extract_bom(
     2) Native PARTS LIST (Cummins / NGFS style)
     3) Table-first LIST OF MATERIAL / BOM grid (all pages; bitmap row/cell OCR;
        optional ``table_image`` / sibling ``bom_table_crop.png``)
-    4) OCR Time-style whole-page regex (only when no grid header / tall grid)
+
+    Time (and similar) LOM is **cell-grid only** — no whole-page OCR/regex
+    and no library-folder padding. When ``pdf_path`` is set and rows are
+    found, write ``{stem}-LOM.xlsx`` next to the PDF.
     """
     notes: list[str] = []
     native = extract_bom_from_native_mac(pdf_path, text=text)
     if native.rows and native.piece_count > 0 and native.confidence >= 0.9:
-        return native
+        return _with_lom_xlsx(native, pdf_path)
     if native.notes:
         notes.extend(native.notes)
 
     parts_list = extract_bom_from_parts_list(pdf_path, text=text)
     if parts_list.rows and parts_list.piece_count > 0:
         parts_list.notes = notes + list(parts_list.notes)
-        return parts_list
+        return _with_lom_xlsx(parts_list, pdf_path)
     if parts_list.notes:
         notes.extend(parts_list.notes)
 
@@ -1563,7 +1425,7 @@ def extract_bom(
             table = parse_material_list_text(text, bom_config=bom_config)
             if table.rows and table.piece_count > 0:
                 table.notes = notes + list(table.notes)
-                return table
+                return _with_lom_xlsx(table, pdf_path)
             notes.extend(table.notes)
 
     if table_image and not pdf_path:
@@ -1575,7 +1437,7 @@ def extract_bom(
         )
         if crop_only.rows or material_list_header_seen(crop_only):
             crop_only.notes = notes + list(crop_only.notes)
-            return crop_only
+            return _with_lom_xlsx(crop_only, pdf_path)
         notes.extend(crop_only.notes)
 
     if pdf_path:
@@ -1591,10 +1453,29 @@ def extract_bom(
 
         if ocr.rows or material_list_header_seen(ocr):
             ocr.notes = notes + list(ocr.notes)
-            return ocr
+            return _with_lom_xlsx(ocr, pdf_path)
 
     if native.rows:
         native.notes = notes + native.notes
-        return native
+        return _with_lom_xlsx(native, pdf_path)
 
     return BomResult(method=None, confidence=0.0, notes=notes or ["No BOM rows detected"])
+
+
+def _with_lom_xlsx(bom: BomResult, pdf_path: Path | str | None) -> BomResult:
+    if not pdf_path or not bom.rows:
+        return bom
+    try:
+        from quote_core.bom_xlsx import write_lom_xlsx_for_bom
+
+        dest = write_lom_xlsx_for_bom(pdf_path, bom)
+    except OSError as exc:
+        dest = None
+        note = f"Could not write LOM.xlsx: {exc}"
+        if note not in bom.notes:
+            bom.notes.append(note)
+    if dest is not None:
+        note = f"Wrote {dest.name}"
+        if note not in bom.notes:
+            bom.notes.append(note)
+    return bom

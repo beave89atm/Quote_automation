@@ -122,6 +122,8 @@ def test_openapi_includes_batch_routes(client: TestClient) -> None:
     assert "post" in paths["/api/bom/table-image"]
     assert "/api/jobs/{job_id}/bom-table-crop" in paths
     assert "post" in paths["/api/jobs/{job_id}/bom-table-crop"]
+    assert "/api/jobs/{job_id}/lom.xlsx" in paths
+    assert "get" in paths["/api/jobs/{job_id}/lom.xlsx"]
 
 
 def test_batch_post_is_not_method_not_allowed(client: TestClient, token: str) -> None:
@@ -166,3 +168,12 @@ def test_bom_table_crop_post_is_not_method_not_allowed(
     )
     assert res.status_code != 405, res.text
     assert res.status_code in {400, 404, 422}
+
+
+def test_lom_xlsx_get_is_not_method_not_allowed(client: TestClient, token: str) -> None:
+    res = client.get(
+        "/api/jobs/1/lom.xlsx",
+        headers={"X-App-Token": token},
+    )
+    assert res.status_code != 405, res.text
+    assert res.status_code in {401, 404}

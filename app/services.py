@@ -101,6 +101,15 @@ def process_job(job_id: int) -> None:
             if related_flag not in flags:
                 flags.append(related_flag)
 
+        from quote_core.bom_xlsx import write_lom_xlsx_for_job
+
+        xlsx = write_lom_xlsx_for_job(job.pdf_path, takeoff)
+        if xlsx is not None:
+            takeoff["lom_xlsx"] = xlsx.name
+            flag = f"LIST OF MATERIAL spreadsheet: {xlsx.name}"
+            if flag not in flags:
+                flags.append(flag)
+
         job.set_takeoff(takeoff)
         job.set_times(times.to_dict())
         job.set_flags(flags)
