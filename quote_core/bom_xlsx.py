@@ -535,11 +535,38 @@ def write_lom_xlsx_for_job(pdf_path: Path | str | None, takeoff: dict[str, Any] 
     return write_lom_xlsx(dest, rows, extra_sheets=extra_sheets_from_takeoff(takeoff))
 
 
+_INCH_NOTE_RE = re.compile(r'^(\d+)\s*["″”]$')
+_FOOTER_TALLY_RE = re.compile(
+    r"(?:"
+    r"\bunique\s+p/?n'?s?\b"
+    r"|\b\d{1,3}\s*p/?n'?s?\b"
+    r"|\b\d{1,3}\s*rows?\b"
+    r"|\bpcs\b"
+    r"|\bqty\s*[:=]\s*\d+"
+    r"|\bpiece(?:s|\s*count)\b"
+    r")",
+    re.IGNORECASE,
+)
+_BARE_COUNT_RE = re.compile(r"^\d{1,3}$")
+
+
 def _qty_int(value: Any) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _xlsx_qty_from_cell(raw: Any) -> tuple[int, bool]:
+    """Return (qty, is_inch_note).
+
+    ``10"`` / ``10″`` is a size note (1004611 S gasket), not 10 pcs and
+    not unread. Keep the row as qty 1.
+    """
+    text = str(raw or "").strip()
+    if _INCH_NOTE_RE.fullmatch(text):
+        return 1, True
+    return _qty_int(text), False
 
 
 def sheet_records(path: Path | str, *, bom_config: str | None = None) -> list[dict[str, Any]]:
@@ -794,14 +821,49 @@ def _title_pns_from_xlsx_path(path: Path | str) -> set[str]:
     return {token.upper() for token in out if token}
 
 
+def _is_xlsx_summary_footer(
+    part: str,
+    desc: str,
+    cols: list[str],
+    qty: int,
+    *,
+    prior_pn_count: int,
+    prior_pcs: int,
+) -> bool:
+    """Drop as-drawn tally footers. Do not skip a real Time PN row.
+
+    Workspace reconstructions print ``51 PNs / qty=97``, ``unique PNs``,
+    ``21 rows``, ``pcs / 11 / 13``, or a PN that is just the unique-count.
+    Those double piece count. A real dashed / 5–7 digit part stays.
+    """
+    from quote_core.bom_table import _is_dashed_time_pn, _is_time_like_part
+
+    raw = " ".join(str(c or "") for c in (list(cols) + [part, desc]))
+    token = str(part or "").strip()
+    real_pn = bool(token) and (
+        _is_time_like_part(token) or _is_dashed_time_pn(token)
+    )
+    if _FOOTER_TALLY_RE.search(raw) and not real_pn:
+        return True
+    if prior_pn_count > 0 and _BARE_COUNT_RE.fullmatch(token):
+        return True
+    if qty > 0 and prior_pcs > 0 and qty == prior_pcs and not real_pn:
+        return True
+    return False
+
+
 def _is_xlsx_junk_row(
     part: str,
     desc: str,
     cols: list[str],
     colmap: dict[str, Any],
     reject_pns: set[str] | None,
+    *,
+    qty: int = 0,
+    prior_pn_count: int = 0,
+    prior_pcs: int = 0,
 ) -> bool:
-    """Skip title-block / qty-header PNs, welding-wire notes, revision marks."""
+    """Skip title-block / qty-header PNs, welding-wire notes, revision marks, footers."""
     from quote_core.bom_table import (
         MaterialListLayout,
         _is_eco_or_title_block_row,
@@ -819,6 +881,15 @@ def _is_xlsx_junk_row(
         qty_header_pns=list(colmap.get("QTY_HEADER_PNS") or [])
     )
     if _part_is_qty_header_pn(part, layout):
+        return True
+    if _is_xlsx_summary_footer(
+        part,
+        desc,
+        cols,
+        qty,
+        prior_pn_count=prior_pn_count,
+        prior_pcs=prior_pcs,
+    ):
         return True
     token = str(part or "").strip().upper()
     if not token:
@@ -916,6 +987,8 @@ def _parse_sheet_xml(
         return str(cols[int(idx)] or "")
 
     data: list[dict[str, Any]] = []
+    prior_pcs = 0
+    prior_pns: set[str] = set()
     for cols in parsed[header_idx + 1 :]:
         rec = {
             "QTY": _get(cols, "QTY"),
@@ -925,17 +998,30 @@ def _parse_sheet_xml(
         }
         if not str(rec["PART NO"]).strip() and not str(rec["ITEM"]).strip():
             continue
+        qty, inch_note = _xlsx_qty_from_cell(rec["QTY"])
+        if inch_note:
+            rec["QTY"] = qty
+            desc = str(rec["DESCRIPTION"] or "").strip()
+            if desc and not re.search(r'["″”]', desc):
+                rec["DESCRIPTION"] = f'{desc} {str(_get(cols, "QTY")).strip()}'.strip()
         if drop_junk and _is_xlsx_junk_row(
             str(rec["PART NO"] or ""),
             str(rec["DESCRIPTION"] or ""),
             cols,
             colmap,
             reject_pns,
+            qty=qty,
+            prior_pn_count=len(prior_pns),
+            prior_pcs=prior_pcs,
         ):
             continue
-        if omit_blank and _qty_int(rec["QTY"]) <= 0:
+        if omit_blank and qty <= 0 and not inch_note:
             continue
         data.append(rec)
+        prior_pcs += max(0, qty)
+        part = str(rec["PART NO"] or "").strip()
+        if part:
+            prior_pns.add(part)
     return header, data
 
 

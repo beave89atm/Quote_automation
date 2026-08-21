@@ -607,3 +607,93 @@ def test_desktop_qty_dash_xlsx_is_not_overwritten(tmp_path: Path, monkeypatch):
     _assert_kyle_28106_1(quoted)
     assert confirmed.read_bytes() == before
     assert not (job / f"{pdf.stem}-LOM.xlsx").is_file()
+
+
+def test_xlsx_qty_inch_note_is_gasket_not_ten():
+    from quote_core.bom_xlsx import _xlsx_qty_from_cell
+
+    assert _xlsx_qty_from_cell('10"') == (1, True)
+    assert _xlsx_qty_from_cell("10″") == (1, True)
+    assert _xlsx_qty_from_cell("10") == (10, False)
+    assert _xlsx_qty_from_cell("") == (0, False)
+
+
+def test_workspace_summary_footer_does_not_double_102728(tmp_path: Path):
+    """Workspace 9518 B reconstruction, not Desktop 6766 B ITEM|QTY."""
+    rows = [["ITEM", "QTY", "PART NO", "DESCRIPTION"]]
+    rows.extend(
+        [item, str(qty), pn, desc] for item, qty, pn, desc in _KYLE_102728_1
+    )
+    rows.append(["", "97", "51 PNs", "qty=97"])
+    path = _write_grid_xlsx(tmp_path / "102728-1-workspace-LOM.xlsx", rows)
+    sourced = bom_from_lom_xlsx(path)
+    _assert_kyle_102728_1(sourced)
+    assert sourced.piece_count == 97
+    assert sourced.part_number_count == 51
+    assert "51 PNs" not in {str(r.part_no) for r in sourced.rows}
+
+
+def test_as_drawn_tally_footers_are_dropped(tmp_path: Path):
+    cells = _kyle_28106_cell_rows()
+    cells[0] = ["QTY -4", "QTY -3", "QTY -2", "QTY -1", "ITEM", "PART NO.", "DESCRIPTION"]
+    cells.append(["", "", "", "11", "pcs", "11", "13"])
+    path = _write_grid_xlsx(tmp_path / "28106-1-LOM.xlsx", cells)
+    _assert_kyle_28106_1(bom_from_lom_xlsx(path, bom_config="-1"))
+
+    dual = [
+        ["ITEM", "QTY -1", "QTY -2", "PART NO", "DESCRIPTION"],
+        ["A", "2", "2", "28275-1", "TUBE, ROUND"],
+        ["B", "4", "4", "28276-1", "PLATE"],
+        ["C", "1", "1", "28277-1", "STIFFENER"],
+        ["", "7", "7", "21 rows", "qty=47"],
+    ]
+    sheet = _write_grid_xlsx(tmp_path / "33612-1-LOM.xlsx", dual)
+    blank = bom_from_lom_xlsx(sheet, bom_config="")
+    assert blank.piece_count == 7
+    assert blank.part_number_count == 3
+    assert "21 rows" not in {str(r.part_no) for r in blank.rows}
+
+    unique = [
+        ["ITEM", "QTY", "PART NO", "DESCRIPTION"],
+        ["A", "2", "16697-1", "TUBE"],
+        ["B", "1", "16697-2", "PLATE"],
+        ["", "", "unique PNs", ""],
+        ["", "3", "unique PNs", "qty=9"],
+    ]
+    u_path = _write_grid_xlsx(tmp_path / "21727-1-LOM.xlsx", unique)
+    sourced = bom_from_lom_xlsx(u_path)
+    assert sourced.part_number_count == 2
+    assert sourced.piece_count == 3
+    assert "unique PNs" not in {str(r.part_no) for r in sourced.rows}
+
+
+def test_gasket_inch_qty_stays_and_count_footer_drops(tmp_path: Path):
+    """1004611 S 10\" is the gasket note (qty 1). Footer PN 22 / qty=22 is not."""
+    rows = [
+        ["-2", "-1", "ITEM", "PART NO", "DESCRIPTION"],
+        ["", "1", "A", "1004611-DWG", ""],
+        ["", '10"', "S", "80054-1", '10" GASKET'],
+        ["1", "", "U", "1004675-1", ""],
+        ["", "22", "", "22", "qty=22"],
+    ]
+    path = _write_grid_xlsx(tmp_path / "1004611-1-LOM.xlsx", rows)
+    sourced = bom_from_lom_xlsx(path, bom_config="-1")
+    by_item = {r.item: r for r in sourced.rows}
+    parts = {str(r.part_no) for r in sourced.rows}
+    assert "S" in by_item
+    assert by_item["S"].part_no == "80054-1"
+    assert by_item["S"].qty == 1
+    assert "10" in by_item["S"].description
+    assert "U" not in by_item
+    assert "22" not in parts
+    assert sourced.part_number_count == 2
+    assert sourced.piece_count == 2
+
+
+def test_desktop_item_qty_102728_still_51_97_without_footer(tmp_path: Path):
+    """Desktop 6766 B ITEM|QTY reader is unchanged. Do not 'fix' 102728 via it."""
+    path = _write_item_qty_xlsx(tmp_path / "102728-1-LOM.xlsx", _kyle_rows())
+    sourced = bom_from_lom_xlsx(path)
+    _assert_kyle_102728_1(sourced)
+    assert sourced.piece_count == 97
+    assert sourced.part_number_count == 51
