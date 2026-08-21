@@ -3,6 +3,26 @@ from quote_core.time_engine import compute_weld_times
 from quote_core.weld.takeoff import WeldLineItem
 
 
+def test_bom_piece_count_is_not_weld_or_fitup():
+    """102728-1 LOM is 97 pcs. That is not weld inches or fit-up time."""
+    rates = load_shop_rates()
+    times = compute_weld_times(
+        [],
+        rates,
+        efficiency_pct=100,
+        part_count=97,
+        joint_count=96,
+        component_weights_lb=[10.0] * 97,
+    )
+    assert times.total_inches == 0.0
+    assert times.weld_minutes == 0.0
+    assert times.fitup_with_fixture_minutes == 0.0
+    assert times.fitup_no_fixture_minutes == 0.0
+    assert times.quoted_no_fixture_minutes == 0.0
+    assert times.quoted_with_fixture_minutes == 0.0
+    assert any("No weld symbols" in n for n in times.fitup_notes)
+
+
 def test_load_shop_rates():
     rates = load_shop_rates()
     assert rates.ipm_for("1/4") == 3.5

@@ -69,15 +69,28 @@ def process_job(job_id: int) -> None:
         takeoff["library"] = library_info
         takeoff["bom_config"] = bom_config
         drivers = _drivers_from_takeoff(takeoff)
-        times = compute_weld_times(
-            items,
-            rates,
-            efficiency_pct=job.efficiency_pct,
-            part_count=drivers["part_count"],
-            joint_count=drivers["joint_count"],
-            assembly_weight_lb=drivers["assembly_weight_lb"],
-            component_weights_lb=drivers.get("component_weights_lb"),
-        )
+        # Weld / fit-up times run only when weld symbols produced items.
+        # LOM.xlsx piece count must not turn those fields on.
+        if not items:
+            times = compute_weld_times(
+                items,
+                rates,
+                efficiency_pct=job.efficiency_pct,
+                part_count=0,
+                joint_count=0,
+                assembly_weight_lb=None,
+                component_weights_lb=[],
+            )
+        else:
+            times = compute_weld_times(
+                items,
+                rates,
+                efficiency_pct=job.efficiency_pct,
+                part_count=drivers["part_count"],
+                joint_count=drivers["joint_count"],
+                assembly_weight_lb=drivers["assembly_weight_lb"],
+                component_weights_lb=drivers.get("component_weights_lb"),
+            )
 
         flags = list(result.flags)
         if bom_config:
