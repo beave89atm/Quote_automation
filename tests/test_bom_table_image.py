@@ -146,7 +146,9 @@ def test_two_rendered_pages_pick_51_row_table_and_bb():
 
 def test_tall_unread_grid_rejects_3_row_nested_lom():
     """Page-1 51-band / 0-PN clip must beat 102711-1's 3-row parse."""
-    tall = extract_bom_from_table_image(_draw_lom_table(_platform_row_texts()))
+    tall = extract_bom_from_table_image(
+        _draw_lom_table(_platform_row_texts()), row_texts=[]
+    )
     decoy = extract_bom_from_table_image(
         _draw_lom_table(
             ["1 B 102709-1 DECOY", "1 C 100585-23 DECOY", "1 D 102711-1 CABLE"]
@@ -164,9 +166,13 @@ def test_tall_unread_grid_rejects_3_row_nested_lom():
     assert not any(r.part_no == "102711-1" for r in best.rows)
 
 
-def test_extract_bom_sibling_crop_beats_short_pdf_lom(tmp_path: Path):
+def test_extract_bom_sibling_crop_beats_short_pdf_lom(tmp_path: Path, monkeypatch):
     """Desktop crop next to the job PDF wins over a nested 3-row LOM page."""
     import fitz
+
+    # This test is the unread-crop path (grid bands, no cell ship). Do not
+    # spend minutes OCR-ing the drawn 51-row fixture.
+    monkeypatch.setattr("quote_core.ocr.ocr_available", lambda: False)
 
     pdf = tmp_path / "Time 102728- Weldment.pdf"
     doc = fitz.open()

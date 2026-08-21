@@ -509,18 +509,28 @@ def _crop_qty_item_windows(im, y0: int, y1: int, v_lines: list[int]):
     return _crop_windows(im, y0, y1, qty_item_pipe_bounds(xs, im.size[0]))
 
 
-def read_qty_cell(im, y0: int, y1: int, v_lines: list[int] | None = None) -> str:
+def read_qty_cell(
+    im,
+    y0: int,
+    y1: int,
+    v_lines: list[int] | None = None,
+    *,
+    isolated: bool = True,
+) -> str:
     """Read one row's QTY digit. Empty if unread. Never defaults to 1.
 
     Pipe-delimited QTY|ITEM|PN (digit glued to the item letter) is the
     read that actually recovers live 1/2 and V6/W4/Y4/AA5/AC4/AD8. Isolated
-    thin-band OCR is fallback only. Real 4–8 stay; 7 and 10–20 stay unread.
+    thin-band OCR is last-pass only — a first-pass 1 must not stick and
+    block a later pipe 4. Real 4–8 stay; 7 and 10–20 stay unread.
     """
     lines = list(v_lines or [])
     for clip in _crop_qty_item_windows(im, y0, y1, lines)[:2]:
         token = _ocr_qty_via_pipe(clip)
         if token:
             return token
+    if not isolated:
+        return ""
     for clip in _crop_qty_windows(im, y0, y1, lines)[:2]:
         token = _accept_qty_token(_ocr_qty_digit(clip))
         if token:
@@ -591,7 +601,9 @@ def _ocr_first_pass_lines(im, seg: dict[str, Any], notes: list[str]) -> list[str
                     # Never put a letter/junk token in the QTY slot (that
                     # shipped live 0s as unread, or a defaulted 1). Blank
                     # stays blank until read_qty_cell sees a real digit.
-                    parts.append(read_qty_cell(im, y0, y1, v_lines))
+                    parts.append(
+                        read_qty_cell(im, y0, y1, v_lines, isolated=False)
+                    )
                     continue
                 parts.append(_ocr_cell_strip(cell).strip())
             # Keep empty QTY so parse sees a blank cell, not a default 1.
@@ -602,7 +614,7 @@ def _ocr_first_pass_lines(im, seg: dict[str, Any], notes: list[str]) -> list[str
                     text = blob
         else:
             text = _ocr_row_strip(strip)
-            digit = read_qty_cell(im, y0, y1, v_lines)
+            digit = read_qty_cell(im, y0, y1, v_lines, isolated=False)
             if digit:
                 glued = leading_qty_before_item(text)
                 if not glued:
