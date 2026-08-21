@@ -32,12 +32,14 @@ from tests.test_bom_table import (
     _assert_kyle_103516,
     _assert_kyle_21727_1,
     _assert_kyle_1007922_1,
+    _assert_kyle_33612_1,
     _kyle_1004611_cell_rows,
     _kyle_28106_cell_rows,
     _kyle_p904225_cell_rows,
     _kyle_103516_cell_rows,
     _kyle_21727_cell_rows,
     _kyle_1007922_cell_rows,
+    _kyle_33612_cell_rows,
 )
 from quote_core.bom_table_image import (
     TABLE_CROP_FILENAME,
@@ -399,6 +401,17 @@ def test_table_image_cell_texts_match_kyle_1007922_1():
     assert bom.method and bom.method.startswith("table_")
     assert not (bom.method or "").startswith("ocr_time")
     _assert_kyle_1007922_1(bom)
+
+
+def test_table_image_cell_texts_match_kyle_33612_1():
+    """33612-1: single QTY, A–W skip I/O, keep 282xx, omit 56657 / 97879."""
+    cells = _kyle_33612_cell_rows()
+    texts = [" | ".join(row) for row in reversed(cells)]
+    im = _draw_lom_table(["1 A 89176-1 TUBE"] * 21)
+    bom = extract_bom_from_table_image(im, row_texts=texts, bom_config="")
+    assert bom.method and bom.method.startswith("table_")
+    assert not (bom.method or "").startswith("ocr_time")
+    _assert_kyle_33612_1(bom)
 
 
 def _live_page1_strips() -> list[str]:

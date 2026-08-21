@@ -7,6 +7,8 @@ Kyle order: 102728-1 → 28106-1 → 1004747-1 → 1004611 → 103516 →
 (14/18 numbered 1–17), 1004611-1 (22/66, A=1004611-DWG, omit U/V),
 103516 (27/45 numeric, 103535-1 GATE WELDMENT, item 27 40002-2 on -1),
 21727-1 (11/16 lettered A–L skip I, single QTY, omit 61358),
+33612-1 (21/47 lettered A–W skip I/O, single QTY, keep 282xx, omit
+56657 / 97879),
 1007922-1 (6/14 dash -1, 14149-1×4 / 1007830-1×2, omit 21750-2 /
 21743-2 / 73207),
 and P904225-1 (11/23 numeric, omit title + 89176-1 welding wire)
@@ -43,6 +45,9 @@ from tests.test_bom_table import (
     _KYLE_1007922_1,
     _KYLE_1007922_1_PCS,
     _KYLE_1007922_1_PN_COUNT,
+    _KYLE_33612_1,
+    _KYLE_33612_1_PCS,
+    _KYLE_33612_1_PN_COUNT,
     _KYLE_P904225_1,
     _KYLE_P904225_1_PCS,
     _KYLE_P904225_1_PN_COUNT,
@@ -52,6 +57,7 @@ from tests.test_bom_table import (
     _assert_kyle_103516,
     _assert_kyle_21727_1,
     _assert_kyle_1007922_1,
+    _assert_kyle_33612_1,
     _assert_kyle_28106_1,
     _assert_kyle_p904225_1,
     _assert_kyle_xlsx,
@@ -60,6 +66,7 @@ from tests.test_bom_table import (
     _kyle_103516_cell_rows,
     _kyle_21727_cell_rows,
     _kyle_1007922_cell_rows,
+    _kyle_33612_cell_rows,
     _kyle_28106_cell_rows,
     _kyle_p904225_cell_rows,
     _write_lom_pdf,
@@ -203,14 +210,12 @@ def _specs() -> dict[str, TimeTenSpec]:
             key="33612-1",
             title="WELDMENT, PLATFORM  33612-1  TIME MANUFACTURING",
             bom_config="",
-            kyle_locked=False,
+            kyle_locked=True,
             header=["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
-            rows=[
-                ("A", 1, "89176-1", "TUBE"),
-                ("M", 1, "94560", "GATE, FABRICATION"),
-            ],
+            rows=list(_KYLE_33612_1),
             reject_pns=frozenset({"33612-1", "33612", "56657", "97879", "72143"}),
-            status="needs_kyle_excel",
+            extra_cells=_kyle_33612_cell_rows()[1:],
+            status="kyle_locked",
         ),
         "21727-1": TimeTenSpec(
             key="21727-1",
@@ -281,6 +286,8 @@ def _cells_for(spec: TimeTenSpec) -> list[list[str]]:
         return _kyle_21727_cell_rows()
     if spec.key == "1007922-1":
         return _kyle_1007922_cell_rows()
+    if spec.key == "33612-1":
+        return _kyle_33612_cell_rows()
     cells = [list(spec.header)]
     cells.extend([str(qty), item, pn, desc] for item, qty, pn, desc in spec.rows)
     cells.extend(spec.extra_cells)
@@ -311,6 +318,9 @@ def _assert_grid(bom, spec: TimeTenSpec) -> None:
         return
     if spec.key == "1007922-1":
         _assert_kyle_1007922_1(bom)
+        return
+    if spec.key == "33612-1":
+        _assert_kyle_33612_1(bom)
         return
     by_item = {r.item: r for r in bom.rows}
     assert len(bom.rows) == len(spec.rows), [f"{r.item}:{r.part_no}×{r.qty}" for r in bom.rows]
@@ -354,6 +364,7 @@ def test_time_ten_order_is_kyle_order():
     assert specs["103516"].kyle_locked
     assert specs["21727-1"].kyle_locked
     assert specs["1007922-1"].kyle_locked
+    assert specs["33612-1"].kyle_locked
     assert not any(
         specs[k].kyle_locked
         for k in TIME_TEN_ORDER
@@ -364,6 +375,7 @@ def test_time_ten_order_is_kyle_order():
             "1004747-1",
             "1004611",
             "103516",
+            "33612-1",
             "21727-1",
             "1007922-1",
             "P904225-1",
@@ -398,6 +410,16 @@ def test_time_ten_order_is_kyle_order():
     assert {pn for _i, _q, pn, _d in _KYLE_1007922_1}.isdisjoint(
         {"21750-2", "21743-2", "73207"}
     )
+    assert _KYLE_33612_1_PN_COUNT == 21
+    assert _KYLE_33612_1_PCS == 47
+    assert {pn for _i, _q, pn, _d in _KYLE_33612_1} >= {
+        "89176-1",
+        "94560",
+        "28275-1",
+        "28275-2",
+    }
+    assert "56657" not in {pn for _i, _q, pn, _d in _KYLE_33612_1}
+    assert "97879" not in {pn for _i, _q, pn, _d in _KYLE_33612_1}
 
 
 def test_time_ten_cell_text_harvest_and_xlsx(tmp_path: Path):
@@ -437,7 +459,7 @@ def test_time_ten_cell_text_harvest_and_xlsx(tmp_path: Path):
         _assert_grid(bom, spec)
         xlsx = pdf.with_name(f"{pdf.stem}-LOM.xlsx")
         assert xlsx.is_file(), key
-        if spec.key not in {"P904225-1", "103516", "21727-1", "1007922-1"}:
+        if spec.key not in {"P904225-1", "103516", "21727-1", "1007922-1", "33612-1"}:
             _assert_kyle_xlsx(xlsx, spec.rows)
         keep = {pn for _i, _q, pn, _d in spec.rows}
         keep.add("904226-1")
@@ -493,6 +515,7 @@ def test_time_ten_is_not_live_done():
         "1004747-1",
         "1004611",
         "103516",
+        "33612-1",
         "21727-1",
         "1007922-1",
         "P904225-1",
@@ -545,8 +568,20 @@ def test_time_ten_is_not_live_done():
     )
     assert _KYLE_1007922_1_PN_COUNT == 6
     assert _KYLE_1007922_1_PCS == 14
+    assert specs["33612-1"].bom_config == ""
+    assert specs["33612-1"].header == ["QTY", "ITEM", "PART NO.", "DESCRIPTION"]
+    assert specs["33612-1"].rows[0] == ("A", 1, "89176-1", "TUBE")
+    assert specs["33612-1"].rows[1] == ("M", 1, "94560", "GATE, FABRICATION")
+    assert {pn for _i, _q, pn, _d in specs["33612-1"].rows} >= {
+        "28275-1",
+        "28275-2",
+        "28275-3",
+    }
+    assert "56657" not in {pn for _i, _q, pn, _d in specs["33612-1"].rows}
+    assert "97879" not in {pn for _i, _q, pn, _d in specs["33612-1"].rows}
+    assert _KYLE_33612_1_PN_COUNT == 21
+    assert _KYLE_33612_1_PCS == 47
     waiting = [k for k, s in specs.items() if not s.kyle_locked]
     assert waiting == [
         "105098-1",
-        "33612-1",
     ]

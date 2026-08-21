@@ -529,6 +529,75 @@ def _assert_kyle_1007922_1(bom) -> None:
     assert "L" not in by_item and "P" not in by_item and "S" not in by_item
 
 
+# Kyle 33612-1 confirmed against 33612-1-LOM.xlsx.
+# Single QTY column (blank dash). Letters A–W skip I/O (21 letters).
+# 21 PNs / 47 pcs. 56657 / 97879 are not weld parts. Keep 282xx.
+# Remaining PNs were not listed — do not invent them. Live bar is 21/47.
+# Item letters on the documented children are fixture slots, not a live claim.
+_KYLE_33612_1_PN_COUNT = 21
+_KYLE_33612_1_PCS = 47
+_KYLE_33612_LETTERS = [c for c in "ABCDEFGHJKLMNPQRSTUVW"]
+_KYLE_33612_282XX = (
+    "28275-1",
+    "28275-2",
+    "28275-3",
+    "28276-1",
+    "28281-1",
+    "28282-1",
+    "28283-1",
+)
+_KYLE_33612_1: list[tuple[str, int, str, str]] = [
+    ("A", 1, "89176-1", "TUBE"),
+    ("M", 1, "94560", "GATE, FABRICATION"),
+    ("N", 1, "28275-1", "TUBE"),
+    ("P", 1, "28275-2", "TUBE"),
+    ("Q", 1, "28275-3", "TUBE"),
+    ("R", 1, "28276-1", "TUBE"),
+    ("S", 1, "28281-1", "TUBE"),
+    ("T", 1, "28282-1", "TUBE"),
+    ("U", 1, "28283-1", "TUBE"),
+]
+
+
+def _kyle_33612_cell_rows() -> list[list[str]]:
+    """21-row QTY|ITEM|PN grid. A at the bottom when reversed. 56657/97879 are junk."""
+    named = {item: (qty, pn, desc) for item, qty, pn, desc in _KYLE_33612_1}
+    rows = [["QTY", "ITEM", "PART NO.", "DESCRIPTION"]]
+    for item in _KYLE_33612_LETTERS:
+        if item in named:
+            qty, pn, desc = named[item]
+            rows.append([str(qty), item, pn, desc])
+        else:
+            # Letter is on the takeoff. PN not listed — do not invent.
+            rows.append(["1", item, "", ""])
+    rows.append(["1", "X", "56657", "FIRST RELEASE TO PRODUCTION"])
+    rows.append(["1", "BT", "97879", "THIS DRAWING IS THE PROPERTY OF TIME"])
+    return rows
+
+
+def _assert_kyle_33612_1(bom) -> None:
+    parts = {str(r.part_no or "") for r in bom.rows}
+    by_item = {str(r.item): r for r in bom.rows}
+    assert by_item["A"].part_no == "89176-1"
+    assert by_item["A"].qty == 1
+    assert "TUBE" in by_item["A"].description.upper()
+    assert "WIRE" not in by_item["A"].description.upper()
+    assert by_item["M"].part_no == "94560"
+    assert "GATE" in by_item["M"].description.upper()
+    assert any(str(p).startswith("282") for p in parts)
+    for pn in _KYLE_33612_282XX:
+        assert pn in parts, pn
+    assert by_item["N"].part_no == "28275-1"
+    assert by_item["P"].part_no == "28275-2"
+    assert "56657" not in parts
+    assert "97879" not in parts
+    assert "33612-1" not in parts
+    assert "33612" not in parts
+    assert "I" not in by_item and "O" not in by_item
+    assert "X" not in by_item and "BT" not in by_item
+    assert all(str(r.item) in _KYLE_33612_LETTERS for r in bom.rows)
+
+
 def test_kyle_grid_writes_four_column_xlsx(tmp_path: Path):
     """Same 51-row grid Kyle confirmed — QTY / ITEM / PART NO / DESCRIPTION."""
     from quote_core.bom import BomResult, BomRow
@@ -1289,6 +1358,84 @@ def test_kyle_1007922_1_dash1_6_pn_14_pcs_omits_other_dash():
     assert "1007830-1" not in parts2
     assert "1007800-1" not in parts2
     assert "73207" not in parts2
+
+
+def test_kyle_33612_1_letters_a_w_skip_io_21_pn_47_pcs():
+    """Kyle-confirmed 33612-1-LOM.xlsx. A–W skip I/O; single QTY; keep 282xx."""
+    assert _KYLE_33612_LETTERS == list("ABCDEFGHJKLMNPQRSTUVW")
+    assert len(_KYLE_33612_LETTERS) == 21
+    assert "I" not in _KYLE_33612_LETTERS and "O" not in _KYLE_33612_LETTERS
+    assert _KYLE_33612_LETTERS[0] == "A" and _KYLE_33612_LETTERS[-1] == "W"
+    assert _KYLE_33612_1_PN_COUNT == 21
+    assert _KYLE_33612_1_PCS == 47
+    named = {pn for _i, _q, pn, _d in _KYLE_33612_1}
+    assert "89176-1" in named and "94560" in named
+    assert set(_KYLE_33612_282XX) <= named
+    assert "56657" not in named and "97879" not in named
+
+    layout = detect_material_list_header(["QTY", "ITEM", "PART NO.", "DESCRIPTION"])
+    assert layout is not None
+    assert layout.qty_cols == ["QTY"]
+    assert not layout.is_multi_qty
+    assert layout.numeric_items is False
+
+    cells = _kyle_33612_cell_rows()
+    assert len(cells) == 24  # header + 21 letters + 56657 + 97879
+    assert cells[0] == ["QTY", "ITEM", "PART NO.", "DESCRIPTION"]
+    assert cells[1][1] == "A" and cells[21][1] == "W"
+    assert cells[-2][2] == "56657" and cells[-1][2] == "97879"
+    parsed = parse_material_list_cells(cells)
+    _assert_kyle_33612_1(parsed)
+    assert parsed.method == "table_material_list"
+
+    lines = [
+        "WELDMENT, PLATFORM",
+        "33612-1",
+        "TIME MANUFACTURING",
+        "LIST OF MATERIAL",
+    ]
+    for row in cells:
+        lines.append(" | ".join(row))
+    text = "\n".join(lines)
+    _assert_kyle_33612_1(parse_material_list_text(text))
+    extracted = extract_bom(text=text)
+    _assert_kyle_33612_1(extracted)
+    assert extracted.method and extracted.method.startswith("table_")
+    assert not (extracted.method or "").startswith("ocr_time")
+
+    strips = [" | ".join(row) for row in reversed(cells)]
+    assert strips[0].split("|")[2].strip() == "97879"
+    assert strips[-2].split("|")[1].strip() == "A"
+    harvested = harvest_ocr_row_strips(
+        strips,
+        bom_config="",
+        page_text="WELDMENT, PLATFORM  33612-1",
+    )
+    _assert_kyle_33612_1(harvested)
+    assert "56657" not in {r.part_no for r in harvested.rows}
+    assert "97879" not in {r.part_no for r in harvested.rows}
+
+
+def test_kyle_33612_1_omits_56657_97879_keeps_282xx():
+    parsed = parse_material_list_cells(
+        [
+            ["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
+            ["1", "A", "89176-1", "TUBE"],
+            ["1", "M", "94560", "GATE, FABRICATION"],
+            ["1", "N", "28275-1", "TUBE"],
+            ["1", "P", "28275-2", "TUBE"],
+            ["1", "", "33612-1", "WELDMENT"],
+            ["1", "X", "56657", "FIRST RELEASE TO PRODUCTION"],
+            ["1", "BT", "97879", "THIS DRAWING IS THE PROPERTY OF TIME"],
+        ]
+    )
+    pns = {r.part_no for r in parsed.rows}
+    assert "89176-1" in pns
+    assert "94560" in pns
+    assert "28275-1" in pns and "28275-2" in pns
+    assert "56657" not in pns
+    assert "97879" not in pns
+    assert "33612-1" not in pns
 
 
 def test_kyle_1004747_1_pdf_extract_bom_and_xlsx(tmp_path: Path):
