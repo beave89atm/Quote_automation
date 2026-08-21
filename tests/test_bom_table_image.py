@@ -8,9 +8,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 from PIL import Image, ImageDraw, ImageFont
 
 from quote_core.bom import BomResult, extract_bom
+from quote_core.ocr import ocr_available
 from quote_core.bom_table import (
     expected_letters_for_bands,
     harvest_material_list_lines,
@@ -29,9 +31,13 @@ from tests.test_bom_table import (
 )
 from quote_core.bom_table_image import (
     TABLE_CROP_FILENAME,
+    _reread_unread_qty_cells,
     extract_bom_from_table_image,
     extract_bom_from_table_images,
+    leading_qty_before_item,
     left_qty_column_bounds,
+    qty_item_pipe_bounds,
+    read_qty_cell,
     segment_table_bands,
 )
 
@@ -202,6 +208,100 @@ def test_left_qty_column_keeps_thin_first_band():
     assert any(a == 0 and b >= 5 for a, b in windows)
     wide = left_qty_column_bounds([0, 120, 200], 400)
     assert any(b - a <= 50 for a, b in wide)
+    pipe = qty_item_pipe_bounds([5, 40, 140, 300], 400)
+    assert any(b >= 40 for a, b in pipe if a == 0)
+
+
+def test_leading_qty_before_item_reads_digit_not_pn():
+    """Pipe/glued QTY|ITEM|PN. PN stem 432710 is not qty 4. Unread stays empty."""
+    assert leading_qty_before_item("6V432710CAP") == "6"
+    assert leading_qty_before_item("8 | AD | 464440 | PLATE") == "8"
+    assert leading_qty_before_item("4 W 432690") == "4"
+    assert leading_qty_before_item("5AA460330") == "5"
+    assert leading_qty_before_item("2 BB 102727-4") == "2"
+    assert leading_qty_before_item("1A460200") == "1"
+    assert leading_qty_before_item(" | V | 432710 | CAP") == ""
+    assert leading_qty_before_item("V432710CAP") == ""
+    assert leading_qty_before_item("432710 CAP") == ""
+    assert leading_qty_before_item("7 S 100200-1") == ""
+    assert leading_qty_before_item("") == ""
+
+
+def _liberation_font(size: int = 12):
+    try:
+        return ImageFont.truetype(
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            size,
+        )
+    except OSError:
+        return ImageFont.load_default()
+
+
+def _draw_qty_item_pn(qty, item: str, pn: str, desc: str = "CAP") -> Image.Image:
+    """One LOM row: optional qty digit, item letter, PN — no customer PDF."""
+    im = Image.new("RGB", (200, 20), "white")
+    draw = ImageDraw.Draw(im)
+    font = _liberation_font(12)
+    if qty not in {None, ""}:
+        draw.text((3, 2), str(qty), fill="black", font=font)
+    draw.text((18, 2), item, fill="black", font=font)
+    draw.text((42, 2), f"{pn} {desc}", fill="black", font=font)
+    return im
+
+
+def test_pipe_qty_cell_reads_kyle_1_through_8():
+    """What actually works: QTY+ITEM+PN clip, leading digit before the letter."""
+    if not ocr_available():
+        pytest.skip("tesseract not installed")
+    want = [(1, "A", "460200"), (2, "E", "432600"), (4, "W", "432690"),
+            (5, "AA", "460330"), (6, "V", "432710"), (8, "AD", "464440")]
+    for qty, item, pn in want:
+        im = _draw_qty_item_pn(qty, item, pn)
+        got = read_qty_cell(im, 0, im.height, [16, 40, 100])
+        assert got == str(qty), (item, qty, got)
+
+
+def test_unread_qty_cell_stays_zero_not_one():
+    """Blank qty + readable item/PN must not become 1."""
+    if not ocr_available():
+        pytest.skip("tesseract not installed")
+    im = _draw_qty_item_pn("", "V", "432710")
+    assert read_qty_cell(im, 0, im.height, [16, 40, 100]) == ""
+    seg = {"row_bands": [(0, 0, im.width, im.height)], "v_lines": [16, 40, 100]}
+    notes: list[str] = []
+    out = _reread_unread_qty_cells(im, seg, [" | V | 432710 | CAP"], notes)
+    parsed = parse_ocr_row_strip(out[0])
+    assert parsed is not None
+    assert parsed["part_no"] == "432710"
+    assert parsed["qty"] == 0
+    assert parsed["qty_clear"] is False
+    assert parsed["qty"] != 1
+
+
+def test_reread_fills_pipe_qty_for_unread_kyle_digits():
+    """791587b shape: letters/PNs already in the pipe; qty cell was blank."""
+    if not ocr_available():
+        pytest.skip("tesseract not installed")
+    cases = [
+        (1, "A", "460200"),
+        (2, "Z", "460320"),
+        (4, "W", "432690"),
+        (5, "AA", "460330"),
+        (6, "V", "432710"),
+        (8, "AD", "464440"),
+    ]
+    for qty, item, pn in cases:
+        im = _draw_qty_item_pn(qty, item, pn)
+        seg = {"row_bands": [(0, 0, im.width, im.height)], "v_lines": [16, 40, 100]}
+        notes: list[str] = []
+        out = _reread_unread_qty_cells(
+            im, seg, [f" | {item} | {pn} | CAP"], notes
+        )
+        parsed = parse_ocr_row_strip(out[0])
+        assert parsed is not None, (item, out[0])
+        assert parsed["part_no"] == pn, (item, parsed)
+        assert parsed["qty"] == qty, (item, parsed["qty"], qty, out[0], notes)
+        assert parsed["qty_clear"] is True
 
 
 def test_table_image_cell_texts_match_kyle_102728_1():
