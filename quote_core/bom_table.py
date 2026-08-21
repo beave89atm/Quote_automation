@@ -1733,6 +1733,10 @@ def material_list_header_seen(bom: Any) -> bool:
     # enough — piece-part pages must not become an invented LOM.
     if method and str(method).startswith("table_") and rows:
         return True
+    # Unread tall desktop crop (51 bands, OCR off) is still a LOM.
+    grid = int(getattr(bom, "grid_row_count", 0) or 0)
+    if grid >= SHORT_TABLE_REJECT:
+        return True
     return False
 
 
