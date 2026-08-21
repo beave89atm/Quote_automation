@@ -250,7 +250,9 @@ def score_material_list(bom: Any) -> tuple:
     items = [str(r.item).upper() for r in rows if r.item]
     seq_hits = sum(1 for i in items if i in seq)
     two_letter = sum(1 for i in items if len(i) == 2 and i in seq)
-    has_bb = 1 if "BB" in items else 0
+    has_bb = 1 if any(
+        str(r.item).upper() == "BB" and str(r.part_no) == "102727-4" for r in rows
+    ) else 0
     has_pn = 1 if any(str(r.part_no) == "102727-4" for r in rows) else 0
     pieces = int(getattr(bom, "piece_count", 0) or 0)
     cellish = sum(
@@ -260,7 +262,9 @@ def score_material_list(bom: Any) -> tuple:
         and "harvest" not in str(getattr(r, "source", ""))
     )
     complete_cell = 1 if cellish >= TALL_TABLE_MIN_ROWS and has_bb and has_pn else 0
-    return (complete_cell, seq_hits, two_letter, has_bb, has_pn, cellish, pieces)
+    # Pieces before a lone two-letter: a false BB on 11694-2 must not beat 15/15.
+    # 51 unique / 65 pcs loses to 51 / 97.
+    return (complete_cell, seq_hits, pieces, two_letter, has_bb, has_pn, cellish)
 
 
 def pick_best_material_list(candidates: Sequence[Any], *, min_rows: int = TALL_TABLE_MIN_ROWS):
@@ -1824,6 +1828,9 @@ def parse_material_list_cells(
             )
         )
 
+    by_pn = {str(r.part_no): r for r in parsed if r.part_no}
+    _drop_hyphenless_dupes(by_pn)
+    parsed = list(by_pn.values())
     parsed.sort(key=lambda r: item_sort_key(str(r.item or "")))
     unread_qty = sum(1 for r in parsed if int(r.qty or 0) <= 0)
     if unread_qty:
