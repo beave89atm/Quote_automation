@@ -44,6 +44,9 @@ from tests.test_bom_table import (
     _kyle_105098_cell_rows,
 )
 from quote_core.bom_table_image import (
+    LOM_QTY_DPI,
+    LOM_STRIP_BOTTOM_FRAC,
+    LOM_STRIP_LEFT_FRAC,
     TABLE_CROP_FILENAME,
     _ocr_first_pass_lines,
     _qty_band_needs_reread,
@@ -56,6 +59,7 @@ from quote_core.bom_table_image import (
     qty_item_pipe_bounds,
     read_qty_cell,
     segment_table_bands,
+    trim_strip_to_lom_qty,
 )
 
 _THROUGH = "BC"
@@ -221,6 +225,27 @@ def test_extract_bom_sibling_crop_beats_short_pdf_lom(tmp_path: Path, monkeypatc
     else:
         assert len(bom.rows) < 10
         assert "flag review" in joined or "unread" in joined or "rejected" in joined
+
+
+def test_scan_clip_includes_qty_column_and_bottom_header():
+    """Live 35eae54: 0.68/0.92 cut QTY and the header under A."""
+    assert LOM_STRIP_LEFT_FRAC <= 0.58
+    assert LOM_STRIP_BOTTOM_FRAC >= 0.96
+    assert LOM_QTY_DPI >= 420
+
+
+def test_trim_strip_starts_at_qty_column():
+    """Wide right-half clip: drop drawing left of the thin QTY band."""
+    im = Image.new("RGB", (400, 120), "white")
+    draw = ImageDraw.Draw(im)
+    for x in (140, 158, 220, 320):
+        draw.line([(x, 0), (x, 119)], fill="black", width=2)
+    for y in range(8, 112, 10):
+        draw.line([(140, y), (399, y)], fill="black", width=1)
+    cropped, x0 = trim_strip_to_lom_qty(im)
+    assert x0 >= 100
+    assert cropped.width < im.width
+    assert cropped.width > 200
 
 
 def test_left_qty_column_keeps_thin_first_band():

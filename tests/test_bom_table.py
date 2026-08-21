@@ -1766,6 +1766,29 @@ def test_kyle_102728_1_pdf_extract_bom_matches_grid(tmp_path: Path):
     assert all(r.source == "lom_xlsx" for r in bom.rows)
 
 
+def test_later_zero_text_page_does_not_replace_page1_lom(tmp_path: Path):
+    """5-page 102728 scan: later blank sheets must not overwrite page 1 LOM."""
+    import fitz
+
+    data_rows = [
+        [str(qty), item, pn, desc] for item, qty, pn, desc in _KYLE_102728_1
+    ]
+    pdf = tmp_path / "Time 102728- Weldment.pdf"
+    _write_lom_pdf(
+        pdf,
+        ["QTY", "ITEM", "PART NO.", "DESCRIPTION"],
+        data_rows,
+        title="WELDMENT, PLATFORM  102728-1  TIME MANUFACTURING",
+    )
+    doc = fitz.open(pdf)
+    doc.new_page()
+    doc.save(pdf)
+    doc.close()
+    bom = extract_bom(pdf_path=pdf)
+    _assert_kyle_102728_1(bom)
+    assert any("zero-text page" in n for n in bom.notes)
+
+
 def test_pdf_table_path_does_not_pad_library_subweldments(tmp_path: Path):
     items = _platform_items()
     data_rows = []

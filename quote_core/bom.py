@@ -1239,6 +1239,19 @@ def extract_bom_from_material_list_table(
                     f"({page_title_weldment_key(page_text)}) — not this job's BOM"
                 )
                 continue
+            zero_text = len(page_text.strip()) < 40
+            if idx > 0 and zero_text:
+                tall = any(
+                    int(getattr(c, "grid_row_count", 0) or 0) >= TALL_TABLE_MIN_ROWS
+                    or len(getattr(c, "rows", None) or []) >= TALL_TABLE_MIN_ROWS
+                    for c in candidates
+                )
+                if tall:
+                    notes.append(
+                        f"Skipped later zero-text page {idx + 1} — "
+                        f"page 1 LIST OF MATERIAL already tall"
+                    )
+                    continue
             parsed = _parse_material_list_on_page(page, bom_config=bom_config)
             if parsed.rows or material_list_header_seen(parsed):
                 parsed.notes = [
@@ -1256,19 +1269,33 @@ def extract_bom_from_material_list_table(
                 continue
             try:
                 from quote_core.bom_table_image import (
+                    LOM_SCAN_DPI,
+                    LOM_STRIP_BOTTOM_FRAC,
+                    LOM_STRIP_DPI,
+                    LOM_STRIP_LEFT_FRAC,
+                    LOM_STRIP_TOP_FRAC,
                     extract_bom_from_table_image,
                     render_page_right_strip,
                 )
 
-                strip = render_page_right_strip(page, dpi=220.0)
+                # 0.68 / 0.92 cut QTY and the header under A on live 102728 scans.
+                dpi = LOM_SCAN_DPI if zero_text else LOM_STRIP_DPI
+                strip = render_page_right_strip(
+                    page,
+                    dpi=dpi,
+                    left_frac=LOM_STRIP_LEFT_FRAC,
+                    top_frac=LOM_STRIP_TOP_FRAC,
+                    bottom_frac=LOM_STRIP_BOTTOM_FRAC,
+                )
                 rendered = extract_bom_from_table_image(
                     strip,
                     bom_config=bom_config,
                     retry_page=page,
                     retry_clip={
-                        "left_frac": 0.68,
-                        "top_frac": 0.03,
-                        "bottom_frac": 0.92,
+                        "left_frac": LOM_STRIP_LEFT_FRAC,
+                        "top_frac": LOM_STRIP_TOP_FRAC,
+                        "bottom_frac": LOM_STRIP_BOTTOM_FRAC,
+                        "strip_width": strip.width,
                     },
                     page_text=page.get_text("text") or "",
                 )
