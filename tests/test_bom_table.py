@@ -838,7 +838,7 @@ def test_qty_ocr_short_circuit_skips_whole_clip_on_sparse_page(tmp_path: Path):
     doc.save(pdf)
     doc.close()
     doc = fitz.open(pdf)
-    bom = _parse_material_list_on_page(doc[0])
+    bom = _parse_material_list_on_page(doc[0], bom_config=None)
     doc.close()
     assert not bom.rows
     assert any("qty-OCR short-circuit" in n for n in bom.notes)
