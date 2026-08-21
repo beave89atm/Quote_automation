@@ -82,6 +82,8 @@ class BomResult:
     assembly_weight_lb: float | None = None
     # Bitmap grid bands on a rendered right-side clip (0 if not segmented).
     grid_row_count: int = 0
+    # Sibling ``{stem}-LOM.xlsx`` the quote rows were read from (if any).
+    lom_xlsx: str | None = None
 
     @property
     def piece_count(self) -> int:
@@ -109,6 +111,8 @@ class BomResult:
             "notes": self.notes,
             "assembly_weight_lb": self.assembly_weight_lb,
             "grid_row_count": self.grid_row_count,
+            "lom_xlsx": self.lom_xlsx,
+            "source": "lom_xlsx" if self.lom_xlsx else None,
             "piece_count": self.piece_count,
             "part_number_count": self.part_number_count,
             "component_weights_lb": self.component_weights_lb(),
@@ -1457,7 +1461,8 @@ def extract_bom(
 
     Time (and similar) LOM is **cell-grid only** — no whole-page OCR/regex
     and no library-folder padding. When ``pdf_path`` is set and rows are
-    found, write ``{stem}-LOM.xlsx`` next to the PDF.
+    found, write ``{stem}-LOM.xlsx`` next to the PDF, then **re-read that
+    sheet** as the quote BOM. There is no side-channel JSON.
     """
     notes: list[str] = []
     probe = text
@@ -1527,11 +1532,57 @@ def extract_bom(
             ocr.notes = notes + list(ocr.notes)
             return _with_lom_xlsx(ocr, pdf_path)
 
-    if native.rows:
+    if native.rows and not time_lom:
         native.notes = notes + native.notes
         return _with_lom_xlsx(native, pdf_path)
 
     return BomResult(method=None, confidence=0.0, notes=notes or ["No BOM rows detected"])
+
+
+def bom_from_lom_xlsx(path: Path | str, *, prior: BomResult | None = None) -> BomResult:
+    """Quote BOM is the written sheet. Do not keep a parallel parse."""
+    from quote_core.bom_xlsx import read_lom_xlsx
+
+    dest = Path(path)
+    _header, data = read_lom_xlsx(dest)
+    prior_rows = list(getattr(prior, "rows", None) or [])
+    by_key: dict[tuple[str, str], BomRow] = {}
+    for row in prior_rows:
+        by_key[(str(row.item or ""), str(row.part_no or ""))] = row
+    rows: list[BomRow] = []
+    for rec in data:
+        raw_qty = rec.get("QTY")
+        try:
+            qty = int(raw_qty)
+        except (TypeError, ValueError):
+            qty = 0
+        item = rec.get("ITEM") or ""
+        part_no = rec.get("PART NO") or ""
+        old = by_key.get((str(item), str(part_no)))
+        rows.append(
+            BomRow(
+                item=item,
+                qty=qty,
+                part_no=part_no,
+                description=rec.get("DESCRIPTION") or "",
+                unit_weight_lb=old.unit_weight_lb if old else None,
+                source="lom_xlsx",
+                confidence=old.confidence if old else 1.0,
+            )
+        )
+    notes = list(getattr(prior, "notes", None) or [])
+    sourced = f"Quote BOM sourced from {dest.name}"
+    if sourced not in notes:
+        notes.append(sourced)
+    return BomResult(
+        rows=rows,
+        method=getattr(prior, "method", None) or "table_lom_xlsx",
+        confidence=float(getattr(prior, "confidence", 1.0) or 1.0),
+        notes=notes,
+        assembly_weight_lb=getattr(prior, "assembly_weight_lb", None),
+        grid_row_count=int(getattr(prior, "grid_row_count", 0) or 0),
+        lom_xlsx=dest.name,
+    )
 
 
 def _with_lom_xlsx(bom: BomResult, pdf_path: Path | str | None) -> BomResult:
@@ -1546,8 +1597,9 @@ def _with_lom_xlsx(bom: BomResult, pdf_path: Path | str | None) -> BomResult:
         note = f"Could not write LOM.xlsx: {exc}"
         if note not in bom.notes:
             bom.notes.append(note)
-    if dest is not None:
-        note = f"Wrote {dest.name}"
-        if note not in bom.notes:
-            bom.notes.append(note)
-    return bom
+    if dest is None:
+        return bom
+    note = f"Wrote {dest.name}"
+    if note not in bom.notes:
+        bom.notes.append(note)
+    return bom_from_lom_xlsx(dest, prior=bom)

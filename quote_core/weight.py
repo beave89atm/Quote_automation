@@ -400,7 +400,7 @@ def estimate_assembly_weight(
     Otherwise calculate: net sq-in × thickness × grade (plates), bbox fill (open sections).
     OCR Time-style BOMs may supply piece counts without unit weights.
     """
-    from quote_core.bom import extract_bom
+    from quote_core.bom import bom_from_lom_xlsx, extract_bom
 
     cfg = load_materials(str(materials_path) if materials_path else None)
     raw_pdf = pdf_text if pdf_text is not None else _read_pdf_text(pdf_path)
@@ -428,10 +428,25 @@ def estimate_assembly_weight(
         related_pdf_names=related_pdf_names,
         bom_config=bom_config,
     )
+    if pdf_path:
+        from quote_core.bom_xlsx import lom_xlsx_path_for_pdf
+
+        xlsx = lom_xlsx_path_for_pdf(pdf_path)
+        if xlsx.is_file():
+            bom = bom_from_lom_xlsx(xlsx, prior=bom)
     pdf_bom = bom.to_dict()
     # Keep legacy lbm-hit fallback when structured BOM rows are absent.
+    # Once a LIST OF MATERIAL exists, do not run a second parser.
     if not bom.rows:
-        pdf_bom = extract_pdf_bom_weights(pdf_path=pdf_path, text=raw_pdf or None)
+        from quote_core.bom_table import (
+            looks_like_time_material_list,
+            material_list_header_seen,
+        )
+
+        if not (
+            looks_like_time_material_list(raw_pdf) or material_list_header_seen(bom)
+        ):
+            pdf_bom = extract_pdf_bom_weights(pdf_path=pdf_path, text=raw_pdf or None)
 
     comps = [float(w) for w in (pdf_bom.get("component_weights_lb") or [])]
     bom_rows = list(pdf_bom.get("bom_rows") or [])

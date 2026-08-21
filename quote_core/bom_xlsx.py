@@ -175,6 +175,95 @@ def write_lom_xlsx_for_job(pdf_path: Path | str | None, takeoff: dict[str, Any] 
     return write_lom_xlsx(dest, rows)
 
 
+def _qty_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def sheet_records(path: Path | str) -> list[dict[str, Any]]:
+    """Four-column LOM.xlsx as quote rows. Qty unread/blank is 0."""
+    _header, data = read_lom_xlsx(path)
+    return [
+        {
+            "item": rec.get("ITEM") or "",
+            "qty": _qty_int(rec.get("QTY")),
+            "part_no": rec.get("PART NO") or "",
+            "description": rec.get("DESCRIPTION") or "",
+        }
+        for rec in data
+    ]
+
+
+def apply_lom_xlsx_to_takeoff(
+    takeoff: dict[str, Any] | None, path: Path | str
+) -> dict[str, Any]:
+    """Replace takeoff BOM JSON with the written sheet. No side channel."""
+    dest = Path(path)
+    records = sheet_records(dest)
+    blob = dict(takeoff or {})
+    prior = rows_from_takeoff(blob)
+    weights: dict[tuple[str, str], Any] = {}
+    for row in prior:
+        if hasattr(row, "item"):
+            key = (str(row.item or ""), str(row.part_no or ""))
+            weights[key] = getattr(row, "unit_weight_lb", None)
+        elif isinstance(row, dict):
+            key = (str(row.get("item") or ""), str(row.get("part_no") or ""))
+            weights[key] = row.get("unit_weight_lb")
+    rows = []
+    bom_rows = []
+    for rec in records:
+        key = (str(rec["item"]), str(rec["part_no"]))
+        unit = weights.get(key)
+        rows.append(
+            {
+                **rec,
+                "unit_weight_lb": unit,
+                "source": "lom_xlsx",
+                "confidence": 1.0,
+            }
+        )
+        bom_rows.append({**rec, "unit_weight_lb": unit})
+    piece = sum(max(0, int(r["qty"] or 0)) for r in records)
+    part_count = len({r["part_no"] for r in records if r["part_no"]})
+    drivers = dict(blob.get("fitup_drivers") or {})
+    weight = dict(drivers.get("weight_calc") or {})
+    existing = weight.get("bom") or weight.get("pdf_bom") or blob.get("bom") or {}
+    method = str((existing or {}).get("method") or "") or "table_lom_xlsx"
+    notes = list((existing or {}).get("notes") or [])
+    sourced = f"Quote BOM sourced from {dest.name}"
+    if sourced not in notes:
+        notes.append(sourced)
+    bom_blob = {
+        "rows": rows,
+        "bom_rows": bom_rows,
+        "method": method,
+        "confidence": (existing or {}).get("confidence"),
+        "notes": notes,
+        "assembly_weight_lb": (existing or {}).get("assembly_weight_lb"),
+        "grid_row_count": (existing or {}).get("grid_row_count") or 0,
+        "lom_xlsx": dest.name,
+        "source": "lom_xlsx",
+        "piece_count": piece,
+        "part_number_count": part_count,
+        "component_weights_lb": (existing or {}).get("component_weights_lb") or [],
+    }
+    weight["bom"] = bom_blob
+    weight["pdf_bom"] = bom_blob
+    weight["piece_count"] = piece
+    weight["part_number_count"] = part_count
+    if piece > 0:
+        drivers["part_count"] = piece
+        drivers["piece_count"] = piece
+    drivers["weight_calc"] = weight
+    blob["fitup_drivers"] = drivers
+    blob["bom"] = bom_blob
+    blob["lom_xlsx"] = dest.name
+    return blob
+
+
 def read_lom_xlsx(path: Path | str) -> tuple[list[str], list[dict[str, Any]]]:
     """Read header + data rows from a LOM.xlsx this module wrote."""
     with zipfile.ZipFile(Path(path)) as zf:

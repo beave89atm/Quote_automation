@@ -1719,6 +1719,8 @@ def test_kyle_102728_1_pdf_extract_bom_matches_grid(tmp_path: Path):
     xlsx = pdf.with_name(f"{pdf.stem}-LOM.xlsx")
     assert xlsx.is_file(), "extract_bom must emit sibling LOM.xlsx"
     _assert_kyle_xlsx(xlsx, _KYLE_102728_1)
+    assert bom.lom_xlsx == xlsx.name
+    assert all(r.source == "lom_xlsx" for r in bom.rows)
 
 
 def test_pdf_table_path_does_not_pad_library_subweldments(tmp_path: Path):
