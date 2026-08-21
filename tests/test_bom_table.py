@@ -476,6 +476,59 @@ def _assert_kyle_21727_1(bom) -> None:
     assert "16697-1" in parts and "16697-2" in parts
 
 
+# Kyle 1007922-1 confirmed against 1007922-1-LOM.xlsx.
+# Dash -1 of -2|-1: 6 PNs / 14 pcs including 14149-1×4 and 1007830-1×2.
+# 21750-2 / 21743-2 are other-dash only. 73207 is not a weld part.
+# Remaining PNs were not listed — do not invent them. Live bar is 6/14.
+# Item letters on the documented children are fixture slots, not a live claim.
+_KYLE_1007922_1_PN_COUNT = 6
+_KYLE_1007922_1_PCS = 14
+_KYLE_1007922_1: list[tuple[str, int, str, str]] = [
+    ("A", 1, "1007800-1", "TUBE"),
+    ("B", 4, "14149-1", "FILLER"),
+    ("C", 2, "1007830-1", "OUTRIGGER LEG"),
+    ("D", 1, "6993-1", "HOSE GUIDE"),
+    ("N", 1, "28275-1", "TUBE"),
+]
+_KYLE_1007922_OTHER_DASH: list[tuple[str, str, str]] = [
+    ("L", "21750-2", ""),
+    ("P", "21743-2", ""),
+]
+
+
+def _kyle_1007922_cell_rows() -> list[list[str]]:
+    """-2|-1 grid. A at the bottom when reversed. Empty -1 omits the row."""
+    rows = [["-2", "-1", "ITEM", "PART NO.", "DESCRIPTION"]]
+    for item, qty, pn, desc in _KYLE_1007922_1:
+        rows.append(["", str(qty), item, pn, desc])
+    for item, pn, desc in _KYLE_1007922_OTHER_DASH:
+        rows.append(["1", "", item, pn, desc])
+    rows.append(["", "1", "S", "73207", "ADDED CONFIGURATION"])
+    return rows
+
+
+def _assert_kyle_1007922_1(bom) -> None:
+    parts = {str(r.part_no or "") for r in bom.rows}
+    by_item = {str(r.item): r for r in bom.rows}
+    assert by_item["B"].part_no == "14149-1"
+    assert by_item["B"].qty == 4
+    assert "FILLER" in by_item["B"].description.upper()
+    assert by_item["C"].part_no == "1007830-1"
+    assert by_item["C"].qty == 2
+    assert "OUTRIGGER" in by_item["C"].description.upper()
+    assert by_item["A"].part_no == "1007800-1"
+    assert by_item["D"].part_no == "6993-1"
+    assert by_item["N"].part_no == "28275-1"
+    assert "14149-1" in parts and "1007830-1" in parts
+    assert "1007800-1" in parts and "6993-1" in parts and "28275-1" in parts
+    assert "21750-2" not in parts
+    assert "21743-2" not in parts
+    assert "73207" not in parts
+    assert "1007922-1" not in parts
+    assert "1007922" not in parts
+    assert "L" not in by_item and "P" not in by_item and "S" not in by_item
+
+
 def test_kyle_grid_writes_four_column_xlsx(tmp_path: Path):
     """Same 51-row grid Kyle confirmed — QTY / ITEM / PART NO / DESCRIPTION."""
     from quote_core.bom import BomResult, BomRow
@@ -1173,6 +1226,69 @@ def test_kyle_21727_1_omits_61358_and_title_dwg():
     assert "16697-2" in pns
     assert "61358" not in pns
     assert "21727-1" not in pns
+
+
+def test_kyle_1007922_1_dash1_6_pn_14_pcs_omits_other_dash():
+    """Kyle-confirmed 1007922-1-LOM.xlsx. Dash -1 only; 14149-1×4, 1007830-1×2."""
+    assert _KYLE_1007922_1_PN_COUNT == 6
+    assert _KYLE_1007922_1_PCS == 14
+    assert {pn for _i, _q, pn, _d in _KYLE_1007922_1} == {
+        "1007800-1",
+        "14149-1",
+        "1007830-1",
+        "6993-1",
+        "28275-1",
+    }
+    assert {pn for _i, pn, _d in _KYLE_1007922_OTHER_DASH} == {"21750-2", "21743-2"}
+    assert "73207" not in {pn for _i, _q, pn, _d in _KYLE_1007922_1}
+    assert next(q for _i, q, pn, _d in _KYLE_1007922_1 if pn == "14149-1") == 4
+    assert next(q for _i, q, pn, _d in _KYLE_1007922_1 if pn == "1007830-1") == 2
+
+    layout = detect_material_list_header(["-2", "-1", "ITEM", "PART NO.", "DESCRIPTION"])
+    assert layout is not None
+    assert layout.qty_cols == ["-2", "-1"]
+    assert layout.is_multi_qty
+    assert layout.numeric_items is False
+
+    cells = _kyle_1007922_cell_rows()
+    assert cells[0][:3] == ["-2", "-1", "ITEM"]
+    assert cells[1][2] == "A" and cells[1][3] == "1007800-1"
+    assert cells[2][1] == "4" and cells[2][3] == "14149-1"
+    assert cells[3][1] == "2" and cells[3][3] == "1007830-1"
+    parsed = parse_material_list_cells(cells, bom_config="-1")
+    _assert_kyle_1007922_1(parsed)
+    assert parsed.method == "table_material_list_multi_qty"
+
+    lines = [
+        "WELDMENT, PLATFORM",
+        "1007922-1",
+        "TIME MANUFACTURING",
+        "LIST OF MATERIAL",
+    ]
+    for row in cells:
+        lines.append(" | ".join(row))
+    text = "\n".join(lines)
+    _assert_kyle_1007922_1(parse_material_list_text(text, bom_config="-1"))
+    extracted = extract_bom(text=text, bom_config="-1")
+    _assert_kyle_1007922_1(extracted)
+    assert extracted.method and extracted.method.startswith("table_")
+    assert not (extracted.method or "").startswith("ocr_time")
+
+    strips = [" | ".join(row) for row in reversed(cells)]
+    harvested = harvest_ocr_row_strips(
+        strips,
+        bom_config="-1",
+        page_text="WELDMENT, PLATFORM  1007922-1",
+    )
+    _assert_kyle_1007922_1(harvested)
+
+    dash2 = parse_material_list_cells(cells, bom_config="2")
+    parts2 = {r.part_no for r in dash2.rows}
+    assert "21750-2" in parts2 and "21743-2" in parts2
+    assert "14149-1" not in parts2
+    assert "1007830-1" not in parts2
+    assert "1007800-1" not in parts2
+    assert "73207" not in parts2
 
 
 def test_kyle_1004747_1_pdf_extract_bom_and_xlsx(tmp_path: Path):

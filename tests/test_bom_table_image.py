@@ -31,11 +31,13 @@ from tests.test_bom_table import (
     _assert_kyle_p904225_1,
     _assert_kyle_103516,
     _assert_kyle_21727_1,
+    _assert_kyle_1007922_1,
     _kyle_1004611_cell_rows,
     _kyle_28106_cell_rows,
     _kyle_p904225_cell_rows,
     _kyle_103516_cell_rows,
     _kyle_21727_cell_rows,
+    _kyle_1007922_cell_rows,
 )
 from quote_core.bom_table_image import (
     TABLE_CROP_FILENAME,
@@ -386,6 +388,17 @@ def test_table_image_cell_texts_match_kyle_21727_1():
     assert bom.method and bom.method.startswith("table_")
     assert not (bom.method or "").startswith("ocr_time")
     _assert_kyle_21727_1(bom)
+
+
+def test_table_image_cell_texts_match_kyle_1007922_1():
+    """1007922-1: dash -1, 14149-1×4 / 1007830-1×2, omit 21750-2 / 21743-2 / 73207."""
+    cells = _kyle_1007922_cell_rows()
+    texts = [" | ".join(row) for row in reversed(cells)]
+    im = _draw_lom_table(["4 B 14149-1 FILLER"] * 6)
+    bom = extract_bom_from_table_image(im, row_texts=texts, bom_config="-1")
+    assert bom.method and bom.method.startswith("table_")
+    assert not (bom.method or "").startswith("ocr_time")
+    _assert_kyle_1007922_1(bom)
 
 
 def _live_page1_strips() -> list[str]:
