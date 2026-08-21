@@ -44,13 +44,17 @@ from tests.test_bom_table import (
     _kyle_105098_cell_rows,
 )
 from quote_core.bom_table_image import (
+    LOM_QTY_COLUMN_WINDOWS,
     LOM_QTY_DPI,
     LOM_QTY_LEFT_FRAC,
+    LOM_QTY_PIPE_WINDOWS,
+    LOM_QTY_REACH_BOTTOM_FRAC,
     LOM_STRIP_BOTTOM_FRAC,
     LOM_STRIP_LEFT_FRAC,
     TABLE_CROP_FILENAME,
     _ocr_first_pass_lines,
     _qty_band_needs_reread,
+    _reread_qty_from_page,
     _reread_unread_qty_cells,
     _would_downgrade_qty,
     extract_bom_from_table_image,
@@ -59,6 +63,7 @@ from quote_core.bom_table_image import (
     left_qty_column_bounds,
     qty_item_pipe_bounds,
     read_qty_cell,
+    render_page_right_strip,
     segment_table_bands,
 )
 
@@ -233,7 +238,103 @@ def test_table_find_clip_is_not_the_037f309_regression():
     assert LOM_STRIP_BOTTOM_FRAC == 0.92
     assert LOM_QTY_LEFT_FRAC < LOM_STRIP_LEFT_FRAC
     assert LOM_QTY_DPI >= 420
+    assert LOM_QTY_REACH_BOTTOM_FRAC > LOM_STRIP_BOTTOM_FRAC
+    assert any(left >= 0.60 and right <= 0.72 for left, right in LOM_QTY_COLUMN_WINDOWS)
+    assert any(left <= 0.55 and right >= 0.74 for left, right in LOM_QTY_PIPE_WINDOWS)
     assert "trim_strip_to_lom_qty" not in dir(__import__("quote_core.bom_table_image", fromlist=["*"]))
+
+
+def _qty_left_of_strip_page():
+    """Synthetic scan: QTY at ~0.60, ITEM/PN in the 0.68 strip. No customer PDF."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    rows = (
+        (0.20, "2", "BB", "102727-4"),
+        (0.30, "8", "AD", "464440"),
+        (0.50, "6", "V", "432710"),
+        (0.70, "", "S", "100200-1"),
+        (0.88, "1", "A", "460200"),
+    )
+    for y_frac, qty, item, pn in rows:
+        y = 792 * y_frac
+        if qty:
+            page.insert_text((612 * 0.60, y), qty, fontsize=11)
+        page.insert_text((612 * 0.70, y), item, fontsize=11)
+        page.insert_text((612 * 0.78, y), pn, fontsize=11)
+    return doc, page, rows
+
+
+def _strip_y_for_page_frac(y_frac: float, strip_h: int) -> int:
+    top = LOM_STRIP_TOP_FRAC
+    bot = LOM_STRIP_BOTTOM_FRAC
+    return int(round((y_frac - top) / (bot - top) * strip_h))
+
+
+def test_qty_sliver_reads_digit_left_of_068_strip():
+    """35eae54 hole: 0.68 strip has PNs; QTY is left of it. Unread stays 0."""
+    if not ocr_available():
+        pytest.skip("tesseract not installed")
+    doc, page, rows = _qty_left_of_strip_page()
+    try:
+        strip = render_page_right_strip(page)
+        clip = {
+            "left_frac": LOM_STRIP_LEFT_FRAC,
+            "top_frac": LOM_STRIP_TOP_FRAC,
+            "bottom_frac": LOM_STRIP_BOTTOM_FRAC,
+            "qty_left_frac": LOM_QTY_LEFT_FRAC,
+        }
+        for y_frac, qty, _item, _pn in rows:
+            mid = _strip_y_for_page_frac(y_frac, strip.height)
+            got = _reread_qty_from_page(
+                page, strip, max(0, mid - 8), min(strip.height, mid + 8), clip
+            )
+            assert got == qty, (y_frac, qty, got)
+    finally:
+        doc.close()
+
+
+def test_sliver_fills_unread_qty_when_strip_has_no_digit():
+    """Reread uses the page sliver, not a PN-stem false hit on the 0.68 clip."""
+    if not ocr_available():
+        pytest.skip("tesseract not installed")
+    doc, page, rows = _qty_left_of_strip_page()
+    try:
+        strip = render_page_right_strip(page)
+        clip = {
+            "left_frac": LOM_STRIP_LEFT_FRAC,
+            "top_frac": LOM_STRIP_TOP_FRAC,
+            "bottom_frac": LOM_STRIP_BOTTOM_FRAC,
+        }
+        want = {item: qty for _y, qty, item, _pn in rows}
+        lines = []
+        bands = []
+        for y_frac, _qty, item, pn in rows:
+            mid = _strip_y_for_page_frac(y_frac, strip.height)
+            y0 = max(0, mid - 8)
+            y1 = min(strip.height, mid + 8)
+            bands.append((0, y0, strip.width, y1))
+            lines.append(f" | {item} | {pn} | CAP")
+        notes: list[str] = []
+        out = _reread_unread_qty_cells(
+            strip,
+            {"row_bands": bands, "v_lines": [16, 40, 100]},
+            lines,
+            notes,
+            retry_page=page,
+            retry_clip=clip,
+        )
+        for text, (_y, qty, item, pn) in zip(out, rows):
+            parsed = parse_ocr_row_strip(text)
+            assert parsed is not None, (item, text)
+            assert parsed["part_no"] == pn, (item, parsed)
+            assert parsed["qty"] == (int(qty) if qty else 0), (item, parsed, want)
+            if not qty:
+                assert parsed["qty"] != 1
+                assert parsed["qty_clear"] is False
+    finally:
+        doc.close()
 
 
 def test_left_qty_column_keeps_thin_first_band():

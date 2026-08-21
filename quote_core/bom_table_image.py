@@ -35,6 +35,20 @@ LOM_STRIP_DPI = 220.0
 LOM_QTY_LEFT_FRAC = 0.55
 LOM_QTY_RIGHT_FRAC = 0.74
 LOM_QTY_DPI = 480.0
+# A + the header under A sit below the 0.92 table clip. Reach them on
+# the sliver only — do not widen table find (that is the 037f309 miss).
+LOM_QTY_REACH_BOTTOM_FRAC = 0.97
+# Thin qty windows walk toward 0.68. 0.55–0.61 alone misses a digit
+# that sits just left of ITEM. Pipe windows keep the item letter.
+LOM_QTY_COLUMN_WINDOWS = (
+    (0.58, 0.66),
+    (0.62, 0.70),
+    (0.55, 0.62),
+)
+LOM_QTY_PIPE_WINDOWS = (
+    (0.55, 0.74),
+    (0.60, 0.76),
+)
 
 
 def resolve_table_crop(
@@ -650,6 +664,90 @@ def _ocr_first_pass_lines(im, seg: dict[str, Any], notes: list[str]) -> list[str
     return lines
 
 
+def _page_frac_from_table_y(y: int, height: int, top: float, bot: float) -> float:
+    return top + (float(y) / max(1, height)) * (bot - top)
+
+
+def _sliver_y_from_page_frac(
+    frac: float, sliver_top: float, sliver_bot: float, sliver_h: int
+) -> int:
+    span = max(1e-6, sliver_bot - sliver_top)
+    return int(round((frac - sliver_top) / span * sliver_h))
+
+
+def _crop_sliver_row(
+    im,
+    y0_frac: float,
+    y1_frac: float,
+    sliver_top: float,
+    sliver_bot: float,
+    *,
+    pad_px: int = 3,
+):
+    height = max(1, im.height)
+    sy0 = _sliver_y_from_page_frac(y0_frac, sliver_top, sliver_bot, height)
+    sy1 = _sliver_y_from_page_frac(y1_frac, sliver_top, sliver_bot, height)
+    sy0 = max(0, min(sy0, sy1) - pad_px)
+    sy1 = min(height, max(sy1, sy0 + 8) + pad_px)
+    return im.crop((0, sy0, im.width, sy1))
+
+
+def _pick_qty_token(pipes: list[str], isolated: list[str]) -> str:
+    """Prefer pipe (digit+letter). Isolated only when windows agree. Never invent 1."""
+    from collections import Counter
+
+    pipes = [t for t in pipes if t]
+    isolated = [t for t in isolated if t]
+    if pipes:
+        tok, n = Counter(pipes).most_common(1)[0]
+        if n >= 2 or len(set(pipes)) == 1:
+            return tok
+        return ""
+    if isolated:
+        tok, n = Counter(isolated).most_common(1)[0]
+        if n >= 2 or len(set(isolated)) == 1:
+            return tok
+    return ""
+
+
+def _qty_sliver_bundle(page, clip: dict[str, Any]) -> dict[str, Any]:
+    """Render qty slivers once per page. Do not re-segment the table grid."""
+    cached = clip.get("_qty_slivers")
+    if cached:
+        return cached
+    table_top = float(clip.get("top_frac", LOM_STRIP_TOP_FRAC))
+    sliver_top = table_top
+    sliver_bot = max(
+        float(clip.get("bottom_frac", LOM_STRIP_BOTTOM_FRAC)),
+        LOM_QTY_REACH_BOTTOM_FRAC,
+    )
+    cols = [
+        render_page_qty_column_band(
+            page,
+            y0_frac=sliver_top,
+            y1_frac=sliver_bot,
+            left_frac=left,
+            right_frac=right,
+            dpi=LOM_QTY_DPI,
+        )
+        for left, right in LOM_QTY_COLUMN_WINDOWS
+    ]
+    pipes = [
+        render_page_qty_item_band(
+            page,
+            y0_frac=sliver_top,
+            y1_frac=sliver_bot,
+            dpi=LOM_QTY_DPI,
+            left_frac=left,
+            right_frac=right,
+        )
+        for left, right in LOM_QTY_PIPE_WINDOWS
+    ]
+    bundle = {"top": sliver_top, "bot": sliver_bot, "cols": cols, "pipes": pipes}
+    clip["_qty_slivers"] = bundle
+    return bundle
+
+
 def _reread_qty_from_page(
     page,
     im,
@@ -660,43 +758,40 @@ def _reread_qty_from_page(
 ) -> str:
     """480-DPI QTY sliver left of the table strip. Do not re-crop the grid.
 
-    Y comes from the 0.68×0.92 table bands (51-PN find). X is a wider
-    sliver so the scan's QTY column is actually in the pixmap. Unread
-    stays 0. Never default to 1.
+    Y comes from the 0.68×0.92 table bands (51-PN find). X walks 0.55–0.76
+    so a digit just left of ITEM is in a window. Unread stays 0. Never
+    default to 1.
     """
     del v_lines
     height = max(1, im.height)
     top = float(clip.get("top_frac", LOM_STRIP_TOP_FRAC))
     bot = float(clip.get("bottom_frac", LOM_STRIP_BOTTOM_FRAC))
-    y0_frac = top + (y0 / height) * (bot - top)
-    y1_frac = top + (y1 / height) * (bot - top)
-    # A is the bottom data row. Reach its qty without changing table bands.
-    y0_frac = max(0.0, y0_frac - 0.003)
-    y1_frac = min(1.0, y1_frac + 0.012)
-    qty_left = float(clip.get("qty_left_frac", LOM_QTY_LEFT_FRAC))
-    qty_right = float(clip.get("qty_right_frac", LOM_QTY_RIGHT_FRAC))
-    if qty_right <= qty_left + 0.01:
-        qty_right = qty_left + 0.12
-    col = render_page_qty_column_band(
-        page,
-        y0_frac=y0_frac,
-        y1_frac=y1_frac,
-        left_frac=qty_left,
-        right_frac=min(0.85, qty_left + 0.06),
-        dpi=LOM_QTY_DPI,
-    )
-    digit = _accept_qty_token(_ocr_qty_digit(col)) or _ocr_qty_via_pipe(col)
-    if digit:
-        return digit
-    band = render_page_qty_item_band(
-        page,
-        y0_frac=y0_frac,
-        y1_frac=y1_frac,
-        dpi=LOM_QTY_DPI,
-        left_frac=qty_left,
-        right_frac=min(0.998, qty_right),
-    )
-    return _ocr_qty_via_pipe(band) or _accept_qty_token(_ocr_qty_digit(band))
+    y0_frac = _page_frac_from_table_y(y0, height, top, bot)
+    y1_frac = _page_frac_from_table_y(y1, height, top, bot)
+    # Tight Y so neighbor digits do not bleed. A (last band) may sit
+    # below the 0.92 table clip — reach it on the sliver only.
+    if y1 >= height - 10:
+        y1_frac = max(y1_frac, LOM_QTY_REACH_BOTTOM_FRAC)
+    y0_frac = max(0.0, y0_frac - 0.002)
+    y1_frac = min(1.0, y1_frac + 0.003)
+    bundle = _qty_sliver_bundle(page, clip)
+    pipes: list[str] = []
+    isolated: list[str] = []
+    for col in bundle["cols"]:
+        row = _crop_sliver_row(col, y0_frac, y1_frac, bundle["top"], bundle["bot"])
+        token = _ocr_qty_via_pipe(row)
+        if token:
+            pipes.append(token)
+            continue
+        digit = _accept_qty_token(_ocr_qty_digit(row))
+        if digit:
+            isolated.append(digit)
+    for band in bundle["pipes"]:
+        row = _crop_sliver_row(band, y0_frac, y1_frac, bundle["top"], bundle["bot"])
+        token = _ocr_qty_via_pipe(row)
+        if token:
+            pipes.append(token)
+    return _pick_qty_token(pipes, isolated)
 
 
 def _qty_band_needs_reread(parsed: dict[str, Any] | None) -> bool:
@@ -718,21 +813,22 @@ def _read_qty_for_band(
     retry_page: Any | None = None,
     retry_clip: dict[str, float] | None = None,
 ) -> str:
-    """Pipe on the clip, then 420-DPI page pipe, then isolated. Never default 1."""
+    """Sliver (QTY is left of 0.68), then strip pipe, then isolated. Never default 1."""
     height = getattr(im, "height", y1) or y1
     yy0 = max(0, int(y0) - 2)
     yy1 = min(int(height), int(y1) + 2)
-    pipe = read_qty_cell(im, yy0, yy1, v_lines, isolated=False)
-    if pipe:
-        return pipe
+    clip = retry_clip if retry_clip is not None else {}
+    # The 0.68 table pixmap does not contain QTY. A strip pipe can
+    # false-hit a PN stem (live V=4) and skip the sliver — try sliver first.
     if retry_page is not None:
         page = _accept_qty_token(
-            _reread_qty_from_page(
-                retry_page, im, yy0, yy1, retry_clip or {}, v_lines
-            )
+            _reread_qty_from_page(retry_page, im, yy0, yy1, clip, v_lines)
         )
         if page:
             return page
+    pipe = read_qty_cell(im, yy0, yy1, v_lines, isolated=False)
+    if pipe:
+        return pipe
     return read_qty_cell(im, yy0, yy1, v_lines, isolated=True)
 
 
@@ -1044,7 +1140,7 @@ def render_page_right_strip(
     top_frac: float = LOM_STRIP_TOP_FRAC,
     bottom_frac: float = LOM_STRIP_BOTTOM_FRAC,
 ):
-    """High-DPI right-side render. Must include the QTY column (left of ITEM)."""
+    """Table-find render (ITEM / PN / DESC). QTY is a separate 480-DPI sliver."""
     import fitz
     from PIL import Image
 
