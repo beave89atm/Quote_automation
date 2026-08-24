@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +13,20 @@ from secturafab.push import (
     classify_sectura_item,
     collect_job_files,
 )
+
+
+def _enter_push_website_mocks(stack: ExitStack, service: SecturaFabPushService) -> None:
+    """Happy-path Finish mocks so legacy push tests do not call quickAddCAD."""
+    stack.enter_context(
+        patch.object(
+            service,
+            "require_website_finish_auth",
+            return_value={"can_finish": True},
+        )
+    )
+    stack.enter_context(patch.object(service, "finish_cad_files", return_value=["Finish CAD"]))
+    stack.enter_context(patch.object(service, "finish_pdf_files", return_value=["Finish PDF"]))
+    stack.enter_context(patch.object(service, "nest_after_finish", return_value=["Nest"]))
 
 
 def test_weld_memo_includes_inches():
@@ -65,29 +80,20 @@ def test_push_job_creates_quote_and_uploads():
     if not pdf.exists() or not stp.exists():
         return
 
-    with patch.object(service, "upload_drawings_quote_request", return_value="qr-uuid") as up_d, patch.object(
-        service, "quick_add_cad", return_value={"ok": True}
-    ) as up_c, patch.object(service, "create_quote", return_value="quote-uuid") as create_q, patch.object(
-        service, "allocate_quote_number", return_value="35145-1"
-    ), patch.object(service, "apply_item_categories", return_value=[]), patch(
-        "secturafab.push.ensure_assembly_root", return_value=["Assembly root"]
-    ), patch(
-        "secturafab.push.relink_assembly_children", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_purchased_components", return_value=[]
-    ), patch(
-        "secturafab.push.find_purchased_part_keys", return_value={}
-    ), patch(
-        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
-    ), patch(
-        "secturafab.push.apply_bom_quantities", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_laser_profile_ops", return_value=["Attached Profile"]
-    ), patch("secturafab.push.ensure_weld_ops", return_value=["Attached Weld"]), patch(
-        "secturafab.push.finalize_quote_ops", return_value=["Verified"]
-    ), patch(
-        "secturafab.push.extract_assembly_description", return_value=None
-    ):
+    with ExitStack() as stack:
+        up_d = stack.enter_context(
+            patch.object(service, "upload_drawings_quote_request", return_value="qr-uuid")
+        )
+        _enter_push_website_mocks(stack, service)
+        create_q = stack.enter_context(
+            patch.object(service, "create_quote", return_value="quote-uuid")
+        )
+        stack.enter_context(patch.object(service, "allocate_quote_number", return_value="35145-1"))
+        stack.enter_context(patch("secturafab.push.refresh_bom_rows_for_push", return_value=([], [])))
+        stack.enter_context(patch("secturafab.push.apply_bom_quantities", return_value=[]))
+        stack.enter_context(patch("secturafab.push.ensure_weld_ops", return_value=["Attached Weld"]))
+        stack.enter_context(patch("secturafab.push.ensure_imperial_item_units", return_value=[]))
+        stack.enter_context(patch("secturafab.push.extract_assembly_description", return_value=None))
         result = service.push_job(
             title="35145-1 JIB ARM",
             pdf_filename="35145.pdf",
@@ -102,7 +108,6 @@ def test_push_job_creates_quote_and_uploads():
     assert result.created_new_quote
     create_q.assert_called_once()
     up_d.assert_called_once()
-    up_c.assert_called_once()
 
 
 def test_pn_quote_number_format():
@@ -118,6 +123,7 @@ def test_classify_sectura_item_categories():
     assert classify_sectura_item("1/2-13 HEX BOLT GRADE 8") == "Component"
     assert classify_sectura_item("23403750 KING PIN") == "Component"
     assert classify_sectura_item("23403750 KINGPIN, 3/8") == "Component"
+    assert classify_sectura_item("21689-1 HOSE GUARD") == "Linear"
 
 
 def test_allocate_quote_number_is_bare_part():
@@ -156,25 +162,13 @@ def test_repush_always_creates_new_quote_and_imports_cad():
     if not pdf.exists() or not stp.exists():
         return
 
-    with patch.object(service, "upload_drawings_quote_request", return_value="qr-uuid"), patch.object(
-        service, "quick_add_cad", return_value={"ok": True}
-    ) as up_c, patch.object(
-        service, "apply_item_categories", return_value=["Categorized items — Cad: 1, Linear: 1, Component: 0"]
-    ), patch("secturafab.push.ensure_assembly_root", return_value=["Assembly root"]), patch(
-        "secturafab.push.relink_assembly_children", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_purchased_components", return_value=[]
-    ), patch(
-        "secturafab.push.find_purchased_part_keys", return_value={}
-    ), patch(
-        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
-    ), patch(
-        "secturafab.push.apply_bom_quantities", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_laser_profile_ops", return_value=["Attached Profile"]
-    ), patch("secturafab.push.ensure_weld_ops", return_value=["Attached Weld"]), patch(
-        "secturafab.push.finalize_quote_ops", return_value=["Verified"]
-    ):
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(service, "upload_drawings_quote_request", return_value="qr-uuid"))
+        _enter_push_website_mocks(stack, service)
+        stack.enter_context(patch("secturafab.push.refresh_bom_rows_for_push", return_value=([], [])))
+        stack.enter_context(patch("secturafab.push.apply_bom_quantities", return_value=[]))
+        stack.enter_context(patch("secturafab.push.ensure_weld_ops", return_value=["Attached Weld"]))
+        stack.enter_context(patch("secturafab.push.ensure_imperial_item_units", return_value=[]))
         result = service.push_job(
             title="21678-1",
             pdf_filename="21678-1.pdf",
@@ -187,7 +181,6 @@ def test_repush_always_creates_new_quote_and_imports_cad():
     assert result.ok
     assert result.created_new_quote
     assert result.quote_number == "21678-1"
-    up_c.assert_called_once()
 
 
 def test_collect_related_pdf_from_sibling_folder(tmp_path: Path):
@@ -256,8 +249,8 @@ def test_needs_assembly_structure_single_vs_multi():
     assert needs_assembly_structure([], [{"part_no": "A", "qty": 1}, {"part_no": "B", "qty": 1}]) is True
 
 
-def test_push_single_solid_step_skips_assembly_root(tmp_path: Path):
-    """One STEP solid + no multi-row BOM → Part + Profile, not Assembly."""
+def test_push_single_solid_step_uses_finish_not_assembly_graft(tmp_path: Path):
+    """One STEP solid → CAD Files Finish, not Assembly conversion or Profile graft."""
     pdf = tmp_path / "ME04-2773.pdf"
     stp = tmp_path / "ME04-2773.stp"
     pdf.write_bytes(b"%PDF")
@@ -278,29 +271,20 @@ def test_push_single_solid_step_skips_assembly_root(tmp_path: Path):
         ],
     }
     service = SecturaFabPushService(client=client)
+    finish = MagicMock(return_value=["Finish CAD"])
 
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
-        service, "quick_add_cad", return_value={"ok": True}
+        service, "require_website_finish_auth", return_value={"can_finish": True}
+    ), patch.object(service, "finish_cad_files", finish), patch.object(
+        service, "nest_after_finish", return_value=[]
     ), patch.object(service, "create_quote", return_value="qid"), patch.object(
         service, "allocate_quote_number", return_value="ME04-2773"
-    ), patch.object(service, "apply_item_categories", return_value=[]), patch(
-        "secturafab.push.ensure_assembly_root", return_value=["SHOULD NOT RUN"]
-    ) as asm, patch(
-        "secturafab.push.relink_assembly_children", return_value=["SHOULD NOT RELINK"]
-    ) as relink, patch(
-        "secturafab.push.ensure_purchased_components", return_value=[]
-    ), patch(
-        "secturafab.push.find_purchased_part_keys", return_value={}
     ), patch(
         "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
     ), patch(
         "secturafab.push.apply_bom_quantities", return_value=[]
     ), patch(
-        "secturafab.push.ensure_laser_profile_ops", return_value=["Attached Profile"]
-    ) as profile, patch(
         "secturafab.push.ensure_weld_ops", return_value=[]
-    ), patch(
-        "secturafab.push.finalize_quote_ops", return_value=[]
     ), patch(
         "secturafab.push.ensure_imperial_item_units", return_value=[]
     ), patch(
@@ -317,10 +301,8 @@ def test_push_single_solid_step_skips_assembly_root(tmp_path: Path):
         )
 
     assert result.ok is True
-    asm.assert_not_called()
-    relink.assert_not_called()
-    profile.assert_called()
-    assert any("left as Part" in n for n in (result.notes or []))
+    finish.assert_called_once()
+    assert "Finish CAD" in (result.notes or [])
 
 
 def test_ensure_laser_profile_ops_retries_when_missing_after_save():
@@ -503,7 +485,7 @@ def test_push_readiness_with_stp_ready(tmp_path: Path):
 
 
 def test_push_pdf_only_uses_single_pdf_shell(tmp_path: Path):
-    """PDF without STEP/library still creates a quote via single-PDF path."""
+    """PDF without STEP still creates a quote via Image Files Finish."""
     pdf = tmp_path / "lonely.pdf"
     pdf.write_bytes(b"%PDF")
     client = MagicMock()
@@ -515,8 +497,13 @@ def test_push_pdf_only_uses_single_pdf_shell(tmp_path: Path):
         ],
     }
     service = SecturaFabPushService(client=client)
+    pdf_finish = MagicMock(return_value=["Image Files Finish"])
 
     with patch.object(service, "upload_drawings_quote_request", return_value="qr") as up_d, patch.object(
+        service, "require_website_finish_auth", return_value={"can_finish": True}
+    ), patch.object(service, "finish_pdf_files", pdf_finish), patch.object(
+        service, "nest_after_finish", return_value=[]
+    ), patch.object(
         service, "create_quote", return_value="qid"
     ) as create_q, patch.object(
         service, "allocate_quote_number", return_value="lonely"
@@ -527,13 +514,10 @@ def test_push_pdf_only_uses_single_pdf_shell(tmp_path: Path):
     ), patch(
         "secturafab.push.ensure_weld_ops", return_value=["Attached Weld"]
     ), patch(
-        "secturafab.push.finalize_quote_ops", return_value=[]
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
     ), patch(
-        "secturafab.push.ensure_laser_profile_ops", return_value=["Attached Profile"]
-    ), patch(
-        "secturafab.pdf_assembly_ops.build_single_pdf_quote",
-        return_value=["Imported job PDF", "Attached Profile"],
-    ) as build_pdf:
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ):
         result = service.push_job(
             title="lonely Title",
             pdf_filename="lonely.pdf",
@@ -548,7 +532,7 @@ def test_push_pdf_only_uses_single_pdf_shell(tmp_path: Path):
     assert result.item_count and result.item_count > 0
     create_q.assert_called_once()
     up_d.assert_called_once()
-    build_pdf.assert_called_once()
+    pdf_finish.assert_called_once()
     assert "lonely Title" in (create_q.call_args.kwargs.get("description") or "")
 
 
@@ -619,29 +603,16 @@ def test_push_ok_requires_nonzero_item_count(tmp_path: Path):
     }
     service = SecturaFabPushService(client=client)
 
-    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
-        service, "quick_add_cad", return_value={"ok": True}
-    ), patch.object(service, "create_quote", return_value="qid") as create_q, patch.object(
-        service, "allocate_quote_number", return_value="part"
-    ), patch.object(service, "apply_item_categories", return_value=[]), patch(
-        "secturafab.push.ensure_assembly_root", return_value=[]
-    ), patch(
-        "secturafab.push.relink_assembly_children", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_purchased_components", return_value=[]
-    ), patch(
-        "secturafab.push.find_purchased_part_keys", return_value={}
-    ), patch(
-        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
-    ), patch(
-        "secturafab.push.apply_bom_quantities", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_laser_profile_ops", return_value=[]
-    ), patch("secturafab.push.ensure_weld_ops", return_value=[]), patch(
-        "secturafab.push.finalize_quote_ops", return_value=[]
-    ), patch(
-        "secturafab.push.extract_assembly_description", return_value=None
-    ):
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(service, "upload_drawings_quote_request", return_value="qr"))
+        _enter_push_website_mocks(stack, service)
+        create_q = stack.enter_context(patch.object(service, "create_quote", return_value="qid"))
+        stack.enter_context(patch.object(service, "allocate_quote_number", return_value="part"))
+        stack.enter_context(patch("secturafab.push.refresh_bom_rows_for_push", return_value=([], [])))
+        stack.enter_context(patch("secturafab.push.apply_bom_quantities", return_value=[]))
+        stack.enter_context(patch("secturafab.push.ensure_weld_ops", return_value=[]))
+        stack.enter_context(patch("secturafab.push.ensure_imperial_item_units", return_value=[]))
+        stack.enter_context(patch("secturafab.push.extract_assembly_description", return_value=None))
         result = service.push_job(
             title="part Title From Job",
             pdf_filename="part.pdf",
@@ -672,29 +643,16 @@ def test_push_success_sets_item_count_gt_zero(tmp_path: Path):
     }
     service = SecturaFabPushService(client=client)
 
-    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
-        service, "quick_add_cad", return_value={"ok": True}
-    ), patch.object(service, "create_quote", return_value="qid") as create_q, patch.object(
-        service, "allocate_quote_number", return_value="ok"
-    ), patch.object(service, "apply_item_categories", return_value=[]), patch(
-        "secturafab.push.ensure_assembly_root", return_value=[]
-    ), patch(
-        "secturafab.push.relink_assembly_children", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_purchased_components", return_value=[]
-    ), patch(
-        "secturafab.push.find_purchased_part_keys", return_value={}
-    ), patch(
-        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
-    ), patch(
-        "secturafab.push.apply_bom_quantities", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_laser_profile_ops", return_value=[]
-    ), patch("secturafab.push.ensure_weld_ops", return_value=[]), patch(
-        "secturafab.push.finalize_quote_ops", return_value=[]
-    ), patch(
-        "secturafab.push.extract_assembly_description", return_value="From drawing"
-    ):
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(service, "upload_drawings_quote_request", return_value="qr"))
+        _enter_push_website_mocks(stack, service)
+        create_q = stack.enter_context(patch.object(service, "create_quote", return_value="qid"))
+        stack.enter_context(patch.object(service, "allocate_quote_number", return_value="ok"))
+        stack.enter_context(patch("secturafab.push.refresh_bom_rows_for_push", return_value=([], [])))
+        stack.enter_context(patch("secturafab.push.apply_bom_quantities", return_value=[]))
+        stack.enter_context(patch("secturafab.push.ensure_weld_ops", return_value=[]))
+        stack.enter_context(patch("secturafab.push.ensure_imperial_item_units", return_value=[]))
+        stack.enter_context(patch("secturafab.push.extract_assembly_description", return_value="From drawing"))
         result = service.push_job(
             title="ok",
             pdf_filename="ok.pdf",

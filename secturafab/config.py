@@ -21,6 +21,11 @@ class SecturaFabConfig:
     password: str = ""
     tenant: str = ""
     timeout_seconds: float = 60.0
+    # www MVC host for Finish / CAD Files (not in public OpenAPI).
+    website_url: str = ""
+    # Optional browser session cookie for /Quote/* Finish routes.
+    # Never commit a real value — set SECTURAFAB_WEBSITE_COOKIE locally.
+    website_cookie: str = ""
 
     @property
     def token_url(self) -> str:
@@ -31,6 +36,22 @@ class SecturaFabConfig:
     @property
     def api_root(self) -> str:
         return f"{self.base_url.rstrip('/')}/api"
+
+    @property
+    def website_root(self) -> str:
+        """www.secturafab.com origin — Finish / CadImport MVC live here."""
+        if self.website_url:
+            return self.website_url.rstrip("/")
+        from urllib.parse import urlparse
+
+        parsed = urlparse(self.token_url)
+        if (
+            parsed.scheme
+            and parsed.netloc
+            and "redacted" not in parsed.netloc.lower()
+        ):
+            return f"{parsed.scheme}://{parsed.netloc}"
+        return "https://www.secturafab.com"
 
     @property
     def uses_client_credentials(self) -> bool:
@@ -64,4 +85,6 @@ class SecturaFabConfig:
             password=os.getenv("SECTURAFAB_PASSWORD", "").strip(),
             tenant=os.getenv("SECTURAFAB_TENANT", "").strip(),
             timeout_seconds=float(os.getenv("SECTURAFAB_TIMEOUT_SECONDS", "60")),
+            website_url=os.getenv("SECTURAFAB_WEBSITE_URL", "").strip().rstrip("/"),
+            website_cookie=os.getenv("SECTURAFAB_WEBSITE_COOKIE", "").strip(),
         )
