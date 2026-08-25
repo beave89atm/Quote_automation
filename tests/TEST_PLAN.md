@@ -49,7 +49,7 @@ Kyle formats: Cad `{PN} - {thk}" {grade} {W} in x {L} in`; Linear `{PN} - {SKU} 
 
 ## Not on this VM (replace later)
 
-Kyle Desktop / Fort Worth `*-LOM.xlsx` for 1007922-1, 21727-1, 33612-1, 105098-1, 103516, P904225-1, 1004611-1. Count-locked workbooks protect the **parser and dash rules** until those files are copied in. 1001898-1 is the only locked **part identity** list.
+No Kyle Desktop / Fort Worth `*-LOM.xlsx` was on this VM (searched workspace and common mounts). Count-locked workbooks protect **parser + dash + nested-tab rules** for every gold drawing except 1001898-1, which uses the locked part list. Drop Kyle’s sheet onto `tests/fixtures/lom/{pn}-LOM.xlsx` to replace a synthetic.
 
 ## Commands
 
