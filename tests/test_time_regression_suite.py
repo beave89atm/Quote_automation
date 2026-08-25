@@ -29,6 +29,7 @@ from secturafab.linear_ops import bind_linear_product_ids
 from secturafab.pdf_assembly_ops import plan_weldment_lines
 from secturafab.push import SecturaFabPushService, classify_sectura_item
 
+from tests.fixtures.live_get_1001898 import gold_1001898_get
 from tests.fixtures.time_gold import (
     CLASSIFY_CASES,
     DESC_CASES,
@@ -281,7 +282,7 @@ def test_plan_1001898_lines_are_not_bare_pn():
     for line in planned:
         counts[line["category"]] += 1
         assert line["Description"] != line["part_no"]
-        assert "22" not in line["Description"]
+        assert "22 in" not in line["Description"] and "28.5" not in line["Description"]
         if line["category"] == "Linear":
             assert line["ProductType"] == 10
         elif line["category"] == "Component":
@@ -342,8 +343,12 @@ def test_linear_bind_sets_product_type_10_and_product_id():
         assert item.get("ProductID") == "pid-rct"
         assert item.get("ProductName") in {None, ""}
         assert item["Description"] != item["ID"]
-        assert not any(
-            str(o.get("OperationName") or "") == "Saw"
+        assert any(
+            str(o.get("OperationName") or o.get("CalculatorName") or "") == "Saw"
+            for o in (item.get("OperationCostList") or [])
+        )
+        assert any(
+            "setup" in str(o.get("OperationName") or o.get("CalculatorName") or "").lower()
             for o in (item.get("OperationCostList") or [])
         )
 
@@ -445,11 +450,7 @@ def test_cookie_less_1001898_attach_profile_false(tmp_path: Path):
     lib.mkdir(parents=True)
     client = MagicMock()
     client.config.website_cookie = ""
-    client.get_json.return_value = {
-        "QuoteNumber": "1001898-1",
-        "ItemCount": 18,
-        "ItemList": [{"Description": "1001898-1 - PEDESTAL WELDMENT", "ProductType": 300}],
-    }
+    client.get_json.return_value = gold_1001898_get()
     service = SecturaFabPushService(client=client)
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value="qid"
@@ -486,7 +487,7 @@ def test_cookie_less_1001898_attach_profile_false(tmp_path: Path):
     assert result.ok is True
     graft.assert_not_called()
     assert finalize.call_args.kwargs.get("attach_profile") in {None, False}
-    assert create_q.call_args.kwargs.get("description") == "1001898-1 - PEDESTAL WELDMENT"
+    assert create_q.call_args.kwargs.get("description") == "PEDESTAL WELDMENT"
 
 
 def test_fixture_dir_has_checked_in_workbooks():

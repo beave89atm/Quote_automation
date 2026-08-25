@@ -232,8 +232,9 @@ class SecturaFabClient:
         Hit a www MVC route (no /api prefix).
 
         CadImport accepts the published API bearer on the API host.
-        /Quote/AddItem_DXFFiles (Finish) and GetItem_AddView need a website
-        session — a 302 to /Account/Login is an auth gap, not a retry.
+        /Quote/AddItem_DXFFiles (CAD Files Finish) still 302s without a cookie.
+        Image Files (AddItem_PDFFiles) and Long (AddItem_Linear) are tried
+        with bearer on every origin; a 302 is not an excuse to ship empty packs.
         """
         req_headers = self._auth_headers(headers)
         last: requests.Response | None = None
@@ -260,7 +261,8 @@ class SecturaFabClient:
                         status_code=response.status_code,
                         body=location,
                     )
-                return response
+                # Cookie-less: try the next origin with the same bearer.
+                continue
             if is_cloudflare_challenge(response.status_code, response.text):
                 last_cf = True
                 continue
@@ -528,9 +530,18 @@ class SecturaFabClient:
             data=form,
             files=files,
             prefer_api_origin=True,
+            require_session=False,
             timeout=max(self.config.timeout_seconds, 180.0),
         )
-        return self._parse_website_or_raise(response)
+        location = response.headers.get("Location") or ""
+        if is_website_login_redirect(response.status_code, location):
+            raise SecturaFabWebsiteAuthError(
+                "AddItem_PDFFiles redirected to login — "
+                "falling back to v1/quote New Line Item laser pack",
+                status_code=response.status_code,
+                body=location,
+            )
+        return self._parse_website_or_raise(response, require_session=False)
 
     def add_item_linear(
         self,
@@ -564,8 +575,17 @@ class SecturaFabClient:
             WEBSITE_FINISH_PATHS["add_item_linear"],
             json=payload,
             prefer_api_origin=True,
+            require_session=False,
         )
-        return self._parse_website_or_raise(response)
+        location = response.headers.get("Location") or ""
+        if is_website_login_redirect(response.status_code, location):
+            raise SecturaFabWebsiteAuthError(
+                "AddItem_Linear redirected to login — "
+                "falling back to v1/quote New Line Item Saw pack",
+                status_code=response.status_code,
+                body=location,
+            )
+        return self._parse_website_or_raise(response, require_session=False)
 
     def nest_quote_edit(self, quote_id: str, extra: dict[str, Any] | None = None) -> Any:
         """POST /Quote/NestQuote_Edit — same nest control the UI uses."""

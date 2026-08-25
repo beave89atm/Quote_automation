@@ -168,8 +168,7 @@ def format_linear_description(
 
 
 def format_component_description(name: str, *, part_no: str | None = None) -> str:
-    """Purchased name only — strip plate dims and refuse a bare PN."""
-    del part_no
+    """Purchased noun only — strip plate dims and refuse a bare PN."""
     text = _PLATE_DIM_RE.sub("", (name or "")).strip(" -,\t")
     text = re.sub(r"\s+", " ", text).strip()
     if is_bare_part_number(text):
@@ -178,7 +177,34 @@ def format_component_description(name: str, *, part_no: str | None = None) -> st
     parts = text.split(None, 1)
     if len(parts) == 2 and is_bare_part_number(parts[0]):
         return parts[1].strip(" -,")
+    pn = normalize_part_token(part_no)
+    if pn and text.upper().startswith(pn.upper()):
+        rest = text[len(pn) :].strip(" -")
+        return rest
     return text
+
+
+def format_component_line(part_no: str, name: str) -> str:
+    """Kyle Component line: ``{PN} - {noun}``."""
+    pn = normalize_part_token(part_no)
+    noun = format_component_description(name, part_no=pn)
+    if pn and noun:
+        return f"{pn} - {noun}"
+    return noun or pn
+
+
+def format_quote_header_description(title: str | None, *, part_key: str | None = None) -> str:
+    """Quote Description is the weldment title only — never the part number."""
+    noun = (title or "").strip()
+    pn = normalize_part_token(part_key)
+    if not noun or is_bare_part_number(noun, pn):
+        return ""
+    if pn and noun.upper().startswith(pn.upper()):
+        noun = noun[len(pn) :].strip(" -")
+    noun = re.sub(r"\s+", " ", noun).strip(" -")
+    if not noun or is_bare_part_number(noun, pn):
+        return ""
+    return noun
 
 
 def format_assembly_description(part_key: str, title: str | None) -> str:
@@ -215,6 +241,56 @@ def title_from_job_title(title: str | None, *, part_key: str | None = None) -> s
         rest = text[len(key) :].strip(" -")
         return rest.upper() if rest else None
     return text
+
+
+_GENERIC_BOM_LEAD = {
+    "PLATE",
+    "TUBE",
+    "ANGLE",
+    "BAR",
+    "PIPE",
+    "NUT",
+    "BOLT",
+    "WASHER",
+    "CAP",
+    "PIN",
+    "RAIL",
+    "ARM",
+    "GUARD",
+    "BRACKET",
+    "CHANNEL",
+    "SHEET",
+    "GUSSET",
+    "STIFFENER",
+}
+
+
+def title_from_bom_family(bom_rows: list[dict] | None) -> str | None:
+    """PEDESTAL TOP PLATE / PEDESTAL TUBE / … → ``PEDESTAL WELDMENT``."""
+    leads: list[str] = []
+    for row in bom_rows or []:
+        noun = str(row.get("description") or "").strip()
+        if not noun:
+            continue
+        if re.search(r"\bWELDMENT\b", noun, re.IGNORECASE):
+            cleaned = re.sub(r"\s+", " ", noun).strip()
+            return cleaned.upper()
+        first = noun.split()[0].upper().strip("-,")
+        if (
+            first
+            and first not in _GENERIC_BOM_LEAD
+            and not is_bare_part_number(first)
+            and first.isalpha()
+        ):
+            leads.append(first)
+    if len(leads) < 3:
+        return None
+    from collections import Counter
+
+    word, n = Counter(leads).most_common(1)[0]
+    if n < 3:
+        return None
+    return f"{word} WELDMENT"
 
 
 def item_flat_dims(item: dict[str, Any] | None) -> tuple[float | None, float | None]:

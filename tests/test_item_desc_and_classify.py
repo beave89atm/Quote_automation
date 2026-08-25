@@ -177,14 +177,9 @@ def test_cookie_less_push_does_not_graft_profile(tmp_path: Path):
     lib.mkdir(parents=True)
     client = MagicMock()
     client.config.website_cookie = ""
-    client.get_json.return_value = {
-        "QuoteNumber": "1001898-1",
-        "ItemCount": 2,
-        "ItemList": [
-            {"Description": "1001898-1 - PEDESTAL WELDMENT", "ProductType": 300},
-            {"Description": '14500-1 - 1/4" A36 12 in x 12 in', "ProductType": 100},
-        ],
-    }
+    from tests.fixtures.live_get_1001898 import gold_1001898_get
+
+    client.get_json.return_value = gold_1001898_get()
     service = SecturaFabPushService(client=client)
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value="qid"

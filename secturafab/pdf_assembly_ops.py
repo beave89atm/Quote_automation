@@ -19,6 +19,7 @@ from .component_ops import ensure_purchased_components, find_purchased_part_keys
 from .item_desc import (
     format_cad_description,
     format_component_description,
+    format_component_line,
     format_linear_description,
     item_flat_dims,
     looks_like_drawing_sheet,
@@ -220,9 +221,9 @@ def _apply_kyle_line_descriptions(
         if cat == "Linear":
             continue
         if cat == "Component":
-            noun = format_component_description(
+            noun = format_component_line(
+                pn,
                 bom_desc.get(normalize_part_key(pn), "") or str(it.get("Description") or ""),
-                part_no=pn,
             )
             if noun and str(it.get("Description") or "").strip() != noun:
                 it["Description"] = noun[:500]
@@ -347,18 +348,12 @@ def categorize_pdf_imported_items(
             it["IsPlate"] = False
             it["IsPart"] = True
             it["Machine"] = "Saw"
-            it["OperationCostList"] = []
-            it["PrimaryTime"] = 0.0
-            it["UnitPrimaryTime"] = 0.0
         elif cat == "Component":
             it["ProductType"] = 200
             it["IsLinear"] = False
             it["IsPlate"] = False
             it["IsPart"] = True
             it["Machine"] = None
-            it["OperationCostList"] = []
-            it["PrimaryTime"] = 0.0
-            it["UnitPrimaryTime"] = 0.0
         else:
             it["ProductType"] = 100
             it["IsLinear"] = False
@@ -453,8 +448,8 @@ def build_pdf_only_assembly(
             )
         )
         notes.append(
-            "Skipped child-PDF quickAddCAD — Cad plates are typed API lines "
-            "(no PDF page-outline flats / 3h laser)"
+            "Skipped child-PDF quickAddCAD — Cad plates are Image Files / "
+            "New Line Item (no PDF page-outline flats / 3h laser)"
         )
     if linear_rows:
         notes.append(
@@ -587,7 +582,10 @@ def build_pdf_only_assembly(
             part_key=part_key,
         )
     )
-    notes.append("Skipped grafted Profile — laser pack left unset (Finish / Image Files only)")
+    notes.append("Skipped grafted Profile — packs from Image Files / Long / New Line Item")
+    from .line_item_ops import stamp_new_line_item_packs
+
+    notes.extend(stamp_new_line_item_packs(client, quote_id))
     notes.extend(relink_assembly_children(client, quote_id, part_key=part_key))
     notes.append(
         "PDF weldment built per lesson 04 — Cad plates from PDF, Linear bound by ProductID, "
@@ -626,7 +624,7 @@ def plan_weldment_lines(
             desc = format_linear_description(pn, sku=None, length_in=None, noun=noun)
             product_type = 10
         elif cat == "Component":
-            desc = format_component_description(noun, part_no=pn) or noun
+            desc = format_component_line(pn, noun) or noun
             product_type = 200
         else:
             desc = format_cad_description(
@@ -655,8 +653,10 @@ def _add_cad_plate_items(
     default_material: str = "A36",
     default_thickness: str | None = None,
 ) -> list[str]:
-    """New Line Item for Cad plates — typed thk/grade/noun, never PDF sheet flats."""
+    """New Line Item for Cad plates — typed thk/grade/noun + laser pack, never PDF sheet flats."""
     from quote_core.part_materials import lookup_part_material
+
+    from .line_item_ops import apply_cad_new_line_ops
 
     detail = client.get_json(f"v1/quote/{quote_id}")
     items = list(detail.get("ItemList") or [])
@@ -679,25 +679,25 @@ def _add_cad_plate_items(
             length_in=None,
             noun=noun,
         )
-        items.append(
-            {
-                "ID": str(uuid.uuid4()),
-                "Description": (desc or part_no)[:500],
-                "Quantity": qty,
-                "ProductType": 100,
-                "ItemType": "Cad",
-                "Category": "Cad",
-                "IsLinear": False,
-                "IsPlate": True,
-                "IsPart": True,
-                "Machine": "Laser",
-                "Material": grade,
-                "Thickness": thk,
-                "OperationCostList": [],
-                "PrimaryTime": 0.0,
-                "UnitPrimaryTime": 0.0,
-            }
-        )
+        line = {
+            "ID": str(uuid.uuid4()),
+            "Description": (desc or part_no)[:500],
+            "Quantity": qty,
+            "ProductType": 100,
+            "ItemType": "Cad",
+            "Category": "Cad",
+            "IsLinear": False,
+            "IsPlate": True,
+            "IsPart": True,
+            "Machine": "Laser",
+            "Material": grade,
+            "Thickness": thk,
+            "OperationCostList": [],
+            "PrimaryTime": 0.0,
+            "UnitPrimaryTime": 0.0,
+        }
+        apply_cad_new_line_ops(line)
+        items.append(line)
         added += 1
     if not added:
         return []
@@ -705,7 +705,9 @@ def _add_cad_plate_items(
     save = client.request("POST", "v1/quote", json=detail)
     if save.status_code >= 400:
         return [f"Adding Cad plate lines failed ({save.status_code})"]
-    return [f"Added {added} Cad plate line(s) (typed flat / no child-PDF quickAddCAD)"]
+    return [
+        f"Added {added} Cad plate line(s) (New Line Item laser pack / no child-PDF quickAddCAD)"
+    ]
 
 
 def _add_component_items(
@@ -718,8 +720,8 @@ def _add_component_items(
     added = 0
     for row in rows:
         part_no = str(row.get("part_no") or row.get("part_number") or "").strip()
-        noun = format_component_description(
-            str(row.get("description") or ""), part_no=part_no
+        noun = format_component_line(
+            part_no, str(row.get("description") or "")
         ) or str(row.get("description") or part_no)
         try:
             qty = max(1, int(row.get("qty") or 1))

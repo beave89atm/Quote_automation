@@ -53,13 +53,12 @@ WEBSITE_FINISH_PATHS = {
 }
 
 WEBSITE_AUTH_GAP = (
-    "Website session required for /Quote/AddItem_DXFFiles (Finish). "
-    "The published API bearer cannot call www.secturafab.com MVC Finish — "
-    "GetItem_AddView / AddItem_DXFFiles redirect to /Account/Login. "
-    "CadImport/UploadItem_DXFFiles and CadImport/Data accept the API token "
-    "on the API host, but Finish does not. Set SECTURAFAB_WEBSITE_COOKIE "
-    "from a logged-in www.secturafab.com session (do not commit it). "
-    "Refusing to fall back to quickAddCAD or grafted Profile/Saw."
+    "Website session required for /Quote/AddItem_DXFFiles (CAD Files Finish). "
+    "GetItem_AddView / AddItem_DXFFiles redirect to /Account/Login without a "
+    "www cookie. Image Files (AddItem_PDFFiles) and Long (AddItem_Linear) are "
+    "called with the API bearer (same as CadImport); if they 302, v1/quote "
+    "New Line Item stamps the laser/saw packs. Cookie-less is not an excuse "
+    "for empty Primary Costs. Set SECTURAFAB_WEBSITE_COOKIE only for DXF Finish."
 )
 
 # Field bag the JS copies from #gridDXFParts into FileList.

@@ -19,10 +19,15 @@ from quote_core.drawing_title import (
 
 from .item_desc import (
     format_assembly_description,
+    format_quote_header_description,
+    is_bare_part_number,
+    title_from_bom_family,
     title_from_job_title,
     title_from_library_folder,
 )
 from .linear_ops import bind_linear_product_ids
+from .line_item_ops import persist_classified_item_fields, stamp_new_line_item_packs
+from .qa_harness import evaluate_quote_get
 
 from .assembly_ops import (
     ensure_assembly_root,
@@ -33,7 +38,7 @@ from .client import SecturaFabApiError, SecturaFabClient
 from .component_ops import ensure_purchased_components, find_purchased_part_keys
 from .finalize_ops import finalize_quote_ops
 from .imperial_ops import ensure_imperial_item_units
-from .org_ops import apply_quote_organization
+from .org_ops import apply_quote_organization, persist_quote_header
 from .profile_ops import ensure_laser_profile_ops  # imported for tests; push no longer grafts
 from .qty_ops import apply_bom_quantities, refresh_bom_rows_for_push
 from .quotes import QuoteService
@@ -722,18 +727,12 @@ class SecturaFabPushService:
                 it["IsPlate"] = False
                 it["IsPart"] = True
                 it["Machine"] = "Saw"
-                it["OperationCostList"] = []
-                it["PrimaryTime"] = 0.0
-                it["UnitPrimaryTime"] = 0.0
             elif cat == "Component":
                 it["ProductType"] = 200
                 it["IsLinear"] = False
                 it["IsPlate"] = False
                 it["IsPart"] = True
                 it["Machine"] = None
-                it["OperationCostList"] = []
-                it["PrimaryTime"] = 0.0
-                it["UnitPrimaryTime"] = 0.0
             else:
                 it["ProductType"] = 100
                 it["IsLinear"] = False
@@ -1532,10 +1531,20 @@ class SecturaFabPushService:
 
             quote_request_id = None
             # TYCROP → Propell; Cummins Clean Fuel → Cummins Clean Fuel Technologies.
+            extra_org_paths = [
+                p
+                for p in (
+                    *list(library.get("searched_roots") or []),
+                    library.get("folder"),
+                    str(job_pdf.parent) if job_pdf else None,
+                    title,
+                )
+                if p
+            ]
             organization_name = detect_organization(
                 pdf_path=job_pdf,
                 library_folder=library.get("folder"),
-                extra_paths=list(library.get("searched_roots") or []),
+                extra_paths=extra_org_paths,
             )
             if drawings:
 
@@ -1582,14 +1591,31 @@ class SecturaFabPushService:
                     library_folder=library.get("folder"),
                     related_pdf_names=list(library.get("related_pdfs") or []),
                 )
+                or title_from_library_folder(library.get("folder"), part_key=part_key)
                 or title_from_library_folder(title, part_key=part_key)
                 or title_from_job_title(title, part_key=part_key)
+                or title_from_bom_family(bom_rows)
             )
-            quote_description = format_assembly_description(part_key, raw_title)
+            assembly_description = format_assembly_description(part_key, raw_title)
+            weldment_title = bool(
+                bom_rows
+                or (raw_title and "WELDMENT" in str(raw_title).upper())
+            )
+            if weldment_title:
+                quote_description = format_quote_header_description(
+                    raw_title, part_key=part_key
+                )
+            else:
+                quote_description = format_assembly_description(part_key, raw_title)
             if raw_title:
                 desc_note = f"Quote Description from assembly drawing: {quote_description}"
             else:
                 desc_note = f"Quote Description from job title: {quote_description}"
+            if not quote_description or is_bare_part_number(quote_description, part_key):
+                notes.append(
+                    "WARNING: Quote Description is still a bare PN — "
+                    "need folder / PDF / BOM weldment title"
+                )
             quote_id = self.create_quote(
                 quote_number=quote_number,
                 description=quote_description or "",
@@ -1601,10 +1627,11 @@ class SecturaFabPushService:
             # Organization before CAD/Profile — later full-quote POSTs can wipe ops.
             if organization_name:
                 notes.extend(
-                    apply_quote_organization(
+                        apply_quote_organization(
                         self.client,
                         quote_id,
                         organization_name=organization_name,
+                        description=quote_description or None,
                     )
                 )
 
@@ -1683,9 +1710,10 @@ class SecturaFabPushService:
                         )
             else:
                 notes.append(
-                    "Website cookie not set — using working Sectura push (quickAddCAD). "
-                    "CAD Files / Image Files Finish skipped; laser/saw packs left unset "
-                    "(not grafting Profile or PDF page-outline times)"
+                    "Website cookie not set — CAD Files Finish (AddItem_DXFFiles) skipped. "
+                    "Using working Sectura push (quickAddCAD / lesson 04). "
+                    "Image Files / Long use bearer; New Line Item stamps laser/saw packs "
+                    "if those MVC routes 302 (not grafting Profile or PDF page-outline times)"
                 )
 
             if used_finish:
@@ -1766,7 +1794,7 @@ class SecturaFabPushService:
                                 self.client,
                                 quote_id,
                                 part_key=part_key,
-                                description=quote_description,
+                                description=assembly_description,
                             )
                         )
                         purchased = find_purchased_part_keys(
@@ -1840,7 +1868,7 @@ class SecturaFabPushService:
                             qty=qty,
                             times=times,
                             extra_pdfs=[Path(pdf_path)] if pdf_path else None,
-                            assembly_description=quote_description,
+                            assembly_description=assembly_description,
                         )
                     )
                 elif has_job_pdf:
@@ -1918,9 +1946,28 @@ class SecturaFabPushService:
                             raise
                 if used_pdf_shell or used_step or (bom_rows and library.get("folder")):
                     notes.append(
-                        "Skipped grafted Profile — laser pack left unset "
-                        "(Finish / Image Files only)"
+                        "Skipped grafted Profile — packs from Image Files / Long / New Line Item"
                     )
+                    notes.extend(stamp_new_line_item_packs(self.client, quote_id))
+
+            notes.extend(stamp_new_line_item_packs(self.client, quote_id))
+            notes.extend(
+                persist_classified_item_fields(
+                    self.client,
+                    quote_id,
+                    bom_rows=bom_rows,
+                    default_material=material,
+                    default_thickness=thickness,
+                )
+            )
+            notes.extend(
+                persist_quote_header(
+                    self.client,
+                    quote_id,
+                    organization_name=organization_name,
+                    description=quote_description,
+                )
+            )
 
             detail = self.client.get_json(f"v1/quote/{quote_id}")
             item_list = list(detail.get("ItemList") or [])
@@ -1963,6 +2010,48 @@ class SecturaFabPushService:
                     created_new_quote=True,
                     uploaded_files=uploaded,
                     item_count=0,
+                    ready=False,
+                    status="failed",
+                    last_error=msg,
+                    attempts=createfile_attempts,
+                )
+
+            strict_qa = bool(organization_name) or bool(bom_rows)
+            qa = evaluate_quote_get(
+                detail,
+                part_key=part_key,
+                expected_org=organization_name,
+                expected_header=(
+                    quote_description
+                    if strict_qa
+                    and quote_description
+                    and not is_bare_part_number(quote_description, part_key)
+                    else None
+                ),
+                expected_assembly_title=(
+                    assembly_description
+                    if strict_qa
+                    and assembly_description
+                    and not is_bare_part_number(assembly_description, part_key)
+                    else None
+                ),
+                bom_rows=bom_rows,
+                require_org=bool(organization_name),
+            )
+            notes.extend(f"QA: {n}" for n in qa.notes)
+            if not qa.ok:
+                msg = "Live GET QA failed: " + "; ".join(qa.failures)
+                notes.append(msg)
+                return PushResult(
+                    ok=False,
+                    error=msg,
+                    notes=notes,
+                    quote_id=quote_id,
+                    quote_number=stored_number,
+                    quote_request_id=quote_request_id,
+                    created_new_quote=True,
+                    uploaded_files=uploaded,
+                    item_count=final_count,
                     ready=False,
                     status="failed",
                     last_error=msg,

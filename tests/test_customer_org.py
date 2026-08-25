@@ -90,6 +90,30 @@ def test_find_organization_by_name_matches_display():
     assert org["ID"] == "abc"
 
 
+def test_find_organization_fuzzy_time_waco_when_display_differs():
+    client = MagicMock()
+    client.get_json.return_value = {
+        "HasNext": False,
+        "Results": [
+            {
+                "ID": "time-real",
+                "OrganizationName": "Time Mfg - Waco",
+                "DisplayName": "Time Mfg - Waco",
+                "Active": True,
+            },
+            {
+                "ID": "other",
+                "OrganizationName": "Propell",
+                "DisplayName": "Propell",
+                "Active": True,
+            },
+        ],
+    }
+    org = find_organization_by_name(client, "Time Manufacturing Waco")
+    assert org is not None
+    assert org["ID"] == "time-real"
+
+
 def test_apply_quote_organization_sets_primary_and_list():
     client = MagicMock()
     client.get_json.side_effect = [

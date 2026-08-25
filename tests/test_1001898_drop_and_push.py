@@ -12,6 +12,7 @@ from quote_core.lom_xlsx import extract_bom_from_lom_xlsx
 from secturafab.item_desc import format_assembly_description, looks_like_drawing_sheet
 from secturafab.pdf_assembly_ops import build_pdf_only_assembly, plan_weldment_lines
 from secturafab.push import SecturaFabPushService, classify_sectura_item
+from tests.fixtures.live_get_1001898 import gold_1001898_get
 
 from tests.test_lom_xlsx import (
     _1001898_DASH1,
@@ -58,7 +59,7 @@ def test_plan_weldment_dry_run_kyle_formats_no_sheet_flats():
         counts[line["category"]] += 1
         desc = line["Description"]
         assert desc and desc != line["part_no"], f"bare PN: {desc}"
-        assert "22" not in desc and "28.5" not in desc
+        assert "22 in" not in desc and "28.5" not in desc and "28 in" not in desc
         if line["category"] == "Cad":
             assert line["ProductType"] == 100
             assert line["part_no"] in desc
@@ -144,7 +145,9 @@ def test_build_pdf_weldment_does_not_quickadd_child_pdfs(tmp_path: Path):
             assembly_description="1001898-1 - PEDESTAL WELDMENT",
         )
     qadd.assert_not_called()
-    assert any("typed API lines" in n or "typed flat" in n for n in notes)
+    assert any(
+        "New Line Item" in n or "typed API lines" in n or "typed flat" in n for n in notes
+    )
     assert any("Skipped child-PDF quickAddCAD" in n for n in notes)
 
 
@@ -156,29 +159,7 @@ def test_cookie_less_1001898_push_dry_run(tmp_path: Path):
     write_excel_absolute_target_xlsx(lib / "1001898-1-LOM.xlsx", _1001898_lom_rows())
     client = MagicMock()
     client.config.website_cookie = ""
-    client.get_json.return_value = {
-        "QuoteNumber": "1001898-1",
-        "ItemCount": 18,
-        "OrganizationName": "Time Manufacturing Waco",
-        "ItemList": (
-            [
-                {
-                    "Description": "1001898-1 - PEDESTAL WELDMENT",
-                    "ProductType": 300,
-                    "IsAssembly": True,
-                }
-            ]
-            + [
-                {
-                    "Description": plan_weldment_lines(_bom_rows())[i]["Description"],
-                    "ProductType": plan_weldment_lines(_bom_rows())[i]["ProductType"],
-                    "Category": plan_weldment_lines(_bom_rows())[i]["category"],
-                    "PrimaryTime": 0,
-                }
-                for i in range(17)
-            ]
-        ),
-    }
+    client.get_json.return_value = gold_1001898_get()
     service = SecturaFabPushService(client=client)
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value="qid"
@@ -223,10 +204,11 @@ def test_cookie_less_1001898_push_dry_run(tmp_path: Path):
     graft.assert_not_called()
     assert finalize.call_args.kwargs.get("attach_profile") in {None, False}
     desc = create_q.call_args.kwargs.get("description") or ""
-    assert desc == "1001898-1 - PEDESTAL WELDMENT"
+    assert desc == "PEDESTAL WELDMENT"
     assert desc != "1001898"
+    assert desc != "1001898-1"
     assert any("Time Manufacturing Waco" in n for n in (result.notes or []))
-    assert any("grafted Profile" in n or "packs left unset" in n for n in (result.notes or []))
+    assert any("grafted Profile" in n or "New Line Item" in n for n in (result.notes or []))
     bom = extract_bom_from_lom_xlsx(lib / "1001898-1-LOM.xlsx", bom_config="1")
     assert bom.part_number_count == 17
     assert bom.piece_count == 27

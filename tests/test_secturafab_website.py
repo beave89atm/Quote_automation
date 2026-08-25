@@ -331,7 +331,13 @@ def test_push_job_finish_failure_falls_back_to_quickadd(tmp_path: Path):
         "ItemList": [{"Description": "A"}, {"Description": "B"}],
     }
     # First peek (Finish failed) is empty; later reads after quickAddCAD are populated.
-    client.get_json.side_effect = [peek_empty, peek_ok, peek_ok, peek_ok, peek_ok]
+    _gets = {"n": 0}
+
+    def _get_json(_path):
+        _gets["n"] += 1
+        return peek_empty if _gets["n"] == 1 else peek_ok
+
+    client.get_json.side_effect = _get_json
 
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value="qid"
