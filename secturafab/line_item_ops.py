@@ -278,25 +278,13 @@ def apply_cad_new_line_ops(item: dict[str, Any]) -> bool:
 
 
 def apply_linear_new_line_ops(item: dict[str, Any]) -> bool:
-    """Saw pack + force ProductType 10 (addLinear leaves Pipe 20 / Structural 40)."""
-    changed = False
-    if item.get("ProductType") not in (10, "10"):
-        item["ProductType"] = 10
-        changed = True
-    if str(item.get("Category") or "") != "Linear":
-        item["Category"] = "Linear"
-        changed = True
-    if str(item.get("ItemType") or "") != "Linear":
-        item["ItemType"] = "Linear"
-        changed = True
-    if not item.get("IsLinear"):
-        item["IsLinear"] = True
-        changed = True
-    if str(item.get("Machine") or "").strip().casefold() != "saw":
-        item["Machine"] = "Saw"
-        changed = True
+    """Attach Long Saw + Saw Setup when missing. Returns True if written.
+
+    Does **not** force ProductType/Machine — a full-quote POST that only
+    flips PT 10 or Machine=Saw wipes addplate Material and addLinear Length.
+    """
     if item_has_saw_pack(item):
-        return changed
+        return False
     item_id = str(item.get("ID") or "") or None
     ops = build_linear_new_line_ops(item_id)
     item["OperationCostList"] = ops
@@ -306,7 +294,95 @@ def apply_linear_new_line_ops(item: dict[str, Any]) -> bool:
     )
     item["PrimaryTime"] = saw_h
     item["UnitPrimaryTime"] = saw_h
+    item["Machine"] = item.get("Machine") or "Saw"
     return True
+
+
+_PERSIST_KEYS = (
+    "Material",
+    "MaterialGrade",
+    "Thickness",
+    "ThicknessDisp",
+    "WeightCategory",
+    "Machine",
+    "Length",
+    "LinearLength",
+    "ProductID",
+    "SKU",
+    "ProductSubType",
+    "IsLinear",
+    "IsPlate",
+)
+
+
+def _copy_calculator_fields(src: dict[str, Any], dst: dict[str, Any]) -> None:
+    """Keep addplate/addLinear GET fields on a later ItemList POST."""
+    for key in _PERSIST_KEYS:
+        val = src.get(key)
+        if val in (None, ""):
+            continue
+        if key in {"Thickness", "Length", "LinearLength"}:
+            try:
+                if float(val) <= 0:
+                    continue
+            except (TypeError, ValueError):
+                pass
+        dst[key] = val
+
+
+def retype_linears_to_pt10_keep_persist(client: Any, quote_id: str) -> list[str]:
+    """Set ProductType 10 on Linears that already have Length>0.
+
+    Full-quote POST after addLinear wiped Material/Length on 124407db when
+    the payload did not copy those calculator fields. Copy them from GET,
+    overlay PT 10 only on cut-length linears, then caller must GET-verify.
+    """
+    detail = client.get_json(f"v1/quote/{quote_id}")
+    items = list(detail.get("ItemList") or [])
+    snapshot = {str(it.get("ID") or ""): dict(it) for it in items if isinstance(it, dict)}
+    cad_ok = any(_cad_fields_on_get(it) for it in items if isinstance(it, dict) and not _is_assembly(it) and not _is_linear(it) and not _is_component(it))
+    lin_ok = any(_linear_fields_on_get(it) for it in items if isinstance(it, dict) and _is_linear(it))
+    if not lin_ok:
+        return ["Skipped PT 10 overlay — no Linear has Machine=Saw and Length>0 on GET"]
+    n = 0
+    for it in items:
+        if not isinstance(it, dict) or not _is_linear(it):
+            continue
+        src = snapshot.get(str(it.get("ID") or ""), it)
+        _copy_calculator_fields(src, it)
+        if not _linear_fields_on_get(it):
+            continue
+        if it.get("ProductType") in (10, "10") and str(it.get("Category") or "") == "Linear":
+            continue
+        it["ProductType"] = 10
+        it["Category"] = "Linear"
+        it["ItemType"] = "Linear"
+        it["IsLinear"] = True
+        apply_linear_new_line_ops(it)
+        _copy_calculator_fields(src, it)
+        n += 1
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        src = snapshot.get(str(it.get("ID") or ""), it)
+        _copy_calculator_fields(src, it)
+    if not n:
+        return []
+    if not cad_ok:
+        # Do not POST a quote whose GET already lost Cad persist.
+        return [
+            "WARNING: skipped PT 10 overlay — Cad Material/Thickness empty on GET "
+            "(a quote POST would lock that in)"
+        ]
+    detail["ItemList"] = items
+    save = client.request("POST", "v1/quote", json=detail)
+    try:
+        status = int(getattr(save, "status_code", 200) or 200)
+    except (TypeError, ValueError):
+        status = 200
+    if status >= 400:
+        return [f"WARNING: PT 10 overlay save failed ({status})"]
+    return [f"PT 10 overlay on {n} Linear line(s) (GET-verify persist fields after)"]
 
 
 def _is_assembly(item: dict[str, Any]) -> bool:
@@ -343,6 +419,7 @@ def stamp_new_line_item_packs(client: Any, quote_id: str) -> list[str]:
     """
     detail = client.get_json(f"v1/quote/{quote_id}")
     items = list(detail.get("ItemList") or [])
+    snapshot = {str(it.get("ID") or ""): dict(it) for it in items if isinstance(it, dict)}
     cad_n = 0
     lin_n = 0
     for it in items:
@@ -351,9 +428,11 @@ def stamp_new_line_item_packs(client: Any, quote_id: str) -> list[str]:
         if _is_linear(it):
             if apply_linear_new_line_ops(it):
                 lin_n += 1
+            _copy_calculator_fields(snapshot.get(str(it.get("ID") or ""), it), it)
             continue
         if apply_cad_new_line_ops(it):
             cad_n += 1
+        _copy_calculator_fields(snapshot.get(str(it.get("ID") or ""), it), it)
     if not cad_n and not lin_n:
         return []
     detail["ItemList"] = items
@@ -761,8 +840,8 @@ def persist_classified_item_fields(
     * Linear: in-place ``POST v1/quoteOnline/addLinear`` on the existing itemID
       (Machine=Saw, cut Length from drawing / ``LG.`` / component PDF)
 
-    Success is a follow-up GET — never a 200 on the write. Linear should run
-    *after* ``stamp_new_line_item_packs`` so a full-quote POST cannot wipe it.
+    Success is a follow-up GET — never a 200 on the write. Stamp packs *before*
+    addLinear. A full-quote POST after addLinear wiped Material/Length on 124407db.
     """
     from quote_core.part_materials import lookup_part_material
 

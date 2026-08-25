@@ -226,7 +226,7 @@ def test_bare_folder_push_still_uses_bom_pedestal_title(tmp_path):
     assert create_q.call_args.kwargs.get("description") == HEADER_DESC
 
 
-def test_push_runs_addlinear_then_stamp(tmp_path):
+def test_push_stamps_packs_then_addlinear(tmp_path):
     from unittest.mock import MagicMock, patch
 
     from secturafab.push import SecturaFabPushService
@@ -278,6 +278,8 @@ def test_push_runs_addlinear_then_stamp(tmp_path):
         "secturafab.push.persist_classified_item_fields", side_effect=_persist
     ), patch(
         "secturafab.push.stamp_new_line_item_packs", side_effect=_stamp
+    ), patch(
+        "secturafab.push.retype_linears_to_pt10_keep_persist", return_value=[]
     ):
         result = service.push_job(
             title="1001898",
@@ -289,7 +291,7 @@ def test_push_runs_addlinear_then_stamp(tmp_path):
             job_id=91,
         )
     assert result.ok is True
-    assert order[:4] == ["cad", "linear", "stamp", "header"]
+    assert order[:4] == ["cad", "stamp", "linear", "header"]
     assert persist_calls[0].get("persist_linear") is False
     assert persist_calls[1].get("persist_cad") is False
     assert persist_calls[1].get("persist_linear") is True
@@ -709,10 +711,10 @@ def test_linear_length_from_sibling_pdf_in_library_folder(tmp_path):
     assert float(lin.kwargs["params"]["length"]) == 11.375
 
 
-def test_stamp_forces_product_type_10_after_addlinear_pipe():
+def test_stamp_does_not_post_when_saw_packs_already_exist():
     from unittest.mock import MagicMock
 
-    from secturafab.line_item_ops import stamp_new_line_item_packs
+    from secturafab.line_item_ops import build_linear_new_line_ops, stamp_new_line_item_packs
 
     detail = {
         "ItemList": [
@@ -721,12 +723,51 @@ def test_stamp_forces_product_type_10_after_addlinear_pipe():
                 "Description": "1001880-2 - Pipe1/8-5_A36_21ft - 16",
                 "ProductType": 20,
                 "Category": "Pipe",
-                "ItemType": "P1/8-5-A36",
                 "IsLinear": True,
                 "Machine": "Saw",
                 "Length": 16.0,
-                "OperationCostList": [],
+                "OperationCostList": build_linear_new_line_ops("l1"),
             }
+        ]
+    }
+    client = MagicMock()
+    client.get_json.return_value = detail
+    notes = stamp_new_line_item_packs(client, "qid")
+    assert notes == []
+    assert not any(c.args[:2] == ("POST", "v1/quote") for c in client.request.call_args_list)
+
+
+def test_retype_pt10_copies_cad_material_and_linear_length():
+    from unittest.mock import MagicMock
+
+    from secturafab.line_item_ops import (
+        build_cad_new_line_ops,
+        retype_linears_to_pt10_keep_persist,
+    )
+
+    detail = {
+        "ItemList": [
+            {
+                "ID": "c1",
+                "Description": "14500-1 - PEDESTAL TOP PLATE",
+                "ProductType": 100,
+                "Category": "Cad",
+                "Material": "A572",
+                "Thickness": 0.25,
+                "OperationCostList": build_cad_new_line_ops("c1"),
+            },
+            {
+                "ID": "l1",
+                "Description": "1001880-2 - P1/8-5-A36 - 16",
+                "ProductType": 20,
+                "Category": "Pipe",
+                "IsLinear": True,
+                "Machine": "Saw",
+                "Length": 16.0,
+                "ProductID": "pid",
+                "SKU": "P1/8-5-A36",
+                "OperationCostList": [],
+            },
         ]
     }
     client = MagicMock()
@@ -734,20 +775,21 @@ def test_stamp_forces_product_type_10_after_addlinear_pipe():
     save = MagicMock()
     save.status_code = 200
     client.request.return_value = save
-    notes = stamp_new_line_item_packs(client, "qid")
-    assert notes
+    notes = retype_linears_to_pt10_keep_persist(client, "qid")
+    assert any("PT 10" in n for n in notes)
     posted = next(
         c.kwargs["json"]
         for c in client.request.call_args_list
         if c.args[:2] == ("POST", "v1/quote")
     )
-    it = posted["ItemList"][0]
-    assert it["ProductType"] == 10
-    assert it["Category"] == "Linear"
-    assert it["Machine"] == "Saw"
-    assert float(it["Length"]) == 16.0
-    names = [o.get("CalculatorName") for o in it["OperationCostList"]]
-    assert "Saw" in names and "Saw Setup" in names
+    cad = next(it for it in posted["ItemList"] if it["ID"] == "c1")
+    lin = next(it for it in posted["ItemList"] if it["ID"] == "l1")
+    assert cad["Material"] == "A572"
+    assert float(cad["Thickness"]) == 0.25
+    assert lin["ProductType"] == 10
+    assert lin["Category"] == "Linear"
+    assert lin["Machine"] == "Saw"
+    assert float(lin["Length"]) == 16.0
 
 
 def test_linear_product_type_20_fails_live_get():

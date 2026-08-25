@@ -29,6 +29,7 @@ from .linear_ops import bind_linear_product_ids
 from .line_item_ops import (
     count_linear_get_misses,
     persist_classified_item_fields,
+    retype_linears_to_pt10_keep_persist,
     stamp_new_line_item_packs,
 )
 from .qa_harness import evaluate_quote_get
@@ -1971,9 +1972,9 @@ class SecturaFabPushService:
                     persist_linear=False,
                 )
             )
-            # addLinear persists Machine/Length on GET but wipes Saw packs.
-            # Stamp after addLinear so ops come back on a GET that already
-            # has Length>0 (v1/quote POST keeps those fields).
+            # Packs only, and only if missing. Do not POST after addLinear —
+            # 39d68d0 stamp-to-PT10 wiped Cad Material and Linear Length.
+            notes.extend(stamp_new_line_item_packs(self.client, quote_id))
             extra_pdfs = list(drawings or [])
             folder = library.get("folder")
             if folder and Path(folder).is_dir():
@@ -1996,7 +1997,6 @@ class SecturaFabPushService:
             notes.extend(
                 persist_classified_item_fields(self.client, quote_id, **lin_kwargs)
             )
-            notes.extend(stamp_new_line_item_packs(self.client, quote_id))
             notes.extend(
                 persist_quote_header(
                     self.client,
@@ -2005,16 +2005,44 @@ class SecturaFabPushService:
                     description=quote_description,
                 )
             )
+            notes.extend(retype_linears_to_pt10_keep_persist(self.client, quote_id))
             peek = self.client.get_json(f"v1/quote/{quote_id}")
-            if count_linear_get_misses(peek, bom_rows):
+            cad_wiped = False
+            for it in peek.get("ItemList") or []:
+                if not isinstance(it, dict):
+                    continue
+                if str(it.get("Category") or it.get("ItemType") or "") != "Cad":
+                    continue
+                if it.get("ProductType") not in (100, "100"):
+                    continue
+                mat = str(it.get("Material") or it.get("MaterialGrade") or "").strip()
+                try:
+                    thk = float(it.get("Thickness") or 0)
+                except (TypeError, ValueError):
+                    thk = 0.0
+                if not mat or thk <= 0:
+                    cad_wiped = True
+                    break
+            if cad_wiped or count_linear_get_misses(peek, bom_rows):
                 notes.append(
-                    "Linear Machine/Length missing after stamp — "
-                    "re-addLinear then re-stamp (GET is truth)"
+                    "GET persist fields empty after PT 10 overlay — "
+                    "re-addplate + re-addLinear, no further quote POST"
+                )
+                notes.extend(
+                    persist_classified_item_fields(
+                        self.client,
+                        quote_id,
+                        bom_rows=bom_rows,
+                        default_material=material,
+                        default_thickness=thickness,
+                        library_folder=library.get("folder"),
+                        related_pdf_names=list(library.get("related_pdfs") or []),
+                        persist_linear=False,
+                    )
                 )
                 notes.extend(
                     persist_classified_item_fields(self.client, quote_id, **lin_kwargs)
                 )
-                notes.extend(stamp_new_line_item_packs(self.client, quote_id))
 
             detail = self.client.get_json(f"v1/quote/{quote_id}")
             item_list = list(detail.get("ItemList") or [])

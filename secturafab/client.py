@@ -115,7 +115,7 @@ class SecturaFabClient:
                 return self._parse_or_raise(response)
             except SecturaFabApiError as exc:
                 last_exc = exc
-                if exc.status_code not in {502, 503, 504} or attempt >= retries:
+                if exc.status_code not in {500, 502, 503, 504} or attempt >= retries:
                     raise
                 time.sleep(min(12.0, 1.5 * attempt))
         assert last_exc is not None
