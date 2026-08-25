@@ -90,7 +90,16 @@ def _item_category(item: dict[str, Any], bom_hint: str = "") -> str | None:
     cat = str(item.get("Category") or item.get("ItemType") or "").strip()
     if cat in {"Cad", "Linear", "Component"}:
         return cat
-    if item.get("IsLinear") or item.get("ProductType") in (10, "10"):
+    if item.get("IsLinear") or item.get("ProductType") in (
+        10,
+        "10",
+        20,
+        "20",
+        40,
+        "40",
+    ):
+        return "Linear"
+    if cat.lower() in {"pipe", "tube", "bar", "structural"}:
         return "Linear"
     if item.get("ProductType") in (200, "200"):
         return "Component"
@@ -252,8 +261,14 @@ def evaluate_quote_get(
             sku = str(it.get("SKU") or it.get("ProductName") or "").strip()
             if not pid and not sku:
                 failures.append(f"Linear {desc!r} has no ProductID/SKU")
-            if it.get("ProductType") in (100, "100"):
-                failures.append(f"Linear {desc!r} ProductType is 100 (want 10 / Linear)")
+            try:
+                pt = int(it.get("ProductType"))
+            except (TypeError, ValueError):
+                pt = None
+            if pt != 10:
+                failures.append(
+                    f"Linear {desc!r} ProductType is {it.get('ProductType')!r}, want 10"
+                )
             machine = str(it.get("Machine") or "").strip()
             if machine.casefold() != "saw":
                 failures.append(f"Linear {desc!r} Machine is {machine!r}, want Saw")

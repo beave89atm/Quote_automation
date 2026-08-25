@@ -458,6 +458,9 @@ def test_parse_cut_length_from_drawing_phrases():
 
     assert largest_drawing_length('1001880-2 PEDESTAL TUBE  36.00"') == 36.0
     assert largest_drawing_length("PEDESTAL TUBE") is None
+    from secturafab.line_item_ops import largest_unmarked_length
+
+    assert largest_unmarked_length("1001880-2 PEDESTAL TUBE 16", "1001880-2") == 16.0
     assert bom_row_cut_length({"part_no": "10081-2", "length_in": 22.5}) == 22.5
     assert bom_row_cut_length(
         {"part_no": "33637-1", "description": "1 1/4 RETURN TUBE"}
@@ -592,6 +595,63 @@ def test_linear_length_from_marked_inch_callout_when_no_lg(tmp_path):
     assert lin.kwargs["params"]["machine"] == "Saw"
 
 
+def test_linear_length_from_unmarked_number_on_component_pdf(tmp_path):
+    import fitz
+    from unittest.mock import MagicMock
+
+    from secturafab.line_item_ops import persist_classified_item_fields
+
+    pdf = tmp_path / "29860-3.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "29860-3 PEDESTAL BRACE ANGLE 9")
+    doc.save(str(pdf))
+    doc.close()
+    empty = {
+        "ItemList": [
+            {
+                "ID": "l1",
+                "Description": "29860-3 - L2X1 1/4X1/8-A36",
+                "ProductType": 10,
+                "Category": "Linear",
+                "SKU": "L2X1 1/4X1/8-A36",
+                "ProductID": "pid",
+                "Length": 0,
+                "Machine": "",
+                "OperationCostList": [],
+            }
+        ]
+    }
+    verified = {
+        "ItemList": [{**empty["ItemList"][0], "Machine": "Saw", "Length": 9.0}]
+    }
+    client = MagicMock()
+    client.get_json.side_effect = [empty, verified]
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    persist_classified_item_fields(
+        client,
+        "qid",
+        bom_rows=[{"part_no": "29860-3", "description": "PEDESTAL BRACE ANGLE", "qty": 2}],
+        plate_catalog=[],
+        linear_catalog=[
+            {
+                "ID": "pid",
+                "ProductName": "L2X1 1/4X1/8-A36",
+                "MaterialGrade": "A36",
+                "ProductSubType": "structural",
+                "Active": True,
+            }
+        ],
+        library_folder=tmp_path,
+        persist_cad=False,
+        persist_linear=True,
+    )
+    lin = next(c for c in client.request.call_args_list if "addLinear" in str(c))
+    assert float(lin.kwargs["params"]["length"]) == 9.0
+
+
 def test_linear_length_from_sibling_pdf_in_library_folder(tmp_path):
     import fitz
     from unittest.mock import MagicMock
@@ -647,6 +707,66 @@ def test_linear_length_from_sibling_pdf_in_library_folder(tmp_path):
     )
     lin = next(c for c in client.request.call_args_list if "addLinear" in str(c))
     assert float(lin.kwargs["params"]["length"]) == 11.375
+
+
+def test_stamp_forces_product_type_10_after_addlinear_pipe():
+    from unittest.mock import MagicMock
+
+    from secturafab.line_item_ops import stamp_new_line_item_packs
+
+    detail = {
+        "ItemList": [
+            {
+                "ID": "l1",
+                "Description": "1001880-2 - Pipe1/8-5_A36_21ft - 16",
+                "ProductType": 20,
+                "Category": "Pipe",
+                "ItemType": "P1/8-5-A36",
+                "IsLinear": True,
+                "Machine": "Saw",
+                "Length": 16.0,
+                "OperationCostList": [],
+            }
+        ]
+    }
+    client = MagicMock()
+    client.get_json.return_value = detail
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    notes = stamp_new_line_item_packs(client, "qid")
+    assert notes
+    posted = next(
+        c.kwargs["json"]
+        for c in client.request.call_args_list
+        if c.args[:2] == ("POST", "v1/quote")
+    )
+    it = posted["ItemList"][0]
+    assert it["ProductType"] == 10
+    assert it["Category"] == "Linear"
+    assert it["Machine"] == "Saw"
+    assert float(it["Length"]) == 16.0
+    names = [o.get("CalculatorName") for o in it["OperationCostList"]]
+    assert "Saw" in names and "Saw Setup" in names
+
+
+def test_linear_product_type_20_fails_live_get():
+    payload = gold_1001898_get()
+    for it in payload["ItemList"]:
+        if it.get("ProductType") == 10 and "1001880" in str(it.get("Description")):
+            it["ProductType"] = 20
+            it["Category"] = "Pipe"
+            break
+    result = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert result.ok is False
+    assert any("ProductType" in f and "20" in f for f in result.failures)
 
 
 def test_addlinear_fetches_product_by_id_when_catalog_misses():

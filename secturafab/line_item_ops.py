@@ -278,9 +278,25 @@ def apply_cad_new_line_ops(item: dict[str, Any]) -> bool:
 
 
 def apply_linear_new_line_ops(item: dict[str, Any]) -> bool:
-    """Attach Long Saw + Saw Setup when missing. Returns True if written."""
+    """Saw pack + force ProductType 10 (addLinear leaves Pipe 20 / Structural 40)."""
+    changed = False
+    if item.get("ProductType") not in (10, "10"):
+        item["ProductType"] = 10
+        changed = True
+    if str(item.get("Category") or "") != "Linear":
+        item["Category"] = "Linear"
+        changed = True
+    if str(item.get("ItemType") or "") != "Linear":
+        item["ItemType"] = "Linear"
+        changed = True
+    if not item.get("IsLinear"):
+        item["IsLinear"] = True
+        changed = True
+    if str(item.get("Machine") or "").strip().casefold() != "saw":
+        item["Machine"] = "Saw"
+        changed = True
     if item_has_saw_pack(item):
-        return False
+        return changed
     item_id = str(item.get("ID") or "") or None
     ops = build_linear_new_line_ops(item_id)
     item["OperationCostList"] = ops
@@ -290,7 +306,6 @@ def apply_linear_new_line_ops(item: dict[str, Any]) -> bool:
     )
     item["PrimaryTime"] = saw_h
     item["UnitPrimaryTime"] = saw_h
-    item["Machine"] = "Saw"
     return True
 
 
@@ -505,6 +520,60 @@ def largest_drawing_length(text: str | None) -> float | None:
     return max(found) if found else None
 
 
+def largest_unmarked_length(text: str | None, part_no: str | None = None) -> float | None:
+    """Largest 2–240 in number on a *component* PDF after stripping the PN."""
+    blob = str(text or "")
+    pn = str(part_no or "").strip()
+    if pn:
+        blob = re.sub(re.escape(pn), " ", blob, flags=re.I)
+        if "-" in pn:
+            blob = re.sub(re.escape(pn.rsplit("-", 1)[0]), " ", blob, flags=re.I)
+    found: list[float] = []
+    for m in re.finditer(
+        r"(?<![\d./])(\d+\s+\d+/\d+|\d+/\d+|\d+(?:\.\d+)?)(?![\d./])",
+        blob,
+    ):
+        got = _sane_cut_length(_inch_token_to_float(m.group(1)))
+        if got and 2.0 <= got <= 240:
+            found.append(got)
+    return max(found) if found else None
+
+
+def _pdfs_matching_part(part_no: str, library_folder: Any) -> list[Path]:
+    base = str(part_no or "").split("-")[0].upper()
+    compact = str(part_no or "").upper().replace(" ", "").replace("-", "")
+    if not base:
+        return []
+    out: list[Path] = []
+    for path in _iter_folder_pdfs(library_folder):
+        stem = path.stem.upper().replace(" ", "").replace("-", "")
+        if base in stem or (compact and compact in stem):
+            out.append(path)
+    return out
+
+
+def _cached_drawing_text(
+    pdf: Path,
+    cache: dict[str, str] | None,
+    *,
+    ocr: bool,
+) -> str:
+    key = f"{str(pdf.resolve()).lower()}:{'ocr' if ocr else 'native'}"
+    store = cache if cache is not None else {}
+    if key not in store:
+        store[key] = _drawing_text(pdf, ocr=ocr)
+    return store[key]
+
+
+def _cut_from_text(text: str, part_no: str, *, allow_unmarked: bool) -> float | None:
+    got = parse_cut_length(text) or _length_near_part(text, part_no) or largest_drawing_length(text)
+    if got:
+        return got
+    if allow_unmarked:
+        return largest_unmarked_length(text, part_no)
+    return None
+
+
 def bom_row_cut_length(row: dict[str, Any] | None) -> float | None:
     row = row or {}
     for key in ("length_in", "cut_length_in", "cut_length", "length"):
@@ -555,9 +624,11 @@ def _length_from_library(
     library_folder: Any = None,
     related_pdf_names: list[str] | None = None,
     extra_pdfs: list[Any] | None = None,
+    text_cache: dict[str, str] | None = None,
 ) -> float | None:
     if not part_no:
         return None
+    cache = text_cache if text_cache is not None else {}
     try:
         from secturafab.pdf_assembly_ops import resolve_component_pdf
     except Exception:  # noqa: BLE001
@@ -572,19 +643,21 @@ def _length_from_library(
             )
         except Exception:  # noqa: BLE001
             component = None
+    dedicated = []
     if component:
-        text = _drawing_text(Path(component), ocr=True)
-        got = (
-            parse_cut_length(text)
-            or _length_near_part(text, part_no)
-            or largest_drawing_length(text)
-        )
+        dedicated.append(Path(component))
+    dedicated.extend(_pdfs_matching_part(part_no, library_folder))
+    seen: set[str] = set()
+    for path in dedicated:
+        key = str(path.resolve()).lower()
+        if key in seen or not path.is_file():
+            continue
+        seen.add(key)
+        text = _cached_drawing_text(path, cache, ocr=True)
+        got = _cut_from_text(text, part_no, allow_unmarked=True)
         if got:
             return got
-    seen: set[str] = set()
-    if component:
-        seen.add(str(Path(component).resolve()).lower())
-    candidates: list[Path] = []
+    others: list[Path] = []
     for raw in list(extra_pdfs or []) + _iter_folder_pdfs(library_folder):
         try:
             path = Path(raw)
@@ -596,9 +669,14 @@ def _length_from_library(
         if key in seen:
             continue
         seen.add(key)
-        candidates.append(path)
-    for path in candidates:
-        text = _drawing_text(path, ocr=False)
+        others.append(path)
+    for path in others:
+        text = _cached_drawing_text(path, cache, ocr=False)
+        got = _cut_from_text(text, part_no, allow_unmarked=False)
+        if got:
+            return got
+    for path in others:
+        text = _cached_drawing_text(path, cache, ocr=True)
         got = _length_near_part(text, part_no) or parse_cut_length(text)
         if got:
             return got
@@ -640,17 +718,19 @@ def count_linear_get_misses(
         if _is_component(it) or want == "Component":
             continue
         if _is_linear(it) or want == "Linear":
-            if not _linear_fields_on_get(it):
+            if not _linear_fields_on_get(it, require_pt10=True):
                 n += 1
     return n
 
 
-def _linear_fields_on_get(item: dict[str, Any]) -> bool:
+def _linear_fields_on_get(item: dict[str, Any], *, require_pt10: bool = False) -> bool:
     machine = str(item.get("Machine") or "").strip().casefold() == "saw"
     try:
         length = float(item.get("Length") or item.get("LinearLength") or 0)
     except (TypeError, ValueError):
         length = 0.0
+    if require_pt10 and item.get("ProductType") not in (10, "10"):
+        return False
     return machine and length > 0
 
 
@@ -740,6 +820,7 @@ def persist_classified_item_fields(
     lin_wrote = 0
     desc_n = 0
     linear_plans: dict[str, tuple[dict[str, Any], float, str, int]] = {}
+    drawing_text_cache: dict[str, str] = {}
 
     def _resolve_linear_product(
         it: dict[str, Any],
@@ -789,6 +870,7 @@ def persist_classified_item_fields(
                 library_folder=library_folder,
                 related_pdf_names=related_pdf_names,
                 extra_pdfs=extra_pdfs,
+                text_cache=drawing_text_cache,
             )
         )
         sku = str(it.get("SKU") or "").strip() or None
