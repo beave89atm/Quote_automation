@@ -114,6 +114,7 @@ def test_pdf_and_linear_payloads_share_id_itemid():
     assert linear["ID"] == "qid"
     assert linear["ProductID"] == "pid-1"
     assert linear["Qty"] == 2
+    assert linear["ProductType"] == 10
 
 
 def test_website_paths_are_quote_mvc_not_quickadd():
@@ -265,7 +266,47 @@ def test_add_item_dxf_files_sends_js_contract():
     assert body["FileList"][0]["Machine"] == "Laser"
 
 
-def test_push_job_no_cookie_uses_working_quickadd(tmp_path: Path):
+def _gold_cad(desc: str = "21680-1 PLATE") -> dict[str, Any]:
+    return {
+        "Description": desc,
+        "ProductType": 100,
+        "Category": "Cad",
+        "BadgeString": "PR",
+        "UnitCost": 12.5,
+        "MaterialCost": 1.1,
+        "Material": "A36",
+        "Thickness": 0.25,
+        "Machine": "Laser",
+        "OperationCostList": [
+            {"OperationName": "Profile", "OperationLabel": "PR", "CalculatorName": "Laser", "UnitTime": 0.03},
+            {"OperationName": "Profile", "OperationLabel": "PR", "CalculatorName": "Drafting", "UnitTime": 0.05},
+            {"OperationName": "Profile", "OperationLabel": "PR", "CalculatorName": "Laser-Setup", "UnitTime": 0.16},
+            {"OperationName": "Profile", "OperationLabel": "PR", "CalculatorName": "Sheet Loading", "UnitTime": 0.05},
+            {"OperationName": "Profile", "OperationLabel": "PR", "CalculatorName": "Deburr", "UnitTime": 0.03},
+        ],
+    }
+
+
+def _gold_lin(desc: str = "21679-1 TUBE") -> dict[str, Any]:
+    return {
+        "Description": desc,
+        "ProductType": 10,
+        "Category": "Linear",
+        "IsLinear": True,
+        "Machine": "Saw",
+        "Length": 16,
+        "UnitCost": 7.63,
+        "MaterialCost": 0.55,
+        "SKU": "RT",
+        "BadgeString": "",
+        "OperationCostList": [
+            {"CalculatorName": "Saw", "OperationName": "Cut"},
+            {"CalculatorName": "Saw Setup", "OperationName": "Cut"},
+        ],
+    }
+
+
+def test_push_job_no_cookie_fails_without_quickadd(tmp_path: Path):
     pdf = tmp_path / "part.pdf"
     stp = tmp_path / "part.stp"
     pdf.write_bytes(b"%PDF")
@@ -274,8 +315,8 @@ def test_push_job_no_cookie_uses_working_quickadd(tmp_path: Path):
     client.config.website_cookie = ""
     client.get_json.return_value = {
         "QuoteNumber": "part",
-        "ItemCount": 2,
-        "ItemList": [{"Description": "A"}, {"Description": "B"}],
+        "ItemCount": 0,
+        "ItemList": [],
     }
     service = SecturaFabPushService(client=client)
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
@@ -289,25 +330,7 @@ def test_push_job_no_cookie_uses_working_quickadd(tmp_path: Path):
     ) as finish, patch.object(
         service, "apply_item_categories", return_value=[]
     ), patch(
-        "secturafab.push.ensure_assembly_root", return_value=[]
-    ), patch(
-        "secturafab.push.relink_assembly_children", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_purchased_components", return_value=[]
-    ), patch(
-        "secturafab.push.find_purchased_part_keys", return_value={}
-    ), patch(
         "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
-    ), patch(
-        "secturafab.push.apply_bom_quantities", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_laser_profile_ops", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_weld_ops", return_value=[]
-    ), patch(
-        "secturafab.push.finalize_quote_ops", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_imperial_item_units", return_value=[]
     ), patch(
         "secturafab.push.extract_assembly_description", return_value=None
     ):
@@ -320,14 +343,14 @@ def test_push_job_no_cookie_uses_working_quickadd(tmp_path: Path):
             times={},
             job_id=2,
         )
-    assert result.ok is True
+    assert result.ok is False
     create_q.assert_called_once()
-    qadd.assert_called_once()
+    qadd.assert_not_called()
     finish.assert_called()
-    assert any(
-        "falling back" in n or "Finish failed" in n or "0 ItemList" in n
-        for n in (result.notes or [])
-    )
+    blob = " ".join(result.notes or []) + " " + (result.error or "")
+    assert "Chrome" in blob or "session" in blob.lower()
+    assert "quickAddCAD" not in blob
+    assert "falling back" not in blob
 
 
 def test_push_job_cookie_uses_finish_not_quickadd(tmp_path: Path):
@@ -340,7 +363,7 @@ def test_push_job_cookie_uses_finish_not_quickadd(tmp_path: Path):
     populated = {
         "QuoteNumber": "21678-1",
         "ItemCount": 12,
-        "ItemList": [{"Description": "21680 PLATE"}, {"Description": "21679 TUBE"}],
+        "ItemList": [_gold_cad("21680-1 PLATE"), _gold_lin("21679-1 TUBE")],
     }
     _n = {"i": 0}
 
@@ -391,7 +414,7 @@ def test_push_job_cookie_uses_finish_not_quickadd(tmp_path: Path):
     assert hasattr(pushmod, "quick_add_cad") or hasattr(SecturaFabPushService, "quick_add_cad")
 
 
-def test_push_job_finish_failure_falls_back_to_quickadd(tmp_path: Path):
+def test_push_job_finish_failure_fails_without_quickadd(tmp_path: Path):
     pdf = tmp_path / "part.pdf"
     stp = tmp_path / "part.stp"
     pdf.write_bytes(b"%PDF")
@@ -400,28 +423,13 @@ def test_push_job_finish_failure_falls_back_to_quickadd(tmp_path: Path):
     client.config.website_cookie = "ASP.NET_SessionId=test"
     client.get_json.return_value = {
         "QuoteNumber": "part",
-        "ItemCount": 2,
-        "ItemList": [{"Description": "A"}, {"Description": "B"}],
+        "ItemCount": 0,
+        "ItemList": [],
     }
     service = SecturaFabPushService(client=client)
 
     def _finish_fail(**kwargs):
         raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
-
-    peek_empty = {"QuoteNumber": "part", "ItemCount": 0, "ItemList": []}
-    peek_ok = {
-        "QuoteNumber": "part",
-        "ItemCount": 2,
-        "ItemList": [{"Description": "A"}, {"Description": "B"}],
-    }
-    # First peek (Finish failed) is empty; later reads after quickAddCAD are populated.
-    _gets = {"n": 0}
-
-    def _get_json(_path):
-        _gets["n"] += 1
-        return peek_empty if _gets["n"] == 1 else peek_ok
-
-    client.get_json.side_effect = _get_json
 
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value="qid"
@@ -431,28 +439,8 @@ def test_push_job_finish_failure_falls_back_to_quickadd(tmp_path: Path):
         service, "finish_cad_files", side_effect=_finish_fail
     ), patch.object(
         service, "quick_add_cad", return_value={"ok": True}
-    ) as qadd, patch.object(
-        service, "apply_item_categories", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_assembly_root", return_value=[]
-    ), patch(
-        "secturafab.push.relink_assembly_children", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_purchased_components", return_value=[]
-    ), patch(
-        "secturafab.push.find_purchased_part_keys", return_value={}
-    ), patch(
+    ) as qadd, patch(
         "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
-    ), patch(
-        "secturafab.push.apply_bom_quantities", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_laser_profile_ops", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_weld_ops", return_value=[]
-    ), patch(
-        "secturafab.push.finalize_quote_ops", return_value=[]
-    ), patch(
-        "secturafab.push.ensure_imperial_item_units", return_value=[]
     ), patch(
         "secturafab.push.extract_assembly_description", return_value=None
     ):
@@ -465,10 +453,12 @@ def test_push_job_finish_failure_falls_back_to_quickadd(tmp_path: Path):
             times={},
             job_id=3,
         )
-    assert result.ok is True
+    assert result.ok is False
     create_q.assert_called_once()
-    qadd.assert_called_once()
-    assert any("falling back to working push" in n for n in (result.notes or []))
+    qadd.assert_not_called()
+    blob = " ".join(result.notes or []) + " " + (result.error or "")
+    assert "Chrome" in blob or "session" in blob.lower()
+    assert "falling back" not in blob
 
 
 def test_push_pdf_only_with_cookie_uses_image_files_finish(tmp_path: Path):
@@ -479,7 +469,7 @@ def test_push_pdf_only_with_cookie_uses_image_files_finish(tmp_path: Path):
     populated = {
         "QuoteNumber": "lonely",
         "ItemCount": 1,
-        "ItemList": [{"Description": "lonely", "ProductType": 100}],
+        "ItemList": [_gold_cad("lonely")],
     }
     _n = {"i": 0}
 
@@ -546,5 +536,72 @@ def test_website_request_login_redirect_is_auth_gap():
     session.request.return_value = resp
     client.session = session
     client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
-    with pytest.raises(SecturaFabWebsiteAuthError, match="AddItem_DXFFiles"):
+    with pytest.raises(SecturaFabWebsiteAuthError, match="Chrome|session"):
         client.website_request("POST", "/Quote/AddItem_DXFFiles", json={})
+
+
+def test_classify_filelist_restores_dashed_cad_pn():
+    service = SecturaFabPushService(client=MagicMock())
+    rows = [
+        {
+            "ErrorStatus": 0,
+            "Qty": 1,
+            "FileName": "14500.pdf",
+            "Name": "14500",
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "Stock_X": 11.0,
+        }
+    ]
+    classified, _notes = service.classify_cadimport_rows(
+        rows,
+        default_material="A36",
+        default_thickness="0.25",
+        bom_rows=[{"part_no": "14500-1", "qty": 1, "description": "PEDESTAL TOP PLATE"}],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+    )
+    assert classified[0]["Name"] == "14500-1"
+    assert str(classified[0]["Description"]).startswith("14500-1")
+    assert classified[0]["SourceDataID"] == "src-1"
+    assert classified[0]["FileID"] == "file-1"
+
+
+def test_effective_cookie_prefers_config_not_chrome():
+    from secturafab.browser_session import effective_website_cookie
+    from secturafab.config import SecturaFabConfig
+
+    cfg = SecturaFabConfig(website_cookie="ASP.NET_SessionId=from-env")
+    assert effective_website_cookie(cfg) == "ASP.NET_SessionId=from-env"
+
+
+def test_discover_cookie_from_sqlite(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        (".secturafab.com", ".AspNet.ApplicationCookie", "auth-token", b""),
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "ASP.NET_SessionId", "sess", b""),
+    )
+    conn.commit()
+    conn.close()
+    profile = {
+        "label": "test",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+    }
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]):
+        header = bs.discover_sectura_website_cookie(force=True)
+    assert ".AspNet.ApplicationCookie=auth-token" in header
+    assert "ASP.NET_SessionId=sess" in header

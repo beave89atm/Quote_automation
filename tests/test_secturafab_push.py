@@ -265,26 +265,33 @@ def test_push_single_solid_step_skips_assembly_root(tmp_path: Path):
     stp = tmp_path / "ME04-2773.stp"
     pdf.write_bytes(b"%PDF")
     stp.write_bytes(b"ISO")
+    from tests.test_secturafab_website import _gold_cad
+
     client = MagicMock()
-    client.get_json.return_value = {
-        "QuoteNumber": "ME04-2773",
-        "ItemCount": 1,
-        "ItemList": [
-            {
-                "ID": "p1",
-                "Description": "ME04-2773 - 0.99 in A36",
-                "ProductType": 100,
-                "IsPart": True,
-                "Machine": "Laser",
-                "Data": 'DataPart:{"Time":0.02}',
-            }
-        ],
-    }
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    gold_item = _gold_cad("ME04-2773 - 0.99 in A36")
+    gold_item["ID"] = "p1"
+    gold_item["Data"] = 'DataPart:{"Time":0.02}'
+    _n = {"i": 0}
+
+    def _get_json(_path):
+        _n["i"] += 1
+        if _n["i"] == 1:
+            return {"QuoteNumber": "ME04-2773", "ItemCount": 0, "ItemList": []}
+        return {
+            "QuoteNumber": "ME04-2773",
+            "ItemCount": 1,
+            "ItemList": [gold_item],
+        }
+
+    client.get_json.side_effect = _get_json
     service = SecturaFabPushService(client=client)
 
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
-        service, "quick_add_cad", return_value={"ok": True}
-    ), patch.object(service, "create_quote", return_value="qid"), patch.object(
+        service, "finish_cad_files", return_value=["Finish CAD"]
+    ), patch.object(
+        service, "quick_add_cad"
+    ) as qadd, patch.object(service, "create_quote", return_value="qid"), patch.object(
         service, "allocate_quote_number", return_value="ME04-2773"
     ), patch.object(service, "apply_item_categories", return_value=[]), patch(
         "secturafab.push.ensure_assembly_root", return_value=["SHOULD NOT RUN"]
@@ -320,10 +327,10 @@ def test_push_single_solid_step_skips_assembly_root(tmp_path: Path):
         )
 
     assert result.ok is True
+    qadd.assert_not_called()
     asm.assert_not_called()
     relink.assert_not_called()
     profile.assert_not_called()
-    assert any("left as Part" in n for n in (result.notes or []))
     assert any("Skipped grafted Profile" in n for n in (result.notes or []))
 
 
@@ -507,7 +514,7 @@ def test_push_readiness_with_stp_ready(tmp_path: Path):
 
 
 def test_push_pdf_only_uses_single_pdf_shell(tmp_path: Path):
-    """PDF without STEP/library still creates a quote via single-PDF path."""
+    """PDF without a Chrome session fails closed (no single-PDF / quickAddCAD)."""
     pdf = tmp_path / "lonely.pdf"
     pdf.write_bytes(b"%PDF")
     client = MagicMock()
@@ -548,14 +555,15 @@ def test_push_pdf_only_uses_single_pdf_shell(tmp_path: Path):
             job_id=99,
         )
 
-    assert result.ok is True
-    assert result.item_count and result.item_count > 0
+    assert result.ok is False
     create_q.assert_called_once()
     up_d.assert_called_once()
-    build_pdf.assert_called_once()
+    build_pdf.assert_not_called()
     desc = create_q.call_args.kwargs.get("description") or ""
     assert "lonely" in desc
     assert "Title" in desc
+    blob = (result.error or "") + " " + " ".join(result.notes or [])
+    assert "Chrome" in blob or "session" in blob.lower()
 
 
 def test_build_single_pdf_quote_skips_assembly_shell(tmp_path: Path):
@@ -623,8 +631,10 @@ def test_push_ok_requires_nonzero_item_count(tmp_path: Path):
     service = SecturaFabPushService(client=client)
 
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "finish_cad_files", return_value=[]
+    ), patch.object(
         service, "quick_add_cad", return_value={"ok": True}
-    ), patch.object(service, "create_quote", return_value="qid") as create_q, patch.object(
+    ) as qadd, patch.object(service, "create_quote", return_value="qid") as create_q, patch.object(
         service, "allocate_quote_number", return_value="part"
     ), patch.object(service, "apply_item_categories", return_value=[]), patch(
         "secturafab.push.ensure_assembly_root", return_value=[]
@@ -658,6 +668,7 @@ def test_push_ok_requires_nonzero_item_count(tmp_path: Path):
     assert result.ok is False
     assert result.item_count == 0
     assert result.status == "failed"
+    qadd.assert_not_called()
     # Description fallback used when creating the quote
     desc = create_q.call_args.kwargs.get("description") or ""
     assert "part" in desc
@@ -669,17 +680,31 @@ def test_push_success_sets_item_count_gt_zero(tmp_path: Path):
     stp = tmp_path / "ok.stp"
     pdf.write_bytes(b"%PDF")
     stp.write_bytes(b"ISO")
+    from tests.test_secturafab_website import _gold_cad, _gold_lin
+
     client = MagicMock()
-    client.get_json.return_value = {
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    populated = {
         "QuoteNumber": "ok",
         "ItemCount": 2,
-        "ItemList": [{"Description": "A"}, {"Description": "B"}],
+        "ItemList": [_gold_cad("A"), _gold_lin("B")],
     }
+    _n = {"i": 0}
+
+    def _get_json(_path):
+        _n["i"] += 1
+        if _n["i"] == 1:
+            return {"QuoteNumber": "ok", "ItemCount": 0, "ItemList": []}
+        return populated
+
+    client.get_json.side_effect = _get_json
     service = SecturaFabPushService(client=client)
 
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
-        service, "quick_add_cad", return_value={"ok": True}
-    ), patch.object(service, "create_quote", return_value="qid") as create_q, patch.object(
+        service, "finish_cad_files", return_value=["Finish CAD"]
+    ), patch.object(
+        service, "quick_add_cad"
+    ) as qadd, patch.object(service, "create_quote", return_value="qid") as create_q, patch.object(
         service, "allocate_quote_number", return_value="ok"
     ), patch.object(service, "apply_item_categories", return_value=[]), patch(
         "secturafab.push.ensure_assembly_root", return_value=[]
@@ -712,5 +737,6 @@ def test_push_success_sets_item_count_gt_zero(tmp_path: Path):
 
     assert result.ok is True
     assert result.item_count and result.item_count > 0
+    qadd.assert_not_called()
     create_q.assert_called_once()
     assert "From drawing" in (create_q.call_args.kwargs.get("description") or "")

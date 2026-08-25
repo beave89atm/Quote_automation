@@ -57,13 +57,14 @@ WEBSITE_FINISH_PATHS = {
 }
 
 WEBSITE_AUTH_GAP = (
-    "Website session required for /Quote/AddItem_DXFFiles (CAD Files Finish). "
-    "GetItem_AddView / AddItem_DXFFiles redirect to /Account/Login without a "
-    "www cookie. Image Files (AddItem_PDFFiles) and Long (AddItem_Linear) are "
-    "called with the API bearer (same as CadImport); if they 302, cookie-less "
-    "quickAddCAD / create-new addLinear write DataPart/DataLinear + UnitCost. "
-    "Do not graft Laser/Drafting/Saw Setup as item tags. "
-    "Set SECTURAFAB_WEBSITE_COOKIE only for DXF Finish."
+    "Finish needs a live SecturaFAB Chrome session on this PC "
+    "(www.secturafab.com / secturafab.com cookies). Sign into SecturaFAB in "
+    "Chrome on the quoting PC, then push again. This app reads Chrome's "
+    "cookies automatically — do not paste a cookie. "
+    "GET /Quote/GetItem_AddView and POST /Quote/AddItem_DXFFiles, "
+    "AddItem_PDFFiles, and AddItem_Linear 302 to /Account/Login or hit "
+    "Cloudflare without that session. Do not fall back to quickAddCAD. "
+    "Do not graft Laser/Drafting/Saw Setup as item tags."
 )
 
 # Identity keys CadImport/UploadItem_DXFFiles returns. Finish needs these
@@ -254,6 +255,8 @@ def build_linear_add_payload(
         "qty": max(1, int(qty)),
         "Machine": machine,
         "machine": machine,
+        "ProductType": 10,
+        "productType": 10,
         "customerMaterial": bool(customer_material),
     }
     if length is not None:
@@ -324,6 +327,7 @@ def overlay_classified_row(
         out["IsLinear"] = True
         out["IsPlate"] = False
         out["IsPart"] = True
+        out["ProductType"] = 10
         out["Machine"] = machine or out.get("Machine") or "Saw"
     elif cat == "Component":
         out["IsLinear"] = False

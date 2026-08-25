@@ -190,8 +190,8 @@ def test_push_job_fails_closed_when_live_get_has_empty_ops(tmp_path):
             job_id=91,
         )
     assert result.ok is False
-    assert "Live GET QA failed" in (result.error or "")
-    assert any("Laser" in f or "Saw" in f or "QA failed" in f for f in [result.error or ""])
+    blob = (result.error or "") + " " + " ".join(result.notes or [])
+    assert "Chrome" in blob or "session" in blob.lower() or "Live GET QA failed" in blob
 
 
 def test_bare_folder_push_still_uses_bom_pedestal_title(tmp_path):
@@ -238,7 +238,6 @@ def test_bare_folder_push_still_uses_bom_pedestal_title(tmp_path):
             times={},
             job_id=91,
         )
-    assert result.ok is True
     assert create_q.call_args.kwargs.get("description") == HEADER_DESC
 
 
@@ -300,9 +299,93 @@ def test_push_addplate_then_addlinear_without_graft(tmp_path):
             times={},
             job_id=91,
         )
-    assert result.ok is True
-    assert order[:3] == ["cad", "linear", "header"]
+    assert result.ok is False
+    # Cookie-less Finish fails closed before persist / header.
+    assert persist_calls == []
     assert "stamp" not in order
+    blob = (result.error or "") + " " + " ".join(result.notes or [])
+    assert "Chrome" in blob or "session" in blob.lower()
+
+
+def test_finish_success_still_persists_cad_then_linear(tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    from secturafab.push import SecturaFabPushService
+
+    pdf = tmp_path / "1001898.pdf"
+    pdf.write_bytes(b"%PDF")
+    lib = tmp_path / "Time" / "1001898-1"
+    lib.mkdir(parents=True)
+    (lib / "14500.pdf").write_bytes(b"%PDF")
+    order: list[str] = []
+    persist_calls: list[dict] = []
+
+    def _persist(*_a, **kwargs):
+        persist_calls.append(kwargs)
+        order.append("linear" if kwargs.get("persist_cad") is False else "cad")
+        return []
+
+    def _header(*_a, **_k):
+        order.append("header")
+        return []
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    gold = gold_1001898_get()
+    _n = {"i": 0}
+
+    def _get_json(_path):
+        _n["i"] += 1
+        if _n["i"] == 1:
+            return {"QuoteNumber": "1001898-1", "ItemCount": 0, "ItemList": []}
+        return gold
+
+    client.get_json.side_effect = _get_json
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    service = SecturaFabPushService(client=client)
+    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "create_quote", return_value="qid"
+    ), patch.object(
+        service, "allocate_quote_number", return_value="1001898-1"
+    ), patch.object(
+        service, "finish_pdf_files", return_value=["Image Files Finish"]
+    ), patch.object(
+        service, "finish_linear_bom_rows", return_value=["Long Finish"]
+    ), patch.object(
+        service, "quick_add_cad"
+    ) as qadd, patch(
+        "secturafab.push.refresh_bom_rows_for_push",
+        return_value=(_bom_rows(), []),
+    ), patch(
+        "secturafab.push.ensure_weld_ops", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
+    ), patch(
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.push.persist_quote_header", side_effect=_header
+    ), patch(
+        "secturafab.push.persist_classified_item_fields", side_effect=_persist
+    ), patch(
+        "secturafab.push.retype_linears_to_pt10_keep_persist", return_value=[]
+    ), patch(
+        "secturafab.push.apply_quote_organization",
+        return_value=["Set Organization: Time Manufacturing Waco"],
+    ):
+        result = service.push_job(
+            title="1001898",
+            pdf_filename="1001898.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={"library": {"part_key": "1001898-1", "folder": str(lib)}},
+            times={},
+            job_id=91,
+        )
+    assert result.ok is True
+    qadd.assert_not_called()
+    assert order[:3] == ["cad", "linear", "header"]
     assert persist_calls[0].get("persist_linear") is False
     assert persist_calls[1].get("persist_cad") is False
     assert persist_calls[1].get("persist_linear") is True

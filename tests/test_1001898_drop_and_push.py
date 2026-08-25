@@ -219,21 +219,14 @@ def test_cookie_less_1001898_push_dry_run(tmp_path: Path):
         service, "allocate_quote_number", return_value="1001898-1"
     ), patch.object(
         service, "finish_pdf_files", return_value=[]
-    ), patch(
+    ), patch.object(
+        service, "quick_add_cad"
+    ) as qadd, patch(
         "secturafab.push.refresh_bom_rows_for_push",
         return_value=(_bom_rows(), []),
     ), patch(
-        "secturafab.push.ensure_weld_ops", return_value=[]
-    ), patch(
-        "secturafab.push.finalize_quote_ops", return_value=[]
-    ) as finalize, patch(
-        "secturafab.pdf_assembly_ops.build_pdf_only_assembly",
-        return_value=[
-            "Added 5 Cad plate line(s) (typed flat / no child-PDF quickAddCAD)",
-            "Skipped child-PDF quickAddCAD",
-            "Skipped grafted Profile",
-        ],
-    ), patch(
+        "secturafab.pdf_assembly_ops.build_pdf_only_assembly"
+    ) as pdf_asm, patch(
         "secturafab.push.apply_quote_organization",
         return_value=["Set Organization: Time Manufacturing Waco"],
     ), patch(
@@ -254,15 +247,17 @@ def test_cookie_less_1001898_push_dry_run(tmp_path: Path):
             times={"weld_minutes": 0, "total_inches": 0},
             job_id=91,
         )
-    assert result.ok is True
+    assert result.ok is False
+    qadd.assert_not_called()
+    pdf_asm.assert_not_called()
     graft.assert_not_called()
-    assert finalize.call_args.kwargs.get("attach_profile") in {None, False}
     desc = create_q.call_args.kwargs.get("description") or ""
     assert desc == "PEDESTAL WELDMENT"
     assert desc != "1001898"
     assert desc != "1001898-1"
-    assert any("Time Manufacturing Waco" in n for n in (result.notes or []))
-    assert any("grafted Profile" in n or "New Line Item" in n for n in (result.notes or []))
+    blob = " ".join(result.notes or []) + " " + (result.error or "")
+    assert "Chrome" in blob or "session" in blob.lower()
+    assert "falling back" not in blob
     bom = extract_bom_from_lom_xlsx(lib / "1001898-1-LOM.xlsx", bom_config="1")
     assert bom.part_number_count == 17
     assert bom.piece_count == 27
@@ -275,13 +270,12 @@ def test_step_21678_cookie_uses_finish_dry_run(tmp_path: Path):
     stp.write_bytes(b"ISO")
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=test"
+    from tests.test_secturafab_website import _gold_cad, _gold_lin
+
     populated = {
         "QuoteNumber": "21678-1",
         "ItemCount": 4,
-        "ItemList": [
-            {"Description": "21680 PLATE", "ProductType": 100},
-            {"Description": "21679 TUBE", "ProductType": 10, "IsLinear": True},
-        ],
+        "ItemList": [_gold_cad("21680-1 PLATE"), _gold_lin("21679-1 TUBE")],
     }
     _n = {"i": 0}
 
@@ -347,7 +341,7 @@ def test_step_cookie_missing_flags_and_does_not_graft(tmp_path: Path):
         service, "allocate_quote_number", return_value="21678-1"
     ), patch.object(
         service, "quick_add_cad", return_value={"ok": True}
-    ), patch.object(
+    ) as qadd, patch.object(
         service, "finish_cad_files", return_value=[]
     ) as finish, patch.object(
         service, "apply_item_categories", return_value=[]
@@ -383,11 +377,10 @@ def test_step_cookie_missing_flags_and_does_not_graft(tmp_path: Path):
             times={},
             job_id=41,
         )
-    assert result.ok is True
+    assert result.ok is False
     finish.assert_called()
+    qadd.assert_not_called()
     graft.assert_not_called()
-    assert finalize.call_args.kwargs.get("attach_profile") in {None, False}
-    assert any(
-        "falling back" in n or "Finish failed" in n or "grafted Profile" in n
-        for n in (result.notes or [])
-    )
+    blob = " ".join(result.notes or []) + " " + (result.error or "")
+    assert "Chrome" in blob or "session" in blob.lower()
+    assert "falling back" not in blob

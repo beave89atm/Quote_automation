@@ -375,12 +375,14 @@ def test_step_weldment_finish_or_no_graft(
     client = MagicMock()
     client.config.website_cookie = cookie
     client.request.return_value.status_code = 200
+    from tests.test_secturafab_website import _gold_cad, _gold_lin
+
     populated = {
         "QuoteNumber": part_key,
         "ItemCount": 2,
         "ItemList": [
-            {"Description": "21680 HOSE GUARD", "ProductType": 10, "IsLinear": True},
-            {"Description": "21679 PLATE", "ProductType": 100},
+            _gold_lin("21680-1 HOSE GUARD"),
+            _gold_cad("21679-1 PLATE"),
         ],
     }
     _n = {"i": 0}
@@ -402,7 +404,7 @@ def test_step_weldment_finish_or_no_graft(
         service, "allocate_quote_number", return_value=part_key
     ), patch.object(
         service, "quick_add_cad", return_value={"ok": True}
-    ), patch.object(
+    ) as qadd, patch.object(
         service, "apply_item_categories", return_value=[]
     ), patch(
         "secturafab.push.ensure_assembly_root", return_value=[]
@@ -436,14 +438,16 @@ def test_step_weldment_finish_or_no_graft(
             times={"weld_minutes": 10, "total_inches": 20},
             job_id=41,
         )
-    assert result.ok is True
     graft.assert_not_called()
     finish.assert_called_once()
-    if not expect_finish:
-        assert any(
-            "falling back" in n or "Finish failed" in n or "0 ItemList" in n
-            for n in (result.notes or [])
-        )
+    qadd.assert_not_called()
+    if expect_finish:
+        assert result.ok is True
+    else:
+        assert result.ok is False
+        blob = " ".join(result.notes or []) + " " + (result.error or "")
+        assert "Chrome" in blob or "session" in blob.lower()
+        assert "falling back" not in blob
     if finalize.called:
         assert finalize.call_args.kwargs.get("attach_profile") in {None, False}
 
@@ -489,10 +493,11 @@ def test_cookie_less_1001898_attach_profile_false(tmp_path: Path):
             times={"weld_minutes": 0, "total_inches": 0},
             job_id=91,
         )
-    assert result.ok is True
+    assert result.ok is False
     graft.assert_not_called()
-    assert finalize.call_args.kwargs.get("attach_profile") in {None, False}
     assert create_q.call_args.kwargs.get("description") == "PEDESTAL WELDMENT"
+    blob = " ".join(result.notes or []) + " " + (result.error or "")
+    assert "Chrome" in blob or "session" in blob.lower()
 
 
 def test_fixture_dir_has_checked_in_workbooks():

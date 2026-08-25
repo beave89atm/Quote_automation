@@ -73,6 +73,15 @@ def match_bom_part_no(
         for pn in dashed:
             if normalize_part_key(pn) == key:
                 return pn
+        # FileName stem ``14500`` / GET ``14500`` → unique dashed BOM ``14500-1``.
+        # Leave ambiguous bases (29860-3 and 29860-4) unmatched here.
+        base_hits = [
+            pn
+            for pn in dashed
+            if pn.rsplit("-", 1)[0].upper() == first.upper()
+        ]
+        if len(base_hits) == 1:
+            return base_hits[0]
         return normalize_part_token(first)
 
     for pn in dashed:

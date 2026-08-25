@@ -344,6 +344,55 @@ def item_has_pr_tag(item: dict[str, Any] | None) -> bool:
     return False
 
 
+def _item_unit_cost(item: dict[str, Any] | None) -> float:
+    try:
+        return float((item or {}).get("UnitCost") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def finish_produced_gold(
+    quote: dict[str, Any] | None,
+    *,
+    expect_cad: bool,
+    expect_linear: bool,
+) -> bool:
+    """True when Finish grew ItemList with gold CalculatorNames (not grafts)."""
+    items = [
+        it
+        for it in ((quote or {}).get("ItemList") or [])
+        if isinstance(it, dict)
+    ]
+    if expect_cad:
+        cad_ok = any(
+            (
+                not _is_assembly(it)
+                and not _is_linear(it)
+                and not _is_component(it)
+                and item_has_laser_pack(it)
+                and item_has_pr_tag(it)
+                and _item_unit_cost(it) > 0
+                and not item_has_grafted_cad_tags(it)
+            )
+            for it in items
+        )
+        if not cad_ok:
+            return False
+    if expect_linear:
+        lin_ok = any(
+            (
+                _is_linear(it)
+                and item_has_saw_pack(it)
+                and _item_unit_cost(it) > 0
+                and not item_has_grafted_saw_tags(it)
+            )
+            for it in items
+        )
+        if not lin_ok:
+            return False
+    return True
+
+
 def item_has_pr_or_laser_machine(item: dict[str, Any] | None) -> bool:
     """PR/Profile badge or Machine already Laser / Laser Bay 1."""
     if item_has_pr_tag(item):
@@ -451,9 +500,18 @@ def _is_linear(item: dict[str, Any]) -> bool:
     if item.get("ProductType") in (100, "100", 200, "200"):
         return False
     cat = str(item.get("Category") or item.get("ItemType") or "").strip()
-    if item.get("IsLinear") or cat == "Linear" or item.get("ProductType") in (10, "10"):
+    if item.get("IsLinear") or cat == "Linear" or item.get("ProductType") in (
+        10,
+        "10",
+        20,
+        "20",
+        30,
+        "30",
+        40,
+        "40",
+    ):
         return True
-    return cat.lower() in {"pipe", "tube", "bar", "structural"}
+    return cat.lower() in {"pipe", "tube", "bar", "structural", "angle"}
 
 
 def item_has_imported_cad(item: dict[str, Any] | None) -> bool:
@@ -882,6 +940,7 @@ def persist_classified_item_fields(
     from quote_core.part_materials import lookup_part_material
 
     from secturafab.item_desc import (
+        format_cad_description,
         format_component_line,
         format_linear_description,
         is_catalog_part_no,
@@ -1047,6 +1106,23 @@ def persist_classified_item_fields(
                 desc_n += 1
             continue
         if persist_linear and (_is_linear(it) or want_cat == "Linear"):
+            if item_has_saw_pack(it):
+                line = raw_desc
+                if pn:
+                    length = (
+                        _item_cut_length(it)
+                        or bom_len.get(normalize_part_key(pn or ""))
+                    )
+                    sku = str(it.get("SKU") or "").strip() or None
+                    line = format_linear_description(
+                        pn, sku=sku, length_in=length, noun=noun
+                    )
+                if iid and line and line != raw_desc:
+                    update_params.append(
+                        {"ID": iid, "ParamName": "Description", "Value": line[:500]}
+                    )
+                    desc_n += 1
+                continue
             _write_linear(
                 it, iid=iid, pn=pn or "", noun=noun, raw_desc=raw_desc, qty=qty
             )
@@ -1075,22 +1151,39 @@ def persist_classified_item_fields(
         if not length:
             length = parsed.get("length_in")
         plate = match_plate_product(plates, thickness=thk, material=grade)
-        if iid and plate and not item_has_imported_cad(it):
+        line = raw_desc
+        if pn:
+            line = format_cad_description(
+                pn,
+                thickness=thk,
+                grade=grade,
+                width_in=width,
+                length_in=length,
+                noun=noun,
+            )
+        if (
+            iid
+            and plate
+            and not item_has_imported_cad(it)
+            and not item_has_laser_pack(it)
+        ):
             if addplate_item(
                 client,
                 quote_id,
                 iid,
                 plate,
-                name=raw_desc,
+                name=line or raw_desc,
                 qty=qty,
                 width_in=width,
                 length_in=length,
             ):
                 cad_wrote += 1
-        if iid and raw_desc:
+        if iid and line:
             update_params.append(
-                {"ID": iid, "ParamName": "Description", "Value": raw_desc[:500]}
+                {"ID": iid, "ParamName": "Description", "Value": line[:500]}
             )
+            if line != raw_desc:
+                desc_n += 1
     if update_params:
         quote_online_update(client, quote_id, update_params)
 

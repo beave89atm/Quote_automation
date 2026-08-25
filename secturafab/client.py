@@ -194,7 +194,9 @@ class SecturaFabClient:
             "Accept": "application/json, text/html",
             "Authorization": token.authorization_header,
         }
-        cookie = (self.config.website_cookie or "").strip()
+        from .browser_session import effective_website_cookie
+
+        cookie = effective_website_cookie(self.config)
         if cookie:
             headers["Cookie"] = cookie
         if extra:
@@ -329,6 +331,8 @@ class SecturaFabClient:
         host; www origin is Cloudflare-challenged from this environment.
         CadImport routes accept the same bearer.
         """
+        from .browser_session import effective_website_cookie
+
         try:
             response = self.website_request(
                 "GET",
@@ -344,7 +348,7 @@ class SecturaFabClient:
                 "status_code": exc.status_code,
                 "gap": WEBSITE_AUTH_GAP,
                 "website_root": self.config.website_root,
-                "has_website_cookie": bool(self.config.website_cookie),
+                "has_website_cookie": bool(effective_website_cookie(self.config)),
             }
         location = response.headers.get("Location") or ""
         login = is_website_login_redirect(response.status_code, location)
@@ -358,7 +362,7 @@ class SecturaFabClient:
             "location": location or None,
             "gap": None if (html_ok and not login) else WEBSITE_AUTH_GAP,
             "website_root": self.config.website_root,
-            "has_website_cookie": bool(self.config.website_cookie),
+            "has_website_cookie": bool(effective_website_cookie(self.config)),
         }
 
     def get_item_add_view(
@@ -536,8 +540,7 @@ class SecturaFabClient:
         location = response.headers.get("Location") or ""
         if is_website_login_redirect(response.status_code, location):
             raise SecturaFabWebsiteAuthError(
-                "AddItem_PDFFiles redirected to login — "
-                "falling back to cookie-less addplate (not grafted ops)",
+                WEBSITE_AUTH_GAP,
                 status_code=response.status_code,
                 body=location,
             )
@@ -580,8 +583,7 @@ class SecturaFabClient:
         location = response.headers.get("Location") or ""
         if is_website_login_redirect(response.status_code, location):
             raise SecturaFabWebsiteAuthError(
-                "AddItem_Linear redirected to login — "
-                "falling back to cookie-less addLinear (not grafted Saw tags)",
+                WEBSITE_AUTH_GAP,
                 status_code=response.status_code,
                 body=location,
             )

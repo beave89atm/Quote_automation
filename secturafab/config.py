@@ -23,8 +23,9 @@ class SecturaFabConfig:
     timeout_seconds: float = 60.0
     # www MVC host for Finish / CAD Files (not in public OpenAPI).
     website_url: str = ""
-    # Optional browser session cookie for /Quote/* Finish routes.
-    # Never commit a real value — set SECTURAFAB_WEBSITE_COOKIE locally.
+    # Optional silent override for /Quote/* Finish. Prefer Chrome cookies
+    # discovered on the quoting PC (Kyle signed into www.secturafab.com).
+    # Never commit a real value; do not add a paste-cookie UX.
     website_cookie: str = ""
 
     @property

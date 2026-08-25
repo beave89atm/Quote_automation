@@ -241,6 +241,12 @@ def evaluate_quote_get(
                 continue
             if part and is_bare_part_number(desc, part):
                 failures.append(f"Cad Description is bare PN {desc!r}")
+            if matched_pn and "-" in matched_pn:
+                first = desc.split()[0].rstrip(".,;:") if desc.split() else ""
+                if first and first != matched_pn:
+                    failures.append(
+                        f"Cad {desc!r} lost dash (want {matched_pn})"
+                    )
             if item_has_grafted_cad_tags(it):
                 failures.append(
                     f"Cad {desc!r} has grafted Laser/Drafting/Deburr/Setup/"
@@ -292,6 +298,12 @@ def evaluate_quote_get(
                 continue
             if part and is_bare_part_number(desc, part):
                 failures.append(f"Linear Description is bare PN {desc!r}")
+            if matched_pn and "-" in matched_pn:
+                first = desc.split()[0].rstrip(".,;:") if desc.split() else ""
+                if first and first != matched_pn:
+                    failures.append(
+                        f"Linear {desc!r} lost dash (want {matched_pn})"
+                    )
             pid = str(it.get("ProductID") or "").strip()
             sku = str(it.get("SKU") or it.get("ProductName") or "").strip()
             if not pid and not sku:

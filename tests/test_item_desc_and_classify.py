@@ -97,6 +97,13 @@ def test_kyle_description_formats():
     assert match_bom_part_no("500065 - 3/4 NPT MAGNETIC PLUG", rows) == "50006-5"
     assert match_bom_part_no("34 - 3/4 NPT COUPLING", rows) == "50030-5"
     assert match_bom_part_no("FILLER - NECK", rows) == "8166-1"
+    cad_rows = [
+        {"part_no": "14500-1", "description": "PEDESTAL TOP PLATE"},
+        {"part_no": "29860-3", "description": "PEDESTAL BRACE ANGLE"},
+        {"part_no": "29860-4", "description": "PEDESTAL BRACE ANGLE"},
+    ]
+    assert match_bom_part_no("14500", cad_rows) == "14500-1"
+    assert match_bom_part_no("29860", cad_rows) == "29860"
     assert format_component_description("14500-1") == ""
     asm = format_assembly_description("1001898-1", "PEDESTAL WELDMENT")
     assert asm == "1001898-1 - PEDESTAL WELDMENT"
@@ -244,13 +251,13 @@ def test_cookie_less_push_does_not_graft_profile(tmp_path: Path):
             job_id=89,
         )
 
-    assert result.ok is True
-    assert finalize.called
-    assert finalize.call_args.kwargs.get("attach_profile") in {None, False}
+    assert result.ok is False
     desc = create_q.call_args.kwargs.get("description") or ""
     assert "PEDESTAL WELDMENT" in desc
     assert desc != "1001898"
-    assert any("Skipped grafted Profile" in n for n in (result.notes or []))
+    blob = " ".join(result.notes or []) + " " + (result.error or "")
+    assert "Chrome" in blob or "session" in blob.lower()
+    assert "falling back" not in blob
     assert any(
         "Time Manufacturing Waco" in n or "Organization" in n or "Set Organization" in n
         for n in (result.notes or [])
