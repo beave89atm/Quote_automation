@@ -26,7 +26,11 @@ from .item_desc import (
     title_from_library_folder,
 )
 from .linear_ops import bind_linear_product_ids
-from .line_item_ops import persist_classified_item_fields, stamp_new_line_item_packs
+from .line_item_ops import (
+    count_linear_get_misses,
+    persist_classified_item_fields,
+    stamp_new_line_item_packs,
+)
 from .qa_harness import evaluate_quote_get
 
 from .assembly_ops import (
@@ -1967,7 +1971,31 @@ class SecturaFabPushService:
                     persist_linear=False,
                 )
             )
-            # UpdateItem_Part can wipe OperationCostList — stamp packs after it.
+            # addLinear persists Machine/Length on GET but wipes Saw packs.
+            # Stamp after addLinear so ops come back on a GET that already
+            # has Length>0 (v1/quote POST keeps those fields).
+            extra_pdfs = list(drawings or [])
+            folder = library.get("folder")
+            if folder and Path(folder).is_dir():
+                extra_pdfs.extend(
+                    p
+                    for p in Path(folder).iterdir()
+                    if p.is_file() and p.suffix.lower() == ".pdf"
+                )
+            lin_kwargs = dict(
+                bom_rows=bom_rows,
+                default_material=material,
+                default_thickness=thickness,
+                library_folder=library.get("folder"),
+                related_pdf_names=list(library.get("related_pdfs") or []),
+                extra_pdfs=extra_pdfs,
+                persist_cad=False,
+                persist_linear=True,
+                retry_linear=True,
+            )
+            notes.extend(
+                persist_classified_item_fields(self.client, quote_id, **lin_kwargs)
+            )
             notes.extend(stamp_new_line_item_packs(self.client, quote_id))
             notes.extend(
                 persist_quote_header(
@@ -1977,23 +2005,16 @@ class SecturaFabPushService:
                     description=quote_description,
                 )
             )
-            # addLinear last: stamp's full-quote POST can wipe Machine/Length if
-            # GET after addLinear still shows Length=0. HTTP 200 is not success.
-            notes.extend(
-                persist_classified_item_fields(
-                    self.client,
-                    quote_id,
-                    bom_rows=bom_rows,
-                    default_material=material,
-                    default_thickness=thickness,
-                    library_folder=library.get("folder"),
-                    related_pdf_names=list(library.get("related_pdfs") or []),
-                    extra_pdfs=list(drawings or []),
-                    persist_cad=False,
-                    persist_linear=True,
-                    retry_linear=True,
+            peek = self.client.get_json(f"v1/quote/{quote_id}")
+            if count_linear_get_misses(peek, bom_rows):
+                notes.append(
+                    "Linear Machine/Length missing after stamp — "
+                    "re-addLinear then re-stamp (GET is truth)"
                 )
-            )
+                notes.extend(
+                    persist_classified_item_fields(self.client, quote_id, **lin_kwargs)
+                )
+                notes.extend(stamp_new_line_item_packs(self.client, quote_id))
 
             detail = self.client.get_json(f"v1/quote/{quote_id}")
             item_list = list(detail.get("ItemList") or [])

@@ -226,7 +226,7 @@ def test_bare_folder_push_still_uses_bom_pedestal_title(tmp_path):
     assert create_q.call_args.kwargs.get("description") == HEADER_DESC
 
 
-def test_push_runs_addlinear_after_stamp_not_before(tmp_path):
+def test_push_runs_addlinear_then_stamp(tmp_path):
     from unittest.mock import MagicMock, patch
 
     from secturafab.push import SecturaFabPushService
@@ -289,7 +289,7 @@ def test_push_runs_addlinear_after_stamp_not_before(tmp_path):
             job_id=91,
         )
     assert result.ok is True
-    assert order == ["cad", "stamp", "header", "linear"]
+    assert order[:4] == ["cad", "linear", "stamp", "header"]
     assert persist_calls[0].get("persist_linear") is False
     assert persist_calls[1].get("persist_cad") is False
     assert persist_calls[1].get("persist_linear") is True
@@ -454,6 +454,14 @@ def test_parse_cut_length_from_drawing_phrases():
     assert parse_cut_length("44.375 LONG") == 44.375
     assert parse_cut_length("PEDESTAL TUBE") is None
     assert parse_cut_length("1001880-2 - P1/8-5-A36") is None
+    from secturafab.line_item_ops import bom_row_cut_length, largest_drawing_length
+
+    assert largest_drawing_length('1001880-2 PEDESTAL TUBE  36.00"') == 36.0
+    assert largest_drawing_length("PEDESTAL TUBE") is None
+    assert bom_row_cut_length({"part_no": "10081-2", "length_in": 22.5}) == 22.5
+    assert bom_row_cut_length(
+        {"part_no": "33637-1", "description": "1 1/4 RETURN TUBE"}
+    ) is None
 
 
 def test_linear_cut_length_from_component_pdf_not_bom_noun(tmp_path):
@@ -524,6 +532,121 @@ def test_linear_cut_length_from_component_pdf_not_bom_noun(tmp_path):
     assert float(lin.kwargs["params"]["length"]) == 18.5
     assert lin.kwargs["params"]["name"] == "1001880-2 - P1/8-5-A36 - 18.5"
     assert "GET-verified" in " ".join(notes)
+
+
+def test_linear_length_from_marked_inch_callout_when_no_lg(tmp_path):
+    import fitz
+    from unittest.mock import MagicMock
+
+    from secturafab.line_item_ops import persist_classified_item_fields
+
+    pdf = tmp_path / "10081-2.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), '10081-2 PEDESTAL HOSE TUBE  27.25"')
+    doc.save(str(pdf))
+    doc.close()
+    empty = {
+        "ItemList": [
+            {
+                "ID": "l1",
+                "Description": "10081-2 - P1/8-5-A36",
+                "ProductType": 10,
+                "Category": "Linear",
+                "SKU": "P1/8-5-A36",
+                "ProductID": "pid",
+                "Length": 0,
+                "Machine": "",
+                "OperationCostList": [],
+            }
+        ]
+    }
+    verified = {
+        "ItemList": [{**empty["ItemList"][0], "Machine": "Saw", "Length": 27.25}]
+    }
+    client = MagicMock()
+    client.get_json.side_effect = [empty, verified]
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    persist_classified_item_fields(
+        client,
+        "qid",
+        bom_rows=[{"part_no": "10081-2", "description": "PEDESTAL HOSE TUBE", "qty": 1}],
+        plate_catalog=[],
+        linear_catalog=[
+            {
+                "ID": "pid",
+                "ProductName": "P1/8-5-A36",
+                "MaterialGrade": "A36",
+                "ProductSubType": "tube",
+                "Active": True,
+            }
+        ],
+        library_folder=tmp_path,
+        persist_cad=False,
+        persist_linear=True,
+    )
+    lin = next(c for c in client.request.call_args_list if "addLinear" in str(c))
+    assert float(lin.kwargs["params"]["length"]) == 27.25
+    assert lin.kwargs["params"]["machine"] == "Saw"
+
+
+def test_linear_length_from_sibling_pdf_in_library_folder(tmp_path):
+    import fitz
+    from unittest.mock import MagicMock
+
+    from secturafab.line_item_ops import persist_classified_item_fields
+
+    asm = tmp_path / "1001898-1.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "B 1 1001880-2 PEDESTAL TUBE 11 3/8 LG.")
+    doc.save(str(asm))
+    doc.close()
+    empty = {
+        "ItemList": [
+            {
+                "ID": "l1",
+                "Description": "1001880-2 - P1/8-5-A36",
+                "ProductType": 10,
+                "Category": "Linear",
+                "SKU": "P1/8-5-A36",
+                "ProductID": "pid",
+                "Length": 0,
+                "Machine": "",
+                "OperationCostList": [],
+            }
+        ]
+    }
+    verified = {
+        "ItemList": [{**empty["ItemList"][0], "Machine": "Saw", "Length": 11.375}]
+    }
+    client = MagicMock()
+    client.get_json.side_effect = [empty, verified]
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    persist_classified_item_fields(
+        client,
+        "qid",
+        bom_rows=[{"part_no": "1001880-2", "description": "PEDESTAL TUBE", "qty": 1}],
+        plate_catalog=[],
+        linear_catalog=[
+            {
+                "ID": "pid",
+                "ProductName": "P1/8-5-A36",
+                "MaterialGrade": "A36",
+                "ProductSubType": "tube",
+                "Active": True,
+            }
+        ],
+        library_folder=tmp_path,
+        persist_cad=False,
+        persist_linear=True,
+    )
+    lin = next(c for c in client.request.call_args_list if "addLinear" in str(c))
+    assert float(lin.kwargs["params"]["length"]) == 11.375
 
 
 def test_addlinear_fetches_product_by_id_when_catalog_misses():

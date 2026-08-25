@@ -461,25 +461,79 @@ def _length_near_part(text: str | None, part_no: str | None) -> float | None:
     return None
 
 
-def _drawing_text(pdf: Path) -> str:
+def _native_pdf_text(pdf: Path) -> str:
     try:
         from quote_core.weight import _read_pdf_text
 
-        text = _read_pdf_text(pdf) or ""
+        return _read_pdf_text(pdf) or ""
     except Exception:  # noqa: BLE001
-        text = ""
-    if parse_cut_length(text):
+        return ""
+
+
+def _drawing_text(pdf: Path, *, ocr: bool = True) -> str:
+    text = _native_pdf_text(pdf)
+    if parse_cut_length(text) or not ocr:
         return text
     try:
         from quote_core.ocr import ocr_pdf_pages
 
-        ocr = ocr_pdf_pages(pdf, max_pages=2, dpi=180, only_when_sparse=False)
-        extra = str((ocr or {}).get("text") or "")
+        extra = str(
+            (ocr_pdf_pages(pdf, max_pages=2, dpi=180, only_when_sparse=False) or {}).get(
+                "text"
+            )
+            or ""
+        )
     except Exception:  # noqa: BLE001
         extra = ""
     if extra:
         return f"{text}\n{extra}" if text else extra
     return text
+
+
+_MARKED_INCH_RE = re.compile(
+    rf"(?i){_INCH_NUM}\s*(?:\"|″|in(?:ch(?:es)?)?)(?:\b|$)"
+)
+
+
+def largest_drawing_length(text: str | None) -> float | None:
+    """Largest marked-inch callout on a component drawing (not plate W×L)."""
+    found: list[float] = []
+    for m in _MARKED_INCH_RE.finditer(str(text or "")):
+        got = _sane_cut_length(_inch_token_to_float(m.group(1)))
+        if got and got >= 2.0:
+            found.append(got)
+    return max(found) if found else None
+
+
+def bom_row_cut_length(row: dict[str, Any] | None) -> float | None:
+    row = row or {}
+    for key in ("length_in", "cut_length_in", "cut_length", "length"):
+        raw = row.get(key)
+        if raw in (None, ""):
+            continue
+        if isinstance(raw, str):
+            got = parse_cut_length(raw) or _sane_cut_length(_inch_token_to_float(raw))
+        else:
+            try:
+                got = _sane_cut_length(float(raw))
+            except (TypeError, ValueError):
+                got = None
+        if got:
+            return got
+    return parse_cut_length(str(row.get("description") or ""))
+
+
+def _iter_folder_pdfs(library_folder: Any) -> list[Path]:
+    folder = Path(library_folder) if library_folder else None
+    if not folder or not folder.is_dir():
+        return []
+    try:
+        return sorted(
+            (p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"),
+            key=lambda p: p.name.lower(),
+        )
+    except OSError:
+        return []
 
 
 def _item_cut_length(item: dict[str, Any] | None) -> float | None:
@@ -519,14 +573,19 @@ def _length_from_library(
         except Exception:  # noqa: BLE001
             component = None
     if component:
-        text = _drawing_text(Path(component))
-        got = parse_cut_length(text) or _length_near_part(text, part_no)
+        text = _drawing_text(Path(component), ocr=True)
+        got = (
+            parse_cut_length(text)
+            or _length_near_part(text, part_no)
+            or largest_drawing_length(text)
+        )
         if got:
             return got
     seen: set[str] = set()
     if component:
         seen.add(str(Path(component).resolve()).lower())
-    for raw in extra_pdfs or []:
+    candidates: list[Path] = []
+    for raw in list(extra_pdfs or []) + _iter_folder_pdfs(library_folder):
         try:
             path = Path(raw)
         except TypeError:
@@ -537,8 +596,10 @@ def _length_from_library(
         if key in seen:
             continue
         seen.add(key)
-        text = _drawing_text(path)
-        got = _length_near_part(text, part_no)
+        candidates.append(path)
+    for path in candidates:
+        text = _drawing_text(path, ocr=False)
+        got = _length_near_part(text, part_no) or parse_cut_length(text)
         if got:
             return got
     return None
@@ -551,6 +612,37 @@ def _cad_fields_on_get(item: dict[str, Any]) -> bool:
     except (TypeError, ValueError):
         thk_ok = bool(str(item.get("Thickness") or item.get("ThicknessDisp") or "").strip())
     return bool(mat) and thk_ok
+
+
+def count_linear_get_misses(
+    detail: dict[str, Any] | None,
+    bom_rows: list[dict[str, Any]] | None = None,
+) -> int:
+    """How many Linear lines still have Machine!=Saw or Length=0 on a live GET."""
+    from secturafab.item_desc import match_bom_part_no
+    from secturafab.push import classify_sectura_item
+    from secturafab.qty_ops import normalize_part_key
+
+    bom_desc: dict[str, str] = {}
+    for row in bom_rows or []:
+        pn = str(row.get("part_no") or row.get("part_number") or "").strip()
+        key = normalize_part_key(pn)
+        if key:
+            bom_desc[key] = str(row.get("description") or "")
+    n = 0
+    for it in (detail or {}).get("ItemList") or []:
+        if not isinstance(it, dict) or _is_assembly(it):
+            continue
+        desc = str(it.get("Description") or "")
+        pn = match_bom_part_no(desc, bom_rows)
+        noun = bom_desc.get(normalize_part_key(pn or ""), "")
+        want = classify_sectura_item(f"{pn or ''} {noun} {desc}")
+        if _is_component(it) or want == "Component":
+            continue
+        if _is_linear(it) or want == "Linear":
+            if not _linear_fields_on_get(it):
+                n += 1
+    return n
 
 
 def _linear_fields_on_get(item: dict[str, Any]) -> bool:
@@ -618,6 +710,7 @@ def persist_classified_item_fields(
     items = list(detail.get("ItemList") or [])
     bom_desc: dict[str, str] = {}
     bom_qty: dict[str, int] = {}
+    bom_len: dict[str, float] = {}
     for row in bom_rows or []:
         pn = str(row.get("part_no") or row.get("part_number") or "").strip()
         key = normalize_part_key(pn)
@@ -628,6 +721,9 @@ def persist_classified_item_fields(
             bom_qty[key] = max(1, int(row.get("qty") or 1))
         except (TypeError, ValueError):
             bom_qty[key] = 1
+        cut = bom_row_cut_length(row)
+        if cut:
+            bom_len[key] = cut
     plates = (
         (list(plate_catalog) if plate_catalog is not None else fetch_plate_catalog(client))
         if persist_cad
@@ -657,9 +753,7 @@ def persist_classified_item_fields(
             product = next(
                 (p for p in linears if str(p.get("ID") or "") == pid),
                 None,
-            )
-            if product is None:
-                product = fetch_linear_product(client, pid)
+            ) or fetch_linear_product(client, pid)
         if product is None:
             new_pid, new_sku, _mismatch = match_linear_product(
                 linears, hint, material=default_material, row=it
@@ -687,6 +781,7 @@ def persist_classified_item_fields(
         nonlocal lin_wrote, desc_n
         length = (
             _item_cut_length(it)
+            or bom_len.get(normalize_part_key(pn or ""))
             or parse_cut_length(noun)
             or parse_cut_length(raw_desc)
             or _length_from_library(
@@ -721,6 +816,11 @@ def persist_classified_item_fields(
                 name=line or raw_desc,
             ):
                 lin_wrote += 1
+        elif persist_linear and iid and not (length and length > 0):
+            notes.append(
+                f"WARNING: no drawing/LG cut length for {pn or raw_desc[:40]!r} "
+                "— addLinear skipped (HTTP 200 is not persist)"
+            )
         elif iid and line and line != raw_desc:
             update_params.append(
                 {"ID": iid, "ParamName": "Description", "Value": line[:500]}
