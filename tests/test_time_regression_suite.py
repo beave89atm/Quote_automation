@@ -35,7 +35,6 @@ from tests.fixtures.time_gold import (
     FIXTURE_DIR,
     LOM_GOLD,
     DASH_1001898,
-    write_all_gold_workbooks,
     write_empty_l2_workbook,
     write_gold_workbook,
 )
@@ -43,13 +42,20 @@ from tests.fixtures.time_gold import (
 
 @pytest.fixture(scope="module", autouse=True)
 def _gold_workbooks():
-    write_all_gold_workbooks()
-    write_empty_l2_workbook()
+    for gold in LOM_GOLD:
+        dest = FIXTURE_DIR / f"{gold.part_key}-LOM.xlsx"
+        if not dest.is_file():
+            write_gold_workbook(gold, dest)
+    empty = FIXTURE_DIR / "empty-l2-LOM.xlsx"
+    if not empty.is_file():
+        write_empty_l2_workbook(empty)
 
 
 @pytest.mark.parametrize("gold", LOM_GOLD, ids=[g.part_key for g in LOM_GOLD])
 def test_locked_lom_counts(gold):
-    path = write_gold_workbook(gold)
+    path = FIXTURE_DIR / f"{gold.part_key}-LOM.xlsx"
+    if not path.is_file():
+        path = write_gold_workbook(gold)
     assert path.is_file()
     bom = extract_bom_from_lom_xlsx(path, bom_config="1")
     assert bom.method == "lom_xlsx", bom.notes
@@ -103,7 +109,9 @@ def test_1004747_dash_trap_title_not_folder():
         == "1"
     )
     gold = next(g for g in LOM_GOLD if g.part_key == "1004747-1")
-    path = write_gold_workbook(gold)
+    path = FIXTURE_DIR / f"{gold.part_key}-LOM.xlsx"
+    if not path.is_file():
+        path = write_gold_workbook(gold)
     dash1 = extract_bom_from_lom_xlsx(path, bom_config="1")
     dash2 = extract_bom_from_lom_xlsx(path, bom_config="2")
     assert dash1.part_number_count == 14 and dash1.piece_count == 18
@@ -150,7 +158,9 @@ def test_empty_clip_never_one_pc(tmp_path: Path):
 
 
 def test_empty_l2_shell_is_flagged():
-    path = write_empty_l2_workbook()
+    path = FIXTURE_DIR / "empty-l2-LOM.xlsx"
+    if not path.is_file():
+        path = write_empty_l2_workbook()
     bom = extract_bom_from_lom_xlsx(path, bom_config="1")
     assert any("empty L2 shell" in n for n in bom.notes)
     assert "99999-1" in {r.part_no for r in bom.rows}
