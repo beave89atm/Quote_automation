@@ -77,14 +77,16 @@ def _1004747_lom_rows() -> list[list[str]]:
     """Synthetic Time LOM: dash -1 is 14 PN / 18 pcs (Kyle-confirmed 1004747-1)."""
     header = ["-4", "-3", "-2", "-1", "ITEM", "PART NO", "DESCRIPTION"]
     rows = [header]
-    # 12 unique PNs at qty 1 + 2 PNs at qty 2 = 14 PN / 18 pcs on -1.
-    # -2 column is empty so a wrong dash would under-count.
-    letters = "ABCDEFGHIJKL"
+    # 10 unique PNs at qty 1 + 4 PNs at qty 2 = 14 PN / 18 pcs on -1.
+    # -2 column is empty on the qty-1 rows so a wrong dash would under-count.
+    letters = "ABCDEFGHIJ"
     for i, letter in enumerate(letters):
         pn = f"10048{10 + i:02d}-1"
         rows.append(["-", "-", "-", "1", letter, pn, f"PLATE {letter}"])
-    rows.append(["-", "-", "1", "2", "M", "1004822-1", "GUSSET"])
-    rows.append(["-", "-", "1", "2", "N", "1004823-1", "STIFFENER"])
+    rows.append(["-", "-", "1", "2", "K", "1004820-1", "GUSSET"])
+    rows.append(["-", "-", "1", "2", "L", "1004821-1", "STIFFENER"])
+    rows.append(["-", "-", "1", "2", "M", "1004822-1", "PAD"])
+    rows.append(["-", "-", "1", "2", "N", "1004823-1", "CLIP"])
     return rows
 
 
@@ -105,14 +107,12 @@ def test_lom_xlsx_dash_one_is_14_pn_18_pcs(tmp_path: Path):
     assert bom.part_number_count == 14, [f"{r.part_no}×{r.qty}" for r in bom.rows]
     assert bom.piece_count == 18, [f"{r.part_no}×{r.qty}" for r in bom.rows]
     qty2 = sorted(r.part_no for r in bom.rows if r.qty == 2)
-    assert qty2 == ["1004822-1", "1004823-1"]
+    assert qty2 == ["1004820-1", "1004821-1", "1004822-1", "1004823-1"]
 
 
 def test_extract_bom_prefers_lom_over_ocr(tmp_path: Path):
     write_minimal_xlsx(tmp_path / "LOM.xlsx", _1004747_lom_rows())
-    pdf = tmp_path / "1004747.pdf"
-    pdf.write_bytes(b"%PDF-1.4 empty")
-    bom = extract_bom(pdf, library_folder=tmp_path, bom_config="1")
+    bom = extract_bom(pdf_path=None, library_folder=tmp_path, bom_config="1")
     assert bom.method == "lom_xlsx"
     assert bom.part_number_count == 14
     assert bom.piece_count == 18
