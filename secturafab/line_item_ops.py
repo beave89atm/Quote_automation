@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import re
 import uuid
+from pathlib import Path
 from typing import Any
 
 # Kyle UI New Line Item (21678-1 class). Times are hours; none are 0 or 3h+.
@@ -360,37 +361,138 @@ def stamp_new_line_item_packs(client: Any, quote_id: str) -> list[str]:
     ]
 
 
+_INCH_NUM = r"(\d+\s+\d+/\d+|\d+/\d+|\d+(?:\.\d+)?)"
 _LG_RE = re.compile(
-    r"(?i)(?:^|[x×\s])(\d+\s+\d+/\d+|\d+/\d+|\d+(?:\.\d+)?)\s*(?:\"|″|in)?\s*LG\.?"
+    rf"(?i)(?:^|[x×\s,;])\s*{_INCH_NUM}\s*(?:\"|″|in(?:ch(?:es)?)?)?\s*L\s*G\.?"
+)
+_LG_AFTER_RE = re.compile(
+    rf"(?i)L\s*G\.?\s*[:=]?\s*{_INCH_NUM}"
+)
+_LENGTH_PHRASE_RE = re.compile(
+    rf"(?i)(?:cut\s*length|overall(?:\s*length)?|o\.?a\.?l\.?|length)"
+    rf"\s*[:=]?\s*{_INCH_NUM}\s*(?:\"|″|in(?:ch(?:es)?)?)?"
+)
+_LONG_RE = re.compile(
+    rf"(?i){_INCH_NUM}\s*(?:\"|″|in(?:ch(?:es)?)?)?\s*LONG\b"
 )
 
 
-def parse_length_lg(text: str | None) -> float | None:
-    """``91 1/8 LG.`` / ``X 4 LG`` → inches."""
+def _inch_token_to_float(raw: str | None) -> float | None:
+    text = re.sub(r"\s+", " ", str(raw or "")).strip()
     if not text:
         return None
-    m = _LG_RE.search(str(text))
-    if not m:
-        return None
-    raw = re.sub(r"\s+", " ", m.group(1)).strip()
-    if " " in raw and "/" in raw:
-        whole, frac = raw.split(" ", 1)
+    if " " in text and "/" in text:
+        whole, frac = text.split(" ", 1)
         num, den = frac.split("/", 1)
         try:
-            return float(whole) + float(num) / float(den)
+            val = float(whole) + float(num) / float(den)
         except (TypeError, ValueError, ZeroDivisionError):
             return None
-    if "/" in raw:
-        num, den = raw.split("/", 1)
+        return val if val > 0 else None
+    if "/" in text:
+        num, den = text.split("/", 1)
         try:
-            return float(num) / float(den)
+            val = float(num) / float(den)
         except (TypeError, ValueError, ZeroDivisionError):
             return None
+        return val if val > 0 else None
     try:
-        val = float(raw)
+        val = float(text)
     except (TypeError, ValueError):
         return None
     return val if val > 0 else None
+
+
+def _sane_cut_length(val: float | None) -> float | None:
+    if val is None or val <= 0:
+        return None
+    if val < 0.5 or val > 600:
+        return None
+    return float(val)
+
+
+def parse_length_lg(text: str | None) -> float | None:
+    """``91 1/8 LG.`` / ``X 4 LG`` / ``LG. 12`` → inches."""
+    if not text:
+        return None
+    for rx in (_LG_RE, _LG_AFTER_RE):
+        m = rx.search(str(text))
+        if not m:
+            continue
+        val = _inch_token_to_float(m.group(1))
+        if val:
+            return val
+    return None
+
+
+def parse_cut_length(text: str | None) -> float | None:
+    """Cut length from ``LG.`` / LENGTH / OAL / CUT LENGTH / LONG (not plate dims)."""
+    got = _sane_cut_length(parse_length_lg(text))
+    if got:
+        return got
+    if not text:
+        return None
+    for rx in (_LENGTH_PHRASE_RE, _LONG_RE):
+        m = rx.search(str(text))
+        if not m:
+            continue
+        got = _sane_cut_length(_inch_token_to_float(m.group(1)))
+        if got:
+            return got
+    return None
+
+
+def _length_near_part(text: str | None, part_no: str | None) -> float | None:
+    blob = str(text or "")
+    pn = str(part_no or "").strip()
+    if not blob or not pn:
+        return None
+    tokens = [pn]
+    if "-" in pn:
+        base = pn.rsplit("-", 1)[0]
+        if len(base) >= 4:
+            tokens.append(base)
+    for token in tokens:
+        for m in re.finditer(re.escape(token), blob, re.I):
+            window = blob[max(0, m.start() - 24) : m.end() + 200]
+            got = parse_cut_length(window)
+            if got:
+                return got
+    return None
+
+
+def _drawing_text(pdf: Path) -> str:
+    try:
+        from quote_core.weight import _read_pdf_text
+
+        text = _read_pdf_text(pdf) or ""
+    except Exception:  # noqa: BLE001
+        text = ""
+    if parse_cut_length(text):
+        return text
+    try:
+        from quote_core.ocr import ocr_pdf_pages
+
+        ocr = ocr_pdf_pages(pdf, max_pages=2, dpi=180, only_when_sparse=False)
+        extra = str((ocr or {}).get("text") or "")
+    except Exception:  # noqa: BLE001
+        extra = ""
+    if extra:
+        return f"{text}\n{extra}" if text else extra
+    return text
+
+
+def _item_cut_length(item: dict[str, Any] | None) -> float | None:
+    """Cut length only — never Dim1 (that is profile size, e.g. 4x4 HSS)."""
+    item = item or {}
+    for key in ("Length", "FlatLength", "LinearLength"):
+        try:
+            val = float(item.get(key))
+        except (TypeError, ValueError):
+            continue
+        if val > 0.05:
+            return val
+    return None
 
 
 def _length_from_library(
@@ -398,25 +500,48 @@ def _length_from_library(
     *,
     library_folder: Any = None,
     related_pdf_names: list[str] | None = None,
+    extra_pdfs: list[Any] | None = None,
 ) -> float | None:
-    if not part_no or not library_folder:
+    if not part_no:
         return None
     try:
-        from quote_core.weight import _read_pdf_text
-
         from secturafab.pdf_assembly_ops import resolve_component_pdf
     except Exception:  # noqa: BLE001
-        return None
-    pdf = resolve_component_pdf(
-        part_no, library_folder=library_folder, related_pdf_names=related_pdf_names
-    )
-    if not pdf:
-        return None
-    try:
-        text = _read_pdf_text(pdf)
-    except Exception:  # noqa: BLE001
-        return None
-    return parse_length_lg(text)
+        resolve_component_pdf = None  # type: ignore[assignment]
+    component = None
+    if resolve_component_pdf and library_folder:
+        try:
+            component = resolve_component_pdf(
+                part_no,
+                library_folder=library_folder,
+                related_pdf_names=related_pdf_names,
+            )
+        except Exception:  # noqa: BLE001
+            component = None
+    if component:
+        text = _drawing_text(Path(component))
+        got = parse_cut_length(text) or _length_near_part(text, part_no)
+        if got:
+            return got
+    seen: set[str] = set()
+    if component:
+        seen.add(str(Path(component).resolve()).lower())
+    for raw in extra_pdfs or []:
+        try:
+            path = Path(raw)
+        except TypeError:
+            continue
+        if not path.is_file():
+            continue
+        key = str(path.resolve()).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        text = _drawing_text(path)
+        got = _length_near_part(text, part_no)
+        if got:
+            return got
+    return None
 
 
 def _cad_fields_on_get(item: dict[str, Any]) -> bool:
@@ -447,8 +572,12 @@ def persist_classified_item_fields(
     default_thickness: str | None = "0.25",
     library_folder: Any = None,
     related_pdf_names: list[str] | None = None,
+    extra_pdfs: list[Any] | None = None,
     plate_catalog: list[dict[str, Any]] | None = None,
     linear_catalog: list[dict[str, Any]] | None = None,
+    persist_cad: bool = True,
+    persist_linear: bool = True,
+    retry_linear: bool = False,
 ) -> list[str]:
     """Persist Cad/Linear fields on the APIs a live GET actually reads.
 
@@ -457,9 +586,11 @@ def persist_classified_item_fields(
     (HTTP 200, GET still empty). Bind tenant products instead:
 
     * Cad: ``POST v1/quoteOnline/addplate`` (PL1/4-A36 class)
-    * Linear: ``POST v1/quoteOnline/addLinear`` (Machine=Saw, cut Length)
+    * Linear: in-place ``POST v1/quoteOnline/addLinear`` on the existing itemID
+      (Machine=Saw, cut Length from drawing / ``LG.`` / component PDF)
 
-    Success is a follow-up GET — never a 200 on the write.
+    Success is a follow-up GET — never a 200 on the write. Linear should run
+    *after* ``stamp_new_line_item_packs`` so a full-quote POST cannot wipe it.
     """
     from quote_core.part_materials import lookup_part_material
 
@@ -468,13 +599,14 @@ def persist_classified_item_fields(
         format_linear_description,
         is_catalog_part_no,
         item_flat_dims,
-        item_length_in,
         match_bom_part_no,
         parse_cad_desc_fields,
     )
     from secturafab.linear_ops import (
         fetch_linear_catalog,
+        fetch_linear_product,
         match_linear_product,
+        product_from_bound_item,
         update_linear_via_api,
     )
     from secturafab.plate_ops import addplate_item, fetch_plate_catalog, match_plate_product
@@ -496,13 +628,105 @@ def persist_classified_item_fields(
             bom_qty[key] = max(1, int(row.get("qty") or 1))
         except (TypeError, ValueError):
             bom_qty[key] = 1
-    plates = list(plate_catalog) if plate_catalog is not None else fetch_plate_catalog(client)
-    linears = list(linear_catalog) if linear_catalog is not None else fetch_linear_catalog(client)
+    plates = (
+        (list(plate_catalog) if plate_catalog is not None else fetch_plate_catalog(client))
+        if persist_cad
+        else []
+    )
+    linears = (
+        (list(linear_catalog) if linear_catalog is not None else fetch_linear_catalog(client))
+        if persist_linear
+        else []
+    )
     notes: list[str] = []
     update_params: list[dict[str, Any]] = []
     cad_wrote = 0
     lin_wrote = 0
     desc_n = 0
+    linear_plans: dict[str, tuple[dict[str, Any], float, str, int]] = {}
+
+    def _resolve_linear_product(
+        it: dict[str, Any],
+        *,
+        pid: str | None,
+        sku: str | None,
+        hint: str,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        product = None
+        if pid:
+            product = next(
+                (p for p in linears if str(p.get("ID") or "") == pid),
+                None,
+            )
+            if product is None:
+                product = fetch_linear_product(client, pid)
+        if product is None:
+            new_pid, new_sku, _mismatch = match_linear_product(
+                linears, hint, material=default_material, row=it
+            )
+            pid = new_pid or pid
+            sku = new_sku or sku
+            if pid:
+                product = next(
+                    (p for p in linears if str(p.get("ID") or "") == pid),
+                    None,
+                ) or fetch_linear_product(client, pid)
+        if product is None:
+            product = product_from_bound_item(it)
+        return product, sku
+
+    def _write_linear(
+        it: dict[str, Any],
+        *,
+        iid: str,
+        pn: str,
+        noun: str,
+        raw_desc: str,
+        qty: int,
+    ) -> None:
+        nonlocal lin_wrote, desc_n
+        length = (
+            _item_cut_length(it)
+            or parse_cut_length(noun)
+            or parse_cut_length(raw_desc)
+            or _length_from_library(
+                pn or "",
+                library_folder=library_folder,
+                related_pdf_names=related_pdf_names,
+                extra_pdfs=extra_pdfs,
+            )
+        )
+        sku = str(it.get("SKU") or "").strip() or None
+        pid = str(it.get("ProductID") or "").strip() or None
+        hint = f"{pn or ''} {noun} {raw_desc}".strip()
+        product, sku = _resolve_linear_product(it, pid=pid, sku=sku, hint=hint or raw_desc)
+        if product:
+            sku = sku or str(
+                product.get("ProductName") or product.get("SKU") or ""
+            ).strip() or None
+        line = raw_desc
+        if pn:
+            line = format_linear_description(
+                pn, sku=sku, length_in=length, noun=noun
+            )
+        if iid and product and length and length > 0:
+            linear_plans[iid] = (product, float(length), line or raw_desc, qty)
+            if update_linear_via_api(
+                client,
+                quote_id,
+                iid,
+                product,
+                length_in=float(length),
+                qty=qty,
+                name=line or raw_desc,
+            ):
+                lin_wrote += 1
+        elif iid and line and line != raw_desc:
+            update_params.append(
+                {"ID": iid, "ParamName": "Description", "Value": line[:500]}
+            )
+            desc_n += 1
+
     for it in items:
         if not isinstance(it, dict) or _is_assembly(it):
             continue
@@ -514,7 +738,7 @@ def persist_classified_item_fields(
         noun = bom_desc.get(normalize_part_key(pn or ""), "")
         want_cat = classify_sectura_item(f"{pn or ''} {noun} {raw_desc}")
         qty = bom_qty.get(normalize_part_key(pn or ""), 1)
-        if _is_component(it) or want_cat == "Component":
+        if persist_cad and (_is_component(it) or want_cat == "Component"):
             line = format_component_line(pn or "", noun or raw_desc)
             if iid and it.get("ProductType") not in (200, "200"):
                 update_params.append({"ID": iid, "ParamName": "ProductType", "Value": "200"})
@@ -525,57 +749,14 @@ def persist_classified_item_fields(
                 update_params.append({"ID": iid, "ParamName": "Description", "Value": line[:500]})
                 desc_n += 1
             continue
-        if _is_linear(it) or want_cat == "Linear":
-            length = (
-                item_length_in(it)
-                or parse_length_lg(noun)
-                or parse_length_lg(raw_desc)
-                or _length_from_library(
-                    pn or "",
-                    library_folder=library_folder,
-                    related_pdf_names=related_pdf_names,
-                )
+        if persist_linear and (_is_linear(it) or want_cat == "Linear"):
+            _write_linear(
+                it, iid=iid, pn=pn or "", noun=noun, raw_desc=raw_desc, qty=qty
             )
-            sku = str(it.get("SKU") or "").strip() or None
-            pid = str(it.get("ProductID") or "").strip() or None
-            hint = f"{pn or ''} {noun} {raw_desc}".strip()
-            product = None
-            if pid:
-                product = next(
-                    (p for p in linears if str(p.get("ID") or "") == pid),
-                    None,
-                )
-            if product is None:
-                new_pid, new_sku, _mismatch = match_linear_product(
-                    linears, hint or raw_desc, material=default_material, row=it
-                )
-                pid = new_pid or pid
-                sku = new_sku or sku
-                product = next(
-                    (p for p in linears if str(p.get("ID") or "") == (pid or "")),
-                    None,
-                )
-            line = raw_desc
-            if pn:
-                line = format_linear_description(
-                    pn, sku=sku, length_in=length, noun=noun
-                )
-            if iid and product and length and length > 0:
-                if update_linear_via_api(
-                    client,
-                    quote_id,
-                    iid,
-                    product,
-                    length_in=float(length),
-                    qty=qty,
-                    name=line or raw_desc,
-                ):
-                    lin_wrote += 1
-            elif iid and line and line != raw_desc:
-                update_params.append(
-                    {"ID": iid, "ParamName": "Description", "Value": line[:500]}
-                )
-                desc_n += 1
+            continue
+        if not persist_cad:
+            continue
+        if _is_linear(it) or want_cat == "Linear" or _is_component(it) or want_cat == "Component":
             continue
         parsed = parse_cad_desc_fields(raw_desc)
         pm = lookup_part_material(part_materials or {}, pn or "") if pn else None
@@ -616,42 +797,70 @@ def persist_classified_item_fields(
     if update_params:
         quote_online_update(client, quote_id, update_params)
 
+    def _verify(payload: dict[str, Any]) -> tuple[int, int, int, int, list[str]]:
+        cad_ok = lin_ok = cad_miss = lin_miss = 0
+        miss_ids: list[str] = []
+        for it in payload.get("ItemList") or []:
+            if not isinstance(it, dict) or _is_assembly(it):
+                continue
+            desc = str(it.get("Description") or "")
+            pn = match_bom_part_no(desc, bom_rows)
+            noun = bom_desc.get(normalize_part_key(pn or ""), "")
+            want = classify_sectura_item(f"{pn or ''} {noun} {desc}")
+            if _is_component(it) or want == "Component":
+                continue
+            if persist_linear and (_is_linear(it) or want == "Linear"):
+                if _linear_fields_on_get(it):
+                    lin_ok += 1
+                else:
+                    lin_miss += 1
+                    iid = str(it.get("ID") or "")
+                    if iid:
+                        miss_ids.append(iid)
+                continue
+            if persist_cad:
+                if _cad_fields_on_get(it):
+                    cad_ok += 1
+                else:
+                    cad_miss += 1
+        return cad_ok, lin_ok, cad_miss, lin_miss, miss_ids
+
     verified = client.get_json(f"v1/quote/{quote_id}")
-    cad_ok = lin_ok = cad_miss = lin_miss = 0
-    for it in verified.get("ItemList") or []:
-        if not isinstance(it, dict) or _is_assembly(it):
-            continue
-        desc = str(it.get("Description") or "")
-        pn = match_bom_part_no(desc, bom_rows)
-        noun = bom_desc.get(normalize_part_key(pn or ""), "")
-        want = classify_sectura_item(f"{pn or ''} {noun} {desc}")
-        if _is_component(it) or want == "Component":
-            continue
-        if _is_linear(it) or want == "Linear":
-            if _linear_fields_on_get(it):
-                lin_ok += 1
-            else:
-                lin_miss += 1
-            continue
-        if _cad_fields_on_get(it):
-            cad_ok += 1
-        else:
-            cad_miss += 1
-    if cad_ok:
+    cad_ok, lin_ok, cad_miss, lin_miss, miss_ids = _verify(verified)
+    if retry_linear and persist_linear and miss_ids:
+        for iid in miss_ids:
+            plan = linear_plans.get(iid)
+            if not plan:
+                continue
+            product, length, name, qty = plan
+            if update_linear_via_api(
+                client,
+                quote_id,
+                iid,
+                product,
+                length_in=length,
+                qty=qty,
+                name=name,
+            ):
+                lin_wrote += 1
+        verified = client.get_json(f"v1/quote/{quote_id}")
+        cad_ok, lin_ok, cad_miss, lin_miss, _miss = _verify(verified)
+    if persist_cad and cad_ok:
         notes.append(
             f"GET-verified Material/Thickness on {cad_ok} Cad line(s) (addplate)"
         )
-    if lin_ok:
+    if persist_linear and lin_ok:
         notes.append(
             f"GET-verified Machine=Saw + Length on {lin_ok} Linear line(s) (addLinear)"
         )
-    if cad_miss:
+    if persist_cad and cad_miss:
         notes.append(
             f"Cad Material/Thickness empty on GET after addplate ({cad_miss} line(s))"
         )
-    if lin_miss:
+    if persist_linear and lin_miss:
         notes.append(
-            f"Linear Machine/Length empty on GET after addLinear ({lin_miss} line(s))"
+            f"WARNING: Linear Machine/Length empty on GET after addLinear "
+            f"({lin_miss} line(s))"
         )
     if desc_n:
         notes.append(f"quoteOnline/update Description on {desc_n} line(s)")

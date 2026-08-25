@@ -1964,6 +1964,7 @@ class SecturaFabPushService:
                     default_thickness=thickness,
                     library_folder=library.get("folder"),
                     related_pdf_names=list(library.get("related_pdfs") or []),
+                    persist_linear=False,
                 )
             )
             # UpdateItem_Part can wipe OperationCostList — stamp packs after it.
@@ -1974,6 +1975,23 @@ class SecturaFabPushService:
                     quote_id,
                     organization_name=organization_name,
                     description=quote_description,
+                )
+            )
+            # addLinear last: stamp's full-quote POST can wipe Machine/Length if
+            # GET after addLinear still shows Length=0. HTTP 200 is not success.
+            notes.extend(
+                persist_classified_item_fields(
+                    self.client,
+                    quote_id,
+                    bom_rows=bom_rows,
+                    default_material=material,
+                    default_thickness=thickness,
+                    library_folder=library.get("folder"),
+                    related_pdf_names=list(library.get("related_pdfs") or []),
+                    extra_pdfs=list(drawings or []),
+                    persist_cad=False,
+                    persist_linear=True,
+                    retry_linear=True,
                 )
             )
 

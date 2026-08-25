@@ -126,6 +126,50 @@ def update_linear_via_api(
     return status < 400
 
 
+def fetch_linear_product(client: Any, product_id: str | None) -> dict[str, Any] | None:
+    """``GET v1/product/linear/{id}`` when the paged catalog missed a bound ProductID."""
+    pid = str(product_id or "").strip()
+    if not pid:
+        return None
+    try:
+        data = client.get_json(f"v1/product/linear/{pid}")
+    except Exception:  # noqa: BLE001 — live GET may 404 a retired SKU
+        return None
+    if isinstance(data, dict) and data.get("ID"):
+        return data
+    if isinstance(data, dict):
+        for key in ("Result", "Product", "Data"):
+            inner = data.get(key)
+            if isinstance(inner, dict) and inner.get("ID"):
+                return inner
+    return None
+
+
+def product_from_bound_item(item: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Minimal addLinear product from an ItemList row that already has ProductID."""
+    item = item or {}
+    pid = str(item.get("ProductID") or "").strip()
+    if not pid:
+        return None
+    return {
+        "ID": pid,
+        "ProductName": item.get("SKU") or item.get("ProductName") or "",
+        "MaterialGrade": item.get("Material") or item.get("MaterialGrade") or "A36",
+        "ProductSubType": item.get("ProductSubType") or item.get("Category") or "tube",
+        "Category": item.get("Category") or "Linear",
+        "Dim1": item.get("Dim1") or 0,
+        "Dim2": item.get("Dim2") or 0,
+        "Dim3": item.get("Dim3") or 0,
+        "Dim4": item.get("Dim4") or 0,
+        "Dim1_Unit": item.get("Dim1_Unit") or "inch",
+        "Dim2_Unit": item.get("Dim2_Unit") or "inch",
+        "Dim3_Unit": item.get("Dim3_Unit") or "inch",
+        "Dim4_Unit": item.get("Dim4_Unit") or "inch",
+        "WeightLength": item.get("WeightLength") or 0,
+        "WeightLength_Unit": item.get("WeightLength_Unit") or "pound/foot",
+    }
+
+
 def fetch_linear_catalog(client: Any) -> list[dict[str, Any]]:
     products: list[dict[str, Any]] = []
     try:
