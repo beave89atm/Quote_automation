@@ -58,4 +58,4 @@ python3 -m pytest -q tests/test_time_regression_suite.py
 python3 -m pytest -q
 ```
 
-Full suite must stay green except `tests/test_ocr.py::test_ocr_skips_when_native_text_rich` when Tesseract is missing.
+Full suite must stay green. `tests/test_ocr.py::test_ocr_skips_when_native_text_rich` is skipped when Tesseract is missing.
