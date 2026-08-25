@@ -1683,7 +1683,9 @@ class SecturaFabPushService:
                         )
             else:
                 notes.append(
-                    "Website cookie not set — using working Sectura push (quickAddCAD)"
+                    "Website cookie not set — using working Sectura push (quickAddCAD). "
+                    "CAD Files / Image Files Finish skipped; laser/saw packs left unset "
+                    "(not grafting Profile or PDF page-outline times)"
                 )
 
             if used_finish:

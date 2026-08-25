@@ -67,9 +67,54 @@ def _cell_text(cell: ET.Element, shared: list[str]) -> str:
     return raw
 
 
+def _zip_name_map(zf: zipfile.ZipFile) -> dict[str, str]:
+    """Lowercased, slash-normalized zip names → actual zip member."""
+    out: dict[str, str] = {}
+    for name in zf.namelist():
+        key = name.replace("\\", "/").lower().lstrip("/")
+        out[key] = name
+    return out
+
+
+def normalize_opc_part(target: str) -> str:
+    """Resolve an OOXML Relationship Target to a package part (never ``xl/xl/...``).
+
+    Excel writes ``Target="worksheets/sheet1.xml"`` (relative to ``xl/``) or
+    ``Target="/xl/worksheets/sheet1.xml"`` (absolute). Prefixing ``xl/`` onto
+    the absolute form produced ``xl/xl/worksheets/sheet1.xml`` (job 91).
+    """
+    text = (target or "").replace("\\", "/").strip()
+    text = text.split("?")[0].split("#")[0]
+    text = text.lstrip("/")
+    text = re.sub(r"^\./", "", text)
+    while text.lower().startswith("xl/xl/"):
+        text = text[3:]
+    if text.lower().startswith("xl/"):
+        return text
+    while text.startswith("../"):
+        text = text[3:]
+    return f"xl/{text}" if text else ""
+
+
+def resolve_zip_part(zf: zipfile.ZipFile, target: str) -> str | None:
+    """Return the real zip member for an OPC target, or None."""
+    names = _zip_name_map(zf)
+    norm = normalize_opc_part(target)
+    if not norm:
+        return None
+    found = names.get(norm.lower())
+    if found:
+        return found
+    leaf = norm.rsplit("/", 1)[-1].lower()
+    if leaf:
+        for key, actual in names.items():
+            if key == leaf or key.endswith("/" + leaf):
+                return actual
+    return None
+
+
 def _load_shared_strings(zf: zipfile.ZipFile) -> list[str]:
-    names = {n.lower(): n for n in zf.namelist()}
-    target = names.get("xl/sharedstrings.xml")
+    target = resolve_zip_part(zf, "xl/sharedStrings.xml")
     if not target:
         return []
     root = ET.fromstring(zf.read(target))
@@ -81,11 +126,15 @@ def _load_shared_strings(zf: zipfile.ZipFile) -> list[str]:
 
 def _sheet_targets(zf: zipfile.ZipFile) -> list[tuple[str, str]]:
     """Return (sheet_name, xml_path) in workbook order."""
-    names = {n.lower(): n for n in zf.namelist()}
+    names = _zip_name_map(zf)
     wb_name = names.get("xl/workbook.xml")
     rels_name = names.get("xl/_rels/workbook.xml.rels")
     if not wb_name or not rels_name:
-        preferred = [n for n in zf.namelist() if n.startswith("xl/worksheets/sheet") and n.endswith(".xml")]
+        preferred = [
+            n
+            for n in zf.namelist()
+            if "worksheets/sheet" in n.replace("\\", "/").lower() and n.lower().endswith(".xml")
+        ]
         preferred.sort()
         return [("LOM", preferred[0])] if preferred else []
     rel_ns = {"r": "http://schemas.openxmlformats.org/package/2006/relationships"}
@@ -95,7 +144,9 @@ def _sheet_targets(zf: zipfile.ZipFile) -> list[tuple[str, str]]:
         rid = rel.get("Id") or ""
         target = rel.get("Target") or ""
         if rid and target:
-            rid_to_target[rid] = "xl/" + target.lstrip("/") if not target.startswith("xl/") else target
+            resolved = resolve_zip_part(zf, target)
+            if resolved:
+                rid_to_target[rid] = resolved
     wb_ns = {
         "m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
         "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
@@ -127,6 +178,8 @@ def read_xlsx_grid(path: Path | str) -> list[list[str]]:
     with zipfile.ZipFile(path) as zf:
         shared = _load_shared_strings(zf)
         sheet = _sheet_path(zf)
+        if sheet and "xl/xl/" in sheet.replace("\\", "/").lower():
+            sheet = resolve_zip_part(zf, sheet)
         if not sheet:
             return []
         root = ET.fromstring(zf.read(sheet))
@@ -277,7 +330,7 @@ def extract_bom_from_lom_xlsx(
     notes: list[str] = []
     try:
         grid = read_xlsx_grid(path)
-    except (OSError, zipfile.BadZipFile, ET.ParseError) as exc:
+    except (OSError, zipfile.BadZipFile, ET.ParseError, KeyError) as exc:
         return BomResult(
             notes=[f"LOM.xlsx unreadable ({path.name}): {exc}"],
             confidence=0.0,

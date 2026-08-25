@@ -1244,10 +1244,13 @@ def extract_bom(
     from quote_core.lom_clip import ensure_lom_xlsx
     from quote_core.lom_xlsx import extract_bom_from_lom_xlsx
 
+    stem_key = Path(pdf_path).stem if pdf_path else None
+    from quote_core.drawing_library import extract_part_key
+
     lom_path, lom_notes = ensure_lom_xlsx(
         pdf_path,
         library_folder=library_folder,
-        part_key=Path(pdf_path).stem if pdf_path else None,
+        part_key=extract_part_key(stem_key) or stem_key,
         bom_config=bom_config,
     )
     notes.extend(lom_notes)

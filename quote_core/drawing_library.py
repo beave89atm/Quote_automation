@@ -150,6 +150,14 @@ def _folder_score(folder: Path, part_key: str) -> int:
         return 85
     if name.startswith(part_key):
         return 80
+    if name.rstrip().endswith(part_key) or name.rstrip().endswith(" " + part_key):
+        return 90
+    # Bare 1001898 matches ``Pedestal Weldment - 1001898-1``.
+    if re.search(
+        rf"(?i)(?:^|[\s_\-]){re.escape(part_key)}(?:-\d+[A-Za-z]?)?$",
+        name.strip(),
+    ):
+        return 88
     if part_key in name:
         return 60
     # Bare key matches dashed folder: 35145 vs 35145-1

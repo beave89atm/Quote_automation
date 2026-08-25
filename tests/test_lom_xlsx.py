@@ -2,15 +2,71 @@
 
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
 from quote_core.bom import extract_bom
-from quote_core.lom_xlsx import extract_bom_from_lom_xlsx, find_lom_xlsx, write_lom_xlsx
+from quote_core.lom_xlsx import (
+    extract_bom_from_lom_xlsx,
+    find_lom_xlsx,
+    normalize_opc_part,
+    read_xlsx_grid,
+    write_lom_xlsx,
+)
 
 
 def write_minimal_xlsx(path: Path, rows: list[list[str]]) -> None:
     write_lom_xlsx(path, rows)
+
+
+def write_excel_absolute_target_xlsx(path: Path, rows: list[list[str]]) -> None:
+    """Minimal real-Excel-style xlsx: Relationship Target is ``/xl/worksheets/...``.
+
+    Job 91 died because the reader prefixed ``xl/`` onto that absolute target.
+    """
+    write_lom_xlsx(path, rows)
+    sheet_xml = zipfile.ZipFile(path).read("xl/worksheets/sheet1.xml")
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<sheets>"
+        '<sheet name="LOM as drawn" sheetId="1" r:id="rId1"/>'
+        "</sheets></workbook>"
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        'Target="/xl/worksheets/sheet1.xml"/>'
+        "</Relationships>"
+    )
+    ctypes = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        "</Types>"
+    )
+    root_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        'Target="xl/workbook.xml"/></Relationships>'
+    )
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("[Content_Types].xml", ctypes)
+        zf.writestr("_rels/.rels", root_rels)
+        zf.writestr("xl/workbook.xml", workbook)
+        zf.writestr("xl/_rels/workbook.xml.rels", rels)
+        zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
 
 
 def _1004747_lom_rows() -> list[list[str]]:
@@ -173,3 +229,59 @@ def test_qty_cell_rejects_paint_plcs():
     assert _parse_qty_cell("20 PLCS") == 0
     assert _parse_qty_cell("-") == 0
     assert _parse_qty_cell("2") == 2
+
+
+def test_opc_target_never_becomes_xl_xl():
+    assert normalize_opc_part("/xl/worksheets/sheet1.xml") == "xl/worksheets/sheet1.xml"
+    assert normalize_opc_part("worksheets/sheet1.xml") == "xl/worksheets/sheet1.xml"
+    assert normalize_opc_part("xl/worksheets/sheet1.xml") == "xl/worksheets/sheet1.xml"
+    assert normalize_opc_part("xl/xl/worksheets/sheet1.xml") == "xl/worksheets/sheet1.xml"
+    assert "xl/xl/" not in normalize_opc_part("/xl/worksheets/sheet1.xml")
+
+
+def test_excel_absolute_target_xlsx_does_not_look_for_xl_xl(tmp_path: Path):
+    """Job 91: 'There is no item named xl/xl/worksheets/sheet1.xml in the archive'."""
+    path = tmp_path / "1001898-1-LOM.xlsx"
+    write_excel_absolute_target_xlsx(path, _1001898_lom_rows())
+    with zipfile.ZipFile(path) as zf:
+        rels = zf.read("xl/_rels/workbook.xml.rels").decode("utf-8")
+        assert 'Target="/xl/worksheets/sheet1.xml"' in rels
+        assert "xl/xl/worksheets/sheet1.xml" not in zf.namelist()
+    grid = read_xlsx_grid(path)
+    assert grid, "Excel-style absolute Target must open"
+    assert not any("xl/xl/" in "".join(row) for row in grid)
+    bom = extract_bom_from_lom_xlsx(path, bom_config="1")
+    assert "xl/xl/" not in " ".join(bom.notes)
+    assert bom.method == "lom_xlsx"
+    assert bom.part_number_count == 17
+    assert bom.piece_count == 27
+
+
+def test_job91_drop_1001898_uses_library_excel_lom(tmp_path: Path):
+    """Drop 1001898.pdf → open Kyle 1001898-1-LOM.xlsx (Excel /xl/ targets) → 17/27."""
+    from quote_core.weld.takeoff import run_weld_takeoff
+
+    lib = tmp_path / "Customer Drawings" / "Time" / "Pedestal Weldment - 1001898-1"
+    lib.mkdir(parents=True)
+    write_excel_absolute_target_xlsx(lib / "1001898-1-LOM.xlsx", _1001898_lom_rows())
+    job_dir = tmp_path / "uploads" / "91"
+    job_dir.mkdir(parents=True)
+    pdf = job_dir / "1001898.pdf"
+    import fitz
+
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(pdf)
+    doc.close()
+    found = find_lom_xlsx(job_dir, lib, part_key="1001898")
+    assert found is not None
+    assert found.name == "1001898-1-LOM.xlsx"
+    bom = extract_bom(pdf, library_folder=lib, bom_config="1")
+    assert bom.method == "lom_xlsx", bom.notes
+    assert bom.part_number_count == 17
+    assert bom.piece_count == 27
+    result = run_weld_takeoff(pdf, library_folder=lib, bom_config="1")
+    assert result.fitup_drivers["part_count"] == 27
+    assert result.fitup_drivers["piece_count"] == 27
+    assert not result.fitup_drivers.get("needs_info")
+    assert result.fitup_drivers["part_count"] != 1 or bom.piece_count == 27
