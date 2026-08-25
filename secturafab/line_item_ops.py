@@ -303,8 +303,12 @@ def _is_assembly(item: dict[str, Any]) -> bool:
 def _is_linear(item: dict[str, Any]) -> bool:
     if _is_assembly(item):
         return False
+    if item.get("ProductType") in (100, "100", 200, "200"):
+        return False
     cat = str(item.get("Category") or item.get("ItemType") or "").strip()
-    return bool(item.get("IsLinear") or cat == "Linear" or item.get("ProductType") in (10, "10"))
+    if item.get("IsLinear") or cat == "Linear" or item.get("ProductType") in (10, "10"):
+        return True
+    return cat.lower() in {"pipe", "tube", "bar", "structural"}
 
 
 def _is_component(item: dict[str, Any]) -> bool:
@@ -415,6 +419,24 @@ def _length_from_library(
     return parse_length_lg(text)
 
 
+def _cad_fields_on_get(item: dict[str, Any]) -> bool:
+    mat = str(item.get("Material") or item.get("MaterialGrade") or "").strip()
+    try:
+        thk_ok = float(item.get("Thickness") or 0) > 0
+    except (TypeError, ValueError):
+        thk_ok = bool(str(item.get("Thickness") or item.get("ThicknessDisp") or "").strip())
+    return bool(mat) and thk_ok
+
+
+def _linear_fields_on_get(item: dict[str, Any]) -> bool:
+    machine = str(item.get("Machine") or "").strip().casefold() == "saw"
+    try:
+        length = float(item.get("Length") or item.get("LinearLength") or 0)
+    except (TypeError, ValueError):
+        length = 0.0
+    return machine and length > 0
+
+
 def persist_classified_item_fields(
     client: Any,
     quote_id: str,
@@ -425,14 +447,21 @@ def persist_classified_item_fields(
     default_thickness: str | None = "0.25",
     library_folder: Any = None,
     related_pdf_names: list[str] | None = None,
+    plate_catalog: list[dict[str, Any]] | None = None,
+    linear_catalog: list[dict[str, Any]] | None = None,
 ) -> list[str]:
-    """Persist Cad/Linear fields on the APIs GET actually reads.
+    """Persist Cad/Linear fields on the APIs a live GET actually reads.
 
-    ``POST v1/quote`` of Material/Thickness/Length/Machine is a no-op after CAD
-    settle. Cad grade/thk go through ``UpdateItem_Part``. Linear Machine/Length
-    and ItemList Descriptions go through ``PUT quoteOnline/update``.
+    New Line items have no DataPart, so ``UpdateItem_Part`` / ``v1/quote`` POST
+    and ``quoteOnline/update`` of Material/Thickness/Machine/Length are no-ops
+    (HTTP 200, GET still empty). Bind tenant products instead:
+
+    * Cad: ``POST v1/quoteOnline/addplate`` (PL1/4-A36 class)
+    * Linear: ``POST v1/quoteOnline/addLinear`` (Machine=Saw, cut Length)
+
+    Success is a follow-up GET — never a 200 on the write.
     """
-    from quote_core.part_materials import _parse_thickness_token, lookup_part_material
+    from quote_core.part_materials import lookup_part_material
 
     from secturafab.item_desc import (
         format_component_line,
@@ -443,6 +472,12 @@ def persist_classified_item_fields(
         match_bom_part_no,
         parse_cad_desc_fields,
     )
+    from secturafab.linear_ops import (
+        fetch_linear_catalog,
+        match_linear_product,
+        update_linear_via_api,
+    )
+    from secturafab.plate_ops import addplate_item, fetch_plate_catalog, match_plate_product
     from secturafab.push import classify_sectura_item
     from secturafab.qty_ops import normalize_part_key
     from secturafab.quote_update import quote_online_update
@@ -461,10 +496,12 @@ def persist_classified_item_fields(
             bom_qty[key] = max(1, int(row.get("qty") or 1))
         except (TypeError, ValueError):
             bom_qty[key] = 1
+    plates = list(plate_catalog) if plate_catalog is not None else fetch_plate_catalog(client)
+    linears = list(linear_catalog) if linear_catalog is not None else fetch_linear_catalog(client)
     notes: list[str] = []
     update_params: list[dict[str, Any]] = []
-    cad_n = 0
-    lin_n = 0
+    cad_wrote = 0
+    lin_wrote = 0
     desc_n = 0
     for it in items:
         if not isinstance(it, dict) or _is_assembly(it):
@@ -476,6 +513,7 @@ def persist_classified_item_fields(
             pn = raw_desc.split()[0].rstrip(".,;:")
         noun = bom_desc.get(normalize_part_key(pn or ""), "")
         want_cat = classify_sectura_item(f"{pn or ''} {noun} {raw_desc}")
+        qty = bom_qty.get(normalize_part_key(pn or ""), 1)
         if _is_component(it) or want_cat == "Component":
             line = format_component_line(pn or "", noun or raw_desc)
             if iid and it.get("ProductType") not in (200, "200"):
@@ -499,23 +537,45 @@ def persist_classified_item_fields(
                 )
             )
             sku = str(it.get("SKU") or "").strip() or None
+            pid = str(it.get("ProductID") or "").strip() or None
+            hint = f"{pn or ''} {noun} {raw_desc}".strip()
+            product = None
+            if pid:
+                product = next(
+                    (p for p in linears if str(p.get("ID") or "") == pid),
+                    None,
+                )
+            if product is None:
+                new_pid, new_sku, _mismatch = match_linear_product(
+                    linears, hint or raw_desc, material=default_material, row=it
+                )
+                pid = new_pid or pid
+                sku = new_sku or sku
+                product = next(
+                    (p for p in linears if str(p.get("ID") or "") == (pid or "")),
+                    None,
+                )
             line = raw_desc
             if pn:
                 line = format_linear_description(
                     pn, sku=sku, length_in=length, noun=noun
                 )
-            if iid:
-                update_params.append({"ID": iid, "ParamName": "Machine", "Value": "Saw"})
-                if length and length > 0:
-                    update_params.append(
-                        {"ID": iid, "ParamName": "Length", "Value": str(length)}
-                    )
-                if line and line != raw_desc:
-                    update_params.append(
-                        {"ID": iid, "ParamName": "Description", "Value": line[:500]}
-                    )
-                    desc_n += 1
-            lin_n += 1
+            if iid and product and length and length > 0:
+                if update_linear_via_api(
+                    client,
+                    quote_id,
+                    iid,
+                    product,
+                    length_in=float(length),
+                    qty=qty,
+                    name=line or raw_desc,
+                ):
+                    lin_wrote += 1
+            elif iid and line and line != raw_desc:
+                update_params.append(
+                    {"ID": iid, "ParamName": "Description", "Value": line[:500]}
+                )
+                desc_n += 1
             continue
         parsed = parse_cad_desc_fields(raw_desc)
         pm = lookup_part_material(part_materials or {}, pn or "") if pn else None
@@ -525,64 +585,79 @@ def persist_classified_item_fields(
             or str(it.get("Material") or "").strip()
             or default_material
         )
-        thk_raw = (
+        thk = (
             (pm.thickness_param() if pm else None)
             or parsed.get("thickness")
             or it.get("Thickness")
             or default_thickness
         )
-        thk = str(thk_raw or "").strip()
-        parsed_thk = _parse_thickness_token(thk) if thk else None
-        if parsed_thk:
-            thk = f"{parsed_thk:.4g}"
         width, length = item_flat_dims(it)
         if not width:
             width = parsed.get("width_in")
         if not length:
             length = parsed.get("length_in")
-        if iid and grade and thk:
-            qty = bom_qty.get(normalize_part_key(pn or ""), 1)
-            upd = client.request(
-                "POST",
-                "v1/quoteOnline/UpdateItem_Part",
-                params={
-                    "quoteID": quote_id,
-                    "itemID": iid,
-                    "material": grade,
-                    "thickness": thk,
-                    "machine": "Laser",
-                    "qty": int(qty),
-                },
+        plate = match_plate_product(plates, thickness=thk, material=grade)
+        if iid and plate:
+            if addplate_item(
+                client,
+                quote_id,
+                iid,
+                plate,
+                name=raw_desc,
+                qty=qty,
+                width_in=width,
+                length_in=length,
+            ):
+                cad_wrote += 1
+        if iid and raw_desc:
+            update_params.append(
+                {"ID": iid, "ParamName": "Description", "Value": raw_desc[:500]}
             )
-            try:
-                status = int(getattr(upd, "status_code", 200) or 200)
-            except (TypeError, ValueError):
-                status = 200
-            if status < 400:
-                cad_n += 1
-            else:
-                notes.append(
-                    f"UpdateItem_Part failed for {raw_desc[:40]!r}: {status}"
-                )
-        if iid:
-            if width and length:
-                update_params.append({"ID": iid, "ParamName": "Width", "Value": str(width)})
-                update_params.append({"ID": iid, "ParamName": "Length", "Value": str(length)})
-            if raw_desc:
-                update_params.append(
-                    {"ID": iid, "ParamName": "Description", "Value": raw_desc[:500]}
-                )
     if update_params:
         quote_online_update(client, quote_id, update_params)
-    if cad_n:
+
+    verified = client.get_json(f"v1/quote/{quote_id}")
+    cad_ok = lin_ok = cad_miss = lin_miss = 0
+    for it in verified.get("ItemList") or []:
+        if not isinstance(it, dict) or _is_assembly(it):
+            continue
+        desc = str(it.get("Description") or "")
+        pn = match_bom_part_no(desc, bom_rows)
+        noun = bom_desc.get(normalize_part_key(pn or ""), "")
+        want = classify_sectura_item(f"{pn or ''} {noun} {desc}")
+        if _is_component(it) or want == "Component":
+            continue
+        if _is_linear(it) or want == "Linear":
+            if _linear_fields_on_get(it):
+                lin_ok += 1
+            else:
+                lin_miss += 1
+            continue
+        if _cad_fields_on_get(it):
+            cad_ok += 1
+        else:
+            cad_miss += 1
+    if cad_ok:
         notes.append(
-            f"UpdateItem_Part Material/Thickness on {cad_n} Cad line(s) "
-            "(not v1/quote POST)"
+            f"GET-verified Material/Thickness on {cad_ok} Cad line(s) (addplate)"
         )
-    if lin_n:
+    if lin_ok:
         notes.append(
-            f"quoteOnline/update Machine=Saw + Length on {lin_n} Linear line(s)"
+            f"GET-verified Machine=Saw + Length on {lin_ok} Linear line(s) (addLinear)"
+        )
+    if cad_miss:
+        notes.append(
+            f"Cad Material/Thickness empty on GET after addplate ({cad_miss} line(s))"
+        )
+    if lin_miss:
+        notes.append(
+            f"Linear Machine/Length empty on GET after addLinear ({lin_miss} line(s))"
         )
     if desc_n:
         notes.append(f"quoteOnline/update Description on {desc_n} line(s)")
+    if cad_wrote or lin_wrote:
+        notes.append(
+            f"Wrote addplate×{cad_wrote} addLinear×{lin_wrote} "
+            "(success is GET-verified fields, not HTTP 200)"
+        )
     return notes

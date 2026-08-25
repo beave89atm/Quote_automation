@@ -262,13 +262,12 @@ def test_list_orgs_still_searches_time_after_other_customers():
     assert org["ID"] == "time-real"
 
 
-def test_persist_uses_update_item_part_not_v1_quote_fields():
+def test_persist_uses_addplate_addlinear_and_get_verifies():
     from unittest.mock import MagicMock
 
     from secturafab.line_item_ops import persist_classified_item_fields
 
-    client = MagicMock()
-    client.get_json.return_value = {
+    empty = {
         "ItemList": [
             {
                 "ID": "c1",
@@ -295,11 +294,35 @@ def test_persist_uses_update_item_part_not_v1_quote_fields():
             },
         ]
     }
+    verified = {
+        "ItemList": [
+            {
+                **empty["ItemList"][0],
+                "Material": "A572",
+                "Thickness": 0.25,
+                "ThicknessDisp": "0.25 in",
+            },
+            {
+                **empty["ItemList"][1],
+                "Machine": "Saw",
+                "Length": 12.0,
+                "Material": "A36",
+            },
+            {
+                **empty["ItemList"][2],
+                "Description": "8166-1 - FILLER NECK",
+                "ProductType": 200,
+                "Category": "Component",
+            },
+        ]
+    }
+    client = MagicMock()
+    client.get_json.side_effect = [empty, verified]
     save = MagicMock()
     save.status_code = 200
     save.text = "true"
     client.request.return_value = save
-    persist_classified_item_fields(
+    notes = persist_classified_item_fields(
         client,
         "qid",
         bom_rows=[
@@ -307,39 +330,45 @@ def test_persist_uses_update_item_part_not_v1_quote_fields():
             {"part_no": "1001880-2", "description": "PEDESTAL TUBE 12 LG.", "qty": 1},
             {"part_no": "8166-1", "description": "FILLER NECK", "qty": 1},
         ],
+        plate_catalog=[
+            {
+                "ID": "pl-a572",
+                "ProductName": "PL1/4-A572",
+                "MaterialGrade": "A572",
+                "Thickness": 0.25,
+                "Active": True,
+                "Thickness_Unit": "inch",
+            }
+        ],
+        linear_catalog=[
+            {
+                "ID": "pid",
+                "ProductName": "P1/8-5-A36",
+                "MaterialGrade": "A36",
+                "ProductSubType": "pipe",
+                "Category": "Pipe",
+                "Dim1": 0.125,
+                "Dim1_Unit": "inch",
+                "WeightLength": 0.14,
+                "WeightLength_Unit": "pound/foot",
+                "Active": True,
+            }
+        ],
     )
-    part_calls = [
-        c
-        for c in client.request.call_args_list
-        if str(c.args[1] if len(c.args) > 1 else c.kwargs.get("path") or "").endswith(
-            "UpdateItem_Part"
-        )
-        or "UpdateItem_Part" in str(c)
-    ]
-    assert part_calls, client.request.call_args_list
-    params = part_calls[0].kwargs.get("params") or {}
-    assert params.get("material")
-    assert params.get("thickness")
-    assert "A572" in str(params.get("material"))
-    field_posts = [
-        c
-        for c in client.request.call_args_list
-        if c.args[:2] == ("POST", "v1/quote") or (
-            len(c.args) >= 2 and c.args[0] == "POST" and c.args[1] == "v1/quote"
-        )
-    ]
-    assert not field_posts
-    update_calls = [
-        c
-        for c in client.request.call_args_list
-        if "quoteOnline/update" in str(c)
-    ]
-    assert update_calls
-    blob = str(client.request.call_args_list)
-    assert "Saw" in blob
-    assert "12" in blob
-    assert "8166-1" in blob
-    assert "FILLER NECK" in blob or "FILLER - NECK" in blob
+    paths = [c.args[1] for c in client.request.call_args_list if len(c.args) > 1]
+    assert any(p.endswith("addplate") for p in paths), paths
+    assert any(p.endswith("addLinear") for p in paths), paths
+    assert not any(p.endswith("UpdateItem_Part") for p in paths)
+    assert not any(c.args[:2] == ("POST", "v1/quote") for c in client.request.call_args_list)
+    blob = " ".join(notes)
+    assert "GET-verified" in blob
+    assert "addplate" in blob
+    plate = next(c for c in client.request.call_args_list if "addplate" in str(c))
+    assert plate.kwargs["params"]["material"] == "A572"
+    assert float(plate.kwargs["params"]["thickness"]) == 0.25
+    lin = next(c for c in client.request.call_args_list if "addLinear" in str(c))
+    assert lin.kwargs["params"]["machine"] == "Saw"
+    assert float(lin.kwargs["params"]["length"]) == 12.0
 
 
 def test_bom_family_title_is_pedestal_weldment_not_child_noun():

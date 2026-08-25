@@ -255,6 +255,41 @@ def test_cookie_less_push_does_not_graft_profile(tmp_path: Path):
     ) or detect_organization(library_folder=lib) == "Time Manufacturing Waco"
 
 
+def test_plate_catalog_grade_and_match():
+    from secturafab.plate_ops import catalog_plate_grade, match_plate_product
+
+    assert catalog_plate_grade("A572 Grade 50") == "A572"
+    assert catalog_plate_grade("A572 G50") == "A572"
+    assert catalog_plate_grade("A36") == "A36"
+    catalog = [
+        {
+            "ID": "pl-a36",
+            "ProductName": "PL1/4-A36",
+            "MaterialGrade": "A36",
+            "Thickness": 0.25,
+            "Active": True,
+        },
+        {
+            "ID": "pl-a572",
+            "ProductName": "PL1/4-A572",
+            "MaterialGrade": "A572",
+            "Thickness": 0.25,
+            "Active": True,
+        },
+        {
+            "ID": "pl-half",
+            "ProductName": "PL1/2-A36",
+            "MaterialGrade": "A36",
+            "Thickness": 0.5,
+            "Active": True,
+        },
+    ]
+    hit = match_plate_product(catalog, thickness="1/4", material="A572 Grade 50")
+    assert hit["ID"] == "pl-a572"
+    hit36 = match_plate_product(catalog, thickness=0.5, material="A36")
+    assert hit36["ID"] == "pl-half"
+
+
 def test_purchased_component_keeps_dashed_pn():
     from secturafab.component_ops import ensure_purchased_components
 

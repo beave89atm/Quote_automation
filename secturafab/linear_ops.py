@@ -13,6 +13,117 @@ from secturafab.weld_ops import _desc_token
 
 _LINEAR_TYPE = 10
 _ASSEMBLY_TYPE = 300
+_LINEAR_TYPE_ENUM = {
+    "config",
+    "bar",
+    "pipe",
+    "tube",
+    "structural",
+    "plate",
+    "coil",
+    "part",
+    "component",
+    "assembly",
+    "service",
+    "software",
+    "unknown",
+}
+
+
+def _linear_product_type_enum(product: dict[str, Any]) -> str:
+    for raw in (
+        product.get("ProductSubType"),
+        product.get("Category"),
+        product.get("ProductTypeName"),
+        product.get("ProductCode"),
+        product.get("ShapeName"),
+    ):
+        text = str(raw or "").strip().lower()
+        if text in _LINEAR_TYPE_ENUM:
+            return text
+        if any(tok in text for tok in ("angle", "beam", "channel")):
+            return "structural"
+        if "pipe" in text:
+            return "pipe"
+        if "tube" in text or "hss" in text:
+            return "tube"
+        if "bar" in text:
+            return "bar"
+    return "tube"
+
+
+def _dim(product: dict[str, Any], n: int) -> float:
+    try:
+        return float(product.get(f"Dim{n}") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def update_linear_via_api(
+    client: Any,
+    quote_id: str,
+    item_id: str,
+    product: dict[str, Any],
+    *,
+    length_in: float,
+    qty: int = 1,
+    name: str = "",
+    machine: str = "Saw",
+) -> bool:
+    """POST ``v1/quoteOnline/addLinear`` (API). Caller must GET-verify Machine/Length.
+
+    Website Long (``/Quote/AddItem_Linear``) 302s without a cookie. This is the
+    write Q10056 GET reads: Machine=Saw, Length=cut, Material=catalog grade.
+    """
+    if not item_id or not product.get("ID") or not length_in or length_in <= 0:
+        return False
+    ptype = _linear_product_type_enum(product)
+    subtype = str(product.get("ProductSubType") or ptype)
+    try:
+        wl = float(product.get("WeightLength") or 0)
+    except (TypeError, ValueError):
+        wl = 0.0
+    resp = client.request(
+        "POST",
+        "v1/quoteOnline/addLinear",
+        params={
+            "ID": quote_id,
+            "ItemID": item_id,
+            "productID": product["ID"],
+            "productType": ptype,
+            "productSubType": subtype,
+            "material": product.get("MaterialGrade") or "A36",
+            "location": "",
+            "dim1": _dim(product, 1),
+            "dim1_Unit": product.get("Dim1_Unit") or "inch",
+            "dim2": _dim(product, 2),
+            "dim2_Unit": product.get("Dim2_Unit") or "inch",
+            "dim3": _dim(product, 3),
+            "dim3_Unit": product.get("Dim3_Unit") or "inch",
+            "dim4": _dim(product, 4),
+            "dim4_Unit": product.get("Dim4_Unit") or "inch",
+            "weightLength": wl,
+            "weightLength_Units": product.get("WeightLength_Unit") or "pound/foot",
+            "materialCost": 0,
+            "materialCost_Units": "pound",
+            "memo": "",
+            "name": (name or "")[:80],
+            "revisionNumber": "",
+            "machine": machine or "Saw",
+            "length": float(length_in),
+            "length_unit": "inch",
+            "qty": max(1, int(qty or 1)),
+            "fixedPrice": 0,
+            "productionReady": False,
+            "customerMaterial": False,
+            "outsource": False,
+        },
+    )
+    try:
+        status = int(getattr(resp, "status_code", 400) or 400)
+    except (TypeError, ValueError):
+        status = 400
+    return status < 400
 
 
 def fetch_linear_catalog(client: Any) -> list[dict[str, Any]]:
