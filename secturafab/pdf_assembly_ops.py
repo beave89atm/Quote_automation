@@ -623,7 +623,7 @@ def plan_weldment_lines(
         thk = (pm.thickness_param() if pm else None) or default_thickness
         grade = (pm.material if pm else None) or default_material
         if cat == "Linear":
-            desc = format_linear_description(pn, sku=None, length_in=None)
+            desc = format_linear_description(pn, sku=None, length_in=None, noun=noun)
             product_type = 10
         elif cat == "Component":
             desc = format_component_description(noun, part_no=pn) or noun

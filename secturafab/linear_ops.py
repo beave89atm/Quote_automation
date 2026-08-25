@@ -125,7 +125,9 @@ def bind_linear_product_ids(
         length = item_length_in(it)
         pn = normalize_part_token(raw_token) or raw_token
         if pn:
-            it["Description"] = format_linear_description(pn, sku=sku, length_in=length)
+            it["Description"] = format_linear_description(
+                pn, sku=sku, length_in=length, noun=bom_desc.get(token, "")
+            )
         changed += 1
 
     if changed:
@@ -172,7 +174,9 @@ def add_linear_item_from_bom(
                 length=length_in,
                 material=material,
                 machine="Saw",
-                name=format_linear_description(part_no, sku=sku, length_in=length_in),
+                name=format_linear_description(
+                    part_no, sku=sku, length_in=length_in, noun=description
+                ),
             )
             notes.append(
                 f"Long addLinear ProductID={pid} SKU={sku or '?'} "
@@ -188,7 +192,9 @@ def add_linear_item_from_bom(
 
     detail = client.get_json(f"v1/quote/{quote_id}")
     items = list(detail.get("ItemList") or [])
-    desc = format_linear_description(part_no, sku=sku, length_in=length_in)
+    desc = format_linear_description(
+        part_no, sku=sku, length_in=length_in, noun=description
+    )
     line = {
         "ID": str(uuid.uuid4()),
         "Description": desc[:500],

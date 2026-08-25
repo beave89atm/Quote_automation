@@ -153,9 +153,15 @@ def format_linear_description(
     *,
     sku: str | None = None,
     length_in: float | None = None,
+    noun: str | None = None,
 ) -> str:
     pn = normalize_part_token(part_no)
-    parts = [p for p in (pn, (sku or "").strip()) if p]
+    mid = (sku or "").strip()
+    if not mid and (noun or "").strip():
+        mid = format_component_description(noun, part_no=pn) or noun.strip()
+        if is_bare_part_number(mid, pn):
+            mid = ""
+    parts = [p for p in (pn, mid) if p]
     if length_in and length_in > 0:
         parts.append(_fmt_in(length_in))
     return " - ".join(parts) if parts else ""
