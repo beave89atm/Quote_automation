@@ -210,6 +210,8 @@ def test_cookie_less_push_does_not_graft_profile(tmp_path: Path):
         service, "create_quote", return_value="qid"
     ) as create_q, patch.object(
         service, "allocate_quote_number", return_value="1001898-1"
+    ), patch.object(
+        service, "finish_pdf_files", return_value=[]
     ), patch(
         "secturafab.push.refresh_bom_rows_for_push",
         return_value=(

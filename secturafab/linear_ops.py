@@ -7,7 +7,7 @@ from typing import Any
 
 from secturafab.item_desc import format_linear_description, item_length_in, normalize_part_token
 from secturafab.qty_ops import normalize_part_key
-from secturafab.website import pick_closest_linear_product
+from secturafab.website import EMPTY_GUID, pick_closest_linear_product
 from secturafab.weld_ops import _desc_token
 
 _LINEAR_TYPE = 10
@@ -76,53 +76,56 @@ def update_linear_via_api(
     """
     if not item_id or not product.get("ID") or not length_in or length_in <= 0:
         return False
-    ptype = _linear_product_type_enum(product)
-    subtype = str(product.get("ProductSubType") or ptype)
+    # "part" is the Long / New Line Item enum that GET-reads as ProductType 10.
+    # Catalog enums (structural/pipe/tube) create PT 40/20/30 and fail QA.
+    ptype = "part"
+    subtype = str(product.get("ProductSubType") or _linear_product_type_enum(product))
     try:
         wl = float(product.get("WeightLength") or 0)
     except (TypeError, ValueError):
         wl = 0.0
-    resp = client.request(
-        "POST",
-        "v1/quoteOnline/addLinear",
-        params={
-            "ID": quote_id,
-            "ItemID": item_id,
-            "productID": product["ID"],
-            "productType": ptype,
-            "productSubType": subtype,
-            "material": product.get("MaterialGrade") or "A36",
-            "location": "",
-            "dim1": _dim(product, 1),
-            "dim1_Unit": product.get("Dim1_Unit") or "inch",
-            "dim2": _dim(product, 2),
-            "dim2_Unit": product.get("Dim2_Unit") or "inch",
-            "dim3": _dim(product, 3),
-            "dim3_Unit": product.get("Dim3_Unit") or "inch",
-            "dim4": _dim(product, 4),
-            "dim4_Unit": product.get("Dim4_Unit") or "inch",
-            "weightLength": wl,
-            "weightLength_Units": product.get("WeightLength_Unit") or "pound/foot",
-            "materialCost": 0,
-            "materialCost_Units": "pound",
-            "memo": "",
-            "name": (name or "")[:80],
-            "revisionNumber": "",
-            "machine": machine or "Saw",
-            "length": float(length_in),
-            "length_unit": "inch",
-            "qty": max(1, int(qty or 1)),
-            "fixedPrice": 0,
-            "productionReady": False,
-            "customerMaterial": False,
-            "outsource": False,
-        },
-    )
-    try:
-        status = int(getattr(resp, "status_code", 400) or 400)
-    except (TypeError, ValueError):
-        status = 400
-    return status < 400
+    params = {
+        "ID": quote_id,
+        "ItemID": item_id,
+        "productID": product["ID"],
+        "productType": ptype,
+        "productSubType": subtype,
+        "material": product.get("MaterialGrade") or "A36",
+        "location": "",
+        "dim1": _dim(product, 1),
+        "dim1_Unit": product.get("Dim1_Unit") or "inch",
+        "dim2": _dim(product, 2),
+        "dim2_Unit": product.get("Dim2_Unit") or "inch",
+        "dim3": _dim(product, 3),
+        "dim3_Unit": product.get("Dim3_Unit") or "inch",
+        "dim4": _dim(product, 4),
+        "dim4_Unit": product.get("Dim4_Unit") or "inch",
+        "weightLength": wl,
+        "weightLength_Units": product.get("WeightLength_Unit") or "pound/foot",
+        "materialCost": 0,
+        "materialCost_Units": "pound",
+        "memo": "",
+        "name": (name or "")[:80],
+        "revisionNumber": "",
+        "machine": machine or "Saw",
+        "length": float(length_in),
+        "length_unit": "inch",
+        "qty": max(1, int(qty or 1)),
+        "fixedPrice": 0,
+        "productionReady": False,
+        "customerMaterial": False,
+        "outsource": False,
+    }
+    # QuoteAPI_AddItem_Linear is the Long / New Line Item write.
+    for path in ("v1/quote/addLinear", "v1/quoteOnline/addLinear"):
+        resp = client.request("POST", path, params=params)
+        try:
+            status = int(getattr(resp, "status_code", 400) or 400)
+        except (TypeError, ValueError):
+            status = 400
+        if status < 400:
+            return True
+    return False
 
 
 def fetch_linear_product(client: Any, product_id: str | None) -> dict[str, Any] | None:
@@ -340,10 +343,32 @@ def add_linear_item_from_bom(
             return notes
         except SecturaFabWebsiteAuthError:
             notes.append(
-                "Long AddItem_Linear 302'd — addLinear API writes Primary Costs"
+                "Long AddItem_Linear 302'd — create-new addLinear (itemID=EMPTY_GUID)"
             )
         except Exception as exc:  # noqa: BLE001
             notes.append(f"WARNING: addLinear failed for {part_no}: {exc}")
+
+    if pid and length_in and length_in > 0:
+        product = next(
+            (p for p in products if str(p.get("ID") or "") == str(pid)),
+            None,
+        ) or fetch_linear_product(client, pid)
+        if product and update_linear_via_api(
+            client,
+            quote_id,
+            EMPTY_GUID,
+            product,
+            length_in=float(length_in),
+            qty=max(1, int(qty or 1)),
+            name=format_linear_description(
+                part_no, sku=sku, length_in=length_in, noun=description
+            ),
+        ):
+            notes.append(
+                f"Long addLinear create-new ProductID={pid} SKU={sku or '?'} "
+                f"{part_no} qty={qty} length={length_in}"
+            )
+            return notes
 
     detail = client.get_json(f"v1/quote/{quote_id}")
     items = list(detail.get("ItemList") or [])

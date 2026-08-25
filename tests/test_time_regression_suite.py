@@ -375,7 +375,7 @@ def test_step_weldment_finish_or_no_graft(
     client = MagicMock()
     client.config.website_cookie = cookie
     client.request.return_value.status_code = 200
-    client.get_json.return_value = {
+    populated = {
         "QuoteNumber": part_key,
         "ItemCount": 2,
         "ItemList": [
@@ -383,8 +383,17 @@ def test_step_weldment_finish_or_no_graft(
             {"Description": "21679 PLATE", "ProductType": 100},
         ],
     }
+    _n = {"i": 0}
+
+    def _get_json(_path):
+        _n["i"] += 1
+        if cookie and _n["i"] == 1:
+            return {"QuoteNumber": part_key, "ItemCount": 0, "ItemList": []}
+        return populated
+
+    client.get_json.side_effect = _get_json
     service = SecturaFabPushService(client=client)
-    finish = MagicMock(return_value=["Finish CAD"])
+    finish = MagicMock(return_value=["Finish CAD"] if cookie else [])
     with patch.object(service, "finish_cad_files", finish), patch.object(
         service, "nest_after_finish", return_value=["Nest"]
     ), patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
@@ -429,11 +438,12 @@ def test_step_weldment_finish_or_no_graft(
         )
     assert result.ok is True
     graft.assert_not_called()
-    if expect_finish:
-        finish.assert_called_once()
-    else:
-        finish.assert_not_called()
-        assert any("cookie not set" in n for n in (result.notes or []))
+    finish.assert_called_once()
+    if not expect_finish:
+        assert any(
+            "falling back" in n or "Finish failed" in n or "0 ItemList" in n
+            for n in (result.notes or [])
+        )
     if finalize.called:
         assert finalize.call_args.kwargs.get("attach_profile") in {None, False}
 

@@ -406,49 +406,36 @@ def retype_linears_to_pt10_keep_persist(client: Any, quote_id: str) -> list[str]
     """
     detail = client.get_json(f"v1/quote/{quote_id}")
     items = list(detail.get("ItemList") or [])
-    snapshot = {str(it.get("ID") or ""): dict(it) for it in items if isinstance(it, dict)}
-    cad_ok = any(_cad_fields_on_get(it) for it in items if isinstance(it, dict) and not _is_assembly(it) and not _is_linear(it) and not _is_component(it))
     lin_ok = any(_linear_fields_on_get(it) for it in items if isinstance(it, dict) and _is_linear(it))
     if not lin_ok:
         return ["Skipped PT 10 overlay — no Linear has Machine=Saw and Length>0 on GET"]
+    from secturafab.quote_update import quote_online_update
+
+    params: list[dict[str, Any]] = []
     n = 0
     for it in items:
         if not isinstance(it, dict) or not _is_linear(it):
             continue
-        src = snapshot.get(str(it.get("ID") or ""), it)
-        _copy_calculator_fields(src, it)
         if not _linear_fields_on_get(it):
             continue
-        if it.get("ProductType") in (10, "10") and str(it.get("Category") or "") == "Linear":
+        if it.get("ProductType") in (10, "10"):
             continue
-        it["ProductType"] = 10
-        it["Category"] = "Linear"
-        it["ItemType"] = "Linear"
-        it["IsLinear"] = True
-        _copy_calculator_fields(src, it)
+        iid = str(it.get("ID") or "")
+        if not iid:
+            continue
+        params.extend(
+            [
+                {"ID": iid, "ParamName": "ProductType", "Value": "10"},
+                {"ID": iid, "ParamName": "Category", "Value": "Linear"},
+                {"ID": iid, "ParamName": "ItemType", "Value": "Linear"},
+            ]
+        )
         n += 1
-    for it in items:
-        if not isinstance(it, dict):
-            continue
-        src = snapshot.get(str(it.get("ID") or ""), it)
-        _copy_calculator_fields(src, it)
-    if not n:
+    if not params:
         return []
-    if not cad_ok:
-        # Do not POST a quote whose GET already lost Cad persist.
-        return [
-            "WARNING: skipped PT 10 overlay — Cad Material/Thickness empty on GET "
-            "(a quote POST would lock that in)"
-        ]
-    detail["ItemList"] = items
-    save = client.request("POST", "v1/quote", json=detail)
-    try:
-        status = int(getattr(save, "status_code", 200) or 200)
-    except (TypeError, ValueError):
-        status = 200
-    if status >= 400:
-        return [f"WARNING: PT 10 overlay save failed ({status})"]
-    return [f"PT 10 overlay on {n} Linear line(s) (GET-verify persist fields after)"]
+    if not quote_online_update(client, quote_id, params):
+        return ["WARNING: PT 10 overlay via quoteOnline/update failed"]
+    return [f"PT 10 overlay on {n} Linear line(s) (quoteOnline/update, no quote POST)"]
 
 
 def _is_assembly(item: dict[str, Any]) -> bool:
@@ -469,6 +456,18 @@ def _is_linear(item: dict[str, Any]) -> bool:
     return cat.lower() in {"pipe", "tube", "bar", "structural"}
 
 
+def item_has_imported_cad(item: dict[str, Any] | None) -> bool:
+    """True when Image Files / quickAddCAD already created DataPart geometry."""
+    item = item or {}
+    data = str(item.get("Data") or "")
+    sub = str(item.get("ProductSubType") or "").strip().lower()
+    if item.get("FileID"):
+        return True
+    if data.startswith("DataPart") or data.startswith("DataPartPDF"):
+        return True
+    return sub.startswith("prt_")
+
+
 def _is_component(item: dict[str, Any]) -> bool:
     if _is_assembly(item) or _is_linear(item):
         return False
@@ -479,14 +478,15 @@ def _is_component(item: dict[str, Any]) -> bool:
 def stamp_new_line_item_packs(client: Any, quote_id: str) -> list[str]:
     """No-op. POST v1/quote OperationCostList grafts become orange tags.
 
-    addplate / addLinear (and Image Files / Long Finish when the cookie
-    works) write Primary Costs + MaterialCost / UnitCost. Do not fall back
-    to grafting Laser/Drafting/Saw Setup as item-level operations.
+    Image Files / CAD Files Finish (CadImport FileList with SourceDataID)
+    write Primary Costs. Cookie-less addplate / addLinear only persist
+    Material/Length/UnitCost. Do not graft Laser/Drafting/Saw Setup as
+    item-level operations.
     """
     return [
         "Skipped grafted Laser/Drafting/Saw packs — "
-        "addplate/addLinear write Primary Costs + MaterialCost "
-        "(PR tag / no Saw Setup badge)"
+        "Finish / New Line Item write Primary Costs "
+        "(addplate/addLinear persist MaterialCost only)"
     ]
 
 
@@ -1075,7 +1075,7 @@ def persist_classified_item_fields(
         if not length:
             length = parsed.get("length_in")
         plate = match_plate_product(plates, thickness=thk, material=grade)
-        if iid and plate:
+        if iid and plate and not item_has_imported_cad(it):
             if addplate_item(
                 client,
                 quote_id,

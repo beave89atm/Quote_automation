@@ -14,7 +14,8 @@ from typing import Any
 from quote_core.part_materials import PartMaterial, build_part_material_map, lookup_part_material
 
 from .assembly_ops import ensure_assembly_root, relink_assembly_children
-from .client import SecturaFabApiError, SecturaFabClient
+from .client import SecturaFabApiError, SecturaFabClient, SecturaFabWebsiteAuthError
+from .website import EMPTY_GUID, filelist_from_cadimport_upload
 from .component_ops import ensure_purchased_components, find_purchased_part_keys
 from .item_desc import (
     format_cad_description,
@@ -165,7 +166,8 @@ def quick_add_component_pdf(
         "qty": max(1, int(qty)),
         "units": "inch",
         "memo": (memo or pdf_path.stem)[:240],
-        "partMode": "Cad",
+        "partMode": "AsSingle",
+        "location": "Bay1",
     }
     with pdf_path.open("rb") as fh:
         return client.post_multipart(
@@ -452,11 +454,9 @@ def build_pdf_only_assembly(
                 part_materials=part_materials,
                 default_material=material,
                 default_thickness=thickness,
+                library_folder=library_folder,
+                related_pdf_names=related_pdf_names,
             )
-        )
-        notes.append(
-            "Skipped child-PDF quickAddCAD — Cad plates are Image Files / "
-            "New Line Item (no PDF page-outline flats / 3h laser)"
         )
     if linear_rows:
         notes.append(
@@ -472,16 +472,34 @@ def build_pdf_only_assembly(
         return notes
 
     catalog = fetch_linear_catalog(client)
+    from secturafab.line_item_ops import (
+        _length_from_library,
+        bom_row_cut_length,
+        parse_cut_length as _parse_cut,
+    )
+
     for row in linear_rows:
         part_no = str(row.get("part_no") or row.get("part_number") or "").strip()
+        noun = str(row.get("description") or "")
+        length = (
+            bom_row_cut_length(row)
+            or _parse_cut(noun)
+            or _length_from_library(
+                part_no,
+                library_folder=library_folder,
+                related_pdf_names=related_pdf_names,
+                extra_pdfs=extra_pdfs,
+            )
+        )
         notes.extend(
             add_linear_item_from_bom(
                 client,
                 quote_id,
                 part_no=part_no,
-                description=str(row.get("description") or ""),
+                description=noun,
                 qty=max(1, int(row.get("qty") or 1)),
                 material=material,
+                length_in=length,
                 catalog=catalog,
             )
         )
@@ -591,7 +609,8 @@ def build_pdf_only_assembly(
         )
     )
     notes.append(
-        "Skipped grafted Profile / laser 5-pack — addplate writes Primary Costs"
+        "Skipped grafted Profile / laser 5-pack — Image Files quickAddCAD / "
+        "Long addLinear write DataPart/DataLinear (Finish stamps Primary Costs)"
     )
     notes.extend(relink_assembly_children(client, quote_id, part_key=part_key))
     notes.append(
@@ -659,17 +678,20 @@ def _add_cad_plate_items(
     part_materials: dict | None = None,
     default_material: str = "A36",
     default_thickness: str | None = None,
+    library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
 ) -> list[str]:
-    """New Line Item for Cad plates — typed thk/grade/noun, never PDF sheet flats.
+    """Image Files / New Line Item for Cad plates.
 
-    Machine is already Laser Bay 1. Do not graft Laser/Drafting as
-    OperationName — addplate writes Primary Costs + MaterialCost and stamps PR.
+    Prefer ``quickAddCAD`` on the component PDF (28106-2 ``prt_dxf`` / DataPart
+    + UnitCost). Do not graft Laser/Drafting as OperationName. Website
+    ``AddItem_PDFFiles`` is tried first when a session exists.
     """
     from quote_core.part_materials import lookup_part_material
 
-    detail = client.get_json(f"v1/quote/{quote_id}")
-    items = list(detail.get("ItemList") or [])
-    added = 0
+    notes: list[str] = []
+    imported = 0
+    shells: list[dict[str, Any]] = []
     for row in rows:
         part_no = str(row.get("part_no") or row.get("part_number") or "").strip()
         noun = str(row.get("description") or "").strip()
@@ -688,34 +710,116 @@ def _add_cad_plate_items(
             length_in=None,
             noun=noun,
         )
-        line = {
-            "ID": str(uuid.uuid4()),
-            "Description": (desc or part_no)[:500],
-            "Quantity": qty,
-            "ProductType": 100,
-            "ItemType": "Cad",
-            "Category": "Cad",
-            "IsLinear": False,
-            "IsPlate": True,
-            "IsPart": True,
-            "Machine": "Laser - Bay1",
-            "Material": grade,
-            "Thickness": thk,
-            "OperationCostList": [],
-            "PrimaryTime": 0.0,
-            "UnitPrimaryTime": 0.0,
-        }
-        items.append(line)
-        added += 1
-    if not added:
-        return []
-    detail["ItemList"] = items
+        pdf = resolve_component_pdf(
+            part_no,
+            library_folder=library_folder,
+            related_pdf_names=related_pdf_names,
+        )
+        if pdf and pdf.is_file():
+            try:
+                with pdf.open("rb") as fh:
+                    uploaded = client.upload_item_dxf_files(
+                        [("files", (pdf.name, fh, "application/pdf"))],
+                        quote_id=quote_id,
+                    )
+                rows = filelist_from_cadimport_upload(uploaded)
+                if not rows:
+                    rows = [
+                        {
+                            "ErrorStatus": 0,
+                            "Qty": qty,
+                            "Name": desc or part_no,
+                            "FileName": pdf.name,
+                            "Machine": "Laser",
+                            "Material": grade,
+                            "Thickness": thk,
+                            "Thickness_Units": "inch",
+                        }
+                    ]
+                else:
+                    for row in rows:
+                        row["ErrorStatus"] = 0
+                        row["Qty"] = qty
+                        row["Quantity"] = qty
+                        row["Machine"] = row.get("Machine") or "Laser"
+                        row["Material"] = grade
+                        row["Thickness"] = thk
+                        row["Thickness_Units"] = "inch"
+                        row["Name"] = desc or row.get("Name") or part_no
+                with pdf.open("rb") as fh:
+                    client.add_item_pdf_files(
+                        quote_id=quote_id,
+                        file_list=rows,
+                        item_id=EMPTY_GUID,
+                        customer_material=False,
+                        files=[("files", (pdf.name, fh, "application/pdf"))],
+                    )
+                imported += 1
+                notes.append(
+                    f"Image Files Finish AddItem_PDFFiles {pdf.name} "
+                    f"(CadImport FileList n={len(rows)})"
+                )
+                continue
+            except SecturaFabWebsiteAuthError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                notes.append(f"WARNING: AddItem_PDFFiles {pdf.name}: {exc}")
+            try:
+                # add_item_pdf_files opens the file; reopen for quickAddCAD
+                quick_add_component_pdf(
+                    client,
+                    quote_id=quote_id,
+                    pdf_path=pdf,
+                    material=str(grade or "A36"),
+                    thickness=str(thk or "0.25"),
+                    machine="Laser",
+                    qty=qty,
+                    memo=desc or part_no,
+                )
+                imported += 1
+                notes.append(f"Image Files quickAddCAD {pdf.name} ({part_no})")
+                continue
+            except Exception as exc:  # noqa: BLE001
+                notes.append(f"WARNING: quickAddCAD {pdf.name}: {exc}")
+        shells.append(
+            {
+                "ID": str(uuid.uuid4()),
+                "Description": (desc or part_no)[:500],
+                "Quantity": qty,
+                "ProductType": 100,
+                "ItemType": "Cad",
+                "Category": "Cad",
+                "IsLinear": False,
+                "IsPlate": True,
+                "IsPart": True,
+                "Machine": "Laser - Bay1",
+                "Material": grade,
+                "Thickness": thk,
+                "OperationCostList": [],
+                "PrimaryTime": 0.0,
+                "UnitPrimaryTime": 0.0,
+            }
+        )
+    if imported:
+        notes.append(
+            f"Imported {imported} Cad plate(s) via Image Files / quickAddCAD "
+            "(DataPart + UnitCost; Finish stamps PR + Primary Costs)"
+        )
+    if not shells:
+        if not imported:
+            notes.append("WARNING: No Cad plates imported")
+        return notes
+    detail = client.get_json(f"v1/quote/{quote_id}")
+    items = list(detail.get("ItemList") or [])
+    detail["ItemList"] = items + shells
     save = client.request("POST", "v1/quote", json=detail)
     if save.status_code >= 400:
-        return [f"Adding Cad plate lines failed ({save.status_code})"]
-    return [
-        f"Added {added} Cad plate line(s) (Laser Bay 1 shell; addplate fills Primary Costs)"
-    ]
+        notes.append(f"Adding Cad plate lines failed ({save.status_code})")
+    else:
+        notes.append(
+            f"Added {len(shells)} Cad plate shell(s) (no component PDF for Image Files)"
+        )
+    return notes
 
 
 def _add_component_items(

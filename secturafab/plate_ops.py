@@ -119,30 +119,33 @@ def addplate_item(
         return False
     width = float(width_in) if width_in and width_in > 0 else 1.0
     length = float(length_in) if length_in and length_in > 0 else 1.0
-    resp = client.request(
-        "POST",
-        "v1/quoteOnline/addplate",
-        params={
-            "quoteID": quote_id,
-            "itemID": item_id,
-            "productID": product.get("ID"),
-            "productConfigID": EMPTY_GUID,
-            "memo": "",
-            "name": (name or "")[:80],
-            "material": product.get("MaterialGrade") or "A36",
-            "thickness": thk,
-            "thickness_Units": product.get("Thickness_Unit") or "inch",
-            "width": width,
-            "width_unit": "inch",
-            "length": length,
-            "length_unit": "inch",
-            "qty": max(1, int(qty or 1)),
-            "fixedPrice": 0,
-            "customerMaterial": False,
-        },
-    )
-    try:
-        status = int(getattr(resp, "status_code", 400) or 400)
-    except (TypeError, ValueError):
-        status = 400
-    return status < 400
+    params = {
+        "quoteID": quote_id,
+        "itemID": item_id,
+        "productID": product.get("ID"),
+        "productConfigID": EMPTY_GUID,
+        "memo": "",
+        "name": (name or "")[:80],
+        "material": product.get("MaterialGrade") or "A36",
+        "thickness": thk,
+        "thickness_Units": product.get("Thickness_Unit") or "inch",
+        "width": width,
+        "width_unit": "inch",
+        "length": length,
+        "length_unit": "inch",
+        "qty": max(1, int(qty or 1)),
+        "fixedPrice": 0,
+        "customerMaterial": False,
+    }
+    # QuoteAPI_AddItem_Plate is the New Line Item write. quoteOnline/addplate
+    # is the overlay that fills Material/Thickness without calculators.
+    resp = None
+    for path in ("v1/quote/addplate", "v1/quoteOnline/addplate"):
+        resp = client.request("POST", path, params=params)
+        try:
+            status = int(getattr(resp, "status_code", 400) or 400)
+        except (TypeError, ValueError):
+            status = 400
+        if status < 400:
+            return True
+    return False

@@ -146,9 +146,61 @@ def test_build_pdf_weldment_does_not_quickadd_child_pdfs(tmp_path: Path):
         )
     qadd.assert_not_called()
     assert any(
-        "New Line Item" in n or "typed API lines" in n or "typed flat" in n for n in notes
+        "no component PDF" in n or "New Line Item" in n or "typed API lines" in n or "typed flat" in n
+        for n in notes
     )
-    assert any("Skipped child-PDF quickAddCAD" in n for n in notes)
+
+
+def test_build_pdf_weldment_quickadds_cad_component_pdfs(tmp_path: Path):
+    from secturafab.client import SecturaFabWebsiteAuthError
+
+    lib = tmp_path / "Pedestal Weldment - 1001898-1"
+    lib.mkdir()
+    (lib / "14500-1.pdf").write_bytes(b"%PDF-1.4")
+    client = MagicMock()
+    client.get_json.return_value = {"ItemList": []}
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    client.add_item_pdf_files.side_effect = SecturaFabWebsiteAuthError("302")
+    with patch(
+        "secturafab.pdf_assembly_ops.quick_add_component_pdf", return_value={"ok": True}
+    ) as qadd, patch(
+        "secturafab.pdf_assembly_ops.fetch_linear_catalog", return_value=[]
+    ), patch(
+        "secturafab.pdf_assembly_ops.create_assembly_shell",
+        return_value=["Created Assembly shell"],
+    ), patch(
+        "secturafab.pdf_assembly_ops.ensure_assembly_root", return_value=[]
+    ), patch(
+        "secturafab.pdf_assembly_ops.relink_assembly_children", return_value=[]
+    ), patch(
+        "secturafab.pdf_assembly_ops.ensure_purchased_components", return_value=[]
+    ), patch(
+        "secturafab.pdf_assembly_ops.find_purchased_part_keys", return_value={}
+    ), patch(
+        "secturafab.pdf_assembly_ops.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.pdf_assembly_ops.bind_linear_product_ids",
+        return_value=[],
+    ), patch(
+        "secturafab.pdf_assembly_ops.categorize_pdf_imported_items", return_value=[]
+    ), patch(
+        "secturafab.pdf_assembly_ops._apply_kyle_line_descriptions", return_value=[]
+    ):
+        notes = build_pdf_only_assembly(
+            client,
+            quote_id="qid",
+            part_key="1001898-1",
+            bom_rows=_bom_rows(),
+            library_folder=lib,
+            related_pdf_names=[],
+            material="A36",
+            thickness="0.25",
+            assembly_description="1001898-1 - PEDESTAL WELDMENT",
+        )
+    assert qadd.called
+    assert any("quickAddCAD" in n and "14500" in n for n in notes)
 
 
 def test_cookie_less_1001898_push_dry_run(tmp_path: Path):
@@ -165,6 +217,8 @@ def test_cookie_less_1001898_push_dry_run(tmp_path: Path):
         service, "create_quote", return_value="qid"
     ) as create_q, patch.object(
         service, "allocate_quote_number", return_value="1001898-1"
+    ), patch.object(
+        service, "finish_pdf_files", return_value=[]
     ), patch(
         "secturafab.push.refresh_bom_rows_for_push",
         return_value=(_bom_rows(), []),
@@ -221,7 +275,7 @@ def test_step_21678_cookie_uses_finish_dry_run(tmp_path: Path):
     stp.write_bytes(b"ISO")
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=test"
-    client.get_json.return_value = {
+    populated = {
         "QuoteNumber": "21678-1",
         "ItemCount": 4,
         "ItemList": [
@@ -229,6 +283,13 @@ def test_step_21678_cookie_uses_finish_dry_run(tmp_path: Path):
             {"Description": "21679 TUBE", "ProductType": 10, "IsLinear": True},
         ],
     }
+    _n = {"i": 0}
+
+    def _get_json(_path):
+        _n["i"] += 1
+        return {"QuoteNumber": "21678-1", "ItemCount": 0, "ItemList": []} if _n["i"] == 1 else populated
+
+    client.get_json.side_effect = _get_json
     service = SecturaFabPushService(client=client)
     finish = MagicMock(return_value=["Finish CAD Files → classify → Finish"])
     with patch.object(service, "finish_cad_files", finish), patch.object(
@@ -287,7 +348,7 @@ def test_step_cookie_missing_flags_and_does_not_graft(tmp_path: Path):
     ), patch.object(
         service, "quick_add_cad", return_value={"ok": True}
     ), patch.object(
-        service, "finish_cad_files"
+        service, "finish_cad_files", return_value=[]
     ) as finish, patch.object(
         service, "apply_item_categories", return_value=[]
     ), patch(
@@ -323,8 +384,10 @@ def test_step_cookie_missing_flags_and_does_not_graft(tmp_path: Path):
             job_id=41,
         )
     assert result.ok is True
-    finish.assert_not_called()
+    finish.assert_called()
     graft.assert_not_called()
     assert finalize.call_args.kwargs.get("attach_profile") in {None, False}
-    assert any("cookie not set" in n for n in (result.notes or []))
-    assert any("not grafting" in n or "grafted Profile" in n for n in (result.notes or []))
+    assert any(
+        "falling back" in n or "Finish failed" in n or "grafted Profile" in n
+        for n in (result.notes or [])
+    )

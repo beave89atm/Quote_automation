@@ -14,8 +14,11 @@ Recovered from QuoteOrderEdit JS (not in public OpenAPI). controllerName = '/Quo
 
 FileList = #gridDXFParts rows with ErrorStatus===0 and Qty>0.
 Finish writes Primary Costs (Laser/Drafting/… under PR; Saw + Saw Setup
-under the linear calculator). Cookie-less addplate / addLinear do the same
-writes GET reads. Do not graft those names as item-level OperationName tags.
+under the linear calculator). The FileList must be the CadImport upload
+grid row (SourceDataID / FileID / Stock_*). Slimming those IDs leaves
+AddItem_DXFFiles / AddItem_PDFFiles with nothing to calculate. Cookie-less
+addplate / addLinear fill Material/Length/UnitCost but do **not** write
+OperationCostList. Do not graft those names as item-level OperationName tags.
 """
 
 from __future__ import annotations
@@ -58,9 +61,29 @@ WEBSITE_AUTH_GAP = (
     "GetItem_AddView / AddItem_DXFFiles redirect to /Account/Login without a "
     "www cookie. Image Files (AddItem_PDFFiles) and Long (AddItem_Linear) are "
     "called with the API bearer (same as CadImport); if they 302, cookie-less "
-    "addplate / addLinear fill MaterialCost and let the calculator write "
-    "Primary Costs. Do not graft Laser/Drafting/Saw Setup as item tags. "
+    "quickAddCAD / create-new addLinear write DataPart/DataLinear + UnitCost. "
+    "Do not graft Laser/Drafting/Saw Setup as item tags. "
     "Set SECTURAFAB_WEBSITE_COOKIE only for DXF Finish."
+)
+
+# Identity keys CadImport/UploadItem_DXFFiles returns. Finish needs these
+# to attach DataPart and run the Profile / Saw calculators. Do not drop.
+CADIMPORT_IDENTITY_FIELDS = (
+    "SourceDataID",
+    "FileID",
+    "CadType",
+    "FileType",
+    "PartCount",
+    "OpenContourCount",
+    "Stock_X",
+    "Stock_Y",
+    "Stock_Z",
+    "Stock_Units",
+    "Stock_Length",
+    "Stock_Diameter",
+    "PartID",
+    "ParentName",
+    "Error",
 )
 
 # Field bag the JS copies from #gridDXFParts into FileList.
@@ -101,6 +124,7 @@ FILELIST_FIELDS = (
     "ID",
     "ItemID",
     "Units",
+    *CADIMPORT_IDENTITY_FIELDS,
 )
 
 
@@ -152,16 +176,26 @@ def filter_finish_filelist(rows: list[dict[str, Any]] | None) -> list[dict[str, 
 
 
 def slim_filelist_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Keep the Finish field bag; pass through extra Linear* / grid keys."""
-    slim: dict[str, Any] = {}
-    for key, val in row.items():
-        if key in FILELIST_FIELDS or key.startswith("Linear") or key.startswith("Dim"):
-            slim[key] = val
+    """Keep the CadImport / #gridDXFParts row. JS Finish posts the whole row."""
+    slim: dict[str, Any] = dict(row)
     if "Qty" not in slim and "Quantity" in slim:
         slim["Qty"] = slim["Quantity"]
     if "Quantity" not in slim and "Qty" in slim:
         slim["Quantity"] = slim["Qty"]
     return slim
+
+
+def filelist_from_cadimport_upload(payload: Any) -> list[dict[str, Any]]:
+    """Rows from POST /CadImport/UploadItem_DXFFiles (status=OK, List=[...])."""
+    if isinstance(payload, list):
+        return [dict(r) for r in payload if isinstance(r, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("List", "FileList", "Data", "Result"):
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            return [dict(r) for r in rows if isinstance(r, dict)]
+    return []
 
 
 def build_dxf_finish_payload(

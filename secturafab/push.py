@@ -50,6 +50,7 @@ from .website import (
     EMPTY_GUID,
     WEBSITE_AUTH_GAP,
     SecturaFabWebsiteAuthError,
+    filelist_from_cadimport_upload,
     overlay_classified_row,
     pick_closest_linear_product,
     row_name,
@@ -956,10 +957,13 @@ class SecturaFabPushService:
         return len(list(peek.get("ItemList") or []))
 
     def _cadimport_rows(self, payload: Any) -> list[dict[str, Any]]:
+        uploaded = filelist_from_cadimport_upload(payload)
+        if uploaded:
+            return uploaded
         if isinstance(payload, list):
             return [r for r in payload if isinstance(r, dict)]
         if isinstance(payload, dict):
-            for key in ("Data", "data", "Results", "Items", "FileList", "rows"):
+            for key in ("Data", "data", "Results", "Items", "FileList", "rows", "List"):
                 val = payload.get(key)
                 if isinstance(val, list):
                     return [r for r in val if isinstance(r, dict)]
@@ -1191,18 +1195,22 @@ class SecturaFabPushService:
             self.client.get_item_add_view(quote_id, item_type="dxf")
             notes.append("Opened CAD Files dialog (GetItem_AddView ItemType=dxf)")
         except SecturaFabWebsiteAuthError:
-            raise
+            notes.append(
+                "GetItem_AddView 302 — continuing CadImport upload / Finish "
+                "with bearer (AddItem_DXFFiles still needs a website session)"
+            )
         except SecturaFabApiError as exc:
             notes.append(f"WARNING: GetItem_AddView returned {exc}")
 
         open_files = []
+        upload_payload: Any = None
         try:
             form_files = []
             for path in cad_files:
                 fh = path.open("rb")
                 open_files.append(fh)
                 form_files.append(("files", (path.name, fh, _mime_for(path))))
-            self.client.upload_item_dxf_files(form_files, quote_id=quote_id)
+            upload_payload = self.client.upload_item_dxf_files(form_files, quote_id=quote_id)
             notes.append(
                 f"Uploaded CAD via /CadImport/UploadItem_DXFFiles: {cad_files[0].name}"
             )
@@ -1215,7 +1223,12 @@ class SecturaFabPushService:
         except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
             notes.append(f"WARNING: CadImport SetUnits failed: {exc}")
 
-        data_rows = self._cadimport_rows(self.client.cadimport_data())
+        # Prefer the upload List (SourceDataID / FileID / Stock). CadImport/Data
+        # is session-empty without a www cookie and must not replace those IDs
+        # with BOM-name stubs — Finish then has nothing to calculate.
+        data_rows = filelist_from_cadimport_upload(upload_payload)
+        if not data_rows:
+            data_rows = self._cadimport_rows(self.client.cadimport_data())
         if not data_rows:
             data_rows = self.seed_cadimport_rows(
                 cad_files=cad_files,
@@ -1226,6 +1239,11 @@ class SecturaFabPushService:
             )
             notes.append(
                 "CadImport/Data was empty — seeded FileList from STEP/BOM names"
+            )
+        else:
+            notes.append(
+                f"CadImport FileList kept {len(data_rows)} upload row(s) "
+                f"(SourceDataID/FileID for Finish calculators)"
             )
         classified, class_notes = self.classify_cadimport_rows(
             data_rows,
@@ -1265,7 +1283,10 @@ class SecturaFabPushService:
             self.client.get_item_add_view(quote_id, item_type="pdf")
             notes.append("Opened Image Files dialog (GetItem_AddView ItemType=pdf)")
         except SecturaFabWebsiteAuthError:
-            raise
+            notes.append(
+                "GetItem_AddView(pdf) 302 — continuing Image Files Finish "
+                "with bearer (AddItem_PDFFiles still needs a website session)"
+            )
         except SecturaFabApiError as exc:
             notes.append(f"WARNING: GetItem_AddView(pdf) returned {exc}")
 
@@ -1277,18 +1298,55 @@ class SecturaFabPushService:
                 fh = path.open("rb")
                 open_files.append(fh)
                 form_files.append(("files", (path.name, fh, _mime_for(path))))
-                file_list.append(
-                    {
-                        "ErrorStatus": 0,
-                        "Qty": max(1, int(qty or 1)),
-                        "Name": description or path.stem,
-                        "FileName": path.name,
-                        "Machine": "Laser",
-                        "Material": material,
-                        "Thickness": thickness,
-                        "Thickness_Units": "inch",
-                    }
+            upload_payload = None
+            try:
+                upload_payload = self.client.upload_item_dxf_files(
+                    form_files, quote_id=quote_id
                 )
+                notes.append(
+                    "Uploaded Image Files via /CadImport/UploadItem_DXFFiles "
+                    f"({len(pdf_files)} PDF)"
+                )
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
+                notes.append(f"WARNING: CadImport PDF upload failed: {exc}")
+            file_list = filelist_from_cadimport_upload(upload_payload)
+            if not file_list:
+                for path in pdf_files:
+                    file_list.append(
+                        {
+                            "ErrorStatus": 0,
+                            "Qty": max(1, int(qty or 1)),
+                            "Name": description or path.stem,
+                            "FileName": path.name,
+                            "Machine": "Laser",
+                            "Material": material,
+                            "Thickness": thickness,
+                            "Thickness_Units": "inch",
+                        }
+                    )
+            else:
+                for row in file_list:
+                    row["ErrorStatus"] = 0
+                    row["Qty"] = max(1, int(row.get("Qty") or qty or 1))
+                    row["Quantity"] = row["Qty"]
+                    row["Machine"] = row.get("Machine") or "Laser"
+                    if material:
+                        row["Material"] = material
+                    if thickness:
+                        row["Thickness"] = thickness
+                        row["Thickness_Units"] = row.get("Thickness_Units") or "inch"
+            # Re-open PDFs for the Finish multipart (upload consumed the handles).
+            for fh in open_files:
+                try:
+                    fh.close()
+                except OSError:
+                    pass
+            open_files = []
+            form_files = []
+            for path in pdf_files:
+                fh = path.open("rb")
+                open_files.append(fh)
+                form_files.append(("files", (path.name, fh, _mime_for(path))))
             self.client.add_item_pdf_files(
                 quote_id=quote_id,
                 file_list=file_list,
@@ -1649,82 +1707,85 @@ class SecturaFabPushService:
             used_finish = False
             used_step = False
             used_pdf_shell = False
-            # Default = working main push (quickAddCAD). Finish is additive
-            # only when a real website cookie is present.
-            if self._website_cookie_present():
-                try:
-                    if cad:
+            # Always try CAD Files / Image Files / Long Finish. CadImport
+            # accepts bearer; AddItem_* 302s without a www session and we
+            # fall back to quickAddCAD / create-new addLinear (not grafts).
+            items_before_finish = self._peek_item_count(quote_id)
+            try:
+                if cad:
+                    notes.extend(
+                        self.finish_cad_files(
+                            quote_id=quote_id,
+                            cad_files=cad,
+                            material=material,
+                            thickness=thickness,
+                            qty=qty,
+                            takeoff=takeoff,
+                            bom_rows=bom_rows,
+                            library=library,
+                            extra_pdfs=extra_pdfs,
+                            part_key=part_key,
+                        )
+                    )
+                    uploaded.extend(p.name for p in cad)
+                elif loose_linear:
+                    notes.extend(
+                        self.add_loose_linears(
+                            quote_id=quote_id,
+                            description=quote_description or title or part_key,
+                            material=material,
+                            qty=qty,
+                        )
+                    )
+                elif drawings or has_job_pdf:
+                    pdfs = list(drawings) if drawings else []
+                    if has_job_pdf and job_pdf not in pdfs:
+                        pdfs.insert(0, job_pdf)
+                    if pdfs:
                         notes.extend(
-                            self.finish_cad_files(
+                            self.finish_pdf_files(
                                 quote_id=quote_id,
-                                cad_files=cad,
+                                pdf_files=pdfs,
                                 material=material,
                                 thickness=thickness,
                                 qty=qty,
-                                takeoff=takeoff,
-                                bom_rows=bom_rows,
-                                library=library,
-                                extra_pdfs=extra_pdfs,
-                                part_key=part_key,
+                                description=quote_description or title,
                             )
                         )
-                        uploaded.extend(p.name for p in cad)
-                    elif loose_linear:
-                        notes.extend(
-                            self.add_loose_linears(
-                                quote_id=quote_id,
-                                description=quote_description or title or part_key,
-                                material=material,
-                                qty=qty,
-                            )
-                        )
-                    elif drawings or has_job_pdf:
-                        pdfs = list(drawings) if drawings else []
-                        if has_job_pdf and job_pdf not in pdfs:
-                            pdfs.insert(0, job_pdf)
-                        if pdfs:
-                            notes.extend(
-                                self.finish_pdf_files(
-                                    quote_id=quote_id,
-                                    pdf_files=pdfs,
-                                    material=material,
-                                    thickness=thickness,
-                                    qty=qty,
-                                    description=quote_description or title,
-                                )
-                            )
-                            uploaded.extend(p.name for p in pdfs)
-                    if self._peek_item_count(quote_id) > 0:
-                        used_finish = True
-                    else:
-                        notes.append(
-                            "WARNING: Finish produced 0 ItemList lines — "
-                            "falling back to working push"
-                        )
-                except (
-                    SecturaFabApiError,
-                    SecturaFabWebsiteAuthError,
-                    ValueError,
-                    OSError,
-                ) as exc:
-                    if self._peek_item_count(quote_id) > 0:
-                        notes.append(
-                            f"WARNING: Finish errored after creating items ({exc}); "
-                            "keeping Finish quote"
-                        )
-                        used_finish = True
-                    else:
-                        notes.append(
-                            f"WARNING: Finish failed ({exc}); "
-                            "falling back to working push"
-                        )
-            else:
-                notes.append(
-                    "Website cookie not set — CAD Files Finish (AddItem_DXFFiles) skipped. "
-                    "Using working Sectura push (quickAddCAD / lesson 04). "
-                    "Image Files / Long use bearer; New Line Item stamps laser/saw packs "
-                    "if those MVC routes 302 (not grafting Profile or PDF page-outline times)"
+                        uploaded.extend(p.name for p in pdfs)
+                created = self._peek_item_count(quote_id) > items_before_finish
+                # Only item-count growth counts as Finish success. Note-string
+                # matching treated MagicMock / 302-then-log as a real calculator
+                # write and skipped the working fallback.
+                if created:
+                    used_finish = True
+                else:
+                    notes.append(
+                        "WARNING: Finish produced 0 ItemList lines — "
+                        "falling back to working push"
+                    )
+            except (
+                SecturaFabApiError,
+                SecturaFabWebsiteAuthError,
+                ValueError,
+                TypeError,
+                OSError,
+            ) as exc:
+                created = (
+                    self._peek_item_count(quote_id) > items_before_finish
+                    and not isinstance(exc, SecturaFabWebsiteAuthError)
                 )
+                if created:
+                    notes.append(
+                        f"WARNING: Finish errored after creating items ({exc}); "
+                        "keeping Finish quote"
+                    )
+                    used_finish = True
+                else:
+                    notes.append(
+                        f"WARNING: Finish failed ({exc}); "
+                        "falling back to working push"
+                    )
 
             if used_finish:
                 notes.extend(ensure_imperial_item_units(self.client, quote_id))
@@ -1956,7 +2017,8 @@ class SecturaFabPushService:
                             raise
                 if used_pdf_shell or used_step or (bom_rows and library.get("folder")):
                     notes.append(
-                        "Skipped grafted Profile — addplate/addLinear write Primary Costs"
+                        "Skipped grafted Profile — CadImport FileList + Finish "
+                        "write Primary Costs"
                     )
 
             notes.extend(
@@ -1973,7 +2035,8 @@ class SecturaFabPushService:
             )
             notes.append(
                 "Skipped grafted Laser/Drafting/Saw packs — "
-                "addplate/addLinear write Primary Costs + MaterialCost"
+                "Finish / New Line Item write Primary Costs "
+                "(addplate/addLinear only persist Material/Length/UnitCost)"
             )
             extra_pdfs = list(drawings or [])
             folder = library.get("folder")

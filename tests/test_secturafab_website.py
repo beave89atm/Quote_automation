@@ -17,6 +17,7 @@ from secturafab.website import (
     build_dxf_finish_payload,
     build_linear_add_payload,
     build_pdf_finish_payload,
+    filelist_from_cadimport_upload,
     filter_finish_filelist,
     overlay_classified_row,
     pick_closest_linear_product,
@@ -59,6 +60,34 @@ def test_dxf_finish_payload_js_contract():
     assert payload["FileList"][1]["LinearLength"] == 9.75
     assert all(r.get("ErrorStatus") == 0 for r in payload["FileList"])
     assert all(r.get("Qty") > 0 for r in payload["FileList"])
+
+
+def test_finish_filelist_keeps_cadimport_source_ids():
+    rows = [
+        {
+            "ErrorStatus": 0,
+            "Qty": 1,
+            "Name": "14500-1",
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "CadType": 0,
+            "FileType": ".pdf",
+            "Stock_X": 11.0,
+            "Stock_Y": 6.25,
+            "Stock_Units": "inch",
+            "Machine": None,
+            "Material": "A572",
+        }
+    ]
+    payload = build_dxf_finish_payload("qid", rows)
+    assert payload["FileList"][0]["SourceDataID"] == "src-1"
+    assert payload["FileList"][0]["FileID"] == "file-1"
+    assert payload["FileList"][0]["Stock_X"] == 11.0
+    uploaded = filelist_from_cadimport_upload(
+        {"status": "OK", "List": rows, "ListOther": []}
+    )
+    assert len(uploaded) == 1
+    assert uploaded[0]["SourceDataID"] == "src-1"
 
 
 def test_filter_filelist_matches_js_grid_rule():
@@ -146,6 +175,51 @@ def test_pick_closest_linear_prefers_round_bar_for_hose_guard():
     assert note is None or "mismatch" not in note.lower() or "A36" in (note or "")
 
 
+def test_finish_cad_files_uses_upload_filelist_ids(tmp_path: Path):
+    stp = tmp_path / "21678-1.STEP"
+    stp.write_bytes(b"ISO")
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {
+        "status": "OK",
+        "List": [
+            {
+                "SourceDataID": "src-cad",
+                "FileID": "file-cad",
+                "FileName": "21678-1.STEP",
+                "Name": "21680-1 PLATE",
+                "Qty": 1,
+                "ErrorStatus": 0,
+                "Stock_X": 18.7,
+                "Stock_Y": 23.4,
+            }
+        ],
+    }
+    client.cadimport_data.return_value = {}
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    client.add_item_dxf_files.side_effect = _add
+    service = SecturaFabPushService(client=client)
+    notes = service.finish_cad_files(
+        quote_id="qid",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="21678-1",
+    )
+    assert captured["file_list"][0]["SourceDataID"] == "src-cad"
+    assert captured["file_list"][0]["FileID"] == "file-cad"
+    assert any("SourceDataID" in n for n in notes)
+
+
 def test_add_item_dxf_files_sends_js_contract():
     client = MagicMock()
     from secturafab.client import SecturaFabClient
@@ -211,7 +285,7 @@ def test_push_job_no_cookie_uses_working_quickadd(tmp_path: Path):
     ), patch.object(
         service, "quick_add_cad", return_value={"ok": True}
     ) as qadd, patch.object(
-        service, "finish_cad_files"
+        service, "finish_cad_files", return_value=[]
     ) as finish, patch.object(
         service, "apply_item_categories", return_value=[]
     ), patch(
@@ -249,8 +323,11 @@ def test_push_job_no_cookie_uses_working_quickadd(tmp_path: Path):
     assert result.ok is True
     create_q.assert_called_once()
     qadd.assert_called_once()
-    finish.assert_not_called()
-    assert any("working Sectura push" in n for n in (result.notes or []))
+    finish.assert_called()
+    assert any(
+        "falling back" in n or "Finish failed" in n or "0 ItemList" in n
+        for n in (result.notes or [])
+    )
 
 
 def test_push_job_cookie_uses_finish_not_quickadd(tmp_path: Path):
@@ -260,11 +337,18 @@ def test_push_job_cookie_uses_finish_not_quickadd(tmp_path: Path):
     stp.write_bytes(b"ISO")
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=test"
-    client.get_json.return_value = {
+    populated = {
         "QuoteNumber": "21678-1",
         "ItemCount": 12,
         "ItemList": [{"Description": "21680 PLATE"}, {"Description": "21679 TUBE"}],
     }
+    _n = {"i": 0}
+
+    def _get_json(_path):
+        _n["i"] += 1
+        return {"QuoteNumber": "21678-1", "ItemCount": 0, "ItemList": []} if _n["i"] == 1 else populated
+
+    client.get_json.side_effect = _get_json
     service = SecturaFabPushService(client=client)
     finish = MagicMock(return_value=["Finish CAD"])
     with patch.object(service, "finish_cad_files", finish), patch.object(
@@ -392,11 +476,18 @@ def test_push_pdf_only_with_cookie_uses_image_files_finish(tmp_path: Path):
     pdf.write_bytes(b"%PDF")
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=test"
-    client.get_json.return_value = {
+    populated = {
         "QuoteNumber": "lonely",
         "ItemCount": 1,
         "ItemList": [{"Description": "lonely", "ProductType": 100}],
     }
+    _n = {"i": 0}
+
+    def _get_json(_path):
+        _n["i"] += 1
+        return {"QuoteNumber": "lonely", "ItemCount": 0, "ItemList": []} if _n["i"] == 1 else populated
+
+    client.get_json.side_effect = _get_json
     service = SecturaFabPushService(client=client)
     pdf_finish = MagicMock(return_value=["Image Files Finish"])
     with patch.object(service, "finish_pdf_files", pdf_finish), patch.object(

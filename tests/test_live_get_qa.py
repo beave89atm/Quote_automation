@@ -454,6 +454,56 @@ def test_persist_uses_addplate_addlinear_and_get_verifies():
     assert float(lin.kwargs["params"]["length"]) == 12.0
     assert lin.kwargs["params"]["ItemID"] == "l1"
     assert "12" in str(lin.kwargs["params"]["name"])
+    assert lin.kwargs["params"]["productType"] == "part"
+
+
+def test_persist_skips_addplate_on_imported_datapart():
+    from unittest.mock import MagicMock
+
+    from secturafab.line_item_ops import persist_classified_item_fields
+
+    imported = {
+        "ItemList": [
+            {
+                "ID": "c1",
+                "Description": '14500-1 - 1/4" A572 Grade 50 PEDESTAL TOP PLATE',
+                "ProductType": 100,
+                "Category": "Cad",
+                "FileID": "file-1",
+                "ProductSubType": "prt_dxf",
+                "Data": 'DataPart:{"PartName":"14500-1"}',
+                "Material": "A572",
+                "Thickness": 0.25,
+                "UnitCost": 5.96,
+                "MaterialCost": 0.41,
+                "OperationCostList": [],
+            }
+        ]
+    }
+    client = MagicMock()
+    client.get_json.return_value = imported
+    save = MagicMock()
+    save.status_code = 200
+    save.text = "true"
+    client.request.return_value = save
+    persist_classified_item_fields(
+        client,
+        "qid",
+        bom_rows=[{"part_no": "14500-1", "description": "PEDESTAL TOP PLATE", "qty": 1}],
+        plate_catalog=[
+            {
+                "ID": "pl-a572",
+                "ProductName": "PL1/4-A572",
+                "MaterialGrade": "A572",
+                "Thickness": 0.25,
+                "Active": True,
+                "Thickness_Unit": "inch",
+            }
+        ],
+        persist_linear=False,
+    )
+    paths = [c.args[1] for c in client.request.call_args_list if len(c.args) > 1]
+    assert not any(p.endswith("addplate") for p in paths), paths
 
 
 def test_parse_cut_length_from_drawing_phrases():
@@ -845,19 +895,11 @@ def test_retype_pt10_copies_cad_material_and_linear_length():
     client.request.return_value = save
     notes = retype_linears_to_pt10_keep_persist(client, "qid")
     assert any("PT 10" in n for n in notes)
-    posted = next(
-        c.kwargs["json"]
-        for c in client.request.call_args_list
-        if c.args[:2] == ("POST", "v1/quote")
-    )
-    cad = next(it for it in posted["ItemList"] if it["ID"] == "c1")
-    lin = next(it for it in posted["ItemList"] if it["ID"] == "l1")
-    assert cad["Material"] == "A572"
-    assert float(cad["Thickness"]) == 0.25
-    assert lin["ProductType"] == 10
-    assert lin["Category"] == "Linear"
-    assert lin["Machine"] == "Saw"
-    assert float(lin["Length"]) == 16.0
+    assert not any(c.args[:2] == ("POST", "v1/quote") for c in client.request.call_args_list)
+    upd = next(c for c in client.request.call_args_list if "quoteOnline/update" in str(c))
+    body = upd.kwargs.get("json") or []
+    assert any(row.get("ParamName") == "ProductType" and row.get("Value") == "10" for row in body)
+    assert any(row.get("ID") == "l1" for row in body)
 
 
 def test_linear_product_type_20_fails_live_get():
