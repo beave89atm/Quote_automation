@@ -80,6 +80,13 @@ def _op_time_hours(op: dict[str, Any]) -> float:
 def _item_category(item: dict[str, Any], bom_hint: str = "") -> str | None:
     if item.get("IsAssembly") or item.get("ProductType") in _ASSEMBLY_TYPES:
         return "Assembly"
+    hint = f"{item.get('Description') or ''} {bom_hint}".strip()
+    if bom_hint:
+        from secturafab.push import classify_sectura_item
+
+        hinted = classify_sectura_item(hint)
+        if hinted in {"Component", "Linear"}:
+            return hinted
     cat = str(item.get("Category") or item.get("ItemType") or "").strip()
     if cat in {"Cad", "Linear", "Component"}:
         return cat
@@ -89,7 +96,6 @@ def _item_category(item: dict[str, Any], bom_hint: str = "") -> str | None:
         return "Component"
     if item.get("IsPlate") or item.get("ProductType") in (100, "100"):
         return "Cad"
-    hint = f"{item.get('Description') or ''} {bom_hint}".strip()
     token = normalize_part_token(hint.split()[0] if hint.split() else "")
     if not hint or (not bom_hint and not _PN_TOKEN.fullmatch(token)):
         return None
@@ -187,9 +193,13 @@ def evaluate_quote_get(
     check_lines = bool(bom_rows)
     assembly_desc = None
     cad_n = lin_n = 0
+    from secturafab.item_desc import match_bom_part_no
+    from secturafab.qty_ops import normalize_part_key as _npk
+
     for it in items:
         desc = str(it.get("Description") or "").strip()
-        hint = bom_hints.get(_desc_key(desc), "")
+        matched_pn = match_bom_part_no(desc, bom_rows)
+        hint = bom_hints.get(_npk(matched_pn or ""), "") or bom_hints.get(_desc_key(desc), "")
         cat = _item_category(it, hint)
         if cat == "Assembly":
             assembly_desc = desc
@@ -259,9 +269,58 @@ def evaluate_quote_get(
         if cat == "Component" and check_lines:
             if part and is_bare_part_number(desc, part):
                 failures.append(f"Component Description is bare PN {desc!r}")
-            token = _desc_key(desc)
-            if token and token not in desc.replace(" ", "").upper() and " - " not in desc:
-                failures.append(f"Component {desc!r} should be '{{PN}} - {{noun}}'")
+
+    if check_lines:
+        from secturafab.item_desc import is_catalog_part_no, match_bom_part_no
+        from secturafab.push import classify_sectura_item
+        from secturafab.qty_ops import normalize_part_key
+
+        claimed: set[str] = set()
+        for row in bom_rows or []:
+            pn = str(row.get("part_no") or row.get("part_number") or "").strip()
+            noun = str(row.get("description") or "")
+            if classify_sectura_item(f"{pn} {noun}") != "Component":
+                continue
+            match = None
+            for it in items:
+                iid = str(it.get("ID") or "")
+                if iid in claimed:
+                    continue
+                it_desc = str(it.get("Description") or "")
+                got = match_bom_part_no(it_desc, bom_rows)
+                if got == pn or (pn and pn.upper() in it_desc.upper()):
+                    match = it
+                    break
+                if match_bom_part_no(it_desc, [row]) == pn:
+                    match = it
+                    break
+            if match is None:
+                failures.append(f"Component {pn} ({noun}) missing from ItemList")
+                continue
+            claimed.add(str(match.get("ID") or ""))
+            it_desc = str(match.get("Description") or "")
+            if match.get("ProductType") in (100, "100") or (
+                str(match.get("Category") or "") == "Cad"
+                and match.get("ProductType") not in (200, "200")
+            ):
+                failures.append(
+                    f"Component {pn} {it_desc!r} is Cad ProductType "
+                    f"{match.get('ProductType')!r} (want 200)"
+                )
+            first = it_desc.split()[0].rstrip(".,;:-") if it_desc.split() else ""
+            if pn.upper() not in it_desc.upper():
+                failures.append(
+                    f"Component {it_desc!r} lacks real PN {pn} "
+                    f"(want '{pn} - {{noun}}')"
+                )
+            elif not is_catalog_part_no(first) or normalize_part_key(first) != normalize_part_key(pn):
+                failures.append(
+                    f"Component {it_desc!r} should start with dashed PN {pn}"
+                )
+            elif "-" in pn and "-" not in first:
+                failures.append(
+                    f"Component {it_desc!r} stripped dash from PN {pn}"
+                )
 
     notes.append(f"Checked {cad_n} Cad / {lin_n} Linear line(s)")
     if assembly_desc:

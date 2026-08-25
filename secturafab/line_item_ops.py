@@ -426,102 +426,163 @@ def persist_classified_item_fields(
     library_folder: Any = None,
     related_pdf_names: list[str] | None = None,
 ) -> list[str]:
-    """Write Material / Thickness / Length / Width / Machine onto items (not just Description)."""
-    from quote_core.part_materials import lookup_part_material
+    """Persist Cad/Linear fields on the APIs GET actually reads.
+
+    ``POST v1/quote`` of Material/Thickness/Length/Machine is a no-op after CAD
+    settle. Cad grade/thk go through ``UpdateItem_Part``. Linear Machine/Length
+    and ItemList Descriptions go through ``PUT quoteOnline/update``.
+    """
+    from quote_core.part_materials import _parse_thickness_token, lookup_part_material
 
     from secturafab.item_desc import (
         format_component_line,
         format_linear_description,
+        is_catalog_part_no,
         item_flat_dims,
         item_length_in,
+        match_bom_part_no,
         parse_cad_desc_fields,
     )
+    from secturafab.push import classify_sectura_item
     from secturafab.qty_ops import normalize_part_key
-    from secturafab.weld_ops import _desc_token
+    from secturafab.quote_update import quote_online_update
 
     detail = client.get_json(f"v1/quote/{quote_id}")
     items = list(detail.get("ItemList") or [])
     bom_desc: dict[str, str] = {}
+    bom_qty: dict[str, int] = {}
     for row in bom_rows or []:
         pn = str(row.get("part_no") or row.get("part_number") or "").strip()
         key = normalize_part_key(pn)
-        if key:
-            bom_desc[key] = str(row.get("description") or "")
-    changed = 0
+        if not key:
+            continue
+        bom_desc[key] = str(row.get("description") or "")
+        try:
+            bom_qty[key] = max(1, int(row.get("qty") or 1))
+        except (TypeError, ValueError):
+            bom_qty[key] = 1
+    notes: list[str] = []
+    update_params: list[dict[str, Any]] = []
+    cad_n = 0
+    lin_n = 0
+    desc_n = 0
     for it in items:
         if not isinstance(it, dict) or _is_assembly(it):
             continue
-        token = normalize_part_key(_desc_token(str(it.get("Description") or "")))
-        noun = bom_desc.get(token, "")
-        if _is_component(it):
-            pn = token or _desc_token(str(it.get("Description") or ""))
-            line = format_component_line(pn, noun or str(it.get("Description") or ""))
-            if line and str(it.get("Description") or "") != line:
+        iid = str(it.get("ID") or "")
+        raw_desc = str(it.get("Description") or "")
+        pn = match_bom_part_no(raw_desc, bom_rows)
+        if not pn and is_catalog_part_no(raw_desc.split()[0] if raw_desc.split() else ""):
+            pn = raw_desc.split()[0].rstrip(".,;:")
+        noun = bom_desc.get(normalize_part_key(pn or ""), "")
+        want_cat = classify_sectura_item(f"{pn or ''} {noun} {raw_desc}")
+        if _is_component(it) or want_cat == "Component":
+            line = format_component_line(pn or "", noun or raw_desc)
+            if iid and it.get("ProductType") not in (200, "200"):
+                update_params.append({"ID": iid, "ParamName": "ProductType", "Value": "200"})
+                update_params.append({"ID": iid, "ParamName": "Category", "Value": "Component"})
+                update_params.append({"ID": iid, "ParamName": "ItemType", "Value": "Component"})
+            if line and line != raw_desc and iid:
                 it["Description"] = line[:500]
-                changed += 1
+                update_params.append({"ID": iid, "ParamName": "Description", "Value": line[:500]})
+                desc_n += 1
             continue
-        if _is_linear(it):
-            it["Machine"] = "Saw"
+        if _is_linear(it) or want_cat == "Linear":
             length = (
                 item_length_in(it)
                 or parse_length_lg(noun)
-                or parse_length_lg(str(it.get("Description") or ""))
+                or parse_length_lg(raw_desc)
                 or _length_from_library(
-                    token,
+                    pn or "",
                     library_folder=library_folder,
                     related_pdf_names=related_pdf_names,
                 )
             )
-            if length and length > 0:
-                it["Length"] = length
-                it["LinearLength"] = length
-                sku = str(it.get("SKU") or "").strip() or None
-                pn = token or _desc_token(str(it.get("Description") or ""))
-                if pn:
-                    it["Description"] = format_linear_description(
-                        pn, sku=sku, length_in=length, noun=noun
+            sku = str(it.get("SKU") or "").strip() or None
+            line = raw_desc
+            if pn:
+                line = format_linear_description(
+                    pn, sku=sku, length_in=length, noun=noun
+                )
+            if iid:
+                update_params.append({"ID": iid, "ParamName": "Machine", "Value": "Saw"})
+                if length and length > 0:
+                    update_params.append(
+                        {"ID": iid, "ParamName": "Length", "Value": str(length)}
                     )
-            apply_linear_new_line_ops(it)
-            changed += 1
+                if line and line != raw_desc:
+                    update_params.append(
+                        {"ID": iid, "ParamName": "Description", "Value": line[:500]}
+                    )
+                    desc_n += 1
+            lin_n += 1
             continue
-        parsed = parse_cad_desc_fields(str(it.get("Description") or ""))
-        pm = lookup_part_material(part_materials or {}, token) if token else None
+        parsed = parse_cad_desc_fields(raw_desc)
+        pm = lookup_part_material(part_materials or {}, pn or "") if pn else None
         grade = (
             (pm.material if pm else None)
             or parsed.get("material")
             or str(it.get("Material") or "").strip()
             or default_material
         )
-        thk = (
+        thk_raw = (
             (pm.thickness_param() if pm else None)
             or parsed.get("thickness")
             or it.get("Thickness")
             or default_thickness
         )
-        it["Material"] = grade
-        it["MaterialGrade"] = grade
-        it["Thickness"] = thk
-        it["Machine"] = it.get("Machine") or "Laser"
+        thk = str(thk_raw or "").strip()
+        parsed_thk = _parse_thickness_token(thk) if thk else None
+        if parsed_thk:
+            thk = f"{parsed_thk:.4g}"
         width, length = item_flat_dims(it)
         if not width:
             width = parsed.get("width_in")
         if not length:
             length = parsed.get("length_in")
-        if width and length:
-            it["Width"] = width
-            it["Length"] = length
-            it["FlatWidth"] = width
-            it["FlatLength"] = length
-        apply_cad_new_line_ops(it)
-        changed += 1
-    if not changed:
-        return []
-    detail["ItemList"] = items
-    save = client.request("POST", "v1/quote", json=detail)
-    try:
-        status = int(getattr(save, "status_code", 200) or 200)
-    except (TypeError, ValueError):
-        status = 200
-    if status >= 400:
-        return [f"WARNING: Item field persist failed ({status})"]
-    return [f"Persisted Material/Thickness/Length/Machine on {changed} line(s)"]
+        if iid and grade and thk:
+            qty = bom_qty.get(normalize_part_key(pn or ""), 1)
+            upd = client.request(
+                "POST",
+                "v1/quoteOnline/UpdateItem_Part",
+                params={
+                    "quoteID": quote_id,
+                    "itemID": iid,
+                    "material": grade,
+                    "thickness": thk,
+                    "machine": "Laser",
+                    "qty": int(qty),
+                },
+            )
+            try:
+                status = int(getattr(upd, "status_code", 200) or 200)
+            except (TypeError, ValueError):
+                status = 200
+            if status < 400:
+                cad_n += 1
+            else:
+                notes.append(
+                    f"UpdateItem_Part failed for {raw_desc[:40]!r}: {status}"
+                )
+        if iid:
+            if width and length:
+                update_params.append({"ID": iid, "ParamName": "Width", "Value": str(width)})
+                update_params.append({"ID": iid, "ParamName": "Length", "Value": str(length)})
+            if raw_desc:
+                update_params.append(
+                    {"ID": iid, "ParamName": "Description", "Value": raw_desc[:500]}
+                )
+    if update_params:
+        quote_online_update(client, quote_id, update_params)
+    if cad_n:
+        notes.append(
+            f"UpdateItem_Part Material/Thickness on {cad_n} Cad line(s) "
+            "(not v1/quote POST)"
+        )
+    if lin_n:
+        notes.append(
+            f"quoteOnline/update Machine=Saw + Length on {lin_n} Linear line(s)"
+        )
+    if desc_n:
+        notes.append(f"quoteOnline/update Description on {desc_n} line(s)")
+    return notes

@@ -26,6 +26,8 @@ def test_classify_fittings_are_component_not_cad():
     assert classify_sectura_item("50006-5 3/4 NPT MAGNETIC PLUG") == "Component"
     assert classify_sectura_item("50122-1 1 1/4 NPT PIPE CAP") == "Component"
     assert classify_sectura_item("8166-1 FILLER NECK") == "Component"
+    assert classify_sectura_item("FILLER - NECK") == "Component"
+    assert classify_sectura_item("FILLER NECK") == "Component"
     assert classify_sectura_item("50029-7 1 1/4 90 STREET ELBOW") == "Component"
     assert classify_sectura_item("10081-2 PEDESTAL HOSE TUBE") == "Linear"
 
@@ -72,6 +74,29 @@ def test_kyle_description_formats():
     assert format_component_description("50115-7 1 1/4 NPT NIPPLE X 4 LG.") == (
         "1 1/4 NPT NIPPLE X 4 LG."
     )
+    assert format_component_description("1 1/4 90 STREET ELBOW", part_no="1") == (
+        "1 1/4 90 STREET ELBOW"
+    )
+    from secturafab.item_desc import format_component_line, match_bom_part_no
+
+    assert format_component_line("50029-7", "1 1/4 90 STREET ELBOW") == (
+        "50029-7 - 1 1/4 90 STREET ELBOW"
+    )
+    assert format_component_line("50006-5", "3/4 NPT MAGNETIC PLUG") == (
+        "50006-5 - 3/4 NPT MAGNETIC PLUG"
+    )
+    assert format_component_line("8166-1", "FILLER NECK") == "8166-1 - FILLER NECK"
+    rows = [
+        {"part_no": "50029-7", "description": "1 1/4 90 STREET ELBOW"},
+        {"part_no": "50006-5", "description": "3/4 NPT MAGNETIC PLUG"},
+        {"part_no": "50030-5", "description": "3/4 NPT COUPLING"},
+        {"part_no": "50137-5", "description": "3/4 NPT HALF COUPLING"},
+        {"part_no": "8166-1", "description": "FILLER NECK"},
+    ]
+    assert match_bom_part_no("1 - 1/4 90 STREET ELBOW", rows) == "50029-7"
+    assert match_bom_part_no("500065 - 3/4 NPT MAGNETIC PLUG", rows) == "50006-5"
+    assert match_bom_part_no("34 - 3/4 NPT COUPLING", rows) == "50030-5"
+    assert match_bom_part_no("FILLER - NECK", rows) == "8166-1"
     assert format_component_description("14500-1") == ""
     asm = format_assembly_description("1001898-1", "PEDESTAL WELDMENT")
     assert asm == "1001898-1 - PEDESTAL WELDMENT"
@@ -228,6 +253,30 @@ def test_cookie_less_push_does_not_graft_profile(tmp_path: Path):
         "Time Manufacturing Waco" in n or "Organization" in n or "Set Organization" in n
         for n in (result.notes or [])
     ) or detect_organization(library_folder=lib) == "Time Manufacturing Waco"
+
+
+def test_purchased_component_keeps_dashed_pn():
+    from secturafab.component_ops import ensure_purchased_components
+
+    client = MagicMock()
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "k1",
+                "Description": "8166-1 - FILLER NECK",
+                "ProductType": 100,
+            }
+        ]
+    }
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    ensure_purchased_components(
+        client, "qid", purchased_keys={"8166-1": "FILLER NECK"}
+    )
+    saved = client.request.call_args.kwargs["json"]["ItemList"][0]
+    assert saved["Description"] == "8166-1 - FILLER NECK"
+    assert saved["ProductType"] == 200
 
 
 def test_rename_imported_descriptions_is_gone():

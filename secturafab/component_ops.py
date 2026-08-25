@@ -179,13 +179,19 @@ def ensure_purchased_components(
         it["WeightCategory"] = None
         if isinstance(it.get("Data"), str) and str(it.get("Data")).startswith("DataPart:"):
             it["Data"] = None
-        from secturafab.item_desc import format_component_description
+        from secturafab.item_desc import (
+            format_component_description,
+            format_component_line,
+            is_catalog_part_no,
+        )
 
-        noun = format_component_description(
-            str(it.get("Description") or ""), part_no=token
-        ) or format_component_description(reason, part_no=token)
-        if noun:
-            it["Description"] = noun[:500]
+        orig = str(it.get("Description") or "")
+        pn = token if is_catalog_part_no(token) else None
+        noun = format_component_description(orig, part_no=pn) or format_component_description(
+            reason, part_no=pn
+        )
+        if pn and noun:
+            it["Description"] = format_component_line(pn, noun)[:500]
         changed += 1
         names.append(f"{token or '?'} ({reason})")
 

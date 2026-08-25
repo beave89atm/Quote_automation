@@ -310,6 +310,21 @@ def _is_laser_plate(item: dict[str, Any]) -> bool:
     return _is_laser_machine(machine) and bool(machine)
 
 
+def _is_cad_update_target(item: dict[str, Any]) -> bool:
+    """Cad plates for UpdateItem_Part — including New Line items with no CAD Data."""
+    pt = item.get("ProductType")
+    if pt in (300, "300", "assembly") or item.get("IsAssembly"):
+        return False
+    if pt in (200, "200", 10, "10") or item.get("IsLinear"):
+        return False
+    cat = str(item.get("Category") or item.get("ItemType") or "").strip().lower()
+    if cat in {"linear", "component"}:
+        return False
+    if pt in (100, "100") or cat == "cad" or item.get("IsPlate"):
+        return True
+    return _is_laser_plate(item)
+
+
 def _build_profile_ops(item_id: str, cut_time_hours: float) -> list[dict[str, Any]]:
     ops: list[dict[str, Any]] = []
     laser_cut_filled = False
@@ -411,14 +426,15 @@ def apply_part_materials(
     Must run *before* Profile/Weld attach, then ``wait_for_quote_settle``.
     Never call this after ops are attached — UpdateItem_Part wipes them.
     """
-    from quote_core.part_materials import PartMaterial, lookup_part_material
+    from quote_core.part_materials import PartMaterial, _parse_thickness_token, lookup_part_material
 
+    from .item_desc import match_bom_part_no
     from .qty_ops import bom_qty_map, normalize_part_key
     from .weld_ops import _desc_token
 
     notes: list[str] = []
     detail = client.get_json(f"v1/quote/{quote_id}")
-    targets = [it for it in (detail.get("ItemList") or []) if _is_laser_plate(it)]
+    targets = [it for it in (detail.get("ItemList") or []) if _is_cad_update_target(it)]
     if not targets:
         return ["No laser plate items for material update"]
 
@@ -462,7 +478,12 @@ def apply_part_materials(
         use_thk = (pm.thickness_param() if pm else None) or thickness
         use_thk = re.sub(r"(?i)\s*(inches|inch|in)\s*$", "", str(use_thk).strip())
         use_thk = use_thk.replace('"', "").replace("″", "").strip() or str(thickness)
-        token = _desc_token(str(it.get("Description") or ""))
+        parsed_thk = _parse_thickness_token(use_thk)
+        if parsed_thk:
+            use_thk = f"{parsed_thk:.4g}"
+        token = match_bom_part_no(str(it.get("Description") or ""), bom_rows) or _desc_token(
+            str(it.get("Description") or "")
+        )
         bom_q = qty_by_pn.get(normalize_part_key(token), 1)
         params: dict[str, Any] = {
             "quoteID": quote_id,

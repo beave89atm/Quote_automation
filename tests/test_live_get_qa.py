@@ -41,7 +41,7 @@ def test_gold_1001898_get_passes_checklist():
     assert payload["ItemList"][0]["Description"] == "1001898-1 - PEDESTAL WELDMENT"
 
 
-@pytest.mark.parametrize("fail", ["org", "bare_pn", "no_ops"])
+@pytest.mark.parametrize("fail", ["org", "bare_pn", "no_ops", "empty_fields", "eaten_pn", "filler_cad"])
 def test_failed_live_get_shapes_fail_the_build(fail: str):
     payload = gold_1001898_get(fail=fail)
     result = evaluate_quote_get(
@@ -63,6 +63,49 @@ def test_failed_live_get_shapes_fail_the_build(fail: str):
             expected_assembly_title=ASSEMBLY_DESC,
             bom_rows=_bom_rows(),
         )
+
+
+def test_empty_cad_linear_fields_fail_live_get():
+    payload = gold_1001898_get(fail="empty_fields")
+    result = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert result.ok is False
+    blob = " ".join(result.failures)
+    assert "Material" in blob
+    assert "Thickness" in blob
+    assert "Saw" in blob or "Machine" in blob
+    assert "cut length" in blob
+
+
+def test_eaten_component_pn_and_filler_cad_fail_live_get():
+    eaten = evaluate_quote_get(
+        gold_1001898_get(fail="eaten_pn"),
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert eaten.ok is False
+    blob = " ".join(eaten.failures)
+    assert "50029-7" in blob
+    assert "8166-1" in blob or "FILLER" in blob
+    filler = evaluate_quote_get(
+        gold_1001898_get(fail="filler_cad"),
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert filler.ok is False
+    assert any("Cad" in f and "8166-1" in f for f in filler.failures)
 
 
 def test_new_line_item_pack_is_not_profile_datapart():
@@ -219,7 +262,7 @@ def test_list_orgs_still_searches_time_after_other_customers():
     assert org["ID"] == "time-real"
 
 
-def test_persist_copies_cad_desc_fields_and_stamps_packs():
+def test_persist_uses_update_item_part_not_v1_quote_fields():
     from unittest.mock import MagicMock
 
     from secturafab.line_item_ops import persist_classified_item_fields
@@ -243,10 +286,18 @@ def test_persist_copies_cad_desc_fields_and_stamps_packs():
                 "ProductID": "pid",
                 "OperationCostList": [],
             },
+            {
+                "ID": "k1",
+                "Description": "FILLER - NECK",
+                "ProductType": 100,
+                "Category": "Cad",
+                "OperationCostList": [],
+            },
         ]
     }
     save = MagicMock()
     save.status_code = 200
+    save.text = "true"
     client.request.return_value = save
     persist_classified_item_fields(
         client,
@@ -254,19 +305,41 @@ def test_persist_copies_cad_desc_fields_and_stamps_packs():
         bom_rows=[
             {"part_no": "14500-1", "description": "PEDESTAL TOP PLATE", "qty": 1},
             {"part_no": "1001880-2", "description": "PEDESTAL TUBE 12 LG.", "qty": 1},
+            {"part_no": "8166-1", "description": "FILLER NECK", "qty": 1},
         ],
     )
-    saved = client.request.call_args.kwargs["json"]["ItemList"]
-    cad = saved[0]
-    lin = saved[1]
-    assert cad["Thickness"] == "1/4"
-    assert "A572" in str(cad["Material"])
-    assert cad["Machine"] == "Laser"
-    assert cad["OperationCostList"]
-    assert lin["Machine"] == "Saw"
-    assert float(lin["Length"]) == 12.0
-    assert "12" in lin["Description"]
-    assert lin["OperationCostList"]
+    part_calls = [
+        c
+        for c in client.request.call_args_list
+        if str(c.args[1] if len(c.args) > 1 else c.kwargs.get("path") or "").endswith(
+            "UpdateItem_Part"
+        )
+        or "UpdateItem_Part" in str(c)
+    ]
+    assert part_calls, client.request.call_args_list
+    params = part_calls[0].kwargs.get("params") or {}
+    assert params.get("material")
+    assert params.get("thickness")
+    assert "A572" in str(params.get("material"))
+    field_posts = [
+        c
+        for c in client.request.call_args_list
+        if c.args[:2] == ("POST", "v1/quote") or (
+            len(c.args) >= 2 and c.args[0] == "POST" and c.args[1] == "v1/quote"
+        )
+    ]
+    assert not field_posts
+    update_calls = [
+        c
+        for c in client.request.call_args_list
+        if "quoteOnline/update" in str(c)
+    ]
+    assert update_calls
+    blob = str(client.request.call_args_list)
+    assert "Saw" in blob
+    assert "12" in blob
+    assert "8166-1" in blob
+    assert "FILLER NECK" in blob or "FILLER - NECK" in blob
 
 
 def test_bom_family_title_is_pedestal_weldment_not_child_noun():

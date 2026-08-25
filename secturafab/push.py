@@ -124,7 +124,7 @@ _COMPONENT_HINTS = (
     "UNION",
 )
 _COMPONENT_WORD_RE = re.compile(
-    r"\b(ELBOW|COUPLING|NIPPLE|PLUG|CAP|FITTING|REDUCER|UNION)\b",
+    r"\b(ELBOW|COUPLING|NIPPLE|PLUG|CAP|FITTING|REDUCER|UNION|FILLER\s*-?\s*NECK)\b",
     re.IGNORECASE,
 )
 
@@ -151,10 +151,12 @@ def classify_sectura_item(description: str) -> str:
     """
     text = f" {str(description or '').upper()} "
     # Collapse spaces so "KING PIN" and "KINGPIN" both match.
-    compact = text.replace(" ", "")
+    compact = text.replace(" ", "").replace("-", "")
     if "HOSEGUARD" in compact or "HOSE GUARD" in text:
         return "Linear"
     if "KINGPIN" in compact:
+        return "Component"
+    if "FILLERNECK" in compact:
         return "Component"
     if any(h in text for h in _COMPONENT_HINTS) or _COMPONENT_WORD_RE.search(text):
         return "Component"
@@ -715,8 +717,12 @@ class SecturaFabPushService:
 
             if it.get("ProductType") in (300, "300", "assembly") or it.get("IsAssembly"):
                 continue
-            token = _npk(_desc_token(str(it.get("Description") or "")))
-            hint = f"{it.get('Description') or ''} {bom_hint.get(token, '')}"
+            desc = str(it.get("Description") or "")
+            from secturafab.item_desc import match_bom_part_no
+
+            pn = match_bom_part_no(desc, bom_rows)
+            token = _npk(pn or _desc_token(desc))
+            hint = f"{desc} {pn or ''} {bom_hint.get(token, '')}"
             cat = classify_sectura_item(hint)
             counts[cat] = counts.get(cat, 0) + 1
             it["ItemType"] = cat
@@ -1948,9 +1954,7 @@ class SecturaFabPushService:
                     notes.append(
                         "Skipped grafted Profile — packs from Image Files / Long / New Line Item"
                     )
-                    notes.extend(stamp_new_line_item_packs(self.client, quote_id))
 
-            notes.extend(stamp_new_line_item_packs(self.client, quote_id))
             notes.extend(
                 persist_classified_item_fields(
                     self.client,
@@ -1962,6 +1966,8 @@ class SecturaFabPushService:
                     related_pdf_names=list(library.get("related_pdfs") or []),
                 )
             )
+            # UpdateItem_Part can wipe OperationCostList — stamp packs after it.
+            notes.extend(stamp_new_line_item_packs(self.client, quote_id))
             notes.extend(
                 persist_quote_header(
                     self.client,

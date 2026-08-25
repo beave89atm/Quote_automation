@@ -141,4 +141,37 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
         for it in payload["ItemList"]:
             it["OperationCostList"] = []
             it["PrimaryTime"] = 0
+    elif fail == "empty_fields":
+        for it in payload["ItemList"]:
+            if it.get("ProductType") in (100, "100"):
+                it["Material"] = ""
+                it["Thickness"] = 0
+                it["Length"] = 0
+                it["Width"] = 0
+            if it.get("ProductType") in (10, "10"):
+                it["Machine"] = ""
+                it["Length"] = 0
+    elif fail == "eaten_pn":
+        eaten = {
+            "50029-7": "1 - 1/4 90 STREET ELBOW",
+            "50122-1": "1 - 1/4 NPT PIPE CAP",
+            "50006-5": "500065 - 3/4 NPT MAGNETIC PLUG",
+            "8166-1": "FILLER - NECK",
+            "50030-5": "34 - 3/4 NPT COUPLING",
+            "50115-7": "1 - 1/4 NPT NIPPLE X 4 LG.",
+            "50137-5": "34 - 3/4 NPT HALF COUPLING",
+        }
+        for it in payload["ItemList"]:
+            pn = str(it.get("ID") or "").split("cmp-", 1)[-1]
+            if pn in eaten:
+                it["Description"] = eaten[pn]
+    elif fail == "filler_cad":
+        for it in payload["ItemList"]:
+            if str(it.get("ID") or "") == "cmp-8166-1" or "8166-1" in str(
+                it.get("Description") or ""
+            ):
+                it["Description"] = "FILLER - NECK"
+                it["ProductType"] = 100
+                it["Category"] = "Cad"
+                it["IsPlate"] = True
     return payload

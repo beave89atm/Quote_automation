@@ -21,8 +21,10 @@ from .item_desc import (
     format_component_description,
     format_component_line,
     format_linear_description,
+    is_catalog_part_no,
     item_flat_dims,
     looks_like_drawing_sheet,
+    match_bom_part_no,
     normalize_part_token,
 )
 from .linear_ops import add_linear_item_from_bom, bind_linear_product_ids, fetch_linear_catalog
@@ -200,17 +202,20 @@ def _apply_kyle_line_descriptions(
                 it["Description"] = assembly_description[:500]
                 changed += 1
             continue
-        token = normalize_part_key(_desc_token(str(it.get("Description") or "")))
-        match = None
-        for pn in unused:
-            base = normalize_part_key(_part_base(pn))
-            full = normalize_part_key(pn)
-            if token == full or token == base or token.startswith(base):
-                match = pn
-                break
-        if match:
+        desc_text = str(it.get("Description") or "")
+        match = match_bom_part_no(desc_text, bom_rows)
+        token = normalize_part_key(_desc_token(desc_text))
+        if not match:
+            for cand in unused:
+                base = normalize_part_key(_part_base(cand))
+                full = normalize_part_key(cand)
+                if token == full or token == base or token.startswith(base):
+                    match = cand
+                    break
+        if match and match in unused:
             unused.remove(match)
-        pn = match or normalize_part_token(token)
+        first = normalize_part_token(_desc_token(desc_text))
+        pn = match or (first if is_catalog_part_no(first) else "")
         cat = str(it.get("Category") or it.get("ItemType") or "").strip()
         if not cat:
             from .push import classify_sectura_item
@@ -336,8 +341,10 @@ def categorize_pdf_imported_items(
     for it in items:
         if it.get("ProductType") in (_ASSEMBLY_TYPE, "300", "assembly"):
             continue
-        token = normalize_part_key(_desc_token(str(it.get("Description") or "")))
-        hint = f"{it.get('Description') or ''} {bom_desc.get(token, '')}"
+        desc_text = str(it.get("Description") or "")
+        pn = match_bom_part_no(desc_text, bom_rows)
+        token = normalize_part_key(pn or _desc_token(desc_text))
+        hint = f"{desc_text} {pn or ''} {bom_desc.get(token, '')}"
         cat = classify_sectura_item(hint)
         counts[cat] = counts.get(cat, 0) + 1
         it["ItemType"] = cat
@@ -527,7 +534,7 @@ def build_pdf_only_assembly(
 
     if part_materials:
         notes.append(f"Read material/thickness from {len(part_materials)} component PDF(s)")
-    if imported:
+    if cad_rows or imported:
         notes.extend(
             apply_part_materials(
                 client,
@@ -538,15 +545,16 @@ def build_pdf_only_assembly(
                 bom_rows=rows,
             )
         )
-        notes.extend(
-            wait_for_quote_settle(
-                client,
-                quote_id,
-                timeout_s=120.0,
-                stable_s=15.0,
-                min_wait_s=45.0,
+        if imported:
+            notes.extend(
+                wait_for_quote_settle(
+                    client,
+                    quote_id,
+                    timeout_s=120.0,
+                    stable_s=15.0,
+                    min_wait_s=45.0,
+                )
             )
-        )
     notes.extend(
         _apply_kyle_line_descriptions(
             client,

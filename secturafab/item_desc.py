@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 _PN_RE = re.compile(r"^\d{4,}(?:-\d+[A-Za-z]?)?$", re.IGNORECASE)
+_NOUN_WORD_RE = re.compile(r"[A-Z]{3,}")
+_NOUN_SKIP = frozenset({"NPT", "THE", "AND", "FOR", "WITH", "LG"})
 _PLATE_DIM_RE = re.compile(
     r"(?i)\b\d+(?:\.\d+)?\s*(?:in|\"|″)?\s*[x×]\s*\d+(?:\.\d+)?\s*(?:in|\"|″)?"
 )
@@ -37,6 +39,74 @@ def normalize_part_token(raw: str | None) -> str:
     if text.upper().startswith("PN "):
         text = text[3:].strip()
     return text
+
+
+def is_catalog_part_no(raw: str | None) -> bool:
+    """True for a shop PN like ``50029-7`` / ``14500-1``, not ``1`` or ``3/4``."""
+    token = normalize_part_token(raw).rstrip(".,;:")
+    return bool(_PN_RE.fullmatch(token))
+
+
+def _noun_key_words(text: str | None) -> frozenset[str]:
+    words = _NOUN_WORD_RE.findall(str(text or "").upper())
+    return frozenset(w for w in words if w not in _NOUN_SKIP)
+
+
+def match_bom_part_no(
+    description: str | None,
+    bom_rows: list[dict[str, Any]] | None,
+) -> str | None:
+    """Return the dashed BOM PN for an ItemList Description (never a first-word guess)."""
+    text = str(description or "").strip()
+    rows = [r for r in (bom_rows or []) if isinstance(r, dict)]
+    dashed: list[str] = []
+    for row in rows:
+        pn = str(row.get("part_no") or row.get("part_number") or "").strip()
+        if is_catalog_part_no(pn):
+            dashed.append(normalize_part_token(pn))
+
+    first = text.split()[0].rstrip(".,;:") if text.split() else ""
+    if is_catalog_part_no(first):
+        from secturafab.qty_ops import normalize_part_key
+
+        key = normalize_part_key(first)
+        for pn in dashed:
+            if normalize_part_key(pn) == key:
+                return pn
+        return normalize_part_token(first)
+
+    for pn in dashed:
+        if re.search(rf"(?i)(?<!\d){re.escape(pn)}(?!\d)", text):
+            return pn
+
+    item_words = _noun_key_words(text)
+    if not item_words:
+        return None
+    best_pn: str | None = None
+    best_score = 0
+    for row in rows:
+        pn = str(row.get("part_no") or row.get("part_number") or "").strip()
+        if not is_catalog_part_no(pn):
+            continue
+        words = _noun_key_words(str(row.get("description") or ""))
+        if not words:
+            continue
+        overlap = words & item_words
+        if not overlap:
+            continue
+        score = len(overlap)
+        if words == item_words:
+            score += 20
+        elif words <= item_words:
+            score += 10
+        elif item_words <= words:
+            score += 1
+        if score > best_score:
+            best_score = score
+            best_pn = pn
+    if best_score >= 2 or (best_score >= 1 and best_pn and len(item_words) == 1):
+        return best_pn
+    return None
 
 
 def is_bare_part_number(text: str | None, part_key: str | None = None) -> bool:
@@ -212,7 +282,8 @@ def format_component_description(name: str, *, part_no: str | None = None) -> st
     if len(parts) == 2 and is_bare_part_number(parts[0]):
         return parts[1].strip(" -,")
     pn = normalize_part_token(part_no)
-    if pn and text.upper().startswith(pn.upper()):
+    # Only strip a real catalog PN — never a leading ``1`` from ``1 1/4 …``.
+    if pn and is_catalog_part_no(pn) and text.upper().startswith(pn.upper()):
         rest = text[len(pn) :].strip(" -")
         return rest
     return text
@@ -222,9 +293,9 @@ def format_component_line(part_no: str, name: str) -> str:
     """Kyle Component line: ``{PN} - {noun}``."""
     pn = normalize_part_token(part_no)
     noun = format_component_description(name, part_no=pn)
-    if pn and noun:
+    if pn and is_catalog_part_no(pn) and noun:
         return f"{pn} - {noun}"
-    return noun or pn
+    return noun or (pn if is_catalog_part_no(pn) else "")
 
 
 def format_quote_header_description(title: str | None, *, part_key: str | None = None) -> str:
