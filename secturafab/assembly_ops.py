@@ -85,6 +85,7 @@ def ensure_assembly_root(
     quote_id: str,
     *,
     part_key: str | None,
+    description: str | None = None,
 ) -> list[str]:
     """
     Mark the top-level PN line as Assembly and attach all other lines under it.
@@ -119,10 +120,15 @@ def ensure_assembly_root(
     tid = str(target["ID"])
     prior_desc = str(target.get("Description") or "").strip()
 
-    # Rewrite root to match Kyle's assembly line — keep drawing title when present.
+    # Rewrite root to match Kyle's assembly line — ``{PN} - {weldment title}``.
+    from secturafab.item_desc import format_assembly_description, is_bare_part_number
+
     target["ProductType"] = _ASSEMBLY_TYPE
-    if prior_desc and prior_desc != key and len(prior_desc) >= 6:
-        target["Description"] = prior_desc[:500]
+    wanted = (description or "").strip()
+    if wanted and not is_bare_part_number(wanted, key):
+        target["Description"] = wanted[:500]
+    elif prior_desc and prior_desc != key and not is_bare_part_number(prior_desc, key):
+        target["Description"] = format_assembly_description(key, prior_desc)[:500]
     else:
         target["Description"] = key
     target["Machine"] = None

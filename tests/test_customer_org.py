@@ -38,6 +38,17 @@ PANEL - BACK, UPPER, 604 SERIES SM, 60
     )
 
 
+def test_detect_time_manufacturing_waco():
+    folder = (
+        r"C:\Users\Kyle\Kannon Manufacturing Inc\Fort Worth - Documents"
+        r"\Engineering\Customer Drawings\Time\Pedestal Weldment - 1001898-1"
+    )
+    assert detect_organization_from_folder(folder) == "Time Manufacturing Waco"
+    assert detect_organization_from_text("TIME MANUFACTURING\n1001898") == (
+        "Time Manufacturing Waco"
+    )
+
+
 def test_detect_organization_from_library_folder():
     folder = (
         r"C:\Users\Kyle\Kannon Manufacturing Inc\Fort Worth - Documents"

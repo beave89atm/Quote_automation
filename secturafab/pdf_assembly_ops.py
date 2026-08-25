@@ -16,7 +16,14 @@ from quote_core.part_materials import PartMaterial, build_part_material_map, loo
 from .assembly_ops import ensure_assembly_root, relink_assembly_children
 from .client import SecturaFabApiError, SecturaFabClient
 from .component_ops import ensure_purchased_components, find_purchased_part_keys
-from .profile_ops import apply_part_materials, ensure_laser_profile_ops, wait_for_quote_settle
+from .item_desc import (
+    format_cad_description,
+    format_component_description,
+    item_flat_dims,
+    normalize_part_token,
+)
+from .linear_ops import add_linear_item_from_bom, bind_linear_product_ids, fetch_linear_catalog
+from .profile_ops import apply_part_materials, wait_for_quote_settle
 from .qty_ops import apply_bom_quantities, normalize_part_key
 from .weld_ops import _desc_token
 
@@ -163,23 +170,32 @@ def quick_add_component_pdf(
         )
 
 
-def _rename_imported_descriptions(
+def _apply_kyle_line_descriptions(
     client: SecturaFabClient,
     quote_id: str,
     *,
     part_nos: list[str],
+    bom_rows: list[dict[str, Any]] | None = None,
+    part_materials: dict | None = None,
+    default_material: str = "A36",
+    default_thickness: str | None = None,
+    assembly_description: str | None = None,
 ) -> list[str]:
-    """
-    quickAddCAD names PDF imports like ``15644  - 1/4\" A36 …``.
+    """Write Kyle Cad / Linear / Component / Assembly descriptions (never bare PN)."""
+    from quote_core.part_materials import lookup_part_material
 
-    Rewrite Description to the BOM part number so qty/material matching works.
-    """
     detail = client.get_json(f"v1/quote/{quote_id}")
     items = list(detail.get("ItemList") or [])
-    unused = list(part_nos)
+    unused = [p for p in part_nos if p]
+    bom_desc = _bom_description_map(list(bom_rows or []))
     changed = 0
     for it in items:
-        if it.get("ProductType") in (_ASSEMBLY_TYPE, "300", "assembly"):
+        if it.get("ProductType") in (_ASSEMBLY_TYPE, "300", "assembly") or it.get(
+            "IsAssembly"
+        ):
+            if assembly_description:
+                it["Description"] = assembly_description[:500]
+                changed += 1
             continue
         token = normalize_part_key(_desc_token(str(it.get("Description") or "")))
         match = None
@@ -189,18 +205,45 @@ def _rename_imported_descriptions(
             if token == full or token == base or token.startswith(base):
                 match = pn
                 break
-        if not match:
+        if match:
+            unused.remove(match)
+        pn = match or normalize_part_token(token)
+        cat = str(it.get("Category") or it.get("ItemType") or "").strip()
+        if not cat:
+            from .push import classify_sectura_item
+
+            cat = classify_sectura_item(
+                f"{it.get('Description') or ''} {bom_desc.get(normalize_part_key(pn), '')}"
+            )
+        if cat == "Linear":
             continue
-        unused.remove(match)
-        if str(it.get("Description") or "").strip() != match:
-            it["Description"] = match
+        if cat == "Component":
+            noun = format_component_description(
+                bom_desc.get(normalize_part_key(pn), "") or str(it.get("Description") or ""),
+                part_no=pn,
+            )
+            if noun and str(it.get("Description") or "").strip() != noun:
+                it["Description"] = noun[:500]
+                changed += 1
+            continue
+        pm = lookup_part_material(part_materials or {}, pn) if pn else None
+        thk = (pm.thickness_param() if pm else None) or default_thickness
+        grade = (pm.material if pm else None) or (
+            str(it.get("Material") or it.get("MaterialGrade") or "").strip() or default_material
+        )
+        width, length = item_flat_dims(it)
+        desc = format_cad_description(
+            pn, thickness=thk, grade=grade, width_in=width, length_in=length
+        )
+        if desc and str(it.get("Description") or "").strip() != desc:
+            it["Description"] = desc[:500]
             changed += 1
     if not changed:
         return []
     save = client.request("POST", "v1/quote", json=detail)
     if save.status_code >= 400:
-        return [f"Renaming PDF import descriptions failed ({save.status_code})"]
-    return [f"Set Description to BOM part number on {changed} PDF-imported item(s)"]
+        return [f"Setting Kyle item Descriptions failed ({save.status_code})"]
+    return [f"Set Kyle-format Descriptions on {changed} item(s)"]
 
 
 def _bom_description_map(bom_rows: list[dict[str, Any]]) -> dict[str, str]:
@@ -226,9 +269,9 @@ def categorize_pdf_imported_items(
     """
     Lesson 04: Cad (plate) / Linear (tube/bar) / Component (purchased).
 
-    After rename, Description is often bare ``15863-1`` — use BOM description
-    text (PIVOT TUBE, …) so Linear classification still works. When BOM text is
-    empty, OCR the component PDF title block for TUBE/BAR hints.
+    Use BOM description text (PIVOT TUBE, NPT NIPPLE, …) so Linear / Component
+    classification works even when CAD left a plate-style Description. When BOM
+    text is empty, OCR the component PDF title block for TUBE/BAR / fitting hints.
     """
     from .push import classify_sectura_item
 
@@ -280,7 +323,7 @@ def categorize_pdf_imported_items(
             it["IsLinear"] = True
             it["IsPlate"] = False
             it["IsPart"] = True
-            it["Machine"] = None
+            it["Machine"] = "Saw"
         elif cat == "Component":
             it["IsLinear"] = False
             it["IsPlate"] = False
@@ -300,10 +343,6 @@ def categorize_pdf_imported_items(
             f"Category save returned {save.status_code}; set Cad/Linear/Component "
             f"manually in SecturaFAB if needed"
         )
-    elif counts["Linear"]:
-        notes.append(
-            "Linear tube/bar rows need stock size (OD/wall/length) reviewed in SecturaFAB"
-        )
     return notes
 
 
@@ -321,20 +360,30 @@ def build_pdf_only_assembly(
     qty: int = 1,
     times: dict[str, Any] | None = None,
     extra_pdfs: list[Path] | None = None,
+    assembly_description: str | None = None,
+    attach_profile: bool = False,
 ) -> list[str]:
     """
     Create assembly + import each BOM component PDF, then link under weldment.
 
     Mirrors lesson 04: Image/PDF components → New Line → Update Assembly.
     """
-    del times  # weld/finalize run in push after this builder
+    del times, attach_profile  # weld/finalize run in push; never graft Profile
     notes: list[str] = []
     rows = [r for r in bom_rows if int(r.get("qty") or 0) > 0 and (r.get("part_no") or r.get("part_number"))]
     if not rows:
         notes.append("WARNING: No BOM rows with qty>0 — cannot build PDF-only assembly")
         return notes
 
-    notes.extend(create_assembly_shell(client, quote_id, part_key=part_key, qty=qty))
+    notes.extend(
+        create_assembly_shell(
+            client,
+            quote_id,
+            part_key=part_key,
+            qty=qty,
+            description=assembly_description,
+        )
+    )
 
     part_materials = build_part_material_map(
         library_folder=library_folder,
@@ -342,11 +391,23 @@ def build_pdf_only_assembly(
         extra_pdfs=extra_pdfs,
     )
 
+    from .push import classify_sectura_item
+
     imported: list[str] = []
     missing: list[str] = []
+    linear_rows: list[dict[str, Any]] = []
+    component_rows: list[dict[str, Any]] = []
     for row in rows:
         part_no = str(row.get("part_no") or row.get("part_number") or "").strip()
         bom_q = max(1, int(row.get("qty") or 1))
+        hint = f"{part_no} {row.get('description') or ''}"
+        cat = classify_sectura_item(hint)
+        if cat == "Linear":
+            linear_rows.append(row)
+            continue
+        if cat == "Component":
+            component_rows.append(row)
+            continue
         pdf = resolve_component_pdf(
             part_no,
             library_folder=library_folder,
@@ -374,37 +435,64 @@ def build_pdf_only_assembly(
             notes.append(f"WARNING: PDF import failed for {part_no} ({pdf.name}): {exc}")
 
     if imported:
-        notes.append(f"Imported {len(imported)} component PDF(s) via quickAddCAD: {', '.join(imported)}")
+        notes.append(f"Imported {len(imported)} Cad plate PDF(s) via quickAddCAD: {', '.join(imported)}")
+    if linear_rows:
         notes.append(
-            "SecturaFAB filled flat Length×Width from each PDF plate outline "
-            "(lesson 04 Image Files equivalent) — review Linear tubes for stock"
+            f"Skipped quickAddCAD on {len(linear_rows)} Linear tube/angle row(s) "
+            "(Long / ProductID, not plate outline)"
+        )
+    if component_rows:
+        notes.append(
+            f"Skipped quickAddCAD on {len(component_rows)} purchased Component row(s)"
         )
     if missing:
         notes.append(
-            "WARNING: Component PDF not found for BOM part(s): " + ", ".join(missing)
+            "WARNING: Cad PDF not found for BOM part(s): " + ", ".join(missing)
         )
-    if not imported:
+    if not imported and not linear_rows and not component_rows:
         notes.append("WARNING: No component PDFs imported — assembly has no children")
         return notes
 
-    # Allow CAD geometry to finish before rename / assembly rollup.
+    if imported:
+        notes.extend(
+            wait_for_quote_settle(
+                client,
+                quote_id,
+                timeout_s=90.0,
+                stable_s=8.0,
+                min_wait_s=12.0,
+            )
+        )
+    catalog = fetch_linear_catalog(client)
+    for row in linear_rows:
+        part_no = str(row.get("part_no") or row.get("part_number") or "").strip()
+        notes.extend(
+            add_linear_item_from_bom(
+                client,
+                quote_id,
+                part_no=part_no,
+                description=str(row.get("description") or ""),
+                qty=max(1, int(row.get("qty") or 1)),
+                material=material,
+                catalog=catalog,
+            )
+        )
+    if component_rows:
+        notes.extend(_add_component_items(client, quote_id, component_rows))
+
+    part_nos = [str(r.get("part_no") or "") for r in rows]
     notes.extend(
-        wait_for_quote_settle(
+        _apply_kyle_line_descriptions(
             client,
             quote_id,
-            timeout_s=90.0,
-            stable_s=8.0,
-            min_wait_s=12.0,
+            part_nos=part_nos,
+            bom_rows=rows,
+            part_materials=part_materials,
+            default_material=material,
+            default_thickness=thickness,
+            assembly_description=assembly_description,
         )
     )
-    notes.extend(
-        _rename_imported_descriptions(
-            client,
-            quote_id,
-            part_nos=[str(r.get("part_no") or "") for r in rows],
-        )
-    )
-    # Lesson 04: Cad / Linear / Component before assembly rollup.
     notes.extend(categorize_pdf_imported_items(
         client,
         quote_id,
@@ -412,7 +500,19 @@ def build_pdf_only_assembly(
         library_folder=library_folder,
         related_pdf_names=related_pdf_names,
     ))
-    notes.extend(ensure_assembly_root(client, quote_id, part_key=part_key))
+    notes.extend(
+        bind_linear_product_ids(
+            client, quote_id, material=material, bom_rows=rows, catalog=catalog
+        )
+    )
+    notes.extend(
+        ensure_assembly_root(
+            client,
+            quote_id,
+            part_key=part_key,
+            description=assembly_description,
+        )
+    )
 
     purchased = find_purchased_part_keys(
         library_folder=library_folder,
@@ -422,7 +522,6 @@ def build_pdf_only_assembly(
     notes.extend(
         ensure_purchased_components(client, quote_id, purchased_keys=purchased)
     )
-    # Same as UI "Update Assembly" — children under top-level weldment.
     notes.extend(relink_assembly_children(client, quote_id, part_key=part_key))
 
     if part_materials:
@@ -437,22 +536,26 @@ def build_pdf_only_assembly(
             bom_rows=rows,
         )
     )
-    notes.extend(
-        wait_for_quote_settle(
-            client,
-            quote_id,
-            timeout_s=120.0,
-            stable_s=15.0,
-            min_wait_s=45.0,
+    if imported:
+        notes.extend(
+            wait_for_quote_settle(
+                client,
+                quote_id,
+                timeout_s=120.0,
+                stable_s=15.0,
+                min_wait_s=45.0,
+            )
         )
-    )
-    # UpdateItem_Part CAD rebuild resets Description to ``15644  - 1/4" A36 …``
-    # — restore BOM PNs / categories / assembly links before qty + Profile.
     notes.extend(
-        _rename_imported_descriptions(
+        _apply_kyle_line_descriptions(
             client,
             quote_id,
-            part_nos=[str(r.get("part_no") or "") for r in rows],
+            part_nos=part_nos,
+            bom_rows=rows,
+            part_materials=part_materials,
+            default_material=material,
+            default_thickness=thickness,
+            assembly_description=assembly_description,
         )
     )
     notes.extend(
@@ -464,6 +567,11 @@ def build_pdf_only_assembly(
             related_pdf_names=related_pdf_names,
         )
     )
+    notes.extend(
+        bind_linear_product_ids(
+            client, quote_id, material=material, bom_rows=rows, catalog=catalog
+        )
+    )
     notes.extend(relink_assembly_children(client, quote_id, part_key=part_key))
     notes.extend(
         apply_bom_quantities(
@@ -473,20 +581,55 @@ def build_pdf_only_assembly(
             part_key=part_key,
         )
     )
-    notes.extend(
-        ensure_laser_profile_ops(
-            client,
-            quote_id,
-            material=material,
-            thickness=thickness,
-        )
-    )
-    # Re-link after qty/material settle — CAD rebuild can drop AssemblyID.
+    notes.append("Skipped grafted Profile — laser pack left unset (Finish / Image Files only)")
     notes.extend(relink_assembly_children(client, quote_id, part_key=part_key))
     notes.append(
-        "PDF weldment built per lesson 04 — review Linear tubes/stock and any missing BOM rows"
+        "PDF weldment built per lesson 04 — Cad plates from PDF, Linear bound by ProductID, "
+        "Components named only"
     )
     return notes
+
+
+def _add_component_items(
+    client: SecturaFabClient,
+    quote_id: str,
+    rows: list[dict[str, Any]],
+) -> list[str]:
+    detail = client.get_json(f"v1/quote/{quote_id}")
+    items = list(detail.get("ItemList") or [])
+    added = 0
+    for row in rows:
+        part_no = str(row.get("part_no") or row.get("part_number") or "").strip()
+        noun = format_component_description(
+            str(row.get("description") or ""), part_no=part_no
+        ) or str(row.get("description") or part_no)
+        try:
+            qty = max(1, int(row.get("qty") or 1))
+        except (TypeError, ValueError):
+            qty = 1
+        items.append(
+            {
+                "ID": str(uuid.uuid4()),
+                "Description": noun[:500],
+                "Quantity": qty,
+                "ProductType": 200,
+                "ItemType": "Component",
+                "Category": "Component",
+                "IsLinear": False,
+                "IsPlate": False,
+                "IsPart": True,
+                "Machine": None,
+                "OperationCostList": [],
+            }
+        )
+        added += 1
+    if not added:
+        return []
+    detail["ItemList"] = items
+    save = client.request("POST", "v1/quote", json=detail)
+    if save.status_code >= 400:
+        return [f"Adding Component lines failed ({save.status_code})"]
+    return [f"Added {added} purchased Component line(s) (name only)"]
 
 
 def _apply_item_descriptions(
@@ -576,17 +719,8 @@ def build_single_pdf_quote(
             min_wait_s=8.0,
         )
     )
-    # Profile last — never relink/POST structure after this (wipes ops).
-    notes.extend(
-        ensure_laser_profile_ops(
-            client,
-            quote_id,
-            material=material,
-            thickness=thk,
-            verify=True,
-        )
-    )
+    notes.append("Skipped grafted Profile — laser pack left unset (Finish / Image Files only)")
     notes.append(
-        "Single-PDF part quote built (no Assembly shell) — confirm Profile + dims"
+        "Single-PDF part quote built (no Assembly shell) — laser times unset without Finish"
     )
     return notes

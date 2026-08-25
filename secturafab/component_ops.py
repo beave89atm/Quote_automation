@@ -21,7 +21,9 @@ _PURCHASED_TITLE_RE = re.compile(
     r"HARDWARE|FASTENER|"
     r"(?:\d[\d\-]*/\d[\d\-]*\s+)?(?:HEX\s+)?(?:BOLT|SCREW|NUT|WASHER|RIVET)|"
     r"CLAMP|COTTER|BUSHING|BEARING|"
-    r"PURCHASED|BUY\s*OUT|BUYOUT"
+    r"PURCHASED|BUY\s*OUT|BUYOUT|"
+    r"(?:\d[\d\s/\-]*\s+)?(?:NPT\s+)?(?:HALF\s+)?(?:STREET\s+)?"
+    r"(?:ELBOW|COUPLING|NIPPLE|PLUG|PIPE\s+CAP|FILLER\s+NECK|FITTING|REDUCER|UNION|CAP)"
     r")\b",
     re.IGNORECASE,
 )
@@ -31,7 +33,8 @@ _PURCHASED_NAME_RE = re.compile(
     r"KING\s*PIN|KINGPIN|"
     r"HARDWARE|FASTENER|BOLT|SCREW|NUT|WASHER|RIVET|CLAMP|COTTER|"
     r"BUSHING|BEARING|"
-    r"PURCHASED|BUY\s*OUT|BUYOUT|VENDOR"
+    r"PURCHASED|BUY\s*OUT|BUYOUT|VENDOR|"
+    r"ELBOW|COUPLING|NIPPLE|PLUG|PIPE\s+CAP|FILLER\s+NECK|FITTING|REDUCER|UNION"
     r")\b",
     re.IGNORECASE,
 )
@@ -176,9 +179,13 @@ def ensure_purchased_components(
         it["WeightCategory"] = None
         if isinstance(it.get("Data"), str) and str(it.get("Data")).startswith("DataPart:"):
             it["Data"] = None
-        # Prefer bare PN description like Kyle's component line
-        if token:
-            it["Description"] = token
+        from secturafab.item_desc import format_component_description
+
+        noun = format_component_description(
+            str(it.get("Description") or ""), part_no=token
+        ) or format_component_description(reason, part_no=token)
+        if noun:
+            it["Description"] = noun[:500]
         changed += 1
         names.append(f"{token or '?'} ({reason})")
 

@@ -17,6 +17,9 @@ from quote_core.drawing_title import (
     extract_drawing_number_from_pdf,
 )
 
+from .item_desc import format_assembly_description, title_from_job_title
+from .linear_ops import bind_linear_product_ids
+
 from .assembly_ops import (
     ensure_assembly_root,
     needs_assembly_structure,
@@ -27,9 +30,7 @@ from .component_ops import ensure_purchased_components, find_purchased_part_keys
 from .finalize_ops import finalize_quote_ops
 from .imperial_ops import ensure_imperial_item_units
 from .org_ops import apply_quote_organization
-from .profile_ops import (
-    ensure_laser_profile_ops,
-)
+from .profile_ops import ensure_laser_profile_ops  # imported for tests; push no longer grafts
 from .qty_ops import apply_bom_quantities, refresh_bom_rows_for_push
 from .quotes import QuoteService
 from .website import (
@@ -101,6 +102,21 @@ _COMPONENT_HINTS = (
     "PURCHASED",
     "BUYOUT",
     "BUY OUT",
+    "ELBOW",
+    "COUPLING",
+    "NIPPLE",
+    "PLUG",
+    "PIPE CAP",
+    "FILLER NECK",
+    "STREET ELBOW",
+    "HALF COUPLING",
+    "FITTING",
+    "REDUCER",
+    "UNION",
+)
+_COMPONENT_WORD_RE = re.compile(
+    r"\b(ELBOW|COUPLING|NIPPLE|PLUG|CAP|FITTING|REDUCER|UNION)\b",
+    re.IGNORECASE,
 )
 
 
@@ -119,7 +135,10 @@ def classify_sectura_item(description: str) -> str:
     Map a STEP/BOM description to SecturaFAB item category dropdown values:
     Cad | Linear | Component
 
-    Component = purchased / not made in-house (hardware, king pins, …).
+    Plate/sheet = Cad. Structural tube/bar/angle/channel/hose guard = Linear.
+    Purchased fittings (elbow, coupling, plug, nipple, cap, filler neck) and
+    hardware = Component. Component is checked before Linear so ``PIPE CAP``
+    is not treated as a Linear pipe.
     """
     text = f" {str(description or '').upper()} "
     # Collapse spaces so "KING PIN" and "KINGPIN" both match.
@@ -128,7 +147,7 @@ def classify_sectura_item(description: str) -> str:
         return "Linear"
     if "KINGPIN" in compact:
         return "Component"
-    if any(h in text for h in _COMPONENT_HINTS):
+    if any(h in text for h in _COMPONENT_HINTS) or _COMPONENT_WORD_RE.search(text):
         return "Component"
     if any(h in text for h in _LINEAR_HINTS):
         return "Linear"
@@ -655,7 +674,12 @@ class SecturaFabPushService:
             pass
         return quote_id
 
-    def apply_item_categories(self, quote_id: str) -> list[str]:
+    def apply_item_categories(
+        self,
+        quote_id: str,
+        *,
+        bom_rows: list[dict[str, Any]] | None = None,
+    ) -> list[str]:
         """
         After STEP import, classify each line as Cad / Linear / Component.
 
@@ -668,9 +692,21 @@ class SecturaFabPushService:
         if not items:
             return ["No items to categorize"]
 
+        bom_hint: dict[str, str] = {}
+        for row in bom_rows or []:
+            key = str(row.get("part_no") or row.get("part_number") or "").strip()
+            if key:
+                from .qty_ops import normalize_part_key as _npk
+
+                bom_hint[_npk(key)] = str(row.get("description") or "")
         counts = {"Cad": 0, "Linear": 0, "Component": 0}
         for it in items:
-            cat = classify_sectura_item(str(it.get("Description") or ""))
+            from .qty_ops import normalize_part_key as _npk
+            from .weld_ops import _desc_token
+
+            token = _npk(_desc_token(str(it.get("Description") or "")))
+            hint = f"{it.get('Description') or ''} {bom_hint.get(token, '')}"
+            cat = classify_sectura_item(hint)
             counts[cat] = counts.get(cat, 0) + 1
             it["ItemType"] = cat
             it["Category"] = cat
@@ -678,6 +714,7 @@ class SecturaFabPushService:
                 it["IsLinear"] = True
                 it["IsPlate"] = False
                 it["IsPart"] = True
+                it["Machine"] = "Saw"
             elif cat == "Component":
                 it["IsLinear"] = False
                 it["IsPlate"] = False
@@ -1521,16 +1558,16 @@ class SecturaFabPushService:
             # Always create a brand-new quote. Display number is bare part key
             # (no "PN " prefix; temp RevNumber is cleared so the UI stays clean).
             quote_number = self.allocate_quote_number(part_key)
-            quote_description = extract_assembly_description(
+            raw_title = extract_assembly_description(
                 part_key=part_key,
                 pdf_path=Path(pdf_path) if pdf_path else None,
                 library_folder=library.get("folder"),
                 related_pdf_names=list(library.get("related_pdfs") or []),
-            )
-            if quote_description:
+            ) or title_from_job_title(title, part_key=part_key)
+            quote_description = format_assembly_description(part_key, raw_title)
+            if raw_title:
                 desc_note = f"Quote Description from assembly drawing: {quote_description}"
             else:
-                quote_description = (title or "").strip() or part_key
                 desc_note = f"Quote Description from job title: {quote_description}"
             quote_id = self.create_quote(
                 quote_number=quote_number,
@@ -1688,14 +1725,25 @@ class SecturaFabPushService:
                             ) from exc
 
                 if used_step:
-                    notes.extend(self.apply_item_categories(quote_id))
+                    notes.extend(self.apply_item_categories(quote_id, bom_rows=bom_rows))
+                    notes.extend(
+                        bind_linear_product_ids(
+                            self.client,
+                            quote_id,
+                            material=material,
+                            bom_rows=bom_rows,
+                        )
+                    )
                     step_detail = self.client.get_json(f"v1/quote/{quote_id}")
                     step_items = list(step_detail.get("ItemList") or [])
                     use_assembly = needs_assembly_structure(step_items, bom_rows)
                     if use_assembly:
                         notes.extend(
                             ensure_assembly_root(
-                                self.client, quote_id, part_key=part_key
+                                self.client,
+                                quote_id,
+                                part_key=part_key,
+                                description=quote_description,
                             )
                         )
                         purchased = find_purchased_part_keys(
@@ -1723,7 +1771,7 @@ class SecturaFabPushService:
                         )
                         notes.append(
                             f"Skipped UpdateItem_Part on single-part STEP (seed {material} @ "
-                            f"{thickness}\") — Profile uses quickAddCAD cut time"
+                            f"{thickness}\") — no grafted Profile"
                         )
                     notes.extend(ensure_imperial_item_units(self.client, quote_id))
                     notes.extend(
@@ -1734,13 +1782,9 @@ class SecturaFabPushService:
                             part_key=part_key,
                         )
                     )
-                    notes.extend(
-                        ensure_laser_profile_ops(
-                            self.client,
-                            quote_id,
-                            material=material,
-                            thickness=thickness,
-                        )
+                    notes.append(
+                        "Skipped grafted Profile — laser pack left unset "
+                        "(Finish / Image Files only)"
                     )
                     notes.extend(
                         apply_bom_quantities(
@@ -1773,6 +1817,7 @@ class SecturaFabPushService:
                             qty=qty,
                             times=times,
                             extra_pdfs=[Path(pdf_path)] if pdf_path else None,
+                            assembly_description=quote_description,
                         )
                     )
                 elif has_job_pdf:
@@ -1837,6 +1882,7 @@ class SecturaFabPushService:
                                 times=times,
                                 part_key=part_key,
                                 bom_rows=bom_rows,
+                                attach_profile=False,
                             )
                         )
                     except SecturaFabApiError as exc:
@@ -1848,14 +1894,9 @@ class SecturaFabPushService:
                         else:
                             raise
                 if used_pdf_shell or used_step or (bom_rows and library.get("folder")):
-                    notes.extend(
-                        ensure_laser_profile_ops(
-                            self.client,
-                            quote_id,
-                            material=material,
-                            thickness=thickness,
-                            verify=True,
-                        )
+                    notes.append(
+                        "Skipped grafted Profile — laser pack left unset "
+                        "(Finish / Image Files only)"
                     )
 
             detail = self.client.get_json(f"v1/quote/{quote_id}")

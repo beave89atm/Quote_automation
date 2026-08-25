@@ -118,6 +118,9 @@ def test_classify_sectura_item_categories():
     assert classify_sectura_item("1/2-13 HEX BOLT GRADE 8") == "Component"
     assert classify_sectura_item("23403750 KING PIN") == "Component"
     assert classify_sectura_item("23403750 KINGPIN, 3/8") == "Component"
+    assert classify_sectura_item("50115-7 1 1/4 NPT NIPPLE") == "Component"
+    assert classify_sectura_item("50029-7 1 1/4 90 STREET ELBOW") == "Component"
+    assert classify_sectura_item("29860-4 PEDESTAL BRACE ANGLE") == "Linear"
 
 
 def test_allocate_quote_number_is_bare_part():
@@ -319,8 +322,9 @@ def test_push_single_solid_step_skips_assembly_root(tmp_path: Path):
     assert result.ok is True
     asm.assert_not_called()
     relink.assert_not_called()
-    profile.assert_called()
+    profile.assert_not_called()
     assert any("left as Part" in n for n in (result.notes or []))
+    assert any("Skipped grafted Profile" in n for n in (result.notes or []))
 
 
 def test_ensure_laser_profile_ops_retries_when_missing_after_save():
@@ -549,7 +553,9 @@ def test_push_pdf_only_uses_single_pdf_shell(tmp_path: Path):
     create_q.assert_called_once()
     up_d.assert_called_once()
     build_pdf.assert_called_once()
-    assert "lonely Title" in (create_q.call_args.kwargs.get("description") or "")
+    desc = create_q.call_args.kwargs.get("description") or ""
+    assert "lonely" in desc
+    assert "Title" in desc
 
 
 def test_build_single_pdf_quote_skips_assembly_shell(tmp_path: Path):
@@ -584,10 +590,7 @@ def test_build_single_pdf_quote_skips_assembly_shell(tmp_path: Path):
         "secturafab.pdf_assembly_ops.quick_add_component_pdf", return_value={"ok": True}
     ) as qadd, patch(
         "secturafab.pdf_assembly_ops.wait_for_quote_settle", return_value=["settled"]
-    ), patch(
-        "secturafab.pdf_assembly_ops.ensure_laser_profile_ops",
-        return_value=["Attached Profile"],
-    ) as profile:
+    ):
         notes = build_single_pdf_quote(
             client,
             quote_id="qid",
@@ -602,8 +605,8 @@ def test_build_single_pdf_quote_skips_assembly_shell(tmp_path: Path):
     root.assert_not_called()
     relink.assert_not_called()
     qadd.assert_called_once()
-    profile.assert_called_once()
     assert any("no Assembly shell" in n for n in notes)
+    assert any("Skipped grafted Profile" in n for n in notes)
 
 
 def test_push_ok_requires_nonzero_item_count(tmp_path: Path):
@@ -656,7 +659,9 @@ def test_push_ok_requires_nonzero_item_count(tmp_path: Path):
     assert result.item_count == 0
     assert result.status == "failed"
     # Description fallback used when creating the quote
-    assert "part Title From Job" in (create_q.call_args.kwargs.get("description") or "")
+    desc = create_q.call_args.kwargs.get("description") or ""
+    assert "part" in desc
+    assert "Title From Job" in desc
 
 
 def test_push_success_sets_item_count_gt_zero(tmp_path: Path):
@@ -708,4 +713,4 @@ def test_push_success_sets_item_count_gt_zero(tmp_path: Path):
     assert result.ok is True
     assert result.item_count and result.item_count > 0
     create_q.assert_called_once()
-    assert create_q.call_args.kwargs.get("description") == "From drawing"
+    assert "From drawing" in (create_q.call_args.kwargs.get("description") or "")

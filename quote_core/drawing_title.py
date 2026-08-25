@@ -277,6 +277,45 @@ def resolve_assembly_drawing_paths(
     return paths
 
 
+def title_from_library_folder(
+    folder: Path | str | None,
+    *,
+    part_key: str | None = None,
+) -> str | None:
+    """``Pedestal Weldment - 1001898-1`` → ``PEDESTAL WELDMENT``."""
+    if not folder:
+        return None
+    blob = str(folder).replace("\\", "/").rstrip("/")
+    name = blob.rsplit("/", 1)[-1].strip()
+    if not name:
+        return None
+    key = (part_key or "").strip()
+    if key.upper().startswith("PN "):
+        key = key[3:].strip()
+    cleaned = name
+    if key:
+        cleaned = re.sub(
+            rf"\s*[-–—]\s*{re.escape(key)}\s*$",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        base = key.split("-")[0]
+        if base:
+            cleaned = re.sub(
+                rf"\s*[-–—]\s*{re.escape(base)}\s*$",
+                "",
+                cleaned,
+                flags=re.IGNORECASE,
+            )
+    cleaned = cleaned.strip(" -")
+    if len(cleaned) < 4:
+        return None
+    if _PART_NUM.fullmatch(cleaned) or (key and _normalize_key(cleaned) == _normalize_key(key)):
+        return None
+    return re.sub(r"\s+", " ", cleaned).upper()
+
+
 def extract_assembly_description(
     *,
     part_key: str,
@@ -298,4 +337,4 @@ def extract_assembly_description(
         title = extract_title_from_pdf_text(text, part_key=part_key)
         if title:
             return title
-    return None
+    return title_from_library_folder(library_folder, part_key=part_key)

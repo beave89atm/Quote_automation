@@ -18,6 +18,10 @@ _DRAWING_TO_ORGANIZATION: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"\bNATURAL\s+GAS\s+FUEL\s+SYSTEMS\b", re.IGNORECASE),
         "Cummins Clean Fuel Technologies",
     ),
+    (
+        re.compile(r"\bTIME\s+MANUFACTURING\b", re.IGNORECASE),
+        "Time Manufacturing Waco",
+    ),
 ]
 
 # Library folder path segments → Organization (when PDF text is thin).
@@ -27,6 +31,17 @@ _FOLDER_TO_ORGANIZATION: list[tuple[re.Pattern[str], str]] = [
         "Cummins Clean Fuel Technologies",
     ),
     (re.compile(r"\bTYCROP\b", re.IGNORECASE), "Propell"),
+    (
+        re.compile(
+            r"(?:Customer\s+Drawings|\bEngineering\b)[\\/]+Time\b|[\\/]Time[\\/]",
+            re.IGNORECASE,
+        ),
+        "Time Manufacturing Waco",
+    ),
+    (
+        re.compile(r"\bTIME\s+MANUFACTURING\b", re.IGNORECASE),
+        "Time Manufacturing Waco",
+    ),
 ]
 
 
