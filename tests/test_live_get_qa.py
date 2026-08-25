@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from secturafab.item_desc import title_from_bom_family
@@ -113,6 +115,8 @@ def test_push_job_fails_closed_when_live_get_has_empty_ops(tmp_path):
     ), patch(
         "secturafab.push.persist_quote_header", return_value=[]
     ), patch(
+        "secturafab.push.persist_classified_item_fields", return_value=[]
+    ), patch(
         "secturafab.push.stamp_new_line_item_packs", return_value=[]
     ):
         result = service.push_job(
@@ -177,6 +181,92 @@ def test_bare_folder_push_still_uses_bom_pedestal_title(tmp_path):
         )
     assert result.ok is True
     assert create_q.call_args.kwargs.get("description") == HEADER_DESC
+
+
+def test_parse_live_cad_description_onto_fields():
+    from secturafab.item_desc import parse_cad_desc_fields
+
+    parsed = parse_cad_desc_fields('14500-1 - 1/4" A572 Grade 50 PEDESTAL TOP PLATE')
+    assert parsed["thickness"] == "1/4"
+    assert "A572" in parsed["material"]
+    flats = parse_cad_desc_fields('14500-1 - 1/4" A36 8 in x 10 in')
+    assert flats["width_in"] == 8.0
+    assert flats["length_in"] == 10.0
+
+
+def test_list_orgs_still_searches_time_after_other_customers():
+    from secturafab.org_ops import find_organization_by_name
+
+    client = MagicMock()
+
+    def _get(path: str):
+        p = str(path)
+        if "Search=Time" in p or "Search=TIME" in p or "Name=Time" in p:
+            return {
+                "HasNext": False,
+                "Results": [
+                    {"ID": "time-real", "OrganizationName": "TIME - Waco", "Active": True}
+                ],
+            }
+        return {
+            "HasNext": False,
+            "Results": [{"ID": "propell", "OrganizationName": "Propell", "Active": True}],
+        }
+
+    client.get_json.side_effect = _get
+    org = find_organization_by_name(client, "Time Manufacturing Waco")
+    assert org is not None
+    assert org["ID"] == "time-real"
+
+
+def test_persist_copies_cad_desc_fields_and_stamps_packs():
+    from unittest.mock import MagicMock
+
+    from secturafab.line_item_ops import persist_classified_item_fields
+
+    client = MagicMock()
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "c1",
+                "Description": '14500-1 - 1/4" A572 Grade 50 PEDESTAL TOP PLATE',
+                "ProductType": 100,
+                "Category": "Cad",
+                "OperationCostList": [],
+            },
+            {
+                "ID": "l1",
+                "Description": "1001880-2 - P1/8-5-A36",
+                "ProductType": 10,
+                "Category": "Linear",
+                "SKU": "P1/8-5-A36",
+                "ProductID": "pid",
+                "OperationCostList": [],
+            },
+        ]
+    }
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    persist_classified_item_fields(
+        client,
+        "qid",
+        bom_rows=[
+            {"part_no": "14500-1", "description": "PEDESTAL TOP PLATE", "qty": 1},
+            {"part_no": "1001880-2", "description": "PEDESTAL TUBE 12 LG.", "qty": 1},
+        ],
+    )
+    saved = client.request.call_args.kwargs["json"]["ItemList"]
+    cad = saved[0]
+    lin = saved[1]
+    assert cad["Thickness"] == "1/4"
+    assert "A572" in str(cad["Material"])
+    assert cad["Machine"] == "Laser"
+    assert cad["OperationCostList"]
+    assert lin["Machine"] == "Saw"
+    assert float(lin["Length"]) == 12.0
+    assert "12" in lin["Description"]
+    assert lin["OperationCostList"]
 
 
 def test_bom_family_title_is_pedestal_weldment_not_child_noun():

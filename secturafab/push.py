@@ -1958,6 +1958,8 @@ class SecturaFabPushService:
                     bom_rows=bom_rows,
                     default_material=material,
                     default_thickness=thickness,
+                    library_folder=library.get("folder"),
+                    related_pdf_names=list(library.get("related_pdfs") or []),
                 )
             )
             notes.extend(

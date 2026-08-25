@@ -116,27 +116,31 @@ def test_find_organization_fuzzy_time_waco_when_display_differs():
 
 def test_apply_quote_organization_sets_primary_and_list():
     client = MagicMock()
-    client.get_json.side_effect = [
-        {
-            "HasNext": False,
-            "Results": [
-                {
-                    "ID": "org-1",
-                    "OrganizationName": "Propell",
-                    "DisplayName": "Propell",
-                    "NameAndLocation": "Propell",
-                    "PrimaryContactID": "00000000-0000-0000-0000-000000000000",
-                }
-            ],
-        },
-        {"ID": "qid", "ItemList": []},
-        {
-            "ID": "qid",
-            "OrganizationName": "Propell",
-            "PrimaryOrganizationID": "org-1",
-            "OrganizationList": [{"OrganizationName": "Propell"}],
-        },
-    ]
+
+    def _get(path: str):
+        if "organization" in str(path).lower():
+            return {
+                "HasNext": False,
+                "Results": [
+                    {
+                        "ID": "org-1",
+                        "OrganizationName": "Propell",
+                        "DisplayName": "Propell",
+                        "NameAndLocation": "Propell",
+                        "PrimaryContactID": "00000000-0000-0000-0000-000000000000",
+                    }
+                ],
+            }
+        if "PrimaryOrganizationID" in str(client.request.call_args):
+            return {
+                "ID": "qid",
+                "OrganizationName": "Propell",
+                "PrimaryOrganizationID": "org-1",
+                "OrganizationList": [{"OrganizationName": "Propell"}],
+            }
+        return {"ID": "qid", "ItemList": []}
+
+    client.get_json.side_effect = _get
     save = MagicMock()
     save.status_code = 200
     client.request.return_value = save

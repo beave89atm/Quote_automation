@@ -389,6 +389,32 @@ def parse_length_lg(text: str | None) -> float | None:
     return val if val > 0 else None
 
 
+def _length_from_library(
+    part_no: str,
+    *,
+    library_folder: Any = None,
+    related_pdf_names: list[str] | None = None,
+) -> float | None:
+    if not part_no or not library_folder:
+        return None
+    try:
+        from quote_core.weight import _read_pdf_text
+
+        from secturafab.pdf_assembly_ops import resolve_component_pdf
+    except Exception:  # noqa: BLE001
+        return None
+    pdf = resolve_component_pdf(
+        part_no, library_folder=library_folder, related_pdf_names=related_pdf_names
+    )
+    if not pdf:
+        return None
+    try:
+        text = _read_pdf_text(pdf)
+    except Exception:  # noqa: BLE001
+        return None
+    return parse_length_lg(text)
+
+
 def persist_classified_item_fields(
     client: Any,
     quote_id: str,
@@ -397,11 +423,19 @@ def persist_classified_item_fields(
     part_materials: dict | None = None,
     default_material: str = "A36",
     default_thickness: str | None = "0.25",
+    library_folder: Any = None,
+    related_pdf_names: list[str] | None = None,
 ) -> list[str]:
     """Write Material / Thickness / Length / Width / Machine onto items (not just Description)."""
     from quote_core.part_materials import lookup_part_material
 
-    from secturafab.item_desc import format_component_line, item_flat_dims, item_length_in
+    from secturafab.item_desc import (
+        format_component_line,
+        format_linear_description,
+        item_flat_dims,
+        item_length_in,
+        parse_cad_desc_fields,
+    )
     from secturafab.qty_ops import normalize_part_key
     from secturafab.weld_ops import _desc_token
 
@@ -428,25 +462,57 @@ def persist_classified_item_fields(
             continue
         if _is_linear(it):
             it["Machine"] = "Saw"
-            length = item_length_in(it) or parse_length_lg(noun) or parse_length_lg(
-                str(it.get("Description") or "")
+            length = (
+                item_length_in(it)
+                or parse_length_lg(noun)
+                or parse_length_lg(str(it.get("Description") or ""))
+                or _length_from_library(
+                    token,
+                    library_folder=library_folder,
+                    related_pdf_names=related_pdf_names,
+                )
             )
             if length and length > 0:
                 it["Length"] = length
                 it["LinearLength"] = length
+                sku = str(it.get("SKU") or "").strip() or None
+                pn = token or _desc_token(str(it.get("Description") or ""))
+                if pn:
+                    it["Description"] = format_linear_description(
+                        pn, sku=sku, length_in=length, noun=noun
+                    )
+            apply_linear_new_line_ops(it)
             changed += 1
             continue
+        parsed = parse_cad_desc_fields(str(it.get("Description") or ""))
         pm = lookup_part_material(part_materials or {}, token) if token else None
-        grade = (pm.material if pm else None) or str(it.get("Material") or "").strip() or default_material
-        thk = (pm.thickness_param() if pm else None) or it.get("Thickness") or default_thickness
+        grade = (
+            (pm.material if pm else None)
+            or parsed.get("material")
+            or str(it.get("Material") or "").strip()
+            or default_material
+        )
+        thk = (
+            (pm.thickness_param() if pm else None)
+            or parsed.get("thickness")
+            or it.get("Thickness")
+            or default_thickness
+        )
         it["Material"] = grade
         it["MaterialGrade"] = grade
         it["Thickness"] = thk
         it["Machine"] = it.get("Machine") or "Laser"
         width, length = item_flat_dims(it)
+        if not width:
+            width = parsed.get("width_in")
+        if not length:
+            length = parsed.get("length_in")
         if width and length:
             it["Width"] = width
             it["Length"] = length
+            it["FlatWidth"] = width
+            it["FlatLength"] = length
+        apply_cad_new_line_ops(it)
         changed += 1
     if not changed:
         return []

@@ -16,12 +16,14 @@ def _org_blob(org: dict[str, Any]) -> str:
 
 
 def list_organizations(client: SecturaFabClient) -> list[dict[str, Any]]:
-    """Page ``v1/organization`` (and a Search= hint) so we bind a real tenant id."""
+    """Page every org, then Search=Time/Waco — do not stop after the first page of others."""
     found: list[dict[str, Any]] = []
     seen: set[str] = set()
     queries = (
         "v1/organization?PageNumber={page}&PageSize=100",
         "v1/organization?PageNumber={page}&PageSize=100&Search=Time",
+        "v1/organization?PageNumber={page}&PageSize=100&Search=Waco",
+        "v1/organization?PageNumber={page}&PageSize=100&Search=TIME",
         "v1/organization?PageNumber={page}&PageSize=100&Name=Time",
     )
     for template in queries:
@@ -45,8 +47,6 @@ def list_organizations(client: SecturaFabClient) -> list[dict[str, Any]]:
             if not data.get("HasNext"):
                 break
             page += 1
-        if found:
-            break
     return found
 
 
@@ -92,9 +92,18 @@ def find_organization_by_name(
     orgs = list_organizations(client)
     if not orgs:
         return None
-    ranked = sorted(orgs, key=lambda o: _score_organization(o, target), reverse=True)
-    best = ranked[0]
-    if _score_organization(best, target) < 40:
+    aliases = [target]
+    lower = target.casefold()
+    if "time" in lower:
+        aliases.extend(["Time Waco", "Time Manufacturing", "Time", "Waco", "TIME"])
+    best = None
+    best_score = -1.0
+    for alias in aliases:
+        for org in orgs:
+            score = _score_organization(org, alias)
+            if score > best_score:
+                best, best_score = org, score
+    if not best or best_score < 40:
         return None
     return best
 
@@ -119,8 +128,18 @@ def apply_quote_organization(
 
     org = find_organization_by_name(client, name)
     if not org or not org.get("ID"):
+        listed = list_organizations(client)
+        sample = ", ".join(
+            (
+                str(o.get("OrganizationName") or o.get("DisplayName") or o.get("ID") or "")
+                for o in listed[:8]
+            )
+        )
         notes.append(
-            f"WARNING: SecturaFAB Organization '{name}' not found — set dropdown manually"
+            f"WARNING: SecturaFAB Organization '{name}' not found in "
+            f"{len(listed)} tenant org(s)"
+            + (f" (e.g. {sample})" if sample else "")
+            + " — set dropdown manually"
         )
         return notes
 
@@ -134,8 +153,16 @@ def apply_quote_organization(
         "ParentID": quote_id,
         "Active": True,
     }
+    actual_name = (
+        org.get("OrganizationName")
+        or org.get("DisplayName")
+        or org.get("NameAndLocation")
+        or name
+    )
     detail["PrimaryOrganizationID"] = org_id
-    detail["OrganizationName"] = org.get("OrganizationName") or name
+    detail["OrganizationID"] = org_id
+    detail["OrganizationName"] = actual_name
+    detail["Organization"] = entry
     detail["OrganizationList"] = [entry]
     if description:
         detail["Description"] = str(description)[:500]
@@ -147,20 +174,31 @@ def apply_quote_organization(
         detail["PrimaryContactID"] = contact_id
 
     save = client.request("POST", "v1/quote", json=detail)
-    if save.status_code >= 400:
+    try:
+        status = int(getattr(save, "status_code", 200) or 200)
+    except (TypeError, ValueError):
+        status = 200
+    if status >= 400:
         notes.append(
-            f"WARNING: Setting Organization '{name}' failed ({save.status_code})"
+            f"WARNING: Setting Organization '{name}' failed ({status})"
         )
         return notes
 
     check = client.get_json(f"v1/quote/{quote_id}")
     got = str(check.get("OrganizationName") or "").strip()
-    if got.casefold() == name.casefold() or got.casefold().startswith(name.casefold()):
-        notes.append(f"Set Organization: {got or name}")
+    got_id = str(check.get("PrimaryOrganizationID") or "").strip()
+    if got_id == org_id or (
+        got
+        and (
+            got.casefold() == str(actual_name).casefold()
+            or "time" in got.casefold()
+        )
+    ):
+        notes.append(f"Set Organization: {got or actual_name} ({org_id})")
     else:
         notes.append(
-            f"WARNING: Organization save returned '{got or '(blank)'}' "
-            f"(wanted '{name}') — set dropdown manually"
+            f"WARNING: Organization save returned name={got or '(blank)'} "
+            f"id={got_id or '(blank)'} (bound {actual_name} {org_id})"
         )
     return notes
 

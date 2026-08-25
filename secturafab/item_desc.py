@@ -114,6 +114,40 @@ def looks_like_drawing_sheet(width_in: float | None, length_in: float | None) ->
     return False
 
 
+_CAD_THK_RE = re.compile(r'(?P<thk>\d+\s*/\s*\d+|\d+(?:\.\d+)?)\s*"')
+_CAD_GRADE_RE = re.compile(
+    r"\b(?P<grade>A\s*572(?:\s+Grade\s+\d+)?|A\s*36|A\s*513|A\s*500|A\s*656(?:\s+Grade\s+\d+)?|100K)\b",
+    re.IGNORECASE,
+)
+_CAD_FLAT_RE = re.compile(
+    r"(?P<w>\d+(?:\.\d+)?)\s*in\s*x\s*(?P<l>\d+(?:\.\d+)?)\s*in",
+    re.IGNORECASE,
+)
+
+
+def parse_cad_desc_fields(description: str | None) -> dict[str, Any]:
+    """Read thk / grade / flats already on a Kyle Cad Description onto item fields."""
+    text = str(description or "")
+    out: dict[str, Any] = {}
+    m = _CAD_THK_RE.search(text)
+    if m:
+        out["thickness"] = re.sub(r"\s+", "", m.group("thk"))
+    g = _CAD_GRADE_RE.search(text)
+    if g:
+        out["material"] = re.sub(r"\s+", " ", g.group("grade")).strip()
+    flat = _CAD_FLAT_RE.search(text)
+    if flat:
+        try:
+            w = float(flat.group("w"))
+            length = float(flat.group("l"))
+        except (TypeError, ValueError):
+            w = length = 0.0
+        if w > 0 and length > 0 and not looks_like_drawing_sheet(w, length):
+            out["width_in"] = w
+            out["length_in"] = length
+    return out
+
+
 def format_cad_description(
     part_no: str,
     *,
