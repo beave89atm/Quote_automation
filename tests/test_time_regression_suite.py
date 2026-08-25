@@ -343,14 +343,9 @@ def test_linear_bind_sets_product_type_10_and_product_id():
         assert item.get("ProductID") == "pid-rct"
         assert item.get("ProductName") in {None, ""}
         assert item["Description"] != item["ID"]
-        assert any(
-            str(o.get("OperationName") or o.get("CalculatorName") or "") == "Saw"
-            for o in (item.get("OperationCostList") or [])
-        )
-        assert any(
-            "setup" in str(o.get("OperationName") or o.get("CalculatorName") or "").lower()
-            for o in (item.get("OperationCostList") or [])
-        )
+        # addLinear writes Saw + Saw Setup as Primary Costs. Bind must not
+        # graft them as OperationName tags (8bcc226b orange badges).
+        assert not (item.get("OperationCostList") or [])
 
 
 def test_pdf_plate_21667_flat_is_drawing_math_not_sheet():
