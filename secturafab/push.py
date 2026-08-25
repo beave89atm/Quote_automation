@@ -17,10 +17,19 @@ from quote_core.drawing_title import (
     extract_drawing_number_from_pdf,
 )
 
+from .assembly_ops import (
+    ensure_assembly_root,
+    needs_assembly_structure,
+    relink_assembly_children,
+)
 from .client import SecturaFabApiError, SecturaFabClient
-from .component_ops import find_purchased_part_keys
+from .component_ops import ensure_purchased_components, find_purchased_part_keys
+from .finalize_ops import finalize_quote_ops
 from .imperial_ops import ensure_imperial_item_units
 from .org_ops import apply_quote_organization
+from .profile_ops import (
+    ensure_laser_profile_ops,
+)
 from .qty_ops import apply_bom_quantities, refresh_bom_rows_for_push
 from .quotes import QuoteService
 from .website import (
@@ -860,14 +869,29 @@ class SecturaFabPushService:
         assert last_exc is not None
         raise last_exc
 
+    def _website_cookie_present(self) -> bool:
+        """True only for a real non-empty SECTURAFAB_WEBSITE_COOKIE string."""
+        cfg = getattr(self.client, "config", None)
+        raw = getattr(cfg, "website_cookie", "") if cfg is not None else ""
+        return isinstance(raw, str) and bool(raw.strip())
+
     def require_website_finish_auth(self) -> dict[str, Any]:
-        """Fail closed: no Finish session means no quote, no quickAddCAD fallback."""
+        """Diagnostic probe only. push_job never refuses for a missing cookie."""
         probe = self.client.probe_website_finish_auth()
         if isinstance(probe, dict) and probe.get("can_finish") is True:
             return probe
         raise SecturaFabWebsiteAuthError(
             (probe.get("gap") if isinstance(probe, dict) else None) or WEBSITE_AUTH_GAP
         )
+
+    def _peek_item_count(self, quote_id: str) -> int:
+        try:
+            peek = self.client.get_json(f"v1/quote/{quote_id}")
+        except SecturaFabApiError:
+            return 0
+        if not isinstance(peek, dict):
+            return 0
+        return len(list(peek.get("ItemList") or []))
 
     def _cadimport_rows(self, payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, list):
@@ -1443,22 +1467,6 @@ class SecturaFabPushService:
             loose_linear = (not cad) and classify_sectura_item(
                 title or part_key or ""
             ) == "Linear"
-            try:
-                probe = self.require_website_finish_auth()
-                notes.append(
-                    "Website Finish auth OK"
-                    if probe.get("can_finish")
-                    else WEBSITE_AUTH_GAP
-                )
-            except SecturaFabWebsiteAuthError as exc:
-                notes.append(str(exc))
-                return PushResult(
-                    ok=False,
-                    error=str(exc),
-                    notes=notes,
-                    status="failed",
-                    last_error=str(exc),
-                )
             if on_progress:
                 on_progress(
                     {
@@ -1543,37 +1551,257 @@ class SecturaFabPushService:
                 )
 
             extra_pdfs = [job_pdf] if has_job_pdf else None
-            if cad:
+            used_finish = False
+            used_step = False
+            used_pdf_shell = False
+            # Default = working main push (quickAddCAD). Finish is additive
+            # only when a real website cookie is present.
+            if self._website_cookie_present():
+                try:
+                    if cad:
+                        notes.extend(
+                            self.finish_cad_files(
+                                quote_id=quote_id,
+                                cad_files=cad,
+                                material=material,
+                                thickness=thickness,
+                                qty=qty,
+                                takeoff=takeoff,
+                                bom_rows=bom_rows,
+                                library=library,
+                                extra_pdfs=extra_pdfs,
+                                part_key=part_key,
+                            )
+                        )
+                        uploaded.extend(p.name for p in cad)
+                    elif loose_linear:
+                        notes.extend(
+                            self.add_loose_linears(
+                                quote_id=quote_id,
+                                description=quote_description or title or part_key,
+                                material=material,
+                                qty=qty,
+                            )
+                        )
+                    elif drawings or has_job_pdf:
+                        pdfs = list(drawings) if drawings else []
+                        if has_job_pdf and job_pdf not in pdfs:
+                            pdfs.insert(0, job_pdf)
+                        if pdfs:
+                            notes.extend(
+                                self.finish_pdf_files(
+                                    quote_id=quote_id,
+                                    pdf_files=pdfs,
+                                    material=material,
+                                    thickness=thickness,
+                                    qty=qty,
+                                    description=quote_description or title,
+                                )
+                            )
+                            uploaded.extend(p.name for p in pdfs)
+                    if self._peek_item_count(quote_id) > 0:
+                        used_finish = True
+                    else:
+                        notes.append(
+                            "WARNING: Finish produced 0 ItemList lines — "
+                            "falling back to working push"
+                        )
+                except (
+                    SecturaFabApiError,
+                    SecturaFabWebsiteAuthError,
+                    ValueError,
+                    OSError,
+                ) as exc:
+                    if self._peek_item_count(quote_id) > 0:
+                        notes.append(
+                            f"WARNING: Finish errored after creating items ({exc}); "
+                            "keeping Finish quote"
+                        )
+                        used_finish = True
+                    else:
+                        notes.append(
+                            f"WARNING: Finish failed ({exc}); "
+                            "falling back to working push"
+                        )
+            else:
+                notes.append(
+                    "Website cookie not set — using working Sectura push (quickAddCAD)"
+                )
+
+            if used_finish:
+                notes.extend(ensure_imperial_item_units(self.client, quote_id))
                 notes.extend(
-                    self.finish_cad_files(
-                        quote_id=quote_id,
-                        cad_files=cad,
-                        material=material,
-                        thickness=thickness,
-                        qty=qty,
-                        takeoff=takeoff,
+                    apply_bom_quantities(
+                        self.client,
+                        quote_id,
                         bom_rows=bom_rows,
-                        library=library,
-                        extra_pdfs=extra_pdfs,
                         part_key=part_key,
                     )
                 )
-                uploaded.extend(p.name for p in cad)
-            elif loose_linear:
+                peek_count = self._peek_item_count(quote_id)
                 notes.extend(
-                    self.add_loose_linears(
-                        quote_id=quote_id,
-                        description=quote_description or title or part_key,
-                        material=material,
-                        qty=qty,
+                    self.nest_after_finish(quote_id, item_count=peek_count or 1)
+                )
+                notes.extend(
+                    ensure_weld_ops(
+                        self.client,
+                        quote_id,
+                        times=times,
+                        part_key=part_key,
                     )
                 )
-            elif drawings or has_job_pdf:
-                pdfs = list(drawings) if drawings else []
-                if has_job_pdf and job_pdf not in pdfs:
-                    pdfs.insert(0, job_pdf)
-                if not pdfs:
-                    msg = "PDF-only job has no Image Files to Finish"
+                notes.extend(ensure_imperial_item_units(self.client, quote_id))
+            else:
+                if cad:
+                    try:
+                        self.quick_add_cad(
+                            quote_id=quote_id,
+                            cad_files=cad,
+                            material=material,
+                            thickness=thickness,
+                            machine=machine,
+                            memo=memo,
+                            qty=qty,
+                        )
+                        used_step = True
+                        uploaded.extend(p.name for p in cad)
+                        notes.append(
+                            f"Imported STEP/STP via quickAddCAD: {cad[0].name} "
+                            f"({machine}, {material}, {thickness}\", units=inch)"
+                        )
+                    except SecturaFabApiError as exc:
+                        detail = _api_error_detail(exc)
+                        notes.append(
+                            f"WARNING: STEP import failed ({exc.status_code}): {detail}"
+                        )
+                        if bom_rows and library.get("folder"):
+                            notes.append(
+                                "Falling back to lesson 04 PDF component assembly "
+                                "(SecturaFAB could not load the STEP)"
+                            )
+                        else:
+                            raise SecturaFabApiError(
+                                f"STEP quickAddCAD failed and no BOM/library for PDF "
+                                f"fallback — {detail}",
+                                status_code=exc.status_code,
+                                body=exc.body,
+                            ) from exc
+
+                if used_step:
+                    notes.extend(self.apply_item_categories(quote_id))
+                    step_detail = self.client.get_json(f"v1/quote/{quote_id}")
+                    step_items = list(step_detail.get("ItemList") or [])
+                    use_assembly = needs_assembly_structure(step_items, bom_rows)
+                    if use_assembly:
+                        notes.extend(
+                            ensure_assembly_root(
+                                self.client, quote_id, part_key=part_key
+                            )
+                        )
+                        purchased = find_purchased_part_keys(
+                            library_folder=library.get("folder"),
+                            related_pdf_names=list(library.get("related_pdfs") or []),
+                            bom_rows=bom_rows,
+                        )
+                        notes.extend(
+                            ensure_purchased_components(
+                                self.client, quote_id, purchased_keys=purchased
+                            )
+                        )
+                        notes.extend(
+                            relink_assembly_children(
+                                self.client, quote_id, part_key=part_key
+                            )
+                        )
+                        notes.append(
+                            f"Skipped UpdateItem_Part on STEP assembly (seed {material} @ "
+                            f"{thickness}\") — avoids delayed CAD wipe of ItemList"
+                        )
+                    else:
+                        notes.append(
+                            "Single-solid STEP — left as Part (no Assembly conversion)"
+                        )
+                        notes.append(
+                            f"Skipped UpdateItem_Part on single-part STEP (seed {material} @ "
+                            f"{thickness}\") — Profile uses quickAddCAD cut time"
+                        )
+                    notes.extend(ensure_imperial_item_units(self.client, quote_id))
+                    notes.extend(
+                        apply_bom_quantities(
+                            self.client,
+                            quote_id,
+                            bom_rows=bom_rows,
+                            part_key=part_key,
+                        )
+                    )
+                    notes.extend(
+                        ensure_laser_profile_ops(
+                            self.client,
+                            quote_id,
+                            material=material,
+                            thickness=thickness,
+                        )
+                    )
+                    notes.extend(
+                        apply_bom_quantities(
+                            self.client,
+                            quote_id,
+                            bom_rows=bom_rows,
+                            part_key=part_key,
+                        )
+                    )
+                    notes.extend(ensure_imperial_item_units(self.client, quote_id))
+                elif bom_rows and library.get("folder"):
+                    from .pdf_assembly_ops import build_pdf_only_assembly
+
+                    notes.append(
+                        "Building assembly from BOM component PDFs "
+                        f"({len(bom_rows)} BOM rows / lesson 04)"
+                        + (" — STEP unavailable/failed" if cad else " — no STEP on job")
+                    )
+                    notes.extend(
+                        build_pdf_only_assembly(
+                            self.client,
+                            quote_id=quote_id,
+                            part_key=part_key,
+                            bom_rows=bom_rows,
+                            library_folder=library.get("folder"),
+                            related_pdf_names=list(library.get("related_pdfs") or []),
+                            material=material,
+                            thickness=thickness,
+                            machine=machine,
+                            qty=qty,
+                            times=times,
+                            extra_pdfs=[Path(pdf_path)] if pdf_path else None,
+                        )
+                    )
+                elif has_job_pdf:
+                    from .pdf_assembly_ops import build_single_pdf_quote
+
+                    used_pdf_shell = True
+                    notes.append(
+                        "Building single-PDF quote (no STEP / no library BOM) from "
+                        f"{job_pdf.name}"
+                    )
+                    notes.extend(
+                        build_single_pdf_quote(
+                            self.client,
+                            quote_id=quote_id,
+                            part_key=part_key,
+                            pdf_path=job_pdf,
+                            material=material,
+                            thickness=thickness,
+                            machine=machine,
+                            qty=qty,
+                            description=quote_description or title,
+                        )
+                    )
+                    uploaded.append(job_pdf.name)
+                else:
+                    msg = (
+                        "No STEP/STP, no BOM/library PDF assembly, and no job PDF — "
+                        "refusing empty drawings-only quote"
+                    )
                     notes.append(msg)
                     return PushResult(
                         ok=False,
@@ -1589,64 +1817,46 @@ class SecturaFabPushService:
                         last_error=msg,
                         attempts=createfile_attempts,
                     )
+
                 notes.extend(
-                    self.finish_pdf_files(
-                        quote_id=quote_id,
-                        pdf_files=pdfs,
-                        material=material,
-                        thickness=thickness,
-                        qty=qty,
-                        description=quote_description or title,
+                    ensure_weld_ops(
+                        self.client,
+                        quote_id,
+                        times=times,
+                        part_key=part_key,
                     )
                 )
-                uploaded.extend(p.name for p in pdfs)
-            else:
-                msg = (
-                    "No STEP/STP, no job PDF, and not a loose linear — "
-                    "refusing empty quote (no Finish / Image Files / Long path)"
-                )
-                notes.append(msg)
-                return PushResult(
-                    ok=False,
-                    error=msg,
-                    notes=notes,
-                    quote_id=quote_id,
-                    quote_number=quote_number,
-                    quote_request_id=quote_request_id,
-                    created_new_quote=True,
-                    uploaded_files=uploaded,
-                    item_count=0,
-                    status="failed",
-                    last_error=msg,
-                    attempts=createfile_attempts,
-                )
-
-            notes.extend(ensure_imperial_item_units(self.client, quote_id))
-            notes.extend(
-                apply_bom_quantities(
-                    self.client,
-                    quote_id,
-                    bom_rows=bom_rows,
-                    part_key=part_key,
-                )
-            )
-
-            peek = self.client.get_json(f"v1/quote/{quote_id}")
-            peek_items = list(peek.get("ItemList") or [])
-            notes.extend(
-                self.nest_after_finish(quote_id, item_count=len(peek_items) or 1)
-            )
-
-            # Lesson 02: Weld is not auto-added by Finish — Cursor times on assemblies.
-            notes.extend(
-                ensure_weld_ops(
-                    self.client,
-                    quote_id,
-                    times=times,
-                    part_key=part_key,
-                )
-            )
-            notes.extend(ensure_imperial_item_units(self.client, quote_id))
+                if used_step or used_pdf_shell or (bom_rows and library.get("folder")):
+                    try:
+                        notes.extend(
+                            finalize_quote_ops(
+                                self.client,
+                                quote_id,
+                                material=material,
+                                thickness=thickness,
+                                times=times,
+                                part_key=part_key,
+                                bom_rows=bom_rows,
+                            )
+                        )
+                    except SecturaFabApiError as exc:
+                        if exc.status_code in {502, 503, 504}:
+                            notes.append(
+                                f"WARNING: Finalize hit transient {exc.status_code}; "
+                                "re-checking quote ItemList"
+                            )
+                        else:
+                            raise
+                if used_pdf_shell or used_step or (bom_rows and library.get("folder")):
+                    notes.extend(
+                        ensure_laser_profile_ops(
+                            self.client,
+                            quote_id,
+                            material=material,
+                            thickness=thickness,
+                            verify=True,
+                        )
+                    )
 
             detail = self.client.get_json(f"v1/quote/{quote_id}")
             item_list = list(detail.get("ItemList") or [])

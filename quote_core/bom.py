@@ -1141,6 +1141,9 @@ def extract_bom_from_ocr_time_style(
 
         multi_hits: list[dict[str, Any]] = []
         texts_for_supp: list[str] = []
+        if not config and texts_have_multi_qty_headers(texts):
+            config = "1"
+            supp_notes.append("Multi-dash Time BOM — defaulted to -1 qty column")
         if config and (
             texts_have_multi_qty_headers(texts)
             or _parse_multi_qty_time_hits(texts, bases, bom_config=config)
@@ -1230,7 +1233,8 @@ def extract_bom(
 
     1) Native MAC text/blocks (high confidence when present)
     2) Native PARTS LIST (Cummins / NGFS style)
-    3) OCR Time-style LIST OF MATERIAL (vector CAD drawings)
+    3) Kyle-confirmed LOM.xlsx in the library folder (preferred over OCR)
+    4) OCR Time-style LIST OF MATERIAL (vector CAD drawings)
     """
     notes: list[str] = []
     native = extract_bom_from_native_mac(pdf_path, text=text)
@@ -1245,6 +1249,16 @@ def extract_bom(
         return parts_list
     if parts_list.notes:
         notes.extend(parts_list.notes)
+
+    from quote_core.lom_xlsx import extract_bom_from_lom_xlsx, find_lom_xlsx
+
+    lom_path = find_lom_xlsx(library_folder)
+    if lom_path:
+        lom = extract_bom_from_lom_xlsx(lom_path, bom_config=bom_config)
+        if lom.rows:
+            lom.notes = notes + list(lom.notes)
+            return lom
+        notes.extend(lom.notes)
 
     if pdf_path:
         ocr = extract_bom_from_ocr_time_style(

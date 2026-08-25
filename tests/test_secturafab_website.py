@@ -1,4 +1,4 @@
-"""Finish / CAD Files JS contract and no-graft push path."""
+"""Finish / CAD Files JS contract; Finish is additive when a website cookie exists."""
 
 from __future__ import annotations
 
@@ -191,12 +191,75 @@ def test_add_item_dxf_files_sends_js_contract():
     assert body["FileList"][0]["Machine"] == "Laser"
 
 
-def test_push_job_uses_finish_not_quickadd_or_profile(tmp_path: Path):
+def test_push_job_no_cookie_uses_working_quickadd(tmp_path: Path):
+    pdf = tmp_path / "part.pdf"
+    stp = tmp_path / "part.stp"
+    pdf.write_bytes(b"%PDF")
+    stp.write_bytes(b"ISO")
+    client = MagicMock()
+    client.config.website_cookie = ""
+    client.get_json.return_value = {
+        "QuoteNumber": "part",
+        "ItemCount": 2,
+        "ItemList": [{"Description": "A"}, {"Description": "B"}],
+    }
+    service = SecturaFabPushService(client=client)
+    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "create_quote", return_value="qid"
+    ) as create_q, patch.object(
+        service, "allocate_quote_number", return_value="part"
+    ), patch.object(
+        service, "quick_add_cad", return_value={"ok": True}
+    ) as qadd, patch.object(
+        service, "finish_cad_files"
+    ) as finish, patch.object(
+        service, "apply_item_categories", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_assembly_root", return_value=[]
+    ), patch(
+        "secturafab.push.relink_assembly_children", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_purchased_components", return_value=[]
+    ), patch(
+        "secturafab.push.find_purchased_part_keys", return_value={}
+    ), patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ), patch(
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_laser_profile_ops", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_weld_ops", return_value=[]
+    ), patch(
+        "secturafab.push.finalize_quote_ops", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value=None
+    ):
+        result = service.push_job(
+            title="part",
+            pdf_filename="part.pdf",
+            pdf_path=pdf,
+            stp_path=stp,
+            takeoff={"library": {"part_key": "part"}},
+            times={},
+            job_id=2,
+        )
+    assert result.ok is True
+    create_q.assert_called_once()
+    qadd.assert_called_once()
+    finish.assert_not_called()
+    assert any("working Sectura push" in n for n in (result.notes or []))
+
+
+def test_push_job_cookie_uses_finish_not_quickadd(tmp_path: Path):
     pdf = tmp_path / "21678-1.pdf"
     stp = tmp_path / "21678-1.STEP"
     pdf.write_bytes(b"%PDF")
     stp.write_bytes(b"ISO")
     client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=test"
     client.get_json.return_value = {
         "QuoteNumber": "21678-1",
         "ItemCount": 12,
@@ -204,9 +267,7 @@ def test_push_job_uses_finish_not_quickadd_or_profile(tmp_path: Path):
     }
     service = SecturaFabPushService(client=client)
     finish = MagicMock(return_value=["Finish CAD"])
-    with patch.object(
-        service, "require_website_finish_auth", return_value={"can_finish": True}
-    ), patch.object(service, "finish_cad_files", finish), patch.object(
+    with patch.object(service, "finish_cad_files", finish), patch.object(
         service, "nest_after_finish", return_value=["Nest"]
     ), patch.object(
         service, "upload_drawings_quote_request", return_value="qr"
@@ -227,7 +288,6 @@ def test_push_job_uses_finish_not_quickadd_or_profile(tmp_path: Path):
     ), patch(
         "secturafab.push.extract_assembly_description", return_value="KNUCKLE"
     ):
-        # Import names that no longer exist on push should stay uncalled via sys.modules
         result = service.push_job(
             title="21678-1",
             pdf_filename="21678-1.pdf",
@@ -242,26 +302,70 @@ def test_push_job_uses_finish_not_quickadd_or_profile(tmp_path: Path):
     qadd.assert_not_called()
     import secturafab.push as pushmod
 
-    assert not hasattr(pushmod, "ensure_laser_profile_ops")
-    assert not hasattr(pushmod, "finalize_quote_ops")
+    assert hasattr(pushmod, "ensure_laser_profile_ops")
+    assert hasattr(pushmod, "finalize_quote_ops")
+    assert hasattr(pushmod, "quick_add_cad") or hasattr(SecturaFabPushService, "quick_add_cad")
 
 
-def test_push_job_auth_gap_does_not_create_or_quickadd(tmp_path: Path):
+def test_push_job_finish_failure_falls_back_to_quickadd(tmp_path: Path):
     pdf = tmp_path / "part.pdf"
     stp = tmp_path / "part.stp"
     pdf.write_bytes(b"%PDF")
     stp.write_bytes(b"ISO")
     client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    client.get_json.return_value = {
+        "QuoteNumber": "part",
+        "ItemCount": 2,
+        "ItemList": [{"Description": "A"}, {"Description": "B"}],
+    }
     service = SecturaFabPushService(client=client)
-    with patch.object(
-        service,
-        "require_website_finish_auth",
-        side_effect=SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP),
-    ), patch.object(service, "create_quote") as create_q, patch.object(
-        service, "quick_add_cad"
+
+    def _finish_fail(**kwargs):
+        raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
+
+    peek_empty = {"QuoteNumber": "part", "ItemCount": 0, "ItemList": []}
+    peek_ok = {
+        "QuoteNumber": "part",
+        "ItemCount": 2,
+        "ItemList": [{"Description": "A"}, {"Description": "B"}],
+    }
+    # First peek (Finish failed) is empty; later reads after quickAddCAD are populated.
+    client.get_json.side_effect = [peek_empty, peek_ok, peek_ok, peek_ok, peek_ok]
+
+    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "create_quote", return_value="qid"
+    ) as create_q, patch.object(
+        service, "allocate_quote_number", return_value="part"
+    ), patch.object(
+        service, "finish_cad_files", side_effect=_finish_fail
+    ), patch.object(
+        service, "quick_add_cad", return_value={"ok": True}
     ) as qadd, patch.object(
-        service, "finish_cad_files"
-    ) as finish:
+        service, "apply_item_categories", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_assembly_root", return_value=[]
+    ), patch(
+        "secturafab.push.relink_assembly_children", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_purchased_components", return_value=[]
+    ), patch(
+        "secturafab.push.find_purchased_part_keys", return_value={}
+    ), patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ), patch(
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_laser_profile_ops", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_weld_ops", return_value=[]
+    ), patch(
+        "secturafab.push.finalize_quote_ops", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value=None
+    ):
         result = service.push_job(
             title="part",
             pdf_filename="part.pdf",
@@ -269,19 +373,19 @@ def test_push_job_auth_gap_does_not_create_or_quickadd(tmp_path: Path):
             stp_path=stp,
             takeoff={"library": {"part_key": "part"}},
             times={},
-            job_id=2,
+            job_id=3,
         )
-    assert result.ok is False
-    assert "quickAddCAD" in (result.error or "") or "Website session" in (result.error or "")
-    create_q.assert_not_called()
-    qadd.assert_not_called()
-    finish.assert_not_called()
+    assert result.ok is True
+    create_q.assert_called_once()
+    qadd.assert_called_once()
+    assert any("falling back to working push" in n for n in (result.notes or []))
 
 
-def test_push_pdf_only_uses_image_files_finish(tmp_path: Path):
+def test_push_pdf_only_with_cookie_uses_image_files_finish(tmp_path: Path):
     pdf = tmp_path / "lonely.pdf"
     pdf.write_bytes(b"%PDF")
     client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=test"
     client.get_json.return_value = {
         "QuoteNumber": "lonely",
         "ItemCount": 1,
@@ -289,9 +393,7 @@ def test_push_pdf_only_uses_image_files_finish(tmp_path: Path):
     }
     service = SecturaFabPushService(client=client)
     pdf_finish = MagicMock(return_value=["Image Files Finish"])
-    with patch.object(
-        service, "require_website_finish_auth", return_value={"can_finish": True}
-    ), patch.object(service, "finish_pdf_files", pdf_finish), patch.object(
+    with patch.object(service, "finish_pdf_files", pdf_finish), patch.object(
         service, "nest_after_finish", return_value=[]
     ), patch.object(
         service, "upload_drawings_quote_request", return_value="qr"
