@@ -17,7 +17,11 @@ from quote_core.drawing_title import (
     extract_drawing_number_from_pdf,
 )
 
-from .item_desc import format_assembly_description, title_from_job_title
+from .item_desc import (
+    format_assembly_description,
+    title_from_job_title,
+    title_from_library_folder,
+)
 from .linear_ops import bind_linear_product_ids
 
 from .assembly_ops import (
@@ -704,6 +708,8 @@ class SecturaFabPushService:
             from .qty_ops import normalize_part_key as _npk
             from .weld_ops import _desc_token
 
+            if it.get("ProductType") in (300, "300", "assembly") or it.get("IsAssembly"):
+                continue
             token = _npk(_desc_token(str(it.get("Description") or "")))
             hint = f"{it.get('Description') or ''} {bom_hint.get(token, '')}"
             cat = classify_sectura_item(hint)
@@ -711,15 +717,25 @@ class SecturaFabPushService:
             it["ItemType"] = cat
             it["Category"] = cat
             if cat == "Linear":
+                it["ProductType"] = 10
                 it["IsLinear"] = True
                 it["IsPlate"] = False
                 it["IsPart"] = True
                 it["Machine"] = "Saw"
+                it["OperationCostList"] = []
+                it["PrimaryTime"] = 0.0
+                it["UnitPrimaryTime"] = 0.0
             elif cat == "Component":
+                it["ProductType"] = 200
                 it["IsLinear"] = False
                 it["IsPlate"] = False
                 it["IsPart"] = True
+                it["Machine"] = None
+                it["OperationCostList"] = []
+                it["PrimaryTime"] = 0.0
+                it["UnitPrimaryTime"] = 0.0
             else:
+                it["ProductType"] = 100
                 it["IsLinear"] = False
                 it["IsPlate"] = True
                 it["IsPart"] = True
@@ -1519,6 +1535,7 @@ class SecturaFabPushService:
             organization_name = detect_organization(
                 pdf_path=job_pdf,
                 library_folder=library.get("folder"),
+                extra_paths=list(library.get("searched_roots") or []),
             )
             if drawings:
 
@@ -1558,12 +1575,16 @@ class SecturaFabPushService:
             # Always create a brand-new quote. Display number is bare part key
             # (no "PN " prefix; temp RevNumber is cleared so the UI stays clean).
             quote_number = self.allocate_quote_number(part_key)
-            raw_title = extract_assembly_description(
-                part_key=part_key,
-                pdf_path=Path(pdf_path) if pdf_path else None,
-                library_folder=library.get("folder"),
-                related_pdf_names=list(library.get("related_pdfs") or []),
-            ) or title_from_job_title(title, part_key=part_key)
+            raw_title = (
+                extract_assembly_description(
+                    part_key=part_key,
+                    pdf_path=Path(pdf_path) if pdf_path else None,
+                    library_folder=library.get("folder"),
+                    related_pdf_names=list(library.get("related_pdfs") or []),
+                )
+                or title_from_library_folder(title, part_key=part_key)
+                or title_from_job_title(title, part_key=part_key)
+            )
             quote_description = format_assembly_description(part_key, raw_title)
             if raw_title:
                 desc_note = f"Quote Description from assembly drawing: {quote_description}"

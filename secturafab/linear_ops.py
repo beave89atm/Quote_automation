@@ -121,7 +121,7 @@ def bind_linear_product_ids(
         it["IsLinear"] = True
         it["IsPlate"] = False
         it["IsPart"] = True
-        it["ProductType"] = it.get("ProductType") or _LINEAR_TYPE
+        it["ProductType"] = _LINEAR_TYPE
         length = item_length_in(it)
         pn = normalize_part_token(raw_token) or raw_token
         if pn:

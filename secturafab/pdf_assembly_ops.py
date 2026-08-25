@@ -20,6 +20,7 @@ from .item_desc import (
     format_cad_description,
     format_component_description,
     item_flat_dims,
+    looks_like_drawing_sheet,
     normalize_part_token,
 )
 from .linear_ops import add_linear_item_from_bom, bind_linear_product_ids, fetch_linear_catalog
@@ -231,9 +232,29 @@ def _apply_kyle_line_descriptions(
         grade = (pm.material if pm else None) or (
             str(it.get("Material") or it.get("MaterialGrade") or "").strip() or default_material
         )
+        raw_w = it.get("Width") or it.get("FlatWidth")
+        raw_l = it.get("Length") or it.get("FlatLength")
+        try:
+            raw_w_f = float(raw_w) if raw_w is not None else None
+            raw_l_f = float(raw_l) if raw_l is not None else None
+        except (TypeError, ValueError):
+            raw_w_f, raw_l_f = None, None
+        if looks_like_drawing_sheet(raw_w_f, raw_l_f):
+            it["Width"] = 0
+            it["Length"] = 0
+            it["FlatWidth"] = 0
+            it["FlatLength"] = 0
+            it["Dim1"] = 0
+            it["Dim2"] = 0
         width, length = item_flat_dims(it)
+        noun = bom_desc.get(normalize_part_key(pn), "")
         desc = format_cad_description(
-            pn, thickness=thk, grade=grade, width_in=width, length_in=length
+            pn,
+            thickness=thk,
+            grade=grade,
+            width_in=width,
+            length_in=length,
+            noun=noun,
         )
         if desc and str(it.get("Description") or "").strip() != desc:
             it["Description"] = desc[:500]
@@ -320,15 +341,25 @@ def categorize_pdf_imported_items(
         it["ItemType"] = cat
         it["Category"] = cat
         if cat == "Linear":
+            it["ProductType"] = 10
             it["IsLinear"] = True
             it["IsPlate"] = False
             it["IsPart"] = True
             it["Machine"] = "Saw"
+            it["OperationCostList"] = []
+            it["PrimaryTime"] = 0.0
+            it["UnitPrimaryTime"] = 0.0
         elif cat == "Component":
+            it["ProductType"] = 200
             it["IsLinear"] = False
             it["IsPlate"] = False
             it["IsPart"] = True
+            it["Machine"] = None
+            it["OperationCostList"] = []
+            it["PrimaryTime"] = 0.0
+            it["UnitPrimaryTime"] = 0.0
         else:
+            it["ProductType"] = 100
             it["IsLinear"] = False
             it["IsPlate"] = True
             it["IsPart"] = True

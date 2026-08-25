@@ -30,6 +30,36 @@ def test_classify_fittings_are_component_not_cad():
     assert classify_sectura_item("10081-2 PEDESTAL HOSE TUBE") == "Linear"
 
 
+_LIVE_1001898 = [
+    ("14500-1", "PEDESTAL TOP PLATE", "Cad"),
+    ("1001880-2", "PEDESTAL TUBE", "Linear"),
+    ("29860-4", "PEDESTAL BRACE ANGLE", "Linear"),
+    ("14501-1", "RESERVOIR TOP PLATE", "Cad"),
+    ("1005966-1", "PEDESTAL BOTTOM PLATE", "Cad"),
+    ("50137-5", "3/4 NPT HALF COUPLING", "Component"),
+    ("50115-7", "1 1/4 NPT NIPPLE X 4 LG.", "Component"),
+    ("50030-5", "3/4 NPT COUPLING", "Component"),
+    ("8166-1", "FILLER NECK", "Component"),
+    ("9905-1", "MOUNTING PLATE, EMER POWER", "Cad"),
+    ("33637-1", "1 1/4 RETURN TUBE", "Linear"),
+    ("10081-2", "PEDESTAL HOSE TUBE", "Linear"),
+    ("50006-5", "3/4 NPT MAGNETIC PLUG", "Component"),
+    ("50122-1", "1 1/4 NPT PIPE CAP", "Component"),
+    ("29860-3", "PEDESTAL BRACE ANGLE", "Linear"),
+    ("1005940-1", "PEDESTAL GUSSET", "Cad"),
+    ("50029-7", "1 1/4 90 STREET ELBOW", "Component"),
+]
+
+
+def test_live_1001898_classify_matches_kyle():
+    got = {pn: classify_sectura_item(f"{pn} {desc}") for pn, desc, _want in _LIVE_1001898}
+    want = {pn: cat for pn, _desc, cat in _LIVE_1001898}
+    assert got == want
+    assert sum(1 for c in got.values() if c == "Cad") == 5
+    assert sum(1 for c in got.values() if c == "Linear") == 5
+    assert sum(1 for c in got.values() if c == "Component") == 7
+
+
 def test_kyle_description_formats():
     cad = format_cad_description(
         "14500-1", thickness=0.25, grade="A36", width_in=12, length_in=12
@@ -46,6 +76,21 @@ def test_kyle_description_formats():
     asm = format_assembly_description("1001898-1", "PEDESTAL WELDMENT")
     assert asm == "1001898-1 - PEDESTAL WELDMENT"
     assert format_assembly_description("1001898-1", "1001898") == "1001898-1"
+    from secturafab.item_desc import looks_like_drawing_sheet
+
+    assert looks_like_drawing_sheet(22.0, 28.5) is True
+    assert looks_like_drawing_sheet(7.5, 10.0) is False
+    sheet_cad = format_cad_description(
+        "14501-1",
+        thickness=0.25,
+        grade="A36",
+        width_in=22.0,
+        length_in=28.5,
+        noun="RESERVOIR TOP PLATE",
+    )
+    assert "22" not in sheet_cad
+    assert "RESERVOIR TOP PLATE" in sheet_cad
+    assert sheet_cad != "14501-1"
 
 
 def test_time_org_and_pedestal_folder_title():
@@ -57,7 +102,18 @@ def test_time_org_and_pedestal_folder_title():
     assert detect_organization(pdf_path=None, library_folder=folder) == (
         "Time Manufacturing Waco"
     )
+    assert detect_organization(
+        pdf_path=None,
+        library_folder="Pedestal Weldment - 1001898-1",
+        extra_paths=[
+            r"C:\Users\Kyle\Kannon Manufacturing Inc\Fort Worth - Documents"
+            r"\Engineering\Customer Drawings\Time"
+        ],
+    ) == "Time Manufacturing Waco"
     assert title_from_library_folder(folder, part_key="1001898-1") == "PEDESTAL WELDMENT"
+    assert title_from_library_folder(
+        "Pedestal Weldment - 1001898-1", part_key="1001898-1"
+    ) == "PEDESTAL WELDMENT"
     assert extract_assembly_description(
         part_key="1001898-1",
         library_folder=folder,
@@ -177,3 +233,128 @@ def test_cookie_less_push_does_not_graft_profile(tmp_path: Path):
         "Time Manufacturing Waco" in n or "Organization" in n or "Set Organization" in n
         for n in (result.notes or [])
     ) or detect_organization(library_folder=lib) == "Time Manufacturing Waco"
+
+
+def test_rename_imported_descriptions_is_gone():
+    import secturafab.pdf_assembly_ops as pdf_ops
+
+    assert not hasattr(pdf_ops, "_rename_imported_descriptions")
+    assert hasattr(pdf_ops, "_apply_kyle_line_descriptions")
+
+
+def test_categorize_live_shaped_items_sets_product_type():
+    from secturafab.pdf_assembly_ops import categorize_pdf_imported_items
+
+    items = [
+        {"ID": "a", "Description": "50029-7", "ProductType": 100, "IsPart": True, "Machine": "Laser"},
+        {"ID": "b", "Description": "29860-3", "ProductType": 100, "IsPart": True, "Machine": "Laser"},
+        {"ID": "c", "Description": "1005940-1", "ProductType": 100, "IsPart": True, "Machine": "Laser"},
+        {"ID": "root", "Description": "1001898-1", "ProductType": 300, "IsAssembly": True},
+    ]
+    client = MagicMock()
+    client.get_json.return_value = {"ItemList": items}
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    notes = categorize_pdf_imported_items(
+        client,
+        "qid",
+        bom_rows=[
+            {"part_no": "50029-7", "description": "1 1/4 90 STREET ELBOW", "qty": 1},
+            {"part_no": "29860-3", "description": "PEDESTAL BRACE ANGLE", "qty": 2},
+            {"part_no": "1005940-1", "description": "PEDESTAL GUSSET", "qty": 8},
+        ],
+    )
+    saved = client.request.call_args.kwargs["json"]["ItemList"]
+    by_id = {it["ID"]: it for it in saved}
+    assert by_id["a"]["ProductType"] == 200
+    assert by_id["a"]["Category"] == "Component"
+    assert by_id["b"]["ProductType"] == 10
+    assert by_id["b"]["IsLinear"] is True
+    assert by_id["b"]["Machine"] == "Saw"
+    assert by_id["c"]["ProductType"] == 100
+    assert by_id["c"]["IsPlate"] is True
+    assert any("Component: 1" in n for n in notes)
+    assert by_id["root"]["ProductType"] == 300
+
+
+def test_apply_item_categories_skips_assembly_and_binds_types():
+    service = SecturaFabPushService(client=MagicMock())
+    items = [
+        {
+            "ID": "root",
+            "Description": "1001898-1 - PEDESTAL WELDMENT",
+            "ProductType": 300,
+            "IsAssembly": True,
+        },
+        {
+            "ID": "lin",
+            "Description": "29860-3",
+            "ProductType": 100,
+            "Machine": "Laser",
+        },
+        {
+            "ID": "fit",
+            "Description": "50029-7",
+            "ProductType": 100,
+            "Machine": "Laser",
+        },
+    ]
+    service.client.get_json.return_value = {"ItemList": items}
+    save = MagicMock()
+    save.status_code = 200
+    service.client.request.return_value = save
+    service.apply_item_categories(
+        "qid",
+        bom_rows=[
+            {"part_no": "29860-3", "description": "PEDESTAL BRACE ANGLE"},
+            {"part_no": "50029-7", "description": "1 1/4 90 STREET ELBOW"},
+        ],
+    )
+    saved = service.client.request.call_args.kwargs["json"]["ItemList"]
+    by_id = {it["ID"]: it for it in saved}
+    assert by_id["root"]["ProductType"] == 300
+    assert by_id["root"]["IsAssembly"] is True
+    assert by_id["lin"]["ProductType"] == 10
+    assert by_id["lin"]["Machine"] == "Saw"
+    assert by_id["fit"]["ProductType"] == 200
+
+
+def test_finalize_qty_mismatch_does_not_graft_profile():
+    from secturafab.finalize_ops import finalize_quote_ops
+
+    client = MagicMock()
+    client.get_json.return_value = {
+        "ItemList": [
+            {"ID": "p1", "Description": "14500-1", "ProductType": 100, "Quantity": 1},
+        ]
+    }
+    with patch("secturafab.finalize_ops.wait_for_quote_settle", return_value=[]), patch(
+        "secturafab.finalize_ops.count_profile_items", return_value=0
+    ), patch(
+        "secturafab.finalize_ops.assembly_has_weld", return_value=True
+    ), patch(
+        "secturafab.finalize_ops.bom_qty_mismatches", return_value=["14500-1"]
+    ), patch(
+        "secturafab.finalize_ops.apply_bom_quantities", return_value=["qty"]
+    ), patch(
+        "secturafab.finalize_ops.ensure_laser_profile_ops", return_value=["Attached Profile"]
+    ) as profile, patch(
+        "secturafab.finalize_ops.ensure_weld_ops", return_value=[]
+    ), patch(
+        "secturafab.finalize_ops.ensure_imperial_item_units", return_value=[]
+    ), patch(
+        "secturafab.finalize_ops.rollup_assembly_costs", return_value=[]
+    ):
+        finalize_quote_ops(
+            client,
+            "qid",
+            material="A36",
+            thickness="0.25",
+            times=None,
+            part_key="1001898-1",
+            bom_rows=[{"part_no": "14500-1", "qty": 1}],
+            attempts=1,
+            attach_profile=False,
+        )
+    profile.assert_not_called()

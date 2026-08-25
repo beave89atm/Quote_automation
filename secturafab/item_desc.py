@@ -79,6 +79,41 @@ def _fmt_in(val: float) -> str:
     return text or "0"
 
 
+# Drawing-sheet outlines from quickAddCAD PDF page size (live 1001898-1: 22×28.5).
+_SHEET_PAIRS = (
+    (8.5, 11.0),
+    (11.0, 17.0),
+    (17.0, 22.0),
+    (18.0, 24.0),
+    (22.0, 28.0),
+    (22.0, 28.5),
+    (22.0, 29.0),
+    (22.0, 29.3),
+    (22.0, 34.0),
+    (24.0, 36.0),
+    (34.0, 44.0),
+)
+
+
+def looks_like_drawing_sheet(width_in: float | None, length_in: float | None) -> bool:
+    """True when L×W is the PDF page / title-block sheet, not the part flat."""
+    try:
+        w = float(width_in or 0)
+        l = float(length_in or 0)
+    except (TypeError, ValueError):
+        return False
+    if w <= 0 or l <= 0:
+        return False
+    a, b = (w, l) if w <= l else (l, w)
+    if max(w, l) >= 20.0:
+        return True
+    for sw, sl in _SHEET_PAIRS:
+        lo, hi = (sw, sl) if sw <= sl else (sl, sw)
+        if abs(a - lo) <= 0.6 and abs(b - hi) <= 0.6:
+            return True
+    return False
+
+
 def format_cad_description(
     part_no: str,
     *,
@@ -86,6 +121,7 @@ def format_cad_description(
     grade: str | None = None,
     width_in: float | None = None,
     length_in: float | None = None,
+    noun: str | None = None,
 ) -> str:
     pn = normalize_part_token(part_no)
     bits = [pn] if pn else []
@@ -96,8 +132,17 @@ def format_cad_description(
     grade_s = (grade or "").strip()
     if grade_s:
         mid.append(grade_s)
-    if width_in and width_in > 0 and length_in and length_in > 0:
-        mid.append(f"{_fmt_in(width_in)} in x {_fmt_in(length_in)} in")
+    use_flat = (
+        width_in
+        and length_in
+        and width_in > 0
+        and length_in > 0
+        and not looks_like_drawing_sheet(width_in, length_in)
+    )
+    if use_flat:
+        mid.append(f"{_fmt_in(float(width_in))} in x {_fmt_in(float(length_in))} in")
+    elif (noun or "").strip() and not is_bare_part_number(noun, pn):
+        mid.append(format_component_description(noun, part_no=pn) or noun.strip())
     if mid:
         bits.append(" ".join(mid))
     return " - ".join(bits)
@@ -178,7 +223,10 @@ def item_flat_dims(item: dict[str, Any] | None) -> tuple[float | None, float | N
         if val > 0.05:
             nums.append(val)
     if len(nums) >= 2:
-        return nums[0], nums[1]
+        w, l = nums[0], nums[1]
+        if looks_like_drawing_sheet(w, l):
+            return None, None
+        return w, l
     return None, None
 
 

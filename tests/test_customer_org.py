@@ -47,6 +47,10 @@ def test_detect_time_manufacturing_waco():
     assert detect_organization_from_text("TIME MANUFACTURING\n1001898") == (
         "Time Manufacturing Waco"
     )
+    assert detect_organization(
+        library_folder="Pedestal Weldment - 1001898-1",
+        extra_paths=[folder],
+    ) == "Time Manufacturing Waco"
 
 
 def test_detect_organization_from_library_folder():

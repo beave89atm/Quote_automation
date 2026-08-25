@@ -148,7 +148,7 @@ def finalize_quote_ops(
                     client, quote_id, bom_rows=bom_rows, part_key=part_key
                 )
             )
-        if need_profile or need_qty:
+        if need_profile:
             notes.extend(
                 ensure_laser_profile_ops(
                     client, quote_id, material=material, thickness=thickness

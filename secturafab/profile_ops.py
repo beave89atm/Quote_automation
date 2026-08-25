@@ -449,6 +449,14 @@ def apply_part_materials(
         iid = it.get("ID")
         if not iid:
             continue
+        cat = str(it.get("Category") or it.get("ItemType") or "").strip()
+        if cat in {"Linear", "Component"} or it.get("ProductType") in (
+            10,
+            200,
+            "10",
+            "200",
+        ):
+            continue
         pm = lookup_part_material(mat_map, str(it.get("Description") or ""))
         use_mat = pm.material if pm else material
         use_thk = (pm.thickness_param() if pm else None) or thickness
