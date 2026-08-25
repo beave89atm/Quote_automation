@@ -70,9 +70,17 @@ def refresh_bom_rows_for_push(
         part_key=library.get("part_key") or title,
     )
     method = _bom_method(takeoff)
-    from quote_core.lom_xlsx import extract_bom_from_lom_xlsx, find_lom_xlsx
+    from quote_core.lom_clip import ensure_lom_xlsx
+    from quote_core.lom_xlsx import extract_bom_from_lom_xlsx
 
-    lom_path = find_lom_xlsx(library.get("folder"))
+    assembly_pdf = Path(pdf_path) if pdf_path else None
+    lom_path, lom_notes = ensure_lom_xlsx(
+        assembly_pdf,
+        library_folder=library.get("folder"),
+        part_key=library.get("part_key") or title,
+        bom_config=bom_config or "1",
+    )
+    notes.extend(lom_notes)
     if lom_path:
         try:
             lom = extract_bom_from_lom_xlsx(lom_path, bom_config=bom_config or "1")
@@ -83,8 +91,7 @@ def refresh_bom_rows_for_push(
             new_rows = [r.to_dict() for r in lom.rows]
             notes.extend(lom.notes)
             notes.append(
-                f"Preferred LOM.xlsx over OCR for config "
-                f"{format_bom_config_label(bom_config or '1')}: "
+                f"LOM.xlsx qty column {format_bom_config_label(bom_config or '1')}: "
                 f"{lom.part_number_count} PNs / {lom.piece_count} pieces"
             )
             wc = ((takeoff.get("fitup_drivers") or {}).get("weight_calc")) or {}
@@ -97,50 +104,24 @@ def refresh_bom_rows_for_push(
             takeoff["bom_config"] = bom_config or "1"
             return new_rows, notes
 
+    if method.startswith("lom"):
+        return rows, notes
     needs_refresh = bool(bom_config) and ("multi_qty" not in method or not rows)
     if not needs_refresh:
         return rows, notes
 
-    assembly_pdf = Path(pdf_path) if pdf_path else None
     if not assembly_pdf or not assembly_pdf.is_file():
         notes.append(
-            f"BOM config {format_bom_config_label(bom_config)} set but assembly PDF "
-            f"unavailable to refresh multi-qty rows — using takeoff BOM as-is"
+            f"BOM config {format_bom_config_label(bom_config)} set but no LOM.xlsx "
+            f"or assembly PDF — using takeoff BOM as-is"
         )
         return rows, notes
 
-    try:
-        from quote_core.bom import extract_bom_from_ocr_time_style
-
-        refreshed = extract_bom_from_ocr_time_style(
-            assembly_pdf,
-            library_folder=library.get("folder"),
-            bom_config=bom_config,
-        )
-    except Exception as exc:  # noqa: BLE001
-        notes.append(f"WARNING: BOM refresh for dash config failed: {exc}")
-        return rows, notes
-
-    if not refreshed.rows:
-        notes.append("WARNING: BOM refresh returned no rows — using takeoff BOM")
-        return rows, notes
-
-    new_rows = [r.to_dict() for r in refreshed.rows]
     notes.append(
-        f"Refreshed BOM for config {format_bom_config_label(bom_config)}: "
-        f"{refreshed.part_number_count} PNs / {refreshed.piece_count} pieces "
-        f"(was {len(rows)} rows, method={method or 'none'})"
+        "WARNING: No LOM.xlsx for dash refresh — refusing whole-page OCR as "
+        "takeoff truth; using takeoff BOM as-is"
     )
-    # Keep takeoff in sync for downstream notes / finalize.
-    wc = ((takeoff.get("fitup_drivers") or {}).get("weight_calc")) or {}
-    if isinstance(wc, dict):
-        wc["bom"] = refreshed.to_dict()
-        drivers = takeoff.setdefault("fitup_drivers", {})
-        drivers["weight_calc"] = wc
-        drivers["piece_count"] = refreshed.piece_count
-        drivers["part_count"] = refreshed.part_number_count
-    takeoff["bom_config"] = bom_config
-    return new_rows, notes
+    return rows, notes
 
 
 def bom_qty_map(bom_rows: list[dict[str, Any]] | None) -> dict[str, int]:

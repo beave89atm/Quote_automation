@@ -1231,14 +1231,42 @@ def extract_bom(
     """
     Multi-strategy BOM extraction.
 
-    1) Native MAC text/blocks (high confidence when present)
-    2) Native PARTS LIST (Cummins / NGFS style)
-    3) Kyle-confirmed LOM.xlsx in the library folder (preferred over OCR)
-    4) OCR Time-style LIST OF MATERIAL (vector CAD drawings)
+    1) Time LIST OF MATERIAL: clip the printed grid to ``*LOM.xlsx`` (or use
+       a Kyle-confirmed workbook) and read only that sheet
+    2) Native MAC text/blocks (high confidence when present)
+    3) Native PARTS LIST (Cummins / NGFS style)
+
+    Whole-page OCR/regex is not takeoff truth when a LOM grid exists.
+    Folder PDF stems are not invented as rows.
     """
+    del related_pdf_names
     notes: list[str] = []
+    from quote_core.lom_clip import ensure_lom_xlsx, pdf_has_lom_grid
+    from quote_core.lom_xlsx import extract_bom_from_lom_xlsx
+
+    lom_path, lom_notes = ensure_lom_xlsx(
+        pdf_path,
+        library_folder=library_folder,
+        part_key=Path(pdf_path).stem if pdf_path else None,
+        bom_config=bom_config,
+    )
+    notes.extend(lom_notes)
+    if lom_path:
+        lom = extract_bom_from_lom_xlsx(lom_path, bom_config=bom_config)
+        if lom.rows:
+            lom.notes = notes + list(lom.notes)
+            return lom
+        notes.extend(lom.notes)
+    if pdf_has_lom_grid(pdf_path):
+        notes.append(
+            "LIST OF MATERIAL grid present — OCR is not takeoff truth; "
+            "clip-grid-to-xlsx produced no usable rows"
+        )
+        return BomResult(method=None, confidence=0.0, notes=notes)
+
     native = extract_bom_from_native_mac(pdf_path, text=text)
     if native.rows and native.piece_count > 0 and native.confidence >= 0.9:
+        native.notes = notes + list(native.notes)
         return native
     if native.notes:
         notes.extend(native.notes)
@@ -1249,28 +1277,6 @@ def extract_bom(
         return parts_list
     if parts_list.notes:
         notes.extend(parts_list.notes)
-
-    from quote_core.lom_xlsx import extract_bom_from_lom_xlsx, find_lom_xlsx
-
-    lom_path = find_lom_xlsx(library_folder)
-    if lom_path:
-        lom = extract_bom_from_lom_xlsx(lom_path, bom_config=bom_config)
-        if lom.rows:
-            lom.notes = notes + list(lom.notes)
-            return lom
-        notes.extend(lom.notes)
-
-    if pdf_path:
-        ocr = extract_bom_from_ocr_time_style(
-            pdf_path,
-            library_folder=library_folder,
-            related_pdf_names=related_pdf_names,
-            bom_config=bom_config,
-        )
-        notes.extend(ocr.notes)
-        if ocr.rows:
-            ocr.notes = notes + list(ocr.notes)
-            return ocr
 
     if native.rows:
         native.notes = notes + native.notes

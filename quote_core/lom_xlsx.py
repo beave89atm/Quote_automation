@@ -31,9 +31,11 @@ _PART_HEADERS = {
     "P/N",
 }
 _DESC_HEADERS = {"DESCRIPTION", "DESC", "MATERIAL DESCRIPTION"}
-_QTY_HEADERS = {"QTY", "QTY.", "QUANTITY", "PCS", "PIECES"}
+# Time LOM uses QTY or dash columns. Do not treat PCS/PIECES as qty —
+# drawings print paint notes like "20 PLCS" that are not BOM totals.
+_QTY_HEADERS = {"QTY", "QTY.", "QUANTITY"}
 _LOM_NAME_RE = re.compile(
-    r"(^lom\.xlsx$)|(^list[-_ ]of[-_ ]materials?\.xlsx$)|(lom)",
+    r"(^lom\.xlsx$)|(^list[-_ ]of[-_ ]materials?\.xlsx$)|(^.*-lom\.xlsx$)|(lom)",
     re.IGNORECASE,
 )
 
@@ -115,28 +117,51 @@ def read_xlsx_grid(path: Path | str) -> list[list[str]]:
         return out
 
 
-def find_lom_xlsx(library_folder: Path | str | None) -> Path | None:
-    """Return a Kyle-confirmed LOM workbook in the library folder, if any."""
-    if not library_folder:
-        return None
-    folder = Path(library_folder)
-    if not folder.is_dir():
-        return None
+def _scan_lom_in_folder(folder: Path, *, part_key: str | None) -> list[Path]:
     exact: list[Path] = []
+    dashed: list[Path] = []
     lomish: list[Path] = []
+    key = re.sub(r"[^0-9A-Za-z-]", "", (part_key or "")).upper()
     for path in folder.iterdir():
         if not path.is_file() or path.suffix.lower() != ".xlsx":
             continue
         name = path.name
-        if name.lower() == "lom.xlsx":
+        lower = name.lower()
+        if lower == "lom.xlsx":
             exact.append(path)
-        elif _LOM_NAME_RE.search(name):
+            continue
+        if lower.endswith("-lom.xlsx") or lower.endswith("_lom.xlsx"):
+            stem = re.sub(r"[-_]lom$", "", path.stem, flags=re.I)
+            stem_key = re.sub(r"[^0-9A-Za-z-]", "", stem).upper()
+            if key and (stem_key == key or stem_key.startswith(key) or key.startswith(stem_key)):
+                dashed.insert(0, path)
+            else:
+                dashed.append(path)
+            continue
+        if _LOM_NAME_RE.search(name):
             lomish.append(path)
-    if exact:
-        return sorted(exact, key=lambda p: p.name.lower())[0]
-    if lomish:
-        return sorted(lomish, key=lambda p: p.name.lower())[0]
-    return None
+    return dashed + exact + lomish
+
+
+def find_lom_xlsx(
+    library_folder: Path | str | None = None,
+    *more_folders: Path | str | None,
+    part_key: str | None = None,
+) -> Path | None:
+    """Return a Kyle-confirmed ``*LOM.xlsx`` from the job or library folder."""
+    folders: list[Path] = []
+    for raw in (library_folder, *more_folders):
+        if not raw:
+            continue
+        folder = Path(raw)
+        if folder.is_dir() and folder not in folders:
+            folders.append(folder)
+    found: list[Path] = []
+    for folder in folders:
+        found.extend(_scan_lom_in_folder(folder, part_key=part_key))
+    if not found:
+        return None
+    return found[0]
 
 
 def _norm_header(raw: str) -> str:
@@ -195,7 +220,10 @@ def _classify_headers(row: list[str]) -> dict[str, Any] | None:
 
 def _parse_qty_cell(raw: str) -> int:
     text = (raw or "").strip()
-    if not text or text in {"-", "—", "–", "."}:
+    if not text or text in {"-", "—", "–", ".", "·"}:
+        return 0
+    # Paint notes ("20 PLCS") and unread cells are not qty 1.
+    if re.search(r"[A-Za-z]", text):
         return 0
     try:
         return max(0, int(float(text)))
@@ -310,3 +338,72 @@ def extract_bom_from_lom_xlsx(
         confidence=0.98,
         notes=notes,
     )
+
+
+def _col_letter(idx: int) -> str:
+    n = idx + 1
+    out = ""
+    while n:
+        n, rem = divmod(n - 1, 26)
+        out = chr(65 + rem) + out
+    return out
+
+
+def write_lom_xlsx(path: Path | str, rows: list[list[str]]) -> Path:
+    """Write a LIST OF MATERIAL grid (header + data) to ``path``."""
+    from xml.sax.saxutils import escape
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sheet_rows = []
+    for r_i, row in enumerate(rows, start=1):
+        cells = []
+        for c_i, val in enumerate(row):
+            ref = f"{_col_letter(c_i)}{r_i}"
+            cells.append(
+                f'<c r="{ref}" t="inlineStr"><is><t>{escape(str(val))}</t></is></c>'
+            )
+        sheet_rows.append(f'<row r="{r_i}">{"".join(cells)}</row>')
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<sheetData>{"".join(sheet_rows)}</sheetData></worksheet>'
+    )
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="LOM" sheetId="1" r:id="rId1"/></sheets></workbook>'
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        'Target="worksheets/sheet1.xml"/></Relationships>'
+    )
+    root_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        'Target="xl/workbook.xml"/></Relationships>'
+    )
+    ctypes = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        "</Types>"
+    )
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("[Content_Types].xml", ctypes)
+        zf.writestr("_rels/.rels", root_rels)
+        zf.writestr("xl/workbook.xml", workbook)
+        zf.writestr("xl/_rels/workbook.xml.rels", rels)
+        zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+    return path
