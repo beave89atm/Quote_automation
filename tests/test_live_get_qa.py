@@ -135,6 +135,7 @@ def test_new_line_item_pack_is_not_profile_datapart():
     assert apply_linear_new_line_ops({"OperationCostList": []}) is False
     from secturafab.line_item_ops import build_linear_new_line_ops
 
+    assert item_has_grafted_saw_tags({"BadgeString": "Saw"})
     assert item_has_grafted_saw_tags(
         {"OperationCostList": build_linear_new_line_ops("l"), "BadgeString": "Saw,Saw Setup"}
     )
@@ -734,7 +735,7 @@ def test_stamp_never_posts_grafted_ops():
     client.request.assert_not_called()
 
 
-def test_addplate_unit_cost_without_grafted_tags_passes_live_get():
+def test_addplate_without_pr_or_primary_costs_fails_live_get():
     payload = gold_1001898_get()
     for it in payload["ItemList"]:
         if it.get("ProductType") in (100, "100"):
@@ -748,7 +749,7 @@ def test_addplate_unit_cost_without_grafted_tags_passes_live_get():
             it["BadgeString"] = ""
             it["UnitCost"] = 7.63
             it["MaterialCost"] = 0.55
-    result = assert_quote_get_qa(
+    result = evaluate_quote_get(
         payload,
         part_key="1001898-1",
         expected_org=TIME_ORG,
@@ -756,8 +757,27 @@ def test_addplate_unit_cost_without_grafted_tags_passes_live_get():
         expected_assembly_title=ASSEMBLY_DESC,
         bom_rows=_bom_rows(),
     )
-    assert result.ok is True
-    assert any("addplate" in n or "addLinear" in n for n in result.notes)
+    assert result.ok is False
+    blob = " ".join(result.failures)
+    assert "PR" in blob or "Primary Costs" in blob
+    assert "Saw" in blob or "Primary Costs" in blob
+
+
+def test_linear_saw_badge_alone_fails_live_get():
+    payload = gold_1001898_get()
+    for it in payload["ItemList"]:
+        if it.get("ProductType") in (10, "10"):
+            it["BadgeString"] = "Saw"
+    result = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert result.ok is False
+    assert any("Saw" in f and "orange" in f for f in result.failures)
 
 
 def test_grafted_ops_and_blank_unit_cost_fail_live_get():

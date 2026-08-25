@@ -16,7 +16,7 @@ from secturafab.line_item_ops import (
     item_has_grafted_cad_tags,
     item_has_grafted_saw_tags,
     item_has_laser_pack,
-    item_has_pr_or_laser_machine,
+    item_has_pr_tag,
     item_has_saw_pack,
 )
 from secturafab.website import EMPTY_GUID
@@ -247,22 +247,16 @@ def evaluate_quote_get(
                     "Sheet Loading orange tags (want PR only; those names are "
                     "Primary Costs)"
                 )
-            cost_ok = _positive_money(it, "UnitCost")
-            if not item_has_pr_or_laser_machine(it) and not cost_ok:
+            if not item_has_pr_tag(it):
                 failures.append(
-                    f"Cad {desc!r} has no PR/Profile tag and Machine is not Laser"
+                    f"Cad {desc!r} has no PR/Profile item tag "
+                    "(ONLY PR is allowed on the Cad row)"
                 )
             if not item_has_laser_pack(it):
-                if cost_ok and not item_has_grafted_cad_tags(it):
-                    notes.append(
-                        f"Cad {desc!r} UnitCost filled without PR pack "
-                        "(cookie-less addplate; Finish stamps Primary Costs)"
-                    )
-                else:
-                    failures.append(
-                        f"Cad {desc!r} lacks Laser + Deburr + Laser Setup + "
-                        "Sheet Loading as Primary Costs"
-                    )
+                failures.append(
+                    f"Cad {desc!r} lacks Laser + Deburr + Laser Setup + "
+                    "Sheet Loading as Primary Costs"
+                )
             if not str(it.get("Material") or it.get("MaterialGrade") or "").strip():
                 failures.append(f"Cad {desc!r} Material is empty")
             thk = it.get("Thickness")
@@ -315,20 +309,13 @@ def evaluate_quote_get(
                 failures.append(f"Linear {desc!r} Machine is {machine!r}, want Saw")
             if item_has_grafted_saw_tags(it):
                 failures.append(
-                    f"Linear {desc!r} has Saw Setup as an orange tag "
-                    "(want Primary Costs only)"
+                    f"Linear {desc!r} has Saw or Saw Setup as an orange tag "
+                    "(want Primary Costs only; no Saw badge on the grid)"
                 )
-            lin_cost_ok = _positive_money(it, "UnitCost")
             if not item_has_saw_pack(it):
-                if lin_cost_ok and not item_has_grafted_saw_tags(it):
-                    notes.append(
-                        f"Linear {desc!r} UnitCost filled without Saw pack "
-                        "(cookie-less addLinear; Long Finish stamps Primary Costs)"
-                    )
-                else:
-                    failures.append(
-                        f"Linear {desc!r} lacks Saw + Saw Setup as Primary Costs"
-                    )
+                failures.append(
+                    f"Linear {desc!r} lacks Saw + Saw Setup as Primary Costs"
+                )
             if not _positive_money(it, "MaterialCost"):
                 failures.append(f"Linear {desc!r} MaterialCost is 0/null/missing")
             if not _positive_money(it, "UnitCost"):

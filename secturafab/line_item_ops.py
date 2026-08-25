@@ -317,8 +317,8 @@ def item_has_grafted_cad_tags(item: dict[str, Any] | None) -> bool:
 
 
 def item_has_grafted_saw_tags(item: dict[str, Any] | None) -> bool:
-    """Saw Setup as an item orange tag. Gold STP uses OperationName=Saw only."""
-    if any("saw" in part and "setup" in part for part in _badge_parts(item)):
+    """Saw or Saw Setup as an item orange tag (8bcc226b). Not Primary Costs."""
+    if any("saw" in part for part in _badge_parts(item)):
         return True
     for op in (item or {}).get("OperationCostList") or []:
         if not isinstance(op, dict):
@@ -330,16 +330,24 @@ def item_has_grafted_saw_tags(item: dict[str, Any] | None) -> bool:
     return False
 
 
-def item_has_pr_or_laser_machine(item: dict[str, Any] | None) -> bool:
-    """PR/Profile badge or Machine already Laser / Laser Bay 1."""
+def item_has_pr_tag(item: dict[str, Any] | None) -> bool:
+    """PR / Profile is the only allowed Cad item tag (21678-1 / 28106-2)."""
     if any(part in {"pr", "profile"} for part in _badge_parts(item)):
         return True
     for op in (item or {}).get("OperationCostList") or []:
         if not isinstance(op, dict):
             continue
-        name = str(op.get("OperationName") or op.get("OperationLabel") or "").strip().lower()
-        if name in {"profile", "pr"}:
+        name = str(op.get("OperationName") or "").strip().lower()
+        label = str(op.get("OperationLabel") or "").strip().lower()
+        if name in {"profile", "pr"} or label in {"profile", "pr"}:
             return True
+    return False
+
+
+def item_has_pr_or_laser_machine(item: dict[str, Any] | None) -> bool:
+    """PR/Profile badge or Machine already Laser / Laser Bay 1."""
+    if item_has_pr_tag(item):
+        return True
     return "laser" in str((item or {}).get("Machine") or "").casefold()
 
 

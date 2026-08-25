@@ -126,7 +126,7 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
                     "Length": 12.0,
                     "MaterialCost": 0.55,
                     "UnitCost": 7.63,
-                    "BadgeString": "Saw",
+                    "BadgeString": "",
                     "OperationCostList": _saw_primary_costs(f"lin-{pn}"),
                     "PrimaryTime": 3.0 / 60.0,
                 }
