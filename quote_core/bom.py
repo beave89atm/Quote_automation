@@ -155,6 +155,16 @@ def normalize_part_no(raw: str) -> str | None:
     m_pref = re.match(r"^((?:[PS]|[A-Z]{2,3}))(\d{4,7})-(\d{1,3}[A-Z]?)$", cleaned)
     if m_pref:
         return f"{m_pref.group(1)}{m_pref.group(2)}-{m_pref.group(3)}"
+    # Drawing-as-row: 1004611-DWG.
+    m_dwg = re.match(r"^(\d{5,7})-(DWG)$", cleaned)
+    if m_dwg:
+        return f"{m_dwg.group(1)}-{m_dwg.group(2)}"
+    # Time catalog with no dash: 94560, 460200, 432710. Keep 6-digit
+    # values that end in 0; 351211 still splits to 35121-1 below.
+    if re.fullmatch(r"\d{5}", cleaned):
+        return cleaned
+    if re.fullmatch(r"\d{6,7}", cleaned) and cleaned.endswith("0"):
+        return cleaned
     # If dash missing but looks like ###### + suffix (351211 → 35121-1)
     m = re.match(r"^(\d{4,7})-(\d{1,3}[A-Z]?)$", cleaned)
     if not m:

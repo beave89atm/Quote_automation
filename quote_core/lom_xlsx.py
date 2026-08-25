@@ -276,6 +276,10 @@ def _dash_from_header(raw: str) -> str | None:
             return m2.group(1)
     if re.fullmatch(r"-?[1-9]", (raw or "").strip()):
         return (raw or "").strip().lstrip("-")
+    # Named dash column: 1004747-1 / P904225-1 (qty header, not a part row).
+    m_named = re.fullmatch(r"(?:[PS])?\d{4,7}-([1-9])", text)
+    if m_named:
+        return m_named.group(1)
     return None
 
 
@@ -318,6 +322,9 @@ def _parse_qty_cell(raw: str) -> int:
     text = (raw or "").strip()
     if not text or text in {"-", "—", "–", ".", "·"}:
         return 0
+    # 10" / 10″ in a qty cell is gasket size, not 10 pieces.
+    if re.fullmatch(r"10\s*[\"″”]", text):
+        return 1
     # Paint notes ("20 PLCS") and unread cells are not qty 1.
     if re.search(r"[A-Za-z]", text):
         return 0
@@ -373,11 +380,22 @@ def _rows_from_grid(
             confidence=0.0,
         )
 
+    header_pns: set[str] = set()
+    for raw in grid[header_idx]:
+        named = re.fullmatch(
+            r"(?:[PS])?\d{4,7}-[1-9]",
+            _norm_header(raw).replace(" ", ""),
+        )
+        if named:
+            skipped = normalize_part_no(raw)
+            if skipped:
+                header_pns.add(skipped)
+
     rows: list[BomRow] = []
     for row in grid[header_idx + 1 :]:
         part_raw = row[mapping["part"]] if mapping["part"] < len(row) else ""
         part = normalize_part_no(part_raw)
-        if not part:
+        if not part or part in header_pns:
             continue
         qty = _parse_qty_cell(row[qty_col] if qty_col < len(row) else "")
         if qty <= 0:
@@ -446,6 +464,11 @@ def extract_bom_from_lom_xlsx(
     skip_names.update(n.lower() for n in sheet_names if n.lower().endswith(" quote"))
 
     for parent in list(rows):
+        desc_u = (parent.description or "").upper()
+        # Later-sheet child table of the same PDF (105098 / 103603-1
+        # MAIN PLATFORM) is not a nested LOM to roll up.
+        if "MAIN PLATFORM" in desc_u:
+            continue
         if not _NESTED_WELDMENT_RE.search(parent.description or ""):
             continue
         child_key = (parent.part_no or "").strip()

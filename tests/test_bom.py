@@ -28,6 +28,9 @@ def test_normalize_part_ocr_confusions():
     assert normalize_part_no("S 80054-1") == "S80054-1"
     # Item letter glued on must not become a vendor prefix.
     assert normalize_part_no("A35121-1") == "35121-1"
+    assert normalize_part_no("1004611-DWG") == "1004611-DWG"
+    assert normalize_part_no("460200") == "460200"
+    assert normalize_part_no("94560") == "94560"
 
 
 def test_vote_time_style_ocr_lines():

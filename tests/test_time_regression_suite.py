@@ -59,6 +59,9 @@ def test_locked_lom_counts(gold):
     assert path.is_file()
     bom = extract_bom_from_lom_xlsx(path, bom_config="1")
     assert bom.method == "lom_xlsx", bom.notes
+    got = {(r.part_no, r.qty) for r in bom.rows}
+    want = set(gold.identity)
+    assert got == want, sorted(got.symmetric_difference(want))
     assert bom.part_number_count == gold.pn, [f"{r.part_no}×{r.qty}" for r in bom.rows]
     assert bom.piece_count == gold.pcs, [f"{r.part_no}×{r.qty}" for r in bom.rows]
     by_pn = {r.part_no for r in bom.rows}
@@ -66,6 +69,8 @@ def test_locked_lom_counts(gold):
         assert pn in by_pn, f"missing locked PN {pn} in {gold.part_key}"
     for pn in gold.forbid_pn:
         assert pn not in by_pn, f"child table leaked {pn} into {gold.part_key}"
+    for child in gold.empty_l2:
+        assert any(f"empty L2 shell: {child}" in n for n in bom.notes), bom.notes
     assert not any("xl/xl/" in n for n in bom.notes)
 
 
@@ -175,6 +180,10 @@ def test_letter_prefix_and_ocr_item_letter():
     assert normalize_part_no("P904225-1") == "P904225-1"
     assert normalize_part_no("S 80054-1") == "S80054-1"
     assert normalize_part_no("A35121-1") == "35121-1"
+    assert normalize_part_no("1004611-DWG") == "1004611-DWG"
+    assert normalize_part_no("460200") == "460200"
+    assert normalize_part_no("94560") == "94560"
+    assert normalize_part_no("351211") == "35121-1"
 
 
 @pytest.mark.parametrize("pn,desc,want", CLASSIFY_CASES, ids=[c[0] for c in CLASSIFY_CASES])
