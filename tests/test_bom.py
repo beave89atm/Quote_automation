@@ -24,6 +24,10 @@ def test_normalize_part_ocr_confusions():
     assert normalize_part_no("35121—1") == "35121-1"
     assert normalize_part_no("35i21-1") == "35121-1"
     assert normalize_part_no("351211") == "35121-1"
+    assert normalize_part_no("P904225-1") == "P904225-1"
+    assert normalize_part_no("S 80054-1") == "S80054-1"
+    # Item letter glued on must not become a vendor prefix.
+    assert normalize_part_no("A35121-1") == "35121-1"
 
 
 def test_vote_time_style_ocr_lines():

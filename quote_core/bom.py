@@ -150,6 +150,11 @@ def normalize_part_no(raw: str) -> str | None:
         .replace(" ", "")
     )
     cleaned = re.sub(r"[^0-9A-Z-]", "", cleaned)
+    # Vendor / stock prefixes: P904225-1, S80054-1, ME12345-1.
+    # Single-letter is only P/S so OCR "A35121-1" still strips to 35121-1.
+    m_pref = re.match(r"^((?:[PS]|[A-Z]{2,3}))(\d{4,7})-(\d{1,3}[A-Z]?)$", cleaned)
+    if m_pref:
+        return f"{m_pref.group(1)}{m_pref.group(2)}-{m_pref.group(3)}"
     # If dash missing but looks like ###### + suffix (351211 → 35121-1)
     m = re.match(r"^(\d{4,7})-(\d{1,3}[A-Z]?)$", cleaned)
     if not m:

@@ -21,6 +21,7 @@ _COL_RE = re.compile(r"([A-Z]+)")
 _DASH_HEADER_RE = re.compile(r"^-?\s*([1-9])\s*$")
 _QTY_DASH_RE = re.compile(r"(?:qty|quantity)?\s*[(\[]?\s*-?\s*([1-9])\s*[)\]]?\s*$", re.I)
 _DRAWN_SHEET_NAMES = {"lom as drawn", "lom", "list of material"}
+_NESTED_WELDMENT_RE = re.compile(r"WELDMENT|\bASSEMBLY\b|\bASM\b", re.IGNORECASE)
 
 _ITEM_HEADERS = {"ITEM", "ITEM NO", "ITEM NO.", "ITEM #", "BALLOON"}
 _PART_HEADERS = {
@@ -162,9 +163,15 @@ def _sheet_targets(zf: zipfile.ZipFile) -> list[tuple[str, str]]:
     return out
 
 
-def _sheet_path(zf: zipfile.ZipFile) -> str | None:
+def _sheet_path(zf: zipfile.ZipFile, sheet_name: str | None = None) -> str | None:
     sheets = _sheet_targets(zf)
     if not sheets:
+        return None
+    if sheet_name:
+        want = sheet_name.strip().lower()
+        for name, target in sheets:
+            if name.strip().lower() == want:
+                return target
         return None
     for name, target in sheets:
         if name.strip().lower() in _DRAWN_SHEET_NAMES:
@@ -172,12 +179,12 @@ def _sheet_path(zf: zipfile.ZipFile) -> str | None:
     return sheets[0][1]
 
 
-def read_xlsx_grid(path: Path | str) -> list[list[str]]:
+def read_xlsx_grid(path: Path | str, *, sheet_name: str | None = None) -> list[list[str]]:
     """Return the ``LOM as drawn`` sheet (else first sheet) as a cell grid."""
     path = Path(path)
     with zipfile.ZipFile(path) as zf:
         shared = _load_shared_strings(zf)
-        sheet = _sheet_path(zf)
+        sheet = _sheet_path(zf, sheet_name)
         if sheet and "xl/xl/" in sheet.replace("\\", "/").lower():
             sheet = resolve_zip_part(zf, sheet)
         if not sheet:
@@ -320,24 +327,13 @@ def _parse_qty_cell(raw: str) -> int:
         return 0
 
 
-def extract_bom_from_lom_xlsx(
-    path: Path | str,
+def _rows_from_grid(
+    grid: list[list[str]],
     *,
-    bom_config: str | None = None,
-) -> BomResult:
-    """Read LOM.xlsx and apply the Time dash qty column (default ``-1``)."""
-    path = Path(path)
-    notes: list[str] = []
-    try:
-        grid = read_xlsx_grid(path)
-    except (OSError, zipfile.BadZipFile, ET.ParseError, KeyError) as exc:
-        return BomResult(
-            notes=[f"LOM.xlsx unreadable ({path.name}): {exc}"],
-            confidence=0.0,
-        )
-    if not grid:
-        return BomResult(notes=[f"LOM.xlsx {path.name} is empty"], confidence=0.0)
-
+    bom_config: str | None,
+    notes: list[str],
+    source_label: str,
+) -> list[BomRow] | BomResult:
     header_idx = None
     mapping = None
     for i, row in enumerate(grid):
@@ -348,7 +344,7 @@ def extract_bom_from_lom_xlsx(
             break
     if mapping is None or header_idx is None:
         return BomResult(
-            notes=[f"LOM.xlsx {path.name} has no ITEM/PART/QTY header row"],
+            notes=[f"LOM.xlsx {source_label} has no ITEM/PART/QTY header row"],
             confidence=0.0,
         )
 
@@ -369,11 +365,11 @@ def extract_bom_from_lom_xlsx(
             qty_col = chosen
             notes.append(
                 f"Used LOM qty column {format_bom_config_label(config or '1')} "
-                f"from {path.name}"
+                f"from {source_label}"
             )
     if qty_col is None:
         return BomResult(
-            notes=[f"LOM.xlsx {path.name} has no qty column for this dash"],
+            notes=[f"LOM.xlsx {source_label} has no qty column for this dash"],
             confidence=0.0,
         )
 
@@ -403,12 +399,85 @@ def extract_bom_from_lom_xlsx(
                 confidence=0.98,
             )
         )
+    return rows
 
+
+def extract_bom_from_lom_xlsx(
+    path: Path | str,
+    *,
+    bom_config: str | None = None,
+) -> BomResult:
+    """Read LOM.xlsx and apply the Time dash qty column (default ``-1``).
+
+    Nested tabs named after a parent WELDMENT/ASSEMBLY row are rolled up.
+    Child tables that are not weldments (e.g. 105098 / 103603-1) stay unused.
+    An empty weldment tab is an empty L2 shell and is noted — not a 1-pc default.
+    """
+    path = Path(path)
+    notes: list[str] = []
+    try:
+        grid = read_xlsx_grid(path)
+    except (OSError, zipfile.BadZipFile, ET.ParseError, KeyError) as exc:
+        return BomResult(
+            notes=[f"LOM.xlsx unreadable ({path.name}): {exc}"],
+            confidence=0.0,
+        )
+    if not grid:
+        return BomResult(notes=[f"LOM.xlsx {path.name} is empty"], confidence=0.0)
+
+    parsed = _rows_from_grid(
+        grid, bom_config=bom_config, notes=notes, source_label=path.name
+    )
+    if isinstance(parsed, BomResult):
+        return parsed
+    rows = parsed
     if not rows:
         return BomResult(
             notes=[f"LOM.xlsx {path.name} header found but no part rows"],
             confidence=0.0,
         )
+
+    try:
+        with zipfile.ZipFile(path) as zf:
+            sheet_names = {name.strip(): name for name, _target in _sheet_targets(zf)}
+    except (OSError, zipfile.BadZipFile):
+        sheet_names = {}
+    skip_names = {n.lower() for n in _DRAWN_SHEET_NAMES}
+    skip_names.update(n.lower() for n in sheet_names if n.lower().endswith(" quote"))
+
+    for parent in list(rows):
+        if not _NESTED_WELDMENT_RE.search(parent.description or ""):
+            continue
+        child_key = (parent.part_no or "").strip()
+        child_sheet = None
+        for raw_name, stored in sheet_names.items():
+            if raw_name.lower() in skip_names:
+                continue
+            if raw_name.strip().lower() == child_key.lower():
+                child_sheet = stored
+                break
+        if not child_sheet:
+            continue
+        try:
+            child_grid = read_xlsx_grid(path, sheet_name=child_sheet)
+        except (OSError, zipfile.BadZipFile, ET.ParseError, KeyError):
+            child_grid = []
+        child_notes: list[str] = []
+        child_parsed = _rows_from_grid(
+            child_grid,
+            bom_config=bom_config,
+            notes=child_notes,
+            source_label=f"{path.name}:{child_sheet}",
+        )
+        if isinstance(child_parsed, BomResult) or not child_parsed:
+            notes.append(f"empty L2 shell: {child_key}")
+            continue
+        notes.append(
+            f"Rolled up nested LOM tab {child_sheet}: "
+            f"{len(child_parsed)} part numbers"
+        )
+        notes.extend(child_notes)
+        rows.extend(child_parsed)
 
     dedup: dict[str, BomRow] = {}
     for r in rows:
@@ -501,31 +570,51 @@ def write_lom_xlsx(
     *,
     part_key: str | None = None,
     bom_config: str | None = None,
+    extra_sheets: dict[str, list[list[str]]] | None = None,
 ) -> Path:
     """Write Kyle format: ``LOM as drawn`` plus a ``{PN} quote`` dash sheet."""
+    from xml.sax.saxutils import escape
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     quote_name = f"{(part_key or 'drawing').strip() or 'drawing'} quote"
     quote_rows = _quote_sheet_rows(rows, bom_config=bom_config)
+    named: list[tuple[str, list[list[str]]]] = [("LOM as drawn", rows)]
+    for extra_name, extra_rows in (extra_sheets or {}).items():
+        label = (extra_name or "sheet").strip()[:31] or "sheet"
+        named.append((label, extra_rows))
+    named.append((quote_name[:31], quote_rows))
+
+    sheet_tags = []
+    rel_tags = []
+    override_tags = [
+        '<Override PartName="/xl/workbook.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+    ]
+    for i, (name, _grid) in enumerate(named, start=1):
+        sheet_tags.append(
+            f'<sheet name="{escape(name)}" sheetId="{i}" r:id="rId{i}"/>'
+        )
+        rel_tags.append(
+            '<Relationship Id="rId'
+            f'{i}" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+            f'Target="worksheets/sheet{i}.xml"/>'
+        )
+        override_tags.append(
+            f'<Override PartName="/xl/worksheets/sheet{i}.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        )
     workbook = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-        "<sheets>"
-        '<sheet name="LOM as drawn" sheetId="1" r:id="rId1"/>'
-        f'<sheet name="{quote_name[:31]}" sheetId="2" r:id="rId2"/>'
-        "</sheets></workbook>"
+        f"<sheets>{''.join(sheet_tags)}</sheets></workbook>"
     )
     rels = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        '<Relationship Id="rId1" '
-        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
-        'Target="worksheets/sheet1.xml"/>'
-        '<Relationship Id="rId2" '
-        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
-        'Target="worksheets/sheet2.xml"/>'
-        "</Relationships>"
+        f"{''.join(rel_tags)}</Relationships>"
     )
     root_rels = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -539,19 +628,13 @@ def write_lom_xlsx(
         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
         '<Default Extension="xml" ContentType="application/xml"/>'
-        '<Override PartName="/xl/workbook.xml" '
-        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-        '<Override PartName="/xl/worksheets/sheet1.xml" '
-        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
-        '<Override PartName="/xl/worksheets/sheet2.xml" '
-        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
-        "</Types>"
+        f"{''.join(override_tags)}</Types>"
     )
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("[Content_Types].xml", ctypes)
         zf.writestr("_rels/.rels", root_rels)
         zf.writestr("xl/workbook.xml", workbook)
         zf.writestr("xl/_rels/workbook.xml.rels", rels)
-        zf.writestr("xl/worksheets/sheet1.xml", _sheet_xml(rows))
-        zf.writestr("xl/worksheets/sheet2.xml", _sheet_xml(quote_rows))
+        for i, (_name, grid) in enumerate(named, start=1):
+            zf.writestr(f"xl/worksheets/sheet{i}.xml", _sheet_xml(grid))
     return path
