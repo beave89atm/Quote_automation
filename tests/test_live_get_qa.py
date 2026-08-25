@@ -41,7 +41,10 @@ def test_gold_1001898_get_passes_checklist():
     assert payload["ItemList"][0]["Description"] == "1001898-1 - PEDESTAL WELDMENT"
 
 
-@pytest.mark.parametrize("fail", ["org", "bare_pn", "no_ops", "empty_fields", "eaten_pn", "filler_cad"])
+@pytest.mark.parametrize(
+    "fail",
+    ["org", "bare_pn", "no_ops", "empty_fields", "eaten_pn", "filler_cad", "grafted_ops", "blank_unit_cost"],
+)
 def test_failed_live_get_shapes_fail_the_build(fail: str):
     payload = gold_1001898_get(fail=fail)
     result = evaluate_quote_get(
@@ -117,11 +120,27 @@ def test_new_line_item_pack_is_not_profile_datapart():
         "Deburr",
     ]
     assert linear_new_line_calculators() == ["Saw", "Saw Setup"]
-    from secturafab.line_item_ops import build_cad_new_line_ops
+    from secturafab.line_item_ops import (
+        apply_cad_new_line_ops,
+        apply_linear_new_line_ops,
+        build_cad_new_line_ops,
+        item_has_grafted_cad_tags,
+        item_has_grafted_saw_tags,
+        stamp_new_line_item_packs,
+    )
 
-    for op in build_cad_new_line_ops("x"):
-        assert op.get("OperationName") != "Profile"
-        assert 0 < float(op.get("UnitTime") or 0) < 3.0
+    grafted = {"ID": "x", "OperationCostList": build_cad_new_line_ops("x")}
+    assert item_has_grafted_cad_tags(grafted) is True
+    assert apply_cad_new_line_ops(grafted) is False
+    assert apply_linear_new_line_ops({"OperationCostList": []}) is False
+    from secturafab.line_item_ops import build_linear_new_line_ops
+
+    assert item_has_grafted_saw_tags(
+        {"OperationCostList": build_linear_new_line_ops("l"), "BadgeString": "Saw,Saw Setup"}
+    )
+    notes = stamp_new_line_item_packs(MagicMock(), "qid")
+    assert notes
+    assert all("Skipped grafted" in n for n in notes)
 
 
 def test_push_job_fails_closed_when_live_get_has_empty_ops(tmp_path):
@@ -159,8 +178,6 @@ def test_push_job_fails_closed_when_live_get_has_empty_ops(tmp_path):
         "secturafab.push.persist_quote_header", return_value=[]
     ), patch(
         "secturafab.push.persist_classified_item_fields", return_value=[]
-    ), patch(
-        "secturafab.push.stamp_new_line_item_packs", return_value=[]
     ):
         result = service.push_job(
             title="1001898",
@@ -210,8 +227,6 @@ def test_bare_folder_push_still_uses_bom_pedestal_title(tmp_path):
         "secturafab.push.extract_assembly_description", return_value=None
     ), patch(
         "secturafab.push.persist_quote_header", return_value=[]
-    ), patch(
-        "secturafab.push.stamp_new_line_item_packs", return_value=[]
     ):
         result = service.push_job(
             title="1001898",
@@ -226,7 +241,7 @@ def test_bare_folder_push_still_uses_bom_pedestal_title(tmp_path):
     assert create_q.call_args.kwargs.get("description") == HEADER_DESC
 
 
-def test_push_stamps_packs_then_addlinear(tmp_path):
+def test_push_addplate_then_addlinear_without_graft(tmp_path):
     from unittest.mock import MagicMock, patch
 
     from secturafab.push import SecturaFabPushService
@@ -241,10 +256,6 @@ def test_push_stamps_packs_then_addlinear(tmp_path):
     def _persist(*_a, **kwargs):
         persist_calls.append(kwargs)
         order.append("linear" if kwargs.get("persist_cad") is False else "cad")
-        return []
-
-    def _stamp(*_a, **_k):
-        order.append("stamp")
         return []
 
     def _header(*_a, **_k):
@@ -277,8 +288,6 @@ def test_push_stamps_packs_then_addlinear(tmp_path):
     ), patch(
         "secturafab.push.persist_classified_item_fields", side_effect=_persist
     ), patch(
-        "secturafab.push.stamp_new_line_item_packs", side_effect=_stamp
-    ), patch(
         "secturafab.push.retype_linears_to_pt10_keep_persist", return_value=[]
     ):
         result = service.push_job(
@@ -291,7 +300,8 @@ def test_push_stamps_packs_then_addlinear(tmp_path):
             job_id=91,
         )
     assert result.ok is True
-    assert order[:4] == ["cad", "stamp", "linear", "header"]
+    assert order[:3] == ["cad", "linear", "header"]
+    assert "stamp" not in order
     assert persist_calls[0].get("persist_linear") is False
     assert persist_calls[1].get("persist_cad") is False
     assert persist_calls[1].get("persist_linear") is True
@@ -711,30 +721,42 @@ def test_linear_length_from_sibling_pdf_in_library_folder(tmp_path):
     assert float(lin.kwargs["params"]["length"]) == 11.375
 
 
-def test_stamp_does_not_post_when_saw_packs_already_exist():
+def test_stamp_never_posts_grafted_ops():
     from unittest.mock import MagicMock
 
-    from secturafab.line_item_ops import build_linear_new_line_ops, stamp_new_line_item_packs
+    from secturafab.line_item_ops import stamp_new_line_item_packs
 
-    detail = {
-        "ItemList": [
-            {
-                "ID": "l1",
-                "Description": "1001880-2 - Pipe1/8-5_A36_21ft - 16",
-                "ProductType": 20,
-                "Category": "Pipe",
-                "IsLinear": True,
-                "Machine": "Saw",
-                "Length": 16.0,
-                "OperationCostList": build_linear_new_line_ops("l1"),
-            }
-        ]
-    }
     client = MagicMock()
-    client.get_json.return_value = detail
     notes = stamp_new_line_item_packs(client, "qid")
-    assert notes == []
-    assert not any(c.args[:2] == ("POST", "v1/quote") for c in client.request.call_args_list)
+    assert notes
+    assert all("Skipped grafted" in n for n in notes)
+    client.get_json.assert_not_called()
+    client.request.assert_not_called()
+
+
+def test_grafted_ops_and_blank_unit_cost_fail_live_get():
+    grafted = evaluate_quote_get(
+        gold_1001898_get(fail="grafted_ops"),
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert grafted.ok is False
+    blob = " ".join(grafted.failures)
+    assert "grafted" in blob.lower() or "orange" in blob.lower()
+    assert "Saw Setup" in blob
+    blank = evaluate_quote_get(
+        gold_1001898_get(fail="blank_unit_cost"),
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert blank.ok is False
+    assert any("UnitCost" in f for f in blank.failures)
 
 
 def test_retype_pt10_copies_cad_material_and_linear_length():

@@ -590,10 +590,9 @@ def build_pdf_only_assembly(
             part_key=part_key,
         )
     )
-    notes.append("Skipped grafted Profile — packs from Image Files / Long / New Line Item")
-    from .line_item_ops import stamp_new_line_item_packs
-
-    notes.extend(stamp_new_line_item_packs(client, quote_id))
+    notes.append(
+        "Skipped grafted Profile / laser 5-pack — addplate writes Primary Costs"
+    )
     notes.extend(relink_assembly_children(client, quote_id, part_key=part_key))
     notes.append(
         "PDF weldment built per lesson 04 — Cad plates from PDF, Linear bound by ProductID, "
@@ -661,10 +660,12 @@ def _add_cad_plate_items(
     default_material: str = "A36",
     default_thickness: str | None = None,
 ) -> list[str]:
-    """New Line Item for Cad plates — typed thk/grade/noun + laser pack, never PDF sheet flats."""
-    from quote_core.part_materials import lookup_part_material
+    """New Line Item for Cad plates — typed thk/grade/noun, never PDF sheet flats.
 
-    from .line_item_ops import apply_cad_new_line_ops
+    Machine is already Laser Bay 1. Do not graft Laser/Drafting as
+    OperationName — addplate writes Primary Costs + MaterialCost and stamps PR.
+    """
+    from quote_core.part_materials import lookup_part_material
 
     detail = client.get_json(f"v1/quote/{quote_id}")
     items = list(detail.get("ItemList") or [])
@@ -697,14 +698,13 @@ def _add_cad_plate_items(
             "IsLinear": False,
             "IsPlate": True,
             "IsPart": True,
-            "Machine": "Laser",
+            "Machine": "Laser - Bay1",
             "Material": grade,
             "Thickness": thk,
             "OperationCostList": [],
             "PrimaryTime": 0.0,
             "UnitPrimaryTime": 0.0,
         }
-        apply_cad_new_line_ops(line)
         items.append(line)
         added += 1
     if not added:
@@ -714,7 +714,7 @@ def _add_cad_plate_items(
     if save.status_code >= 400:
         return [f"Adding Cad plate lines failed ({save.status_code})"]
     return [
-        f"Added {added} Cad plate line(s) (New Line Item laser pack / no child-PDF quickAddCAD)"
+        f"Added {added} Cad plate line(s) (Laser Bay 1 shell; addplate fills Primary Costs)"
     ]
 
 

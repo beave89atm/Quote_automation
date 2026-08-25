@@ -1,8 +1,8 @@
 """Live GET checklist for a SecturaFAB quote (not unit-test mocks of create_quote).
 
-Fails when Organization is null, Description is a bare PN, any Cad line lacks
-Laser+Deburr+Laser Setup+Sheet Loading with sane times, or any Linear lacks
-SKU/ProductID + Saw + Saw Setup.
+Fails when Organization is null, Description is a bare PN, Cad lines show
+grafted Laser/Drafting orange tags or blank UnitCost, or Linear lines show
+Saw Setup as an item tag or lack addLinear MaterialCost / UnitCost.
 """
 
 from __future__ import annotations
@@ -12,7 +12,13 @@ from dataclasses import dataclass, field
 from typing import Any  # noqa: I001
 
 from secturafab.item_desc import is_bare_part_number, normalize_part_token
-from secturafab.line_item_ops import item_has_laser_pack, item_has_saw_pack
+from secturafab.line_item_ops import (
+    item_has_grafted_cad_tags,
+    item_has_grafted_saw_tags,
+    item_has_laser_pack,
+    item_has_pr_or_laser_machine,
+    item_has_saw_pack,
+)
 from secturafab.website import EMPTY_GUID
 
 _ASSEMBLY_TYPES = {300, "300", "assembly"}
@@ -56,6 +62,16 @@ def _org_id(payload: dict[str, Any]) -> str:
     if isinstance(payload.get("Organization"), dict):
         raw = raw or payload["Organization"].get("ID")
     return str(raw or "").strip()
+
+
+def _positive_money(item: dict[str, Any], key: str) -> bool:
+    val = item.get(key)
+    if val in (None, ""):
+        return False
+    try:
+        return float(val) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _op_time_hours(op: dict[str, Any]) -> float:
@@ -225,9 +241,20 @@ def evaluate_quote_get(
                 continue
             if part and is_bare_part_number(desc, part):
                 failures.append(f"Cad Description is bare PN {desc!r}")
+            if item_has_grafted_cad_tags(it):
+                failures.append(
+                    f"Cad {desc!r} has grafted Laser/Drafting/Deburr/Setup/"
+                    "Sheet Loading orange tags (want PR only; those names are "
+                    "Primary Costs)"
+                )
+            if not item_has_pr_or_laser_machine(it):
+                failures.append(
+                    f"Cad {desc!r} has no PR/Profile tag and Machine is not Laser"
+                )
             if not item_has_laser_pack(it):
                 failures.append(
-                    f"Cad {desc!r} lacks Laser + Deburr + Laser Setup + Sheet Loading"
+                    f"Cad {desc!r} lacks Laser + Deburr + Laser Setup + Sheet Loading "
+                    "as Primary Costs"
                 )
             if not str(it.get("Material") or it.get("MaterialGrade") or "").strip():
                 failures.append(f"Cad {desc!r} Material is empty")
@@ -238,17 +265,24 @@ def evaluate_quote_get(
                 thk_ok = bool(str(thk).strip())
             if not thk_ok:
                 failures.append(f"Cad {desc!r} Thickness is empty/0")
+            if not _positive_money(it, "MaterialCost"):
+                failures.append(f"Cad {desc!r} MaterialCost is 0/null/missing")
+            if not _positive_money(it, "UnitCost"):
+                failures.append(f"Cad {desc!r} UnitCost is blank/0")
             for op in it.get("OperationCostList") or []:
                 if not isinstance(op, dict):
+                    continue
+                calc = str(op.get("CalculatorName") or "").strip().casefold()
+                if calc != "laser":
                     continue
                 hours = _op_time_hours(op)
                 name = str(op.get("CalculatorName") or op.get("OperationName") or "")
                 if hours <= 0:
                     failures.append(f"Cad {desc!r} op {name!r} time is 0")
-                if hours >= 3.0:
+                if hours > 1.0:
                     failures.append(
                         f"Cad {desc!r} op {name!r} time {hours:.2f}h is not sane "
-                        "(page-outline / DataPart)"
+                        "(page-outline / grafted 3h laser)"
                     )
             continue
         if cat == "Linear":
@@ -272,8 +306,19 @@ def evaluate_quote_get(
             machine = str(it.get("Machine") or "").strip()
             if machine.casefold() != "saw":
                 failures.append(f"Linear {desc!r} Machine is {machine!r}, want Saw")
+            if item_has_grafted_saw_tags(it):
+                failures.append(
+                    f"Linear {desc!r} has Saw Setup as an orange tag "
+                    "(want Primary Costs only)"
+                )
             if not item_has_saw_pack(it):
-                failures.append(f"Linear {desc!r} lacks Saw + Saw Setup")
+                failures.append(
+                    f"Linear {desc!r} lacks Saw + Saw Setup as Primary Costs"
+                )
+            if not _positive_money(it, "MaterialCost"):
+                failures.append(f"Linear {desc!r} MaterialCost is 0/null/missing")
+            if not _positive_money(it, "UnitCost"):
+                failures.append(f"Linear {desc!r} UnitCost is blank/0")
             try:
                 length = float(it.get("Length") or it.get("LinearLength") or 0)
             except (TypeError, ValueError):

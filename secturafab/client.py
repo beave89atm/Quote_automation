@@ -537,7 +537,7 @@ class SecturaFabClient:
         if is_website_login_redirect(response.status_code, location):
             raise SecturaFabWebsiteAuthError(
                 "AddItem_PDFFiles redirected to login — "
-                "falling back to v1/quote New Line Item laser pack",
+                "falling back to cookie-less addplate (not grafted ops)",
                 status_code=response.status_code,
                 body=location,
             )
@@ -581,7 +581,7 @@ class SecturaFabClient:
         if is_website_login_redirect(response.status_code, location):
             raise SecturaFabWebsiteAuthError(
                 "AddItem_Linear redirected to login — "
-                "falling back to v1/quote New Line Item Saw pack",
+                "falling back to cookie-less addLinear (not grafted Saw tags)",
                 status_code=response.status_code,
                 body=location,
             )

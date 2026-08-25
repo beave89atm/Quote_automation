@@ -6,7 +6,6 @@ import uuid
 from typing import Any
 
 from secturafab.item_desc import format_linear_description, item_length_in, normalize_part_token
-from secturafab.line_item_ops import apply_linear_new_line_ops
 from secturafab.qty_ops import normalize_part_key
 from secturafab.website import pick_closest_linear_product
 from secturafab.weld_ops import _desc_token
@@ -284,8 +283,6 @@ def bind_linear_product_ids(
             it["Description"] = format_linear_description(
                 pn, sku=sku, length_in=length, noun=bom_desc.get(token, "")
             )
-        if apply_linear_new_line_ops(it):
-            notes.append(f"New Line Item Saw + Saw Setup on {pn or raw_token}")
         changed += 1
 
     if changed:
@@ -343,7 +340,7 @@ def add_linear_item_from_bom(
             return notes
         except SecturaFabWebsiteAuthError:
             notes.append(
-                "Long AddItem_Linear 302'd — New Line Item Saw pack on API item"
+                "Long AddItem_Linear 302'd — addLinear API writes Primary Costs"
             )
         except Exception as exc:  # noqa: BLE001
             notes.append(f"WARNING: addLinear failed for {part_no}: {exc}")
@@ -369,7 +366,6 @@ def add_linear_item_from_bom(
         "Length": length_in,
         "OperationCostList": [],
     }
-    apply_linear_new_line_ops(line)
     detail["ItemList"] = items + [line]
     save = client.request("POST", "v1/quote", json=detail)
     if save.status_code >= 400:

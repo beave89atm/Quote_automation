@@ -13,8 +13,9 @@ Recovered from QuoteOrderEdit JS (not in public OpenAPI). controllerName = '/Quo
   POST /Quote/NestQuoteMultiPart_Renest
 
 FileList = #gridDXFParts rows with ErrorStatus===0 and Qty>0.
-Finish stamps the laser pack on CAD and Saw + Saw Setup on Linear (Q10056).
-Do not substitute quickAddCAD / addplate / grafted Profile for Finish.
+Finish writes Primary Costs (Laser/Drafting/… under PR; Saw + Saw Setup
+under the linear calculator). Cookie-less addplate / addLinear do the same
+writes GET reads. Do not graft those names as item-level OperationName tags.
 """
 
 from __future__ import annotations
@@ -56,9 +57,10 @@ WEBSITE_AUTH_GAP = (
     "Website session required for /Quote/AddItem_DXFFiles (CAD Files Finish). "
     "GetItem_AddView / AddItem_DXFFiles redirect to /Account/Login without a "
     "www cookie. Image Files (AddItem_PDFFiles) and Long (AddItem_Linear) are "
-    "called with the API bearer (same as CadImport); if they 302, v1/quote "
-    "New Line Item stamps the laser/saw packs. Cookie-less is not an excuse "
-    "for empty Primary Costs. Set SECTURAFAB_WEBSITE_COOKIE only for DXF Finish."
+    "called with the API bearer (same as CadImport); if they 302, cookie-less "
+    "addplate / addLinear fill MaterialCost and let the calculator write "
+    "Primary Costs. Do not graft Laser/Drafting/Saw Setup as item tags. "
+    "Set SECTURAFAB_WEBSITE_COOKIE only for DXF Finish."
 )
 
 # Field bag the JS copies from #gridDXFParts into FileList.

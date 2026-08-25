@@ -1,9 +1,9 @@
-"""Kyle New Line Item / Long calculator packs (not grafted Profile + DataPart).
+"""Kyle New Line Item / Long calculator names (gold 21678-1 / Q10056).
 
-Image Files (``AddItem_PDFFiles``) and Long (``AddItem_Linear``) stamp these
-packs when the MVC route accepts the API bearer. Cookie-less v1/quote
-``New Line Item`` POSTs the same shop calculators with sane default times —
-never DataPart page-outline cut time (22×28 → 3h+).
+Image Files Finish and Long / addplate / addLinear write these as *Primary
+Costs* under a single PR (Cad) or Saw (Linear) item tag. Do **not** POST
+them as ``OperationName`` rows via ``v1/quote`` — that becomes orange grid
+tags and leaves UnitCost blank (8bcc226b).
 """
 
 from __future__ import annotations
@@ -242,7 +242,21 @@ def _op_text(op: dict[str, Any]) -> str:
 
 
 def item_has_laser_pack(item: dict[str, Any] | None) -> bool:
+    """True when Primary Costs list Laser + Deburr + Setup + Sheet Loading.
+
+    Gold (21678-1) stores those as ``CalculatorName`` under OperationName=Profile.
+    Grafted 8bcc226b used the same words as OperationName (orange tags) — that
+    shape is rejected separately by ``item_has_grafted_cad_tags``.
+    """
     ops = list((item or {}).get("OperationCostList") or [])
+    blob = " ".join(
+        str(o.get("CalculatorName") or "") if isinstance(o, dict) else ""
+        for o in ops
+    ).lower()
+    if "laser" in blob and "deburr" in blob and "setup" in blob and (
+        "sheet" in blob and "load" in blob
+    ):
+        return True
     blob = " ".join(_op_text(o) if isinstance(o, dict) else "" for o in ops)
     return (
         "laser" in blob
@@ -253,49 +267,90 @@ def item_has_laser_pack(item: dict[str, Any] | None) -> bool:
 
 
 def item_has_saw_pack(item: dict[str, Any] | None) -> bool:
+    """True when Primary Costs list Saw + Saw Setup (CalculatorName)."""
     ops = list((item or {}).get("OperationCostList") or [])
-    names = [_op_text(o) if isinstance(o, dict) else "" for o in ops]
+    names = [
+        str(o.get("CalculatorName") or "").lower()
+        if isinstance(o, dict)
+        else ""
+        for o in ops
+    ]
+    if not any(names):
+        names = [_op_text(o) if isinstance(o, dict) else "" for o in ops]
     has_saw = any("saw" in n and "setup" not in n for n in names)
     has_setup = any("saw" in n and "setup" in n for n in names)
     return has_saw and has_setup
 
 
+_CAD_GRAFT_TAGS = frozenset(
+    {
+        "laser",
+        "drafting",
+        "deburr",
+        "laser-setup",
+        "laser setup",
+        "sheet loading",
+    }
+)
+
+
+def _badge_parts(item: dict[str, Any] | None) -> list[str]:
+    return [
+        p.strip().lower()
+        for p in str((item or {}).get("BadgeString") or "").split(",")
+        if p.strip()
+    ]
+
+
+def item_has_grafted_cad_tags(item: dict[str, Any] | None) -> bool:
+    """Laser/Drafting/Deburr/Setup/Sheet Loading as item orange tags (8bcc226b)."""
+    if any(part in _CAD_GRAFT_TAGS for part in _badge_parts(item)):
+        return True
+    for op in (item or {}).get("OperationCostList") or []:
+        if not isinstance(op, dict):
+            continue
+        name = str(op.get("OperationName") or "").strip().lower()
+        label = str(op.get("OperationLabel") or "").strip().lower()
+        if name in _CAD_GRAFT_TAGS or label in _CAD_GRAFT_TAGS:
+            return True
+    return False
+
+
+def item_has_grafted_saw_tags(item: dict[str, Any] | None) -> bool:
+    """Saw Setup as an item orange tag. Gold STP uses OperationName=Saw only."""
+    if any("saw" in part and "setup" in part for part in _badge_parts(item)):
+        return True
+    for op in (item or {}).get("OperationCostList") or []:
+        if not isinstance(op, dict):
+            continue
+        name = str(op.get("OperationName") or "").strip().lower()
+        label = str(op.get("OperationLabel") or "").strip().lower()
+        if ("saw" in name and "setup" in name) or ("saw" in label and "setup" in label):
+            return True
+    return False
+
+
+def item_has_pr_or_laser_machine(item: dict[str, Any] | None) -> bool:
+    """PR/Profile badge or Machine already Laser / Laser Bay 1."""
+    if any(part in {"pr", "profile"} for part in _badge_parts(item)):
+        return True
+    for op in (item or {}).get("OperationCostList") or []:
+        if not isinstance(op, dict):
+            continue
+        name = str(op.get("OperationName") or op.get("OperationLabel") or "").strip().lower()
+        if name in {"profile", "pr"}:
+            return True
+    return "laser" in str((item or {}).get("Machine") or "").casefold()
+
+
 def apply_cad_new_line_ops(item: dict[str, Any]) -> bool:
-    """Attach the New Line Item laser pack when missing. Returns True if written."""
-    if item_has_laser_pack(item):
-        return False
-    item_id = str(item.get("ID") or "") or None
-    ops = build_cad_new_line_ops(item_id)
-    item["OperationCostList"] = ops
-    laser_h = next(
-        (float(o.get("UnitTime") or 0) for o in ops if o.get("CalculatorName") == "Laser"),
-        1.97 / 60.0,
-    )
-    item["PrimaryTime"] = laser_h
-    item["UnitPrimaryTime"] = laser_h
-    item["Machine"] = item.get("Machine") or "Laser"
-    return True
+    """No-op. Grafting Laser/Drafting as OperationName becomes orange tags."""
+    return False
 
 
 def apply_linear_new_line_ops(item: dict[str, Any]) -> bool:
-    """Attach Long Saw + Saw Setup when missing. Returns True if written.
-
-    Does **not** force ProductType/Machine — a full-quote POST that only
-    flips PT 10 or Machine=Saw wipes addplate Material and addLinear Length.
-    """
-    if item_has_saw_pack(item):
-        return False
-    item_id = str(item.get("ID") or "") or None
-    ops = build_linear_new_line_ops(item_id)
-    item["OperationCostList"] = ops
-    saw_h = next(
-        (float(o.get("UnitTime") or 0) for o in ops if o.get("CalculatorName") == "Saw"),
-        3.0 / 60.0,
-    )
-    item["PrimaryTime"] = saw_h
-    item["UnitPrimaryTime"] = saw_h
-    item["Machine"] = item.get("Machine") or "Saw"
-    return True
+    """No-op. Grafting Saw Setup as OperationName becomes an orange tag."""
+    return False
 
 
 _PERSIST_KEYS = (
@@ -312,6 +367,10 @@ _PERSIST_KEYS = (
     "ProductSubType",
     "IsLinear",
     "IsPlate",
+    "MaterialCost",
+    "UnitCost",
+    "UnitWeightCost",
+    "BadgeString",
 )
 
 
@@ -358,7 +417,6 @@ def retype_linears_to_pt10_keep_persist(client: Any, quote_id: str) -> list[str]
         it["Category"] = "Linear"
         it["ItemType"] = "Linear"
         it["IsLinear"] = True
-        apply_linear_new_line_ops(it)
         _copy_calculator_fields(src, it)
         n += 1
     for it in items:
@@ -411,47 +469,16 @@ def _is_component(item: dict[str, Any]) -> bool:
 
 
 def stamp_new_line_item_packs(client: Any, quote_id: str) -> list[str]:
-    """
-    Cookie-less fallback: v1/quote New Line Item packs on Cad / Linear lines.
+    """No-op. POST v1/quote OperationCostList grafts become orange tags.
 
-    Does not graft Profile or read DataPart. Skips lines that already have
-    Image Files / Long packs.
+    addplate / addLinear (and Image Files / Long Finish when the cookie
+    works) write Primary Costs + MaterialCost / UnitCost. Do not fall back
+    to grafting Laser/Drafting/Saw Setup as item-level operations.
     """
-    detail = client.get_json(f"v1/quote/{quote_id}")
-    items = list(detail.get("ItemList") or [])
-    snapshot = {str(it.get("ID") or ""): dict(it) for it in items if isinstance(it, dict)}
-    cad_n = 0
-    lin_n = 0
-    for it in items:
-        if not isinstance(it, dict) or _is_assembly(it) or _is_component(it):
-            continue
-        if _is_linear(it):
-            if apply_linear_new_line_ops(it):
-                lin_n += 1
-            _copy_calculator_fields(snapshot.get(str(it.get("ID") or ""), it), it)
-            continue
-        if apply_cad_new_line_ops(it):
-            cad_n += 1
-        _copy_calculator_fields(snapshot.get(str(it.get("ID") or ""), it), it)
-    if not cad_n and not lin_n:
-        return []
-    detail["ItemList"] = items
-    save = client.request("POST", "v1/quote", json=detail)
-    try:
-        status = int(getattr(save, "status_code", 200) or 200)
-    except (TypeError, ValueError):
-        status = 200
-    if status >= 400:
-        return [f"WARNING: New Line Item pack save failed ({save.status_code})"]
-    bits = []
-    if cad_n:
-        bits.append(f"{cad_n} Cad Laser/Deburr/Setup/Sheet Loading")
-    if lin_n:
-        bits.append(f"{lin_n} Linear Saw + Saw Setup")
     return [
-        "New Line Item stamped "
-        + " and ".join(bits)
-        + " (Image Files / Long bearer fallback; not grafted Profile)"
+        "Skipped grafted Laser/Drafting/Saw packs — "
+        "addplate/addLinear write Primary Costs + MaterialCost "
+        "(PR tag / no Saw Setup badge)"
     ]
 
 
@@ -840,8 +867,9 @@ def persist_classified_item_fields(
     * Linear: in-place ``POST v1/quoteOnline/addLinear`` on the existing itemID
       (Machine=Saw, cut Length from drawing / ``LG.`` / component PDF)
 
-    Success is a follow-up GET — never a 200 on the write. Stamp packs *before*
-    addLinear. A full-quote POST after addLinear wiped Material/Length on 124407db.
+    Success is a follow-up GET — never a 200 on the write. Do not stamp
+    OperationCostList packs around addLinear — that POST grafted orange tags
+    and left UnitCost blank on 8bcc226b.
     """
     from quote_core.part_materials import lookup_part_material
 

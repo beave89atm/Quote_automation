@@ -11,9 +11,66 @@ from secturafab.item_desc import (
     format_linear_description,
     format_quote_header_description,
 )
-from secturafab.line_item_ops import build_cad_new_line_ops, build_linear_new_line_ops
 from secturafab.push import classify_sectura_item
 from tests.fixtures.time_gold import DASH_1001898
+
+
+def _profile_primary_costs(item_id: str) -> list[dict[str, Any]]:
+    """Gold 21678-1 shape: OperationName=Profile / PR, calculators in Primary Costs."""
+    times = {
+        "Laser": 0.5 / 60.0,
+        "Drafting": 0.5 / 60.0,
+        "Laser-Setup": 0.0,
+        "Sheet Loading": 5.0 / 60.0,
+        "Deburr": 4.0 / 60.0,
+    }
+    ops: list[dict[str, Any]] = []
+    for name, hours in times.items():
+        ops.append(
+            {
+                "ID": f"{item_id}-{name}",
+                "ItemID": item_id,
+                "OperationName": "Profile",
+                "OperationLabel": "PR",
+                "CalculatorName": name,
+                "PrimaryOperation": True,
+                "UnitTime": hours,
+                "Value": hours,
+                "Time": hours,
+                "UnitCost": 1.25 if hours else 0.0,
+            }
+        )
+    return ops
+
+
+def _saw_primary_costs(item_id: str) -> list[dict[str, Any]]:
+    """Gold STP Long: OperationName=Saw for both; Saw-Setup is a calculator."""
+    return [
+        {
+            "ID": f"{item_id}-saw",
+            "ItemID": item_id,
+            "OperationName": "Saw",
+            "OperationLabel": "Saw",
+            "CalculatorName": "Saw",
+            "PrimaryOperation": True,
+            "UnitTime": 3.0 / 60.0,
+            "Value": 3.0 / 60.0,
+            "Time": 3.0 / 60.0,
+            "UnitCost": 1.52,
+        },
+        {
+            "ID": f"{item_id}-setup",
+            "ItemID": item_id,
+            "OperationName": "Saw",
+            "OperationLabel": "Saw",
+            "CalculatorName": "Saw-Setup",
+            "PrimaryOperation": True,
+            "UnitTime": 5.0 / 60.0,
+            "Value": 5.0 / 60.0,
+            "Time": 5.0 / 60.0,
+            "UnitCost": 4.0,
+        },
+    ]
 
 TIME_ORG = "Time Manufacturing Waco"
 TIME_ORG_ID = "11111111-2222-3333-4444-555555555555"
@@ -67,7 +124,10 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
                     "SKU": sku,
                     "Quantity": qty,
                     "Length": 12.0,
-                    "OperationCostList": build_linear_new_line_ops(f"lin-{pn}"),
+                    "MaterialCost": 0.55,
+                    "UnitCost": 7.63,
+                    "BadgeString": "Saw",
+                    "OperationCostList": _saw_primary_costs(f"lin-{pn}"),
                     "PrimaryTime": 3.0 / 60.0,
                 }
             )
@@ -103,14 +163,17 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
                     "ItemType": "Cad",
                     "IsLinear": False,
                     "IsPlate": True,
-                    "Machine": "Laser",
+                    "Machine": "Laser - Bay1",
                     "Material": "A36",
                     "Thickness": "0.25",
                     "Width": 8.0,
                     "Length": 10.0,
                     "Quantity": qty,
-                    "OperationCostList": build_cad_new_line_ops(f"cad-{pn}"),
-                    "PrimaryTime": 1.97 / 60.0,
+                    "MaterialCost": 0.55,
+                    "UnitCost": 12.34,
+                    "BadgeString": "PR",
+                    "OperationCostList": _profile_primary_costs(f"cad-{pn}"),
+                    "PrimaryTime": 0.5 / 60.0,
                 }
             )
 
@@ -148,9 +211,33 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
                 it["Thickness"] = 0
                 it["Length"] = 0
                 it["Width"] = 0
+                it["MaterialCost"] = 0
+                it["UnitCost"] = 0
             if it.get("ProductType") in (10, "10"):
                 it["Machine"] = ""
                 it["Length"] = 0
+                it["MaterialCost"] = 0
+                it["UnitCost"] = 0
+    elif fail == "grafted_ops":
+        from secturafab.line_item_ops import (
+            build_cad_new_line_ops,
+            build_linear_new_line_ops,
+        )
+
+        for it in payload["ItemList"]:
+            if it.get("ProductType") in (100, "100"):
+                it["OperationCostList"] = build_cad_new_line_ops(str(it.get("ID")))
+                it["BadgeString"] = "Laser,Drafting,Laser-Setup,Sheet Loading,Deburr"
+                it["UnitCost"] = 0
+            if it.get("ProductType") in (10, "10"):
+                it["OperationCostList"] = build_linear_new_line_ops(str(it.get("ID")))
+                it["BadgeString"] = "Saw,Saw Setup"
+                it["UnitCost"] = 0
+    elif fail == "blank_unit_cost":
+        for it in payload["ItemList"]:
+            if it.get("ProductType") in (100, "100", 10, "10"):
+                it["UnitCost"] = 0
+                it["MaterialCost"] = 0.55
     elif fail == "eaten_pn":
         eaten = {
             "50029-7": "1 - 1/4 90 STREET ELBOW",

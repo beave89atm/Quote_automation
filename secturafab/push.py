@@ -30,7 +30,6 @@ from .line_item_ops import (
     count_linear_get_misses,
     persist_classified_item_fields,
     retype_linears_to_pt10_keep_persist,
-    stamp_new_line_item_packs,
 )
 from .qa_harness import evaluate_quote_get
 
@@ -1957,7 +1956,7 @@ class SecturaFabPushService:
                             raise
                 if used_pdf_shell or used_step or (bom_rows and library.get("folder")):
                     notes.append(
-                        "Skipped grafted Profile — packs from Image Files / Long / New Line Item"
+                        "Skipped grafted Profile — addplate/addLinear write Primary Costs"
                     )
 
             notes.extend(
@@ -1972,9 +1971,10 @@ class SecturaFabPushService:
                     persist_linear=False,
                 )
             )
-            # Packs only, and only if missing. Do not POST after addLinear —
-            # 39d68d0 stamp-to-PT10 wiped Cad Material and Linear Length.
-            notes.extend(stamp_new_line_item_packs(self.client, quote_id))
+            notes.append(
+                "Skipped grafted Laser/Drafting/Saw packs — "
+                "addplate/addLinear write Primary Costs + MaterialCost"
+            )
             extra_pdfs = list(drawings or [])
             folder = library.get("folder")
             if folder and Path(folder).is_dir():
