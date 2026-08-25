@@ -18,8 +18,9 @@ from quote_core.bom_config import format_bom_config_label, normalize_bom_config
 
 _NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 _COL_RE = re.compile(r"([A-Z]+)")
-_DASH_HEADER_RE = re.compile(r"^-?\s*([1-4])\s*$")
-_QTY_DASH_RE = re.compile(r"(?:qty|quantity)?\s*[(\[]?\s*-?\s*([1-4])\s*[)\]]?\s*$", re.I)
+_DASH_HEADER_RE = re.compile(r"^-?\s*([1-9])\s*$")
+_QTY_DASH_RE = re.compile(r"(?:qty|quantity)?\s*[(\[]?\s*-?\s*([1-9])\s*[)\]]?\s*$", re.I)
+_DRAWN_SHEET_NAMES = {"lom as drawn", "lom", "list of material"}
 
 _ITEM_HEADERS = {"ITEM", "ITEM NO", "ITEM NO.", "ITEM #", "BALLOON"}
 _PART_HEADERS = {
@@ -78,15 +79,50 @@ def _load_shared_strings(zf: zipfile.ZipFile) -> list[str]:
     return out
 
 
+def _sheet_targets(zf: zipfile.ZipFile) -> list[tuple[str, str]]:
+    """Return (sheet_name, xml_path) in workbook order."""
+    names = {n.lower(): n for n in zf.namelist()}
+    wb_name = names.get("xl/workbook.xml")
+    rels_name = names.get("xl/_rels/workbook.xml.rels")
+    if not wb_name or not rels_name:
+        preferred = [n for n in zf.namelist() if n.startswith("xl/worksheets/sheet") and n.endswith(".xml")]
+        preferred.sort()
+        return [("LOM", preferred[0])] if preferred else []
+    rel_ns = {"r": "http://schemas.openxmlformats.org/package/2006/relationships"}
+    rid_to_target: dict[str, str] = {}
+    rel_root = ET.fromstring(zf.read(rels_name))
+    for rel in rel_root.findall("r:Relationship", rel_ns):
+        rid = rel.get("Id") or ""
+        target = rel.get("Target") or ""
+        if rid and target:
+            rid_to_target[rid] = "xl/" + target.lstrip("/") if not target.startswith("xl/") else target
+    wb_ns = {
+        "m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+        "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    }
+    wb = ET.fromstring(zf.read(wb_name))
+    out: list[tuple[str, str]] = []
+    for sheet in wb.findall("m:sheets/m:sheet", wb_ns):
+        name = sheet.get("name") or "LOM"
+        rid = sheet.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id") or ""
+        target = rid_to_target.get(rid)
+        if target:
+            out.append((name, target))
+    return out
+
+
 def _sheet_path(zf: zipfile.ZipFile) -> str | None:
-    names = zf.namelist()
-    preferred = [n for n in names if n.startswith("xl/worksheets/sheet") and n.endswith(".xml")]
-    preferred.sort()
-    return preferred[0] if preferred else None
+    sheets = _sheet_targets(zf)
+    if not sheets:
+        return None
+    for name, target in sheets:
+        if name.strip().lower() in _DRAWN_SHEET_NAMES:
+            return target
+    return sheets[0][1]
 
 
 def read_xlsx_grid(path: Path | str) -> list[list[str]]:
-    """Return the first sheet as a row-major grid of cell strings."""
+    """Return the ``LOM as drawn`` sheet (else first sheet) as a cell grid."""
     path = Path(path)
     with zipfile.ZipFile(path) as zf:
         shared = _load_shared_strings(zf)
@@ -174,11 +210,11 @@ def _dash_from_header(raw: str) -> str | None:
     if m:
         return m.group(1)
     m2 = _QTY_DASH_RE.match(text)
-    if m2 and ("QTY" in text or text.startswith("-") or text in {"1", "2", "3", "4"}):
+    if m2 and ("QTY" in text or text.startswith("-") or text in set("123456789")):
         # Bare "-1" already handled; "QTY-1" / "QTY(-1)"
         if "QTY" in text or "QUANTITY" in text:
             return m2.group(1)
-    if re.fullmatch(r"-?[1-4]", (raw or "").strip()):
+    if re.fullmatch(r"-?[1-9]", (raw or "").strip()):
         return (raw or "").strip().lstrip("-")
     return None
 
@@ -349,12 +385,9 @@ def _col_letter(idx: int) -> str:
     return out
 
 
-def write_lom_xlsx(path: Path | str, rows: list[list[str]]) -> Path:
-    """Write a LIST OF MATERIAL grid (header + data) to ``path``."""
+def _sheet_xml(rows: list[list[str]]) -> str:
     from xml.sax.saxutils import escape
 
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     sheet_rows = []
     for r_i, row in enumerate(rows, start=1):
         cells = []
@@ -364,23 +397,82 @@ def write_lom_xlsx(path: Path | str, rows: list[list[str]]) -> Path:
                 f'<c r="{ref}" t="inlineStr"><is><t>{escape(str(val))}</t></is></c>'
             )
         sheet_rows.append(f'<row r="{r_i}">{"".join(cells)}</row>')
-    sheet_xml = (
+    return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         f'<sheetData>{"".join(sheet_rows)}</sheetData></worksheet>'
     )
+
+
+def _quote_sheet_rows(drawn: list[list[str]], *, bom_config: str | None) -> list[list[str]]:
+    """Selected-dash view: QTY / ITEM / PART NO / DESCRIPTION."""
+    if not drawn:
+        return [["QTY", "ITEM", "PART NO", "DESCRIPTION"]]
+    mapping = None
+    header_idx = 0
+    for i, row in enumerate(drawn):
+        found = _classify_headers(row)
+        if found:
+            mapping = found
+            header_idx = i
+            break
+    config = normalize_bom_config(bom_config) or "1"
+    out = [["QTY", "ITEM", "PART NO", "DESCRIPTION"]]
+    if mapping is None:
+        return out
+    qty_col = mapping["qty"]
+    if mapping["dash"]:
+        qty_col = mapping["dash"].get(config, qty_col)
+    if qty_col is None:
+        return out
+    for row in drawn[header_idx + 1 :]:
+        part_raw = row[mapping["part"]] if mapping["part"] < len(row) else ""
+        if not normalize_part_no(part_raw):
+            continue
+        qty = _parse_qty_cell(row[qty_col] if qty_col < len(row) else "")
+        if qty <= 0:
+            continue
+        item = ""
+        if mapping["item"] is not None and mapping["item"] < len(row):
+            item = row[mapping["item"]]
+        desc = ""
+        if mapping["desc"] is not None and mapping["desc"] < len(row):
+            desc = row[mapping["desc"]]
+        out.append([str(qty), item, part_raw, desc])
+    return out
+
+
+def write_lom_xlsx(
+    path: Path | str,
+    rows: list[list[str]],
+    *,
+    part_key: str | None = None,
+    bom_config: str | None = None,
+) -> Path:
+    """Write Kyle format: ``LOM as drawn`` plus a ``{PN} quote`` dash sheet."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    quote_name = f"{(part_key or 'drawing').strip() or 'drawing'} quote"
+    quote_rows = _quote_sheet_rows(rows, bom_config=bom_config)
     workbook = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-        '<sheets><sheet name="LOM" sheetId="1" r:id="rId1"/></sheets></workbook>'
+        "<sheets>"
+        '<sheet name="LOM as drawn" sheetId="1" r:id="rId1"/>'
+        f'<sheet name="{quote_name[:31]}" sheetId="2" r:id="rId2"/>'
+        "</sheets></workbook>"
     )
     rels = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
         '<Relationship Id="rId1" '
         'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
-        'Target="worksheets/sheet1.xml"/></Relationships>'
+        'Target="worksheets/sheet1.xml"/>'
+        '<Relationship Id="rId2" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        'Target="worksheets/sheet2.xml"/>'
+        "</Relationships>"
     )
     root_rels = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -398,6 +490,8 @@ def write_lom_xlsx(path: Path | str, rows: list[list[str]]) -> Path:
         'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
         '<Override PartName="/xl/worksheets/sheet1.xml" '
         'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet2.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
         "</Types>"
     )
     with zipfile.ZipFile(path, "w") as zf:
@@ -405,5 +499,6 @@ def write_lom_xlsx(path: Path | str, rows: list[list[str]]) -> Path:
         zf.writestr("_rels/.rels", root_rels)
         zf.writestr("xl/workbook.xml", workbook)
         zf.writestr("xl/_rels/workbook.xml.rels", rels)
-        zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+        zf.writestr("xl/worksheets/sheet1.xml", _sheet_xml(rows))
+        zf.writestr("xl/worksheets/sheet2.xml", _sheet_xml(quote_rows))
     return path

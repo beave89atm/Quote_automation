@@ -13,7 +13,7 @@ from typing import Any
 from quote_core.lom_xlsx import find_lom_xlsx, write_lom_xlsx
 
 _LOM_TITLE_RE = re.compile(r"LIST\s+OF\s+MATERIAL", re.IGNORECASE)
-_DASH_TOKEN_RE = re.compile(r"^-?[1-4]$")
+_DASH_TOKEN_RE = re.compile(r"^-?[1-9]$")
 
 
 def _norm(text: str) -> str:
@@ -188,41 +188,63 @@ def detect_lom_table_words(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [w for w in words if float(w["x1"]) >= x0 and float(w["x0"]) <= x1]
 
 
-def clip_lom_grid_from_page(page) -> tuple[list[list[str]], list[str]]:
-    """Return a LOM cell grid from one PDF page (native words, else OCR of the clip)."""
+def clip_lom_grid_from_page(
+    page,
+    *,
+    ocr_cell=None,
+) -> tuple[list[list[str]], list[str], bool]:
+    """
+    Return (grid, notes, grid_found).
+
+    Native PDF words are used only when the table is real extractable text.
+    Drawn Time grids have almost no text — those are rendered and read
+    cell-by-cell from the bitmap.
+    """
     notes: list[str] = []
     words = _fitz_words(page)
     table = detect_lom_table_words(words)
     grid = words_to_grid(table) if table else []
-    if grid:
+    if grid and len(grid) > 1 and len(words) >= 12:
         notes.append("Clipped LIST OF MATERIAL grid from native PDF words")
-        return grid, notes
+        return grid, notes, True
 
-    rect = page.rect
-    # Time LOM is the right-side title-block table (headers often at the bottom).
+    from quote_core.lom_bitmap import clip_drawn_lom_from_page
+
+    drawn, drawn_notes, grid_found = clip_drawn_lom_from_page(page, ocr_cell=ocr_cell)
+    notes.extend(drawn_notes)
+    if drawn and len(drawn) > 1:
+        return drawn, notes, True
+    if grid_found:
+        return [], notes, True
+
+    # Last resort: OCR the typical LOM window as positioned words (not page regex).
+    from quote_core.ocr import ocr_available
     import fitz
 
-    clips = [
-        fitz.Rect(rect.width * 0.52, rect.height * 0.28, rect.width * 0.995, rect.height * 0.97),
-        fitz.Rect(rect.width * 0.58, rect.height * 0.38, rect.width * 0.995, rect.height * 0.96),
-    ]
-    from quote_core.ocr import ocr_available
+    if ocr_available():
+        rect = page.rect
+        clips = [
+            fitz.Rect(rect.width * 0.50, rect.height * 0.22, rect.width * 0.995, rect.height * 0.99),
+        ]
+        for clip in clips:
+            ocr_words = _ocr_words(page, clip)
+            table = detect_lom_table_words(ocr_words)
+            word_grid = words_to_grid(table) if table else words_to_grid(ocr_words)
+            if word_grid and len(word_grid) > 1:
+                notes.append("Clipped LIST OF MATERIAL from OCR word boxes of the printed table")
+                return word_grid, notes, True
+    return [], notes, bool(page_has_lom_grid_text(page.get_text("text") or ""))
 
-    if not ocr_available():
-        if page_has_lom_grid_text(page.get_text("text") or ""):
-            notes.append(
-                "LIST OF MATERIAL title found but native words were too sparse "
-                "to clip, and Tesseract is not installed"
-            )
-        return [], notes
-    for clip in clips:
-        ocr_words = _ocr_words(page, clip)
-        table = detect_lom_table_words(ocr_words)
-        grid = words_to_grid(table) if table else words_to_grid(ocr_words)
-        if grid and len(grid) > 1:
-            notes.append("Clipped LIST OF MATERIAL grid from OCR of the printed table")
-            return grid, notes
-    return [], notes
+
+def page_has_drawn_lom_grid(page) -> bool:
+    """True when the rendered title-block region has a drawn cell grid."""
+    from quote_core.lom_bitmap import candidate_lom_clips, find_grid_lines, render_page_region
+
+    for clip in candidate_lom_clips(page)[:2]:
+        im = render_page_region(page, clip, dpi=140)
+        if find_grid_lines(im, min_h=6, min_v=5).get("found"):
+            return True
+    return False
 
 
 def pdf_has_lom_grid(pdf_path: Path | str | None) -> bool:
@@ -245,26 +267,34 @@ def pdf_has_lom_grid(pdf_path: Path | str | None) -> bool:
             words = _fitz_words(page)
             if detect_lom_table_words(words):
                 return True
+            if page_has_drawn_lom_grid(page):
+                return True
     finally:
         doc.close()
     return False
 
 
-def clip_lom_grid_from_pdf(pdf_path: Path | str) -> tuple[list[list[str]], list[str]]:
+def clip_lom_grid_from_pdf(
+    pdf_path: Path | str,
+    *,
+    ocr_cell=None,
+) -> tuple[list[list[str]], list[str], bool]:
     import fitz
 
     path = Path(pdf_path)
     doc = fitz.open(str(path))
     notes: list[str] = []
+    saw_grid = False
     try:
         for page in doc:
-            grid, page_notes = clip_lom_grid_from_page(page)
+            grid, page_notes, grid_found = clip_lom_grid_from_page(page, ocr_cell=ocr_cell)
             notes.extend(page_notes)
+            saw_grid = saw_grid or grid_found
             if grid and len(grid) > 1:
-                return grid, notes
+                return grid, notes, True
     finally:
         doc.close()
-    return [], notes
+    return [], notes, saw_grid
 
 
 def _safe_part_stem(part_key: str | None, pdf_path: Path | None) -> str:
@@ -283,36 +313,36 @@ def ensure_lom_xlsx(
     """
     First BOM step: reuse a Kyle ``*LOM.xlsx`` or clip the printed grid to one.
 
-    ``bom_config`` is unused here — the workbook keeps every dash column; the
-    reader selects ``-1`` later.
+    The workbook keeps every dash column on ``LOM as drawn``; ``bom_config``
+    is written to the ``{PN} quote`` sheet only.
     """
-    del bom_config
     notes: list[str] = []
     pdf = Path(pdf_path) if pdf_path else None
     extra = pdf.parent if pdf and pdf.exists() else None
-    existing = find_lom_xlsx(library_folder, extra, part_key=part_key)
+    existing = find_lom_xlsx(extra, library_folder, part_key=part_key)
     if existing:
         notes.append(f"Using Kyle-confirmed LOM workbook {existing.name}")
         return existing, notes
     if not pdf or not pdf.is_file():
         return None, notes
     try:
-        grid, clip_notes = clip_lom_grid_from_pdf(pdf)
+        grid, clip_notes, grid_found = clip_lom_grid_from_pdf(pdf)
     except Exception as exc:  # noqa: BLE001
         notes.append(f"WARNING: LOM grid clip failed: {exc}")
         return None, notes
     notes.extend(clip_notes)
     if not grid or len(grid) < 2:
-        if pdf_has_lom_grid(pdf):
+        if grid_found or pdf_has_lom_grid(pdf):
             notes.append(
-                "LIST OF MATERIAL grid exists but clip produced no rows — "
+                "LIST OF MATERIAL grid found on the drawing but clip produced "
+                "0 rows — piece count unknown (needs_info); "
                 "refusing whole-page OCR as takeoff truth"
             )
         return None, notes
     dest_dir = extra if extra and extra.is_dir() else pdf.parent
     dest = dest_dir / f"{_safe_part_stem(part_key, pdf)}-LOM.xlsx"
     try:
-        write_lom_xlsx(dest, grid)
+        write_lom_xlsx(dest, grid, part_key=part_key, bom_config=bom_config)
     except OSError as exc:
         notes.append(f"WARNING: Could not write {dest.name}: {exc}")
         return None, notes

@@ -95,8 +95,9 @@ def _write_1001898_pdf(path: Path) -> None:
     doc.close()
 
 
-def test_clip_pdf_1001898_dash1_is_27_not_20(tmp_path: Path):
-    pdf = tmp_path / "1001898-1.pdf"
+def test_clip_text_grid_writes_xlsx_and_reads_dash_column(tmp_path: Path):
+    """Printed (extractable-text) LOM grid → xlsx → dash -1 only. Paint 20 is not qty."""
+    pdf = tmp_path / "assembly-1.pdf"
     _write_1001898_pdf(pdf)
     with patch("quote_core.bom.extract_bom_from_ocr_time_style") as ocr:
         bom = extract_bom(pdf, library_folder=tmp_path, bom_config="1")
@@ -104,7 +105,7 @@ def test_clip_pdf_1001898_dash1_is_27_not_20(tmp_path: Path):
     assert bom.method == "lom_xlsx", bom.notes
     assert bom.piece_count != 20
     assert bom.piece_count == 27, [f"{r.part_no}×{r.qty}" for r in bom.rows]
-    assert (tmp_path / "1001898-1-LOM.xlsx").exists() or list(tmp_path.glob("*LOM.xlsx"))
+    assert list(tmp_path.glob("*LOM.xlsx"))
 
 
 def test_ensure_reuses_kyle_lom_without_second_parser(tmp_path: Path):
@@ -138,13 +139,24 @@ def test_lom_grid_without_xlsx_does_not_use_ocr_as_truth(tmp_path: Path):
     page.insert_text((360, 70), "ITEM PART NO QTY", fontsize=10)
     doc.save(pdf)
     doc.close()
-    with patch("quote_core.lom_clip.clip_lom_grid_from_pdf", return_value=([], ["no rows"])):
+    with patch(
+        "quote_core.lom_clip.clip_lom_grid_from_pdf",
+        return_value=(
+            [],
+            [
+                "LIST OF MATERIAL grid found on the drawing but clip produced "
+                "0 rows — piece count unknown (needs_info); "
+                "refusing whole-page OCR as takeoff truth"
+            ],
+            True,
+        ),
+    ):
         with patch("quote_core.bom.extract_bom_from_ocr_time_style") as ocr:
             bom = extract_bom(pdf, library_folder=tmp_path, bom_config="1")
             ocr.assert_not_called()
-    assert bom.method != "ocr_time"
+    assert bom.method == "lom_clip_empty"
     assert bom.piece_count == 0 or not bom.rows
-    assert any("OCR is not takeoff truth" in n or "refusing whole-page OCR" in n for n in bom.notes)
+    assert any("needs_info" in n or "refusing whole-page OCR" in n for n in bom.notes)
 
 
 def test_clip_writes_xlsx_then_reader_is_only_parser(tmp_path: Path):
@@ -165,7 +177,7 @@ def test_clip_writes_xlsx_then_reader_is_only_parser(tmp_path: Path):
     page.insert_text((620, 90), "PLATE")
     doc.save(pdf)
     doc.close()
-    grid, notes = clip_lom_grid_from_pdf(pdf)
+    grid, notes, _found = clip_lom_grid_from_pdf(pdf)
     assert grid and grid[0][3] == "-1" or any("-1" in row for row in grid)
     dest, more = ensure_lom_xlsx(pdf, part_key="1004747")
     assert dest is not None

@@ -118,7 +118,11 @@ def process_job(job_id: int) -> None:
         job.set_takeoff(takeoff)
         job.set_times(times.to_dict())
         job.set_flags(flags)
-        job.status = "review"
+        drivers_info = takeoff.get("fitup_drivers") or {}
+        lom_needs_info = bool(drivers_info.get("needs_info")) or any(
+            "needs_info" in n or "clip produced 0 rows" in n for n in flags
+        )
+        job.status = "needs_info" if lom_needs_info else "review"
         db.commit()
     except Exception as exc:  # noqa: BLE001
         job = db.get(Job, job_id)

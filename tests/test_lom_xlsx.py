@@ -96,24 +96,68 @@ def test_confirmed_28106_dash1_11_pn_13_pcs(tmp_path: Path):
     assert bom.piece_count == 13
 
 
-def test_1001898_dash1_is_27_not_paint_20(tmp_path: Path):
-    """Kyle: 1001898-1 -1 = 27 pcs. OCR 20 was the '20 PLCS' paint note."""
-    header = ["-4", "-3", "-2", "-1", "ITEM", "PART NO", "DESCRIPTION"]
+# Kyle-confirmed Time LOM for 1001898 dash -1: 17 PN / 27 pcs.
+# Unused letters (other dashes only) must not be summed into -1.
+_1001898_DASH1 = [
+    ("A", 1, "14500-1", "PEDESTAL TOP PLATE"),
+    ("B", 1, "1001880-2", "PEDESTAL TUBE"),
+    ("C", 2, "29860-4", "PEDESTAL BRACE ANGLE"),
+    ("D", 1, "14501-1", "RESERVOIR TOP PLATE"),
+    ("E", 1, "1005966-1", "PEDESTAL BOTTOM PLATE"),
+    ("F", 2, "50137-5", "3/4 NPT HALF COUPLING"),
+    ("G", 1, "50115-7", "1 1/4 NPT NIPPLE X 4 LG."),
+    ("H", 1, "50030-5", "3/4 NPT COUPLING"),
+    ("J", 1, "8166-1", "FILLER NECK"),
+    ("K", 1, "9905-1", "MOUNTING PLATE, EMER POWER"),
+    ("L", 1, "33637-1", "1 1/4 RETURN TUBE"),
+    ("M", 1, "10081-2", "PEDESTAL HOSE TUBE"),
+    ("N", 1, "50006-5", "3/4 NPT MAGNETIC PLUG"),
+    ("P", 1, "50122-1", "1 1/4 NPT PIPE CAP"),
+    ("U", 2, "29860-3", "PEDESTAL BRACE ANGLE"),
+    ("X", 8, "1005940-1", "PEDESTAL GUSSET"),
+    ("AB", 1, "50029-7", "1 1/4 90 STREET ELBOW"),
+]
+_1001898_OTHER_DASH = [
+    ("Q", "1001899-1", "OTHER DASH Q"),
+    ("R", "1001900-1", "OTHER DASH R"),
+    ("S", "1001901-1", "OTHER DASH S"),
+    ("T", "1001902-1", "OTHER DASH T"),
+    ("V", "1001903-1", "OTHER DASH V"),
+    ("W", "1001904-1", "OTHER DASH W"),
+    ("Y", "1001905-1", "OTHER DASH Y"),
+    ("Z", "1001906-1", "OTHER DASH Z"),
+    ("AA", "1001907-1", "OTHER DASH AA"),
+    ("AC", "1001908-1", "OTHER DASH AC"),
+]
+
+
+def _1001898_lom_rows() -> list[list[str]]:
+    header = ["-5", "-4", "-3", "-2", "-1", "ITEM", "PART NO", "DESCRIPTION"]
     rows = [header]
-    # 5×1 + 11×2 = 16 PN / 27 pcs on -1. One -2-only row must be omitted.
-    letters = "ABCDEFGHJKLMNPQR"
-    for i, letter in enumerate(letters[:5]):
-        rows.append(["-", "-", "-", "1", letter, f"10019{10+i:02d}-1", f"PLATE {letter}"])
-    for i, letter in enumerate(letters[5:16]):
-        desc = "20 PLCS PAINT ALL OVER" if i == 0 else f"TUBE {letter}"
-        rows.append(["-", "-", "1", "2", letter, f"10019{15+i:02d}-1", desc])
-    rows.append(["-", "-", "1", "-", "Z", "1001999-1", "OTHER DASH ONLY"])
+    for item, qty, pn, desc in _1001898_DASH1:
+        rows.append(["-", "-", "-", "-", str(qty), item, pn, desc])
+    for item, pn, desc in _1001898_OTHER_DASH:
+        rows.append(["-", "-", "-", "1", "-", item, pn, desc])
+    return rows
+
+
+def test_1001898_dash1_is_17_pn_27_pcs_not_paint_20(tmp_path: Path):
+    """Locked Desktop LOM: dash -1 is 17 PN / 27 pcs. Paint '20 PLCS' is not qty."""
     path = tmp_path / "1001898-1-LOM.xlsx"
-    write_minimal_xlsx(path, rows)
+    write_minimal_xlsx(path, _1001898_lom_rows())
     bom = extract_bom_from_lom_xlsx(path, bom_config="1")
+    assert bom.part_number_count == 17, [f"{r.item} {r.part_no}×{r.qty}" for r in bom.rows]
+    assert bom.piece_count == 27, [f"{r.item} {r.part_no}×{r.qty}" for r in bom.rows]
     assert bom.piece_count != 20
-    assert bom.piece_count == 27, [f"{r.part_no}×{r.qty}" for r in bom.rows]
-    assert all(r.part_no != "1001999-1" for r in bom.rows)
+    by_pn = {r.part_no: r for r in bom.rows}
+    assert by_pn["14500-1"].qty == 1
+    assert by_pn["1005940-1"].qty == 8
+    assert by_pn["50029-7"].item == "AB"
+    assert "1001899-1" not in by_pn
+    # Bare title / omitted dash must not sum columns.
+    bare = extract_bom_from_lom_xlsx(path, bom_config=None)
+    assert bare.part_number_count == 17
+    assert bare.piece_count == 27
 
 
 def test_lom_does_not_invent_folder_pdf_rows(tmp_path: Path):

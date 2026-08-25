@@ -1241,7 +1241,7 @@ def extract_bom(
     """
     del related_pdf_names
     notes: list[str] = []
-    from quote_core.lom_clip import ensure_lom_xlsx, pdf_has_lom_grid
+    from quote_core.lom_clip import ensure_lom_xlsx
     from quote_core.lom_xlsx import extract_bom_from_lom_xlsx
 
     lom_path, lom_notes = ensure_lom_xlsx(
@@ -1257,12 +1257,12 @@ def extract_bom(
             lom.notes = notes + list(lom.notes)
             return lom
         notes.extend(lom.notes)
-    if pdf_has_lom_grid(pdf_path):
-        notes.append(
-            "LIST OF MATERIAL grid present — OCR is not takeoff truth; "
-            "clip-grid-to-xlsx produced no usable rows"
-        )
-        return BomResult(method=None, confidence=0.0, notes=notes)
+    clip_empty = any(
+        "clip produced 0 rows" in n or "produced no usable rows" in n or "(needs_info)" in n
+        for n in notes
+    )
+    if clip_empty:
+        return BomResult(method="lom_clip_empty", confidence=0.0, notes=notes)
 
     native = extract_bom_from_native_mac(pdf_path, text=text)
     if native.rows and native.piece_count > 0 and native.confidence >= 0.9:

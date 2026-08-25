@@ -1164,7 +1164,8 @@ def estimate_fitup_drivers(
         part_count = int(stp_summary.get("solid_count") or 0)
     defaulted_part_count = False
     if part_count <= 0:
-        part_count = 1
+        # Do not invent 1 pc here — LOM clip failure is handled after weight_info.
+        part_count = 0
         defaulted_part_count = True
 
     skip_kinds = {"kingpin_all_around", "angle_end", "channel_end", "gusset_all_around"}
@@ -1192,6 +1193,7 @@ def estimate_fitup_drivers(
     assembly_weight = weight_info.get("assembly_weight_lb")
     component_weights = list(weight_info.get("component_weights_lb") or [])
     method = str(weight_info.get("method") or "")
+    lom_unknown = method == "lom_clip_empty" or bool(weight_info.get("needs_info"))
     bom_piece_count = int(weight_info.get("piece_count") or 0)
     bom_part_numbers = int(weight_info.get("part_number_count") or 0)
 
@@ -1256,7 +1258,16 @@ def estimate_fitup_drivers(
         part_count = bom_piece_count
         defaulted_part_count = False
 
-    if defaulted_part_count:
+    if lom_unknown and bom_piece_count <= 0:
+        part_count = 0
+        defaulted_part_count = False
+        notes_out.insert(
+            0,
+            "LIST OF MATERIAL clip produced 0 rows — piece count unknown (needs_info)",
+        )
+    elif defaulted_part_count and part_count <= 0 and not lom_unknown:
+        # Loose piece (no LOM grid): one quote = one PN. Not a failed clip.
+        part_count = 1
         notes_out.insert(0, "Part count defaulted to 1 — enter actual part count")
     if joint_estimated and bom_piece_count <= 0:
         notes_out.append("Joint count estimated from part count (parts - 1)")
@@ -1265,11 +1276,18 @@ def estimate_fitup_drivers(
         joint_count = max(1, part_count - 1)
         notes_out.append("Joint count estimated from BOM piece count (pieces - 1)")
 
+    if lom_unknown and bom_piece_count <= 0:
+        piece_out = 0
+    elif bom_piece_count > 0:
+        piece_out = bom_piece_count
+    elif component_weights:
+        piece_out = len(component_weights)
+    else:
+        piece_out = part_count
     return {
         "part_count": part_count,
-        "piece_count": bom_piece_count
-        if bom_piece_count > 0
-        else (len(component_weights) if component_weights else part_count),
+        "piece_count": piece_out,
+        "needs_info": bool(lom_unknown and bom_piece_count <= 0),
         "joint_count": joint_count,
         "assembly_weight_lb": assembly_weight,
         "component_weights_lb": component_weights,
@@ -1321,24 +1339,35 @@ def run_weld_takeoff(
             msg += " Attach STEP for geometry when available."
         flags.insert(0, msg)
 
+    fitup_drivers = estimate_fitup_drivers(
+        stp_summary,
+        notes,
+        pdf_path=pdf_path,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+        bom_config=bom_config,
+    )
     if not items:
-        fitup_drivers = {
-            "part_count": 0,
-            "joint_count": 0,
-            "assembly_weight_lb": None,
-            "component_weights_lb": [],
-            "source": "no_weld",
-            "notes": ["No weld symbols — weld and fit-up left at 0"],
-        }
-    else:
-        fitup_drivers = estimate_fitup_drivers(
-            stp_summary,
-            notes,
-            pdf_path=pdf_path,
-            library_folder=library_folder,
-            related_pdf_names=related_pdf_names,
-            bom_config=bom_config,
-        )
+        lom_takeoff = bool(fitup_drivers.get("needs_info")) or int(
+            fitup_drivers.get("piece_count") or 0
+        ) > 0
+        if lom_takeoff:
+            fitup_notes = list(fitup_drivers.get("notes") or [])
+            fitup_notes.insert(
+                0,
+                "No weld symbols — weld inches left at 0; piece count from LOM/BOM",
+            )
+            fitup_drivers["notes"] = fitup_notes
+        else:
+            fitup_drivers = {
+                "part_count": 0,
+                "piece_count": 0,
+                "joint_count": 0,
+                "assembly_weight_lb": None,
+                "component_weights_lb": [],
+                "source": "no_weld",
+                "notes": ["No weld symbols — weld and fit-up left at 0"],
+            }
     for n in fitup_drivers.get("notes") or []:
         if n not in flags:
             flags.append(n)
