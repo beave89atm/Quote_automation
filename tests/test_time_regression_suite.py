@@ -60,18 +60,32 @@ def test_locked_lom_counts(gold):
     bom = extract_bom_from_lom_xlsx(path, bom_config="1")
     assert bom.method == "lom_xlsx", bom.notes
     got = {(r.part_no, r.qty) for r in bom.rows}
-    want = set(gold.identity)
+    parent = set(gold.identity)
+    child = set(gold.child_identity)
+    want = parent | child
     assert got == want, sorted(got.symmetric_difference(want))
-    assert bom.part_number_count == gold.pn, [f"{r.part_no}×{r.qty}" for r in bom.rows]
-    assert bom.piece_count == gold.pcs, [f"{r.part_no}×{r.qty}" for r in bom.rows]
+    assert parent <= got
+    if child:
+        assert child <= got
+        assert any("Rolled up nested LOM tab" in n for n in bom.notes), bom.notes
+        assert bom.part_number_count == len(want)
+        assert bom.piece_count == sum(q for _p, q in want)
+        assert gold.pn == len(parent) and gold.pcs == sum(q for _p, q in parent)
+    else:
+        assert bom.part_number_count == gold.pn, [f"{r.part_no}×{r.qty}" for r in bom.rows]
+        assert bom.piece_count == gold.pcs, [f"{r.part_no}×{r.qty}" for r in bom.rows]
+    if gold.gasket_pn:
+        assert (gold.gasket_pn, 1) in got
+        assert sum(q for p, q in got if p != gold.gasket_pn) == 66
     by_pn = {r.part_no for r in bom.rows}
     for pn in gold.require_pn:
         assert pn in by_pn, f"missing locked PN {pn} in {gold.part_key}"
     for pn in gold.forbid_pn:
         assert pn not in by_pn, f"child table leaked {pn} into {gold.part_key}"
-    for child in gold.empty_l2:
-        assert any(f"empty L2 shell: {child}" in n for n in bom.notes), bom.notes
+    for child_key in gold.empty_l2:
+        assert any(f"empty L2 shell: {child_key}" in n for n in bom.notes), bom.notes
     assert not any("xl/xl/" in n for n in bom.notes)
+    assert gold.complete is True
 
 
 def test_prefer_existing_lom_over_clip(tmp_path: Path):
@@ -169,6 +183,23 @@ def test_empty_l2_shell_is_flagged():
     bom = extract_bom_from_lom_xlsx(path, bom_config="1")
     assert any("empty L2 shell" in n for n in bom.notes)
     assert "99999-1" in {r.part_no for r in bom.rows}
+
+
+def test_103516_empty_child_tab_is_empty_l2(tmp_path: Path):
+    from quote_core.lom_xlsx import write_lom_xlsx
+    from tests.fixtures.time_gold import rows_103516
+
+    path = tmp_path / "103516-LOM.xlsx"
+    write_lom_xlsx(
+        path,
+        rows_103516(),
+        part_key="103516",
+        extra_sheets={"103535-1": [["-1", "ITEM", "PART NO", "DESCRIPTION"]]},
+    )
+    bom = extract_bom_from_lom_xlsx(path, bom_config="1")
+    assert any("empty L2 shell: 103535-1" in n for n in bom.notes)
+    assert ("103535-1", 1) in {(r.part_no, r.qty) for r in bom.rows}
+    assert "103542-1" not in {r.part_no for r in bom.rows}
 
 
 def test_job91_opc_path_still_normalized():

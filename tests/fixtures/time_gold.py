@@ -172,22 +172,82 @@ DASH_21727: list[tuple[str, int, str, str]] = [
     ("L", 1, "21889-1", "PLATE"),
 ]
 
-# Named rows only — remaining 17 PNs were not in Kyle's list.
 DASH_33612: list[tuple[str, int, str, str]] = [
-    ("A", 1, "28275-1", "TUBE"),
-    ("P", 4, "28273-2", "TUBE"),
-    ("U", 4, "33638-1", "TUBE"),
-    ("W", 4, "8121-2", "TUBE"),
+    ("A", 1, "28275-1", "TOE KICK, REAR"),
+    ("B", 1, "28275-2", "TOE KICK, SIDE"),
+    ("C", 1, "28276-1", "TOE KICK, FRONT"),
+    ("D", 1, "28283-1", "PLATFORM DECK"),
+    ("E", 2, "28270-1", "MOUNTING TUBE WELDMENT"),
+    ("F", 2, "28269-1", "FLOOR SUPPORT, INNER"),
+    ("G", 4, "28268-1", "FLOOR SUPPORT, OUTER"),
+    ("H", 4, "28265-1", "HORIZ. INTERMED. RAIL, SIDE"),
+    ("J", 1, "28265-2", "HORIZ. INTERMED. RAIL, LOWER GATE"),
+    ("K", 3, "33613-1", "HORIZ. INTERMED. RAIL"),
+    ("L", 1, "28274-2", "HORIZ. INTERMED. RAIL, FRONT"),
+    ("M", 1, "28266-1", "VERT. RAIL, STRAIGHT"),
+    ("N", 1, "28281-1", "STIFFENER"),
+    ("P", 4, "28273-2", "CAP PLATE"),
+    ("Q", 4, "28282-1", "LANYARD ANCHOR"),
+    ("R", 1, "28278-1", "PLATFORM GATE WELDMENT"),
+    ("S", 2, "28287-1", "GATE REST"),
+    ("T", 4, "33611-1", "CORNER VERT. RAIL, STRAIGHT"),
+    ("U", 4, "33638-1", "PIPE CAP"),
+    ("V", 1, "28275-3", "TOE KICK, SIDE"),
+    ("W", 4, "8121-2", "SPUD, VALVE SUPPORT"),
 ]
 
 DASH_105098: list[tuple[str, int, str, str]] = [
     ("A", 1, "103603-1", "MAIN PLATFORM WELDMENT"),
-    ("H", 1, "105097-1", "PLATE"),
+    ("B", 1, "104124-1", "CONTROL BOX MOUNT"),
+    ("C", 1, "104124-2", "CONTROL BOX MOUNT"),
+    ("D", 1, "104977-1", "BATTERY BOX MOUNT"),
+    ("E", 1, "105094-1", "PLATFORM REST SUB-WELDMENT"),
+    ("F", 1, "105095-1", "PLATFORM SWITCH MOUNT"),
+    ("G", 1, "105096-1", "CHARGE CABLE BRACKET"),
+    ("H", 1, "105097-1", "INTERCOM MOUNT"),
+    ("J", 1, "40002-2", "1/4-20NC HHCS X 5/8 L"),
 ]
 
 DASH_103516: list[tuple[str, int, str, str]] = [
+    ("1", 1, "103517-1", ""),
+    ("2", 1, "103518-1", ""),
+    ("3", 1, "103519-1", ""),
+    ("4", 4, "103520-1", ""),
+    ("5", 2, "103521-1", ""),
+    ("6", 2, "103522-1", ""),
+    ("7", 2, "103523-1", ""),
+    ("8", 2, "103524-1", ""),
+    ("9", 2, "103525-1", ""),
+    ("10", 1, "103526-1", ""),
+    ("11", 1, "103527-1", ""),
+    ("12", 1, "103528-1", ""),
+    ("13", 2, "103529-1", ""),
+    ("14", 1, "103530-1", ""),
+    ("15", 1, "103531-1", ""),
+    ("16", 1, "103532-1", ""),
+    ("17", 1, "103533-1", ""),
+    ("18", 1, "103534-1", ""),
+    ("19", 1, "30345-19", ""),
     ("20", 1, "103535-1", "GATE WELDMENT"),
+    ("21", 1, "103536-1", ""),
+    ("22", 1, "103537-1", ""),
+    ("23", 2, "103538-1", ""),
+    ("24", 3, "103539-1", ""),
+    ("25", 4, "103540-1", ""),
+    ("26", 4, "103541-1", ""),
     ("27", 1, "40002-2", ""),
+]
+
+DASH_103535: list[tuple[str, int, str, str]] = [
+    ("A", 1, "103542-1", "GATE RAIL"),
+    ("B", 2, "103543-1", "GATE RAIL"),
+    ("C", 2, "103544-1", "STRIKER MOUNT"),
+    ("D", 2, "30345-20", "PLATE (STRIKER BRACE)"),
+    ("E", 1, "101229-4", "BAR ROUND 1/2 DIA.(STRIKER)"),
+    ("F", 4, "103545-1", "GATE GUSSET"),
+    ("G", 2, "102196-5", "PLATE (HINGE PLATE)"),
+    ("H", 2, "671700", "HINGE SELF CLOSING 1-PAIR"),
+    ("J", 1, "103546-1", "GATE STOP"),
 ]
 
 DASH_P904225: list[tuple[str, int, str, str]] = [
@@ -206,7 +266,27 @@ DASH_P904225: list[tuple[str, int, str, str]] = [
 
 DASH_1004611: list[tuple[str, int, str, str]] = [
     ("A", 1, "1004611-DWG", "DRAWING - STL PLATFORM ASSY"),
-    ("S", 1, "S 80054-1", '10" GASKET'),
+    ("B", 1, "1004612-1", "24 X 30 PLATFORM WELDMENT"),
+    ("C", 2, "15062-2", ""),
+    ("D", 8, "40002-8", ""),
+    ("E", 8, "44013-7", ""),
+    ("F", 8, "42005-1", ""),
+    ("G", 2, "89047-1", ""),
+    ("H", 1, "3649-7", ""),
+    ("J", 1, "89028-1", ""),
+    ("K", 1, "48049-1", ""),
+    ("L", 4, "40014-1", ""),
+    ("M", 4, "42005-17", ""),
+    ("N", 1, "1004065-1", ""),
+    ("P", 1, "89134-1", ""),
+    ("Q", 1, "42005-3", ""),
+    ("R", 1, "44013-6", ""),
+    ("S", 1, "80054-1", '10" DOOR SEAL GASKET'),
+    ("T", 1, "1004620-1", ""),
+    ("W", 4, "12803-1", ""),
+    ("X", 8, "44013-3", ""),
+    ("Y", 4, "40006-7", ""),
+    ("Z", 4, "42005-5", ""),
 ]
 _1004611_OTHER = [
     ("U", "1004675-1", ""),
@@ -302,9 +382,10 @@ def rows_33612() -> list[list[str]]:
 
 
 def rows_105098() -> list[list[str]]:
-    rows = [["QTY", "ITEM", "PART NO", "DESCRIPTION"]]
+    # H is -1 only (blank on -2).
+    rows = [["-2", "-1", "ITEM", "PART NO", "DESCRIPTION"]]
     for item, qty, pn, desc in reversed(DASH_105098):
-        rows.append([str(qty), item, pn, desc])
+        rows.append(["-", str(qty), item, pn, desc])
     return rows
 
 
@@ -323,11 +404,15 @@ def rows_103516() -> list[list[str]]:
     named = {item: (qty, pn, desc) for item, qty, pn, desc in DASH_103516}
     for n in range(27, 0, -1):
         item = str(n)
-        if item in named:
-            qty, pn, desc = named[item]
-            rows.append(["-", str(qty), item, pn, desc])
-        else:
-            rows.append(["-", "-", item, "", ""])
+        qty, pn, desc = named[item]
+        rows.append(["-", str(qty), item, pn, desc])
+    return rows
+
+
+def rows_103535() -> list[list[str]]:
+    rows = [["QTY", "ITEM", "PART NO", "DESCRIPTION"]]
+    for item, qty, pn, desc in reversed(DASH_103535):
+        rows.append([str(qty), item, pn, desc])
     return rows
 
 
@@ -346,7 +431,8 @@ def rows_p904225() -> list[list[str]]:
 def rows_1004611() -> list[list[str]]:
     rows = [["-2", "-1", "ITEM", "PART NO", "DESCRIPTION"]]
     for item, qty, pn, desc in DASH_1004611:
-        rows.append(["-", str(qty), item, pn, desc])
+        qty_cell = '10"' if item == "S" else str(qty)
+        rows.append(["-", qty_cell, item, pn, desc])
     for item, pn, desc in _1004611_OTHER:
         rows.append(["1", "-", item, pn, desc])
     return rows
@@ -363,10 +449,12 @@ class LomGold:
     notes: str = ""
     extra_sheets: dict[str, list[list[str]]] = field(default_factory=dict)
     identity: tuple[tuple[str, int], ...] = ()
+    child_identity: tuple[tuple[str, int], ...] = ()
     require_pn: tuple[str, ...] = ()
     forbid_pn: tuple[str, ...] = ()
     empty_l2: tuple[str, ...] = ()
     complete: bool = True
+    gasket_pn: str = ""
 
     def drawn_rows(self) -> list[list[str]]:
         return self.builder()
@@ -380,13 +468,16 @@ def _gold(
     builder,
     notes: str = "",
     extra_sheets: dict[str, list[list[str]]] | None = None,
+    child_rows: list[tuple[str, int, str, str]] | None = None,
     forbid_pn: tuple[str, ...] = (),
     empty_l2: tuple[str, ...] = (),
     complete: bool = True,
     pn: int | None = None,
     pcs: int | None = None,
+    gasket_pn: str = "",
 ) -> LomGold:
     ident = _identity(rows)
+    child_ident = _identity(child_rows) if child_rows else ()
     return LomGold(
         part_key=part_key,
         pn=pn if pn is not None else len(ident),
@@ -397,10 +488,12 @@ def _gold(
         notes=notes,
         extra_sheets=extra_sheets or {},
         identity=ident,
-        require_pn=tuple(p for p, _q in ident),
+        child_identity=child_ident,
+        require_pn=tuple(p for p, _q in ident) + tuple(p for p, _q in child_ident),
         forbid_pn=forbid_pn,
         empty_l2=empty_l2,
         complete=complete,
+        gasket_pn=gasket_pn,
     )
 
 
@@ -460,9 +553,10 @@ LOM_GOLD: list[LomGold] = [
         DASH_33612,
         title="33612-1",
         builder=rows_33612,
-        notes="Named rows only (A/P/U/W). Remaining 17 PNs were not listed.",
+        notes="A–W skip I/O. 56657 / 97879 omitted.",
         forbid_pn=("56657", "97879"),
-        complete=False,
+        pn=21,
+        pcs=47,
     ),
     _gold(
         "105098-1",
@@ -470,21 +564,21 @@ LOM_GOLD: list[LomGold] = [
         title="105098-1",
         builder=rows_105098,
         extra_sheets={"103603-1": _105098_child_ignored()},
-        notes="Parent named rows only. Later-sheet 103603-1 child table ignored.",
+        notes="Parent LOM only. H is -1 only. Later-sheet 103603-1 ignored.",
         forbid_pn=("56657", "97879", "89176-1"),
-        complete=False,
+        pn=9,
+        pcs=9,
     ),
     _gold(
         "103516",
         DASH_103516,
         title="103516",
         builder=rows_103516,
-        extra_sheets={
-            "103535-1": [["-1", "ITEM", "PART NO", "DESCRIPTION"]],
-        },
-        notes="Item 20 GATE WELDMENT + item 27. Empty nested tab is empty L2.",
-        empty_l2=("103535-1",),
-        complete=False,
+        extra_sheets={"103535-1": rows_103535()},
+        child_rows=DASH_103535,
+        notes="Parent 27/45; nested 103535-1 GATE WELDMENT rolls up 9/17.",
+        pn=27,
+        pcs=45,
     ),
     _gold(
         "P904225-1",
@@ -501,9 +595,11 @@ LOM_GOLD: list[LomGold] = [
         DASH_1004611,
         title="1004611-1",
         builder=rows_1004611,
-        notes="Named rows only: A 1004611-DWG + S 80054-1 10\" gasket.",
+        notes="22 PN / 66 pcs + 10″ gasket on S (size, not 10 pieces).",
         forbid_pn=("1004620-2", "1004675-1"),
-        complete=False,
+        pn=22,
+        pcs=67,
+        gasket_pn="80054-1",
     ),
     _gold(
         "1001898-1",
