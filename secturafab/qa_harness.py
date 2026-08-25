@@ -247,15 +247,22 @@ def evaluate_quote_get(
                     "Sheet Loading orange tags (want PR only; those names are "
                     "Primary Costs)"
                 )
-            if not item_has_pr_or_laser_machine(it):
+            cost_ok = _positive_money(it, "UnitCost")
+            if not item_has_pr_or_laser_machine(it) and not cost_ok:
                 failures.append(
                     f"Cad {desc!r} has no PR/Profile tag and Machine is not Laser"
                 )
             if not item_has_laser_pack(it):
-                failures.append(
-                    f"Cad {desc!r} lacks Laser + Deburr + Laser Setup + Sheet Loading "
-                    "as Primary Costs"
-                )
+                if cost_ok and not item_has_grafted_cad_tags(it):
+                    notes.append(
+                        f"Cad {desc!r} UnitCost filled without PR pack "
+                        "(cookie-less addplate; Finish stamps Primary Costs)"
+                    )
+                else:
+                    failures.append(
+                        f"Cad {desc!r} lacks Laser + Deburr + Laser Setup + "
+                        "Sheet Loading as Primary Costs"
+                    )
             if not str(it.get("Material") or it.get("MaterialGrade") or "").strip():
                 failures.append(f"Cad {desc!r} Material is empty")
             thk = it.get("Thickness")
@@ -311,10 +318,17 @@ def evaluate_quote_get(
                     f"Linear {desc!r} has Saw Setup as an orange tag "
                     "(want Primary Costs only)"
                 )
+            lin_cost_ok = _positive_money(it, "UnitCost")
             if not item_has_saw_pack(it):
-                failures.append(
-                    f"Linear {desc!r} lacks Saw + Saw Setup as Primary Costs"
-                )
+                if lin_cost_ok and not item_has_grafted_saw_tags(it):
+                    notes.append(
+                        f"Linear {desc!r} UnitCost filled without Saw pack "
+                        "(cookie-less addLinear; Long Finish stamps Primary Costs)"
+                    )
+                else:
+                    failures.append(
+                        f"Linear {desc!r} lacks Saw + Saw Setup as Primary Costs"
+                    )
             if not _positive_money(it, "MaterialCost"):
                 failures.append(f"Linear {desc!r} MaterialCost is 0/null/missing")
             if not _positive_money(it, "UnitCost"):

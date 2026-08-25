@@ -734,6 +734,32 @@ def test_stamp_never_posts_grafted_ops():
     client.request.assert_not_called()
 
 
+def test_addplate_unit_cost_without_grafted_tags_passes_live_get():
+    payload = gold_1001898_get()
+    for it in payload["ItemList"]:
+        if it.get("ProductType") in (100, "100"):
+            it["OperationCostList"] = []
+            it["BadgeString"] = ""
+            it["Machine"] = ""
+            it["UnitCost"] = 3.12
+            it["MaterialCost"] = 0.55
+        if it.get("ProductType") in (10, "10"):
+            it["OperationCostList"] = []
+            it["BadgeString"] = ""
+            it["UnitCost"] = 7.63
+            it["MaterialCost"] = 0.55
+    result = assert_quote_get_qa(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert result.ok is True
+    assert any("addplate" in n or "addLinear" in n for n in result.notes)
+
+
 def test_grafted_ops_and_blank_unit_cost_fail_live_get():
     grafted = evaluate_quote_get(
         gold_1001898_get(fail="grafted_ops"),

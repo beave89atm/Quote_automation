@@ -204,6 +204,9 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
         for it in payload["ItemList"]:
             it["OperationCostList"] = []
             it["PrimaryTime"] = 0
+            it["BadgeString"] = ""
+            it["UnitCost"] = 0
+            it["MaterialCost"] = 0
     elif fail == "empty_fields":
         for it in payload["ItemList"]:
             if it.get("ProductType") in (100, "100"):
