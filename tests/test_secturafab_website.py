@@ -1285,6 +1285,115 @@ def test_chrome_default_records_vss_skip_on_linux(tmp_path: Path):
     assert "vss=skipped:not_nt" in status["lock_bypass"]
 
 
+def test_vss_create_script_uses_cim_not_file_drive_arg():
+    from secturafab import browser_session as bs
+
+    script = bs._vss_create_ps1()
+    assert "Invoke-CimMethod" in script
+    assert "Win32_ShadowCopy" in script
+    assert "ClientAccessible" in script
+    assert "param($ArgsFile)" in script
+    assert "param($Drive,$Rel,$Dest,$Status)" not in script
+
+
+def test_parse_vssadmin_create_output():
+    from secturafab import browser_session as bs
+
+    text = (
+        "Successfully created shadow copy for 'C:\\'\n"
+        "    Shadow Copy ID: {C7C1D1A0-1111-2222-3333-444444444444}\n"
+        "    Shadow Copy Volume Name: "
+        "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy12\n"
+    )
+    parsed = bs._parse_vss_create_output(text)
+    assert parsed is not None
+    assert parsed[0] == "{C7C1D1A0-1111-2222-3333-444444444444}"
+    assert parsed[1].endswith("HarddiskVolumeShadowCopy12")
+    assert bs._parse_vss_create_output("VSS none") is None
+
+
+def test_prefer_vss_status_keeps_create_returnvalue():
+    from secturafab import browser_session as bs
+
+    wrapped = "exc:MethodInvocationException:0x80131501"
+    assert bs._prefer_vss_status(wrapped, "create:1") == "create:1"
+    assert bs._prefer_vss_status("", wrapped) == wrapped
+
+
+def test_vss_ps_command_is_args_file_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import subprocess
+
+    from secturafab import browser_session as bs
+
+    dest = tmp_path / "out" / "Cookies"
+    dest.parent.mkdir()
+    seen: dict[str, list[str]] = {}
+
+    def fake_run(args, **_k):
+        seen["args"] = [str(a) for a in args]
+        dest.write_bytes(b"sqlite")
+        (dest.parent / (dest.name + ".vss-status")).write_text("ok", encoding="ascii")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(bs, "_windows_powershell", lambda: "powershell.exe")
+    with patch.object(bs.subprocess, "run", side_effect=fake_run):
+        bs._win_vss_ps_create_copy(tmp_path / "Cookies", dest, r"Users\x\Cookies", "C:")
+    args = seen["args"]
+    assert args[0] == "powershell.exe"
+    file_i = args.index("-File")
+    assert len(args) == file_i + 3
+    assert not any(a == "C:\\" or a.endswith("\\") and a[1:2] == ":" for a in args)
+    assert args[-1].endswith(".vss-args")
+    assert bs._cache["vss"] == "ok"
+
+
+def test_win_vss_copy_uses_vssadmin_after_cim_throw(tmp_path: Path):
+    import shutil
+
+    from secturafab import browser_session as bs
+
+    real = tmp_path / "Cookies"
+    _write_cookie_db(real)
+    dest = tmp_path / "snap" / "Cookies"
+    dest.parent.mkdir()
+    order: list[str] = []
+
+    class _Driven:
+        drive = "C:"
+
+        def resolve(self):
+            return self
+
+        def __str__(self) -> str:
+            return r"C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"
+
+    def _ps(*_a, **_k):
+        order.append("ps")
+        bs._record_vss("exc:MethodInvocationException:0x80131501")
+        raise OSError(1, "ps")
+
+    def _va(_src: Path, dest_path: Path, rel: str, letter: str) -> None:
+        order.append("vssadmin")
+        assert letter == "C:"
+        assert rel.replace("\\", "/").endswith("Cookies")
+        shutil.copy2(real, dest_path)
+        bs._record_vss("ok")
+
+    def _ds(*_a, **_k):
+        raise AssertionError("diskshadow must not run after vssadmin ok")
+
+    with patch.object(bs, "_win_vss_ps_create_copy", _ps), patch.object(
+        bs, "_win_vss_vssadmin_copy", _va
+    ), patch.object(bs, "_win_vss_diskshadow_copy", _ds), patch.object(
+        bs, "_enable_privilege", lambda *_a, **_k: None
+    ):
+        bs._cache["vss"] = ""
+        bs._win_vss_copy(_Driven(), dest)  # type: ignore[arg-type]
+    assert dest.is_file() and dest.stat().st_size > 0
+    assert order == ["ps", "vssadmin"]
+    assert bs._cache["vss"] == "ok"
+
+
 def test_profile_1_does_not_run_vss_or_lock_bypass(tmp_path: Path):
     from secturafab import browser_session as bs
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -1437,6 +1438,26 @@ def _win_vss_existing_copy(src: Path, dest: Path) -> None:
         raise OSError(run.returncode or 32, "VSS existing copy failed")
 
 
+_VSS_SHADOW_ID_RE = re.compile(
+    r"Shadow Copy (?:set )?ID:\s*(\{[0-9A-Fa-f-]{36}\})", re.I
+)
+_VSS_SHADOW_VOL_RE = re.compile(
+    r"Shadow Copy Volume(?: Name)?:\s*"
+    r"(\\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy\d+)",
+    re.I,
+)
+
+
+def _windows_system32_exe(name: str) -> str:
+    """64-bit System32 binary even when this process is WOW64."""
+    windir = os.environ.get("WINDIR") or r"C:\Windows"
+    for folder in ("Sysnative", "System32"):
+        candidate = Path(windir) / folder / name
+        if candidate.is_file():
+            return str(candidate)
+    return name
+
+
 def _windows_powershell() -> str:
     """64-bit Windows PowerShell even when this process is WOW64."""
     windir = os.environ.get("WINDIR") or r"C:\Windows"
@@ -1458,6 +1479,29 @@ def _read_vss_status_file(path: Path) -> str:
     if not text:
         return ""
     return _safe_snapshot_detail(text.splitlines()[0])[:80]
+
+
+def _parse_vss_create_output(text: str) -> tuple[str, str] | None:
+    """Shadow ID + GLOBALROOT device only. Ignores any other text."""
+    if not text:
+        return None
+    ids = _VSS_SHADOW_ID_RE.findall(text)
+    vols = _VSS_SHADOW_VOL_RE.findall(text)
+    if ids and vols:
+        return ids[-1], vols[-1]
+    return None
+
+
+def _prefer_vss_status(cur: str, new: str) -> str:
+    """Keep a Create ReturnValue over a wrapper MethodInvocationException."""
+    new = (new or "").strip()
+    if not new:
+        return cur
+    if new.startswith("create:") and new[7:].isdigit():
+        return new
+    if not cur or cur.startswith("exc:MethodInvocationException"):
+        return new
+    return cur
 
 
 def _try_vss_create_copy(src: Path, dest: Path) -> bool:
@@ -1483,88 +1527,184 @@ def _try_vss_create_copy(src: Path, dest: Path) -> bool:
     return False
 
 
-def _win_vss_copy(src: Path, dest: Path) -> None:
-    """CREATE a VSS shadow, copy Cookies from it, then delete the shadow."""
-    src = src.resolve()
-    if not src.drive:
-        _record_vss("skipped:no_drive")
-        raise OSError(22, "VSS no drive")
-    drive = f"{src.drive}\\"
-    rel = str(src)[len(src.drive) :].lstrip("\\/")
+def _vss_create_ps1() -> str:
+    """CIM Create first — [wmiclass].Create throws 0x80131501 on this PC."""
+    return (
+        "param($ArgsFile)\n"
+        "$ErrorActionPreference='Continue'\n"
+        "$lines=Get-Content -LiteralPath $ArgsFile\n"
+        "$letter=([string]$lines[0]).Trim().TrimEnd('\\')\n"
+        "$Drive=$letter+'\\'\n"
+        "$Rel=[string]$lines[1]\n"
+        "$Dest=[string]$lines[2]\n"
+        "$Status=[string]$lines[3]\n"
+        "$id=$null\n"
+        "$last='exc:none'\n"
+        "function Write-Status([string]$s){\n"
+        "  Set-Content -LiteralPath $Status -Value $s -Encoding ascii\n"
+        "}\n"
+        "function Format-Exc($err){\n"
+        "  $ex=$err.Exception; $parts=@()\n"
+        "  while($ex -ne $null){\n"
+        "    $parts += $ex.GetType().Name\n"
+        "    try { $hr=[int]$ex.HResult; if($hr){ "
+        "$parts += ('0x{0:X8}' -f $hr) } } catch {}\n"
+        "    $ex=$ex.InnerException\n"
+        "  }\n"
+        "  return 'exc:'+($parts -join ':')\n"
+        "}\n"
+        "function Find-Device([string]$sid){\n"
+        "  $want=$sid.Trim('{}')\n"
+        "  for($i=0; $i -lt 40; $i++){\n"
+        "    $all=@()\n"
+        "    try { $all+=@(Get-CimInstance Win32_ShadowCopy) } catch {}\n"
+        "    try { $all+=@(Get-WmiObject Win32_ShadowCopy) } catch {}\n"
+        "    $sc=$all | Where-Object {\n"
+        "      ([string]$_.ID).Trim('{}') -eq $want -and $_.DeviceObject\n"
+        "    } | Select-Object -First 1\n"
+        "    if($sc){ return [string]$sc.DeviceObject }\n"
+        "    Start-Sleep -Milliseconds 250\n"
+        "  }\n"
+        "  return $null\n"
+        "}\n"
+        "function Copy-FromRoot([string]$root){\n"
+        "  $root=$root.TrimEnd('\\'); $copied=$false\n"
+        "  foreach($suf in @('','-wal','-shm','-journal')){\n"
+        "    $p=$root+'\\'+$Rel+$suf\n"
+        "    if($suf -ne '' -and -not (Test-Path -LiteralPath $p)){ continue }\n"
+        "    $out=$Dest; if($suf){ $out=$Dest+$suf }\n"
+        "    try { [System.IO.File]::Copy($p,$out,$true) } catch {}\n"
+        "    if(-not (Test-Path -LiteralPath $out)){\n"
+        "      cmd /c copy /y `\"$p`\" `\"$out`\" | Out-Null\n"
+        "    }\n"
+        "    if($suf -eq '' -and (Test-Path -LiteralPath $out) -and "
+        "((Get-Item -LiteralPath $out).Length -gt 0)){ $copied=$true }\n"
+        "  }\n"
+        "  return $copied\n"
+        "}\n"
+        "function Remove-CreatedShadow([string]$sid){\n"
+        "  if(-not $sid){ return }\n"
+        "  $want=$sid.Trim('{}')\n"
+        "  try {\n"
+        "    Get-CimInstance Win32_ShadowCopy -ErrorAction SilentlyContinue |\n"
+        "      Where-Object { ([string]$_.ID).Trim('{}') -eq $want } |\n"
+        "      Remove-CimInstance -ErrorAction SilentlyContinue\n"
+        "  } catch {}\n"
+        "  try {\n"
+        "    Get-WmiObject Win32_ShadowCopy -ErrorAction SilentlyContinue |\n"
+        "      Where-Object { ([string]$_.ID).Trim('{}') -eq $want } |\n"
+        "      ForEach-Object { $_.Delete() }\n"
+        "  } catch {}\n"
+        "}\n"
+        "function Try-CreateCopy($make){\n"
+        "  $sid=$null\n"
+        "  try {\n"
+        "    $res=& $make\n"
+        "    if($null -eq $res){ return $false }\n"
+        "    $rv=0; try { $rv=[int]$res.ReturnValue } catch {}\n"
+        "    if($rv -ne 0){ $script:last='create:'+$rv; return $false }\n"
+        "    $sid=[string]$res.ShadowID\n"
+        "    if(-not $sid){ $script:last='create:no_id'; return $false }\n"
+        "    $dev=Find-Device $sid\n"
+        "    if(-not $dev){ $script:last='create:no_device'; return $false }\n"
+        "    if(Copy-FromRoot $dev){ Write-Status 'ok'; return $true }\n"
+        "    $script:last='create:copy_empty'; return $false\n"
+        "  } finally {\n"
+        "    Remove-CreatedShadow $sid\n"
+        "  }\n"
+        "}\n"
+        "try { Start-Service VSS -ErrorAction SilentlyContinue } catch {}\n"
+        "try { Start-Service swprv -ErrorAction SilentlyContinue } catch {}\n"
+        "try {\n"
+        "  if(Try-CreateCopy {\n"
+        "    Invoke-CimMethod -ClassName Win32_ShadowCopy -MethodName Create "
+        "-Arguments @{ Volume=$Drive; Context='ClientAccessible' }\n"
+        "  }){ exit 0 }\n"
+        "} catch { $last=Format-Exc $_ }\n"
+        "try {\n"
+        "  if(Try-CreateCopy {\n"
+        "    (Get-WmiObject -List Win32_ShadowCopy).Create($Drive,'ClientAccessible')\n"
+        "  }){ exit 0 }\n"
+        "} catch { $last=Format-Exc $_ }\n"
+        "try {\n"
+        "  if(Try-CreateCopy {\n"
+        "    ([wmiclass]'root\\cimv2:Win32_ShadowCopy').Create("
+        "$Drive,'ClientAccessible')\n"
+        "  }){ exit 0 }\n"
+        "} catch { $last=Format-Exc $_ }\n"
+        "Write-Status $last\n"
+        "exit 2\n"
+    )
+
+
+def _win_copy_raw(src_win: str, dest: Path) -> None:
+    """CreateFileW on a raw Win32 path (GLOBALROOT). Do not pathlib.resolve()."""
+    import ctypes
+    from ctypes import wintypes
+
+    generic_read = 0x80000000
+    share = 0x00000001 | 0x00000002 | 0x00000004
+    open_existing = 3
+    invalids = {-1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF}
+    kernel32 = _kernel32()
+    handle = kernel32.CreateFileW(
+        src_win,
+        generic_read,
+        share,
+        None,
+        open_existing,
+        0x02000000 | 0x80,
+        None,
+    )
+    hid = int(handle) if handle is not None else -1
+    if hid in invalids or hid == 0:
+        raise OSError(ctypes.get_last_error() or 32, "CreateFileW failed")
+    try:
+        _read_handle_to_file(handle, dest)
+    finally:
+        kernel32.CloseHandle(wintypes.HANDLE(handle))
+
+
+def _win_copy_from_shadow_device(device: str, rel: str, dest: Path) -> None:
+    root = device.rstrip("\\")
+    rel_win = rel.replace("/", "\\").lstrip("\\")
+    copied = False
+    for suf in ("", "-wal", "-shm", "-journal"):
+        remote = f"{root}\\{rel_win}{suf}"
+        out = dest if not suf else Path(str(dest) + suf)
+        try:
+            _win_copy_raw(remote, out)
+        except OSError:
+            if os.name == "nt":
+                subprocess.run(
+                    ["cmd.exe", "/c", "copy", "/y", remote, str(out)],
+                    capture_output=True,
+                    timeout=15,
+                    check=False,
+                )
+        if not suf:
+            copied = out.is_file() and out.stat().st_size > 0
+    if not copied:
+        raise OSError(32, "VSS shadow file copy failed")
+
+
+def _win_vss_ps_create_copy(src: Path, dest: Path, rel: str, letter: str) -> None:
+    """CREATE via CIM/WMI. Args file so C:\\ is never a -File positional."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     status_path = dest.parent / (dest.name + ".vss-status")
+    args_path = dest.parent / (dest.name + ".vss-args")
     try:
         if status_path.exists():
             status_path.unlink()
     except OSError:
         pass
-    # ReturnValue / exception name only — never paths or file bytes.
-    script = (
-        "param($Drive,$Rel,$Dest,$Status)\n"
-        "$ErrorActionPreference='Stop'\n"
-        "$id=$null\n"
-        "function Write-Status([string]$s){\n"
-        "  Set-Content -LiteralPath $Status -Value $s -Encoding ascii\n"
-        "}\n"
-        "try {\n"
-        "  $cls=[wmiclass]'\\\\.\\root\\cimv2:Win32_ShadowCopy'\n"
-        "  $res=$cls.Create($Drive,'ClientAccessible')\n"
-        "  $rv=[int]$res.ReturnValue\n"
-        "  if($rv -ne 0){ Write-Status ('create:'+$rv); exit 2 }\n"
-        "  $id=[string]$res.ShadowID\n"
-        "  $sc=$null\n"
-        "  for($i=0; $i -lt 40; $i++){\n"
-        "    $all=@()\n"
-        "    try { $all=@($all)+@(Get-WmiObject Win32_ShadowCopy) } catch {}\n"
-        "    try { $all=@($all)+@(Get-CimInstance Win32_ShadowCopy) } catch {}\n"
-        "    $sc=$all | Where-Object {\n"
-        "      ([string]$_.ID).Trim('{}') -eq $id.Trim('{}') -and $_.DeviceObject\n"
-        "    } | Select-Object -First 1\n"
-        "    if($sc){ break }\n"
-        "    Start-Sleep -Milliseconds 250\n"
-        "  }\n"
-        "  if(-not $sc -or -not $sc.DeviceObject){\n"
-        "    Write-Status 'create:no_device'; exit 3\n"
-        "  }\n"
-        "  $root=[string]$sc.DeviceObject\n"
-        "  $root=$root.TrimEnd('\\')\n"
-        "  $copied=$false\n"
-        "  foreach($suf in @('','-wal','-shm','-journal')){\n"
-        "    $p=$root+'\\'+$Rel+$suf\n"
-        "    if($suf -ne '' -and -not (Test-Path -LiteralPath $p)){ continue }\n"
-        "    $out=$Dest; if($suf){ $out=$Dest+$suf }\n"
-        "    try { [System.IO.File]::Copy($p,$out,$true); $copied=$true } catch {}\n"
-        "    if(-not (Test-Path -LiteralPath $out)){\n"
-        "      cmd /c copy /y `\"$p`\" `\"$out`\" | Out-Null\n"
-        "    }\n"
-        "    if(-not (Test-Path -LiteralPath $out)){\n"
-        "      Copy-Item -LiteralPath $p -Destination $out -Force\n"
-        "    }\n"
-        "    if($suf -eq '' -and (Test-Path -LiteralPath $out) -and "
-        "((Get-Item -LiteralPath $out).Length -gt 0)){ $copied=$true }\n"
-        "  }\n"
-        "  if(-not $copied){ Write-Status 'create:copy_empty'; exit 4 }\n"
-        "  Write-Status 'ok'\n"
-        "} catch {\n"
-        "  $name=$_.Exception.GetType().Name\n"
-        "  $hr=0\n"
-        "  try { $hr=[int]$_.Exception.HResult } catch {}\n"
-        "  if($hr){ Write-Status ('exc:'+$name+':0x'+('{0:X8}' -f $hr)) }\n"
-        "  else { Write-Status ('exc:'+$name) }\n"
-        "  exit 1\n"
-        "} finally {\n"
-        "  if($id){\n"
-        "    try {\n"
-        "      Get-WmiObject Win32_ShadowCopy -ErrorAction SilentlyContinue |\n"
-        "        Where-Object { ([string]$_.ID).Trim('{}') -eq $id.Trim('{}') } |\n"
-        "        ForEach-Object { $_.Delete() }\n"
-        "    } catch {}\n"
-        "  }\n"
-        "}\n"
+    args_path.write_text(
+        f"{letter}\n{rel}\n{dest}\n{status_path}\n",
+        encoding="utf-8",
     )
     tmp = tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False, encoding="utf-8")
     try:
-        tmp.write(script)
+        tmp.write(_vss_create_ps1())
         tmp.close()
         try:
             run = subprocess.run(
@@ -1576,10 +1716,7 @@ def _win_vss_copy(src: Path, dest: Path) -> None:
                     "Bypass",
                     "-File",
                     tmp.name,
-                    drive,
-                    rel,
-                    str(dest),
-                    str(status_path),
+                    str(args_path),
                 ],
                 capture_output=True,
                 text=True,
@@ -1593,10 +1730,11 @@ def _win_vss_copy(src: Path, dest: Path) -> None:
             _record_vss("exc:TimeoutExpired")
             raise OSError(32, "VSS create timeout") from None
     finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
+        for leftover in (tmp.name, args_path):
+            try:
+                os.unlink(leftover)
+            except OSError:
+                pass
     status = _read_vss_status_file(status_path)
     if status:
         _record_vss(status)
@@ -1608,6 +1746,107 @@ def _win_vss_copy(src: Path, dest: Path) -> None:
     if not status:
         _record_vss(f"create:{run.returncode or 32}")
     raise OSError(run.returncode or 32, "VSS snapshot copy failed")
+
+
+def _win_vss_vssadmin_copy(src: Path, dest: Path, rel: str, letter: str) -> None:
+    exe = _windows_system32_exe("vssadmin.exe")
+    run = subprocess.run(
+        [exe, "create", "shadow", f"/for={letter}"],
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    parsed = _parse_vss_create_output(f"{run.stdout or ''}\n{run.stderr or ''}")
+    if not parsed:
+        blob = f"{run.stderr or ''} {run.stdout or ''}".lower()
+        if "permission" in blob or "not have" in blob or "access" in blob:
+            _record_vss("create:1")
+        else:
+            _record_vss(f"create:vssadmin:{run.returncode or 32}")
+        raise OSError(run.returncode or 32, "vssadmin create failed")
+    sid, device = parsed
+    try:
+        _win_copy_from_shadow_device(device, rel, dest)
+        _record_vss("ok")
+    finally:
+        subprocess.run(
+            [exe, "delete", "shadows", f"/Shadow={sid}", "/Quiet"],
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+
+
+def _win_vss_diskshadow_copy(src: Path, dest: Path, rel: str, letter: str) -> None:
+    exe = _windows_system32_exe("diskshadow.exe")
+    dsh = tempfile.NamedTemporaryFile("w", suffix=".dsh", delete=False, encoding="ascii")
+    try:
+        dsh.write(
+            "set context persistent nowriters\n"
+            f"add volume {letter} alias kvss\n"
+            "create\n"
+        )
+        dsh.close()
+        run = subprocess.run(
+            [exe, "/s", dsh.name],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+    finally:
+        try:
+            os.unlink(dsh.name)
+        except OSError:
+            pass
+    parsed = _parse_vss_create_output(f"{run.stdout or ''}\n{run.stderr or ''}")
+    if not parsed:
+        _record_vss(f"create:diskshadow:{run.returncode or 32}")
+        raise OSError(run.returncode or 32, "diskshadow create failed")
+    sid, device = parsed
+    try:
+        _win_copy_from_shadow_device(device, rel, dest)
+        _record_vss("ok")
+    finally:
+        subprocess.run(
+            [_windows_system32_exe("vssadmin.exe"), "delete", "shadows", f"/Shadow={sid}", "/Quiet"],
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+
+
+def _win_vss_copy(src: Path, dest: Path) -> None:
+    """CREATE a VSS shadow, copy Cookies from it, then delete the shadow."""
+    src = src.resolve()
+    if not src.drive:
+        _record_vss("skipped:no_drive")
+        raise OSError(22, "VSS no drive")
+    letter = src.drive.rstrip("\\")
+    rel = str(src)[len(src.drive) :].lstrip("\\/")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _enable_privilege("SeBackupPrivilege")
+    except OSError:
+        pass
+    last = str(_cache.get("vss") or "")
+    for fn in (
+        _win_vss_ps_create_copy,
+        _win_vss_vssadmin_copy,
+        _win_vss_diskshadow_copy,
+    ):
+        try:
+            fn(src, dest, rel, letter)
+        except OSError:
+            last = _prefer_vss_status(last, str(_cache.get("vss") or ""))
+            continue
+        if dest.is_file() and dest.stat().st_size > 0:
+            _record_vss("ok")
+            return
+        last = _prefer_vss_status(last, str(_cache.get("vss") or "create:empty"))
+    _record_vss(last or "create:failed")
+    raise OSError(32, "VSS snapshot copy failed")
 
 
 def _win_share_copy(src: Path, dest: Path) -> None:
