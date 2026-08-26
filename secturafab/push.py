@@ -1559,6 +1559,8 @@ class SecturaFabPushService:
             bits.append(f"source={st['source']}")
         if st.get("lock_bypass"):
             bits.append(f"lock_bypass={st['lock_bypass']}")
+        if st.get("vss"):
+            bits.append(f"vss={st['vss']}")
         if st.get("abe"):
             bits.append(f"abe={st['abe']}")
         if st.get("abe_hr"):

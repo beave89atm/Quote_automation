@@ -61,6 +61,8 @@ _cache: dict[str, Any] = {
     "source": "",
     "session_found": False,
     "lock_bypass": "",
+    "lock_bypass_pinned": False,
+    "vss": "",
     "dup_timed_out": False,
     "abe": "",
     "abe_hr": "",
@@ -135,6 +137,7 @@ def discover_status() -> dict[str, Any]:
         "session_found": session_found(),
         "source": last_discover_source(),
         "lock_bypass": str(_cache.get("lock_bypass") or ""),
+        "vss": str(_cache.get("vss") or ""),
         "abe": str(_cache.get("abe") or ""),
         "abe_hr": str(_cache.get("abe_hr") or ""),
         "v20_blobs": int(_cache.get("v20_blobs") or 0),
@@ -145,6 +148,8 @@ def discover_status() -> dict[str, Any]:
 
 def _discover_uncached() -> tuple[str, str, str]:
     _cache["lock_bypass"] = ""
+    _cache["lock_bypass_pinned"] = False
+    _cache["vss"] = ""
     _cache["dup_timed_out"] = False
     _cache["abe"] = ""
     _cache["abe_hr"] = ""
@@ -223,6 +228,9 @@ def _discover_uncached() -> tuple[str, str, str]:
         )
     if snapshot_errors:
         bypass = str(_cache.get("lock_bypass") or "none")
+        vss = str(_cache.get("vss") or "missing")
+        if "vss=" not in bypass and bypass != "vss":
+            bypass = f"vss={vss};{bypass}"
         return (
             "",
             "Could not snapshot Chrome Cookies while the browser is open "
@@ -378,26 +386,70 @@ def _history_has_sectura(profile_dir: Path) -> bool:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def _is_chrome_default(label: str) -> bool:
+    return label == "chrome:Default"
+
+
+def _set_lock_bypass(value: str, *, pin: bool = False) -> None:
+    """Record lock_bypass. After Chrome Default, later profiles must not wipe it."""
+    if _cache.get("lock_bypass_pinned"):
+        return
+    _cache["lock_bypass"] = value
+    if pin:
+        _cache["lock_bypass_pinned"] = True
+
+
+def _record_vss(reason: str) -> None:
+    _cache["vss"] = _safe_snapshot_detail(reason)[:80]
+
+
+def _lock_bypass_with_vss(rest: str) -> str:
+    """lock_bypass must include vss=… (ok / create HRESULT / skip reason)."""
+    vss = str(_cache.get("vss") or "skipped")
+    prefix = "vss" if vss == "ok" else f"vss={vss}"
+    rest = (rest or "").strip()
+    if not rest or rest in {prefix, "vss"}:
+        return prefix
+    if rest.startswith("vss=") or rest.startswith("vss;") or rest == "vss":
+        return rest
+    return f"{prefix};{rest}"
+
+
 def _read_cookie_rows(
     profile: dict[str, Path | str | bool],
 ) -> list[tuple[str, str, str, bytes]]:
     src = Path(profile["cookies"])
     tmp_dir = tempfile.mkdtemp(prefix="kannon-chrome-cookies-")
     label = str(profile.get("label") or "")
-    allow_vss = label.startswith("chrome:") and label.endswith("Default")
+    is_default = _is_chrome_default(label)
     try:
         dest = Path(tmp_dir) / "Cookies"
         last_exc: BaseException | None = None
-        for attempt in range(2):
-            try:
-                _snapshot_sqlite_file(src, dest, allow_vss=allow_vss)
-                last_exc = None
-                break
-            except (OSError, sqlite3.Error) as exc:
-                last_exc = exc
-                time.sleep(0.35)
-        if last_exc is not None:
-            raise last_exc
+        # Chrome Default: CREATE a VSS shadow first (Chrome stays open).
+        # Skipping create is a FAIL — vss= must show HRESULT / exception name.
+        if is_default and _try_vss_create_copy(src, dest):
+            _set_lock_bypass("vss", pin=True)
+        else:
+            for attempt in range(2):
+                try:
+                    _snapshot_sqlite_file(
+                        src,
+                        dest,
+                        allow_vss=False,
+                        allow_lock_bypass=is_default,
+                    )
+                    last_exc = None
+                    break
+                except (OSError, sqlite3.Error) as exc:
+                    last_exc = exc
+                    time.sleep(0.35)
+            if is_default:
+                _set_lock_bypass(
+                    _lock_bypass_with_vss(str(_cache.get("lock_bypass") or "")),
+                    pin=True,
+                )
+            if last_exc is not None:
+                raise last_exc
         conn = sqlite3.connect(str(dest))
         try:
             cur = conn.execute(
@@ -440,7 +492,7 @@ def _snapshot_sqlite_file(
             fn(src, dest)
             if dest.is_file() and dest.stat().st_size > 0:
                 if name != "lock_bypass" or not _cache.get("lock_bypass"):
-                    _cache["lock_bypass"] = str(_cache.get("lock_bypass") or name)
+                    _set_lock_bypass(str(_cache.get("lock_bypass") or name))
                 return
             errors.append(f"{name}: empty")
         except (OSError, sqlite3.Error) as exc:
@@ -452,7 +504,7 @@ def _snapshot_sqlite_file(
                     pass
     detail = "; ".join(errors) or "no snapshot method ran"
     if not _cache.get("lock_bypass"):
-        _cache["lock_bypass"] = _safe_snapshot_detail(detail)
+        _set_lock_bypass(_safe_snapshot_detail(detail))
     raise OSError(32, _safe_snapshot_detail(detail))
 
 
@@ -542,7 +594,7 @@ def _win_lock_bypass_with_wal(src: Path, dest: Path, *, allow_vss: bool = True) 
                         fn(side, dest.parent / (dest.name + suffix))
                     except OSError:
                         continue
-                _cache["lock_bypass"] = name
+                _set_lock_bypass(name)
                 return
             trail.append(f"{name}: empty")
         except OSError as exc:
@@ -560,7 +612,7 @@ def _win_lock_bypass_with_wal(src: Path, dest: Path, *, allow_vss: bool = True) 
                     dest.unlink()
                 except OSError:
                     pass
-    _cache["lock_bypass"] = ";".join(trail) or "none"
+    _set_lock_bypass(";".join(trail) or "none")
     raise last or OSError(32, ";".join(trail) or "Windows lock bypass failed")
 
 
@@ -1385,59 +1437,177 @@ def _win_vss_existing_copy(src: Path, dest: Path) -> None:
         raise OSError(run.returncode or 32, "VSS existing copy failed")
 
 
-def _win_vss_copy(src: Path, dest: Path) -> None:
-    """Read the file from a Volume Shadow Copy (works on exclusive locks)."""
-    import subprocess
+def _windows_powershell() -> str:
+    """64-bit Windows PowerShell even when this process is WOW64."""
+    windir = os.environ.get("WINDIR") or r"C:\Windows"
+    for rel in (
+        ("Sysnative", "WindowsPowerShell", "v1.0", "powershell.exe"),
+        ("System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    ):
+        candidate = Path(windir).joinpath(*rel)
+        if candidate.is_file():
+            return str(candidate)
+    return "powershell.exe"
 
+
+def _read_vss_status_file(path: Path) -> str:
+    try:
+        text = path.read_text(encoding="ascii", errors="ignore").strip()
+    except OSError:
+        return ""
+    if not text:
+        return ""
+    return _safe_snapshot_detail(text.splitlines()[0])[:80]
+
+
+def _try_vss_create_copy(src: Path, dest: Path) -> bool:
+    """Always attempt VSS CREATE for Chrome Default. Record HRESULT / skip."""
+    if os.name != "nt":
+        _record_vss("skipped:not_nt")
+        return False
+    try:
+        _win_vss_copy(src, dest)
+    except OSError as exc:
+        if not _cache.get("vss"):
+            _record_vss(_safe_os_error(exc))
+        return False
+    except Exception as exc:  # noqa: BLE001 — create result must be visible
+        _record_vss(f"exc:{type(exc).__name__}")
+        return False
+    if dest.is_file() and dest.stat().st_size > 0:
+        if not _cache.get("vss"):
+            _record_vss("ok")
+        return True
+    if not _cache.get("vss"):
+        _record_vss("create:empty")
+    return False
+
+
+def _win_vss_copy(src: Path, dest: Path) -> None:
+    """CREATE a VSS shadow, copy Cookies from it, then delete the shadow."""
     src = src.resolve()
+    if not src.drive:
+        _record_vss("skipped:no_drive")
+        raise OSError(22, "VSS no drive")
     drive = f"{src.drive}\\"
     rel = str(src)[len(src.drive) :].lstrip("\\/")
     dest.parent.mkdir(parents=True, exist_ok=True)
+    status_path = dest.parent / (dest.name + ".vss-status")
+    try:
+        if status_path.exists():
+            status_path.unlink()
+    except OSError:
+        pass
+    # ReturnValue / exception name only — never paths or file bytes.
     script = (
-        "param($Drive,$Rel,$Dest)\n"
+        "param($Drive,$Rel,$Dest,$Status)\n"
         "$ErrorActionPreference='Stop'\n"
-        "$cls=[wmiclass]'\\\\.\\root\\cimv2:Win32_ShadowCopy'\n"
-        "$res=$cls.Create($Drive,'ClientAccessible')\n"
-        "if($res.ReturnValue -ne 0){ throw ('VSS '+$res.ReturnValue) }\n"
-        "$id=$res.ShadowID\n"
-        "try{\n"
-        "  $sc=Get-CimInstance Win32_ShadowCopy | Where-Object {$_.ID -eq $id}\n"
-        "  Copy-Item -LiteralPath ($sc.DeviceObject+'\\'+$Rel) -Destination $Dest -Force\n"
+        "$id=$null\n"
+        "function Write-Status([string]$s){\n"
+        "  Set-Content -LiteralPath $Status -Value $s -Encoding ascii\n"
+        "}\n"
+        "try {\n"
+        "  $cls=[wmiclass]'\\\\.\\root\\cimv2:Win32_ShadowCopy'\n"
+        "  $res=$cls.Create($Drive,'ClientAccessible')\n"
+        "  $rv=[int]$res.ReturnValue\n"
+        "  if($rv -ne 0){ Write-Status ('create:'+$rv); exit 2 }\n"
+        "  $id=[string]$res.ShadowID\n"
+        "  $sc=$null\n"
+        "  for($i=0; $i -lt 40; $i++){\n"
+        "    $all=@()\n"
+        "    try { $all=@($all)+@(Get-WmiObject Win32_ShadowCopy) } catch {}\n"
+        "    try { $all=@($all)+@(Get-CimInstance Win32_ShadowCopy) } catch {}\n"
+        "    $sc=$all | Where-Object {\n"
+        "      ([string]$_.ID).Trim('{}') -eq $id.Trim('{}') -and $_.DeviceObject\n"
+        "    } | Select-Object -First 1\n"
+        "    if($sc){ break }\n"
+        "    Start-Sleep -Milliseconds 250\n"
+        "  }\n"
+        "  if(-not $sc -or -not $sc.DeviceObject){\n"
+        "    Write-Status 'create:no_device'; exit 3\n"
+        "  }\n"
+        "  $root=[string]$sc.DeviceObject\n"
+        "  $root=$root.TrimEnd('\\')\n"
+        "  $copied=$false\n"
+        "  foreach($suf in @('','-wal','-shm','-journal')){\n"
+        "    $p=$root+'\\'+$Rel+$suf\n"
+        "    if($suf -ne '' -and -not (Test-Path -LiteralPath $p)){ continue }\n"
+        "    $out=$Dest; if($suf){ $out=$Dest+$suf }\n"
+        "    try { [System.IO.File]::Copy($p,$out,$true); $copied=$true } catch {}\n"
+        "    if(-not (Test-Path -LiteralPath $out)){\n"
+        "      cmd /c copy /y `\"$p`\" `\"$out`\" | Out-Null\n"
+        "    }\n"
+        "    if(-not (Test-Path -LiteralPath $out)){\n"
+        "      Copy-Item -LiteralPath $p -Destination $out -Force\n"
+        "    }\n"
+        "    if($suf -eq '' -and (Test-Path -LiteralPath $out) -and "
+        "((Get-Item -LiteralPath $out).Length -gt 0)){ $copied=$true }\n"
+        "  }\n"
+        "  if(-not $copied){ Write-Status 'create:copy_empty'; exit 4 }\n"
+        "  Write-Status 'ok'\n"
+        "} catch {\n"
+        "  $name=$_.Exception.GetType().Name\n"
+        "  $hr=0\n"
+        "  try { $hr=[int]$_.Exception.HResult } catch {}\n"
+        "  if($hr){ Write-Status ('exc:'+$name+':0x'+('{0:X8}' -f $hr)) }\n"
+        "  else { Write-Status ('exc:'+$name) }\n"
+        "  exit 1\n"
         "} finally {\n"
-        "  Get-CimInstance Win32_ShadowCopy | Where-Object {$_.ID -eq $id} | "
-        "Remove-CimInstance\n"
+        "  if($id){\n"
+        "    try {\n"
+        "      Get-WmiObject Win32_ShadowCopy -ErrorAction SilentlyContinue |\n"
+        "        Where-Object { ([string]$_.ID).Trim('{}') -eq $id.Trim('{}') } |\n"
+        "        ForEach-Object { $_.Delete() }\n"
+        "    } catch {}\n"
+        "  }\n"
         "}\n"
     )
     tmp = tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False, encoding="utf-8")
     try:
         tmp.write(script)
         tmp.close()
-        run = subprocess.run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                tmp.name,
-                drive,
-                rel,
-                str(dest),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
+        try:
+            run = subprocess.run(
+                [
+                    _windows_powershell(),
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    tmp.name,
+                    drive,
+                    rel,
+                    str(dest),
+                    str(status_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=45,
+                check=False,
+            )
+        except FileNotFoundError:
+            _record_vss("exc:FileNotFoundError")
+            raise OSError(2, "powershell missing") from None
+        except subprocess.TimeoutExpired:
+            _record_vss("exc:TimeoutExpired")
+            raise OSError(32, "VSS create timeout") from None
     finally:
         try:
             os.unlink(tmp.name)
         except OSError:
             pass
-    if run.returncode != 0 or not dest.is_file() or dest.stat().st_size <= 0:
-        # Do not include PowerShell stdout (could be noisy); code only.
-        raise OSError(run.returncode or 32, "VSS snapshot copy failed")
+    status = _read_vss_status_file(status_path)
+    if status:
+        _record_vss(status)
+    dest_ok = dest.is_file() and dest.stat().st_size > 0
+    if dest_ok:
+        if not status:
+            _record_vss("ok")
+        return
+    if not status:
+        _record_vss(f"create:{run.returncode or 32}")
+    raise OSError(run.returncode or 32, "VSS snapshot copy failed")
 
 
 def _win_share_copy(src: Path, dest: Path) -> None:
