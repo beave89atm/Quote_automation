@@ -144,6 +144,8 @@ def _discover_uncached() -> tuple[str, str, str]:
         if not rows:
             continue
         found_hosts += 1
+        if not source:
+            source = label
         keys = _browser_keys(profile["local_state"])
         if keys.status and not _cache["abe"]:
             _cache["abe"] = keys.status

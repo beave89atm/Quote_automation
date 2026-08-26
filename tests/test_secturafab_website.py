@@ -876,7 +876,7 @@ def test_finish_session_error_includes_abe_not_values():
 
     bs._cache.update(
         {
-            "cookie": "ASP.NET_SessionId=hidden-secret",
+            "cookie": "",
             "session_found": False,
             "source": "chrome:Default",
             "error": "app-bound decrypt failed",
