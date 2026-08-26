@@ -757,6 +757,8 @@ def test_lock_bypass_times_out_dup_then_uses_backup(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(bs, "_DUP_HANDLE_TIMEOUT_S", 0.35)
     monkeypatch.setattr(bs.os, "name", "nt")
     bs._cache["dup_timed_out"] = False
+    bs._cache["lock_bypass_pinned"] = False
+    bs._cache["lock_bypass"] = ""
     db = tmp_path / "Cookies"
     _write_cookie_db(db)
     dest = tmp_path / "snap" / "Cookies"
@@ -818,6 +820,8 @@ def test_lock_bypass_creates_vss_when_allowed(tmp_path: Path, monkeypatch: pytes
 
     monkeypatch.setattr(bs.os, "name", "nt")
     bs._cache["dup_timed_out"] = False
+    bs._cache["lock_bypass_pinned"] = False
+    bs._cache["lock_bypass"] = ""
     db = tmp_path / "Cookies"
     _write_cookie_db(db)
     dest = tmp_path / "snap" / "Cookies"
@@ -1170,13 +1174,12 @@ def test_finish_session_error_includes_abe_not_values():
     assert "do not paste a cookie" in msg.lower()
 
 
-def test_chrome_default_runs_vss_create_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_chrome_default_runs_vss_create_first(tmp_path: Path):
     """Chrome Default must CREATE a VSS shadow before nolock/share/dup."""
     import shutil
 
     from secturafab import browser_session as bs
 
-    monkeypatch.setattr(bs.os, "name", "nt")
     db = tmp_path / "Default" / "Network" / "Cookies"
     _write_cookie_db(db)
     profile = {
@@ -1188,16 +1191,17 @@ def test_chrome_default_runs_vss_create_first(tmp_path: Path, monkeypatch: pytes
     }
     created: list[str] = []
 
-    def _vss(src: Path, dest: Path) -> None:
+    def _vss_create(src: Path, dest: Path) -> bool:
         created.append("vss")
         shutil.copy2(src, dest)
         bs._record_vss("ok")
+        return True
 
     def _no_nolock(*_a, **_k):
         raise AssertionError("nolock must not run when VSS create succeeds")
 
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
-        bs, "_win_vss_copy", side_effect=_vss
+        bs, "_try_vss_create_copy", side_effect=_vss_create
     ), patch.object(bs, "_sqlite_backup_nolock", side_effect=_no_nolock):
         header = bs.discover_sectura_website_cookie(force=True)
     assert header
@@ -1209,12 +1213,9 @@ def test_chrome_default_runs_vss_create_first(tmp_path: Path, monkeypatch: pytes
     assert status["source"] == "chrome:Default"
 
 
-def test_vss_create_hresult_stays_visible_after_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_vss_create_hresult_stays_visible_after_fallback(tmp_path: Path):
     from secturafab import browser_session as bs
 
-    monkeypatch.setattr(bs.os, "name", "nt")
     db = tmp_path / "Cookies"
     _write_cookie_db(db)
     profile = {
@@ -1225,18 +1226,30 @@ def test_vss_create_hresult_stays_visible_after_fallback(
         "history_hit": True,
     }
 
-    def _vss(*_a, **_k):
+    def _vss_create(*_a, **_k):
         bs._record_vss("create:5")
-        raise OSError(5, "VSS snapshot copy failed")
+        return False
 
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
-        bs, "_win_vss_copy", side_effect=_vss
+        bs, "_try_vss_create_copy", side_effect=_vss_create
     ):
         header = bs.discover_sectura_website_cookie(force=True)
     assert header
     status = bs.discover_status()
     assert status["vss"] == "create:5"
     assert status["lock_bypass"].startswith("vss=create:5")
+
+
+def test_lock_bypass_with_vss_prefixes_create_hresult():
+    from secturafab import browser_session as bs
+
+    bs._cache["vss"] = "create:5"
+    assert (
+        bs._lock_bypass_with_vss("dup_handle_not_found")
+        == "vss=create:5;dup_handle_not_found"
+    )
+    bs._cache["vss"] = "ok"
+    assert bs._lock_bypass_with_vss("") == "vss"
 
 
 def test_later_profile_cannot_wipe_default_vss_pin():
