@@ -1557,6 +1557,10 @@ class SecturaFabPushService:
         ]
         if st.get("source"):
             bits.append(f"source={st['source']}")
+        if st.get("abe"):
+            bits.append(f"abe={st['abe']}")
+        if st.get("abe_hr"):
+            bits.append(f"abe_hr={st['abe_hr']}")
         extra = str(st.get("error") or "").strip()
         if extra:
             bits.append(extra)

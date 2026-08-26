@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import json
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -736,3 +739,168 @@ def test_win_paths_match_strips_extended_prefix():
         r"\\?\C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies",
         r"C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies",
     )
+
+
+def test_app_bound_strips_appb_prefix():
+    from secturafab.browser_session import _accept_aes_key, _app_bound_ciphertext
+
+    inner = b"\x01\x02\x03\x04" + (b"\xab" * 20)
+    b64 = base64.b64encode(b"APPB" + inner).decode("ascii")
+    assert _app_bound_ciphertext(b64) == inner
+    assert _accept_aes_key(b"x" * 32) == b"x" * 32
+    assert _accept_aes_key(b"x" * 16) == b"x" * 16
+    assert _accept_aes_key(b"too-short") is None
+    packed = (32).to_bytes(4, "little") + (b"k" * 32) + b"trailer"
+    assert _accept_aes_key(packed) == b"k" * 32
+
+
+def test_v20_cookie_uses_abe_key_never_v10():
+    from secturafab.browser_session import _BrowserKeys, _decrypt_cookie_value, _v20_cookie_text
+
+    abe = os.urandom(32)
+    v10 = os.urandom(32)
+    nonce = os.urandom(12)
+    secret = b"sectura-session-value"
+    plain = (b"\x11" * 32) + secret
+    payload = _aes_gcm_encrypt(plain, abe, nonce)
+    blob = b"v20" + nonce + payload
+    assert _decrypt_cookie_value(blob, _BrowserKeys(abe=abe, v10=v10)) == secret.decode()
+    assert _decrypt_cookie_value(blob, _BrowserKeys(abe=None, v10=abe)) == ""
+    assert _v20_cookie_text(plain) == secret.decode()
+
+
+def test_v20_blobs_fail_closed_without_abe(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        (
+            "www.secturafab.com",
+            "ASP.NET_SessionId",
+            "",
+            b"v20" + b"\x00" * 40,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    local_state = tmp_path / "Local State"
+    local_state.write_text(
+        json.dumps(
+            {
+                "os_crypt": {
+                    "app_bound_encrypted_key": base64.b64encode(b"APPB" + b"\x01" * 40).decode(),
+                    "encrypted_key": base64.b64encode(b"DPAPI" + b"\x02" * 40).decode(),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": local_state,
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+    fake_v10 = b"V" * 32
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_unwrap_app_bound_key", return_value=(None, "failed", "0x80070005")
+    ), patch.object(bs, "_v10_os_crypt_key", return_value=fake_v10):
+        header = bs.discover_sectura_website_cookie(force=True)
+    assert header == ""
+    assert bs.session_found() is False
+    status = bs.discover_status()
+    assert status["session_found"] is False
+    assert status["source"] == "chrome:Default"
+    assert status["abe"] == "failed"
+    assert status["abe_hr"] == "0x80070005"
+    assert status["v20_blobs"] == 1
+    assert status["v20_ok"] == 0
+    assert "0x80070005" in status["error"]
+    assert "do not paste" in status["error"].lower()
+    assert "auth-token" not in str(status)
+    assert fake_v10.hex() not in str(status)
+
+
+def test_v20_discover_succeeds_with_elevator_key(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    abe = os.urandom(32)
+    nonce = os.urandom(12)
+    secret = b"sess-ok"
+    payload = _aes_gcm_encrypt((b"\x22" * 32) + secret, abe, nonce)
+    db = tmp_path / "Cookies"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "ASP.NET_SessionId", "", b"v20" + nonce + payload),
+    )
+    conn.commit()
+    conn.close()
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+    keys = bs._BrowserKeys(abe=abe, status="elevator", hr="0x00000000")
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_browser_keys", return_value=keys
+    ):
+        header = bs.discover_sectura_website_cookie(force=True)
+    assert "ASP.NET_SessionId=sess-ok" in header
+    status = bs.discover_status()
+    assert status["session_found"] is True
+    assert status["source"] == "chrome:Default"
+    assert status["abe"] == "elevator"
+    assert status["v20_ok"] == 1
+    assert "sess-ok" not in str(status)
+
+
+def test_finish_session_error_includes_abe_not_values():
+    from secturafab import browser_session as bs
+    from secturafab.push import SecturaFabPushService
+
+    bs._cache.update(
+        {
+            "cookie": "ASP.NET_SessionId=hidden-secret",
+            "session_found": False,
+            "source": "chrome:Default",
+            "error": "app-bound decrypt failed",
+            "abe": "failed",
+            "abe_hr": "0x80004005",
+        }
+    )
+    svc = SecturaFabPushService(MagicMock())
+    msg = svc._finish_session_error()
+    assert "session_found=false" in msg
+    assert "abe=failed" in msg
+    assert "abe_hr=0x80004005" in msg
+    assert "hidden-secret" not in msg
+    assert "do not paste a cookie" in msg.lower()
+
+
+def _aes_gcm_encrypt(plain: bytes, key: bytes, nonce: bytes) -> bytes:
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        return AESGCM(key).encrypt(nonce, plain, None)
+    except Exception:  # noqa: BLE001
+        from Crypto.Cipher import AES  # type: ignore[import-untyped]
+
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        ct, tag = cipher.encrypt_and_digest(plain)
+        return ct + tag

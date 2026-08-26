@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -41,10 +42,7 @@ CHROME_SESSION_REQUIRED = (
     "Finish needs a live SecturaFAB Chrome session on this PC "
     "(www.secturafab.com / secturafab.com cookies). Sign into SecturaFAB in "
     "Chrome on the quoting PC, then push again. This app reads Chrome's "
-    "cookies automatically — do not paste a cookie. "
-    "If Chrome is already signed in and this still fails, cookies may be "
-    "app-bound encrypted; keep Chrome open as the same Windows user that "
-    "runs the app."
+    "cookies automatically — do not paste a cookie."
 )
 
 _CACHE_TTL_S = 30.0
@@ -55,7 +53,14 @@ _cache: dict[str, Any] = {
     "source": "",
     "session_found": False,
     "lock_bypass": "",
+    "abe": "",
+    "abe_hr": "",
+    "v20_blobs": 0,
+    "v20_ok": 0,
 }
+
+# In-process memo of Local State unwrap. Key bytes stay in RAM only.
+_abe_memo: dict[str, "_BrowserKeys"] = {}
 
 
 def effective_website_cookie(cfg: Any | None = None) -> str:
@@ -72,6 +77,10 @@ def effective_website_cookie(cfg: Any | None = None) -> str:
 def discover_sectura_website_cookie(*, force: bool = False) -> str:
     """Return a Cookie header from Chrome/Edge, or '' if none is usable."""
     now = time.monotonic()
+    if force:
+        for sig, keys in list(_abe_memo.items()):
+            if not keys.abe:
+                _abe_memo.pop(sig, None)
     if (
         not force
         and _cache["cookie"]
@@ -101,17 +110,25 @@ def session_found() -> bool:
 
 
 def discover_status() -> dict[str, Any]:
-    """QA-safe status. Never includes cookie values."""
+    """QA-safe status. Never includes cookie values or key material."""
     return {
         "session_found": session_found(),
         "source": last_discover_source(),
         "lock_bypass": str(_cache.get("lock_bypass") or ""),
+        "abe": str(_cache.get("abe") or ""),
+        "abe_hr": str(_cache.get("abe_hr") or ""),
+        "v20_blobs": int(_cache.get("v20_blobs") or 0),
+        "v20_ok": int(_cache.get("v20_ok") or 0),
         "error": last_discover_error(),
     }
 
 
 def _discover_uncached() -> tuple[str, str, str]:
     _cache["lock_bypass"] = ""
+    _cache["abe"] = ""
+    _cache["abe_hr"] = ""
+    _cache["v20_blobs"] = 0
+    _cache["v20_ok"] = 0
     pairs_all: list[tuple[str, str]] = []
     decrypt_failures = 0
     found_hosts = 0
@@ -127,15 +144,25 @@ def _discover_uncached() -> tuple[str, str, str]:
         if not rows:
             continue
         found_hosts += 1
-        key = _browser_aes_key(profile["local_state"])
+        keys = _browser_keys(profile["local_state"])
+        if keys.status and not _cache["abe"]:
+            _cache["abe"] = keys.status
+            _cache["abe_hr"] = keys.hr
+        elif keys.status in {"elevator", "chrome_dir"}:
+            _cache["abe"] = keys.status
+            _cache["abe_hr"] = keys.hr
         for host, name, value, encrypted in rows:
             del host
+            if encrypted[:3] == b"v20":
+                _cache["v20_blobs"] = int(_cache["v20_blobs"] or 0) + 1
             plain = (value or "").strip()
             if not plain and encrypted:
-                plain = _decrypt_cookie_value(encrypted, key)
+                plain = _decrypt_cookie_value(encrypted, keys)
                 if not plain:
                     decrypt_failures += 1
                     continue
+                if encrypted[:3] == b"v20":
+                    _cache["v20_ok"] = int(_cache["v20_ok"] or 0) + 1
             if name and plain:
                 pairs_all.append((name, plain))
         if pairs_all:
@@ -145,11 +172,15 @@ def _discover_uncached() -> tuple[str, str, str]:
     if header:
         return header, "", source
     if found_hosts and decrypt_failures:
+        abe = str(_cache.get("abe") or "failed")
+        hr = str(_cache.get("abe_hr") or "")
         return (
             "",
-            "Found SecturaFAB cookies in Chrome but could not decrypt them "
-            "(app-bound / v20 encryption). Keep Chrome signed into SecturaFAB "
-            "as the same Windows user that runs this app.",
+            "Found SecturaFAB v20 cookies but app-bound decrypt failed "
+            f"(abe={abe}"
+            + (f" hr={hr}" if hr else "")
+            + "). IElevator could not unwrap Local State. Fail closed — "
+            "no Cookie header. Do not paste a cookie.",
             source,
         )
     if found_hosts:
@@ -769,47 +800,150 @@ def _win_share_copy(src: Path, dest: Path) -> None:
     _win_createfile_copy(src, dest, flags=0x80)
 
 
-def _browser_aes_key(local_state: Path | str) -> bytes | None:
+class _BrowserKeys:
+    """AES keys from Local State. v20 cookies must use `abe`, never `v10`."""
+
+    __slots__ = ("abe", "v10", "status", "hr")
+
+    def __init__(
+        self,
+        abe: bytes | None = None,
+        v10: bytes | None = None,
+        status: str = "",
+        hr: str = "",
+    ) -> None:
+        self.abe = abe
+        self.v10 = v10
+        self.status = status
+        self.hr = hr
+
+
+# Chrome elevation service. IElevator2 first (Chrome 144+); DecryptData is
+# still vtable slot 5. CLSCTX_LOCAL_SERVER — GoogleChromeElevationService.
+_CHROME_ELEVATOR: tuple[tuple[str, str], ...] = (
+    (
+        "{708860E0-F641-4611-8895-7D867DD3675B}",
+        "{1BF5208B-295F-4992-B5F4-3A9BB6494838}",
+    ),  # stable IElevator2Chrome
+    (
+        "{708860E0-F641-4611-8895-7D867DD3675B}",
+        "{463ABECF-410D-407F-8AF5-0DF35A005CC8}",
+    ),  # stable IElevatorChrome
+    (
+        "{DD2646BA-3707-4BF8-B9A7-038691A68FC2}",
+        "{B96A14B8-D0B0-44D8-BA68-2385B2A03254}",
+    ),  # beta
+    (
+        "{DA7FDCA5-2CAA-4637-AA17-0740584DE7DA}",
+        "{3FEFA48E-C8BF-461F-AED6-63F658CC850A}",
+    ),  # dev
+)
+
+_ABE_HELPER_NAME = "kannon_quote_abe.exe"
+_compiled_abe_helper: Path | None = None
+
+
+def _local_state_sig(path: Path) -> str:
+    try:
+        st = path.stat()
+    except OSError:
+        return str(path)
+    return f"{path}:{st.st_mtime_ns}:{st.st_size}"
+
+
+def _browser_keys(local_state: Path | str) -> _BrowserKeys:
     path = Path(local_state)
+    sig = _local_state_sig(path)
+    cached = _abe_memo.get(sig)
+    if cached is not None:
+        return cached
+    keys = _browser_keys_uncached(path)
+    _abe_memo[sig] = keys
+    if len(_abe_memo) > 8:
+        oldest = next(iter(_abe_memo))
+        if oldest != sig:
+            _abe_memo.pop(oldest, None)
+    return keys
+
+
+def _browser_keys_uncached(path: Path) -> _BrowserKeys:
+    keys = _BrowserKeys(status="missing")
     if not path.is_file():
-        return None
+        return keys
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeError):
-        return None
+        return keys
     os_crypt = data.get("os_crypt") if isinstance(data, dict) else None
     if not isinstance(os_crypt, dict):
-        return None
-    abe = os_crypt.get("app_bound_encrypted_key")
-    if isinstance(abe, str) and abe.strip():
-        key = _decrypt_app_bound_key(abe)
-        if key:
-            return key
+        return keys
     enc = os_crypt.get("encrypted_key")
     if isinstance(enc, str) and enc.strip():
-        try:
-            raw = base64.b64decode(enc)
-        except (ValueError, TypeError):
-            return None
-        if raw.startswith(b"DPAPI"):
-            raw = raw[5:]
-        return _dpapi_unprotect(raw)
-    return None
+        keys.v10 = _v10_os_crypt_key(enc)
+    abe = os_crypt.get("app_bound_encrypted_key")
+    if isinstance(abe, str) and abe.strip():
+        key, status, hr = _unwrap_app_bound_key(abe)
+        keys.abe = key
+        keys.status = status
+        keys.hr = hr
+        return keys
+    if keys.v10:
+        keys.status = "v10"
+    return keys
 
 
-def _decrypt_app_bound_key(b64_key: str) -> bytes | None:
-    """Chrome v20 app-bound key. Best-effort on Windows via DPAPI / IElevator."""
+def _v10_os_crypt_key(b64_key: str) -> bytes | None:
+    try:
+        raw = base64.b64decode(b64_key)
+    except (ValueError, TypeError):
+        return None
+    if raw.startswith(b"DPAPI"):
+        raw = raw[5:]
+    return _accept_aes_key(_dpapi_unprotect(raw))
+
+
+def _app_bound_ciphertext(b64_key: str) -> bytes | None:
+    """Base64-decode Local State app_bound_encrypted_key and strip APPB."""
     try:
         raw = base64.b64decode(b64_key)
     except (ValueError, TypeError):
         return None
     if raw.startswith(b"APPB"):
         raw = raw[4:]
-    # Some builds wrap the AES key in user DPAPI after the APPB prefix.
-    plain = _dpapi_unprotect(raw)
-    if plain and len(plain) in {16, 32}:
+    return raw or None
+
+
+def _unwrap_app_bound_key(b64_key: str) -> tuple[bytes | None, str, str]:
+    """IElevator.DecryptData unwrap. Never treat the v10 DPAPI key as ABE."""
+    raw = _app_bound_ciphertext(b64_key)
+    if not raw:
+        return None, "failed", ""
+    key, hr = _elevator_decrypt(raw)
+    if key:
+        return key, "elevator", hr
+    # Path validation: IElevator compares the caller to Chrome's install dir.
+    # A short-lived helper next to chrome.exe has the same trimmed path.
+    key, helper_hr = _elevator_decrypt_via_chrome_dir(raw)
+    hr = helper_hr or hr
+    if key:
+        return key, "chrome_dir", hr
+    # Legacy: some older builds DPAPI-wrapped a raw 16/32-byte key.
+    legacy = _accept_aes_key(_dpapi_unprotect(raw))
+    if legacy:
+        return legacy, "dpapi", hr
+    return None, "failed", hr
+
+
+def _accept_aes_key(plain: bytes | None) -> bytes | None:
+    if not plain:
+        return None
+    if len(plain) in {16, 32}:
         return plain
-    return _elevator_decrypt(raw) or plain
+    if len(plain) >= 36:
+        n = int.from_bytes(plain[:4], "little")
+        if n in {16, 32} and len(plain) >= 4 + n:
+            return plain[4 : 4 + n]
+    return None
 
 
 def _dpapi_unprotect(blob: bytes) -> bytes | None:
@@ -847,32 +981,226 @@ def _dpapi_unprotect(blob: bytes) -> bytes | None:
         return None
 
 
-def _elevator_decrypt(blob: bytes) -> bytes | None:
-    """Chrome IElevator COM — only present on Windows with Chrome installed."""
+def _hr_hex(hr: int) -> str:
+    return f"0x{(hr & 0xFFFFFFFF):08X}"
+
+
+def _elevator_decrypt(blob: bytes) -> tuple[bytes | None, str]:
+    """Call IElevator.DecryptData (binary BSTR, local server, proxy blanket)."""
     if not blob or os.name != "nt":
-        return None
+        return None, ""
+    last_hr = ""
     try:
         import ctypes
+        from ctypes import POINTER, WINFUNCTYPE, byref, c_long, c_uint, c_void_p, cast
 
         ole32 = ctypes.windll.ole32
-        ole32.CoInitialize(None)
-        # CLSID_Elevator / IID_IElevator (Chrome). Failures are non-fatal.
-        clsid = _guid("{708860E0-F641-4611-8895-7D867DD3675B}")
-        iid = _guid("{A949CB4E-C4F9-44C4-B213-6BF8AA9AC69C}")
-        punk = ctypes.c_void_p()
-        hr = ole32.CoCreateInstance(
-            ctypes.byref(clsid),
-            None,
-            1,  # CLSCTX_INPROC_SERVER
-            ctypes.byref(iid),
-            ctypes.byref(punk),
-        )
-        if hr != 0 or not punk.value:
-            return None
-        # Best-effort: if COM create worked, DPAPI above already tried.
-        return None
+        oleaut32 = ctypes.windll.oleaut32
+        # S_OK / S_FALSE (already initialized) are both fine.
+        init_hr = ole32.CoInitializeEx(None, 0x2)  # COINIT_APARTMENTTHREADED
+        did_init = init_hr in (0, 1)
+        DecryptFn = WINFUNCTYPE(c_long, c_void_p, c_void_p, POINTER(c_void_p), POINTER(c_uint))
+        ReleaseFn = WINFUNCTYPE(c_uint, c_void_p)
+        oleaut32.SysAllocStringByteLen.restype = c_void_p
+        oleaut32.SysStringByteLen.restype = c_uint
+        try:
+            for clsid_s, iid_s in _CHROME_ELEVATOR:
+                punk = c_void_p()
+                clsid = _guid(clsid_s)
+                iid = _guid(iid_s)
+                hr = int(
+                    ole32.CoCreateInstance(
+                        byref(clsid),
+                        None,
+                        0x4,  # CLSCTX_LOCAL_SERVER
+                        byref(iid),
+                        byref(punk),
+                    )
+                )
+                last_hr = _hr_hex(hr)
+                if hr < 0 or not punk.value:
+                    continue
+                try:
+                    ole32.CoSetProxyBlanket(
+                        punk,
+                        0xFFFFFFFF,  # RPC_C_AUTHN_DEFAULT
+                        0xFFFFFFFF,  # RPC_C_AUTHZ_DEFAULT
+                        None,
+                        6,  # RPC_C_AUTHN_LEVEL_PKT_PRIVACY
+                        3,  # RPC_C_IMP_LEVEL_IMPERSONATE
+                        None,
+                        0x40,  # EOAC_DYNAMIC_CLOAKING
+                    )
+                    vptr = cast(punk, POINTER(c_void_p))
+                    vtable = cast(c_void_p(vptr[0]), POINTER(c_void_p))
+                    decrypt = DecryptFn(vtable[5])
+                    bstr_in = oleaut32.SysAllocStringByteLen(blob, len(blob))
+                    if not bstr_in:
+                        continue
+                    plaintext = c_void_p()
+                    last_error = c_uint()
+                    try:
+                        dhr = int(decrypt(punk, bstr_in, byref(plaintext), byref(last_error)))
+                    finally:
+                        oleaut32.SysFreeString(bstr_in)
+                    last_hr = _hr_hex(dhr)
+                    if dhr < 0 or not plaintext.value:
+                        continue
+                    try:
+                        n = int(oleaut32.SysStringByteLen(plaintext))
+                        raw = ctypes.string_at(plaintext.value, n)
+                    finally:
+                        oleaut32.SysFreeString(plaintext)
+                    key = _accept_aes_key(raw)
+                    if key:
+                        return key, last_hr
+                finally:
+                    vptr = cast(punk, POINTER(c_void_p))
+                    vtable = cast(c_void_p(vptr[0]), POINTER(c_void_p))
+                    ReleaseFn(vtable[2])(punk)
+        finally:
+            if did_init:
+                ole32.CoUninitialize()
     except (AttributeError, OSError, ValueError, TypeError):
+        return None, last_hr
+    return None, last_hr
+
+
+def _elevator_decrypt_via_chrome_dir(blob: bytes) -> tuple[bytes | None, str]:
+    """Same DecryptData, but the process image lives under Chrome's install dir."""
+    if not blob or os.name != "nt":
+        return None, ""
+    helper = _compiled_abe_helper_exe()
+    if helper is None:
+        return None, ""
+    last_hr = ""
+    for app_dir in _chrome_application_dirs():
+        dest = app_dir / _ABE_HELPER_NAME
+        try:
+            shutil.copy2(helper, dest)
+        except OSError:
+            continue
+        try:
+            key, hr = _run_abe_helper(dest, blob)
+            last_hr = hr or last_hr
+            if key:
+                return key, last_hr
+        finally:
+            try:
+                dest.unlink()
+            except OSError:
+                pass
+    return None, last_hr
+
+
+def _run_abe_helper(exe: Path, blob: bytes) -> tuple[bytes | None, str]:
+    try:
+        run = subprocess.run(
+            [str(exe)],
+            input=blob,
+            capture_output=True,
+            timeout=45,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, ""
+    # stdout is the raw AES key on success — never log it.
+    if run.returncode == 0:
+        return _accept_aes_key(run.stdout), "0x00000000"
+    err = (run.returncode or 0) & 0xFFFFFFFF
+    return None, _hr_hex(err)
+
+
+def _compiled_abe_helper_exe() -> Path | None:
+    global _compiled_abe_helper
+    if _compiled_abe_helper is not None and _compiled_abe_helper.is_file():
+        return _compiled_abe_helper
+    csc = _find_csc()
+    if csc is None:
         return None
+    tmp = Path(tempfile.mkdtemp(prefix="kannon-abe-"))
+    cs_path = tmp / "abe.cs"
+    exe_path = tmp / _ABE_HELPER_NAME
+    try:
+        cs_path.write_text(_ABE_HELPER_CS, encoding="utf-8")
+        run = subprocess.run(
+            [str(csc), "/nologo", "/target:exe", "/platform:x64", f"/out:{exe_path}", str(cs_path)],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        if run.returncode != 0 or not exe_path.is_file():
+            return None
+        _compiled_abe_helper = exe_path
+        return exe_path
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _find_csc() -> Path | None:
+    windir = os.environ.get("WINDIR") or r"C:\Windows"
+    candidates = [
+        Path(windir) / "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe",
+        Path(windir) / "Microsoft.NET" / "Framework" / "v4.0.30319" / "csc.exe",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _chrome_application_dirs() -> list[Path]:
+    found: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        try:
+            path = path.resolve()
+        except OSError:
+            return
+        if path.is_file() and path.name.lower() == "chrome.exe":
+            path = path.parent
+        if not path.is_dir() or not (path / "chrome.exe").is_file():
+            return
+        key = str(path).replace("/", "\\").casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(path)
+
+    for env_name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        root = os.environ.get(env_name) or ""
+        if not root:
+            continue
+        add(Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe")
+    add(_chrome_exe_from_registry())
+    return found
+
+
+def _chrome_exe_from_registry() -> Path:
+    if os.name != "nt":
+        return Path()
+    try:
+        import winreg  # type: ignore[import-not-found]
+    except ImportError:
+        return Path()
+    keys = (
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
+        ),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"),
+    )
+    for hive, sub in keys:
+        try:
+            with winreg.OpenKey(hive, sub) as key:
+                val, _ = winreg.QueryValueEx(key, "")
+        except OSError:
+            continue
+        if isinstance(val, str) and val.strip():
+            return Path(val.strip())
+    return Path()
 
 
 def _guid(text: str) -> Any:
@@ -892,14 +1220,24 @@ def _guid(text: str) -> Any:
     return g
 
 
-def _decrypt_cookie_value(blob: bytes, aes_key: bytes | None) -> str:
+def _decrypt_cookie_value(blob: bytes, keys: _BrowserKeys | bytes | None) -> str:
     if not blob:
         return ""
+    if not isinstance(keys, _BrowserKeys):
+        keys = _BrowserKeys(abe=keys, v10=keys)
     prefix = blob[:3]
-    if prefix in (b"v10", b"v11", b"v20") and aes_key:
-        plain = _aes_gcm_decrypt(blob[3:], aes_key)
-        if plain:
-            return plain
+    if prefix == b"v20":
+        if not keys.abe:
+            return ""
+        raw = _aes_gcm_decrypt_bytes(blob[3:], keys.abe)
+        return _v20_cookie_text(raw)
+    if prefix in (b"v10", b"v11") and keys.v10:
+        raw = _aes_gcm_decrypt_bytes(blob[3:], keys.v10)
+        if raw:
+            try:
+                return raw.decode("utf-8")
+            except UnicodeDecodeError:
+                return ""
     # Older Chrome: the whole blob is DPAPI.
     raw = _dpapi_unprotect(blob)
     if raw:
@@ -910,26 +1248,112 @@ def _decrypt_cookie_value(blob: bytes, aes_key: bytes | None) -> str:
     return ""
 
 
-def _aes_gcm_decrypt(payload: bytes, key: bytes) -> str:
-    if len(payload) < 16 + 16:
+def _v20_cookie_text(plain: bytes) -> str:
+    """v20 cookie plaintext: 32-byte metadata prefix, then the cookie value."""
+    if not plain:
         return ""
+    candidates = []
+    if len(plain) > 32:
+        candidates.append(plain[32:])
+    candidates.append(plain)
+    for chunk in candidates:
+        try:
+            text = chunk.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if text and "\x00" not in text:
+            return text
+    return ""
+
+
+def _aes_gcm_decrypt_bytes(payload: bytes, key: bytes) -> bytes:
+    if len(payload) < 16 + 16 or not key:
+        return b""
     nonce = payload[:12]
     cipher_tag = payload[12:]
     ciphertext, tag = cipher_tag[:-16], cipher_tag[-16:]
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-        plain = AESGCM(key).decrypt(nonce, ciphertext + tag, None)
-        return plain.decode("utf-8")
+        return AESGCM(key).decrypt(nonce, ciphertext + tag, None)
     except Exception:  # noqa: BLE001 — optional crypto / bad key
         try:
             from Crypto.Cipher import AES  # type: ignore[import-untyped]
 
             cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-            plain = cipher.decrypt_and_verify(ciphertext, tag)
-            return plain.decode("utf-8")
+            return cipher.decrypt_and_verify(ciphertext, tag)
         except Exception:  # noqa: BLE001
-            return ""
+            return b""
+
+
+# Minimal IElevator client. stdin = APPB-stripped blob; stdout = AES key only.
+_ABE_HELPER_CS = r"""
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+
+class K {
+  [DllImport("ole32.dll")] static extern int CoInitializeEx(IntPtr p, uint f);
+  [DllImport("ole32.dll")] static extern void CoUninitialize();
+  [DllImport("ole32.dll")] static extern int CoCreateInstance(ref Guid c, IntPtr u, uint ctx, ref Guid i, out IntPtr o);
+  [DllImport("ole32.dll")] static extern int CoSetProxyBlanket(IntPtr p, uint a, uint z, IntPtr n, uint al, uint im, IntPtr c, uint cap);
+  [DllImport("ole32.dll")] static extern int CLSIDFromString([MarshalAs(UnmanagedType.LPWStr)] string s, out Guid g);
+  [DllImport("oleaut32.dll")] static extern IntPtr SysAllocStringByteLen(byte[] s, uint l);
+  [DllImport("oleaut32.dll")] static extern uint SysStringByteLen(IntPtr b);
+  [DllImport("oleaut32.dll")] static extern void SysFreeString(IntPtr b);
+
+  [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+  delegate int DecryptDel(IntPtr self, IntPtr cipher, out IntPtr plain, out uint err);
+
+  static readonly string[] Iids = {
+    "{1BF5208B-295F-4992-B5F4-3A9BB6494838}",
+    "{463ABECF-410D-407F-8AF5-0DF35A005CC8}"
+  };
+
+  [STAThread]
+  static int Main() {
+    byte[] blob;
+    using (var stdin = Console.OpenStandardInput())
+    using (var ms = new MemoryStream()) {
+      stdin.CopyTo(ms);
+      blob = ms.ToArray();
+    }
+    if (blob.Length < 8) return 2;
+    CoInitializeEx(IntPtr.Zero, 2);
+    try {
+      Guid clsid;
+      if (CLSIDFromString("{708860E0-F641-4611-8895-7D867DD3675B}", out clsid) != 0) return 3;
+      foreach (var ids in Iids) {
+        Guid iid;
+        if (CLSIDFromString(ids, out iid) != 0) continue;
+        IntPtr punk;
+        int hr = CoCreateInstance(ref clsid, IntPtr.Zero, 4, ref iid, out punk);
+        if (hr < 0 || punk == IntPtr.Zero) continue;
+        CoSetProxyBlanket(punk, 0xFFFFFFFF, 0xFFFFFFFF, IntPtr.Zero, 6, 3, IntPtr.Zero, 0x40);
+        IntPtr vtbl = Marshal.ReadIntPtr(punk);
+        IntPtr pfn = Marshal.ReadIntPtr(vtbl, 5 * IntPtr.Size);
+        DecryptDel dec = (DecryptDel)Marshal.GetDelegateForFunctionPointer(pfn, typeof(DecryptDel));
+        IntPtr bstr = SysAllocStringByteLen(blob, (uint)blob.Length);
+        IntPtr plain;
+        uint last;
+        hr = dec(punk, bstr, out plain, out last);
+        SysFreeString(bstr);
+        if (hr >= 0 && plain != IntPtr.Zero) {
+          uint n = SysStringByteLen(plain);
+          byte[] key = new byte[n];
+          Marshal.Copy(plain, key, 0, (int)n);
+          SysFreeString(plain);
+          Console.OpenStandardOutput().Write(key, 0, key.Length);
+          return 0;
+        }
+      }
+      return 1;
+    } finally {
+      CoUninitialize();
+    }
+  }
+}
+"""
 
 
 def _assemble_cookie_header(pairs: list[tuple[str, str]]) -> str:
