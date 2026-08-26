@@ -785,6 +785,67 @@ def test_lock_bypass_times_out_dup_then_uses_backup(tmp_path: Path, monkeypatch:
     assert time.monotonic() - t0 < 4.0
 
 
+def test_nt_native_path_strips_extended_prefix():
+    from secturafab.browser_session import _nt_native_path
+
+    assert _nt_native_path(r"C:\Users\kyle\Cookies") == r"\??\C:\Users\kyle\Cookies"
+    assert _nt_native_path(r"\\?\C:\Users\kyle\Cookies") == r"\??\C:\Users\kyle\Cookies"
+    assert _nt_native_path(r"\??\C:\Users\kyle\Cookies") == r"\??\C:\Users\kyle\Cookies"
+
+
+def test_rank_browser_pids_puts_network_first():
+    from secturafab import browser_session as bs
+
+    def _cmd(pid: int) -> str:
+        return {
+            11: r"chrome.exe",
+            22: r"chrome.exe --type=utility --utility-sub-type=network.mojom.NetworkService",
+            33: r"chrome.exe --type=renderer",
+            44: r"chrome.exe --type=utility --utility-sub-type=storage.mojom.StorageService",
+        }[pid]
+
+    with patch.object(bs, "_process_command_line", side_effect=_cmd):
+        ranked = bs._rank_browser_pids([11, 22, 33, 44])
+    assert ranked[0] == 22
+    assert ranked[1] == 44
+    assert 11 in ranked
+
+
+def test_lock_bypass_creates_vss_when_allowed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import shutil
+
+    from secturafab import browser_session as bs
+
+    monkeypatch.setattr(bs.os, "name", "nt")
+    bs._cache["dup_timed_out"] = False
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db)
+    dest = tmp_path / "snap" / "Cookies"
+    dest.parent.mkdir()
+    order: list[str] = []
+
+    def _fail(name: str):
+        def _inner(*_a, **_k):
+            order.append(name)
+            raise OSError(32, name)
+
+        return _inner
+
+    def _vss(src: Path, dest_path: Path) -> None:
+        order.append("vss")
+        shutil.copy2(src, dest_path)
+
+    with patch.object(bs, "_win_dup_handle_copy", _fail("dup_handle")), patch.object(
+        bs, "_win_backup_copy", _fail("backup_priv")
+    ), patch.object(bs, "_win_ntcreatefile_backup_copy", _fail("nt_backup")), patch.object(
+        bs, "_win_vss_copy", _vss
+    ):
+        bs._win_lock_bypass_with_wal(db, dest, allow_vss=True)
+    assert dest.is_file()
+    assert bs._cache["lock_bypass"] == "vss"
+    assert order == ["dup_handle", "backup_priv", "nt_backup", "vss"]
+
+
 def test_history_snapshot_does_not_scan_handles(tmp_path: Path):
     import sqlite3
 
