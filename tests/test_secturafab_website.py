@@ -605,3 +605,101 @@ def test_discover_cookie_from_sqlite(tmp_path: Path):
         header = bs.discover_sectura_website_cookie(force=True)
     assert ".AspNet.ApplicationCookie=auth-token" in header
     assert "ASP.NET_SessionId=sess" in header
+    status = bs.discover_status()
+    assert status["session_found"] is True
+    assert status["source"] == "test"
+    assert "auth-token" not in str(status)
+    assert status.get("error") in {"", None}
+
+
+def _write_cookie_db(path: Path, *, host: str = ".secturafab.com") -> None:
+    import sqlite3
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        (host, ".AspNet.ApplicationCookie", "auth-token", b""),
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "ASP.NET_SessionId", "sess", b""),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_locked_shutil_copy_still_reads_chrome_default(tmp_path: Path):
+    """WinError 32 on shutil.copy2 must not hide Chrome Default cookies."""
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Default" / "Network" / "Cookies"
+    _write_cookie_db(db)
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path / "Default",
+        "history_hit": True,
+    }
+
+    def _locked(*_a, **_k):
+        raise OSError(32, "The process cannot access the file")
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs.shutil, "copy2", side_effect=_locked
+    ):
+        header = bs.discover_sectura_website_cookie(force=True)
+    assert header
+    assert bs.session_found() is True
+    assert bs.last_discover_source() == "chrome:Default"
+    assert "auth-token" not in bs.last_discover_error()
+
+
+def test_share_copy_when_sqlite_backup_and_copy2_fail(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db)
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_sqlite_backup_nolock", side_effect=sqlite3.Error("locked")
+    ), patch.object(bs.shutil, "copy2", side_effect=OSError(32, "locked")):
+        header = bs.discover_sectura_website_cookie(force=True)
+    assert header
+    assert bs.discover_status()["session_found"] is True
+
+
+def test_chrome_default_ranks_before_profile_1():
+    from secturafab.browser_session import _profile_rank
+
+    default = {
+        "label": "chrome:Default",
+        "cookies": "C:/x/Default/Network/Cookies",
+        "history_hit": True,
+    }
+    profile1 = {
+        "label": "chrome:Profile 1",
+        "cookies": "C:/x/Profile 1/Network/Cookies",
+        "history_hit": False,
+    }
+    edge = {
+        "label": "edge:Default",
+        "cookies": "C:/x/Edge/Default/Network/Cookies",
+        "history_hit": False,
+    }
+    ranked = sorted([profile1, edge, default], key=_profile_rank)
+    assert ranked[0]["label"] == "chrome:Default"
+    assert ranked[1]["label"] == "chrome:Profile 1"

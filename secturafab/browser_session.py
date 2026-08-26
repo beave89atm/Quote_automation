@@ -48,7 +48,13 @@ CHROME_SESSION_REQUIRED = (
 )
 
 _CACHE_TTL_S = 30.0
-_cache: dict[str, Any] = {"cookie": "", "ts": 0.0, "error": "", "source": ""}
+_cache: dict[str, Any] = {
+    "cookie": "",
+    "ts": 0.0,
+    "error": "",
+    "source": "",
+    "session_found": False,
+}
 
 
 def effective_website_cookie(cfg: Any | None = None) -> str:
@@ -76,6 +82,7 @@ def discover_sectura_website_cookie(*, force: bool = False) -> str:
     _cache["ts"] = now
     _cache["error"] = err
     _cache["source"] = source
+    _cache["session_found"] = bool(cookie)
     return cookie
 
 
@@ -87,13 +94,33 @@ def last_discover_source() -> str:
     return str(_cache.get("source") or "")
 
 
+def session_found() -> bool:
+    """True when a Sectura website session cookie header is available."""
+    return bool(_cache.get("session_found") or _cache.get("cookie"))
+
+
+def discover_status() -> dict[str, Any]:
+    """QA-safe status. Never includes cookie values."""
+    return {
+        "session_found": session_found(),
+        "source": last_discover_source(),
+        "error": last_discover_error(),
+    }
+
+
 def _discover_uncached() -> tuple[str, str, str]:
     pairs_all: list[tuple[str, str]] = []
     decrypt_failures = 0
     found_hosts = 0
     source = ""
+    snapshot_errors: list[str] = []
     for profile in _browser_cookie_dbs():
-        rows = _read_cookie_rows(profile)
+        label = str(profile.get("label") or "profile")
+        try:
+            rows = _read_cookie_rows(profile)
+        except (OSError, sqlite3.Error) as exc:
+            snapshot_errors.append(f"{label}: {_safe_os_error(exc)}")
+            continue
         if not rows:
             continue
         found_hosts += 1
@@ -109,7 +136,7 @@ def _discover_uncached() -> tuple[str, str, str]:
             if name and plain:
                 pairs_all.append((name, plain))
         if pairs_all:
-            source = str(profile.get("label") or profile.get("cookies") or "chrome")
+            source = label
             break
     header = _assemble_cookie_header(pairs_all)
     if header:
@@ -128,6 +155,15 @@ def _discover_uncached() -> tuple[str, str, str]:
             "Chrome has a SecturaFAB host entry but no usable session cookie.",
             source,
         )
+    if snapshot_errors:
+        return (
+            "",
+            "Could not snapshot Chrome Cookies while the browser is open "
+            f"({'; '.join(snapshot_errors)}). "
+            "The app copies Default with a share-read handle — do not close "
+            "Chrome and do not paste a cookie.",
+            "",
+        )
     return (
         "",
         "No Chrome/Edge cookies for www.secturafab.com on this PC.",
@@ -135,7 +171,18 @@ def _discover_uncached() -> tuple[str, str, str]:
     )
 
 
-def _browser_cookie_dbs() -> list[dict[str, Path | str]]:
+def _safe_os_error(exc: BaseException) -> str:
+    """WinError / errno only — never cookie material."""
+    win = getattr(exc, "winerror", None)
+    if win is not None:
+        return f"WinError {win}"
+    err = getattr(exc, "errno", None)
+    if err is not None:
+        return f"errno {err}"
+    return type(exc).__name__
+
+
+def _browser_cookie_dbs() -> list[dict[str, Path | str | bool]]:
     roots: list[tuple[str, Path]] = []
     local = os.environ.get("LOCALAPPDATA") or ""
     if local:
@@ -146,31 +193,51 @@ def _browser_cookie_dbs() -> list[dict[str, Path | str]]:
     roots.append(("chrome", home / ".config" / "google-chrome"))
     roots.append(("chrome", home / ".config" / "chromium"))
 
-    out: list[dict[str, Path | str]] = []
+    out: list[dict[str, Path | str | bool]] = []
     seen: set[str] = set()
     for label, root in roots:
         if not root.is_dir():
             continue
         local_state = root / "Local State"
         for profile_dir in _profile_dirs(root):
-            for cookies in (
-                profile_dir / "Network" / "Cookies",
-                profile_dir / "Cookies",
-            ):
-                if not cookies.is_file():
-                    continue
-                key = str(cookies)
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append(
-                    {
-                        "label": f"{label}:{profile_dir.name}",
-                        "cookies": cookies,
-                        "local_state": local_state,
-                    }
-                )
+            cookies = _cookies_db_path(profile_dir)
+            if cookies is None:
+                continue
+            key = str(cookies)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "label": f"{label}:{profile_dir.name}",
+                    "cookies": cookies,
+                    "local_state": local_state,
+                    "profile_dir": profile_dir,
+                    "history_hit": _history_has_sectura(profile_dir),
+                }
+            )
+    out.sort(key=_profile_rank)
     return out
+
+
+def _cookies_db_path(profile_dir: Path) -> Path | None:
+    for cookies in (
+        profile_dir / "Network" / "Cookies",
+        profile_dir / "Cookies",
+    ):
+        if cookies.is_file():
+            return cookies
+    return None
+
+
+def _profile_rank(profile: dict[str, Path | str | bool]) -> tuple[int, int, int]:
+    """Chrome Default first (History on Default beats empty Profile 1)."""
+    label = str(profile.get("label") or "")
+    browser, _, name = label.partition(":")
+    is_chrome = 0 if browser == "chrome" else 1
+    is_default = 0 if name == "Default" else 1
+    history = 0 if profile.get("history_hit") else 1
+    return (is_chrome, is_default, history)
 
 
 def _profile_dirs(root: Path) -> list[Path]:
@@ -188,20 +255,37 @@ def _profile_dirs(root: Path) -> list[Path]:
     return [root / n for n in names if (root / n).is_dir()]
 
 
+def _history_has_sectura(profile_dir: Path) -> bool:
+    history = Path(profile_dir) / "History"
+    if not history.is_file():
+        return False
+    tmp_dir = tempfile.mkdtemp(prefix="kannon-chrome-history-")
+    try:
+        dest = Path(tmp_dir) / "History"
+        _snapshot_sqlite_file(history, dest)
+        conn = sqlite3.connect(str(dest))
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM urls WHERE url LIKE ? LIMIT 1",
+                (f"%{SECTURA_HOST_NEEDLE}%",),
+            ).fetchone()
+            return bool(row)
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error):
+        return False
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def _read_cookie_rows(
-    profile: dict[str, Path | str],
+    profile: dict[str, Path | str | bool],
 ) -> list[tuple[str, str, str, bytes]]:
     src = Path(profile["cookies"])
     tmp_dir = tempfile.mkdtemp(prefix="kannon-chrome-cookies-")
     try:
         dest = Path(tmp_dir) / "Cookies"
-        shutil.copy2(src, dest)
-        wal = Path(str(src) + "-wal")
-        shm = Path(str(src) + "-shm")
-        if wal.is_file():
-            shutil.copy2(wal, Path(tmp_dir) / "Cookies-wal")
-        if shm.is_file():
-            shutil.copy2(shm, Path(tmp_dir) / "Cookies-shm")
+        _snapshot_sqlite_file(src, dest)
         conn = sqlite3.connect(str(dest))
         try:
             cur = conn.execute(
@@ -216,10 +300,137 @@ def _read_cookie_rows(
             return rows
         finally:
             conn.close()
-    except (OSError, sqlite3.Error):
-        return []
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _snapshot_sqlite_file(src: Path, dest: Path) -> None:
+    """Copy a Chrome SQLite DB that may be locked (WinError 32)."""
+    errors: list[str] = []
+    for fn in (
+        _sqlite_backup_nolock,
+        _share_copy_with_wal,
+        _shutil_copy_with_wal,
+    ):
+        try:
+            if dest.exists():
+                dest.unlink()
+            fn(src, dest)
+            if dest.is_file() and dest.stat().st_size > 0:
+                return
+            errors.append(f"{getattr(fn, '__name__', type(fn).__name__)}: empty")
+        except (OSError, sqlite3.Error) as exc:
+            errors.append(
+                f"{getattr(fn, '__name__', type(fn).__name__)}: {_safe_os_error(exc)}"
+            )
+            for leftover in dest.parent.glob(dest.name + "*"):
+                try:
+                    leftover.unlink()
+                except OSError:
+                    pass
+    raise OSError(
+        "Could not snapshot locked SQLite (" + "; ".join(errors) + ")"
+    )
+
+
+def _sqlite_backup_nolock(src: Path, dest: Path) -> None:
+    """sqlite backup via share/nolock URI — works while Chrome is open."""
+    src_uri = src.resolve().as_uri() + "?mode=ro&nolock=1"
+    src_conn = sqlite3.connect(src_uri, uri=True, timeout=1.0)
+    dest_conn = sqlite3.connect(str(dest))
+    try:
+        src_conn.backup(dest_conn)
+        dest_conn.commit()
+    finally:
+        dest_conn.close()
+        src_conn.close()
+
+
+def _share_copy_with_wal(src: Path, dest: Path) -> None:
+    _copy_shared(src, dest)
+    for suffix in ("-wal", "-shm", "-journal"):
+        side = Path(str(src) + suffix)
+        if not side.is_file():
+            continue
+        try:
+            _copy_shared(side, dest.parent / (dest.name + suffix))
+        except OSError:
+            continue
+
+
+def _shutil_copy_with_wal(src: Path, dest: Path) -> None:
+    shutil.copy2(src, dest)
+    for suffix in ("-wal", "-shm", "-journal"):
+        side = Path(str(src) + suffix)
+        if side.is_file():
+            try:
+                shutil.copy2(side, dest.parent / (dest.name + suffix))
+            except OSError:
+                continue
+
+
+def _copy_shared(src: Path, dest: Path) -> None:
+    """Copy bytes from a file Chrome may have open (FILE_SHARE_READ|WRITE)."""
+    if os.name == "nt":
+        _win_share_copy(src, dest)
+        return
+    with src.open("rb") as inf, dest.open("wb") as out:
+        while True:
+            chunk = inf.read(1024 * 1024)
+            if not chunk:
+                break
+            out.write(chunk)
+
+
+def _win_share_copy(src: Path, dest: Path) -> None:
+    """CreateFileW with FILE_SHARE_READ|WRITE|DELETE, then ReadFile."""
+    import ctypes
+    from ctypes import wintypes
+
+    generic_read = 0x80000000
+    share = 0x00000001 | 0x00000002 | 0x00000004
+    open_existing = 3
+    file_attribute_normal = 0x80
+    invalid = wintypes.HANDLE(-1).value
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(src),
+        generic_read,
+        share,
+        None,
+        open_existing,
+        file_attribute_normal,
+        None,
+    )
+    if handle == invalid or not handle:
+        raise OSError(ctypes.get_last_error() or 32, "CreateFileW share-open failed")
+    read_file = kernel32.ReadFile
+    close_handle = kernel32.CloseHandle
+    try:
+        buf = ctypes.create_string_buffer(1024 * 1024)
+        done = wintypes.DWORD(0)
+        with dest.open("wb") as out:
+            while True:
+                ok = read_file(handle, buf, len(buf), ctypes.byref(done), None)
+                if not ok:
+                    raise OSError(ctypes.get_last_error() or 32, "ReadFile failed")
+                if done.value == 0:
+                    break
+                out.write(buf.raw[: done.value])
+    finally:
+        close_handle(handle)
 
 
 def _browser_aes_key(local_state: Path | str) -> bytes | None:
