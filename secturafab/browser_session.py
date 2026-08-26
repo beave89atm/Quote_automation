@@ -18,9 +18,17 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
+
+# Handle-dup must not pin the quoting PC. 18 chrome.exe processes * system
+# handle table is unbounded; GetFinalPathNameByHandle can also stall.
+_DUP_HANDLE_TIMEOUT_S = 4.0
+_DUP_HANDLE_MAX_PIDS = 8
+_DUP_HANDLE_MAX_HANDLES = 2000
+_SYSTEM_HANDLE_BUF_MAX = 8 << 20
 
 SECTURA_HOST_NEEDLE = "secturafab.com"
 
@@ -53,6 +61,7 @@ _cache: dict[str, Any] = {
     "source": "",
     "session_found": False,
     "lock_bypass": "",
+    "dup_timed_out": False,
     "abe": "",
     "abe_hr": "",
     "v20_blobs": 0,
@@ -136,6 +145,7 @@ def discover_status() -> dict[str, Any]:
 
 def _discover_uncached() -> tuple[str, str, str]:
     _cache["lock_bypass"] = ""
+    _cache["dup_timed_out"] = False
     _cache["abe"] = ""
     _cache["abe_hr"] = ""
     _cache["v20_blobs"] = 0
@@ -335,7 +345,9 @@ def _history_has_sectura(profile_dir: Path) -> bool:
     tmp_dir = tempfile.mkdtemp(prefix="kannon-chrome-history-")
     try:
         dest = Path(tmp_dir) / "History"
-        _snapshot_sqlite_file(history, dest, allow_vss=False)
+        _snapshot_sqlite_file(
+            history, dest, allow_vss=False, allow_lock_bypass=False
+        )
         conn = sqlite3.connect(str(dest))
         try:
             row = conn.execute(
@@ -391,15 +403,24 @@ def _read_cookie_rows(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _snapshot_sqlite_file(src: Path, dest: Path, *, allow_vss: bool = True) -> None:
+def _snapshot_sqlite_file(
+    src: Path, dest: Path, *, allow_vss: bool = True, allow_lock_bypass: bool = True
+) -> None:
     """Copy a Chrome SQLite DB that may be locked (WinError 32)."""
     errors: list[str] = []
-    for name, fn in (
+    methods: list[tuple[str, Any]] = [
         ("nolock", _sqlite_backup_nolock),
         ("share", _share_copy_with_wal),
-        ("lock_bypass", lambda s, d: _win_lock_bypass_with_wal(s, d, allow_vss=allow_vss)),
-        ("shutil", _shutil_copy_with_wal),
-    ):
+    ]
+    if allow_lock_bypass:
+        methods.append(
+            (
+                "lock_bypass",
+                lambda s, d: _win_lock_bypass_with_wal(s, d, allow_vss=allow_vss),
+            )
+        )
+    methods.append(("shutil", _shutil_copy_with_wal))
+    for name, fn in methods:
         try:
             if dest.exists():
                 dest.unlink()
@@ -487,6 +508,9 @@ def _win_lock_bypass_with_wal(src: Path, dest: Path, *, allow_vss: bool = True) 
     ]
     if allow_vss:
         methods.append(("vss", _win_vss_copy))
+    if _cache.get("dup_timed_out"):
+        methods = [(n, fn) for n, fn in methods if n != "dup_handle"]
+        trail.append("dup_handle_timeout")
     for name, fn in methods:
         try:
             if dest.exists():
@@ -506,7 +530,12 @@ def _win_lock_bypass_with_wal(src: Path, dest: Path, *, allow_vss: bool = True) 
             trail.append(f"{name}: empty")
         except OSError as exc:
             last = exc
-            trail.append(f"{name}:{_safe_os_error(exc)}")
+            detail = str(exc.args[1] if len(exc.args) > 1 else exc)
+            if name == "dup_handle" and "dup_handle_timeout" in detail:
+                trail.append("dup_handle_timeout")
+                _cache["dup_timed_out"] = True
+            else:
+                trail.append(f"{name}:{_safe_os_error(exc)}")
             if dest.exists():
                 try:
                     dest.unlink()
@@ -631,10 +660,35 @@ def _read_handle_to_file(handle: Any, dest: Path) -> None:
 
 
 def _win_dup_handle_copy(src: Path, dest: Path) -> None:
+    """Duplicate the Cookies handle, or raise dup_handle_timeout after a few seconds."""
+    done = threading.Event()
+    err: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            _win_dup_handle_copy_inner(src, dest)
+        except BaseException as exc:  # noqa: BLE001
+            err.append(exc)
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_worker, name="kannon-dup-handle", daemon=True)
+    thread.start()
+    if not done.wait(_DUP_HANDLE_TIMEOUT_S):
+        raise OSError(32, "dup_handle_timeout")
+    if dest.is_file() and dest.stat().st_size > 0:
+        return
+    if err:
+        raise err[0]
+    raise OSError(32, "Cookies handle not found on chrome.exe/msedge.exe")
+
+
+def _win_dup_handle_copy_inner(src: Path, dest: Path) -> None:
     """Duplicate the open Cookies handle from chrome.exe / msedge.exe (same user)."""
     import ctypes
     from ctypes import wintypes
 
+    deadline = time.monotonic() + _DUP_HANDLE_TIMEOUT_S
     try:
         _enable_privilege("SeDebugPrivilege")
     except OSError:
@@ -651,31 +705,38 @@ def _win_dup_handle_copy(src: Path, dest: Path) -> None:
         wintypes.DWORD,
     ]
     kernel32.DuplicateHandle.restype = wintypes.BOOL
-    process_dup_handle = 0x0040
-    process_query = 0x0400
-    process_query_limited = 0x1000
     duplicate_same_access = 0x00000002
     file_type_disk = 1
 
     exe_names = _browser_exe_names_for_path(src)
-    pids = _windows_browser_pids(exe_names)
+    pids = _windows_browser_pids(exe_names)[:_DUP_HANDLE_MAX_PIDS]
     if not pids:
         raise OSError(32, "No chrome.exe/msedge.exe process for handle dup")
     pid_set = set(pids)
-    handle_pairs = _system_handle_pairs(pid_set)
+    handle_pairs = _system_handle_pairs(pid_set, deadline=deadline)
     if not handle_pairs:
         for pid in pids:
+            if time.monotonic() > deadline:
+                raise OSError(32, "dup_handle_timeout")
             hproc = _open_browser_process(kernel32, pid)
             if not hproc:
                 continue
             try:
                 for handle_value in _process_handles(hproc):
                     handle_pairs.append((pid, handle_value))
+                    if len(handle_pairs) >= _DUP_HANDLE_MAX_HANDLES:
+                        break
             finally:
                 kernel32.CloseHandle(hproc)
+            if len(handle_pairs) >= _DUP_HANDLE_MAX_HANDLES:
+                break
     opened: dict[int, Any] = {}
+    scanned = 0
     try:
         for pid, handle_value in handle_pairs:
+            if scanned >= _DUP_HANDLE_MAX_HANDLES or time.monotonic() > deadline:
+                raise OSError(32, "dup_handle_timeout")
+            scanned += 1
             hproc = opened.get(pid)
             if hproc is None:
                 hproc = _open_browser_process(kernel32, pid)
@@ -727,7 +788,9 @@ def _browser_exe_names_for_path(src: Path) -> set[str]:
     return {"chrome.exe"}
 
 
-def _system_handle_pairs(pids: set[int]) -> list[tuple[int, int]]:
+def _system_handle_pairs(
+    pids: set[int], *, deadline: float | None = None
+) -> list[tuple[int, int]]:
     """SYSTEM_HANDLE_INFORMATION_EX — more reliable than per-process class 51."""
     if not pids:
         return []
@@ -753,7 +816,11 @@ def _system_handle_pairs(pids: set[int]) -> list[tuple[int, int]]:
         status_length = 0xC0000004
         size = 1 << 20
         out: list[tuple[int, int]] = []
-        for _ in range(10):
+        for _ in range(6):
+            if deadline is not None and time.monotonic() > deadline:
+                return out
+            if size > _SYSTEM_HANDLE_BUF_MAX:
+                return out
             buf = ctypes.create_string_buffer(size)
             needed = ctypes.c_ulong()
             status = int(ntdll.NtQuerySystemInformation(
@@ -763,24 +830,32 @@ def _system_handle_pairs(pids: set[int]) -> list[tuple[int, int]]:
                 ctypes.byref(needed),
             )) & 0xFFFFFFFF
             if status == status_length:
-                size = max(size * 2, int(needed.value or 0) + 4096)
+                nxt = max(size * 2, int(needed.value or 0) + 4096)
+                size = min(nxt, _SYSTEM_HANDLE_BUF_MAX)
+                if size == _SYSTEM_HANDLE_BUF_MAX and nxt > size:
+                    return out
                 continue
             if status != 0:
                 return []
             number = int(ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0] or 0)
             header = ctypes.sizeof(ctypes.c_void_p) * 2
             entry_size = ctypes.sizeof(ENTRY)
-            for i in range(max(0, number)):
-                off = header + i * entry_size
-                if off + entry_size > size:
-                    break
-                ent = ENTRY.from_buffer_copy(buf.raw[off : off + entry_size])
+            max_i = min(max(0, number), (size - header) // entry_size)
+            arr = ctypes.cast(
+                ctypes.addressof(buf) + header, ctypes.POINTER(ENTRY)
+            )
+            for i in range(max_i):
+                if deadline is not None and i % 256 == 0 and time.monotonic() > deadline:
+                    return out
+                ent = arr[i]
                 pid = int(ent.UniqueProcessId or 0)
                 if pid not in pids or not ent.HandleValue:
                     continue
                 out.append((pid, int(ent.HandleValue)))
+                if len(out) >= _DUP_HANDLE_MAX_HANDLES:
+                    return out
             return out
-    except (AttributeError, OSError, ValueError, TypeError):
+    except (AttributeError, OSError, ValueError, TypeError, OverflowError):
         return []
     return []
 

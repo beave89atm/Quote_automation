@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -730,6 +731,76 @@ def test_snapshot_uses_lock_bypass_when_share_and_copy2_fail(tmp_path: Path):
     ), patch.object(bs, "_win_lock_bypass_with_wal", side_effect=_bypass):
         bs._snapshot_sqlite_file(db, dest)
     assert dest.is_file() and dest.stat().st_size > 0
+
+
+def test_dup_handle_timeout_raises_quickly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from secturafab import browser_session as bs
+
+    monkeypatch.setattr(bs, "_DUP_HANDLE_TIMEOUT_S", 0.35)
+
+    def _hang(*_a, **_k):
+        time.sleep(30)
+
+    monkeypatch.setattr(bs, "_win_dup_handle_copy_inner", _hang)
+    t0 = time.monotonic()
+    with pytest.raises(OSError) as ei:
+        bs._win_dup_handle_copy(tmp_path / "Cookies", tmp_path / "out")
+    assert "dup_handle_timeout" in str(ei.value)
+    assert time.monotonic() - t0 < 3.0
+
+
+def test_lock_bypass_times_out_dup_then_uses_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import shutil
+
+    from secturafab import browser_session as bs
+
+    monkeypatch.setattr(bs, "_DUP_HANDLE_TIMEOUT_S", 0.35)
+    monkeypatch.setattr(bs.os, "name", "nt")
+    bs._cache["dup_timed_out"] = False
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db)
+    dest = tmp_path / "snap" / "Cookies"
+    dest.parent.mkdir()
+
+    def _hang(*_a, **_k):
+        time.sleep(30)
+
+    def _ok(src: Path, dest_path: Path) -> None:
+        shutil.copy2(src, dest_path)
+
+    def _fail(*_a, **_k):
+        raise OSError(32, "skip")
+
+    with patch.object(bs, "_win_dup_handle_copy_inner", _hang), patch.object(
+        bs, "_win_backup_copy", _ok
+    ), patch.object(bs, "_win_ntcreatefile_backup_copy", _fail), patch.object(
+        bs, "_win_esentutl_copy", _fail
+    ), patch.object(bs, "_win_robocopy_backup_copy", _fail), patch.object(
+        bs, "_win_vss_existing_copy", _fail
+    ):
+        t0 = time.monotonic()
+        bs._win_lock_bypass_with_wal(db, dest, allow_vss=False)
+    assert dest.is_file() and dest.stat().st_size > 0
+    assert bs._cache["lock_bypass"] == "backup_priv"
+    assert time.monotonic() - t0 < 4.0
+
+
+def test_history_snapshot_does_not_scan_handles(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    hist = tmp_path / "History"
+    conn = sqlite3.connect(str(hist))
+    conn.execute("CREATE TABLE urls (url TEXT)")
+    conn.commit()
+    conn.close()
+
+    def _nope(*_a, **_k):
+        raise AssertionError("lock bypass must not run for History")
+
+    with patch.object(bs, "_win_lock_bypass_with_wal", side_effect=_nope):
+        assert bs._history_has_sectura(tmp_path) is False
 
 
 def test_win_paths_match_strips_extended_prefix():
