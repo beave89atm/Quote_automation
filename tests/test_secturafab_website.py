@@ -703,3 +703,36 @@ def test_chrome_default_ranks_before_profile_1():
     ranked = sorted([profile1, edge, default], key=_profile_rank)
     assert ranked[0]["label"] == "chrome:Default"
     assert ranked[1]["label"] == "chrome:Profile 1"
+
+
+def test_snapshot_uses_lock_bypass_when_share_and_copy2_fail(tmp_path: Path):
+    """Exclusive Chrome lock: share-open/copy2 fail; backup/dup/VSS must still copy."""
+    import shutil
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db)
+    dest = tmp_path / "snap" / "Cookies"
+    dest.parent.mkdir()
+
+    def _bypass(src: Path, dest_path: Path) -> None:
+        shutil.copy2(src, dest_path)
+
+    with patch.object(bs, "_sqlite_backup_nolock", side_effect=sqlite3.Error("locked")), patch.object(
+        bs, "_share_copy_with_wal", side_effect=OSError(32, "locked")
+    ), patch.object(
+        bs, "_shutil_copy_with_wal", side_effect=OSError(32, "locked")
+    ), patch.object(bs, "_win_lock_bypass_with_wal", side_effect=_bypass):
+        bs._snapshot_sqlite_file(db, dest)
+    assert dest.is_file() and dest.stat().st_size > 0
+
+
+def test_win_paths_match_strips_extended_prefix():
+    from secturafab.browser_session import _paths_match
+
+    assert _paths_match(
+        r"\\?\C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies",
+        r"C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies",
+    )

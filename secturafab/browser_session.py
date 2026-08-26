@@ -54,6 +54,7 @@ _cache: dict[str, Any] = {
     "error": "",
     "source": "",
     "session_found": False,
+    "lock_bypass": "",
 }
 
 
@@ -104,11 +105,13 @@ def discover_status() -> dict[str, Any]:
     return {
         "session_found": session_found(),
         "source": last_discover_source(),
+        "lock_bypass": str(_cache.get("lock_bypass") or ""),
         "error": last_discover_error(),
     }
 
 
 def _discover_uncached() -> tuple[str, str, str]:
+    _cache["lock_bypass"] = ""
     pairs_all: list[tuple[str, str]] = []
     decrypt_failures = 0
     found_hosts = 0
@@ -309,6 +312,7 @@ def _snapshot_sqlite_file(src: Path, dest: Path) -> None:
     errors: list[str] = []
     for fn in (
         _sqlite_backup_nolock,
+        _win_lock_bypass_with_wal,
         _share_copy_with_wal,
         _shutil_copy_with_wal,
     ):
@@ -382,16 +386,103 @@ def _copy_shared(src: Path, dest: Path) -> None:
             out.write(chunk)
 
 
-def _win_share_copy(src: Path, dest: Path) -> None:
-    """CreateFileW with FILE_SHARE_READ|WRITE|DELETE, then ReadFile."""
+def _win_lock_bypass_with_wal(src: Path, dest: Path) -> None:
+    """Bypass exclusive Chrome locks: backup privilege, handle dup, VSS."""
+    if os.name != "nt":
+        raise OSError("lock bypass is Windows-only")
+    last: OSError | None = None
+    used = ""
+    for name, fn in (
+        ("backup_priv", _win_backup_copy),
+        ("dup_handle", _win_dup_handle_copy),
+        ("vss", _win_vss_copy),
+    ):
+        try:
+            if dest.exists():
+                dest.unlink()
+            fn(src, dest)
+            if dest.is_file() and dest.stat().st_size > 0:
+                used = name
+                for suffix in ("-wal", "-shm", "-journal"):
+                    side = Path(str(src) + suffix)
+                    if not side.is_file():
+                        continue
+                    try:
+                        fn(side, dest.parent / (dest.name + suffix))
+                    except OSError:
+                        continue
+                _cache["lock_bypass"] = used
+                return
+        except OSError as exc:
+            last = exc
+            if dest.exists():
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
+    raise last or OSError(32, "Windows lock bypass failed")
+
+
+def _win_backup_copy(src: Path, dest: Path) -> None:
+    """CreateFileW + FILE_FLAG_BACKUP_SEMANTICS after enabling SeBackupPrivilege."""
+    _enable_privilege("SeBackupPrivilege")
+    _win_createfile_copy(src, dest, flags=0x02000000)  # FILE_FLAG_BACKUP_SEMANTICS
+
+
+def _enable_privilege(name: str) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    token_adjust = 0x0020
+    token_query = 0x0008
+    se_privilege_enabled = 0x00000002
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    class LUID(ctypes.Structure):
+        _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", ctypes.c_long)]
+
+    class LUID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("Luid", LUID), ("Attributes", wintypes.DWORD)]
+
+    class TOKEN_PRIVILEGES(ctypes.Structure):
+        _fields_ = [
+            ("PrivilegeCount", wintypes.DWORD),
+            ("Privileges", LUID_AND_ATTRIBUTES * 1),
+        ]
+
+    token = wintypes.HANDLE()
+    if not kernel32.OpenProcessToken(
+        kernel32.GetCurrentProcess(),
+        token_adjust | token_query,
+        ctypes.byref(token),
+    ):
+        raise OSError(ctypes.get_last_error() or 5, "OpenProcessToken failed")
+    try:
+        luid = LUID()
+        if not advapi.LookupPrivilegeValueW(None, name, ctypes.byref(luid)):
+            raise OSError(ctypes.get_last_error() or 1313, "LookupPrivilegeValue failed")
+        tp = TOKEN_PRIVILEGES()
+        tp.PrivilegeCount = 1
+        tp.Privileges[0].Luid = luid
+        tp.Privileges[0].Attributes = se_privilege_enabled
+        if not advapi.AdjustTokenPrivileges(token, False, ctypes.byref(tp), 0, None, None):
+            raise OSError(ctypes.get_last_error() or 5, "AdjustTokenPrivileges failed")
+        err = ctypes.get_last_error()
+        if err == 1300:  # ERROR_NOT_ALL_ASSIGNED
+            raise OSError(1300, "SeBackupPrivilege not held")
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def _win_createfile_copy(src: Path, dest: Path, *, flags: int = 0x80) -> None:
     import ctypes
     from ctypes import wintypes
 
     generic_read = 0x80000000
     share = 0x00000001 | 0x00000002 | 0x00000004
     open_existing = 3
-    file_attribute_normal = 0x80
-    invalid = wintypes.HANDLE(-1).value
+    invalids = {-1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF}
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     create_file = kernel32.CreateFileW
@@ -411,26 +502,271 @@ def _win_share_copy(src: Path, dest: Path) -> None:
         share,
         None,
         open_existing,
-        file_attribute_normal,
+        int(flags),
         None,
     )
-    if handle == invalid or not handle:
-        raise OSError(ctypes.get_last_error() or 32, "CreateFileW share-open failed")
-    read_file = kernel32.ReadFile
-    close_handle = kernel32.CloseHandle
+    hid = int(handle) if handle is not None else -1
+    if hid in invalids or hid == 0:
+        raise OSError(ctypes.get_last_error() or 32, "CreateFileW failed")
     try:
-        buf = ctypes.create_string_buffer(1024 * 1024)
-        done = wintypes.DWORD(0)
-        with dest.open("wb") as out:
-            while True:
-                ok = read_file(handle, buf, len(buf), ctypes.byref(done), None)
-                if not ok:
-                    raise OSError(ctypes.get_last_error() or 32, "ReadFile failed")
-                if done.value == 0:
-                    break
-                out.write(buf.raw[: done.value])
+        _read_handle_to_file(handle, dest)
     finally:
-        close_handle(handle)
+        kernel32.CloseHandle(handle)
+
+
+def _read_handle_to_file(handle: Any, dest: Path) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    file_begin = 0
+    kernel32.SetFilePointer(handle, 0, None, file_begin)
+    buf = ctypes.create_string_buffer(1024 * 1024)
+    done = wintypes.DWORD(0)
+    wrote = 0
+    with dest.open("wb") as out:
+        while True:
+            ok = kernel32.ReadFile(handle, buf, len(buf), ctypes.byref(done), None)
+            if not ok:
+                raise OSError(ctypes.get_last_error() or 32, "ReadFile failed")
+            if done.value == 0:
+                break
+            out.write(buf.raw[: done.value])
+            wrote += done.value
+    if wrote <= 0:
+        raise OSError(32, "ReadFile returned 0 bytes")
+
+
+def _win_dup_handle_copy(src: Path, dest: Path) -> None:
+    """Duplicate the open Cookies handle from chrome.exe / msedge.exe (same user)."""
+    import ctypes
+    from ctypes import wintypes
+
+    want = _normalize_win_path(str(src.resolve()))
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    process_dup_handle = 0x0040
+    process_query = 0x0400
+    process_query_limited = 0x1000
+    duplicate_same_access = 0x00000002
+    file_type_disk = 1
+
+    pids = _windows_browser_pids()
+    if not pids:
+        raise OSError(32, "No chrome.exe/msedge.exe process for handle dup")
+    for pid in pids:
+        hproc = kernel32.OpenProcess(process_dup_handle | process_query, False, pid)
+        if not hproc:
+            hproc = kernel32.OpenProcess(
+                process_dup_handle | process_query_limited, False, pid
+            )
+        if not hproc:
+            continue
+        try:
+            for handle_value in _process_handles(hproc):
+                dup = wintypes.HANDLE()
+                if not kernel32.DuplicateHandle(
+                    hproc,
+                    handle_value,
+                    kernel32.GetCurrentProcess(),
+                    ctypes.byref(dup),
+                    0,
+                    False,
+                    duplicate_same_access,
+                ):
+                    continue
+                try:
+                    if kernel32.GetFileType(dup) != file_type_disk:
+                        continue
+                    path = _final_path_from_handle(dup)
+                    if not _paths_match(path, want):
+                        continue
+                    _read_handle_to_file(dup, dest)
+                    if dest.is_file() and dest.stat().st_size > 0:
+                        return
+                finally:
+                    kernel32.CloseHandle(dup)
+        finally:
+            kernel32.CloseHandle(hproc)
+    raise OSError(32, "Cookies handle not found on chrome.exe/msedge.exe")
+
+
+def _windows_browser_pids() -> list[int]:
+    import ctypes
+    from ctypes import wintypes
+
+    names = {"chrome.exe", "msedge.exe"}
+    snap_process = 0x00000002
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_void_p),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    snap = kernel32.CreateToolhelp32Snapshot(snap_process, 0)
+    if int(snap) in {-1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF}:
+        return []
+    pids: list[int] = []
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        if not kernel32.Process32FirstW(snap, ctypes.byref(entry)):
+            return []
+        while True:
+            exe = (entry.szExeFile or "").lower()
+            if exe in names:
+                pids.append(int(entry.th32ProcessID))
+            if not kernel32.Process32NextW(snap, ctypes.byref(entry)):
+                break
+    finally:
+        kernel32.CloseHandle(snap)
+    return pids
+
+
+def _process_handles(hproc: Any) -> list[int]:
+    import ctypes
+    from ctypes import wintypes
+
+    ntdll = ctypes.WinDLL("ntdll")
+    process_handle_information = 51
+    status_length = 0xC0000004
+
+    class ENTRY(ctypes.Structure):
+        _fields_ = [
+            ("HandleValue", ctypes.c_void_p),
+            ("HandleCount", ctypes.c_void_p),
+            ("PointerCount", ctypes.c_void_p),
+            ("GrantedAccess", wintypes.ULONG),
+            ("ObjectTypeIndex", wintypes.ULONG),
+            ("HandleAttributes", wintypes.ULONG),
+            ("Reserved", wintypes.ULONG),
+        ]
+
+    size = 0x10000
+    for _ in range(8):
+        buf = ctypes.create_string_buffer(size)
+        needed = ctypes.c_ulong()
+        status = ntdll.NtQueryInformationProcess(
+            hproc,
+            process_handle_information,
+            buf,
+            size,
+            ctypes.byref(needed),
+        )
+        status &= 0xFFFFFFFF
+        if status == status_length:
+            size = max(size * 2, int(needed.value or 0) + 4096)
+            continue
+        if status != 0:
+            return []
+        number = ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0]
+        count = int(number)
+        # NumberOfHandles + Reserved, then ENTRY array.
+        header = ctypes.sizeof(ctypes.c_void_p) * 2
+        out: list[int] = []
+        for i in range(max(0, count)):
+            off = header + i * ctypes.sizeof(ENTRY)
+            if off + ctypes.sizeof(ENTRY) > size:
+                break
+            ent = ENTRY.from_buffer_copy(buf.raw[off : off + ctypes.sizeof(ENTRY)])
+            if ent.HandleValue:
+                out.append(int(ent.HandleValue))
+        return out
+    return []
+
+
+def _final_path_from_handle(handle: Any) -> str:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    buf = ctypes.create_unicode_buffer(1024)
+    n = kernel32.GetFinalPathNameByHandleW(handle, buf, 1024, 0)
+    if not n:
+        return ""
+    return buf.value or ""
+
+
+def _normalize_win_path(path: str) -> str:
+    text = (path or "").strip()
+    if text.startswith("\\\\?\\"):
+        text = text[4:]
+    return text.replace("/", "\\").casefold()
+
+
+def _paths_match(got: str, want: str) -> bool:
+    a = _normalize_win_path(got)
+    b = _normalize_win_path(want)
+    return bool(a) and a == b
+
+
+def _win_vss_copy(src: Path, dest: Path) -> None:
+    """Read the file from a Volume Shadow Copy (works on exclusive locks)."""
+    import subprocess
+
+    src = src.resolve()
+    drive = f"{src.drive}\\"
+    rel = str(src)[len(src.drive) :].lstrip("\\/")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    script = (
+        "param($Drive,$Rel,$Dest)\n"
+        "$ErrorActionPreference='Stop'\n"
+        "$cls=[wmiclass]'\\\\.\\root\\cimv2:Win32_ShadowCopy'\n"
+        "$res=$cls.Create($Drive,'ClientAccessible')\n"
+        "if($res.ReturnValue -ne 0){ throw ('VSS '+$res.ReturnValue) }\n"
+        "$id=$res.ShadowID\n"
+        "try{\n"
+        "  $sc=Get-CimInstance Win32_ShadowCopy | Where-Object {$_.ID -eq $id}\n"
+        "  Copy-Item -LiteralPath ($sc.DeviceObject+'\\'+$Rel) -Destination $Dest -Force\n"
+        "} finally {\n"
+        "  Get-CimInstance Win32_ShadowCopy | Where-Object {$_.ID -eq $id} | "
+        "Remove-CimInstance\n"
+        "}\n"
+    )
+    tmp = tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False, encoding="utf-8")
+    try:
+        tmp.write(script)
+        tmp.close()
+        run = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                tmp.name,
+                drive,
+                rel,
+                str(dest),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+    if run.returncode != 0 or not dest.is_file() or dest.stat().st_size <= 0:
+        # Do not include PowerShell stdout (could be noisy); code only.
+        raise OSError(run.returncode or 32, "VSS snapshot copy failed")
+
+
+def _win_share_copy(src: Path, dest: Path) -> None:
+    """CreateFileW with FILE_SHARE_READ|WRITE|DELETE, then ReadFile."""
+    _win_createfile_copy(src, dest, flags=0x80)
 
 
 def _browser_aes_key(local_state: Path | str) -> bytes | None:
