@@ -871,6 +871,103 @@ def test_v20_blobs_fail_closed_without_abe(tmp_path: Path):
     assert fake_v10.hex() not in str(status)
 
 
+def test_elevator_overflow_does_not_crash_discover(tmp_path: Path):
+    """SysFreeString OverflowError must set abe=failed and keep source."""
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "ASP.NET_SessionId", "", b"v20" + b"\x00" * 40),
+    )
+    conn.commit()
+    conn.close()
+    local_state = tmp_path / "Local State"
+    local_state.write_text(
+        json.dumps(
+            {"os_crypt": {"app_bound_encrypted_key": base64.b64encode(b"APPB" + b"\x01" * 40).decode()}}
+        ),
+        encoding="utf-8",
+    )
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": local_state,
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_elevator_decrypt", side_effect=OverflowError("int too long to convert")
+    ), patch.object(
+        bs, "_elevator_decrypt_via_chrome_dir", return_value=(None, "")
+    ):
+        header = bs.discover_sectura_website_cookie(force=True)
+    assert header == ""
+    status = bs.discover_status()
+    assert status["session_found"] is False
+    assert status["source"] == "chrome:Default"
+    assert status["abe"] == "failed"
+    assert status["abe_hr"] == "OverflowError"
+    assert status["v20_blobs"] == 1
+    assert status["v20_ok"] == 0
+    assert "OverflowError" in status["error"]
+    assert "do not paste" in status["error"].lower()
+
+
+def test_bstr_free_uses_c_void_p_not_raw_int():
+    """Win64 SysFreeString must get a pointer-width c_void_p."""
+    import ctypes
+    from ctypes import c_void_p
+    from unittest.mock import Mock
+
+    from secturafab.browser_session import _bstr_free
+
+    ole = Mock()
+    huge = 0x7FFF_FFFF_ABCD_1234
+    _bstr_free(ole, huge)
+    ole.SysFreeString.assert_called_once()
+    arg = ole.SysFreeString.call_args[0][0]
+    assert isinstance(arg, c_void_p)
+    assert int(arg.value) == huge
+    ole.SysFreeString.side_effect = OverflowError("int too long to convert")
+    _bstr_free(ole, c_void_p(huge))  # must not raise
+
+
+def test_discover_outer_catch_writes_abe_after_crash(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    profile = {
+        "label": "chrome:Default",
+        "cookies": tmp_path / "Cookies",
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+
+    def _boom(*_a, **_k):
+        bs._cache["lock_bypass"] = "dup_handle"
+        bs._cache["source"] = "chrome:Default"
+        raise OverflowError("int too long to convert")
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_read_cookie_rows", side_effect=_boom
+    ):
+        header = bs.discover_sectura_website_cookie(force=True)
+    assert header == ""
+    status = bs.discover_status()
+    assert status["session_found"] is False
+    assert status["source"] == "chrome:Default"
+    assert status["lock_bypass"] == "dup_handle"
+    assert status["abe"] == "failed"
+    assert status["abe_hr"] == "OverflowError"
+
+
 def test_v20_discover_succeeds_with_elevator_key(tmp_path: Path):
     import sqlite3
 

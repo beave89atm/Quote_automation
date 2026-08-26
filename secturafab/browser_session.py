@@ -87,7 +87,18 @@ def discover_sectura_website_cookie(*, force: bool = False) -> str:
         and (now - float(_cache["ts"] or 0)) < _CACHE_TTL_S
     ):
         return str(_cache["cookie"])
-    cookie, err, source = _discover_uncached()
+    try:
+        cookie, err, source = _discover_uncached()
+    except Exception as exc:  # noqa: BLE001 — never crash Finish discover
+        cookie = ""
+        source = str(_cache.get("source") or "")
+        if not _cache.get("abe"):
+            _cache["abe"] = "failed"
+            _cache["abe_hr"] = type(exc).__name__
+        err = (
+            f"Discover failed after snapshot ({type(exc).__name__}). "
+            "Fail closed — no Cookie header. Do not paste a cookie."
+        )
     _cache["cookie"] = cookie
     _cache["ts"] = now
     _cache["error"] = err
@@ -148,7 +159,14 @@ def _discover_uncached() -> tuple[str, str, str]:
         found_hosts += 1
         if not source:
             source = label
-        keys = _browser_keys(profile["local_state"])
+        _cache["source"] = source
+        try:
+            keys = _browser_keys(profile["local_state"])
+        except Exception as exc:  # noqa: BLE001 — ABE must not abort discover
+            hr = type(exc).__name__
+            _cache["abe"] = "failed"
+            _cache["abe_hr"] = hr
+            keys = _BrowserKeys(status="failed", hr=hr)
         if keys.status and not _cache["abe"]:
             _cache["abe"] = keys.status
             _cache["abe_hr"] = keys.hr
@@ -1307,17 +1325,27 @@ def _unwrap_app_bound_key(b64_key: str) -> tuple[bytes | None, str, str]:
     raw = _app_bound_ciphertext(b64_key)
     if not raw:
         return None, "failed", ""
-    key, hr = _elevator_decrypt(raw)
+    hr = ""
+    try:
+        key, hr = _elevator_decrypt(raw)
+    except Exception as exc:  # noqa: BLE001 — ctypes pointer-width bugs
+        key, hr = None, type(exc).__name__
     if key:
         return key, "elevator", hr
     # Path validation: IElevator compares the caller to Chrome's install dir.
     # A short-lived helper next to chrome.exe has the same trimmed path.
-    key, helper_hr = _elevator_decrypt_via_chrome_dir(raw)
+    try:
+        key, helper_hr = _elevator_decrypt_via_chrome_dir(raw)
+    except Exception as exc:  # noqa: BLE001
+        key, helper_hr = None, type(exc).__name__
     hr = helper_hr or hr
     if key:
         return key, "chrome_dir", hr
     # Legacy: some older builds DPAPI-wrapped a raw 16/32-byte key.
-    legacy = _accept_aes_key(_dpapi_unprotect(raw))
+    try:
+        legacy = _accept_aes_key(_dpapi_unprotect(raw))
+    except Exception:  # noqa: BLE001
+        legacy = None
     if legacy:
         return legacy, "dpapi", hr
     return None, "failed", hr
@@ -1374,6 +1402,63 @@ def _hr_hex(hr: int) -> str:
     return f"0x{(hr & 0xFFFFFFFF):08X}"
 
 
+def _oleaut32():
+    """oleaut32 with pointer-width BSTR prototypes (Win64 LLP64)."""
+    import ctypes
+    from ctypes import c_char_p, c_uint, c_void_p
+
+    oleaut32 = ctypes.windll.oleaut32
+    oleaut32.SysAllocStringByteLen.argtypes = [c_char_p, c_uint]
+    oleaut32.SysAllocStringByteLen.restype = c_void_p
+    oleaut32.SysFreeString.argtypes = [c_void_p]
+    oleaut32.SysFreeString.restype = None
+    oleaut32.SysStringByteLen.argtypes = [c_void_p]
+    oleaut32.SysStringByteLen.restype = c_uint
+    return oleaut32
+
+
+def _bstr_from_bytes(oleaut32: Any, blob: bytes) -> Any:
+    import ctypes
+    from ctypes import c_void_p
+
+    buf = ctypes.create_string_buffer(blob, len(blob))
+    raw = oleaut32.SysAllocStringByteLen(buf, len(blob))
+    if not raw:
+        return None
+    return c_void_p(int(raw))
+
+
+def _bstr_free(oleaut32: Any, bstr: Any) -> None:
+    """SysFreeString with an explicit 64-bit c_void_p. Never pass a raw int."""
+    import ctypes
+    from ctypes import c_void_p
+
+    if not bstr:
+        return
+    try:
+        ptr = bstr if isinstance(bstr, c_void_p) else c_void_p(int(bstr))
+        if not ptr.value:
+            return
+        oleaut32.SysFreeString(ptr)
+    except (OverflowError, ValueError, TypeError, OSError, ctypes.ArgumentError):
+        return
+
+
+def _bstr_bytes(oleaut32: Any, bstr: Any) -> bytes:
+    import ctypes
+    from ctypes import c_void_p
+
+    if not bstr:
+        return b""
+    ptr = bstr if isinstance(bstr, c_void_p) else c_void_p(int(bstr))
+    if not ptr.value:
+        return b""
+    n = int(oleaut32.SysStringByteLen(ptr))
+    if n <= 0:
+        return b""
+    return ctypes.string_at(ptr.value, n)
+
+
 def _elevator_decrypt(blob: bytes) -> tuple[bytes | None, str]:
     """Call IElevator.DecryptData (binary BSTR, local server, proxy blanket)."""
     if not blob or os.name != "nt":
@@ -1384,14 +1469,33 @@ def _elevator_decrypt(blob: bytes) -> tuple[bytes | None, str]:
         from ctypes import POINTER, WINFUNCTYPE, byref, c_long, c_uint, c_void_p, cast
 
         ole32 = ctypes.windll.ole32
-        oleaut32 = ctypes.windll.oleaut32
+        ole32.CoInitializeEx.argtypes = [c_void_p, c_uint]
+        ole32.CoInitializeEx.restype = c_long
+        ole32.CoCreateInstance.argtypes = [
+            c_void_p,
+            c_void_p,
+            c_uint,
+            c_void_p,
+            c_void_p,
+        ]
+        ole32.CoCreateInstance.restype = c_long
+        ole32.CoSetProxyBlanket.argtypes = [
+            c_void_p,
+            c_uint,
+            c_uint,
+            c_void_p,
+            c_uint,
+            c_uint,
+            c_void_p,
+            c_uint,
+        ]
+        ole32.CoSetProxyBlanket.restype = c_long
+        oleaut32 = _oleaut32()
         # S_OK / S_FALSE (already initialized) are both fine.
-        init_hr = ole32.CoInitializeEx(None, 0x2)  # COINIT_APARTMENTTHREADED
+        init_hr = int(ole32.CoInitializeEx(None, 0x2))  # COINIT_APARTMENTTHREADED
         did_init = init_hr in (0, 1)
         DecryptFn = WINFUNCTYPE(c_long, c_void_p, c_void_p, POINTER(c_void_p), POINTER(c_uint))
         ReleaseFn = WINFUNCTYPE(c_uint, c_void_p)
-        oleaut32.SysAllocStringByteLen.restype = c_void_p
-        oleaut32.SysStringByteLen.restype = c_uint
         try:
             for clsid_s, iid_s in _CHROME_ELEVATOR:
                 punk = c_void_p()
@@ -1423,23 +1527,24 @@ def _elevator_decrypt(blob: bytes) -> tuple[bytes | None, str]:
                     vptr = cast(punk, POINTER(c_void_p))
                     vtable = cast(c_void_p(vptr[0]), POINTER(c_void_p))
                     decrypt = DecryptFn(vtable[5])
-                    bstr_in = oleaut32.SysAllocStringByteLen(blob, len(blob))
-                    if not bstr_in:
+                    bstr_in = _bstr_from_bytes(oleaut32, blob)
+                    if not bstr_in or not bstr_in.value:
                         continue
                     plaintext = c_void_p()
                     last_error = c_uint()
                     try:
-                        dhr = int(decrypt(punk, bstr_in, byref(plaintext), byref(last_error)))
+                        dhr = int(
+                            decrypt(punk, bstr_in, byref(plaintext), byref(last_error))
+                        )
                     finally:
-                        oleaut32.SysFreeString(bstr_in)
+                        _bstr_free(oleaut32, bstr_in)
                     last_hr = _hr_hex(dhr)
                     if dhr < 0 or not plaintext.value:
                         continue
                     try:
-                        n = int(oleaut32.SysStringByteLen(plaintext))
-                        raw = ctypes.string_at(plaintext.value, n)
+                        raw = _bstr_bytes(oleaut32, plaintext)
                     finally:
-                        oleaut32.SysFreeString(plaintext)
+                        _bstr_free(oleaut32, plaintext)
                     key = _accept_aes_key(raw)
                     if key:
                         return key, last_hr
@@ -1450,8 +1555,10 @@ def _elevator_decrypt(blob: bytes) -> tuple[bytes | None, str]:
         finally:
             if did_init:
                 ole32.CoUninitialize()
-    except (AttributeError, OSError, ValueError, TypeError):
-        return None, last_hr
+    except (AttributeError, OSError, ValueError, TypeError, OverflowError):
+        return None, last_hr or "OverflowError"
+    except Exception as exc:  # noqa: BLE001 — fail closed, never abort discover
+        return None, last_hr or type(exc).__name__
     return None, last_hr
 
 
