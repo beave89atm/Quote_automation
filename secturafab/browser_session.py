@@ -139,7 +139,9 @@ def _discover_uncached() -> tuple[str, str, str]:
         try:
             rows = _read_cookie_rows(profile)
         except (OSError, sqlite3.Error) as exc:
-            snapshot_errors.append(f"{label}: {_safe_os_error(exc)}")
+            if not source:
+                source = label
+            snapshot_errors.append(f"{label}: {_snapshot_error_text(exc)}")
             continue
         if not rows:
             continue
@@ -192,13 +194,13 @@ def _discover_uncached() -> tuple[str, str, str]:
             source,
         )
     if snapshot_errors:
+        bypass = str(_cache.get("lock_bypass") or "none")
         return (
             "",
             "Could not snapshot Chrome Cookies while the browser is open "
-            f"({'; '.join(snapshot_errors)}). "
-            "The app copies Default with a share-read handle — do not close "
-            "Chrome and do not paste a cookie.",
-            "",
+            f"(lock_bypass={bypass}; {'; '.join(snapshot_errors)}). "
+            "Do not paste a cookie.",
+            source,
         )
     return (
         "",
@@ -216,6 +218,23 @@ def _safe_os_error(exc: BaseException) -> str:
     if err is not None:
         return f"errno {err}"
     return type(exc).__name__
+
+
+def _safe_snapshot_detail(text: str) -> str:
+    """Keep method names and WinError/errno. Strip anything else."""
+    allowed = set(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.:;=/() -"
+    )
+    cleaned = "".join(ch if ch in allowed else " " for ch in (text or ""))
+    return " ".join(cleaned.split())[:500]
+
+
+def _snapshot_error_text(exc: BaseException) -> str:
+    """Prefer the snapshot method chain over a bare OSError type name."""
+    detail = _safe_snapshot_detail(str(exc))
+    if detail and detail not in {"OSError", "Error", "sqlite3.Error"}:
+        return detail
+    return _safe_os_error(exc)
 
 
 def _browser_cookie_dbs() -> list[dict[str, Path | str | bool]]:
@@ -298,7 +317,7 @@ def _history_has_sectura(profile_dir: Path) -> bool:
     tmp_dir = tempfile.mkdtemp(prefix="kannon-chrome-history-")
     try:
         dest = Path(tmp_dir) / "History"
-        _snapshot_sqlite_file(history, dest)
+        _snapshot_sqlite_file(history, dest, allow_vss=False)
         conn = sqlite3.connect(str(dest))
         try:
             row = conn.execute(
@@ -319,9 +338,23 @@ def _read_cookie_rows(
 ) -> list[tuple[str, str, str, bytes]]:
     src = Path(profile["cookies"])
     tmp_dir = tempfile.mkdtemp(prefix="kannon-chrome-cookies-")
+    label = str(profile.get("label") or "")
+    allow_vss = label.startswith("chrome:") and label.endswith("Default")
     try:
         dest = Path(tmp_dir) / "Cookies"
-        _snapshot_sqlite_file(src, dest)
+        last_exc: BaseException | None = None
+        for attempt in range(3):
+            try:
+                _snapshot_sqlite_file(
+                    src, dest, allow_vss=allow_vss and attempt == 2
+                )
+                last_exc = None
+                break
+            except (OSError, sqlite3.Error) as exc:
+                last_exc = exc
+                time.sleep(0.35)
+        if last_exc is not None:
+            raise last_exc
         conn = sqlite3.connect(str(dest))
         try:
             cur = conn.execute(
@@ -340,34 +373,35 @@ def _read_cookie_rows(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _snapshot_sqlite_file(src: Path, dest: Path) -> None:
+def _snapshot_sqlite_file(src: Path, dest: Path, *, allow_vss: bool = True) -> None:
     """Copy a Chrome SQLite DB that may be locked (WinError 32)."""
     errors: list[str] = []
-    for fn in (
-        _sqlite_backup_nolock,
-        _win_lock_bypass_with_wal,
-        _share_copy_with_wal,
-        _shutil_copy_with_wal,
+    for name, fn in (
+        ("nolock", _sqlite_backup_nolock),
+        ("share", _share_copy_with_wal),
+        ("lock_bypass", lambda s, d: _win_lock_bypass_with_wal(s, d, allow_vss=allow_vss)),
+        ("shutil", _shutil_copy_with_wal),
     ):
         try:
             if dest.exists():
                 dest.unlink()
             fn(src, dest)
             if dest.is_file() and dest.stat().st_size > 0:
+                if name != "lock_bypass" or not _cache.get("lock_bypass"):
+                    _cache["lock_bypass"] = str(_cache.get("lock_bypass") or name)
                 return
-            errors.append(f"{getattr(fn, '__name__', type(fn).__name__)}: empty")
+            errors.append(f"{name}: empty")
         except (OSError, sqlite3.Error) as exc:
-            errors.append(
-                f"{getattr(fn, '__name__', type(fn).__name__)}: {_safe_os_error(exc)}"
-            )
+            errors.append(f"{name}: {_snapshot_error_text(exc)}")
             for leftover in dest.parent.glob(dest.name + "*"):
                 try:
                     leftover.unlink()
                 except OSError:
                     pass
-    raise OSError(
-        "Could not snapshot locked SQLite (" + "; ".join(errors) + ")"
-    )
+    detail = "; ".join(errors) or "no snapshot method ran"
+    if not _cache.get("lock_bypass"):
+        _cache["lock_bypass"] = _safe_snapshot_detail(detail)
+    raise OSError(32, _safe_snapshot_detail(detail))
 
 
 def _sqlite_backup_nolock(src: Path, dest: Path) -> None:
@@ -419,23 +453,28 @@ def _copy_shared(src: Path, dest: Path) -> None:
             out.write(chunk)
 
 
-def _win_lock_bypass_with_wal(src: Path, dest: Path) -> None:
-    """Bypass exclusive Chrome locks: backup privilege, handle dup, VSS."""
+def _win_lock_bypass_with_wal(src: Path, dest: Path, *, allow_vss: bool = True) -> None:
+    """Bypass exclusive Chrome locks: handle dup, backup, VSS."""
     if os.name != "nt":
-        raise OSError("lock bypass is Windows-only")
+        raise OSError(32, "lock bypass is Windows-only")
     last: OSError | None = None
-    used = ""
-    for name, fn in (
-        ("backup_priv", _win_backup_copy),
+    trail: list[str] = []
+    methods: list[tuple[str, Any]] = [
         ("dup_handle", _win_dup_handle_copy),
-        ("vss", _win_vss_copy),
-    ):
+        ("backup_priv", _win_backup_copy),
+        ("nt_backup", _win_ntcreatefile_backup_copy),
+        ("esentutl", _win_esentutl_copy),
+        ("robocopy_b", _win_robocopy_backup_copy),
+        ("vss_existing", _win_vss_existing_copy),
+    ]
+    if allow_vss:
+        methods.append(("vss", _win_vss_copy))
+    for name, fn in methods:
         try:
             if dest.exists():
                 dest.unlink()
             fn(src, dest)
             if dest.is_file() and dest.stat().st_size > 0:
-                used = name
                 for suffix in ("-wal", "-shm", "-journal"):
                     side = Path(str(src) + suffix)
                     if not side.is_file():
@@ -444,16 +483,19 @@ def _win_lock_bypass_with_wal(src: Path, dest: Path) -> None:
                         fn(side, dest.parent / (dest.name + suffix))
                     except OSError:
                         continue
-                _cache["lock_bypass"] = used
+                _cache["lock_bypass"] = name
                 return
+            trail.append(f"{name}: empty")
         except OSError as exc:
             last = exc
+            trail.append(f"{name}:{_safe_os_error(exc)}")
             if dest.exists():
                 try:
                     dest.unlink()
                 except OSError:
                     pass
-    raise last or OSError(32, "Windows lock bypass failed")
+    _cache["lock_bypass"] = ";".join(trail) or "none"
+    raise last or OSError(32, ";".join(trail) or "Windows lock bypass failed")
 
 
 def _win_backup_copy(src: Path, dest: Path) -> None:
@@ -575,59 +617,161 @@ def _win_dup_handle_copy(src: Path, dest: Path) -> None:
     import ctypes
     from ctypes import wintypes
 
+    try:
+        _enable_privilege("SeDebugPrivilege")
+    except OSError:
+        pass
     want = _normalize_win_path(str(src.resolve()))
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.DuplicateHandle.argtypes = [
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.HANDLE),
+        wintypes.DWORD,
+        wintypes.BOOL,
+        wintypes.DWORD,
+    ]
+    kernel32.DuplicateHandle.restype = wintypes.BOOL
     process_dup_handle = 0x0040
     process_query = 0x0400
     process_query_limited = 0x1000
     duplicate_same_access = 0x00000002
     file_type_disk = 1
 
-    pids = _windows_browser_pids()
+    exe_names = _browser_exe_names_for_path(src)
+    pids = _windows_browser_pids(exe_names)
     if not pids:
         raise OSError(32, "No chrome.exe/msedge.exe process for handle dup")
-    for pid in pids:
-        hproc = kernel32.OpenProcess(process_dup_handle | process_query, False, pid)
-        if not hproc:
-            hproc = kernel32.OpenProcess(
-                process_dup_handle | process_query_limited, False, pid
-            )
-        if not hproc:
-            continue
-        try:
-            for handle_value in _process_handles(hproc):
-                dup = wintypes.HANDLE()
-                if not kernel32.DuplicateHandle(
-                    hproc,
-                    handle_value,
-                    kernel32.GetCurrentProcess(),
-                    ctypes.byref(dup),
-                    0,
-                    False,
-                    duplicate_same_access,
-                ):
+    pid_set = set(pids)
+    handle_pairs = _system_handle_pairs(pid_set)
+    if not handle_pairs:
+        for pid in pids:
+            hproc = _open_browser_process(kernel32, pid)
+            if not hproc:
+                continue
+            try:
+                for handle_value in _process_handles(hproc):
+                    handle_pairs.append((pid, handle_value))
+            finally:
+                kernel32.CloseHandle(hproc)
+    opened: dict[int, Any] = {}
+    try:
+        for pid, handle_value in handle_pairs:
+            hproc = opened.get(pid)
+            if hproc is None:
+                hproc = _open_browser_process(kernel32, pid)
+                if not hproc:
                     continue
-                try:
-                    if kernel32.GetFileType(dup) != file_type_disk:
-                        continue
-                    path = _final_path_from_handle(dup)
-                    if not _paths_match(path, want):
-                        continue
-                    _read_handle_to_file(dup, dest)
-                    if dest.is_file() and dest.stat().st_size > 0:
-                        return
-                finally:
-                    kernel32.CloseHandle(dup)
-        finally:
+                opened[pid] = hproc
+            dup = wintypes.HANDLE()
+            if not kernel32.DuplicateHandle(
+                hproc,
+                wintypes.HANDLE(handle_value),
+                kernel32.GetCurrentProcess(),
+                ctypes.byref(dup),
+                0,
+                False,
+                duplicate_same_access,
+            ):
+                continue
+            try:
+                if kernel32.GetFileType(dup) != file_type_disk:
+                    continue
+                path = _final_path_from_handle(dup)
+                if not _paths_match(path, want):
+                    continue
+                _read_handle_to_file(dup, dest)
+                if dest.is_file() and dest.stat().st_size > 0:
+                    return
+            finally:
+                kernel32.CloseHandle(dup)
+    finally:
+        for hproc in opened.values():
             kernel32.CloseHandle(hproc)
     raise OSError(32, "Cookies handle not found on chrome.exe/msedge.exe")
 
 
-def _windows_browser_pids() -> list[int]:
+def _open_browser_process(kernel32: Any, pid: int) -> Any:
+    from ctypes import wintypes
+
+    for access in (0x0040 | 0x0400, 0x0040 | 0x1000, 0x0040):
+        hproc = kernel32.OpenProcess(access, False, pid)
+        if hproc:
+            return hproc
+    return None
+
+
+def _browser_exe_names_for_path(src: Path) -> set[str]:
+    text = _normalize_win_path(str(src))
+    if "microsoft\\edge" in text:
+        return {"msedge.exe"}
+    return {"chrome.exe"}
+
+
+def _system_handle_pairs(pids: set[int]) -> list[tuple[int, int]]:
+    """SYSTEM_HANDLE_INFORMATION_EX — more reliable than per-process class 51."""
+    if not pids:
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class ENTRY(ctypes.Structure):
+            _fields_ = [
+                ("Object", ctypes.c_void_p),
+                ("UniqueProcessId", ctypes.c_void_p),
+                ("HandleValue", ctypes.c_void_p),
+                ("GrantedAccess", wintypes.ULONG),
+                ("CreatorBackTraceIndex", wintypes.USHORT),
+                ("ObjectTypeIndex", wintypes.USHORT),
+                ("HandleAttributes", wintypes.ULONG),
+                ("Reserved", wintypes.ULONG),
+            ]
+
+        ntdll = ctypes.WinDLL("ntdll")
+        ntdll.NtQuerySystemInformation.restype = ctypes.c_long
+        system_extended_handle_information = 64
+        status_length = 0xC0000004
+        size = 1 << 20
+        out: list[tuple[int, int]] = []
+        for _ in range(10):
+            buf = ctypes.create_string_buffer(size)
+            needed = ctypes.c_ulong()
+            status = int(ntdll.NtQuerySystemInformation(
+                system_extended_handle_information,
+                buf,
+                size,
+                ctypes.byref(needed),
+            )) & 0xFFFFFFFF
+            if status == status_length:
+                size = max(size * 2, int(needed.value or 0) + 4096)
+                continue
+            if status != 0:
+                return []
+            number = int(ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0] or 0)
+            header = ctypes.sizeof(ctypes.c_void_p) * 2
+            entry_size = ctypes.sizeof(ENTRY)
+            for i in range(max(0, number)):
+                off = header + i * entry_size
+                if off + entry_size > size:
+                    break
+                ent = ENTRY.from_buffer_copy(buf.raw[off : off + entry_size])
+                pid = int(ent.UniqueProcessId or 0)
+                if pid not in pids or not ent.HandleValue:
+                    continue
+                out.append((pid, int(ent.HandleValue)))
+            return out
+    except (AttributeError, OSError, ValueError, TypeError):
+        return []
+    return []
+
+
+def _windows_browser_pids(names: set[str] | None = None) -> list[int]:
     import ctypes
     from ctypes import wintypes
 
-    names = {"chrome.exe", "msedge.exe"}
+    names = names or {"chrome.exe", "msedge.exe"}
     snap_process = 0x00000002
 
     class PROCESSENTRY32W(ctypes.Structure):
@@ -722,24 +866,267 @@ def _final_path_from_handle(handle: Any) -> str:
     from ctypes import wintypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    buf = ctypes.create_unicode_buffer(1024)
-    n = kernel32.GetFinalPathNameByHandleW(handle, buf, 1024, 0)
-    if not n:
-        return ""
-    return buf.value or ""
+    buf = ctypes.create_unicode_buffer(2048)
+    for flags in (0, 2):  # VOLUME_NAME_DOS, VOLUME_NAME_NT
+        n = kernel32.GetFinalPathNameByHandleW(handle, buf, 2048, flags)
+        if n:
+            return buf.value or ""
+    return ""
 
 
 def _normalize_win_path(path: str) -> str:
-    text = (path or "").strip()
+    text = (path or "").strip().replace("/", "\\")
     if text.startswith("\\\\?\\"):
         text = text[4:]
-    return text.replace("/", "\\").casefold()
+    if text.lower().startswith("unc\\"):
+        text = "\\\\" + text[4:]
+    text = _win_volume_to_dos(text)
+    return text.casefold()
+
+
+def _win_volume_to_dos(path: str) -> str:
+    r"""\\?\Volume{guid}\... or \Device\HarddiskVolumeN\... → C:\..."""
+    text = path
+    lower = text.lower()
+    if lower.startswith("volume{"):
+        idx = text.find("}\\")
+        if idx != -1:
+            vol = "\\\\?\\Volume" + text[6 : idx + 1] + "\\"
+            rest = text[idx + 2 :]
+            drive = _volume_guid_to_drive(vol)
+            if drive:
+                return drive.rstrip("\\") + "\\" + rest.lstrip("\\")
+    if lower.startswith("\\device\\harddiskvolume"):
+        drive = _device_volume_to_drive(text)
+        if drive:
+            return drive
+    return text
+
+
+def _volume_guid_to_drive(volume: str) -> str:
+    if os.name != "nt":
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        buf = ctypes.create_unicode_buffer(256)
+        kernel32.GetVolumePathNamesForVolumeNameW.restype = wintypes.BOOL
+        if kernel32.GetVolumePathNamesForVolumeNameW(volume, buf, 256, None):
+            return (buf.value or "").split("\x00")[0]
+    except (AttributeError, OSError, ValueError, TypeError):
+        return ""
+    return ""
+
+
+def _device_volume_to_drive(path: str) -> str:
+    if os.name != "nt":
+        return ""
+    try:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        lower = path.replace("/", "\\")
+        # \Device\HarddiskVolumeN\...
+        parts = lower.split("\\")
+        if len(parts) < 4:
+            return ""
+        device = "\\".join(parts[:4])  # \Device\HarddiskVolumeN
+        rest = "\\".join(parts[4:])
+        buf = ctypes.create_unicode_buffer(1024)
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            n = kernel32.QueryDosDeviceW(f"{letter}:", buf, 1024)
+            if not n:
+                continue
+            mapped = (buf.value or "").rstrip("\\")
+            if mapped.lower() == device.lower():
+                return f"{letter}:\\" + rest
+    except (AttributeError, OSError, ValueError, TypeError):
+        return ""
+    return ""
 
 
 def _paths_match(got: str, want: str) -> bool:
     a = _normalize_win_path(got)
     b = _normalize_win_path(want)
-    return bool(a) and a == b
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    a_tail = "\\".join(a.split("\\")[-4:])
+    b_tail = "\\".join(b.split("\\")[-4:])
+    return bool(a_tail) and a_tail == b_tail
+
+
+def _win_ntcreatefile_backup_copy(src: Path, dest: Path) -> None:
+    """NtCreateFile + FILE_OPEN_FOR_BACKUP_INTENT (SeBackupPrivilege)."""
+    if os.name != "nt":
+        raise OSError(32, "nt_backup is Windows-only")
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        _enable_privilege("SeBackupPrivilege")
+    except OSError:
+        pass
+    try:
+        _enable_privilege("SeRestorePrivilege")
+    except OSError:
+        pass
+
+    class UNICODE_STRING(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.USHORT),
+            ("MaximumLength", wintypes.USHORT),
+            ("Buffer", wintypes.LPWSTR),
+        ]
+
+    class OBJECT_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.ULONG),
+            ("RootDirectory", wintypes.HANDLE),
+            ("ObjectName", ctypes.POINTER(UNICODE_STRING)),
+            ("Attributes", wintypes.ULONG),
+            ("SecurityDescriptor", ctypes.c_void_p),
+            ("SecurityQualityOfService", ctypes.c_void_p),
+        ]
+
+    class IO_STATUS_BLOCK(ctypes.Structure):
+        _fields_ = [
+            ("Status", ctypes.c_void_p),
+            ("Information", ctypes.c_void_p),
+        ]
+
+    resolved = str(src.resolve())
+    nt_path = "\\??\\" + resolved
+    buf = ctypes.create_unicode_buffer(nt_path)
+    us = UNICODE_STRING()
+    us.Length = len(nt_path) * 2
+    us.MaximumLength = us.Length + 2
+    us.Buffer = ctypes.cast(buf, wintypes.LPWSTR)
+    oa = OBJECT_ATTRIBUTES()
+    oa.Length = ctypes.sizeof(OBJECT_ATTRIBUTES)
+    oa.ObjectName = ctypes.pointer(us)
+    oa.Attributes = 0x40  # OBJ_CASE_INSENSITIVE
+    handle = wintypes.HANDLE()
+    iosb = IO_STATUS_BLOCK()
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtCreateFile.restype = ctypes.c_long
+    status = int(
+        ntdll.NtCreateFile(
+            ctypes.byref(handle),
+            0x80000000 | 0x00100000,  # GENERIC_READ | SYNCHRONIZE
+            ctypes.byref(oa),
+            ctypes.byref(iosb),
+            None,
+            0x80,  # FILE_ATTRIBUTE_NORMAL
+            0x00000001 | 0x00000002 | 0x00000004,
+            1,  # FILE_OPEN
+            0x00000020 | 0x00000040 | 0x00004000,  # SYNC | NONDIR | BACKUP_INTENT
+            None,
+            0,
+        )
+    ) & 0xFFFFFFFF
+    if status != 0 or not handle:
+        raise OSError(status or 32, "NtCreateFile backup open failed")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    try:
+        _read_handle_to_file(handle, dest)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _win_esentutl_copy(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    exe = Path(os.environ.get("WINDIR") or r"C:\Windows") / "System32" / "esentutl.exe"
+    if not exe.is_file():
+        raise OSError(2, "esentutl.exe missing")
+    run = subprocess.run(
+        [str(exe), "/y", str(src), "/d", str(dest)],
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    if run.returncode != 0 or not dest.is_file() or dest.stat().st_size <= 0:
+        raise OSError(run.returncode or 32, "esentutl copy failed")
+
+
+def _win_robocopy_backup_copy(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    run = subprocess.run(
+        [
+            "robocopy",
+            str(src.parent),
+            str(dest.parent),
+            src.name,
+            "/B",
+            "/COPY:D",
+            "/R:0",
+            "/W:0",
+            "/NFL",
+            "/NDL",
+            "/NJH",
+            "/NJS",
+        ],
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    # robocopy 0-7 = success-ish
+    copied = dest.parent / src.name
+    if copied != dest and copied.is_file():
+        shutil.copyfile(copied, dest)
+    if run.returncode >= 8 or not dest.is_file() or dest.stat().st_size <= 0:
+        raise OSError(run.returncode or 32, "robocopy /B failed")
+
+
+def _win_vss_existing_copy(src: Path, dest: Path) -> None:
+    """Copy from an existing shadow (no Create). Admin not required to list."""
+    src = src.resolve()
+    rel = str(src)[len(src.drive) :].lstrip("\\/")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    script = (
+        "param($Rel,$Dest)\n"
+        "$ErrorActionPreference='Stop'\n"
+        "$sc=Get-CimInstance Win32_ShadowCopy | Sort-Object InstallDate -Descending | "
+        "Select-Object -First 4\n"
+        "if(-not $sc){ throw 'VSS none' }\n"
+        "$ok=$false\n"
+        "foreach($s in @($sc)){\n"
+        "  $p=$s.DeviceObject+'\\'+$Rel\n"
+        "  if(Test-Path -LiteralPath $p){ Copy-Item -LiteralPath $p -Destination $Dest -Force; $ok=$true; break }\n"
+        "}\n"
+        "if(-not $ok){ throw 'VSS existing miss' }\n"
+    )
+    tmp = tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False, encoding="utf-8")
+    try:
+        tmp.write(script)
+        tmp.close()
+        run = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                tmp.name,
+                rel,
+                str(dest),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=25,
+            check=False,
+        )
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+    if run.returncode != 0 or not dest.is_file() or dest.stat().st_size <= 0:
+        raise OSError(run.returncode or 32, "VSS existing copy failed")
 
 
 def _win_vss_copy(src: Path, dest: Path) -> None:
@@ -784,7 +1171,7 @@ def _win_vss_copy(src: Path, dest: Path) -> None:
             ],
             capture_output=True,
             text=True,
-            timeout=90,
+            timeout=30,
             check=False,
         )
     finally:

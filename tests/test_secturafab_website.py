@@ -720,7 +720,7 @@ def test_snapshot_uses_lock_bypass_when_share_and_copy2_fail(tmp_path: Path):
     dest = tmp_path / "snap" / "Cookies"
     dest.parent.mkdir()
 
-    def _bypass(src: Path, dest_path: Path) -> None:
+    def _bypass(src: Path, dest_path: Path, **_k) -> None:
         shutil.copy2(src, dest_path)
 
     with patch.object(bs, "_sqlite_backup_nolock", side_effect=sqlite3.Error("locked")), patch.object(
@@ -739,6 +739,48 @@ def test_win_paths_match_strips_extended_prefix():
         r"\\?\C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies",
         r"C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies",
     )
+    assert _paths_match(
+        r"\Device\HarddiskVolume3\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies",
+        r"D:\unused\Google\Chrome\User Data\Default\Network\Cookies",
+    )
+
+
+def test_snapshot_failure_reports_bypass_not_bare_oserror(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    db.write_bytes(b"x")
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+
+    def _fail(*_a, **_k):
+        raise OSError(32, "locked")
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_sqlite_backup_nolock", side_effect=sqlite3.Error("locked")
+    ), patch.object(bs, "_share_copy_with_wal", side_effect=_fail), patch.object(
+        bs, "_shutil_copy_with_wal", side_effect=_fail
+    ), patch.object(bs, "_win_lock_bypass_with_wal", side_effect=_fail), patch.object(
+        bs.time, "sleep", return_value=None
+    ):
+        header = bs.discover_sectura_website_cookie(force=True)
+    assert header == ""
+    status = bs.discover_status()
+    assert status["session_found"] is False
+    assert status["source"] == "chrome:Default"
+    err = status["error"]
+    assert "OSError" not in err or "nolock" in err or "lock_bypass" in err
+    assert "lock_bypass=" in err
+    assert "do not paste" in err.lower()
+    assert status["lock_bypass"]
+    assert status["lock_bypass"] != ""
 
 
 def test_app_bound_strips_appb_prefix():
@@ -882,11 +924,13 @@ def test_finish_session_error_includes_abe_not_values():
             "error": "app-bound decrypt failed",
             "abe": "failed",
             "abe_hr": "0x80004005",
+            "lock_bypass": "dup_handle",
         }
     )
     svc = SecturaFabPushService(MagicMock())
     msg = svc._finish_session_error()
     assert "session_found=false" in msg
+    assert "lock_bypass=dup_handle" in msg
     assert "abe=failed" in msg
     assert "abe_hr=0x80004005" in msg
     assert "hidden-secret" not in msg
