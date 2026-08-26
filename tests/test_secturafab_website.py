@@ -921,6 +921,104 @@ def test_snapshot_failure_reports_bypass_not_bare_oserror(tmp_path: Path):
     assert "vss=skipped:not_nt" in status["lock_bypass"]
 
 
+def test_hr_label_surfaces_classnotreg():
+    from secturafab.browser_session import _hr_label, _label_classnotreg
+
+    assert _hr_label(0x80040154) == "0x80040154:CLASSNOTREG"
+    assert _hr_label(-2147221164) == "0x80040154:CLASSNOTREG"
+    assert _hr_label(0x80040155) == "0x80040155:IIDNOTREG"
+    assert "CLASSNOTREG" in _label_classnotreg("0x80040154", "no_elevation_service")
+    assert "no_elevation_service" in _label_classnotreg("0x80040154", "no_elevation_service")
+    assert _hr_label(0) == "0x00000000"
+
+
+def test_elevation_service_exes_finds_versioned_151(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from secturafab import browser_session as bs
+
+    root = tmp_path / "Google" / "Chrome" / "Application"
+    root.mkdir(parents=True)
+    (root / "chrome.exe").write_bytes(b"mz")
+    ver = root / "151.0.7922.174"
+    ver.mkdir()
+    (ver / "elevation_service.exe").write_bytes(b"mz")
+    monkeypatch.setenv("PROGRAMFILES", str(tmp_path))
+    monkeypatch.delenv("PROGRAMFILES(X86)", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    with patch.object(bs, "_chrome_exe_from_registry", return_value=Path()):
+        exes = bs._elevation_service_exes()
+        dirs = bs._chrome_helper_dirs()
+    assert any(p.name.lower() == "elevation_service.exe" for p in exes)
+    assert any(p.name == "151.0.7922.174" for p in dirs)
+
+
+def test_prepare_elevator_without_exe_is_classnotreg_reason():
+    from secturafab import browser_session as bs
+
+    with patch.object(bs.os, "name", "nt"), patch.object(
+        bs, "_elevation_service_exes", return_value=[]
+    ):
+        assert bs._prepare_elevator_com() == "no_elevation_service"
+
+
+def test_unwrap_surfaces_classnotreg_not_generic_fail():
+    from secturafab import browser_session as bs
+
+    b64 = base64.b64encode(b"APPB" + b"\x01" * 40).decode("ascii")
+    with patch.object(bs, "_prepare_elevator_com", return_value=""), patch.object(
+        bs, "_elevator_decrypt", return_value=(None, "0x80040154:CLASSNOTREG")
+    ), patch.object(
+        bs, "_elevator_decrypt_via_chrome_dir", return_value=(None, "0x80040154:CLASSNOTREG")
+    ), patch.object(bs, "_dpapi_unprotect", return_value=None):
+        key, status, hr = bs._unwrap_app_bound_key(b64)
+    assert key is None
+    assert status == "failed"
+    assert "CLASSNOTREG" in hr
+    assert "0x80040154" in hr
+
+
+def test_discover_abe_hr_is_classnotreg(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "ASP.NET_SessionId", "", b"v20" + b"\x00" * 40),
+    )
+    conn.commit()
+    conn.close()
+    local_state = tmp_path / "Local State"
+    local_state.write_text(
+        json.dumps(
+            {"os_crypt": {"app_bound_encrypted_key": base64.b64encode(b"APPB" + b"\x01" * 40).decode()}}
+        ),
+        encoding="utf-8",
+    )
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": local_state,
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_unwrap_app_bound_key", return_value=(None, "failed", "0x80040154:CLASSNOTREG")
+    ):
+        header = bs.discover_sectura_website_cookie(force=True)
+    assert header == ""
+    status = bs.discover_status()
+    assert status["abe"] == "failed"
+    assert "CLASSNOTREG" in status["abe_hr"]
+    assert "0x80040154" in status["abe_hr"]
+    assert "CLASSNOTREG" in status["error"]
+    assert "do not paste" in status["error"].lower()
+
+
 def test_app_bound_strips_appb_prefix():
     from secturafab.browser_session import _accept_aes_key, _app_bound_ciphertext
 
