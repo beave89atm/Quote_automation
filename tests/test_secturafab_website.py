@@ -921,12 +921,46 @@ def test_snapshot_failure_reports_bypass_not_bare_oserror(tmp_path: Path):
     assert "vss=skipped:not_nt" in status["lock_bypass"]
 
 
+def test_localserver32_cmd_uses_console():
+    from secturafab.browser_session import _localserver32_cmd
+
+    cmd = _localserver32_cmd(
+        Path(r"C:\Program Files\Google\Chrome\Application\151.0.7922.174\elevation_service.exe")
+    )
+    assert "--console" in cmd
+    assert "elevation_service.exe" in cmd
+
+
+def test_rm_file_pids_empty_off_windows(tmp_path: Path):
+    from secturafab.browser_session import _rm_file_pids
+
+    assert _rm_file_pids(tmp_path / "Cookies") == []
+
+
+def test_unwrap_keeps_server_exec_failure():
+    from secturafab import browser_session as bs
+
+    b64 = base64.b64encode(b"APPB" + b"\x01" * 40).decode("ascii")
+    with patch.object(bs, "_prepare_elevator_com", return_value=""), patch.object(
+        bs, "_elevator_decrypt", return_value=(None, "0x80080005:SERVER_EXEC_FAILURE")
+    ), patch.object(
+        bs, "_elevator_decrypt_via_chrome_dir",
+        return_value=(None, "0x80080005:SERVER_EXEC_FAILURE"),
+    ), patch.object(bs, "_dpapi_unprotect", return_value=None):
+        key, status, hr = bs._unwrap_app_bound_key(b64)
+    assert key is None
+    assert status == "failed"
+    assert "SERVER_EXEC_FAILURE" in hr
+    assert "0x80080005" in hr
+
+
 def test_hr_label_surfaces_classnotreg():
     from secturafab.browser_session import _hr_label, _label_classnotreg
 
     assert _hr_label(0x80040154) == "0x80040154:CLASSNOTREG"
     assert _hr_label(-2147221164) == "0x80040154:CLASSNOTREG"
     assert _hr_label(0x80040155) == "0x80040155:IIDNOTREG"
+    assert _hr_label(0x80080005) == "0x80080005:SERVER_EXEC_FAILURE"
     assert "CLASSNOTREG" in _label_classnotreg("0x80040154", "no_elevation_service")
     assert "no_elevation_service" in _label_classnotreg("0x80040154", "no_elevation_service")
     assert _hr_label(0) == "0x00000000"
@@ -940,6 +974,7 @@ def test_elevation_service_exes_finds_versioned_151(tmp_path: Path, monkeypatch:
     (root / "chrome.exe").write_bytes(b"mz")
     ver = root / "151.0.7922.174"
     ver.mkdir()
+    (ver / "chrome.exe").write_bytes(b"mz")
     (ver / "elevation_service.exe").write_bytes(b"mz")
     monkeypatch.setenv("PROGRAMFILES", str(tmp_path))
     monkeypatch.delenv("PROGRAMFILES(X86)", raising=False)
@@ -948,7 +983,7 @@ def test_elevation_service_exes_finds_versioned_151(tmp_path: Path, monkeypatch:
         exes = bs._elevation_service_exes()
         dirs = bs._chrome_helper_dirs()
     assert any(p.name.lower() == "elevation_service.exe" for p in exes)
-    assert any(p.name == "151.0.7922.174" for p in dirs)
+    assert dirs and dirs[0].name == "151.0.7922.174"
 
 
 def test_prepare_elevator_without_exe_is_classnotreg_reason():

