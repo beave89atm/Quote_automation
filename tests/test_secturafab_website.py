@@ -1233,7 +1233,7 @@ def test_app_bound_layout_keeps_dpapi_fp_when_unprotect_raises():
     assert len(blob) == 640
     with patch.object(
         bs,
-        "_dpapi_unprotect",
+        "_dpapi_unprotect_local",
         side_effect=ctypes.ArgumentError("argument 1: OverflowError: int too long to convert"),
     ):
         fp, views = bs._app_bound_layout_views(blob)
@@ -1779,6 +1779,10 @@ def test_abe_helper_has_no_cocreate():
     assert "addressof" in inspect.getsource(bs._dpapi_unprotect_ex)
     assert "_local_free" in inspect.getsource(bs._dpapi_unprotect_ex)
     assert "ArgumentError" in inspect.getsource(bs._dpapi_unprotect_ex)
+    assert "entropy is not None" in inspect.getsource(bs._dpapi_unprotect_ex)
+    assert "_dpapi_unprotect_local" in inspect.getsource(bs._app_bound_layout_views)
+    assert "Chrome not required" in inspect.getsource(bs._dpapi_unprotect_appb)
+    assert '_join_abe_hr(["memscan:no_chrome"])' in inspect.getsource(bs._memscan_abe_key)
     assert "kernel32.LocalFree(out_blob.pbData)" not in inspect.getsource(bs)
     assert "UnprotectOnce" in cs
     assert "CryptUnprotectData" in cs
@@ -2133,6 +2137,64 @@ def test_dpapi_640_nested_unprotect_then_length_prefix():
             bs, "_chrome_unprotect_memory_blob", return_value=None
         ):
             assert bs._static_app_bound_cookie_key(cookie_blob) == cookie_key
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+        bs._cache["_appb_views"] = []
+        bs._cache["_appb_fp"] = ""
+
+
+def test_disk_dpapi_unwrap_succeeds_without_chrome():
+    from secturafab import browser_session as bs
+
+    cookie_key = os.urandom(32)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x88" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    inner = (32).to_bytes(4, "little") + cookie_key
+    blob = b"\x01\x00\x00\x00" + os.urandom(636)
+    bs._cache["_app_bound_blob"] = blob
+    bs._cache["_v20_verify"] = [cookie_blob]
+    bs._cache["_appb_fp"] = ""
+    try:
+        with patch.object(bs, "_dpapi_unprotect_local", return_value=inner), patch.object(
+            bs, "_chrome_pids_prioritized", return_value=[]
+        ), patch.object(
+            bs, "_memscan_abe_key", side_effect=AssertionError("disk unwrap must not need memscan")
+        ), patch.object(
+            bs, "_compiled_abe_helper_exe", side_effect=AssertionError("disk unwrap must not need helper")
+        ):
+            key, hr = bs._elevator_decrypt_via_chrome_dir(cookie_blob)
+        assert key == cookie_key
+        assert hr == "0x00000000"
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+        bs._cache["_appb_views"] = []
+        bs._cache["_appb_fp"] = ""
+
+
+def test_no_chrome_hr_keeps_appb_fp():
+    from secturafab import browser_session as bs
+
+    blob = b"\x01\x00\x00\x00" + os.urandom(636)
+    sample = b"v20" + b"\x00" * 40
+    bs._cache["_app_bound_blob"] = blob
+    bs._cache["_v20_verify"] = [sample]
+    bs._cache["_appb_fp"] = ""
+    try:
+        with patch.object(bs, "_dpapi_unprotect_local", return_value=None), patch.object(
+            bs, "_dpapi_unprotect_appb", return_value=None
+        ), patch.object(bs, "_chrome_pids_prioritized", return_value=[]), patch.object(
+            bs, "_compiled_abe_helper_exe", return_value=(None, "csc_missing")
+        ), patch.object(
+            bs, "_memscan_abe_key", side_effect=AssertionError("closed Chrome skips memscan")
+        ):
+            key, hr = bs._elevator_decrypt_via_chrome_dir(sample)
+        assert key is None
+        assert "appb:dpapi:640" in hr
+        assert "CLASSNOTREG" not in hr
     finally:
         bs._cache["_app_bound_blob"] = None
         bs._cache["_v20_verify"] = []

