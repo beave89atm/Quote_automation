@@ -63,6 +63,11 @@ CHROME_SESSION_REQUIRED = (
     "cookies automatically — do not paste a cookie."
 )
 
+_LIVE_COOKIES_PATH_ERR = (
+    "Could not snapshot Chrome Cookies while the browser is open "
+    "(Errno 32 / WinError 32 on live path)."
+)
+
 _CACHE_TTL_S = 30.0
 _cache: dict[str, Any] = {
     "cookie": "",
@@ -594,20 +599,34 @@ def _read_cookie_rows(
         dest = Path(tmp_dir) / "Cookies"
         last_exc: BaseException | None = None
         method = ""
-        if is_default and _try_nolock_copy(src, dest) and _dest_has_session_material(dest):
+        chrome_open = is_default and _chrome_is_open()
+        if (
+            is_default
+            and not chrome_open
+            and _try_nolock_copy(src, dest)
+            and _dest_has_session_material(dest)
+        ):
             method = "nolock"
         elif is_default and _try_vss_create_copy(src, dest):
             # Sidecars must come from the same GLOBALROOT shadow, not live Chrome.
             if _dest_has_session_material(dest):
                 method = "vss"
-        if not method and is_default and _try_live_cookie_sidecar_copy(src, dest):
+        if (
+            not method
+            and is_default
+            and not chrome_open
+            and _try_live_cookie_sidecar_copy(src, dest)
+        ):
             method = "wal"
         if not method and is_default and _try_cached_cookie_copy(dest):
             method = "cached"
-        if not method and is_default and _try_handle_dup_copy(src, dest):
+        if not method and is_default and not chrome_open and _try_handle_dup_copy(src, dest):
             _copy_cookie_sidecars(src, dest)
             if _dest_has_session_material(dest):
                 method = "dup_handle"
+        if not method and chrome_open:
+            _set_lock_bypass(_lock_bypass_with_vss("live_path"), pin=True)
+            raise OSError(32, _LIVE_COOKIES_PATH_ERR)
         if not method:
             for attempt in range(2):
                 try:
@@ -2094,11 +2113,9 @@ def _win_robocopy_backup_copy(src: Path, dest: Path) -> None:
 
 def _win_vss_existing_copy(src: Path, dest: Path) -> None:
     """Copy Cookies + WAL/SHM from an existing GLOBALROOT shadow. Never the live file."""
-    src = src.resolve()
-    if not src.drive:
+    letter, rel = _win_volume_relpath(src)
+    if not letter or not rel:
         raise OSError(22, "VSS no drive")
-    letter = src.drive.rstrip("\\")
-    rel = str(src)[len(src.drive) :].lstrip("\\/")
     dest.parent.mkdir(parents=True, exist_ok=True)
     last: OSError | None = None
     for device in _win_list_shadow_devices(letter):
@@ -2163,7 +2180,83 @@ def _parse_vss_create_output(text: str) -> tuple[str, str] | None:
     vols = _VSS_SHADOW_VOL_RE.findall(text)
     if ids and vols:
         return ids[-1], vols[-1]
+    if vols:
+        return "", vols[-1]
+    devices = _parse_vss_list_output(text)
+    if devices:
+        return "", devices[0]
     return None
+
+
+def _decode_vss_output(stdout: Any, stderr: Any = b"") -> str:
+    """vssadmin often emits UTF-16. Never pathlib-resolve this text."""
+    parts: list[str] = []
+    for blob in (stdout, stderr):
+        if blob is None:
+            continue
+        if isinstance(blob, str):
+            parts.append(blob)
+            continue
+        raw = bytes(blob)
+        if not raw:
+            continue
+        text = ""
+        if raw.startswith(b"\xff\xfe"):
+            text = raw.decode("utf-16-le", "ignore")
+        elif raw.startswith(b"\xfe\xff"):
+            text = raw.decode("utf-16-be", "ignore")
+        elif len(raw) > 8 and raw[1:2] == b"\x00" and raw[0:1] != b"\x00":
+            text = raw.decode("utf-16-le", "ignore")
+        else:
+            for enc in ("utf-8", "cp437", "cp1252"):
+                cand = raw.decode(enc, "ignore")
+                if "HarddiskVolumeShadowCopy" in cand or "Shadow Copy" in cand:
+                    text = cand
+                    break
+            if not text:
+                text = raw.decode("latin-1", "ignore")
+        parts.append(text)
+    return "\n".join(parts)
+
+
+def _run_vssadmin(args: list[str], timeout: int = 20) -> subprocess.CompletedProcess[bytes]:
+    exe = _windows_system32_exe("vssadmin.exe")
+    try:
+        return subprocess.run(
+            [exe, *args],
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(
+            exc.cmd,
+            2,
+            exc.stdout or b"",
+            exc.stderr or b"",
+        )
+
+
+def _win_volume_relpath(src: Any) -> tuple[str, str]:
+    """C: + Users\\...\\Cookies. Strip \\\\?\\ so GLOBALROOT join is not a live C:\\ path."""
+    text = str(src).replace("/", "\\")
+    if text.startswith("\\\\?\\"):
+        text = text[4:]
+    if len(text) >= 2 and text[1] == ":" and text[0].isalpha():
+        return text[:2].upper(), text[2:].lstrip("\\")
+    drive = str(getattr(src, "drive", "") or "")
+    if drive:
+        letter = drive.rstrip("\\")
+        if letter.startswith("\\\\?\\"):
+            letter = letter[4:]
+        if len(letter) >= 2 and letter[1] == ":":
+            letter = letter[:2].upper()
+        raw = str(src)
+        prefix = str(getattr(src, "drive", ""))
+        if prefix and raw.startswith(prefix):
+            return letter, raw[len(prefix) :].lstrip("\\/")
+        return letter, text.lstrip("\\")
+    return "", ""
 
 
 def _normalize_shadow_device(device: str) -> str:
@@ -2222,16 +2315,9 @@ def _win_list_shadow_devices(letter: str) -> list[str]:
     """Newest HarddiskVolumeShadowCopyN for this volume. vssadmin list, then CIM."""
     letter = (letter or "C:").rstrip("\\")
     devices: list[str] = []
-    exe = _windows_system32_exe("vssadmin.exe")
     try:
-        run = subprocess.run(
-            [exe, "list", "shadows", f"/for={letter}"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-        devices.extend(_parse_vss_list_output(f"{run.stdout or ''}\n{run.stderr or ''}"))
+        run = _run_vssadmin(["list", "shadows", f"/for={letter}"], timeout=15)
+        devices.extend(_parse_vss_list_output(_decode_vss_output(run.stdout, run.stderr)))
     except (OSError, subprocess.TimeoutExpired):
         pass
     if devices:
@@ -2294,7 +2380,11 @@ def _try_vss_create_copy(src: Path, dest: Path) -> bool:
     except OSError as exc:
         if not _cache.get("vss"):
             _record_vss(_safe_os_error(exc))
-        return False
+        if not (dest.is_file() and dest.stat().st_size > 0):
+            try:
+                _win_vss_existing_copy(src, dest)
+            except OSError:
+                return False
     except Exception as exc:  # noqa: BLE001 — create result must be visible
         _record_vss(f"exc:{type(exc).__name__}")
         return False
@@ -2422,6 +2512,8 @@ def _win_copy_raw(src_win: str, dest: Path) -> None:
     import ctypes
     from ctypes import wintypes
 
+    if _looks_like_live_dos_path(src_win):
+        raise OSError(22, "VSS copy refused live path")
     generic_read = 0x80000000
     share = 0x00000001 | 0x00000002 | 0x00000004
     open_existing = 3
@@ -2445,28 +2537,139 @@ def _win_copy_raw(src_win: str, dest: Path) -> None:
         kernel32.CloseHandle(wintypes.HANDLE(handle))
 
 
+def _looks_like_live_dos_path(path: str) -> bool:
+    text = (path or "").replace("/", "\\")
+    if text.startswith("\\\\?\\") and not text.upper().startswith("\\\\?\\GLOBALROOT\\"):
+        text = text[4:]
+    return len(text) >= 2 and text[1] == ":" and text[0].isalpha()
+
+
+def _shadow_copy_num(device: str) -> str:
+    match = re.search(r"HarddiskVolumeShadowCopy(\d+)", device or "", flags=re.I)
+    return match.group(1) if match else ""
+
+
+def _shadow_win_paths(device: str, rel_win: str, suf: str) -> list[str]:
+    num = _shadow_copy_num(device)
+    if not num:
+        return []
+    return [
+        rf"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy{num}\{rel_win}{suf}",
+        rf"\\.\GLOBALROOT\Device\HarddiskVolumeShadowCopy{num}\{rel_win}{suf}",
+    ]
+
+
+def _shadow_nt_paths(device: str, rel_win: str, suf: str) -> list[str]:
+    num = _shadow_copy_num(device)
+    if not num:
+        return []
+    return [
+        rf"\Device\HarddiskVolumeShadowCopy{num}\{rel_win}{suf}",
+        rf"\??\GLOBALROOT\Device\HarddiskVolumeShadowCopy{num}\{rel_win}{suf}",
+    ]
+
+
+def _win_copy_raw_nt(src_nt: str, dest: Path) -> None:
+    """NtCreateFile on \\Device\\HarddiskVolumeShadowCopyN\\... Never a live DOS path."""
+    if os.name != "nt":
+        raise OSError(32, "nt copy is Windows-only")
+    if "HarddiskVolumeShadowCopy" not in (src_nt or "") or _looks_like_live_dos_path(src_nt):
+        raise OSError(22, "VSS copy refused live path")
+    import ctypes
+    from ctypes import wintypes
+
+    class UNICODE_STRING(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.USHORT),
+            ("MaximumLength", wintypes.USHORT),
+            ("Buffer", wintypes.LPWSTR),
+        ]
+
+    class OBJECT_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.ULONG),
+            ("RootDirectory", wintypes.HANDLE),
+            ("ObjectName", ctypes.POINTER(UNICODE_STRING)),
+            ("Attributes", wintypes.ULONG),
+            ("SecurityDescriptor", ctypes.c_void_p),
+            ("SecurityQualityOfService", ctypes.c_void_p),
+        ]
+
+    class IO_STATUS_BLOCK(ctypes.Structure):
+        _fields_ = [
+            ("Status", ctypes.c_void_p),
+            ("Information", ctypes.c_void_p),
+        ]
+
+    buf = ctypes.create_unicode_buffer(src_nt)
+    us = UNICODE_STRING()
+    us.Length = len(src_nt) * 2
+    us.MaximumLength = (len(src_nt) + 1) * 2
+    us.Buffer = ctypes.cast(ctypes.addressof(buf), wintypes.LPWSTR)
+    oa = OBJECT_ATTRIBUTES()
+    oa.Length = ctypes.sizeof(OBJECT_ATTRIBUTES)
+    oa.ObjectName = ctypes.pointer(us)
+    oa.Attributes = 0x40
+    handle = wintypes.HANDLE()
+    iosb = IO_STATUS_BLOCK()
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtCreateFile.restype = ctypes.c_long
+    status = int(
+        ntdll.NtCreateFile(
+            ctypes.byref(handle),
+            0x80000000 | 0x00100000,
+            ctypes.byref(oa),
+            ctypes.byref(iosb),
+            None,
+            0x80,
+            0x00000001 | 0x00000002 | 0x00000004,
+            1,
+            0x00000020 | 0x00000040 | 0x00004000,
+            None,
+            0,
+        )
+    ) & 0xFFFFFFFF
+    if status != 0 or not handle:
+        raise OSError(status or 32, "NtCreateFile shadow open failed")
+    kernel32 = _kernel32()
+    try:
+        _read_handle_to_file(handle, dest)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _win_copy_from_shadow_device(device: str, rel: str, dest: Path) -> None:
     """Copy Cookies + wal/shm/journal from GLOBALROOT. Never the live Chrome path."""
     root = _normalize_shadow_device(device)
-    rel_win = rel.replace("/", "\\").lstrip("\\")
+    rel_win = _win_volume_relpath(rel)[1] or rel.replace("/", "\\").lstrip("\\")
+    if rel_win.lower().endswith(":\\") or _looks_like_live_dos_path(rel_win):
+        raise OSError(22, "VSS copy refused live path")
     if not root or "HarddiskVolumeShadowCopy" not in root:
         raise OSError(22, "VSS shadow device missing")
-    if rel_win[1:3] == ":\\" if len(rel_win) >= 3 else False:
-        raise OSError(22, "VSS copy refused live path")
     dest.parent.mkdir(parents=True, exist_ok=True)
     copied = False
     last: OSError | None = None
     for suf in ("", *_COOKIE_SIDECARS):
-        remote = f"{root}\\{rel_win}{suf}"
-        if "GLOBALROOT" not in remote.upper() or "HarddiskVolumeShadowCopy" not in remote:
-            raise OSError(22, "VSS copy refused live path")
         out = dest if not suf else Path(str(dest) + suf)
-        try:
-            _win_copy_raw(remote, out)
-        except OSError as exc:
-            last = exc
+        opened = False
+        for remote in _shadow_win_paths(root, rel_win, suf):
+            try:
+                _win_copy_raw(remote, out)
+                opened = True
+                break
+            except OSError as exc:
+                last = exc
+        if not opened:
+            for remote in _shadow_nt_paths(root, rel_win, suf):
+                try:
+                    _win_copy_raw_nt(remote, out)
+                    opened = True
+                    break
+                except OSError as exc:
+                    last = exc
+        if not opened:
             if not suf:
-                raise
+                raise last or OSError(32, "VSS shadow file copy failed")
             continue
         if not suf:
             copied = out.is_file() and out.stat().st_size > 0
@@ -2535,41 +2738,54 @@ def _win_vss_ps_create_copy(src: Path, dest: Path, rel: str, letter: str) -> Non
 
 
 def _win_vss_vssadmin_copy(src: Path, dest: Path, rel: str, letter: str) -> None:
-    exe = _windows_system32_exe("vssadmin.exe")
-    run = subprocess.run(
-        [exe, "create", "shadow", f"/for={letter}"],
-        capture_output=True,
-        text=True,
-        timeout=8,
-        check=False,
-    )
-    parsed = _parse_vss_create_output(f"{run.stdout or ''}\n{run.stderr or ''}")
-    sid = ""
-    device = ""
-    if parsed:
-        sid, device = parsed
-    else:
-        blob = f"{run.stderr or ''} {run.stdout or ''}".lower()
+    run = _run_vssadmin(["create", "shadow", f"/for={letter}"], timeout=20)
+    text = _decode_vss_output(run.stdout, run.stderr)
+    parsed = _parse_vss_create_output(text)
+    blob = text.lower()
+    if not parsed:
         if "permission" in blob or "not have" in blob or "access" in blob:
             _record_vss("create:1")
         else:
             _record_vss(f"create:vssadmin:{run.returncode or 32}")
-        listed = _win_list_shadow_devices(letter)
-        if not listed:
+    elif parsed[0] and parsed[1]:
+        pass
+    else:
+        _record_vss(f"create:vssadmin:{run.returncode or 32}")
+    devices: list[str] = []
+    sid = parsed[0] if parsed and parsed[0] else ""
+    if parsed and parsed[1]:
+        devices.append(parsed[1])
+    devices.extend(_win_list_shadow_devices(letter))
+    devices = _uniq_shadow_devices(
+        [_normalize_shadow_device(d) for d in devices if d]
+    )
+    if not devices:
+        if not parsed:
             raise OSError(run.returncode or 32, "vssadmin create failed")
-        device = listed[0]
+        raise OSError(32, "vssadmin shadow device missing")
+    last: OSError | None = None
+    copied = False
     try:
-        _win_copy_from_shadow_device(device, rel, dest)
-        if parsed:
-            _record_vss("ok")
+        for device in devices:
+            try:
+                _win_copy_from_shadow_device(device, rel, dest)
+            except OSError as exc:
+                last = exc
+                continue
+            if dest.is_file() and dest.stat().st_size > 0:
+                copied = True
+                if parsed and parsed[0] and parsed[1] and not str(
+                    _cache.get("vss") or ""
+                ).startswith("create:"):
+                    _record_vss("ok")
+                elif not _cache.get("vss"):
+                    _record_vss(f"create:vssadmin:{run.returncode or 32}")
+                break
+        if not copied:
+            raise last or OSError(32, "VSS shadow file copy failed")
     finally:
         if sid:
-            subprocess.run(
-                [exe, "delete", "shadows", f"/Shadow={sid}", "/Quiet"],
-                capture_output=True,
-                timeout=20,
-                check=False,
-            )
+            _run_vssadmin(["delete", "shadows", f"/Shadow={sid}", "/Quiet"], timeout=20)
 
 
 def _win_vss_diskshadow_copy(src: Path, dest: Path, rel: str, letter: str) -> None:
@@ -2612,13 +2828,11 @@ def _win_vss_diskshadow_copy(src: Path, dest: Path, rel: str, letter: str) -> No
 
 
 def _win_vss_copy(src: Path, dest: Path) -> None:
-    """CREATE a VSS shadow, copy Cookies from it, then delete the shadow."""
-    src = src.resolve()
-    if not src.drive:
+    """CREATE a VSS shadow, copy Cookies from GLOBALROOT, then delete the shadow."""
+    letter, rel = _win_volume_relpath(src)
+    if not letter or not rel:
         _record_vss("skipped:no_drive")
         raise OSError(22, "VSS no drive")
-    letter = src.drive.rstrip("\\")
-    rel = str(src)[len(src.drive) :].lstrip("\\/")
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
         _enable_privilege("SeBackupPrivilege")
@@ -4231,6 +4445,14 @@ def _compiled_abe_helper_exe() -> tuple[Path | None, str]:
         return None, f"csc:{_oserror_label(exc)}"
     except subprocess.SubprocessError as exc:
         return None, f"csc:{type(exc).__name__}"
+
+
+def _chrome_is_open() -> bool:
+    """True when chrome.exe is running. Chrome-open must not touch the live Cookies path."""
+    try:
+        return bool(_chrome_pids())
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def _chrome_pids() -> list[int]:

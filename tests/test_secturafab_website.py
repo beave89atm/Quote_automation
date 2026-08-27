@@ -1560,6 +1560,40 @@ def test_parse_vss_list_output_newest_globalroot_first():
     )
 
 
+def test_decode_vssadmin_utf16_lists_globalroot():
+    from secturafab import browser_session as bs
+
+    text = (
+        "Successfully created shadow copy for 'C:\\'\r\n"
+        "    Shadow Copy ID: {C7C1D1A0-1111-2222-3333-444444444444}\r\n"
+        "    Shadow Copy Volume Name: "
+        "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy12\r\n"
+    )
+    raw = text.encode("utf-16-le")
+    decoded = bs._decode_vss_output(raw, b"")
+    parsed = bs._parse_vss_create_output(decoded)
+    assert parsed is not None
+    assert parsed[1].endswith("HarddiskVolumeShadowCopy12")
+    listed = bs._parse_vss_list_output(decoded)
+    assert listed[0].endswith("HarddiskVolumeShadowCopy12")
+
+
+def test_win_volume_relpath_strips_extended_prefix():
+    from secturafab import browser_session as bs
+
+    letter, rel = bs._win_volume_relpath(
+        r"\\?\C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"
+    )
+    assert letter == "C:"
+    assert rel.endswith(r"Default\Network\Cookies")
+    assert not rel.startswith("C:")
+    assert "?\\" not in rel
+    letter2, rel2 = bs._win_volume_relpath(
+        r"C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"
+    )
+    assert (letter2, rel2) == (letter, rel)
+
+
 def test_win_copy_from_shadow_device_uses_globalroot_not_live(tmp_path: Path):
     import inspect
 
@@ -1809,6 +1843,9 @@ def test_chrome_open_uses_vss_then_cached_not_dup(tmp_path: Path):
         order.append("dup")
         raise AssertionError("dup_handle must not run before VSS+cached")
 
+    def _no_live_nolock(*_a, **_k):
+        raise AssertionError("nolock must not touch the live Cookies path when Chrome is open")
+
     sprayed: list[str] = []
 
     def _spray(name: str):
@@ -1820,7 +1857,9 @@ def test_chrome_open_uses_vss_then_cached_not_dup(tmp_path: Path):
 
     with patch.dict(os.environ, {"KANNON_COOKIE_CACHE": str(tmp_path / "cache")}), patch.object(
         bs, "_browser_cookie_dbs", return_value=[profile]
-    ), patch.object(bs, "_try_nolock_copy", return_value=False), patch.object(
+    ), patch.object(bs, "_chrome_is_open", return_value=True), patch.object(
+        bs, "_try_nolock_copy", side_effect=_no_live_nolock
+    ), patch.object(bs, "_sqlite_backup_nolock", side_effect=_no_live_nolock), patch.object(
         bs, "_try_vss_create_copy", side_effect=_vss
     ), patch.object(bs, "_try_handle_dup_copy", side_effect=_no_dup), patch.object(
         bs, "_win_lock_bypass_with_wal", side_effect=_spray("lock_bypass")
@@ -1841,8 +1880,48 @@ def test_chrome_open_uses_vss_then_cached_not_dup(tmp_path: Path):
     assert "nt_backup" not in status["lock_bypass"]
     assert "esentutl" not in status["lock_bypass"]
     assert "robocopy_b" not in status["lock_bypass"]
+    assert "nolock" not in status["lock_bypass"]
+    assert "live_path" not in status["lock_bypass"]
     assert status["session_found"] is True
     assert status["source"] == "chrome:Default"
+
+
+def test_chrome_open_vss_miss_does_not_nolock_live_path(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    live = tmp_path / "live" / "Cookies"
+    live.parent.mkdir()
+    live.write_bytes(b"locked")
+    profile = {
+        "label": "chrome:Default",
+        "cookies": live,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+
+    def _vss(*_a, **_k):
+        bs._record_vss("create:vssadmin:2")
+        return False
+
+    def _no_live(*_a, **_k):
+        raise AssertionError("must not open the live Cookies path when Chrome is open")
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_chrome_is_open", return_value=True
+    ), patch.object(bs, "_try_nolock_copy", side_effect=_no_live), patch.object(
+        bs, "_sqlite_backup_nolock", side_effect=_no_live
+    ), patch.object(bs, "_try_vss_create_copy", side_effect=_vss), patch.object(
+        bs, "_try_live_cookie_sidecar_copy", side_effect=_no_live
+    ), patch.object(bs, "_try_handle_dup_copy", side_effect=_no_live):
+        header = bs.discover_sectura_website_cookie(force=True)
+    assert header == ""
+    status = bs.discover_status()
+    assert status["session_found"] is False
+    assert status["source"] == "chrome:Default"
+    assert "nolock" not in status["lock_bypass"]
+    assert "live_path" in status["lock_bypass"]
+    assert "WinError 32 on live path" in status["error"]
 
 
 def test_vss_success_does_not_copy_live_sidecars(tmp_path: Path):
@@ -1868,10 +1947,10 @@ def test_vss_success_does_not_copy_live_sidecars(tmp_path: Path):
         raise AssertionError("must not copy live Chrome sidecars after a shadow copy")
 
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
-        bs, "_try_nolock_copy", return_value=False
-    ), patch.object(bs, "_try_vss_create_copy", side_effect=_vss), patch.object(
-        bs, "_copy_cookie_sidecars", side_effect=_no_live
-    ):
+        bs, "_chrome_is_open", return_value=True
+    ), patch.object(bs, "_try_nolock_copy", side_effect=_no_live), patch.object(
+        bs, "_try_vss_create_copy", side_effect=_vss
+    ), patch.object(bs, "_copy_cookie_sidecars", side_effect=_no_live):
         header = bs.discover_sectura_website_cookie(force=True)
     assert header
     status = bs.discover_status()
@@ -2022,13 +2101,19 @@ def test_abe_helper_has_no_cocreate():
     assert rows_src.index("_try_cached_cookie_copy") < rows_src.index("_try_handle_dup_copy")
     assert "allow_lock_bypass=False" in rows_src
     assert "same GLOBALROOT shadow" in rows_src
+    assert "_chrome_is_open" in rows_src
+    assert "not chrome_open" in rows_src
+    assert "_LIVE_COOKIES_PATH_ERR" in rows_src
     vssadmin_src = inspect.getsource(bs._win_vss_vssadmin_copy)
     assert "_win_list_shadow_devices" in vssadmin_src
     assert "_win_copy_from_shadow_device" in vssadmin_src
+    assert "_decode_vss_output" in vssadmin_src
     shadow_src = inspect.getsource(bs._win_copy_from_shadow_device)
     assert "cmd.exe" not in shadow_src
     assert "_win_copy_raw" in shadow_src
+    assert "_win_copy_raw_nt" in shadow_src
     assert "_COOKIE_SIDECARS" in shadow_src
+    assert "_looks_like_live_dos_path" in inspect.getsource(bs._win_copy_raw)
     assert "_host_is_sectura" in inspect.getsource(bs)
     assert "_collect_v20_from_db" in inspect.getsource(bs)
     assert "_cookie_blob_bytes" in inspect.getsource(bs)
