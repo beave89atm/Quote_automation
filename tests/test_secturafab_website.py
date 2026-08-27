@@ -1709,6 +1709,8 @@ def test_abe_helper_has_no_cocreate():
     assert "_v20_verify_samples" in inspect.getsource(bs)
     assert "consider_raw" in memscan
     assert "consider_apc" in memscan
+    assert "keyring_pending" not in memscan
+    assert memscan.index("hit = consider_apc") < memscan.index("nxt = addr + size")
     assert 'unprotect(b"\\x00" * 32)' not in memscan
     assert "public long cbData" in cs
     assert "new IntPtr(32), new IntPtr(0)" in cs
