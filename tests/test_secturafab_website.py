@@ -1676,7 +1676,9 @@ def test_abe_helper_has_no_cocreate():
     assert "ReadProcessMemory" in cs
     assert "VirtualQueryEx" in cs
     assert "cand=" in cs
-    assert "start + 32" in cs
+    assert "AbePid" in cs
+    assert "--type=" in cs
+    assert "MEM_MAPPED" in cs
     assert "KANNON_CHROME_PIDS" in cs
 
 
@@ -1802,18 +1804,37 @@ def test_extract_abe_candidate_ptrs_follows_vector():
     key_addr = 0x000001A2B3C4D500
     buf = bytearray(48)
     struct.pack_into("<QQQ", buf, 0, key_addr, key_addr + 32, key_addr + 32)
-    assert key_addr in bs._extract_abe_candidate_ptrs(bytes(buf))
+    assert (key_addr, 32) in bs._extract_abe_candidate_ptrs(bytes(buf))
 
 
-def test_inline_bstr_keys_skips_x64_size_t():
+def test_inline_bstr_keys_reads_after_size_t_and_dword():
     from secturafab import browser_session as bs
 
     junk = bytes(range(32))
-    # x64 size_t 32 is 20 00 00 00 00 00 00 00 — not a BSTR key.
     blob = b"\x20\x00\x00\x00\x00\x00\x00\x00" + junk
-    assert bs._inline_bstr_keys(blob) == []
+    assert junk in bs._inline_bstr_keys(blob)
     bstr = b"\x20\x00\x00\x00" + junk
     assert junk in bs._inline_bstr_keys(bstr)
+
+
+def test_keys_from_key_blob_parses_elevator_layout():
+    from secturafab import browser_session as bs
+
+    key = bytes(range(32))
+    blob = (8).to_bytes(4, "little") + b"validate" + (32).to_bytes(4, "little") + key
+    assert key in bs._keys_from_key_blob(blob)
+
+
+def test_chrome_abe_cmd_ok_skips_renderer():
+    from secturafab import browser_session as bs
+
+    assert bs._chrome_abe_cmd_ok(r"C:\...\chrome.exe") is True
+    assert (
+        bs._chrome_abe_cmd_ok(r'chrome.exe --utility-sub-type=network.mojom.NetworkService')
+        is True
+    )
+    assert bs._chrome_abe_cmd_ok(r"chrome.exe --type=renderer") is False
+    assert bs._chrome_abe_cmd_ok(r"chrome.exe --type=gpu-process") is False
 
 
 def test_pick_v20_sample_skips_short():
