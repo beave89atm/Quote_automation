@@ -1832,6 +1832,19 @@ def test_extract_abe_candidate_ptrs_follows_v20_keyring_tag():
     assert (key_addr, 32) in bs._extract_abe_candidate_ptrs(bytes(buf))
 
 
+def test_extract_abe_size_first_sso_keyring():
+    import struct
+
+    from secturafab import browser_session as bs
+
+    key_addr = 0x000001A2B3C4D500
+    buf = bytearray(56)
+    buf[0] = 6
+    buf[1:5] = b"v20\x00"
+    struct.pack_into("<QQ", buf, 32, key_addr, key_addr + 32)
+    assert (key_addr, 32) in bs._extract_abe_candidate_ptrs(bytes(buf))
+
+
 def test_extract_abe_skips_inline_dword_32_spray():
     from secturafab import browser_session as bs
 
