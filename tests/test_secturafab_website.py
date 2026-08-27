@@ -2084,22 +2084,33 @@ def test_abe_helper_has_no_cocreate():
     assert "apc:key:off=" not in memscan
     assert "heap:hit" in memscan
     assert "memscan:cands=" in memscan
+    assert "tried=" in memscan
     assert "no_cand" not in memscan
+    assert "20000" in memscan or bs._ABE_MEMSCAN_MAX_CAND == 20000
+    assert "tried >= 200" not in memscan
+    assert "cands == 200" not in memscan
     assert memscan.index("def consider(") < memscan.index("hit = consider(")
     assert memscan.index("hit = consider(") < memscan.index("nxt = addr + size")
     assert "apc:0" in elev
-    assert "apc:ok" in elev
     assert "apc:hr=" in elev
     assert "apc:key" in elev
+    assert "crt:err" in elev
+    assert "alloc:err" in elev
+    assert "elev:len=" in elev
     assert "DecryptData" in elev
     assert "vtable" in elev
     assert "CoCreateInstance" in elev
+    assert "NtTestAlert" in elev
     assert "CryptUnprotectMemory" not in elev
     assert "CryptUnprotectData" not in elev
+    assert "_chrome_elevator_via_exports" in inspect.getsource(bs)
+    assert "_v20_prove_samples" in inspect.getsource(bs)
+    assert "BCrypt first" in inspect.getsource(bs._aes_gcm_decrypt_bytes)
     assert "_aes_key_windows_offs" in inspect.getsource(bs)
     assert "_v20_one_ok" in inspect.getsource(bs)
     assert "try_blobs" not in memscan
-    assert 'f"memscan:cands={tried}' in memscan
+    assert "memscan:cands=" in memscan
+    assert "tried=" in memscan
     assert memscan.index("_keyring_v20_key_ptrs") < memscan.index(
         "_extract_abe_candidate_ptrs(data)"
     )
@@ -2651,6 +2662,39 @@ def test_chrome_elevator_abe_key_is_apc_0_off_windows():
     assert stub.startswith(b"\x53")
     assert stub.endswith(b"\xc3")
     assert 80 <= len(stub) <= 256
+
+
+def test_v20_one_ok_is_gcm_success_not_printable_or_longest():
+    from secturafab import browser_session as bs
+
+    key = os.urandom(32)
+    other = os.urandom(32)
+    nonce_long = os.urandom(12)
+    nonce_ok = os.urandom(12)
+    long_plain = os.urandom(80)
+    ok_plain = os.urandom(32) + b"session"
+    long_blob = b"v20" + nonce_long + _aes_gcm_encrypt(long_plain, other, nonce_long)
+    ok_blob = b"v20" + nonce_ok + _aes_gcm_encrypt(ok_plain, key, nonce_ok)
+    assert len(long_blob) > len(ok_blob)
+    bs._cache["_v20_verify"] = [long_blob, ok_blob]
+    bs._cache["_v20_sectura"] = [ok_blob]
+    bs._cache["_v20_prove"] = []
+    try:
+        assert bs._v20_one_ok(key, long_blob) is True
+        assert bs._abe_proves_cookies(key, long_blob) is True
+        binary_only = os.urandom(48)
+        nonce_bin = os.urandom(12)
+        bin_blob = b"v20" + nonce_bin + _aes_gcm_encrypt(binary_only, key, nonce_bin)
+        bs._cache["_v20_verify"] = [bin_blob]
+        bs._cache["_v20_sectura"] = [bin_blob]
+        assert bs._aes_gcm_decrypt_bytes(bin_blob[3:], key)
+        assert bs._v20_one_ok(key, bin_blob) is True
+        assert bs._abe_proves_cookies(key, bin_blob) is True
+        assert bs._v20_cookie_text(binary_only) == ""
+    finally:
+        bs._cache["_v20_verify"] = []
+        bs._cache["_v20_sectura"] = []
+        bs._cache["_v20_prove"] = []
 
 
 def test_pick_v20_sample_skips_short():
