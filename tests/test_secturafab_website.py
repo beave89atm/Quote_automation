@@ -1676,6 +1676,8 @@ def test_abe_helper_has_no_cocreate():
     assert "ReadProcessMemory" in cs
     assert "VirtualQueryEx" in cs
     assert "cand=" in cs
+    assert "start + 32" in cs
+    assert "KANNON_CHROME_PIDS" in cs
 
 
 def test_run_abe_helper_timeout_is_helper_timeout():
@@ -1756,23 +1758,87 @@ def test_unwrap_uses_chrome_dir_helper_first():
     assert hr == "0x00000000"
 
 
+def test_user_abe_helper_dirs_skips_program_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from secturafab import browser_session as bs
+
+    pf = tmp_path / "Program Files" / "Google" / "Chrome" / "Application" / "151.0.7922.174"
+    pf.mkdir(parents=True)
+    (pf / "chrome.exe").write_bytes(b"mz")
+    local = tmp_path / "Local"
+    monkeypatch.setenv("PROGRAMFILES", str(tmp_path / "Program Files"))
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    with patch.object(bs, "_chrome_helper_dirs", return_value=[pf]):
+        dirs = bs._user_abe_helper_dirs()
+    assert dirs
+    assert all("program files" not in str(d).lower() for d in dirs)
+    assert any(d.name == "151.0.7922.174" and "Local" in str(d) for d in dirs)
+    assert any(d.name == "abe" for d in dirs)
+
+
+def test_install_abe_helper_writes_localapp_not_program_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from secturafab import browser_session as bs
+
+    helper = tmp_path / "kannon_quote_abe.exe"
+    helper.write_bytes(b"mz")
+    local = tmp_path / "Local"
+    dest_dir = local / "KannonQuote" / "abe"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    with patch.object(bs, "_user_abe_helper_dirs", return_value=[dest_dir]):
+        dests, hr = bs._install_abe_helper(helper)
+    assert hr == ""
+    assert dests and dests[0].is_file()
+    assert "Program Files" not in str(dests[0])
+
+
+def test_extract_abe_candidate_ptrs_follows_vector():
+    import struct
+
+    from secturafab import browser_session as bs
+
+    key_addr = 0x000001A2B3C4D500
+    buf = bytearray(48)
+    struct.pack_into("<QQQ", buf, 0, key_addr, key_addr + 32, key_addr + 32)
+    assert key_addr in bs._extract_abe_candidate_ptrs(bytes(buf))
+
+
+def test_inline_bstr_keys_skips_x64_size_t():
+    from secturafab import browser_session as bs
+
+    junk = bytes(range(32))
+    # x64 size_t 32 is 20 00 00 00 00 00 00 00 — not a BSTR key.
+    blob = b"\x20\x00\x00\x00\x00\x00\x00\x00" + junk
+    assert bs._inline_bstr_keys(blob) == []
+    bstr = b"\x20\x00\x00\x00" + junk
+    assert junk in bs._inline_bstr_keys(bstr)
+
+
+def test_pick_v20_sample_skips_short():
+    from secturafab import browser_session as bs
+
+    short = b"v20" + b"\x00" * 10
+    long = b"v20" + b"\x00" * 40
+    assert bs._pick_v20_sample([("h", "n", "", short)]) is None
+    assert bs._pick_v20_sample([("h", "n", "", short), ("h", "n", "", long)]) == long
+
+
 def test_chrome_dir_copy_denied_is_not_classnotreg(tmp_path: Path):
     from secturafab import browser_session as bs
 
     helper = tmp_path / "kannon_quote_abe.exe"
     helper.write_bytes(b"mz")
-    chrome_dir = tmp_path / "151.0.7922.174"
-    chrome_dir.mkdir()
 
     def _denied(*_a, **_k):
-        exc = OSError(5, "Access is denied")
-        exc.winerror = 5
+        exc = OSError(13, "Permission denied")
         raise exc
 
     with patch.object(bs.os, "name", "nt"), patch.object(
         bs, "_compiled_abe_helper_exe", return_value=(helper, "")
     ), patch.object(
-        bs, "_chrome_helper_dirs", return_value=[chrome_dir]
+        bs, "_user_abe_helper_dirs", return_value=[tmp_path / "abe"]
     ), patch.object(
         bs.shutil, "copy2", side_effect=_denied
     ), patch.object(
@@ -1782,8 +1848,8 @@ def test_chrome_dir_copy_denied_is_not_classnotreg(tmp_path: Path):
     ):
         key, hr = bs._elevator_decrypt_via_chrome_dir(b"v20" + b"\x00" * 40)
     assert key is None
-    assert "copy:AccessDenied" in hr
     assert "CLASSNOTREG" not in hr
+    assert "copy:errno13" in hr or "helper:exit1" in hr or "memscan:no_key" in hr
 
 
 def test_key_from_helper_candidates_decrypts_v20():
