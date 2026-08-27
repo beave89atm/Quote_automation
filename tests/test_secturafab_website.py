@@ -1711,8 +1711,10 @@ def test_abe_helper_has_no_cocreate():
     assert "_cookie_keys_from_wrap" in inspect.getsource(bs)
     assert "_abe_proves_cookies" in inspect.getsource(bs)
     assert "_aes_gcm_decrypt_layouts" in inspect.getsource(bs)
-    assert "_v20_cookie_text" in inspect.getsource(bs._v20_key_ok)
+    assert "_app_bound_layout_views" in inspect.getsource(bs)
+    assert "_static_app_bound_cookie_key" in inspect.getsource(bs)
     assert "_abe_proves_cookies" in inspect.getsource(bs._unwrap_app_bound_key)
+    assert "return _abe_key_from_material(cand, v20_sample)" not in memscan
     assert "consider_raw" in memscan
     assert "consider_apc" in memscan
     assert "keyring_pending" not in memscan
@@ -1991,6 +1993,41 @@ def test_aes_key_windows_takes_offset_32():
     padded = b"\xaa" * 8 + key + b"\xbb" * 8
     assert key in bs._aes_key_windows(padded)
     assert key in bs._aes_key_windows(key)
+
+
+def test_app_bound_layout_fingerprint_dpapi_and_flag():
+    from secturafab import browser_session as bs
+
+    dpapi = b"\x01\x00\x00\x00" + os.urandom(80)
+    fp, views = bs._app_bound_layout_views(dpapi)
+    assert fp.startswith("appb:dpapi:")
+    assert dpapi[-60:] in views
+    flag = b"\x01" + os.urandom(12) + os.urandom(32) + os.urandom(16)
+    fp2, views2 = bs._app_bound_layout_views(flag)
+    assert fp2.startswith("appb:flag1:")
+    assert flag[1:] in views2
+
+
+def test_flag1_wrap_unwraps_local_state_then_cookie():
+    from secturafab import browser_session as bs
+
+    cookie_key = os.urandom(32)
+    nonce = os.urandom(12)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x44" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    inner = b"\x01" + nonce + _aes_gcm_encrypt(cookie_key, bs._FLAG1_AES, nonce)
+    bs._cache["_app_bound_blob"] = inner
+    bs._cache["_v20_verify"] = [cookie_blob]
+    bs._cache["_v10_key"] = None
+    try:
+        assert bs._static_app_bound_cookie_key(cookie_blob) == cookie_key
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+        bs._cache["_appb_views"] = []
+        bs._cache["_appb_fp"] = ""
 
 
 def test_abe_wrap_key_unwraps_app_bound_then_cookie():
