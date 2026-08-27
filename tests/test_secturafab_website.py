@@ -1657,7 +1657,7 @@ def test_chrome_default_uses_handle_dup_before_vss(tmp_path: Path):
     assert status["source"] == "chrome:Default"
 
 
-def test_abe_helper_writes_embedding_localserver32_and_caps_cocreate():
+def test_abe_helper_does_not_write_localserver32_and_caps_cocreate():
     import inspect
 
     from secturafab import browser_session as bs
@@ -1667,12 +1667,12 @@ def test_abe_helper_writes_embedding_localserver32_and_caps_cocreate():
     cs = bs._ABE_HELPER_CS
     assert "Join(2000)" in cs
     assert "SERVER_EXEC_FAILURE:timeout" in cs
-    assert "LocalServer32" in cs
+    assert "DeleteSubKey" in cs and "LocalServer32" in cs
     assert "--console -Embedding" in cs
+    assert 'CreateSubKey(@"Software\\Classes\\CLSID\\" + Clsid + @"\\LocalServer32")' not in cs
     src = inspect.getsource(bs._register_hkcu_elevator_localserver)
-    assert "LocalServer32" in src
-    assert "_localserver32_cmd" in src
-    assert "-Embedding" in bs._localserver32_cmd(Path("elevation_service.exe"))
+    assert "_delete_hkcu_localserver32" in src
+    assert "clsid_path + r\"\\LocalServer32\"" not in src
 
 
 def test_run_abe_helper_timeout_surfaces_server_exec():

