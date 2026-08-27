@@ -63,9 +63,8 @@ CHROME_SESSION_REQUIRED = (
     "cookies automatically — do not paste a cookie."
 )
 
-_LIVE_COOKIES_PATH_ERR = (
-    "Could not snapshot Chrome Cookies while the browser is open "
-    "(Errno 32 / WinError 32 on live path)."
+_SHADOW_MISS_ERR = (
+    "Could not copy Chrome Cookies from the VSS GLOBALROOT shadow."
 )
 
 _CACHE_TTL_S = 30.0
@@ -609,8 +608,8 @@ def _read_cookie_rows(
             method = "nolock"
         elif is_default and _try_vss_create_copy(src, dest):
             # Sidecars must come from the same GLOBALROOT shadow, not live Chrome.
-            if _dest_has_session_material(dest):
-                method = "vss"
+            if _vss_dest_ok(dest):
+                method = "shadow"
         if (
             not method
             and is_default
@@ -625,8 +624,10 @@ def _read_cookie_rows(
             if _dest_has_session_material(dest):
                 method = "dup_handle"
         if not method and chrome_open:
-            _set_lock_bypass(_lock_bypass_with_vss("live_path"), pin=True)
-            raise OSError(32, _LIVE_COOKIES_PATH_ERR)
+            _set_lock_bypass(_lock_bypass_with_vss("shadow_miss"), pin=True)
+            raise OSError(32, _SHADOW_MISS_ERR)
+        if is_default and method == "shadow":
+            _set_lock_bypass("vss=shadow", pin=True)
         if not method:
             for attempt in range(2):
                 try:
@@ -2114,17 +2115,18 @@ def _win_robocopy_backup_copy(src: Path, dest: Path) -> None:
 def _win_vss_existing_copy(src: Path, dest: Path) -> None:
     """Copy Cookies + WAL/SHM from an existing GLOBALROOT shadow. Never the live file."""
     letter, rel = _win_volume_relpath(src)
-    if not letter or not rel:
+    if not letter and not _chrome_shadow_cookie_rels(src):
         raise OSError(22, "VSS no drive")
     dest.parent.mkdir(parents=True, exist_ok=True)
     last: OSError | None = None
-    for device in _win_list_shadow_devices(letter):
+    for device in _win_guess_shadow_devices(letter or "C:"):
         try:
-            _win_copy_from_shadow_device(device, rel, dest)
+            _win_copy_from_shadow_src(device, src, dest, extra_rel=rel)
         except OSError as exc:
             last = exc
             continue
-        if dest.is_file() and dest.stat().st_size > 0:
+        if _vss_dest_ok(dest):
+            _record_vss("shadow")
             return
     raise last or OSError(32, "VSS existing copy failed")
 
@@ -2259,6 +2261,56 @@ def _win_volume_relpath(src: Any) -> tuple[str, str]:
     return "", ""
 
 
+def _windows_profile_user(src: Any) -> str:
+    text = str(src).replace("/", "\\")
+    match = re.search(r"\\Users\\([^\\]+)\\", text, flags=re.I)
+    if match:
+        return match.group(1)
+    for key in ("USERNAME", "USERPROFILE"):
+        val = (os.environ.get(key) or "").strip()
+        if not val:
+            continue
+        if key == "USERPROFILE":
+            val = Path(val).name
+        if val not in {"", ".", ".."}:
+            return val
+    return ""
+
+
+def _chrome_shadow_cookie_rels(src: Any) -> list[str]:
+    """Default\\Cookies first (Kyle / Chrome-open). Then Network\\Cookies. Never a live C:\\ path."""
+    letter, rel = _win_volume_relpath(src)
+    user = _windows_profile_user(src)
+    rels: list[str] = []
+    if user:
+        base = rf"Users\{user}\AppData\Local\Google\Chrome\User Data\Default"
+        rels.append(rf"{base}\Cookies")
+        rels.append(rf"{base}\Network\Cookies")
+    if rel:
+        rel_win = rel.replace("/", "\\").lstrip("\\")
+        if rel_win.lower().endswith(r"\network\cookies"):
+            rels.append(rel_win[: -len(r"\Network\Cookies")] + r"\Cookies")
+        elif rel_win.lower().endswith(r"\cookies"):
+            rels.append(rel_win[: -len(r"\Cookies")] + r"\Network\Cookies")
+        rels.append(rel_win)
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in rels:
+        key = item.replace("/", "\\").casefold()
+        if not item or key in seen or _looks_like_live_dos_path(item):
+            continue
+        seen.add(key)
+        out.append(item.replace("/", "\\").lstrip("\\"))
+    return out
+
+
+def _vss_dest_ok(dest: Path) -> bool:
+    if not dest.is_file() or dest.stat().st_size <= 0:
+        return False
+    n, _samples = _collect_v20_from_db(dest)
+    return n >= 26 or _dest_has_session_material(dest)
+
+
 def _normalize_shadow_device(device: str) -> str:
     """\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopyN. Refuse drive-letter paths."""
     text = (device or "").strip().replace("/", "\\").rstrip("\\")
@@ -2348,6 +2400,19 @@ def _win_list_shadow_devices(letter: str) -> list[str]:
     return _uniq_shadow_devices(devices)
 
 
+def _win_guess_shadow_devices(letter: str) -> list[str]:
+    """Listed shadows first, then HarddiskVolumeShadowCopy32..1 if list parse misses."""
+    devices = list(_win_list_shadow_devices(letter))
+    try:
+        run = _run_vssadmin(["list", "shadows"], timeout=15)
+        devices.extend(_parse_vss_list_output(_decode_vss_output(run.stdout, run.stderr)))
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    for n in range(32, 0, -1):
+        devices.append(_normalize_shadow_device(f"HarddiskVolumeShadowCopy{n}"))
+    return _uniq_shadow_devices(devices)
+
+
 def _uniq_shadow_devices(devices: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -2380,7 +2445,7 @@ def _try_vss_create_copy(src: Path, dest: Path) -> bool:
     except OSError as exc:
         if not _cache.get("vss"):
             _record_vss(_safe_os_error(exc))
-        if not (dest.is_file() and dest.stat().st_size > 0):
+        if not _vss_dest_ok(dest):
             try:
                 _win_vss_existing_copy(src, dest)
             except OSError:
@@ -2388,9 +2453,8 @@ def _try_vss_create_copy(src: Path, dest: Path) -> bool:
     except Exception as exc:  # noqa: BLE001 — create result must be visible
         _record_vss(f"exc:{type(exc).__name__}")
         return False
-    if dest.is_file() and dest.stat().st_size > 0:
-        if not _cache.get("vss"):
-            _record_vss("ok")
+    if _vss_dest_ok(dest):
+        _record_vss("shadow")
         return True
     if not _cache.get("vss"):
         _record_vss("create:empty")
@@ -2677,6 +2741,28 @@ def _win_copy_from_shadow_device(device: str, rel: str, dest: Path) -> None:
         raise last or OSError(32, "VSS shadow file copy failed")
 
 
+def _win_copy_from_shadow_src(
+    device: str, src: Any, dest: Path, *, extra_rel: str = ""
+) -> None:
+    """Try Default\\Cookies first, then Network\\Cookies, on this GLOBALROOT device."""
+    rels = list(_chrome_shadow_cookie_rels(src))
+    extra = (extra_rel or "").replace("/", "\\").lstrip("\\")
+    if extra and extra not in rels and not _looks_like_live_dos_path(extra):
+        rels.append(extra)
+    last: OSError | None = None
+    for rel in rels:
+        try:
+            _win_copy_from_shadow_device(device, rel, dest)
+        except OSError as exc:
+            last = exc
+            continue
+        if _vss_dest_ok(dest):
+            return
+    if dest.is_file() and dest.stat().st_size > 0:
+        return
+    raise last or OSError(32, "VSS shadow file copy failed")
+
+
 def _win_vss_ps_create_copy(src: Path, dest: Path, rel: str, letter: str) -> None:
     """CREATE via CIM/WMI. Args file so C:\\ is never a -File positional."""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -2755,7 +2841,7 @@ def _win_vss_vssadmin_copy(src: Path, dest: Path, rel: str, letter: str) -> None
     sid = parsed[0] if parsed and parsed[0] else ""
     if parsed and parsed[1]:
         devices.append(parsed[1])
-    devices.extend(_win_list_shadow_devices(letter))
+    devices.extend(_win_guess_shadow_devices(letter))
     devices = _uniq_shadow_devices(
         [_normalize_shadow_device(d) for d in devices if d]
     )
@@ -2768,16 +2854,14 @@ def _win_vss_vssadmin_copy(src: Path, dest: Path, rel: str, letter: str) -> None
     try:
         for device in devices:
             try:
-                _win_copy_from_shadow_device(device, rel, dest)
+                _win_copy_from_shadow_src(device, src, dest, extra_rel=rel)
             except OSError as exc:
                 last = exc
                 continue
-            if dest.is_file() and dest.stat().st_size > 0:
+            if _vss_dest_ok(dest) or (dest.is_file() and dest.stat().st_size > 0):
                 copied = True
-                if parsed and parsed[0] and parsed[1] and not str(
-                    _cache.get("vss") or ""
-                ).startswith("create:"):
-                    _record_vss("ok")
+                if _vss_dest_ok(dest):
+                    _record_vss("shadow")
                 elif not _cache.get("vss"):
                     _record_vss(f"create:vssadmin:{run.returncode or 32}")
                 break
@@ -2849,10 +2933,14 @@ def _win_vss_copy(src: Path, dest: Path) -> None:
         except OSError:
             last = _prefer_vss_status(last, str(_cache.get("vss") or ""))
             continue
-        if dest.is_file() and dest.stat().st_size > 0:
-            if not str(_cache.get("vss") or "").startswith("create:"):
-                _record_vss("ok")
+        if _vss_dest_ok(dest):
+            _record_vss("shadow")
             return
+        if dest.is_file() and dest.stat().st_size > 0:
+            try:
+                dest.unlink()
+            except OSError:
+                pass
         last = _prefer_vss_status(last, str(_cache.get("vss") or "create:empty"))
     _record_vss(last or "create:failed")
     raise OSError(32, "VSS snapshot copy failed")

@@ -1594,6 +1594,28 @@ def test_win_volume_relpath_strips_extended_prefix():
     assert (letter2, rel2) == (letter, rel)
 
 
+def test_chrome_shadow_cookie_rels_default_cookies_first():
+    from secturafab import browser_session as bs
+
+    src = r"C:\Users\Kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"
+    rels = bs._chrome_shadow_cookie_rels(src)
+    assert rels[0].replace("/", "\\").endswith(r"Default\Cookies")
+    assert not rels[0].lower().endswith(r"network\cookies")
+    assert any(r.lower().endswith(r"default\network\cookies") for r in rels)
+    assert all(not bs._looks_like_live_dos_path(r) for r in rels)
+
+
+def test_vss_dest_ok_needs_session_or_26_v20(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    empty = tmp_path / "empty"
+    empty.write_bytes(b"x" * 8)
+    assert bs._vss_dest_ok(empty) is False
+    cookies = tmp_path / "Cookies"
+    _write_cookie_db(cookies)
+    assert bs._vss_dest_ok(cookies) is True
+
+
 def test_win_copy_from_shadow_device_uses_globalroot_not_live(tmp_path: Path):
     import inspect
 
@@ -1672,8 +1694,9 @@ def test_vssadmin_create_rc2_copies_from_listed_shadow(tmp_path: Path):
         bs._cache["vss"] = ""
         bs._win_vss_vssadmin_copy(tmp_path / "Cookies", dest, rel, "C:")
     assert dest.is_file() and dest.stat().st_size > 0
-    assert bs._cache["vss"] == "create:vssadmin:2"
+    assert bs._cache["vss"] == "shadow"
     assert any(p.endswith("Cookies") for p in copied)
+    assert any("Default\\Cookies" in p.replace("/", "\\") or p.endswith("Cookies") for p in copied)
     assert any(p.endswith("Cookies-wal") for p in copied)
     assert any(p.endswith("Cookies-shm") for p in copied)
     assert not any("delete" in str(a).lower() for a in copied)
@@ -1758,7 +1781,7 @@ def test_win_vss_copy_uses_vssadmin_after_cim_throw(tmp_path: Path):
         bs._win_vss_copy(_Driven(), dest)  # type: ignore[arg-type]
     assert dest.is_file() and dest.stat().st_size > 0
     assert order == ["ps", "vssadmin"]
-    assert bs._cache["vss"] == "ok"
+    assert bs._cache["vss"] == "shadow"
 
 
 def test_sqlite_has_cookie_table(tmp_path: Path):
@@ -1882,6 +1905,7 @@ def test_chrome_open_uses_vss_then_cached_not_dup(tmp_path: Path):
     assert "robocopy_b" not in status["lock_bypass"]
     assert "nolock" not in status["lock_bypass"]
     assert "live_path" not in status["lock_bypass"]
+    assert "shadow_miss" not in status["lock_bypass"]
     assert status["session_found"] is True
     assert status["source"] == "chrome:Default"
 
@@ -1920,8 +1944,9 @@ def test_chrome_open_vss_miss_does_not_nolock_live_path(tmp_path: Path):
     assert status["session_found"] is False
     assert status["source"] == "chrome:Default"
     assert "nolock" not in status["lock_bypass"]
-    assert "live_path" in status["lock_bypass"]
-    assert "WinError 32 on live path" in status["error"]
+    assert "live_path" not in status["lock_bypass"]
+    assert "shadow_miss" in status["lock_bypass"]
+    assert "GLOBALROOT" in status["error"] or "shadow" in status["error"].casefold()
 
 
 def test_vss_success_does_not_copy_live_sidecars(tmp_path: Path):
@@ -1955,7 +1980,8 @@ def test_vss_success_does_not_copy_live_sidecars(tmp_path: Path):
     assert header
     status = bs.discover_status()
     assert status["source"] == "chrome:Default"
-    assert status["lock_bypass"].startswith("vss=create:vssadmin:2")
+    assert status["lock_bypass"] == "vss=shadow"
+    assert "live_path" not in status["lock_bypass"]
     assert "cached" not in status["lock_bypass"]
 
 
@@ -2103,10 +2129,13 @@ def test_abe_helper_has_no_cocreate():
     assert "same GLOBALROOT shadow" in rows_src
     assert "_chrome_is_open" in rows_src
     assert "not chrome_open" in rows_src
-    assert "_LIVE_COOKIES_PATH_ERR" in rows_src
+    assert "_SHADOW_MISS_ERR" in rows_src
+    assert "_LIVE_COOKIES_PATH_ERR" not in inspect.getsource(bs)
+    assert "live_path" not in rows_src
+    assert "vss=shadow" in rows_src
     vssadmin_src = inspect.getsource(bs._win_vss_vssadmin_copy)
-    assert "_win_list_shadow_devices" in vssadmin_src
-    assert "_win_copy_from_shadow_device" in vssadmin_src
+    assert "_win_guess_shadow_devices" in vssadmin_src
+    assert "_win_copy_from_shadow_src" in vssadmin_src
     assert "_decode_vss_output" in vssadmin_src
     shadow_src = inspect.getsource(bs._win_copy_from_shadow_device)
     assert "cmd.exe" not in shadow_src
