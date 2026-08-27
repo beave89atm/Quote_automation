@@ -1685,7 +1685,8 @@ def test_abe_helper_has_no_cocreate():
     assert "memscan:no_chrome" in cs
     assert "memscan:no_browser" not in cs
     assert "CryptUnprotectMemory" in cs
-    assert "CreateRemoteThread" in cs
+    assert "NtQueueApcThread" in cs
+    assert "NtTestAlert" in cs
     assert "idx < 4" not in cs
     assert "bool entropy" not in cs
     assert "aligned_entropy" not in cs
@@ -1824,9 +1825,10 @@ def test_extract_abe_candidate_ptrs_follows_v20_keyring_tag():
     from secturafab import browser_session as bs
 
     key_addr = 0x000001A2B3C4D500
-    buf = bytearray(96)
+    buf = bytearray(48)
     buf[0:4] = b"v20\x00"
-    struct.pack_into("<Q", buf, 16, key_addr)
+    buf[23:29] = bs._KEYRING_V20_MARK
+    struct.pack_into("<Q", buf, 32, key_addr)
     assert (key_addr, 32) in bs._extract_abe_candidate_ptrs(bytes(buf))
 
 
@@ -1836,14 +1838,9 @@ def test_extract_abe_skips_inline_dword_32_spray():
     junk = bytes(range(32))
     assert bs._extract_abe_candidate_ptrs(b"\x20\x00\x00\x00" + junk) == []
     assert bs._aligned_entropy_keys(junk * 4) == []
-
-
-def test_crypt_unprotect_stub_is_same_process_32():
-    from secturafab import browser_session as bs
-
-    stub = bs._x64_crypt_unprotect_stub(0x7FF800001234)
-    assert stub[4:9] == b"\xBA\x20\x00\x00\x00"
-    assert stub[9:15] == b"\x41\xB8\x01\x00\x00\x00"
+    loose = bytearray(40)
+    loose[0:4] = b"v20\x00"
+    assert bs._extract_abe_candidate_ptrs(bytes(loose)) == []
 
 
 def test_inline_bstr_keys_reads_after_size_t_and_dword():

