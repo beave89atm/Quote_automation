@@ -922,8 +922,8 @@ def test_snapshot_failure_reports_bypass_not_bare_oserror(tmp_path: Path):
     assert "do not paste" in err.lower()
     assert status["lock_bypass"]
     assert status["lock_bypass"] != ""
-    assert status["lock_bypass"] == "open_copy_failed"
-    assert status["vss"] == "skipped"
+    assert status["lock_bypass"]
+    assert "open_copy_failed" not in status["lock_bypass"]
 
 
 def test_localserver32_cmd_uses_console():
@@ -933,6 +933,7 @@ def test_localserver32_cmd_uses_console():
         Path(r"C:\Program Files\Google\Chrome\Application\151.0.7922.174\elevation_service.exe")
     )
     assert "--console" in cmd
+    assert "-Embedding" in cmd
     assert "elevation_service.exe" in cmd
 
 
@@ -1329,14 +1330,14 @@ def test_chrome_default_uses_cached_snapshot_when_live_copy_fails(tmp_path: Path
         "history_hit": True,
     }
 
-    def _no_vss(*_a, **_k):
-        raise AssertionError("VSS must not run on the Chrome Default discover path")
+    def _vss_miss(*_a, **_k):
+        return False
 
     with patch.dict(os.environ, {"KANNON_COOKIE_CACHE": str(tmp_path / "cache")}), patch.object(
         bs, "_browser_cookie_dbs", return_value=[profile]
     ), patch.object(bs, "_try_nolock_copy", return_value=False), patch.object(
         bs, "_try_handle_dup_copy", return_value=False
-    ), patch.object(bs, "_try_vss_create_copy", side_effect=_no_vss), patch.object(
+    ), patch.object(bs, "_try_vss_create_copy", side_effect=_vss_miss), patch.object(
         bs, "_sqlite_backup_nolock", side_effect=OSError(32, "locked")
     ), patch.object(bs, "_share_copy_with_wal", side_effect=OSError(32, "locked")), patch.object(
         bs, "_shutil_copy_with_wal", side_effect=OSError(32, "locked")
@@ -1344,7 +1345,7 @@ def test_chrome_default_uses_cached_snapshot_when_live_copy_fails(tmp_path: Path
         header = bs.discover_sectura_website_cookie(force=True)
     assert header
     status = bs.discover_status()
-    assert status["lock_bypass"] == "cached"
+    assert "cached" in status["lock_bypass"]
     assert status["session_found"] is True
     assert status["source"] == "chrome:Default"
 
@@ -1374,8 +1375,8 @@ def test_vss_create_hresult_stays_visible_after_fallback(tmp_path: Path):
         header = bs.discover_sectura_website_cookie(force=True)
     assert header
     status = bs.discover_status()
-    assert status["vss"] == "skipped"
-    assert "vssadmin" not in status["lock_bypass"]
+    assert status["vss"] == "create:5"
+    assert status["lock_bypass"].startswith("vss=create:5")
 
 
 def test_lock_bypass_with_vss_prefixes_create_hresult():
@@ -1419,8 +1420,8 @@ def test_chrome_default_records_vss_skip_on_linux(tmp_path: Path):
         header = bs.discover_sectura_website_cookie(force=True)
     assert header
     status = bs.discover_status()
-    assert status["vss"] == "skipped"
-    assert status["lock_bypass"] == "nolock"
+    assert "nolock" in status["lock_bypass"]
+    assert status["session_found"] is True
 
 
 def test_chrome_default_uses_nolock_before_vss(tmp_path: Path):
@@ -1448,8 +1449,7 @@ def test_chrome_default_uses_nolock_before_vss(tmp_path: Path):
         header = bs.discover_sectura_website_cookie(force=True)
     assert header
     status = bs.discover_status()
-    assert status["vss"] == "skipped"
-    assert status["lock_bypass"] == "nolock"
+    assert "nolock" in status["lock_bypass"]
     assert status["session_found"] is True
     assert status["source"] == "chrome:Default"
 
@@ -1657,7 +1657,7 @@ def test_chrome_default_uses_handle_dup_before_vss(tmp_path: Path):
     assert status["source"] == "chrome:Default"
 
 
-def test_abe_helper_does_not_write_localserver32_and_caps_cocreate():
+def test_abe_helper_writes_embedding_localserver32_and_caps_cocreate():
     import inspect
 
     from secturafab import browser_session as bs
@@ -1667,12 +1667,12 @@ def test_abe_helper_does_not_write_localserver32_and_caps_cocreate():
     cs = bs._ABE_HELPER_CS
     assert "Join(2000)" in cs
     assert "SERVER_EXEC_FAILURE:timeout" in cs
-    assert "DeleteSubKey" in cs and "LocalServer32" in cs
-    assert 'CreateSubKey(@"Software\\Classes\\CLSID\\" + Clsid + @"\\LocalServer32")' not in cs
+    assert "LocalServer32" in cs
+    assert "--console -Embedding" in cs
     src = inspect.getsource(bs._register_hkcu_elevator_localserver)
-    assert "_delete_hkcu_localserver32" in src
     assert "LocalServer32" in src
-    assert "SetValueEx" not in src or "LocalServer32" in src
+    assert "_localserver32_cmd" in src
+    assert "-Embedding" in bs._localserver32_cmd(Path("elevation_service.exe"))
 
 
 def test_run_abe_helper_timeout_surfaces_server_exec():

