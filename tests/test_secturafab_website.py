@@ -1780,6 +1780,11 @@ def test_abe_helper_has_no_cocreate():
     assert "_local_free" in inspect.getsource(bs._dpapi_unprotect_ex)
     assert "ArgumentError" in inspect.getsource(bs._dpapi_unprotect_ex)
     assert "entropy is not None" in inspect.getsource(bs._dpapi_unprotect_ex)
+    assert "get_last_error" in inspect.getsource(bs._dpapi_unprotect_ex)
+    assert "dpapi:ok" in inspect.getsource(bs)
+    assert "dpapi:win32=" in inspect.getsource(bs)
+    assert "dpapi:len=" in inspect.getsource(bs)
+    assert "_note_dpapi_hr" in inspect.getsource(bs)
     assert "_dpapi_unprotect_local" in inspect.getsource(bs._app_bound_layout_views)
     assert "Chrome not required" in inspect.getsource(bs._dpapi_unprotect_appb)
     assert '_join_abe_hr(["memscan:no_chrome"])' in inspect.getsource(bs._memscan_abe_key)
@@ -2142,6 +2147,66 @@ def test_dpapi_640_nested_unprotect_then_length_prefix():
         bs._cache["_v20_verify"] = []
         bs._cache["_appb_views"] = []
         bs._cache["_appb_fp"] = ""
+
+
+def test_dpapi_blob_slices_full_then_appb_then_header():
+    from secturafab import browser_session as bs
+
+    body = b"\x01\x00\x00\x00" + os.urandom(636)
+    raw = b"APPB" + body
+    bs._cache["_app_bound_raw"] = raw
+    try:
+        slices = bs._dpapi_blob_slices(body)
+        assert slices[0] == raw
+        assert slices[1] == body
+        assert slices[2] == body[4:]
+    finally:
+        bs._cache["_app_bound_raw"] = None
+
+
+def test_join_abe_hr_includes_dpapi_win32_and_len():
+    from secturafab import browser_session as bs
+
+    bs._cache["_appb_fp"] = "appb:dpapi:640"
+    bs._cache["_dpapi_hr"] = "dpapi:ok;dpapi:len=32"
+    try:
+        hr = bs._join_abe_hr(["run:4551"])
+        assert "appb:dpapi:640" in hr
+        assert "dpapi:ok" in hr
+        assert "dpapi:len=32" in hr
+        assert "run:4551" in hr
+    finally:
+        bs._cache["_appb_fp"] = ""
+        bs._cache["_dpapi_hr"] = ""
+    bs._cache["_appb_fp"] = "appb:dpapi:640"
+    bs._cache["_dpapi_hr"] = "dpapi:win32=13"
+    try:
+        hr = bs._join_abe_hr(["run:4551"])
+        assert "dpapi:win32=13" in hr
+        assert "appb:dpapi:640" in hr
+    finally:
+        bs._cache["_appb_fp"] = ""
+        bs._cache["_dpapi_hr"] = ""
+
+
+def test_dpapi_ok_plain_after_header_is_cookie_key():
+    from secturafab import browser_session as bs
+
+    cookie_key = os.urandom(32)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x99" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    # Successful CryptUnprotect payload after the DPAPI version dword.
+    inner = b"\x01\x00\x00\x00" + cookie_key
+    blob = b"\x01\x00\x00\x00" + os.urandom(636)
+    bs._cache["_app_bound_blob"] = blob
+    bs._cache["_v20_verify"] = [cookie_blob]
+    try:
+        assert bs._cookie_key_from_unprotect_plain(inner, cookie_blob) == cookie_key
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
 
 
 def test_disk_dpapi_unwrap_succeeds_without_chrome():

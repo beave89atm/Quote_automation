@@ -80,9 +80,11 @@ _cache: dict[str, Any] = {
     "v20_ok": 0,
     "_v20_verify": [],
     "_app_bound_blob": None,
+    "_app_bound_raw": None,
     "_app_bound_b64": "",
     "_appb_fp": "",
     "_appb_views": [],
+    "_dpapi_hr": "",
     "_v10_key": None,
 }
 
@@ -173,9 +175,11 @@ def _discover_uncached() -> tuple[str, str, str]:
     _cache["v20_ok"] = 0
     _cache["_v20_verify"] = []
     _cache["_app_bound_blob"] = None
+    _cache["_app_bound_raw"] = None
     _cache["_app_bound_b64"] = ""
     _cache["_appb_fp"] = ""
     _cache["_appb_views"] = []
+    _cache["_dpapi_hr"] = ""
     _cache["_v10_key"] = None
     pairs_all: list[tuple[str, str]] = []
     decrypt_failures = 0
@@ -2509,6 +2513,8 @@ def _app_bound_ciphertext(b64_key: str) -> bytes | None:
         raw = base64.b64decode(b64_key)
     except (ValueError, TypeError):
         return None
+    if raw:
+        _cache["_app_bound_raw"] = raw
     if raw.startswith(b"APPB"):
         raw = raw[4:]
     return raw or None
@@ -2582,6 +2588,7 @@ def _unwrap_app_bound_key(
     raw = _app_bound_ciphertext(b64_key)
     _cache["_app_bound_blob"] = raw
     _cache["_app_bound_b64"] = b64_key
+    _cache["_dpapi_hr"] = ""
     sample = _resolve_v20_sample(v20_sample)
     if not raw and not sample:
         return None, "chrome_dir", "no_app_bound_key"
@@ -2610,6 +2617,21 @@ def _accept_aes_key(plain: bytes | None) -> bytes | None:
     return None
 
 
+def _note_dpapi_hr(token: str) -> None:
+    """Record CryptUnprotect result. Never stores plaintext or key bytes."""
+    text = (token or "").strip()
+    if not text:
+        return
+    cur = str(_cache.get("_dpapi_hr") or "")
+    if text.startswith("dpapi:ok"):
+        _cache["_dpapi_hr"] = text
+        return
+    if "dpapi:ok" in cur:
+        return
+    if not cur:
+        _cache["_dpapi_hr"] = text
+
+
 def _dpapi_unprotect(blob: bytes) -> bytes | None:
     return _dpapi_unprotect_ex(blob)
 
@@ -2629,10 +2651,13 @@ def _dpapi_unprotect_ex(
                 ("pbData", ctypes.c_void_p),
             ]
 
-        crypt32 = ctypes.windll.crypt32
-        kernel32 = ctypes.windll.kernel32
+        if not hasattr(ctypes, "WinDLL"):
+            return None
+        crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.LocalFree.argtypes = [ctypes.c_void_p]
         kernel32.LocalFree.restype = ctypes.c_void_p
+        crypt32.CryptUnprotectData.restype = wintypes.BOOL
         # c_void_p + addressof: DPAPI starts 01 00 00 00; c_char_p would truncate.
         in_buf = (ctypes.c_ubyte * len(blob)).from_buffer_copy(blob)
         in_blob = DATA_BLOB(len(blob), ctypes.addressof(in_buf))
@@ -2655,23 +2680,24 @@ def _dpapi_unprotect_ex(
             int(flags),
             ctypes.byref(out_blob),
         ):
+            _note_dpapi_hr(f"dpapi:win32={int(ctypes.get_last_error() or 0)}")
             return None
         pb = out_blob.pbData
         cb = int(out_blob.cbData or 0)
         if not pb or cb <= 0:
+            _note_dpapi_hr("dpapi:len=0")
             return None
         ptr = pb if isinstance(pb, ctypes.c_void_p) else ctypes.c_void_p(int(pb))
         plain = ctypes.string_at(ptr, cb)
         _local_free(kernel32, ptr)
+        _note_dpapi_hr(f"dpapi:ok;dpapi:len={len(plain)}")
         return plain
     except (AttributeError, OSError, ValueError, TypeError, OverflowError, ctypes.ArgumentError):
         return None
 
 
 def _dpapi_blob_slices(blob: bytes) -> list[bytes]:
-    """640-byte APPB body plus inner DPAPI headers (01 00 00 00)."""
-    if blob.startswith(b"APPB"):
-        blob = blob[4:]
+    """Full APPB+blob, post-APPB 640, then payload after the DPAPI version dword."""
     out: list[bytes] = []
     seen: set[bytes] = set()
 
@@ -2680,13 +2706,22 @@ def _dpapi_blob_slices(blob: bytes) -> list[bytes]:
             seen.add(part)
             out.append(part)
 
-    add(blob)
-    start = 0
+    raw = _cache.get("_app_bound_raw")
+    if isinstance(raw, (bytes, bytearray)) and raw:
+        add(bytes(raw))
+    body = bytes(blob)
+    if body.startswith(b"APPB"):
+        add(body)
+        body = body[4:]
+    add(body)
+    if _looks_like_dpapi(body):
+        add(body[4:])
+    start = 1
     while True:
-        idx = blob.find(b"\x01\x00\x00\x00", start)
+        idx = body.find(b"\x01\x00\x00\x00", start)
         if idx < 0:
             break
-        add(blob[idx:])
+        add(body[idx:])
         start = idx + 1
     return out
 
@@ -3187,6 +3222,18 @@ def _join_abe_hr(parts: list[str]) -> str:
             out.insert(1, fp)
         else:
             out.append(fp)
+    dp = str(_cache.get("_dpapi_hr") or "")
+    if dp:
+        idx = 1
+        for i, item in enumerate(out):
+            if item.startswith("appb:"):
+                idx = i + 1
+                break
+        for bit in dp.split(";"):
+            bit = bit.strip()
+            if bit and bit not in out:
+                out.insert(idx, bit)
+                idx += 1
     return _safe_snapshot_detail(";".join(out))[:80]
 
 
@@ -3458,7 +3505,10 @@ def _cookie_key_from_unprotect_plain(
             hit = _cookie_key_from_unprotect_plain(nested, v20_sample)
             if hit:
                 return hit
-    for cand in _plain_aes_keys(plain) + _aes_key_windows(plain):
+    material = plain[4:] if plain.startswith(b"APPB") else plain
+    if _looks_like_dpapi(material):
+        material = material[4:]
+    for cand in _plain_aes_keys(plain) + _plain_aes_keys(material) + _aes_key_windows(plain):
         if _v20_key_ok(cand, v20_sample, all_blobs=True):
             return cand
     popped = _pop_len_prefixed(plain)
