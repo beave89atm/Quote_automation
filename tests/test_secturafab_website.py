@@ -1705,7 +1705,11 @@ def test_abe_helper_has_no_cocreate():
     assert "CRYPTPROTECTMEMORY_SAME_PROCESS" in apc
     assert "same_process" in apc
     assert "_aes_gcm_decrypt_bcrypt" in inspect.getsource(bs)
+    assert "_aes_gcm_decrypt_stdlib" in inspect.getsource(bs)
     assert "_v20_verify_samples" in inspect.getsource(bs)
+    assert "consider_raw" in memscan
+    assert "consider_apc" in memscan
+    assert 'unprotect(b"\\x00" * 32)' not in memscan
     assert "public long cbData" in cs
     assert "new IntPtr(32), new IntPtr(0)" in cs
     assert "new IntPtr(32), new IntPtr(1)" not in cs
@@ -1953,6 +1957,40 @@ def test_pick_v20_sample_skips_short():
     assert bs._pick_v20_sample([("h", "n", "", short)]) is None
     assert bs._pick_v20_sample([("h", "n", "", short), ("h", "n", "", long)]) == long
     assert bs._v20_samples_from_rows([("h", "n", "", short), ("h", "n", "", long)]) == [long]
+
+
+def test_aes_gcm_stdlib_matches_cryptography():
+    from secturafab import browser_session as bs
+
+    key = os.urandom(32)
+    nonce = os.urandom(12)
+    plain = (b"\x11" * 32) + b"session"
+    payload = nonce + _aes_gcm_encrypt(plain, key, nonce)
+    assert bs._aes_gcm_decrypt_stdlib(payload, key) == plain
+    assert bs._aes_gcm_decrypt_stdlib(payload, os.urandom(32)) == b""
+
+
+def test_aes_key_windows_takes_offset_32():
+    from secturafab import browser_session as bs
+
+    key = bytes(range(32))
+    padded = b"\xaa" * 8 + key + b"\xbb" * 8
+    assert key in bs._aes_key_windows(padded)
+    assert key in bs._aes_key_windows(key)
+
+
+def test_v20_key_ok_accepts_offset_apc_plain():
+    from secturafab import browser_session as bs
+
+    key = os.urandom(32)
+    nonce = os.urandom(12)
+    plain = (b"\x22" * 32) + b"session"
+    blob = b"v20" + nonce + _aes_gcm_encrypt(plain, key, nonce)
+    bs._cache["_v20_verify"] = [blob]
+    try:
+        assert bs._v20_key_ok(b"\xaa" * 8 + key + b"\xbb" * 8, blob) is True
+    finally:
+        bs._cache["_v20_verify"] = []
 
 
 def test_v20_key_ok_uses_apc_plain_against_any_of_the_blobs():

