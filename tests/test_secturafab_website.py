@@ -1786,6 +1786,7 @@ def test_abe_helper_has_no_cocreate():
     assert "dpapi:len=" in inspect.getsource(bs)
     assert "dpapi:off=" in inspect.getsource(bs)
     assert "dpapi:all13" in inspect.getsource(bs)
+    assert "next=chrome_open" in inspect.getsource(bs)
     assert "_DPAPI_WALK_OFFS" in inspect.getsource(bs)
     assert bs._DPAPI_WALK_OFFS == (0, 4, 8, 12, 16, 32, 44)
     assert "_note_dpapi_hr" in inspect.getsource(bs)
@@ -2215,12 +2216,12 @@ def test_dpapi_walk_all13():
     try:
         with patch.object(bs, "_dpapi_unprotect_ex", side_effect=_ex):
             assert bs._dpapi_unprotect_local(body) is None
-        assert bs._cache["_dpapi_hr"] == "dpapi:win32=13;dpapi:all13"
+        assert bs._cache["_dpapi_hr"] == "dpapi:all13;next=chrome_open"
         bs._cache["_appb_fp"] = "appb:dpapi:640"
         hr = bs._join_abe_hr(["run:4551"])
-        assert "dpapi:all13" in hr
+        assert hr.startswith("dpapi:all13")
+        assert "next=chrome_open" in hr
         assert "appb:dpapi:640" in hr
-        assert "run:4551" in hr
     finally:
         bs._cache["_app_bound_raw"] = None
         bs._cache["_dpapi_hr"] = ""
@@ -2235,11 +2236,10 @@ def test_join_abe_hr_includes_dpapi_win32_and_len():
     bs._cache["_dpapi_hr"] = "dpapi:ok;dpapi:len=32;dpapi:off=16"
     try:
         hr = bs._join_abe_hr(["run:4551"])
+        assert hr.startswith("dpapi:ok")
         assert "appb:dpapi:640" in hr
-        assert "dpapi:ok" in hr
         assert "dpapi:len=32" in hr
         assert "dpapi:off=16" in hr
-        assert "run:4551" in hr
     finally:
         bs._cache["_appb_fp"] = ""
         bs._cache["_dpapi_hr"] = ""
@@ -2272,6 +2272,42 @@ def test_dpapi_ok_plain_after_header_is_cookie_key():
     finally:
         bs._cache["_app_bound_blob"] = None
         bs._cache["_v20_verify"] = []
+
+
+def test_all13_skips_helper_and_leads_abe_hr():
+    from secturafab import browser_session as bs
+
+    body = b"\x01\x00\x00\x00" + os.urandom(636)
+    sample = b"v20" + b"\x00" * 40
+    bs._cache["_app_bound_blob"] = body
+    bs._cache["_app_bound_raw"] = b"APPB" + body
+    bs._cache["_v20_verify"] = [sample]
+    bs._cache["_dpapi_hr"] = ""
+
+    def _ex(*_a, **_k):
+        bs._cache["_dpapi_last_win32"] = 13
+        return None
+
+    try:
+        with patch.object(bs, "_dpapi_unprotect_ex", side_effect=_ex), patch.object(
+            bs, "_chrome_pids_prioritized", return_value=[]
+        ), patch.object(
+            bs,
+            "_compiled_abe_helper_exe",
+            side_effect=AssertionError("all13 must not retry CryptUnprotect"),
+        ):
+            key, hr = bs._elevator_decrypt_via_chrome_dir(sample)
+        assert key is None
+        assert hr.startswith("dpapi:all13")
+        assert "next=chrome_open" in hr
+        assert "appb:dpapi:640" in hr
+        assert "run:4551" not in hr
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_app_bound_raw"] = None
+        bs._cache["_v20_verify"] = []
+        bs._cache["_dpapi_hr"] = ""
+        bs._cache["_appb_fp"] = ""
 
 
 def test_disk_dpapi_unwrap_succeeds_without_chrome():
