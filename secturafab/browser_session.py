@@ -2472,7 +2472,10 @@ def _browser_keys_uncached(
         return keys
     enc = os_crypt.get("encrypted_key")
     if isinstance(enc, str) and enc.strip():
-        keys.v10 = _v10_os_crypt_key(enc)
+        try:
+            keys.v10 = _v10_os_crypt_key(enc)
+        except Exception:  # noqa: BLE001 — v10 LocalFree must not skip APPB
+            keys.v10 = None
         if keys.v10:
             _cache["_v10_key"] = keys.v10
     abe = os_crypt.get("app_bound_encrypted_key")
@@ -2494,7 +2497,10 @@ def _v10_os_crypt_key(b64_key: str) -> bytes | None:
         return None
     if raw.startswith(b"DPAPI"):
         raw = raw[5:]
-    return _accept_aes_key(_dpapi_unprotect(raw))
+    try:
+        return _accept_aes_key(_dpapi_unprotect(raw))
+    except Exception:  # noqa: BLE001 — LocalFree ArgumentError must not abort ABE
+        return None
 
 
 def _app_bound_ciphertext(b64_key: str) -> bytes | None:
@@ -2625,6 +2631,8 @@ def _dpapi_unprotect_ex(
 
         crypt32 = ctypes.windll.crypt32
         kernel32 = ctypes.windll.kernel32
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        kernel32.LocalFree.restype = ctypes.c_void_p
         # c_void_p + addressof: DPAPI starts 01 00 00 00; c_char_p would truncate.
         in_buf = (ctypes.c_ubyte * len(blob)).from_buffer_copy(blob)
         in_blob = DATA_BLOB(len(blob), ctypes.addressof(in_buf))
@@ -2645,11 +2653,15 @@ def _dpapi_unprotect_ex(
             ctypes.byref(out_blob),
         ):
             return None
-        try:
-            return ctypes.string_at(out_blob.pbData, out_blob.cbData)
-        finally:
-            kernel32.LocalFree(out_blob.pbData)
-    except (AttributeError, OSError, ValueError, TypeError):
+        pb = out_blob.pbData
+        cb = int(out_blob.cbData or 0)
+        if not pb or cb <= 0:
+            return None
+        ptr = pb if isinstance(pb, ctypes.c_void_p) else ctypes.c_void_p(int(pb))
+        plain = ctypes.string_at(ptr, cb)
+        _local_free(kernel32, ptr)
+        return plain
+    except (AttributeError, OSError, ValueError, TypeError, OverflowError, ctypes.ArgumentError):
         return None
 
 
@@ -2976,6 +2988,27 @@ def _bstr_from_bytes(oleaut32: Any, blob: bytes) -> Any:
     if not raw:
         return None
     return c_void_p(int(raw))
+
+
+def _local_free(kernel32: Any, ptr: Any) -> None:
+    """LocalFree with an explicit 64-bit c_void_p. Never pass a raw int."""
+    import ctypes
+    from ctypes import c_void_p
+
+    if not ptr:
+        return
+    try:
+        handle = ptr if isinstance(ptr, c_void_p) else c_void_p(int(ptr))
+        if not handle.value:
+            return
+        try:
+            kernel32.LocalFree.argtypes = [c_void_p]
+            kernel32.LocalFree.restype = c_void_p
+        except (AttributeError, TypeError):
+            pass
+        kernel32.LocalFree(handle)
+    except (OverflowError, ValueError, TypeError, OSError, ctypes.ArgumentError):
+        return
 
 
 def _bstr_free(oleaut32: Any, bstr: Any) -> None:
@@ -3336,7 +3369,10 @@ def _app_bound_layout_views(blob: bytes) -> tuple[str, list[bytes]]:
                 views.append(item)
 
     add_all(blob)
-    inner = _dpapi_unprotect(blob)
+    try:
+        inner = _dpapi_unprotect(blob)
+    except Exception:  # noqa: BLE001 — keep appb:dpapi:N even if LocalFree overflows
+        inner = None
     if inner:
         kind = f"{kind}+u"
         add_all(inner)

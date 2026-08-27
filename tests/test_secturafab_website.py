@@ -1203,6 +1203,58 @@ def test_elevator_overflow_does_not_crash_discover(tmp_path: Path):
     assert "do not paste" in status["error"].lower()
 
 
+def test_local_free_uses_c_void_p_not_raw_int():
+    """Win64 LocalFree must get a pointer-width c_void_p, not a raw int."""
+    import ctypes
+    from ctypes import c_void_p
+    from unittest.mock import Mock
+
+    from secturafab.browser_session import _local_free
+
+    k32 = Mock()
+    huge = 0x7FFF_FFFF_ABCD_1234
+    _local_free(k32, huge)
+    k32.LocalFree.assert_called_once()
+    arg = k32.LocalFree.call_args[0][0]
+    assert isinstance(arg, c_void_p)
+    assert int(arg.value) == huge
+    k32.LocalFree.side_effect = ctypes.ArgumentError(
+        "argument 1: OverflowError: int too long to convert"
+    )
+    _local_free(k32, c_void_p(huge))  # must not raise
+
+
+def test_app_bound_layout_keeps_dpapi_fp_when_unprotect_raises():
+    import ctypes
+
+    from secturafab import browser_session as bs
+
+    blob = b"\x01\x00\x00\x00" + os.urandom(636)
+    assert len(blob) == 640
+    with patch.object(
+        bs,
+        "_dpapi_unprotect",
+        side_effect=ctypes.ArgumentError("argument 1: OverflowError: int too long to convert"),
+    ):
+        fp, views = bs._app_bound_layout_views(blob)
+    assert fp.startswith("appb:dpapi:640")
+    assert views
+
+
+def test_v10_os_crypt_key_swallows_localfree_argument_error():
+    import ctypes
+
+    from secturafab import browser_session as bs
+
+    b64 = base64.b64encode(b"DPAPI" + b"\x01\x00\x00\x00" + os.urandom(32)).decode("ascii")
+    with patch.object(
+        bs,
+        "_dpapi_unprotect",
+        side_effect=ctypes.ArgumentError("argument 1: OverflowError: int too long to convert"),
+    ):
+        assert bs._v10_os_crypt_key(b64) is None
+
+
 def test_bstr_free_uses_c_void_p_not_raw_int():
     """Win64 SysFreeString must get a pointer-width c_void_p."""
     import ctypes
@@ -1725,6 +1777,9 @@ def test_abe_helper_has_no_cocreate():
     assert "ImpersonateLoggedOnUser" in inspect.getsource(bs)
     assert "c_void_p" in inspect.getsource(bs._dpapi_unprotect_ex)
     assert "addressof" in inspect.getsource(bs._dpapi_unprotect_ex)
+    assert "_local_free" in inspect.getsource(bs._dpapi_unprotect_ex)
+    assert "ArgumentError" in inspect.getsource(bs._dpapi_unprotect_ex)
+    assert "kernel32.LocalFree(out_blob.pbData)" not in inspect.getsource(bs)
     assert "UnprotectOnce" in cs
     assert "CryptUnprotectData" in cs
     assert "KANNON_APPB_PATH" in cs
