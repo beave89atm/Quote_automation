@@ -879,6 +879,11 @@ def test_win_paths_match_strips_extended_prefix():
         r"\Device\HarddiskVolume3\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies",
         r"D:\unused\Google\Chrome\User Data\Default\Network\Cookies",
     )
+    # FileNameInfo is volume-relative (no drive) when GetFinalPathName is empty.
+    assert _paths_match(
+        r"\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies",
+        r"C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies",
+    )
 
 
 def test_snapshot_failure_reports_bypass_not_bare_oserror(tmp_path: Path):
@@ -1334,6 +1339,8 @@ def test_chrome_default_runs_vss_create_first(tmp_path: Path):
         raise AssertionError("nolock must not run when VSS create succeeds")
 
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_try_nolock_copy", return_value=False
+    ), patch.object(
         bs, "_try_handle_dup_copy", return_value=False
     ), patch.object(
         bs, "_try_vss_create_copy", side_effect=_vss_create
@@ -1366,6 +1373,8 @@ def test_vss_create_hresult_stays_visible_after_fallback(tmp_path: Path):
         return False
 
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_try_nolock_copy", return_value=False
+    ), patch.object(
         bs, "_try_vss_create_copy", side_effect=_vss_create
     ):
         header = bs.discover_sectura_website_cookie(force=True)
@@ -1416,8 +1425,39 @@ def test_chrome_default_records_vss_skip_on_linux(tmp_path: Path):
         header = bs.discover_sectura_website_cookie(force=True)
     assert header
     status = bs.discover_status()
-    assert status["vss"] == "skipped:not_nt"
-    assert "vss=skipped:not_nt" in status["lock_bypass"]
+    assert status["vss"] == "skipped:nolock"
+    assert "nolock" in status["lock_bypass"]
+
+
+def test_chrome_default_uses_nolock_before_vss(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db)
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+
+    def _no_vss(*_a, **_k):
+        raise AssertionError("VSS must not run when nolock lands Cookies")
+
+    def _no_dup(*_a, **_k):
+        raise AssertionError("handle-dup must not run when nolock lands Cookies")
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_try_vss_create_copy", side_effect=_no_vss
+    ), patch.object(bs, "_try_handle_dup_copy", side_effect=_no_dup):
+        header = bs.discover_sectura_website_cookie(force=True)
+    assert header
+    status = bs.discover_status()
+    assert status["vss"] == "skipped:nolock"
+    assert "nolock" in status["lock_bypass"]
+    assert status["session_found"] is True
+    assert status["source"] == "chrome:Default"
 
 
 def test_vss_create_script_uses_cim_not_file_drive_arg():
@@ -1610,6 +1650,8 @@ def test_chrome_default_uses_handle_dup_before_vss(tmp_path: Path):
         raise AssertionError("VSS must not run when handle-dup lands Cookies")
 
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_try_nolock_copy", return_value=False
+    ), patch.object(
         bs, "_try_handle_dup_copy", side_effect=_dup
     ), patch.object(bs, "_try_vss_create_copy", side_effect=_vss):
         header = bs.discover_sectura_website_cookie(force=True)
@@ -1621,7 +1663,7 @@ def test_chrome_default_uses_handle_dup_before_vss(tmp_path: Path):
     assert status["source"] == "chrome:Default"
 
 
-def test_abe_helper_does_not_write_localserver32_and_caps_cocreate():
+def test_abe_helper_writes_console_localserver32_and_caps_cocreate():
     from secturafab import browser_session as bs
 
     assert bs._ABE_HELPER_TIMEOUT_S <= 8
@@ -1629,9 +1671,14 @@ def test_abe_helper_does_not_write_localserver32_and_caps_cocreate():
     cs = bs._ABE_HELPER_CS
     assert "Join(3500)" in cs
     assert "SERVER_EXEC_FAILURE:timeout" in cs
-    assert "DeleteSubKey" in cs and "LocalServer32" in cs
-    assert r'LocalServer32"))' not in cs.replace("DeleteSubKey", "")
-    assert 'CreateSubKey(@"Software\\Classes\\CLSID\\" + Clsid + @"\\LocalServer32")' not in cs
+    assert "LocalServer32" in cs
+    assert "--console" in cs
+    assert r'CLSID\" + Clsid + @"\LocalServer32' in cs or "LocalServer32" in cs
+    import inspect
+
+    src = inspect.getsource(bs._register_hkcu_elevator_localserver)
+    assert "LocalServer32" in src
+    assert "_localserver32_cmd" in src
 
 
 def test_run_abe_helper_timeout_surfaces_server_exec():
