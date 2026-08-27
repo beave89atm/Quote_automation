@@ -3661,12 +3661,11 @@ def _static_app_bound_cookie_key(v20_sample: bytes | None) -> bytes | None:
         fp, views = _app_bound_layout_views(blob)
         _cache["_appb_fp"] = fp
         _cache["_appb_views"] = views
-        if "dpapi:all13" not in str(_cache.get("_dpapi_hr") or ""):
-            inner = _dpapi_unprotect_appb(blob)
-            if inner:
-                hit = _cookie_key_from_unprotect_plain(inner, v20_sample)
-                if hit:
-                    return hit
+        inner = _dpapi_unprotect_appb(blob)
+        if inner:
+            hit = _cookie_key_from_unprotect_plain(inner, v20_sample)
+            if hit:
+                return hit
         for view in views:
             if len(view) == 32 and _high_entropy32(view) and _v20_key_ok(
                 view, v20_sample, all_blobs=True

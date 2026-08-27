@@ -2124,6 +2124,7 @@ def test_dpapi_640_plain_length_prefix_is_cookie_key():
     assert len(blob) == 640
     bs._cache["_app_bound_blob"] = blob
     bs._cache["_v20_verify"] = [cookie_blob]
+    bs._cache["_dpapi_hr"] = ""
     try:
         fp, _views = bs._app_bound_layout_views(blob)
         assert fp.startswith("appb:dpapi:640")
@@ -2135,6 +2136,7 @@ def test_dpapi_640_plain_length_prefix_is_cookie_key():
         bs._cache["_v20_verify"] = []
         bs._cache["_appb_views"] = []
         bs._cache["_appb_fp"] = ""
+        bs._cache["_dpapi_hr"] = ""
 
 
 def test_dpapi_640_nested_unprotect_then_length_prefix():
@@ -2151,6 +2153,7 @@ def test_dpapi_640_nested_unprotect_then_length_prefix():
     assert len(blob) == 640
     bs._cache["_app_bound_blob"] = blob
     bs._cache["_v20_verify"] = [cookie_blob]
+    bs._cache["_dpapi_hr"] = ""
     plains = iter([user_dpapi, inner])
 
     def _once(current):
@@ -2171,6 +2174,7 @@ def test_dpapi_640_nested_unprotect_then_length_prefix():
         bs._cache["_v20_verify"] = []
         bs._cache["_appb_views"] = []
         bs._cache["_appb_fp"] = ""
+        bs._cache["_dpapi_hr"] = ""
 
 
 def test_dpapi_blob_slices_full_then_appb_then_header():
@@ -2499,6 +2503,7 @@ def test_dpapi_640_plain_flag1_inner_is_cookie_key():
     blob = b"\x01\x00\x00\x00" + os.urandom(636)
     bs._cache["_app_bound_blob"] = blob
     bs._cache["_v20_verify"] = [cookie_blob]
+    bs._cache["_dpapi_hr"] = ""
     try:
         with patch.object(bs, "_dpapi_unprotect_appb", return_value=inner):
             assert bs._static_app_bound_cookie_key(cookie_blob) == cookie_key
@@ -2507,6 +2512,7 @@ def test_dpapi_640_plain_flag1_inner_is_cookie_key():
         bs._cache["_v20_verify"] = []
         bs._cache["_appb_views"] = []
         bs._cache["_appb_fp"] = ""
+        bs._cache["_dpapi_hr"] = ""
 
 
 def test_flag1_wrap_unwraps_local_state_then_cookie():
