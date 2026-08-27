@@ -2086,6 +2086,10 @@ def test_abe_helper_has_no_cocreate():
     assert "consider_apc" not in memscan
     assert "consider_appb_apc" not in memscan
     assert "_ABE_HEAP_MARKS" not in memscan
+    assert "os_crypt" in memscan
+    assert "KeyRing" in memscan
+    assert "_chrome_browser_pids" in memscan
+    assert "hot_marks" in memscan
     assert "_RemoteUnprotect" not in memscan
     assert "apc:key:off=" not in memscan
     assert "heap:hit" in memscan
@@ -2101,6 +2105,8 @@ def test_abe_helper_has_no_cocreate():
     assert "apc:hr=" in elev
     assert "apc:key" in elev
     assert "apc:q:err=" in elev
+    assert "apc:ran" in elev
+    assert "handshake" in elev
     assert "crt:err" not in elev
     assert "CreateRemoteThread" not in elev
     assert "alloc:err" in elev
@@ -2166,8 +2172,8 @@ def test_abe_helper_has_no_cocreate():
     elevator = inspect.getsource(bs._elevator_decrypt_via_chrome_dir)
     assert "if all13:" in elevator
     assert elevator.index("if pids:") < elevator.index("if all13:")
-    assert elevator.index("_chrome_elevator_abe_key") < elevator.index("_memscan_abe_key")
-    assert elevator.index("_memscan_abe_key") < elevator.index("_compiled_abe_helper_exe")
+    assert elevator.index("_memscan_abe_key") < elevator.index("_chrome_elevator_abe_key")
+    assert elevator.index("_chrome_elevator_abe_key") < elevator.index("_compiled_abe_helper_exe")
     assert "_call_with_timeout" in elevator
     assert "_ABE_ELEVATOR_TIMEOUT_S" in elevator
     keys_src = inspect.getsource(bs._browser_keys)
@@ -2682,6 +2688,7 @@ def test_chrome_elevator_abe_key_is_apc_0_off_windows():
     stub = bs._elevator_remote_stub_bytes()
     assert stub.startswith(b"\x53")
     assert stub.endswith(b"\xc3")
+    assert bytes((0xC6, 0x43, 0x18, 0xA1)) in stub
     assert 80 <= len(stub) <= 256
 
 
@@ -2702,6 +2709,7 @@ def test_chrome_elevator_reports_apc_q_err_not_crt():
     assert "_elev_hr_token" in elev
     assert "elev:len=" in elev
     assert "apc:key" in elev
+    assert "apc:ran" in elev
     assert "for flag in (1, 0)" in elev
     token = bs._apc_q_err(5)
     assert token == "apc:q:err=5"
