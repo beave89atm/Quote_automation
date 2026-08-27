@@ -1677,9 +1677,13 @@ def test_abe_helper_has_no_cocreate():
     assert "VirtualQueryEx" in cs
     assert "cand=" in cs
     assert "AbePid" in cs
+    assert "SkipPid" in cs
+    assert "PreferPid" in cs
     assert "--type=" in cs
     assert "MEM_MAPPED" in cs
     assert "KANNON_CHROME_PIDS" in cs
+    assert "memscan:no_chrome" in cs
+    assert "memscan:no_browser" not in cs
 
 
 def test_run_abe_helper_timeout_is_helper_timeout():
@@ -1828,13 +1832,24 @@ def test_keys_from_key_blob_parses_elevator_layout():
 def test_chrome_abe_cmd_ok_skips_renderer():
     from secturafab import browser_session as bs
 
+    assert bs._chrome_abe_cmd_ok("") is True
     assert bs._chrome_abe_cmd_ok(r"C:\...\chrome.exe") is True
     assert (
         bs._chrome_abe_cmd_ok(r'chrome.exe --utility-sub-type=network.mojom.NetworkService')
         is True
     )
+    assert bs._chrome_abe_cmd_ok(r"chrome.exe --type=utility") is True
     assert bs._chrome_abe_cmd_ok(r"chrome.exe --type=renderer") is False
     assert bs._chrome_abe_cmd_ok(r"chrome.exe --type=gpu-process") is False
+
+
+def test_chrome_pids_prioritized_falls_back_to_running_chrome():
+    from secturafab import browser_session as bs
+
+    with patch.object(bs, "_chrome_pids", return_value=[111, 222]), patch.object(
+        bs.subprocess, "run", side_effect=OSError("no powershell")
+    ):
+        assert bs._chrome_pids_prioritized() == [111, 222]
 
 
 def test_pick_v20_sample_skips_short():
