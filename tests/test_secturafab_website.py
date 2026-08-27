@@ -1709,6 +1709,10 @@ def test_abe_helper_has_no_cocreate():
     assert "_v20_verify_samples" in inspect.getsource(bs)
     assert "_abe_key_from_material" in inspect.getsource(bs)
     assert "_cookie_keys_from_wrap" in inspect.getsource(bs)
+    assert "_abe_proves_cookies" in inspect.getsource(bs)
+    assert "_aes_gcm_decrypt_layouts" in inspect.getsource(bs)
+    assert "_v20_cookie_text" in inspect.getsource(bs._v20_key_ok)
+    assert "_abe_proves_cookies" in inspect.getsource(bs._unwrap_app_bound_key)
     assert "consider_raw" in memscan
     assert "consider_apc" in memscan
     assert "keyring_pending" not in memscan
@@ -1787,19 +1791,25 @@ def test_unwrap_real_path_is_chrome_dir_not_classnotreg():
 def test_unwrap_uses_chrome_dir_helper_first():
     from secturafab import browser_session as bs
 
+    key = os.urandom(32)
+    nonce = os.urandom(12)
+    cookie_blob = b"v20" + nonce + _aes_gcm_encrypt((b"\x22" * 32) + b"session", key, nonce)
     b64 = base64.b64encode(b"APPB" + b"\x01" * 40).decode("ascii")
-    key = b"k" * 32
+    bs._cache["_v20_verify"] = [cookie_blob]
 
     def _no_elevator(*_a, **_k):
         raise AssertionError("in-process CoCreate must not run when chrome_dir returns a key")
 
-    with patch.object(
-        bs, "_elevator_decrypt_via_chrome_dir", return_value=(key, "0x00000000")
-    ), patch.object(bs, "_elevator_decrypt", side_effect=_no_elevator):
-        got, status, hr = bs._unwrap_app_bound_key(b64, v20_sample=b"v20" + b"\x00" * 40)
-    assert got == key
-    assert status == "chrome_dir"
-    assert hr == "0x00000000"
+    try:
+        with patch.object(
+            bs, "_elevator_decrypt_via_chrome_dir", return_value=(key, "0x00000000")
+        ), patch.object(bs, "_elevator_decrypt", side_effect=_no_elevator):
+            got, status, hr = bs._unwrap_app_bound_key(b64, v20_sample=cookie_blob)
+        assert got == key
+        assert status == "chrome_dir"
+        assert hr == "0x00000000"
+    finally:
+        bs._cache["_v20_verify"] = []
 
 
 def test_user_abe_helper_dirs_skips_program_files(
@@ -2004,6 +2014,58 @@ def test_abe_wrap_key_unwraps_app_bound_then_cookie():
     finally:
         bs._cache["_app_bound_blob"] = None
         bs._cache["_v20_verify"] = []
+
+
+def test_abe_wrap_key_unwraps_embedded_and_tag_before_ct():
+    """Chrome 151: GCM record is not always the whole APPB body; tag may precede ct."""
+    from secturafab import browser_session as bs
+
+    wrap = os.urandom(32)
+    cookie_key = os.urandom(32)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x33" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    nonce = os.urandom(12)
+    ct_tag = _aes_gcm_encrypt(cookie_key, wrap, nonce)
+    ct, tag = ct_tag[:-16], ct_tag[-16:]
+    headered = b"\x00" * 40 + nonce + ct_tag
+    tag_first = nonce + tag + ct
+    flagged = b"\x01" + nonce + ct_tag
+    bs._cache["_v20_verify"] = [cookie_blob]
+    try:
+        bs._cache["_app_bound_blob"] = headered
+        assert bs._abe_key_from_material(wrap, cookie_blob) == cookie_key
+        bs._cache["_app_bound_blob"] = tag_first
+        assert bs._abe_key_from_material(wrap, cookie_blob) == cookie_key
+        bs._cache["_app_bound_blob"] = flagged
+        assert bs._abe_key_from_material(wrap, cookie_blob) == cookie_key
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+
+
+def test_unwrap_zero_hr_requires_cookie_text():
+    from secturafab import browser_session as bs
+
+    wrap = os.urandom(32)
+    b64 = base64.b64encode(b"APPB" + b"\x01" * 40).decode("ascii")
+    dummy = b"v20" + b"\x00" * 40
+    bs._cache["_v20_verify"] = [dummy]
+    try:
+        with patch.object(
+            bs, "_elevator_decrypt_via_chrome_dir", return_value=(wrap, "0x00000000")
+        ), patch.object(
+            bs, "_elevator_decrypt", side_effect=AssertionError("no CoCreate")
+        ):
+            key, status, hr = bs._unwrap_app_bound_key(b64, v20_sample=dummy)
+        assert key is None
+        assert status == "chrome_dir"
+        assert hr != "0x00000000"
+        assert "CLASSNOTREG" not in hr
+    finally:
+        bs._cache["_v20_verify"] = []
+        bs._cache["_app_bound_blob"] = None
 
 
 def test_v20_key_ok_accepts_offset_apc_plain():

