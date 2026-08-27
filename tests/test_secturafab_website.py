@@ -2072,17 +2072,34 @@ def test_abe_helper_has_no_cocreate():
     import inspect
 
     memscan = inspect.getsource(bs._memscan_abe_key)
-    assert "apc:setup" in memscan
-    assert "apc:0" in memscan
-    assert "apc:ok" in memscan
-    assert "apc:hr" in memscan
-    assert "apc:key:off=" in memscan
+    elev = inspect.getsource(bs._chrome_elevator_abe_key) + inspect.getsource(
+        bs._chrome_elevator_decrypt_once
+    )
+    assert "def consider(" in memscan
+    assert "consider_heap" not in memscan
+    assert "consider_apc" not in memscan
+    assert "consider_appb_apc" not in memscan
+    assert "_ABE_HEAP_MARKS" not in memscan
+    assert "_RemoteUnprotect" not in memscan
+    assert "apc:key:off=" not in memscan
     assert "heap:hit" in memscan
+    assert "memscan:cands=" in memscan
+    assert "no_cand" not in memscan
+    assert memscan.index("def consider(") < memscan.index("hit = consider(")
+    assert memscan.index("hit = consider(") < memscan.index("nxt = addr + size")
+    assert "apc:0" in elev
+    assert "apc:ok" in elev
+    assert "apc:hr=" in elev
+    assert "apc:key" in elev
+    assert "DecryptData" in elev
+    assert "vtable" in elev
+    assert "CoCreateInstance" in elev
+    assert "CryptUnprotectMemory" not in elev
+    assert "CryptUnprotectData" not in elev
     assert "_aes_key_windows_offs" in inspect.getsource(bs)
     assert "_v20_one_ok" in inspect.getsource(bs)
     assert "try_blobs" not in memscan
-    assert 'f"memscan:no_cand{extra}"' in memscan
-    assert 'f"memscan:no_key:{tried}{extra}"' in memscan
+    assert 'f"memscan:cands={tried}' in memscan
     assert memscan.index("_keyring_v20_key_ptrs") < memscan.index(
         "_extract_abe_candidate_ptrs(data)"
     )
@@ -2164,11 +2181,11 @@ def test_abe_helper_has_no_cocreate():
     assert "KANNON_APPB_PATH" in cs
     assert "_abe_proves_cookies" in inspect.getsource(bs._unwrap_app_bound_key)
     assert "return _abe_key_from_material(cand, v20_sample)" not in memscan
-    assert "consider_raw" in memscan
-    assert "consider_apc" in memscan
+    assert "_abe_key_from_material" not in memscan
     assert "keyring_pending" not in memscan
-    assert memscan.index("hit = consider_apc") < memscan.index("nxt = addr + size")
     assert 'unprotect(b"\\x00" * 32)' not in memscan
+    assert "_chrome_elevator_abe_key" in inspect.getsource(bs._elevator_decrypt_via_chrome_dir)
+    assert "_elevator_decrypt(" not in inspect.getsource(bs._elevator_decrypt_via_chrome_dir)
     assert "public long cbData" in cs
     assert "new IntPtr(32), new IntPtr(0)" in cs
     assert "new IntPtr(32), new IntPtr(1)" not in cs
@@ -2600,6 +2617,40 @@ def test_chrome_pids_prioritized_falls_back_to_running_chrome():
         bs.subprocess, "run", side_effect=OSError("no powershell")
     ):
         assert bs._chrome_pids_prioritized() == [111, 222]
+
+
+def test_chrome_pids_prioritized_puts_browser_first():
+    from secturafab import browser_session as bs
+
+    class _Run:
+        stdout = (
+            "22\tchrome.exe --type=utility --utility-sub-type=network.mojom.NetworkService\n"
+            "11\tchrome.exe\n"
+            "33\tchrome.exe --type=renderer\n"
+            "44\tchrome.exe --type=utility --utility-sub-type=storage.mojom.StorageService\n"
+        )
+        returncode = 0
+
+    with patch.object(bs, "_chrome_pids", return_value=[22, 11, 33, 44]), patch.object(
+        bs, "_windows_powershell", return_value="powershell"
+    ), patch.object(bs.subprocess, "run", return_value=_Run):
+        ranked = bs._chrome_pids_prioritized()
+    assert ranked[0] == 11
+    assert ranked[1] == 22
+    assert 44 in ranked
+    assert 33 not in ranked
+
+
+def test_chrome_elevator_abe_key_is_apc_0_off_windows():
+    from secturafab import browser_session as bs
+
+    key, hr = bs._chrome_elevator_abe_key(b"v20" + b"\x00" * 40)
+    assert key is None
+    assert hr == "apc:0"
+    stub = bs._elevator_remote_stub_bytes()
+    assert stub.startswith(b"\x53")
+    assert stub.endswith(b"\xc3")
+    assert 80 <= len(stub) <= 256
 
 
 def test_pick_v20_sample_skips_short():
