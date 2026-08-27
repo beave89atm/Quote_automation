@@ -1539,6 +1539,112 @@ def test_parse_vssadmin_create_output():
     assert bs._parse_vss_create_output("VSS none") is None
 
 
+def test_parse_vss_list_output_newest_globalroot_first():
+    from secturafab import browser_session as bs
+
+    text = (
+        "Contents of shadow copy set ID: {AAAAAAAA-1111-2222-3333-444444444444}\n"
+        "    Shadow Copy Volume: "
+        "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy2\n"
+        "Contents of shadow copy set ID: {BBBBBBBB-1111-2222-3333-444444444444}\n"
+        "    Shadow Copy Volume: "
+        "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy7\n"
+    )
+    devices = bs._parse_vss_list_output(text)
+    assert devices[0].endswith("HarddiskVolumeShadowCopy7")
+    assert devices[1].endswith("HarddiskVolumeShadowCopy2")
+    assert all(d.startswith("\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy") for d in devices)
+    assert bs._normalize_shadow_device(r"C:\Users\kyle\Cookies") == ""
+    assert bs._normalize_shadow_device("HarddiskVolumeShadowCopy9") == (
+        "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy9"
+    )
+
+
+def test_win_copy_from_shadow_device_uses_globalroot_not_live(tmp_path: Path):
+    import inspect
+
+    from secturafab import browser_session as bs
+
+    dest = tmp_path / "Cookies"
+    seen: list[str] = []
+    rel = r"Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"
+
+    def fake_raw(src_win: str, out: Path) -> None:
+        seen.append(src_win)
+        assert "GLOBALROOT" in src_win
+        assert "HarddiskVolumeShadowCopy3" in src_win
+        assert src_win[1:3] != ":\\"
+        if src_win.endswith("Cookies"):
+            out.write_bytes(b"sqlite-shadow")
+        else:
+            raise OSError(2, "no sidecar")
+
+    with patch.object(bs, "_win_copy_raw", side_effect=fake_raw):
+        bs._win_copy_from_shadow_device(
+            r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy3",
+            rel,
+            dest,
+        )
+    assert dest.read_bytes() == b"sqlite-shadow"
+    assert seen[0] == (
+        r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy3"
+        r"\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"
+    )
+    assert any(p.endswith("Cookies-wal") for p in seen)
+    assert any(p.endswith("Cookies-shm") for p in seen)
+    src = inspect.getsource(bs._win_copy_from_shadow_device)
+    assert "cmd.exe" not in src
+    assert "_win_copy_raw" in src
+    with pytest.raises(OSError):
+        bs._win_copy_from_shadow_device(r"C:\Users\kyle\Cookies", rel, dest)
+
+
+def test_vssadmin_create_rc2_copies_from_listed_shadow(tmp_path: Path):
+    import subprocess
+
+    from secturafab import browser_session as bs
+
+    dest = tmp_path / "snap" / "Cookies"
+    dest.parent.mkdir()
+    rel = r"Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"
+    copied: list[str] = []
+
+    def fake_run(args, **_k):
+        argv = [str(a) for a in args]
+        if "create" in argv:
+            return subprocess.CompletedProcess(argv, 2, "Shadow copy created.\n", "")
+        if "list" in argv:
+            text = (
+                "Contents of shadow copy set ID: {AAAAAAAA-1111-2222-3333-444444444444}\n"
+                "    Shadow Copy Volume: "
+                "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy7\n"
+            )
+            return subprocess.CompletedProcess(argv, 0, text, "")
+        return subprocess.CompletedProcess(argv, 1, "", "")
+
+    def fake_raw(src_win: str, out: Path) -> None:
+        copied.append(src_win)
+        assert "GLOBALROOT" in src_win
+        assert "HarddiskVolumeShadowCopy7" in src_win
+        assert src_win[1:3] != ":\\"
+        if src_win.endswith("Cookies"):
+            _write_cookie_db(out)
+        else:
+            out.write_bytes(b"side")
+
+    with patch.object(bs.subprocess, "run", side_effect=fake_run), patch.object(
+        bs, "_win_copy_raw", side_effect=fake_raw
+    ), patch.object(bs, "_windows_system32_exe", return_value="vssadmin.exe"):
+        bs._cache["vss"] = ""
+        bs._win_vss_vssadmin_copy(tmp_path / "Cookies", dest, rel, "C:")
+    assert dest.is_file() and dest.stat().st_size > 0
+    assert bs._cache["vss"] == "create:vssadmin:2"
+    assert any(p.endswith("Cookies") for p in copied)
+    assert any(p.endswith("Cookies-wal") for p in copied)
+    assert any(p.endswith("Cookies-shm") for p in copied)
+    assert not any("delete" in str(a).lower() for a in copied)
+
+
 def test_prefer_vss_status_keeps_create_returnvalue():
     from secturafab import browser_session as bs
 
@@ -1703,20 +1809,75 @@ def test_chrome_open_uses_vss_then_cached_not_dup(tmp_path: Path):
         order.append("dup")
         raise AssertionError("dup_handle must not run before VSS+cached")
 
+    sprayed: list[str] = []
+
+    def _spray(name: str):
+        def _inner(*_a, **_k):
+            sprayed.append(name)
+            raise AssertionError(name)
+
+        return _inner
+
     with patch.dict(os.environ, {"KANNON_COOKIE_CACHE": str(tmp_path / "cache")}), patch.object(
         bs, "_browser_cookie_dbs", return_value=[profile]
     ), patch.object(bs, "_try_nolock_copy", return_value=False), patch.object(
         bs, "_try_vss_create_copy", side_effect=_vss
-    ), patch.object(bs, "_try_handle_dup_copy", side_effect=_no_dup):
+    ), patch.object(bs, "_try_handle_dup_copy", side_effect=_no_dup), patch.object(
+        bs, "_win_lock_bypass_with_wal", side_effect=_spray("lock_bypass")
+    ), patch.object(bs, "_win_backup_copy", side_effect=_spray("backup_priv")), patch.object(
+        bs, "_win_ntcreatefile_backup_copy", side_effect=_spray("nt_backup")
+    ), patch.object(bs, "_win_esentutl_copy", side_effect=_spray("esentutl")), patch.object(
+        bs, "_win_robocopy_backup_copy", side_effect=_spray("robocopy_b")
+    ):
         header = bs.discover_sectura_website_cookie(force=True)
     assert header
     status = bs.discover_status()
     assert order == ["vss"]
+    assert sprayed == []
     assert status["lock_bypass"].startswith("vss=create:vssadmin:2")
     assert "cached" in status["lock_bypass"]
     assert "dup_handle" not in status["lock_bypass"]
+    assert "backup_priv" not in status["lock_bypass"]
+    assert "nt_backup" not in status["lock_bypass"]
+    assert "esentutl" not in status["lock_bypass"]
+    assert "robocopy_b" not in status["lock_bypass"]
     assert status["session_found"] is True
     assert status["source"] == "chrome:Default"
+
+
+def test_vss_success_does_not_copy_live_sidecars(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    live = tmp_path / "live" / "Cookies"
+    live.parent.mkdir()
+    live.write_bytes(b"locked")
+    profile = {
+        "label": "chrome:Default",
+        "cookies": live,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+
+    def _vss(_src: Path, dest: Path) -> bool:
+        _write_cookie_db(dest)
+        bs._record_vss("create:vssadmin:2")
+        return True
+
+    def _no_live(*_a, **_k):
+        raise AssertionError("must not copy live Chrome sidecars after a shadow copy")
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_try_nolock_copy", return_value=False
+    ), patch.object(bs, "_try_vss_create_copy", side_effect=_vss), patch.object(
+        bs, "_copy_cookie_sidecars", side_effect=_no_live
+    ):
+        header = bs.discover_sectura_website_cookie(force=True)
+    assert header
+    status = bs.discover_status()
+    assert status["source"] == "chrome:Default"
+    assert status["lock_bypass"].startswith("vss=create:vssadmin:2")
+    assert "cached" not in status["lock_bypass"]
 
 
 def test_browser_dbs_omit_edge_when_chrome_default_exists(
@@ -1859,6 +2020,15 @@ def test_abe_helper_has_no_cocreate():
     assert rows_src.index("_try_vss_create_copy") < rows_src.index("_try_live_cookie_sidecar_copy")
     assert rows_src.index("_try_live_cookie_sidecar_copy") < rows_src.index("_try_cached_cookie_copy")
     assert rows_src.index("_try_cached_cookie_copy") < rows_src.index("_try_handle_dup_copy")
+    assert "allow_lock_bypass=False" in rows_src
+    assert "same GLOBALROOT shadow" in rows_src
+    vssadmin_src = inspect.getsource(bs._win_vss_vssadmin_copy)
+    assert "_win_list_shadow_devices" in vssadmin_src
+    assert "_win_copy_from_shadow_device" in vssadmin_src
+    shadow_src = inspect.getsource(bs._win_copy_from_shadow_device)
+    assert "cmd.exe" not in shadow_src
+    assert "_win_copy_raw" in shadow_src
+    assert "_COOKIE_SIDECARS" in shadow_src
     assert "_host_is_sectura" in inspect.getsource(bs)
     assert "_collect_v20_from_db" in inspect.getsource(bs)
     assert "_cookie_blob_bytes" in inspect.getsource(bs)
