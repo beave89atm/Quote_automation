@@ -2699,7 +2699,7 @@ def test_chrome_elevator_reports_apc_q_err_not_crt():
     assert "CreateRemoteThread" not in elev
     assert "PROCESS_CREATE_THREAD" not in elev or "No PROCESS_CREATE_THREAD" in elev
     assert "apc:q:err=" in elev
-    assert "apc:hr=0x" in elev
+    assert "_elev_hr_token" in elev
     assert "elev:len=" in elev
     assert "apc:key" in elev
     assert "for flag in (1, 0)" in elev
