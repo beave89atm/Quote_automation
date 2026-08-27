@@ -1695,6 +1695,12 @@ def test_abe_helper_has_no_cocreate():
     assert "apc:0" in memscan
     assert "apc:ok" in memscan
     assert "apc:hr" in memscan
+    assert "try_blobs" not in memscan
+    assert 'f"memscan:no_cand{extra}"' in memscan
+    assert 'f"memscan:no_key:{tried}{extra}"' in memscan
+    assert memscan.index("_keyring_v20_key_ptrs") < memscan.index(
+        "_extract_abe_candidate_ptrs(data)"
+    )
     apc = inspect.getsource(bs._RemoteUnprotect._apc)
     assert "CRYPTPROTECTMEMORY_SAME_PROCESS" in apc
     assert "same_process" in apc
