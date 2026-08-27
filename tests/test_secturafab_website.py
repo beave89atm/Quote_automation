@@ -943,21 +943,22 @@ def test_rm_file_pids_empty_off_windows(tmp_path: Path):
     assert _rm_file_pids(tmp_path / "Cookies") == []
 
 
-def test_unwrap_keeps_server_exec_failure():
+def test_unwrap_keeps_helper_timeout_as_chrome_dir():
     from secturafab import browser_session as bs
 
     b64 = base64.b64encode(b"APPB" + b"\x01" * 40).decode("ascii")
-    with patch.object(bs, "_prepare_elevator_com", return_value=""), patch.object(
-        bs, "_elevator_decrypt", return_value=(None, "0x80080005:SERVER_EXEC_FAILURE")
-    ), patch.object(
-        bs, "_elevator_decrypt_via_chrome_dir",
-        return_value=(None, "0x80080005:SERVER_EXEC_FAILURE"),
-    ), patch.object(bs, "_dpapi_unprotect", return_value=None):
-        key, status, hr = bs._unwrap_app_bound_key(b64)
+
+    def _no_elevator(*_a, **_k):
+        raise AssertionError("in-process CoCreate must not run")
+
+    with patch.object(
+        bs, "_elevator_decrypt_via_chrome_dir", return_value=(None, "helper:timeout")
+    ), patch.object(bs, "_elevator_decrypt", side_effect=_no_elevator):
+        key, status, hr = bs._unwrap_app_bound_key(b64, v20_sample=b"v20" + b"\x00" * 40)
     assert key is None
-    assert status == "failed"
-    assert "SERVER_EXEC_FAILURE" in hr
-    assert "0x80080005" in hr
+    assert status == "chrome_dir"
+    assert hr == "helper:timeout"
+    assert "CLASSNOTREG" not in hr
 
 
 def test_hr_label_surfaces_classnotreg():
@@ -1001,23 +1002,26 @@ def test_prepare_elevator_without_exe_is_classnotreg_reason():
         assert bs._prepare_elevator_com() == "no_elevation_service"
 
 
-def test_unwrap_surfaces_classnotreg_not_generic_fail():
+def test_unwrap_helper_miss_is_chrome_dir_not_classnotreg():
     from secturafab import browser_session as bs
 
     b64 = base64.b64encode(b"APPB" + b"\x01" * 40).decode("ascii")
-    with patch.object(bs, "_prepare_elevator_com", return_value=""), patch.object(
-        bs, "_elevator_decrypt", return_value=(None, "0x80040154:CLASSNOTREG")
-    ), patch.object(
-        bs, "_elevator_decrypt_via_chrome_dir", return_value=(None, "0x80040154:CLASSNOTREG")
-    ), patch.object(bs, "_dpapi_unprotect", return_value=None):
-        key, status, hr = bs._unwrap_app_bound_key(b64)
+
+    def _no_elevator(*_a, **_k):
+        raise AssertionError("in-process CoCreate must not run")
+
+    with patch.object(
+        bs, "_elevator_decrypt_via_chrome_dir", return_value=(None, "csc_missing")
+    ), patch.object(bs, "_elevator_decrypt", side_effect=_no_elevator):
+        key, status, hr = bs._unwrap_app_bound_key(b64, v20_sample=b"v20" + b"\x00" * 40)
     assert key is None
-    assert status == "failed"
-    assert "CLASSNOTREG" in hr
-    assert "0x80040154" in hr
+    assert status == "chrome_dir"
+    assert hr == "csc_missing"
+    assert "CLASSNOTREG" not in hr
+    assert "0x80040154" not in hr
 
 
-def test_discover_abe_hr_is_classnotreg(tmp_path: Path):
+def test_discover_abe_hr_is_chrome_dir(tmp_path: Path):
     import sqlite3
 
     from secturafab import browser_session as bs
@@ -1048,15 +1052,15 @@ def test_discover_abe_hr_is_classnotreg(tmp_path: Path):
         "history_hit": True,
     }
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
-        bs, "_unwrap_app_bound_key", return_value=(None, "failed", "0x80040154:CLASSNOTREG")
+        bs, "_unwrap_app_bound_key", return_value=(None, "chrome_dir", "csc_missing")
     ):
         header = bs.discover_sectura_website_cookie(force=True)
     assert header == ""
     status = bs.discover_status()
-    assert status["abe"] == "failed"
-    assert "CLASSNOTREG" in status["abe_hr"]
-    assert "0x80040154" in status["abe_hr"]
-    assert "CLASSNOTREG" in status["error"]
+    assert status["abe"] == "chrome_dir"
+    assert status["abe_hr"] == "csc_missing"
+    assert "CLASSNOTREG" not in status["abe_hr"]
+    assert "csc_missing" in status["error"]
     assert "do not paste" in status["error"].lower()
 
 
@@ -1180,16 +1184,18 @@ def test_elevator_overflow_does_not_crash_discover(tmp_path: Path):
         "history_hit": True,
     }
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
-        bs, "_elevator_decrypt", side_effect=OverflowError("int too long to convert")
+        bs, "_elevator_decrypt_via_chrome_dir",
+        side_effect=OverflowError("int too long to convert"),
     ), patch.object(
-        bs, "_elevator_decrypt_via_chrome_dir", return_value=(None, "")
+        bs, "_elevator_decrypt",
+        side_effect=AssertionError("in-process CoCreate must not run"),
     ):
         header = bs.discover_sectura_website_cookie(force=True)
     assert header == ""
     status = bs.discover_status()
     assert status["session_found"] is False
     assert status["source"] == "chrome:Default"
-    assert status["abe"] == "failed"
+    assert status["abe"] == "chrome_dir"
     assert status["abe_hr"] == "OverflowError"
     assert status["v20_blobs"] == 1
     assert status["v20_ok"] == 0
@@ -1657,25 +1663,22 @@ def test_chrome_default_uses_handle_dup_before_vss(tmp_path: Path):
     assert status["source"] == "chrome:Default"
 
 
-def test_abe_helper_does_not_write_localserver32_and_caps_cocreate():
-    import inspect
-
+def test_abe_helper_has_no_cocreate():
     from secturafab import browser_session as bs
 
     assert bs._ABE_HELPER_TIMEOUT_S <= 8
-    assert bs._ABE_COCREATE_TIMEOUT_S <= 4
     cs = bs._ABE_HELPER_CS
-    assert "Join(2000)" in cs
-    assert "SERVER_EXEC_FAILURE:timeout" in cs
-    assert "DeleteSubKey" in cs and "LocalServer32" in cs
-    assert "--console -Embedding" in cs
-    assert 'CreateSubKey(@"Software\\Classes\\CLSID\\" + Clsid + @"\\LocalServer32")' not in cs
-    src = inspect.getsource(bs._register_hkcu_elevator_localserver)
-    assert "_delete_hkcu_localserver32" in src
-    assert "clsid_path + r\"\\LocalServer32\"" not in src
+    assert "CoCreateInstance" not in cs
+    assert "ole32" not in cs
+    assert "LocalServer32" not in cs
+    assert "elevation_service" not in cs
+    assert "CLASSNOTREG" not in cs
+    assert "ReadProcessMemory" in cs
+    assert "VirtualQueryEx" in cs
+    assert "cand=" in cs
 
 
-def test_run_abe_helper_timeout_surfaces_server_exec():
+def test_run_abe_helper_timeout_is_helper_timeout():
     import subprocess
 
     from secturafab import browser_session as bs
@@ -1684,9 +1687,10 @@ def test_run_abe_helper_timeout_surfaces_server_exec():
         raise subprocess.TimeoutExpired(cmd="abe", timeout=8)
 
     with patch.object(bs.subprocess, "run", side_effect=_expire):
-        key, hr = bs._run_abe_helper(Path("kannon_quote_abe.exe"), b"\x01" * 40)
+        key, hr = bs._run_abe_helper(Path("kannon_quote_abe.exe"), b"v20" + b"\x00" * 40)
     assert key is None
-    assert hr == "0x80080005:SERVER_EXEC_FAILURE:timeout"
+    assert hr == "helper:timeout"
+    assert "CLASSNOTREG" not in hr
 
 
 def test_persist_cookie_snapshot_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1712,6 +1716,28 @@ def test_copy_dup_handle_bytes_tries_mapview_first():
     assert src.index("_mapview_handle_to_file") < src.index("_read_handle_to_file")
 
 
+def test_unwrap_source_never_cocreates():
+    import inspect
+
+    from secturafab import browser_session as bs
+
+    src = inspect.getsource(bs._unwrap_app_bound_key)
+    assert "_prepare_elevator_com" not in src
+    assert "_elevator_decrypt(" not in src.replace("_elevator_decrypt_via_chrome_dir", "CHROME_DIR")
+
+
+def test_unwrap_real_path_is_chrome_dir_not_classnotreg():
+    from secturafab import browser_session as bs
+
+    b64 = base64.b64encode(b"APPB" + b"\x01" * 40).decode("ascii")
+    key, status, hr = bs._unwrap_app_bound_key(b64, v20_sample=b"v20" + b"\x00" * 40)
+    assert key is None
+    assert status == "chrome_dir"
+    assert "CLASSNOTREG" not in hr
+    assert "0x80040154" not in hr
+    assert "chrome_dir:not_nt" in hr or "csc_missing" in hr or "memscan:not_nt" in hr
+
+
 def test_unwrap_uses_chrome_dir_helper_first():
     from secturafab import browser_session as bs
 
@@ -1721,13 +1747,56 @@ def test_unwrap_uses_chrome_dir_helper_first():
     def _no_elevator(*_a, **_k):
         raise AssertionError("in-process CoCreate must not run when chrome_dir returns a key")
 
-    with patch.object(bs, "_prepare_elevator_com", return_value=""), patch.object(
+    with patch.object(
         bs, "_elevator_decrypt_via_chrome_dir", return_value=(key, "0x00000000")
     ), patch.object(bs, "_elevator_decrypt", side_effect=_no_elevator):
-        got, status, hr = bs._unwrap_app_bound_key(b64)
+        got, status, hr = bs._unwrap_app_bound_key(b64, v20_sample=b"v20" + b"\x00" * 40)
     assert got == key
     assert status == "chrome_dir"
     assert hr == "0x00000000"
+
+
+def test_chrome_dir_copy_denied_is_not_classnotreg(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    helper = tmp_path / "kannon_quote_abe.exe"
+    helper.write_bytes(b"mz")
+    chrome_dir = tmp_path / "151.0.7922.174"
+    chrome_dir.mkdir()
+
+    def _denied(*_a, **_k):
+        exc = OSError(5, "Access is denied")
+        exc.winerror = 5
+        raise exc
+
+    with patch.object(bs.os, "name", "nt"), patch.object(
+        bs, "_compiled_abe_helper_exe", return_value=(helper, "")
+    ), patch.object(
+        bs, "_chrome_helper_dirs", return_value=[chrome_dir]
+    ), patch.object(
+        bs.shutil, "copy2", side_effect=_denied
+    ), patch.object(
+        bs, "_run_abe_helper", return_value=(None, "helper:exit1")
+    ), patch.object(
+        bs, "_memscan_abe_key", return_value=(None, "memscan:no_key")
+    ):
+        key, hr = bs._elevator_decrypt_via_chrome_dir(b"v20" + b"\x00" * 40)
+    assert key is None
+    assert "copy:AccessDenied" in hr
+    assert "CLASSNOTREG" not in hr
+
+
+def test_key_from_helper_candidates_decrypts_v20():
+    from secturafab import browser_session as bs
+
+    key = os.urandom(32)
+    nonce = os.urandom(12)
+    plain = (b"\x11" * 32) + b"session"
+    payload = _aes_gcm_encrypt(plain, key, nonce)
+    sample = b"v20" + nonce + payload
+    stdout = f"cand={'00' * 32}\ncand={key.hex()}\n".encode("ascii")
+    got = bs._key_from_helper_candidates(stdout, sample)
+    assert got == key
 
 
 def test_profile_1_does_not_run_vss_or_lock_bypass(tmp_path: Path):
