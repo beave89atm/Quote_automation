@@ -1704,6 +1704,9 @@ def test_abe_helper_has_no_cocreate():
     apc = inspect.getsource(bs._RemoteUnprotect._apc)
     assert "CRYPTPROTECTMEMORY_SAME_PROCESS" in apc
     assert "same_process" in apc
+    assert "_aes_gcm_decrypt_bcrypt" in inspect.getsource(bs)
+    assert "_v20_verify_samples" in inspect.getsource(bs)
+    assert "public long cbData" in cs
     assert "new IntPtr(32), new IntPtr(0)" in cs
     assert "new IntPtr(32), new IntPtr(1)" not in cs
     assert "idx < 4" not in cs
@@ -1949,6 +1952,29 @@ def test_pick_v20_sample_skips_short():
     long = b"v20" + b"\x00" * 40
     assert bs._pick_v20_sample([("h", "n", "", short)]) is None
     assert bs._pick_v20_sample([("h", "n", "", short), ("h", "n", "", long)]) == long
+    assert bs._v20_samples_from_rows([("h", "n", "", short), ("h", "n", "", long)]) == [long]
+
+
+def test_v20_key_ok_uses_apc_plain_against_any_of_the_blobs():
+    from secturafab import browser_session as bs
+
+    key = os.urandom(32)
+    other = os.urandom(32)
+    nonce_long = os.urandom(12)
+    nonce_ok = os.urandom(12)
+    long_plain = (b"\x11" * 32) + (b"x" * 80)
+    ok_plain = (b"\x22" * 32) + b"session"
+    long_blob = b"v20" + nonce_long + _aes_gcm_encrypt(long_plain, other, nonce_long)
+    ok_blob = b"v20" + nonce_ok + _aes_gcm_encrypt(ok_plain, key, nonce_ok)
+    assert len(long_blob) > len(ok_blob)
+    bs._cache["_v20_verify"] = []
+    assert bs._v20_key_ok(key, long_blob) is False
+    bs._cache["_v20_verify"] = [long_blob, ok_blob]
+    try:
+        assert bs._v20_key_ok(key, long_blob) is True
+        assert bs._pick_v20_sample([("h", "n", "", long_blob), ("h", "n", "", ok_blob)]) == long_blob
+    finally:
+        bs._cache["_v20_verify"] = []
 
 
 def test_chrome_dir_copy_denied_is_not_classnotreg(tmp_path: Path):
