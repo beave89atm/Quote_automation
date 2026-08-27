@@ -2076,6 +2076,10 @@ def test_abe_helper_has_no_cocreate():
     assert "apc:0" in memscan
     assert "apc:ok" in memscan
     assert "apc:hr" in memscan
+    assert "apc:key:off=" in memscan
+    assert "heap:hit" in memscan
+    assert "_aes_key_windows_offs" in inspect.getsource(bs)
+    assert "_v20_one_ok" in inspect.getsource(bs)
     assert "try_blobs" not in memscan
     assert 'f"memscan:no_cand{extra}"' in memscan
     assert 'f"memscan:no_key:{tried}{extra}"' in memscan
@@ -2626,6 +2630,36 @@ def test_aes_key_windows_takes_offset_32():
     padded = b"\xaa" * 8 + key + b"\xbb" * 8
     assert key in bs._aes_key_windows(padded)
     assert key in bs._aes_key_windows(key)
+    flagged = b"\x01" + key + b"\xcc" * 8
+    assert key in bs._aes_key_windows(flagged)
+    buried = b"\xaa" * 7 + key
+    assert key in bs._aes_key_windows(buried)
+    offs = {off for off, cand in bs._aes_key_windows_offs(flagged) if cand == key}
+    assert 1 in offs
+
+
+def test_abe_key_from_material_walks_flag_byte_key():
+    from secturafab import browser_session as bs
+
+    cookie_key = os.urandom(32)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x66" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    bs._cache["_v20_verify"] = [cookie_blob]
+    bs._cache["_abe_hit"] = ""
+    bs._cache["_app_bound_blob"] = None
+    try:
+        assert bs._abe_key_from_material(b"\x01" + cookie_key, cookie_blob) == cookie_key
+        assert str(bs._cache.get("_abe_hit") or "").startswith("apc:key:off=1")
+        buried = b"\x00" * 7 + cookie_key
+        assert bs._abe_key_from_material(buried, cookie_blob) == cookie_key
+        assert "off=7" in str(bs._cache.get("_abe_hit") or "")
+        assert bs._v20_one_ok(cookie_key, cookie_blob) is True
+        assert bs._v20_one_ok(os.urandom(32), cookie_blob) is False
+    finally:
+        bs._cache["_v20_verify"] = []
+        bs._cache["_abe_hit"] = ""
 
 
 def test_app_bound_layout_fingerprint_dpapi_and_flag():

