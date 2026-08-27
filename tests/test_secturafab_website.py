@@ -1860,6 +1860,8 @@ def test_abe_helper_has_no_cocreate():
     assert rows_src.index("_try_live_cookie_sidecar_copy") < rows_src.index("_try_cached_cookie_copy")
     assert rows_src.index("_try_cached_cookie_copy") < rows_src.index("_try_handle_dup_copy")
     assert "_host_is_sectura" in inspect.getsource(bs)
+    assert "_collect_v20_from_db" in inspect.getsource(bs)
+    assert "_cookie_blob_bytes" in inspect.getsource(bs)
     assert "_COOKIE_SIDECARS" in inspect.getsource(bs)
     assert bs._COOKIE_SIDECARS == ("-journal", "-wal", "-shm")
     assert "_DPAPI_WALK_OFFS" in inspect.getsource(bs)
@@ -1932,6 +1934,97 @@ def test_host_is_sectura_contains_domain_not_www_only():
     assert bs._host_is_sectura("https://login.secturafab.com/")
     assert not bs._host_is_sectura("www.example.com")
     assert not bs._host_is_sectura("www.secturafab.com.evil.test")
+
+
+def test_cookie_blob_bytes_coerces_memoryview_and_str():
+    from secturafab import browser_session as bs
+
+    raw = b"v20" + b"\x00" * 40
+    assert bs._cookie_blob_bytes(memoryview(raw)) == raw
+    assert bs._is_v20_prefix(bs._cookie_blob_bytes("v20" + "\x00" * 40))
+    assert bs._V20_PREFIX == b"\x76\x32\x30"
+
+
+def test_collect_v20_counts_every_prefix_and_keeps_a_sample(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    blob = b"v20" + b"\x11" * 40
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.example.com", "other", "", blob),
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "sid", "", blob),
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "plain", "x", b""),
+    )
+    conn.commit()
+    conn.close()
+    n, samples = bs._collect_v20_from_db(db)
+    assert n == 2
+    assert samples and samples[0] == blob
+
+
+def test_discover_passes_db_v20_sample_to_chrome_dir(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    sample = b"v20" + b"\x22" * 40
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.example.com", "x", "", sample),
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "sid", "", b""),
+    )
+    conn.commit()
+    conn.close()
+    local_state = tmp_path / "Local State"
+    local_state.write_text(
+        json.dumps(
+            {"os_crypt": {"app_bound_encrypted_key": base64.b64encode(b"APPB" + b"\x01" * 40).decode()}}
+        ),
+        encoding="utf-8",
+    )
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": local_state,
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+    seen: list[bytes | None] = []
+
+    def _unwrap(_b64, v20_sample=None):
+        seen.append(v20_sample)
+        return None, "chrome_dir", "ok"
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_unwrap_app_bound_key", side_effect=_unwrap
+    ):
+        bs.discover_sectura_website_cookie(force=True)
+    status = bs.discover_status()
+    assert status["source"] == "chrome:Default"
+    assert status["v20_blobs"] == 1
+    assert seen and seen[0] == sample
+    assert status["abe"] == "chrome_dir"
 
 
 def test_query_matches_non_www_sectura_host(tmp_path: Path):

