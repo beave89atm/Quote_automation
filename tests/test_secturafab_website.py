@@ -922,8 +922,8 @@ def test_snapshot_failure_reports_bypass_not_bare_oserror(tmp_path: Path):
     assert "do not paste" in err.lower()
     assert status["lock_bypass"]
     assert status["lock_bypass"] != ""
-    assert status["vss"] == "skipped:not_nt"
-    assert "vss=skipped:not_nt" in status["lock_bypass"]
+    assert status["lock_bypass"] == "open_copy_failed"
+    assert status["vss"] == "skipped"
 
 
 def test_localserver32_cmd_uses_console():
@@ -1312,45 +1312,39 @@ def test_finish_session_error_includes_abe_not_values():
     assert "do not paste a cookie" in msg.lower()
 
 
-def test_chrome_default_runs_vss_create_first(tmp_path: Path):
-    """When handle-dup misses, Chrome Default still CREATEs a VSS shadow."""
-    import shutil
-
+def test_chrome_default_uses_cached_snapshot_when_live_copy_fails(tmp_path: Path):
+    """Chrome-open copy can reuse a Cookies DB that already landed."""
     from secturafab import browser_session as bs
 
-    db = tmp_path / "Default" / "Network" / "Cookies"
-    _write_cookie_db(db)
+    live = tmp_path / "live" / "Cookies"
+    live.parent.mkdir()
+    live.write_bytes(b"locked")
+    cached = tmp_path / "cache" / "Cookies"
+    _write_cookie_db(cached)
     profile = {
         "label": "chrome:Default",
-        "cookies": db,
+        "cookies": live,
         "local_state": tmp_path / "Local State",
-        "profile_dir": tmp_path / "Default",
+        "profile_dir": tmp_path,
         "history_hit": True,
     }
-    created: list[str] = []
 
-    def _vss_create(src: Path, dest: Path) -> bool:
-        created.append("vss")
-        shutil.copy2(src, dest)
-        bs._record_vss("ok")
-        return True
+    def _no_vss(*_a, **_k):
+        raise AssertionError("VSS must not run on the Chrome Default discover path")
 
-    def _no_nolock(*_a, **_k):
-        raise AssertionError("nolock must not run when VSS create succeeds")
-
-    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
-        bs, "_try_nolock_copy", return_value=False
-    ), patch.object(
+    with patch.dict(os.environ, {"KANNON_COOKIE_CACHE": str(tmp_path / "cache")}), patch.object(
+        bs, "_browser_cookie_dbs", return_value=[profile]
+    ), patch.object(bs, "_try_nolock_copy", return_value=False), patch.object(
         bs, "_try_handle_dup_copy", return_value=False
-    ), patch.object(
-        bs, "_try_vss_create_copy", side_effect=_vss_create
-    ), patch.object(bs, "_sqlite_backup_nolock", side_effect=_no_nolock):
+    ), patch.object(bs, "_try_vss_create_copy", side_effect=_no_vss), patch.object(
+        bs, "_sqlite_backup_nolock", side_effect=OSError(32, "locked")
+    ), patch.object(bs, "_share_copy_with_wal", side_effect=OSError(32, "locked")), patch.object(
+        bs, "_shutil_copy_with_wal", side_effect=OSError(32, "locked")
+    ):
         header = bs.discover_sectura_website_cookie(force=True)
     assert header
     status = bs.discover_status()
-    assert created == ["vss"]
-    assert status["vss"] == "ok"
-    assert status["lock_bypass"] == "vss"
+    assert status["lock_bypass"] == "cached"
     assert status["session_found"] is True
     assert status["source"] == "chrome:Default"
 
@@ -1380,8 +1374,8 @@ def test_vss_create_hresult_stays_visible_after_fallback(tmp_path: Path):
         header = bs.discover_sectura_website_cookie(force=True)
     assert header
     status = bs.discover_status()
-    assert status["vss"] == "create:5"
-    assert status["lock_bypass"].startswith("vss=create:5")
+    assert status["vss"] == "skipped"
+    assert "vssadmin" not in status["lock_bypass"]
 
 
 def test_lock_bypass_with_vss_prefixes_create_hresult():
@@ -1425,8 +1419,8 @@ def test_chrome_default_records_vss_skip_on_linux(tmp_path: Path):
         header = bs.discover_sectura_website_cookie(force=True)
     assert header
     status = bs.discover_status()
-    assert status["vss"] == "skipped:nolock"
-    assert "nolock" in status["lock_bypass"]
+    assert status["vss"] == "skipped"
+    assert status["lock_bypass"] == "nolock"
 
 
 def test_chrome_default_uses_nolock_before_vss(tmp_path: Path):
@@ -1454,8 +1448,8 @@ def test_chrome_default_uses_nolock_before_vss(tmp_path: Path):
         header = bs.discover_sectura_website_cookie(force=True)
     assert header
     status = bs.discover_status()
-    assert status["vss"] == "skipped:nolock"
-    assert "nolock" in status["lock_bypass"]
+    assert status["vss"] == "skipped"
+    assert status["lock_bypass"] == "nolock"
     assert status["session_found"] is True
     assert status["source"] == "chrome:Default"
 
@@ -1663,22 +1657,22 @@ def test_chrome_default_uses_handle_dup_before_vss(tmp_path: Path):
     assert status["source"] == "chrome:Default"
 
 
-def test_abe_helper_writes_console_localserver32_and_caps_cocreate():
+def test_abe_helper_does_not_write_localserver32_and_caps_cocreate():
+    import inspect
+
     from secturafab import browser_session as bs
 
     assert bs._ABE_HELPER_TIMEOUT_S <= 8
     assert bs._ABE_COCREATE_TIMEOUT_S <= 4
     cs = bs._ABE_HELPER_CS
-    assert "Join(3500)" in cs
+    assert "Join(2000)" in cs
     assert "SERVER_EXEC_FAILURE:timeout" in cs
-    assert "LocalServer32" in cs
-    assert "--console" in cs
-    assert r'CLSID\" + Clsid + @"\LocalServer32' in cs or "LocalServer32" in cs
-    import inspect
-
+    assert "DeleteSubKey" in cs and "LocalServer32" in cs
+    assert 'CreateSubKey(@"Software\\Classes\\CLSID\\" + Clsid + @"\\LocalServer32")' not in cs
     src = inspect.getsource(bs._register_hkcu_elevator_localserver)
+    assert "_delete_hkcu_localserver32" in src
     assert "LocalServer32" in src
-    assert "_localserver32_cmd" in src
+    assert "SetValueEx" not in src or "LocalServer32" in src
 
 
 def test_run_abe_helper_timeout_surfaces_server_exec():
@@ -1693,6 +1687,47 @@ def test_run_abe_helper_timeout_surfaces_server_exec():
         key, hr = bs._run_abe_helper(Path("kannon_quote_abe.exe"), b"\x01" * 40)
     assert key is None
     assert hr == "0x80080005:SERVER_EXEC_FAILURE:timeout"
+
+
+def test_persist_cookie_snapshot_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from secturafab import browser_session as bs
+
+    monkeypatch.setenv("KANNON_COOKIE_CACHE", str(tmp_path / "cache"))
+    src = tmp_path / "Cookies"
+    _write_cookie_db(src)
+    bs._persist_cookie_snapshot(src)
+    dest = tmp_path / "out" / "Cookies"
+    dest.parent.mkdir()
+    assert bs._try_cached_cookie_copy(dest) is True
+    assert bs._sqlite_has_cookie_table(dest)
+
+
+def test_copy_dup_handle_bytes_tries_mapview_first():
+    import inspect
+
+    from secturafab.browser_session import _copy_dup_handle_bytes
+
+    src = inspect.getsource(_copy_dup_handle_bytes)
+    assert "_mapview_handle_to_file" in src
+    assert src.index("_mapview_handle_to_file") < src.index("_read_handle_to_file")
+
+
+def test_unwrap_uses_chrome_dir_helper_first():
+    from secturafab import browser_session as bs
+
+    b64 = base64.b64encode(b"APPB" + b"\x01" * 40).decode("ascii")
+    key = b"k" * 32
+
+    def _no_elevator(*_a, **_k):
+        raise AssertionError("in-process CoCreate must not run when chrome_dir returns a key")
+
+    with patch.object(bs, "_prepare_elevator_com", return_value=""), patch.object(
+        bs, "_elevator_decrypt_via_chrome_dir", return_value=(key, "0x00000000")
+    ), patch.object(bs, "_elevator_decrypt", side_effect=_no_elevator):
+        got, status, hr = bs._unwrap_app_bound_key(b64)
+    assert got == key
+    assert status == "chrome_dir"
+    assert hr == "0x00000000"
 
 
 def test_profile_1_does_not_run_vss_or_lock_bypass(tmp_path: Path):
