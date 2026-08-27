@@ -2072,8 +2072,14 @@ def test_abe_helper_has_no_cocreate():
     import inspect
 
     memscan = inspect.getsource(bs._memscan_abe_key)
-    elev = inspect.getsource(bs._chrome_elevator_abe_key) + inspect.getsource(
-        bs._chrome_elevator_decrypt_once
+    elev = (
+        inspect.getsource(bs._chrome_elevator_abe_key)
+        + inspect.getsource(bs._chrome_elevator_decrypt_once)
+        + inspect.getsource(bs._chrome_elevator_via_exports)
+        + inspect.getsource(bs._queue_special_apc)
+        + inspect.getsource(bs._hijack_existing_thread)
+        + inspect.getsource(bs._elev_hr_token)
+        + inspect.getsource(bs._apc_q_err)
     )
     assert "def consider(" in memscan
     assert "consider_heap" not in memscan
@@ -2094,15 +2100,23 @@ def test_abe_helper_has_no_cocreate():
     assert "apc:0" in elev
     assert "apc:hr=" in elev
     assert "apc:key" in elev
-    assert "crt:err" in elev
+    assert "apc:q:err=" in elev
+    assert "crt:err" not in elev
+    assert "CreateRemoteThread" not in elev
     assert "alloc:err" in elev
     assert "elev:len=" in elev
     assert "DecryptData" in elev
     assert "vtable" in elev
     assert "CoCreateInstance" in elev
+    assert "CoInitializeEx" in elev
     assert "NtTestAlert" in elev
+    assert "NtQueueApcThread" in elev
+    assert "QueueUserAPC" in elev
+    assert "SetThreadContext" in elev
     assert "CryptUnprotectMemory" not in elev
     assert "CryptUnprotectData" not in elev
+    assert bs._ABE_ELEVATOR_TIMEOUT_S <= 3.0
+    assert bs._ABE_BROWSER_KEYS_TIMEOUT_S <= 12.0
     assert "_chrome_elevator_via_exports" in inspect.getsource(bs)
     assert "_v20_prove_samples" in inspect.getsource(bs)
     assert "BCrypt first" in inspect.getsource(bs._aes_gcm_decrypt_bytes)
@@ -2152,7 +2166,14 @@ def test_abe_helper_has_no_cocreate():
     elevator = inspect.getsource(bs._elevator_decrypt_via_chrome_dir)
     assert "if all13:" in elevator
     assert elevator.index("if pids:") < elevator.index("if all13:")
+    assert elevator.index("_chrome_elevator_abe_key") < elevator.index("_memscan_abe_key")
     assert elevator.index("_memscan_abe_key") < elevator.index("_compiled_abe_helper_exe")
+    assert "_call_with_timeout" in elevator
+    assert "_ABE_ELEVATOR_TIMEOUT_S" in elevator
+    keys_src = inspect.getsource(bs._browser_keys)
+    assert "_call_with_timeout" in keys_src
+    assert "_ABE_BROWSER_KEYS_TIMEOUT_S" in keys_src
+    assert "apc:q:err=timeout" in keys_src
     rows_src = inspect.getsource(bs._read_cookie_rows)
     assert rows_src.index("_try_vss_create_copy") < rows_src.index("_try_live_cookie_sidecar_copy")
     assert rows_src.index("_try_live_cookie_sidecar_copy") < rows_src.index("_try_cached_cookie_copy")
@@ -2662,6 +2683,31 @@ def test_chrome_elevator_abe_key_is_apc_0_off_windows():
     assert stub.startswith(b"\x53")
     assert stub.endswith(b"\xc3")
     assert 80 <= len(stub) <= 256
+
+
+def test_chrome_elevator_reports_apc_q_err_not_crt():
+    import inspect
+
+    from secturafab import browser_session as bs
+
+    elev = (
+        inspect.getsource(bs._chrome_elevator_abe_key)
+        + inspect.getsource(bs._chrome_elevator_decrypt_once)
+        + inspect.getsource(bs._chrome_elevator_via_exports)
+    )
+    assert "crt:err" not in elev
+    assert "CreateRemoteThread" not in elev
+    assert "PROCESS_CREATE_THREAD" not in elev or "No PROCESS_CREATE_THREAD" in elev
+    assert "apc:q:err=" in elev
+    assert "apc:hr=0x" in elev
+    assert "elev:len=" in elev
+    assert "apc:key" in elev
+    assert "for flag in (1, 0)" in elev
+    token = bs._apc_q_err(5)
+    assert token == "apc:q:err=5"
+    assert "crt:" not in token
+    assert bs._apc_q_err(0xC0000022) == "apc:q:err=0xc0000022"
+    assert bs._elev_hr_token(0x80040154) == "apc:hr=0x80040154"
 
 
 def test_v20_one_ok_is_gcm_success_not_printable_or_longest():
