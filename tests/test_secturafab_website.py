@@ -1687,7 +1687,8 @@ def test_abe_helper_has_no_cocreate():
     assert "CryptUnprotectMemory" in cs
     assert "CreateRemoteThread" in cs
     assert "idx < 4" not in cs
-    assert "2 * 1024 * 1024" not in cs
+    assert "bool entropy" not in cs
+    assert "aligned_entropy" not in cs
     assert bs._ABE_MEMSCAN_MAX_CAND == 20000
     assert "const int MAX_CAND = 20000" in cs
 
