@@ -1713,6 +1713,21 @@ def test_abe_helper_has_no_cocreate():
     assert "_aes_gcm_decrypt_layouts" in inspect.getsource(bs)
     assert "_app_bound_layout_views" in inspect.getsource(bs)
     assert "_static_app_bound_cookie_key" in inspect.getsource(bs)
+    assert "_dpapi_unprotect_appb" in inspect.getsource(bs)
+    assert "_chrome_unprotect_data" in inspect.getsource(bs)
+    assert "_chrome_unprotect_data_once" in inspect.getsource(bs)
+    assert "_impersonate_chrome_unprotect" in inspect.getsource(bs)
+    assert "_cookie_key_from_unprotect_plain" in inspect.getsource(bs)
+    chrome_once = inspect.getsource(bs._chrome_unprotect_data_once)
+    assert "7th pDataOut @+0x38" in chrome_once
+    assert "stack[0x38:0x40]" in chrome_once
+    assert "stack[0x30:0x38] = int(out_blob_addr)" not in chrome_once
+    assert "ImpersonateLoggedOnUser" in inspect.getsource(bs)
+    assert "c_void_p" in inspect.getsource(bs._dpapi_unprotect_ex)
+    assert "addressof" in inspect.getsource(bs._dpapi_unprotect_ex)
+    assert "UnprotectOnce" in cs
+    assert "CryptUnprotectData" in cs
+    assert "KANNON_APPB_PATH" in cs
     assert "_abe_proves_cookies" in inspect.getsource(bs._unwrap_app_bound_key)
     assert "return _abe_key_from_material(cand, v20_sample)" not in memscan
     assert "consider_raw" in memscan
@@ -2006,6 +2021,91 @@ def test_app_bound_layout_fingerprint_dpapi_and_flag():
     fp2, views2 = bs._app_bound_layout_views(flag)
     assert fp2.startswith("appb:flag1:")
     assert flag[1:] in views2
+
+
+def test_dpapi_640_plain_length_prefix_is_cookie_key():
+    from secturafab import browser_session as bs
+
+    cookie_key = os.urandom(32)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x55" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    inner = (0).to_bytes(4, "little") + (32).to_bytes(4, "little") + cookie_key
+    blob = b"\x01\x00\x00\x00" + os.urandom(636)
+    assert len(blob) == 640
+    bs._cache["_app_bound_blob"] = blob
+    bs._cache["_v20_verify"] = [cookie_blob]
+    try:
+        fp, _views = bs._app_bound_layout_views(blob)
+        assert fp.startswith("appb:dpapi:640")
+        assert bs._cookie_key_from_unprotect_plain(inner, cookie_blob) == cookie_key
+        with patch.object(bs, "_dpapi_unprotect_appb", return_value=inner):
+            assert bs._static_app_bound_cookie_key(cookie_blob) == cookie_key
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+        bs._cache["_appb_views"] = []
+        bs._cache["_appb_fp"] = ""
+
+
+def test_dpapi_640_nested_unprotect_then_length_prefix():
+    from secturafab import browser_session as bs
+
+    cookie_key = os.urandom(32)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x77" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    inner = (32).to_bytes(4, "little") + cookie_key
+    user_dpapi = b"\x01\x00\x00\x00" + os.urandom(80)
+    blob = b"\x01\x00\x00\x00" + os.urandom(636)
+    assert len(blob) == 640
+    bs._cache["_app_bound_blob"] = blob
+    bs._cache["_v20_verify"] = [cookie_blob]
+    plains = iter([user_dpapi, inner])
+
+    def _once(current):
+        try:
+            return next(plains)
+        except StopIteration:
+            return None
+
+    try:
+        with patch.object(bs, "_dpapi_unprotect_local", side_effect=_once), patch.object(
+            bs, "_impersonate_chrome_unprotect", return_value=None
+        ), patch.object(bs, "_chrome_unprotect_data", return_value=None), patch.object(
+            bs, "_chrome_unprotect_memory_blob", return_value=None
+        ):
+            assert bs._static_app_bound_cookie_key(cookie_blob) == cookie_key
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+        bs._cache["_appb_views"] = []
+        bs._cache["_appb_fp"] = ""
+
+
+def test_dpapi_640_plain_flag1_inner_is_cookie_key():
+    from secturafab import browser_session as bs
+
+    cookie_key = os.urandom(32)
+    nonce = os.urandom(12)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x66" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    inner = b"\x01" + nonce + _aes_gcm_encrypt(cookie_key, bs._FLAG1_AES, nonce)
+    blob = b"\x01\x00\x00\x00" + os.urandom(636)
+    bs._cache["_app_bound_blob"] = blob
+    bs._cache["_v20_verify"] = [cookie_blob]
+    try:
+        with patch.object(bs, "_dpapi_unprotect_appb", return_value=inner):
+            assert bs._static_app_bound_cookie_key(cookie_blob) == cookie_key
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+        bs._cache["_appb_views"] = []
+        bs._cache["_appb_fp"] = ""
 
 
 def test_flag1_wrap_unwraps_local_state_then_cookie():

