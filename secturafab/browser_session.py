@@ -2628,6 +2628,9 @@ def _note_dpapi_hr(token: str) -> None:
         return
     if "dpapi:ok" in cur:
         return
+    if text == "dpapi:all13":
+        _cache["_dpapi_hr"] = "dpapi:win32=13;dpapi:all13"
+        return
     if not cur:
         _cache["_dpapi_hr"] = text
 
@@ -2680,67 +2683,78 @@ def _dpapi_unprotect_ex(
             int(flags),
             ctypes.byref(out_blob),
         ):
-            _note_dpapi_hr(f"dpapi:win32={int(ctypes.get_last_error() or 0)}")
+            err = int(ctypes.get_last_error() or 0)
+            _cache["_dpapi_last_win32"] = err
+            _note_dpapi_hr(f"dpapi:win32={err}")
             return None
         pb = out_blob.pbData
         cb = int(out_blob.cbData or 0)
         if not pb or cb <= 0:
+            _cache["_dpapi_last_win32"] = 0
             _note_dpapi_hr("dpapi:len=0")
             return None
         ptr = pb if isinstance(pb, ctypes.c_void_p) else ctypes.c_void_p(int(pb))
         plain = ctypes.string_at(ptr, cb)
         _local_free(kernel32, ptr)
+        _cache["_dpapi_last_win32"] = 0
         _note_dpapi_hr(f"dpapi:ok;dpapi:len={len(plain)}")
         return plain
     except (AttributeError, OSError, ValueError, TypeError, OverflowError, ctypes.ArgumentError):
         return None
 
 
-def _dpapi_blob_slices(blob: bytes) -> list[bytes]:
-    """Full APPB+blob, post-APPB 640, then payload after the DPAPI version dword."""
-    out: list[bytes] = []
+# Offsets on the 640-byte APPB body. 44 = classic DPAPI header (ver+GUIDs+flags).
+_DPAPI_WALK_OFFS = (0, 4, 8, 12, 16, 32, 44)
+
+
+def _dpapi_offset_views(blob: bytes) -> list[tuple[str, bytes]]:
+    """Labeled CryptUnprotect views: full APPB, then skip 4/8/12/16/32/header."""
+    out: list[tuple[str, bytes]] = []
     seen: set[bytes] = set()
 
-    def add(part: bytes) -> None:
-        if part and part not in seen and len(part) >= 24:
+    def add(label: str, part: bytes) -> None:
+        if part and len(part) >= 24 and part not in seen:
             seen.add(part)
-            out.append(part)
+            out.append((label, part))
 
     raw = _cache.get("_app_bound_raw")
     if isinstance(raw, (bytes, bytearray)) and raw:
-        add(bytes(raw))
+        add("appb", bytes(raw))
+        if bytes(raw).startswith(b"APPB"):
+            add("0", bytes(raw[4:]))
     body = bytes(blob)
     if body.startswith(b"APPB"):
-        add(body)
+        add("appb", body)
         body = body[4:]
-    add(body)
-    if _looks_like_dpapi(body):
-        add(body[4:])
-    start = 1
-    while True:
-        idx = body.find(b"\x01\x00\x00\x00", start)
-        if idx < 0:
-            break
-        add(body[idx:])
-        start = idx + 1
+    for off in _DPAPI_WALK_OFFS:
+        if off < len(body):
+            add(str(off), body[off:])
+    idx = body.find(b"\x01\x00\x00\x00", 1)
+    if idx > 0:
+        add(str(idx), body[idx:])
     return out
 
 
+def _dpapi_blob_slices(blob: bytes) -> list[bytes]:
+    return [part for _label, part in _dpapi_offset_views(blob)]
+
+
 def _dpapi_unprotect_local(blob: bytes) -> bytes | None:
-    """User-context CryptUnprotectData on appb:dpapi:640 slices."""
-    ents: list[bytes | None] = [
-        None,
-        b"",
-        b"Google Chrome",
-        "Google Chrome".encode("utf-16-le"),
-        b"Chromium",
-    ]
-    for cand in _dpapi_blob_slices(blob):
-        for flags in (0, 1, 4, 5):
-            for ent in ents:
-                plain = _dpapi_unprotect_ex(cand, flags, ent)
-                if plain:
-                    return plain
+    """Walk APPB offsets. Chrome not required. win32=13 = wrong slice."""
+    if not blob:
+        return None
+    errs: list[int] = []
+    for label, part in _dpapi_offset_views(blob):
+        _cache["_dpapi_last_win32"] = None
+        plain = _dpapi_unprotect_ex(part, 0, None)
+        if plain:
+            _note_dpapi_hr(f"dpapi:ok;dpapi:len={len(plain)};dpapi:off={label}")
+            return plain
+        err = _cache.get("_dpapi_last_win32")
+        if err is not None:
+            errs.append(int(err))
+    if errs and all(err == 13 for err in errs):
+        _note_dpapi_hr("dpapi:all13")
     return None
 
 

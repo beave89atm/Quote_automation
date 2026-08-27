@@ -1784,6 +1784,10 @@ def test_abe_helper_has_no_cocreate():
     assert "dpapi:ok" in inspect.getsource(bs)
     assert "dpapi:win32=" in inspect.getsource(bs)
     assert "dpapi:len=" in inspect.getsource(bs)
+    assert "dpapi:off=" in inspect.getsource(bs)
+    assert "dpapi:all13" in inspect.getsource(bs)
+    assert "_DPAPI_WALK_OFFS" in inspect.getsource(bs)
+    assert bs._DPAPI_WALK_OFFS == (0, 4, 8, 12, 16, 32, 44)
     assert "_note_dpapi_hr" in inspect.getsource(bs)
     assert "_dpapi_unprotect_local" in inspect.getsource(bs._app_bound_layout_views)
     assert "Chrome not required" in inspect.getsource(bs._dpapi_unprotect_appb)
@@ -2160,20 +2164,81 @@ def test_dpapi_blob_slices_full_then_appb_then_header():
         assert slices[0] == raw
         assert slices[1] == body
         assert slices[2] == body[4:]
+        labels = [lab for lab, _part in bs._dpapi_offset_views(body)]
+        assert labels[0] == "appb"
+        for off in (0, 4, 8, 12, 16, 32, 44):
+            assert str(off) in labels
     finally:
         bs._cache["_app_bound_raw"] = None
+
+
+def test_dpapi_walk_records_winning_offset():
+    from secturafab import browser_session as bs
+
+    body = b"\x01\x00\x00\x00" + os.urandom(636)
+    bs._cache["_app_bound_raw"] = b"APPB" + body
+    bs._cache["_dpapi_hr"] = ""
+
+    def _ex(part: bytes, flags: int = 0, entropy: bytes | None = None):
+        del flags, entropy
+        if part == body[16:]:
+            bs._cache["_dpapi_last_win32"] = 0
+            return b"\x22" * 32
+        bs._cache["_dpapi_last_win32"] = 13
+        return None
+
+    try:
+        with patch.object(bs, "_dpapi_unprotect_ex", side_effect=_ex):
+            got = bs._dpapi_unprotect_local(body)
+        assert got == b"\x22" * 32
+        hr = str(bs._cache.get("_dpapi_hr") or "")
+        assert "dpapi:ok" in hr
+        assert "dpapi:len=32" in hr
+        assert "dpapi:off=16" in hr
+    finally:
+        bs._cache["_app_bound_raw"] = None
+        bs._cache["_dpapi_hr"] = ""
+        bs._cache["_dpapi_last_win32"] = None
+
+
+def test_dpapi_walk_all13():
+    from secturafab import browser_session as bs
+
+    body = b"\x01\x00\x00\x00" + os.urandom(636)
+    bs._cache["_app_bound_raw"] = b"APPB" + body
+    bs._cache["_dpapi_hr"] = ""
+
+    def _ex(*_a, **_k):
+        bs._cache["_dpapi_last_win32"] = 13
+        return None
+
+    try:
+        with patch.object(bs, "_dpapi_unprotect_ex", side_effect=_ex):
+            assert bs._dpapi_unprotect_local(body) is None
+        assert bs._cache["_dpapi_hr"] == "dpapi:win32=13;dpapi:all13"
+        bs._cache["_appb_fp"] = "appb:dpapi:640"
+        hr = bs._join_abe_hr(["run:4551"])
+        assert "dpapi:all13" in hr
+        assert "appb:dpapi:640" in hr
+        assert "run:4551" in hr
+    finally:
+        bs._cache["_app_bound_raw"] = None
+        bs._cache["_dpapi_hr"] = ""
+        bs._cache["_appb_fp"] = ""
+        bs._cache["_dpapi_last_win32"] = None
 
 
 def test_join_abe_hr_includes_dpapi_win32_and_len():
     from secturafab import browser_session as bs
 
     bs._cache["_appb_fp"] = "appb:dpapi:640"
-    bs._cache["_dpapi_hr"] = "dpapi:ok;dpapi:len=32"
+    bs._cache["_dpapi_hr"] = "dpapi:ok;dpapi:len=32;dpapi:off=16"
     try:
         hr = bs._join_abe_hr(["run:4551"])
         assert "appb:dpapi:640" in hr
         assert "dpapi:ok" in hr
         assert "dpapi:len=32" in hr
+        assert "dpapi:off=16" in hr
         assert "run:4551" in hr
     finally:
         bs._cache["_appb_fp"] = ""
