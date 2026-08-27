@@ -2682,9 +2682,9 @@ def test_v20_one_ok_is_gcm_success_not_printable_or_longest():
     try:
         assert bs._v20_one_ok(key, long_blob) is True
         assert bs._abe_proves_cookies(key, long_blob) is True
-            binary_only = b"\xff" * 48
-            nonce_bin = os.urandom(12)
-            bin_blob = b"v20" + nonce_bin + _aes_gcm_encrypt(binary_only, key, nonce_bin)
+        binary_only = b"\xff" * 48
+        nonce_bin = os.urandom(12)
+        bin_blob = b"v20" + nonce_bin + _aes_gcm_encrypt(binary_only, key, nonce_bin)
         bs._cache["_v20_verify"] = [bin_blob]
         bs._cache["_v20_sectura"] = [bin_blob]
         assert bs._aes_gcm_decrypt_bytes(bin_blob[3:], key)
