@@ -1856,8 +1856,12 @@ def test_abe_helper_has_no_cocreate():
     assert elevator.index("if pids:") < elevator.index("if all13:")
     assert elevator.index("_memscan_abe_key") < elevator.index("_compiled_abe_helper_exe")
     rows_src = inspect.getsource(bs._read_cookie_rows)
-    assert rows_src.index("_try_vss_create_copy") < rows_src.index("_try_cached_cookie_copy")
+    assert rows_src.index("_try_vss_create_copy") < rows_src.index("_try_live_cookie_sidecar_copy")
+    assert rows_src.index("_try_live_cookie_sidecar_copy") < rows_src.index("_try_cached_cookie_copy")
     assert rows_src.index("_try_cached_cookie_copy") < rows_src.index("_try_handle_dup_copy")
+    assert "_host_is_sectura" in inspect.getsource(bs)
+    assert "_COOKIE_SIDECARS" in inspect.getsource(bs)
+    assert bs._COOKIE_SIDECARS == ("-journal", "-wal", "-shm")
     assert "_DPAPI_WALK_OFFS" in inspect.getsource(bs)
     assert bs._DPAPI_WALK_OFFS == (0, 4, 8, 12, 16, 32, 44)
     assert "_note_dpapi_hr" in inspect.getsource(bs)
@@ -1906,11 +1910,94 @@ def test_persist_cookie_snapshot_roundtrip(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setenv("KANNON_COOKIE_CACHE", str(tmp_path / "cache"))
     src = tmp_path / "Cookies"
     _write_cookie_db(src)
+    (tmp_path / "Cookies-wal").write_bytes(b"wal")
+    (tmp_path / "Cookies-shm").write_bytes(b"shm")
+    (tmp_path / "Cookies-journal").write_bytes(b"jnl")
     bs._persist_cookie_snapshot(src)
     dest = tmp_path / "out" / "Cookies"
     dest.parent.mkdir()
     assert bs._try_cached_cookie_copy(dest) is True
     assert bs._sqlite_has_cookie_table(dest)
+    assert (tmp_path / "cache" / "Cookies-wal").read_bytes() == b"wal"
+    assert (tmp_path / "cache" / "Cookies-shm").read_bytes() == b"shm"
+    assert (tmp_path / "cache" / "Cookies-journal").read_bytes() == b"jnl"
+
+
+def test_host_is_sectura_contains_domain_not_www_only():
+    from secturafab import browser_session as bs
+
+    assert bs._host_is_sectura(".secturafab.com")
+    assert bs._host_is_sectura("www.secturafab.com")
+    assert bs._host_is_sectura("APP.SECTURAFAB.COM")
+    assert bs._host_is_sectura("https://login.secturafab.com/")
+    assert not bs._host_is_sectura("www.example.com")
+    assert not bs._host_is_sectura("www.secturafab.com.evil.test")
+
+
+def test_query_matches_non_www_sectura_host(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db, host="app.secturafab.com")
+    rows = bs._query_sectura_cookie_rows(db)
+    hosts = {r[0] for r in rows}
+    assert "app.secturafab.com" in hosts
+    assert "www.secturafab.com" in hosts
+
+
+def test_empty_chrome_default_keeps_source(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.example.com", "sid", "x", b""),
+    )
+    conn.commit()
+    conn.close()
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]):
+        header = bs.discover_sectura_website_cookie(force=True)
+    assert header == ""
+    assert bs.discover_status()["source"] == "chrome:Default"
+
+
+def test_cached_without_sectura_rows_is_not_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    monkeypatch.setenv("KANNON_COOKIE_CACHE", str(tmp_path / "cache"))
+    cache = tmp_path / "cache" / "Cookies"
+    cache.parent.mkdir()
+    conn = sqlite3.connect(str(cache))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.example.com", "sid", "x", b""),
+    )
+    conn.commit()
+    conn.close()
+    dest = tmp_path / "out" / "Cookies"
+    dest.parent.mkdir()
+    assert bs._try_cached_cookie_copy(dest) is False
 
 
 def test_copy_dup_handle_bytes_tries_mapview_first():

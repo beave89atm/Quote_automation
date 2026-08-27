@@ -287,7 +287,7 @@ def _discover_uncached() -> tuple[str, str, str]:
     return (
         "",
         "No Chrome/Edge cookies for www.secturafab.com on this PC.",
-        "",
+        source,
     )
 
 
@@ -439,19 +439,59 @@ def _is_chrome_default(label: str) -> bool:
     return label == "chrome:Default"
 
 
+def _host_is_sectura(host: str) -> bool:
+    """Any host whose label is secturafab.com — not www-only."""
+    text = (host or "").replace("\\", "/").casefold()
+    if SECTURA_HOST_NEEDLE not in text:
+        return False
+    body = text.replace("https://", "").replace("http://", "")
+    label = body.split("/", 1)[0].split(":", 1)[0].strip(".")
+    return label == SECTURA_HOST_NEEDLE or label.endswith("." + SECTURA_HOST_NEEDLE)
+
+
 def _query_sectura_cookie_rows(dest: Path) -> list[tuple[str, str, str, bytes]]:
+    rows = _query_sectura_cookie_rows_once(dest)
+    if rows:
+        return rows
+    # Torn WAL/SHM: retry the main Cookies file alone.
+    for suffix in _COOKIE_SIDECARS:
+        side = Path(str(dest) + suffix)
+        if not side.is_file():
+            continue
+        try:
+            side.unlink()
+        except OSError:
+            continue
+    return _query_sectura_cookie_rows_once(dest)
+
+
+def _query_sectura_cookie_rows_once(dest: Path) -> list[tuple[str, str, str, bytes]]:
+    if not dest.is_file():
+        return []
     conn = sqlite3.connect(str(dest))
     try:
+        try:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except sqlite3.Error:
+            pass
+        cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(cookies)")}
+        if "host_key" not in cols:
+            return []
+        extra = ", top_frame_site_key" if "top_frame_site_key" in cols else ""
         cur = conn.execute(
-            "SELECT host_key, name, value, encrypted_value FROM cookies "
-            "WHERE host_key LIKE ?",
-            (f"%{SECTURA_HOST_NEEDLE}%",),
+            f"SELECT host_key, name, value, encrypted_value{extra} FROM cookies"
         )
         rows: list[tuple[str, str, str, bytes]] = []
-        for host, name, value, encrypted in cur.fetchall():
-            blob = encrypted if isinstance(encrypted, (bytes, bytearray)) else b""
-            rows.append((str(host or ""), str(name or ""), str(value or ""), bytes(blob)))
+        for rec in cur.fetchall():
+            host = str(rec[0] or "")
+            frame = str(rec[4] or "") if extra else ""
+            if not (_host_is_sectura(host) or _host_is_sectura(frame)):
+                continue
+            blob = rec[3] if isinstance(rec[3], (bytes, bytearray)) else b""
+            rows.append((host, str(rec[1] or ""), str(rec[2] or ""), bytes(blob)))
         return rows
+    except sqlite3.Error:
+        return []
     finally:
         conn.close()
 
@@ -492,15 +532,21 @@ def _read_cookie_rows(
         dest = Path(tmp_dir) / "Cookies"
         last_exc: BaseException | None = None
         method = ""
-        if is_default and _try_nolock_copy(src, dest):
+        if is_default and _try_nolock_copy(src, dest) and _query_sectura_cookie_rows(dest):
             method = "nolock"
         elif is_default and _try_vss_create_copy(src, dest):
-            method = "vss"
-        elif is_default and _try_cached_cookie_copy(dest):
+            _copy_cookie_sidecars(src, dest)
+            if _query_sectura_cookie_rows(dest):
+                method = "vss"
+        if not method and is_default and _try_live_cookie_sidecar_copy(src, dest):
+            method = "wal"
+        if not method and is_default and _try_cached_cookie_copy(dest):
             method = "cached"
-        elif is_default and _try_handle_dup_copy(src, dest):
-            method = "dup_handle"
-        else:
+        if not method and is_default and _try_handle_dup_copy(src, dest):
+            _copy_cookie_sidecars(src, dest)
+            if _query_sectura_cookie_rows(dest):
+                method = "dup_handle"
+        if not method:
             for attempt in range(2):
                 try:
                     _snapshot_sqlite_file(
@@ -587,7 +633,7 @@ def _snapshot_sqlite_file(
 def _sqlite_backup_nolock(src: Path, dest: Path) -> None:
     """sqlite backup via share/nolock URI — landed Cookies with Chrome closed."""
     last: BaseException | None = None
-    for extra in ("?mode=ro&nolock=1&immutable=1", "?mode=ro&nolock=1"):
+    for extra in ("?mode=ro&nolock=1", "?mode=ro&nolock=1&immutable=1"):
         src_uri = src.resolve().as_uri() + extra
         src_conn = None
         dest_conn = None
@@ -632,6 +678,25 @@ def _cookie_snapshot_cache_dir() -> Path | None:
     return None
 
 
+_COOKIE_SIDECARS = ("-journal", "-wal", "-shm")
+
+
+def _copy_cookie_sidecars(src: Path, dest: Path) -> None:
+    """Copy Cookies-journal / Cookies-wal / Cookies-shm from the same folder."""
+    for suffix in _COOKIE_SIDECARS:
+        side = Path(str(src) + suffix)
+        if not side.is_file():
+            continue
+        out = Path(str(dest) + suffix)
+        try:
+            _copy_shared(side, out)
+        except OSError:
+            try:
+                shutil.copy2(side, out)
+            except OSError:
+                continue
+
+
 def _persist_cookie_snapshot(src: Path) -> None:
     """Keep a Cookies DB that already landed so Chrome-open can decrypt later."""
     if not _sqlite_has_cookie_table(src):
@@ -642,6 +707,10 @@ def _persist_cookie_snapshot(src: Path) -> None:
     try:
         cache.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, cache / "Cookies")
+        for suffix in _COOKIE_SIDECARS:
+            side = Path(str(src) + suffix)
+            if side.is_file():
+                shutil.copy2(side, cache / f"Cookies{suffix}")
     except OSError:
         return
 
@@ -657,9 +726,28 @@ def _try_cached_cookie_copy(dest: Path) -> bool:
         if dest.exists():
             dest.unlink()
         shutil.copy2(cache, dest)
+        if not _sqlite_has_cookie_table(dest):
+            return False
+        for suffix in _COOKIE_SIDECARS:
+            side = cache_dir / f"Cookies{suffix}"
+            if side.is_file():
+                shutil.copy2(side, Path(str(dest) + suffix))
     except OSError:
         return False
-    return _sqlite_has_cookie_table(dest)
+    return bool(_query_sectura_cookie_rows(dest))
+
+
+def _try_live_cookie_sidecar_copy(src: Path, dest: Path) -> bool:
+    """Copy live chrome:Default Cookies + journal/wal/shm, then apply WAL."""
+    try:
+        if dest.exists():
+            dest.unlink()
+        _share_copy_with_wal(src, dest)
+    except (OSError, sqlite3.Error):
+        return False
+    if not dest.is_file() or not _sqlite_has_cookie_table(dest):
+        return False
+    return bool(_query_sectura_cookie_rows(dest))
 
 
 def _share_copy_with_wal(src: Path, dest: Path) -> None:
@@ -1742,7 +1830,7 @@ def _sqlite_has_cookie_table(path: Path) -> bool:
     except OSError:
         return False
     try:
-        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro&immutable=1", uri=True)
         try:
             row = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cookies' LIMIT 1"
@@ -2582,8 +2670,12 @@ def _v20_samples_from_cache() -> list[bytes]:
     if not path.is_file():
         return []
     try:
-        conn = sqlite3.connect(f"file:{path.resolve().as_posix()}?mode=ro", uri=True)
+        conn = sqlite3.connect(str(path))
         try:
+            try:
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except sqlite3.Error:
+                pass
             cur = conn.execute(
                 "SELECT encrypted_value FROM cookies "
                 "WHERE typeof(encrypted_value)='blob' AND length(encrypted_value)>=32"
