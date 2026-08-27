@@ -1707,6 +1707,8 @@ def test_abe_helper_has_no_cocreate():
     assert "_aes_gcm_decrypt_bcrypt" in inspect.getsource(bs)
     assert "_aes_gcm_decrypt_stdlib" in inspect.getsource(bs)
     assert "_v20_verify_samples" in inspect.getsource(bs)
+    assert "_abe_key_from_material" in inspect.getsource(bs)
+    assert "_cookie_keys_from_wrap" in inspect.getsource(bs)
     assert "consider_raw" in memscan
     assert "consider_apc" in memscan
     assert "keyring_pending" not in memscan
@@ -1979,6 +1981,29 @@ def test_aes_key_windows_takes_offset_32():
     padded = b"\xaa" * 8 + key + b"\xbb" * 8
     assert key in bs._aes_key_windows(padded)
     assert key in bs._aes_key_windows(key)
+
+
+def test_abe_wrap_key_unwraps_app_bound_then_cookie():
+    from secturafab import browser_session as bs
+
+    wrap = os.urandom(32)
+    cookie_key = os.urandom(32)
+    nonce = os.urandom(12)
+    cookie_nonce = os.urandom(12)
+    cookie_plain = (b"\x22" * 32) + b"session"
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(cookie_plain, cookie_key, cookie_nonce)
+    app_bound = nonce + _aes_gcm_encrypt(cookie_key, wrap, nonce)
+    bs._cache["_app_bound_blob"] = app_bound
+    bs._cache["_v20_verify"] = [cookie_blob]
+    try:
+        assert bs._v20_key_ok(wrap, cookie_blob) is False
+        assert bs._abe_key_from_material(wrap, cookie_blob) == cookie_key
+        prefixed = b"APPB" + app_bound
+        bs._cache["_app_bound_blob"] = prefixed
+        assert bs._abe_key_from_material(wrap, cookie_blob) == cookie_key
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
 
 
 def test_v20_key_ok_accepts_offset_apc_plain():
