@@ -1308,7 +1308,7 @@ def test_finish_session_error_includes_abe_not_values():
 
 
 def test_chrome_default_runs_vss_create_first(tmp_path: Path):
-    """Chrome Default must CREATE a VSS shadow before nolock/share/dup."""
+    """When handle-dup misses, Chrome Default still CREATEs a VSS shadow."""
     import shutil
 
     from secturafab import browser_session as bs
@@ -1334,6 +1334,8 @@ def test_chrome_default_runs_vss_create_first(tmp_path: Path):
         raise AssertionError("nolock must not run when VSS create succeeds")
 
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_try_handle_dup_copy", return_value=False
+    ), patch.object(
         bs, "_try_vss_create_copy", side_effect=_vss_create
     ), patch.object(bs, "_sqlite_backup_nolock", side_effect=_no_nolock):
         header = bs.discover_sectura_website_cookie(force=True)
@@ -1525,6 +1527,125 @@ def test_win_vss_copy_uses_vssadmin_after_cim_throw(tmp_path: Path):
     assert dest.is_file() and dest.stat().st_size > 0
     assert order == ["ps", "vssadmin"]
     assert bs._cache["vss"] == "ok"
+
+
+def test_sqlite_has_cookie_table(tmp_path: Path):
+    from secturafab.browser_session import _sqlite_has_cookie_table
+
+    missing = tmp_path / "nope"
+    assert _sqlite_has_cookie_table(missing) is False
+    junk = tmp_path / "junk"
+    junk.write_bytes(b"not-sqlite")
+    assert _sqlite_has_cookie_table(junk) is False
+    other = tmp_path / "other.db"
+    import sqlite3
+
+    conn = sqlite3.connect(str(other))
+    conn.execute("CREATE TABLE hosts (name TEXT)")
+    conn.commit()
+    conn.close()
+    assert _sqlite_has_cookie_table(other) is False
+    cookies = tmp_path / "Cookies"
+    _write_cookie_db(cookies)
+    assert _sqlite_has_cookie_table(cookies) is True
+
+
+def test_call_with_timeout_returns_default_on_hang():
+    from secturafab import browser_session as bs
+
+    def _hang() -> str:
+        time.sleep(8)
+        return "late"
+
+    t0 = time.monotonic()
+    got = bs._call_with_timeout(_hang, 0.25, (None, "0x80080005:SERVER_EXEC_FAILURE:timeout"))
+    elapsed = time.monotonic() - t0
+    assert got == (None, "0x80080005:SERVER_EXEC_FAILURE:timeout")
+    assert elapsed < 2.0
+
+
+def test_elevator_decrypt_times_out_with_server_exec_failure():
+    from secturafab import browser_session as bs
+
+    def _hang(_blob: bytes):
+        time.sleep(8)
+        return b"k" * 32, "0x00000000"
+
+    with patch.object(bs.os, "name", "nt"), patch.object(
+        bs, "_elevator_decrypt_uncapped", side_effect=_hang
+    ):
+        t0 = time.monotonic()
+        key, hr = bs._elevator_decrypt(b"\x01" * 40)
+        elapsed = time.monotonic() - t0
+    assert key is None
+    assert "0x80080005" in hr
+    assert "SERVER_EXEC_FAILURE" in hr
+    assert "timeout" in hr
+    assert elapsed < 6.0
+
+
+def test_chrome_default_uses_handle_dup_before_vss(tmp_path: Path):
+    import shutil
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db)
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+    order: list[str] = []
+
+    def _dup(src: Path, dest: Path) -> bool:
+        order.append("dup")
+        shutil.copy2(src, dest)
+        return True
+
+    def _vss(*_a, **_k):
+        order.append("vss")
+        raise AssertionError("VSS must not run when handle-dup lands Cookies")
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_try_handle_dup_copy", side_effect=_dup
+    ), patch.object(bs, "_try_vss_create_copy", side_effect=_vss):
+        header = bs.discover_sectura_website_cookie(force=True)
+    assert header
+    status = bs.discover_status()
+    assert order == ["dup"]
+    assert "dup_handle" in status["lock_bypass"]
+    assert status["session_found"] is True
+    assert status["source"] == "chrome:Default"
+
+
+def test_abe_helper_does_not_write_localserver32_and_caps_cocreate():
+    from secturafab import browser_session as bs
+
+    assert bs._ABE_HELPER_TIMEOUT_S <= 8
+    assert bs._ABE_COCREATE_TIMEOUT_S <= 4
+    cs = bs._ABE_HELPER_CS
+    assert "Join(3500)" in cs
+    assert "SERVER_EXEC_FAILURE:timeout" in cs
+    assert "DeleteSubKey" in cs and "LocalServer32" in cs
+    assert r'LocalServer32"))' not in cs.replace("DeleteSubKey", "")
+    assert 'CreateSubKey(@"Software\\Classes\\CLSID\\" + Clsid + @"\\LocalServer32")' not in cs
+
+
+def test_run_abe_helper_timeout_surfaces_server_exec():
+    import subprocess
+
+    from secturafab import browser_session as bs
+
+    def _expire(*_a, **_k):
+        raise subprocess.TimeoutExpired(cmd="abe", timeout=8)
+
+    with patch.object(bs.subprocess, "run", side_effect=_expire):
+        key, hr = bs._run_abe_helper(Path("kannon_quote_abe.exe"), b"\x01" * 40)
+    assert key is None
+    assert hr == "0x80080005:SERVER_EXEC_FAILURE:timeout"
 
 
 def test_profile_1_does_not_run_vss_or_lock_bypass(tmp_path: Path):

