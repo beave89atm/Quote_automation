@@ -1687,6 +1687,12 @@ def test_abe_helper_has_no_cocreate():
     assert "CryptUnprotectMemory" in cs
     assert "NtQueueApcThread" in cs
     assert "NtTestAlert" in cs
+    assert "32, 40, 48" in cs
+    import inspect
+
+    memscan = inspect.getsource(bs._memscan_abe_key)
+    assert "apc:setup" in memscan
+    assert "apc:0" in memscan
     assert "idx < 4" not in cs
     assert "bool entropy" not in cs
     assert "aligned_entropy" not in cs
@@ -1842,6 +1848,18 @@ def test_extract_abe_size_first_sso_keyring():
     buf[0] = 6
     buf[1:5] = b"v20\x00"
     struct.pack_into("<QQ", buf, 32, key_addr, key_addr + 32)
+    assert (key_addr, 32) in bs._extract_abe_candidate_ptrs(bytes(buf))
+
+
+def test_extract_abe_optional_key_vector_at_plus_40():
+    import struct
+
+    from secturafab import browser_session as bs
+
+    key_addr = 0x000001A2B3C4D500
+    buf = bytearray(64)
+    buf[0:4] = b"v20\x00"
+    struct.pack_into("<QQ", buf, 40, key_addr, key_addr + 32)
     assert (key_addr, 32) in bs._extract_abe_candidate_ptrs(bytes(buf))
 
 
