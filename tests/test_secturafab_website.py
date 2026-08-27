@@ -2088,8 +2088,8 @@ def test_abe_helper_has_no_cocreate():
     assert "_ABE_HEAP_MARKS" not in memscan
     assert "os_crypt" in memscan
     assert "KeyRing" in memscan
-    assert "_chrome_browser_pids" in memscan
-    assert "hot_marks" in memscan
+    assert "_chrome_pids_prioritized" in memscan
+    assert "starved tried=145" in memscan
     assert "_RemoteUnprotect" not in memscan
     assert "apc:key:off=" not in memscan
     assert "heap:hit" in memscan
@@ -2106,6 +2106,7 @@ def test_abe_helper_has_no_cocreate():
     assert "apc:key" in elev
     assert "apc:q:err=" in elev
     assert "apc:ran" in elev
+    assert "apc:force=miss" in elev
     assert "handshake" in elev
     assert "crt:err" not in elev
     assert "CreateRemoteThread" not in elev
@@ -2176,6 +2177,7 @@ def test_abe_helper_has_no_cocreate():
     assert elevator.index("_chrome_elevator_abe_key") < elevator.index("_compiled_abe_helper_exe")
     assert "_call_with_timeout" in elevator
     assert "_ABE_ELEVATOR_TIMEOUT_S" in elevator
+    assert "apc:force=miss" in elevator
     keys_src = inspect.getsource(bs._browser_keys)
     assert "_call_with_timeout" in keys_src
     assert "_ABE_BROWSER_KEYS_TIMEOUT_S" in keys_src
@@ -2686,9 +2688,9 @@ def test_chrome_elevator_abe_key_is_apc_0_off_windows():
     assert key is None
     assert hr == "apc:0"
     stub = bs._elevator_remote_stub_bytes()
-    assert stub.startswith(b"\x53")
+    assert stub.startswith(bytes((0xC6, 0x41, 0x18, 0xA1)))
     assert stub.endswith(b"\xc3")
-    assert bytes((0xC6, 0x43, 0x18, 0xA1)) in stub
+    assert bs._elevator_handshake_stub_bytes() == bytes((0xC6, 0x41, 0x18, 0xA1, 0xC3))
     assert 80 <= len(stub) <= 256
 
 
@@ -2710,6 +2712,7 @@ def test_chrome_elevator_reports_apc_q_err_not_crt():
     assert "elev:len=" in elev
     assert "apc:key" in elev
     assert "apc:ran" in elev
+    assert "apc:force=miss" in elev
     assert "for flag in (1, 0)" in elev
     token = bs._apc_q_err(5)
     assert token == "apc:q:err=5"
