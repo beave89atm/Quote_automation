@@ -1676,43 +1676,106 @@ def test_elevator_decrypt_times_out_with_server_exec_failure():
     assert elapsed < 6.0
 
 
-def test_chrome_default_uses_handle_dup_before_vss(tmp_path: Path):
-    import shutil
-
+def test_chrome_open_uses_vss_then_cached_not_dup(tmp_path: Path):
+    """Chrome-open: VSS first (create:vssadmin:2), then cached. Do not skip VSS."""
     from secturafab import browser_session as bs
 
-    db = tmp_path / "Cookies"
-    _write_cookie_db(db)
+    live = tmp_path / "live" / "Cookies"
+    live.parent.mkdir()
+    live.write_bytes(b"locked")
+    cached = tmp_path / "cache" / "Cookies"
+    _write_cookie_db(cached)
     profile = {
         "label": "chrome:Default",
-        "cookies": db,
+        "cookies": live,
         "local_state": tmp_path / "Local State",
         "profile_dir": tmp_path,
         "history_hit": True,
     }
     order: list[str] = []
 
-    def _dup(src: Path, dest: Path) -> bool:
-        order.append("dup")
-        shutil.copy2(src, dest)
-        return True
-
     def _vss(*_a, **_k):
         order.append("vss")
-        raise AssertionError("VSS must not run when handle-dup lands Cookies")
+        bs._record_vss("create:vssadmin:2")
+        return False
 
-    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
-        bs, "_try_nolock_copy", return_value=False
-    ), patch.object(
-        bs, "_try_handle_dup_copy", side_effect=_dup
-    ), patch.object(bs, "_try_vss_create_copy", side_effect=_vss):
+    def _no_dup(*_a, **_k):
+        order.append("dup")
+        raise AssertionError("dup_handle must not run before VSS+cached")
+
+    with patch.dict(os.environ, {"KANNON_COOKIE_CACHE": str(tmp_path / "cache")}), patch.object(
+        bs, "_browser_cookie_dbs", return_value=[profile]
+    ), patch.object(bs, "_try_nolock_copy", return_value=False), patch.object(
+        bs, "_try_vss_create_copy", side_effect=_vss
+    ), patch.object(bs, "_try_handle_dup_copy", side_effect=_no_dup):
         header = bs.discover_sectura_website_cookie(force=True)
     assert header
     status = bs.discover_status()
-    assert order == ["dup"]
-    assert "dup_handle" in status["lock_bypass"]
+    assert order == ["vss"]
+    assert status["lock_bypass"].startswith("vss=create:vssadmin:2")
+    assert "cached" in status["lock_bypass"]
+    assert "dup_handle" not in status["lock_bypass"]
     assert status["session_found"] is True
     assert status["source"] == "chrome:Default"
+
+
+def test_browser_dbs_omit_edge_when_chrome_default_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from secturafab import browser_session as bs
+
+    local = tmp_path / "Local"
+    chrome = local / "Google" / "Chrome" / "User Data" / "Default" / "Network"
+    edge = local / "Microsoft" / "Edge" / "User Data" / "Default" / "Network"
+    chrome.mkdir(parents=True)
+    edge.mkdir(parents=True)
+    _write_cookie_db(chrome / "Cookies")
+    _write_cookie_db(edge / "Cookies")
+    (local / "Google" / "Chrome" / "User Data" / "Local State").write_text("{}", encoding="utf-8")
+    (local / "Microsoft" / "Edge" / "User Data" / "Local State").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    dbs = bs._browser_cookie_dbs()
+    labels = [str(p["label"]) for p in dbs]
+    assert "chrome:Default" in labels
+    assert all(not lab.startswith("edge:") for lab in labels)
+
+
+def test_discover_does_not_read_edge_after_chrome_default(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    chrome_db = tmp_path / "chrome" / "Cookies"
+    edge_db = tmp_path / "edge" / "Cookies"
+    _write_cookie_db(chrome_db)
+    _write_cookie_db(edge_db)
+    chrome = {
+        "label": "chrome:Default",
+        "cookies": chrome_db,
+        "local_state": tmp_path / "chrome-state",
+        "profile_dir": tmp_path / "chrome",
+        "history_hit": True,
+    }
+    edge = {
+        "label": "edge:Default",
+        "cookies": edge_db,
+        "local_state": tmp_path / "edge-state",
+        "profile_dir": tmp_path / "edge",
+        "history_hit": False,
+    }
+    seen: list[str] = []
+
+    real = bs._read_cookie_rows
+
+    def _track(profile):
+        seen.append(str(profile.get("label") or ""))
+        return real(profile)
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[chrome, edge]), patch.object(
+        bs, "_read_cookie_rows", side_effect=_track
+    ):
+        header = bs.discover_sectura_website_cookie(force=True)
+    assert header
+    assert seen == ["chrome:Default"]
+    assert bs.discover_status()["source"] == "chrome:Default"
 
 
 def test_abe_helper_has_no_cocreate():
@@ -1792,6 +1855,9 @@ def test_abe_helper_has_no_cocreate():
     assert "if all13:" in elevator
     assert elevator.index("if pids:") < elevator.index("if all13:")
     assert elevator.index("_memscan_abe_key") < elevator.index("_compiled_abe_helper_exe")
+    rows_src = inspect.getsource(bs._read_cookie_rows)
+    assert rows_src.index("_try_vss_create_copy") < rows_src.index("_try_cached_cookie_copy")
+    assert rows_src.index("_try_cached_cookie_copy") < rows_src.index("_try_handle_dup_copy")
     assert "_DPAPI_WALK_OFFS" in inspect.getsource(bs)
     assert bs._DPAPI_WALK_OFFS == (0, 4, 8, 12, 16, 32, 44)
     assert "_note_dpapi_hr" in inspect.getsource(bs)

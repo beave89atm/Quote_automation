@@ -194,8 +194,14 @@ def _discover_uncached() -> tuple[str, str, str]:
             if not source:
                 source = label
             snapshot_errors.append(f"{label}: {_snapshot_error_text(exc)}")
+            if _is_chrome_default(label):
+                break
             continue
         if not rows:
+            if _is_chrome_default(label):
+                source = source or label
+                _cache["source"] = source
+                break
             continue
         found_hosts += 1
         if not source:
@@ -242,6 +248,8 @@ def _discover_uncached() -> tuple[str, str, str]:
                 pairs_all.append((name, plain))
         if pairs_all:
             source = label
+            break
+        if _is_chrome_default(label):
             break
     header = _assemble_cookie_header(pairs_all)
     if header:
@@ -361,6 +369,9 @@ def _browser_cookie_dbs() -> list[dict[str, Path | str | bool]]:
                 }
             )
     out.sort(key=_profile_rank)
+    # Live QA 9d6ef2f: never prefer Edge when chrome:Default Cookies exist.
+    if any(_is_chrome_default(str(p.get("label") or "")) for p in out):
+        out = [p for p in out if str(p.get("label") or "").startswith("chrome:")]
     return out
 
 
@@ -428,6 +439,23 @@ def _is_chrome_default(label: str) -> bool:
     return label == "chrome:Default"
 
 
+def _query_sectura_cookie_rows(dest: Path) -> list[tuple[str, str, str, bytes]]:
+    conn = sqlite3.connect(str(dest))
+    try:
+        cur = conn.execute(
+            "SELECT host_key, name, value, encrypted_value FROM cookies "
+            "WHERE host_key LIKE ?",
+            (f"%{SECTURA_HOST_NEEDLE}%",),
+        )
+        rows: list[tuple[str, str, str, bytes]] = []
+        for host, name, value, encrypted in cur.fetchall():
+            blob = encrypted if isinstance(encrypted, (bytes, bytearray)) else b""
+            rows.append((str(host or ""), str(name or ""), str(value or ""), bytes(blob)))
+        return rows
+    finally:
+        conn.close()
+
+
 def _set_lock_bypass(value: str, *, pin: bool = False) -> None:
     """Record lock_bypass. After Chrome Default, later profiles must not wipe it."""
     if _cache.get("lock_bypass_pinned"):
@@ -466,10 +494,12 @@ def _read_cookie_rows(
         method = ""
         if is_default and _try_nolock_copy(src, dest):
             method = "nolock"
-        elif is_default and _try_handle_dup_copy(src, dest):
-            method = "dup_handle"
         elif is_default and _try_vss_create_copy(src, dest):
             method = "vss"
+        elif is_default and _try_cached_cookie_copy(dest):
+            method = "cached"
+        elif is_default and _try_handle_dup_copy(src, dest):
+            method = "dup_handle"
         else:
             for attempt in range(2):
                 try:
@@ -497,22 +527,19 @@ def _read_cookie_rows(
                 raise last_exc
         if is_default:
             _set_lock_bypass(_lock_bypass_with_vss(method or "snapshot"), pin=True)
-            if method != "cached":
-                _persist_cookie_snapshot(dest)
-        conn = sqlite3.connect(str(dest))
-        try:
-            cur = conn.execute(
-                "SELECT host_key, name, value, encrypted_value FROM cookies "
-                "WHERE host_key LIKE ?",
-                (f"%{SECTURA_HOST_NEEDLE}%",),
-            )
-            rows: list[tuple[str, str, str, bytes]] = []
-            for host, name, value, encrypted in cur.fetchall():
-                blob = encrypted if isinstance(encrypted, (bytes, bytearray)) else b""
-                rows.append((str(host or ""), str(name or ""), str(value or ""), bytes(blob)))
-            return rows
-        finally:
-            conn.close()
+        rows = _query_sectura_cookie_rows(dest)
+        if (
+            is_default
+            and not rows
+            and method != "cached"
+            and _try_cached_cookie_copy(dest)
+        ):
+            method = "cached"
+            _set_lock_bypass(_lock_bypass_with_vss("cached"), pin=True)
+            rows = _query_sectura_cookie_rows(dest)
+        if is_default and method != "cached" and rows:
+            _persist_cookie_snapshot(dest)
+        return rows
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
