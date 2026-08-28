@@ -540,24 +540,18 @@ def _takeoff_row_matches(part_no: str, row: dict[str, Any]) -> bool:
     )
     if want in token or normalize_part_token(token) == want:
         return True
-    from secturafab.qty_ops import normalize_part_key
-
-    want_key = normalize_part_key(want)
     row_pn = normalize_part_token(
         str(row.get("part_no") or row.get("part_number") or row.get("name") or "")
     )
-    row_key = normalize_part_key(row_pn)
-    if want_key and row_key and want_key == row_key:
+    if not row_pn:
+        return False
+    if want == row_pn:
         return True
-    want_base = want_key.split("-")[0] if want_key else ""
-    row_base = row_key.split("-")[0] if row_key else ""
+    want_base = want.rsplit("-", 1)[0] if "-" in want else want
+    row_base = row_pn.rsplit("-", 1)[0] if "-" in row_pn else row_pn
     if want_base and row_base and want_base == row_base:
-        if "-" not in want_key or "-" not in row_key:
-            return True
-        return want_key == row_key or want_key.startswith(row_key + "-") or row_key.startswith(
-            want_key + "-"
-        )
-    return False
+        return True
+    return want == row_base or row_pn == want_base
 
 
 def flats_from_takeoff(
