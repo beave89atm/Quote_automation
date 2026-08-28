@@ -57,10 +57,9 @@ WEBSITE_FINISH_PATHS = {
 }
 
 WEBSITE_AUTH_GAP = (
-    "Finish needs a live SecturaFAB Chrome session on this PC "
-    "(www.secturafab.com / secturafab.com cookies). Sign into SecturaFAB in "
-    "Chrome on the quoting PC, then push again. This app reads Chrome's "
-    "cookies automatically — do not paste a cookie. "
+    "Finish needs a SecturaFAB website session cookie "
+    "(SECTURA_WEBSITE_COOKIE from a signed-in www.secturafab.com Chrome). "
+    "Do not paste a cookie. Do not unwrap Windows Chrome. "
     "GET /Quote/GetItem_AddView and POST /Quote/AddItem_DXFFiles, "
     "AddItem_PDFFiles, and AddItem_Linear 302 to /Account/Login or hit "
     "Cloudflare without that session. Do not fall back to quickAddCAD. "

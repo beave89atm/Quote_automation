@@ -942,7 +942,7 @@ class SecturaFabPushService:
         raise last_exc
 
     def _website_cookie_present(self) -> bool:
-        """True when env override or Chrome on this PC has a Sectura session."""
+        """True when SECTURA_WEBSITE_COOKIE (env/file) is set. No Windows unwrap."""
         cfg = getattr(self.client, "config", None)
         return bool(effective_website_cookie(cfg))
 
@@ -1307,6 +1307,8 @@ class SecturaFabPushService:
         extra_pdfs: list[Path] | None = None,
     ) -> list[str]:
         """Image Files Finish: POST /Quote/AddItem_PDFFiles."""
+        if not self._website_cookie_present():
+            raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
         notes: list[str] = []
         try:
             self.client.get_item_add_view(quote_id, item_type="pdf")
@@ -1418,6 +1420,8 @@ class SecturaFabPushService:
         length: float | None = None,
     ) -> list[str]:
         """Long: POST /Quote/AddItem_Linear for a job that is itself a linear."""
+        if not self._website_cookie_present():
+            raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
         notes: list[str] = []
         product_id, sku, mismatch = self._match_linear_sku(
             description, material=material
@@ -1492,6 +1496,8 @@ class SecturaFabPushService:
         extra_pdfs: list[Path] | None,
     ) -> list[str]:
         """Long Finish: POST /Quote/AddItem_Linear with ProductType 10."""
+        if not self._website_cookie_present():
+            raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
         from .line_item_ops import (
             _length_from_library,
             bom_row_cut_length,

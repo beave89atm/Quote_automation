@@ -23,8 +23,7 @@ class SecturaFabConfig:
     timeout_seconds: float = 60.0
     # www MVC host for Finish / CAD Files (not in public OpenAPI).
     website_url: str = ""
-    # Optional silent override for /Quote/* Finish. Prefer Chrome cookies
-    # discovered on the quoting PC (Kyle signed into www.secturafab.com).
+    # Cookie header from SECTURA_WEBSITE_COOKIE (env or file path).
     # Never commit a real value; do not add a paste-cookie UX.
     website_cookie: str = ""
 
@@ -87,5 +86,9 @@ class SecturaFabConfig:
             tenant=os.getenv("SECTURAFAB_TENANT", "").strip(),
             timeout_seconds=float(os.getenv("SECTURAFAB_TIMEOUT_SECONDS", "60")),
             website_url=os.getenv("SECTURAFAB_WEBSITE_URL", "").strip().rstrip("/"),
-            website_cookie=os.getenv("SECTURAFAB_WEBSITE_COOKIE", "").strip(),
+            website_cookie=(
+                os.getenv("SECTURA_WEBSITE_COOKIE")
+                or os.getenv("SECTURAFAB_WEBSITE_COOKIE")
+                or ""
+            ).strip(),
         )

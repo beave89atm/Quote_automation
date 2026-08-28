@@ -64,10 +64,9 @@ COOKIE_NAMES = (
 )
 
 CHROME_SESSION_REQUIRED = (
-    "Finish needs a live SecturaFAB Chrome session on this PC "
-    "(www.secturafab.com / secturafab.com cookies). Sign into SecturaFAB in "
-    "Chrome on the quoting PC, then push again. This app reads Chrome's "
-    "cookies automatically — do not paste a cookie."
+    "Finish needs a SecturaFAB website session cookie "
+    "(SECTURA_WEBSITE_COOKIE from a signed-in www.secturafab.com Chrome). "
+    "Do not paste a cookie. Do not unwrap Windows Chrome."
 )
 
 _SHADOW_MISS_ERR = (
@@ -104,15 +103,40 @@ _cache: dict[str, Any] = {
 _abe_memo: dict[str, "_BrowserKeys"] = {}
 
 
+def _cookie_text_from_value(raw: str) -> str:
+    """Cookie header string, or first line of a file path. Never logs the value."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    looks_like_path = (
+        len(text) < 512
+        and ("/" in text or "\\" in text or text.endswith((".txt", ".cookie")))
+    )
+    if looks_like_path:
+        try:
+            path = Path(text).expanduser()
+            if path.is_file():
+                body = path.read_text(encoding="utf-8").strip()
+                return (body.splitlines()[0].strip() if body else "")
+        except OSError:
+            return ""
+    return text
+
+
+def _env_website_cookie() -> str:
+    for name in ("SECTURA_WEBSITE_COOKIE", "SECTURAFAB_WEBSITE_COOKIE"):
+        got = _cookie_text_from_value(os.getenv(name) or "")
+        if got:
+            return got
+    return ""
+
+
 def effective_website_cookie(cfg: Any | None = None) -> str:
-    """Env/config override first, else Chrome/Edge cookies on this PC."""
+    """Env/file Cookie header only. Do not unwrap Windows Chrome."""
     explicit = getattr(cfg, "website_cookie", None) if cfg is not None else None
     if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
-    env = (os.getenv("SECTURAFAB_WEBSITE_COOKIE") or "").strip()
-    if env:
-        return env
-    return discover_sectura_website_cookie()
+        return _cookie_text_from_value(explicit.strip())
+    return _env_website_cookie()
 
 
 def discover_sectura_website_cookie(*, force: bool = False) -> str:
@@ -158,14 +182,16 @@ def last_discover_source() -> str:
 
 def session_found() -> bool:
     """True when a Sectura website session cookie header is available."""
-    return bool(_cache.get("session_found") or _cache.get("cookie"))
+    if _env_website_cookie() or _cache.get("session_found") or _cache.get("cookie"):
+        return True
+    return False
 
 
 def discover_status() -> dict[str, Any]:
     """QA-safe status. Never includes cookie values or key material."""
     return {
         "session_found": session_found(),
-        "source": last_discover_source(),
+        "source": last_discover_source() or ("env" if _env_website_cookie() else ""),
         "lock_bypass": str(_cache.get("lock_bypass") or ""),
         "vss": str(_cache.get("vss") or ""),
         "abe": str(_cache.get("abe") or ""),

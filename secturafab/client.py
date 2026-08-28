@@ -513,6 +513,10 @@ class SecturaFabClient:
         files: list[tuple[str, tuple[str, Any, str]]] | None = None,
     ) -> Any:
         """POST /Quote/AddItem_PDFFiles — Image Files Finish (OnAddPDFClick)."""
+        from .browser_session import effective_website_cookie
+
+        if not effective_website_cookie(self.config):
+            raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
         payload = build_pdf_finish_payload(
             quote_id,
             file_list,
@@ -534,7 +538,7 @@ class SecturaFabClient:
             data=form,
             files=files,
             prefer_api_origin=True,
-            require_session=False,
+            require_session=True,
             timeout=max(self.config.timeout_seconds, 180.0),
         )
         location = response.headers.get("Location") or ""
@@ -544,7 +548,7 @@ class SecturaFabClient:
                 status_code=response.status_code,
                 body=location,
             )
-        return self._parse_website_or_raise(response, require_session=False)
+        return self._parse_website_or_raise(response, require_session=True)
 
     def add_item_linear(
         self,
@@ -561,6 +565,10 @@ class SecturaFabClient:
         extra: dict[str, Any] | None = None,
     ) -> Any:
         """POST /Quote/AddItem_Linear — Long."""
+        from .browser_session import effective_website_cookie
+
+        if not effective_website_cookie(self.config):
+            raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
         payload = build_linear_add_payload(
             quote_id,
             product_id=product_id,
@@ -578,7 +586,7 @@ class SecturaFabClient:
             WEBSITE_FINISH_PATHS["add_item_linear"],
             json=payload,
             prefer_api_origin=True,
-            require_session=False,
+            require_session=True,
         )
         location = response.headers.get("Location") or ""
         if is_website_login_redirect(response.status_code, location):
@@ -587,7 +595,7 @@ class SecturaFabClient:
                 status_code=response.status_code,
                 body=location,
             )
-        return self._parse_website_or_raise(response, require_session=False)
+        return self._parse_website_or_raise(response, require_session=True)
 
     def nest_quote_edit(self, quote_id: str, extra: dict[str, Any] | None = None) -> Any:
         """POST /Quote/NestQuote_Edit — same nest control the UI uses."""

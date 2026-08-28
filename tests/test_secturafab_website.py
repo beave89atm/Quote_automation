@@ -270,6 +270,150 @@ def test_add_item_dxf_files_sends_js_contract():
     assert body["FileList"][0]["Machine"] == "Laser"
 
 
+def test_add_item_pdf_files_posts_quote_mvc():
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = SecturaFabConfig(website_cookie="ASP.NET_SessionId=fixture")
+    captured: dict[str, Any] = {}
+
+    def fake_website_request(method, path, **kwargs):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json"] = kwargs.get("json")
+        captured["data"] = kwargs.get("data")
+        captured["files"] = kwargs.get("files")
+        captured["require_session"] = kwargs.get("require_session")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = b"{}"
+        resp.json.return_value = {"ok": True}
+        resp.headers = {}
+        resp.text = "{}"
+        resp.url = path
+        return resp
+
+    real.website_request = fake_website_request  # type: ignore[method-assign]
+    from io import BytesIO
+
+    real.add_item_pdf_files(
+        quote_id="qid",
+        file_list=[
+            {
+                "ErrorStatus": 0,
+                "Qty": 1,
+                "Machine": "Laser",
+                "Material": "A36",
+                "Thickness": 0.25,
+                "FileName": "14500-1.pdf",
+                "Name": "14500-1 PEDESTAL TOP PLATE",
+            }
+        ],
+        files=[("files", ("14500-1.pdf", BytesIO(b"%PDF-1.4"), "application/pdf"))],
+    )
+    assert captured["path"] == "/Quote/AddItem_PDFFiles"
+    assert captured["method"] == "POST"
+    assert captured["require_session"] is True
+    assert captured["json"] is None
+    form = captured["data"]
+    assert form["ID"] == "qid"
+    assert form["ItemID"] == EMPTY_GUID
+    rows = json.loads(form["FileList"])
+    assert rows[0]["Machine"] == "Laser"
+    assert rows[0]["FileName"] == "14500-1.pdf"
+    assert captured["files"][0][1][0] == "14500-1.pdf"
+
+
+def test_add_item_linear_posts_quote_mvc():
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = SecturaFabConfig(website_cookie="ASP.NET_SessionId=fixture")
+    captured: dict[str, Any] = {}
+
+    def fake_website_request(method, path, **kwargs):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json"] = kwargs.get("json")
+        captured["require_session"] = kwargs.get("require_session")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = b"{}"
+        resp.json.return_value = {"ok": True}
+        resp.headers = {}
+        resp.text = "{}"
+        resp.url = path
+        return resp
+
+    real.website_request = fake_website_request  # type: ignore[method-assign]
+    real.add_item_linear(
+        quote_id="qid",
+        product_id="pid-tube",
+        qty=2,
+        length=10.9,
+        material="A500",
+        machine="Saw",
+        name="1001880-2 TUBE",
+    )
+    assert captured["path"] == "/Quote/AddItem_Linear"
+    assert captured["method"] == "POST"
+    assert captured["require_session"] is True
+    body = captured["json"]
+    assert body["ID"] == "qid"
+    assert body["ItemID"] == EMPTY_GUID
+    assert body["ProductID"] == "pid-tube"
+    assert body["Qty"] == 2
+    assert body["Length"] == 10.9
+    assert body["ProductType"] == 10
+    assert body["Machine"] == "Saw"
+    assert body["Name"] == "1001880-2 TUBE"
+
+
+def test_add_item_pdf_files_fails_closed_without_cookie(monkeypatch):
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    monkeypatch.delenv("SECTURA_WEBSITE_COOKIE", raising=False)
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = SecturaFabConfig(website_cookie="")
+    called = {"n": 0}
+
+    def boom(*_a, **_k):
+        called["n"] += 1
+        raise AssertionError("must not POST without a cookie")
+
+    real.website_request = boom  # type: ignore[method-assign]
+    with pytest.raises(SecturaFabWebsiteAuthError, match="SECTURA_WEBSITE_COOKIE|session"):
+        real.add_item_pdf_files(
+            quote_id="qid",
+            file_list=[{"ErrorStatus": 0, "Qty": 1, "Machine": "Laser"}],
+        )
+    assert called["n"] == 0
+
+
+def test_add_item_linear_fails_closed_without_cookie(monkeypatch):
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    monkeypatch.delenv("SECTURA_WEBSITE_COOKIE", raising=False)
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = SecturaFabConfig(website_cookie="")
+    called = {"n": 0}
+
+    def boom(*_a, **_k):
+        called["n"] += 1
+        raise AssertionError("must not POST without a cookie")
+
+    real.website_request = boom  # type: ignore[method-assign]
+    with pytest.raises(SecturaFabWebsiteAuthError, match="SECTURA_WEBSITE_COOKIE|session"):
+        real.add_item_linear(quote_id="qid", product_id="pid")
+    assert called["n"] == 0
+
+
 def _gold_cad(desc: str = "21680-1 PLATE") -> dict[str, Any]:
     return {
         "Description": desc,
@@ -578,6 +722,38 @@ def test_effective_cookie_prefers_config_not_chrome():
 
     cfg = SecturaFabConfig(website_cookie="ASP.NET_SessionId=from-env")
     assert effective_website_cookie(cfg) == "ASP.NET_SessionId=from-env"
+
+
+def test_effective_cookie_reads_sectura_website_cookie_env(monkeypatch):
+    from secturafab.browser_session import effective_website_cookie
+
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=from-box")
+    assert effective_website_cookie() == "ASP.NET_SessionId=from-box"
+
+
+def test_effective_cookie_reads_cookie_file(tmp_path: Path, monkeypatch):
+    from secturafab.browser_session import effective_website_cookie
+
+    path = tmp_path / "box.cookie"
+    path.write_text("ASP.NET_SessionId=box-sess\n", encoding="utf-8")
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", str(path))
+    assert effective_website_cookie() == "ASP.NET_SessionId=box-sess"
+
+
+def test_effective_cookie_does_not_call_windows_discover(monkeypatch):
+    from secturafab.browser_session import effective_website_cookie
+    from secturafab.config import SecturaFabConfig
+
+    monkeypatch.delenv("SECTURA_WEBSITE_COOKIE", raising=False)
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
+    with patch(
+        "secturafab.browser_session.discover_sectura_website_cookie",
+        side_effect=AssertionError("Windows unwrap is dead"),
+    ) as disc:
+        assert effective_website_cookie(SecturaFabConfig()) == ""
+        disc.assert_not_called()
 
 
 def test_discover_cookie_from_sqlite(tmp_path: Path):
