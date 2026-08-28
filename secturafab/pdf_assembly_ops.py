@@ -790,26 +790,14 @@ def _add_cad_plate_items(
                 )
                 continue
             except SecturaFabWebsiteAuthError:
-                pass
-            except Exception as exc:  # noqa: BLE001
-                notes.append(f"WARNING: AddItem_PDFFiles {pdf.name}: {exc}")
-            try:
-                # add_item_pdf_files opens the file; reopen for quickAddCAD
-                quick_add_component_pdf(
-                    client,
-                    quote_id=quote_id,
-                    pdf_path=pdf,
-                    material=str(grade or "A36"),
-                    thickness=str(thk or "0.25"),
-                    machine="Laser",
-                    qty=qty,
-                    memo=desc or part_no,
+                notes.append(
+                    f"AddItem_PDFFiles {pdf.name} fail-closed — no website session "
+                    "(not substituting quickAddCAD)"
                 )
-                imported += 1
-                notes.append(f"Image Files quickAddCAD {pdf.name} ({part_no})")
                 continue
             except Exception as exc:  # noqa: BLE001
-                notes.append(f"WARNING: quickAddCAD {pdf.name}: {exc}")
+                notes.append(f"WARNING: AddItem_PDFFiles {pdf.name}: {exc}")
+                continue
         shells.append(
             {
                 "ID": str(uuid.uuid4()),
@@ -831,7 +819,7 @@ def _add_cad_plate_items(
         )
     if imported:
         notes.append(
-            f"Imported {imported} Cad plate(s) via Image Files / quickAddCAD "
+            f"Imported {imported} Cad plate(s) via Image Files "
             "(DataPart + UnitCost; Finish stamps PR + Primary Costs)"
         )
     if not shells:

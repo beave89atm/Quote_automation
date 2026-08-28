@@ -7,6 +7,10 @@ from typing import Any
 
 from .client import SecturaFabClient
 
+# Kyle-confirmed Time Manufacturing Waco tenant org (do not search-guess).
+TIME_WACO_ORG_ID = "b7dbc294-3fd2-43aa-99be-268a6c4fce14"
+TIME_WACO_ORG_NAME = "Time Manufacturing Waco"
+
 
 def _org_blob(org: dict[str, Any]) -> str:
     return " ".join(
@@ -127,6 +131,15 @@ def apply_quote_organization(
         return notes
 
     org = find_organization_by_name(client, name)
+    want_time_waco = "time" in name.casefold() and "waco" in name.casefold()
+    if want_time_waco:
+        org = {
+            "ID": TIME_WACO_ORG_ID,
+            "OrganizationName": (org or {}).get("OrganizationName") or TIME_WACO_ORG_NAME,
+            "DisplayName": (org or {}).get("DisplayName") or TIME_WACO_ORG_NAME,
+            "NameAndLocation": (org or {}).get("NameAndLocation") or TIME_WACO_ORG_NAME,
+            "PrimaryContactID": (org or {}).get("PrimaryContactID"),
+        }
     if not org or not org.get("ID"):
         listed = list_organizations(client)
         sample = ", ".join(

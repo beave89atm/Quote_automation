@@ -348,6 +348,47 @@ def ensure_weld_ops(
         ]
 
     qty = int(target.get("Quantity") or target.get("Qty") or 1)
+    weld_inches = float((times or {}).get("total_inches") or 0.0)
+    from .browser_session import effective_website_cookie
+    from .website import (
+        SecturaFabWebsiteAuthError,
+        WELD_CALC_PARAM_TYPE,
+        WELD_OPERATION_CODE,
+    )
+
+    cookie = effective_website_cookie(getattr(client, "config", None))
+    if cookie and hasattr(client, "add_operation"):
+        try:
+            posted = client.add_operation(
+                quote_id=quote_id,
+                item_id=str(target["ID"]),
+                weld_inches=weld_inches,
+                weld_hours=weld_h,
+                fitup_hours=fit_h,
+                setup_hours=setup_h,
+            )
+            if posted in (None, "", {}, []):
+                return [
+                    "WARNING: AddOperation weld returned empty — "
+                    "not grafting a 3h laser; session path only"
+                ]
+            fit_label = "with fixture"
+            mode = (os.getenv("SECTURAFAB_FITUP_MODE") or "with").strip().lower()
+            if mode in {"no", "none", "no_fixture", "nofixture"}:
+                fit_label = "no fixture"
+            return [
+                f"AddOperation {WELD_OPERATION_CODE} on "
+                f"{(target.get('Description') or '')[:40]!r} "
+                f"CalcParamType={WELD_CALC_PARAM_TYPE} ApplyTo=ITEM: "
+                f"{weld_h * 60:.1f} min weld, {fit_h * 60:.1f} min fit-up "
+                f"({fit_label}), {setup_h * 60:.0f} min setup"
+            ]
+        except SecturaFabWebsiteAuthError as exc:
+            return [
+                f"WARNING: AddOperation weld fail-closed ({exc}) — "
+                "not grafting Laser"
+            ]
+
     weld_ops = build_weld_ops(
         str(target["ID"]),
         weld_hours=weld_h,
@@ -359,7 +400,7 @@ def ensure_weld_ops(
     kept = [o for o in existing if o.get("OperationName") != "Weld"]
     target["OperationCostList"] = kept + weld_ops
 
-    # Write back via full quote POST (same pattern as Profile attach).
+    # Cookie absent: public quote POST (do not refuse the whole push).
     for it in detail.get("ItemList") or []:
         if it.get("ID") == target["ID"]:
             it["OperationCostList"] = target["OperationCostList"]

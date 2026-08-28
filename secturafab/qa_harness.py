@@ -223,6 +223,7 @@ def evaluate_quote_get(
     bom_hints = _bom_hint_map(bom_rows)
     check_lines = bool(bom_rows)
     assembly_desc = None
+    assembly_id = None
     cad_n = lin_n = 0
     from secturafab.item_desc import match_bom_part_no
     from secturafab.qty_ops import normalize_part_key as _npk
@@ -234,6 +235,7 @@ def evaluate_quote_get(
         cat = _item_category(it, hint)
         if cat == "Assembly":
             assembly_desc = desc
+            assembly_id = str(it.get("ID") or "") or assembly_id
             if part and is_bare_part_number(desc, part):
                 failures.append(f"Assembly Description is bare PN {desc!r}")
             if expected_assembly_title and desc != expected_assembly_title:
@@ -402,6 +404,22 @@ def evaluate_quote_get(
                 failures.append(
                     f"Component {it_desc!r} stripped dash from PN {pn}"
                 )
+
+    if assembly_id and len(items) > 1:
+        flat = [
+            str(it.get("Description") or it.get("ID") or "")
+            for it in items
+            if str(it.get("ID") or "") != assembly_id
+            and not (
+                it.get("IsAssembly") or it.get("ProductType") in _ASSEMBLY_TYPES
+            )
+            and str(it.get("AssemblyID") or "") != assembly_id
+        ]
+        if flat:
+            failures.append(
+                f"Flat root kids (not under assembly {assembly_id}): "
+                + ", ".join(flat[:6])
+            )
 
     notes.append(f"Checked {cad_n} Cad / {lin_n} Linear line(s)")
     if assembly_desc:

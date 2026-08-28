@@ -79,7 +79,7 @@ def _saw_primary_costs(item_id: str) -> list[dict[str, Any]]:
     ]
 
 TIME_ORG = "Time Manufacturing Waco"
-TIME_ORG_ID = "11111111-2222-3333-4444-555555555555"
+TIME_ORG_ID = "b7dbc294-3fd2-43aa-99be-268a6c4fce14"
 ASSEMBLY_DESC = format_assembly_description("1001898-1", "PEDESTAL WELDMENT")
 HEADER_DESC = format_quote_header_description("PEDESTAL WELDMENT", part_key="1001898-1")
 
@@ -116,6 +116,8 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
             items.append(
                 {
                     "ID": f"lin-{pn}",
+                    "AssemblyID": "asm-1001898",
+                    "AssemblyLevel": 2,
                     "Description": format_linear_description(
                         pn, sku=sku, length_in=length_in, noun=noun
                     ),
@@ -140,6 +142,8 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
             items.append(
                 {
                     "ID": f"cmp-{pn}",
+                    "AssemblyID": "asm-1001898",
+                    "AssemblyLevel": 2,
                     "Description": format_component_line(
                         pn, locked_component_noun(pn, noun)
                     )
@@ -163,6 +167,8 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
             items.append(
                 {
                     "ID": f"cad-{pn}",
+                    "AssemblyID": "asm-1001898",
+                    "AssemblyLevel": 2,
                     "Description": format_cad_description(
                         pn,
                         thickness=thk,

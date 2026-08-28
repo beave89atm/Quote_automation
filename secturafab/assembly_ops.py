@@ -212,6 +212,44 @@ def relink_assembly_children(
     )
     if not linked:
         return []
+    from .browser_session import effective_website_cookie
+    from .website import SecturaFabWebsiteAuthError
+
+    cookie = effective_website_cookie(getattr(client, "config", None))
+    if cookie and hasattr(client, "copy_move_item_to_assembly"):
+        moved = 0
+        for it in items:
+            cid = str(it.get("ID") or "")
+            if not cid or cid == tid:
+                continue
+            try:
+                client.copy_move_item_to_assembly(
+                    quote_id=quote_id,
+                    item_id=cid,
+                    assembly_id=tid,
+                    mode="Move",
+                )
+                moved += 1
+            except SecturaFabWebsiteAuthError as exc:
+                return [
+                    f"WARNING: Copy/Move into Assembly fail-closed ({exc})"
+                ]
+            except Exception as exc:  # noqa: BLE001
+                return [f"WARNING: Copy/Move into Assembly failed ({exc})"]
+        check = client.get_json(f"v1/quote/{quote_id}")
+        ok = sum(
+            1
+            for it in (check.get("ItemList") or [])
+            if it.get("ID") != tid and it.get("AssemblyID") == tid
+        )
+        notes = [f"Copy/Move {moved} child item(s) into Assembly"]
+        if ok < moved:
+            notes.append(
+                f"WARNING: only {ok}/{moved} children retained AssemblyID — "
+                "flat root kids fail QA"
+            )
+        return notes
+
     detail["ItemList"] = items
     save = client.request("POST", "v1/quote", json=detail)
     if save.status_code >= 400:

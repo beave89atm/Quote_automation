@@ -154,6 +154,31 @@ def _row_qty(row: dict[str, Any]) -> float:
     return 0.0
 
 
+def _plate_thickness_in(description: str) -> float | None:
+    """Plate/ring thickness in inches, or None (ignore NPT / angle SKUs)."""
+    from quote_core.part_materials import _parse_thickness_token
+
+    text = str(description or "")
+    if re.search(r"\bNPT\b", text, re.I):
+        return None
+    if re.search(r"\bL\d", text, re.I):
+        return None
+    m = re.search(
+        r"(?i)(?:^|[\s-])(\d+(?:\.\d+)?(?:\s+\d+/\d+)?|\d+/\d+)\s*"
+        r"(?:\"|IN\b|INCH)?\s+(?:A\d|PLATE|RING|SQ|OUTSOURCE|DOMEX)",
+        text,
+    )
+    if not m:
+        return None
+    token = re.sub(r"\s+", "", m.group(1))
+    return _parse_thickness_token(token)
+
+
+def _looks_like_formed_plate(description: str) -> bool:
+    text = f" {str(description or '').upper()} "
+    return any(h in text for h in (" FORMED ", " ROLLED ", " BENT PLATE "))
+
+
 def classify_sectura_item(description: str) -> str:
     """
     Map a STEP/BOM description to SecturaFAB item category dropdown values:
@@ -163,6 +188,9 @@ def classify_sectura_item(description: str) -> str:
     Purchased fittings (elbow, coupling, plug, nipple, cap, filler neck) and
     hardware = Component. Component is checked before Linear so ``PIPE CAP``
     is not treated as a Linear pipe.
+
+    Plate over 3/4 in is Component (no invented $). A formed plate that looks
+    like an angle is still Cad. Hose guards / structural tube are Linear.
 
     Job 92 / 1001898-1 child-PDF locks win over LOM nouns (rolled 1001880-2
     is Cad; 14500-1 / 1005966-1 are outsource Component).
@@ -183,9 +211,55 @@ def classify_sectura_item(description: str) -> str:
         return "Component"
     if any(h in text for h in _COMPONENT_HINTS) or _COMPONENT_WORD_RE.search(text):
         return "Component"
+    thk = _plate_thickness_in(description)
+    if thk is not None and thk > 0.75:
+        return "Component"
+    if _looks_like_formed_plate(description):
+        return "Cad"
     if any(h in text for h in _LINEAR_HINTS):
         return "Linear"
     return "Cad"
+
+
+_HOLE_NOUN_RE = re.compile(
+    r"(?i)(\d+(?:\s+\d+/\d+)?|\d+/\d+|\d+\.\d+)\s*(?:\"|IN)?\s*HOLES?"
+)
+
+
+def _holes_from_noun(text: str) -> list[dict[str, Any]]:
+    """Holes only when the drawing/BOM noun calls them out. Never invent."""
+    from quote_core.part_materials import _parse_thickness_token
+
+    holes: list[dict[str, Any]] = []
+    for m in _HOLE_NOUN_RE.finditer(str(text or "")):
+        dia = _parse_thickness_token(re.sub(r"\s+", "", m.group(1)))
+        if dia and 0.1 <= dia <= 6.0:
+            holes.append({"diameter": dia, "qty": 1})
+    return holes
+
+
+def _holes_from_takeoff_or_bom(
+    takeoff: dict[str, Any] | None,
+    bom_rows: list[dict[str, Any]] | None,
+) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    for row in bom_rows or []:
+        pn = str(row.get("part_no") or row.get("part_number") or "").strip()
+        noun = str(row.get("description") or "")
+        holes = _holes_from_noun(f"{pn} {noun}")
+        if pn and holes:
+            out[pn] = holes
+    for item in (takeoff or {}).get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        notes = str(item.get("joint_notes") or item.get("notes") or "")
+        holes = _holes_from_noun(notes)
+        if not holes:
+            continue
+        pn = str(item.get("part_no") or item.get("part_number") or "").strip()
+        if pn:
+            out.setdefault(pn, holes)
+    return out
 
 
 @dataclass
@@ -324,8 +398,19 @@ def _default_material(takeoff: dict[str, Any] | None) -> str:
         return "A36"
     if label:
         # SecturaFAB grades are typically bare codes like A36 / A572.
-        return label.split()[0]
+        grade = label.split()[0]
+        if "A569" in grade.upper():
+            return "A36"
+        return grade
     return "A36"
+
+
+def _shop_material(material: str | None) -> str:
+    """Grade from the drawing. A36 only when none is called out. Never A569."""
+    text = str(material or "").strip()
+    if not text or "A569" in text.upper():
+        return "A36"
+    return text
 
 
 def _resolve_push_material_thickness(
@@ -388,6 +473,7 @@ def _resolve_push_material_thickness(
                 f"using {material} @ {thickness} instead; confirm against the PDF"
             )
 
+    material = _shop_material(material)
     thickness = _sanitize_thickness_param(thickness)
     return material, thickness, notes
 
@@ -1423,6 +1509,13 @@ class SecturaFabPushService:
                     notes.extend(class_notes)
             for row in file_list:
                 row["Status"] = row.get("Status") or 1
+                holes = _holes_from_noun(
+                    str(row.get("Name") or row.get("Description") or "")
+                )
+                if holes:
+                    from .website import internal_data_from_holes
+
+                    row["InternalData"] = internal_data_from_holes(holes)
             self.client.add_item_pdf_files(
                 quote_id=quote_id,
                 file_list=file_list,
@@ -1513,6 +1606,125 @@ class SecturaFabPushService:
             if classify_sectura_item(f"{pn} {noun}") == "Linear":
                 rows.append(row)
         return rows
+
+    def _library_component_rows(
+        self, bom_rows: list[dict[str, Any]] | None
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for row in bom_rows or []:
+            pn = str(row.get("part_no") or row.get("part_number") or "").strip()
+            noun = str(row.get("description") or "")
+            if classify_sectura_item(f"{pn} {noun}") == "Component":
+                rows.append(row)
+        return rows
+
+    def finish_website_weldment(
+        self,
+        *,
+        quote_id: str,
+        part_key: str,
+        bom_rows: list[dict[str, Any]] | None,
+        library: dict[str, Any] | None,
+        extra_pdfs: list[Path] | None,
+        material: str,
+        assembly_description: str | None,
+        takeoff: dict[str, Any] | None,
+    ) -> list[str]:
+        """Components + Copy/Move under assembly + Internal holes (website session)."""
+        from .forbidden_quotes import is_forbidden_quote_id
+        from .pdf_assembly_ops import _add_component_items, create_assembly_shell
+
+        if is_forbidden_quote_id(quote_id):
+            raise SecturaFabApiError(
+                f"Refusing to PATCH/reuse forbidden live quote {quote_id}"
+            )
+        notes: list[str] = []
+        if not self._website_cookie_present():
+            notes.append(
+                "Pack-stamp / Copy-Move / AddFeature fail-closed — no website session"
+            )
+            return notes
+        notes.extend(
+            create_assembly_shell(
+                self.client,
+                quote_id,
+                part_key=part_key,
+                description=assembly_description,
+            )
+        )
+        components = self._library_component_rows(bom_rows)
+        if components:
+            notes.extend(
+                _add_component_items(self.client, quote_id, components)
+            )
+        notes.extend(
+            relink_assembly_children(self.client, quote_id, part_key=part_key)
+        )
+        notes.extend(
+            self.stamp_cad_holes(
+                quote_id=quote_id,
+                bom_rows=bom_rows,
+                library=library,
+                extra_pdfs=extra_pdfs,
+                takeoff=takeoff,
+            )
+        )
+        del material  # components do not invent dollars
+        return notes
+
+    def stamp_cad_holes(
+        self,
+        *,
+        quote_id: str,
+        bom_rows: list[dict[str, Any]] | None,
+        library: dict[str, Any] | None,
+        extra_pdfs: list[Path] | None,
+        takeoff: dict[str, Any] | None,
+    ) -> list[str]:
+        """Internal / Add Feature when the drawing has holes. Never invent holes."""
+        del library, extra_pdfs
+        notes: list[str] = []
+        holes_by_pn = _holes_from_takeoff_or_bom(takeoff, bom_rows)
+        if not holes_by_pn:
+            return notes
+        if not self._website_cookie_present():
+            notes.append("AddFeature holes fail-closed — no website session")
+            return notes
+        try:
+            detail = self.client.get_json(f"v1/quote/{quote_id}")
+        except SecturaFabApiError:
+            return notes
+        from .item_desc import match_bom_part_no
+
+        stamped = 0
+        for it in detail.get("ItemList") or []:
+            if not isinstance(it, dict):
+                continue
+            desc = str(it.get("Description") or "")
+            pn = match_bom_part_no(desc, bom_rows) or ""
+            holes = holes_by_pn.get(pn) or _holes_from_noun(desc)
+            if not holes or not it.get("ID"):
+                continue
+            if classify_sectura_item(desc) != "Cad" and it.get("ProductType") not in (
+                100,
+                "100",
+            ):
+                continue
+            for hole in holes:
+                try:
+                    self.client.add_item_feature(
+                        quote_id=quote_id,
+                        item_id=str(it["ID"]),
+                        diameter=float(hole["diameter"]),
+                        qty=int(hole.get("qty") or 1),
+                    )
+                    stamped += 1
+                except (SecturaFabWebsiteAuthError, SecturaFabApiError, TypeError, ValueError) as exc:
+                    notes.append(f"WARNING: AddFeature Internal {pn or desc[:20]}: {exc}")
+                    return notes
+        if stamped:
+            notes.append(f"AddFeature Internal on {stamped} hole feature(s)")
+        return notes
 
     def finish_linear_bom_rows(
         self,
@@ -1940,6 +2152,12 @@ class SecturaFabPushService:
                 memo="",
                 quote_request_id=quote_request_id,
             )
+            from .forbidden_quotes import is_forbidden_quote_id
+
+            if is_forbidden_quote_id(quote_id):
+                raise SecturaFabApiError(
+                    f"Refusing to PATCH/reuse forbidden live quote {quote_id}"
+                )
             notes.append(f"Created SecturaFAB quote {quote_number}")
             notes.append(desc_note)
             # Organization before CAD/Profile — later full-quote POSTs can wipe ops.
@@ -1959,6 +2177,8 @@ class SecturaFabPushService:
             expect_cad = bool(cad or cad_pdfs or ((drawings or has_job_pdf) and not loose_linear))
             expect_linear = bool(loose_linear or linear_bom)
             items_before_finish = self._peek_item_count(quote_id)
+            website_cookie = self._website_cookie_present()
+            attempted_pack_stamp = False
             try:
                 if cad:
                     notes.extend(
@@ -1976,6 +2196,12 @@ class SecturaFabPushService:
                         )
                     )
                     uploaded.extend(p.name for p in cad)
+                    attempted_pack_stamp = True
+                elif not website_cookie:
+                    notes.append(
+                        "Pack-stamp fail-closed — no website session; "
+                        "skipped Image Files / Long. Public nest/weld continue."
+                    )
                 elif loose_linear:
                     notes.extend(
                         self.add_loose_linears(
@@ -1985,6 +2211,7 @@ class SecturaFabPushService:
                             qty=qty,
                         )
                     )
+                    attempted_pack_stamp = True
                 elif cad_pdfs or linear_bom:
                     if cad_pdfs:
                         notes.extend(
@@ -2011,6 +2238,7 @@ class SecturaFabPushService:
                                 extra_pdfs=extra_pdfs,
                             )
                         )
+                    attempted_pack_stamp = True
                 elif drawings or has_job_pdf:
                     pdfs = list(drawings) if drawings else []
                     if has_job_pdf and job_pdf not in pdfs:
@@ -2030,6 +2258,7 @@ class SecturaFabPushService:
                             )
                         )
                         uploaded.extend(p.name for p in pdfs)
+                    attempted_pack_stamp = True
                 else:
                     msg = (
                         "No STEP/STP, no library Cad PDFs, and no job PDF — "
@@ -2050,22 +2279,60 @@ class SecturaFabPushService:
                         last_error=msg,
                         attempts=createfile_attempts,
                     )
-                peek = self.client.get_json(f"v1/quote/{quote_id}")
-                created = len(list(peek.get("ItemList") or [])) > items_before_finish
-                gold = finish_produced_gold(
-                    peek if isinstance(peek, dict) else {},
-                    expect_cad=expect_cad,
-                    expect_linear=expect_linear,
-                )
-                if not created or not gold:
-                    msg = (
-                        "Finish did not stamp gold OperationCostList "
-                        "CalculatorNames (ItemList must grow AND Cad PR + "
-                        "Laser/Drafting/Laser-Setup/Sheet Loading/Deburr, "
-                        "Linear Saw + Saw Setup). "
-                        + self._finish_session_error()
+                if attempted_pack_stamp:
+                    peek = self.client.get_json(f"v1/quote/{quote_id}")
+                    created = len(list(peek.get("ItemList") or [])) > items_before_finish
+                    gold = finish_produced_gold(
+                        peek if isinstance(peek, dict) else {},
+                        expect_cad=expect_cad,
+                        expect_linear=expect_linear,
                     )
-                    notes.append(msg)
+                    if not created or not gold:
+                        msg = (
+                            "Finish did not stamp gold OperationCostList "
+                            "CalculatorNames (ItemList must grow AND Cad PR + "
+                            "Laser/Drafting/Laser-Setup/Sheet Loading/Deburr, "
+                            "Linear Saw + Saw Setup). "
+                            + self._finish_session_error()
+                        )
+                        notes.append(msg)
+                        return PushResult(
+                            ok=False,
+                            error=msg,
+                            notes=notes,
+                            quote_id=quote_id,
+                            quote_number=quote_number,
+                            quote_request_id=quote_request_id,
+                            created_new_quote=True,
+                            uploaded_files=uploaded,
+                            item_count=self._peek_item_count(quote_id),
+                            status="failed",
+                            last_error=msg,
+                            attempts=createfile_attempts,
+                        )
+                    if website_cookie and not cad and bom_rows:
+                        notes.extend(
+                            self.finish_website_weldment(
+                                quote_id=quote_id,
+                                part_key=part_key,
+                                bom_rows=bom_rows,
+                                library=library,
+                                extra_pdfs=list(extra_pdfs or []),
+                                material=material,
+                                assembly_description=assembly_description,
+                                takeoff=takeoff,
+                            )
+                        )
+            except (
+                SecturaFabApiError,
+                SecturaFabWebsiteAuthError,
+                ValueError,
+                TypeError,
+                OSError,
+            ) as exc:
+                msg = self._finish_session_error(exc)
+                notes.append(msg)
+                if cad or website_cookie:
                     return PushResult(
                         ok=False,
                         error=msg,
@@ -2080,29 +2347,6 @@ class SecturaFabPushService:
                         last_error=msg,
                         attempts=createfile_attempts,
                     )
-            except (
-                SecturaFabApiError,
-                SecturaFabWebsiteAuthError,
-                ValueError,
-                TypeError,
-                OSError,
-            ) as exc:
-                msg = self._finish_session_error(exc)
-                notes.append(msg)
-                return PushResult(
-                    ok=False,
-                    error=msg,
-                    notes=notes,
-                    quote_id=quote_id,
-                    quote_number=quote_number,
-                    quote_request_id=quote_request_id,
-                    created_new_quote=True,
-                    uploaded_files=uploaded,
-                    item_count=self._peek_item_count(quote_id),
-                    status="failed",
-                    last_error=msg,
-                    attempts=createfile_attempts,
-                )
 
             notes.extend(ensure_imperial_item_units(self.client, quote_id))
             notes.extend(
@@ -2125,6 +2369,26 @@ class SecturaFabPushService:
                     part_key=part_key,
                 )
             )
+            if not website_cookie and not cad and (expect_cad or expect_linear):
+                msg = (
+                    "Pack-stamp fail-closed — Image Files / Long not run. "
+                    + self._finish_session_error()
+                )
+                notes.append(msg)
+                return PushResult(
+                    ok=False,
+                    error=msg,
+                    notes=notes,
+                    quote_id=quote_id,
+                    quote_number=quote_number,
+                    quote_request_id=quote_request_id,
+                    created_new_quote=True,
+                    uploaded_files=uploaded,
+                    item_count=self._peek_item_count(quote_id),
+                    status="failed",
+                    last_error=msg,
+                    attempts=createfile_attempts,
+                )
             notes.extend(ensure_imperial_item_units(self.client, quote_id))
             notes.append(
                 "Skipped grafted Profile / quickAddCAD fallback — "

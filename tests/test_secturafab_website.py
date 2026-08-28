@@ -151,6 +151,9 @@ def test_website_paths_are_quote_mvc_not_quickadd():
     assert WEBSITE_FINISH_PATHS["add_item_dxf_files"] == "/Quote/AddItem_DXFFiles"
     assert WEBSITE_FINISH_PATHS["add_item_pdf_files"] == "/Quote/AddItem_PDFFiles"
     assert WEBSITE_FINISH_PATHS["add_item_linear"] == "/Quote/AddItem_Linear"
+    assert WEBSITE_FINISH_PATHS["add_operation"] == "/Quote/AddOperation"
+    assert WEBSITE_FINISH_PATHS["copy_move_to_assembly"] == "/Quote/CopyMoveItemToAssembly"
+    assert WEBSITE_FINISH_PATHS["add_feature"] == "/Quote/AddFeature"
     assert WEBSITE_FINISH_PATHS["upload_dxf"] == "/CadImport/UploadItem_DXFFiles"
     assert "quickAddCAD" not in str(WEBSITE_FINISH_PATHS)
 

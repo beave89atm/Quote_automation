@@ -6,14 +6,18 @@ import requests
 
 from .auth import AccessToken, SecturaFabAuthError, fetch_access_token
 from .config import SecturaFabConfig
+from .forbidden_quotes import ForbiddenQuoteError, refuse_forbidden_quote_write
 from .website import (
     EMPTY_GUID,
     WEBSITE_AUTH_GAP,
     WEBSITE_FINISH_PATHS,
     SecturaFabWebsiteAuthError,
+    build_add_feature_payload,
+    build_copy_move_assembly_payload,
     build_dxf_finish_payload,
     build_linear_add_payload,
     build_pdf_finish_payload,
+    build_weld_add_operation_payload,
     is_cloudflare_challenge,
     is_website_login_redirect,
     jquery_ajax_form,
@@ -63,6 +67,10 @@ class SecturaFabClient:
         allow_absolute: bool = False,
         retry_on_auth_error: bool = True,
     ) -> requests.Response:
+        try:
+            refuse_forbidden_quote_write(method=method, path=path, payload=json)
+        except ForbiddenQuoteError as exc:
+            raise SecturaFabApiError(str(exc)) from exc
         token = self.authenticate()
         if path.startswith("http://") or path.startswith("https://"):
             if not allow_absolute:
@@ -232,13 +240,17 @@ class SecturaFabClient:
         retry_on_auth_error: bool = False,
     ) -> requests.Response:
         """
-        Hit a www MVC route (no /api prefix).
+        Hit a www MVC route (no /api prefix). Never PATCH a forbidden live quote.
 
         CadImport accepts the published API bearer on the API host.
         /Quote/AddItem_DXFFiles (CAD Files Finish) still 302s without a cookie.
         Image Files (AddItem_PDFFiles) and Long (AddItem_Linear) are tried
         with bearer on every origin; a 302 is not an excuse to ship empty packs.
         """
+        try:
+            refuse_forbidden_quote_write(method=method, path=path, payload=json)
+        except ForbiddenQuoteError as exc:
+            raise SecturaFabApiError(str(exc)) from exc
         req_headers = self._auth_headers(headers)
         last: requests.Response | None = None
         last_cf = False
@@ -578,6 +590,135 @@ class SecturaFabClient:
         response = self.website_request(
             "POST",
             WEBSITE_FINISH_PATHS["add_item_linear"],
+            json=None,
+            data=jquery_ajax_form(payload),
+            files=None,
+            prefer_api_origin=False,
+            require_session=True,
+        )
+        location = response.headers.get("Location") or ""
+        if is_website_login_redirect(response.status_code, location):
+            raise SecturaFabWebsiteAuthError(
+                WEBSITE_AUTH_GAP,
+                status_code=response.status_code,
+                body=location,
+            )
+        return self._parse_website_or_raise(response, require_session=True)
+
+    def add_operation(
+        self,
+        *,
+        quote_id: str,
+        item_id: str,
+        weld_inches: float,
+        weld_hours: float,
+        fitup_hours: float,
+        setup_hours: float,
+        grind_cost: float = 0.0,
+    ) -> Any:
+        """POST /Quote/AddOperation — weld on the assembly (Q10056 shape)."""
+        from .browser_session import effective_website_cookie
+
+        if not effective_website_cookie(self.config):
+            raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
+        refuse_forbidden_quote_write(
+            method="POST", path=WEBSITE_FINISH_PATHS["add_operation"], payload={"ID": quote_id}
+        )
+        payload = build_weld_add_operation_payload(
+            quote_id,
+            item_id,
+            weld_inches=weld_inches,
+            weld_hours=weld_hours,
+            fitup_hours=fitup_hours,
+            setup_hours=setup_hours,
+            grind_cost=grind_cost,
+        )
+        response = self.website_request(
+            "POST",
+            WEBSITE_FINISH_PATHS["add_operation"],
+            json=None,
+            data=jquery_ajax_form(payload),
+            files=None,
+            prefer_api_origin=False,
+            require_session=True,
+        )
+        location = response.headers.get("Location") or ""
+        if is_website_login_redirect(response.status_code, location):
+            raise SecturaFabWebsiteAuthError(
+                WEBSITE_AUTH_GAP,
+                status_code=response.status_code,
+                body=location,
+            )
+        return self._parse_website_or_raise(response, require_session=True)
+
+    def copy_move_item_to_assembly(
+        self,
+        *,
+        quote_id: str,
+        item_id: str,
+        assembly_id: str,
+        mode: str = "Move",
+    ) -> Any:
+        """POST /Quote/CopyMoveItemToAssembly — kid under the top-level assembly."""
+        from .browser_session import effective_website_cookie
+
+        if not effective_website_cookie(self.config):
+            raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
+        refuse_forbidden_quote_write(
+            method="POST",
+            path=WEBSITE_FINISH_PATHS["copy_move_to_assembly"],
+            payload={"ID": quote_id},
+        )
+        payload = build_copy_move_assembly_payload(
+            quote_id, item_id, assembly_id, mode=mode
+        )
+        response = self.website_request(
+            "POST",
+            WEBSITE_FINISH_PATHS["copy_move_to_assembly"],
+            json=None,
+            data=jquery_ajax_form(payload),
+            files=None,
+            prefer_api_origin=False,
+            require_session=True,
+        )
+        location = response.headers.get("Location") or ""
+        if is_website_login_redirect(response.status_code, location):
+            raise SecturaFabWebsiteAuthError(
+                WEBSITE_AUTH_GAP,
+                status_code=response.status_code,
+                body=location,
+            )
+        return self._parse_website_or_raise(response, require_session=True)
+
+    def add_item_feature(
+        self,
+        *,
+        quote_id: str,
+        item_id: str,
+        diameter: float,
+        qty: int = 1,
+        feature_type: str = "Internal",
+    ) -> Any:
+        """POST /Quote/AddFeature — Internal hole on a Cad plate."""
+        from .browser_session import effective_website_cookie
+
+        if not effective_website_cookie(self.config):
+            raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
+        refuse_forbidden_quote_write(
+            method="POST",
+            path=WEBSITE_FINISH_PATHS["add_feature"],
+            payload={"ID": quote_id},
+        )
+        payload = build_add_feature_payload(
+            quote_id,
+            item_id,
+            diameter=diameter,
+            qty=qty,
+            feature_type=feature_type,
+        )
+        response = self.website_request(
+            "POST",
+            WEBSITE_FINISH_PATHS["add_feature"],
             json=None,
             data=jquery_ajax_form(payload),
             files=None,

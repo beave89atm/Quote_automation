@@ -64,9 +64,47 @@ WEBSITE_FINISH_PATHS = {
     "add_item_dxf_files": "/Quote/AddItem_DXFFiles",
     "add_item_pdf_files": "/Quote/AddItem_PDFFiles",
     "add_item_linear": "/Quote/AddItem_Linear",
+    "add_operation": "/Quote/AddOperation",
+    "copy_move_to_assembly": "/Quote/CopyMoveItemToAssembly",
+    "add_feature": "/Quote/AddFeature",
     "nest_quote_edit": "/Quote/NestQuote_Edit",
     "nest_quote_renest": "/Quote/NestQuoteMultiPart_Renest",
 }
+
+# Q10056 Weld calculator shape (website AddOperation, not grafted Laser).
+WELD_CALC_PARAM_TYPE = "weld|perunittime|perunittime|fixedtime|perunitcost"
+WELD_OPERATION_CODE = "op_weld"
+WELD_EQUIPMENT = "Welding"
+WELD_APPLY_TO = "ITEM"
+
+WELD_ADD_FIELDS = (
+    "ID",
+    "ItemID",
+    "operation_code",
+    "Equipment",
+    "ApplyTo",
+    "CalcParamType",
+    "weld",
+    "perunittime",
+    "perunittime2",
+    "fixedtime",
+    "perunitcost",
+)
+
+COPY_MOVE_FIELDS = (
+    "ID",
+    "ItemID",
+    "AssemblyID",
+    "Mode",
+)
+
+ADD_FEATURE_FIELDS = (
+    "ID",
+    "ItemID",
+    "FeatureType",
+    "Diameter",
+    "Qty",
+)
 
 WEBSITE_AUTH_GAP = (
     "Finish needs SECTURA_WEBSITE_COOKIE (env or file) from the signed-in "
@@ -458,6 +496,88 @@ def build_linear_add_payload(
             if key in payload:
                 payload[key] = val
     return payload
+
+
+def build_weld_add_operation_payload(
+    quote_id: str,
+    item_id: str,
+    *,
+    weld_inches: float,
+    weld_hours: float,
+    fitup_hours: float,
+    setup_hours: float,
+    grind_cost: float = 0.0,
+) -> dict[str, Any]:
+    """POST /Quote/AddOperation — Q10056 CalcParamType on the assembly only."""
+    payload: dict[str, Any] = {key: "" for key in WELD_ADD_FIELDS}
+    payload["ID"] = quote_id
+    payload["ItemID"] = item_id
+    payload["operation_code"] = WELD_OPERATION_CODE
+    payload["Equipment"] = WELD_EQUIPMENT
+    payload["ApplyTo"] = WELD_APPLY_TO
+    payload["CalcParamType"] = WELD_CALC_PARAM_TYPE
+    payload["weld"] = float(weld_inches or 0)
+    payload["perunittime"] = float(weld_hours or 0)
+    payload["perunittime2"] = float(fitup_hours or 0)
+    payload["fixedtime"] = float(setup_hours or 0)
+    payload["perunitcost"] = float(grind_cost or 0)
+    return payload
+
+
+def build_copy_move_assembly_payload(
+    quote_id: str,
+    item_id: str,
+    assembly_id: str,
+    *,
+    mode: str = "Move",
+) -> dict[str, Any]:
+    """POST /Quote/CopyMoveItemToAssembly — kids under the top-level assembly."""
+    return {
+        "ID": quote_id,
+        "ItemID": item_id,
+        "AssemblyID": assembly_id,
+        "Mode": mode or "Move",
+    }
+
+
+def build_add_feature_payload(
+    quote_id: str,
+    item_id: str,
+    *,
+    diameter: float,
+    qty: int = 1,
+    feature_type: str = "Internal",
+) -> dict[str, Any]:
+    """POST /Quote/AddFeature — Internal hole when the drawing has one."""
+    return {
+        "ID": quote_id,
+        "ItemID": item_id,
+        "FeatureType": feature_type or "Internal",
+        "Diameter": float(diameter),
+        "Qty": max(1, int(qty or 1)),
+    }
+
+
+def internal_data_from_holes(holes: list[dict[str, Any]] | None) -> str:
+    """Serialize hole features for Image Files FileList InternalData."""
+    import json
+
+    rows: list[dict[str, Any]] = []
+    for hole in holes or []:
+        if not isinstance(hole, dict):
+            continue
+        try:
+            dia = float(hole.get("diameter") or hole.get("Diameter") or 0)
+        except (TypeError, ValueError):
+            continue
+        if dia <= 0:
+            continue
+        try:
+            qty = max(1, int(hole.get("qty") or hole.get("Qty") or 1))
+        except (TypeError, ValueError):
+            qty = 1
+        rows.append({"Type": "Circle", "Diameter": dia, "Qty": qty})
+    return json.dumps(rows) if rows else ""
 
 
 def is_website_login_redirect(status_code: int, location: str | None) -> bool:

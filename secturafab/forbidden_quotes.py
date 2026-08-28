@@ -1,0 +1,73 @@
+"""Live Sectura quotes this automation must never PATCH or reuse."""
+
+from __future__ import annotations
+
+from typing import Any
+
+# Kyle-confirmed + leftover + human Time quotes. Create NEW quotes only.
+FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
+    {
+        "a7dc46bf-836a-4250-b038-9331cc0595a7",  # Kyle-confirmed 1001898-1
+        "ee8a3b59-616f-44e1-94c7-175892b15256",  # leftover incomplete
+        "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d",
+        "a7d6ca50-efec-409d-bd32-e68012e710c3",  # Q10056 / 21678-1
+    }
+)
+
+FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
+    {
+        "Q10056",
+        "21678-1",
+        "28106-1",
+        "28106-2",
+        "1007922-1",
+        "21727-1",
+    }
+)
+
+
+def is_forbidden_quote_id(quote_id: str | None) -> bool:
+    return str(quote_id or "").strip().casefold() in {
+        x.casefold() for x in FORBIDDEN_LIVE_QUOTE_IDS
+    }
+
+
+def is_forbidden_quote_number(quote_number: str | None) -> bool:
+    raw = str(quote_number or "").strip().casefold()
+    return raw in {x.casefold() for x in FORBIDDEN_LIVE_QUOTE_NUMBERS}
+
+
+class ForbiddenQuoteError(RuntimeError):
+    """Write targeted a Kyle-confirmed or human Time quote."""
+
+
+def refuse_forbidden_quote_write(
+    *,
+    method: str,
+    path: str,
+    payload: Any = None,
+) -> None:
+    """Raise if a write would PATCH/reuse a forbidden live quote.
+
+    GET is allowed. New quotes (empty / new UUID + a job PN) are allowed.
+    """
+    if str(method or "GET").upper() in {"GET", "HEAD", "OPTIONS"}:
+        return
+    blob = payload if isinstance(payload, dict) else {}
+    qid = str(blob.get("ID") or blob.get("QuoteID") or "").strip()
+    path_l = str(path or "").casefold()
+    if not qid:
+        for part in path_l.replace("\\", "/").split("/"):
+            if is_forbidden_quote_id(part):
+                qid = part
+                break
+    if is_forbidden_quote_id(qid):
+        raise ForbiddenQuoteError(
+            f"Refusing to PATCH/reuse forbidden live quote {qid}"
+        )
+    # Updating an existing Q10056 / 21678-1 / human Time quote by number + ID.
+    qn = str(blob.get("QuoteNumber") or "").strip()
+    if qid and is_forbidden_quote_number(qn):
+        raise ForbiddenQuoteError(
+            f"Refusing to PATCH/reuse forbidden live quote {qn} ({qid})"
+        )

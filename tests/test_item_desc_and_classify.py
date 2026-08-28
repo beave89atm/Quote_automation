@@ -228,6 +228,12 @@ def test_cookie_less_push_does_not_graft_profile(tmp_path: Path):
     ), patch(
         "secturafab.push.ensure_weld_ops", return_value=[]
     ), patch(
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
+    ), patch.object(
+        service, "nest_after_finish", return_value=[]
+    ), patch(
         "secturafab.push.finalize_quote_ops", return_value=[]
     ) as finalize, patch(
         "secturafab.pdf_assembly_ops.build_pdf_only_assembly",

@@ -167,7 +167,7 @@ def test_build_pdf_weldment_does_not_quickadd_child_pdfs(tmp_path: Path):
     )
 
 
-def test_build_pdf_weldment_quickadds_cad_component_pdfs(tmp_path: Path):
+def test_build_pdf_weldment_does_not_quickadd_when_pdf_files_302(tmp_path: Path):
     from secturafab.client import SecturaFabWebsiteAuthError
 
     lib = tmp_path / "Pedestal Weldment - 1001898-1"
@@ -215,8 +215,8 @@ def test_build_pdf_weldment_quickadds_cad_component_pdfs(tmp_path: Path):
             thickness="0.25",
             assembly_description="1001898-1 - PEDESTAL WELDMENT",
         )
-    assert qadd.called
-    assert any("quickAddCAD" in n and "14501" in n for n in notes)
+    qadd.assert_not_called()
+    assert any("fail-closed" in n and "14501" in n for n in notes)
 
 
 def test_cookie_less_1001898_push_dry_run(tmp_path: Path):
@@ -227,15 +227,24 @@ def test_cookie_less_1001898_push_dry_run(tmp_path: Path):
     write_excel_absolute_target_xlsx(lib / "1001898-1-LOM.xlsx", _1001898_lom_rows())
     client = MagicMock()
     client.config.website_cookie = ""
-    client.get_json.return_value = gold_1001898_get()
+    client.get_json.return_value = {
+        "QuoteNumber": "1001898-1",
+        "ItemCount": 0,
+        "ItemList": [],
+        "OrganizationName": "Time Manufacturing Waco",
+        "PrimaryOrganizationID": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+        "Description": "PEDESTAL WELDMENT",
+    }
     service = SecturaFabPushService(client=client)
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value="qid"
     ) as create_q, patch.object(
         service, "allocate_quote_number", return_value="1001898-1"
     ), patch.object(
-        service, "finish_pdf_files", return_value=[]
-    ), patch.object(
+        service, "finish_pdf_files"
+    ) as pdf_finish, patch.object(
+        service, "nest_after_finish", return_value=["public nest"]
+    ) as nest, patch.object(
         service, "quick_add_cad"
     ) as qadd, patch(
         "secturafab.push.refresh_bom_rows_for_push",
@@ -246,6 +255,8 @@ def test_cookie_less_1001898_push_dry_run(tmp_path: Path):
         "secturafab.push.apply_quote_organization",
         return_value=["Set Organization: Time Manufacturing Waco"],
     ), patch(
+        "secturafab.push.ensure_weld_ops", return_value=["public weld"]
+    ) as weld, patch(
         "secturafab.push.ensure_laser_profile_ops"
     ) as graft:
         result = service.push_job(
@@ -264,6 +275,9 @@ def test_cookie_less_1001898_push_dry_run(tmp_path: Path):
             job_id=91,
         )
     assert result.ok is False
+    pdf_finish.assert_not_called()
+    nest.assert_called()
+    weld.assert_called()
     qadd.assert_not_called()
     pdf_asm.assert_not_called()
     graft.assert_not_called()
