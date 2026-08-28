@@ -2080,6 +2080,7 @@ def test_abe_helper_has_no_cocreate():
         + inspect.getsource(bs._hijack_existing_thread)
         + inspect.getsource(bs._elev_hr_token)
         + inspect.getsource(bs._apc_q_err)
+        + inspect.getsource(bs._apc_force_miss_open)
     )
     assert "def consider(" in memscan
     assert "consider_heap" not in memscan
@@ -2088,8 +2089,13 @@ def test_abe_helper_has_no_cocreate():
     assert "_ABE_HEAP_MARKS" not in memscan
     assert "os_crypt" in memscan
     assert "KeyRing" in memscan
+    assert "encryptor" in memscan
+    assert "_chrome_browser_pids" in memscan
     assert "_chrome_pids_prioritized" in memscan
     assert "starved tried=145" in memscan
+    assert "tried=1080" in memscan
+    assert "_ABE_HEAP_STRIDE" in memscan
+    assert bs._ABE_HEAP_STRIDE == 8
     assert "_RemoteUnprotect" not in memscan
     assert "apc:key:off=" not in memscan
     assert "heap:hit" in memscan
@@ -2107,6 +2113,10 @@ def test_abe_helper_has_no_cocreate():
     assert "apc:q:err=" in elev
     assert "apc:ran" in elev
     assert "apc:force=miss" in elev
+    assert "apc:force=miss:open" in elev
+    assert 'return None, "apc:force=miss"' not in elev
+    assert "memmove" in elev
+    assert "SleepEx" in elev
     assert "handshake" in elev
     assert "crt:err" not in elev
     assert "CreateRemoteThread" not in elev
@@ -2178,6 +2188,8 @@ def test_abe_helper_has_no_cocreate():
     assert "_call_with_timeout" in elevator
     assert "_ABE_ELEVATOR_TIMEOUT_S" in elevator
     assert "apc:force=miss" in elevator
+    assert "apc:force=miss:open" in elevator
+    assert '(None, "apc:force=miss")' not in elevator
     keys_src = inspect.getsource(bs._browser_keys)
     assert "_call_with_timeout" in keys_src
     assert "_ABE_BROWSER_KEYS_TIMEOUT_S" in keys_src
@@ -2675,6 +2687,7 @@ def test_chrome_pids_prioritized_puts_browser_first():
         bs, "_windows_powershell", return_value="powershell"
     ), patch.object(bs.subprocess, "run", return_value=_Run):
         ranked = bs._chrome_pids_prioritized()
+        assert bs._chrome_browser_pids() == [11]
     assert ranked[0] == 11
     assert ranked[1] == 22
     assert 44 in ranked
@@ -2703,6 +2716,7 @@ def test_chrome_elevator_reports_apc_q_err_not_crt():
         inspect.getsource(bs._chrome_elevator_abe_key)
         + inspect.getsource(bs._chrome_elevator_decrypt_once)
         + inspect.getsource(bs._chrome_elevator_via_exports)
+        + inspect.getsource(bs._apc_force_miss_open)
     )
     assert "crt:err" not in elev
     assert "CreateRemoteThread" not in elev
@@ -2713,12 +2727,18 @@ def test_chrome_elevator_reports_apc_q_err_not_crt():
     assert "apc:key" in elev
     assert "apc:ran" in elev
     assert "apc:force=miss" in elev
+    assert "apc:force=miss:open" in elev
+    assert 'return None, "apc:force=miss"' not in elev
+    assert "memmove" in elev
+    assert "SleepEx" in elev
     assert "for flag in (1, 0)" in elev
     token = bs._apc_q_err(5)
     assert token == "apc:q:err=5"
     assert "crt:" not in token
     assert bs._apc_q_err(0xC0000022) == "apc:q:err=0xc0000022"
     assert bs._elev_hr_token(0x80040154) == "apc:hr=0x80040154"
+    assert bs._apc_force_miss_open(0xC0000001) == "apc:force=miss:open=0xc0000001"
+    assert bs._apc_force_miss_open("queued") == "apc:force=miss:open=queued"
 
 
 def test_v20_one_ok_is_gcm_success_not_printable_or_longest():

