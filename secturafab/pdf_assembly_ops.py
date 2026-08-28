@@ -481,8 +481,12 @@ def build_pdf_only_assembly(
     for row in linear_rows:
         part_no = str(row.get("part_no") or row.get("part_number") or "").strip()
         noun = str(row.get("description") or "")
+        from .locked_1001898 import locked_linear_bind
+
+        locked_lin = locked_linear_bind(part_no)
         length = (
-            bom_row_cut_length(row)
+            (locked_lin or {}).get("length_in")
+            or bom_row_cut_length(row)
             or _parse_cut(noun)
             or _length_from_library(
                 part_no,
@@ -646,15 +650,35 @@ def plan_weldment_lines(
         pm = lookup_part_material(part_materials or {}, pn) if part_materials else None
         thk = (pm.thickness_param() if pm else None) or default_thickness
         grade = (pm.material if pm else None) or default_material
+        from .locked_1001898 import (
+            locked_cad_spec,
+            locked_component_noun,
+            locked_linear_bind,
+        )
+
         if cat == "Linear":
-            desc = format_linear_description(pn, sku=None, length_in=None, noun=noun)
-            product_type = linear_website_product_type(f"{pn} {noun}")
+            locked = locked_linear_bind(pn)
+            desc = format_linear_description(
+                pn,
+                sku=(locked or {}).get("sku"),
+                length_in=(locked or {}).get("length_in"),
+                noun=noun,
+            )
+            product_type = linear_website_product_type(
+                f"{pn} {noun}", (locked or {}).get("sku")
+            )
         elif cat == "Component":
-            desc = format_component_line(pn, noun) or noun
+            desc = format_component_line(pn, locked_component_noun(pn, noun)) or noun
             product_type = 200
         else:
+            cad = locked_cad_spec(pn) or {}
             desc = format_cad_description(
-                pn, thickness=thk, grade=grade, width_in=None, length_in=None, noun=noun
+                pn,
+                thickness=cad.get("thickness", thk),
+                grade=cad.get("grade", grade),
+                width_in=cad.get("width_in"),
+                length_in=cad.get("length_in"),
+                noun=cad.get("noun") or noun,
             )
             product_type = 100
         planned.append(
@@ -702,13 +726,18 @@ def _add_cad_plate_items(
         pm = lookup_part_material(part_materials or {}, part_no) if part_no else None
         thk = (pm.thickness_param() if pm else None) or default_thickness
         grade = (pm.material if pm else None) or default_material
+        from .locked_1001898 import locked_cad_spec
+
+        cad = locked_cad_spec(part_no) or {}
+        thk = cad.get("thickness", thk)
+        grade = cad.get("grade", grade)
         desc = format_cad_description(
             part_no,
             thickness=thk,
             grade=grade,
-            width_in=None,
-            length_in=None,
-            noun=noun,
+            width_in=cad.get("width_in"),
+            length_in=cad.get("length_in"),
+            noun=cad.get("noun") or noun,
         )
         pdf = resolve_component_pdf(
             part_no,

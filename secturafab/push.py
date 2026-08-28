@@ -163,7 +163,15 @@ def classify_sectura_item(description: str) -> str:
     Purchased fittings (elbow, coupling, plug, nipple, cap, filler neck) and
     hardware = Component. Component is checked before Linear so ``PIPE CAP``
     is not treated as a Linear pipe.
+
+    Job 92 / 1001898-1 child-PDF locks win over LOM nouns (rolled 1001880-2
+    is Cad; 14500-1 / 1005966-1 are outsource Component).
     """
+    from .locked_1001898 import locked_category
+
+    locked = locked_category(text=description)
+    if locked:
+        return locked
     text = f" {str(description or '').upper()} "
     # Collapse spaces so "KING PIN" and "KINGPIN" both match.
     compact = text.replace(" ", "").replace("-", "")
@@ -1011,8 +1019,37 @@ class SecturaFabPushService:
         material: str | None,
         row: dict[str, Any] | None = None,
     ) -> tuple[str | None, str | None, str | None]:
+        from .locked_1001898 import locked_linear_bind
+
+        locked = locked_linear_bind(text=description)
+        products = self._linear_catalog()
+        if locked and locked.get("sku"):
+            want = str(locked["sku"]).upper()
+            exact = next(
+                (
+                    p
+                    for p in products
+                    if str(p.get("ProductName") or p.get("SKU") or "").upper() == want
+                ),
+                None,
+            )
+            note = None
+            if locked.get("grade_note"):
+                note = (
+                    f"Linear {description!r} catalog {locked['sku']} "
+                    f"({locked['grade_note']})"
+                )
+            if exact:
+                return (
+                    str(exact.get("ID") or "") or None,
+                    str(exact.get("ProductName") or locked["sku"]),
+                    note,
+                )
+            return None, str(locked["sku"]), note or (
+                f"Locked SKU {locked['sku']} not in tenant catalog"
+            )
         product, note = pick_closest_linear_product(
-            self._linear_catalog(),
+            products,
             description=description,
             material=material,
             row=row,
@@ -1506,8 +1543,12 @@ class SecturaFabPushService:
                 qty = max(1, int(row.get("qty") or row.get("quantity") or 1))
             except (TypeError, ValueError):
                 qty = 1
+            from .locked_1001898 import locked_linear_bind
+
+            locked = locked_linear_bind(pn)
             length = (
-                bom_row_cut_length(row)
+                (locked or {}).get("length_in")
+                or bom_row_cut_length(row)
                 or parse_cut_length(noun)
                 or _length_from_library(
                     pn,
@@ -1582,15 +1623,15 @@ class SecturaFabPushService:
                 unit = float(it.get("UnitCost") or 0)
             except (TypeError, ValueError):
                 unit = 0.0
-            if "14500-1" in desc or desc.startswith("14500"):
+            if "14501-1" in desc or desc.startswith("14501"):
                 ok = (
                     item_has_pr_tag(it)
                     and item_has_laser_pack(it)
                     and unit > 0
-                    and "14500-1" in desc
+                    and "14501-1" in desc
                 )
                 notes.append(
-                    "GET 14500-1 "
+                    "GET 14501-1 "
                     + (
                         "PASS PR + laser pack + UnitCost>0"
                         if ok

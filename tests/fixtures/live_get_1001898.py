@@ -11,6 +11,11 @@ from secturafab.item_desc import (
     format_linear_description,
     format_quote_header_description,
 )
+from secturafab.locked_1001898 import (
+    locked_cad_spec,
+    locked_component_noun,
+    locked_linear_bind,
+)
 from secturafab.push import classify_sectura_item
 from secturafab.website import linear_website_product_type
 from tests.fixtures.time_gold import DASH_1001898
@@ -78,24 +83,6 @@ TIME_ORG_ID = "11111111-2222-3333-4444-555555555555"
 ASSEMBLY_DESC = format_assembly_description("1001898-1", "PEDESTAL WELDMENT")
 HEADER_DESC = format_quote_header_description("PEDESTAL WELDMENT", part_key="1001898-1")
 
-# Catalog SKUs the Long path would bind (shape only — not live ProductIDs).
-# 29860 is L2X1 1/4X1/8-A36 (angle, PT 40). Tube SKUs prefer RT/RCT/HSS/DOM, not P-pipe.
-_LINEAR_SKU = {
-    "1001880-2": "HSS 4X4X.188-A500",
-    "29860-3": "L2X1 1/4X1/8-A36",
-    "29860-4": "L2X1 1/4X1/8-A36",
-    "10081-2": "HSS 2X2X.125-A500",
-    "33637-1": "DOM 1.25X.120-A513",
-}
-_LINEAR_LEN = {
-    "1001880-2": 16.0,
-    "29860-3": 125.0,
-    "29860-4": 125.0,
-    "10081-2": 74.0,
-    "33637-1": 40.0,
-}
-
-
 def _is_linear_pt(item: dict[str, Any]) -> bool:
     try:
         return int(item.get("ProductType")) in (10, 30, 40)
@@ -123,8 +110,9 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
     for _item, qty, pn, noun in DASH_1001898:
         cat = classify_sectura_item(f"{pn} {noun}")
         if cat == "Linear":
-            sku = _LINEAR_SKU[pn]
-            length_in = _LINEAR_LEN[pn]
+            locked = locked_linear_bind(pn) or {}
+            sku = locked.get("sku")
+            length_in = locked.get("length_in")
             items.append(
                 {
                     "ID": f"lin-{pn}",
@@ -152,7 +140,10 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
             items.append(
                 {
                     "ID": f"cmp-{pn}",
-                    "Description": format_component_line(pn, noun) or noun,
+                    "Description": format_component_line(
+                        pn, locked_component_noun(pn, noun)
+                    )
+                    or noun,
                     "ProductType": 200,
                     "Category": "Component",
                     "ItemType": "Component",
@@ -164,16 +155,21 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
                 }
             )
         else:
+            cad = locked_cad_spec(pn) or {}
+            thk = cad.get("thickness", 0.25)
+            grade = cad.get("grade", "A36")
+            width_in = cad.get("width_in")
+            length_in = cad.get("length_in")
             items.append(
                 {
                     "ID": f"cad-{pn}",
                     "Description": format_cad_description(
                         pn,
-                        thickness=0.25,
-                        grade="A36",
-                        width_in=8.0,
-                        length_in=10.0,
-                        noun=noun,
+                        thickness=thk,
+                        grade=grade,
+                        width_in=width_in,
+                        length_in=length_in,
+                        noun=cad.get("noun") or noun,
                     ),
                     "ProductType": 100,
                     "Category": "Cad",
@@ -181,10 +177,10 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
                     "IsLinear": False,
                     "IsPlate": True,
                     "Machine": "Laser - Bay1",
-                    "Material": "A36",
-                    "Thickness": "0.25",
-                    "Width": 8.0,
-                    "Length": 10.0,
+                    "Material": grade,
+                    "Thickness": thk,
+                    "Width": width_in,
+                    "Length": length_in,
                     "Quantity": qty,
                     "MaterialCost": 0.55,
                     "UnitCost": 12.34,

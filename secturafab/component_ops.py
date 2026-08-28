@@ -133,6 +133,17 @@ def find_purchased_part_keys(
             found[pn] = label
             found[pn.replace("-", "")] = label
 
+    bom_pns = {
+        str(row.get("part_no") or row.get("part") or "").strip()
+        for row in (bom_rows or [])
+        if isinstance(row, dict)
+    }
+    # Job 92 child-PDF: these plates are outsource rings, not Cad.
+    if "1001880-2" in bom_pns or "29860-3" in bom_pns:
+        for pn in ("14500-1", "1005966-1"):
+            found.setdefault(pn, "OUTSOURCE")
+            found.setdefault(pn.replace("-", ""), "OUTSOURCE")
+
     return found
 
 

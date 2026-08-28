@@ -200,6 +200,27 @@ def match_linear_product(
     material: str | None = None,
     row: dict[str, Any] | None = None,
 ) -> tuple[str | None, str | None, str | None]:
+    from secturafab.locked_1001898 import locked_linear_bind
+
+    locked = locked_linear_bind(text=description)
+    if locked and locked.get("sku"):
+        want = str(locked["sku"]).upper()
+        exact = next(
+            (
+                p
+                for p in catalog
+                if str(p.get("ProductName") or p.get("SKU") or "").upper() == want
+            ),
+            None,
+        )
+        note = None
+        if locked.get("grade_note"):
+            note = f"Linear catalog {locked['sku']} ({locked['grade_note']})"
+        if exact:
+            return str(exact.get("ID") or "") or None, str(
+                exact.get("ProductName") or locked["sku"]
+            ), note
+        return None, str(locked["sku"]), note
     product, note = pick_closest_linear_product(
         catalog, description=description, material=material, row=row
     )

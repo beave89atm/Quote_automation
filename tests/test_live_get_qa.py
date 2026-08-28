@@ -438,17 +438,17 @@ def test_persist_uses_addplate_addlinear_and_get_verifies():
         "ItemList": [
             {
                 "ID": "c1",
-                "Description": '14500-1 - 1/4" A572 Grade 50 PEDESTAL TOP PLATE',
+                "Description": '14501-1 - 3/16" A36 Ø21.875',
                 "ProductType": 100,
                 "Category": "Cad",
                 "OperationCostList": [],
             },
             {
                 "ID": "l1",
-                "Description": "1001880-2 - P1/8-5-A36",
-                "ProductType": 10,
+                "Description": "10081-2 - P5-40-A36",
+                "ProductType": 30,
                 "Category": "Linear",
-                "SKU": "P1/8-5-A36",
+                "SKU": "P5-40-A36",
                 "ProductID": "pid",
                 "OperationCostList": [],
             },
@@ -492,25 +492,25 @@ def test_persist_uses_addplate_addlinear_and_get_verifies():
     notes = persist_classified_item_fields(
         client,
         "qid",
-        bom_rows=[
-            {"part_no": "14500-1", "description": "PEDESTAL TOP PLATE", "qty": 1},
-            {"part_no": "1001880-2", "description": "PEDESTAL TUBE 12 LG.", "qty": 1},
-            {"part_no": "8166-1", "description": "FILLER NECK", "qty": 1},
-        ],
-        plate_catalog=[
-            {
-                "ID": "pl-a572",
-                "ProductName": "PL1/4-A572",
-                "MaterialGrade": "A572",
-                "Thickness": 0.25,
-                "Active": True,
-                "Thickness_Unit": "inch",
-            }
-        ],
+            bom_rows=[
+                    {"part_no": "14501-1", "description": "RESERVOIR TOP PLATE", "qty": 1},
+                    {"part_no": "10081-2", "description": "PEDESTAL HOSE TUBE 12 LG.", "qty": 1},
+                    {"part_no": "8166-1", "description": "FILLER NECK", "qty": 1},
+            ],
+            plate_catalog=[
+                {
+                    "ID": "pl-a36",
+                    "ProductName": "PL3/16-A36",
+                    "MaterialGrade": "A36",
+                    "Thickness": 0.1875,
+                    "Active": True,
+                    "Thickness_Unit": "inch",
+                }
+            ],
         linear_catalog=[
             {
                 "ID": "pid",
-                "ProductName": "P1/8-5-A36",
+                "ProductName": "P5-40-A36",
                 "MaterialGrade": "A36",
                 "ProductSubType": "pipe",
                 "Category": "Pipe",
@@ -531,8 +531,8 @@ def test_persist_uses_addplate_addlinear_and_get_verifies():
     assert "GET-verified" in blob
     assert "addplate" in blob
     plate = next(c for c in client.request.call_args_list if "addplate" in str(c))
-    assert plate.kwargs["params"]["material"] == "A572"
-    assert float(plate.kwargs["params"]["thickness"]) == 0.25
+    assert plate.kwargs["params"]["material"] == "A36"
+    assert float(plate.kwargs["params"]["thickness"]) == 0.1875
     lin = next(c for c in client.request.call_args_list if "addLinear" in str(c))
     assert lin.kwargs["params"]["machine"] == "Saw"
     assert float(lin.kwargs["params"]["length"]) == 12.0
@@ -989,7 +989,9 @@ def test_retype_pt10_copies_cad_material_and_linear_length():
 def test_linear_product_type_20_fails_live_get():
     payload = gold_1001898_get()
     for it in payload["ItemList"]:
-        if "1001880" in str(it.get("Description")):
+        if "10081-2" in str(it.get("Description")) or "33637-1" in str(
+            it.get("Description")
+        ):
             it["ProductType"] = 20
             it["Category"] = "Pipe"
             break

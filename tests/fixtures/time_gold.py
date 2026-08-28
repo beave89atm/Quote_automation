@@ -615,12 +615,12 @@ LOM_GOLD: list[LomGold] = [
 
 
 CLASSIFY_CASES: list[tuple[str, str, str]] = [
-    ("14500-1", "PEDESTAL TOP PLATE", "Cad"),
+    ("14500-1", "PEDESTAL TOP PLATE", "Component"),
     ("14501-1", "RESERVOIR TOP PLATE", "Cad"),
-    ("1005966-1", "PEDESTAL BOTTOM PLATE", "Cad"),
+    ("1005966-1", "PEDESTAL BOTTOM PLATE", "Component"),
     ("9905-1", "MOUNTING PLATE, EMER POWER", "Cad"),
     ("1005940-1", "PEDESTAL GUSSET", "Cad"),
-    ("1001880-2", "PEDESTAL TUBE", "Linear"),
+    ("1001880-2", "PEDESTAL TUBE", "Cad"),
     ("29860-3", "PEDESTAL BRACE ANGLE", "Linear"),
     ("29860-4", "PEDESTAL BRACE ANGLE", "Linear"),
     ("10081-2", "PEDESTAL HOSE TUBE", "Linear"),

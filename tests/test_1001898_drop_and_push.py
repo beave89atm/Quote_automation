@@ -22,9 +22,11 @@ from tests.test_lom_xlsx import (
 )
 
 _LOCKED = {
-    "Cad": {"14500-1", "14501-1", "1005966-1", "9905-1", "1005940-1"},
-    "Linear": {"1001880-2", "29860-3", "29860-4", "10081-2", "33637-1"},
+    "Cad": {"14501-1", "1001880-2", "9905-1", "1005940-1"},
+    "Linear": {"29860-3", "29860-4", "10081-2", "33637-1"},
     "Component": {
+        "14500-1",
+        "1005966-1",
         "50029-7",
         "50122-1",
         "50006-5",
@@ -43,13 +45,13 @@ def _bom_rows() -> list[dict]:
     ]
 
 
-def test_locked_1001898_classify_is_5_cad_5_linear_7_component():
+def test_locked_1001898_classify_is_4_cad_4_linear_9_component():
     got = {pn: classify_sectura_item(f"{pn} {desc}") for _i, _q, pn, desc in _1001898_DASH1}
     for cat, pns in _LOCKED.items():
         assert {pn for pn, c in got.items() if c == cat} == pns
-    assert sum(1 for c in got.values() if c == "Cad") == 5
-    assert sum(1 for c in got.values() if c == "Linear") == 5
-    assert sum(1 for c in got.values() if c == "Component") == 7
+    assert sum(1 for c in got.values() if c == "Cad") == 4
+    assert sum(1 for c in got.values() if c == "Linear") == 4
+    assert sum(1 for c in got.values() if c == "Component") == 9
 
 
 def test_plan_weldment_dry_run_kyle_formats_no_sheet_flats():
@@ -71,10 +73,21 @@ def test_plan_weldment_dry_run_kyle_formats_no_sheet_flats():
         else:
             assert line["ProductType"] == 200
             assert line["part_no"] not in desc or desc != line["part_no"]
-    assert counts == {"Cad": 5, "Linear": 5, "Component": 7}
+    assert counts == {"Cad": 4, "Linear": 4, "Component": 9}
     assert looks_like_drawing_sheet(22.0, 28.5) is True
     gusset = next(l for l in planned if l["part_no"] == "1005940-1")
     assert "PEDESTAL GUSSET" in gusset["Description"]
+    assert "12 in x 2.75 in" in gusset["Description"]
+    rolled = next(l for l in planned if l["part_no"] == "1001880-2")
+    assert rolled["category"] == "Cad"
+    assert "69.875" in rolled["Description"] and "48.75" in rolled["Description"]
+    ring = next(l for l in planned if l["part_no"] == "14500-1")
+    assert ring["category"] == "Component"
+    assert "OUTSOURCE" in ring["Description"].upper()
+    angle = next(l for l in planned if l["part_no"] == "29860-3")
+    assert angle["ProductType"] == 40
+    assert "L2X2X3/8-A36" in angle["Description"]
+    assert "27.75" in angle["Description"]
     elbow = next(l for l in planned if l["part_no"] == "50029-7")
     assert "ELBOW" in elbow["Description"].upper()
     assert elbow["Description"] != "50029-7"
@@ -159,7 +172,7 @@ def test_build_pdf_weldment_quickadds_cad_component_pdfs(tmp_path: Path):
 
     lib = tmp_path / "Pedestal Weldment - 1001898-1"
     lib.mkdir()
-    (lib / "14500-1.pdf").write_bytes(b"%PDF-1.4")
+    (lib / "14501-1.pdf").write_bytes(b"%PDF-1.4")
     client = MagicMock()
     client.get_json.return_value = {"ItemList": []}
     save = MagicMock()
@@ -203,7 +216,7 @@ def test_build_pdf_weldment_quickadds_cad_component_pdfs(tmp_path: Path):
             assembly_description="1001898-1 - PEDESTAL WELDMENT",
         )
     assert qadd.called
-    assert any("quickAddCAD" in n and "14500" in n for n in notes)
+    assert any("quickAddCAD" in n and "14501" in n for n in notes)
 
 
 def test_cookie_less_1001898_push_dry_run(tmp_path: Path):

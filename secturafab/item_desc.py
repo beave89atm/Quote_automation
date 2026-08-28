@@ -184,8 +184,6 @@ def looks_like_drawing_sheet(width_in: float | None, length_in: float | None) ->
     if w <= 0 or l <= 0:
         return False
     a, b = (w, l) if w <= l else (l, w)
-    if max(w, l) >= 20.0:
-        return True
     for sw, sl in _SHEET_PAIRS:
         lo, hi = (sw, sl) if sw <= sl else (sl, sw)
         if abs(a - lo) <= 0.6 and abs(b - hi) <= 0.6:
@@ -252,10 +250,15 @@ def format_cad_description(
         and length_in > 0
         and not looks_like_drawing_sheet(width_in, length_in)
     )
+    extra = ""
+    if (noun or "").strip() and not is_bare_part_number(noun, pn):
+        extra = format_component_description(noun, part_no=pn) or noun.strip()
     if use_flat:
         mid.append(f"{_fmt_in(float(width_in))} in x {_fmt_in(float(length_in))} in")
-    elif (noun or "").strip() and not is_bare_part_number(noun, pn):
-        mid.append(format_component_description(noun, part_no=pn) or noun.strip())
+        if extra and extra.upper() not in " ".join(mid).upper():
+            mid.append(extra)
+    elif extra:
+        mid.append(extra)
     if mid:
         bits.append(" ".join(mid))
     return " - ".join(bits)

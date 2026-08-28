@@ -18,8 +18,8 @@ from secturafab.push import SecturaFabPushService, classify_sectura_item
 
 
 def test_classify_fittings_are_component_not_cad():
-    assert classify_sectura_item("14500-1 PEDESTAL TOP PLATE") == "Cad"
-    assert classify_sectura_item("1001880-2 PEDESTAL TUBE") == "Linear"
+    assert classify_sectura_item("14500-1 PEDESTAL TOP PLATE") == "Component"
+    assert classify_sectura_item("1001880-2 PEDESTAL TUBE") == "Cad"
     assert classify_sectura_item("29860-4 PEDESTAL BRACE ANGLE") == "Linear"
     assert classify_sectura_item("50137-5 3/4 NPT HALF COUPLING") == "Component"
     assert classify_sectura_item("50115-7 1 1/4 NPT NIPPLE X 4 LG.") == "Component"
@@ -33,11 +33,11 @@ def test_classify_fittings_are_component_not_cad():
 
 
 _LIVE_1001898 = [
-    ("14500-1", "PEDESTAL TOP PLATE", "Cad"),
-    ("1001880-2", "PEDESTAL TUBE", "Linear"),
+    ("14500-1", "PEDESTAL TOP PLATE", "Component"),
+    ("1001880-2", "PEDESTAL TUBE", "Cad"),
     ("29860-4", "PEDESTAL BRACE ANGLE", "Linear"),
     ("14501-1", "RESERVOIR TOP PLATE", "Cad"),
-    ("1005966-1", "PEDESTAL BOTTOM PLATE", "Cad"),
+    ("1005966-1", "PEDESTAL BOTTOM PLATE", "Component"),
     ("50137-5", "3/4 NPT HALF COUPLING", "Component"),
     ("50115-7", "1 1/4 NPT NIPPLE X 4 LG.", "Component"),
     ("50030-5", "3/4 NPT COUPLING", "Component"),
@@ -57,9 +57,9 @@ def test_live_1001898_classify_matches_kyle():
     got = {pn: classify_sectura_item(f"{pn} {desc}") for pn, desc, _want in _LIVE_1001898}
     want = {pn: cat for pn, _desc, cat in _LIVE_1001898}
     assert got == want
-    assert sum(1 for c in got.values() if c == "Cad") == 5
-    assert sum(1 for c in got.values() if c == "Linear") == 5
-    assert sum(1 for c in got.values() if c == "Component") == 7
+    assert sum(1 for c in got.values() if c == "Cad") == 4
+    assert sum(1 for c in got.values() if c == "Linear") == 4
+    assert sum(1 for c in got.values() if c == "Component") == 9
 
 
 def test_kyle_description_formats():

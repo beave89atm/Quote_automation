@@ -500,9 +500,13 @@ def linear_website_product_type(
     if any(h in text for h in (" TUBE", " HSS", " PIPE", " DOM")):
         return LINEAR_PRODUCT_TYPE_TUBE
     sku_u = str(sku or "").upper().strip()
+    compact_sku = sku_u.replace(" ", "")
     if sku_u.startswith("L") and "X" in sku_u:
         return LINEAR_PRODUCT_TYPE_ANGLE
     if sku_u.startswith(("RT", "RCT", "HSS", "DOM")):
+        return LINEAR_PRODUCT_TYPE_TUBE
+    # Tenant pipe SKUs (P5-40-A36 / P1 1/4-40-A36) are Long tube, not bar.
+    if re.match(r"^P[\d/]+-\d+", compact_sku):
         return LINEAR_PRODUCT_TYPE_TUBE
     return LINEAR_PRODUCT_TYPE_BAR
 

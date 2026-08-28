@@ -225,9 +225,9 @@ def test_classify_locked_rows(pn, desc, want):
 
 def test_1001898_classify_counts():
     got = {pn: classify_sectura_item(f"{pn} {desc}") for _i, _q, pn, desc in DASH_1001898}
-    assert sum(1 for c in got.values() if c == "Cad") == 5
-    assert sum(1 for c in got.values() if c == "Linear") == 5
-    assert sum(1 for c in got.values() if c == "Component") == 7
+    assert sum(1 for c in got.values() if c == "Cad") == 4
+    assert sum(1 for c in got.values() if c == "Linear") == 4
+    assert sum(1 for c in got.values() if c == "Component") == 9
 
 
 @pytest.mark.parametrize("case", DESC_CASES, ids=[c["part_no"] + ":" + c["kind"] for c in DESC_CASES])
@@ -257,6 +257,7 @@ def test_pdf_sheet_outline_rejected():
     assert looks_like_drawing_sheet(22.0, 29.3) is True
     assert looks_like_drawing_sheet(10.0, 9.0) is False
     assert looks_like_drawing_sheet(7.5, 10.0) is False
+    assert looks_like_drawing_sheet(69.875, 48.75) is False
 
 
 def test_time_org_and_pedestal_title():
@@ -293,7 +294,7 @@ def test_plan_1001898_lines_are_not_bare_pn():
             assert line["ProductType"] == 200
         else:
             assert line["ProductType"] == 100
-    assert counts == {"Cad": 5, "Linear": 5, "Component": 7}
+    assert counts == {"Cad": 4, "Linear": 4, "Component": 9}
 
 
 def test_new_line_item_laser_pack_is_not_grafted():

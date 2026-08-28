@@ -622,19 +622,13 @@ def parse_length_lg(text: str | None) -> float | None:
     return None
 
 
-# Kyle-confirmed 1001898-1 (Job 92) cut lengths. Prefer these over unmarked PDF guesses.
-_CONFIRMED_CUT_LENGTH_IN = {
-    "29860-3": 125.0,
-    "29860-4": 125.0,
-    "1001880-2": 16.0,
-    "10081-2": 74.0,
-    "33637-1": 40.0,
-}
-
-
 def confirmed_cut_length_in(part_no: str | None) -> float | None:
-    key = str(part_no or "").strip().upper()
-    return _CONFIRMED_CUT_LENGTH_IN.get(key)
+    from secturafab.locked_1001898 import locked_linear_bind
+
+    bind = locked_linear_bind(part_no)
+    if bind and bind.get("length_in"):
+        return float(bind["length_in"])
+    return None
 
 
 def parse_cut_length(text: str | None) -> float | None:
