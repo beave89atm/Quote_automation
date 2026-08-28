@@ -19,7 +19,11 @@ from secturafab.line_item_ops import (
     item_has_pr_tag,
     item_has_saw_pack,
 )
-from secturafab.website import EMPTY_GUID
+from secturafab.website import (
+    EMPTY_GUID,
+    is_valid_linear_product_type,
+    linear_website_product_type,
+)
 
 _ASSEMBLY_TYPES = {300, "300", "assembly"}
 _PN_TOKEN = re.compile(r"^\d{4,}(?:-\d+[A-Za-z]?)?$", re.IGNORECASE)
@@ -111,6 +115,8 @@ def _item_category(item: dict[str, Any], bom_hint: str = "") -> str | None:
         "10",
         20,
         "20",
+        30,
+        "30",
         40,
         "40",
     ):
@@ -312,9 +318,11 @@ def evaluate_quote_get(
                 pt = int(it.get("ProductType"))
             except (TypeError, ValueError):
                 pt = None
-            if pt != 10:
+            want_pt = linear_website_product_type(desc, sku)
+            if not is_valid_linear_product_type(pt) or pt != want_pt:
                 failures.append(
-                    f"Linear {desc!r} ProductType is {it.get('ProductType')!r}, want 10"
+                    f"Linear {desc!r} ProductType is {it.get('ProductType')!r}, "
+                    f"want {want_pt} (10 bar, 30 tube, 40 angle/channel)"
                 )
             machine = str(it.get("Machine") or "").strip()
             if machine.casefold() != "saw":

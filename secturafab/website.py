@@ -29,10 +29,22 @@ from typing import Any
 EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
 
 # SetPartMode requires an integer (strings 500). Verified 0..4 HTTP 200 on empty guid.
-# Mapping follows Kyle UI categories + Q10056 ProductType (100 Cad, 10/30 Linear, 200 Component).
+# Mapping follows Kyle UI categories + Q10056 ProductType (100 Cad, 10/30/40 Linear, 200 Component).
+# Long ProductType: 10 bar, 30 tube, 40 angle/channel. 20 (pipe) fails live GET.
+# Do not force angles to 10 — QA that says "ProductType is 40, want 10" is wrong.
 PART_MODE_CAD = 0
 PART_MODE_LINEAR = 1
 PART_MODE_COMPONENT = 2
+LINEAR_PRODUCT_TYPE_BAR = 10
+LINEAR_PRODUCT_TYPE_TUBE = 30
+LINEAR_PRODUCT_TYPE_ANGLE = 40
+VALID_LINEAR_PRODUCT_TYPES = frozenset(
+    {
+        LINEAR_PRODUCT_TYPE_BAR,
+        LINEAR_PRODUCT_TYPE_TUBE,
+        LINEAR_PRODUCT_TYPE_ANGLE,
+    }
+)
 
 PART_MODE_BY_CATEGORY = {
     "Cad": PART_MODE_CAD,
@@ -429,7 +441,7 @@ def build_linear_add_payload(
     payload["ID"] = quote_id
     payload["ItemID"] = item_id or EMPTY_GUID
     payload["productID"] = product_id
-    payload["productType"] = 10
+    payload["productType"] = linear_website_product_type(name)
     payload["qty"] = max(1, int(qty))
     payload["machine"] = machine
     payload["customerMaterial"] = bool(customer_material)
@@ -461,6 +473,38 @@ def is_cloudflare_challenge(status_code: int, text: str | None) -> bool:
 
 def part_mode_int(category: str) -> int:
     return PART_MODE_BY_CATEGORY.get(str(category or "Cad"), PART_MODE_CAD)
+
+
+def coerce_product_type(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_valid_linear_product_type(value: Any) -> bool:
+    return coerce_product_type(value) in VALID_LINEAR_PRODUCT_TYPES
+
+
+def linear_website_product_type(
+    description: str | None,
+    sku: str | None = None,
+) -> int:
+    """Website Long ProductType: 10 bar, 30 tube, 40 angle/channel."""
+    text = f" {str(description or '').upper()} {str(sku or '').upper()} "
+    if any(h in text for h in (" ANGLE", " CHANNEL")):
+        return LINEAR_PRODUCT_TYPE_ANGLE
+    # Hose guards bind Round Bar (bar), not tube.
+    if "HOSE GUARD" in text or "HOSEGUARD" in text:
+        return LINEAR_PRODUCT_TYPE_BAR
+    if any(h in text for h in (" TUBE", " HSS", " PIPE", " DOM")):
+        return LINEAR_PRODUCT_TYPE_TUBE
+    sku_u = str(sku or "").upper().strip()
+    if sku_u.startswith("L") and "X" in sku_u:
+        return LINEAR_PRODUCT_TYPE_ANGLE
+    if sku_u.startswith(("RT", "RCT", "HSS", "DOM")):
+        return LINEAR_PRODUCT_TYPE_TUBE
+    return LINEAR_PRODUCT_TYPE_BAR
 
 
 def overlay_classified_row(
@@ -500,7 +544,9 @@ def overlay_classified_row(
         out["IsLinear"] = True
         out["IsPlate"] = False
         out["IsPart"] = True
-        out["ProductType"] = 10
+        out["ProductType"] = linear_website_product_type(
+            row_name(out), sku=sku
+        )
         out["Machine"] = machine or out.get("Machine") or "Saw"
     elif cat == "Component":
         out["IsLinear"] = False
@@ -565,6 +611,13 @@ def score_linear_product(
             score += 30
         if "MECHANICAL TUBE" in blob:
             score += 8
+        if pname.startswith("RT") or pname.startswith("RCT") or " RCT" in blob:
+            score += 12
+        # Prior 1001898 binds of P1/8-5-A36 / P1/4-5-A36 on tubes are suspect.
+        if " TUBE" in text and " PIPE" not in text:
+            compact_name = pname.replace(" ", "")
+            if re.match(r"^P[\d/]", compact_name):
+                score -= 25
     elif "ANGLE" in text:
         if "ANGLE" in blob:
             score += 30

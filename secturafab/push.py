@@ -60,6 +60,7 @@ from .website import (
     WEBSITE_AUTH_GAP,
     SecturaFabWebsiteAuthError,
     filelist_from_cadimport_upload,
+    linear_website_product_type,
     overlay_classified_row,
     pick_closest_linear_product,
     row_name,
@@ -742,7 +743,7 @@ class SecturaFabPushService:
             it["ItemType"] = cat
             it["Category"] = cat
             if cat == "Linear":
-                it["ProductType"] = 10
+                it["ProductType"] = linear_website_product_type(hint)
                 it["IsLinear"] = True
                 it["IsPlate"] = False
                 it["IsPart"] = True
@@ -1485,12 +1486,13 @@ class SecturaFabPushService:
         library: dict[str, Any] | None,
         extra_pdfs: list[Path] | None,
     ) -> list[str]:
-        """Long Finish: POST /Quote/AddItem_Linear with ProductType 10."""
+        """Long Finish: POST /Quote/AddItem_Linear (10 bar / 30 tube / 40 angle)."""
         if not self._website_cookie_present():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
         from .line_item_ops import (
             _length_from_library,
             bom_row_cut_length,
+            confirmed_cut_length_in,
             parse_cut_length,
         )
 
@@ -1506,6 +1508,7 @@ class SecturaFabPushService:
                 qty = 1
             length = (
                 bom_row_cut_length(row)
+                or confirmed_cut_length_in(pn)
                 or parse_cut_length(noun)
                 or _length_from_library(
                     pn,
@@ -1527,6 +1530,7 @@ class SecturaFabPushService:
             name = format_linear_description(
                 pn, sku=sku, length_in=length, noun=noun
             )
+            pt = linear_website_product_type(f"{pn} {noun} {name}", sku)
             self.client.add_item_linear(
                 quote_id=quote_id,
                 product_id=product_id,
@@ -1535,11 +1539,11 @@ class SecturaFabPushService:
                 material=material,
                 machine="Saw",
                 name=name,
-                extra={"productType": 10},
+                extra={"productType": pt},
             )
             notes.append(
                 f"Long POST /Quote/AddItem_Linear {pn} SKU={sku or product_id} "
-                f"qty={qty} length={length} PT=10"
+                f"qty={qty} length={length} PT={pt}"
             )
         return notes
 
@@ -1600,7 +1604,7 @@ class SecturaFabPushService:
                 except (TypeError, ValueError):
                     pt = None
                 ok = (
-                    pt == 10
+                    pt == 40
                     and item_has_saw_pack(it)
                     and unit > 0
                     and not item_has_grafted_saw_tags(it)
@@ -1608,9 +1612,9 @@ class SecturaFabPushService:
                 notes.append(
                     "GET 29860-3 "
                     + (
-                        "PASS PT 10 + Saw/Saw Setup + UnitCost>0 + no Saw badge"
+                        "PASS PT 40 + Saw/Saw Setup + UnitCost>0 + no Saw badge"
                         if ok
-                        else "FAIL — want PT 10 + Saw/Saw-Setup CalculatorNames "
+                        else "FAIL — want PT 40 (angle) + Saw/Saw-Setup CalculatorNames "
                         "+ UnitCost>0 + no Saw badge"
                     )
                 )

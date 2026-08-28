@@ -9,6 +9,7 @@ import pytest
 from secturafab.item_desc import title_from_bom_family
 from secturafab.line_item_ops import cad_new_line_calculators, linear_new_line_calculators
 from secturafab.qa_harness import assert_quote_get_qa, evaluate_quote_get
+from secturafab.website import is_valid_linear_product_type
 from tests.fixtures.live_get_1001898 import (
     ASSEMBLY_DESC,
     HEADER_DESC,
@@ -877,7 +878,7 @@ def test_addplate_without_pr_or_primary_costs_fails_live_get():
             it["Machine"] = ""
             it["UnitCost"] = 3.12
             it["MaterialCost"] = 0.55
-        if it.get("ProductType") in (10, "10"):
+        if is_valid_linear_product_type(it.get("ProductType")):
             it["OperationCostList"] = []
             it["BadgeString"] = ""
             it["UnitCost"] = 7.63
@@ -899,7 +900,7 @@ def test_addplate_without_pr_or_primary_costs_fails_live_get():
 def test_linear_saw_badge_alone_fails_live_get():
     payload = gold_1001898_get()
     for it in payload["ItemList"]:
-        if it.get("ProductType") in (10, "10"):
+        if is_valid_linear_product_type(it.get("ProductType")):
             it["BadgeString"] = "Saw"
     result = evaluate_quote_get(
         payload,
@@ -977,18 +978,18 @@ def test_retype_pt10_copies_cad_material_and_linear_length():
     save.status_code = 200
     client.request.return_value = save
     notes = retype_linears_to_pt10_keep_persist(client, "qid")
-    assert any("PT 10" in n for n in notes)
+    assert any("PT overlay" in n for n in notes)
     assert not any(c.args[:2] == ("POST", "v1/quote") for c in client.request.call_args_list)
     upd = next(c for c in client.request.call_args_list if "quoteOnline/update" in str(c))
     body = upd.kwargs.get("json") or []
-    assert any(row.get("ParamName") == "ProductType" and row.get("Value") == "10" for row in body)
+    assert any(row.get("ParamName") == "ProductType" and row.get("Value") == "30" for row in body)
     assert any(row.get("ID") == "l1" for row in body)
 
 
 def test_linear_product_type_20_fails_live_get():
     payload = gold_1001898_get()
     for it in payload["ItemList"]:
-        if it.get("ProductType") == 10 and "1001880" in str(it.get("Description")):
+        if "1001880" in str(it.get("Description")):
             it["ProductType"] = 20
             it["Category"] = "Pipe"
             break
@@ -1002,6 +1003,64 @@ def test_linear_product_type_20_fails_live_get():
     )
     assert result.ok is False
     assert any("ProductType" in f and "20" in f for f in result.failures)
+
+
+def test_angle_product_type_40_passes_and_forced_10_fails():
+    payload = gold_1001898_get()
+    angle = next(
+        it
+        for it in payload["ItemList"]
+        if "29860-3" in str(it.get("Description") or "")
+    )
+    assert angle["ProductType"] == 40
+    result = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert result.ok is True
+    angle["ProductType"] = 10
+    forced = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert forced.ok is False
+    blob = " ".join(forced.failures)
+    assert "want 40" in blob
+    assert "want 10" not in blob
+
+
+def test_retype_skips_angle_product_type_40():
+    from unittest.mock import MagicMock
+
+    from secturafab.line_item_ops import retype_linears_to_pt10_keep_persist
+
+    detail = {
+        "ItemList": [
+            {
+                "ID": "a1",
+                "Description": "29860-3 - L2X1 1/4X1/8-A36 - 125",
+                "ProductType": 40,
+                "Category": "Linear",
+                "IsLinear": True,
+                "Machine": "Saw",
+                "Length": 125.0,
+                "SKU": "L2X1 1/4X1/8-A36",
+            }
+        ]
+    }
+    client = MagicMock()
+    client.get_json.return_value = detail
+    notes = retype_linears_to_pt10_keep_persist(client, "qid")
+    assert notes == []
+    assert not client.request.called
 
 
 def test_addlinear_fetches_product_by_id_when_catalog_misses():

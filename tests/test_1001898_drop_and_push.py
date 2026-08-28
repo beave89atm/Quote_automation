@@ -12,6 +12,7 @@ from quote_core.lom_xlsx import extract_bom_from_lom_xlsx
 from secturafab.item_desc import format_assembly_description, looks_like_drawing_sheet
 from secturafab.pdf_assembly_ops import build_pdf_only_assembly, plan_weldment_lines
 from secturafab.push import SecturaFabPushService, classify_sectura_item
+from secturafab.website import linear_website_product_type
 from tests.fixtures.live_get_1001898 import gold_1001898_get
 
 from tests.test_lom_xlsx import (
@@ -64,7 +65,9 @@ def test_plan_weldment_dry_run_kyle_formats_no_sheet_flats():
             assert line["ProductType"] == 100
             assert line["part_no"] in desc
         elif line["category"] == "Linear":
-            assert line["ProductType"] == 10
+            assert line["ProductType"] == linear_website_product_type(
+                f"{line['part_no']} {line.get('noun') or ''}"
+            )
         else:
             assert line["ProductType"] == 200
             assert line["part_no"] not in desc or desc != line["part_no"]

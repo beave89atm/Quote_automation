@@ -284,7 +284,11 @@ def test_plan_1001898_lines_are_not_bare_pn():
         assert line["Description"] != line["part_no"]
         assert "22 in" not in line["Description"] and "28.5" not in line["Description"]
         if line["category"] == "Linear":
-            assert line["ProductType"] == 10
+            from secturafab.website import linear_website_product_type
+
+            assert line["ProductType"] == linear_website_product_type(
+                f"{line['part_no']} {line.get('noun') or ''}"
+            )
         elif line["category"] == "Component":
             assert line["ProductType"] == 200
         else:
@@ -337,7 +341,7 @@ def test_linear_bind_sets_product_type_10_and_product_id():
     bind_linear_product_ids(client, "qid", material="A513", catalog=catalog)
     payload = client.request.call_args.kwargs["json"]
     for item in payload["ItemList"]:
-        assert item["ProductType"] == 10
+        assert item["ProductType"] == 30
         assert item["IsLinear"] is True
         assert item["Machine"] == "Saw"
         assert item.get("ProductID") == "pid-rct"

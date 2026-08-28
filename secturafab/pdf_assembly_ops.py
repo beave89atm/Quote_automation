@@ -15,7 +15,7 @@ from quote_core.part_materials import PartMaterial, build_part_material_map, loo
 
 from .assembly_ops import ensure_assembly_root, relink_assembly_children
 from .client import SecturaFabApiError, SecturaFabClient, SecturaFabWebsiteAuthError
-from .website import EMPTY_GUID, filelist_from_cadimport_upload
+from .website import EMPTY_GUID, filelist_from_cadimport_upload, linear_website_product_type
 from .component_ops import ensure_purchased_components, find_purchased_part_keys
 from .item_desc import (
     format_cad_description,
@@ -352,7 +352,7 @@ def categorize_pdf_imported_items(
         it["ItemType"] = cat
         it["Category"] = cat
         if cat == "Linear":
-            it["ProductType"] = 10
+            it["ProductType"] = linear_website_product_type(hint)
             it["IsLinear"] = True
             it["IsPlate"] = False
             it["IsPart"] = True
@@ -648,7 +648,7 @@ def plan_weldment_lines(
         grade = (pm.material if pm else None) or default_material
         if cat == "Linear":
             desc = format_linear_description(pn, sku=None, length_in=None, noun=noun)
-            product_type = 10
+            product_type = linear_website_product_type(f"{pn} {noun}")
         elif cat == "Component":
             desc = format_component_line(pn, noun) or noun
             product_type = 200

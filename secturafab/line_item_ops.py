@@ -447,17 +447,23 @@ def _copy_calculator_fields(src: dict[str, Any], dst: dict[str, Any]) -> None:
 
 
 def retype_linears_to_pt10_keep_persist(client: Any, quote_id: str) -> list[str]:
-    """Set ProductType 10 on Linears that already have Length>0.
+    """Set website Long ProductType on Linears that already have Length>0.
 
+    10 bar, 30 tube, 40 angle/channel. Do not force 40→10. Skip lines that
+    already have a valid Long type. Overlay only invalid types (e.g. 20 pipe).
     Full-quote POST after addLinear wiped Material/Length on 124407db when
-    the payload did not copy those calculator fields. Copy them from GET,
-    overlay PT 10 only on cut-length linears, then caller must GET-verify.
+    the payload did not copy those calculator fields.
     """
+    from secturafab.website import (
+        is_valid_linear_product_type,
+        linear_website_product_type,
+    )
+
     detail = client.get_json(f"v1/quote/{quote_id}")
     items = list(detail.get("ItemList") or [])
     lin_ok = any(_linear_fields_on_get(it) for it in items if isinstance(it, dict) and _is_linear(it))
     if not lin_ok:
-        return ["Skipped PT 10 overlay — no Linear has Machine=Saw and Length>0 on GET"]
+        return ["Skipped PT overlay — no Linear has Machine=Saw and Length>0 on GET"]
     from secturafab.quote_update import quote_online_update
 
     params: list[dict[str, Any]] = []
@@ -467,14 +473,18 @@ def retype_linears_to_pt10_keep_persist(client: Any, quote_id: str) -> list[str]
             continue
         if not _linear_fields_on_get(it):
             continue
-        if it.get("ProductType") in (10, "10"):
+        if is_valid_linear_product_type(it.get("ProductType")):
             continue
         iid = str(it.get("ID") or "")
         if not iid:
             continue
+        want = linear_website_product_type(
+            str(it.get("Description") or ""),
+            str(it.get("SKU") or it.get("ProductName") or "") or None,
+        )
         params.extend(
             [
-                {"ID": iid, "ParamName": "ProductType", "Value": "10"},
+                {"ID": iid, "ParamName": "ProductType", "Value": str(want)},
                 {"ID": iid, "ParamName": "Category", "Value": "Linear"},
                 {"ID": iid, "ParamName": "ItemType", "Value": "Linear"},
             ]
@@ -483,8 +493,8 @@ def retype_linears_to_pt10_keep_persist(client: Any, quote_id: str) -> list[str]
     if not params:
         return []
     if not quote_online_update(client, quote_id, params):
-        return ["WARNING: PT 10 overlay via quoteOnline/update failed"]
-    return [f"PT 10 overlay on {n} Linear line(s) (quoteOnline/update, no quote POST)"]
+        return ["WARNING: Linear PT overlay via quoteOnline/update failed"]
+    return [f"PT overlay on {n} Linear line(s) (quoteOnline/update, no quote POST)"]
 
 
 def _is_assembly(item: dict[str, Any]) -> bool:
@@ -610,6 +620,21 @@ def parse_length_lg(text: str | None) -> float | None:
         if val:
             return val
     return None
+
+
+# Kyle-confirmed 1001898-1 (Job 92) cut lengths. Prefer these over unmarked PDF guesses.
+_CONFIRMED_CUT_LENGTH_IN = {
+    "29860-3": 125.0,
+    "29860-4": 125.0,
+    "1001880-2": 16.0,
+    "10081-2": 74.0,
+    "33637-1": 40.0,
+}
+
+
+def confirmed_cut_length_in(part_no: str | None) -> float | None:
+    key = str(part_no or "").strip().upper()
+    return _CONFIRMED_CUT_LENGTH_IN.get(key)
 
 
 def parse_cut_length(text: str | None) -> float | None:
@@ -890,19 +915,22 @@ def count_linear_get_misses(
         if _is_component(it) or want == "Component":
             continue
         if _is_linear(it) or want == "Linear":
-            if not _linear_fields_on_get(it, require_pt10=True):
+            if not _linear_fields_on_get(it, require_linear_pt=True):
                 n += 1
     return n
 
 
-def _linear_fields_on_get(item: dict[str, Any], *, require_pt10: bool = False) -> bool:
+def _linear_fields_on_get(item: dict[str, Any], *, require_pt10: bool = False, require_linear_pt: bool = False) -> bool:
+    from secturafab.website import is_valid_linear_product_type
+
     machine = str(item.get("Machine") or "").strip().casefold() == "saw"
     try:
         length = float(item.get("Length") or item.get("LinearLength") or 0)
     except (TypeError, ValueError):
         length = 0.0
-    if require_pt10 and item.get("ProductType") not in (10, "10"):
-        return False
+    if require_pt10 or require_linear_pt:
+        if not is_valid_linear_product_type(item.get("ProductType")):
+            return False
     return machine and length > 0
 
 
@@ -1037,6 +1065,7 @@ def persist_classified_item_fields(
         length = (
             _item_cut_length(it)
             or bom_len.get(normalize_part_key(pn or ""))
+            or confirmed_cut_length_in(pn)
             or parse_cut_length(noun)
             or parse_cut_length(raw_desc)
             or _length_from_library(

@@ -26,6 +26,7 @@ from secturafab.website import (
     filelist_from_cadimport_upload,
     filter_finish_filelist,
     filter_pdf_filelist,
+    linear_website_product_type,
     overlay_classified_row,
     pick_closest_linear_product,
 )
@@ -124,6 +125,14 @@ def test_pdf_and_linear_payloads_share_id_itemid():
     assert linear["productID"] == "pid-1"
     assert linear["qty"] == 2
     assert linear["productType"] == 10
+    angle = build_linear_add_payload(
+        "qid", product_id="pid-ang", qty=2, length=125, name="29860-3 PEDESTAL BRACE ANGLE"
+    )
+    assert angle["productType"] == 40
+    tube = build_linear_add_payload(
+        "qid", product_id="pid-tube", qty=1, length=16, name="1001880-2 PEDESTAL TUBE"
+    )
+    assert tube["productType"] == 30
     assert list(linear.keys()) == list(LINEAR_ADD_FIELDS)
 
 
@@ -165,6 +174,45 @@ def test_overlay_linear_sets_saw_and_product():
     assert row["IsLinear"] is True
     assert row["ProductID"] == "pid"
     assert row["PartMode"] == 1
+    assert row["ProductType"] == 30
+
+
+def test_linear_website_product_type_bar_tube_angle():
+    assert linear_website_product_type("29860-3 PEDESTAL BRACE ANGLE") == 40
+    assert linear_website_product_type("1001880-2 PEDESTAL TUBE") == 30
+    assert linear_website_product_type("10081-2 PEDESTAL HOSE TUBE") == 30
+    assert linear_website_product_type("33637-1 1 1/4 RETURN TUBE") == 30
+    assert linear_website_product_type("21689-1 HOSE GUARD") == 10
+    assert linear_website_product_type("ROUND BAR") == 10
+    assert linear_website_product_type("29860-3", sku="L2X1 1/4X1/8-A36") == 40
+
+
+def test_pick_closest_linear_prefers_rt_over_pipe_sku_for_tube():
+    products = [
+        {
+            "ID": "pipe",
+            "ProductName": "P1/8-5-A36",
+            "ProductDescription": "Pipe 1/8 A36",
+            "ShapeName": "Pipe",
+            "MaterialGrade": "A36",
+            "Dim1": 0.405,
+            "Active": True,
+        },
+        {
+            "ID": "rct",
+            "ProductName": "RCT1.25X.120-A513",
+            "ProductDescription": "Mechanical Tube 1.25 X .120 A513",
+            "ShapeName": "Mechanical Tube",
+            "MaterialGrade": "A513",
+            "Dim1": 1.25,
+            "Active": True,
+        },
+    ]
+    best, _note = pick_closest_linear_product(
+        products, description="33637-1 1 1/4 RETURN TUBE", material="A36"
+    )
+    assert best is not None
+    assert best["ID"] == "rct"
 
 
 def test_pick_closest_linear_prefers_round_bar_for_hose_guard():
@@ -394,7 +442,7 @@ def test_add_item_linear_posts_quote_mvc():
     assert body["productID"] == "pid-tube"
     assert body["qty"] == "2"
     assert body["length"] == "10.9"
-    assert body["productType"] == "10"
+    assert body["productType"] == "30"
     assert body["machine"] == "Saw"
     assert body["name"] == "1001880-2 TUBE"
     assert "SKU" not in body
@@ -468,7 +516,7 @@ def _gold_cad(desc: str = "21680-1 PLATE") -> dict[str, Any]:
 def _gold_lin(desc: str = "21679-1 TUBE") -> dict[str, Any]:
     return {
         "Description": desc,
-        "ProductType": 10,
+        "ProductType": 30,
         "Category": "Linear",
         "IsLinear": True,
         "Machine": "Saw",

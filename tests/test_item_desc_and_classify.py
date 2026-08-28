@@ -357,7 +357,7 @@ def test_categorize_live_shaped_items_sets_product_type():
     by_id = {it["ID"]: it for it in saved}
     assert by_id["a"]["ProductType"] == 200
     assert by_id["a"]["Category"] == "Component"
-    assert by_id["b"]["ProductType"] == 10
+    assert by_id["b"]["ProductType"] == 40
     assert by_id["b"]["IsLinear"] is True
     assert by_id["b"]["Machine"] == "Saw"
     assert by_id["c"]["ProductType"] == 100
@@ -403,7 +403,7 @@ def test_apply_item_categories_skips_assembly_and_binds_types():
     by_id = {it["ID"]: it for it in saved}
     assert by_id["root"]["ProductType"] == 300
     assert by_id["root"]["IsAssembly"] is True
-    assert by_id["lin"]["ProductType"] == 10
+    assert by_id["lin"]["ProductType"] == 40
     assert by_id["lin"]["Machine"] == "Saw"
     assert by_id["fit"]["ProductType"] == 200
 

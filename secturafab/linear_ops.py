@@ -7,7 +7,7 @@ from typing import Any
 
 from secturafab.item_desc import format_linear_description, item_length_in, normalize_part_token
 from secturafab.qty_ops import normalize_part_key
-from secturafab.website import EMPTY_GUID, pick_closest_linear_product
+from secturafab.website import EMPTY_GUID, linear_website_product_type, pick_closest_linear_product
 from secturafab.weld_ops import _desc_token
 
 _LINEAR_TYPE = 10
@@ -279,7 +279,7 @@ def bind_linear_product_ids(
         it["IsLinear"] = True
         it["IsPlate"] = False
         it["IsPart"] = True
-        it["ProductType"] = _LINEAR_TYPE
+        it["ProductType"] = linear_website_product_type(hint or raw_token, sku)
         length = item_length_in(it)
         pn = normalize_part_token(raw_token) or raw_token
         if pn:
@@ -379,7 +379,7 @@ def add_linear_item_from_bom(
         "ID": str(uuid.uuid4()),
         "Description": desc[:500],
         "Quantity": max(1, int(qty or 1)),
-        "ProductType": _LINEAR_TYPE,
+        "ProductType": linear_website_product_type(f"{part_no} {description}", sku),
         "ItemType": "Linear",
         "Category": "Linear",
         "IsLinear": True,

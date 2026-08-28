@@ -12,6 +12,7 @@ from secturafab.item_desc import (
     format_quote_header_description,
 )
 from secturafab.push import classify_sectura_item
+from secturafab.website import linear_website_product_type
 from tests.fixtures.time_gold import DASH_1001898
 
 
@@ -78,13 +79,28 @@ ASSEMBLY_DESC = format_assembly_description("1001898-1", "PEDESTAL WELDMENT")
 HEADER_DESC = format_quote_header_description("PEDESTAL WELDMENT", part_key="1001898-1")
 
 # Catalog SKUs the Long path would bind (shape only — not live ProductIDs).
+# 29860 is L2X1 1/4X1/8-A36 (angle, PT 40). Tube SKUs prefer RT/RCT/HSS/DOM, not P-pipe.
 _LINEAR_SKU = {
     "1001880-2": "HSS 4X4X.188-A500",
-    "29860-3": "L3X3X1/4-A36",
-    "29860-4": "L3X3X1/4-A36",
+    "29860-3": "L2X1 1/4X1/8-A36",
+    "29860-4": "L2X1 1/4X1/8-A36",
     "10081-2": "HSS 2X2X.125-A500",
     "33637-1": "DOM 1.25X.120-A513",
 }
+_LINEAR_LEN = {
+    "1001880-2": 16.0,
+    "29860-3": 125.0,
+    "29860-4": 125.0,
+    "10081-2": 74.0,
+    "33637-1": 40.0,
+}
+
+
+def _is_linear_pt(item: dict[str, Any]) -> bool:
+    try:
+        return int(item.get("ProductType")) in (10, 30, 40)
+    except (TypeError, ValueError):
+        return False
 
 
 def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
@@ -108,13 +124,14 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
         cat = classify_sectura_item(f"{pn} {noun}")
         if cat == "Linear":
             sku = _LINEAR_SKU[pn]
+            length_in = _LINEAR_LEN[pn]
             items.append(
                 {
                     "ID": f"lin-{pn}",
                     "Description": format_linear_description(
-                        pn, sku=sku, length_in=12.0, noun=noun
+                        pn, sku=sku, length_in=length_in, noun=noun
                     ),
-                    "ProductType": 10,
+                    "ProductType": linear_website_product_type(f"{pn} {noun}", sku),
                     "Category": "Linear",
                     "ItemType": "Linear",
                     "IsLinear": True,
@@ -123,7 +140,7 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
                     "ProductID": f"pid-{pn}",
                     "SKU": sku,
                     "Quantity": qty,
-                    "Length": 12.0,
+                    "Length": length_in,
                     "MaterialCost": 0.55,
                     "UnitCost": 7.63,
                     "BadgeString": "",
@@ -216,7 +233,7 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
                 it["Width"] = 0
                 it["MaterialCost"] = 0
                 it["UnitCost"] = 0
-            if it.get("ProductType") in (10, "10"):
+            if _is_linear_pt(it):
                 it["Machine"] = ""
                 it["Length"] = 0
                 it["MaterialCost"] = 0
@@ -232,13 +249,13 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
                 it["OperationCostList"] = build_cad_new_line_ops(str(it.get("ID")))
                 it["BadgeString"] = "Laser,Drafting,Laser-Setup,Sheet Loading,Deburr"
                 it["UnitCost"] = 0
-            if it.get("ProductType") in (10, "10"):
+            if _is_linear_pt(it):
                 it["OperationCostList"] = build_linear_new_line_ops(str(it.get("ID")))
                 it["BadgeString"] = "Saw,Saw Setup"
                 it["UnitCost"] = 0
     elif fail == "blank_unit_cost":
         for it in payload["ItemList"]:
-            if it.get("ProductType") in (100, "100", 10, "10"):
+            if it.get("ProductType") in (100, "100") or _is_linear_pt(it):
                 it["UnitCost"] = 0
                 it["MaterialCost"] = 0.55
     elif fail == "eaten_pn":
