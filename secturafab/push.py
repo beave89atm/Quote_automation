@@ -1508,7 +1508,6 @@ class SecturaFabPushService:
                 qty = 1
             length = (
                 bom_row_cut_length(row)
-                or confirmed_cut_length_in(pn)
                 or parse_cut_length(noun)
                 or _length_from_library(
                     pn,
@@ -1516,6 +1515,7 @@ class SecturaFabPushService:
                     related_pdf_names=related,
                     extra_pdfs=extra_pdfs,
                 )
+                or confirmed_cut_length_in(pn)
             )
             product_id, sku, mismatch = self._match_linear_sku(
                 f"{pn} {noun}", material=material

@@ -479,7 +479,7 @@ def retype_linears_to_pt10_keep_persist(client: Any, quote_id: str) -> list[str]
         if not iid:
             continue
         want = linear_website_product_type(
-            str(it.get("Description") or ""),
+            f"{it.get('Description') or ''} {it.get('Category') or ''}",
             str(it.get("SKU") or it.get("ProductName") or "") or None,
         )
         params.extend(
@@ -1065,7 +1065,6 @@ def persist_classified_item_fields(
         length = (
             _item_cut_length(it)
             or bom_len.get(normalize_part_key(pn or ""))
-            or confirmed_cut_length_in(pn)
             or parse_cut_length(noun)
             or parse_cut_length(raw_desc)
             or _length_from_library(
