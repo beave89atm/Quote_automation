@@ -59,10 +59,14 @@ from .website import (
     EMPTY_GUID,
     WEBSITE_AUTH_GAP,
     SecturaFabWebsiteAuthError,
+    count_cad_product_type,
+    count_linear_product_type,
     filelist_from_cadimport_upload,
     linear_website_product_type,
     overlay_classified_row,
     pick_closest_linear_product,
+    prepare_pdf_newline_fields,
+    quote_item_rows,
     row_name,
 )
 from .weld_ops import ensure_weld_ops
@@ -224,6 +228,16 @@ def classify_sectura_item(description: str) -> str:
 _HOLE_NOUN_RE = re.compile(
     r"(?i)(\d+(?:\s+\d+/\d+)?|\d+/\d+|\d+\.\d+)\s*(?:\"|IN)?\s*HOLES?"
 )
+
+
+_GUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _looks_like_product_id(value: str | None) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and bool(_GUID_RE.fullmatch(text))
 
 
 def _holes_from_noun(text: str) -> list[dict[str, Any]]:
@@ -1507,21 +1521,65 @@ class SecturaFabPushService:
                     )
                     file_list = classified
                     notes.extend(class_notes)
+            cad_rows: list[dict[str, Any]] = []
             for row in file_list:
-                row["Status"] = row.get("Status") or 1
+                prepared = prepare_pdf_newline_fields(row)
                 holes = _holes_from_noun(
-                    str(row.get("Name") or row.get("Description") or "")
+                    str(prepared.get("Name") or prepared.get("Description") or "")
                 )
                 if holes:
                     from .website import internal_data_from_holes
 
-                    row["InternalData"] = internal_data_from_holes(holes)
-            self.client.add_item_pdf_files(
-                quote_id=quote_id,
-                file_list=file_list,
-                item_id=EMPTY_GUID,
-                customer_material=False,
-            )
+                    prepared["InternalData"] = internal_data_from_holes(holes)
+                cat = str(prepared.get("Category") or prepared.get("ItemType") or "")
+                if cat == "Linear":
+                    continue
+                if cat == "Component":
+                    continue
+                cad_rows.append(prepared)
+            if not cad_rows:
+                notes.append(
+                    "WARNING: CadImport listed rows but none were Cad for "
+                    "AddItem_PDFFiles (New Line Item fields not posted)"
+                )
+            if cad_rows:
+                try:
+                    self.client.add_item_pdf_files(
+                        quote_id=quote_id,
+                        file_list=cad_rows,
+                        item_id=EMPTY_GUID,
+                        customer_material=False,
+                    )
+                except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
+                    notes.append(f"WARNING: AddItem_PDFFiles batch: {exc}")
+                posted = self._read_quote_items(quote_id)
+                if count_cad_product_type(posted) <= 0:
+                    for row in cad_rows:
+                        try:
+                            self.client.add_item_pdf_files(
+                                quote_id=quote_id,
+                                file_list=[row],
+                                item_id=EMPTY_GUID,
+                                customer_material=False,
+                            )
+                        except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
+                            notes.append(
+                                f"WARNING: AddItem_PDFFiles "
+                                f"{row.get('FileName') or row.get('Name')}: {exc}"
+                            )
+            posted = self._read_quote_items(quote_id)
+            cad_n = count_cad_product_type(posted)
+            if cad_n <= 0:
+                notes.append(
+                    f"WARNING: AddItem_PDFFiles posted {len(cad_rows)} FileList "
+                    f"row(s) but item read has 0 ProductType 100 lines "
+                    f"(CadImport list is not success)"
+                )
+            else:
+                notes.append(
+                    f"Image Files persisted {cad_n} Cad ProductType 100 line(s) "
+                    f"via /Quote/AddItem_PDFFiles"
+                )
         finally:
             for fh in open_files:
                 fh.close()
@@ -1530,6 +1588,25 @@ class SecturaFabPushService:
             + ", ".join(p.name for p in pdf_files)
         )
         return notes
+
+    def _read_quote_items(self, quote_id: str) -> dict[str, Any]:
+        """Prefer QuoteItem_Read; fall back to v1/quote ItemList."""
+        if hasattr(self.client, "quote_item_read"):
+            try:
+                payload = self.client.quote_item_read(quote_id)
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError, ValueError):
+                payload = None
+            if isinstance(payload, dict):
+                rows = quote_item_rows(payload)
+                if rows:
+                    return payload
+            elif isinstance(payload, list) and payload:
+                return {"Data": payload, "ItemList": payload}
+        try:
+            peek = self.client.get_json(f"v1/quote/{quote_id}")
+        except SecturaFabApiError:
+            return {"ItemList": [], "Data": []}
+        return peek if isinstance(peek, dict) else {"ItemList": []}
 
     def add_loose_linears(
         self,
@@ -1784,19 +1861,47 @@ class SecturaFabPushService:
                 pn, sku=sku, length_in=length, noun=noun
             )
             pt = linear_website_product_type(f"{pn} {noun} {name}", sku)
-            self.client.add_item_linear(
-                quote_id=quote_id,
-                product_id=product_id,
-                qty=qty,
-                length=length,
-                material=material,
-                machine="Saw",
-                name=name,
-                extra={"productType": pt},
-            )
+            if not _looks_like_product_id(product_id):
+                notes.append(
+                    f"WARNING: Linear {pn} ProductID {product_id!r} is not a "
+                    "catalog GUID — skipped AddItem_Linear"
+                )
+                continue
+            try:
+                length_f = float(length) if length is not None else 0.0
+            except (TypeError, ValueError):
+                length_f = 0.0
+            if length_f <= 0:
+                notes.append(
+                    f"WARNING: Linear {pn} has no cut length — skipped AddItem_Linear"
+                )
+                continue
+            try:
+                self.client.add_item_linear(
+                    quote_id=quote_id,
+                    product_id=product_id,
+                    qty=qty,
+                    length=length_f,
+                    material=material,
+                    machine="Saw",
+                    name=name,
+                    extra={"productType": pt},
+                )
+            except Exception as exc:
+                notes.append(
+                    f"WARNING: Long AddItem_Linear {pn} SKU={sku or product_id} "
+                    f"PT={pt} length={length_f} failed ({exc}) — continuing"
+                )
+                continue
             notes.append(
                 f"Long POST /Quote/AddItem_Linear {pn} SKU={sku or product_id} "
-                f"qty={qty} length={length} PT={pt}"
+                f"qty={qty} length={length_f} PT={pt}"
+            )
+        after = count_linear_product_type(self._read_quote_items(quote_id))
+        if linear_rows and after <= 0:
+            notes.append(
+                "WARNING: AddItem_Linear produced 0 Linear ProductType 10/30/40 "
+                "lines — not aborting weld/nest"
             )
         return notes
 
@@ -2214,30 +2319,48 @@ class SecturaFabPushService:
                     attempted_pack_stamp = True
                 elif cad_pdfs or linear_bom:
                     if cad_pdfs:
-                        notes.extend(
-                            self.finish_pdf_files(
-                                quote_id=quote_id,
-                                pdf_files=cad_pdfs,
-                                material=material,
-                                thickness=thickness,
-                                qty=qty,
-                                description=quote_description or title,
-                                bom_rows=bom_rows,
-                                library=library,
-                                extra_pdfs=extra_pdfs,
+                        try:
+                            notes.extend(
+                                self.finish_pdf_files(
+                                    quote_id=quote_id,
+                                    pdf_files=cad_pdfs,
+                                    material=material,
+                                    thickness=thickness,
+                                    qty=qty,
+                                    description=quote_description or title,
+                                    bom_rows=bom_rows,
+                                    library=library,
+                                    extra_pdfs=extra_pdfs,
+                                )
                             )
-                        )
-                        uploaded.extend(p.name for p in cad_pdfs)
+                            uploaded.extend(p.name for p in cad_pdfs)
+                        except (
+                            SecturaFabApiError,
+                            SecturaFabWebsiteAuthError,
+                            ValueError,
+                            TypeError,
+                            OSError,
+                        ) as exc:
+                            notes.append(
+                                f"WARNING: Image Files Finish failed ({exc}) — "
+                                "continuing Linear / weld / nest"
+                            )
                     if linear_bom:
-                        notes.extend(
-                            self.finish_linear_bom_rows(
-                                quote_id=quote_id,
-                                linear_rows=linear_bom,
-                                material=material,
-                                library=library,
-                                extra_pdfs=extra_pdfs,
+                        try:
+                            notes.extend(
+                                self.finish_linear_bom_rows(
+                                    quote_id=quote_id,
+                                    linear_rows=linear_bom,
+                                    material=material,
+                                    library=library,
+                                    extra_pdfs=extra_pdfs,
+                                )
                             )
-                        )
+                        except Exception as exc:
+                            notes.append(
+                                f"WARNING: Long AddItem_Linear failed ({exc}) — "
+                                "not aborting weld/nest"
+                            )
                     attempted_pack_stamp = True
                 elif drawings or has_job_pdf:
                     pdfs = list(drawings) if drawings else []
@@ -2280,36 +2403,41 @@ class SecturaFabPushService:
                         attempts=createfile_attempts,
                     )
                 if attempted_pack_stamp:
-                    peek = self.client.get_json(f"v1/quote/{quote_id}")
-                    created = len(list(peek.get("ItemList") or [])) > items_before_finish
+                    peek = self._read_quote_items(quote_id)
+                    created = len(quote_item_rows(peek)) > items_before_finish
                     gold = finish_produced_gold(
                         peek if isinstance(peek, dict) else {},
                         expect_cad=expect_cad,
                         expect_linear=expect_linear,
                     )
                     if not created or not gold:
-                        msg = (
-                            "Finish did not stamp gold OperationCostList "
-                            "CalculatorNames (ItemList must grow AND Cad PR + "
-                            "Laser/Drafting/Laser-Setup/Sheet Loading/Deburr, "
-                            "Linear Saw + Saw Setup). "
+                        notes.append(
+                            "WARNING: Finish did not stamp gold OperationCostList "
+                            "CalculatorNames yet (Cad PR + laser pack / Linear "
+                            "Saw+Saw-Setup). "
+                            + (
+                                "Continuing weld/nest/kids. "
+                                if not cad
+                                else ""
+                            )
                             + self._finish_session_error()
                         )
-                        notes.append(msg)
-                        return PushResult(
-                            ok=False,
-                            error=msg,
-                            notes=notes,
-                            quote_id=quote_id,
-                            quote_number=quote_number,
-                            quote_request_id=quote_request_id,
-                            created_new_quote=True,
-                            uploaded_files=uploaded,
-                            item_count=self._peek_item_count(quote_id),
-                            status="failed",
-                            last_error=msg,
-                            attempts=createfile_attempts,
-                        )
+                        if cad:
+                            msg = notes[-1]
+                            return PushResult(
+                                ok=False,
+                                error=msg,
+                                notes=notes,
+                                quote_id=quote_id,
+                                quote_number=quote_number,
+                                quote_request_id=quote_request_id,
+                                created_new_quote=True,
+                                uploaded_files=uploaded,
+                                item_count=self._peek_item_count(quote_id),
+                                status="failed",
+                                last_error=msg,
+                                attempts=createfile_attempts,
+                            )
                     if website_cookie and not cad and bom_rows:
                         notes.extend(
                             self.finish_website_weldment(
@@ -2332,7 +2460,7 @@ class SecturaFabPushService:
             ) as exc:
                 msg = self._finish_session_error(exc)
                 notes.append(msg)
-                if cad or website_cookie:
+                if cad:
                     return PushResult(
                         ok=False,
                         error=msg,
@@ -2347,6 +2475,31 @@ class SecturaFabPushService:
                         last_error=msg,
                         attempts=createfile_attempts,
                     )
+                notes.append(
+                    "WARNING: Image Files / Long raised — not aborting weld/nest"
+                )
+                if website_cookie and not cad and bom_rows:
+                    try:
+                        notes.extend(
+                            self.finish_website_weldment(
+                                quote_id=quote_id,
+                                part_key=part_key,
+                                bom_rows=bom_rows,
+                                library=library,
+                                extra_pdfs=list(extra_pdfs or []),
+                                material=material,
+                                assembly_description=assembly_description,
+                                takeoff=takeoff,
+                            )
+                        )
+                    except (
+                        SecturaFabApiError,
+                        SecturaFabWebsiteAuthError,
+                        ValueError,
+                        TypeError,
+                        OSError,
+                    ) as weldment_exc:
+                        notes.append(f"WARNING: website weldment continue failed: {weldment_exc}")
 
             notes.extend(ensure_imperial_item_units(self.client, quote_id))
             notes.extend(

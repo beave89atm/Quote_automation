@@ -67,6 +67,7 @@ WEBSITE_FINISH_PATHS = {
     "add_operation": "/Quote/AddOperation",
     "copy_move_to_assembly": "/Quote/CopyMoveItemToAssembly",
     "add_feature": "/Quote/AddFeature",
+    "quote_item_read": "/Quote/QuoteItem_Read",
     "nest_quote_edit": "/Quote/NestQuote_Edit",
     "nest_quote_renest": "/Quote/NestQuoteMultiPart_Renest",
 }
@@ -266,8 +267,10 @@ def build_dxf_finish_payload(
     }
 
 
-# GetPDFData() row keys from QuoteOrderEdit OnAddPDFClick. Do not add others.
+# GetPDFData() row keys from QuoteOrderEdit OnAddPDFClick, plus Status
+# (grid filter Status>0) so New Line Item actually commits.
 PDF_GETDATA_FIELDS = (
+    "Status",
     "ItemType",
     "ItemID",
     "FileID",
@@ -413,17 +416,89 @@ def filter_pdf_filelist(rows: list[dict[str, Any]] | None) -> list[dict[str, Any
     return out
 
 
+def prepare_pdf_newline_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Commit Image Files New Line Item fields (not CadImport list-only).
+
+    CadImport Stock_X/Y is the drawing flat. Never use a PDF page outline.
+    Machine is Laser Bay 1. ProductType 100. Status>0 so GetPDFData keeps the row.
+    """
+    out = dict(row)
+    try:
+        status = float(out.get("Status") or 0)
+    except (TypeError, ValueError):
+        status = 0.0
+    if status <= 0:
+        out["Status"] = 1
+    machine = str(out.get("Machine") or "").strip()
+    if not machine or machine.casefold() == "laser":
+        out["Machine"] = "Laser - Bay1"
+    out["ProductType"] = out.get("ProductType") or 100
+    try:
+        if int(out["ProductType"]) != 100 and not out.get("IsLinear"):
+            out["ProductType"] = 100
+    except (TypeError, ValueError):
+        out["ProductType"] = 100
+    out["Location"] = out.get("Location") or "Bay1"
+    out["ProcessLocation"] = out.get("ProcessLocation") or out.get("Location") or "Bay1"
+    if not out.get("PartName") and out.get("Name"):
+        out["PartName"] = out["Name"]
+    if not out.get("Description") and (out.get("Name") or out.get("PartName")):
+        out["Description"] = out.get("Name") or out.get("PartName")
+    length = out.get("Length") or out.get("Stock_Y") or out.get("Stock_Length")
+    width = out.get("Width") or out.get("Stock_X")
+    if length not in (None, ""):
+        out["Length"] = length
+        out["Length_Units"] = out.get("Length_Units") or "inch"
+    if width not in (None, ""):
+        out["Width"] = width
+        out["Width_Units"] = out.get("Width_Units") or "inch"
+    if _qty_of(out) <= 0:
+        out["Qty"] = 1
+    return out
+
+
 def slim_pdf_grid_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Exactly the GetPDFData() field bag. No CadImport extras."""
-    src = dict(row)
-    if not src.get("PartName") and src.get("Name"):
-        src["PartName"] = src["Name"]
-    if not src.get("Description") and src.get("Name"):
-        src["Description"] = src["Name"]
+    """GetPDFData() field bag after New Line Item fields are filled."""
+    src = prepare_pdf_newline_fields(row)
     slim: dict[str, Any] = {}
     for key in PDF_GETDATA_FIELDS:
         slim[key] = src[key] if key in src and src[key] is not None else ""
     return slim
+
+
+def quote_item_rows(payload: Any) -> list[dict[str, Any]]:
+    """Rows from v1/quote ItemList or QuoteItem_Read Data."""
+    if isinstance(payload, list):
+        return [r for r in payload if isinstance(r, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("ItemList", "Data", "Results"):
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            return [r for r in rows if isinstance(r, dict)]
+    return []
+
+
+def count_cad_product_type(payload: Any) -> int:
+    n = 0
+    for it in quote_item_rows(payload):
+        try:
+            if int(it.get("ProductType")) == 100:
+                n += 1
+        except (TypeError, ValueError):
+            continue
+    return n
+
+
+def count_linear_product_type(payload: Any) -> int:
+    n = 0
+    for it in quote_item_rows(payload):
+        try:
+            if int(it.get("ProductType")) in VALID_LINEAR_PRODUCT_TYPES:
+                n += 1
+        except (TypeError, ValueError):
+            continue
+    return n
 
 
 def jquery_ajax_form(value: Any, prefix: str = "") -> list[tuple[str, str]]:
@@ -454,7 +529,14 @@ def build_pdf_finish_payload(
 ) -> dict[str, Any]:
     """POST /Quote/AddItem_PDFFiles — { ID, ItemID, FileList: GetPDFData() }."""
     del customer_material  # row field only; not a top-level OnAddPDFClick key
-    rows = [slim_pdf_grid_row(r) for r in filter_pdf_filelist(file_list)]
+    # CadImport List rows often have Status=0 (list-only). Fill New Line Item
+    # first so GetPDFData's Status>0 filter keeps them and LxW/machine commit.
+    prepared = [
+        prepare_pdf_newline_fields(r)
+        for r in (file_list or [])
+        if isinstance(r, dict)
+    ]
+    rows = [slim_pdf_grid_row(r) for r in filter_pdf_filelist(prepared)]
     return {
         "ID": quote_id,
         "ItemID": item_id or EMPTY_GUID,
@@ -481,6 +563,7 @@ def build_linear_add_payload(
     payload["ItemID"] = item_id or EMPTY_GUID
     payload["productID"] = product_id
     payload["productType"] = linear_website_product_type(name)
+    payload["productConfigID"] = EMPTY_GUID
     payload["qty"] = max(1, int(qty))
     payload["machine"] = machine
     payload["customerMaterial"] = bool(customer_material)
@@ -495,6 +578,8 @@ def build_linear_add_payload(
         for key, val in extra.items():
             if key in payload:
                 payload[key] = val
+    if not str(payload.get("productConfigID") or "").strip():
+        payload["productConfigID"] = EMPTY_GUID
     return payload
 
 
@@ -682,7 +767,10 @@ def overlay_classified_row(
         out["IsLinear"] = False
         out["IsPlate"] = True
         out["IsPart"] = True
-        out["Machine"] = machine or out.get("Machine") or "Laser"
+        out["ProductType"] = 100
+        out["Machine"] = machine or out.get("Machine") or "Laser - Bay1"
+        if str(out["Machine"]).casefold() == "laser":
+            out["Machine"] = "Laser - Bay1"
     out["ErrorStatus"] = _error_status(out)
     return out
 

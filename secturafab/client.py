@@ -605,6 +605,17 @@ class SecturaFabClient:
             )
         return self._parse_website_or_raise(response, require_session=True)
 
+    def quote_item_read(self, quote_id: str) -> Any:
+        """GET /Quote/QuoteItem_Read?ParentID=&LoadAssemblies=True."""
+        response = self.website_request(
+            "GET",
+            WEBSITE_FINISH_PATHS["quote_item_read"],
+            params={"ParentID": quote_id, "LoadAssemblies": "True"},
+            prefer_api_origin=False,
+            require_session=False,
+        )
+        return self._parse_website_or_raise(response, require_session=False)
+
     def add_operation(
         self,
         *,

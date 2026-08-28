@@ -20,6 +20,7 @@ from secturafab.forbidden_quotes import (
     refuse_forbidden_quote_write,
 )
 from secturafab.org_ops import TIME_WACO_ORG_ID, TIME_WACO_ORG_NAME
+from secturafab.client import SecturaFabApiError
 from secturafab.push import (
     SecturaFabPushService,
     classify_sectura_item,
@@ -425,6 +426,202 @@ def test_ensure_weld_ops_uses_add_operation_when_cookie():
     assert kwargs["weld_inches"] == pytest.approx(308.66)
     assert any("AddOperation" in n and "op_weld" in n for n in notes)
     client.request.assert_not_called()
+
+
+def test_cadimport_rows_are_not_success_without_product_type_100_read(tmp_path, monkeypatch):
+    """CadImport FileList + AddItem_PDFFiles 200 is not success until item read shows PT 100."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "14501-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_item_dxf_files.return_value = {
+        "status": "OK",
+        "List": [
+            {
+                "Status": 0,
+                "Qty": 1,
+                "FileName": "14501-1.pdf",
+                "Name": "14501-1 PEDESTAL TOP PLATE",
+                "Machine": "Laser",
+                "Stock_X": 11.0,
+                "Stock_Y": 6.25,
+                "Material": "A572",
+                "Thickness": 0.25,
+            }
+        ],
+    }
+    client.add_item_pdf_files.return_value = {"ok": True}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000000010",
+        pdf_files=[pdf],
+        material="A572",
+        thickness="0.25",
+        qty=1,
+        description="14501-1 PEDESTAL TOP PLATE",
+    )
+    assert client.add_item_pdf_files.called
+    posted = client.add_item_pdf_files.call_args_list[0].kwargs["file_list"][0]
+    assert posted["Status"] == 1
+    assert posted["Machine"] == "Laser - Bay1"
+    assert int(posted["ProductType"]) == 100
+    assert posted["Width"] == 11.0
+    assert posted["Length"] == 6.25
+    assert client.quote_item_read.called or client.get_json.called
+    blob = " ".join(notes)
+    assert "0 ProductType 100" in blob
+    assert "CadImport list is not success" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_linear_http_500_does_not_abort_weld_or_nest(tmp_path, monkeypatch):
+    """A Long AddItem_Linear HTTP 500 must not skip weld or nest."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "1001898-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    lib = tmp_path / "Customer Drawings" / "Time" / "Pedestal Weldment - 1001898-1"
+    lib.mkdir(parents=True)
+    write_excel_absolute_target_xlsx(lib / "1001898-1-LOM.xlsx", _1001898_lom_rows())
+    (lib / "14501-1.pdf").write_bytes(b"%PDF")
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {
+        "QuoteNumber": "1004747-1",
+        "ItemCount": 0,
+        "ItemList": [],
+    }
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    service = SecturaFabPushService(client=client)
+    new_id = "11111111-aaaa-bbbb-cccc-000000000011"
+    assert new_id not in FORBIDDEN_LIVE_QUOTE_IDS
+    linear_err = SecturaFabApiError(
+        "API request failed (500) for /Quote/AddItem_Linear",
+        status_code=500,
+        body="error",
+    )
+    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "create_quote", return_value=new_id
+    ), patch.object(
+        service, "allocate_quote_number", return_value="1004747-1"
+    ), patch.object(
+        service, "finish_pdf_files", return_value=["Image Files Finish"]
+    ), patch.object(
+        service, "finish_linear_bom_rows", side_effect=linear_err
+    ) as lin, patch.object(
+        service, "finish_website_weldment", return_value=["Copy/Move kids"]
+    ) as weldment, patch.object(
+        service, "nest_after_finish", return_value=["Nest"]
+    ) as nest, patch.object(
+        service, "quick_add_cad"
+    ) as qadd, patch(
+        "secturafab.push.ensure_weld_ops",
+        return_value=["AddOperation op_weld"],
+    ) as weld, patch(
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
+    ), patch(
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.push.refresh_bom_rows_for_push",
+        return_value=(_bom_rows(), []),
+    ), patch(
+        "secturafab.push.apply_quote_organization",
+        return_value=[f"Set Organization: {TIME_WACO_ORG_NAME}"],
+    ), patch(
+        "secturafab.push.persist_classified_item_fields", return_value=[]
+    ), patch(
+        "secturafab.push.persist_quote_header", return_value=[]
+    ), patch(
+        "secturafab.push.retype_linears_to_pt10_keep_persist", return_value=[]
+    ), patch(
+        "secturafab.push.extract_assembly_description",
+        return_value="OUTER BOOM WELDMENT",
+    ), patch(
+        "secturafab.push.ensure_laser_profile_ops"
+    ) as graft:
+        result = service.push_job(
+            title="1004747-1",
+            pdf_filename="1004747-1.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={
+                "library": {
+                    "part_key": "1004747-1",
+                    "folder": str(lib),
+                    "searched_roots": [str(lib.parent.parent)],
+                    "related_pdfs": ["14501-1.pdf"],
+                },
+                "bom_config": "1",
+            },
+            times={
+                "weld_minutes": 154.33,
+                "total_inches": 308.66,
+                "fitup_with_fixture_minutes": 108.0,
+            },
+            job_id=93,
+        )
+    lin.assert_called()
+    nest.assert_called()
+    weld.assert_called()
+    weldment.assert_called()
+    qadd.assert_not_called()
+    graft.assert_not_called()
+    blob = " ".join(result.notes or []) + " " + (result.error or "")
+    assert "not aborting weld/nest" in blob
+    assert result.quote_id == new_id
+    assert result.quote_id not in FORBIDDEN_LIVE_QUOTE_IDS
+
+
+def test_finish_linear_bom_rows_500_is_warning_not_raise(monkeypatch):
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.add_item_linear.side_effect = SecturaFabApiError(
+        "API request failed (500) for /Quote/AddItem_Linear",
+        status_code=500,
+        body="error",
+    )
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    svc = SecturaFabPushService(client=client)
+    with patch.object(
+        svc,
+        "_match_linear_sku",
+        return_value=("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "HOSE", None),
+    ):
+        notes = svc.finish_linear_bom_rows(
+            quote_id="11111111-aaaa-bbbb-cccc-000000000012",
+            linear_rows=[
+                {
+                    "part_no": "21689-1",
+                    "description": "HOSE GUARD",
+                    "qty": 1,
+                    "cut_length_in": 12.5,
+                }
+            ],
+            material="A36",
+            library={},
+            extra_pdfs=[],
+        )
+    blob = " ".join(notes)
+    assert "500" in blob or "continuing" in blob
+    assert "not aborting weld/nest" in blob
+
+
+def test_forbidden_includes_empty_1004747_draft():
+    assert "5e111cd2-73d1-44e1-9602-f2a4a3de2fb4" in FORBIDDEN_LIVE_QUOTE_IDS
+    with pytest.raises(ForbiddenQuoteError, match="forbidden"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "5e111cd2-73d1-44e1-9602-f2a4a3de2fb4"},
+        )
 
 
 def test_no_symbols_skips_weld():

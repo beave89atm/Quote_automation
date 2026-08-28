@@ -136,6 +136,37 @@ def test_pdf_and_linear_payloads_share_id_itemid():
     assert list(linear.keys()) == list(LINEAR_ADD_FIELDS)
 
 
+def test_pdf_finish_payload_commits_cadimport_newline_fields():
+    """CadImport list-only rows (Status=0, Stock_X/Y, Machine Laser) must commit."""
+    from secturafab.website import prepare_pdf_newline_fields
+
+    raw = {
+        "Status": 0,
+        "Qty": 1,
+        "Machine": "Laser",
+        "FileName": "14501-1.pdf",
+        "Name": "14501-1 PEDESTAL TOP PLATE",
+        "Stock_X": 11.0,
+        "Stock_Y": 6.25,
+        "Material": "A572",
+        "Thickness": 0.25,
+    }
+    prepared = prepare_pdf_newline_fields(raw)
+    assert prepared["Status"] == 1
+    assert prepared["Machine"] == "Laser - Bay1"
+    assert int(prepared["ProductType"]) == 100
+    assert prepared["Width"] == 11.0
+    assert prepared["Length"] == 6.25
+    payload = build_pdf_finish_payload("qid", [raw])
+    assert len(payload["FileList"]) == 1
+    row = payload["FileList"][0]
+    assert row["Status"] == 1
+    assert row["Machine"] == "Laser - Bay1"
+    assert int(row["ProductType"]) == 100
+    assert row["Width"] == 11.0
+    assert row["Length"] == 6.25
+
+
 def test_getpdfdata_keeps_status_gt_zero_only():
     kept = filter_pdf_filelist(
         [
@@ -387,7 +418,9 @@ def test_add_item_pdf_files_posts_quote_mvc():
     form = dict(captured["data"])
     assert form["ID"] == "qid"
     assert form["ItemID"] == EMPTY_GUID
-    assert form["FileList[0][Machine]"] == "Laser"
+    assert form["FileList[0][Machine]"] == "Laser - Bay1"
+    assert form["FileList[0][ProductType]"] == "100"
+    assert form["FileList[0][Status]"] == "1"
     assert form["FileList[0][FileName]"] == "14500-1.pdf"
     assert form["FileList[0][PartName]"] == "14500-1 PEDESTAL TOP PLATE"
     assert "customerMaterial" not in form
@@ -448,6 +481,7 @@ def test_add_item_linear_posts_quote_mvc():
     assert body["productType"] == "30"
     assert body["machine"] == "Saw"
     assert body["name"] == "1001880-2 TUBE"
+    assert body["productConfigID"] == EMPTY_GUID
     assert "SKU" not in body
     assert "ProductID" not in body
 
