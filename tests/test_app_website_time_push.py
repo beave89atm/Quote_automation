@@ -27,6 +27,8 @@ from secturafab.push import (
     _shop_material,
 )
 from secturafab.qa_harness import evaluate_quote_get
+from secturafab.item_desc import resolve_cad_plate_flats
+from secturafab.locked_1001898 import locked_cad_spec
 from secturafab.website import (
     EMPTY_GUID,
     WELD_CALC_PARAM_TYPE,
@@ -675,12 +677,77 @@ def test_linear_without_catalog_config_does_not_post(monkeypatch):
     assert any("productConfigID" in n for n in notes)
 
 
+def test_additem_pdf_uses_takeoff_flats_when_lock_missing(tmp_path, monkeypatch):
+    """AddItem_PDFFiles must not skip solely because locked_cad_spec has no PN."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pn = "1004738-1"
+    assert locked_cad_spec(pn) is None
+    w, length = resolve_cad_plate_flats(
+        pn,
+        bom_row={
+            "part_no": pn,
+            "description": "TOP STIFFENER, OUTER BOOM",
+            "width_in": 18.5,
+            "length_in": 6.25,
+        },
+        takeoff={"items": [{"part_no": pn, "blank": [18.5, 6.25]}]},
+        locked=locked_cad_spec(pn),
+    )
+    assert w == 18.5
+    assert length == 6.25
+    pdf = tmp_path / f"{pn}.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_item_pdf_attachment.return_value = {
+        "FileID": "att-1",
+        "ImageID": "img-1",
+        "FileName": f"{pn}.pdf",
+    }
+    client.add_item_pdf_files.return_value = {"ok": True}
+    client.quote_item_read.return_value = {
+        "Data": [{"ProductType": 100, "Description": pn}],
+        "Total": 1,
+    }
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000000020",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="TOP STIFFENER, OUTER BOOM",
+        bom_rows=[
+            {
+                "part_no": pn,
+                "qty": 1,
+                "description": "TOP STIFFENER, OUTER BOOM",
+                "width_in": 18.5,
+                "length_in": 6.25,
+            }
+        ],
+        takeoff={"items": [{"part_no": pn, "blank": [18.5, 6.25]}]},
+    )
+    client.add_item_pdf_files.assert_called()
+    posted = client.add_item_pdf_files.call_args.kwargs["file_list"][0]
+    assert float(posted["Width"]) == 18.5
+    assert float(posted["Length"]) == 6.25
+    assert float(posted["Thickness"]) > 0
+    assert posted["ItemType"] == "cad"
+    assert "persisted" in " ".join(notes).lower()
+
+
 def test_forbidden_includes_empty_1004747_draft():
     assert "5e111cd2-73d1-44e1-9602-f2a4a3de2fb4" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "936b5c6c-2fc5-4b28-a8f6-015db289cb4f" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "9354f680-ef91-47d9-af42-8dd65b75473f" in FORBIDDEN_LIVE_QUOTE_IDS
+    from secturafab.forbidden_quotes import is_forbidden_quote_id
+
+    assert is_forbidden_quote_id("280f4dcb-1111-2222-3333-444444444444")
     for qid in (
         "5e111cd2-73d1-44e1-9602-f2a4a3de2fb4",
         "936b5c6c-2fc5-4b28-a8f6-015db289cb4f",
+        "9354f680-ef91-47d9-af42-8dd65b75473f",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(

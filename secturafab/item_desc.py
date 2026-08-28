@@ -410,6 +410,134 @@ def title_from_bom_family(bom_rows: list[dict] | None) -> str | None:
     return f"{word} WELDMENT"
 
 
+_LXW_RE = re.compile(
+    r"(?<![\d.])(\d+(?:\.\d+)?)\s*[\"″']?\s*(?:in(?:ch(?:es)?)?)?\s*[xX×]\s*"
+    r"(\d+(?:\.\d+)?)\s*[\"″']?(?:\s*in(?:ch(?:es)?)?)?",
+)
+
+
+def _as_flat(val: Any) -> float | None:
+    try:
+        num = float(val)
+    except (TypeError, ValueError):
+        return None
+    if num <= 0.05:
+        return None
+    return num
+
+
+def parse_plate_flats(text: str | None) -> tuple[float | None, float | None]:
+    """L×W from takeoff / LOM / drawing text. Reject PDF sheet outlines."""
+    best: tuple[float, float] | None = None
+    for match in _LXW_RE.finditer(str(text or "")):
+        try:
+            a = float(match.group(1))
+            b = float(match.group(2))
+        except (TypeError, ValueError):
+            continue
+        if a <= 0.25 or b <= 0.25 or max(a, b) > 240:
+            continue
+        if looks_like_drawing_sheet(a, b):
+            continue
+        if best is None:
+            best = (a, b)
+    if not best:
+        return None, None
+    return best
+
+
+def flats_from_mapping(row: dict[str, Any] | None) -> tuple[float | None, float | None]:
+    """Takeoff / LOM / FileList row dims (not a 1001898-only lock)."""
+    row = row or {}
+    pairs = (
+        ("width_in", "length_in"),
+        ("Width", "Length"),
+        ("width", "length"),
+        ("Stock_X", "Stock_Y"),
+        ("FlatWidth", "FlatLength"),
+    )
+    for wk, lk in pairs:
+        w = _as_flat(row.get(wk))
+        length = _as_flat(row.get(lk))
+        if w and length and not looks_like_drawing_sheet(w, length):
+            return w, length
+    blank = row.get("blank") or row.get("Blank") or []
+    if isinstance(blank, (list, tuple)) and len(blank) >= 2:
+        a = _as_flat(blank[0])
+        b = _as_flat(blank[1])
+        if a and b and not looks_like_drawing_sheet(a, b):
+            return b, a
+    parsed = parse_plate_flats(
+        " ".join(
+            str(row.get(k) or "")
+            for k in ("description", "Description", "joint_notes", "notes", "noun")
+        )
+    )
+    if parsed[0] and parsed[1]:
+        return parsed
+    return item_flat_dims(row)
+
+
+def flats_from_takeoff(
+    takeoff: dict[str, Any] | None,
+    part_no: str,
+) -> tuple[float | None, float | None]:
+    pn = normalize_part_token(part_no)
+    if not pn or not isinstance(takeoff, dict):
+        return None, None
+    bags: list[Any] = []
+    for key in ("items", "sizes", "gussets", "plates", "components"):
+        inner = takeoff.get(key)
+        if isinstance(inner, list):
+            bags.extend(inner)
+    for it in bags:
+        if not isinstance(it, dict):
+            continue
+        token = " ".join(
+            str(it.get(k) or "")
+            for k in ("part_no", "part_number", "name", "Name", "Description")
+        )
+        if pn not in token and normalize_part_token(token) != pn:
+            continue
+        got = flats_from_mapping(it)
+        if got[0] and got[1]:
+            return got
+    return None, None
+
+
+def flats_from_drawing(pdf_path: Path | None) -> tuple[float | None, float | None]:
+    if pdf_path is None or not Path(pdf_path).is_file():
+        return None, None
+    try:
+        from quote_core.weight import _read_pdf_text
+
+        return parse_plate_flats(_read_pdf_text(Path(pdf_path)))
+    except Exception:  # noqa: BLE001 — drawing OCR is optional
+        return None, None
+
+
+def resolve_cad_plate_flats(
+    part_no: str,
+    *,
+    bom_row: dict[str, Any] | None = None,
+    takeoff: dict[str, Any] | None = None,
+    pdf_path: Path | None = None,
+    noun: str = "",
+    locked: dict[str, Any] | None = None,
+) -> tuple[float | None, float | None]:
+    """L×W for Image Files. Lock table is optional, never the only source."""
+    for source in (
+        flats_from_mapping(bom_row),
+        flats_from_takeoff(takeoff, part_no),
+        flats_from_drawing(pdf_path),
+        parse_plate_flats(noun),
+        flats_from_mapping(locked),
+    ):
+        if source[0] and source[1]:
+            return source
+    return None, None
+
+
 def item_flat_dims(item: dict[str, Any] | None) -> tuple[float | None, float | None]:
     item = item or {}
     nums: list[float] = []

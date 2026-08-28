@@ -13,6 +13,14 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "a7d6ca50-efec-409d-bd32-e68012e710c3",  # Q10056 / 21678-1
         "5e111cd2-73d1-44e1-9602-f2a4a3de2fb4",  # empty 1004747-1 draft
         "936b5c6c-2fc5-4b28-a8f6-015db289cb4f",  # empty 1004747-1 draft (2nd drop)
+        "9354f680-ef91-47d9-af42-8dd65b75473f",  # empty 1004747-1 draft (3rd drop)
+    }
+)
+
+# Partial ids from live notes when the full GUID was not restated.
+FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
+    {
+        "280f4dcb",
     }
 )
 
@@ -29,9 +37,12 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
 
 
 def is_forbidden_quote_id(quote_id: str | None) -> bool:
-    return str(quote_id or "").strip().casefold() in {
-        x.casefold() for x in FORBIDDEN_LIVE_QUOTE_IDS
-    }
+    raw = str(quote_id or "").strip().casefold()
+    if not raw:
+        return False
+    if raw in {x.casefold() for x in FORBIDDEN_LIVE_QUOTE_IDS}:
+        return True
+    return any(raw.startswith(p.casefold()) for p in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES)
 
 
 def is_forbidden_quote_number(quote_number: str | None) -> bool:

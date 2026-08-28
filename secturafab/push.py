@@ -1514,11 +1514,16 @@ class SecturaFabPushService:
         bom_rows: list[dict[str, Any]] | None = None,
         library: dict[str, Any] | None = None,
         extra_pdfs: list[Path] | None = None,
+        takeoff: dict[str, Any] | None = None,
     ) -> list[str]:
         """Image Files Finish: Attachment upload + per-part AddItem_PDFFiles."""
         if not self._website_cookie_present():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
-        from .item_desc import format_cad_description, match_bom_part_no
+        from .item_desc import (
+            format_cad_description,
+            match_bom_part_no,
+            resolve_cad_plate_flats,
+        )
         from .locked_1001898 import locked_cad_spec
         from quote_core.part_materials import (
             build_part_material_map,
@@ -1563,10 +1568,12 @@ class SecturaFabPushService:
             stem = path.stem
             pn = match_bom_part_no(stem, bom_rows) or stem
             noun = ""
+            matched_row: dict[str, Any] | None = None
             row_qty = max(1, int(qty or 1))
             for brow in bom_rows or []:
                 bpn = str(brow.get("part_no") or brow.get("part_number") or "").strip()
                 if bpn == pn:
+                    matched_row = brow
                     noun = str(brow.get("description") or "")
                     try:
                         row_qty = max(1, int(brow.get("qty") or brow.get("quantity") or qty or 1))
@@ -1591,8 +1598,14 @@ class SecturaFabPushService:
                 plate_thk = pm.thickness_in
             if plate_thk is None:
                 plate_thk = thickness
-            plate_w = locked.get("width_in")
-            plate_l = locked.get("length_in")
+            plate_w, plate_l = resolve_cad_plate_flats(
+                pn,
+                bom_row=matched_row,
+                takeoff=takeoff,
+                pdf_path=path,
+                noun=noun,
+                locked=locked,
+            )
             part_name = format_cad_description(
                 pn,
                 thickness=plate_thk,
@@ -2430,6 +2443,7 @@ class SecturaFabPushService:
                                     bom_rows=bom_rows,
                                     library=library,
                                     extra_pdfs=extra_pdfs,
+                                    takeoff=takeoff,
                                 )
                             )
                             uploaded.extend(p.name for p in cad_pdfs)
@@ -2477,6 +2491,7 @@ class SecturaFabPushService:
                                 bom_rows=bom_rows,
                                 library=library,
                                 extra_pdfs=extra_pdfs,
+                                takeoff=takeoff,
                             )
                         )
                         uploaded.extend(p.name for p in pdfs)

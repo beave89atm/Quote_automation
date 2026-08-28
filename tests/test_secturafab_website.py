@@ -243,6 +243,20 @@ def test_linear_payload_rejects_empty_config_guid():
         )
 
 
+def test_pick_linear_config_id_reads_value_guid():
+    from secturafab.website import pick_linear_config_id
+
+    cfg20 = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    rows = [
+        {"ID": EMPTY_GUID, "Text": "24 ft", "Value": "dddddddd-dddd-4ddd-8ddd-dddddddddddd"},
+        {"ID": None, "Text": "20 ft", "Value": cfg20},
+    ]
+    assert pick_linear_config_id(rows) == cfg20
+    value_only = [{"Value": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "Text": "21 ft"}]
+    assert pick_linear_config_id(value_only) == "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    assert pick_linear_config_id([{"ID": EMPTY_GUID, "Name": "20 ft"}]) is None
+
+
 def test_linear_bind_uses_20ft_config_and_catalog_dims():
     from secturafab.website import linear_bind_fields, pick_linear_config_id
 

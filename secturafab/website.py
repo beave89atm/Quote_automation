@@ -629,18 +629,57 @@ def linear_lookup_rows(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def pick_linear_config_id(rows: list[dict[str, Any]] | None) -> str | None:
+def _linear_config_guid(row: dict[str, Any]) -> str | None:
+    """Config GUID from a Read_DataLinearlookup row (Value, not only ID)."""
+    product_id = str(row.get("ProductID") or row.get("productID") or "")
+    for key in (
+        "Value",
+        "ProductConfigID",
+        "ConfigID",
+        "ConfigValue",
+        "Key",
+        "ID",
+    ):
+        val = row.get(key)
+        if not is_tenant_guid(val):
+            continue
+        if product_id and str(val) == product_id:
+            continue
+        return str(val)
+    for key, val in row.items():
+        if key in {"ProductID", "productID", "ID"}:
+            continue
+        if is_tenant_guid(val) and str(val) != product_id:
+            return str(val)
+    return None
+
+
+def pick_linear_config_id(
+    rows: list[dict[str, Any]] | None,
+    *,
+    product_id: str | None = None,
+) -> str | None:
     """Prefer the 20ft/21ft stock config GUID. Empty GUID is never a bind."""
+    wanted = str(product_id or "").strip()
+    pool = [r for r in (rows or []) if isinstance(r, dict)]
+    if wanted:
+        matched = [
+            r
+            for r in pool
+            if str(r.get("ProductID") or r.get("productID") or "") == wanted
+        ]
+        if matched:
+            pool = matched
     ranked: list[tuple[float, str]] = []
-    for row in rows or []:
+    for row in pool:
         if not isinstance(row, dict):
             continue
-        cid = row.get("ID") or row.get("ProductConfigID") or row.get("ConfigID")
-        if not is_tenant_guid(cid):
+        cid = _linear_config_guid(row)
+        if not cid:
             continue
         label = " ".join(
             str(row.get(k) or "")
-            for k in ("Name", "Description", "Length", "StockLength")
+            for k in ("Name", "Text", "Display", "Description", "Length", "StockLength")
         )
         feet = None
         match = _FT_RE.search(label)
@@ -674,7 +713,7 @@ def linear_bind_fields(
     nested = list(configs or [])
     if not nested:
         nested = linear_lookup_rows(product)
-    cfg = pick_linear_config_id(nested)
+    cfg = pick_linear_config_id(nested, product_id=str(pid) if pid else None)
     if not cfg:
         return None
     sku = str(
