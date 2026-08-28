@@ -2094,8 +2094,10 @@ def test_abe_helper_has_no_cocreate():
     assert "_chrome_pids_prioritized" in memscan
     assert "starved tried=145" in memscan
     assert "tried=1080" in memscan
+    assert "tried=392" in memscan
     assert "_ABE_HEAP_STRIDE" in memscan
     assert bs._ABE_HEAP_STRIDE == 8
+    assert bs._ABE_MEMSCAN_TIMEOUT_S >= 12.0
     assert "_RemoteUnprotect" not in memscan
     assert "apc:key:off=" not in memscan
     assert "heap:hit" in memscan
@@ -2115,6 +2117,7 @@ def test_abe_helper_has_no_cocreate():
     assert "apc:force=miss" in elev
     assert "apc:force=miss:open" in elev
     assert 'return None, "apc:force=miss"' not in elev
+    assert 'return None, "apc:force=miss:open"' not in elev
     assert "memmove" in elev
     assert "SleepEx" in elev
     assert "handshake" in elev
@@ -2133,7 +2136,7 @@ def test_abe_helper_has_no_cocreate():
     assert "CryptUnprotectMemory" not in elev
     assert "CryptUnprotectData" not in elev
     assert bs._ABE_ELEVATOR_TIMEOUT_S <= 3.0
-    assert bs._ABE_BROWSER_KEYS_TIMEOUT_S <= 12.0
+    assert bs._ABE_BROWSER_KEYS_TIMEOUT_S <= 15.0
     assert "_chrome_elevator_via_exports" in inspect.getsource(bs)
     assert "_v20_prove_samples" in inspect.getsource(bs)
     assert "BCrypt first" in inspect.getsource(bs._aes_gcm_decrypt_bytes)
@@ -2189,7 +2192,9 @@ def test_abe_helper_has_no_cocreate():
     assert "_ABE_ELEVATOR_TIMEOUT_S" in elevator
     assert "apc:force=miss" in elevator
     assert "apc:force=miss:open" in elevator
+    assert "apc:force=miss:open=timeout" in elevator
     assert '(None, "apc:force=miss")' not in elevator
+    assert '(None, "apc:force=miss:open")' not in elevator
     keys_src = inspect.getsource(bs._browser_keys)
     assert "_call_with_timeout" in keys_src
     assert "_ABE_BROWSER_KEYS_TIMEOUT_S" in keys_src
@@ -2729,6 +2734,7 @@ def test_chrome_elevator_reports_apc_q_err_not_crt():
     assert "apc:force=miss" in elev
     assert "apc:force=miss:open" in elev
     assert 'return None, "apc:force=miss"' not in elev
+    assert 'return None, "apc:force=miss:open"' not in elev
     assert "memmove" in elev
     assert "SleepEx" in elev
     assert "for flag in (1, 0)" in elev
@@ -2739,6 +2745,9 @@ def test_chrome_elevator_reports_apc_q_err_not_crt():
     assert bs._elev_hr_token(0x80040154) == "apc:hr=0x80040154"
     assert bs._apc_force_miss_open(0xC0000001) == "apc:force=miss:open=0xc0000001"
     assert bs._apc_force_miss_open("queued") == "apc:force=miss:open=queued"
+    assert bs._apc_force_miss_open("apc:force=miss:open") == "apc:force=miss:open=queued"
+    assert bs._apc_force_miss_open("timeout") == "apc:force=miss:open=timeout"
+    assert bs._apc_force_miss_open("") == "apc:force=miss:open=queued"
 
 
 def test_v20_one_ok_is_gcm_success_not_printable_or_longest():
