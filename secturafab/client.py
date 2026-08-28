@@ -16,6 +16,7 @@ from .website import (
     build_pdf_finish_payload,
     is_cloudflare_challenge,
     is_website_login_redirect,
+    jquery_ajax_form,
 )
 
 
@@ -523,21 +524,14 @@ class SecturaFabClient:
             item_id=item_id,
             customer_material=customer_material,
         )
-        import json as _json
-
-        form = None if not files else {
-            "ID": payload["ID"],
-            "ItemID": payload["ItemID"],
-            "customerMaterial": str(payload["customerMaterial"]).lower(),
-            "FileList": _json.dumps(payload["FileList"]),
-        }
+        del files  # OnAddPDFClick is urlencoded {ID, ItemID, FileList}, not multipart
         response = self.website_request(
             "POST",
             WEBSITE_FINISH_PATHS["add_item_pdf_files"],
-            json=None if files else payload,
-            data=form,
-            files=files,
-            prefer_api_origin=True,
+            json=None,
+            data=jquery_ajax_form(payload),
+            files=None,
+            prefer_api_origin=False,
             require_session=True,
             timeout=max(self.config.timeout_seconds, 180.0),
         )
@@ -584,8 +578,10 @@ class SecturaFabClient:
         response = self.website_request(
             "POST",
             WEBSITE_FINISH_PATHS["add_item_linear"],
-            json=payload,
-            prefer_api_origin=True,
+            json=None,
+            data=jquery_ajax_form(payload),
+            files=None,
+            prefer_api_origin=False,
             require_session=True,
         )
         location = response.headers.get("Location") or ""

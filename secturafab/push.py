@@ -1345,9 +1345,11 @@ class SecturaFabPushService:
                 for path in pdf_files:
                     file_list.append(
                         {
-                            "ErrorStatus": 0,
+                            "Status": 1,
                             "Qty": max(1, int(qty or 1)),
                             "Name": description or path.stem,
+                            "PartName": description or path.stem,
+                            "Description": description or path.stem,
                             "FileName": path.name,
                             "Machine": "Laser",
                             "Material": material,
@@ -1361,9 +1363,8 @@ class SecturaFabPushService:
                     f"(SourceDataID/FileID for Finish calculators)"
                 )
                 for row in file_list:
-                    row["ErrorStatus"] = 0
+                    row["Status"] = row.get("Status") or 1
                     row["Qty"] = max(1, int(row.get("Qty") or qty or 1))
-                    row["Quantity"] = row["Qty"]
                     row["Machine"] = row.get("Machine") or "Laser"
                     if material:
                         row["Material"] = material
@@ -1382,24 +1383,13 @@ class SecturaFabPushService:
                     )
                     file_list = classified
                     notes.extend(class_notes)
-            # Re-open PDFs for the Finish multipart (upload consumed the handles).
-            for fh in open_files:
-                try:
-                    fh.close()
-                except OSError:
-                    pass
-            open_files = []
-            form_files = []
-            for path in pdf_files:
-                fh = path.open("rb")
-                open_files.append(fh)
-                form_files.append(("files", (path.name, fh, _mime_for(path))))
+            for row in file_list:
+                row["Status"] = row.get("Status") or 1
             self.client.add_item_pdf_files(
                 quote_id=quote_id,
                 file_list=file_list,
                 item_id=EMPTY_GUID,
                 customer_material=False,
-                files=form_files,
             )
         finally:
             for fh in open_files:
@@ -1545,7 +1535,7 @@ class SecturaFabPushService:
                 material=material,
                 machine="Saw",
                 name=name,
-                extra={"ProductType": 10, "productType": 10, "SKU": sku or ""},
+                extra={"productType": 10},
             )
             notes.append(
                 f"Long POST /Quote/AddItem_Linear {pn} SKU={sku or product_id} "

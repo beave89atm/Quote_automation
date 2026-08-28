@@ -19,10 +19,13 @@ from secturafab.website import (
     WEBSITE_FINISH_PATHS,
     SecturaFabWebsiteAuthError,
     build_dxf_finish_payload,
+    LINEAR_ADD_FIELDS,
+    PDF_GETDATA_FIELDS,
     build_linear_add_payload,
     build_pdf_finish_payload,
     filelist_from_cadimport_upload,
     filter_finish_filelist,
+    filter_pdf_filelist,
     overlay_classified_row,
     pick_closest_linear_product,
 )
@@ -109,16 +112,30 @@ def test_filter_filelist_matches_js_grid_rule():
 def test_pdf_and_linear_payloads_share_id_itemid():
     pdf = build_pdf_finish_payload(
         "qid",
-        [{"ErrorStatus": 0, "Qty": 1, "Machine": "Laser", "FileName": "a.pdf"}],
+        [{"Status": 1, "Qty": 1, "Machine": "Laser", "FileName": "a.pdf"}],
     )
     assert pdf["ID"] == "qid"
     assert pdf["ItemID"] == EMPTY_GUID
-    assert pdf["customerMaterial"] is False
+    assert set(pdf.keys()) == {"ID", "ItemID", "FileList"}
+    assert "customerMaterial" not in pdf
+    assert list(pdf["FileList"][0].keys()) == list(PDF_GETDATA_FIELDS)
     linear = build_linear_add_payload("qid", product_id="pid-1", qty=2, length=10.9)
     assert linear["ID"] == "qid"
-    assert linear["ProductID"] == "pid-1"
-    assert linear["Qty"] == 2
-    assert linear["ProductType"] == 10
+    assert linear["productID"] == "pid-1"
+    assert linear["qty"] == 2
+    assert linear["productType"] == 10
+    assert list(linear.keys()) == list(LINEAR_ADD_FIELDS)
+
+
+def test_getpdfdata_keeps_status_gt_zero_only():
+    kept = filter_pdf_filelist(
+        [
+            {"Status": 1, "FileName": "ok.pdf", "Qty": 1},
+            {"Status": 0, "FileName": "zero.pdf", "Qty": 4},
+            {"ErrorStatus": 0, "FileName": "dxf-rule.pdf", "Qty": 1},
+        ]
+    )
+    assert [r["FileName"] for r in kept] == ["ok.pdf"]
 
 
 def test_website_paths_are_quote_mvc_not_quickadd():
@@ -285,6 +302,7 @@ def test_add_item_pdf_files_posts_quote_mvc():
         captured["data"] = kwargs.get("data")
         captured["files"] = kwargs.get("files")
         captured["require_session"] = kwargs.get("require_session")
+        captured["prefer_api_origin"] = kwargs.get("prefer_api_origin")
         resp = MagicMock()
         resp.status_code = 200
         resp.content = b"{}"
@@ -295,13 +313,11 @@ def test_add_item_pdf_files_posts_quote_mvc():
         return resp
 
     real.website_request = fake_website_request  # type: ignore[method-assign]
-    from io import BytesIO
-
     real.add_item_pdf_files(
         quote_id="qid",
         file_list=[
             {
-                "ErrorStatus": 0,
+                "Status": 1,
                 "Qty": 1,
                 "Machine": "Laser",
                 "Material": "A36",
@@ -310,19 +326,24 @@ def test_add_item_pdf_files_posts_quote_mvc():
                 "Name": "14500-1 PEDESTAL TOP PLATE",
             }
         ],
-        files=[("files", ("14500-1.pdf", BytesIO(b"%PDF-1.4"), "application/pdf"))],
     )
     assert captured["path"] == "/Quote/AddItem_PDFFiles"
     assert captured["method"] == "POST"
     assert captured["require_session"] is True
+    assert captured["prefer_api_origin"] is False
     assert captured["json"] is None
-    form = captured["data"]
+    assert captured["files"] is None
+    form = dict(captured["data"])
     assert form["ID"] == "qid"
     assert form["ItemID"] == EMPTY_GUID
-    rows = json.loads(form["FileList"])
-    assert rows[0]["Machine"] == "Laser"
-    assert rows[0]["FileName"] == "14500-1.pdf"
-    assert captured["files"][0][1][0] == "14500-1.pdf"
+    assert form["FileList[0][Machine]"] == "Laser"
+    assert form["FileList[0][FileName]"] == "14500-1.pdf"
+    assert form["FileList[0][PartName]"] == "14500-1 PEDESTAL TOP PLATE"
+    assert "customerMaterial" not in form
+    assert "FileList[0][SourceDataID]" not in form
+    assert "FileList[0][ErrorStatus]" not in form
+    keys = [k for k, _v in captured["data"] if k.startswith("FileList[0][")]
+    assert keys == [f"FileList[0][{name}]" for name in PDF_GETDATA_FIELDS]
 
 
 def test_add_item_linear_posts_quote_mvc():
@@ -337,7 +358,10 @@ def test_add_item_linear_posts_quote_mvc():
         captured["method"] = method
         captured["path"] = path
         captured["json"] = kwargs.get("json")
+        captured["data"] = kwargs.get("data")
+        captured["files"] = kwargs.get("files")
         captured["require_session"] = kwargs.get("require_session")
+        captured["prefer_api_origin"] = kwargs.get("prefer_api_origin")
         resp = MagicMock()
         resp.status_code = 200
         resp.content = b"{}"
@@ -360,15 +384,21 @@ def test_add_item_linear_posts_quote_mvc():
     assert captured["path"] == "/Quote/AddItem_Linear"
     assert captured["method"] == "POST"
     assert captured["require_session"] is True
-    body = captured["json"]
+    assert captured["prefer_api_origin"] is False
+    assert captured["json"] is None
+    assert captured["files"] is None
+    body = dict(captured["data"])
+    assert list(body.keys()) == list(LINEAR_ADD_FIELDS)
     assert body["ID"] == "qid"
     assert body["ItemID"] == EMPTY_GUID
-    assert body["ProductID"] == "pid-tube"
-    assert body["Qty"] == 2
-    assert body["Length"] == 10.9
-    assert body["ProductType"] == 10
-    assert body["Machine"] == "Saw"
-    assert body["Name"] == "1001880-2 TUBE"
+    assert body["productID"] == "pid-tube"
+    assert body["qty"] == "2"
+    assert body["length"] == "10.9"
+    assert body["productType"] == "10"
+    assert body["machine"] == "Saw"
+    assert body["name"] == "1001880-2 TUBE"
+    assert "SKU" not in body
+    assert "ProductID" not in body
 
 
 def test_add_item_pdf_files_fails_closed_without_cookie(monkeypatch):
@@ -389,7 +419,7 @@ def test_add_item_pdf_files_fails_closed_without_cookie(monkeypatch):
     with pytest.raises(SecturaFabWebsiteAuthError, match="SECTURA_WEBSITE_COOKIE|session"):
         real.add_item_pdf_files(
             quote_id="qid",
-            file_list=[{"ErrorStatus": 0, "Qty": 1, "Machine": "Laser"}],
+            file_list=[{"Status": 1, "Qty": 1, "Machine": "Laser"}],
         )
     assert called["n"] == 0
 

@@ -7,8 +7,8 @@ Recovered from QuoteOrderEdit JS (not in public OpenAPI). controllerName = '/Quo
   GET  /CadImport/Data
   POST /CadImport/UpdateData, UpdateDataNext, SetPartMode, SetUnits, ConvertTo
   POST /Quote/AddItem_DXFFiles   data { ID, ItemID, customerMaterial, FileList }
-  POST /Quote/AddItem_PDFFiles   (Image Files Finish)
-  POST /Quote/AddItem_Linear     (Long)
+  POST /Quote/AddItem_PDFFiles   urlencoded { ID, ItemID, FileList: GetPDFData() }
+  POST /Quote/AddItem_Linear     urlencoded OnAddLinearClick field bag
   POST /Quote/NestQuote_Edit
   POST /Quote/NestQuoteMultiPart_Renest
 
@@ -215,6 +215,185 @@ def build_dxf_finish_payload(
     }
 
 
+# GetPDFData() row keys from QuoteOrderEdit OnAddPDFClick. Do not add others.
+PDF_GETDATA_FIELDS = (
+    "ItemType",
+    "ItemID",
+    "FileID",
+    "ImageID",
+    "FileName",
+    "RevisionNumber",
+    "Description",
+    "PageNumber",
+    "PartName",
+    "Machine",
+    "Memo",
+    "Material",
+    "Thickness",
+    "Thickness_Units",
+    "Location",
+    "ProcessLocation",
+    "Qty",
+    "FixedCost",
+    "FixedPrice",
+    "HasFixedPrice",
+    "CustomerMaterial",
+    "Grain",
+    "Outsource",
+    "OutsourceMargin",
+    "MaterialCost",
+    "MaterialCost_Units",
+    "VendorID",
+    "VendorName",
+    "WeightBorder",
+    "WeightBorder_Units",
+    "NumberOfHeads",
+    "Length",
+    "Length_Units",
+    "Width",
+    "Width_Units",
+    "OutsideArea",
+    "OutsideArea_Units",
+    "OutsidePerimeter",
+    "OutsidePerimeter_Units",
+    "OutsidePerimeter_UseLocal",
+    "Weight",
+    "Weight_Units",
+    "Weight_UseLocal",
+    "TrueWeight",
+    "TrueWeight_Units",
+    "InternalData",
+    "ProductID",
+    "ProductType",
+    "ProductSubType",
+    "Dim1",
+    "Dim1_Units",
+    "Dim2",
+    "Dim2_Units",
+    "Dim3",
+    "Dim3_Units",
+    "Dim4",
+    "Dim4_Units",
+    "WeightLength",
+    "WeightLength_Units",
+    "LinearMaterialCost",
+    "LinearMaterialCost_Units",
+    "LinearMachine",
+    "LinearTrimLeft",
+    "LinearLeftMiterAngle",
+    "LinearTrimRight",
+    "LinearRightMiterAngle",
+    "PriceListID",
+    "PriceListItemID",
+    "MarginMarkup",
+)
+
+# OnAddLinearClick body keys. Do not add others.
+LINEAR_ADD_FIELDS = (
+    "ID",
+    "ItemID",
+    "productID",
+    "productType",
+    "productSubType",
+    "productConfigID",
+    "material",
+    "location",
+    "dim1",
+    "dim1_Unit",
+    "dim2",
+    "dim2_Unit",
+    "dim3",
+    "dim3_Unit",
+    "dim4",
+    "dim4_Unit",
+    "weightLength",
+    "weightLength_Units",
+    "materialCost",
+    "materialCost_Units",
+    "memo",
+    "name",
+    "revisionNumber",
+    "machine",
+    "length",
+    "length_unit",
+    "qty",
+    "fixedPrice",
+    "productionReady",
+    "customerMaterial",
+    "outsource",
+    "outsourceCustomerMaterial",
+    "outsourceUnitCost",
+    "outsourceMargin",
+    "vendorID",
+    "FileID",
+    "ImageID",
+    "MiterLeft",
+    "MiterLeftAngle1",
+    "MiterLeftAngle2",
+    "MiterLeftOffset",
+    "MiterRight",
+    "MiterRightAngle1",
+    "MiterRightAngle2",
+    "MiterRightOffset",
+    "Internal",
+    "processLocation",
+)
+
+
+def _pdf_row_status(row: dict[str, Any]) -> float:
+    raw = row.get("Status", row.get("status"))
+    if raw is None:
+        return 0.0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def filter_pdf_filelist(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """GetPDFData(): gridPDF rows with Status>0."""
+    out: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if _pdf_row_status(row) <= 0:
+            continue
+        out.append(dict(row))
+    return out
+
+
+def slim_pdf_grid_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Exactly the GetPDFData() field bag. No CadImport extras."""
+    src = dict(row)
+    if not src.get("PartName") and src.get("Name"):
+        src["PartName"] = src["Name"]
+    if not src.get("Description") and src.get("Name"):
+        src["Description"] = src["Name"]
+    slim: dict[str, Any] = {}
+    for key in PDF_GETDATA_FIELDS:
+        slim[key] = src[key] if key in src and src[key] is not None else ""
+    return slim
+
+
+def jquery_ajax_form(value: Any, prefix: str = "") -> list[tuple[str, str]]:
+    """jQuery $.param (traditional=false) — ajax default urlencoding."""
+    pairs: list[tuple[str, str]] = []
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            name = f"{prefix}[{key}]" if prefix else str(key)
+            pairs.extend(jquery_ajax_form(inner, name))
+        return pairs
+    if isinstance(value, (list, tuple)):
+        for idx, inner in enumerate(value):
+            pairs.extend(jquery_ajax_form(inner, f"{prefix}[{idx}]"))
+        return pairs
+    if value is None:
+        return [(prefix, "")]
+    if isinstance(value, bool):
+        return [(prefix, "true" if value else "false")]
+    return [(prefix, str(value))]
+
+
 def build_pdf_finish_payload(
     quote_id: str,
     file_list: list[dict[str, Any]],
@@ -222,13 +401,14 @@ def build_pdf_finish_payload(
     item_id: str | None = None,
     customer_material: bool = False,
 ) -> dict[str, Any]:
-    """POST /Quote/AddItem_PDFFiles (OnAddPDFClick) — same ID / ItemID / FileList bag."""
-    return build_dxf_finish_payload(
-        quote_id,
-        file_list,
-        item_id=item_id,
-        customer_material=customer_material,
-    )
+    """POST /Quote/AddItem_PDFFiles — { ID, ItemID, FileList: GetPDFData() }."""
+    del customer_material  # row field only; not a top-level OnAddPDFClick key
+    rows = [slim_pdf_grid_row(r) for r in filter_pdf_filelist(file_list)]
+    return {
+        "ID": quote_id,
+        "ItemID": item_id or EMPTY_GUID,
+        "FileList": rows,
+    }
 
 
 def build_linear_add_payload(
@@ -244,32 +424,26 @@ def build_linear_add_payload(
     customer_material: bool = False,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """POST /Quote/AddItem_Linear (Long) — website form bag."""
-    payload: dict[str, Any] = {
-        "ID": quote_id,
-        "ItemID": item_id or EMPTY_GUID,
-        "ProductID": product_id,
-        "productID": product_id,
-        "Qty": max(1, int(qty)),
-        "qty": max(1, int(qty)),
-        "Machine": machine,
-        "machine": machine,
-        "ProductType": 10,
-        "productType": 10,
-        "customerMaterial": bool(customer_material),
-    }
+    """POST /Quote/AddItem_Linear (OnAddLinearClick) — exact form keys."""
+    payload: dict[str, Any] = {key: "" for key in LINEAR_ADD_FIELDS}
+    payload["ID"] = quote_id
+    payload["ItemID"] = item_id or EMPTY_GUID
+    payload["productID"] = product_id
+    payload["productType"] = 10
+    payload["qty"] = max(1, int(qty))
+    payload["machine"] = machine
+    payload["customerMaterial"] = bool(customer_material)
     if length is not None:
-        payload["Length"] = length
         payload["length"] = length
         payload["length_unit"] = "inch"
     if material:
-        payload["Material"] = material
         payload["material"] = material
     if name:
-        payload["Name"] = name
         payload["name"] = name
     if extra:
-        payload.update(extra)
+        for key, val in extra.items():
+            if key in payload:
+                payload[key] = val
     return payload
 
 
