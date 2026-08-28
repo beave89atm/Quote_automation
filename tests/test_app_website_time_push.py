@@ -741,6 +741,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "5e111cd2-73d1-44e1-9602-f2a4a3de2fb4" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "936b5c6c-2fc5-4b28-a8f6-015db289cb4f" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "9354f680-ef91-47d9-af42-8dd65b75473f" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "f61c033a-48f2-4b11-9a10-96bc5c70716c" in FORBIDDEN_LIVE_QUOTE_IDS
     from secturafab.forbidden_quotes import is_forbidden_quote_id
 
     assert is_forbidden_quote_id("280f4dcb-1111-2222-3333-444444444444")
@@ -748,6 +749,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "5e111cd2-73d1-44e1-9602-f2a4a3de2fb4",
         "936b5c6c-2fc5-4b28-a8f6-015db289cb4f",
         "9354f680-ef91-47d9-af42-8dd65b75473f",
+        "f61c033a-48f2-4b11-9a10-96bc5c70716c",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(
@@ -795,3 +797,110 @@ def test_no_symbols_skips_weld():
     notes = ensure_weld_ops(client, "qid", times={"weld_minutes": 0, "total_inches": 0})
     assert any("No weld minutes" in n for n in notes)
     client.add_operation.assert_not_called()
+
+
+def test_website_cad_persist_skips_addplate_and_update_when_get_has_pack():
+    """(a) website Cad must not addplate/update after GET already has PR+pack+UnitCost."""
+    from secturafab.line_item_ops import persist_classified_item_fields
+
+    stamped = {
+        "ItemList": [
+            {
+                "ID": "c1",
+                "Description": "1004738-1 - 1/4 A36 2 in x 9 in",
+                "ProductType": 100,
+                "Category": "Cad",
+                "BadgeString": "PR",
+                "UnitCost": 12.5,
+                "Material": "A36",
+                "Thickness": 0.25,
+                "OperationCostList": [
+                    {"OperationName": "Profile", "CalculatorName": "Laser"},
+                    {"OperationName": "Profile", "CalculatorName": "Drafting"},
+                    {"OperationName": "Profile", "CalculatorName": "Deburr"},
+                    {"OperationName": "Profile", "CalculatorName": "Laser-Setup"},
+                    {"OperationName": "Profile", "CalculatorName": "Sheet Loading"},
+                ],
+            }
+        ]
+    }
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = stamped
+    persist_classified_item_fields(
+        client,
+        "qid",
+        bom_rows=[{"part_no": "1004738-1", "description": "TOP STIFFENER", "qty": 1}],
+        persist_cad=True,
+        persist_linear=False,
+        plate_catalog=[{"ID": "pl", "ProductName": "PL1/4-A36", "Thickness": 0.25, "MaterialGrade": "A36", "Active": True}],
+    )
+    paths = [c.args[1] for c in client.request.call_args_list if len(c.args) > 1]
+    assert not any("addplate" in str(p) for p in paths), paths
+    assert not any("quoteOnline/update" in str(p) for p in paths), paths
+
+
+def test_website_cad_persist_skips_addplate_even_without_pack():
+    """addplate/update after Image Files wipes calculators — never call on website Cad."""
+    from secturafab.line_item_ops import persist_classified_item_fields
+
+    empty_pack = {
+        "ItemList": [
+            {
+                "ID": "c1",
+                "Description": "1004738-1 - 1/4 A36 2 in x 9 in",
+                "ProductType": 100,
+                "Category": "Cad",
+                "BadgeString": "",
+                "UnitCost": 0,
+                "Material": "A36",
+                "Thickness": 0.25,
+                "OperationCostList": [],
+            }
+        ]
+    }
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = empty_pack
+    persist_classified_item_fields(
+        client,
+        "qid",
+        bom_rows=[{"part_no": "1004738-1", "description": "TOP STIFFENER", "qty": 1}],
+        persist_cad=True,
+        persist_linear=False,
+        plate_catalog=[{"ID": "pl", "ProductName": "PL1/4-A36", "Thickness": 0.25, "MaterialGrade": "A36", "Active": True}],
+    )
+    paths = [c.args[1] for c in client.request.call_args_list if len(c.args) > 1]
+    assert not any("addplate" in str(p) for p in paths), paths
+    assert not any("quoteOnline/update" in str(p) for p in paths), paths
+
+
+def test_takeoff_supplies_remaining_1004747_cad_flats():
+    """Takeoff plates must resolve L×W for LOM Cad PNs that lock does not list."""
+    remaining = [
+        ("6993-1", "6993", [6.0, 2.0]),
+        ("1004806-1", "1004806-1", [12.0, 8.0]),
+        ("1004711-1", "1004711-1", [10.0, 4.0]),
+        ("1004741-1", "1004741-1", [14.0, 8.0]),
+        ("1004744-1", "1004744", [18.0, 3.0]),
+    ]
+    takeoff = {
+        "plates": [
+            {"part_no": src, "blank": blank, "width_in": blank[1], "length_in": blank[0]}
+            for _pn, src, blank in remaining
+        ]
+    }
+    for pn, _src, blank in remaining:
+        assert locked_cad_spec(pn) is None
+        w, length = resolve_cad_plate_flats(pn, takeoff=takeoff, locked=None)
+        assert w and length, pn
+        assert {w, length} == {blank[0], blank[1]}
+
+
+def test_parse_plate_flats_reads_inch_and_overall():
+    from secturafab.item_desc import parse_plate_flats
+
+    assert parse_plate_flats('2" X 9"') == (2.0, 9.0)
+    assert parse_plate_flats("OVERALL 18.5 X 6.25") == (18.5, 6.25)
+    assert parse_plate_flats("1/4 X 2 X 9") == (2.0, 9.0)
+    assert parse_plate_flats("2-1/2 X 9") == (2.5, 9.0)

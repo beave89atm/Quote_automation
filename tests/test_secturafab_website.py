@@ -288,6 +288,97 @@ def test_linear_bind_uses_20ft_config_and_catalog_dims():
     assert bind["weightLength"] == 0.38
 
 
+def test_linear_bind_uses_lookup_row_subtype_dims_weightlength():
+    """(b) AddItem_Linear must copy subtype/dims/weightLength from the lookup row."""
+    from secturafab.website import build_linear_add_payload, linear_bind_fields
+
+    cfg20 = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    product = {
+        "ID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "ProductName": "C3X4.1-A36",
+    }
+    lookup = [
+        {
+            "Value": cfg20,
+            "Text": "20 ft",
+            "ProductID": product["ID"],
+            "productSubType": "channel",
+            "dim1": 3,
+            "dim2": 1.41,
+            "dim3": 0.17,
+            "dim4": 0.273,
+            "weightLength": 4.1,
+        }
+    ]
+    bind = linear_bind_fields(product, lookup)
+    assert bind is not None
+    assert bind["productConfigID"] == cfg20
+    assert bind["productSubType"] == "channel"
+    assert bind["dim1"] == 3
+    assert bind["dim2"] == 1.41
+    assert bind["dim3"] == 0.17
+    assert bind["dim4"] == 0.273
+    assert bind["weightLength"] == 4.1
+    extra = {k: v for k, v in bind.items() if k != "sku"}
+    payload = build_linear_add_payload(
+        "qid",
+        product_id=product["ID"],
+        qty=1,
+        length=125,
+        machine="Saw",
+        name="1004740-1 C3X4.1-A36",
+        extra=extra,
+    )
+    assert payload["productSubType"] == "channel"
+    assert payload["dim1"] == 3
+    assert payload["dim2"] == 1.41
+    assert payload["dim3"] == 0.17
+    assert payload["dim4"] == 0.273
+    assert payload["weightLength"] == 4.1
+
+
+def test_filelist_from_upload_keeps_sourcedataid_and_fileid():
+    """(c) AddItem_PDFFiles FileList must keep SourceDataID/FileID from the upload List."""
+    from secturafab.website import (
+        build_pdf_finish_payload,
+        filelist_row_from_attachment_upload,
+        jquery_ajax_form,
+    )
+
+    upload = {
+        "List": [
+            {
+                "SourceDataID": "src-upload-1",
+                "FileID": "file-upload-1",
+                "ImageID": "img-1",
+                "CadType": 0,
+                "FileName": "1004738-1.pdf",
+                "Stock_X": 2.0,
+                "Stock_Y": 9.0,
+            }
+        ]
+    }
+    row = filelist_row_from_attachment_upload(
+        upload,
+        part_name="1004738-1 - 1/4 A36 2 in x 9 in",
+        qty=1,
+        material="A36",
+        thickness=0.25,
+        length=9.0,
+        width=2.0,
+        file_name="1004738-1.pdf",
+    )
+    assert row["SourceDataID"] == "src-upload-1"
+    assert row["FileID"] == "file-upload-1"
+    payload = build_pdf_finish_payload("qid", [row])
+    posted = payload["FileList"][0]
+    assert posted["SourceDataID"] == "src-upload-1"
+    assert posted["FileID"] == "file-upload-1"
+    form = dict(jquery_ajax_form(payload))
+    assert form["FileList[0][SourceDataID]"] == "src-upload-1"
+    assert form["FileList[0][FileID]"] == "file-upload-1"
+
+
 def test_getpdfdata_keeps_status_gt_zero_only():
     kept = filter_pdf_filelist(
         [
@@ -554,7 +645,6 @@ def test_add_item_pdf_files_posts_quote_mvc():
     assert form["FileList[0][FileName]"] == "14500-1.pdf"
     assert form["FileList[0][PartName]"] == "14500-1 PEDESTAL TOP PLATE"
     assert "customerMaterial" not in form
-    assert "FileList[0][SourceDataID]" not in form
     assert "FileList[0][ErrorStatus]" not in form
     keys = [k for k, _v in captured["data"] if k.startswith("FileList[0][")]
     assert keys == [f"FileList[0][{name}]" for name in PDF_GETDATA_FIELDS]

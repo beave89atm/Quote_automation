@@ -1606,6 +1606,9 @@ class SecturaFabPushService:
                 noun=noun,
                 locked=locked,
             )
+            if matched_row is not None and plate_w and plate_l:
+                matched_row["width_in"] = plate_w
+                matched_row["length_in"] = plate_l
             part_name = format_cad_description(
                 pn,
                 thickness=plate_thk,
@@ -1676,6 +1679,25 @@ class SecturaFabPushService:
                 f"Image Files persisted {cad_persisted} Cad ProductType 100 line(s) "
                 f"via /Quote/AddItem_PDFFiles"
             )
+        from .line_item_ops import cad_image_files_stamped
+
+        for it in quote_item_rows(posted):
+            try:
+                if int(it.get("ProductType") or 0) != 100:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            desc = str(it.get("Description") or it.get("Name") or "")
+            if cad_image_files_stamped(it):
+                notes.append(
+                    f"GET Cad {desc} Badge PR + laser pack + UnitCost>0 "
+                    "before addplate/update"
+                )
+            else:
+                notes.append(
+                    f"WARNING: Cad {desc} missing PR/pack/UnitCost after "
+                    "AddItem_PDFFiles — not calling addplate/quoteOnline update"
+                )
         notes.append(
             "Image Files Finish POST /Quote/AddItem_PDFFiles: "
             + ", ".join(p.name for p in pdf_files)
@@ -1988,6 +2010,24 @@ class SecturaFabPushService:
                     f"WARNING: Linear {pn} has no cut length — skipped AddItem_Linear"
                 )
                 continue
+            from .website import build_linear_add_payload, redact_linear_add_keys
+
+            try:
+                bag = build_linear_add_payload(
+                    quote_id,
+                    product_id=product_id,
+                    qty=qty,
+                    length=length_f,
+                    material=material,
+                    machine="Saw",
+                    name=name,
+                    extra=extra,
+                )
+            except ValueError as exc:
+                notes.append(
+                    f"WARNING: Linear {pn} AddItem_Linear payload incomplete ({exc})"
+                )
+                continue
             try:
                 self.client.add_item_linear(
                     quote_id=quote_id,
@@ -2002,7 +2042,8 @@ class SecturaFabPushService:
             except Exception as exc:
                 notes.append(
                     f"WARNING: Long AddItem_Linear {pn} SKU={sku or product_id} "
-                    f"PT={pt} length={length_f} failed ({exc}) — continuing"
+                    f"PT={pt} length={length_f} failed ({exc}) "
+                    f"form[{redact_linear_add_keys(bag)}] — continuing"
                 )
                 continue
             notes.append(
@@ -2671,6 +2712,7 @@ class SecturaFabPushService:
                     default_thickness=thickness,
                     library_folder=library.get("folder"),
                     related_pdf_names=list(library.get("related_pdfs") or []),
+                    persist_cad=not website_cookie,
                     persist_linear=False,
                 )
             )
@@ -2728,25 +2770,35 @@ class SecturaFabPushService:
                     cad_wiped = True
                     break
             if cad_wiped or count_linear_get_misses(peek, bom_rows):
-                notes.append(
-                    "GET persist fields empty after PT 10 overlay — "
-                    "re-addplate + re-addLinear, no further quote POST"
-                )
-                notes.extend(
-                    persist_classified_item_fields(
-                        self.client,
-                        quote_id,
-                        bom_rows=bom_rows,
-                        default_material=material,
-                        default_thickness=thickness,
-                        library_folder=library.get("folder"),
-                        related_pdf_names=list(library.get("related_pdfs") or []),
-                        persist_linear=False,
+                if website_cookie:
+                    notes.append(
+                        "GET persist fields empty after PT 10 overlay — "
+                        "website session: skip re-addplate (wipes Image Files packs); "
+                        "re-addLinear only"
                     )
-                )
-                notes.extend(
-                    persist_classified_item_fields(self.client, quote_id, **lin_kwargs)
-                )
+                    notes.extend(
+                        persist_classified_item_fields(self.client, quote_id, **lin_kwargs)
+                    )
+                else:
+                    notes.append(
+                        "GET persist fields empty after PT 10 overlay — "
+                        "re-addplate + re-addLinear, no further quote POST"
+                    )
+                    notes.extend(
+                        persist_classified_item_fields(
+                            self.client,
+                            quote_id,
+                            bom_rows=bom_rows,
+                            default_material=material,
+                            default_thickness=thickness,
+                            library_folder=library.get("folder"),
+                            related_pdf_names=list(library.get("related_pdfs") or []),
+                            persist_linear=False,
+                        )
+                    )
+                    notes.extend(
+                        persist_classified_item_fields(self.client, quote_id, **lin_kwargs)
+                    )
 
             detail = self.client.get_json(f"v1/quote/{quote_id}")
             notes.extend(self._verify_gold_anchors(detail if isinstance(detail, dict) else {}))

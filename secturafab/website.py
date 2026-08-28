@@ -289,6 +289,7 @@ PDF_GETDATA_FIELDS = (
     "ItemType",
     "ItemID",
     "FileID",
+    "SourceDataID",
     "ImageID",
     "FileName",
     "RevisionNumber",
@@ -475,11 +476,18 @@ def prepare_pdf_newline_fields(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def slim_pdf_grid_row(row: dict[str, Any]) -> dict[str, Any]:
-    """GetPDFData() field bag after New Line Item fields are filled."""
+    """GetPDFData() field bag after New Line Item fields are filled.
+
+    Keep upload List identity (SourceDataID / FileID). Slimming those away
+    leaves AddItem_PDFFiles with nothing for the laser calculators.
+    """
     src = prepare_pdf_newline_fields(row)
     slim: dict[str, Any] = {}
     for key in PDF_GETDATA_FIELDS:
         slim[key] = src[key] if key in src and src[key] is not None else ""
+    for key in ("SourceDataID", "FileID"):
+        if src.get(key) not in (None, "") and not slim.get(key):
+            slim[key] = src[key]
     return slim
 
 
@@ -520,8 +528,13 @@ def filelist_row_from_attachment_upload(
     width: Any = None,
     file_name: str = "",
 ) -> dict[str, Any]:
-    """FileList row after POST /Attachment/UploadItem_PDFFiles (not CadImport)."""
-    src = _first_upload_row(payload)
+    """FileList row after POST /Attachment/UploadItem_PDFFiles (not CadImport).
+
+    Merge the upload List row so SourceDataID / FileID / CadType / Stock_* stay
+    on the FileList. Rebuilding a slim dict without those IDs leaves Finish
+    calculators unstamped (no Badge PR, no laser pack, UnitCost 0).
+    """
+    src = dict(_first_upload_row(payload))
     file_id = src.get("FileID") or src.get("ID") or src.get("ImageID") or ""
     image_id = src.get("ImageID") or file_id
     length = length if length not in (None, "") else (
@@ -531,11 +544,12 @@ def filelist_row_from_attachment_upload(
         src.get("Width") or src.get("Stock_X")
     )
     thickness = thickness if thickness not in (None, "") else src.get("Thickness")
-    return prepare_pdf_newline_fields(
+    row = dict(src)
+    row.update(
         {
             "Status": 1,
             "ItemType": "cad",
-            "ItemID": EMPTY_GUID,
+            "ItemID": src.get("ItemID") or EMPTY_GUID,
             "FileID": file_id,
             "ImageID": image_id,
             "FileName": file_name or src.get("FileName") or "",
@@ -545,14 +559,19 @@ def filelist_row_from_attachment_upload(
             "Machine": "Laser",
             "Material": material or "A36",
             "Thickness": thickness,
-            "Thickness_Units": "inch",
+            "Thickness_Units": src.get("Thickness_Units") or "inch",
             "Length": length,
-            "Length_Units": "inch",
+            "Length_Units": src.get("Length_Units") or "inch",
             "Width": width,
-            "Width_Units": "inch",
-            "ProductType": 100,
+            "Width_Units": src.get("Width_Units") or "inch",
+            "ProductType": src.get("ProductType") or 100,
         }
     )
+    if src.get("SourceDataID") not in (None, ""):
+        row["SourceDataID"] = src["SourceDataID"]
+    if src.get("FileID") not in (None, ""):
+        row["FileID"] = src["FileID"]
+    return prepare_pdf_newline_fields(row)
 
 
 def attachment_pdf_filelist_ready(row: dict[str, Any] | None) -> bool:
@@ -654,12 +673,12 @@ def _linear_config_guid(row: dict[str, Any]) -> str | None:
     return None
 
 
-def pick_linear_config_id(
+def pick_linear_config_row(
     rows: list[dict[str, Any]] | None,
     *,
     product_id: str | None = None,
-) -> str | None:
-    """Prefer the 20ft/21ft stock config GUID. Empty GUID is never a bind."""
+) -> dict[str, Any] | None:
+    """Prefer the 20ft/21ft stock config row (GUID + subtype/dims/weightLength)."""
     wanted = str(product_id or "").strip()
     pool = [r for r in (rows or []) if isinstance(r, dict)]
     if wanted:
@@ -670,7 +689,7 @@ def pick_linear_config_id(
         ]
         if matched:
             pool = matched
-    ranked: list[tuple[float, str]] = []
+    ranked: list[tuple[float, dict[str, Any]]] = []
     for row in pool:
         if not isinstance(row, dict):
             continue
@@ -693,18 +712,47 @@ def pick_linear_config_id(
             score = 100.0
         elif feet:
             score = 20.0
-        ranked.append((score, str(cid)))
+        ranked.append((score, row))
     if not ranked:
         return None
     ranked.sort(key=lambda item: item[0], reverse=True)
     return ranked[0][1]
 
 
+def pick_linear_config_id(
+    rows: list[dict[str, Any]] | None,
+    *,
+    product_id: str | None = None,
+) -> str | None:
+    """Prefer the 20ft/21ft stock config GUID. Empty GUID is never a bind."""
+    row = pick_linear_config_row(rows, product_id=product_id)
+    if not row:
+        return None
+    return _linear_config_guid(row)
+
+
+def _linear_bind_val(*rows: dict[str, Any] | None, keys: tuple[str, ...]) -> Any:
+    """First non-empty value. Lookup config row wins over the catalog product."""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in keys:
+            val = row.get(key)
+            if val not in (None, ""):
+                return val
+    return None
+
+
 def linear_bind_fields(
     product: dict[str, Any] | None,
     configs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """productID + productConfigID + subtype/dims/weightLength for AddItem_Linear."""
+    """productID + productConfigID + subtype/dims/weightLength for AddItem_Linear.
+
+    Dims / productSubType / weightLength come from the chosen lookup row when
+    present. Catalog product alone often has empty/0 dims — that 500s even
+    with a real productConfigID.
+    """
     if not isinstance(product, dict):
         return None
     pid = product.get("ID") or product.get("ProductID")
@@ -713,44 +761,97 @@ def linear_bind_fields(
     nested = list(configs or [])
     if not nested:
         nested = linear_lookup_rows(product)
-    cfg = pick_linear_config_id(nested, product_id=str(pid) if pid else None)
+    cfg_row = pick_linear_config_row(nested, product_id=str(pid) if pid else None) or {}
+    cfg = _linear_config_guid(cfg_row)
     if not cfg:
         return None
     sku = str(
-        product.get("ProductName")
-        or product.get("SKU")
-        or product.get("ProductCode")
+        _linear_bind_val(
+            cfg_row,
+            product,
+            keys=("ProductName", "SKU", "ProductCode", "sku"),
+        )
         or ""
     )
     subtype = str(
-        product.get("ProductSubType") or product.get("productSubType") or ""
+        _linear_bind_val(
+            cfg_row,
+            product,
+            keys=("productSubType", "ProductSubType", "SubType", "ProductSubTypeName"),
+        )
+        or ""
     ).strip()
     if not subtype:
         pt = linear_website_product_type(sku or str(product.get("Name") or ""))
         subtype = {10: "bar", 30: "tube", 40: "angle"}.get(int(pt), "tube")
+
     def _dim(n: int) -> Any:
-        return product.get(f"Dim{n}") or product.get(f"dim{n}") or 0
+        got = _linear_bind_val(
+            cfg_row,
+            product,
+            keys=(f"dim{n}", f"Dim{n}", f"DIM{n}", f"Size{n}"),
+        )
+        return 0 if got is None else got
 
     return {
         "productID": str(pid),
         "productConfigID": cfg,
         "productSubType": subtype,
         "dim1": _dim(1),
-        "dim1_Unit": product.get("Dim1_Unit") or product.get("dim1_Unit") or "inch",
+        "dim1_Unit": _linear_bind_val(
+            cfg_row, product, keys=("dim1_Unit", "Dim1_Unit", "dim1_Units", "Dim1_Units")
+        )
+        or "inch",
         "dim2": _dim(2),
-        "dim2_Unit": product.get("Dim2_Unit") or product.get("dim2_Unit") or "inch",
+        "dim2_Unit": _linear_bind_val(
+            cfg_row, product, keys=("dim2_Unit", "Dim2_Unit", "dim2_Units", "Dim2_Units")
+        )
+        or "inch",
         "dim3": _dim(3),
-        "dim3_Unit": product.get("Dim3_Unit") or product.get("dim3_Unit") or "inch",
+        "dim3_Unit": _linear_bind_val(
+            cfg_row, product, keys=("dim3_Unit", "Dim3_Unit", "dim3_Units", "Dim3_Units")
+        )
+        or "inch",
         "dim4": _dim(4),
-        "dim4_Unit": product.get("Dim4_Unit") or product.get("dim4_Unit") or "inch",
-        "weightLength": product.get("WeightLength") or product.get("weightLength") or 0,
-        "weightLength_Units": (
-            product.get("WeightLength_Unit")
-            or product.get("weightLength_Units")
-            or "pound/foot"
-        ),
+        "dim4_Unit": _linear_bind_val(
+            cfg_row, product, keys=("dim4_Unit", "Dim4_Unit", "dim4_Units", "Dim4_Units")
+        )
+        or "inch",
+        "weightLength": _linear_bind_val(
+            cfg_row,
+            product,
+            keys=(
+                "weightLength",
+                "WeightLength",
+                "WeightPerFoot",
+                "WtPerFt",
+                "Weight_Length",
+            ),
+        )
+        or 0,
+        "weightLength_Units": _linear_bind_val(
+            cfg_row,
+            product,
+            keys=("weightLength_Units", "WeightLength_Unit", "WeightLength_Units"),
+        )
+        or "pound/foot",
         "sku": sku or None,
     }
+
+
+def redact_linear_add_keys(payload: dict[str, Any] | None) -> str:
+    """Redacted OnAddLinearClick bag for 500 dumps (no full GUIDs)."""
+    bits: list[str] = []
+    for key in LINEAR_ADD_FIELDS:
+        val = (payload or {}).get(key, "")
+        if val in ("", None):
+            bits.append(f"{key}=<empty>")
+            continue
+        if is_tenant_guid(val):
+            bits.append(f"{key}=guid…{str(val)[-4:]}")
+            continue
+        bits.append(f"{key}={val}")
+    return " ".join(bits)
 
 
 def jquery_ajax_form(value: Any, prefix: str = "") -> list[tuple[str, str]]:

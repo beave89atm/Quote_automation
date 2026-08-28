@@ -351,6 +351,29 @@ def _item_unit_cost(item: dict[str, Any] | None) -> float:
         return 0.0
 
 
+def cad_image_files_stamped(item: dict[str, Any] | None) -> bool:
+    """True when Image Files Finish already wrote PR + laser pack + UnitCost."""
+    return (
+        item_has_pr_tag(item)
+        and item_has_laser_pack(item)
+        and _item_unit_cost(item) > 0
+    )
+
+
+def _persist_website_session(client: Any) -> bool:
+    """True only for a real cookie string on the client (not a MagicMock)."""
+    cfg = getattr(client, "config", None)
+    raw = getattr(cfg, "website_cookie", None) if cfg is not None else None
+    return isinstance(raw, str) and bool(raw.strip())
+
+
+def _is_cad(item: dict[str, Any]) -> bool:
+    if _is_assembly(item) or _is_linear(item) or _is_component(item):
+        return False
+    cat = str(item.get("Category") or item.get("ItemType") or "").strip()
+    return item.get("ProductType") in (100, "100") or cat == "Cad"
+
+
 def finish_produced_gold(
     quote: dict[str, Any] | None,
     *,
@@ -1152,6 +1175,12 @@ def persist_classified_item_fields(
         if not persist_cad:
             continue
         if _is_linear(it) or want_cat == "Linear" or _is_component(it) or want_cat == "Component":
+            continue
+        if _persist_website_session(client) and (
+            want_cat == "Cad" or _is_cad(it) or it.get("ProductType") in (100, "100")
+        ):
+            # Image Files already GET-verified (or not). addplate / quoteOnline
+            # update wipe Badge PR + laser pack + UnitCost on website Cad.
             continue
         parsed = parse_cad_desc_fields(raw_desc)
         pm = lookup_part_material(part_materials or {}, pn or "") if pn else None

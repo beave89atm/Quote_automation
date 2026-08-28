@@ -69,3 +69,13 @@ def test_job68_pdf_no_weld_if_present():
     assert result.items == []
     assert result.to_dict()["total_inches"] == 0
     assert any("No weld symbols" in f for f in result.flags)
+
+
+def test_plate_blank_reads_whole_inch_and_overall():
+    from quote_core.weld.takeoff import _plate_blank_size_from_text
+
+    assert _plate_blank_size_from_text('2" X 9"', min_side=0.26, max_side=240) == (2.0, 9.0)
+    assert _plate_blank_size_from_text(
+        "OVERALL 18.50 X 6.25", min_side=0.26, max_side=240
+    ) == (18.5, 6.25)
+    assert _plate_blank_size_from_text("11 X 17", min_side=0.26, max_side=240) is None

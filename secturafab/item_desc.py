@@ -410,9 +410,19 @@ def title_from_bom_family(bom_rows: list[dict] | None) -> str | None:
     return f"{word} WELDMENT"
 
 
+_LXW_NUM = r"(\d+\s+\d+/\d+|\d+-\d+/\d+|\d+/\d+|\d+(?:\.\d+)?)"
 _LXW_RE = re.compile(
-    r"(?<![\d.])(\d+(?:\.\d+)?)\s*[\"″']?\s*(?:in(?:ch(?:es)?)?)?\s*[xX×]\s*"
-    r"(\d+(?:\.\d+)?)\s*[\"″']?(?:\s*in(?:ch(?:es)?)?)?",
+    rf"(?<![\d.]){_LXW_NUM}\s*[\"″']?\s*(?:in(?:ch(?:es)?)?)?\s*[xX×]\s*"
+    rf"{_LXW_NUM}\s*[\"″']?(?:\s*in(?:ch(?:es)?)?)?",
+)
+_LXW_TRIPLE_RE = re.compile(
+    rf"(?<![\d.]){_LXW_NUM}\s*[\"″']?\s*[xX×]\s*"
+    rf"{_LXW_NUM}\s*[\"″']?\s*[xX×]\s*{_LXW_NUM}",
+)
+_LXW_LABELED_RE = re.compile(
+    rf"(?:OVERALL|BLANK|PLATE\s*SIZE|FINISHED\s*SIZE)[^\n]{{0,40}}?"
+    rf"{_LXW_NUM}\s*[\"″']?\s*[xX×]\s*{_LXW_NUM}",
+    re.IGNORECASE,
 )
 
 
@@ -426,21 +436,56 @@ def _as_flat(val: Any) -> float | None:
     return num
 
 
+def _lxw_num(raw: str | None) -> float | None:
+    text = str(raw or "").strip().replace("-", " ")
+    if not text:
+        return None
+    try:
+        if " " in text and "/" in text:
+            whole, frac = text.split(None, 1)
+            num, den = frac.split("/", 1)
+            return float(whole) + float(num) / float(den)
+        if "/" in text:
+            num, den = text.split("/", 1)
+            den_f = float(den)
+            if den_f == 0:
+                return None
+            return float(num) / den_f
+        return float(text)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _pair_ok(a: float | None, b: float | None) -> bool:
+    if a is None or b is None:
+        return False
+    if a <= 0.25 or b <= 0.25 or max(a, b) > 240:
+        return False
+    return not looks_like_drawing_sheet(a, b)
+
+
 def parse_plate_flats(text: str | None) -> tuple[float | None, float | None]:
     """L×W from takeoff / LOM / drawing text. Reject PDF sheet outlines."""
+    blob = str(text or "")
+    for match in _LXW_TRIPLE_RE.finditer(blob):
+        thk = _lxw_num(match.group(1))
+        a = _lxw_num(match.group(2))
+        b = _lxw_num(match.group(3))
+        if thk is not None and thk <= 1.5 and _pair_ok(a, b):
+            return a, b
+    for match in _LXW_LABELED_RE.finditer(blob):
+        a = _lxw_num(match.group(1))
+        b = _lxw_num(match.group(2))
+        if _pair_ok(a, b):
+            return a, b
     best: tuple[float, float] | None = None
-    for match in _LXW_RE.finditer(str(text or "")):
-        try:
-            a = float(match.group(1))
-            b = float(match.group(2))
-        except (TypeError, ValueError):
-            continue
-        if a <= 0.25 or b <= 0.25 or max(a, b) > 240:
-            continue
-        if looks_like_drawing_sheet(a, b):
+    for match in _LXW_RE.finditer(blob):
+        a = _lxw_num(match.group(1))
+        b = _lxw_num(match.group(2))
+        if not _pair_ok(a, b):
             continue
         if best is None:
-            best = (a, b)
+            best = (a, b)  # type: ignore[assignment]
     if not best:
         return None, None
     return best
@@ -478,6 +523,43 @@ def flats_from_mapping(row: dict[str, Any] | None) -> tuple[float | None, float 
     return item_flat_dims(row)
 
 
+def _takeoff_row_matches(part_no: str, row: dict[str, Any]) -> bool:
+    want = normalize_part_token(part_no)
+    if not want:
+        return False
+    token = " ".join(
+        str(row.get(k) or "")
+        for k in (
+            "part_no",
+            "part_number",
+            "name",
+            "Name",
+            "Description",
+            "description",
+        )
+    )
+    if want in token or normalize_part_token(token) == want:
+        return True
+    from secturafab.qty_ops import normalize_part_key
+
+    want_key = normalize_part_key(want)
+    row_pn = normalize_part_token(
+        str(row.get("part_no") or row.get("part_number") or row.get("name") or "")
+    )
+    row_key = normalize_part_key(row_pn)
+    if want_key and row_key and want_key == row_key:
+        return True
+    want_base = want_key.split("-")[0] if want_key else ""
+    row_base = row_key.split("-")[0] if row_key else ""
+    if want_base and row_base and want_base == row_base:
+        if "-" not in want_key or "-" not in row_key:
+            return True
+        return want_key == row_key or want_key.startswith(row_key + "-") or row_key.startswith(
+            want_key + "-"
+        )
+    return False
+
+
 def flats_from_takeoff(
     takeoff: dict[str, Any] | None,
     part_no: str,
@@ -490,14 +572,16 @@ def flats_from_takeoff(
         inner = takeoff.get(key)
         if isinstance(inner, list):
             bags.extend(inner)
+    fitup = takeoff.get("fitup_drivers")
+    if isinstance(fitup, dict):
+        for key in ("plates", "components"):
+            inner = fitup.get(key)
+            if isinstance(inner, list):
+                bags.extend(inner)
     for it in bags:
         if not isinstance(it, dict):
             continue
-        token = " ".join(
-            str(it.get(k) or "")
-            for k in ("part_no", "part_number", "name", "Name", "Description")
-        )
-        if pn not in token and normalize_part_token(token) != pn:
+        if not _takeoff_row_matches(pn, it):
             continue
         got = flats_from_mapping(it)
         if got[0] and got[1]:

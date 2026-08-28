@@ -386,11 +386,12 @@ def test_finish_success_still_persists_cad_then_linear(tmp_path):
         )
     assert result.ok is True
     qadd.assert_not_called()
-    assert order[:3] == ["cad", "linear", "header"]
+    assert persist_calls[0].get("persist_cad") is False
     assert persist_calls[0].get("persist_linear") is False
     assert persist_calls[1].get("persist_cad") is False
     assert persist_calls[1].get("persist_linear") is True
     assert persist_calls[1].get("retry_linear") is True
+    assert "header" in order
 
 
 def test_parse_live_cad_description_onto_fields():

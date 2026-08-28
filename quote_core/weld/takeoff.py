@@ -40,9 +40,18 @@ WEIGHT_RE = re.compile(
     r"(?<![\d.])(\d{1,4}(?:\.\d+)?)\s*(?:lbm|lbs?|pounds?)\b",
     re.IGNORECASE,
 )
-# Plate blank callout on component drawings: 7.00" X 3.19"
+# Plate blank callout on component drawings: 7.00" X 3.19" or 2" X 9"
 PLATE_BLANK_RE = re.compile(
-    r"(?<![\d.])(\d{1,2}\.\d{1,4})\s*[\"″']?\s*[Xx×]\s*(\d{1,2}\.\d{1,4})\s*[\"″']?",
+    r"(?<![\d.])(\d{1,3}(?:\.\d{1,4})?)\s*[\"″']?\s*[Xx×]\s*(\d{1,3}(?:\.\d{1,4})?)\s*[\"″']?",
+)
+_PLATE_OVERALL_RE = re.compile(
+    r"(?:OVERALL|BLANK|PLATE\s*SIZE|FINISHED\s*SIZE)[^\n]{0,40}?"
+    r"(\d{1,3}(?:\.\d{1,4})?)\s*[\"″']?\s*[Xx×]\s*(\d{1,3}(?:\.\d{1,4})?)",
+    re.IGNORECASE,
+)
+_SKIP_CAD_FLAT_RE = re.compile(
+    r"\b(CHANNEL|TUBE|PIPE|HOSE\s+GUARD)\b|\bC\d+X|\bL\d+/\d|\bRT\d",
+    re.IGNORECASE,
 )
 GUSSET_DESC_RE = re.compile(r"\bGUSSET\b", re.IGNORECASE)
 
@@ -70,6 +79,7 @@ class WeldTakeoffResult:
     stp_summary: dict[str, Any] = field(default_factory=dict)
 
     fitup_drivers: dict[str, Any] = field(default_factory=dict)
+    plates: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +89,7 @@ class WeldTakeoffResult:
             "notes": self.notes,
             "stp_summary": self.stp_summary,
             "fitup_drivers": self.fitup_drivers,
+            "plates": self.plates,
             "total_inches": sum(i.inches for i in self.items),
         }
 
@@ -391,31 +402,112 @@ def _estimate_segments_from_pdf(
     return segments
 
 
-def _plate_blank_size_from_text(text: str) -> tuple[float, float] | None:
-    """Return (L, W) from a plate blank callout like 7.00\" X 3.19\"."""
+def _looks_like_sheet_outline(a: float, b: float) -> bool:
+    pair = (min(a, b), max(a, b))
+    for lo, hi in ((8.5, 11.0), (11.0, 17.0), (17.0, 22.0), (22.0, 28.5), (22.0, 34.0)):
+        if abs(pair[0] - lo) <= 0.6 and abs(pair[1] - hi) <= 0.6:
+            return True
+    return False
+
+
+def _plate_blank_size_from_text(
+    text: str,
+    *,
+    min_side: float = 0.75,
+    max_side: float = 24.0,
+) -> tuple[float, float] | None:
+    """Return (L, W) from a plate blank callout like 7.00\" X 3.19\" or 2\" X 9\"."""
     candidates: list[tuple[float, float]] = []
-    for m in PLATE_BLANK_RE.finditer(text or ""):
+    blob = text or ""
+    for m in _PLATE_OVERALL_RE.finditer(blob):
         try:
             a = float(m.group(1))
             b = float(m.group(2))
         except ValueError:
             continue
-        # Gusset / plate blanks are typically under ~24" each side.
-        if 0.75 <= a <= 24.0 and 0.75 <= b <= 24.0:
-            candidates.append((max(a, b), min(a, b)))
+        if min_side <= a <= max_side and min_side <= b <= max_side:
+            if not _looks_like_sheet_outline(a, b):
+                candidates.append((a, b))
+    for m in PLATE_BLANK_RE.finditer(blob):
+        try:
+            a = float(m.group(1))
+            b = float(m.group(2))
+        except ValueError:
+            continue
+        if min_side <= a <= max_side and min_side <= b <= max_side:
+            if not _looks_like_sheet_outline(a, b):
+                candidates.append((a, b))
     if not candidates:
         return None
-    # Prefer the first title-block blank (usually the overall plate size).
+    # Prefer the first title-block / OVERALL blank (usually the part size).
     return candidates[0]
 
 
-def _plate_blank_size_from_pdf(pdf_path: Path) -> tuple[float, float] | None:
+def _plate_blank_size_from_pdf(
+    pdf_path: Path,
+    *,
+    min_side: float = 0.75,
+    max_side: float = 24.0,
+) -> tuple[float, float] | None:
     from quote_core.weight import _read_pdf_text
 
     try:
-        return _plate_blank_size_from_text(_read_pdf_text(pdf_path))
+        return _plate_blank_size_from_text(
+            _read_pdf_text(pdf_path), min_side=min_side, max_side=max_side
+        )
     except Exception:  # noqa: BLE001
         return None
+
+
+def collect_lom_cad_plates(
+    pdf_path: Path | str | None,
+    library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
+    bom_config: str | None = None,
+) -> list[dict[str, Any]]:
+    """L×W for LOM Cad PNs from each child drawing (not the 1001898 lock)."""
+    from quote_core.bom import extract_bom
+
+    plates: list[dict[str, Any]] = []
+    if not pdf_path or not Path(pdf_path).is_file():
+        return plates
+    try:
+        bom = extract_bom(
+            pdf_path,
+            library_folder=library_folder,
+            related_pdf_names=related_pdf_names,
+            bom_config=bom_config,
+        )
+    except Exception:  # noqa: BLE001 — LOM/PDF optional
+        return plates
+    search_dirs = _component_pdf_search_dirs(Path(pdf_path), library_folder)
+    seen: set[str] = set()
+    for row in getattr(bom, "rows", None) or []:
+        pn = str(getattr(row, "part_no", "") or "").strip()
+        noun = str(getattr(row, "description", "") or "")
+        if not pn or pn in seen:
+            continue
+        if _SKIP_CAD_FLAT_RE.search(f"{pn} {noun}"):
+            continue
+        comp = _find_component_pdf(pn, search_dirs, related_pdf_names)
+        if not comp:
+            continue
+        blank = _plate_blank_size_from_pdf(comp, min_side=0.26, max_side=240.0)
+        if not blank:
+            continue
+        length_in, width_in = blank
+        seen.add(pn)
+        plates.append(
+            {
+                "part_no": pn,
+                "name": pn,
+                "description": noun,
+                "width_in": width_in,
+                "length_in": length_in,
+                "blank": [length_in, width_in],
+            }
+        )
+    return plates
 
 
 def _component_pdf_search_dirs(
@@ -1372,12 +1464,24 @@ def run_weld_takeoff(
         if n not in flags:
             flags.append(n)
 
+    plates = collect_lom_cad_plates(
+        pdf_path,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+        bom_config=bom_config,
+    )
+    if plates:
+        flags.append(
+            f"Takeoff Cad flats for {len(plates)} LOM PN(s) from child drawings"
+        )
+
     return WeldTakeoffResult(
         items=items,
         flags=flags,
         sizes_found=sorted(set(sizes)),
         notes=notes[:40],
         fitup_drivers=fitup_drivers,
+        plates=plates,
         stp_summary={
             "solid_count": stp_summary.get("solid_count", 0),
             "unit_scale": stp_summary.get("unit_scale"),
