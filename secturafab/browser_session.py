@@ -1,12 +1,11 @@
-"""Discover Kyle's SecturaFAB website session from Chrome on this PC.
+"""Website session for Finish (Image Files / Long).
 
-Finish (POST /Quote/AddItem_DXFFiles, AddItem_PDFFiles, AddItem_Linear) needs
-the www MVC cookie. The quoting PC already has that session when Kyle is
-signed into Sectura in Chrome. Read Chrome (and Edge) cookies for
-www.secturafab.com / secturafab.com and assemble a Cookie header.
+Live push uses SECTURA_WEBSITE_COOKIE (env string or file path) from the
+already-signed-in box Chrome. Fail closed if missing. Do not unwrap Windows
+Chrome. Do not call ABE / IElevator / memscan. Do not depend on Kyle's
+quoting PC (no DESKTOP-FVA3MNI, no localhost:8000 on his laptop).
 
-Do not invent a paste-cookie UX. SECTURAFAB_WEBSITE_COOKIE remains a silent
-env override for service accounts — never prompt anyone to paste it.
+Do not invent a paste-cookie UX.
 """
 
 from __future__ import annotations
@@ -64,9 +63,10 @@ COOKIE_NAMES = (
 )
 
 CHROME_SESSION_REQUIRED = (
-    "Finish needs a SecturaFAB website session cookie "
-    "(SECTURA_WEBSITE_COOKIE from a signed-in www.secturafab.com Chrome). "
-    "Do not paste a cookie. Do not unwrap Windows Chrome."
+    "Finish needs SECTURA_WEBSITE_COOKIE (env or file) from the signed-in "
+    "www.secturafab.com Chrome on this Linux box. "
+    "Do not paste a cookie. Do not unwrap Windows Chrome. "
+    "Do not use Kyle's quoting PC."
 )
 
 _SHADOW_MISS_ERR = (
@@ -140,7 +140,23 @@ def effective_website_cookie(cfg: Any | None = None) -> str:
 
 
 def discover_sectura_website_cookie(*, force: bool = False) -> str:
-    """Return a Cookie header from Chrome/Edge, or '' if none is usable."""
+    """Env/file Cookie header only. Live Finish never unwraps Windows Chrome."""
+    del force
+    cookie = _env_website_cookie()
+    _cache["cookie"] = cookie
+    _cache["ts"] = time.monotonic()
+    _cache["source"] = "env" if cookie else ""
+    _cache["session_found"] = bool(cookie)
+    _cache["error"] = "" if cookie else CHROME_SESSION_REQUIRED
+    _cache["lock_bypass"] = ""
+    _cache["vss"] = ""
+    _cache["abe"] = ""
+    _cache["abe_hr"] = ""
+    return cookie
+
+
+def _discover_windows_chrome(*, force: bool = False) -> str:
+    """Dead quoting-PC unwrap. Tests only. Live push must not call this."""
     now = time.monotonic()
     if force:
         for sig, keys in list(_abe_memo.items()):

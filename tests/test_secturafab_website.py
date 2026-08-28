@@ -834,6 +834,62 @@ def test_effective_cookie_does_not_call_windows_discover(monkeypatch):
         disc.assert_not_called()
 
 
+def test_public_discover_never_unwraps_windows_chrome(monkeypatch):
+    from secturafab import browser_session as bs
+
+    monkeypatch.delenv("SECTURA_WEBSITE_COOKIE", raising=False)
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
+    with patch.object(
+        bs, "_discover_uncached", side_effect=AssertionError("must not unwrap")
+    ), patch.object(
+        bs, "_memscan_abe_key", side_effect=AssertionError("must not memscan")
+    ), patch.object(
+        bs, "_discover_windows_chrome", side_effect=AssertionError("must not unwrap")
+    ):
+        assert bs.discover_sectura_website_cookie(force=True) == ""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    with patch.object(
+        bs, "_discover_windows_chrome", side_effect=AssertionError("must not unwrap")
+    ):
+        assert bs.discover_sectura_website_cookie(force=True) == "ASP.NET_SessionId=box"
+
+
+def test_finish_pdf_and_linear_never_call_windows_discover(monkeypatch):
+    from secturafab.client import SecturaFabClient, SecturaFabWebsiteAuthError
+    from secturafab.config import SecturaFabConfig
+    from secturafab.push import SecturaFabPushService
+
+    monkeypatch.delenv("SECTURA_WEBSITE_COOKIE", raising=False)
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(website_cookie="")
+    svc = SecturaFabPushService(client=client)
+    with patch(
+        "secturafab.browser_session._discover_windows_chrome",
+        side_effect=AssertionError("must not unwrap"),
+    ), patch(
+        "secturafab.browser_session._discover_uncached",
+        side_effect=AssertionError("must not unwrap"),
+    ):
+        with pytest.raises(SecturaFabWebsiteAuthError):
+            svc.finish_pdf_files(
+                quote_id="qid",
+                pdf_files=[],
+                material="A36",
+                thickness="0.25",
+                qty=1,
+                description="x",
+            )
+        with pytest.raises(SecturaFabWebsiteAuthError):
+            svc.finish_linear_bom_rows(
+                quote_id="qid",
+                linear_rows=[{"part_no": "29860-3", "description": "ANGLE", "qty": 1}],
+                material="A36",
+                library={},
+                extra_pdfs=[],
+            )
+
+
 def test_discover_cookie_from_sqlite(tmp_path: Path):
     import sqlite3
 
@@ -860,7 +916,7 @@ def test_discover_cookie_from_sqlite(tmp_path: Path):
         "local_state": tmp_path / "Local State",
     }
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert ".AspNet.ApplicationCookie=auth-token" in header
     assert "ASP.NET_SessionId=sess" in header
     status = bs.discover_status()
@@ -910,7 +966,7 @@ def test_locked_shutil_copy_still_reads_chrome_default(tmp_path: Path):
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
         bs.shutil, "copy2", side_effect=_locked
     ):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header
     assert bs.session_found() is True
     assert bs.last_discover_source() == "chrome:Default"
@@ -935,7 +991,7 @@ def test_share_copy_when_sqlite_backup_and_copy2_fail(tmp_path: Path):
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
         bs, "_sqlite_backup_nolock", side_effect=sqlite3.Error("locked")
     ), patch.object(bs.shutil, "copy2", side_effect=OSError(32, "locked")):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header
     assert bs.discover_status()["session_found"] is True
 
@@ -1165,7 +1221,7 @@ def test_snapshot_failure_reports_bypass_not_bare_oserror(tmp_path: Path):
     ), patch.object(bs, "_win_lock_bypass_with_wal", side_effect=_fail), patch.object(
         bs.time, "sleep", return_value=None
     ):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header == ""
     status = bs.discover_status()
     assert status["session_found"] is False
@@ -1308,7 +1364,7 @@ def test_discover_abe_hr_is_chrome_dir(tmp_path: Path):
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
         bs, "_unwrap_app_bound_key", return_value=(None, "chrome_dir", "csc_missing")
     ):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header == ""
     status = bs.discover_status()
     assert status["abe"] == "chrome_dir"
@@ -1390,7 +1446,7 @@ def test_v20_blobs_fail_closed_without_abe(tmp_path: Path):
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
         bs, "_unwrap_app_bound_key", return_value=(None, "failed", "0x80070005")
     ), patch.object(bs, "_v10_os_crypt_key", return_value=fake_v10):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header == ""
     assert bs.session_found() is False
     status = bs.discover_status()
@@ -1444,7 +1500,7 @@ def test_elevator_overflow_does_not_crash_discover(tmp_path: Path):
         bs, "_elevator_decrypt",
         side_effect=AssertionError("in-process CoCreate must not run"),
     ):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header == ""
     status = bs.discover_status()
     assert status["session_found"] is False
@@ -1547,7 +1603,7 @@ def test_discover_outer_catch_writes_abe_after_crash(tmp_path: Path):
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
         bs, "_read_cookie_rows", side_effect=_boom
     ):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header == ""
     status = bs.discover_status()
     assert status["session_found"] is False
@@ -1588,7 +1644,7 @@ def test_v20_discover_succeeds_with_elevator_key(tmp_path: Path):
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
         bs, "_browser_keys", return_value=keys
     ):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert "ASP.NET_SessionId=sess-ok" in header
     status = bs.discover_status()
     assert status["session_found"] is True
@@ -1598,31 +1654,21 @@ def test_v20_discover_succeeds_with_elevator_key(tmp_path: Path):
     assert "sess-ok" not in str(status)
 
 
-def test_finish_session_error_includes_abe_not_values():
-    from secturafab import browser_session as bs
+def test_finish_session_error_is_env_cookie_only(monkeypatch):
     from secturafab.push import SecturaFabPushService
 
-    bs._cache.update(
-        {
-            "cookie": "",
-            "session_found": False,
-            "source": "chrome:Default",
-            "error": "app-bound decrypt failed",
-            "abe": "failed",
-            "abe_hr": "0x80004005",
-            "lock_bypass": "vss=create:5",
-            "vss": "create:5",
-        }
-    )
+    monkeypatch.delenv("SECTURA_WEBSITE_COOKIE", raising=False)
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
     svc = SecturaFabPushService(MagicMock())
     msg = svc._finish_session_error()
     assert "session_found=false" in msg
-    assert "lock_bypass=vss=create:5" in msg
-    assert "vss=create:5" in msg
-    assert "abe=failed" in msg
-    assert "abe_hr=0x80004005" in msg
-    assert "hidden-secret" not in msg
+    assert "SECTURA_WEBSITE_COOKIE" in msg
+    assert "abe=" not in msg
+    assert "abe_hr=" not in msg
+    assert "lock_bypass=" not in msg
+    assert "vss=" not in msg
     assert "do not paste a cookie" in msg.lower()
+    assert "quoting pc" in msg.lower() or "unwrap" in msg.lower()
 
 
 def test_chrome_default_uses_cached_snapshot_when_live_copy_fails(tmp_path: Path):
@@ -1654,7 +1700,7 @@ def test_chrome_default_uses_cached_snapshot_when_live_copy_fails(tmp_path: Path
     ), patch.object(bs, "_share_copy_with_wal", side_effect=OSError(32, "locked")), patch.object(
         bs, "_shutil_copy_with_wal", side_effect=OSError(32, "locked")
     ):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header
     status = bs.discover_status()
     assert "cached" in status["lock_bypass"]
@@ -1684,7 +1730,7 @@ def test_vss_create_hresult_stays_visible_after_fallback(tmp_path: Path):
     ), patch.object(
         bs, "_try_vss_create_copy", side_effect=_vss_create
     ):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header
     status = bs.discover_status()
     assert status["vss"] == "create:5"
@@ -1729,7 +1775,7 @@ def test_chrome_default_records_vss_skip_on_linux(tmp_path: Path):
         "history_hit": True,
     }
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header
     status = bs.discover_status()
     assert "nolock" in status["lock_bypass"]
@@ -1758,7 +1804,7 @@ def test_chrome_default_uses_nolock_before_vss(tmp_path: Path):
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
         bs, "_try_vss_create_copy", side_effect=_no_vss
     ), patch.object(bs, "_try_handle_dup_copy", side_effect=_no_dup):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header
     status = bs.discover_status()
     assert "nolock" in status["lock_bypass"]
@@ -2145,7 +2191,7 @@ def test_chrome_open_uses_vss_then_cached_not_dup(tmp_path: Path):
     ), patch.object(bs, "_win_esentutl_copy", side_effect=_spray("esentutl")), patch.object(
         bs, "_win_robocopy_backup_copy", side_effect=_spray("robocopy_b")
     ):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header
     status = bs.discover_status()
     assert order == ["vss"]
@@ -2192,7 +2238,7 @@ def test_chrome_open_vss_miss_does_not_nolock_live_path(tmp_path: Path):
     ), patch.object(bs, "_try_vss_create_copy", side_effect=_vss), patch.object(
         bs, "_try_live_cookie_sidecar_copy", side_effect=_no_live
     ), patch.object(bs, "_try_handle_dup_copy", side_effect=_no_live):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header == ""
     status = bs.discover_status()
     assert status["session_found"] is False
@@ -2230,7 +2276,7 @@ def test_vss_success_does_not_copy_live_sidecars(tmp_path: Path):
     ), patch.object(bs, "_try_nolock_copy", side_effect=_no_live), patch.object(
         bs, "_try_vss_create_copy", side_effect=_vss
     ), patch.object(bs, "_copy_cookie_sidecars", side_effect=_no_live):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header
     status = bs.discover_status()
     assert status["source"] == "chrome:Default"
@@ -2292,7 +2338,7 @@ def test_discover_does_not_read_edge_after_chrome_default(tmp_path: Path):
     with patch.object(bs, "_browser_cookie_dbs", return_value=[chrome, edge]), patch.object(
         bs, "_read_cookie_rows", side_effect=_track
     ):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header
     assert seen == ["chrome:Default"]
     assert bs.discover_status()["source"] == "chrome:Default"
@@ -2635,7 +2681,7 @@ def test_discover_passes_db_v20_sample_to_chrome_dir(tmp_path: Path):
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
         bs, "_unwrap_app_bound_key", side_effect=_unwrap
     ):
-        bs.discover_sectura_website_cookie(force=True)
+        bs._discover_windows_chrome(force=True)
     status = bs.discover_status()
     assert status["source"] == "chrome:Default"
     assert status["v20_blobs"] == 1
@@ -2679,7 +2725,7 @@ def test_empty_chrome_default_keeps_source(tmp_path: Path):
         "history_hit": True,
     }
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header == ""
     assert bs.discover_status()["source"] == "chrome:Default"
 
@@ -3706,7 +3752,7 @@ def test_profile_1_does_not_run_vss_or_lock_bypass(tmp_path: Path):
     with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
         bs, "_win_vss_copy", side_effect=_nope
     ), patch.object(bs, "_win_lock_bypass_with_wal", side_effect=_nope):
-        header = bs.discover_sectura_website_cookie(force=True)
+        header = bs._discover_windows_chrome(force=True)
     assert header
     status = bs.discover_status()
     assert status["vss"] == ""

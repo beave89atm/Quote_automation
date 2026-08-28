@@ -1589,26 +1589,13 @@ class SecturaFabPushService:
         return notes
 
     def _finish_session_error(self, exc: BaseException | None = None) -> str:
-        from .browser_session import discover_status
-
-        st = discover_status()
+        cookie = effective_website_cookie()
         bits = [
             CHROME_SESSION_REQUIRED,
-            f"session_found={str(bool(st.get('session_found'))).lower()}",
+            f"session_found={str(bool(cookie)).lower()}",
         ]
-        if st.get("source"):
-            bits.append(f"source={st['source']}")
-        if st.get("lock_bypass"):
-            bits.append(f"lock_bypass={st['lock_bypass']}")
-        if st.get("vss"):
-            bits.append(f"vss={st['vss']}")
-        if st.get("abe"):
-            bits.append(f"abe={st['abe']}")
-        if st.get("abe_hr"):
-            bits.append(f"abe_hr={st['abe_hr']}")
-        extra = str(st.get("error") or "").strip()
-        if extra:
-            bits.append(extra)
+        if cookie:
+            bits.append("source=env")
         if exc:
             bits.append(str(exc))
         return " ".join(bits)
