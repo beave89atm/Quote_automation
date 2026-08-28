@@ -59,9 +59,14 @@ from .website import (
     EMPTY_GUID,
     WEBSITE_AUTH_GAP,
     SecturaFabWebsiteAuthError,
+    attachment_pdf_filelist_ready,
     count_cad_product_type,
+    is_tenant_guid,
     count_linear_product_type,
     filelist_from_cadimport_upload,
+    filelist_row_from_attachment_upload,
+    linear_bind_fields,
+    linear_lookup_rows,
     linear_website_product_type,
     overlay_classified_row,
     pick_closest_linear_product,
@@ -1165,6 +1170,72 @@ class SecturaFabPushService:
         ) or None
         return pid, sku, note
 
+    def _match_linear_product(
+        self,
+        description: str,
+        *,
+        material: str | None,
+        row: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, str | None, str | None]:
+        from .locked_1001898 import locked_linear_bind
+
+        locked = locked_linear_bind(text=description)
+        products = self._linear_catalog()
+        if locked and locked.get("sku"):
+            want = str(locked["sku"]).upper()
+            exact = next(
+                (
+                    p
+                    for p in products
+                    if str(p.get("ProductName") or p.get("SKU") or "").upper() == want
+                ),
+                None,
+            )
+            note = None
+            if locked.get("grade_note"):
+                note = (
+                    f"Linear {description!r} catalog {locked['sku']} "
+                    f"({locked['grade_note']})"
+                )
+            if exact:
+                return exact, str(exact.get("ProductName") or locked["sku"]), note
+            return None, str(locked["sku"]), note or (
+                f"Locked SKU {locked['sku']} not in tenant catalog"
+            )
+        product, note = pick_closest_linear_product(
+            products,
+            description=description,
+            material=material,
+            row=row,
+        )
+        if not product:
+            return None, None, note
+        sku = str(
+            product.get("ProductName")
+            or product.get("SKU")
+            or product.get("ProductCode")
+            or ""
+        ) or None
+        return product, sku, note
+
+    def _linear_catalog_bind(
+        self,
+        product: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not product:
+            return None
+        bind = linear_bind_fields(product)
+        if bind:
+            return bind
+        pid = str(product.get("ID") or "")
+        if not pid or not hasattr(self.client, "read_data_linear_lookup"):
+            return None
+        try:
+            payload = self.client.read_data_linear_lookup(pid)
+        except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError, ValueError):
+            return None
+        return linear_bind_fields(product, linear_lookup_rows(payload))
+
     def classify_cadimport_rows(
         self,
         rows: list[dict[str, Any]],
@@ -1444,9 +1515,16 @@ class SecturaFabPushService:
         library: dict[str, Any] | None = None,
         extra_pdfs: list[Path] | None = None,
     ) -> list[str]:
-        """Image Files Finish: POST /Quote/AddItem_PDFFiles."""
+        """Image Files Finish: Attachment upload + per-part AddItem_PDFFiles."""
         if not self._website_cookie_present():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
+        from .item_desc import format_cad_description, match_bom_part_no
+        from .locked_1001898 import locked_cad_spec
+        from quote_core.part_materials import (
+            build_part_material_map,
+            lookup_part_material,
+        )
+
         notes: list[str] = []
         try:
             self.client.get_item_add_view(quote_id, item_type="pdf")
@@ -1459,130 +1537,132 @@ class SecturaFabPushService:
         except SecturaFabApiError as exc:
             notes.append(f"WARNING: GetItem_AddView(pdf) returned {exc}")
 
-        file_list = []
-        open_files = []
-        try:
-            form_files = []
-            for path in pdf_files:
-                fh = path.open("rb")
-                open_files.append(fh)
-                form_files.append(("files", (path.name, fh, _mime_for(path))))
-            upload_payload = None
-            try:
-                upload_payload = self.client.upload_item_dxf_files(
-                    form_files, quote_id=quote_id
-                )
-                notes.append(
-                    "Uploaded Image Files via /CadImport/UploadItem_DXFFiles "
-                    f"({len(pdf_files)} PDF)"
-                )
-            except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
-                notes.append(f"WARNING: CadImport PDF upload failed: {exc}")
-            file_list = filelist_from_cadimport_upload(upload_payload)
-            if not file_list:
-                for path in pdf_files:
-                    file_list.append(
-                        {
-                            "Status": 1,
-                            "Qty": max(1, int(qty or 1)),
-                            "Name": description or path.stem,
-                            "PartName": description or path.stem,
-                            "Description": description or path.stem,
-                            "FileName": path.name,
-                            "Machine": "Laser",
-                            "Material": material,
-                            "Thickness": thickness,
-                            "Thickness_Units": "inch",
-                        }
-                    )
+        cad_n = lin_n = comp_n = 0
+        for row in bom_rows or []:
+            pn = str(row.get("part_no") or row.get("part_number") or "").strip()
+            noun = str(row.get("description") or "")
+            cat = classify_sectura_item(f"{pn} {noun}")
+            if cat == "Cad":
+                cad_n += 1
+            elif cat == "Linear":
+                lin_n += 1
             else:
-                notes.append(
-                    f"CadImport FileList kept {len(file_list)} upload row(s) "
-                    f"(SourceDataID/FileID for Finish calculators)"
-                )
-                for row in file_list:
-                    row["Status"] = row.get("Status") or 1
-                    row["Qty"] = max(1, int(row.get("Qty") or qty or 1))
-                    row["Machine"] = row.get("Machine") or "Laser"
-                    if material:
-                        row["Material"] = material
-                    if thickness:
-                        row["Thickness"] = thickness
-                        row["Thickness_Units"] = row.get("Thickness_Units") or "inch"
-                if bom_rows:
-                    classified, class_notes = self.classify_cadimport_rows(
-                        file_list,
-                        default_material=material,
-                        default_thickness=thickness,
-                        bom_rows=bom_rows,
-                        library=library,
-                        extra_pdfs=extra_pdfs,
-                        qty=qty,
-                    )
-                    file_list = classified
-                    notes.extend(class_notes)
-            cad_rows: list[dict[str, Any]] = []
-            for row in file_list:
-                prepared = prepare_pdf_newline_fields(row)
-                holes = _holes_from_noun(
-                    str(prepared.get("Name") or prepared.get("Description") or "")
-                )
-                if holes:
-                    from .website import internal_data_from_holes
+                comp_n += 1
+        if bom_rows:
+            notes.append(
+                f"BOM classify Cad:{cad_n} Linear:{lin_n} Component:{comp_n}"
+            )
 
-                    prepared["InternalData"] = internal_data_from_holes(holes)
-                cat = str(prepared.get("Category") or prepared.get("ItemType") or "")
-                if cat == "Linear":
-                    continue
-                if cat == "Component":
-                    continue
-                cad_rows.append(prepared)
-            if not cad_rows:
+        part_materials = build_part_material_map(
+            library_folder=(library or {}).get("folder"),
+            related_pdf_names=list((library or {}).get("related_pdfs") or []),
+            extra_pdfs=extra_pdfs,
+        )
+        posted_n = 0
+        for path in pdf_files:
+            stem = path.stem
+            pn = match_bom_part_no(stem, bom_rows) or stem
+            noun = ""
+            row_qty = max(1, int(qty or 1))
+            for brow in bom_rows or []:
+                bpn = str(brow.get("part_no") or brow.get("part_number") or "").strip()
+                if bpn == pn:
+                    noun = str(brow.get("description") or "")
+                    try:
+                        row_qty = max(1, int(brow.get("qty") or brow.get("quantity") or qty or 1))
+                    except (TypeError, ValueError):
+                        row_qty = max(1, int(qty or 1))
+                    break
+            cat = classify_sectura_item(f"{pn} {noun}")
+            if cat != "Cad":
                 notes.append(
-                    "WARNING: CadImport listed rows but none were Cad for "
-                    "AddItem_PDFFiles (New Line Item fields not posted)"
+                    f"Skipped Image Files {path.name} — {cat} goes Long/Component"
                 )
-            if cad_rows:
-                try:
-                    self.client.add_item_pdf_files(
+                continue
+            locked = locked_cad_spec(pn) or {}
+            pm = lookup_part_material(part_materials, pn)
+            plate_mat = (
+                locked.get("grade")
+                or (pm.material if pm and pm.material else None)
+                or material
+            )
+            plate_thk = locked.get("thickness")
+            if plate_thk is None and pm and pm.thickness_in:
+                plate_thk = pm.thickness_in
+            if plate_thk is None:
+                plate_thk = thickness
+            plate_w = locked.get("width_in")
+            plate_l = locked.get("length_in")
+            part_name = format_cad_description(
+                pn,
+                thickness=plate_thk,
+                grade=plate_mat,
+                width_in=plate_w,
+                length_in=plate_l,
+                noun=locked.get("noun") or noun or description,
+            )
+            try:
+                with path.open("rb") as fh:
+                    upload = self.client.upload_item_pdf_attachment(
+                        [("files", (path.name, fh, _mime_for(path)))],
                         quote_id=quote_id,
-                        file_list=cad_rows,
-                        item_id=EMPTY_GUID,
-                        customer_material=False,
                     )
-                except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
-                    notes.append(f"WARNING: AddItem_PDFFiles batch: {exc}")
-                posted = self._read_quote_items(quote_id)
-                if count_cad_product_type(posted) <= 0:
-                    for row in cad_rows:
-                        try:
-                            self.client.add_item_pdf_files(
-                                quote_id=quote_id,
-                                file_list=[row],
-                                item_id=EMPTY_GUID,
-                                customer_material=False,
-                            )
-                        except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
-                            notes.append(
-                                f"WARNING: AddItem_PDFFiles "
-                                f"{row.get('FileName') or row.get('Name')}: {exc}"
-                            )
-            posted = self._read_quote_items(quote_id)
-            cad_n = count_cad_product_type(posted)
-            if cad_n <= 0:
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
                 notes.append(
-                    f"WARNING: AddItem_PDFFiles posted {len(cad_rows)} FileList "
-                    f"row(s) but item read has 0 ProductType 100 lines "
-                    f"(CadImport list is not success)"
+                    f"WARNING: Attachment/UploadItem_PDFFiles {path.name}: {exc}"
                 )
-            else:
+                continue
+            notes.append(
+                f"Uploaded Image Files via /Attachment/UploadItem_PDFFiles {path.name}"
+            )
+            row = filelist_row_from_attachment_upload(
+                upload,
+                part_name=part_name,
+                description=part_name,
+                qty=row_qty,
+                material=plate_mat,
+                thickness=plate_thk,
+                length=plate_l,
+                width=plate_w,
+                file_name=path.name,
+            )
+            holes = _holes_from_noun(f"{pn} {noun} {part_name}")
+            if holes:
+                from .website import internal_data_from_holes
+
+                row["InternalData"] = internal_data_from_holes(holes)
+            if not attachment_pdf_filelist_ready(row):
                 notes.append(
-                    f"Image Files persisted {cad_n} Cad ProductType 100 line(s) "
-                    f"via /Quote/AddItem_PDFFiles"
+                    f"WARNING: AddItem_PDFFiles skipped {path.name} — "
+                    "FileList missing Thickness/Length/Width/ItemType=cad "
+                    "(CadImport-only rows are not posted)"
                 )
-        finally:
-            for fh in open_files:
-                fh.close()
+                continue
+            try:
+                self.client.add_item_pdf_files(
+                    quote_id=quote_id,
+                    file_list=[row],
+                    item_id=EMPTY_GUID,
+                    customer_material=False,
+                )
+                posted_n += 1
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
+                notes.append(
+                    f"WARNING: AddItem_PDFFiles {path.name}: {exc}"
+                )
+        posted = self._read_quote_items(quote_id)
+        cad_persisted = count_cad_product_type(posted)
+        if cad_persisted <= 0:
+            notes.append(
+                f"WARNING: AddItem_PDFFiles posted {posted_n} FileList "
+                f"row(s) but item read has 0 ProductType 100 lines "
+                f"(CadImport list is not success)"
+            )
+        else:
+            notes.append(
+                f"Image Files persisted {cad_persisted} Cad ProductType 100 line(s) "
+                f"via /Quote/AddItem_PDFFiles"
+            )
         notes.append(
             "Image Files Finish POST /Quote/AddItem_PDFFiles: "
             + ", ".join(p.name for p in pdf_files)
@@ -1626,10 +1706,17 @@ class SecturaFabPushService:
         )
         if mismatch:
             notes.append(f"WARNING: {mismatch}")
-        if not product_id:
+        product, sku2, _note2 = self._match_linear_product(
+            description, material=material
+        )
+        del sku2, _note2
+        bind = self._linear_catalog_bind(product)
+        if not product_id or not bind:
             raise SecturaFabApiError(
-                "Loose linear has no matching ProductID/SKU in the catalog"
+                "Loose linear has no matching ProductID/productConfigID in the catalog"
             )
+        extra = {k: v for k, v in bind.items() if k != "sku"}
+        extra["productType"] = linear_website_product_type(description, sku=sku)
         self.client.add_item_linear(
             quote_id=quote_id,
             product_id=product_id,
@@ -1638,6 +1725,7 @@ class SecturaFabPushService:
             material=material,
             machine="Saw",
             name=description,
+            extra=extra,
         )
         notes.append(
             f"Long POST /Quote/AddItem_Linear SKU={sku or product_id} "
@@ -1847,20 +1935,31 @@ class SecturaFabPushService:
                 )
                 or confirmed_cut_length_in(pn)
             )
-            product_id, sku, mismatch = self._match_linear_sku(
-                f"{pn} {noun}", material=material
+            product, sku, mismatch = self._match_linear_product(
+                f"{pn} {noun}", material=material, row=row
             )
             if mismatch:
                 notes.append(f"WARNING: {mismatch}")
+            product_id = str((product or {}).get("ID") or "") or None
             if not product_id:
                 notes.append(
                     f"WARNING: Linear {pn} has no catalog ProductID — skipped Finish"
                 )
                 continue
+            bind = self._linear_catalog_bind(product)
+            if not bind or not is_tenant_guid(bind.get("productConfigID")):
+                notes.append(
+                    f"WARNING: Linear {pn} has no tenant productConfigID from "
+                    "Read_DataLinearlookup — skipped AddItem_Linear "
+                    "(empty GUID 500s)"
+                )
+                continue
             name = format_linear_description(
-                pn, sku=sku, length_in=length, noun=noun
+                pn, sku=sku or bind.get("sku"), length_in=length, noun=noun
             )
             pt = linear_website_product_type(f"{pn} {noun} {name}", sku)
+            extra = {k: v for k, v in bind.items() if k != "sku"}
+            extra["productType"] = pt
             if not _looks_like_product_id(product_id):
                 notes.append(
                     f"WARNING: Linear {pn} ProductID {product_id!r} is not a "
@@ -1885,7 +1984,7 @@ class SecturaFabPushService:
                     material=material,
                     machine="Saw",
                     name=name,
-                    extra={"productType": pt},
+                    extra=extra,
                 )
             except Exception as exc:
                 notes.append(

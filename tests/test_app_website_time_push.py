@@ -28,6 +28,7 @@ from secturafab.push import (
 )
 from secturafab.qa_harness import evaluate_quote_get
 from secturafab.website import (
+    EMPTY_GUID,
     WELD_CALC_PARAM_TYPE,
     WELD_OPERATION_CODE,
     build_add_feature_payload,
@@ -50,6 +51,12 @@ def _bom_rows() -> list[dict]:
         {"part_no": pn, "qty": qty, "description": desc}
         for _i, qty, pn, desc in DASH_1001898
     ]
+
+
+def test_classify_1004747_angles_channel_tube_are_linear():
+    assert classify_sectura_item("32259-1 RETAINER BAR, HOSE") == "Linear"
+    assert classify_sectura_item("1004740-1 MASTER CYLINDER MOUNT CHANNEL") == "Linear"
+    assert classify_sectura_item("25060-6 TUBE, PIVOT") == "Linear"
 
 
 def test_classify_plate_over_three_quarter_is_component():
@@ -406,7 +413,14 @@ def test_ensure_weld_ops_uses_add_operation_when_cookie():
                 "IsAssembly": True,
                 "Quantity": 1,
                 "OperationCostList": [],
-            }
+            },
+            {
+                "ID": "cad-1",
+                "Description": "14501-1 PEDESTAL TOP PLATE",
+                "ProductType": 100,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
         ]
     }
     client.add_operation.return_value = {"ok": True}
@@ -429,28 +443,20 @@ def test_ensure_weld_ops_uses_add_operation_when_cookie():
 
 
 def test_cadimport_rows_are_not_success_without_product_type_100_read(tmp_path, monkeypatch):
-    """CadImport FileList + AddItem_PDFFiles 200 is not success until item read shows PT 100."""
+    """Attachment FileList + AddItem_PDFFiles 200 is not success until item read shows PT 100."""
     monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
     pdf = tmp_path / "14501-1.pdf"
     pdf.write_bytes(b"%PDF")
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=box"
     client.get_item_add_view.return_value = {}
-    client.upload_item_dxf_files.return_value = {
-        "status": "OK",
-        "List": [
-            {
-                "Status": 0,
-                "Qty": 1,
-                "FileName": "14501-1.pdf",
-                "Name": "14501-1 PEDESTAL TOP PLATE",
-                "Machine": "Laser",
-                "Stock_X": 11.0,
-                "Stock_Y": 6.25,
-                "Material": "A572",
-                "Thickness": 0.25,
-            }
-        ],
+    client.upload_item_pdf_attachment.return_value = {
+        "FileID": "att-1",
+        "ImageID": "img-1",
+        "FileName": "14501-1.pdf",
+        "Thickness": 0.1875,
+        "Length": 21.875,
+        "Width": 21.875,
     }
     client.add_item_pdf_files.return_value = {"ok": True}
     client.quote_item_read.return_value = {"Data": [], "Total": 0}
@@ -459,23 +465,27 @@ def test_cadimport_rows_are_not_success_without_product_type_100_read(tmp_path, 
     notes = SecturaFabPushService(client=client).finish_pdf_files(
         quote_id="11111111-aaaa-bbbb-cccc-000000000010",
         pdf_files=[pdf],
-        material="A572",
-        thickness="0.25",
+        material="A36",
+        thickness="0.1875",
         qty=1,
         description="14501-1 PEDESTAL TOP PLATE",
     )
+    client.upload_item_dxf_files.assert_not_called()
+    assert client.upload_item_pdf_attachment.called
     assert client.add_item_pdf_files.called
     posted = client.add_item_pdf_files.call_args_list[0].kwargs["file_list"][0]
+    assert posted["ItemType"] == "cad"
     assert posted["Status"] == 1
-    assert posted["Machine"] == "Laser - Bay1"
-    assert int(posted["ProductType"]) == 100
-    assert posted["Width"] == 11.0
-    assert posted["Length"] == 6.25
+    assert posted["Machine"] == "Laser"
+    assert posted["Thickness"] not in (None, "")
+    assert posted["Length"] not in (None, "")
+    assert posted["Width"] not in (None, "")
     assert client.quote_item_read.called or client.get_json.called
     blob = " ".join(notes)
     assert "0 ProductType 100" in blob
     assert "CadImport list is not success" in blob
     assert "persisted" not in blob.lower()
+    assert "/Attachment/UploadItem_PDFFiles" in blob
 
 
 def test_linear_http_500_does_not_abort_weld_or_nest(tmp_path, monkeypatch):
@@ -590,11 +600,29 @@ def test_finish_linear_bom_rows_500_is_warning_not_raise(monkeypatch):
     client.quote_item_read.return_value = {"Data": [], "Total": 0}
     client.get_json.return_value = {"ItemList": []}
     svc = SecturaFabPushService(client=client)
+    product = {
+        "ID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "ProductName": "L1/2X1/2X1/8-A36",
+        "ProductSubType": "bar",
+        "Dim1": 0.5,
+        "Dim2": 0.5,
+        "Dim3": 0.125,
+        "WeightLength": 0.38,
+    }
+    bind = {
+        "productID": product["ID"],
+        "productConfigID": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "productSubType": "bar",
+        "dim1": 0.5,
+        "dim2": 0.5,
+        "dim3": 0.125,
+        "dim4": 0,
+        "weightLength": 0.38,
+        "sku": "L1/2X1/2X1/8-A36",
+    }
     with patch.object(
-        svc,
-        "_match_linear_sku",
-        return_value=("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "HOSE", None),
-    ):
+        svc, "_match_linear_product", return_value=(product, "L1/2X1/2X1/8-A36", None)
+    ), patch.object(svc, "_linear_catalog_bind", return_value=bind):
         notes = svc.finish_linear_bom_rows(
             quote_id="11111111-aaaa-bbbb-cccc-000000000012",
             linear_rows=[
@@ -612,16 +640,85 @@ def test_finish_linear_bom_rows_500_is_warning_not_raise(monkeypatch):
     blob = " ".join(notes)
     assert "500" in blob or "continuing" in blob
     assert "not aborting weld/nest" in blob
+    extra = client.add_item_linear.call_args.kwargs.get("extra") or {}
+    assert extra.get("productConfigID") != EMPTY_GUID
+    assert extra.get("productSubType")
+    assert extra.get("weightLength") not in (None, "")
+
+
+def test_linear_without_catalog_config_does_not_post(monkeypatch):
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    svc = SecturaFabPushService(client=client)
+    product = {"ID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "ProductName": "C3X4.1-A36"}
+    with patch.object(
+        svc, "_match_linear_product", return_value=(product, "C3X4.1-A36", None)
+    ), patch.object(svc, "_linear_catalog_bind", return_value=None):
+        notes = svc.finish_linear_bom_rows(
+            quote_id="11111111-aaaa-bbbb-cccc-000000000013",
+            linear_rows=[
+                {
+                    "part_no": "1004740-1",
+                    "description": "MASTER CYLINDER MOUNT CHANNEL",
+                    "qty": 1,
+                    "cut_length_in": 12.5,
+                }
+            ],
+            material="A36",
+            library={},
+            extra_pdfs=[],
+        )
+    client.add_item_linear.assert_not_called()
+    assert any("productConfigID" in n for n in notes)
 
 
 def test_forbidden_includes_empty_1004747_draft():
     assert "5e111cd2-73d1-44e1-9602-f2a4a3de2fb4" in FORBIDDEN_LIVE_QUOTE_IDS
-    with pytest.raises(ForbiddenQuoteError, match="forbidden"):
-        refuse_forbidden_quote_write(
-            method="POST",
-            path="/Quote/AddItem_PDFFiles",
-            payload={"ID": "5e111cd2-73d1-44e1-9602-f2a4a3de2fb4"},
-        )
+    assert "936b5c6c-2fc5-4b28-a8f6-015db289cb4f" in FORBIDDEN_LIVE_QUOTE_IDS
+    for qid in (
+        "5e111cd2-73d1-44e1-9602-f2a4a3de2fb4",
+        "936b5c6c-2fc5-4b28-a8f6-015db289cb4f",
+    ):
+        with pytest.raises(ForbiddenQuoteError, match="forbidden"):
+            refuse_forbidden_quote_write(
+                method="POST",
+                path="/Quote/AddItem_PDFFiles",
+                payload={"ID": qid},
+            )
+
+
+def test_weld_does_not_post_before_cad_or_linear_kids():
+    from secturafab.weld_ops import ensure_weld_ops
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "asm-1",
+                "Description": "1004747-1 - OUTER BOOM WELDMENT",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "Quantity": 1,
+                "OperationCostList": [],
+            }
+        ]
+    }
+    notes = ensure_weld_ops(
+        client,
+        "new-qid",
+        times={
+            "weld_minutes": 154.33,
+            "total_inches": 308.66,
+            "fitup_with_fixture_minutes": 108.0,
+        },
+        part_key="1004747-1",
+    )
+    client.add_operation.assert_not_called()
+    assert any("no Cad/Linear kids" in n for n in notes)
 
 
 def test_no_symbols_skips_weld():

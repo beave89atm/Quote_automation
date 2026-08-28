@@ -113,24 +113,56 @@ def test_filter_filelist_matches_js_grid_rule():
 def test_pdf_and_linear_payloads_share_id_itemid():
     pdf = build_pdf_finish_payload(
         "qid",
-        [{"Status": 1, "Qty": 1, "Machine": "Laser", "FileName": "a.pdf"}],
+        [
+            {
+                "Status": 1,
+                "Qty": 1,
+                "Machine": "Laser",
+                "FileName": "a.pdf",
+                "ItemType": "cad",
+                "Thickness": 0.25,
+                "Length": 6.25,
+                "Width": 11.0,
+            }
+        ],
     )
     assert pdf["ID"] == "qid"
     assert pdf["ItemID"] == EMPTY_GUID
     assert set(pdf.keys()) == {"ID", "ItemID", "FileList"}
     assert "customerMaterial" not in pdf
     assert list(pdf["FileList"][0].keys()) == list(PDF_GETDATA_FIELDS)
-    linear = build_linear_add_payload("qid", product_id="pid-1", qty=2, length=10.9)
+    _lin_extra = {
+        "productConfigID": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "productSubType": "bar",
+        "dim1": 1,
+        "dim2": 0,
+        "dim3": 0,
+        "dim4": 0,
+        "weightLength": 1.2,
+    }
+    linear = build_linear_add_payload(
+        "qid", product_id="pid-1", qty=2, length=10.9, extra=_lin_extra
+    )
     assert linear["ID"] == "qid"
     assert linear["productID"] == "pid-1"
     assert linear["qty"] == 2
     assert linear["productType"] == 10
     angle = build_linear_add_payload(
-        "qid", product_id="pid-ang", qty=2, length=125, name="29860-3 PEDESTAL BRACE ANGLE"
+        "qid",
+        product_id="pid-ang",
+        qty=2,
+        length=125,
+        name="29860-3 PEDESTAL BRACE ANGLE",
+        extra={**_lin_extra, "productSubType": "angle"},
     )
     assert angle["productType"] == 40
     tube = build_linear_add_payload(
-        "qid", product_id="pid-tube", qty=1, length=16, name="1001880-2 PEDESTAL TUBE"
+        "qid",
+        product_id="pid-tube",
+        qty=1,
+        length=16,
+        name="1001880-2 PEDESTAL TUBE",
+        extra={**_lin_extra, "productSubType": "tube"},
     )
     assert tube["productType"] == 30
     assert list(linear.keys()) == list(LINEAR_ADD_FIELDS)
@@ -153,7 +185,8 @@ def test_pdf_finish_payload_commits_cadimport_newline_fields():
     }
     prepared = prepare_pdf_newline_fields(raw)
     assert prepared["Status"] == 1
-    assert prepared["Machine"] == "Laser - Bay1"
+    assert prepared["Machine"] == "Laser"
+    assert prepared["ItemType"] == "cad"
     assert int(prepared["ProductType"]) == 100
     assert prepared["Width"] == 11.0
     assert prepared["Length"] == 6.25
@@ -161,10 +194,84 @@ def test_pdf_finish_payload_commits_cadimport_newline_fields():
     assert len(payload["FileList"]) == 1
     row = payload["FileList"][0]
     assert row["Status"] == 1
-    assert row["Machine"] == "Laser - Bay1"
+    assert row["Machine"] == "Laser"
+    assert row["ItemType"] == "cad"
     assert int(row["ProductType"]) == 100
     assert row["Width"] == 11.0
     assert row["Length"] == 6.25
+    assert row["Thickness"] == 0.25
+
+
+def test_cadimport_only_filelist_is_not_additem_pdf_body():
+    """CadImport identity without Thickness/Length/Width/ItemType=cad must not POST."""
+    from secturafab.website import (
+        attachment_pdf_filelist_ready,
+        is_cadimport_only_filelist_row,
+    )
+
+    cadimport_only = {
+        "SourceDataID": "src-1",
+        "FileID": "file-1",
+        "CadType": 0,
+        "Status": 1,
+        "Qty": 1,
+        "Machine": "Laser",
+        "FileName": "32259-1.pdf",
+        "Name": "32259-1",
+    }
+    assert is_cadimport_only_filelist_row(cadimport_only) is True
+    assert attachment_pdf_filelist_ready(cadimport_only) is False
+    payload = build_pdf_finish_payload("qid", [cadimport_only])
+    assert payload["FileList"] == []
+
+
+def test_linear_payload_rejects_empty_config_guid():
+    with pytest.raises(ValueError, match="productConfigID"):
+        build_linear_add_payload(
+            "qid",
+            product_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            qty=1,
+            length=12.5,
+            extra={"productConfigID": EMPTY_GUID, "productSubType": "bar"},
+        )
+    with pytest.raises(ValueError, match="productConfigID"):
+        build_linear_add_payload(
+            "qid",
+            product_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            qty=1,
+            length=12.5,
+        )
+
+
+def test_linear_bind_uses_20ft_config_and_catalog_dims():
+    from secturafab.website import linear_bind_fields, pick_linear_config_id
+
+    cfg20 = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    cfg24 = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    configs = [
+        {"ID": cfg24, "Name": "24 ft"},
+        {"ID": EMPTY_GUID, "Name": "20 ft"},
+        {"ID": cfg20, "Name": "20 ft"},
+    ]
+    assert pick_linear_config_id(configs) == cfg20
+    bind = linear_bind_fields(
+        {
+            "ID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "ProductName": "L1/2X1/2X1/8-A36",
+            "ProductSubType": "bar",
+            "Dim1": 0.5,
+            "Dim2": 0.5,
+            "Dim3": 0.125,
+            "WeightLength": 0.38,
+        },
+        configs,
+    )
+    assert bind is not None
+    assert bind["productConfigID"] == cfg20
+    assert bind["productConfigID"] != EMPTY_GUID
+    assert bind["productSubType"] == "bar"
+    assert bind["dim1"] == 0.5
+    assert bind["weightLength"] == 0.38
 
 
 def test_getpdfdata_keeps_status_gt_zero_only():
@@ -186,6 +293,8 @@ def test_website_paths_are_quote_mvc_not_quickadd():
     assert WEBSITE_FINISH_PATHS["copy_move_to_assembly"] == "/Quote/CopyMoveItemToAssembly"
     assert WEBSITE_FINISH_PATHS["add_feature"] == "/Quote/AddFeature"
     assert WEBSITE_FINISH_PATHS["upload_dxf"] == "/CadImport/UploadItem_DXFFiles"
+    assert WEBSITE_FINISH_PATHS["upload_pdf_attachment"] == "/Attachment/UploadItem_PDFFiles"
+    assert WEBSITE_FINISH_PATHS["linear_lookup"] == "/Product/Read_DataLinearlookup"
     assert "quickAddCAD" not in str(WEBSITE_FINISH_PATHS)
 
 
@@ -404,6 +513,9 @@ def test_add_item_pdf_files_posts_quote_mvc():
                 "Machine": "Laser",
                 "Material": "A36",
                 "Thickness": 0.25,
+                "Length": 6.25,
+                "Width": 11.0,
+                "ItemType": "cad",
                 "FileName": "14500-1.pdf",
                 "Name": "14500-1 PEDESTAL TOP PLATE",
             }
@@ -418,9 +530,13 @@ def test_add_item_pdf_files_posts_quote_mvc():
     form = dict(captured["data"])
     assert form["ID"] == "qid"
     assert form["ItemID"] == EMPTY_GUID
-    assert form["FileList[0][Machine]"] == "Laser - Bay1"
+    assert form["FileList[0][Machine]"] == "Laser"
+    assert form["FileList[0][ItemType]"] == "cad"
     assert form["FileList[0][ProductType]"] == "100"
     assert form["FileList[0][Status]"] == "1"
+    assert form["FileList[0][Thickness]"] == "0.25"
+    assert form["FileList[0][Length]"] == "6.25"
+    assert form["FileList[0][Width]"] == "11.0"
     assert form["FileList[0][FileName]"] == "14500-1.pdf"
     assert form["FileList[0][PartName]"] == "14500-1 PEDESTAL TOP PLATE"
     assert "customerMaterial" not in form
@@ -464,6 +580,15 @@ def test_add_item_linear_posts_quote_mvc():
         material="A500",
         machine="Saw",
         name="1001880-2 TUBE",
+        extra={
+            "productConfigID": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "productSubType": "tube",
+            "dim1": 2,
+            "dim2": 4,
+            "dim3": 0.25,
+            "dim4": 0,
+            "weightLength": 3.1,
+        },
     )
     assert captured["path"] == "/Quote/AddItem_Linear"
     assert captured["method"] == "POST"
@@ -481,7 +606,11 @@ def test_add_item_linear_posts_quote_mvc():
     assert body["productType"] == "30"
     assert body["machine"] == "Saw"
     assert body["name"] == "1001880-2 TUBE"
-    assert body["productConfigID"] == EMPTY_GUID
+    assert body["productConfigID"] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    assert body["productConfigID"] != EMPTY_GUID
+    assert body["productSubType"] == "tube"
+    assert body["dim1"] == "2"
+    assert body["weightLength"] == "3.1"
     assert "SKU" not in body
     assert "ProductID" not in body
 

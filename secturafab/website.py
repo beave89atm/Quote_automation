@@ -3,12 +3,14 @@
 Recovered from QuoteOrderEdit JS (not in public OpenAPI). controllerName = '/Quote'.
 
   GET  /Quote/GetItem_AddView?ID={quoteId}&ItemType=dxf
-  POST /CadImport/UploadItem_DXFFiles
+  POST /Attachment/UploadItem_PDFFiles  (Image Files plates — not CadImport)
+  POST /CadImport/UploadItem_DXFFiles   (STEP / DXF CAD Files only)
   GET  /CadImport/Data
   POST /CadImport/UpdateData, UpdateDataNext, SetPartMode, SetUnits, ConvertTo
   POST /Quote/AddItem_DXFFiles   data { ID, ItemID, customerMaterial, FileList }
-  POST /Quote/AddItem_PDFFiles   urlencoded { ID, ItemID, FileList: GetPDFData() }
+  POST /Quote/AddItem_PDFFiles   urlencoded { ID, ItemID, FileList } one part
   POST /Quote/AddItem_Linear     urlencoded OnAddLinearClick field bag
+  GET  /Product/Read_DataLinearlookup?ProductID=  (20ft/21ft productConfigID)
   POST /Quote/NestQuote_Edit
   POST /Quote/NestQuoteMultiPart_Renest
 
@@ -27,6 +29,17 @@ import re
 from typing import Any
 
 EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
+_GUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+_FT_RE = re.compile(r"(?i)(\d+(?:\.\d+)?)\s*(?:'|ft|feet)\b")
+
+
+def is_tenant_guid(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text or text == EMPTY_GUID:
+        return False
+    return bool(_GUID_RE.fullmatch(text))
 
 # SetPartMode requires an integer (strings 500). Verified 0..4 HTTP 200 on empty guid.
 # Mapping follows Kyle UI categories + Q10056 ProductType (100 Cad, 10/30/40 Linear, 200 Component).
@@ -54,6 +67,8 @@ PART_MODE_BY_CATEGORY = {
 
 WEBSITE_FINISH_PATHS = {
     "get_item_add_view": "/Quote/GetItem_AddView",
+    "upload_pdf_attachment": "/Attachment/UploadItem_PDFFiles",
+    "linear_lookup": "/Product/Read_DataLinearlookup",
     "upload_dxf": "/CadImport/UploadItem_DXFFiles",
     "cadimport_data": "/CadImport/Data",
     "cadimport_update_data": "/CadImport/UpdateData",
@@ -419,8 +434,8 @@ def filter_pdf_filelist(rows: list[dict[str, Any]] | None) -> list[dict[str, Any
 def prepare_pdf_newline_fields(row: dict[str, Any]) -> dict[str, Any]:
     """Commit Image Files New Line Item fields (not CadImport list-only).
 
-    CadImport Stock_X/Y is the drawing flat. Never use a PDF page outline.
-    Machine is Laser Bay 1. ProductType 100. Status>0 so GetPDFData keeps the row.
+    Drawing flat is Length/Width (or CadImport Stock_X/Y). Never a PDF page outline.
+    Proven Image Files FileList uses ItemType=cad, Machine=Laser, Status>0.
     """
     out = dict(row)
     try:
@@ -430,8 +445,10 @@ def prepare_pdf_newline_fields(row: dict[str, Any]) -> dict[str, Any]:
     if status <= 0:
         out["Status"] = 1
     machine = str(out.get("Machine") or "").strip()
-    if not machine or machine.casefold() == "laser":
-        out["Machine"] = "Laser - Bay1"
+    if not machine or machine.casefold() in {"laser", "laser - bay1", "laser-bay1"}:
+        out["Machine"] = "Laser"
+    if str(out.get("ItemType") or "").casefold() != "linear":
+        out["ItemType"] = "cad"
     out["ProductType"] = out.get("ProductType") or 100
     try:
         if int(out["ProductType"]) != 100 and not out.get("IsLinear"):
@@ -464,6 +481,104 @@ def slim_pdf_grid_row(row: dict[str, Any]) -> dict[str, Any]:
     for key in PDF_GETDATA_FIELDS:
         slim[key] = src[key] if key in src and src[key] is not None else ""
     return slim
+
+
+def _first_upload_row(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, list):
+        for row in payload:
+            if isinstance(row, dict):
+                return row
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    for key in ("List", "Data", "Results", "Result", "File", "NewItem"):
+        inner = payload.get(key)
+        if isinstance(inner, list):
+            for row in inner:
+                if isinstance(row, dict):
+                    return row
+        if isinstance(inner, dict):
+            nested = inner.get("NewItem") or inner.get("File") or inner.get("Result")
+            if isinstance(nested, dict):
+                return nested
+            if inner.get("FileID") or inner.get("ID") or inner.get("ImageID"):
+                return inner
+    if payload.get("FileID") or payload.get("ImageID") or payload.get("ID"):
+        return payload
+    return {}
+
+
+def filelist_row_from_attachment_upload(
+    payload: Any,
+    *,
+    part_name: str,
+    description: str = "",
+    qty: int = 1,
+    material: str = "A36",
+    thickness: Any = None,
+    length: Any = None,
+    width: Any = None,
+    file_name: str = "",
+) -> dict[str, Any]:
+    """FileList row after POST /Attachment/UploadItem_PDFFiles (not CadImport)."""
+    src = _first_upload_row(payload)
+    file_id = src.get("FileID") or src.get("ID") or src.get("ImageID") or ""
+    image_id = src.get("ImageID") or file_id
+    length = length if length not in (None, "") else (
+        src.get("Length") or src.get("Stock_Y")
+    )
+    width = width if width not in (None, "") else (
+        src.get("Width") or src.get("Stock_X")
+    )
+    thickness = thickness if thickness not in (None, "") else src.get("Thickness")
+    return prepare_pdf_newline_fields(
+        {
+            "Status": 1,
+            "ItemType": "cad",
+            "ItemID": EMPTY_GUID,
+            "FileID": file_id,
+            "ImageID": image_id,
+            "FileName": file_name or src.get("FileName") or "",
+            "PartName": part_name,
+            "Description": description or part_name,
+            "Qty": max(1, int(qty or 1)),
+            "Machine": "Laser",
+            "Material": material or "A36",
+            "Thickness": thickness,
+            "Thickness_Units": "inch",
+            "Length": length,
+            "Length_Units": "inch",
+            "Width": width,
+            "Width_Units": "inch",
+            "ProductType": 100,
+        }
+    )
+
+
+def attachment_pdf_filelist_ready(row: dict[str, Any] | None) -> bool:
+    """True only when Image Files New Line Item fields are present."""
+    if not isinstance(row, dict):
+        return False
+    if str(row.get("ItemType") or "").strip().casefold() != "cad":
+        return False
+    try:
+        thickness = float(row.get("Thickness") or 0)
+        length = float(row.get("Length") or 0)
+        width = float(row.get("Width") or 0)
+        status = float(row.get("Status") or 0)
+    except (TypeError, ValueError):
+        return False
+    return thickness > 0 and length > 0 and width > 0 and status > 0
+
+
+def is_cadimport_only_filelist_row(row: dict[str, Any] | None) -> bool:
+    """CadImport identity without Attachment New Line Item fields."""
+    if not isinstance(row, dict):
+        return False
+    has_cadimport = bool(row.get("SourceDataID")) or "CadType" in row
+    return has_cadimport and not attachment_pdf_filelist_ready(
+        prepare_pdf_newline_fields(row)
+    )
 
 
 def quote_item_rows(payload: Any) -> list[dict[str, Any]]:
@@ -501,6 +616,104 @@ def count_linear_product_type(payload: Any) -> int:
     return n
 
 
+def linear_lookup_rows(payload: Any) -> list[dict[str, Any]]:
+    """Rows from /Product/Read_DataLinearlookup or a catalog product.Configs."""
+    rows = quote_item_rows(payload)
+    if rows:
+        return rows
+    if isinstance(payload, dict):
+        for key in ("Configs", "ProductConfigList", "ProductConfigs", "List"):
+            inner = payload.get(key)
+            if isinstance(inner, list):
+                return [r for r in inner if isinstance(r, dict)]
+    return []
+
+
+def pick_linear_config_id(rows: list[dict[str, Any]] | None) -> str | None:
+    """Prefer the 20ft/21ft stock config GUID. Empty GUID is never a bind."""
+    ranked: list[tuple[float, str]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        cid = row.get("ID") or row.get("ProductConfigID") or row.get("ConfigID")
+        if not is_tenant_guid(cid):
+            continue
+        label = " ".join(
+            str(row.get(k) or "")
+            for k in ("Name", "Description", "Length", "StockLength")
+        )
+        feet = None
+        match = _FT_RE.search(label)
+        if match:
+            try:
+                feet = float(match.group(1))
+            except (TypeError, ValueError):
+                feet = None
+        score = 10.0
+        if feet in (20.0, 21.0):
+            score = 100.0
+        elif feet:
+            score = 20.0
+        ranked.append((score, str(cid)))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return ranked[0][1]
+
+
+def linear_bind_fields(
+    product: dict[str, Any] | None,
+    configs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """productID + productConfigID + subtype/dims/weightLength for AddItem_Linear."""
+    if not isinstance(product, dict):
+        return None
+    pid = product.get("ID") or product.get("ProductID")
+    if not is_tenant_guid(pid):
+        return None
+    nested = list(configs or [])
+    if not nested:
+        nested = linear_lookup_rows(product)
+    cfg = pick_linear_config_id(nested)
+    if not cfg:
+        return None
+    sku = str(
+        product.get("ProductName")
+        or product.get("SKU")
+        or product.get("ProductCode")
+        or ""
+    )
+    subtype = str(
+        product.get("ProductSubType") or product.get("productSubType") or ""
+    ).strip()
+    if not subtype:
+        pt = linear_website_product_type(sku or str(product.get("Name") or ""))
+        subtype = {10: "bar", 30: "tube", 40: "angle"}.get(int(pt), "tube")
+    def _dim(n: int) -> Any:
+        return product.get(f"Dim{n}") or product.get(f"dim{n}") or 0
+
+    return {
+        "productID": str(pid),
+        "productConfigID": cfg,
+        "productSubType": subtype,
+        "dim1": _dim(1),
+        "dim1_Unit": product.get("Dim1_Unit") or product.get("dim1_Unit") or "inch",
+        "dim2": _dim(2),
+        "dim2_Unit": product.get("Dim2_Unit") or product.get("dim2_Unit") or "inch",
+        "dim3": _dim(3),
+        "dim3_Unit": product.get("Dim3_Unit") or product.get("dim3_Unit") or "inch",
+        "dim4": _dim(4),
+        "dim4_Unit": product.get("Dim4_Unit") or product.get("dim4_Unit") or "inch",
+        "weightLength": product.get("WeightLength") or product.get("weightLength") or 0,
+        "weightLength_Units": (
+            product.get("WeightLength_Unit")
+            or product.get("weightLength_Units")
+            or "pound/foot"
+        ),
+        "sku": sku or None,
+    }
+
+
 def jquery_ajax_form(value: Any, prefix: str = "") -> list[tuple[str, str]]:
     """jQuery $.param (traditional=false) — ajax default urlencoding."""
     pairs: list[tuple[str, str]] = []
@@ -527,16 +740,18 @@ def build_pdf_finish_payload(
     item_id: str | None = None,
     customer_material: bool = False,
 ) -> dict[str, Any]:
-    """POST /Quote/AddItem_PDFFiles — { ID, ItemID, FileList: GetPDFData() }."""
+    """POST /Quote/AddItem_PDFFiles — { ID, ItemID, FileList } one part."""
     del customer_material  # row field only; not a top-level OnAddPDFClick key
-    # CadImport List rows often have Status=0 (list-only). Fill New Line Item
-    # first so GetPDFData's Status>0 filter keeps them and LxW/machine commit.
     prepared = [
         prepare_pdf_newline_fields(r)
         for r in (file_list or [])
         if isinstance(r, dict)
     ]
-    rows = [slim_pdf_grid_row(r) for r in filter_pdf_filelist(prepared)]
+    rows = [
+        slim_pdf_grid_row(r)
+        for r in filter_pdf_filelist(prepared)
+        if attachment_pdf_filelist_ready(r)
+    ]
     return {
         "ID": quote_id,
         "ItemID": item_id or EMPTY_GUID,
@@ -563,7 +778,6 @@ def build_linear_add_payload(
     payload["ItemID"] = item_id or EMPTY_GUID
     payload["productID"] = product_id
     payload["productType"] = linear_website_product_type(name)
-    payload["productConfigID"] = EMPTY_GUID
     payload["qty"] = max(1, int(qty))
     payload["machine"] = machine
     payload["customerMaterial"] = bool(customer_material)
@@ -578,8 +792,23 @@ def build_linear_add_payload(
         for key, val in extra.items():
             if key in payload:
                 payload[key] = val
-    if not str(payload.get("productConfigID") or "").strip():
-        payload["productConfigID"] = EMPTY_GUID
+    if not is_tenant_guid(payload.get("productConfigID")):
+        raise ValueError(
+            "AddItem_Linear requires a tenant productConfigID from "
+            "/Product/Read_DataLinearlookup (empty GUID 500s)"
+        )
+    if str(payload.get("productSubType") or "").strip() == "":
+        raise ValueError(
+            "AddItem_Linear requires productSubType from the catalog lookup"
+        )
+    if not any(payload.get(k) not in ("", None) for k in ("dim1", "dim2", "dim3", "dim4")):
+        raise ValueError(
+            "AddItem_Linear requires dim1-4 from the catalog lookup"
+        )
+    if payload.get("weightLength") in ("", None):
+        raise ValueError(
+            "AddItem_Linear requires weightLength from the catalog lookup"
+        )
     return payload
 
 

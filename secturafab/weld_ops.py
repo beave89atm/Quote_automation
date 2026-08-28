@@ -336,6 +336,20 @@ def ensure_weld_ops(
     weld_h, fit_h, setup_h = resolved
     detail = client.get_json(f"v1/quote/{quote_id}")
     items = list(detail.get("ItemList") or [])
+    kids = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        try:
+            pt = int(it.get("ProductType"))
+        except (TypeError, ValueError):
+            continue
+        if pt in (100, 10, 30, 40):
+            kids.append(it)
+    if not kids:
+        return [
+            "WARNING: AddOperation weld skipped — no Cad/Linear kids yet"
+        ]
     target = pick_weld_target_item(items, part_key=part_key)
     if not target or not target.get("ID"):
         return ["No quote item found to attach Weld ops"]

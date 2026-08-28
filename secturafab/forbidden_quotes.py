@@ -12,6 +12,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d",
         "a7d6ca50-efec-409d-bd32-e68012e710c3",  # Q10056 / 21678-1
         "5e111cd2-73d1-44e1-9602-f2a4a3de2fb4",  # empty 1004747-1 draft
+        "936b5c6c-2fc5-4b28-a8f6-015db289cb4f",  # empty 1004747-1 draft (2nd drop)
     }
 )
 

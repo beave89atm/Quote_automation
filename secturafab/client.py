@@ -416,6 +416,66 @@ class SecturaFabClient:
         )
         return self._parse_website_or_raise(response, require_session=False)
 
+    def upload_item_pdf_attachment(
+        self,
+        files: list[tuple[str, tuple[str, Any, str]]],
+        *,
+        quote_id: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        """POST /Attachment/UploadItem_PDFFiles — Image Files plate upload."""
+        from .browser_session import effective_website_cookie
+
+        if not effective_website_cookie(self.config):
+            raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
+        query = dict(params or {})
+        if quote_id:
+            query.setdefault("ID", quote_id)
+            query.setdefault("quoteID", quote_id)
+        response = self.website_request(
+            "POST",
+            WEBSITE_FINISH_PATHS["upload_pdf_attachment"],
+            params=query or None,
+            files=files,
+            prefer_api_origin=False,
+            require_session=True,
+            timeout=max(self.config.timeout_seconds, 180.0),
+        )
+        location = response.headers.get("Location") or ""
+        if is_website_login_redirect(response.status_code, location):
+            raise SecturaFabWebsiteAuthError(
+                WEBSITE_AUTH_GAP,
+                status_code=response.status_code,
+                body=location,
+            )
+        return self._parse_website_or_raise(response, require_session=True)
+
+    def read_data_linear_lookup(self, product_id: str) -> Any:
+        """GET /Product/Read_DataLinearlookup — 20ft/21ft productConfigID."""
+        from .browser_session import effective_website_cookie
+
+        if not effective_website_cookie(self.config):
+            raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
+        response = self.website_request(
+            "GET",
+            WEBSITE_FINISH_PATHS["linear_lookup"],
+            params={
+                "ProductID": product_id,
+                "productID": product_id,
+                "ID": product_id,
+            },
+            prefer_api_origin=False,
+            require_session=True,
+        )
+        location = response.headers.get("Location") or ""
+        if is_website_login_redirect(response.status_code, location):
+            raise SecturaFabWebsiteAuthError(
+                WEBSITE_AUTH_GAP,
+                status_code=response.status_code,
+                body=location,
+            )
+        return self._parse_website_or_raise(response, require_session=True)
+
     def cadimport_data(self, params: dict[str, Any] | None = None) -> Any:
         """GET /CadImport/Data — classify grid after upload."""
         response = self.website_request(
