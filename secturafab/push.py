@@ -65,6 +65,7 @@ from .website import (
     count_linear_product_type,
     filelist_from_cadimport_upload,
     filelist_row_from_attachment_upload,
+    linear_add_product_type,
     linear_bind_fields,
     linear_lookup_rows,
     linear_website_product_type,
@@ -1224,17 +1225,17 @@ class SecturaFabPushService:
     ) -> dict[str, Any] | None:
         if not product:
             return None
-        bind = linear_bind_fields(product)
-        if bind:
-            return bind
         pid = str(product.get("ID") or "")
-        if not pid or not hasattr(self.client, "read_data_linear_lookup"):
-            return None
-        try:
-            payload = self.client.read_data_linear_lookup(pid)
-        except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError, ValueError):
-            return None
-        return linear_bind_fields(product, linear_lookup_rows(payload))
+        rows: list[dict[str, Any]] = []
+        if pid and hasattr(self.client, "read_data_linear_lookup"):
+            try:
+                payload = self.client.read_data_linear_lookup(pid)
+                rows = linear_lookup_rows(payload)
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError, ValueError):
+                rows = []
+        if not rows:
+            rows = linear_lookup_rows(product)
+        return linear_bind_fields(product, rows, lookup_scoped=True)
 
     def classify_cadimport_rows(
         self,
@@ -1751,7 +1752,7 @@ class SecturaFabPushService:
                 "Loose linear has no matching ProductID/productConfigID in the catalog"
             )
         extra = {k: v for k, v in bind.items() if k != "sku"}
-        extra["productType"] = linear_website_product_type(description, sku=sku)
+        extra["productType"] = linear_add_product_type(description, sku=sku)
         self.client.add_item_linear(
             quote_id=quote_id,
             product_id=product_id,
@@ -1992,9 +1993,10 @@ class SecturaFabPushService:
             name = format_linear_description(
                 pn, sku=sku or bind.get("sku"), length_in=length, noun=noun
             )
-            pt = linear_website_product_type(f"{pn} {noun} {name}", sku)
             extra = {k: v for k, v in bind.items() if k != "sku"}
-            extra["productType"] = pt
+            extra["productType"] = linear_add_product_type(
+                f"{pn} {noun} {name}", sku
+            )
             if not _looks_like_product_id(product_id):
                 notes.append(
                     f"WARNING: Linear {pn} ProductID {product_id!r} is not a "
@@ -2042,13 +2044,13 @@ class SecturaFabPushService:
             except Exception as exc:
                 notes.append(
                     f"WARNING: Long AddItem_Linear {pn} SKU={sku or product_id} "
-                    f"PT={pt} length={length_f} failed ({exc}) "
+                    f"PT={bag.get('productType')} length={length_f} failed ({exc}) "
                     f"form[{redact_linear_add_keys(bag)}] — continuing"
                 )
                 continue
             notes.append(
                 f"Long POST /Quote/AddItem_Linear {pn} SKU={sku or product_id} "
-                f"qty={qty} length={length_f} PT={pt}"
+                f"qty={qty} length={length_f} PT={bag.get('productType')}"
             )
         after = count_linear_product_type(self._read_quote_items(quote_id))
         if linear_rows and after <= 0:

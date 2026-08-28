@@ -452,10 +452,22 @@ def _plate_blank_size_from_pdf(
     from quote_core.weight import _read_pdf_text
 
     try:
-        return _plate_blank_size_from_text(
-            _read_pdf_text(pdf_path), min_side=min_side, max_side=max_side
-        )
+        text = _read_pdf_text(pdf_path)
     except Exception:  # noqa: BLE001
+        text = ""
+    got = _plate_blank_size_from_text(text, min_side=min_side, max_side=max_side)
+    if got:
+        return got
+    try:
+        from quote_core.ocr import ocr_pdf_pages
+
+        ocr = ocr_pdf_pages(pdf_path, max_pages=2, dpi=180)
+        return _plate_blank_size_from_text(
+            str((ocr or {}).get("text") or ""),
+            min_side=min_side,
+            max_side=max_side,
+        )
+    except Exception:  # noqa: BLE001 — OCR optional
         return None
 
 
@@ -481,6 +493,12 @@ def collect_lom_cad_plates(
     except Exception:  # noqa: BLE001 — LOM/PDF optional
         return plates
     search_dirs = _component_pdf_search_dirs(Path(pdf_path), library_folder)
+    try:
+        from quote_core.weight import _read_pdf_text
+
+        assembly_text = _read_pdf_text(Path(pdf_path))
+    except Exception:  # noqa: BLE001
+        assembly_text = ""
     seen: set[str] = set()
     for row in getattr(bom, "rows", None) or []:
         pn = str(getattr(row, "part_no", "") or "").strip()
@@ -490,9 +508,11 @@ def collect_lom_cad_plates(
         if _SKIP_CAD_FLAT_RE.search(f"{pn} {noun}"):
             continue
         comp = _find_component_pdf(pn, search_dirs, related_pdf_names)
-        if not comp:
-            continue
-        blank = _plate_blank_size_from_pdf(comp, min_side=0.26, max_side=240.0)
+        blank = None
+        if comp:
+            blank = _plate_blank_size_from_pdf(comp, min_side=0.26, max_side=240.0)
+        if not blank:
+            blank = _flats_near_part_no(assembly_text, pn)
         if not blank:
             continue
         length_in, width_in = blank
@@ -557,10 +577,37 @@ def _find_component_pdf(
                 name_u = p.name.upper()
                 if "[1]" in name_u:
                     continue
-                if name_u.startswith(part_u) or p.stem.upper().startswith(part_u):
+                stem_u = p.stem.upper()
+                if name_u.startswith(part_u) or stem_u.startswith(part_u):
+                    return p
+                base = part_u.rsplit("-", 1)[0] if "-" in part_u else part_u
+                if base and (
+                    stem_u == base
+                    or stem_u.startswith(base + "-")
+                    or stem_u.startswith(base + ".")
+                ):
                     return p
         except OSError:
             continue
+    return None
+
+
+def _flats_near_part_no(text: str, part_no: str) -> tuple[float, float] | None:
+    """L×W printed next to a balloon/PN on the assembly drawing."""
+    token = (part_no or "").strip()
+    if not token:
+        return None
+    base = token.rsplit("-", 1)[0] if "-" in token else token
+    needles = [token]
+    if base and base != token:
+        needles.append(base)
+    blob = text or ""
+    for needle in needles:
+        for match in re.finditer(re.escape(needle), blob, re.IGNORECASE):
+            window = blob[max(0, match.start() - 100) : match.end() + 100]
+            got = _plate_blank_size_from_text(window, min_side=0.26, max_side=240.0)
+            if got:
+                return got
     return None
 
 

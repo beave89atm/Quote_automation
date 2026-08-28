@@ -72,10 +72,13 @@ def test_job68_pdf_no_weld_if_present():
 
 
 def test_plate_blank_reads_whole_inch_and_overall():
-    from quote_core.weld.takeoff import _plate_blank_size_from_text
+    from quote_core.weld.takeoff import _flats_near_part_no, _plate_blank_size_from_text
 
     assert _plate_blank_size_from_text('2" X 9"', min_side=0.26, max_side=240) == (2.0, 9.0)
     assert _plate_blank_size_from_text(
         "OVERALL 18.50 X 6.25", min_side=0.26, max_side=240
     ) == (18.5, 6.25)
     assert _plate_blank_size_from_text("11 X 17", min_side=0.26, max_side=240) is None
+    text = "ITEM 17 6993-1 HOSE GUIDE  4.00 X 1.50 A36"
+    assert _flats_near_part_no(text, "6993-1") == (4.0, 1.5)
+    assert _flats_near_part_no(text, "6993") == (4.0, 1.5)

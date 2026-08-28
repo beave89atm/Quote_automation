@@ -478,7 +478,7 @@ def test_cadimport_rows_are_not_success_without_product_type_100_read(tmp_path, 
     posted = client.add_item_pdf_files.call_args_list[0].kwargs["file_list"][0]
     assert posted["ItemType"] == "cad"
     assert posted["Status"] == 1
-    assert posted["Machine"] == "Laser"
+    assert posted["Machine"] == "Laser - Bay1"
     assert posted["Thickness"] not in (None, "")
     assert posted["Length"] not in (None, "")
     assert posted["Width"] not in (None, "")
@@ -742,6 +742,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "936b5c6c-2fc5-4b28-a8f6-015db289cb4f" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "9354f680-ef91-47d9-af42-8dd65b75473f" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "f61c033a-48f2-4b11-9a10-96bc5c70716c" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "a522d863-1805-4206-85d1-36841dd107d2" in FORBIDDEN_LIVE_QUOTE_IDS
     from secturafab.forbidden_quotes import is_forbidden_quote_id
 
     assert is_forbidden_quote_id("280f4dcb-1111-2222-3333-444444444444")
@@ -750,6 +751,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "936b5c6c-2fc5-4b28-a8f6-015db289cb4f",
         "9354f680-ef91-47d9-af42-8dd65b75473f",
         "f61c033a-48f2-4b11-9a10-96bc5c70716c",
+        "a522d863-1805-4206-85d1-36841dd107d2",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(

@@ -436,7 +436,7 @@ def prepare_pdf_newline_fields(row: dict[str, Any]) -> dict[str, Any]:
     """Commit Image Files New Line Item fields (not CadImport list-only).
 
     Drawing flat is Length/Width (or CadImport Stock_X/Y). Never a PDF page outline.
-    Proven Image Files FileList uses ItemType=cad, Machine=Laser, Status>0.
+    Proven Image Files FileList uses ItemType=cad, Machine=Laser - Bay1, Status>0.
     """
     out = dict(row)
     try:
@@ -447,7 +447,7 @@ def prepare_pdf_newline_fields(row: dict[str, Any]) -> dict[str, Any]:
         out["Status"] = 1
     machine = str(out.get("Machine") or "").strip()
     if not machine or machine.casefold() in {"laser", "laser - bay1", "laser-bay1"}:
-        out["Machine"] = "Laser"
+        out["Machine"] = "Laser - Bay1"
     if str(out.get("ItemType") or "").casefold() != "linear":
         out["ItemType"] = "cad"
     out["ProductType"] = out.get("ProductType") or 100
@@ -476,19 +476,8 @@ def prepare_pdf_newline_fields(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def slim_pdf_grid_row(row: dict[str, Any]) -> dict[str, Any]:
-    """GetPDFData() field bag after New Line Item fields are filled.
-
-    Keep upload List identity (SourceDataID / FileID). Slimming those away
-    leaves AddItem_PDFFiles with nothing for the laser calculators.
-    """
-    src = prepare_pdf_newline_fields(row)
-    slim: dict[str, Any] = {}
-    for key in PDF_GETDATA_FIELDS:
-        slim[key] = src[key] if key in src and src[key] is not None else ""
-    for key in ("SourceDataID", "FileID"):
-        if src.get(key) not in (None, "") and not slim.get(key):
-            slim[key] = src[key]
-    return slim
+    """Deprecated helper. AddItem_PDFFiles must keep the full upload List row."""
+    return prepare_pdf_newline_fields(row)
 
 
 def _first_upload_row(payload: Any) -> dict[str, Any]:
@@ -556,7 +545,7 @@ def filelist_row_from_attachment_upload(
             "PartName": part_name,
             "Description": description or part_name,
             "Qty": max(1, int(qty or 1)),
-            "Machine": "Laser",
+            "Machine": "Laser - Bay1",
             "Material": material or "A36",
             "Thickness": thickness,
             "Thickness_Units": src.get("Thickness_Units") or "inch",
@@ -673,15 +662,51 @@ def _linear_config_guid(row: dict[str, Any]) -> str | None:
     return None
 
 
+def _lookup_row_belongs_to_product(
+    row: dict[str, Any] | None,
+    product: dict[str, Any] | None,
+) -> bool:
+    """True when a Read_DataLinearlookup row is this SKU — not the first 20ft row."""
+    if not isinstance(row, dict) or not isinstance(product, dict):
+        return False
+    pid = str(product.get("ID") or product.get("ProductID") or "").strip()
+    row_pid = str(row.get("ProductID") or row.get("productID") or "").strip()
+    if pid and row_pid and row_pid == pid:
+        return True
+    sku = str(
+        product.get("ProductName") or product.get("SKU") or product.get("ProductCode") or ""
+    ).strip().upper()
+    if not sku:
+        return False
+    blob = " ".join(
+        str(row.get(k) or "")
+        for k in ("ProductName", "SKU", "Name", "Text", "Display", "Description")
+    ).upper()
+    compact = sku.replace(" ", "")
+    return bool(sku and (sku in blob or compact in blob.replace(" ", "")))
+
+
 def pick_linear_config_row(
     rows: list[dict[str, Any]] | None,
     *,
     product_id: str | None = None,
+    product: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Prefer the 20ft/21ft stock config row (GUID + subtype/dims/weightLength)."""
-    wanted = str(product_id or "").strip()
+    """Prefer the 20ft/21ft stock config row for this SKU only."""
+    wanted = str(product_id or (product or {}).get("ID") or "").strip()
     pool = [r for r in (rows or []) if isinstance(r, dict)]
-    if wanted:
+    if product is not None:
+        owned = [r for r in pool if _lookup_row_belongs_to_product(r, product)]
+        if owned:
+            pool = owned
+        elif wanted:
+            matched = [
+                r
+                for r in pool
+                if str(r.get("ProductID") or r.get("productID") or "") == wanted
+            ]
+            pool = matched
+    elif wanted:
         matched = [
             r
             for r in pool
@@ -723,16 +748,17 @@ def pick_linear_config_id(
     rows: list[dict[str, Any]] | None,
     *,
     product_id: str | None = None,
+    product: dict[str, Any] | None = None,
 ) -> str | None:
     """Prefer the 20ft/21ft stock config GUID. Empty GUID is never a bind."""
-    row = pick_linear_config_row(rows, product_id=product_id)
+    row = pick_linear_config_row(rows, product_id=product_id, product=product)
     if not row:
         return None
     return _linear_config_guid(row)
 
 
 def _linear_bind_val(*rows: dict[str, Any] | None, keys: tuple[str, ...]) -> Any:
-    """First non-empty value. Lookup config row wins over the catalog product."""
+    """First non-empty value from the given rows in order."""
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -743,15 +769,77 @@ def _linear_bind_val(*rows: dict[str, Any] | None, keys: tuple[str, ...]) -> Any
     return None
 
 
+def _sku_num_token(raw: str) -> float | None:
+    text = str(raw or "").strip().replace("-", " ")
+    if not text:
+        return None
+    try:
+        if " " in text and "/" in text:
+            whole, frac = text.split(None, 1)
+            num, den = frac.split("/", 1)
+            return float(whole) + float(num) / float(den)
+        if "/" in text:
+            num, den = text.split("/", 1)
+            den_f = float(den)
+            if den_f == 0:
+                return None
+            return float(num) / den_f
+        return float(text)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def parse_linear_sku_dims(sku: str | None) -> dict[str, float]:
+    """Dim1-4 from this SKU only (C3X4.1 / L1/2X1/2X1/8 / RT1/8X0.022)."""
+    raw = str(sku or "").upper().replace(" ", "")
+    raw = re.sub(r"-[A-Z][A-Z0-9]*$", "", raw)
+    rest = raw
+    for prefix in ("HSS", "DOM", "RCT", "RT", "L", "C", "P"):
+        if raw.startswith(prefix):
+            rest = raw[len(prefix) :]
+            break
+    nums: list[float] = []
+    for tok in re.split(r"[X×]", rest):
+        num = _sku_num_token(tok)
+        if num is None:
+            continue
+        nums.append(num)
+        if len(nums) >= 4:
+            break
+    out: dict[str, float] = {}
+    for idx, num in enumerate(nums, start=1):
+        out[f"dim{idx}"] = num
+    return out
+
+
+def infer_linear_subtype(sku: str | None, description: str | None = None) -> str:
+    """Website productSubType for this SKU — never copy another SKU's struct_ang."""
+    text = f" {sku or ''} {description or ''} ".upper()
+    compact = str(sku or "").upper().replace(" ", "")
+    if "CHANNEL" in text or re.match(r"^C\d", compact):
+        return "channel"
+    if "ANGLE" in text or (compact.startswith("L") and "X" in compact):
+        return "struct_ang"
+    if compact.startswith(("RT", "RCT", "HSS", "DOM")) or " TUBE" in text:
+        return "tube"
+    if re.match(r"^P[\d/]", compact) or " PIPE" in text:
+        return "pipe"
+    if "HOSE GUARD" in text or " BAR" in text:
+        return "bar"
+    return "bar"
+
+
 def linear_bind_fields(
     product: dict[str, Any] | None,
     configs: list[dict[str, Any]] | None = None,
+    *,
+    lookup_scoped: bool = False,
 ) -> dict[str, Any] | None:
-    """productID + productConfigID + subtype/dims/weightLength for AddItem_Linear.
+    """productID + this SKU's subtype/dims/weightLength + its productConfigID.
 
-    Dims / productSubType / weightLength come from the chosen lookup row when
-    present. Catalog product alone often has empty/0 dims — that 500s even
-    with a real productConfigID.
+    Never overlay another SKU's lookup row (live 51e017e reused L1/2 angle
+    struct_ang / dim1=0.5 / wl=0.37275 on C3X4.1 and RT*). Lookup supplies
+    the 20ft/21ft GUID; dims come from the catalog product or this SKU parse.
     """
     if not isinstance(product, dict):
         return None
@@ -761,37 +849,50 @@ def linear_bind_fields(
     nested = list(configs or [])
     if not nested:
         nested = linear_lookup_rows(product)
-    cfg_row = pick_linear_config_row(nested, product_id=str(pid) if pid else None) or {}
+    owned = [r for r in nested if _lookup_row_belongs_to_product(r, product)]
+    foreign = [
+        r
+        for r in nested
+        if str(r.get("ProductID") or r.get("productID") or "") not in ("", str(pid))
+    ]
+    if owned:
+        cfg_row = pick_linear_config_row(owned, product=product) or {}
+    elif lookup_scoped or not foreign:
+        # Anonymous {Value, Text: 20 ft} rows, or a ProductID-scoped lookup.
+        cfg_row = pick_linear_config_row(nested) or {}
+    else:
+        cfg_row = {}
     cfg = _linear_config_guid(cfg_row)
     if not cfg:
         return None
     sku = str(
-        _linear_bind_val(
-            cfg_row,
-            product,
-            keys=("ProductName", "SKU", "ProductCode", "sku"),
-        )
+        product.get("ProductName")
+        or product.get("SKU")
+        or product.get("ProductCode")
         or ""
     )
+    sku_dims = parse_linear_sku_dims(sku)
+    owned_row = cfg_row if _lookup_row_belongs_to_product(cfg_row, product) else {}
     subtype = str(
         _linear_bind_val(
-            cfg_row,
             product,
+            owned_row,
             keys=("productSubType", "ProductSubType", "SubType", "ProductSubTypeName"),
         )
-        or ""
+        or infer_linear_subtype(sku, str(product.get("Name") or ""))
     ).strip()
-    if not subtype:
-        pt = linear_website_product_type(sku or str(product.get("Name") or ""))
-        subtype = {10: "bar", 30: "tube", 40: "angle"}.get(int(pt), "tube")
 
     def _dim(n: int) -> Any:
         got = _linear_bind_val(
-            cfg_row,
             product,
+            owned_row,
             keys=(f"dim{n}", f"Dim{n}", f"DIM{n}", f"Size{n}"),
         )
-        return 0 if got is None else got
+        if got not in (None, ""):
+            return got
+        if sku_dims.get(f"dim{n}") is not None:
+            return sku_dims[f"dim{n}"]
+        return 0
 
     return {
         "productID": str(pid),
@@ -799,27 +900,27 @@ def linear_bind_fields(
         "productSubType": subtype,
         "dim1": _dim(1),
         "dim1_Unit": _linear_bind_val(
-            cfg_row, product, keys=("dim1_Unit", "Dim1_Unit", "dim1_Units", "Dim1_Units")
+            product, owned_row, keys=("dim1_Unit", "Dim1_Unit", "dim1_Units", "Dim1_Units")
         )
         or "inch",
         "dim2": _dim(2),
         "dim2_Unit": _linear_bind_val(
-            cfg_row, product, keys=("dim2_Unit", "Dim2_Unit", "dim2_Units", "Dim2_Units")
+            product, owned_row, keys=("dim2_Unit", "Dim2_Unit", "dim2_Units", "Dim2_Units")
         )
         or "inch",
         "dim3": _dim(3),
         "dim3_Unit": _linear_bind_val(
-            cfg_row, product, keys=("dim3_Unit", "Dim3_Unit", "dim3_Units", "Dim3_Units")
+            product, owned_row, keys=("dim3_Unit", "Dim3_Unit", "dim3_Units", "Dim3_Units")
         )
         or "inch",
         "dim4": _dim(4),
         "dim4_Unit": _linear_bind_val(
-            cfg_row, product, keys=("dim4_Unit", "Dim4_Unit", "dim4_Units", "Dim4_Units")
+            product, owned_row, keys=("dim4_Unit", "Dim4_Unit", "dim4_Units", "Dim4_Units")
         )
         or "inch",
         "weightLength": _linear_bind_val(
-            cfg_row,
             product,
+            owned_row,
             keys=(
                 "weightLength",
                 "WeightLength",
@@ -830,8 +931,8 @@ def linear_bind_fields(
         )
         or 0,
         "weightLength_Units": _linear_bind_val(
-            cfg_row,
             product,
+            owned_row,
             keys=("weightLength_Units", "WeightLength_Unit", "WeightLength_Units"),
         )
         or "pound/foot",
@@ -887,8 +988,10 @@ def build_pdf_finish_payload(
         for r in (file_list or [])
         if isinstance(r, dict)
     ]
+    # Keep every upload List key. Slimming drops calculator identity that is
+    # not named SourceDataID (live 51e017e Upload List never had SourceDataID).
     rows = [
-        slim_pdf_grid_row(r)
+        r
         for r in filter_pdf_filelist(prepared)
         if attachment_pdf_filelist_ready(r)
     ]
@@ -917,7 +1020,9 @@ def build_linear_add_payload(
     payload["ID"] = quote_id
     payload["ItemID"] = item_id or EMPTY_GUID
     payload["productID"] = product_id
-    payload["productType"] = linear_website_product_type(name)
+    payload["productType"] = linear_add_product_type(
+        name, sku=str((extra or {}).get("sku") or "")
+    )
     payload["qty"] = max(1, int(qty))
     payload["machine"] = machine
     payload["customerMaterial"] = bool(customer_material)
@@ -932,6 +1037,11 @@ def build_linear_add_payload(
         for key, val in extra.items():
             if key in payload:
                 payload[key] = val
+    payload["productType"] = coerce_linear_add_product_type(
+        payload.get("productType"),
+        name=name,
+        sku=str((extra or {}).get("sku") or ""),
+    )
     if not is_tenant_guid(payload.get("productConfigID")):
         raise ValueError(
             "AddItem_Linear requires a tenant productConfigID from "
@@ -1065,7 +1175,7 @@ def linear_website_product_type(
     description: str | None,
     sku: str | None = None,
 ) -> int:
-    """Website Long ProductType: 10 bar, 30 tube, 40 angle/channel."""
+    """GET ItemList ProductType: 10 bar, 30 tube, 40 angle/channel."""
     text = f" {str(description or '').upper()} {str(sku or '').upper()} "
     if any(h in text for h in (" ANGLE", " CHANNEL")):
         return LINEAR_PRODUCT_TYPE_ANGLE
@@ -1084,6 +1194,70 @@ def linear_website_product_type(
     if re.match(r"^P[\d/]+-\d+", compact_sku):
         return LINEAR_PRODUCT_TYPE_TUBE
     return LINEAR_PRODUCT_TYPE_BAR
+
+
+LINEAR_ADD_TYPE_STRUCTURAL = "structural"
+LINEAR_ADD_TYPE_PIPE = "pipe"
+LINEAR_ADD_TYPE_TUBE = "tube"
+LINEAR_ADD_TYPE_BAR = "bar"
+_LINEAR_ADD_TYPES = frozenset(
+    {
+        LINEAR_ADD_TYPE_STRUCTURAL,
+        LINEAR_ADD_TYPE_PIPE,
+        LINEAR_ADD_TYPE_TUBE,
+        LINEAR_ADD_TYPE_BAR,
+    }
+)
+_INT_TO_LINEAR_ADD_TYPE = {
+    10: LINEAR_ADD_TYPE_BAR,
+    20: LINEAR_ADD_TYPE_PIPE,
+    30: LINEAR_ADD_TYPE_TUBE,
+    40: LINEAR_ADD_TYPE_STRUCTURAL,
+}
+
+
+def linear_add_product_type(
+    description: str | None,
+    sku: str | None = None,
+) -> str:
+    """OnAddLinearClick productType: structural / pipe / tube / bar (not 10/30/40)."""
+    text = f" {str(description or '').upper()} {str(sku or '').upper()} "
+    compact = text.replace(" ", "")
+    if "CHANNEL" in text or re.search(r"C\d+X", compact):
+        return LINEAR_ADD_TYPE_STRUCTURAL
+    if "ANGLE" in text or re.search(r"L\d", compact) and "X" in compact:
+        return LINEAR_ADD_TYPE_STRUCTURAL
+    if "PIPE" in text or re.search(r"(^|[^A-Z])P[\d/]", compact):
+        return LINEAR_ADD_TYPE_PIPE
+    if (
+        "TUBE" in text
+        or "RT" in compact
+        or "RCT" in compact
+        or "HSS" in compact
+        or "DOM" in compact
+    ):
+        return LINEAR_ADD_TYPE_TUBE
+    if "HOSE GUARD" in text or "HOSEGUARD" in text or " BAR" in text:
+        return LINEAR_ADD_TYPE_BAR
+    return LINEAR_ADD_TYPE_BAR
+
+
+def coerce_linear_add_product_type(
+    value: Any,
+    *,
+    name: str = "",
+    sku: str = "",
+) -> str:
+    """Force the proven-script strings. Int 10/30/40 500s on AddItem_Linear."""
+    if isinstance(value, str) and value.strip().casefold() in _LINEAR_ADD_TYPES:
+        return value.strip().casefold()
+    try:
+        mapped = _INT_TO_LINEAR_ADD_TYPE.get(int(value))
+        if mapped:
+            return mapped
+    except (TypeError, ValueError):
+        pass
+    return linear_add_product_type(name, sku=sku)
 
 
 def overlay_classified_row(
