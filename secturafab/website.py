@@ -519,9 +519,11 @@ def filelist_row_from_attachment_upload(
 ) -> dict[str, Any]:
     """FileList row after POST /Attachment/UploadItem_PDFFiles (not CadImport).
 
-    Merge the upload List row so SourceDataID / FileID / CadType / Stock_* stay
-    on the FileList. Rebuilding a slim dict without those IDs leaves Finish
-    calculators unstamped (no Badge PR, no laser pack, UnitCost 0).
+    Merge the upload List row so calculator identity fields stay on FileList.
+    Keep whatever the upload actually returned. Do not invent SourceDataID
+    (live Upload List often has none). Live 7a555ac2 posted an 85-key
+    jquery.param FileList[0][Field] + Laser - Bay1 and still left Badge
+    empty — do not switch that encoding to JSON.
     """
     src = dict(_first_upload_row(payload))
     file_id = src.get("FileID") or src.get("ID") or src.get("ImageID") or ""
@@ -625,41 +627,106 @@ def count_linear_product_type(payload: Any) -> int:
 
 
 def linear_lookup_rows(payload: Any) -> list[dict[str, Any]]:
-    """Rows from /Product/Read_DataLinearlookup or a catalog product.Configs."""
-    rows = quote_item_rows(payload)
-    if rows:
-        return rows
-    if isinstance(payload, dict):
-        for key in ("Configs", "ProductConfigList", "ProductConfigs", "List"):
-            inner = payload.get(key)
-            if isinstance(inner, list):
-                return [r for r in inner if isinstance(r, dict)]
-    return []
+    """Rows from /Product/Read_DataLinearlookup or a catalog product.Configs.
+
+    Do not stop at Data. Live 7a555ac2 Data was the product-shaped row
+    (Value == productID); the 20ft/21ft config GUIDs sat on List.
+    """
+    if isinstance(payload, list):
+        return [r for r in payload if isinstance(r, dict)]
+    if not isinstance(payload, dict):
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    def _add(rows: Any) -> None:
+        if isinstance(rows, dict):
+            rows = [rows]
+        if not isinstance(rows, list):
+            return
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            marker = id(row)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            out.append(row)
+            for nested_key in (
+                "Configs",
+                "ProductConfigList",
+                "ProductConfigs",
+                "List",
+            ):
+                inner = row.get(nested_key)
+                if inner is not None and inner is not row:
+                    _add(inner)
+
+    for key in (
+        "Data",
+        "Results",
+        "List",
+        "Configs",
+        "ProductConfigList",
+        "ProductConfigs",
+        "ItemList",
+    ):
+        _add(payload.get(key))
+    if not out and any(payload.get(k) not in (None, "") for k in ("Value", "ID", "Text", "Name")):
+        out.append(payload)
+    return out
 
 
-def _linear_config_guid(row: dict[str, Any]) -> str | None:
-    """Config GUID from a Read_DataLinearlookup row (Value, not only ID)."""
-    product_id = str(row.get("ProductID") or row.get("productID") or "")
+def _linear_config_guid(
+    row: dict[str, Any] | None,
+    *,
+    not_id: str | None = None,
+) -> str | None:
+    """Stock-length config GUID. Never the product GUID (that 500s)."""
+    if not isinstance(row, dict):
+        return None
+    skip = {
+        EMPTY_GUID,
+        str(not_id or "").strip(),
+        str(row.get("ProductID") or "").strip(),
+        str(row.get("productID") or "").strip(),
+    }
+    skip.discard("")
     for key in (
         "Value",
         "ProductConfigID",
         "ConfigID",
         "ConfigValue",
         "Key",
-        "ID",
     ):
         val = row.get(key)
-        if not is_tenant_guid(val):
-            continue
-        if product_id and str(val) == product_id:
-            continue
+        if is_tenant_guid(val) and str(val) not in skip:
+            return str(val)
+    val = row.get("ID")
+    if is_tenant_guid(val) and str(val) not in skip:
         return str(val)
     for key, val in row.items():
         if key in {"ProductID", "productID", "ID"}:
             continue
-        if is_tenant_guid(val) and str(val) != product_id:
+        if is_tenant_guid(val) and str(val) not in skip:
             return str(val)
     return None
+
+
+def _linear_stock_feet(row: dict[str, Any] | None) -> float | None:
+    if not isinstance(row, dict):
+        return None
+    label = " ".join(
+        str(row.get(k) or "")
+        for k in ("Name", "Text", "Display", "Description", "Length", "StockLength")
+    )
+    match = _FT_RE.search(label)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except (TypeError, ValueError):
+        return None
 
 
 def _lookup_row_belongs_to_product(
@@ -692,46 +759,38 @@ def pick_linear_config_row(
     product_id: str | None = None,
     product: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Prefer the 20ft/21ft stock config row for this SKU only."""
+    """Prefer the 20ft/21ft stock config row. Never a row whose GUID is productID."""
     wanted = str(product_id or (product or {}).get("ID") or "").strip()
     pool = [r for r in (rows or []) if isinstance(r, dict)]
-    if product is not None:
-        owned = [r for r in pool if _lookup_row_belongs_to_product(r, product)]
-        if owned:
-            pool = owned
-        elif wanted:
-            matched = [
-                r
-                for r in pool
-                if str(r.get("ProductID") or r.get("productID") or "") == wanted
-            ]
-            pool = matched
-    elif wanted:
-        matched = [
+    stock = [
+        r
+        for r in pool
+        if _linear_stock_feet(r) in (20.0, 21.0)
+        and _linear_config_guid(r, not_id=wanted)
+    ]
+    if stock:
+        pool = stock
+    elif product is not None or wanted:
+        owned = [
             r
             for r in pool
-            if str(r.get("ProductID") or r.get("productID") or "") == wanted
+            if _linear_config_guid(r, not_id=wanted)
+            and (
+                _lookup_row_belongs_to_product(r, product)
+                or (
+                    wanted
+                    and str(r.get("ProductID") or r.get("productID") or "") == wanted
+                )
+            )
         ]
-        if matched:
-            pool = matched
+        distinct = [r for r in pool if _linear_config_guid(r, not_id=wanted)]
+        pool = owned or distinct
     ranked: list[tuple[float, dict[str, Any]]] = []
     for row in pool:
-        if not isinstance(row, dict):
+        cid = _linear_config_guid(row, not_id=wanted)
+        if not cid or (wanted and cid == wanted):
             continue
-        cid = _linear_config_guid(row)
-        if not cid:
-            continue
-        label = " ".join(
-            str(row.get(k) or "")
-            for k in ("Name", "Text", "Display", "Description", "Length", "StockLength")
-        )
-        feet = None
-        match = _FT_RE.search(label)
-        if match:
-            try:
-                feet = float(match.group(1))
-            except (TypeError, ValueError):
-                feet = None
+        feet = _linear_stock_feet(row)
         score = 10.0
         if feet in (20.0, 21.0):
             score = 100.0
@@ -750,11 +809,15 @@ def pick_linear_config_id(
     product_id: str | None = None,
     product: dict[str, Any] | None = None,
 ) -> str | None:
-    """Prefer the 20ft/21ft stock config GUID. Empty GUID is never a bind."""
+    """20ft/21ft config GUID. Never the product GUID (live 7a555ac2 500)."""
+    wanted = str(product_id or (product or {}).get("ID") or "").strip()
     row = pick_linear_config_row(rows, product_id=product_id, product=product)
     if not row:
         return None
-    return _linear_config_guid(row)
+    cid = _linear_config_guid(row, not_id=wanted)
+    if not cid or (wanted and cid == wanted):
+        return None
+    return cid
 
 
 def _linear_bind_val(*rows: dict[str, Any] | None, keys: tuple[str, ...]) -> Any:
@@ -849,21 +912,13 @@ def linear_bind_fields(
     nested = list(configs or [])
     if not nested:
         nested = linear_lookup_rows(product)
-    owned = [r for r in nested if _lookup_row_belongs_to_product(r, product)]
-    foreign = [
-        r
-        for r in nested
-        if str(r.get("ProductID") or r.get("productID") or "") not in ("", str(pid))
-    ]
-    if owned:
-        cfg_row = pick_linear_config_row(owned, product=product) or {}
-    elif lookup_scoped or not foreign:
-        # Anonymous {Value, Text: 20 ft} rows, or a ProductID-scoped lookup.
-        cfg_row = pick_linear_config_row(nested) or {}
-    else:
-        cfg_row = {}
-    cfg = _linear_config_guid(cfg_row)
-    if not cfg:
+    del lookup_scoped  # lookup List/Data is always scanned; never owned-only
+    # Config GUIDs live on anonymous {Value, Text: "20 ft"} rows. A
+    # product-shaped Data row (SKU in ProductName, Value==productID) is
+    # "owned" and used to hide those Values — that 500'd live 7a555ac2.
+    cfg_row = pick_linear_config_row(nested, product_id=str(pid), product=product) or {}
+    cfg = _linear_config_guid(cfg_row, not_id=str(pid))
+    if not cfg or cfg == str(pid):
         return None
     sku = str(
         product.get("ProductName")
@@ -1042,11 +1097,15 @@ def build_linear_add_payload(
         name=name,
         sku=str((extra or {}).get("sku") or ""),
     )
+    cid = str(payload.get("productConfigID") or "")
+    pid = str(payload.get("productID") or product_id or "")
     if not is_tenant_guid(payload.get("productConfigID")):
         raise ValueError(
             "AddItem_Linear requires a tenant productConfigID from "
             "/Product/Read_DataLinearlookup (empty GUID 500s)"
         )
+    if cid == pid:
+        raise ValueError("linear bind productConfigID must not equal productID")
     if str(payload.get("productSubType") or "").strip() == "":
         raise ValueError(
             "AddItem_Linear requires productSubType from the catalog lookup"

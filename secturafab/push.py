@@ -1235,7 +1235,14 @@ class SecturaFabPushService:
                 rows = []
         if not rows:
             rows = linear_lookup_rows(product)
-        return linear_bind_fields(product, rows, lookup_scoped=True)
+        bind = linear_bind_fields(product, rows, lookup_scoped=True)
+        if not bind:
+            return None
+        if str(bind.get("productConfigID") or "") == str(
+            product.get("ID") or product.get("ProductID") or ""
+        ):
+            return None
+        return bind
 
     def classify_cadimport_rows(
         self,
@@ -1983,11 +1990,15 @@ class SecturaFabPushService:
                 )
                 continue
             bind = self._linear_catalog_bind(product)
-            if not bind or not is_tenant_guid(bind.get("productConfigID")):
+            if (
+                not bind
+                or not is_tenant_guid(bind.get("productConfigID"))
+                or str(bind.get("productConfigID") or "") == str(product_id)
+            ):
                 notes.append(
                     f"WARNING: Linear {pn} has no tenant productConfigID from "
                     "Read_DataLinearlookup — skipped AddItem_Linear "
-                    "(empty GUID 500s)"
+                    "(empty GUID 500s; productConfigID must not equal productID)"
                 )
                 continue
             name = format_linear_description(

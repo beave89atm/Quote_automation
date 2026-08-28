@@ -244,6 +244,24 @@ def test_linear_payload_rejects_empty_config_guid():
         )
 
 
+def test_linear_payload_rejects_config_equal_product_id():
+    """productConfigID == productID 500s (live 7a555ac2)."""
+    pid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    with pytest.raises(ValueError, match="must not equal productID"):
+        build_linear_add_payload(
+            "qid",
+            product_id=pid,
+            qty=1,
+            length=12.5,
+            extra={
+                "productConfigID": pid,
+                "productSubType": "struct_ang",
+                "dim1": 0.5,
+                "weightLength": 0.37275,
+            },
+        )
+
+
 def test_pick_linear_config_id_reads_value_guid():
     from secturafab.website import pick_linear_config_id
 
@@ -362,6 +380,162 @@ def test_linear_bind_does_not_copy_angle_dims_onto_channel_or_tube():
     for payload in (ch_payload, tu_payload):
         assert isinstance(payload["productType"], str)
         assert payload["productType"] not in {10, 30, 40, "10", "30", "40"}
+
+
+def test_linear_bind_keeps_20ft_value_not_product_id():
+    """Live 7a555ac2: product-shaped lookup row must not hide a 20ft Value."""
+    from secturafab.website import (
+        linear_bind_fields,
+        linear_lookup_rows,
+        pick_linear_config_id,
+    )
+
+    pid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    cfg20 = "fd2cc452-aaaa-4bbb-8ccc-dddddddddddd"
+    cfg21 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    product_row = {
+        "ID": pid,
+        "Value": pid,
+        "ProductName": "L1/2X1/2X1/8-A36",
+        "productSubType": "struct_ang",
+        "dim1": 0.5,
+        "dim2": 0.5,
+        "dim3": 0.125,
+        "weightLength": 0.37275,
+    }
+    lookup_list = [
+        product_row,
+        {"Value": cfg20, "Text": "20 ft"},
+        {"Value": cfg21, "Text": "21 ft"},
+    ]
+    assert pick_linear_config_id(lookup_list, product_id=pid) == cfg20
+    assert pick_linear_config_id(lookup_list, product_id=pid) != pid
+
+    # Data=product, List=20ft/21ft — Value must not be discarded.
+    merged = linear_lookup_rows({"Data": [product_row], "List": lookup_list[1:]})
+    assert pick_linear_config_id(merged, product_id=pid) == cfg20
+    assert any(str(r.get("Value") or "") == cfg20 for r in merged)
+
+    cases = (
+        (
+            "32259-1",
+            "L1/2X1/2X1/8-A36",
+            {
+                "ProductSubType": "struct_ang",
+                "Dim1": 0.5,
+                "Dim2": 0.5,
+                "Dim3": 0.125,
+                "WeightLength": 0.37275,
+            },
+            "structural",
+        ),
+        (
+            "1004740-1",
+            "C3X4.1-A36",
+            {
+                "ProductSubType": "channel",
+                "Dim1": 3,
+                "Dim2": 0.17,
+                "Dim3": 1.41,
+                "WeightLength": 4.1,
+            },
+            "structural",
+        ),
+        (
+            "25060-6",
+            "RT1/8X0.022-A519",
+            {
+                "ProductSubType": "tube",
+                "Dim1": 0.125,
+                "Dim2": 0.022,
+                "Dim3": 0,
+                "WeightLength": 0.024,
+            },
+            "tube",
+        ),
+    )
+    for pn, sku, dims, ptype in cases:
+        product = {"ID": pid, "ProductName": sku, **dims}
+        shaped = {
+            "ID": pid,
+            "Value": pid,
+            "ProductName": sku,
+            **{k.lower() if k.startswith("Dim") else k: v for k, v in dims.items()},
+        }
+        rows = [
+            shaped,
+            {"Value": cfg20, "Text": "20 ft"},
+            {"Value": cfg21, "Text": "21 ft"},
+        ]
+        bind = linear_bind_fields(product, rows, lookup_scoped=True)
+        assert bind is not None, sku
+        assert bind["productConfigID"] == cfg20, sku
+        assert bind["productConfigID"] != bind["productID"], sku
+        payload = build_linear_add_payload(
+            "qid",
+            product_id=pid,
+            qty=1,
+            length=12.5,
+            name=f"{pn} {sku}",
+            extra={k: v for k, v in bind.items() if k != "sku"},
+        )
+        assert payload["productConfigID"] == cfg20, sku
+        assert payload["productConfigID"] != payload["productID"], sku
+        assert payload["productType"] == ptype
+
+
+def test_linear_catalog_bind_sends_distinct_config_guid():
+    """A Linear POST must send the 20ft List Value, never Data's productID."""
+    from secturafab.website import linear_lookup_rows, pick_linear_config_id
+
+    pid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    cfg20 = "fd2cc452-aaaa-4bbb-8ccc-dddddddddddd"
+    product = {
+        "ID": pid,
+        "ProductName": "L1/2X1/2X1/8-A36",
+        "ProductSubType": "struct_ang",
+        "Dim1": 0.5,
+        "Dim2": 0.5,
+        "Dim3": 0.125,
+        "WeightLength": 0.37275,
+    }
+    lookup = {
+        "Data": [
+            {
+                "ID": pid,
+                "Value": pid,
+                "ProductName": "L1/2X1/2X1/8-A36",
+                "productSubType": "struct_ang",
+                "dim1": 0.5,
+                "weightLength": 0.37275,
+            }
+        ],
+        "List": [
+            {"Value": cfg20, "Text": "20 ft"},
+            {"Value": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "Text": "21 ft"},
+        ],
+    }
+    rows = linear_lookup_rows(lookup)
+    assert pick_linear_config_id(rows, product_id=pid) == cfg20
+    client = MagicMock()
+    client.read_data_linear_lookup.return_value = lookup
+    svc = SecturaFabPushService(client=client)
+    bind = svc._linear_catalog_bind(product)
+    assert bind is not None
+    assert bind["productConfigID"] == cfg20
+    assert bind["productConfigID"] != bind["productID"]
+    extra = {k: v for k, v in bind.items() if k != "sku"}
+    payload = build_linear_add_payload(
+        "qid",
+        product_id=pid,
+        qty=1,
+        length=12.5,
+        name="32259-1 L1/2X1/2X1/8-A36",
+        extra=extra,
+    )
+    assert payload["productConfigID"] == cfg20
+    assert payload["productConfigID"] != payload["productID"]
+    assert payload["productType"] == "structural"
 
 
 def test_linear_add_product_type_is_website_string_not_int():

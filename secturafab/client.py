@@ -24,6 +24,25 @@ from .website import (
 )
 
 
+def _forbid_write_payload(json_body: Any, data: Any) -> Any:
+    """Quote ID for the forbid check — form POSTs send ID in data, not json."""
+    if isinstance(json_body, dict):
+        return json_body
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, (list, tuple)):
+        out: dict[str, Any] = {}
+        for item in data:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            key = str(item[0])
+            if key in {"ID", "QuoteID"} and item[1] not in (None, ""):
+                out[key] = item[1]
+        if out:
+            return out
+    return json_body
+
+
 class SecturaFabApiError(RuntimeError):
     def __init__(
         self,
@@ -68,7 +87,11 @@ class SecturaFabClient:
         retry_on_auth_error: bool = True,
     ) -> requests.Response:
         try:
-            refuse_forbidden_quote_write(method=method, path=path, payload=json)
+            refuse_forbidden_quote_write(
+                method=method,
+                path=path,
+                payload=_forbid_write_payload(json, data),
+            )
         except ForbiddenQuoteError as exc:
             raise SecturaFabApiError(str(exc)) from exc
         token = self.authenticate()
@@ -248,7 +271,11 @@ class SecturaFabClient:
         with bearer on every origin; a 302 is not an excuse to ship empty packs.
         """
         try:
-            refuse_forbidden_quote_write(method=method, path=path, payload=json)
+            refuse_forbidden_quote_write(
+                method=method,
+                path=path,
+                payload=_forbid_write_payload(json, data),
+            )
         except ForbiddenQuoteError as exc:
             raise SecturaFabApiError(str(exc)) from exc
         req_headers = self._auth_headers(headers)

@@ -743,6 +743,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "9354f680-ef91-47d9-af42-8dd65b75473f" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "f61c033a-48f2-4b11-9a10-96bc5c70716c" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "a522d863-1805-4206-85d1-36841dd107d2" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "7a555ac2-2a77-4bd9-a936-bf8a64eb60e7" in FORBIDDEN_LIVE_QUOTE_IDS
     from secturafab.forbidden_quotes import is_forbidden_quote_id
 
     assert is_forbidden_quote_id("280f4dcb-1111-2222-3333-444444444444")
@@ -752,6 +753,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "9354f680-ef91-47d9-af42-8dd65b75473f",
         "f61c033a-48f2-4b11-9a10-96bc5c70716c",
         "a522d863-1805-4206-85d1-36841dd107d2",
+        "7a555ac2-2a77-4bd9-a936-bf8a64eb60e7",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(
