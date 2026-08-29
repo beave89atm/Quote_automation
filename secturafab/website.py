@@ -10,18 +10,24 @@ treat an API 500/404 as final. CadImport stays on www — do not fall
 through SetUnits/GetDXFData 500/404 to the API host (live 1002381-1
 logged api after www already failed the same way).
 
-UpdateDataNext List must be a JSON array of objects, never Python
-str(list) with single quotes (live 1002381-1 Next 200 empty body).
-SetUnits sends one query key `units` (ASP.NET NameValueCollection is
-case-insensitive; units+Units 500s "same key has already been added").
-Do not Finish the raw STEP upload row.
+UpdateDataNext POST is application/json with List as a native array
+({"List": [{...}], "ListOther": [], "status": "OK"}). json.dumps(rows)
+stuffed into a form/JSON string field is still a string — live 34574-1
+list_type=str, Next 200 empty, no explode.
+
+ConvertTo is the recovered QuoteOrderEdit STEP→parts path; call it
+before Next when the upload row is a STEP / PartCount>1.
+
+GetDXFData does not exist on www (404 HTML). The classify grid is
+CadImport/Data after a real explode. Do not poll GetDXFData.
+
+SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
   GET  /Quote/GetItem_AddView?ID={quoteId}&ItemType=dxf
   POST /Attachment/UploadItem_PDFFiles  (Image Files plates — not CadImport)
   POST /CadImport/UploadItem_DXFFiles   (STEP / DXF CAD Files only)
   GET  /CadImport/Data
   POST /CadImport/UpdateData, UpdateDataNext, SetPartMode, SetUnits, ConvertTo
-  GET  /CadImport/GetDXFData then /Quote/GetDXFData  (grid after green Next)
   POST /Quote/AddItem_DXFFiles   data { ID, ItemID, customerMaterial, FileList }
   POST /Quote/AddItem_PDFFiles   urlencoded { ID, ItemID, FileList } one part
   POST /Quote/AddItem_Linear     urlencoded OnAddLinearClick field bag
@@ -471,13 +477,35 @@ def build_cadimport_next_payload(
     rows: Any,
     *,
     list_other: Any = None,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Green Next body: List is a JSON array of objects, not str(list)."""
-    return {
+    """Green Next / ConvertTo JSON: List is a native array, not dumps-text."""
+    body: dict[str, Any] = {
         "ID": quote_id,
         "List": normalize_cadimport_list(rows),
         "ListOther": normalize_cadimport_list(list_other),
+        "status": "OK",
     }
+    if isinstance(extra, dict):
+        status = extra.get("status") or extra.get("Status")
+        if status not in (None, ""):
+            body["status"] = status
+        for key, val in extra.items():
+            if key in body or key in {"List", "ListOther", "list_type", "Status"}:
+                continue
+            if isinstance(val, (list, dict)):
+                continue
+            if val is not None:
+                body[key] = val
+    return body
+
+
+def cadimport_list_is_native_array(payload: Any) -> bool:
+    """True when List is a list of dicts (live capture list_type must not be str)."""
+    if not isinstance(payload, dict):
+        return False
+    rows = payload.get("List")
+    return isinstance(rows, list) and all(isinstance(r, dict) for r in rows)
 
 
 def cadimport_next_form(
@@ -485,18 +513,12 @@ def cadimport_next_form(
     *,
     token: str | None = None,
 ) -> list[tuple[str, str]]:
-    """urlencoded Next — List/ListOther are JSON arrays (double quotes)."""
-    rows = normalize_cadimport_list(payload.get("List"))
-    other = normalize_cadimport_list(payload.get("ListOther"))
-    form: list[tuple[str, str]] = []
-    qid = str(payload.get("ID") or payload.get("quoteID") or "").strip()
-    if qid:
-        form.append(("ID", qid))
-    form.append(("List", json.dumps(rows, default=str)))
-    form.append(("ListOther", json.dumps(other, default=str)))
-    if token:
-        form.append(("__RequestVerificationToken", token))
-    return form
+    """Do not use for Next. Live 34574-1: form List=dumps(rows) is still a string."""
+    del payload, token
+    raise RuntimeError(
+        "CadImport Next/ConvertTo must POST json List as a native array; "
+        "form List=json.dumps(rows) is list_type=str and does not explode"
+    )
 
 
 def _step_like_name(text: str | None) -> bool:

@@ -20,7 +20,7 @@ from .website import (
     build_linear_add_payload,
     build_pdf_finish_payload,
     build_weld_add_operation_payload,
-    cadimport_next_form,
+    cadimport_list_is_native_array,
     is_cloudflare_challenge,
     is_website_login_redirect,
     jquery_ajax_form,
@@ -548,21 +548,39 @@ class SecturaFabClient:
         )
         return self._parse_website_or_raise(response, require_session=False)
 
+    def _cadimport_json_headers(self) -> dict[str, str]:
+        headers = self._cadimport_ajax_headers()
+        token = getattr(self, "_request_verification_token", None)
+        if token:
+            headers["RequestVerificationToken"] = token
+            headers["__RequestVerificationToken"] = token
+        return headers
+
+    def _cadimport_json_body(self, payload: Any) -> dict[str, Any]:
+        if isinstance(payload, dict):
+            body = build_cadimport_next_payload(
+                str(payload.get("ID") or payload.get("quoteID") or ""),
+                payload.get("List"),
+                list_other=payload.get("ListOther"),
+                extra=payload,
+            )
+        else:
+            body = build_cadimport_next_payload("", payload)
+        if not cadimport_list_is_native_array(body) and body.get("List") != []:
+            raise SecturaFabApiError(
+                "CadImport List must be a native JSON array, not a string"
+            )
+        return body
+
     def cadimport_update_data(self, payload: Any = None) -> Any:
-        """POST /CadImport/UpdateData"""
+        """POST /CadImport/UpdateData — json List is a native array."""
+        body = self._cadimport_json_body(payload)
         response = self.website_request(
             "POST",
             WEBSITE_FINISH_PATHS["cadimport_update_data"],
-            json=None,
-            data=cadimport_next_form(
-                payload if isinstance(payload, dict) else {"List": payload},
-                token=getattr(self, "_request_verification_token", None),
-            )
-            if payload is not None
-            else cadimport_next_form(
-                {}, token=getattr(self, "_request_verification_token", None)
-            ),
-            headers=self._cadimport_ajax_headers(),
+            json=body,
+            data=None,
+            headers=self._cadimport_json_headers(),
             prefer_api_origin=False,
             www_only=True,
             require_session=False,
@@ -570,26 +588,18 @@ class SecturaFabClient:
         return self._parse_website_or_raise(response, require_session=False)
 
     def cadimport_update_data_next(self, payload: Any = None) -> Any:
-        """POST /CadImport/UpdateDataNext — green Next on www CAD Files.
+        """POST /CadImport/UpdateDataNext — json List is a native array.
 
-        List is a JSON array of objects (double quotes), never Python str(list).
+        Live 34574-1: form/JSON string List (list_type=str) 200s empty and
+        does not explode. Do not json.dumps the array into the List field.
         """
-        if isinstance(payload, dict):
-            body = build_cadimport_next_payload(
-                str(payload.get("ID") or payload.get("quoteID") or ""),
-                payload.get("List"),
-                list_other=payload.get("ListOther"),
-            )
-        else:
-            body = build_cadimport_next_payload("", payload)
+        body = self._cadimport_json_body(payload)
         response = self.website_request(
             "POST",
             WEBSITE_FINISH_PATHS["cadimport_update_data_next"],
-            json=None,
-            data=cadimport_next_form(
-                body, token=getattr(self, "_request_verification_token", None)
-            ),
-            headers=self._cadimport_ajax_headers(),
+            json=body,
+            data=None,
+            headers=self._cadimport_json_headers(),
             prefer_api_origin=False,
             www_only=True,
             require_session=False,
@@ -638,12 +648,14 @@ class SecturaFabClient:
         return self._parse_website_or_raise(response, require_session=False)
 
     def cadimport_convert_to(self, payload: Any = None) -> Any:
-        """POST /CadImport/ConvertTo"""
+        """POST /CadImport/ConvertTo — STEP→parts (QuoteOrderEdit CadImport)."""
+        body = self._cadimport_json_body(payload)
         response = self.website_request(
             "POST",
             WEBSITE_FINISH_PATHS["cadimport_convert_to"],
-            json=payload,
-            headers=self._cadimport_ajax_headers(),
+            json=body,
+            data=None,
+            headers=self._cadimport_json_headers(),
             prefer_api_origin=False,
             www_only=True,
             require_session=False,

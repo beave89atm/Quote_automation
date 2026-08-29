@@ -24,7 +24,7 @@ from secturafab.website import (
     build_linear_add_payload,
     build_pdf_finish_payload,
     build_cadimport_next_payload,
-    cadimport_next_form,
+    cadimport_list_is_native_array,
     cadimport_payload_preview,
     filelist_from_cadimport_upload,
     normalize_cadimport_list,
@@ -160,18 +160,18 @@ def test_cadimport_next_list_is_json_array_not_python_repr():
     payload = build_cadimport_next_payload(
         "qid", py_repr, list_other="[]"
     )
-    assert isinstance(payload["List"], list)
+    assert cadimport_list_is_native_array(payload)
+    assert payload["status"] == "OK"
+    assert payload["List"][0]["PartCount"] == 4
     assert payload["ListOther"] == []
-    form = dict(cadimport_next_form(payload))
-    list_field = form["List"]
-    assert list_field.startswith("[{")
-    assert "'" not in list_field or '"SourceDataID"' in list_field
-    loaded = json.loads(list_field)
-    assert loaded[0]["PartCount"] == 4
-    assert json.loads(form["ListOther"]) == []
+    dumped = json.dumps(payload)
+    parsed = json.loads(dumped)
+    assert isinstance(parsed["List"], list)
+    assert parsed["List"][0]["SourceDataID"] == "489f2a35-7617-47b2-a973-318a83574665"
 
 
-def test_cadimport_update_data_next_posts_json_array_form():
+def test_cadimport_update_data_next_posts_native_json_array():
+    """Live 34574-1: List must be list_type=list in the JSON body, not str."""
     from secturafab.client import SecturaFabClient
 
     real = SecturaFabClient.__new__(SecturaFabClient)
@@ -199,27 +199,27 @@ def test_cadimport_update_data_next_posts_json_array_form():
     real.cadimport_update_data_next(
         {
             "ID": "qid",
-            "List": str(
-                [
-                    {
-                        "SourceDataID": "src-1",
-                        "Name": "1002381-1",
-                        "PartCount": 4,
-                    }
-                ]
-            ),
-            "ListOther": "[]",
+            "status": "OK",
+            "List": [
+                {
+                    "SourceDataID": "src-1",
+                    "Name": "34574-1",
+                    "PartCount": 12,
+                }
+            ],
+            "ListOther": [],
         }
     )
     assert captured["path"] == "/CadImport/UpdateDataNext"
-    assert captured["json"] is None
+    assert captured["data"] is None
     assert captured["www_only"] is True
-    form = dict(captured["data"])
-    loaded = json.loads(form["List"])
-    assert isinstance(loaded, list)
-    assert loaded[0]["SourceDataID"] == "src-1"
-    assert form["List"].startswith("[{")
-    assert form["ID"] == "qid"
+    body = captured["json"]
+    assert isinstance(body["List"], list)
+    assert not isinstance(body["List"], str)
+    assert body["List"][0]["SourceDataID"] == "src-1"
+    assert body["ListOther"] == []
+    assert body["status"] == "OK"
+    assert body["ID"] == "qid"
 
 
 def test_filter_filelist_matches_js_grid_rule():
@@ -1212,8 +1212,90 @@ def test_cadimport_next_json_string_body_is_finished(tmp_path: Path):
     assert any("exploded" in n.lower() for n in notes)
 
 
+def test_step_convert_to_before_next_posts_native_list(tmp_path: Path):
+    """QuoteOrderEdit ConvertTo (STEP→parts) runs before Next; List is an array."""
+    stp = tmp_path / "34574-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "fc29e35e-aaaa-bbbb-cccc-000000003457",
+        "FileID": "file-step",
+        "FileName": "34574-1.STEP",
+        "Name": "34574-1",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 12,
+        "PartMode": 0,
+        "FileType": ".STEP",
+        "CadType": 1,
+    }
+    kids = [
+        {
+            "SourceDataID": f"src-{i}",
+            "FileID": f"file-{i}",
+            "Name": f"34574-{i + 2} PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        }
+        for i in range(3)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {
+        "status": "OK",
+        "List": [raw],
+        "ListOther": [],
+    }
+    client.cadimport_convert_to.return_value = {"List": kids}
+    client.cadimport_update_data_next.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {"FileList": kids}
+    client.quote_item_read.return_value = {
+        "Data": [{"ProductType": 100, "Description": "34574-2"}],
+        "Total": 1,
+    }
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    client.add_item_dxf_files.side_effect = _add
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003457",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[{"part_no": "34574-2", "description": "PLATE 100K", "qty": 1}],
+        library={},
+        extra_pdfs=None,
+        part_key="34574-1",
+        explode_polls=2,
+        explode_sleep_s=0,
+    )
+    client.cadimport_convert_to.assert_called()
+    conv_body = client.cadimport_convert_to.call_args.args[0]
+    assert isinstance(conv_body["List"], list)
+    assert not isinstance(conv_body["List"], str)
+    assert conv_body["List"][0]["PartCount"] == 12
+    client.cadimport_get_dxf_data.assert_not_called()
+    client.add_item_dxf_files.assert_called()
+    assert len(captured["file_list"]) == 3
+    assert any("ConvertTo" in n or "exploded" in n.lower() for n in notes)
+
+
+def test_collect_cadimport_grid_skips_get_dxf_data():
+    client = MagicMock()
+    client.cadimport_data.return_value = {}
+    client.get_item_add_view.return_value = {}
+    SecturaFabPushService(client=client)._collect_cadimport_grid(quote_id="qid")
+    client.cadimport_get_dxf_data.assert_not_called()
+    client.cadimport_data.assert_called()
+
+
 def test_cadimport_explode_routes_use_www():
-    """CadImport Next/Data/SetUnits/GetDXFData must hit www, not api first."""
+    """CadImport Next/Data/SetUnits/ConvertTo must hit www, not api first."""
     from secturafab.client import SecturaFabClient
 
     real = SecturaFabClient.__new__(SecturaFabClient)
@@ -1245,9 +1327,9 @@ def test_cadimport_explode_routes_use_www():
 
     real.website_request = fake_website_request  # type: ignore[method-assign]
     real.cadimport_data(params={"ID": "qid"})
-    real.cadimport_update_data_next({"ID": "qid"})
+    real.cadimport_update_data_next({"ID": "qid", "List": [], "ListOther": []})
+    real.cadimport_convert_to({"ID": "qid", "List": [], "ListOther": []})
     real.cadimport_set_units("inch")
-    real.cadimport_get_dxf_data(quote_id="qid")
     real.get_item_add_view("qid")
     real.upload_item_dxf_files(
         [("files", ("a.step", b"ISO", "application/octet-stream"))],
@@ -1261,9 +1343,14 @@ def test_cadimport_explode_routes_use_www():
     )
     paths = {row["path"] for row in captured}
     assert "/CadImport/UpdateDataNext" in paths
+    assert "/CadImport/ConvertTo" in paths
     assert "/CadImport/Data" in paths
     assert "/CadImport/SetUnits" in paths
-    assert "/CadImport/GetDXFData" in paths or "/Quote/GetDXFData" in paths
+    assert "/CadImport/GetDXFData" not in paths
+    assert "/Quote/GetDXFData" not in paths
+    next_row = next(r for r in captured if r["path"] == "/CadImport/UpdateDataNext")
+    assert isinstance((next_row.get("json") or {}).get("List"), list)
+    assert next_row.get("data") is None
     units = next(r for r in captured if r["path"] == "/CadImport/SetUnits")
     assert units["params"] == {"units": "inch"}
     assert units["json"] is None

@@ -1240,21 +1240,16 @@ class SecturaFabPushService:
         upload_rows: list[dict[str, Any]] | None = None,
         quote_request_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """CadImport/Data + GetDXFData + GetItem_AddView FileList after Next."""
+        """CadImport/Data + GetItem_AddView FileList after explode.
+
+        GetDXFData 404s on www (live 34574-1). Do not poll a missing route.
+        """
         bags: list[dict[str, Any]] = []
         query = self._cadimport_quote_query(quote_id, quote_request_id)
         fetchers = [
             lambda: self.client.cadimport_data(params=query),
+            lambda: self.client.get_item_add_view(quote_id, item_type="dxf"),
         ]
-        if hasattr(self.client, "cadimport_get_dxf_data"):
-            fetchers.append(
-                lambda: self.client.cadimport_get_dxf_data(
-                    quote_id=quote_id, params=query
-                )
-            )
-        fetchers.append(
-            lambda: self.client.get_item_add_view(quote_id, item_type="dxf")
-        )
         for fetch in fetchers:
             try:
                 bags.extend(self._cadimport_rows(fetch()))
@@ -1300,9 +1295,29 @@ class SecturaFabPushService:
                 quote_id,
                 upload_payload.get("List") or upload_rows,
                 list_other=upload_payload.get("ListOther"),
+                extra=upload_payload,
             )
         else:
             next_body = build_cadimport_next_payload(quote_id, upload_rows)
+        step_row = any(
+            is_raw_step_upload_row(r, part_key=part_key, cad_filename=cad_filename)
+            for r in (upload_rows or [])
+        )
+        if step_row and hasattr(self.client, "cadimport_convert_to"):
+            try:
+                conv = self.client.cadimport_convert_to(next_body)
+                notes.append("CadImport ConvertTo (STEP → parts)")
+                exploded = self._cadimport_rows(conv)
+                if cadimport_filelist_exploded(
+                    exploded, part_key=part_key, cad_filename=cad_filename
+                ):
+                    notes.append(
+                        f"CadImport exploded {len(exploded)} FileList row(s) "
+                        "on ConvertTo"
+                    )
+                    return exploded, notes
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
+                notes.append(f"WARNING: CadImport ConvertTo failed: {exc}")
         try:
             nxt = self.client.cadimport_update_data_next(next_body)
             notes.append("CadImport UpdateDataNext (green Next)")
