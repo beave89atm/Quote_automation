@@ -26,6 +26,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "0e892c8f-93ee-49fa-90c9-3bb4bbf91c22",  # 34887-1 empty shell (227dff0) — leave it
         "ed8cfcda-68e4-4655-a240-79cce4280d7e",  # 34639-1 empty shell (743c5ee) — leave it
         "ba7730a0-0848-42d2-8579-dc18f86ec27f",  # 11791-2 empty shell (3bf75f8) — leave it
+        "30940f1d-d262-4562-bfd3-1b17575dc83c",  # 10072-1 empty shell (7b723b9) — leave it
     }
 )
 
@@ -50,6 +51,11 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "34887-1",  # spent empty shell (227dff0)
         "34639-1",  # spent empty shell (743c5ee)
         "11791-2",  # spent empty shell (3bf75f8)
+        "10072-1",  # spent empty shell (7b723b9)
+        "10107-1",  # occupied — do not remint
+        "14284-2",  # occupied — do not remint
+        "21807-1",  # occupied — do not remint
+        "1007830-1",  # occupied — do not remint
     }
 )
 

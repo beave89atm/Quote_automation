@@ -24,8 +24,9 @@ DoCreateDXFParts has no traditional / ajaxSetup; jQuery default is IDList[].
 PartController 403+LogOnUrl (live 34639-1 / 11791-2) — kendo.antiForgeryTokens
 reads hidden inputs on the Quote **layout** (GET /Quote?ID=), not the
 GetItem_AddView partial. Cookie GET /Quote is 302 AccessDenied (aa86d56);
-Chrome Quotes DOM / CDP cookies supply AF. Fail closed if missing — do
-not POST /part/create and do not mint.
+Chrome Quotes tab supplies AF and POSTs /part/create via in-page fetch.
+Cookie-file HTTP POST 403s (wrong claims user, live 7b723b9). Fail closed
+if chrome_dom is missing — do not POST and do not mint.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 

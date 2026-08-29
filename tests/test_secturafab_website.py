@@ -1349,21 +1349,12 @@ def test_step_create_all_parts_posts_part_create_not_convert_to(tmp_path: Path):
     assert any("DoCreateDXFParts" in n or "exploded" in n.lower() for n in notes)
 
 
-def test_part_create_sends_antiforgery_referer_and_cookie():
-    """PartController AF + /Quote Referer; IDList[] unchanged; cookie kept."""
+def test_part_create_uses_quotes_tab_fetch_not_cookie_http():
+    """DoCreateDXFParts runs as fetch in the Quotes tab (live 7b723b9)."""
     from secturafab.client import SecturaFabClient
     from secturafab.config import SecturaFabConfig
-    from secturafab.website import request_verification_fields
 
-    html = (
-        '<input name="__RequestVerificationToken" type="hidden" '
-        'value="af-secret-token-value" />'
-        '<input id="InventoryLocation" value="" />'
-    )
-    fields = request_verification_fields(html)
-    assert fields[0][0] == "__RequestVerificationToken"
-    assert fields[0][1] == "af-secret-token-value"
-
+    token = "af-secret-token-value"
     client = SecturaFabClient.__new__(SecturaFabClient)
     client.config = SecturaFabConfig(
         base_url="https://api.example.test",
@@ -1372,53 +1363,41 @@ def test_part_create_sends_antiforgery_referer_and_cookie():
         client_secret="y",
         website_cookie=".AspNet.ApplicationCookie=boxcookie",
     )
-    client._token = MagicMock()
-    client._token.authorization_header = "Bearer tok"
-    client._token.is_expired = False
-    client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
-    client._request_verification_token = "af-secret-token-value"
-    client._request_verification_fields = fields
-    captured: list[dict[str, Any]] = []
+    client._af_source = "chrome_dom"
+    client._request_verification_fields = [("__RequestVerificationToken", token)]
+    client._request_verification_token = token
+    posted: list[list[tuple[str, str]]] = []
 
-    def _req(method, url, **kwargs):
-        captured.append(
-            {
-                "method": method,
-                "url": url,
-                "headers": kwargs.get("headers") or {},
-                "data": kwargs.get("data"),
-                "json": kwargs.get("json"),
-            }
-        )
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.headers = {}
-        resp.text = '{"List":[]}'
-        resp.content = b'{"List":[]}'
-        resp.url = url
-        resp.json.return_value = {"List": []}
-        return resp
+    def _cdp(form_pairs, **_k):
+        posted.append(list(form_pairs))
+        return {
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["List"],
+            "list_len": 2,
+            "List": [{"SourceDataID": "kid-1"}, {"SourceDataID": "kid-2"}],
+            "via": "chrome_dom_fetch",
+        }
 
     client.session = MagicMock()
-    client.session.request.side_effect = _req
-    client.create_dxf_parts(["src-1"], ["inch"], location="")
-    assert captured
-    row = captured[0]
-    assert row["url"].endswith("/part/create")
-    assert row["json"] is None
-    headers = row["headers"]
-    assert headers.get("Cookie") == ".AspNet.ApplicationCookie=boxcookie"
-    assert headers.get("Referer") == "https://www.example.test/Quote"
-    assert headers.get("Origin") == "https://www.example.test"
-    assert headers.get("X-Requested-With") == "XMLHttpRequest"
-    assert headers.get("RequestVerificationToken") == "af-secret-token-value"
-    form = row["data"] or []
-    form_map = {k: v for k, v in form}
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.post_part_create_from_quotes_tab", side_effect=_cdp
+    ):
+        result = client.create_dxf_parts(["src-1"], ["inch"], location="")
+    client.session.request.assert_not_called()
+    assert posted
+    form_map = {k: v for k, v in posted[0]}
     assert form_map.get("IDList[]") == "src-1"
     assert form_map.get("unitList[]") == "inch"
-    assert form_map.get("Location") == ""
-    assert form_map.get("__RequestVerificationToken") == "af-secret-token-value"
-    assert "IDList" not in form_map
+    assert "__RequestVerificationToken" not in form_map
+    assert result["List"][0]["SourceDataID"] == "kid-1"
+    assert client._part_create_via == "chrome_dom_fetch"
 
 
 def test_request_verification_fields_matches_kendo_selectors():
@@ -1509,15 +1488,14 @@ def test_ensure_quote_antiforgery_reads_quote_layout_not_addview():
             resp.content = add_view.encode()
         return resp
 
+    client._af_source = ""
     client.website_request = _req  # type: ignore[method-assign]
-    assert client.ensure_quote_antiforgery("qid-new") is True
-    assert client_antiforgery_extracted(client) is True
-    quote_gets = [r for r in captured if r["path"] in {"/Quote", "/Quote/QuoteOrderEdit"}]
-    assert quote_gets
-    for row in quote_gets:
-        assert row["headers"].get("X-Requested-With") is None
-        assert "text/html" in (row["headers"].get("Accept") or "")
-    assert client._request_verification_fields[0][0] == "__RequestVerificationToken"
+    with patch("secturafab.chrome_cdp.chrome_quotes_live", return_value=False), patch(
+        "secturafab.chrome_cdp.chrome_debug_base", return_value=None
+    ), patch("secturafab.chrome_cdp.scrape_quotes_af_fields", return_value=[]):
+        assert client.ensure_quote_antiforgery("qid-new") is False
+    assert client._af_source != "cookie_quote_html"
+    assert token not in json.dumps(captured)
 
 
 def test_part_create_not_posted_when_af_extracted_false():
@@ -1624,8 +1602,8 @@ def test_explode_skips_part_create_when_quote_html_has_no_token(tmp_path: Path):
     mock.add_item_dxf_files.assert_not_called()
 
 
-def test_explode_posts_part_create_when_quote_layout_has_token(tmp_path: Path):
-    """Quote layout token → af_extracted=true, form has AF, token never in notes."""
+def test_explode_posts_part_create_from_quotes_tab(tmp_path: Path):
+    """chrome_dom fetch → kids Finish; cookie HTTP /part/create never used."""
     from secturafab.client import SecturaFabClient
     from secturafab.config import SecturaFabConfig
 
@@ -1660,10 +1638,6 @@ def test_explode_posts_part_create_when_quote_layout_has_token(tmp_path: Path):
         },
     ]
     token = "af-secret-token-value"
-    quote_html = (
-        '<html><body><input type="hidden" name="__RequestVerificationToken" '
-        f'value="{token}" /></body></html>'
-    )
     client = SecturaFabClient.__new__(SecturaFabClient)
     client.config = SecturaFabConfig(
         base_url="https://api.example.test",
@@ -1676,42 +1650,39 @@ def test_explode_posts_part_create_when_quote_layout_has_token(tmp_path: Path):
     client._token.authorization_header = "Bearer tok"
     client._token.is_expired = False
     client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
-    client._request_verification_token = None
-    client._request_verification_fields = []
+    client._request_verification_token = token
+    client._request_verification_fields = [("__RequestVerificationToken", token)]
+    client._af_source = "chrome_dom"
+    client._quotes_tab_live = True
     client._last_item_add_view_html = "<div id='gridDXF'>partial</div>"
-    captured: list[dict[str, Any]] = []
+    posted: list[list[tuple[str, str]]] = []
 
-    def _req(method, url, **kwargs):
-        path = str(url or "")
-        captured.append(
-            {
-                "method": method,
-                "url": path,
-                "headers": kwargs.get("headers") or {},
-                "data": kwargs.get("data"),
-                "json": kwargs.get("json"),
-            }
-        )
+    def _cdp(form_pairs, **_k):
+        posted.append(list(form_pairs))
+        return {
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["List"],
+            "list_len": 2,
+            "List": kids,
+            "via": "chrome_dom_fetch",
+        }
+
+    client.session = MagicMock()
+
+    def _session_req(method, url, **kwargs):
+        assert "/part/create" not in str(url)
         resp = MagicMock()
         resp.status_code = 200
         resp.headers = {}
-        resp.url = path
-        if path.endswith("/part/create"):
-            resp.text = json.dumps({"List": kids})
-            resp.content = resp.text.encode()
-            resp.json.return_value = {"List": kids}
-        elif "/Quote" in path and "GetItem" not in path:
-            resp.text = quote_html
-            resp.content = quote_html.encode()
-            resp.json.side_effect = ValueError("html")
-        else:
-            resp.text = "{}"
-            resp.content = b"{}"
-            resp.json.return_value = {}
+        resp.text = "{}"
+        resp.content = b"{}"
+        resp.url = url
+        resp.json.return_value = {}
         return resp
 
-    client.session = MagicMock()
-    client.session.request.side_effect = _req
+    client.session.request.side_effect = _session_req
 
     def _upload(*_a, **_k):
         return {"status": "OK", "List": [raw]}
@@ -1731,34 +1702,38 @@ def test_explode_posts_part_create_when_quote_layout_has_token(tmp_path: Path):
         return {"ok": True}
 
     client.add_item_dxf_files = _add  # type: ignore[method-assign]
-    notes = SecturaFabPushService(client=client).finish_cad_files(
-        quote_id="11111111-aaaa-bbbb-cccc-000000003498",
-        cad_files=[stp],
-        material="A36",
-        thickness="0.25",
-        qty=1,
-        takeoff={},
-        bom_rows=[{"part_no": "34998-2", "description": "PLATE", "qty": 1}],
-        library={},
-        extra_pdfs=None,
-        part_key="34998-1",
-        explode_polls=1,
-        explode_sleep_s=0,
-    )
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.post_part_create_from_quotes_tab", side_effect=_cdp
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="11111111-aaaa-bbbb-cccc-000000003498",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[{"part_no": "34998-2", "description": "PLATE", "qty": 1}],
+            library={},
+            extra_pdfs=None,
+            part_key="34998-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
     blob = " ".join(notes)
     assert "af_extracted=true" in blob
     assert "has_antiforgery=true" in blob
+    assert "af_source=chrome_dom" in blob
+    assert "part_create_via=chrome_dom_fetch" in blob
     assert token not in blob
-    create = [r for r in captured if str(r["url"]).endswith("/part/create")]
-    assert create
-    form = create[0]["data"] or []
-    form_map = {k: v for k, v in form}
-    assert form_map.get("__RequestVerificationToken") == token
-    from secturafab.website import form_has_antiforgery
-
-    assert form_has_antiforgery(form) is True
-    assert create[0]["headers"].get("Referer") == "https://www.example.test/Quote"
-    assert create[0]["headers"].get("RequestVerificationToken") == token
+    assert posted
+    form_map = {k: v for k, v in posted[0]}
+    assert form_map.get("IDList[]") == "src-step"
+    assert "__RequestVerificationToken" not in form_map
     assert finish_args.get("file_list")
     assert len(finish_args["file_list"]) == 2
 
@@ -1782,30 +1757,135 @@ def test_cookie_name_presence_never_includes_values():
     assert diff["chrome_only"] == ["__RequestVerificationToken"]
 
 
-def test_quotes_tab_prefers_quote_edit_url():
+def test_post_part_create_from_quotes_tab_uses_page_fetch():
+    """DoCreateDXFParts is fetch() in the Quotes document, not cookie HTTP."""
+    from secturafab.chrome_cdp import post_part_create_from_quotes_tab
+
+    token = "af-secret-token-value"
+    tab = {
+        "title": "Quotes",
+        "url": "https://www.secturafab.com/Quote",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        assert method == "Runtime.evaluate"
+        expr = str((params or {}).get("expression") or "")
+        assert "fetch(" in expr
+        assert "/part/create" in expr
+        assert "credentials" in expr
+        assert "same-origin" in expr
+        assert params.get("awaitPromise") is True
+        assert params.get("returnByValue") is True
+        assert token not in expr
+        assert kwargs.get("timeout", 0) >= 60
+        return {
+            "result": {
+                "value": {
+                    "has_antiforgery": True,
+                    "af_names": ["__RequestVerificationToken"],
+                    "status": 200,
+                    "body_keys": ["List"],
+                    "list_len": 2,
+                    "List": [{"SourceDataID": "a"}, {"SourceDataID": "b"}],
+                }
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quotes_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.cdp_call", side_effect=_call
+    ):
+        result = post_part_create_from_quotes_tab(
+            [("IDList[]", "src-1"), ("unitList[]", "inch")]
+        )
+    assert result["status"] == 200
+    assert result["via"] == "chrome_dom_fetch"
+    assert result["body_keys"] == ["List"]
+    assert result["list_len"] == 2
+    assert len(result["List"]) == 2
+    blob = json.dumps(result)
+    assert token not in blob
+
+
+def test_explode_skips_cookie_quote_html_even_when_fields_present(tmp_path: Path):
+    """cookie_quote_html is the wrong claims user — no /part/create."""
+    stp = tmp_path / "34997-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "34997-1.STEP",
+        "Name": "34997-1",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 4,
+        "Units": "inch",
+    }
+    token = "af-secret-token-value"
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", token)]
+    client._request_verification_token = token
+    client._af_source = "cookie_quote_html"
+    client._quotes_tab_live = True
+    client.cadimport_data.return_value = {"List": [raw]}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003497",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="34997-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    blob = " ".join(notes)
+    client.create_dxf_parts.assert_not_called()
+    client.add_item_dxf_files.assert_not_called()
+    assert "cookie_quote_html is the wrong" in blob
+    assert "no cookie HTTP /part/create" in blob
+    assert token not in blob
+
+
+def test_quotes_tab_skips_login_and_claims_mismatch():
     from secturafab.chrome_cdp import quotes_tab
 
     tabs = [
         {
             "type": "page",
-            "url": "https://www.secturafab.com/Home",
-            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/home",
+            "title": "Login",
+            "url": "https://www.secturafab.com/Account/Login",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/login",
         },
         {
             "type": "page",
-            "url": "https://www.secturafab.com/Quote/Edit/?ID=abc",
-            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/edit",
+            "title": (
+                "The provided anti-forgery token was meant for a different "
+                "claims-based user than"
+            ),
+            "url": "https://www.secturafab.com/Quote",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/claims",
         },
         {
             "type": "page",
-            "url": "https://www.secturafab.com/Quote?ID=abc",
-            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/quote",
+            "title": "Quotes",
+            "url": "https://www.secturafab.com/Quote",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
         },
     ]
     with patch("secturafab.chrome_cdp.list_chrome_targets", return_value=tabs):
-        tab = quotes_tab("http://127.0.0.1:9222")
+        tab = quotes_tab("http://127.0.0.1:9224")
     assert tab is not None
-    assert "/Quote/Edit" in str(tab.get("url") or "")
+    assert tab["title"] == "Quotes"
+    assert tab["webSocketDebuggerUrl"].endswith("/quotes")
 
 
 def test_scrape_quotes_af_fields_from_cdp_evaluate():
@@ -1834,13 +1914,14 @@ def test_scrape_quotes_af_fields_from_cdp_evaluate():
     assert fields == [("__RequestVerificationToken", token)]
 
 
-def test_ensure_uses_chrome_dom_when_cookie_quote_is_access_denied():
-    """Live aa86d56: cookie GET /Quote 302 AccessDenied; Chrome Quotes has AF."""
+def test_ensure_prefers_chrome_dom_over_cookie_quote_html():
+    """Live 7b723b9: cookie /Quote 200 AF is the wrong claims user."""
     from secturafab.client import SecturaFabClient
     from secturafab.config import SecturaFabConfig
     from secturafab.website import client_antiforgery_extracted
 
     token = "af-secret-token-value"
+    cookie_token = "cookie-html-wrong-user-token"
     client = SecturaFabClient.__new__(SecturaFabClient)
     client.config = SecturaFabConfig(
         base_url="https://api.example.test",
@@ -1853,44 +1934,30 @@ def test_ensure_uses_chrome_dom_when_cookie_quote_is_access_denied():
     client._token.authorization_header = "Bearer tok"
     client._token.is_expired = False
     client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
-    client._request_verification_token = None
-    client._request_verification_fields = []
-    client._last_item_add_view_html = "<div id='gridDXF'>partial</div>"
-    client._af_source = ""
+    client._request_verification_token = cookie_token
+    client._request_verification_fields = [
+        ("__RequestVerificationToken", cookie_token)
+    ]
+    client._af_source = "cookie_quote_html"
     client._chrome_user_agent = ""
     client._chrome_cookie_name_diff = {}
     client._cookie_quote_access_denied = False
     client._website_cookie_override = ""
-    captured: list[dict[str, Any]] = []
+    client._quotes_tab_live = False
 
-    def _req(method, path, **kwargs):
-        captured.append(
-            {
-                "path": path,
-                "headers": kwargs.get("headers") or {},
-                "omit_authorization": kwargs.get("omit_authorization"),
-            }
-        )
-        resp = MagicMock()
-        resp.status_code = 302
-        resp.headers = {"Location": "/Account/AccessDenied"}
-        resp.text = ""
-        resp.content = b""
-        resp.url = path
-        return resp
+    def _req(*_a, **_k):
+        raise AssertionError("cookie GET /Quote must not supply AF when Quotes is live")
 
     client.website_request = _req  # type: ignore[method-assign]
     with patch(
-        "secturafab.chrome_cdp.chrome_debug_base", return_value="http://127.0.0.1:9222"
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.chrome_cdp.chrome_debug_base", return_value="http://127.0.0.1:9224"
     ), patch(
         "secturafab.chrome_cdp.chrome_version_user_agent",
         return_value="Mozilla/5.0 Chrome/120",
     ), patch(
-        "secturafab.chrome_cdp.sectura_cookies_from_cdp",
-        return_value=[
-            (".AspNet.ApplicationCookie", "livecookie"),
-            ("__RequestVerificationToken", "ck"),
-        ],
+        "secturafab.chrome_cdp.sectura_cookies_from_cdp", return_value=[]
     ), patch(
         "secturafab.chrome_cdp.scrape_quotes_af_fields",
         return_value=[("__RequestVerificationToken", token)],
@@ -1898,19 +1965,14 @@ def test_ensure_uses_chrome_dom_when_cookie_quote_is_access_denied():
         assert client.ensure_quote_antiforgery("qid") is True
     assert client_antiforgery_extracted(client) is True
     assert client._af_source == "chrome_dom"
-    assert client._cookie_quote_access_denied is True
-    assert captured
-    assert all(row["omit_authorization"] is True for row in captured)
-    assert all(row["headers"].get("X-Requested-With") is None for row in captured)
-    assert "__RequestVerificationToken" in client._chrome_cookie_name_diff.get(
-        "chrome_only", []
-    )
+    assert client._quotes_tab_live is True
     notes = SecturaFabPushService(client=client)._antiforgery_capture_notes()
     blob = " ".join(notes)
     assert "af_extracted=true" in blob
     assert "af_source=chrome_dom" in blob
+    assert "cookie_quote_html" not in blob
     assert token not in blob
-    assert "livecookie" not in blob
+    assert cookie_token not in blob
     assert "filecookie" not in blob
 
 
@@ -1956,6 +2018,8 @@ def test_push_job_does_not_mint_when_af_extracted_false(tmp_path: Path):
     client.get_json = MagicMock(return_value={"ItemList": []})  # type: ignore[method-assign]
     service = SecturaFabPushService(client=client)
     with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=False
+    ), patch(
         "secturafab.chrome_cdp.chrome_debug_base", return_value=None
     ), patch.object(
         service, "upload_drawings_quote_request", return_value="qr"
@@ -2089,11 +2153,29 @@ def test_cadimport_explode_routes_use_www():
         resp.url = path
         return resp
 
+    real._af_source = "chrome_dom"
     real.website_request = fake_website_request  # type: ignore[method-assign]
     real.cadimport_data(params={"ID": "qid"})
     real.cadimport_update_data_next({"ID": "qid", "List": [], "ListOther": []})
     real.cadimport_convert_to({"ID": "qid", "List": [], "ListOther": []})
-    real.create_dxf_parts(["src-1"], ["inch"], location="")
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.post_part_create_from_quotes_tab",
+        return_value={
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["List"],
+            "list_len": 0,
+            "List": [],
+            "via": "chrome_dom_fetch",
+        },
+    ):
+        real.create_dxf_parts(["src-1"], ["inch"], location="")
     real.cadimport_set_units("inch")
     real.get_item_add_view("qid")
     real.upload_item_dxf_files(
@@ -2109,7 +2191,7 @@ def test_cadimport_explode_routes_use_www():
     paths = {row["path"] for row in captured}
     assert "/CadImport/UpdateDataNext" in paths
     assert "/CadImport/ConvertTo" in paths
-    assert "/part/create" in paths
+    assert "/part/create" not in paths
     assert "/CadImport/Data" in paths
     assert "/CadImport/SetUnits" in paths
     assert "/CadImport/GetDXFData" not in paths
@@ -2117,21 +2199,6 @@ def test_cadimport_explode_routes_use_www():
     next_row = next(r for r in captured if r["path"] == "/CadImport/UpdateDataNext")
     assert isinstance((next_row.get("json") or {}).get("List"), list)
     assert next_row.get("data") is None
-    create_row = next(r for r in captured if r["path"] == "/part/create")
-    assert create_row.get("json") is None
-    form = create_row.get("data") or []
-    form_keys = [k for k, _ in form]
-    assert "IDList[]" in form_keys
-    assert "unitList[]" in form_keys
-    assert "Location" in form_keys
-    assert "Height" in form_keys
-    assert "Width" in form_keys
-    assert create_row["headers"].get("Content-Type", "").startswith(
-        "application/x-www-form-urlencoded"
-    )
-    assert create_row["headers"].get("Referer") == "https://www.secturafab.com/Quote"
-    assert create_row["headers"].get("X-Requested-With") == "XMLHttpRequest"
-    assert "__RequestVerificationToken" in form_keys
     units = next(r for r in captured if r["path"] == "/CadImport/SetUnits")
     assert units["params"] == {"units": "inch"}
     assert units["json"] is None

@@ -1196,8 +1196,10 @@ class SecturaFabPushService:
         notes.append(f"af_extracted={str(af).lower()}")
         notes.append(f"has_antiforgery={str(af).lower()}")
         source = getattr(self.client, "_af_source", "") or ""
-        if source:
+        if isinstance(source, str) and source:
             notes.append(f"af_source={source}")
+        if getattr(self.client, "_quotes_tab_live", False) is True:
+            notes.append("chrome_quotes_live=true")
         if getattr(self.client, "_cookie_quote_access_denied", False):
             notes.append("cookie_quote_layout=302_AccessDenied")
         diff = getattr(self.client, "_chrome_cookie_name_diff", None) or {}
@@ -1216,10 +1218,11 @@ class SecturaFabPushService:
             except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError):
                 pass
         notes.extend(self._antiforgery_capture_notes())
-        if not client_antiforgery_extracted(self.client):
+        source = getattr(self.client, "_af_source", "") or ""
+        if source != "chrome_dom":
             notes.append(
-                "af_extracted=false — not minting "
-                "(cookie GET /Quote cannot see the layout field)"
+                "chrome_dom required — not minting "
+                "(cookie_quote_html is the wrong claims identity)"
             )
         return notes
 
@@ -1379,10 +1382,21 @@ class SecturaFabPushService:
                 or "inch"
             )
         create_fn = getattr(self.client, "create_dxf_parts", None)
-        if not af_extracted:
+        source = getattr(self.client, "_af_source", "")
+        if isinstance(source, str) and source == "cookie_quote_html":
+            notes.append(
+                "DoCreateDXFParts skipped — cookie_quote_html is the wrong "
+                "claims identity (no cookie HTTP /part/create)"
+            )
+        elif isinstance(source, str) and source != "chrome_dom":
             notes.append(
                 "DoCreateDXFParts skipped — af_extracted=false "
-                "(no /part/create; GetItem_AddView is a partial)"
+                "(chrome_dom required; no /part/create)"
+            )
+        elif not af_extracted:
+            notes.append(
+                "DoCreateDXFParts skipped — af_extracted=false "
+                "(chrome_dom required; no /part/create)"
             )
         elif callable(create_fn) and id_list:
             try:
@@ -1394,6 +1408,9 @@ class SecturaFabPushService:
                     height=0,
                     width=0,
                 )
+                via = getattr(self.client, "_part_create_via", "") or ""
+                if isinstance(via, str) and via:
+                    notes.append(f"part_create_via={via}")
             except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError) as exc:
                 notes.append(
                     f"WARNING: {xhr.cite()} failed: "
@@ -2894,13 +2911,13 @@ class SecturaFabPushService:
                     callable(
                         getattr(type(self.client), "ensure_quote_antiforgery", None)
                     )
-                    and not client_antiforgery_extracted(self.client)
+                    and getattr(self.client, "_af_source", "") != "chrome_dom"
                 ):
                     return PushResult(
                         ok=False,
                         error=(
-                            "af_extracted=false — not minting a new quote "
-                            "(no /part/create)"
+                            "af_source!=chrome_dom — not minting a new quote "
+                            "(cookie_quote_html is the wrong claims identity)"
                         ),
                         notes=notes,
                         status="failed",

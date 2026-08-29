@@ -22,7 +22,6 @@ from .website import (
     build_weld_add_operation_payload,
     cadimport_list_is_native_array,
     client_antiforgery_extracted,
-    form_has_antiforgery,
     is_cloudflare_challenge,
     is_website_login_redirect,
     jquery_ajax_form,
@@ -81,6 +80,8 @@ class SecturaFabClient:
         self._chrome_cookie_name_diff: dict[str, list[str]] = {}
         self._cookie_quote_access_denied: bool = False
         self._website_cookie_override: str = ""
+        self._quotes_tab_live: bool = False
+        self._part_create_via: str = ""
 
     def authenticate(self, force: bool = False) -> AccessToken:
         if self._token and not self._token.is_expired and not force:
@@ -541,22 +542,21 @@ class SecturaFabClient:
     def harvest_chrome_antiforgery(self) -> str:
         """Hypothesis A+B: CDP cookies / Quotes DOM. Returns af_source or ''."""
         from .chrome_cdp import (
-            chrome_debug_base,
+            chrome_quotes_live,
             chrome_version_user_agent,
             scrape_quotes_af_fields,
             sectura_cookies_from_cdp,
         )
 
-        base = chrome_debug_base()
-        if not base:
+        if not chrome_quotes_live():
             return ""
-        ua = chrome_version_user_agent(base)
+        ua = chrome_version_user_agent()
         if ua:
             self._chrome_user_agent = ua
-        pairs = sectura_cookies_from_cdp(base)
+        pairs = sectura_cookies_from_cdp()
         if pairs:
             self._chrome_cookie_name_diff = self._apply_chrome_cookies(pairs)
-        fields = scrape_quotes_af_fields(base)
+        fields = scrape_quotes_af_fields()
         if fields:
             self._merge_antiforgery_fields(fields)
             if client_antiforgery_extracted(self):
@@ -643,22 +643,29 @@ class SecturaFabClient:
         return False
 
     def ensure_quote_antiforgery(self, quote_id: str) -> bool:
-        """AF from Quote layout or Chrome Quotes DOM — never AddView.
+        """AF from the live Quotes tab DOM — never cookie HTML, never AddView.
 
-        Cookie GET /Quote is 302 AccessDenied (live aa86d56) while Chrome
-        Quotes is 200 with the kendo hidden input. Try cookie HTML, then
-        CDP cookie refresh + retry, then Chrome DOM. Never log values.
+        Live 7b723b9: cookie GET /Quote 200 AF is a different claims-based
+        user than the Quotes tab. That field 403s /part/create. Prefer
+        chrome_dom when a Quotes tab is live. Never log values.
         """
-        if client_antiforgery_extracted(self):
-            return True
-        if self._scrape_quote_layout_html(quote_id):
-            return True
+        del quote_id
+        from .chrome_cdp import chrome_quotes_live
+
+        self._quotes_tab_live = bool(chrome_quotes_live())
+        if getattr(self, "_af_source", "") == "cookie_quote_html":
+            self._request_verification_fields = []
+            self._request_verification_token = None
+            self._af_source = ""
         source = self.harvest_chrome_antiforgery()
-        if source:
+        if source == "chrome_dom" and client_antiforgery_extracted(self):
+            self._af_source = "chrome_dom"
             return True
-        if self._scrape_quote_layout_html(quote_id):
-            return True
-        return client_antiforgery_extracted(self)
+        # Harvest miss: leftover cookie HTML is the wrong claims user.
+        self._request_verification_fields = []
+        self._request_verification_token = None
+        self._af_source = ""
+        return False
 
     def harvest_cadimport_js(
         self,
@@ -994,13 +1001,21 @@ class SecturaFabClient:
         QuoteOrderEdit createAllParts collects #gridDXF SourceDataID + Units
         and POSTs application/x-www-form-urlencoded
         {Location, IDList, unitList, OtherFileIDList, Height, Width}.
-        No traditional (IDList[]). PartController AF: kendo.antiForgeryTokens
-        merges ``input[name^='__RequestVerificationToken']`` from the Quote
-        layout into ``data`` (not GetItem_AddView). Fail closed if empty.
-        success t.List = kids.
+        No traditional (IDList[]). AF + Cookie + claims must come from the
+        live Quotes document (CDP fetch). Cookie-file HTTP POST 403s
+        (live 7b723b9) even with a form AF field. Fail closed if chrome_dom
+        is missing. success t.List = kids.
         """
         from .cadimport_js import build_create_dxf_parts_fields, jquery_ajax_form
+        from .chrome_cdp import chrome_quotes_live, post_part_create_from_quotes_tab
 
+        if chrome_quotes_live():
+            self.harvest_chrome_antiforgery()
+        if getattr(self, "_af_source", "") != "chrome_dom":
+            raise SecturaFabApiError(
+                "af_extracted=false — chrome_dom required, "
+                "not POSTing /part/create via cookie HTTP"
+            )
         fields = build_create_dxf_parts_fields(
             [
                 {"SourceDataID": sid, "Units": units}
@@ -1012,32 +1027,23 @@ class SecturaFabClient:
             width=width,
         )
         form = jquery_ajax_form(fields)
-        for name, value in getattr(self, "_request_verification_fields", None) or ():
-            if name and value:
-                form.append((str(name), str(value)))
-        if not form_has_antiforgery(form):
-            token = getattr(self, "_request_verification_token", None)
-            if isinstance(token, str) and token.strip():
-                form.append(("__RequestVerificationToken", token))
-        if not form_has_antiforgery(form):
+        result = post_part_create_from_quotes_tab(form)
+        self._part_create_via = "chrome_dom_fetch"
+        if not result.get("has_antiforgery"):
             raise SecturaFabApiError(
-                "af_extracted=false — not POSTing /part/create"
+                "af_extracted=false — chrome_dom required, not POSTing /part/create"
             )
-        headers = self._quote_page_ajax_headers(
-            {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}
-        )
-        response = self.website_request(
-            "POST",
-            WEBSITE_FINISH_PATHS["part_create"],
-            json=None,
-            data=form,
-            headers=headers,
-            prefer_api_origin=False,
-            www_only=True,
-            require_session=False,
-            timeout=max(self.config.timeout_seconds, 180.0),
-        )
-        return self._parse_website_or_raise(response, require_session=False)
+        status = int(result.get("status") or 0)
+        body_keys = [str(k) for k in (result.get("body_keys") or [])]
+        if status >= 400:
+            body = {key: True for key in body_keys}
+            raise SecturaFabApiError(
+                f"API request failed ({status}) for chrome_dom /part/create",
+                status_code=status,
+                body=body or {"Error": True, "LogOnUrl": True},
+            )
+        kids = result.get("List")
+        return {"List": kids} if isinstance(kids, list) else {"List": []}
 
     def cadimport_convert_to(self, payload: Any = None) -> Any:
         """POST /CadImport/ConvertTo — ConvertTo(n) units, not STEP explode.
