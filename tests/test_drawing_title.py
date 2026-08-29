@@ -45,6 +45,37 @@ ALUMINUM PLATFORM WELDMENT
     assert "WELDMENT" in weld.upper()
 
 
+def test_three_place_decimal_is_not_a_title():
+    """Live 34137-2 stamped THREE PLACE DECIMAL — drawing note, not the weldment."""
+    from secturafab.item_desc import (
+        format_assembly_description,
+        format_quote_header_description,
+    )
+
+    assert is_drawing_boilerplate_title("THREE PLACE DECIMAL")
+    assert is_drawing_boilerplate_title("34137-2 - THREE PLACE DECIMAL")
+    assert format_quote_header_description(
+        "THREE PLACE DECIMAL", part_key="34137-2"
+    ) == ""
+    assert format_quote_header_description(
+        "34137-2 - THREE PLACE DECIMAL", part_key="34137-2"
+    ) == ""
+    assert "DECIMAL" not in format_assembly_description(
+        "34137-2", "THREE PLACE DECIMAL"
+    )
+    text = """
+34137-2
+THREE PLACE DECIMAL
+DRAWING IS THE SOLE PROPERTY OF
+ALUMINUM PLATFORM WELDMENT
+"""
+    title = extract_title_from_pdf_text(text, part_key="34137-2")
+    assert title is not None
+    assert "DECIMAL" not in title.upper()
+    assert "SOLE PROPERTY" not in title.upper()
+    assert "PLATFORM" in title.upper() or "WELDMENT" in title.upper()
+
+
 def test_extract_title_coupler_asm():
     text = """THIS DRAWING IS THE PROPERTY OF MAC TRAILER
 PART NO

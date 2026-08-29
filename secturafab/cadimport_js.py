@@ -113,8 +113,11 @@ UPDATE_DATA_NEXT_SNIPPET = (
 # QuoteOrderEdit Finish — same controllerName='/Quote' as GetItem_AddView.
 #   data:{ID, ItemID, customerMaterial, FileList}
 # FileList = #gridDXFParts rows (ErrorStatus===0, Qty>0), not the raw STEP.
-# Live 34137-1: cookie-HTTP POST 200 empty str / ItemList 0. Same claims
-# miss as /part/create — send via Quotes-tab fetch, do not invent a route.
+# Live 34137-1: cookie-HTTP POST 200 empty str / ItemList 0.
+# Live 34137-2: Quotes-tab fetch of a Python-rebuilt FileList is the same
+# empty 200 — fetch('/part/create') never runs DoCreateDXFParts success, so
+# #gridDXFParts stays empty. Drive createAllParts / DoCreateDXFParts then
+# the page Finish that reads that grid. Do not invent a route.
 ADD_ITEM_DXF_FILES_PATH = "/Quote/AddItem_DXFFiles"
 ADD_ITEM_DXF_FILES_BODY_KEYS = ("ID", "ItemID", "customerMaterial", "FileList")
 ADD_ITEM_DXF_FILES_SNIPPET = (

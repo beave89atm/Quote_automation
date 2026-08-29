@@ -28,9 +28,11 @@ Chrome Quotes tab supplies AF and POSTs /part/create via in-page fetch.
 Cookie-file HTTP POST 403s (wrong claims user, live 7b723b9). Fail closed
 if chrome_dom is missing — do not POST and do not mint.
 Live 34137-1: /part/create chrome_dom_fetch 200 t.List=31, then cookie-HTTP
-Finish POST /Quote/AddItem_DXFFiles 200 empty str / ItemList 0. Send Finish
-(and SetPartMode / UpdateData) the same Quotes-tab fetch. Do not Finish
-the raw STEP or a Root-only FileList.
+Finish POST /Quote/AddItem_DXFFiles 200 empty str / ItemList 0.
+Live 34137-2: Quotes-tab fetch Finish of reconstructed kids is the same
+empty 200 — page success never bound #gridDXFParts. Drive createAllParts /
+DoCreateDXFParts so t.List lands on that grid, then page Finish. Do not
+Finish the raw STEP or a Root-only FileList.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 

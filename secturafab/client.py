@@ -22,6 +22,7 @@ from .website import (
     build_weld_add_operation_payload,
     cadimport_list_is_native_array,
     client_antiforgery_extracted,
+    filter_finish_filelist,
     is_cloudflare_challenge,
     is_website_login_redirect,
     jquery_ajax_form,
@@ -83,6 +84,7 @@ class SecturaFabClient:
         self._quotes_tab_live: bool = False
         self._part_create_via: str = ""
         self._finish_via: str = ""
+        self._grid_dxf_row_count: int | None = None
 
     def authenticate(self, force: bool = False) -> AccessToken:
         if self._token and not self._token.is_expired and not force:
@@ -1049,19 +1051,21 @@ class SecturaFabClient:
         height: int | float = 0,
         width: int | float = 0,
     ) -> Any:
-        """POST /part/create — DoCreateDXFParts (Kyle Next → #gridDXFParts).
+        """Drive QuoteOrderEdit createAllParts / DoCreateDXFParts in the Quotes tab.
 
-        QuoteOrderEdit createAllParts collects #gridDXF SourceDataID + Units
-        and POSTs application/x-www-form-urlencoded
-        {Location, IDList, unitList, OtherFileIDList, Height, Width}.
-        No traditional (IDList[]). AF + Cookie + claims must come from the
-        live Quotes document (CDP fetch). Cookie-file HTTP POST 403s
-        (live 7b723b9) even with a form AF field. Fail closed if chrome_dom
-        is missing. success t.List = kids.
+        Live 34137-2: CDP fetch('/part/create') 200 t.List does **not** run
+        the page success handler, so #gridDXFParts stays empty. Evaluate the
+        page fn so success binds the grid. XHR is still POST /part/create.
+        Cookie-file HTTP POST 403s (live 7b723b9). Fail closed if chrome_dom
+        is missing or #gridDXFParts row count stays <=1.
         """
-        from .cadimport_js import build_create_dxf_parts_fields, jquery_ajax_form
-        from .chrome_cdp import chrome_quotes_live, post_part_create_from_quotes_tab
+        from .chrome_cdp import (
+            chrome_quotes_live,
+            grid_dxf_parts_rows_from_quotes_tab,
+            invoke_page_create_all_parts,
+        )
 
+        del location, other_file_ids, height, width
         if chrome_quotes_live():
             self.harvest_chrome_antiforgery()
         if getattr(self, "_af_source", "") != "chrome_dom":
@@ -1069,34 +1073,17 @@ class SecturaFabClient:
                 "af_extracted=false — chrome_dom required, "
                 "not POSTing /part/create via cookie HTTP"
             )
-        fields = build_create_dxf_parts_fields(
-            [
-                {"SourceDataID": sid, "Units": units}
-                for sid, units in zip(id_list, unit_list)
-            ],
-            location=location,
-            other_file_ids=other_file_ids,
-            height=height,
-            width=width,
-        )
-        form = jquery_ajax_form(fields)
-        result = post_part_create_from_quotes_tab(form)
-        self._part_create_via = "chrome_dom_fetch"
-        if not result.get("has_antiforgery"):
-            raise SecturaFabApiError(
-                "af_extracted=false — chrome_dom required, not POSTing /part/create"
-            )
-        status = int(result.get("status") or 0)
-        body_keys = [str(k) for k in (result.get("body_keys") or [])]
-        if status >= 400:
-            body = {key: True for key in body_keys}
-            raise SecturaFabApiError(
-                f"API request failed ({status}) for chrome_dom /part/create",
-                status_code=status,
-                body=body or {"Error": True, "LogOnUrl": True},
-            )
-        kids = result.get("List")
-        return {"List": kids} if isinstance(kids, list) else {"List": []}
+        page = invoke_page_create_all_parts(id_list, unit_list)
+        called = str(page.get("called") or "")
+        self._part_create_via = called or "page_fn"
+        self._grid_dxf_row_count = int(page.get("grid_dxf_row_count") or 0)
+        rows = [r for r in (page.get("List") or []) if isinstance(r, dict)]
+        if self._grid_dxf_row_count > 1 and len(rows) <= 1:
+            extra = grid_dxf_parts_rows_from_quotes_tab()
+            if extra:
+                rows = extra
+                self._grid_dxf_row_count = max(self._grid_dxf_row_count, len(rows))
+        return {"List": rows}
 
     def cadimport_convert_to(self, payload: Any = None) -> Any:
         """POST /CadImport/ConvertTo — ConvertTo(n) units, not STEP explode.
@@ -1161,20 +1148,22 @@ class SecturaFabClient:
         item_id: str | None = None,
         customer_material: bool = False,
     ) -> Any:
-        """POST /Quote/AddItem_DXFFiles — green Finish (JS contract).
+        """POST /Quote/AddItem_DXFFiles — page Finish that reads #gridDXFParts.
 
-        Live 34137-1: cookie-HTTP www 200 empty str / no NewItem / ItemList 0.
-        Same claims miss as /part/create. Quotes-tab fetch only. Never cookie
-        HTTP Finish when chrome_dom is required.
+        Live 34137-1: cookie-HTTP 200 empty / ItemList 0.
+        Live 34137-2: Quotes-tab fetch of a Python-rebuilt FileList is the
+        same empty 200 — #gridDXFParts was never bound. Invoke the page
+        Finish (OnAddDXFClick / click) after createAllParts. Fallback fetch
+        uses the grid dataSource rows only, never reconstructed kids.
         """
-        from .chrome_cdp import chrome_quotes_live, post_add_item_dxf_files_from_quotes_tab
-
-        payload = build_dxf_finish_payload(
-            quote_id,
-            file_list,
-            item_id=item_id,
-            customer_material=customer_material,
+        from .chrome_cdp import (
+            chrome_quotes_live,
+            grid_dxf_parts_rows_from_quotes_tab,
+            invoke_page_dxf_finish,
+            post_add_item_dxf_files_from_quotes_tab,
         )
+
+        del file_list
         if chrome_quotes_live():
             self.harvest_chrome_antiforgery()
         if getattr(self, "_af_source", "") != "chrome_dom":
@@ -1182,8 +1171,41 @@ class SecturaFabClient:
                 "af_extracted=false — chrome_dom required, "
                 "not POSTing /Quote/AddItem_DXFFiles via cookie HTTP"
             )
+        n_grid = getattr(self, "_grid_dxf_row_count", None)
+        if isinstance(n_grid, (int, float)) and int(n_grid) <= 1:
+            self._finish_via = "skipped"
+            return self._dxf_finish_capture({}, via="skipped")
+        page = invoke_page_dxf_finish()
+        via = str(page.get("via") or "")
+        if via == "skipped":
+            self._finish_via = "skipped"
+            return self._dxf_finish_capture(page, via="skipped")
+        if via == "page_fn":
+            self._finish_via = "page_fn"
+            status = int(page.get("status") or 0)
+            if status >= 400:
+                raise SecturaFabApiError(
+                    f"API request failed ({status}) for page_fn /Quote/AddItem_DXFFiles",
+                    status_code=status,
+                    body={key: True for key in (page.get("body_keys") or [])}
+                    or {"Error": True},
+                )
+            return self._dxf_finish_capture(page, via="page_fn")
+        grid_rows = [r for r in (page.get("List") or []) if isinstance(r, dict)]
+        if len(grid_rows) <= 1:
+            grid_rows = grid_dxf_parts_rows_from_quotes_tab()
+        kids = filter_finish_filelist(grid_rows)
+        if len(kids) <= 1:
+            self._finish_via = "skipped"
+            return self._dxf_finish_capture({}, via="skipped")
+        payload = {
+            "ID": quote_id,
+            "ItemID": item_id or EMPTY_GUID,
+            "customerMaterial": bool(customer_material),
+            "FileList": kids,
+        }
         result = post_add_item_dxf_files_from_quotes_tab(payload)
-        self._finish_via = "chrome_dom_fetch"
+        self._finish_via = "grid_finish"
         if not result.get("has_antiforgery"):
             raise SecturaFabApiError(
                 "af_extracted=false — chrome_dom required, not POSTing Finish"
@@ -1192,18 +1214,23 @@ class SecturaFabClient:
         body_keys = [str(k) for k in (result.get("body_keys") or [])]
         if status >= 400:
             raise SecturaFabApiError(
-                f"API request failed ({status}) for chrome_dom /Quote/AddItem_DXFFiles",
+                f"API request failed ({status}) for grid_finish /Quote/AddItem_DXFFiles",
                 status_code=status,
                 body={key: True for key in body_keys} or {"Error": True},
             )
+        return self._dxf_finish_capture(result, via="grid_finish")
+
+    @staticmethod
+    def _dxf_finish_capture(result: dict[str, Any], *, via: str) -> dict[str, Any]:
+        body_keys = [str(k) for k in (result.get("body_keys") or [])]
         return {
-            "status": status,
+            "status": int(result.get("status") or 0),
             "body_keys": body_keys,
             "body_type": result.get("body_type") or "empty",
             "has_NewItem": bool(result.get("has_NewItem")),
             "has_QuoteItem": bool(result.get("has_QuoteItem")),
             "text_len": int(result.get("text_len") or 0),
-            "via": "chrome_dom_fetch",
+            "via": via,
             "empty_body": (
                 str(result.get("body_type") or "") in {"empty", "str"}
                 and not result.get("has_NewItem")

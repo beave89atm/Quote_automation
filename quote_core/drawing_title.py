@@ -25,6 +25,7 @@ _SKIP_LINE = re.compile(
     r"DOWN\s+\d|T\.?S\.?C\.?$|TYP$|REVISIONS?$|CHECKED BY|DRAWN BY|"
     r"DRAWING RELEASED|UPDATED POSITIONS|STEEL MATERIALS|ALUMINUM MATERIALS|"
     r"DRAWING IS THE SOLE|SOLE PROPERTY|"
+    r"THREE PLACE DECIMAL|PLACE DECIMAL|"
     r"DWG\s*NO:?$|APPROVED:?$|QA$|MFG$|CHECKED$|DRAWN$"
     r")"
 )
@@ -65,7 +66,9 @@ _LEGAL_OR_BANNER = re.compile(
     r"complete or partial reproduction|"
     r"drawing is the sole|"
     r"sole property of|"
-    r"this drawing is the property"
+    r"this drawing is the property|"
+    r"three place decimal|"
+    r"place decimal"
     r")"
 )
 
@@ -333,7 +336,12 @@ def is_drawing_boilerplate_title(text: str | None) -> bool:
     if _SKIP_LINE.match(s):
         return True
     upper = s.upper()
-    return "SOLE PROPERTY" in upper or "DRAWING IS THE SOLE" in upper
+    return (
+        "SOLE PROPERTY" in upper
+        or "DRAWING IS THE SOLE" in upper
+        or "THREE PLACE DECIMAL" in upper
+        or "PLACE DECIMAL" in upper
+    )
 
 
 def title_from_exploded_names(names: list[str] | None) -> str | None:

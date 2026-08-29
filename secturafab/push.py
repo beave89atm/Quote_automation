@@ -1418,6 +1418,15 @@ class SecturaFabPushService:
                 via = getattr(self.client, "_part_create_via", "") or ""
                 if isinstance(via, str) and via:
                     notes.append(f"part_create_via={via}")
+                n_grid = getattr(self.client, "_grid_dxf_row_count", None)
+                if isinstance(n_grid, (int, float)):
+                    notes.append(f"grid_dxf_row_count={int(n_grid)}")
+                    if int(n_grid) <= 1:
+                        notes.append(
+                            "WARNING: #gridDXFParts row count<=1 after page "
+                            "createAllParts/DoCreateDXFParts — not Finishing"
+                        )
+                        result = None
             except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError) as exc:
                 notes.append(
                     f"WARNING: {xhr.cite()} failed: "
@@ -1425,6 +1434,9 @@ class SecturaFabPushService:
                 )
                 result = None
             exploded = self._cadimport_rows(result)
+            n_grid = getattr(self.client, "_grid_dxf_row_count", None)
+            if isinstance(n_grid, (int, float)) and int(n_grid) <= 1:
+                return exploded or upload_rows, notes
             if cadimport_filelist_exploded(
                 exploded, part_key=part_key, cad_filename=cad_filename
             ):
@@ -1894,6 +1906,16 @@ class SecturaFabPushService:
             sleep_s=explode_sleep_s,
         )
         notes.extend(explode_notes)
+        n_grid = getattr(self.client, "_grid_dxf_row_count", None)
+        if isinstance(n_grid, (int, float)):
+            if f"grid_dxf_row_count={int(n_grid)}" not in " ".join(notes):
+                notes.append(f"grid_dxf_row_count={int(n_grid)}")
+            if int(n_grid) <= 1:
+                notes.append(
+                    "WARNING: #gridDXFParts row count<=1 — not Finishing "
+                    "(page createAllParts/DoCreateDXFParts did not bind the grid)"
+                )
+                return notes
         if not cadimport_filelist_exploded(
             data_rows, part_key=part_key, cad_filename=cad_filename
         ):
@@ -1975,7 +1997,8 @@ class SecturaFabPushService:
                 empty_finish = True
                 notes.append(
                     "WARNING: AddItem_DXFFiles HTTP 200 empty body / no NewItem "
-                    "— not success (cookie HTTP Finish is the ItemList-0 path)"
+                    "— not success (reconstructed FileList Finish is the "
+                    "ItemList-0 path; need page #gridDXFParts Finish)"
                 )
         posted = self._read_quote_items(quote_id)
         cad_n = count_cad_product_type(posted)
