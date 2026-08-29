@@ -2817,13 +2817,13 @@ class SecturaFabPushService:
                             "Saw+Saw-Setup). "
                             + (
                                 "Continuing weld/nest/kids. "
-                                if not cad
+                                if not (cad or expect_cad)
                                 else ""
                             )
                             + "AddItem_PDFFiles HTTP 200 is not session-expired; "
                             "PR / laser pack / UnitCost did not stamp."
                         )
-                        if cad:
+                        if cad or expect_cad:
                             msg = notes[-1]
                             return PushResult(
                                 ok=False,
