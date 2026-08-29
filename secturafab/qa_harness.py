@@ -424,6 +424,20 @@ def evaluate_quote_get(
     notes.append(f"Checked {cad_n} Cad / {lin_n} Linear line(s)")
     if assembly_desc:
         notes.append(f"Assembly={assembly_desc}")
+    if check_lines:
+        expect_cad = sum(
+            1
+            for row in (bom_rows or [])
+            if classify_sectura_item(
+                f"{row.get('part_no') or row.get('part_number') or ''} "
+                f"{row.get('description') or ''}"
+            )
+            == "Cad"
+        )
+        if expect_cad and cad_n <= 0:
+            failures.append(
+                "0 Cad lines landed (empty assembly shell is not success)"
+            )
     return QuoteGetQaResult(ok=not failures, failures=failures, notes=notes)
 
 

@@ -193,7 +193,7 @@ def looks_like_drawing_sheet(width_in: float | None, length_in: float | None) ->
 
 _CAD_THK_RE = re.compile(r'(?P<thk>\d+\s*/\s*\d+|\d+(?:\.\d+)?)\s*"')
 _CAD_GRADE_RE = re.compile(
-    r"\b(?P<grade>A\s*572(?:\s+Grade\s+\d+)?|A\s*36|A\s*513|A\s*500|A\s*656(?:\s+Grade\s+\d+)?|100K)\b",
+    r"\b(?P<grade>A\s*572(?:\s+Grade\s+\d+)?|A\s*36|A\s*513|A\s*500|A\s*656(?:\s+Grade\s+\d+)?|100K|5052(?:-H32)?)\b",
     re.IGNORECASE,
 )
 _CAD_FLAT_RE = re.compile(
@@ -498,8 +498,10 @@ def flats_from_mapping(row: dict[str, Any] | None) -> tuple[float | None, float 
         ("width_in", "length_in"),
         ("Width", "Length"),
         ("width", "length"),
+        ("W", "L"),
         ("Stock_X", "Stock_Y"),
         ("FlatWidth", "FlatLength"),
+        ("blank_width", "blank_length"),
     )
     for wk, lk in pairs:
         w = _as_flat(row.get(wk))
@@ -515,7 +517,17 @@ def flats_from_mapping(row: dict[str, Any] | None) -> tuple[float | None, float 
     parsed = parse_plate_flats(
         " ".join(
             str(row.get(k) or "")
-            for k in ("description", "Description", "joint_notes", "notes", "noun")
+            for k in (
+                "description",
+                "Description",
+                "joint_notes",
+                "notes",
+                "noun",
+                "size",
+                "Size",
+                "blank_size",
+                "overall",
+            )
         )
     )
     if parsed[0] and parsed[1]:

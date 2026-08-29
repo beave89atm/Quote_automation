@@ -58,6 +58,7 @@ from .quotes import QuoteService
 from .website import (
     EMPTY_GUID,
     WEBSITE_AUTH_GAP,
+    WEBSITE_SESSION_EXPIRED,
     SecturaFabWebsiteAuthError,
     attachment_pdf_filelist_ready,
     count_cad_product_type,
@@ -412,9 +413,15 @@ def _default_material(takeoff: dict[str, Any] | None) -> str:
     weight = drivers.get("weight_calc") or {}
     key = str(weight.get("material_key") or "").strip().lower()
     label = str(weight.get("material_label") or "").strip()
+    if key == "aluminum_5052" or "5052" in label.upper() or "ALPL" in label.upper():
+        return "5052-H32"
+    if key == "aluminum_6061" or "6061" in label.upper():
+        return "6061-T6"
     # Weight heuristics often mis-read title-block boilerplate ("ALUMINUM MATERIALS")
     # as the part material — do not seed SecturaFAB from weak aluminum guesses.
-    if key in {"aluminum", "aluminium"} or "aluminum" in label.lower():
+    if key in {"aluminum", "aluminium"} or (
+        "aluminum" in label.lower() and "5052" not in label.upper() and "6061" not in label.upper()
+    ):
         return "A36"
     if label:
         # SecturaFAB grades are typically bare codes like A36 / A572.
@@ -430,6 +437,9 @@ def _shop_material(material: str | None) -> str:
     text = str(material or "").strip()
     if not text or "A569" in text.upper():
         return "A36"
+    upper = text.upper()
+    if "5052" in upper or upper.startswith("ALPL"):
+        return "5052-H32"
     return text
 
 
@@ -1542,11 +1552,12 @@ class SecturaFabPushService:
         try:
             self.client.get_item_add_view(quote_id, item_type="pdf")
             notes.append("Opened Image Files dialog (GetItem_AddView ItemType=pdf)")
-        except SecturaFabWebsiteAuthError:
-            notes.append(
-                "GetItem_AddView(pdf) 302 — continuing Image Files Finish "
-                "with bearer (AddItem_PDFFiles still needs a website session)"
-            )
+        except SecturaFabWebsiteAuthError as exc:
+            raise SecturaFabWebsiteAuthError(
+                f"{WEBSITE_SESSION_EXPIRED} — GetItem_AddView(pdf) 302 ({exc})",
+                status_code=getattr(exc, "status_code", None),
+                body=getattr(exc, "body", None),
+            ) from exc
         except SecturaFabApiError as exc:
             notes.append(f"WARNING: GetItem_AddView(pdf) returned {exc}")
 
@@ -1594,11 +1605,32 @@ class SecturaFabPushService:
                     f"Skipped Image Files {path.name} — {cat} goes Long/Component"
                 )
                 continue
+            for plat in (takeoff or {}).get("plates") or []:
+                if not isinstance(plat, dict):
+                    continue
+                plat_pn = str(plat.get("part_no") or plat.get("name") or "")
+                if not plat_pn:
+                    continue
+                if plat_pn == pn or plat_pn == stem or pn.startswith(plat_pn) or plat_pn.startswith(pn):
+                    if matched_row is None:
+                        matched_row = dict(plat)
+                        noun = noun or str(plat.get("description") or "")
+                    else:
+                        matched_row.setdefault("width_in", plat.get("width_in"))
+                        matched_row.setdefault("length_in", plat.get("length_in"))
+                    break
             locked = locked_cad_spec(pn) or {}
-            pm = lookup_part_material(part_materials, pn)
-            plate_mat = (
+            pm = lookup_part_material(part_materials, pn) or lookup_part_material(
+                part_materials, f"{pn} {noun}"
+            )
+            named_grade = None
+            grade_blob = f"{noun} {pn} {path.name}"
+            if re.search(r"(?i)5052|ALPL", grade_blob):
+                named_grade = "5052-H32"
+            plate_mat = _shop_material(
                 locked.get("grade")
                 or (pm.material if pm and pm.material else None)
+                or named_grade
                 or material
             )
             plate_thk = locked.get("thickness")
@@ -1655,6 +1687,12 @@ class SecturaFabPushService:
                 from .website import internal_data_from_holes
 
                 row["InternalData"] = internal_data_from_holes(holes)
+            if plate_w and plate_l:
+                row["Width"] = plate_w
+                row["Length"] = plate_l
+                row["Width_Units"] = row.get("Width_Units") or "inch"
+                row["Length_Units"] = row.get("Length_Units") or "inch"
+            row = prepare_pdf_newline_fields(row)
             if not attachment_pdf_filelist_ready(row):
                 notes.append(
                     f"WARNING: AddItem_PDFFiles skipped {path.name} — "
@@ -1670,7 +1708,13 @@ class SecturaFabPushService:
                     customer_material=False,
                 )
                 posted_n += 1
-            except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
+            except SecturaFabWebsiteAuthError as exc:
+                raise SecturaFabWebsiteAuthError(
+                    f"{WEBSITE_SESSION_EXPIRED} — AddItem_PDFFiles 302 ({exc})",
+                    status_code=getattr(exc, "status_code", None),
+                    body=getattr(exc, "body", None),
+                ) from exc
+            except SecturaFabApiError as exc:
                 notes.append(
                     f"WARNING: AddItem_PDFFiles {path.name}: {exc}"
                 )
@@ -1850,6 +1894,15 @@ class SecturaFabPushService:
         if not self._website_cookie_present():
             notes.append(
                 "Pack-stamp / Copy-Move / AddFeature fail-closed — no website session"
+            )
+            return notes
+        peek = self._read_quote_items(quote_id)
+        cad_n = count_cad_product_type(peek)
+        lin_n = count_linear_product_type(peek)
+        if cad_n <= 0 and lin_n <= 0:
+            notes.append(
+                "Skipped empty assembly shell — no Cad/Linear kids landed "
+                "(CadImport list / empty shell is not success)"
             )
             return notes
         notes.extend(
@@ -2052,6 +2105,12 @@ class SecturaFabPushService:
                     name=name,
                     extra=extra,
                 )
+            except SecturaFabWebsiteAuthError as exc:
+                raise SecturaFabWebsiteAuthError(
+                    f"{WEBSITE_SESSION_EXPIRED} — AddItem_Linear 302 ({exc})",
+                    status_code=getattr(exc, "status_code", None),
+                    body=getattr(exc, "body", None),
+                ) from exc
             except Exception as exc:
                 notes.append(
                     f"WARNING: Long AddItem_Linear {pn} SKU={sku or product_id} "
@@ -2074,6 +2133,7 @@ class SecturaFabPushService:
     def _finish_session_error(self, exc: BaseException | None = None) -> str:
         cookie = effective_website_cookie()
         bits = [
+            WEBSITE_SESSION_EXPIRED,
             CHROME_SESSION_REQUIRED,
             f"session_found={str(bool(cookie)).lower()}",
         ]
@@ -2082,6 +2142,38 @@ class SecturaFabPushService:
         if exc:
             bits.append(str(exc))
         return " ".join(bits)
+
+    def _fail_push(
+        self,
+        *,
+        msg: str,
+        notes: list[str],
+        quote_id: str | None,
+        quote_number: str | None,
+        quote_request_id: str | None,
+        uploaded: list[str],
+        attempts: int,
+        item_count: int | None = None,
+    ) -> PushResult:
+        if msg not in notes:
+            notes.append(msg)
+        return PushResult(
+            ok=False,
+            error=msg,
+            notes=notes,
+            quote_id=quote_id,
+            quote_number=quote_number,
+            quote_request_id=quote_request_id,
+            created_new_quote=True,
+            uploaded_files=uploaded,
+            item_count=item_count if item_count is not None else (
+                self._peek_item_count(quote_id) if quote_id else 0
+            ),
+            ready=False,
+            status="failed",
+            last_error=msg,
+            attempts=attempts,
+        )
 
     def _verify_gold_anchors(self, quote: dict[str, Any]) -> list[str]:
         notes: list[str] = []
@@ -2501,9 +2593,18 @@ class SecturaFabPushService:
                                 )
                             )
                             uploaded.extend(p.name for p in cad_pdfs)
+                        except SecturaFabWebsiteAuthError as exc:
+                            return self._fail_push(
+                                msg=self._finish_session_error(exc),
+                                notes=notes,
+                                quote_id=quote_id,
+                                quote_number=quote_number,
+                                quote_request_id=quote_request_id,
+                                uploaded=uploaded,
+                                attempts=createfile_attempts,
+                            )
                         except (
                             SecturaFabApiError,
-                            SecturaFabWebsiteAuthError,
                             ValueError,
                             TypeError,
                             OSError,
@@ -2522,6 +2623,16 @@ class SecturaFabPushService:
                                     library=library,
                                     extra_pdfs=extra_pdfs,
                                 )
+                            )
+                        except SecturaFabWebsiteAuthError as exc:
+                            return self._fail_push(
+                                msg=self._finish_session_error(exc),
+                                notes=notes,
+                                quote_id=quote_id,
+                                quote_number=quote_number,
+                                quote_request_id=quote_request_id,
+                                uploaded=uploaded,
+                                attempts=createfile_attempts,
                             )
                         except Exception as exc:
                             notes.append(
@@ -2572,6 +2683,20 @@ class SecturaFabPushService:
                     )
                 if attempted_pack_stamp:
                     peek = self._read_quote_items(quote_id)
+                    if expect_cad and count_cad_product_type(peek) <= 0:
+                        return self._fail_push(
+                            msg=(
+                                "Image Files Finish landed 0 Cad lines — "
+                                "empty assembly shell is not success"
+                            ),
+                            notes=notes,
+                            quote_id=quote_id,
+                            quote_number=quote_number,
+                            quote_request_id=quote_request_id,
+                            uploaded=uploaded,
+                            attempts=createfile_attempts,
+                            item_count=len(quote_item_rows(peek)),
+                        )
                     created = len(quote_item_rows(peek)) > items_before_finish
                     gold = finish_produced_gold(
                         peek if isinstance(peek, dict) else {},
@@ -2619,9 +2744,18 @@ class SecturaFabPushService:
                                 takeoff=takeoff,
                             )
                         )
+            except SecturaFabWebsiteAuthError as exc:
+                return self._fail_push(
+                    msg=self._finish_session_error(exc),
+                    notes=notes,
+                    quote_id=quote_id,
+                    quote_number=quote_number,
+                    quote_request_id=quote_request_id,
+                    uploaded=uploaded,
+                    attempts=createfile_attempts,
+                )
             except (
                 SecturaFabApiError,
-                SecturaFabWebsiteAuthError,
                 ValueError,
                 TypeError,
                 OSError,
@@ -2629,18 +2763,13 @@ class SecturaFabPushService:
                 msg = self._finish_session_error(exc)
                 notes.append(msg)
                 if cad:
-                    return PushResult(
-                        ok=False,
-                        error=msg,
+                    return self._fail_push(
+                        msg=msg,
                         notes=notes,
                         quote_id=quote_id,
                         quote_number=quote_number,
                         quote_request_id=quote_request_id,
-                        created_new_quote=True,
-                        uploaded_files=uploaded,
-                        item_count=self._peek_item_count(quote_id),
-                        status="failed",
-                        last_error=msg,
+                        uploaded=uploaded,
                         attempts=createfile_attempts,
                     )
                 notes.append(
@@ -2840,25 +2969,47 @@ class SecturaFabPushService:
                 else (len(item_list) if item_list else 0)
             )
             if final_count <= 0:
-                msg = (
-                    "SecturaFAB quote has 0 line items after import — "
-                    "push marked failed (empty ItemList)"
-                )
-                notes.append(msg)
-                return PushResult(
-                    ok=False,
-                    error=msg,
+                return self._fail_push(
+                    msg=(
+                        "SecturaFAB quote has 0 line items after import — "
+                        "push marked failed (empty ItemList)"
+                    ),
                     notes=notes,
                     quote_id=quote_id,
                     quote_number=stored_number,
                     quote_request_id=quote_request_id,
-                    created_new_quote=True,
-                    uploaded_files=uploaded,
-                    item_count=0,
-                    ready=False,
-                    status="failed",
-                    last_error=msg,
+                    uploaded=uploaded,
                     attempts=createfile_attempts,
+                    item_count=0,
+                )
+            cad_landed = count_cad_product_type(detail)
+            lin_landed = count_linear_product_type(detail)
+            if expect_cad and cad_landed <= 0:
+                return self._fail_push(
+                    msg=(
+                        "Image Files Finish landed 0 Cad lines — "
+                        "empty assembly shell is not success"
+                    ),
+                    notes=notes,
+                    quote_id=quote_id,
+                    quote_number=stored_number,
+                    quote_request_id=quote_request_id,
+                    uploaded=uploaded,
+                    attempts=createfile_attempts,
+                    item_count=final_count,
+                )
+            if (expect_cad or expect_linear) and cad_landed <= 0 and lin_landed <= 0:
+                return self._fail_push(
+                    msg=(
+                        f"item_count={final_count} assembly shell only is not success"
+                    ),
+                    notes=notes,
+                    quote_id=quote_id,
+                    quote_number=stored_number,
+                    quote_request_id=quote_request_id,
+                    uploaded=uploaded,
+                    attempts=createfile_attempts,
+                    item_count=final_count,
                 )
 
             strict_qa = bool(organization_name) or bool(bom_rows)

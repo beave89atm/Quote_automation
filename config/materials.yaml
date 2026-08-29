@@ -229,8 +229,11 @@ materials:
     psf_per_inch: 14.0
     aliases:
       - "5052"
+      - "5052-H32"
+      - "5052 H32"
       - "AL 5052"
       - "ALUMINUM 5052"
+      - "ALPL"
 
   aluminum:
     label: Aluminum (unspecified)

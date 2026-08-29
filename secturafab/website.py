@@ -122,6 +122,8 @@ ADD_FEATURE_FIELDS = (
     "Qty",
 )
 
+WEBSITE_SESSION_EXPIRED = "website session expired"
+
 WEBSITE_AUTH_GAP = (
     "Finish needs SECTURA_WEBSITE_COOKIE (env or file) from the signed-in "
     "www.secturafab.com Chrome on this Linux box. "
@@ -129,7 +131,8 @@ WEBSITE_AUTH_GAP = (
     "Do not use Kyle's quoting PC. "
     "GET /Quote/GetItem_AddView and POST /Quote/AddItem_DXFFiles, "
     "AddItem_PDFFiles, and AddItem_Linear 302 to /Account/Login or hit "
-    "Cloudflare without that session. Do not fall back to quickAddCAD. "
+    "Cloudflare without that session (website session expired). "
+    "Do not fall back to quickAddCAD. "
     "Do not graft Laser/Drafting/Saw Setup as item tags."
 )
 

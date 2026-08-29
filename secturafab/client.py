@@ -11,6 +11,7 @@ from .website import (
     EMPTY_GUID,
     WEBSITE_AUTH_GAP,
     WEBSITE_FINISH_PATHS,
+    WEBSITE_SESSION_EXPIRED,
     SecturaFabWebsiteAuthError,
     build_add_feature_payload,
     build_copy_move_assembly_payload,
@@ -299,7 +300,7 @@ class SecturaFabClient:
             if is_website_login_redirect(response.status_code, location):
                 if require_session:
                     raise SecturaFabWebsiteAuthError(
-                        WEBSITE_AUTH_GAP,
+                        f"{WEBSITE_SESSION_EXPIRED} — {WEBSITE_AUTH_GAP}",
                         status_code=response.status_code,
                         body=location,
                     )
@@ -349,7 +350,7 @@ class SecturaFabClient:
         if is_website_login_redirect(response.status_code, location):
             if require_session:
                 raise SecturaFabWebsiteAuthError(
-                    WEBSITE_AUTH_GAP,
+                    f"{WEBSITE_SESSION_EXPIRED} — {WEBSITE_AUTH_GAP}",
                     status_code=response.status_code,
                     body=location,
                 )

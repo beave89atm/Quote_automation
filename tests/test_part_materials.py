@@ -42,6 +42,31 @@ def test_parse_material_block_thickness_only_defaults_a36():
     assert key == "a36"
 
 
+def test_parse_material_block_5052_h32_is_named_grade():
+    text = """
+    MATERIAL
+    1/8
+    5052-H32
+    ALPL009-28K
+    """
+    thk, key, src = parse_material_block(text)
+    assert key == "aluminum_5052"
+    from quote_core.part_materials import _sectura_material_string
+
+    assert _sectura_material_string(key) == "5052-H32"
+    assert thk == 0.125
+    assert "5052" in src or "ALPL" in src.upper()
+
+
+def test_parse_material_block_alpl_stock_is_not_a36():
+    text = 'STOCK\nALPL019-28K\n.090"\n5052 H32\n'
+    _thk, key, _src = parse_material_block(text)
+    assert key == "aluminum_5052"
+    from quote_core.part_materials import _sectura_material_string
+
+    assert _sectura_material_string(key) != "A36"
+
+
 def test_parse_skips_material_no_without_pair():
     text = "KINGPIN\nMATERIAL No.\n12345\nANGLES ±2°\nFRACTIONS ±1/16\n"
     thk, key, src = parse_material_block(text)

@@ -611,6 +611,63 @@ def _flats_near_part_no(text: str, part_no: str) -> tuple[float, float] | None:
     return None
 
 
+def _estimate_plate_perimeter_segments(
+    pdf_path: Path | None,
+    library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
+    plates: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Fillet-symbol length from LOM/child-drawing plate perimeters."""
+    notes: list[str] = []
+    rows = list(plates or [])
+    if not rows:
+        try:
+            rows = collect_lom_cad_plates(
+                pdf_path,
+                library_folder=library_folder,
+                related_pdf_names=related_pdf_names,
+            )
+        except Exception:  # noqa: BLE001
+            rows = []
+    segments: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        width = row.get("width_in") or row.get("Width")
+        length = row.get("length_in") or row.get("Length")
+        blank = row.get("blank") or []
+        if (width in (None, "") or length in (None, "")) and isinstance(blank, (list, tuple)) and len(blank) >= 2:
+            length, width = blank[0], blank[1]
+        try:
+            width_f = float(width)
+            length_f = float(length)
+        except (TypeError, ValueError):
+            continue
+        if width_f <= 0.05 or length_f <= 0.05:
+            continue
+        perimeter = 2.0 * (length_f + width_f)
+        try:
+            qty = max(1, int(row.get("qty") or row.get("quantity") or 1))
+        except (TypeError, ValueError):
+            qty = 1
+        pn = str(row.get("part_no") or row.get("name") or "plate")
+        segments.append(
+            {
+                "length": round(perimeter, 4),
+                "qty": qty,
+                "sides": 1,
+                "kind": "plate_perimeter",
+                "name": pn,
+                "blank": [length_f, width_f],
+            }
+        )
+        notes.append(
+            f"Plate {pn}: fillet perimeter 2×({length_f:g}+{width_f:g})"
+            f" = {perimeter:g}\" × qty {qty}"
+        )
+    return segments, notes
+
+
 def _estimate_gusset_all_around_segments(
     pdf_path: Path | None,
     library_folder: Path | str | None = None,
@@ -1083,6 +1140,7 @@ def _build_items_from_signals(
     pdf_path: Path | str | None = None,
     library_folder: Path | str | None = None,
     related_pdf_names: list[str] | None = None,
+    plates: list[dict[str, Any]] | None = None,
 ) -> tuple[list[WeldLineItem], list[str]]:
     items: list[WeldLineItem] = []
     flags: list[str] = []
@@ -1113,10 +1171,15 @@ def _build_items_from_signals(
         primary_sizes = list(size_counts.keys())
 
     # Prefer structural fillet sizes over thin 1/8 noise when both appear weakly.
+    # Keep 1/8 when it is the only fillet size on the sheet.
     if len(primary_sizes) > 1 and "1/8" in primary_sizes:
         stronger = [s for s in primary_sizes if s != "1/8"]
         if stronger and all(weld_sheet_sizes.get(s, size_counts.get(s, 0)) <= 2 for s in primary_sizes):
             primary_sizes = stronger
+    if not primary_sizes:
+        blob = " ".join(str(n) for n in notes).lower()
+        if "fillet" in blob and "1/8" in blob:
+            primary_sizes = ["1/8"]
 
     segments = _weld_segments_from_stp(stp_summary, notes)
     length_source = "stp_assembly"
@@ -1133,8 +1196,21 @@ def _build_items_from_signals(
             segments = gusset_segs
             length_source = "gusset_all_around"
         else:
-            segments = _estimate_segments_from_pdf(pdf_dimensions, notes)
-            length_source = "pdf_dims"
+            plate_segs, plate_notes = _estimate_plate_perimeter_segments(
+                Path(pdf_path) if pdf_path else None,
+                library_folder=library_folder,
+                related_pdf_names=related_pdf_names,
+                plates=plates,  # optional LOM flats from caller / tests
+            )
+            for n in plate_notes:
+                if n not in flags:
+                    flags.append(n)
+            if plate_segs:
+                segments = plate_segs
+                length_source = "plate_perimeter"
+            else:
+                segments = _estimate_segments_from_pdf(pdf_dimensions, notes)
+                length_source = "pdf_dims"
     for n in stp_summary.get("qty_hint_notes") or []:
         if n not in flags:
             flags.append(n)
@@ -1237,6 +1313,10 @@ def _build_items_from_signals(
     elif length_source == "gusset_all_around":
         flags.append(
             "Weld inches from gusset plate blank perimeters (all-around) — confirm weld symbols"
+        )
+    elif length_source == "plate_perimeter":
+        flags.append(
+            "Weld inches from Cad plate blank perimeters (fillet symbols) — confirm"
         )
     cover_inches = float(stp_summary.get("cover_inches") or 0)
     covers_included = bool(stp_summary.get("covers_included_in_total"))

@@ -45,6 +45,21 @@ def test_default_material_from_takeoff():
     assert mat == "A572"
 
 
+def test_default_material_keeps_named_5052():
+    mat = _default_material(
+        {
+            "fitup_drivers": {
+                "weight_calc": {
+                    "material_key": "aluminum_5052",
+                    "material_label": "Aluminum 5052",
+                }
+            }
+        }
+    )
+    assert mat == "5052-H32"
+    assert mat != "A36"
+
+
 def test_collect_job_files(tmp_path: Path):
     pdf = tmp_path / "35145-1.pdf"
     stp = tmp_path / "35145-1.STEP"

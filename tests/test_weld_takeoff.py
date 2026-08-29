@@ -32,6 +32,39 @@ def test_takeoff_73476047_if_present():
     assert result.to_dict()["total_inches"] >= 0
 
 
+def test_fillet_1_8_symbols_use_plate_perimeters():
+    """1/8 fillet symbols must produce weld inches from Cad plate blanks."""
+    from quote_core.weld.takeoff import _build_items_from_signals, _ingest_page_text
+
+    text = """
+    1001775-1 WELDMENT
+    1/8 FILLET TYP
+    """
+    sizes, notes, hits, _dims = _ingest_page_text(1, text)
+    assert "1/8" in sizes
+    items, flags = _build_items_from_signals(
+        sizes=sizes,
+        notes=notes,
+        page_hits=hits,
+        stp_summary={},
+        pdf_name="1001775.pdf",
+        pdf_dimensions=[],
+        pdf_path=None,
+        plates=[
+            {
+                "part_no": "1001913-1",
+                "width_in": 4.0,
+                "length_in": 6.0,
+                "qty": 1,
+            }
+        ],
+    )
+    assert items
+    assert sum(i.inches for i in items) == 20.0
+    assert any(i.size == "1/8" for i in items)
+    assert any("perimeter" in f.lower() or "fillet" in f.lower() for f in flags)
+
+
 def test_tycrop_electrode_note_is_not_a_weld_symbol():
     """Title-block 'MINIMUM WELD ELECTRODE' + plate 3/16 must not invent weld time."""
     from quote_core.weld.takeoff import _ingest_page_text, _build_items_from_signals
