@@ -1407,24 +1407,44 @@ class SecturaFabPushService:
             )
         elif callable(create_fn) and id_list:
             try:
-                result = create_fn(
-                    id_list,
-                    unit_list,
-                    location=location,
-                    other_file_ids=[],
-                    height=0,
-                    width=0,
-                )
+                try:
+                    result = create_fn(
+                        id_list,
+                        unit_list,
+                        location=location,
+                        other_file_ids=[],
+                        height=0,
+                        width=0,
+                        quote_id=quote_id,
+                    )
+                except TypeError:
+                    result = create_fn(
+                        id_list,
+                        unit_list,
+                        location=location,
+                        other_file_ids=[],
+                        height=0,
+                        width=0,
+                    )
                 via = getattr(self.client, "_part_create_via", "") or ""
                 if isinstance(via, str) and via:
                     notes.append(f"part_create_via={via}")
+                n_list = getattr(self.client, "_part_create_list_len", None)
+                if isinstance(n_list, (int, float)):
+                    notes.append(f"part_create_list_len={int(n_list)}")
+                    if int(n_list) <= 1:
+                        notes.append(
+                            "WARNING: /part/create List len<=1 — not Finishing "
+                            "(empty #gridDXF createAllParts is the 34632-2 miss)"
+                        )
+                        result = None
                 n_grid = getattr(self.client, "_grid_dxf_row_count", None)
                 if isinstance(n_grid, (int, float)):
                     notes.append(f"grid_dxf_row_count={int(n_grid)}")
                     if int(n_grid) <= 1:
                         notes.append(
-                            "WARNING: #gridDXFParts row count<=1 after page "
-                            "createAllParts/DoCreateDXFParts — not Finishing"
+                            "WARNING: #gridDXFParts row count<=1 after "
+                            "DoCreateDXFParts success bind — not Finishing"
                         )
                         result = None
             except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError) as exc:
@@ -1434,7 +1454,10 @@ class SecturaFabPushService:
                 )
                 result = None
             exploded = self._cadimport_rows(result)
+            n_list = getattr(self.client, "_part_create_list_len", None)
             n_grid = getattr(self.client, "_grid_dxf_row_count", None)
+            if isinstance(n_list, (int, float)) and int(n_list) <= 1:
+                return exploded or upload_rows, notes
             if isinstance(n_grid, (int, float)) and int(n_grid) <= 1:
                 return exploded or upload_rows, notes
             if cadimport_filelist_exploded(
@@ -1906,6 +1929,15 @@ class SecturaFabPushService:
             sleep_s=explode_sleep_s,
         )
         notes.extend(explode_notes)
+        n_list = getattr(self.client, "_part_create_list_len", None)
+        if isinstance(n_list, (int, float)):
+            if f"part_create_list_len={int(n_list)}" not in " ".join(notes):
+                notes.append(f"part_create_list_len={int(n_list)}")
+            if int(n_list) <= 1:
+                notes.append(
+                    "WARNING: /part/create List len<=1 — not Finishing"
+                )
+                return notes
         n_grid = getattr(self.client, "_grid_dxf_row_count", None)
         if isinstance(n_grid, (int, float)):
             if f"grid_dxf_row_count={int(n_grid)}" not in " ".join(notes):

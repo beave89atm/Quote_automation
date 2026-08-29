@@ -1357,8 +1357,8 @@ def test_step_create_all_parts_posts_part_create_not_convert_to(tmp_path: Path):
     assert any("DoCreateDXFParts" in n or "exploded" in n.lower() for n in notes)
 
 
-def test_part_create_invokes_page_create_all_parts_not_fetch():
-    """DoCreateDXFParts runs as the page fn so success binds #gridDXFParts."""
+def test_part_create_fetches_upload_ids_then_binds_grid():
+    """Explode = fetch Upload IDs; bind = DoCreateDXFParts success on t.List."""
     from secturafab.client import SecturaFabClient
     from secturafab.config import SecturaFabConfig
 
@@ -1374,18 +1374,29 @@ def test_part_create_invokes_page_create_all_parts_not_fetch():
     client._af_source = "chrome_dom"
     client._request_verification_fields = [("__RequestVerificationToken", token)]
     client._request_verification_token = token
-    invoked: list[tuple[list[str], list[str]]] = []
+    posted: list[list[tuple[str, str]]] = []
+    bound: list[list[dict[str, Any]]] = []
 
-    def _page(id_list, unit_list, **_k):
-        invoked.append((list(id_list), list(unit_list)))
+    def _fetch(form_pairs, **_k):
+        posted.append(list(form_pairs))
         return {
-            "called": "DoCreateDXFParts",
-            "grid_dxf_row_count": 2,
-            "has_createAllParts": True,
-            "has_DoCreateDXFParts": True,
-            "has_gridDXFParts": True,
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["List"],
+            "list_len": 2,
             "List": [{"SourceDataID": "kid-1"}, {"SourceDataID": "kid-2"}],
-            "via": "page_fn",
+            "via": "chrome_dom_fetch",
+        }
+
+    def _bind(rows, **_k):
+        bound.append(list(rows))
+        return {
+            "has_gridDXFParts": True,
+            "grid_dxf_row_count": 2,
+            "bound": True,
+            "list_len": 2,
+            "opened_via": "already",
         }
 
     client.session = MagicMock()
@@ -1395,13 +1406,21 @@ def test_part_create_invokes_page_create_all_parts_not_fetch():
         "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
         return_value="chrome_dom",
     ), patch(
-        "secturafab.chrome_cdp.invoke_page_create_all_parts", side_effect=_page
+        "secturafab.chrome_cdp.post_part_create_from_quotes_tab", side_effect=_fetch
+    ), patch(
+        "secturafab.chrome_cdp.bind_do_create_dxf_parts_success", side_effect=_bind
     ):
-        result = client.create_dxf_parts(["src-1"], ["inch"], location="")
+        result = client.create_dxf_parts(["src-1"], ["inch"], location="", quote_id="qid")
     client.session.request.assert_not_called()
-    assert invoked == [(["src-1"], ["inch"])]
+    assert posted
+    form_map = {k: v for k, v in posted[0]}
+    assert form_map.get("IDList[]") == "src-1"
+    assert form_map.get("unitList[]") == "inch"
+    assert "__RequestVerificationToken" not in form_map
+    assert bound[0][0]["SourceDataID"] == "kid-1"
     assert result["List"][0]["SourceDataID"] == "kid-1"
-    assert client._part_create_via == "DoCreateDXFParts"
+    assert client._part_create_via == "chrome_dom_fetch"
+    assert client._part_create_list_len == 2
     assert client._grid_dxf_row_count == 2
     assert token not in json.dumps(result)
 
@@ -1609,7 +1628,7 @@ def test_explode_skips_part_create_when_quote_html_has_no_token(tmp_path: Path):
 
 
 def test_explode_posts_part_create_from_quotes_tab(tmp_path: Path):
-    """Page createAllParts/DoCreateDXFParts binds #gridDXFParts; no cookie HTTP."""
+    """Fetch /part/create with Upload IDs, then bind t.List onto #gridDXFParts."""
     from secturafab.client import SecturaFabClient
     from secturafab.config import SecturaFabConfig
 
@@ -1661,18 +1680,29 @@ def test_explode_posts_part_create_from_quotes_tab(tmp_path: Path):
     client._af_source = "chrome_dom"
     client._quotes_tab_live = True
     client._last_item_add_view_html = "<div id='gridDXF'>partial</div>"
-    invoked: list[tuple[list[str], list[str]]] = []
+    posted: list[list[tuple[str, str]]] = []
+    bound: list[int] = []
 
-    def _page(id_list, unit_list, **_k):
-        invoked.append((list(id_list), list(unit_list)))
+    def _fetch(form_pairs, **_k):
+        posted.append(list(form_pairs))
         return {
-            "called": "DoCreateDXFParts",
-            "grid_dxf_row_count": 2,
-            "has_createAllParts": True,
-            "has_DoCreateDXFParts": True,
-            "has_gridDXFParts": True,
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["List"],
+            "list_len": 2,
             "List": kids,
-            "via": "page_fn",
+            "via": "chrome_dom_fetch",
+        }
+
+    def _bind(rows, **_k):
+        bound.append(len(rows))
+        return {
+            "has_gridDXFParts": True,
+            "grid_dxf_row_count": 2,
+            "bound": True,
+            "list_len": 2,
+            "opened_via": "getitem_addview",
         }
 
     client.session = MagicMock()
@@ -1714,7 +1744,9 @@ def test_explode_posts_part_create_from_quotes_tab(tmp_path: Path):
         "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
         return_value="chrome_dom",
     ), patch(
-        "secturafab.chrome_cdp.invoke_page_create_all_parts", side_effect=_page
+        "secturafab.chrome_cdp.post_part_create_from_quotes_tab", side_effect=_fetch
+    ), patch(
+        "secturafab.chrome_cdp.bind_do_create_dxf_parts_success", side_effect=_bind
     ):
         notes = SecturaFabPushService(client=client).finish_cad_files(
             quote_id="11111111-aaaa-bbbb-cccc-000000003498",
@@ -1734,10 +1766,14 @@ def test_explode_posts_part_create_from_quotes_tab(tmp_path: Path):
     assert "af_extracted=true" in blob
     assert "has_antiforgery=true" in blob
     assert "af_source=chrome_dom" in blob
-    assert "part_create_via=DoCreateDXFParts" in blob
+    assert "part_create_via=chrome_dom_fetch" in blob
+    assert "part_create_list_len=2" in blob
     assert "grid_dxf_row_count=2" in blob
     assert token not in blob
-    assert invoked == [(["src-step"], ["inch"])]
+    assert posted
+    form_map = {k: v for k, v in posted[0]}
+    assert form_map.get("IDList[]") == "src-step"
+    assert bound == [2]
     assert finish_args.get("file_list")
     assert len(finish_args["file_list"]) == 2
 
@@ -1861,9 +1897,9 @@ def test_add_item_dxf_files_quotes_tab_fetch_not_cookie_http():
     assert token not in json.dumps(result)
 
 
-def test_invoke_page_create_all_parts_evaluates_quote_order_edit():
-    """Runtime.evaluate createAllParts/DoCreateDXFParts — not fetch('/part/create')."""
-    from secturafab.chrome_cdp import invoke_page_create_all_parts
+def test_bind_do_create_dxf_parts_success_evaluates_quote_order_edit():
+    """Runtime.evaluate DoCreateDXFParts success on t.List — opens GetItem_AddView."""
+    from secturafab.chrome_cdp import bind_do_create_dxf_parts_success
 
     tab = {
         "title": "Quotes",
@@ -1875,33 +1911,34 @@ def test_invoke_page_create_all_parts_evaluates_quote_order_edit():
     def _call(ws_url, method, params=None, **kwargs):
         expr = str((params or {}).get("expression") or "")
         assert method == "Runtime.evaluate"
-        assert "createAllParts" in expr
-        assert "DoCreateDXFParts" in expr
         assert "gridDXFParts" in expr
-        assert "fetch(" not in expr
+        assert "dataSource.data().toJSON().push" in expr
+        assert "/Quote/GetItem_AddView" in expr
+        assert "createAllParts" not in expr
         assert params.get("awaitPromise") is True
         assert kwargs.get("timeout", 0) >= 60
+        assert "af-secret" not in expr
         return {
             "result": {
                 "value": {
-                    "called": "DoCreateDXFParts",
-                    "grid_dxf_row_count": 31,
-                    "has_createAllParts": True,
-                    "has_DoCreateDXFParts": True,
                     "has_gridDXFParts": True,
-                    "List": [{"SourceDataID": "a"}, {"SourceDataID": "b"}],
+                    "grid_dxf_row_count": 31,
+                    "bound": True,
+                    "list_len": 31,
+                    "opened_via": "getitem_addview",
                 }
             }
         }
 
+    kids = [{"SourceDataID": "a"}, {"SourceDataID": "b"}]
     with patch("secturafab.chrome_cdp.quotes_tab", return_value=tab), patch(
         "secturafab.chrome_cdp.cdp_call", side_effect=_call
     ):
-        result = invoke_page_create_all_parts(["src-1"], ["inch"])
-    assert result["called"] == "DoCreateDXFParts"
+        result = bind_do_create_dxf_parts_success(kids, quote_id="qid")
+    assert result["bound"] is True
     assert result["grid_dxf_row_count"] == 31
-    assert result["via"] == "page_fn"
-    assert len(result["List"]) == 2
+    assert result["has_gridDXFParts"] is True
+    assert result["opened_via"] == "getitem_addview"
 
 
 def test_invoke_page_dxf_finish_evaluates_page_fn():
@@ -2471,18 +2508,28 @@ def test_cadimport_explode_routes_use_www():
         "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
         return_value="chrome_dom",
     ), patch(
-        "secturafab.chrome_cdp.invoke_page_create_all_parts",
+        "secturafab.chrome_cdp.post_part_create_from_quotes_tab",
         return_value={
-            "called": "DoCreateDXFParts",
-            "grid_dxf_row_count": 0,
-            "has_createAllParts": True,
-            "has_DoCreateDXFParts": True,
-            "has_gridDXFParts": False,
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["List"],
+            "list_len": 0,
             "List": [],
-            "via": "page_fn",
+            "via": "chrome_dom_fetch",
         },
-    ):
+    ), patch(
+        "secturafab.chrome_cdp.bind_do_create_dxf_parts_success",
+        return_value={
+            "has_gridDXFParts": False,
+            "grid_dxf_row_count": 0,
+            "bound": False,
+            "list_len": 0,
+            "opened_via": "",
+        },
+    ) as bind_fn:
         real.create_dxf_parts(["src-1"], ["inch"], location="")
+    bind_fn.assert_not_called()
     real.cadimport_set_units("inch")
     real.get_item_add_view("qid")
     real.upload_item_dxf_files(
@@ -2846,6 +2893,55 @@ def test_grid_dxf_row_count_le_1_skips_finish(tmp_path: Path):
     assert "grid_dxf_row_count=1" in blob
     assert "not Finishing" in blob
     client.add_item_dxf_files.assert_not_called()
+
+
+def test_part_create_empty_list_skips_bind_and_finish():
+    """Live 34632-2: /part/create List=0 → no bind, no Finish, no remint."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=boxcookie",
+    )
+    client._af_source = "chrome_dom"
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client.session = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.post_part_create_from_quotes_tab",
+        return_value={
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["List"],
+            "list_len": 0,
+            "List": [],
+            "via": "chrome_dom_fetch",
+        },
+    ), patch(
+        "secturafab.chrome_cdp.bind_do_create_dxf_parts_success",
+    ) as bind_fn, patch(
+        "secturafab.chrome_cdp.invoke_page_dxf_finish",
+    ) as finish_fn:
+        result = client.create_dxf_parts(["src-1"], ["inch"], location="")
+        finish = client.add_item_dxf_files(quote_id="qid", file_list=[{"Qty": 1}])
+    bind_fn.assert_not_called()
+    finish_fn.assert_not_called()
+    assert result["List"] == []
+    assert client._part_create_via == "chrome_dom_fetch"
+    assert client._part_create_list_len == 0
+    assert client._grid_dxf_row_count == 0
+    assert finish["via"] == "skipped"
+    assert client._finish_via == "skipped"
 
 
 def test_add_item_pdf_files_posts_quote_mvc():

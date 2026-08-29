@@ -114,10 +114,12 @@ UPDATE_DATA_NEXT_SNIPPET = (
 #   data:{ID, ItemID, customerMaterial, FileList}
 # FileList = #gridDXFParts rows (ErrorStatus===0, Qty>0), not the raw STEP.
 # Live 34137-1: cookie-HTTP POST 200 empty str / ItemList 0.
-# Live 34137-2: Quotes-tab fetch of a Python-rebuilt FileList is the same
-# empty 200 — fetch('/part/create') never runs DoCreateDXFParts success, so
-# #gridDXFParts stays empty. Drive createAllParts / DoCreateDXFParts then
-# the page Finish that reads that grid. Do not invent a route.
+# Live 34137-2: fetch('/part/create') with Upload IDs → t.List=31, but
+# success never ran so #gridDXFParts stayed empty; reconstructed Finish
+# empty 200.
+# Live 34632-2: page createAllParts on the Quotes list (empty #gridDXF)
+# → t.List=0. Explode = fetch with Upload IDs; bind = DoCreateDXFParts
+# success on that t.List in the CAD Files dialog. Do not invent a route.
 ADD_ITEM_DXF_FILES_PATH = "/Quote/AddItem_DXFFiles"
 ADD_ITEM_DXF_FILES_BODY_KEYS = ("ID", "ItemID", "customerMaterial", "FileList")
 ADD_ITEM_DXF_FILES_SNIPPET = (

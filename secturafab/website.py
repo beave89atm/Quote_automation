@@ -30,9 +30,12 @@ if chrome_dom is missing — do not POST and do not mint.
 Live 34137-1: /part/create chrome_dom_fetch 200 t.List=31, then cookie-HTTP
 Finish POST /Quote/AddItem_DXFFiles 200 empty str / ItemList 0.
 Live 34137-2: Quotes-tab fetch Finish of reconstructed kids is the same
-empty 200 — page success never bound #gridDXFParts. Drive createAllParts /
-DoCreateDXFParts so t.List lands on that grid, then page Finish. Do not
-Finish the raw STEP or a Root-only FileList.
+empty 200 — page success never bound #gridDXFParts.
+Live 34632-2: page createAllParts on the Quotes list posted empty #gridDXF
+IDList → t.List=0. Explode = fetch /part/create with Upload IDs; bind =
+DoCreateDXFParts success onto #gridDXFParts in the CAD Files dialog
+(GetItem_AddView in Chrome if the grid is missing); then page Finish.
+Do not Finish the raw STEP or a Root-only FileList.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
