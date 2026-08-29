@@ -191,6 +191,28 @@ def looks_like_drawing_sheet(width_in: float | None, length_in: float | None) ->
     return False
 
 
+def looks_like_page_outline(width_in: float | None, length_in: float | None) -> bool:
+    """True for PDF crop / SCALE 1:N artifacts (1×2, 1×16), not the child flat."""
+    try:
+        w = float(width_in or 0)
+        l = float(length_in or 0)
+    except (TypeError, ValueError):
+        return False
+    if w <= 0 or l <= 0:
+        return False
+    a, b = (w, l) if w <= l else (l, w)
+    # Live 1007049-1: 1007013 landed 1×2 (drawing ~5.25×5.75); 1007012 landed 1×16
+    # (drawing ~14.625×7.375). Min side ≈ 1 in is the page/scale outline.
+    if 0.90 <= a <= 1.10:
+        return True
+    return False
+
+
+def usable_cad_flats(width_in: float | None, length_in: float | None) -> bool:
+    """True when L×W is a plate blank, not a sheet or 1×N page outline."""
+    return _pair_ok(width_in, length_in)
+
+
 _CAD_THK_RE = re.compile(r'(?P<thk>\d+\s*/\s*\d+|\d+(?:\.\d+)?)\s*"')
 _CAD_GRADE_RE = re.compile(
     r"\b(?P<grade>A\s*572(?:\s+Grade\s+\d+)?|A\s*36|A\s*513|A\s*500|A\s*656(?:\s+Grade\s+\d+)?|100K|5052(?:-H32)?)\b",
@@ -219,7 +241,7 @@ def parse_cad_desc_fields(description: str | None) -> dict[str, Any]:
             length = float(flat.group("l"))
         except (TypeError, ValueError):
             w = length = 0.0
-        if w > 0 and length > 0 and not looks_like_drawing_sheet(w, length):
+        if w > 0 and length > 0 and _pair_ok(w, length):
             out["width_in"] = w
             out["length_in"] = length
     return out
@@ -248,7 +270,7 @@ def format_cad_description(
         and length_in
         and width_in > 0
         and length_in > 0
-        and not looks_like_drawing_sheet(width_in, length_in)
+        and _pair_ok(width_in, length_in)
     )
     extra = ""
     if (noun or "").strip() and not is_bare_part_number(noun, pn):
@@ -461,34 +483,50 @@ def _pair_ok(a: float | None, b: float | None) -> bool:
         return False
     if a <= 0.25 or b <= 0.25 or max(a, b) > 240:
         return False
-    return not looks_like_drawing_sheet(a, b)
+    if looks_like_drawing_sheet(a, b) or looks_like_page_outline(a, b):
+        return False
+    return True
+
+
+def _best_flat_pair(pairs: list[tuple[float, float]]) -> tuple[float, float] | None:
+    if not pairs:
+        return None
+    return max(pairs, key=lambda p: float(p[0]) * float(p[1]))
 
 
 def parse_plate_flats(text: str | None) -> tuple[float | None, float | None]:
-    """L×W from takeoff / LOM / drawing text. Reject PDF sheet outlines."""
+    """L×W from takeoff / LOM / drawing text. Reject PDF sheet / 1×N outlines."""
     blob = str(text or "")
+    labeled: list[tuple[float, float]] = []
+    for match in _LXW_LABELED_RE.finditer(blob):
+        a = _lxw_num(match.group(1))
+        b = _lxw_num(match.group(2))
+        if _pair_ok(a, b):
+            labeled.append((float(a), float(b)))
+    hit = _best_flat_pair(labeled)
+    if hit:
+        return hit
+    triples: list[tuple[float, float]] = []
     for match in _LXW_TRIPLE_RE.finditer(blob):
         thk = _lxw_num(match.group(1))
         a = _lxw_num(match.group(2))
         b = _lxw_num(match.group(3))
         if thk is not None and thk <= 1.5 and _pair_ok(a, b):
-            return a, b
-    for match in _LXW_LABELED_RE.finditer(blob):
-        a = _lxw_num(match.group(1))
-        b = _lxw_num(match.group(2))
-        if _pair_ok(a, b):
-            return a, b
-    best: tuple[float, float] | None = None
+            triples.append((float(a), float(b)))
+    hit = _best_flat_pair(triples)
+    if hit:
+        return hit
+    unlabeled: list[tuple[float, float]] = []
     for match in _LXW_RE.finditer(blob):
         a = _lxw_num(match.group(1))
         b = _lxw_num(match.group(2))
         if not _pair_ok(a, b):
             continue
-        if best is None:
-            best = (a, b)  # type: ignore[assignment]
-    if not best:
+        unlabeled.append((float(a), float(b)))
+    hit = _best_flat_pair(unlabeled)
+    if not hit:
         return None, None
-    return best
+    return hit
 
 
 def flats_from_mapping(row: dict[str, Any] | None) -> tuple[float | None, float | None]:
@@ -506,13 +544,13 @@ def flats_from_mapping(row: dict[str, Any] | None) -> tuple[float | None, float 
     for wk, lk in pairs:
         w = _as_flat(row.get(wk))
         length = _as_flat(row.get(lk))
-        if w and length and not looks_like_drawing_sheet(w, length):
+        if w and length and _pair_ok(w, length):
             return w, length
     blank = row.get("blank") or row.get("Blank") or []
     if isinstance(blank, (list, tuple)) and len(blank) >= 2:
         a = _as_flat(blank[0])
         b = _as_flat(blank[1])
-        if a and b and not looks_like_drawing_sheet(a, b):
+        if a and b and _pair_ok(a, b):
             return b, a
     parsed = parse_plate_flats(
         " ".join(
@@ -566,13 +604,10 @@ def _takeoff_row_matches(part_no: str, row: dict[str, Any]) -> bool:
     return want == row_base or row_pn == want_base
 
 
-def flats_from_takeoff(
-    takeoff: dict[str, Any] | None,
-    part_no: str,
-) -> tuple[float | None, float | None]:
-    pn = normalize_part_token(part_no)
-    if not pn or not isinstance(takeoff, dict):
-        return None, None
+def iter_takeoff_plate_rows(takeoff: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """LOM / takeoff Cad plate rows (top-level and fitup_drivers)."""
+    if not isinstance(takeoff, dict):
+        return []
     bags: list[Any] = []
     for key in ("items", "sizes", "gussets", "plates", "components"):
         inner = takeoff.get(key)
@@ -584,9 +619,31 @@ def flats_from_takeoff(
             inner = fitup.get(key)
             if isinstance(inner, list):
                 bags.extend(inner)
-    for it in bags:
-        if not isinstance(it, dict):
-            continue
+    return [it for it in bags if isinstance(it, dict)]
+
+
+def takeoff_plate_row(
+    takeoff: dict[str, Any] | None,
+    part_no: str,
+) -> dict[str, Any] | None:
+    """Matching LOM/takeoff plate for a Cad PN (dashed or bare)."""
+    pn = normalize_part_token(part_no)
+    if not pn:
+        return None
+    for it in iter_takeoff_plate_rows(takeoff):
+        if _takeoff_row_matches(pn, it):
+            return it
+    return None
+
+
+def flats_from_takeoff(
+    takeoff: dict[str, Any] | None,
+    part_no: str,
+) -> tuple[float | None, float | None]:
+    pn = normalize_part_token(part_no)
+    if not pn or not isinstance(takeoff, dict):
+        return None, None
+    for it in iter_takeoff_plate_rows(takeoff):
         if not _takeoff_row_matches(pn, it):
             continue
         got = flats_from_mapping(it)
@@ -641,7 +698,7 @@ def item_flat_dims(item: dict[str, Any] | None) -> tuple[float | None, float | N
             nums.append(val)
     if len(nums) >= 2:
         w, l = nums[0], nums[1]
-        if looks_like_drawing_sheet(w, l):
+        if not _pair_ok(w, l):
             return None, None
         return w, l
     return None, None

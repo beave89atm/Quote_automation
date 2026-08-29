@@ -77,6 +77,9 @@ _BARE_GRADE_KEYS: dict[str, str] = {
     "5052 H32": "aluminum_5052",
     "AL 5052": "aluminum_5052",
     "ALUMINUM 5052": "aluminum_5052",
+    "PL025-50K": "a572_gr50",
+    "PL02550K": "a572_gr50",
+    "PL025": "a572_gr50",
 }
 
 _THICKNESS_LINE_RE = re.compile(
@@ -87,7 +90,7 @@ _THICKNESS_LINE_RE = re.compile(
 _GRADE_LINE_RE = re.compile(
     r"^(?P<grade>A\s*572(?:\s*(?:GR|GRADE|G)?\s*\d+)?|A\s*656(?:\s*(?:GR|GRADE|G)?\s*\d+)?|"
     r"A\s*36|A\s*514|A\s*992|GR\s*\d+|GRADE\s*\d+|G\s*\d+|STEEL|GALV(?:ANISED|ANIZED)?|"
-    r"5052(?:\s*-?\s*H32)?|ALPL[A-Z0-9\-]*)$",
+    r"5052(?:\s*-?\s*H32)?|ALPL[A-Z0-9\-]*|PL025(?:-50K)?)$",
     re.IGNORECASE,
 )
 
@@ -193,6 +196,8 @@ def _grade_to_material_key(grade: str) -> str:
         return "a36"
     if "5052" in compact or compact.startswith("ALPL"):
         return "aluminum_5052"
+    if "PL025" in compact or (compact.startswith("PL") and "50K" in compact):
+        return "a572_gr50"
     # Fall back to shared detector on the grade token only (not whole PDF).
     return detect_material_key([grade])
 

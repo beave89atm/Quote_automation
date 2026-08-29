@@ -42,6 +42,23 @@ def test_parse_material_block_thickness_only_defaults_a36():
     assert key == "a36"
 
 
+def test_parse_material_block_pl025_50k_is_named_a572():
+    text = """
+    MATERIAL
+    1/4
+    A572
+    PL025-50K
+    """
+    thk, key, src = parse_material_block(text)
+    assert key == "a572_gr50"
+    from quote_core.part_materials import _sectura_material_string
+
+    assert "A572" in _sectura_material_string(key)
+    assert _sectura_material_string(key) != "A36"
+    assert thk == 0.25
+    assert "A572" in src or "PL025" in src.upper() or "GR50" in src.upper()
+
+
 def test_parse_material_block_5052_h32_is_named_grade():
     text = """
     MATERIAL

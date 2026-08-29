@@ -112,6 +112,14 @@ def test_plate_blank_reads_whole_inch_and_overall():
         "OVERALL 18.50 X 6.25", min_side=0.26, max_side=240
     ) == (18.5, 6.25)
     assert _plate_blank_size_from_text("11 X 17", min_side=0.26, max_side=240) is None
+    assert _plate_blank_size_from_text("1 x 2", min_side=0.26, max_side=240) is None
+    assert _plate_blank_size_from_text("1 x 16", min_side=0.26, max_side=240) is None
+    assert _plate_blank_size_from_text(
+        "SCALE 1 X 2  OVERALL 5.25 X 5.75", min_side=0.26, max_side=240
+    ) == (5.25, 5.75)
+    assert _plate_blank_size_from_text(
+        "1 x 16  14.625 X 7.375", min_side=0.26, max_side=240
+    ) == (14.625, 7.375)
     text = "ITEM 17 6993-1 HOSE GUIDE  4.00 X 1.50 A36"
     assert _flats_near_part_no(text, "6993-1") == (4.0, 1.5)
     assert _flats_near_part_no(text, "6993") == (4.0, 1.5)

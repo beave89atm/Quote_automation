@@ -429,6 +429,9 @@ def _default_material(takeoff: dict[str, Any] | None) -> str:
         if "A569" in grade.upper():
             return "A36"
         return grade
+    named = _named_grade_from_takeoff(takeoff)
+    if named:
+        return named
     return "A36"
 
 
@@ -440,7 +443,58 @@ def _shop_material(material: str | None) -> str:
     upper = text.upper()
     if "5052" in upper or upper.startswith("ALPL"):
         return "5052-H32"
+    if "A572" in upper or "PL025" in upper:
+        # A572 / PL025-50K is a named grade — never overwrite to A36.
+        return text if "A572" in upper else "A572 Grade 50"
     return text
+
+
+def _named_grade_from_blob(text: str | None) -> str | None:
+    """A572 / PL025-50K / 5052-H32 called out on a child drawing or takeoff row."""
+    upper = str(text or "").upper()
+    if not upper:
+        return None
+    if "5052" in upper or "ALPL" in upper:
+        return "5052-H32"
+    if "A572" in upper or "PL025" in upper:
+        return "A572 Grade 50"
+    return None
+
+
+def _named_grade_from_takeoff(takeoff: dict[str, Any] | None) -> str | None:
+    """Named grade from takeoff / LOM child rows. A572 is not a seed."""
+    if not isinstance(takeoff, dict):
+        return None
+    bits: list[str] = []
+    drivers = takeoff.get("fitup_drivers") or {}
+    if isinstance(drivers, dict):
+        weight = drivers.get("weight_calc") or {}
+        if isinstance(weight, dict):
+            bits.append(str(weight.get("material_key") or ""))
+            bits.append(str(weight.get("material_label") or ""))
+        for note in drivers.get("notes") or []:
+            bits.append(str(note))
+    for key in ("notes", "flags"):
+        for note in takeoff.get(key) or []:
+            bits.append(str(note))
+    from .item_desc import iter_takeoff_plate_rows
+
+    for row in iter_takeoff_plate_rows(takeoff):
+        bits.append(
+            " ".join(
+                str(row.get(k) or "")
+                for k in (
+                    "description",
+                    "Description",
+                    "material",
+                    "Material",
+                    "grade",
+                    "noun",
+                    "notes",
+                )
+            )
+        )
+    return _named_grade_from_blob(" ".join(bits))
 
 
 def _resolve_push_material_thickness(
@@ -455,6 +509,9 @@ def _resolve_push_material_thickness(
     """
     notes: list[str] = []
     material = _default_material(takeoff)
+    named = _named_grade_from_takeoff(takeoff) or _named_grade_from_blob(material)
+    if named:
+        material = named
     thickness = _sanitize_thickness_param(_default_thickness_in(takeoff, stp_path))
     known_from_pdf = False
 
@@ -464,18 +521,33 @@ def _resolve_push_material_thickness(
         try:
             pm = extract_part_material_from_pdf(pdf_path)
         except Exception as exc:  # noqa: BLE001 — corrupt/minimal test PDFs
-            notes.append(
-                f"WARNING: Could not read material/thickness from PDF ({exc}) — "
-                f"seeded {material} @ {thickness}; confirm in SecturaFAB"
-            )
+            if named:
+                notes.append(
+                    f"Parent PDF material unread ({exc}) — using named grade {material} "
+                    f"@ {thickness} from child drawings / takeoff"
+                )
+            else:
+                notes.append(
+                    f"WARNING: Could not read material/thickness from PDF ({exc}) — "
+                    f"seeded {material} @ {thickness}; confirm in SecturaFAB"
+                )
             pm = None
         if pm:
+            child_named = named or _named_grade_from_blob(pm.material)
             if pm.material:
-                material = pm.material
+                if child_named and _shop_material(pm.material) == "A36":
+                    material = child_named
+                    notes.append(
+                        f"Material from child drawings / takeoff: {material} "
+                        f"(parent extract was {pm.material})"
+                    )
+                else:
+                    material = pm.material
                 known_from_pdf = True
-                notes.append(
-                    f"Material from drawing: {pm.material} ({pm.source})"
-                )
+                if not child_named or _shop_material(pm.material) != "A36":
+                    notes.append(
+                        f"Material from drawing: {pm.material} ({pm.source})"
+                    )
             if pm.thickness_in is not None:
                 thickness = _sanitize_thickness_param(pm.thickness_param() or pm.thickness_in)
                 notes.append(
@@ -485,15 +557,26 @@ def _resolve_push_material_thickness(
             if pm.material_key in {None, ""} or (
                 pm.source.startswith("no_material") or "unknown" in pm.source.lower()
             ):
-                notes.append(
-                    "WARNING: Drawing material grade not confidently identified — "
-                    f"seeded {material}; confirm in SecturaFAB"
-                )
+                if named:
+                    material = named
+                    notes.append(
+                        f"Material from child drawings / takeoff: {material}"
+                    )
+                else:
+                    notes.append(
+                        "WARNING: Drawing material grade not confidently identified — "
+                        f"seeded {material}; confirm in SecturaFAB"
+                    )
         elif not any("Could not read material" in n for n in notes):
-            notes.append(
-                "WARNING: Could not read material/thickness from PDF title block — "
-                f"seeded {material} @ {thickness}; confirm in SecturaFAB"
-            )
+            if named:
+                notes.append(
+                    f"Material from child drawings / takeoff: {material} @ {thickness}"
+                )
+            else:
+                notes.append(
+                    "WARNING: Could not read material/thickness from PDF title block — "
+                    f"seeded {material} @ {thickness}; confirm in SecturaFAB"
+                )
     elif not known_from_pdf:
         drivers = (takeoff or {}).get("fitup_drivers") or {}
         weight = drivers.get("weight_calc") or {}
@@ -1541,6 +1624,7 @@ class SecturaFabPushService:
             format_cad_description,
             match_bom_part_no,
             resolve_cad_plate_flats,
+            takeoff_plate_row,
         )
         from .locked_1001898 import locked_cad_spec
         from quote_core.part_materials import (
@@ -1605,28 +1689,31 @@ class SecturaFabPushService:
                     f"Skipped Image Files {path.name} — {cat} goes Long/Component"
                 )
                 continue
-            for plat in (takeoff or {}).get("plates") or []:
-                if not isinstance(plat, dict):
-                    continue
-                plat_pn = str(plat.get("part_no") or plat.get("name") or "")
-                if not plat_pn:
-                    continue
-                if plat_pn == pn or plat_pn == stem or pn.startswith(plat_pn) or plat_pn.startswith(pn):
-                    if matched_row is None:
-                        matched_row = dict(plat)
-                        noun = noun or str(plat.get("description") or "")
-                    else:
-                        matched_row.setdefault("width_in", plat.get("width_in"))
-                        matched_row.setdefault("length_in", plat.get("length_in"))
-                    break
+            plat = takeoff_plate_row(takeoff, pn) or takeoff_plate_row(takeoff, stem)
+            if plat:
+                if matched_row is None:
+                    matched_row = dict(plat)
+                    noun = noun or str(plat.get("description") or "")
+                else:
+                    matched_row.setdefault("width_in", plat.get("width_in"))
+                    matched_row.setdefault("length_in", plat.get("length_in"))
+                    if plat.get("blank") and not matched_row.get("blank"):
+                        matched_row["blank"] = plat.get("blank")
             locked = locked_cad_spec(pn) or {}
             pm = lookup_part_material(part_materials, pn) or lookup_part_material(
                 part_materials, f"{pn} {noun}"
             )
             named_grade = None
-            grade_blob = f"{noun} {pn} {path.name}"
+            grade_blob = f"{noun} {pn} {path.name} {material}"
+            if plat:
+                grade_blob = (
+                    f"{grade_blob} {plat.get('description') or ''} "
+                    f"{plat.get('material') or ''} {plat.get('grade') or ''}"
+                )
             if re.search(r"(?i)5052|ALPL", grade_blob):
                 named_grade = "5052-H32"
+            elif re.search(r"(?i)A\s*572|PL025", grade_blob):
+                named_grade = "A572 Grade 50"
             plate_mat = _shop_material(
                 locked.get("grade")
                 or (pm.material if pm and pm.material else None)
@@ -1692,7 +1779,24 @@ class SecturaFabPushService:
                 row["Length"] = plate_l
                 row["Width_Units"] = row.get("Width_Units") or "inch"
                 row["Length_Units"] = row.get("Length_Units") or "inch"
+            if plate_thk not in (None, ""):
+                row["Thickness"] = plate_thk
+            row["ItemType"] = "cad"
+            row["Machine"] = row.get("Machine") or "Laser - Bay1"
+            row["Material"] = plate_mat
+            if row.get("Status") in (None, "", 0, "0"):
+                row["Status"] = 1
             row = prepare_pdf_newline_fields(row)
+            if not attachment_pdf_filelist_ready(row):
+                # LOM Cad kids with flats must still post a full Image Files row.
+                # Do not skip 1007014/1007015-style kids when takeoff listed flats.
+                if plat and (plate_w and plate_l and plate_thk not in (None, "", 0, "0")):
+                    row["Width"] = plate_w
+                    row["Length"] = plate_l
+                    row["Thickness"] = plate_thk
+                    row["ItemType"] = "cad"
+                    row["Status"] = 1
+                    row = prepare_pdf_newline_fields(row)
             if not attachment_pdf_filelist_ready(row):
                 notes.append(
                     f"WARNING: AddItem_PDFFiles skipped {path.name} — "
@@ -2716,7 +2820,8 @@ class SecturaFabPushService:
                                 if not cad
                                 else ""
                             )
-                            + self._finish_session_error()
+                            + "AddItem_PDFFiles HTTP 200 is not session-expired; "
+                            "PR / laser pack / UnitCost did not stamp."
                         )
                         if cad:
                             msg = notes[-1]
@@ -2763,7 +2868,7 @@ class SecturaFabPushService:
                 TypeError,
                 OSError,
             ) as exc:
-                msg = self._finish_session_error(exc)
+                msg = f"WARNING: Image Files / Long raised ({exc})"
                 notes.append(msg)
                 if cad:
                     return self._fail_push(

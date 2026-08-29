@@ -568,6 +568,25 @@ def filelist_row_from_attachment_upload(
     return prepare_pdf_newline_fields(row)
 
 
+def _filelist_dim(val: Any) -> float:
+    """Numeric FileList Thickness / Length / Width (fractions ok)."""
+    if val in (None, ""):
+        return 0.0
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        text = str(val).strip().replace('"', "").replace("″", "").replace("'", "")
+        if "/" in text:
+            try:
+                num, den = text.split("/", 1)
+                den_f = float(den)
+                if den_f:
+                    return float(num) / den_f
+            except (TypeError, ValueError, ZeroDivisionError):
+                return 0.0
+        return 0.0
+
+
 def attachment_pdf_filelist_ready(row: dict[str, Any] | None) -> bool:
     """True only when Image Files New Line Item fields are present."""
     if not isinstance(row, dict):
@@ -575,9 +594,9 @@ def attachment_pdf_filelist_ready(row: dict[str, Any] | None) -> bool:
     if str(row.get("ItemType") or "").strip().casefold() != "cad":
         return False
     try:
-        thickness = float(row.get("Thickness") or 0)
-        length = float(row.get("Length") or 0)
-        width = float(row.get("Width") or 0)
+        thickness = _filelist_dim(row.get("Thickness"))
+        length = _filelist_dim(row.get("Length"))
+        width = _filelist_dim(row.get("Width"))
         status = float(row.get("Status") or 0)
     except (TypeError, ValueError):
         return False

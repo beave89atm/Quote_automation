@@ -108,10 +108,14 @@ def test_kyle_description_formats():
     asm = format_assembly_description("1001898-1", "PEDESTAL WELDMENT")
     assert asm == "1001898-1 - PEDESTAL WELDMENT"
     assert format_assembly_description("1001898-1", "1001898") == "1001898-1"
-    from secturafab.item_desc import looks_like_drawing_sheet
+    from secturafab.item_desc import looks_like_drawing_sheet, looks_like_page_outline
 
     assert looks_like_drawing_sheet(22.0, 28.5) is True
     assert looks_like_drawing_sheet(7.5, 10.0) is False
+    assert looks_like_page_outline(1.0, 2.0) is True
+    assert looks_like_page_outline(1.0, 16.0) is True
+    assert looks_like_page_outline(5.25, 5.75) is False
+    assert looks_like_page_outline(2.0, 9.0) is False
     sheet_cad = format_cad_description(
         "14501-1",
         thickness=0.25,

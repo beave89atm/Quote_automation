@@ -402,8 +402,16 @@ def _estimate_segments_from_pdf(
     return segments
 
 
+def _looks_like_page_outline(a: float, b: float) -> bool:
+    """PDF crop / SCALE 1:N artifacts (1×2, 1×16), not the child-drawing flat."""
+    pair = (min(a, b), max(a, b))
+    return 0.90 <= pair[0] <= 1.10
+
+
 def _looks_like_sheet_outline(a: float, b: float) -> bool:
     pair = (min(a, b), max(a, b))
+    if _looks_like_page_outline(a, b):
+        return True
     for lo, hi in ((8.5, 11.0), (11.0, 17.0), (17.0, 22.0), (22.0, 28.5), (22.0, 34.0)):
         if abs(pair[0] - lo) <= 0.6 and abs(pair[1] - hi) <= 0.6:
             return True
@@ -417,30 +425,35 @@ def _plate_blank_size_from_text(
     max_side: float = 24.0,
 ) -> tuple[float, float] | None:
     """Return (L, W) from a plate blank callout like 7.00\" X 3.19\" or 2\" X 9\"."""
-    candidates: list[tuple[float, float]] = []
+    overall: list[tuple[float, float]] = []
+    blanks: list[tuple[float, float]] = []
     blob = text or ""
+
+    def _keep(a: float, b: float, bag: list[tuple[float, float]]) -> None:
+        if min_side <= a <= max_side and min_side <= b <= max_side:
+            if not _looks_like_sheet_outline(a, b):
+                bag.append((a, b))
+
     for m in _PLATE_OVERALL_RE.finditer(blob):
         try:
             a = float(m.group(1))
             b = float(m.group(2))
         except ValueError:
             continue
-        if min_side <= a <= max_side and min_side <= b <= max_side:
-            if not _looks_like_sheet_outline(a, b):
-                candidates.append((a, b))
+        _keep(a, b, overall)
     for m in PLATE_BLANK_RE.finditer(blob):
         try:
             a = float(m.group(1))
             b = float(m.group(2))
         except ValueError:
             continue
-        if min_side <= a <= max_side and min_side <= b <= max_side:
-            if not _looks_like_sheet_outline(a, b):
-                candidates.append((a, b))
-    if not candidates:
+        _keep(a, b, blanks)
+    # Prefer OVERALL/BLANK labels, then the largest plausible child-drawing pair.
+    # Do not return a first-hit 1×N page outline.
+    pool = overall or blanks
+    if not pool:
         return None
-    # Prefer the first title-block / OVERALL blank (usually the part size).
-    return candidates[0]
+    return max(pool, key=lambda p: p[0] * p[1])
 
 
 def _plate_blank_size_from_pdf(

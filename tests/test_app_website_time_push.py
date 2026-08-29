@@ -73,6 +73,8 @@ def test_classify_plate_over_three_quarter_is_component():
 def test_never_a569_material():
     assert _shop_material("A569") == "A36"
     assert _shop_material("A572") == "A572"
+    assert _shop_material("A572 Grade 50") == "A572 Grade 50"
+    assert _shop_material("PL025-50K") == "A572 Grade 50"
     assert _shop_material("") == "A36"
     assert _shop_material("5052-H32") == "5052-H32"
     assert _shop_material("ALPL009-28K") == "5052-H32"
@@ -776,6 +778,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "a522d863-1805-4206-85d1-36841dd107d2" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "7a555ac2-2a77-4bd9-a936-bf8a64eb60e7" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "8f87fbae-d2ef-40ee-abd4-47a8755ce19f" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "804172ea-f507-42fe-87ae-1b91d2cc0d29" in FORBIDDEN_LIVE_QUOTE_IDS
     from secturafab.forbidden_quotes import is_forbidden_quote_id
 
     assert is_forbidden_quote_id("280f4dcb-1111-2222-3333-444444444444")
@@ -787,6 +790,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "a522d863-1805-4206-85d1-36841dd107d2",
         "7a555ac2-2a77-4bd9-a936-bf8a64eb60e7",
         "8f87fbae-d2ef-40ee-abd4-47a8755ce19f",
+        "804172ea-f507-42fe-87ae-1b91d2cc0d29",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(
@@ -1195,3 +1199,311 @@ def test_empty_shell_item_count_1_is_not_success(tmp_path, monkeypatch):
     assert result.status == "failed"
     assert "0 Cad" in (result.error or "") or "empty assembly" in (result.error or "").lower()
     weldment.assert_not_called()
+
+
+def test_page_outline_1xn_is_not_a_cad_flat():
+    from secturafab.item_desc import (
+        looks_like_page_outline,
+        parse_plate_flats,
+        resolve_cad_plate_flats,
+    )
+
+    assert looks_like_page_outline(1.0, 2.0) is True
+    assert looks_like_page_outline(1.0, 16.0) is True
+    assert looks_like_page_outline(5.25, 5.75) is False
+    assert looks_like_page_outline(14.625, 7.375) is False
+    assert looks_like_page_outline(2.0, 9.0) is False
+    drawing = "SCALE 1 X 2  TITLE 1 x 16  OVERALL 5.25 X 5.75"
+    assert parse_plate_flats(drawing) == (5.25, 5.75)
+    assert parse_plate_flats("1 x 2") == (None, None)
+    assert parse_plate_flats("1 x 16") == (None, None)
+    w, length = resolve_cad_plate_flats(
+        "1007013-1",
+        takeoff={
+            "plates": [
+                {
+                    "part_no": "1007013-1",
+                    "width_in": 1.0,
+                    "length_in": 2.0,
+                    "description": "OVERALL 5.25 X 5.75 A572",
+                }
+            ]
+        },
+        noun="1 x 2 OVERALL 5.25 x 5.75",
+        locked=None,
+    )
+    assert {w, length} == {5.25, 5.75}
+
+
+def test_filelist_built_for_every_cad_with_lom_flats(tmp_path, monkeypatch):
+    """Every LOM Cad kid with takeoff flats gets a full Image Files FileList."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    kids = [
+        ("1007012.pdf", "1007012-1", 7.375, 14.625),
+        ("1007013.pdf", "1007013-1", 5.25, 5.75),
+        ("1007014.pdf", "1007014-1", 6.0, 8.0),
+        ("1007015.pdf", "1007015-1", 4.0, 10.0),
+    ]
+    pdfs = []
+    for name, _pn, _w, _l in kids:
+        p = tmp_path / name
+        p.write_bytes(b"%PDF")
+        pdfs.append(p)
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_item_pdf_attachment.return_value = {
+        "FileID": "att-1",
+        "FileName": "kid.pdf",
+    }
+    client.add_item_pdf_files.return_value = {"ok": True}
+    client.quote_item_read.return_value = {
+        "Data": [{"ProductType": 100, "Description": pn} for _n, pn, _w, _l in kids],
+        "Total": 4,
+    }
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000000704",
+        pdf_files=pdfs,
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE",
+        bom_rows=[
+            {
+                "part_no": pn,
+                "qty": 1,
+                "description": "PL025-50K A572 Grade 50 PLATE",
+            }
+            for _n, pn, _w, _l in kids
+        ],
+        takeoff={
+            "plates": [
+                {
+                    "part_no": pn,
+                    "width_in": w,
+                    "length_in": length,
+                    "blank": [length, w],
+                    "description": "A572 Grade 50",
+                }
+                for _n, pn, w, length in kids
+            ]
+        },
+    )
+    assert client.add_item_pdf_files.call_count == 4
+    posted_names = []
+    for call in client.add_item_pdf_files.call_args_list:
+        row = call.kwargs["file_list"][0]
+        posted_names.append(row.get("FileName"))
+        assert row["ItemType"] == "cad"
+        assert row["Machine"] == "Laser - Bay1"
+        assert float(row["Status"]) > 0
+        assert float(row["Thickness"]) > 0
+        assert float(row["Width"]) > 1.1
+        assert float(row["Length"]) > 1.1
+        assert {float(row["Width"]), float(row["Length"])} != {1.0, 2.0}
+        assert {float(row["Width"]), float(row["Length"])} != {1.0, 16.0}
+        assert "A572" in str(row["Material"])
+        assert row["Material"] != "A36"
+    assert "1007014.pdf" in posted_names
+    assert "1007015.pdf" in posted_names
+    blob = " ".join(notes)
+    assert "FileList missing" not in blob
+    assert "AddItem_PDFFiles skipped" not in blob
+
+
+def test_filelist_rejects_page_outline_dims_for_1007013(tmp_path, monkeypatch):
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "1007013.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_item_pdf_attachment.return_value = {
+        "FileID": "att-1",
+        "FileName": "1007013.pdf",
+    }
+    client.add_item_pdf_files.return_value = {"ok": True}
+    client.quote_item_read.return_value = {
+        "Data": [{"ProductType": 100, "Description": "1007013-1"}],
+        "Total": 1,
+    }
+    SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000000713",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE",
+        bom_rows=[
+            {
+                "part_no": "1007013-1",
+                "qty": 1,
+                "description": "1 x 2 OVERALL 5.25 x 5.75 A572 PLATE",
+            }
+        ],
+        takeoff={
+            "plates": [
+                {
+                    "part_no": "1007013-1",
+                    "width_in": 1.0,
+                    "length_in": 2.0,
+                    "description": "OVERALL 5.25 X 5.75",
+                }
+            ]
+        },
+    )
+    client.add_item_pdf_files.assert_called()
+    row = client.add_item_pdf_files.call_args.kwargs["file_list"][0]
+    assert {float(row["Width"]), float(row["Length"])} == {5.25, 5.75}
+
+
+def test_gold_miss_after_200_finish_is_not_session_expired(tmp_path, monkeypatch):
+    """HTTP 200 AddItem_PDFFiles without PR/pack/UnitCost is fail, not session expired."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "1007049-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "1007013.pdf").write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    no_gold = {
+        "QuoteNumber": "1007049-1",
+        "ItemCount": 3,
+        "ItemList": [
+            {
+                "ID": "asm-1",
+                "Description": "WELDMENT",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "UnitCost": 0,
+            },
+            {
+                "ID": "cad-1",
+                "Description": "1007013-1",
+                "ProductType": 100,
+                "Category": "Cad",
+                "BadgeString": "",
+                "UnitCost": 0,
+                "Machine": "Laser - Bay1",
+                "OperationCostList": [],
+            },
+            {
+                "ID": "cad-2",
+                "Description": "1007012-1",
+                "ProductType": 100,
+                "Category": "Cad",
+                "BadgeString": "",
+                "UnitCost": 0,
+                "Machine": "Laser - Bay1",
+                "OperationCostList": [],
+            },
+        ],
+    }
+    client.get_json.return_value = no_gold
+    client.quote_item_read.return_value = {"Data": no_gold["ItemList"], "Total": 3}
+    service = SecturaFabPushService(client=client)
+    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "create_quote", return_value="11111111-aaaa-bbbb-cccc-000000000704"
+    ), patch.object(
+        service, "allocate_quote_number", return_value="1007049-1"
+    ), patch.object(
+        service,
+        "finish_pdf_files",
+        return_value=["Uploaded Image Files 200", "AddItem_PDFFiles HTTP 200"],
+    ), patch.object(
+        service, "finish_website_weldment"
+    ) as weldment, patch(
+        "secturafab.push.refresh_bom_rows_for_push",
+        return_value=(
+            [
+                {
+                    "part_no": "1007013-1",
+                    "qty": 1,
+                    "description": "PLATE",
+                    "width_in": 5.25,
+                    "length_in": 5.75,
+                }
+            ],
+            [],
+        ),
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value="WELDMENT"
+    ), patch(
+        "secturafab.push.apply_quote_organization", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
+    ), patch(
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_weld_ops", return_value=[]
+    ):
+        result = service.push_job(
+            title="1007049-1",
+            pdf_filename="1007049-1.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={
+                "library": {
+                    "part_key": "1007049-1",
+                    "folder": str(lib),
+                    "related_pdfs": ["1007013.pdf"],
+                },
+                "plates": [
+                    {
+                        "part_no": "1007013-1",
+                        "width_in": 5.25,
+                        "length_in": 5.75,
+                        "description": "A572 Grade 50",
+                    }
+                ],
+            },
+            times={"weld_minutes": 10, "total_inches": 40.0},
+            job_id=7049,
+        )
+    assert result.ok is False
+    assert result.ready is False
+    blob = f"{result.error or ''} {' '.join(result.notes or [])}"
+    assert "gold" in blob.lower() or "UnitCost" in blob or "pack" in blob.lower()
+    assert WEBSITE_SESSION_EXPIRED not in blob
+    weldment.assert_not_called()
+
+
+def test_ensure_weld_ops_empty_200_counts_as_posted():
+    from secturafab.weld_ops import ensure_weld_ops
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "asm-1",
+                "Description": "1007049-1 - WELDMENT",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+            {
+                "ID": "cad-1",
+                "Description": "1007013-1",
+                "ProductType": 100,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+        ]
+    }
+    client.add_operation.return_value = None
+    notes = ensure_weld_ops(
+        client,
+        "new-qid",
+        times={"weld_minutes": 20.0, "total_inches": 40.0},
+        part_key="1007049-1",
+    )
+    client.add_operation.assert_called_once()
+    assert client.add_operation.call_args.kwargs["weld_inches"] == pytest.approx(40.0)
+    blob = " ".join(notes)
+    assert "AddOperation" in blob
+    assert "returned empty" not in blob
+    assert "graft" not in blob.lower() or "not grafting" in blob
+    client.request.assert_not_called()

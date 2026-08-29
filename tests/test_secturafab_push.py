@@ -45,6 +45,38 @@ def test_default_material_from_takeoff():
     assert mat == "A572"
 
 
+def test_resolve_material_keeps_a572_from_child_takeoff(tmp_path):
+    from secturafab.push import _resolve_push_material_thickness
+
+    pdf = tmp_path / "1007049-1.pdf"
+    pdf.write_bytes(b"%PDF-1.4 empty")
+    takeoff = {
+        "plates": [
+            {
+                "part_no": "1007014-1",
+                "description": "PL025-50K A572 Grade 50",
+                "width_in": 6.0,
+                "length_in": 8.0,
+            }
+        ],
+        "fitup_drivers": {"weight_calc": {}},
+        "notes": ["A572 Grade 50 on child drawings"],
+    }
+    with patch(
+        "quote_core.part_materials.extract_part_material_from_pdf",
+        return_value=None,
+    ):
+        mat, _thk, notes = _resolve_push_material_thickness(
+            takeoff=takeoff,
+            stp_path=None,
+            pdf_path=pdf,
+        )
+    assert "A572" in mat
+    assert mat != "A36"
+    blob = " ".join(notes)
+    assert "seeded A36" not in blob
+
+
 def test_default_material_keeps_named_5052():
     mat = _default_material(
         {

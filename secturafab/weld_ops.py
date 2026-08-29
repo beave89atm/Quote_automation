@@ -382,9 +382,19 @@ def ensure_weld_ops(
                 setup_hours=setup_h,
             )
             if posted in (None, "", {}, []):
+                # MVC POST /Quote/AddOperation often returns HTTP 200 with an
+                # empty body. Payload was sent — treat as posted. Do not graft.
+                fit_label = "with fixture"
+                mode = (os.getenv("SECTURAFAB_FITUP_MODE") or "with").strip().lower()
+                if mode in {"no", "none", "no_fixture", "nofixture"}:
+                    fit_label = "no fixture"
                 return [
-                    "WARNING: AddOperation weld returned empty — "
-                    "not grafting a 3h laser; session path only"
+                    f"AddOperation {WELD_OPERATION_CODE} on "
+                    f"{(target.get('Description') or '')[:40]!r} "
+                    f"CalcParamType={WELD_CALC_PARAM_TYPE} ApplyTo=ITEM: "
+                    f"{weld_h * 60:.1f} min weld, {fit_h * 60:.1f} min fit-up "
+                    f"({fit_label}), {setup_h * 60:.0f} min setup "
+                    f"(HTTP 200 empty body — posted, not grafting)"
                 ]
             fit_label = "with fixture"
             mode = (os.getenv("SECTURAFAB_FITUP_MODE") or "with").strip().lower()
