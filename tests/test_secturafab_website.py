@@ -2410,6 +2410,48 @@ def test_classify_bare_part_key_is_assembly_not_cad():
     assert by_src["plate"] == "Cad"
 
 
+def test_live_105918_kid_names_are_not_all_component():
+    """Live 105918-1 GET: plates/gussets/mounts Cad, channels/tubes Linear."""
+    from tests.fixtures.live_105918_classify import LIVE_105918_KID_NAMES
+
+    from secturafab.website import overlay_classified_row, part_mode_int
+
+    rows = [
+        {
+            "SourceDataID": f"s{i}",
+            "ID": f"id-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+        for i, (name, _want) in enumerate(LIVE_105918_KID_NAMES)
+    ]
+    classified, notes = SecturaFabPushService(client=MagicMock()).classify_cadimport_rows(
+        rows,
+        default_material="A36",
+        default_thickness="0.25",
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+        part_key="105918-1",
+    )
+    counts = {"Cad": 0, "Linear": 0, "Assembly": 0, "Component": 0}
+    assert len(classified) == len(LIVE_105918_KID_NAMES)
+    for row, (name, want) in zip(classified, LIVE_105918_KID_NAMES, strict=True):
+        cat = str(row.get("Category") or "")
+        assert cat == want, f"{name!r} want {want} got {cat}"
+        counts[want] += 1
+        if want != "Assembly":
+            over = overlay_classified_row({"Name": name}, category=want)
+            assert over["PartMode"] == part_mode_int(want)
+    assert counts["Cad"] >= 8
+    assert counts["Linear"] == 3
+    assert counts["Assembly"] == 5
+    assert counts["Component"] == 0
+    assert "Cad:" in " ".join(notes)
+
+
 def test_explode_skips_cookie_quote_html_even_when_fields_present(tmp_path: Path):
     """cookie_quote_html is the wrong claims user — no /part/create."""
     stp = tmp_path / "34997-1.STEP"

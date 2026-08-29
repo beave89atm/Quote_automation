@@ -262,6 +262,9 @@ def candidate_lom_clips(page) -> list[Any]:
         fitz.Rect(rect.width * 0.55, rect.height * 0.35, rect.width * 0.999, rect.height * 0.99),
         fitz.Rect(rect.width * 0.48, 0, rect.width * 0.999, rect.height),
         fitz.Rect(rect.width * 0.35, rect.height * 0.40, rect.width * 0.999, rect.height * 0.99),
+        # Time title-block LOM is often lower-right; 105918/106687 clips were 0 rows.
+        fitz.Rect(rect.width * 0.42, rect.height * 0.18, rect.width, rect.height),
+        fitz.Rect(rect.width * 0.58, rect.height * 0.48, rect.width, rect.height),
     ]
 
 

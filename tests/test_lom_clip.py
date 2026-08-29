@@ -186,3 +186,30 @@ def test_clip_writes_xlsx_then_reader_is_only_parser(tmp_path: Path):
     assert bom.method == "lom_xlsx"
     assert bom.piece_count >= 1
     assert notes or more
+
+
+def test_empty_time_grid_clip_does_not_invent_bom(tmp_path: Path):
+    """105918/106687 clips were 0 usable rows — do not invent LIST OF MATERIAL."""
+    from quote_core.lom_bitmap import clip_drawn_lom_from_page
+
+    pdf = tmp_path / "empty-lom.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=792, height=612)
+    page.insert_text((420, 40), "LIST OF MATERIAL", fontsize=10)
+    doc.save(pdf)
+    doc.close()
+    grid, notes, _found = clip_lom_grid_from_pdf(pdf)
+    assert grid == [] or len(grid) < 2
+    dest, more = ensure_lom_xlsx(pdf, part_key="105918-1")
+    if dest is None:
+        blob = " ".join(notes + more)
+        assert "invent" not in blob.lower() or "0 rows" in blob or not dest
+    else:
+        bom = extract_bom_from_lom_xlsx(dest, bom_config="1")
+        assert bom.piece_count == 0 or not bom.rows
+
+    doc = fitz.open(pdf)
+    drawn, drawn_notes, _saw = clip_drawn_lom_from_page(doc[0], ocr_cell=lambda _im: "")
+    doc.close()
+    assert drawn == [] or len(drawn) < 2
+    assert not any("105918" in (n or "") and "invent" in (n or "").lower() for n in drawn_notes)

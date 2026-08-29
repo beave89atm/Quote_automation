@@ -218,13 +218,22 @@ def _looks_like_formed_plate(description: str) -> bool:
 
 
 def _cad_plate_sheet_noun(description: str) -> bool:
-    """Plate/sheet/gusset is Cad. TRIANGLE GUSSET is not Linear (ANGLE substring)."""
+    """Laser plate/sheet/gusset/mount/flat. CHANNEL PLATE is Cad, KICK CHANNEL is not.
+
+    Kyle (105918-1): leftover Component is not the rule. TRIANGLE GUSSET is
+    not Linear (ANGLE is a substring of TRIANGLE). FLAT BAR stays Linear.
+    MOUNT CHANNEL stays Linear (structural channel, not a laser mount plate).
+    """
     text = f" {str(description or '').upper()} "
-    if any(h in text for h in (" CHANNEL ", " TUBE ", " PIPE ", " BEAM ", " HSS ")):
-        return False
-    if re.search(r"\bANGLE\b", text) or re.search(r"\bBARS?\b", text):
-        return False
-    return bool(re.search(r"\b(PLATE|GUSSET|SHEET|FLAT)\b", text))
+    if re.search(r"\b(PLATE|GUSSET|SHEET)\b", text):
+        return True
+    if re.search(r"\bFLAT\b", text) and not re.search(r"\bFLAT\s+BAR\b", text):
+        return True
+    if re.search(r"\bMOUNT\b", text) and not re.search(
+        r"\b(CHANNEL|TUBE|PIPE|BARS?|ANGLE|BEAM|HSS)\b", text
+    ):
+        return True
+    return False
 
 
 def classify_sectura_item(description: str) -> str:
@@ -232,7 +241,7 @@ def classify_sectura_item(description: str) -> str:
     Map a STEP/BOM description to SecturaFAB item category dropdown values:
     Cad | Linear | Component
 
-    Plate/sheet = Cad. Structural tube/bar/angle/channel/hose guard = Linear.
+    Plate/sheet/gusset/mount/flat = Cad. Tube/bar/angle/channel = Linear.
     Purchased fittings (elbow, coupling, plug, nipple, cap, filler neck) and
     hardware = Component. Component is checked before Linear so ``PIPE CAP``
     is not treated as a Linear pipe.

@@ -634,6 +634,22 @@ CLASSIFY_CASES: list[tuple[str, str, str]] = [
     ("50137-5", "3/4 NPT HALF COUPLING", "Component"),
     ("21680-1", "HOSE GUARD", "Linear"),
     ("21679-1", "HOSEGUARD TUBE", "Linear"),
+    # Live 105918-1 STEP nouns (Finish landed these as Component — wrong).
+    ("30345-19", "PLATE", "Cad"),
+    ("105918-g1", "TRIANGLE GUSSET", "Cad"),
+    ("105918-g2", "FLOOR GUSSET", "Cad"),
+    ("105918-g3", "gate gusset", "Cad"),
+    ("105918-p1", "CHANNEL PLATE", "Cad"),
+    ("105918-p2", "ANCHOR PLATE", "Cad"),
+    ("105918-p3", "SUPPORT PLATE", "Cad"),
+    ("105918-m1", "RAIL MOUNT", "Cad"),
+    ("105918-l1", "KICK CHANNEL", "Linear"),
+    ("105918-l2", "vertical tube", "Linear"),
+    ("105918-l3", "main channel", "Linear"),
+    ("103603-1", "PLATFORM BASE WELDMENT", "Assembly"),
+    ("103535-1", "GATE WELDMENT", "Assembly"),
+    ("103629-1", "SUPPORT WELDMENT", "Assembly"),
+    ("105094-1", "REST WELDMENT", "Assembly"),
 ]
 
 
