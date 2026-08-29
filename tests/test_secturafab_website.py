@@ -2479,6 +2479,15 @@ def test_28110_nested_names_are_assembly_only():
     assert filelist_leaf_noun_names(
         rows, part_key="28110-2", cad_filename="28110-2.STEP"
     ) == []
+    one = [
+        {
+            "SourceDataID": "w1",
+            "Name": "END WELDMENT",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+    ]
+    assert filelist_is_assembly_only(one, part_key="28110-2")
     assert is_nested_assembly_name("28109 COMP LINK ASSY WITH INSERT-5997_28109-1")
     assert is_nested_assembly_name(
         "28248 COMPLINK END WELDMENT INSULATED-5994_28248-2"

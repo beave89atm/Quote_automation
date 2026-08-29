@@ -897,7 +897,7 @@ def filelist_is_assembly_only(
     kids = finish_filelist_kids(
         rows, part_key=part_key, cad_filename=cad_filename
     )
-    if len(kids) <= 1:
+    if not kids:
         return False
     return not filelist_leaf_noun_names(
         kids, part_key=part_key, cad_filename=cad_filename
