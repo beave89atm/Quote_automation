@@ -34,7 +34,8 @@ empty 200 — page success never bound #gridDXFParts.
 Live 34632-2: page createAllParts on the Quotes list posted empty #gridDXF
 IDList → t.List=0. Explode = fetch /part/create with Upload IDs; bind =
 DoCreateDXFParts success onto #gridDXFParts in the CAD Files dialog
-(GetItem_AddView in Chrome if the grid is missing); then page Finish.
+(click CAD Files in the live Quotes tab — cookie GetItem_AddView is the
+wrong document, live 106386-1); then page Finish.
 Do not Finish the raw STEP or a Root-only FileList.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.

@@ -1416,6 +1416,7 @@ class SecturaFabPushService:
                         height=0,
                         width=0,
                         quote_id=quote_id,
+                        quote_number=part_key,
                     )
                 except TypeError:
                     result = create_fn(
@@ -1429,6 +1430,16 @@ class SecturaFabPushService:
                 via = getattr(self.client, "_part_create_via", "") or ""
                 if isinstance(via, str) and via:
                     notes.append(f"part_create_via={via}")
+                present = getattr(self.client, "_grid_present", None)
+                if isinstance(present, bool):
+                    notes.append(f"grid_present={'true' if present else 'false'}")
+                    if not present:
+                        notes.append(
+                            "WARNING: #gridDXFParts not in the Chrome Quotes "
+                            "document — cookie GetItem_AddView is the wrong "
+                            "document (live 106386-1); not Finishing"
+                        )
+                        result = None
                 n_list = getattr(self.client, "_part_create_list_len", None)
                 if isinstance(n_list, (int, float)):
                     notes.append(f"part_create_list_len={int(n_list)}")
@@ -1456,6 +1467,9 @@ class SecturaFabPushService:
             exploded = self._cadimport_rows(result)
             n_list = getattr(self.client, "_part_create_list_len", None)
             n_grid = getattr(self.client, "_grid_dxf_row_count", None)
+            present = getattr(self.client, "_grid_present", None)
+            if isinstance(present, bool) and not present:
+                return exploded or upload_rows, notes
             if isinstance(n_list, (int, float)) and int(n_list) <= 1:
                 return exploded or upload_rows, notes
             if isinstance(n_grid, (int, float)) and int(n_grid) <= 1:
@@ -1882,11 +1896,14 @@ class SecturaFabPushService:
         explode_polls: int | None = None,
         explode_sleep_s: float | None = None,
     ) -> list[str]:
-        """CAD Files: dialog → upload STEP → createAllParts /part/create kids → Finish."""
+        """CAD Files: upload STEP → fetch /part/create → bind #gridDXFParts → Finish."""
         notes: list[str] = []
         try:
             self.client.get_item_add_view(quote_id, item_type="dxf")
-            notes.append("Opened CAD Files dialog (GetItem_AddView ItemType=dxf)")
+            notes.append(
+                "GetItem_AddView cookie-HTTP (AF scrape, not the Chrome "
+                "CAD Files dialog)"
+            )
         except SecturaFabWebsiteAuthError:
             notes.append(
                 "GetItem_AddView 302 — continuing CadImport upload / Finish "
@@ -1929,6 +1946,16 @@ class SecturaFabPushService:
             sleep_s=explode_sleep_s,
         )
         notes.extend(explode_notes)
+        present = getattr(self.client, "_grid_present", None)
+        if isinstance(present, bool):
+            if f"grid_present={'true' if present else 'false'}" not in " ".join(notes):
+                notes.append(f"grid_present={'true' if present else 'false'}")
+            if not present:
+                notes.append(
+                    "WARNING: #gridDXFParts not in the Chrome Quotes document "
+                    "— not Finishing"
+                )
+                return notes
         n_list = getattr(self.client, "_part_create_list_len", None)
         if isinstance(n_list, (int, float)):
             if f"part_create_list_len={int(n_list)}" not in " ".join(notes):

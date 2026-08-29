@@ -86,6 +86,7 @@ class SecturaFabClient:
         self._finish_via: str = ""
         self._grid_dxf_row_count: int | None = None
         self._part_create_list_len: int | None = None
+        self._grid_present: bool | None = None
 
     def authenticate(self, force: bool = False) -> AccessToken:
         if self._token and not self._token.is_expired and not force:
@@ -1052,6 +1053,7 @@ class SecturaFabClient:
         height: int | float = 0,
         width: int | float = 0,
         quote_id: str | None = None,
+        quote_number: str | None = None,
     ) -> Any:
         """Explode via fetch /part/create (Upload IDs), then bind t.List.
 
@@ -1108,7 +1110,15 @@ class SecturaFabClient:
         if self._part_create_list_len <= 1:
             self._grid_dxf_row_count = 0
             return {"List": kids}
-        bind = bind_do_create_dxf_parts_success(kids, quote_id=quote_id or None)
+        bind = bind_do_create_dxf_parts_success(
+            kids,
+            quote_id=quote_id or None,
+            quote_number=quote_number or None,
+        )
+        self._grid_present = bool(bind.get("grid_present"))
+        if not self._grid_present:
+            self._grid_dxf_row_count = 0
+            return {"List": kids}
         self._grid_dxf_row_count = int(bind.get("grid_dxf_row_count") or 0)
         return {"List": kids}
 
@@ -1179,9 +1189,10 @@ class SecturaFabClient:
 
         Live 34137-1: cookie-HTTP 200 empty / ItemList 0.
         Live 34137-2: Quotes-tab fetch of a Python-rebuilt FileList is the
-        same empty 200 — #gridDXFParts was never bound. Invoke the page
-        Finish (OnAddDXFClick / click) after createAllParts. Fallback fetch
-        uses the grid dataSource rows only, never reconstructed kids.
+        same empty 200 — #gridDXFParts was never bound.
+        Live 34632-2: page createAllParts explode returned t.List=0.
+        Invoke page Finish after fetch+bind. Fallback fetch uses the grid
+        dataSource rows only, never reconstructed kids.
         """
         from .chrome_cdp import (
             chrome_quotes_live,
@@ -1200,6 +1211,10 @@ class SecturaFabClient:
             )
         n_list = getattr(self, "_part_create_list_len", None)
         if isinstance(n_list, (int, float)) and int(n_list) <= 1:
+            self._finish_via = "skipped"
+            return self._dxf_finish_capture({}, via="skipped")
+        present = getattr(self, "_grid_present", None)
+        if isinstance(present, bool) and not present:
             self._finish_via = "skipped"
             return self._dxf_finish_capture({}, via="skipped")
         n_grid = getattr(self, "_grid_dxf_row_count", None)

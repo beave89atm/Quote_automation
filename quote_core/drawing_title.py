@@ -26,6 +26,7 @@ _SKIP_LINE = re.compile(
     r"DRAWING RELEASED|UPDATED POSITIONS|STEEL MATERIALS|ALUMINUM MATERIALS|"
     r"DRAWING IS THE SOLE|SOLE PROPERTY|"
     r"THREE PLACE DECIMAL|PLACE DECIMAL|"
+    r"TEST FIT WELDMENT|"
     r"DWG\s*NO:?$|APPROVED:?$|QA$|MFG$|CHECKED$|DRAWN$"
     r")"
 )
@@ -68,7 +69,8 @@ _LEGAL_OR_BANNER = re.compile(
     r"sole property of|"
     r"this drawing is the property|"
     r"three place decimal|"
-    r"place decimal"
+    r"place decimal|"
+    r"test fit weldment"
     r")"
 )
 
@@ -341,6 +343,8 @@ def is_drawing_boilerplate_title(text: str | None) -> bool:
         or "DRAWING IS THE SOLE" in upper
         or "THREE PLACE DECIMAL" in upper
         or "PLACE DECIMAL" in upper
+        or "TEST FIT WELDMENT" in upper
+        or upper.startswith("TEST FIT")
     )
 
 

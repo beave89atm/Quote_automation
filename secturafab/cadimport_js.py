@@ -118,8 +118,10 @@ UPDATE_DATA_NEXT_SNIPPET = (
 # success never ran so #gridDXFParts stayed empty; reconstructed Finish
 # empty 200.
 # Live 34632-2: page createAllParts on the Quotes list (empty #gridDXF)
-# → t.List=0. Explode = fetch with Upload IDs; bind = DoCreateDXFParts
-# success on that t.List in the CAD Files dialog. Do not invent a route.
+# → t.List=0. Live 106386-1: fetch t.List=26 but cookie GetItem_AddView
+# never put #gridDXFParts in Chrome. Explode = fetch with Upload IDs;
+# bind = click CAD Files in the Quotes tab, then DoCreateDXFParts success
+# only if grid_present. Do not invent a route.
 ADD_ITEM_DXF_FILES_PATH = "/Quote/AddItem_DXFFiles"
 ADD_ITEM_DXF_FILES_BODY_KEYS = ("ID", "ItemID", "customerMaterial", "FileList")
 ADD_ITEM_DXF_FILES_SNIPPET = (

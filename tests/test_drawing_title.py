@@ -76,6 +76,34 @@ ALUMINUM PLATFORM WELDMENT
     assert "PLATFORM" in title.upper() or "WELDMENT" in title.upper()
 
 
+def test_test_fit_weldment_in_is_not_a_title():
+    """Live 106386-1 stamped TEST FIT WELDMENT IN — drawing note, not the title."""
+    from secturafab.item_desc import (
+        format_assembly_description,
+        format_quote_header_description,
+    )
+
+    assert is_drawing_boilerplate_title("TEST FIT WELDMENT IN")
+    assert is_drawing_boilerplate_title("106386-1 - TEST FIT WELDMENT IN")
+    assert format_quote_header_description(
+        "TEST FIT WELDMENT IN", part_key="106386-1"
+    ) == ""
+    assert "TEST FIT" not in format_assembly_description(
+        "106386-1", "TEST FIT WELDMENT IN"
+    )
+    text = """
+106386-1
+TEST FIT WELDMENT IN
+DRAWING IS THE SOLE PROPERTY OF
+PLATFORM EXTENSION WELDMENT 42 IN
+"""
+    title = extract_title_from_pdf_text(text, part_key="106386-1")
+    assert title is not None
+    assert "TEST FIT" not in title.upper()
+    assert "PLATFORM" in title.upper()
+    assert "WELDMENT" in title.upper()
+
+
 def test_extract_title_coupler_asm():
     text = """THIS DRAWING IS THE PROPERTY OF MAC TRAILER
 PART NO

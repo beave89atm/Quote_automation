@@ -12,10 +12,10 @@ Live 34632-2: evaluating ``createAllParts`` / ``DoCreateDXFParts`` on the
 Quotes **list** (no CAD Files dialog) posts an empty ``#gridDXF`` IDList →
 t.List=0. HTTP Upload does not fill the browser grid.
 
-Explode = proven fetch with Upload IDs. Bind = run DoCreateDXFParts
-**success** on that t.List onto ``#gridDXFParts`` in the CAD Files dialog
-(open GetItem_AddView in Chrome first if the grid is missing). Finish =
-page fn that reads that grid.
+Explode = proven fetch with Upload IDs. Bind = click CAD Files in the
+live Quotes tab so ``#gridDXFParts`` exists, then run DoCreateDXFParts
+**success** on that t.List. Cookie GET GetItem_AddView is the wrong
+document (live 106386-1). Finish = page fn that reads that grid.
 
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys / counts only.
@@ -680,8 +680,9 @@ def post_update_data_from_quotes_tab(
 # QuoteOrderEdit DoCreateDXFParts success (cited):
 #   success:function(t){var i=$("#gridDXFParts").data("kendoGrid");
 #     for(var e=0;e<t.List.length;e++)i.dataSource.data().toJSON().push(t.List[e])}
-# Live 34632-2: do not call createAllParts on an empty Quotes-list #gridDXF.
-# Live 34137-2: fetch already has t.List — run this success on that List.
+# Live 106386-1: cookie GET GetItem_AddView / HTML inject is the wrong
+# document — #gridDXFParts lives in the Chrome CAD Files dialog.
+# Click the Quotes-tab UI (quote row + CAD Files). Bind only if grid_present.
 _BIND_DO_CREATE_SUCCESS_JS = """(function(spec) {
   function gridWin() {
     try {
@@ -698,7 +699,7 @@ _BIND_DO_CREATE_SUCCESS_JS = """(function(spec) {
     } catch (e3) {}
     return null;
   }
-  function hasPartsGrid() { return !!gridWin(); }
+  function gridPresent() { return !!gridWin(); }
   function gridCount() {
     var w = gridWin();
     if (!w) return 0;
@@ -720,88 +721,111 @@ _BIND_DO_CREATE_SUCCESS_JS = """(function(spec) {
       }, 250);
     });
   }
-  function clickCadFiles() {
-    if (hasPartsGrid()) return "";
-    try {
-      var nodes = document.querySelectorAll(
-        "button, a, input[type=button], input[type=submit], [role=button]"
-      );
-      for (var i = 0; i < nodes.length; i++) {
-        var el = nodes[i];
-        var blob = (
-          (el.getAttribute("onclick") || "") + " " + (el.textContent || "")
-          + " " + (el.value || "") + " " + (el.id || "")
-          + " " + (el.getAttribute("href") || "")
-        ).toLowerCase();
-        if (blob.indexOf("cad files") >= 0 || blob.indexOf("getitem_addview") >= 0
-            || blob.indexOf("itemtype=dxf") >= 0 || blob.indexOf("adddxf") >= 0) {
-          el.click();
-          return "click";
+  function clickLabeled(needles) {
+    var nodes = document.querySelectorAll(
+      "button, a, input, [role=button], [role=menuitem], .k-button, .k-link, li, span, td"
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      var text = String(el.textContent || el.value || "").replace(/\\s+/g, " ").trim();
+      if (text.length > 48) continue;
+      var blob = (
+        (el.getAttribute("onclick") || "") + " " + text + " " + (el.id || "")
+        + " " + (el.className || "") + " " + (el.getAttribute("title") || "")
+        + " " + (el.getAttribute("href") || "")
+      ).toLowerCase();
+      for (var n = 0; n < needles.length; n++) {
+        if (blob.indexOf(needles[n]) >= 0) {
+          try { el.click(); return needles[n]; } catch (e) {}
         }
       }
-    } catch (e) {}
+    }
+    return "";
+  }
+  function selectQuoteRow(qid, qnum) {
+    if (!window.jQuery) return "";
+    var hit = "";
+    jQuery("[data-role=grid]").each(function() {
+      if (hit) return;
+      var g = jQuery(this).data("kendoGrid");
+      if (!g || !g.dataSource) return;
+      var data = g.dataSource.data();
+      for (var i = 0; i < data.length; i++) {
+        var row = data[i];
+        var id = String(row.ID || row.QuoteID || row.Id || "");
+        var num = String(row.QuoteNumber || row.Number || row.Name || "");
+        if ((qid && id.toLowerCase() === qid.toLowerCase())
+            || (qnum && num && num.toLowerCase() === qnum.toLowerCase())) {
+          var tr = g.tbody && g.tbody.find("tr[data-uid='" + row.uid + "']");
+          if (tr && tr.length) {
+            try { g.select(tr); } catch (e) {}
+            try { tr.trigger("dblclick"); } catch (e2) {}
+            try { tr.click(); } catch (e3) {}
+            hit = "quote_row";
+          }
+        }
+      }
+    });
+    return hit;
+  }
+  function callPageOpen(qid) {
+    var names = [
+      "OnAddCADClick", "OnCADFilesClick", "AddDXF", "AddDXFItem",
+      "ShowCADFiles", "OpenCADFiles", "AddItemDXF"
+    ];
+    for (var i = 0; i < names.length; i++) {
+      if (typeof window[names[i]] === "function") {
+        try {
+          var fn = window[names[i]];
+          if (fn.length >= 2) fn(qid, "dxf");
+          else if (fn.length === 1) fn(qid);
+          else fn();
+          return names[i];
+        } catch (e) {}
+      }
+    }
     try {
       for (var k in window) {
         var fn = window[k];
-        if (typeof fn === "function"
-            && String(fn).indexOf("/Quote/GetItem_AddView") >= 0) {
-          fn();
-          return "page_fn";
+        if (typeof fn !== "function") continue;
+        var src = String(fn);
+        if (src.indexOf("/Quote/GetItem_AddView") >= 0) {
+          try {
+            if (fn.length >= 2) fn(qid, "dxf");
+            else if (fn.length === 1) fn(qid);
+            else fn();
+            return k;
+          } catch (e2) {}
         }
       }
-    } catch (e2) {}
+    } catch (e3) {}
     return "";
   }
-  function fetchAddView() {
+  function openDialog() {
+    if (gridPresent()) return "already";
     var qid = String((spec && spec.quoteId) || "");
-    if (!qid || hasPartsGrid()) return Promise.resolve("");
-    var path = "/Quote/GetItem_AddView?ID=" + encodeURIComponent(qid)
-      + "&ItemType=dxf";
-    return fetch(path, {
-      method: "GET",
-      credentials: "same-origin",
-      headers: {
-        "X-Requested-With": "XMLHttpRequest",
-        "Accept": "text/html, */*; q=0.01"
-      }
-    }).then(function(r) {
-      if (!r.ok) return "";
-      return r.text();
-    }).then(function(html) {
-      if (!html) return "";
-      var host = document.getElementById("divAddItem")
-        || document.getElementById("AddItemWindow")
-        || document.querySelector("[id*='AddItem']")
-        || document.querySelector(".modal-body")
-        || document.getElementById("cadFilesDialog");
-      if (!host) {
-        host = document.createElement("div");
-        host.id = "cadFilesDialog";
-        host.setAttribute("data-kannon", "getitem-addview");
-        document.body.appendChild(host);
-      }
-      host.innerHTML = html;
-      var scripts = host.querySelectorAll("script");
-      for (var i = 0; i < scripts.length; i++) {
-        var s = document.createElement("script");
-        s.text = scripts[i].textContent || "";
-        document.body.appendChild(s);
-      }
-      return "getitem_addview";
-    }).catch(function() { return ""; });
+    var qnum = String((spec && spec.quoteNumber) || "");
+    var via = selectQuoteRow(qid, qnum);
+    var cad = clickLabeled([
+      "cad files", "cad file", "add cad", "adddxf", "itemtype=dxf"
+    ]);
+    if (cad) return via ? via + "+click" : "click";
+    var fn = callPageOpen(qid);
+    if (fn) return fn;
+    return via || "";
   }
-  function bindSuccess() {
-    var w = gridWin();
-    if (!w) {
-      return {
-        has_gridDXFParts: false,
-        grid_dxf_row_count: 0,
-        bound: false,
-        list_len: ((spec && spec.List) || []).length
-      };
-    }
+  function bindIfPresent() {
+    var present = gridPresent();
+    var empty = {
+      grid_present: present,
+      has_gridDXFParts: present,
+      grid_dxf_row_count: present ? gridCount() : 0,
+      bound: false,
+      list_len: ((spec && spec.List) || []).length
+    };
+    if (!present) return empty;
     var t = {List: (spec && spec.List) || []};
-    var i = w.jQuery("#gridDXFParts").data("kendoGrid");
+    var i = gridWin().jQuery("#gridDXFParts").data("kendoGrid");
     for (var e = 0; e < t.List.length; e++) {
       i.dataSource.data().toJSON().push(t.List[e]);
     }
@@ -809,26 +833,21 @@ _BIND_DO_CREATE_SUCCESS_JS = """(function(spec) {
       var cur = i.dataSource.data().toJSON ? i.dataSource.data().toJSON() : [];
       i.dataSource.data(cur.concat(t.List));
     }
-    try { w.jQuery('#ulDXFTab a[href="#dxfparts"]').tab("show"); } catch (e2) {}
+    try { gridWin().jQuery('#ulDXFTab a[href="#dxfparts"]').tab("show"); } catch (e2) {}
     return {
+      grid_present: true,
       has_gridDXFParts: true,
       grid_dxf_row_count: gridCount(),
       bound: true,
       list_len: t.List.length
     };
   }
-  var opened = hasPartsGrid() ? "already" : clickCadFiles();
-  return waitUntil(hasPartsGrid, opened && opened !== "already" ? 8000 : 0)
-    .then(function(ready) {
-      if (ready) return opened;
-      return fetchAddView();
-    }).then(function(via) {
-      return waitUntil(hasPartsGrid, via && via !== "already" ? 15000 : 0)
-        .then(function() {
-          var out = bindSuccess();
-          out.opened_via = via || "";
-          return out;
-        });
+  var opened = openDialog();
+  return waitUntil(gridPresent, opened && opened !== "already" ? 12000 : 0)
+    .then(function() {
+      var out = bindIfPresent();
+      out.opened_via = opened || "";
+      return out;
     });
 })"""
 
@@ -993,37 +1012,91 @@ def _cdp_evaluate_promise(
     return _unwrap_evaluate(result)
 
 
+def _quote_layout_url(quote_id: str) -> str:
+    """GET /Quote?ID= — same Quotes layout Kyle uses. Not GetItem_AddView."""
+    qid = str(quote_id or "").strip()
+    return f"https://www.secturafab.com/Quote?ID={qid}"
+
+
+def _navigate_quotes_tab_to_quote(
+    quote_id: str,
+    *,
+    base: str | None = None,
+) -> bool:
+    """Open the quote in the live Quotes tab so CAD Files can appear."""
+    qid = str(quote_id or "").strip()
+    if not qid:
+        return False
+    tab = quotes_tab(base)
+    if not tab:
+        return False
+    here = str(tab.get("url") or "").lower()
+    if qid.lower() in here and "/quote" in here:
+        return True
+    ws = str(tab.get("webSocketDebuggerUrl") or "")
+    if not ws:
+        return False
+    cdp_call(ws, "Page.navigate", {"url": _quote_layout_url(qid)})
+    ready = _cdp_evaluate_promise(
+        """(function(){
+      return new Promise(function(resolve){
+        if (document.readyState === "complete") { resolve(true); return; }
+        window.addEventListener("load", function(){ resolve(true); });
+        setTimeout(function(){ resolve(document.readyState === "complete"); }, 15000);
+      });
+    })()""",
+        timeout=20.0,
+        base=base,
+    )
+    return bool(ready)
+
+
 def bind_do_create_dxf_parts_success(
     list_rows: list[dict[str, Any]],
     *,
     quote_id: str | None = None,
+    quote_number: str | None = None,
     base: str | None = None,
 ) -> dict[str, Any]:
-    """Run QuoteOrderEdit DoCreateDXFParts success on t.List → #gridDXFParts.
+    """Bind t.List onto #gridDXFParts only if that kendo grid is in Chrome.
 
-    Opens CAD Files (GetItem_AddView) in Chrome first if the kendo grid is
-    missing. Does not POST /part/create (that is the proven fetch).
+    Opens the quote + CAD Files via the Quotes-tab UI. Cookie GetItem_AddView
+    is the wrong document (live 106386-1). Does not POST /part/create.
     """
+    kids = [r for r in list_rows if isinstance(r, dict)]
     spec = {
-        "List": [r for r in list_rows if isinstance(r, dict)],
+        "List": kids,
         "quoteId": str(quote_id or ""),
+        "quoteNumber": str(quote_number or ""),
     }
     expression = (
         _BIND_DO_CREATE_SUCCESS_JS + "(" + json.dumps(spec, separators=(",", ":")) + ")"
     )
     value = _cdp_evaluate_promise(expression, base=base)
+    if (
+        (not isinstance(value, dict) or not value.get("grid_present"))
+        and quote_id
+    ):
+        if _navigate_quotes_tab_to_quote(quote_id, base=base):
+            value = _cdp_evaluate_promise(expression, base=base)
+            if isinstance(value, dict) and not value.get("opened_via"):
+                value["opened_via"] = "quote_layout"
     if not isinstance(value, dict):
         return {
+            "grid_present": False,
             "has_gridDXFParts": False,
             "grid_dxf_row_count": 0,
             "bound": False,
-            "list_len": len(spec["List"]),
+            "list_len": len(kids),
             "opened_via": "",
         }
+    present = bool(value.get("grid_present") or value.get("has_gridDXFParts"))
+    bound = bool(value.get("bound")) and present
     return {
-        "has_gridDXFParts": bool(value.get("has_gridDXFParts")),
-        "grid_dxf_row_count": int(value.get("grid_dxf_row_count") or 0),
-        "bound": bool(value.get("bound")),
+        "grid_present": present,
+        "has_gridDXFParts": present,
+        "grid_dxf_row_count": int(value.get("grid_dxf_row_count") or 0) if present else 0,
+        "bound": bound,
         "list_len": int(value.get("list_len") or 0),
         "opened_via": str(value.get("opened_via") or ""),
     }

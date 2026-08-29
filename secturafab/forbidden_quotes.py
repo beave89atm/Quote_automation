@@ -30,6 +30,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "9a2bc798-f192-4e4c-9b12-78098305f7cc",  # 34137-1 empty shell (08d7855) — leave it
         "aab44741-1213-470c-b941-d44ccf1068ea",  # 34137-2 empty shell (9a0d895) — leave it
         "069da4fe-5818-4125-983a-197bd4188ed1",  # 34632-2 empty shell (f6ac309) — leave it
+        "a6ef6891-e080-45de-b57c-1a55fee00c19",  # 106386-1 empty shell (1fd9b53) — leave it
     }
 )
 
@@ -60,7 +61,9 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "34137-2",  # spent empty shell (9a0d895 fetch Finish miss) — leave it
         "34632-2",  # spent empty shell (f6ac309 page_fn List=0) — leave it
         "106384-1",  # spent 20MB+ Upload 502 — do not remint
-        "105918-1",  # 20MB+ Upload 502 — do not mint
+        "105918-1",  # 27MB — do not mint until bind lands grid_dxf_row_count>1
+        "106386-1",  # spent empty shell (1fd9b53 explode-ok / bind miss) — leave it
+        "106687-1",  # 43MB — do not mint until bind lands grid_dxf_row_count>1
         "10107-1",  # occupied — do not remint
         "14284-2",  # occupied — do not remint
         "21807-1",  # occupied — do not remint
