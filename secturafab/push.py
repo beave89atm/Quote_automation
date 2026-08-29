@@ -64,6 +64,7 @@ from .website import (
     count_cad_product_type,
     is_tenant_guid,
     count_linear_product_type,
+    build_cadimport_next_payload,
     cadimport_filelist_exploded,
     cadimport_payload_preview,
     filelist_from_cadimport_upload,
@@ -1294,9 +1295,14 @@ class SecturaFabPushService:
                 f"CadImport FileList already exploded ({len(upload_rows)} kid row(s))"
             )
             return upload_rows, notes
-        next_body: Any = upload_payload if upload_payload is not None else (
-            {"List": upload_rows, "ID": quote_id} if upload_rows else {"ID": quote_id}
-        )
+        if isinstance(upload_payload, dict):
+            next_body = build_cadimport_next_payload(
+                quote_id,
+                upload_payload.get("List") or upload_rows,
+                list_other=upload_payload.get("ListOther"),
+            )
+        else:
+            next_body = build_cadimport_next_payload(quote_id, upload_rows)
         try:
             nxt = self.client.cadimport_update_data_next(next_body)
             notes.append("CadImport UpdateDataNext (green Next)")

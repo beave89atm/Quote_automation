@@ -21,6 +21,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "804172ea-f507-42fe-87ae-1b91d2cc0d29",  # 1007049-1 live drop (a44790a) — leave it
         "f703b928-3475-45c2-ade5-fcce97e1709e",  # 1010103-1 STEP drop (f1a7cc9) — leave it
         "12239b72-c82c-4493-b226-c51a98eb4fb5",  # 1007756-3 empty shell (adf610a) — leave it
+        "593d9450-530f-4ade-a137-9d195714ac73",  # 1002381-1 empty shell (e7dd028) — leave it
     }
 )
 
@@ -40,6 +41,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "1007922-1",
         "21727-1",
         "1007756-3",  # spent empty shell — next unused is 1007756-1
+        "1002381-1",  # spent empty shell (e7dd028)
     }
 )
 

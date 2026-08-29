@@ -14,14 +14,17 @@ from .website import (
     WEBSITE_SESSION_EXPIRED,
     SecturaFabWebsiteAuthError,
     build_add_feature_payload,
+    build_cadimport_next_payload,
     build_copy_move_assembly_payload,
     build_dxf_finish_payload,
     build_linear_add_payload,
     build_pdf_finish_payload,
     build_weld_add_operation_payload,
+    cadimport_next_form,
     is_cloudflare_challenge,
     is_website_login_redirect,
     jquery_ajax_form,
+    request_verification_token,
 )
 
 
@@ -68,6 +71,7 @@ class SecturaFabClient:
         self.config = config or SecturaFabConfig.from_env()
         self.session = session or requests.Session()
         self._token: AccessToken | None = None
+        self._request_verification_token: str | None = None
 
     def authenticate(self, force: bool = False) -> AccessToken:
         if self._token and not self._token.is_expired and not force:
@@ -267,6 +271,7 @@ class SecturaFabClient:
         files: Any = None,
         headers: dict[str, str] | None = None,
         prefer_api_origin: bool = False,
+        www_only: bool = False,
         require_session: bool = True,
         timeout: float | None = None,
         retry_on_auth_error: bool = False,
@@ -275,10 +280,9 @@ class SecturaFabClient:
         Hit a www MVC route (no /api prefix). Never PATCH a forbidden live quote.
 
         CadImport MVC (Upload / Next / Data / SetUnits / GetDXFData) is the
-        signed-in www.secturafab.com Quotes UI. The API host 500s SetUnits and
-        404s GetDXFData; Next/Data 200 with a string is not a FileList.
-        Prefer www for those actions. 404/405/>=500 on one origin tries the
-        other — do not treat an API miss as final.
+        signed-in www.secturafab.com Quotes UI. www_only=True for those
+        actions — do not fall through a www 500/404 to api (live 1002381-1
+        SetUnits/GetDXFData logged api after www already failed).
         /Quote/AddItem_DXFFiles (CAD Files Finish) still 302s without a cookie.
         Image Files (AddItem_PDFFiles) and Long (AddItem_Linear) are tried
         with bearer on every origin; a 302 is not an excuse to ship empty packs.
@@ -294,7 +298,11 @@ class SecturaFabClient:
         req_headers = self._auth_headers(headers)
         last: requests.Response | None = None
         last_cf = False
-        for origin in self._website_origins(prefer_api_origin=prefer_api_origin):
+        if www_only:
+            origins = [self.config.website_root.rstrip("/")]
+        else:
+            origins = self._website_origins(prefer_api_origin=prefer_api_origin)
+        for origin in origins:
             url = f"{origin}/{path.lstrip('/')}"
             response = self.session.request(
                 method=method.upper(),
@@ -435,7 +443,11 @@ class SecturaFabClient:
             params={"ID": quote_id, "ItemType": item_type},
             headers=self._cadimport_ajax_headers(),
             prefer_api_origin=False,
+            www_only=True,
         )
+        token = request_verification_token(getattr(response, "text", "") or "")
+        if token:
+            self._request_verification_token = token
         return self._parse_website_or_raise(response)
 
     def upload_item_dxf_files(
@@ -457,6 +469,7 @@ class SecturaFabClient:
             files=files,
             headers=self._cadimport_ajax_headers(),
             prefer_api_origin=False,
+            www_only=True,
             require_session=False,
             timeout=max(self.config.timeout_seconds, 180.0),
         )
@@ -530,6 +543,7 @@ class SecturaFabClient:
             params=params,
             headers=self._cadimport_ajax_headers(),
             prefer_api_origin=False,
+            www_only=True,
             require_session=False,
         )
         return self._parse_website_or_raise(response, require_session=False)
@@ -539,21 +553,45 @@ class SecturaFabClient:
         response = self.website_request(
             "POST",
             WEBSITE_FINISH_PATHS["cadimport_update_data"],
-            json=payload,
+            json=None,
+            data=cadimport_next_form(
+                payload if isinstance(payload, dict) else {"List": payload},
+                token=getattr(self, "_request_verification_token", None),
+            )
+            if payload is not None
+            else cadimport_next_form(
+                {}, token=getattr(self, "_request_verification_token", None)
+            ),
             headers=self._cadimport_ajax_headers(),
             prefer_api_origin=False,
+            www_only=True,
             require_session=False,
         )
         return self._parse_website_or_raise(response, require_session=False)
 
     def cadimport_update_data_next(self, payload: Any = None) -> Any:
-        """POST /CadImport/UpdateDataNext — green Next on www CAD Files."""
+        """POST /CadImport/UpdateDataNext — green Next on www CAD Files.
+
+        List is a JSON array of objects (double quotes), never Python str(list).
+        """
+        if isinstance(payload, dict):
+            body = build_cadimport_next_payload(
+                str(payload.get("ID") or payload.get("quoteID") or ""),
+                payload.get("List"),
+                list_other=payload.get("ListOther"),
+            )
+        else:
+            body = build_cadimport_next_payload("", payload)
         response = self.website_request(
             "POST",
             WEBSITE_FINISH_PATHS["cadimport_update_data_next"],
-            json=payload,
+            json=None,
+            data=cadimport_next_form(
+                body, token=getattr(self, "_request_verification_token", None)
+            ),
             headers=self._cadimport_ajax_headers(),
             prefer_api_origin=False,
+            www_only=True,
             require_session=False,
         )
         return self._parse_website_or_raise(response, require_session=False)
@@ -575,19 +613,26 @@ class SecturaFabClient:
             params=params,
             headers=self._cadimport_ajax_headers(),
             prefer_api_origin=False,
+            www_only=True,
             require_session=False,
         )
         return self._parse_website_or_raise(response, require_session=False)
 
     def cadimport_set_units(self, units: str = "inch") -> Any:
-        """POST /CadImport/SetUnits — www MVC (API host 500 on live 1007756-3)."""
+        """POST /CadImport/SetUnits?units= — one key, www only.
+
+        units+Units (query and json) 500s ASP.NET 'same key has already been
+        added' (live 1002381-1). Do not hit the API host.
+        """
         response = self.website_request(
             "POST",
             WEBSITE_FINISH_PATHS["cadimport_set_units"],
-            params={"units": units, "Units": units},
-            json={"units": units, "Units": units},
+            params={"units": units},
+            json=None,
+            data=None,
             headers=self._cadimport_ajax_headers(),
             prefer_api_origin=False,
+            www_only=True,
             require_session=False,
         )
         return self._parse_website_or_raise(response, require_session=False)
@@ -600,6 +645,7 @@ class SecturaFabClient:
             json=payload,
             headers=self._cadimport_ajax_headers(),
             prefer_api_origin=False,
+            www_only=True,
             require_session=False,
         )
         return self._parse_website_or_raise(response, require_session=False)
@@ -624,6 +670,7 @@ class SecturaFabClient:
                     params=query or None,
                     headers=self._cadimport_ajax_headers(),
                     prefer_api_origin=False,
+                    www_only=True,
                     require_session=False,
                 )
             except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
@@ -661,6 +708,7 @@ class SecturaFabClient:
             json=payload,
             headers=self._cadimport_ajax_headers(),
             prefer_api_origin=False,
+            www_only=True,
             timeout=max(self.config.timeout_seconds, 180.0),
         )
         return self._parse_website_or_raise(response)

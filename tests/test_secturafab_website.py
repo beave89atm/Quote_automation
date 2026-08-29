@@ -23,8 +23,11 @@ from secturafab.website import (
     PDF_GETDATA_FIELDS,
     build_linear_add_payload,
     build_pdf_finish_payload,
+    build_cadimport_next_payload,
+    cadimport_next_form,
     cadimport_payload_preview,
     filelist_from_cadimport_upload,
+    normalize_cadimport_list,
     filter_finish_filelist,
     filter_pdf_filelist,
     linear_website_product_type,
@@ -135,6 +138,88 @@ def test_filelist_from_cadimport_parses_string_and_html_bodies():
     assert len(html_rows) == 2
     assert html_rows[0]["SourceDataID"] == "src-plate"
     assert "string" in cadimport_payload_preview(html)
+
+
+def test_cadimport_next_list_is_json_array_not_python_repr():
+    """Live 1002381-1 sent List=str(rows) with single quotes; Next 200 empty."""
+    rows = [
+        {
+            "SourceDataID": "489f2a35-7617-47b2-a973-318a83574665",
+            "CadType": 1,
+            "PartMode": 0,
+            "FileType": ".STEP",
+            "PartCount": 4,
+            "Name": "1002381-1",
+        }
+    ]
+    py_repr = str(rows)
+    assert py_repr.startswith("[{'")
+    parsed = normalize_cadimport_list(py_repr)
+    assert len(parsed) == 1
+    assert parsed[0]["SourceDataID"] == "489f2a35-7617-47b2-a973-318a83574665"
+    payload = build_cadimport_next_payload(
+        "qid", py_repr, list_other="[]"
+    )
+    assert isinstance(payload["List"], list)
+    assert payload["ListOther"] == []
+    form = dict(cadimport_next_form(payload))
+    list_field = form["List"]
+    assert list_field.startswith("[{")
+    assert "'" not in list_field or '"SourceDataID"' in list_field
+    loaded = json.loads(list_field)
+    assert loaded[0]["PartCount"] == 4
+    assert json.loads(form["ListOther"]) == []
+
+
+def test_cadimport_update_data_next_posts_json_array_form():
+    from secturafab.client import SecturaFabClient
+
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.timeout_seconds = 30
+    captured: dict[str, Any] = {}
+
+    def fake_website_request(method, path, **kwargs):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json"] = kwargs.get("json")
+        captured["data"] = kwargs.get("data")
+        captured["prefer_api_origin"] = kwargs.get("prefer_api_origin")
+        captured["www_only"] = kwargs.get("www_only")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = b""
+        resp.json.side_effect = ValueError("empty")
+        resp.headers = {}
+        resp.text = ""
+        resp.url = path
+        return resp
+
+    real.website_request = fake_website_request  # type: ignore[method-assign]
+    real.cadimport_update_data_next(
+        {
+            "ID": "qid",
+            "List": str(
+                [
+                    {
+                        "SourceDataID": "src-1",
+                        "Name": "1002381-1",
+                        "PartCount": 4,
+                    }
+                ]
+            ),
+            "ListOther": "[]",
+        }
+    )
+    assert captured["path"] == "/CadImport/UpdateDataNext"
+    assert captured["json"] is None
+    assert captured["www_only"] is True
+    form = dict(captured["data"])
+    loaded = json.loads(form["List"])
+    assert isinstance(loaded, list)
+    assert loaded[0]["SourceDataID"] == "src-1"
+    assert form["List"].startswith("[{")
+    assert form["ID"] == "qid"
 
 
 def test_filter_filelist_matches_js_grid_rule():
@@ -1142,8 +1227,11 @@ def test_cadimport_explode_routes_use_www():
                 "method": method,
                 "path": path,
                 "prefer_api_origin": kwargs.get("prefer_api_origin"),
+                "www_only": kwargs.get("www_only"),
                 "headers": kwargs.get("headers") or {},
                 "params": kwargs.get("params"),
+                "json": kwargs.get("json"),
+                "data": kwargs.get("data"),
             }
         )
         resp = MagicMock()
@@ -1167,6 +1255,7 @@ def test_cadimport_explode_routes_use_www():
     )
     assert captured
     assert all(row["prefer_api_origin"] is False for row in captured)
+    assert all(row["www_only"] is True for row in captured)
     assert all(
         row["headers"].get("X-Requested-With") == "XMLHttpRequest" for row in captured
     )
@@ -1175,6 +1264,10 @@ def test_cadimport_explode_routes_use_www():
     assert "/CadImport/Data" in paths
     assert "/CadImport/SetUnits" in paths
     assert "/CadImport/GetDXFData" in paths or "/Quote/GetDXFData" in paths
+    units = next(r for r in captured if r["path"] == "/CadImport/SetUnits")
+    assert units["params"] == {"units": "inch"}
+    assert units["json"] is None
+    assert "Units" not in (units["params"] or {})
 
 
 def test_website_request_retries_www_after_api_500():
@@ -1223,6 +1316,48 @@ def test_website_request_retries_www_after_api_500():
     assert resp.status_code == 200
     assert any("api.example.test" in u for u in urls)
     assert any("www.example.test" in u for u in urls)
+
+
+def test_cadimport_set_units_www_only_does_not_hit_api():
+    """www SetUnits 500 must not fall through to api (live 1002381-1)."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+    )
+    client._token = MagicMock()
+    client._token.authorization_header = "Bearer tok"
+    client._token.is_expired = False
+    client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
+    urls: list[str] = []
+
+    def _req(method, url, **kwargs):
+        urls.append(url)
+        resp = MagicMock()
+        resp.headers = {}
+        resp.text = "An item with the same key has already been added."
+        resp.content = b"err"
+        resp.url = url
+        resp.status_code = 500
+        resp.json.side_effect = ValueError("not json")
+        return resp
+
+    session = MagicMock()
+    session.request.side_effect = _req
+    client.session = session
+    with pytest.raises(Exception, match="500|same key|API request failed"):
+        client.cadimport_set_units("inch")
+    assert urls
+    assert all("www.example.test" in u for u in urls)
+    assert not any("api.example.test" in u for u in urls)
+    called_params = session.request.call_args.kwargs.get("params") or {}
+    assert called_params == {"units": "inch"}
+    assert session.request.call_args.kwargs.get("json") is None
 
 
 def test_step_job_does_not_call_image_files(tmp_path: Path, monkeypatch):

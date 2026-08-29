@@ -6,7 +6,15 @@ CadImport MVC lives on the signed-in UI host (www.secturafab.com), same
 cookie as Quotes. api.secturafab.com accepted Upload (200, List=1) on
 live 1007756-3 but SetUnits 500, GetDXFData 404, and Next/Data 200 with
 a string body the FileList parser treated as 0 rows. Prefer www; do not
-treat an API 500/404 as final. Do not Finish the raw STEP upload row.
+treat an API 500/404 as final. CadImport stays on www — do not fall
+through SetUnits/GetDXFData 500/404 to the API host (live 1002381-1
+logged api after www already failed the same way).
+
+UpdateDataNext List must be a JSON array of objects, never Python
+str(list) with single quotes (live 1002381-1 Next 200 empty body).
+SetUnits sends one query key `units` (ASP.NET NameValueCollection is
+case-insensitive; units+Units 500s "same key has already been added").
+Do not Finish the raw STEP upload row.
 
   GET  /Quote/GetItem_AddView?ID={quoteId}&ItemType=dxf
   POST /Attachment/UploadItem_PDFFiles  (Image Files plates — not CadImport)
@@ -32,6 +40,7 @@ OperationCostList. Do not graft those names as item-level OperationName tags.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -397,6 +406,97 @@ def filelist_from_cadimport_upload(payload: Any) -> list[dict[str, Any]]:
         if found:
             return found
     return _filelist_rows_from_html(json.dumps(payload)) if payload else []
+
+
+_REQUEST_VERIFICATION_RE = re.compile(
+    r'name=["\']__RequestVerificationToken["\'][^>]*value=["\']([^"\']+)["\']'
+    r'|value=["\']([^"\']+)["\'][^>]*name=["\']__RequestVerificationToken["\']',
+    re.I,
+)
+
+
+def request_verification_token(html: Any) -> str | None:
+    """Hidden field from GetItem_AddView — QuoteOrderEdit posts it with MVC ajax."""
+    text = html if isinstance(html, str) else ""
+    if not text:
+        return None
+    match = _REQUEST_VERIFICATION_RE.search(text)
+    if not match:
+        return None
+    return (match.group(1) or match.group(2) or "").strip() or None
+
+
+def normalize_cadimport_list(value: Any) -> list[dict[str, Any]]:
+    """Coerce List / ListOther to a list of row dicts.
+
+    Live 1002381-1 request preview had List as Python ``str(rows)``
+    (single quotes) and ListOther as ``\"[]\"``. That is not a JSON array
+    and UpdateDataNext 200s with an empty body (no explode).
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [dict(r) for r in value if isinstance(r, dict)]
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text in {"[]", "null", "None"}:
+            return []
+        parsed: Any
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            try:
+                parsed = ast.literal_eval(text)
+            except (ValueError, SyntaxError):
+                return []
+        if parsed is value:
+            return []
+        return normalize_cadimport_list(parsed)
+    if isinstance(value, dict):
+        for key in _CADIMPORT_ROW_KEYS:
+            found = value.get(key)
+            if found is not None and found is not value:
+                rows = normalize_cadimport_list(found)
+                if rows:
+                    return rows
+        if any(k in value for k in ("SourceDataID", "FileID", "FileName", "Name")):
+            return [dict(value)]
+    return []
+
+
+def build_cadimport_next_payload(
+    quote_id: str,
+    rows: Any,
+    *,
+    list_other: Any = None,
+) -> dict[str, Any]:
+    """Green Next body: List is a JSON array of objects, not str(list)."""
+    return {
+        "ID": quote_id,
+        "List": normalize_cadimport_list(rows),
+        "ListOther": normalize_cadimport_list(list_other),
+    }
+
+
+def cadimport_next_form(
+    payload: dict[str, Any],
+    *,
+    token: str | None = None,
+) -> list[tuple[str, str]]:
+    """urlencoded Next — List/ListOther are JSON arrays (double quotes)."""
+    rows = normalize_cadimport_list(payload.get("List"))
+    other = normalize_cadimport_list(payload.get("ListOther"))
+    form: list[tuple[str, str]] = []
+    qid = str(payload.get("ID") or payload.get("quoteID") or "").strip()
+    if qid:
+        form.append(("ID", qid))
+    form.append(("List", json.dumps(rows, default=str)))
+    form.append(("ListOther", json.dumps(other, default=str)))
+    if token:
+        form.append(("__RequestVerificationToken", token))
+    return form
 
 
 def _step_like_name(text: str | None) -> bool:
