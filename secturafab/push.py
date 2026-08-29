@@ -16,6 +16,7 @@ from quote_core.drawing_title import (
     extract_assembly_description,
     extract_drawing_number_from_pdf,
     is_drawing_boilerplate_title,
+    is_nested_child_weldment_title,
     title_from_stp_takeoff,
 )
 
@@ -70,9 +71,12 @@ from .website import (
     cadimport_filelist_exploded,
     cadimport_payload_preview,
     client_antiforgery_extracted,
+    filelist_has_nested_titles,
+    filelist_id_fields_present,
     filelist_is_assembly_only,
     filelist_leaf_noun_names,
     nested_assembly_id_list,
+    overlay_filelist_ids,
     inventory_location_from_html,
     filelist_from_cadimport_upload,
     finish_filelist_kids,
@@ -1323,13 +1327,18 @@ class SecturaFabPushService:
         for row in rows:
             if not isinstance(row, dict):
                 continue
+            from .website import filelist_row_id_fields
+
+            fields = filelist_row_id_fields(row)
             key = str(
-                row.get("SourceDataID")
-                or row.get("FileID")
+                fields.get("ID")
+                or fields.get("FileID")
                 or row.get("PartID")
-                or row.get("Name")
-                or row.get("Description")
-                or id(row)
+                or (
+                    f"{row.get('Name') or row.get('Description') or ''}|"
+                    f"{fields.get('SourceDataID') or ''}|"
+                    f"{id(row)}"
+                )
             )
             if key in seen:
                 continue
@@ -1500,6 +1509,23 @@ class SecturaFabPushService:
             )
         return exploded, notes, False
 
+    def _overlay_grid_filelist_ids(
+        self,
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Fill missing ID/FileID from bound #gridDXFParts (chrome names, Python IDs empty)."""
+        try:
+            from .chrome_cdp import chrome_quotes_live, grid_dxf_parts_rows_from_quotes_tab
+
+            if not chrome_quotes_live():
+                return rows
+            grid = grid_dxf_parts_rows_from_quotes_tab()
+        except (TypeError, ValueError, OSError):
+            return rows
+        if not grid:
+            return rows
+        return overlay_filelist_ids(rows, grid)
+
     def _reexplode_nested_assemblies(
         self,
         *,
@@ -1511,11 +1537,11 @@ class SecturaFabPushService:
         location: str,
         first_pass: int,
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        """Re-POST /part/create with nested *ASSY*/*WELDMENT* IDs until leaves."""
+        """Re-POST /part/create with nested *ASSY*/*WELDMENT* / unnamed IDs."""
         from .cadimport_js import CREATE_DXF_PARTS_FUNCTION, CREATE_DXF_PARTS_PATH
 
         notes: list[str] = []
-        rows = list(grid)
+        rows = self._overlay_grid_filelist_ids(list(grid))
         seen = set(used_ids)
         extra = 0
         max_extra = max(0, CADIMPORT_EXPLODE_MAX_PASSES - first_pass)
@@ -1525,17 +1551,42 @@ class SecturaFabPushService:
             )
             and extra < max_extra
         ):
-            nested = [
-                (sid, units)
-                for sid, units in nested_assembly_id_list(
+            nested = nested_assembly_id_list(
+                rows,
+                part_key=part_key,
+                cad_filename=cad_filename,
+                used_ids=seen,
+            )
+            notes.append(f"nested_ids_found={len(nested)}")
+            notes.append(f"used_ids={len(seen)}")
+            notes.append(
+                "id_fields_present="
+                + filelist_id_fields_present(rows)
+            )
+            if not nested:
+                if filelist_has_nested_titles(
                     rows, part_key=part_key, cad_filename=cad_filename
-                )
-                if sid not in seen
-            ]
+                ):
+                    notes.append(
+                        "WARNING: GATE WELDMENT / unnamed names present but "
+                        "nested_ids_found=0 — FileList ID parse miss"
+                    )
+                    rows = self._overlay_grid_filelist_ids(rows)
+                    nested = nested_assembly_id_list(
+                        rows,
+                        part_key=part_key,
+                        cad_filename=cad_filename,
+                        used_ids=seen,
+                    )
+                    notes.append(f"nested_ids_found={len(nested)}")
+                    notes.append(
+                        "id_fields_present="
+                        + filelist_id_fields_present(rows)
+                    )
             if not nested:
                 notes.append(
                     "no nested assembly IDs left — FileList still "
-                    "ASSY/WELDMENT only (live 28110-2)"
+                    "ASSY/WELDMENT only (live 28110-2 / 107877-1)"
                 )
                 break
             id_list = [sid for sid, _units in nested]
@@ -1543,7 +1594,7 @@ class SecturaFabPushService:
             notes.append(
                 f"QuoteOrderEdit {CREATE_DXF_PARTS_FUNCTION} "
                 f"{CREATE_DXF_PARTS_PATH} re-explode "
-                f"{len(id_list)} nested ASSY/WELDMENT ID(s)"
+                f"{len(id_list)} nested ASSY/WELDMENT/unnamed ID(s)"
             )
             exploded, pass_notes, abort = self._post_do_create_dxf_parts(
                 quote_id=quote_id,
@@ -1558,7 +1609,10 @@ class SecturaFabPushService:
             if abort:
                 break
             if exploded:
-                rows = self._dedupe_cadimport_rows(list(exploded) + list(rows))
+                rows = self._dedupe_cadimport_rows(
+                    list(exploded) + list(rows)
+                )
+                rows = self._overlay_grid_filelist_ids(rows)
             else:
                 break
         notes.extend(
@@ -3492,12 +3546,23 @@ class SecturaFabPushService:
                 or title_from_job_title(title, part_key=part_key)
                 or title_from_bom_family(bom_rows)
             )
-            if is_drawing_boilerplate_title(raw_title):
+            if is_drawing_boilerplate_title(raw_title) or is_nested_child_weldment_title(
+                raw_title
+            ):
+                if is_nested_child_weldment_title(raw_title):
+                    notes.append(
+                        "WARNING: rejected nested GATE/REST/SUB-WELDMENT "
+                        "quote title — use assembly drawing header"
+                    )
                 raw_title = (
                     title_from_stp_takeoff(takeoff)
                     or title_from_library_folder(library.get("folder"), part_key=part_key)
+                    or title_from_library_folder(title, part_key=part_key)
+                    or title_from_job_title(title, part_key=part_key)
                     or title_from_bom_family(bom_rows)
                 )
+                if is_nested_child_weldment_title(raw_title):
+                    raw_title = None
             assembly_description = format_assembly_description(part_key, raw_title)
             weldment_title = bool(
                 bom_rows

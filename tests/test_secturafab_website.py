@@ -2501,6 +2501,63 @@ def test_28110_nested_names_are_assembly_only():
     assert classify_sectura_item("28109 COMP LINK ASSY WITH INSERT") == "Assembly"
 
 
+def test_107877_shared_sourcedataid_still_builds_pass2_idlist():
+    """Live 107877-1: child SourceDataID == pass-1 upload id — use ID/FileID."""
+    from tests.fixtures.live_107877_nested import LIVE_107877_NESTED_NAMES
+    from secturafab.website import (
+        filelist_id_fields_present,
+        filelist_is_assembly_only,
+        filelist_row_explode_id,
+        is_unnamed_step_node,
+        nested_assembly_id_list,
+        overlay_filelist_ids,
+    )
+
+    assert is_unnamed_step_node("-28656")
+    assert not is_unnamed_step_node("GATE WELDMENT-2640_103535-1")
+    rows = [
+        {
+            "SourceDataID": "src-step",
+            "ID": f"id-{i}",
+            "FileID": f"file-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+        for i, name in enumerate(LIVE_107877_NESTED_NAMES)
+    ]
+    assert filelist_is_assembly_only(
+        rows, part_key="107877-1", cad_filename="107877-1 without floor.STEP"
+    )
+    used = {"src-step"}
+    nested = nested_assembly_id_list(
+        rows,
+        part_key="107877-1",
+        cad_filename="107877-1 without floor.STEP",
+        used_ids=used,
+    )
+    ids = [sid for sid, _u in nested]
+    assert ids
+    assert "src-step" not in ids
+    assert any(x.startswith("id-") for x in ids)
+    assert filelist_row_explode_id(rows[1], used_ids=used) == "id-1"
+    blob = filelist_id_fields_present(rows)
+    assert "SourceDataID:" in blob and "ID:" in blob
+    names_only = [
+        {"Name": name, "Qty": 1, "ErrorStatus": 0}
+        for name in LIVE_107877_NESTED_NAMES
+    ]
+    empty = nested_assembly_id_list(
+        names_only, part_key="107877-1", used_ids=used
+    )
+    assert empty == []
+    filled = overlay_filelist_ids(names_only, rows)
+    recovered = nested_assembly_id_list(
+        filled, part_key="107877-1", used_ids=used
+    )
+    assert [sid for sid, _u in recovered]
+
+
 def test_nested_assy_reexplode_then_finish_leaf_filelist(tmp_path: Path):
     """After /part/create, re-explode ASSY/WELDMENT IDs until plate/tube nouns."""
     from tests.fixtures.live_28110_nested import (
@@ -2714,6 +2771,109 @@ def test_finish_get_zero_items_is_not_success(tmp_path: Path):
     blob = " ".join(notes)
     assert "item_count=0" in blob
     assert "not success" in blob
+
+
+def test_107877_shared_parent_id_reexplodes_unnamed_and_weldment(tmp_path: Path):
+    """Pass 1 kids share upload SourceDataID — pass 2 IDList is child ID/FileID."""
+    from tests.fixtures.live_107877_nested import (
+        LIVE_107877_LEAF_NAMES,
+        LIVE_107877_NESTED_NAMES,
+    )
+
+    stp = tmp_path / "107877-1 without floor.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "107877-1 without floor.STEP",
+        "Name": "107877-1 without floor.STEP",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 65,
+    }
+    nested = [
+        {
+            "SourceDataID": "src-step",
+            "ID": f"id-{i}",
+            "FileID": f"file-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        }
+        for i, name in enumerate(LIVE_107877_NESTED_NAMES)
+    ]
+    leaves = [
+        {
+            "SourceDataID": "src-step",
+            "ID": f"leaf-{i}",
+            "FileID": f"fleaf-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        }
+        for i, name in enumerate(LIVE_107877_LEAF_NAMES)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.side_effect = [
+        {"List": nested},
+        {"List": leaves},
+    ]
+    client.cadimport_data.return_value = {"List": leaves}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {
+        "Data": [
+            {"ProductType": 100, "Description": "FLOOR PLATE"},
+            {"ProductType": 10, "Description": "GATE TUBE"},
+        ],
+        "Total": 2,
+    }
+    client.get_json.return_value = {
+        "ItemList": [
+            {"ProductType": 100, "Description": "FLOOR PLATE"},
+            {"ProductType": 10, "Description": "GATE TUBE"},
+        ]
+    }
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"body_keys": ["List", "Result"], "has_NewItem": True}
+
+    client.add_item_dxf_files.side_effect = _add
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001078",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="107877-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    assert client.create_dxf_parts.call_count == 2
+    first_ids = client.create_dxf_parts.call_args_list[0].args[0]
+    second_ids = client.create_dxf_parts.call_args_list[1].args[0]
+    assert first_ids == ["src-step"]
+    assert "src-step" not in second_ids
+    assert any(str(x).startswith("id-") for x in second_ids)
+    blob = " ".join(notes)
+    assert "explode_passes=2" in blob
+    assert "nested_ids_found=" in blob
+    assert "id_fields_present=" in blob
+    assert "FLOOR PLATE" in blob or "leaf_names=" in blob
+    client.add_item_dxf_files.assert_called()
+    posted = {str(r.get("Name") or "") for r in captured.get("file_list") or []}
+    assert "FLOOR PLATE" in posted
+    assert "GATE TUBE" in posted
 
 
 def test_explode_skips_cookie_quote_html_even_when_fields_present(tmp_path: Path):

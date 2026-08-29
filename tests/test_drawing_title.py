@@ -45,6 +45,41 @@ ALUMINUM PLATFORM WELDMENT
     assert "WELDMENT" in weld.upper()
 
 
+def test_nested_rest_gate_sub_weldment_is_not_quote_title():
+    """Live 107877-1: child REST/GATE/SUB-WELDMENT is not the header."""
+    from quote_core.drawing_title import is_nested_child_weldment_title
+
+    assert is_nested_child_weldment_title("PLATFORM REST SUB-WELDMENT")
+    assert is_nested_child_weldment_title("GATE WELDMENT-2640_103535-1")
+    assert is_nested_child_weldment_title("REST WELDMENT-2742_105094-1")
+    assert not is_nested_child_weldment_title("PLATFORM WELDMENT WITHOUT JIB")
+    picked = title_from_exploded_names(
+        [
+            "Root",
+            "-28656",
+            "GATE WELDMENT-2640_103535-1",
+            "REST WELDMENT-2742_105094-1",
+            "107877-1 PLATFORM WELDMENT WITHOUT JIB",
+        ]
+    )
+    assert picked is not None
+    assert "WITHOUT JIB" in picked.upper()
+    assert "REST" not in picked.upper()
+    assert "GATE" not in picked.upper()
+    text = """
+107877-1
+TITLE:
+PLATFORM WELDMENT WITHOUT JIB
+PLATFORM REST SUB-WELDMENT
+GATE WELDMENT
+"""
+    title = extract_title_from_pdf_text(text, part_key="107877-1")
+    assert title is not None
+    assert "WITHOUT JIB" in title.upper()
+    assert "REST" not in title.upper()
+    assert "GATE" not in title.upper()
+
+
 def test_three_place_decimal_is_not_a_title():
     """Live 34137-2 stamped THREE PLACE DECIMAL — drawing note, not the weldment."""
     from secturafab.item_desc import (

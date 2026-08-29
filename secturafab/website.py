@@ -42,8 +42,13 @@ Live 28110-2 (6c02c08): first /part/create FileList was only Root +
 Re-explode those nested IDs with the same DoCreateDXFParts /part/create
 until leaf Cad/Linear nouns exist (plates/tubes) or no nested assembly
 IDs remain. Do not Finish an assembly-only FileList; want_cad=0 is not
-a license. Leave quote 75b3a938 / 28110-2. Do not mint 1020249-1 until
-a live capture has leaf FileList and GET ItemList >0.
+a license. Leave quote 75b3a938 / 28110-2. Live 107877-1 (1e76c96): pass 1
+FileList 65 (Root / -28656 / GATE WELDMENT / REST WELDMENT) but
+re-explode did not fire — child SourceDataID matched pass-1 used_ids
+or Python rows lacked ID/FileID. Extract SourceDataID + ID + FileID;
+unused child ID/FileID is the IDList. Unnamed -NNNN is a nest.
+Leave e2cc0a7d / 107877-1. Do not mint 1020249-1 until a live
+capture has leaf FileList and GET ItemList >0.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -836,8 +841,114 @@ def filelist_row_is_leaf_noun(name: str | None) -> bool:
     return False
 
 
-def _filelist_row_source_id(row: dict[str, Any]) -> str:
-    return str(row.get("SourceDataID") or row.get("ID") or "").strip()
+_UNNAMED_STEP_NODE_RE = re.compile(r"^-?\d{3,}$")
+
+
+def is_unnamed_step_node(name: str | None) -> bool:
+    """Empty Name or ``-28656`` STEP node — not a leaf Cad/Linear noun."""
+    text = str(name or "").strip()
+    if not text:
+        return True
+    if text.casefold() == "root":
+        return False
+    return bool(_UNNAMED_STEP_NODE_RE.fullmatch(text))
+
+
+def _row_field_ci(row: dict[str, Any], *names: str) -> str:
+    """Read a FileList id field; accept Pascal/camel case. Skip empty GUID."""
+    lower = {str(k).casefold(): v for k, v in row.items()}
+    for name in names:
+        raw = row.get(name)
+        if raw in (None, ""):
+            raw = lower.get(name.casefold())
+        val = str(raw or "").strip()
+        if not val or val.casefold() == EMPTY_GUID.casefold():
+            continue
+        return val
+    return ""
+
+
+def filelist_row_id_fields(row: dict[str, Any] | None) -> dict[str, str]:
+    """SourceDataID / ID / FileID on a FileList row (any case)."""
+    if not isinstance(row, dict):
+        return {"SourceDataID": "", "ID": "", "FileID": ""}
+    return {
+        "SourceDataID": _row_field_ci(row, "SourceDataID"),
+        "ID": _row_field_ci(row, "ID", "ItemID"),
+        "FileID": _row_field_ci(row, "FileID"),
+    }
+
+
+def filelist_id_fields_present(rows: list[dict[str, Any]] | None) -> str:
+    """Capture note: how many rows have each id field. Not token values."""
+    src = ident = file_id = 0
+    for row in rows or []:
+        if not isinstance(row, dict) or is_cadimport_root_row(row):
+            continue
+        fields = filelist_row_id_fields(row)
+        if fields["SourceDataID"]:
+            src += 1
+        if fields["ID"]:
+            ident += 1
+        if fields["FileID"]:
+            file_id += 1
+    return f"SourceDataID:{src},ID:{ident},FileID:{file_id}"
+
+
+def filelist_row_explode_id(
+    row: dict[str, Any] | None,
+    *,
+    used_ids: set[str] | None = None,
+) -> str:
+    """DoCreateDXFParts IDList value for this row.
+
+    Prefer unused SourceDataID (28110-2 unique kids). When SourceDataID is
+    the pass-1 upload id (live 107877-1 shared parent), use unused ID/FileID.
+    """
+    used = {str(x) for x in (used_ids or set()) if str(x).strip()}
+    fields = filelist_row_id_fields(row)
+    for key in ("SourceDataID", "ID", "FileID"):
+        val = fields.get(key) or ""
+        if val and val not in used:
+            return val
+    return ""
+
+
+def overlay_filelist_ids(
+    rows: list[dict[str, Any]] | None,
+    grid_rows: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Copy ID/FileID/SourceDataID from bound #gridDXFParts onto name-only rows."""
+    from collections import defaultdict
+
+    pool: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for grid in grid_rows or []:
+        if not isinstance(grid, dict):
+            continue
+        if not any(filelist_row_id_fields(grid).values()):
+            continue
+        pool[filelist_row_display_name(grid)].append(grid)
+    taken: set[int] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        merged = dict(row)
+        fields = filelist_row_id_fields(merged)
+        if not fields["ID"] or not fields["FileID"]:
+            name = filelist_row_display_name(merged)
+            for donor in pool.get(name) or []:
+                did = id(donor)
+                if did in taken:
+                    continue
+                taken.add(did)
+                donor_fields = filelist_row_id_fields(donor)
+                for key, val in donor_fields.items():
+                    if val and not filelist_row_id_fields(merged).get(key):
+                        merged[key] = val
+                break
+        out.append(merged)
+    return out
 
 
 def is_nested_assembly_row(
@@ -846,7 +957,7 @@ def is_nested_assembly_row(
     part_key: str = "",
     cad_filename: str = "",
 ) -> bool:
-    """FileList row whose ID should be re-exploded (nested ASSY/WELDMENT / job PN)."""
+    """FileList row to re-explode: ASSY/WELDMENT, unnamed -NNNN, or job PN."""
     if not isinstance(row, dict):
         return False
     if is_cadimport_root_row(row):
@@ -854,7 +965,7 @@ def is_nested_assembly_row(
     if is_raw_step_upload_row(row, part_key=part_key, cad_filename=cad_filename):
         return False
     name = filelist_row_display_name(row)
-    if is_nested_assembly_name(name):
+    if is_nested_assembly_name(name) or is_unnamed_step_node(name):
         return True
     if part_key:
         from .item_desc import normalize_part_token
@@ -893,7 +1004,10 @@ def filelist_is_assembly_only(
     part_key: str = "",
     cad_filename: str = "",
 ) -> bool:
-    """True when exploded kids exist but none are leaf Cad/Linear nouns (28110-2)."""
+    """True when exploded kids exist but none are leaf Cad/Linear nouns.
+
+    Live 107877-1: unnamed ``-28656`` + GATE/REST WELDMENT is assembly-only.
+    """
     kids = finish_filelist_kids(
         rows, part_key=part_key, cad_filename=cad_filename
     )
@@ -904,15 +1018,34 @@ def filelist_is_assembly_only(
     )
 
 
+def filelist_has_nested_titles(
+    rows: list[dict[str, Any]] | None,
+    *,
+    part_key: str = "",
+    cad_filename: str = "",
+) -> bool:
+    """True when names say GATE WELDMENT / ASSY / unnamed -NNNN (parse check)."""
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if is_nested_assembly_row(
+            row, part_key=part_key, cad_filename=cad_filename
+        ):
+            return True
+    return False
+
+
 def nested_assembly_id_list(
     rows: list[dict[str, Any]] | None,
     *,
     part_key: str = "",
     cad_filename: str = "",
+    used_ids: set[str] | None = None,
 ) -> list[tuple[str, str]]:
-    """(SourceDataID/ID, units) for nested assembly FileList rows to re-explode."""
+    """Unused SourceDataID/ID/FileID + units for nested FileList rows."""
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
+    used = {str(x) for x in (used_ids or set()) if str(x).strip()}
     for row in rows or []:
         if not isinstance(row, dict):
             continue
@@ -920,7 +1053,7 @@ def nested_assembly_id_list(
             row, part_key=part_key, cad_filename=cad_filename
         ):
             continue
-        sid = _filelist_row_source_id(row)
+        sid = filelist_row_explode_id(row, used_ids=used)
         if not sid or sid in seen:
             continue
         seen.add(sid)

@@ -147,6 +147,8 @@ def _score_title_candidate(s: str, *, from_title_block: bool) -> tuple[int, int,
         pts += 100
     if any(tok in upper for tok in (" ASM", "ASM,", "ASSEMBLY", "WELDMENT", "COUPLER")):
         pts += 50
+    if is_nested_child_weldment_title(s):
+        pts -= 80
     if any(
         tok in upper
         for tok in (
@@ -160,6 +162,7 @@ def _score_title_candidate(s: str, *, from_title_block: bool) -> tuple[int, int,
             "PANEL",
             "DOUBLER",
             "CLOSEOUT",
+            "PLATFORM",
         )
     ):
         pts += 30
@@ -203,6 +206,9 @@ def extract_title_from_pdf_text(text: str, *, part_key: str | None = None) -> st
                 if _is_noise_line(nxt, key=key, key_norm=key_norm, allow_plate_title=True):
                     j += 1
                     continue
+                if is_nested_child_weldment_title(nxt):
+                    j += 1
+                    continue
                 parts.append(nxt)
                 j += 1
             if parts:
@@ -220,7 +226,12 @@ def extract_title_from_pdf_text(text: str, *, part_key: str | None = None) -> st
         return None
 
     ranked = sorted(scored, key=lambda row: row[0], reverse=True)
-    ranked = [row for row in ranked if not is_drawing_boilerplate_title(row[1])]
+    ranked = [
+        row
+        for row in ranked
+        if not is_drawing_boilerplate_title(row[1])
+        and not is_nested_child_weldment_title(row[1])
+    ]
     if not ranked:
         return None
     best_score, best = ranked[0]
@@ -351,6 +362,20 @@ def is_drawing_boilerplate_title(text: str | None) -> bool:
     )
 
 
+def is_nested_child_weldment_title(text: str | None) -> bool:
+    """True for nested GATE / REST / SUB-WELDMENT — never the quote header.
+
+    Live 107877-1 stamped PLATFORM REST SUB-WELDMENT (child 105094). The
+    assembly drawing title is PLATFORM WELDMENT WITHOUT JIB.
+    """
+    upper = f" {str(text or '').upper()} "
+    if "SUB-WELDMENT" in upper or "SUB WELDMENT" in upper:
+        return True
+    if "WELDMENT" in upper and re.search(r"\b(GATE|REST)\b", upper):
+        return True
+    return False
+
+
 def title_from_exploded_names(names: list[str] | None) -> str | None:
     """Prefer a weldment/assembly noun from STEP / FileList names."""
     best: str | None = None
@@ -362,6 +387,8 @@ def title_from_exploded_names(names: list[str] | None) -> str | None:
             continue
         s = re.sub(r"^\d{4,}(?:-\d+)?\s+", "", s).strip()
         if not s or is_drawing_boilerplate_title(s):
+            continue
+        if is_nested_child_weldment_title(s):
             continue
         upper = s.upper()
         pts = 0
