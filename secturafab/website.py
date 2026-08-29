@@ -2,11 +2,18 @@
 
 Recovered from QuoteOrderEdit JS (not in public OpenAPI). controllerName = '/Quote'.
 
+CadImport MVC lives on the signed-in UI host (www.secturafab.com), same
+cookie as Quotes. api.secturafab.com accepted Upload (200, List=1) on
+live 1007756-3 but SetUnits 500, GetDXFData 404, and Next/Data 200 with
+a string body the FileList parser treated as 0 rows. Prefer www; do not
+treat an API 500/404 as final. Do not Finish the raw STEP upload row.
+
   GET  /Quote/GetItem_AddView?ID={quoteId}&ItemType=dxf
   POST /Attachment/UploadItem_PDFFiles  (Image Files plates — not CadImport)
   POST /CadImport/UploadItem_DXFFiles   (STEP / DXF CAD Files only)
   GET  /CadImport/Data
   POST /CadImport/UpdateData, UpdateDataNext, SetPartMode, SetUnits, ConvertTo
+  GET  /CadImport/GetDXFData then /Quote/GetDXFData  (grid after green Next)
   POST /Quote/AddItem_DXFFiles   data { ID, ItemID, customerMaterial, FileList }
   POST /Quote/AddItem_PDFFiles   urlencoded { ID, ItemID, FileList } one part
   POST /Quote/AddItem_Linear     urlencoded OnAddLinearClick field bag
@@ -25,6 +32,7 @@ OperationCostList. Do not graft those names as item-level OperationName tags.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -258,17 +266,137 @@ def slim_filelist_row(row: dict[str, Any]) -> dict[str, Any]:
     return slim
 
 
+_CADIMPORT_ROW_KEYS = (
+    "List",
+    "FileList",
+    "Data",
+    "data",
+    "Result",
+    "Items",
+    "rows",
+    "d",
+)
+
+# #gridDXFParts / Next JSON embedded in an HTML dialog or Kendo init.
+_FILELIST_JSON_RE = re.compile(
+    r'"(?:FileList|List)"\s*:\s*(\[(?:[^[\]]|\[[^[\]]*\])*\])',
+    re.DOTALL,
+)
+_SOURCEDATA_OBJ_RE = re.compile(
+    r'\{[^{}]*"SourceDataID"\s*:\s*"(?:[^"\\]|\\.)+"[^{}]*\}',
+)
+
+
+def cadimport_payload_preview(payload: Any, *, limit: int = 160) -> str:
+    """Short type/len note for explode logs. Never include cookies."""
+    if payload is None:
+        return "null"
+    if isinstance(payload, dict):
+        keys = ",".join(list(payload)[:8])
+        return f"dict keys={keys!r} n={len(payload)}"
+    if isinstance(payload, list):
+        return f"list len={len(payload)}"
+    text = str(payload).replace("\r", " ").replace("\n", " ").strip()
+    return f"string {text[:limit]!r}"
+
+
+def _filelist_rows_from_html(text: str) -> list[dict[str, Any]]:
+    """Pull #gridDXFParts / FileList rows out of an HTML or JS-string body."""
+    if not text:
+        return []
+    blob = text
+    if "SourceDataID" not in blob and "FileList" not in blob and "gridDXFParts" not in blob:
+        return []
+    for match in _FILELIST_JSON_RE.finditer(blob):
+        try:
+            rows = json.loads(match.group(1))
+        except ValueError:
+            continue
+        if isinstance(rows, list) and any(isinstance(r, dict) for r in rows):
+            return [dict(r) for r in rows if isinstance(r, dict)]
+    objs: list[dict[str, Any]] = []
+    for match in _SOURCEDATA_OBJ_RE.finditer(blob):
+        try:
+            obj = json.loads(match.group(0))
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("SourceDataID") not in (None, ""):
+            objs.append(obj)
+    return objs
+
+
+def _coerce_cadimport_payload(payload: Any) -> Any:
+    """Unwrap JSON-as-string / nested Data strings from Next and CadImport/Data."""
+    cur: Any = payload
+    for _ in range(5):
+        if isinstance(cur, (bytes, bytearray)):
+            cur = cur.decode("utf-8", errors="replace")
+            continue
+        if isinstance(cur, str):
+            text = cur.strip()
+            if not text:
+                return cur
+            try:
+                cur = json.loads(text)
+                continue
+            except ValueError:
+                html_rows = _filelist_rows_from_html(text)
+                return html_rows if html_rows else cur
+        if isinstance(cur, dict):
+            for key in ("d", "Data", "data", "Result"):
+                val = cur.get(key)
+                if isinstance(val, str) and val.strip()[:1] in "{[":
+                    try:
+                        cur = json.loads(val)
+                        break
+                    except ValueError:
+                        continue
+            else:
+                return cur
+            continue
+        return cur
+    return cur
+
+
+def _rows_from_cadimport_container(rows: Any) -> list[dict[str, Any]] | None:
+    if isinstance(rows, str):
+        try:
+            rows = json.loads(rows)
+        except ValueError:
+            extracted = _filelist_rows_from_html(rows)
+            return extracted or None
+    if isinstance(rows, dict):
+        for inner in _CADIMPORT_ROW_KEYS:
+            val = rows.get(inner)
+            if isinstance(val, list):
+                rows = val
+                break
+        else:
+            return None
+    if isinstance(rows, list) and any(isinstance(r, dict) for r in rows):
+        return [dict(r) for r in rows if isinstance(r, dict)]
+    return None
+
+
 def filelist_from_cadimport_upload(payload: Any) -> list[dict[str, Any]]:
-    """Rows from POST /CadImport/UploadItem_DXFFiles (status=OK, List=[...])."""
+    """Rows from CadImport Upload / Next / Data / GetDXFData / GetItem_AddView.
+
+    Live Next/Data on the API host returned HTTP 200 with a *string* body
+    (HTML dialog, JSON-as-string, or Kendo init). Unwrap those so FileList
+    kids are visible; a dict/list with List/FileList/Data still wins.
+    """
+    payload = _coerce_cadimport_payload(payload)
     if isinstance(payload, list):
         return [dict(r) for r in payload if isinstance(r, dict)]
+    if isinstance(payload, str):
+        return _filelist_rows_from_html(payload)
     if not isinstance(payload, dict):
         return []
-    for key in ("List", "FileList", "Data", "Result", "Items", "rows"):
-        rows = payload.get(key)
-        if isinstance(rows, list):
-            return [dict(r) for r in rows if isinstance(r, dict)]
-    return []
+    for key in _CADIMPORT_ROW_KEYS:
+        found = _rows_from_cadimport_container(payload.get(key))
+        if found:
+            return found
+    return _filelist_rows_from_html(json.dumps(payload)) if payload else []
 
 
 def _step_like_name(text: str | None) -> bool:

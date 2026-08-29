@@ -65,6 +65,7 @@ from .website import (
     is_tenant_guid,
     count_linear_product_type,
     cadimport_filelist_exploded,
+    cadimport_payload_preview,
     filelist_from_cadimport_upload,
     is_raw_step_upload_row,
     filelist_row_from_attachment_upload,
@@ -1220,20 +1221,35 @@ class SecturaFabPushService:
             out.append(row)
         return out
 
+    def _cadimport_quote_query(
+        self,
+        quote_id: str,
+        quote_request_id: str | None = None,
+    ) -> dict[str, Any]:
+        query: dict[str, Any] = {"ID": quote_id, "quoteID": quote_id}
+        if quote_request_id:
+            query["quoteRequestID"] = quote_request_id
+            query["QuoteRequestID"] = quote_request_id
+        return query
+
     def _collect_cadimport_grid(
         self,
         *,
         quote_id: str,
         upload_rows: list[dict[str, Any]] | None = None,
+        quote_request_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """CadImport/Data + GetDXFData + GetItem_AddView FileList after Next."""
         bags: list[dict[str, Any]] = []
+        query = self._cadimport_quote_query(quote_id, quote_request_id)
         fetchers = [
-            lambda: self.client.cadimport_data(),
+            lambda: self.client.cadimport_data(params=query),
         ]
         if hasattr(self.client, "cadimport_get_dxf_data"):
             fetchers.append(
-                lambda: self.client.cadimport_get_dxf_data(quote_id=quote_id)
+                lambda: self.client.cadimport_get_dxf_data(
+                    quote_id=quote_id, params=query
+                )
             )
         fetchers.append(
             lambda: self.client.get_item_add_view(quote_id, item_type="dxf")
@@ -1255,6 +1271,7 @@ class SecturaFabPushService:
         upload_payload: Any = None,
         part_key: str,
         cad_filename: str,
+        quote_request_id: str | None = None,
         polls: int | None = None,
         sleep_s: float | None = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -1291,6 +1308,10 @@ class SecturaFabPushService:
                     f"CadImport exploded {len(exploded)} FileList row(s) on Next"
                 )
                 return exploded, notes
+            notes.append(
+                "CadImport UpdateDataNext had no kid FileList "
+                f"({cadimport_payload_preview(nxt)})"
+            )
         except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
             notes.append(f"WARNING: CadImport UpdateDataNext failed: {exc}")
         grid = list(upload_rows)
@@ -1298,7 +1319,9 @@ class SecturaFabPushService:
             if attempt and wait > 0:
                 time.sleep(wait)
             grid = self._collect_cadimport_grid(
-                quote_id=quote_id, upload_rows=None
+                quote_id=quote_id,
+                upload_rows=None,
+                quote_request_id=quote_request_id,
             )
             if cadimport_filelist_exploded(
                 grid, part_key=part_key, cad_filename=cad_filename
@@ -1678,6 +1701,7 @@ class SecturaFabPushService:
         library: dict[str, Any] | None,
         extra_pdfs: list[Path] | None,
         part_key: str,
+        quote_request_id: str | None = None,
         explode_polls: int | None = None,
         explode_sleep_s: float | None = None,
     ) -> list[str]:
@@ -1723,6 +1747,7 @@ class SecturaFabPushService:
             upload_payload=upload_payload,
             part_key=part_key,
             cad_filename=cad_filename,
+            quote_request_id=quote_request_id,
             polls=explode_polls,
             sleep_s=explode_sleep_s,
         )
@@ -2838,6 +2863,7 @@ class SecturaFabPushService:
                             library=library,
                             extra_pdfs=extra_pdfs,
                             part_key=part_key,
+                            quote_request_id=quote_request_id,
                         )
                     )
                     uploaded.extend(p.name for p in cad)
@@ -2967,7 +2993,10 @@ class SecturaFabPushService:
                     peek = self._read_quote_items(quote_id)
                     if expect_cad and count_cad_product_type(peek) <= 0:
                         msg = (
-                            "Image Files Finish landed 0 Cad lines — "
+                            "CAD Files / AddItem_DXFFiles Finish landed 0 Cad lines — "
+                            "empty assembly shell is not success"
+                            if cad
+                            else "Image Files Finish landed 0 Cad lines — "
                             "empty assembly shell is not success"
                         )
                         if not website_cookie:
@@ -3294,7 +3323,10 @@ class SecturaFabPushService:
             if expect_cad and cad_landed <= 0:
                 return self._fail_push(
                     msg=(
-                        "Image Files Finish landed 0 Cad lines — "
+                        "CAD Files / AddItem_DXFFiles Finish landed 0 Cad lines — "
+                        "empty assembly shell is not success"
+                        if cad
+                        else "Image Files Finish landed 0 Cad lines — "
                         "empty assembly shell is not success"
                     ),
                     notes=notes,

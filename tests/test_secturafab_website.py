@@ -23,6 +23,7 @@ from secturafab.website import (
     PDF_GETDATA_FIELDS,
     build_linear_add_payload,
     build_pdf_finish_payload,
+    cadimport_payload_preview,
     filelist_from_cadimport_upload,
     filter_finish_filelist,
     filter_pdf_filelist,
@@ -96,6 +97,44 @@ def test_finish_filelist_keeps_cadimport_source_ids():
     )
     assert len(uploaded) == 1
     assert uploaded[0]["SourceDataID"] == "src-1"
+
+
+def test_filelist_from_cadimport_parses_string_and_html_bodies():
+    """Live Next/Data returned HTTP 200 with a string; kids must still parse."""
+    kids = [
+        {
+            "SourceDataID": "src-plate",
+            "FileID": "file-plate",
+            "Name": "1007756-2 GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "SourceDataID": "src-slug",
+            "FileID": "file-slug",
+            "Name": "1007756-4 SLUG",
+            "Qty": 2,
+            "ErrorStatus": 0,
+        },
+    ]
+    as_json = json.dumps({"List": kids})
+    assert [r["Name"] for r in filelist_from_cadimport_upload(as_json)] == [
+        "1007756-2 GUSSET",
+        "1007756-4 SLUG",
+    ]
+    double = json.dumps(as_json)
+    assert len(filelist_from_cadimport_upload(double)) == 2
+    nested = {"Data": json.dumps({"FileList": kids})}
+    assert len(filelist_from_cadimport_upload(nested)) == 2
+    html = (
+        '<div id="gridDXFParts"></div><script>kendoGrid({data:'
+        + json.dumps({"FileList": kids})
+        + "});</script>"
+    )
+    html_rows = filelist_from_cadimport_upload(html)
+    assert len(html_rows) == 2
+    assert html_rows[0]["SourceDataID"] == "src-plate"
+    assert "string" in cadimport_payload_preview(html)
 
 
 def test_filter_filelist_matches_js_grid_rule():
@@ -1008,6 +1047,184 @@ def test_cadimport_next_exploded_kids_are_finished(tmp_path: Path):
     assert any("exploded" in n.lower() for n in notes)
 
 
+def test_cadimport_next_json_string_body_is_finished(tmp_path: Path):
+    """Next 200 with a JSON *string* must still Finish exploded kids."""
+    stp = tmp_path / "1007756-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "1007756-1.STEP",
+        "Name": "1007756-1",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 2,
+    }
+    kids = [
+        {
+            "SourceDataID": "src-plate",
+            "FileID": "file-plate",
+            "FileName": "1007756-2",
+            "Name": "1007756-2 GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+        {
+            "SourceDataID": "src-bar",
+            "FileID": "file-bar",
+            "FileName": "1007756-4",
+            "Name": "1007756-4 TUBE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client.cadimport_update_data_next.return_value = json.dumps({"List": kids})
+    client.cadimport_data.return_value = json.dumps({"Data": kids})
+    client.cadimport_get_dxf_data.return_value = (
+        '<div id="gridDXFParts"></div>' + json.dumps({"FileList": kids})
+    )
+    client.get_item_add_view.return_value = {"FileList": kids}
+    client.quote_item_read.return_value = {
+        "Data": [
+            {"ProductType": 100, "Description": "1007756-2"},
+            {"ProductType": 10, "Description": "1007756-4"},
+        ],
+        "Total": 2,
+    }
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    client.add_item_dxf_files.side_effect = _add
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001013",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[
+            {"part_no": "1007756-2", "description": "GUSSET 100K", "qty": 1},
+            {"part_no": "1007756-4", "description": "TUBE A1011", "qty": 1},
+        ],
+        library={},
+        extra_pdfs=None,
+        part_key="1007756-1",
+        explode_polls=2,
+        explode_sleep_s=0,
+    )
+    client.add_item_dxf_files.assert_called()
+    assert len(captured["file_list"]) == 2
+    assert not any(
+        str(r.get("Name") or "").endswith(".STEP") for r in captured["file_list"]
+    )
+    assert any("exploded" in n.lower() for n in notes)
+
+
+def test_cadimport_explode_routes_use_www():
+    """CadImport Next/Data/SetUnits/GetDXFData must hit www, not api first."""
+    from secturafab.client import SecturaFabClient
+
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.timeout_seconds = 30
+    captured: list[dict[str, Any]] = []
+
+    def fake_website_request(method, path, **kwargs):
+        captured.append(
+            {
+                "method": method,
+                "path": path,
+                "prefer_api_origin": kwargs.get("prefer_api_origin"),
+                "headers": kwargs.get("headers") or {},
+                "params": kwargs.get("params"),
+            }
+        )
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = b"{}"
+        resp.json.return_value = {}
+        resp.headers = {}
+        resp.text = "{}"
+        resp.url = path
+        return resp
+
+    real.website_request = fake_website_request  # type: ignore[method-assign]
+    real.cadimport_data(params={"ID": "qid"})
+    real.cadimport_update_data_next({"ID": "qid"})
+    real.cadimport_set_units("inch")
+    real.cadimport_get_dxf_data(quote_id="qid")
+    real.get_item_add_view("qid")
+    real.upload_item_dxf_files(
+        [("files", ("a.step", b"ISO", "application/octet-stream"))],
+        quote_id="qid",
+    )
+    assert captured
+    assert all(row["prefer_api_origin"] is False for row in captured)
+    assert all(
+        row["headers"].get("X-Requested-With") == "XMLHttpRequest" for row in captured
+    )
+    paths = {row["path"] for row in captured}
+    assert "/CadImport/UpdateDataNext" in paths
+    assert "/CadImport/Data" in paths
+    assert "/CadImport/SetUnits" in paths
+    assert "/CadImport/GetDXFData" in paths or "/Quote/GetDXFData" in paths
+
+
+def test_website_request_retries_www_after_api_500():
+    """API SetUnits 500 / GetDXFData 404 must fall through to www."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+    )
+    client._token = MagicMock()
+    client._token.authorization_header = "Bearer tok"
+    client._token.is_expired = False
+    client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
+    urls: list[str] = []
+
+    def _req(method, url, **_kwargs):
+        urls.append(url)
+        resp = MagicMock()
+        resp.headers = {}
+        resp.text = ""
+        resp.content = b""
+        resp.url = url
+        if "api.example.test" in url:
+            resp.status_code = 500 if "SetUnits" in url else 404
+            return resp
+        resp.status_code = 200
+        resp.content = b"{}"
+        resp.text = "{}"
+        resp.json.return_value = {"ok": True}
+        return resp
+
+    session = MagicMock()
+    session.request.side_effect = _req
+    client.session = session
+    resp = client.website_request(
+        "POST",
+        "/CadImport/SetUnits",
+        prefer_api_origin=True,
+        require_session=False,
+    )
+    assert resp.status_code == 200
+    assert any("api.example.test" in u for u in urls)
+    assert any("www.example.test" in u for u in urls)
+
+
 def test_step_job_does_not_call_image_files(tmp_path: Path, monkeypatch):
     """Do not use Image Files when a STEP is on the job."""
     monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
@@ -1070,6 +1287,9 @@ def test_step_job_does_not_call_image_files(tmp_path: Path, monkeypatch):
     finish_cad.assert_called()
     finish_pdf.assert_not_called()
     assert result.ok is False
+    err = result.error or ""
+    assert "Image Files Finish landed" not in err
+    assert "CAD Files" in err or "AddItem_DXFFiles" in err
 
 
 def test_add_item_dxf_files_sends_js_contract():
@@ -1085,6 +1305,8 @@ def test_add_item_dxf_files_sends_js_contract():
         captured["method"] = method
         captured["path"] = path
         captured["json"] = kwargs.get("json")
+        captured["prefer_api_origin"] = kwargs.get("prefer_api_origin")
+        captured["headers"] = kwargs.get("headers")
         resp = MagicMock()
         resp.status_code = 200
         resp.content = b"{}"
@@ -1109,6 +1331,8 @@ def test_add_item_dxf_files_sends_js_contract():
         ],
     )
     assert captured["path"] == "/Quote/AddItem_DXFFiles"
+    assert captured["prefer_api_origin"] is False
+    assert (captured.get("headers") or {}).get("X-Requested-With") == "XMLHttpRequest"
     body = captured["json"]
     assert body["ID"] == "qid"
     assert body["ItemID"] == EMPTY_GUID

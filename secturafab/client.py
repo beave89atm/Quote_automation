@@ -236,6 +236,14 @@ class SecturaFabClient:
             headers.update(extra)
         return headers
 
+    @staticmethod
+    def _cadimport_ajax_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
+        """QuoteOrderEdit jQuery ajax header so MVC returns JSON, not a view string."""
+        headers = {"X-Requested-With": "XMLHttpRequest"}
+        if extra:
+            headers.update(extra)
+        return headers
+
     def _website_origins(self, *, prefer_api_origin: bool = False) -> list[str]:
         website = self.config.website_root.rstrip("/")
         api = self.config.base_url.rstrip("/")
@@ -266,7 +274,11 @@ class SecturaFabClient:
         """
         Hit a www MVC route (no /api prefix). Never PATCH a forbidden live quote.
 
-        CadImport accepts the published API bearer on the API host.
+        CadImport MVC (Upload / Next / Data / SetUnits / GetDXFData) is the
+        signed-in www.secturafab.com Quotes UI. The API host 500s SetUnits and
+        404s GetDXFData; Next/Data 200 with a string is not a FileList.
+        Prefer www for those actions. 404/405/>=500 on one origin tries the
+        other — do not treat an API miss as final.
         /Quote/AddItem_DXFFiles (CAD Files Finish) still 302s without a cookie.
         Image Files (AddItem_PDFFiles) and Long (AddItem_Linear) are tried
         with bearer on every origin; a 302 is not an excuse to ship empty packs.
@@ -308,6 +320,10 @@ class SecturaFabClient:
                 continue
             if is_cloudflare_challenge(response.status_code, response.text):
                 last_cf = True
+                continue
+            # API host: CadImport SetUnits 500, GetDXFData 404 (live 1007756-3).
+            # The www MVC host still serves those actions.
+            if response.status_code in (404, 405) or response.status_code >= 500:
                 continue
             if (
                 response.status_code in (401, 403)
@@ -417,7 +433,8 @@ class SecturaFabClient:
             "GET",
             WEBSITE_FINISH_PATHS["get_item_add_view"],
             params={"ID": quote_id, "ItemType": item_type},
-            prefer_api_origin=True,
+            headers=self._cadimport_ajax_headers(),
+            prefer_api_origin=False,
         )
         return self._parse_website_or_raise(response)
 
@@ -438,7 +455,8 @@ class SecturaFabClient:
             WEBSITE_FINISH_PATHS["upload_dxf"],
             params=query or None,
             files=files,
-            prefer_api_origin=True,
+            headers=self._cadimport_ajax_headers(),
+            prefer_api_origin=False,
             require_session=False,
             timeout=max(self.config.timeout_seconds, 180.0),
         )
@@ -505,12 +523,13 @@ class SecturaFabClient:
         return self._parse_website_or_raise(response, require_session=True)
 
     def cadimport_data(self, params: dict[str, Any] | None = None) -> Any:
-        """GET /CadImport/Data — classify grid after upload."""
+        """GET /CadImport/Data — classify grid after upload (www MVC)."""
         response = self.website_request(
             "GET",
             WEBSITE_FINISH_PATHS["cadimport_data"],
             params=params,
-            prefer_api_origin=True,
+            headers=self._cadimport_ajax_headers(),
+            prefer_api_origin=False,
             require_session=False,
         )
         return self._parse_website_or_raise(response, require_session=False)
@@ -521,18 +540,20 @@ class SecturaFabClient:
             "POST",
             WEBSITE_FINISH_PATHS["cadimport_update_data"],
             json=payload,
-            prefer_api_origin=True,
+            headers=self._cadimport_ajax_headers(),
+            prefer_api_origin=False,
             require_session=False,
         )
         return self._parse_website_or_raise(response, require_session=False)
 
     def cadimport_update_data_next(self, payload: Any = None) -> Any:
-        """POST /CadImport/UpdateDataNext"""
+        """POST /CadImport/UpdateDataNext — green Next on www CAD Files."""
         response = self.website_request(
             "POST",
             WEBSITE_FINISH_PATHS["cadimport_update_data_next"],
             json=payload,
-            prefer_api_origin=True,
+            headers=self._cadimport_ajax_headers(),
+            prefer_api_origin=False,
             require_session=False,
         )
         return self._parse_website_or_raise(response, require_session=False)
@@ -552,19 +573,21 @@ class SecturaFabClient:
             "POST",
             WEBSITE_FINISH_PATHS["cadimport_set_part_mode"],
             params=params,
-            prefer_api_origin=True,
+            headers=self._cadimport_ajax_headers(),
+            prefer_api_origin=False,
             require_session=False,
         )
         return self._parse_website_or_raise(response, require_session=False)
 
     def cadimport_set_units(self, units: str = "inch") -> Any:
-        """POST /CadImport/SetUnits"""
+        """POST /CadImport/SetUnits — www MVC (API host 500 on live 1007756-3)."""
         response = self.website_request(
             "POST",
             WEBSITE_FINISH_PATHS["cadimport_set_units"],
             params={"units": units, "Units": units},
             json={"units": units, "Units": units},
-            prefer_api_origin=True,
+            headers=self._cadimport_ajax_headers(),
+            prefer_api_origin=False,
             require_session=False,
         )
         return self._parse_website_or_raise(response, require_session=False)
@@ -575,7 +598,8 @@ class SecturaFabClient:
             "POST",
             WEBSITE_FINISH_PATHS["cadimport_convert_to"],
             json=payload,
-            prefer_api_origin=True,
+            headers=self._cadimport_ajax_headers(),
+            prefer_api_origin=False,
             require_session=False,
         )
         return self._parse_website_or_raise(response, require_session=False)
@@ -586,7 +610,7 @@ class SecturaFabClient:
         quote_id: str | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        """GET GetDXFData — grid after green Next (CadImport, then Quote)."""
+        """GET GetDXFData — grid after green Next (www CadImport, then Quote)."""
         query = dict(params or {})
         if quote_id:
             query.setdefault("ID", quote_id)
@@ -598,7 +622,8 @@ class SecturaFabClient:
                     "GET",
                     WEBSITE_FINISH_PATHS[path_key],
                     params=query or None,
-                    prefer_api_origin=True,
+                    headers=self._cadimport_ajax_headers(),
+                    prefer_api_origin=False,
                     require_session=False,
                 )
             except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
@@ -634,7 +659,8 @@ class SecturaFabClient:
             "POST",
             WEBSITE_FINISH_PATHS["add_item_dxf_files"],
             json=payload,
-            prefer_api_origin=True,
+            headers=self._cadimport_ajax_headers(),
+            prefer_api_origin=False,
             timeout=max(self.config.timeout_seconds, 180.0),
         )
         return self._parse_website_or_raise(response)
