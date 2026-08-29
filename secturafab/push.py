@@ -2805,26 +2805,47 @@ class SecturaFabPushService:
                             item_count=len(quote_item_rows(peek)),
                         )
                     created = len(quote_item_rows(peek)) > items_before_finish
+                    peek_dict = peek if isinstance(peek, dict) else {}
                     gold = finish_produced_gold(
-                        peek if isinstance(peek, dict) else {},
+                        peek_dict,
                         expect_cad=expect_cad,
                         expect_linear=expect_linear,
                     )
+                    cad_gold = (
+                        finish_produced_gold(
+                            peek_dict,
+                            expect_cad=True,
+                            expect_linear=False,
+                        )
+                        if expect_cad
+                        else True
+                    )
                     if not created or not gold:
-                        notes.append(
+                        fail_closed = False
+                        if cad and (not created or not cad_gold):
+                            fail_closed = True
+                        elif expect_cad and not cad_gold:
+                            fail_closed = True
+                        extra = (
+                            "AddItem_PDFFiles HTTP 200 is not session-expired; "
+                            "PR / laser pack / UnitCost did not stamp."
+                            if not cad_gold
+                            else (
+                                ""
+                                if fail_closed
+                                else "Continuing weld/nest/kids. "
+                            )
+                        )
+                        msg = (
                             "WARNING: Finish did not stamp gold OperationCostList "
                             "CalculatorNames yet (Cad PR + laser pack / Linear "
                             "Saw+Saw-Setup). "
-                            + (
-                                "Continuing weld/nest/kids. "
-                                if not (cad or expect_cad)
-                                else ""
-                            )
-                            + "AddItem_PDFFiles HTTP 200 is not session-expired; "
-                            "PR / laser pack / UnitCost did not stamp."
+                            + extra
                         )
-                        if cad or expect_cad:
-                            msg = notes[-1]
+                        if fail_closed and not website_cookie:
+                            msg = f"{msg} {CHROME_SESSION_REQUIRED}"
+                        notes.append(msg)
+                        if fail_closed:
                             return PushResult(
                                 ok=False,
                                 error=msg,

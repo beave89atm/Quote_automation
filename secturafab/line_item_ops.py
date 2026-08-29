@@ -381,11 +381,9 @@ def finish_produced_gold(
     expect_linear: bool,
 ) -> bool:
     """True when Finish grew ItemList with gold CalculatorNames (not grafts)."""
-    items = [
-        it
-        for it in ((quote or {}).get("ItemList") or [])
-        if isinstance(it, dict)
-    ]
+    from .website import quote_item_rows
+
+    items = [it for it in quote_item_rows(quote) if isinstance(it, dict)]
     if expect_cad:
         cad_ok = any(
             (

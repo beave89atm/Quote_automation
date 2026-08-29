@@ -512,6 +512,15 @@ def test_linear_http_500_does_not_abort_weld_or_nest(tmp_path, monkeypatch):
         "Description": "14501-1 PEDESTAL TOP PLATE",
         "ProductType": 100,
         "Quantity": 1,
+        "BadgeString": "PR",
+        "UnitCost": 12.5,
+        "OperationCostList": [
+            {"OperationName": "Profile", "CalculatorName": "Laser"},
+            {"OperationName": "Profile", "CalculatorName": "Drafting"},
+            {"OperationName": "Profile", "CalculatorName": "Deburr"},
+            {"OperationName": "Profile", "CalculatorName": "Laser-Setup"},
+            {"OperationName": "Profile", "CalculatorName": "Sheet Loading"},
+        ],
     }
     client.get_json.return_value = {
         "QuoteNumber": "1004747-1",
