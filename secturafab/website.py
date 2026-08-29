@@ -37,6 +37,13 @@ DoCreateDXFParts success onto #gridDXFParts in the CAD Files dialog
 (click CAD Files in the live Quotes tab — cookie GetItem_AddView is the
 wrong document, live 106386-1); then page Finish.
 Do not Finish the raw STEP or a Root-only FileList.
+Live 28110-2 (6c02c08): first /part/create FileList was only Root +
+*ASSY* / *WELDMENT* (one-level nest). Finish 200 + GET ItemList 0.
+Re-explode those nested IDs with the same DoCreateDXFParts /part/create
+until leaf Cad/Linear nouns exist (plates/tubes) or no nested assembly
+IDs remain. Do not Finish an assembly-only FileList; want_cad=0 is not
+a license. Leave quote 75b3a938 / 28110-2. Do not mint 1020249-1 until
+a live capture has leaf FileList and GET ItemList >0.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -772,7 +779,11 @@ def cadimport_filelist_exploded(
     part_key: str = "",
     cad_filename: str = "",
 ) -> bool:
-    """True when CadImport split the STEP into child FileList rows (Kyle Next)."""
+    """True when CadImport split the STEP into child FileList rows (Kyle Next).
+
+    Multi-kid *ASSY* / *WELDMENT* only (live 28110-2) is one-level nest, not
+    leaf-exploded. Callers must re-explode those IDs before Finish.
+    """
     kids = [r for r in (rows or []) if isinstance(r, dict)]
     if not kids:
         return False
@@ -781,6 +792,144 @@ def cadimport_filelist_exploded(
     return not is_raw_step_upload_row(
         kids[0], part_key=part_key, cad_filename=cad_filename
     )
+
+
+def filelist_row_display_name(row: dict[str, Any] | None) -> str:
+    if not isinstance(row, dict):
+        return ""
+    return str(
+        row.get("Name")
+        or row.get("PartName")
+        or row.get("Description")
+        or row.get("FileName")
+        or ""
+    ).strip()
+
+
+def is_nested_assembly_name(name: str | None) -> bool:
+    """*ASSY* / *WELDMENT* / *ASSEMBLY* titles — not leaf plate/tube nouns."""
+    text = str(name or "").strip().upper()
+    if not text or text == "ROOT":
+        return False
+    if "WELDMENT" in text or "ASSEMBLY" in text:
+        return True
+    return "ASSY" in text
+
+
+def filelist_row_is_leaf_noun(name: str | None) -> bool:
+    """Cad plate/gusset/mount/flat or Linear tube/channel — not an assembly title."""
+    if is_nested_assembly_name(name):
+        return False
+    text = f" {str(name or '').upper()} "
+    if re.search(r"\b(PLATE|GUSSET|SHEET)\b", text):
+        return True
+    if re.search(r"\bFLAT\b", text) and not re.search(r"\bFLAT\s+BAR\b", text):
+        return True
+    if re.search(r"\bMOUNT\b", text) and not re.search(
+        r"\b(CHANNEL|TUBE|PIPE|BARS?|ANGLE|BEAM|HSS)\b", text
+    ):
+        return True
+    if re.search(
+        r"\b(TUBE|CHANNEL|PIPE|ANGLE|BEAM|HSS|BARS?)\b", text
+    ):
+        return True
+    return False
+
+
+def _filelist_row_source_id(row: dict[str, Any]) -> str:
+    return str(row.get("SourceDataID") or row.get("ID") or "").strip()
+
+
+def is_nested_assembly_row(
+    row: dict[str, Any] | None,
+    *,
+    part_key: str = "",
+    cad_filename: str = "",
+) -> bool:
+    """FileList row whose ID should be re-exploded (nested ASSY/WELDMENT / job PN)."""
+    if not isinstance(row, dict):
+        return False
+    if is_cadimport_root_row(row):
+        return False
+    if is_raw_step_upload_row(row, part_key=part_key, cad_filename=cad_filename):
+        return False
+    name = filelist_row_display_name(row)
+    if is_nested_assembly_name(name):
+        return True
+    if part_key:
+        from .item_desc import normalize_part_token
+
+        if normalize_part_token(name) == normalize_part_token(part_key):
+            return True
+    return False
+
+
+def filelist_leaf_noun_names(
+    rows: list[dict[str, Any]] | None,
+    *,
+    part_key: str = "",
+    cad_filename: str = "",
+) -> list[str]:
+    """Kid display names that are Cad/Linear nouns (not Root / raw STEP / ASSY)."""
+    names: list[str] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if is_cadimport_root_row(row):
+            continue
+        if is_raw_step_upload_row(
+            row, part_key=part_key, cad_filename=cad_filename
+        ):
+            continue
+        name = filelist_row_display_name(row)
+        if filelist_row_is_leaf_noun(name):
+            names.append(name)
+    return names
+
+
+def filelist_is_assembly_only(
+    rows: list[dict[str, Any]] | None,
+    *,
+    part_key: str = "",
+    cad_filename: str = "",
+) -> bool:
+    """True when exploded kids exist but none are leaf Cad/Linear nouns (28110-2)."""
+    kids = finish_filelist_kids(
+        rows, part_key=part_key, cad_filename=cad_filename
+    )
+    if len(kids) <= 1:
+        return False
+    return not filelist_leaf_noun_names(
+        kids, part_key=part_key, cad_filename=cad_filename
+    )
+
+
+def nested_assembly_id_list(
+    rows: list[dict[str, Any]] | None,
+    *,
+    part_key: str = "",
+    cad_filename: str = "",
+) -> list[tuple[str, str]]:
+    """(SourceDataID/ID, units) for nested assembly FileList rows to re-explode."""
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if not is_nested_assembly_row(
+            row, part_key=part_key, cad_filename=cad_filename
+        ):
+            continue
+        sid = _filelist_row_source_id(row)
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        units = (
+            str(row.get("Units") or row.get("Length_Units") or "inch").strip()
+            or "inch"
+        )
+        out.append((sid, units))
+    return out
 
 
 def build_dxf_finish_payload(

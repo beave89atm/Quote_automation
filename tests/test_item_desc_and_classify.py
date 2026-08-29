@@ -30,6 +30,10 @@ def test_classify_fittings_are_component_not_cad():
     assert classify_sectura_item("FILLER NECK") == "Component"
     assert classify_sectura_item("50029-7 1 1/4 90 STREET ELBOW") == "Component"
     assert classify_sectura_item("10081-2 PEDESTAL HOSE TUBE") == "Linear"
+    assert classify_sectura_item("28109 COMP LINK ASSY WITH INSERT") == "Assembly"
+    assert classify_sectura_item(
+        "28248 COMPLINK END WELDMENT INSULATED"
+    ) == "Assembly"
 
 
 _LIVE_1001898 = [

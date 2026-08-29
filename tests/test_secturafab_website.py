@@ -1202,6 +1202,7 @@ def test_cadimport_next_exploded_kids_are_finished(tmp_path: Path):
         explode_sleep_s=0,
     )
     client.create_dxf_parts.assert_called()
+    assert client.create_dxf_parts.call_count == 1
     ids, units = client.create_dxf_parts.call_args.args[:2]
     assert ids == ["src-step"]
     assert units
@@ -2450,6 +2451,260 @@ def test_live_105918_kid_names_are_not_all_component():
     assert counts["Assembly"] == 5
     assert counts["Component"] == 0
     assert "Cad:" in " ".join(notes)
+
+
+def test_28110_nested_names_are_assembly_only():
+    """Live 28110-2 first FileList: ASSY/WELDMENT only — not leaf-exploded."""
+    from tests.fixtures.live_28110_nested import LIVE_28110_NESTED_NAMES
+    from secturafab.website import (
+        filelist_is_assembly_only,
+        filelist_leaf_noun_names,
+        is_nested_assembly_name,
+        nested_assembly_id_list,
+    )
+
+    rows = [
+        {
+            "SourceDataID": f"nest-{i}",
+            "ID": f"id-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+        for i, name in enumerate(LIVE_28110_NESTED_NAMES)
+    ]
+    assert filelist_is_assembly_only(
+        rows, part_key="28110-2", cad_filename="28110-2.STEP"
+    )
+    assert filelist_leaf_noun_names(
+        rows, part_key="28110-2", cad_filename="28110-2.STEP"
+    ) == []
+    assert is_nested_assembly_name("28109 COMP LINK ASSY WITH INSERT-5997_28109-1")
+    assert is_nested_assembly_name(
+        "28248 COMPLINK END WELDMENT INSULATED-5994_28248-2"
+    )
+    ids = [sid for sid, _u in nested_assembly_id_list(
+        rows, part_key="28110-2", cad_filename="28110-2.STEP"
+    )]
+    assert "nest-0" not in ids  # Root
+    assert "nest-1" in ids  # 28110-2 job PN
+    assert "nest-2" in ids  # ASSY
+    assert classify_sectura_item("28109 COMP LINK ASSY WITH INSERT") == "Assembly"
+
+
+def test_nested_assy_reexplode_then_finish_leaf_filelist(tmp_path: Path):
+    """After /part/create, re-explode ASSY/WELDMENT IDs until plate/tube nouns."""
+    from tests.fixtures.live_28110_nested import (
+        LIVE_28110_LEAF_NAMES,
+        LIVE_28110_NESTED_NAMES,
+    )
+
+    stp = tmp_path / "28110-2.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "28110-2.STEP",
+        "Name": "28110-2.STEP",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 15,
+    }
+    nested = [
+        {
+            "SourceDataID": f"nest-{i}",
+            "FileID": f"file-n{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        }
+        for i, name in enumerate(LIVE_28110_NESTED_NAMES)
+    ]
+    leaves = [
+        {
+            "SourceDataID": f"leaf-{i}",
+            "FileID": f"file-l{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        }
+        for i, name in enumerate(LIVE_28110_LEAF_NAMES)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.side_effect = [
+        {"List": nested},
+        {"List": leaves},
+    ]
+    client.cadimport_data.return_value = {"List": leaves}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {
+        "Data": [
+            {"ProductType": 100, "Description": "LINK PLATE"},
+            {"ProductType": 10, "Description": "END TUBE"},
+        ],
+        "Total": 2,
+    }
+    client.get_json.return_value = {
+        "ItemList": [
+            {"ProductType": 100, "Description": "LINK PLATE"},
+            {"ProductType": 10, "Description": "END TUBE"},
+        ]
+    }
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"body_keys": ["List", "Result"], "has_NewItem": True}
+
+    client.add_item_dxf_files.side_effect = _add
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000002811",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="28110-2",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    assert client.create_dxf_parts.call_count == 2
+    first_ids = client.create_dxf_parts.call_args_list[0].args[0]
+    second_ids = client.create_dxf_parts.call_args_list[1].args[0]
+    assert first_ids == ["src-step"]
+    assert "nest-0" not in second_ids
+    assert "nest-1" in second_ids
+    assert "nest-2" in second_ids
+    client.add_item_dxf_files.assert_called()
+    posted_names = {
+        str(r.get("Name") or "") for r in captured.get("file_list") or []
+    }
+    assert "LINK PLATE" in posted_names
+    assert "END TUBE" in posted_names
+    blob = " ".join(notes)
+    assert "explode_passes=2" in blob
+    assert "LINK PLATE" in blob
+    assert "leaf_names=" in blob
+
+
+def test_assembly_only_filelist_does_not_finish(tmp_path: Path):
+    """Live 28110-2: still ASSY/WELDMENT after re-explode → no Finish."""
+    from tests.fixtures.live_28110_nested import LIVE_28110_NESTED_NAMES
+
+    stp = tmp_path / "28110-2.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "28110-2.STEP",
+        "Name": "28110-2.STEP",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 15,
+    }
+    nested = [
+        {
+            "SourceDataID": f"nest-{i}",
+            "FileID": f"file-n{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        }
+        for i, name in enumerate(LIVE_28110_NESTED_NAMES)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.return_value = {"List": nested}
+    client.cadimport_data.return_value = {"List": nested}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000002812",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="28110-2",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "assembly-only" in blob.lower() or "ASSY/WELDMENT" in blob
+    assert "not Finishing" in blob
+    assert "want_cad=0 is not a license" in blob
+    assert client.create_dxf_parts.call_count >= 2
+
+
+def test_finish_get_zero_items_is_not_success(tmp_path: Path):
+    """Finish 200 + GET ItemList 0 → not success (leave shell, no remint)."""
+    stp = tmp_path / "1020249-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-a",
+            "FileID": "file-a",
+            "Name": "LINK PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+        {
+            "SourceDataID": "src-b",
+            "FileID": "file-b",
+            "Name": "END TUBE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    client.add_item_dxf_files.return_value = {
+        "body_keys": ["List", "Result"],
+        "has_NewItem": False,
+    }
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001020",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="1020249-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    client.add_item_dxf_files.assert_called()
+    blob = " ".join(notes)
+    assert "item_count=0" in blob
+    assert "not success" in blob
 
 
 def test_explode_skips_cookie_quote_html_even_when_fields_present(tmp_path: Path):

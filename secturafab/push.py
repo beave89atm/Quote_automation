@@ -70,6 +70,9 @@ from .website import (
     cadimport_filelist_exploded,
     cadimport_payload_preview,
     client_antiforgery_extracted,
+    filelist_is_assembly_only,
+    filelist_leaf_noun_names,
+    nested_assembly_id_list,
     inventory_location_from_html,
     filelist_from_cadimport_upload,
     finish_filelist_kids,
@@ -90,6 +93,8 @@ from .weld_ops import ensure_weld_ops
 # CreateFile outage retry (SecturaFAB DB "underlying provider failed on Open").
 CREATEFILE_RETRY_INTERVAL_S = 300.0
 CREATEFILE_RETRY_MAX_S = 48 * 3600.0
+# Nested ASSY/WELDMENT /part/create passes after the first explode (28110-2).
+CADIMPORT_EXPLODE_MAX_PASSES = 5
 
 
 def _part_create_fail_note(exc: BaseException) -> str:
@@ -264,7 +269,13 @@ def classify_sectura_item(description: str) -> str:
         return "Linear"
     if "HINGE" in text and "PLATE" not in text:
         return "Component"
-    if "WELDMENT" in text or " ASSEMBLY" in text or " ASM," in text or " ASM " in text:
+    if (
+        "WELDMENT" in text
+        or "ASSEMBLY" in text
+        or re.search(r"\bASSY\b", text)
+        or " ASM," in text
+        or " ASM " in text
+    ):
         return "Assembly"
     if "KINGPIN" in compact:
         return "Component"
@@ -1363,6 +1374,203 @@ class SecturaFabPushService:
             bags.extend(r for r in upload_rows if isinstance(r, dict))
         return self._dedupe_cadimport_rows(bags)
 
+    def _explode_capture_notes(
+        self,
+        *,
+        explode_passes: int,
+        rows: list[dict[str, Any]],
+        part_key: str,
+        cad_filename: str,
+    ) -> list[str]:
+        leaves = filelist_leaf_noun_names(
+            rows, part_key=part_key, cad_filename=cad_filename
+        )
+        sample = ",".join(leaves[:20])
+        return [
+            f"explode_passes={int(explode_passes)}",
+            f"leaf_names={sample}",
+        ]
+
+    def _post_do_create_dxf_parts(
+        self,
+        *,
+        quote_id: str,
+        part_key: str,
+        id_list: list[str],
+        unit_list: list[str],
+        location: str,
+    ) -> tuple[list[dict[str, Any]], list[str], bool]:
+        """Same DoCreateDXFParts POST /part/create. abort=True → stop exploding."""
+        from .cadimport_js import CREATE_DXF_PARTS_FUNCTION, CREATE_DXF_PARTS_PATH
+
+        notes: list[str] = []
+        create_fn = getattr(self.client, "create_dxf_parts", None)
+        source = getattr(self.client, "_af_source", "")
+        af_extracted = client_antiforgery_extracted(self.client)
+        if isinstance(source, str) and source == "cookie_quote_html":
+            notes.append(
+                "DoCreateDXFParts skipped — cookie_quote_html is the wrong "
+                "claims identity (no cookie HTTP /part/create)"
+            )
+            return [], notes, True
+        if isinstance(source, str) and source != "chrome_dom":
+            notes.append(
+                "DoCreateDXFParts skipped — af_extracted=false "
+                "(chrome_dom required; no /part/create)"
+            )
+            return [], notes, True
+        if not af_extracted:
+            notes.append(
+                "DoCreateDXFParts skipped — af_extracted=false "
+                "(chrome_dom required; no /part/create)"
+            )
+            return [], notes, True
+        if not (callable(create_fn) and id_list):
+            if not id_list:
+                notes.append(
+                    "QuoteOrderEdit DoCreateDXFParts skipped — row has no "
+                    "SourceDataID (IDList)"
+                )
+            return [], notes, True
+        try:
+            try:
+                result = create_fn(
+                    id_list,
+                    unit_list,
+                    location=location,
+                    other_file_ids=[],
+                    height=0,
+                    width=0,
+                    quote_id=quote_id,
+                    quote_number=part_key,
+                )
+            except TypeError:
+                result = create_fn(
+                    id_list,
+                    unit_list,
+                    location=location,
+                    other_file_ids=[],
+                    height=0,
+                    width=0,
+                )
+        except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError) as exc:
+            from .cadimport_js import create_dxf_parts_xhr
+
+            xhr = create_dxf_parts_xhr()
+            notes.append(
+                f"WARNING: {xhr.cite()} failed: {_part_create_fail_note(exc)}"
+            )
+            return [], notes, True
+        via = getattr(self.client, "_part_create_via", "") or ""
+        if isinstance(via, str) and via:
+            notes.append(f"part_create_via={via}")
+        present = getattr(self.client, "_grid_present", None)
+        if isinstance(present, bool):
+            notes.append(f"grid_present={'true' if present else 'false'}")
+            if not present:
+                notes.append(
+                    "WARNING: #gridDXFParts kendo not on /Quote/EDIT "
+                    "(click #but_dxf) — cookie GetItem_AddView is the "
+                    "wrong document (live a64509d); not Finishing"
+                )
+                return self._cadimport_rows(result), notes, True
+        n_list = getattr(self.client, "_part_create_list_len", None)
+        if isinstance(n_list, (int, float)):
+            notes.append(f"part_create_list_len={int(n_list)}")
+            if int(n_list) <= 1:
+                notes.append(
+                    "WARNING: /part/create List len<=1 — not Finishing "
+                    "(empty #gridDXF createAllParts is the 34632-2 miss)"
+                )
+                return self._cadimport_rows(result), notes, True
+        n_grid = getattr(self.client, "_grid_dxf_row_count", None)
+        if isinstance(n_grid, (int, float)):
+            notes.append(f"grid_dxf_row_count={int(n_grid)}")
+            if int(n_grid) <= 1:
+                notes.append(
+                    "WARNING: #gridDXFParts row count<=1 after "
+                    "DoCreateDXFParts success bind — not Finishing"
+                )
+                return self._cadimport_rows(result), notes, True
+        exploded = self._cadimport_rows(result)
+        if not cadimport_filelist_exploded(exploded, part_key=part_key):
+            notes.append(
+                f"{CREATE_DXF_PARTS_FUNCTION} {CREATE_DXF_PARTS_PATH} had no "
+                f"kid FileList ({cadimport_payload_preview(result)})"
+            )
+        return exploded, notes, False
+
+    def _reexplode_nested_assemblies(
+        self,
+        *,
+        quote_id: str,
+        part_key: str,
+        cad_filename: str,
+        grid: list[dict[str, Any]],
+        used_ids: set[str],
+        location: str,
+        first_pass: int,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Re-POST /part/create with nested *ASSY*/*WELDMENT* IDs until leaves."""
+        from .cadimport_js import CREATE_DXF_PARTS_FUNCTION, CREATE_DXF_PARTS_PATH
+
+        notes: list[str] = []
+        rows = list(grid)
+        seen = set(used_ids)
+        extra = 0
+        max_extra = max(0, CADIMPORT_EXPLODE_MAX_PASSES - first_pass)
+        while (
+            filelist_is_assembly_only(
+                rows, part_key=part_key, cad_filename=cad_filename
+            )
+            and extra < max_extra
+        ):
+            nested = [
+                (sid, units)
+                for sid, units in nested_assembly_id_list(
+                    rows, part_key=part_key, cad_filename=cad_filename
+                )
+                if sid not in seen
+            ]
+            if not nested:
+                notes.append(
+                    "no nested assembly IDs left — FileList still "
+                    "ASSY/WELDMENT only (live 28110-2)"
+                )
+                break
+            id_list = [sid for sid, _units in nested]
+            unit_list = [units for _sid, units in nested]
+            notes.append(
+                f"QuoteOrderEdit {CREATE_DXF_PARTS_FUNCTION} "
+                f"{CREATE_DXF_PARTS_PATH} re-explode "
+                f"{len(id_list)} nested ASSY/WELDMENT ID(s)"
+            )
+            exploded, pass_notes, abort = self._post_do_create_dxf_parts(
+                quote_id=quote_id,
+                part_key=part_key,
+                id_list=id_list,
+                unit_list=unit_list,
+                location=location,
+            )
+            notes.extend(pass_notes)
+            extra += 1
+            seen.update(id_list)
+            if abort:
+                break
+            if exploded:
+                rows = self._dedupe_cadimport_rows(list(exploded) + list(rows))
+            else:
+                break
+        notes.extend(
+            self._explode_capture_notes(
+                explode_passes=first_pass + extra,
+                rows=rows,
+                part_key=part_key,
+                cad_filename=cad_filename,
+            )
+        )
+        return rows, notes
+
     def wait_for_cadimport_explode(
         self,
         *,
@@ -1389,9 +1597,19 @@ class SecturaFabPushService:
         )
         if cadimport_filelist_exploded(
             upload_rows, part_key=part_key, cad_filename=cad_filename
+        ) and not filelist_is_assembly_only(
+            upload_rows, part_key=part_key, cad_filename=cad_filename
         ):
             notes.append(
                 f"CadImport FileList already exploded ({len(upload_rows)} kid row(s))"
+            )
+            notes.extend(
+                self._explode_capture_notes(
+                    explode_passes=0,
+                    rows=upload_rows,
+                    part_key=part_key,
+                    cad_filename=cad_filename,
+                )
             )
             return upload_rows, notes
         from .cadimport_js import (
@@ -1511,10 +1729,34 @@ class SecturaFabPushService:
             n_grid = getattr(self.client, "_grid_dxf_row_count", None)
             present = getattr(self.client, "_grid_present", None)
             if isinstance(present, bool) and not present:
+                notes.extend(
+                    self._explode_capture_notes(
+                        explode_passes=1,
+                        rows=exploded or upload_rows,
+                        part_key=part_key,
+                        cad_filename=cad_filename,
+                    )
+                )
                 return exploded or upload_rows, notes
             if isinstance(n_list, (int, float)) and int(n_list) <= 1:
+                notes.extend(
+                    self._explode_capture_notes(
+                        explode_passes=1,
+                        rows=exploded or upload_rows,
+                        part_key=part_key,
+                        cad_filename=cad_filename,
+                    )
+                )
                 return exploded or upload_rows, notes
             if isinstance(n_grid, (int, float)) and int(n_grid) <= 1:
+                notes.extend(
+                    self._explode_capture_notes(
+                        explode_passes=1,
+                        rows=exploded or upload_rows,
+                        part_key=part_key,
+                        cad_filename=cad_filename,
+                    )
+                )
                 return exploded or upload_rows, notes
             if cadimport_filelist_exploded(
                 exploded, part_key=part_key, cad_filename=cad_filename
@@ -1523,7 +1765,18 @@ class SecturaFabPushService:
                     f"CadImport exploded {len(exploded)} FileList row(s) "
                     f"on {CREATE_DXF_PARTS_FUNCTION} {CREATE_DXF_PARTS_PATH}"
                 )
-                return exploded, notes
+                used = {str(x) for x in id_list}
+                grid, nest_notes = self._reexplode_nested_assemblies(
+                    quote_id=quote_id,
+                    part_key=part_key,
+                    cad_filename=cad_filename,
+                    grid=exploded,
+                    used_ids=used,
+                    location=location,
+                    first_pass=1,
+                )
+                notes.extend(nest_notes)
+                return grid, notes
             notes.append(
                 f"{CREATE_DXF_PARTS_FUNCTION} {CREATE_DXF_PARTS_PATH} had no "
                 f"kid FileList ({cadimport_payload_preview(result)})"
@@ -1549,10 +1802,29 @@ class SecturaFabPushService:
                     f"CadImport exploded {len(grid)} FileList row(s) "
                     f"after {CREATE_DXF_PARTS_PATH} (poll {attempt + 1})"
                 )
+                used = {str(x) for x in id_list}
+                grid, nest_notes = self._reexplode_nested_assemblies(
+                    quote_id=quote_id,
+                    part_key=part_key,
+                    cad_filename=cad_filename,
+                    grid=grid,
+                    used_ids=used,
+                    location=location,
+                    first_pass=1,
+                )
+                notes.extend(nest_notes)
                 return grid, notes
         notes.append(
             f"CadImport FileList still {len(grid)} raw upload row(s) "
             f"after {CREATE_DXF_PARTS_FUNCTION} — not Finishing the STEP file row"
+        )
+        notes.extend(
+            self._explode_capture_notes(
+                explode_passes=0,
+                rows=grid,
+                part_key=part_key,
+                cad_filename=cad_filename,
+            )
         )
         return grid, notes
 
@@ -2056,6 +2328,15 @@ class SecturaFabPushService:
                 "1 raw STEP or Root-only)"
             )
             return notes
+        if filelist_is_assembly_only(
+            kids, part_key=part_key, cad_filename=cad_filename
+        ):
+            notes.append(
+                "WARNING: FileList is assembly-only (ASSY/WELDMENT) after "
+                "re-explode — not Finishing an empty stamp "
+                "(live 28110-2; want_cad=0 is not a license)"
+            )
+            return notes
         notes.append(
             f"CadImport FileList using {len(kids)} exploded kid row(s) "
             f"(SourceDataID/FileID for Finish calculators)"
@@ -2087,10 +2368,26 @@ class SecturaFabPushService:
             want_cad = sum(
                 1 for r in classified if str(r.get("Category") or "") == "Cad"
             )
+            want_lin = sum(
+                1 for r in classified if str(r.get("Category") or "") == "Linear"
+            )
             if want_cad > 0 and int(applied.get("cad") or 0) <= 0:
                 notes.append(
                     "WARNING: #gridDXFParts Cad=0 after SetPartMode — laser "
                     "plates still Component; not Finishing (live 105918-1)"
+                )
+                return notes
+            if (
+                want_cad <= 0
+                and want_lin <= 0
+                and filelist_is_assembly_only(
+                    classified, part_key=part_key, cad_filename=cad_filename
+                )
+            ):
+                notes.append(
+                    "WARNING: FileList Cad=0 Linear=0 after classify — "
+                    "assembly-only stamp; not Finishing "
+                    "(live 28110-2; want_cad=0 is not a license)"
                 )
                 return notes
         ready = []
@@ -2152,7 +2449,13 @@ class SecturaFabPushService:
                 "WARNING: GET 0 Cad — laser plates still Component is not gold "
                 "(live 105918-1)"
             )
-        if cad_n <= 0 and lin_n <= 0:
+        posted_n = len(quote_item_rows(posted))
+        if posted_n <= 0:
+            notes.append(
+                f"WARNING: AddItem_DXFFiles HTTP 200 GET item_count=0 — "
+                f"not success (leave shell, no remint; live 28110-2)"
+            )
+        elif cad_n <= 0 and lin_n <= 0:
             notes.append(
                 f"WARNING: AddItem_DXFFiles HTTP 200 with {len(ready)} FileList "
                 f"row(s) landed 0 ItemList lines — not success"

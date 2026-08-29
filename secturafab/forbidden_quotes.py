@@ -33,6 +33,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "a6ef6891-e080-45de-b57c-1a55fee00c19",  # 106386-1 empty shell (1fd9b53) — leave it
         "997f1eb7-3eb0-4a76-83f9-4c3439e929b7",  # 105918-1 Finish 66 / 0 Cad (23b96a9) — leave it
         "66a0271f-f2f7-42c1-ac01-cd879f1bfa22",  # 106687-1 Upload 502 43MB (bd4d75e) — leave it
+        "75b3a938-ff89-4525-80d9-c6000d055a48",  # 28110-2 Finish 200 / GET 0 (6c02c08) — leave it
     }
 )
 
@@ -42,6 +43,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "280f4dcb",
         "a484ba3b",  # 106384-1 spent (32MB Upload 502) — do not remint
         "66a0271f",  # 106687-1 spent (43MB Upload 502) — do not remint
+        "75b3a938",  # 28110-2 spent (Finish 200 / GET 0) — do not remint
     }
 )
 
@@ -71,6 +73,9 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "14284-2",  # occupied — do not remint
         "21807-1",  # occupied — do not remint
         "1007830-1",  # occupied — do not remint
+        "28110-2",  # spent 6c02c08 Finish 200 / GET 0 — do not PATCH or remint
+        # 1020249-1 is the next unused 2.5MB STEP — mint only after a live
+        # capture has leaf FileList (plate/tube nouns) AND GET ItemList >0.
     }
 )
 
