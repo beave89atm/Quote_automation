@@ -334,22 +334,26 @@ def format_component_line(part_no: str, name: str) -> str:
 
 def format_quote_header_description(title: str | None, *, part_key: str | None = None) -> str:
     """Quote Description is the weldment title only — never the part number."""
+    from quote_core.drawing_title import is_drawing_boilerplate_title
+
     noun = (title or "").strip()
     pn = normalize_part_token(part_key)
-    if not noun or is_bare_part_number(noun, pn):
+    if not noun or is_bare_part_number(noun, pn) or is_drawing_boilerplate_title(noun):
         return ""
     if pn and noun.upper().startswith(pn.upper()):
         noun = noun[len(pn) :].strip(" -")
     noun = re.sub(r"\s+", " ", noun).strip(" -")
-    if not noun or is_bare_part_number(noun, pn):
+    if not noun or is_bare_part_number(noun, pn) or is_drawing_boilerplate_title(noun):
         return ""
     return noun
 
 
 def format_assembly_description(part_key: str, title: str | None) -> str:
+    from quote_core.drawing_title import is_drawing_boilerplate_title
+
     pn = normalize_part_token(part_key)
     noun = (title or "").strip()
-    if noun and is_bare_part_number(noun, pn):
+    if noun and (is_bare_part_number(noun, pn) or is_drawing_boilerplate_title(noun)):
         noun = ""
     if pn and noun.upper().startswith(pn.upper()):
         rest = noun[len(pn) :].strip(" -")
@@ -372,8 +376,10 @@ def title_from_library_folder(
 
 
 def title_from_job_title(title: str | None, *, part_key: str | None = None) -> str | None:
+    from quote_core.drawing_title import is_drawing_boilerplate_title
+
     text = (title or "").strip()
-    if not text or is_bare_part_number(text, part_key):
+    if not text or is_bare_part_number(text, part_key) or is_drawing_boilerplate_title(text):
         return None
     key = normalize_part_token(part_key)
     if key and text.upper().startswith(key.upper()):

@@ -82,6 +82,7 @@ class SecturaFabClient:
         self._website_cookie_override: str = ""
         self._quotes_tab_live: bool = False
         self._part_create_via: str = ""
+        self._finish_via: str = ""
 
     def authenticate(self, force: bool = False) -> AccessToken:
         if self._token and not self._token.is_expired and not force:
@@ -912,8 +913,33 @@ class SecturaFabClient:
         return body
 
     def cadimport_update_data(self, payload: Any = None) -> Any:
-        """POST /CadImport/UpdateData — json List is a native array."""
+        """POST /CadImport/UpdateData — json List is a native array.
+
+        Live 34137-1: cookie-HTTP 200 often empty str (wrong claims user).
+        Quotes-tab fetch when chrome_dom is live. Do not skip classify.
+        """
+        from .chrome_cdp import chrome_quotes_live, post_update_data_from_quotes_tab
+
         body = self._cadimport_json_body(payload)
+        if chrome_quotes_live() and getattr(self, "_af_source", "") == "chrome_dom":
+            result = post_update_data_from_quotes_tab(body)
+            if not result.get("has_antiforgery"):
+                raise SecturaFabApiError(
+                    "af_extracted=false — chrome_dom required, "
+                    "not POSTing /CadImport/UpdateData via cookie HTTP"
+                )
+            status = int(result.get("status") or 0)
+            if status >= 400:
+                raise SecturaFabApiError(
+                    f"API request failed ({status}) for chrome_dom /CadImport/UpdateData",
+                    status_code=status,
+                    body={k: True for k in (result.get("body_keys") or [])} or {"Error": True},
+                )
+            return {
+                "body_keys": result.get("body_keys") or [],
+                "body_type": result.get("body_type"),
+                "via": "chrome_dom_fetch",
+            }
         response = self.website_request(
             "POST",
             WEBSITE_FINISH_PATHS["cadimport_update_data"],
@@ -952,10 +978,37 @@ class SecturaFabClient:
         part_mode: int,
         extra: dict[str, Any] | None = None,
     ) -> Any:
-        """POST /CadImport/SetPartMode — PartMode is an integer (strings 500)."""
+        """POST /CadImport/SetPartMode — PartMode is an integer (strings 500).
+
+        QuoteOrderEdit: data:{ID, PartMode}. Live 34137-1 cookie-HTTP 200
+        empty str — Quotes-tab fetch when chrome_dom is live.
+        """
+        from .chrome_cdp import chrome_quotes_live, post_set_part_mode_from_quotes_tab
+
         params: dict[str, Any] = {"ID": row_id, "PartMode": int(part_mode)}
         if extra:
             params.update(extra)
+        if chrome_quotes_live() and getattr(self, "_af_source", "") == "chrome_dom":
+            result = post_set_part_mode_from_quotes_tab(
+                row_id=str(row_id), part_mode=int(part_mode)
+            )
+            if not result.get("has_antiforgery"):
+                raise SecturaFabApiError(
+                    "af_extracted=false — chrome_dom required, "
+                    "not POSTing /CadImport/SetPartMode via cookie HTTP"
+                )
+            status = int(result.get("status") or 0)
+            if status >= 400:
+                raise SecturaFabApiError(
+                    f"API request failed ({status}) for chrome_dom /CadImport/SetPartMode",
+                    status_code=status,
+                    body={k: True for k in (result.get("body_keys") or [])} or {"Error": True},
+                )
+            return {
+                "body_keys": result.get("body_keys") or [],
+                "body_type": result.get("body_type"),
+                "via": "chrome_dom_fetch",
+            }
         response = self.website_request(
             "POST",
             WEBSITE_FINISH_PATHS["cadimport_set_part_mode"],
@@ -1108,23 +1161,56 @@ class SecturaFabClient:
         item_id: str | None = None,
         customer_material: bool = False,
     ) -> Any:
-        """POST /Quote/AddItem_DXFFiles — green Finish (JS contract)."""
+        """POST /Quote/AddItem_DXFFiles — green Finish (JS contract).
+
+        Live 34137-1: cookie-HTTP www 200 empty str / no NewItem / ItemList 0.
+        Same claims miss as /part/create. Quotes-tab fetch only. Never cookie
+        HTTP Finish when chrome_dom is required.
+        """
+        from .chrome_cdp import chrome_quotes_live, post_add_item_dxf_files_from_quotes_tab
+
         payload = build_dxf_finish_payload(
             quote_id,
             file_list,
             item_id=item_id,
             customer_material=customer_material,
         )
-        response = self.website_request(
-            "POST",
-            WEBSITE_FINISH_PATHS["add_item_dxf_files"],
-            json=payload,
-            headers=self._cadimport_ajax_headers(),
-            prefer_api_origin=False,
-            www_only=True,
-            timeout=max(self.config.timeout_seconds, 180.0),
-        )
-        return self._parse_website_or_raise(response)
+        if chrome_quotes_live():
+            self.harvest_chrome_antiforgery()
+        if getattr(self, "_af_source", "") != "chrome_dom":
+            raise SecturaFabApiError(
+                "af_extracted=false — chrome_dom required, "
+                "not POSTing /Quote/AddItem_DXFFiles via cookie HTTP"
+            )
+        result = post_add_item_dxf_files_from_quotes_tab(payload)
+        self._finish_via = "chrome_dom_fetch"
+        if not result.get("has_antiforgery"):
+            raise SecturaFabApiError(
+                "af_extracted=false — chrome_dom required, not POSTing Finish"
+            )
+        status = int(result.get("status") or 0)
+        body_keys = [str(k) for k in (result.get("body_keys") or [])]
+        if status >= 400:
+            raise SecturaFabApiError(
+                f"API request failed ({status}) for chrome_dom /Quote/AddItem_DXFFiles",
+                status_code=status,
+                body={key: True for key in body_keys} or {"Error": True},
+            )
+        return {
+            "status": status,
+            "body_keys": body_keys,
+            "body_type": result.get("body_type") or "empty",
+            "has_NewItem": bool(result.get("has_NewItem")),
+            "has_QuoteItem": bool(result.get("has_QuoteItem")),
+            "text_len": int(result.get("text_len") or 0),
+            "via": "chrome_dom_fetch",
+            "empty_body": (
+                str(result.get("body_type") or "") in {"empty", "str"}
+                and not result.get("has_NewItem")
+                and not result.get("has_QuoteItem")
+                and not body_keys
+            ),
+        }
 
     def add_item_pdf_files(
         self,

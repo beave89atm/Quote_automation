@@ -24,6 +24,7 @@ _SKIP_LINE = re.compile(
     r"CONSMETIC\s+SIDE|COSMETIC\s+SIDE|SECTION\s+[A-Z]-[A-Z]|DETAIL\s+[A-Z]|"
     r"DOWN\s+\d|T\.?S\.?C\.?$|TYP$|REVISIONS?$|CHECKED BY|DRAWN BY|"
     r"DRAWING RELEASED|UPDATED POSITIONS|STEEL MATERIALS|ALUMINUM MATERIALS|"
+    r"DRAWING IS THE SOLE|SOLE PROPERTY|"
     r"DWG\s*NO:?$|APPROVED:?$|QA$|MFG$|CHECKED$|DRAWN$"
     r")"
 )
@@ -61,7 +62,10 @@ _LEGAL_OR_BANNER = re.compile(
     r"^cummins clean fuel technologies$|"
     r"must be returned to cummins|"
     r"all rights reserved|"
-    r"complete or partial reproduction"
+    r"complete or partial reproduction|"
+    r"drawing is the sole|"
+    r"sole property of|"
+    r"this drawing is the property"
     r")"
 )
 
@@ -209,6 +213,9 @@ def extract_title_from_pdf_text(text: str, *, part_key: str | None = None) -> st
         return None
 
     ranked = sorted(scored, key=lambda row: row[0], reverse=True)
+    ranked = [row for row in ranked if not is_drawing_boilerplate_title(row[1])]
+    if not ranked:
+        return None
     best_score, best = ranked[0]
     if best_score[0] < 20 and not any(
         tok in best.upper() for tok in ("ASM", "ASSEMBLY", "WELDMENT", "COUPLER", "PANEL")
@@ -314,6 +321,65 @@ def title_from_library_folder(
     if _PART_NUM.fullmatch(cleaned) or (key and _normalize_key(cleaned) == _normalize_key(key)):
         return None
     return re.sub(r"\s+", " ", cleaned).upper()
+
+
+def is_drawing_boilerplate_title(text: str | None) -> bool:
+    """True for title-block legal lines — never a quote Description."""
+    s = str(text or "").strip()
+    if not s:
+        return False
+    if _LEGAL_OR_BANNER.search(s):
+        return True
+    if _SKIP_LINE.match(s):
+        return True
+    upper = s.upper()
+    return "SOLE PROPERTY" in upper or "DRAWING IS THE SOLE" in upper
+
+
+def title_from_exploded_names(names: list[str] | None) -> str | None:
+    """Prefer a weldment/assembly noun from STEP / FileList names."""
+    best: str | None = None
+    best_pts = -1
+    for raw in names or []:
+        s = re.sub(r"[_\-]+", " ", str(raw or ""))
+        s = re.sub(r"\s+", " ", s).strip()
+        if not s or s.casefold() == "root" or is_drawing_boilerplate_title(s):
+            continue
+        s = re.sub(r"^\d{4,}(?:-\d+)?\s+", "", s).strip()
+        if not s or is_drawing_boilerplate_title(s):
+            continue
+        upper = s.upper()
+        pts = 0
+        if "WELDMENT" in upper:
+            pts += 50
+        if "ASSEMBLY" in upper or re.search(r"\bASM\b", upper):
+            pts += 40
+        if "PLATFORM" in upper or "DOOR" in upper:
+            pts += 10
+        if pts < 40:
+            continue
+        if pts > best_pts:
+            best_pts = pts
+            best = re.sub(r"\s+", " ", s).strip()[:200]
+    return best
+
+
+def title_from_stp_takeoff(takeoff: dict | None) -> str | None:
+    """Weldment title from parsed STEP solids — not PDF boilerplate."""
+    stp = (takeoff or {}).get("stp_summary") or {}
+    names: list[str] = []
+    for solid in stp.get("top_solids") or []:
+        if isinstance(solid, dict):
+            names.append(
+                str(solid.get("name") or solid.get("part_no") or solid.get("label") or "")
+            )
+        elif solid:
+            names.append(str(solid))
+    for key in ("name", "title", "assembly_name"):
+        val = stp.get(key)
+        if val:
+            names.append(str(val))
+    return title_from_exploded_names(names)
 
 
 def extract_assembly_description(

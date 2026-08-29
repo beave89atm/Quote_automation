@@ -27,6 +27,10 @@ GetItem_AddView partial. Cookie GET /Quote is 302 AccessDenied (aa86d56);
 Chrome Quotes tab supplies AF and POSTs /part/create via in-page fetch.
 Cookie-file HTTP POST 403s (wrong claims user, live 7b723b9). Fail closed
 if chrome_dom is missing — do not POST and do not mint.
+Live 34137-1: /part/create chrome_dom_fetch 200 t.List=31, then cookie-HTTP
+Finish POST /Quote/AddItem_DXFFiles 200 empty str / ItemList 0. Send Finish
+(and SetPartMode / UpdateData) the same Quotes-tab fetch. Do not Finish
+the raw STEP or a Root-only FileList.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -277,6 +281,35 @@ def filter_finish_filelist(rows: list[dict[str, Any]] | None) -> list[dict[str, 
         if _qty_of(row) <= 0:
             continue
         out.append(dict(row))
+    return out
+
+
+def is_cadimport_root_row(row: dict[str, Any] | None) -> bool:
+    """Synthetic CadImport 'Root' node — not a Finish kid."""
+    if not isinstance(row, dict):
+        return False
+    name = str(
+        row.get("Name") or row.get("PartName") or row.get("Description") or ""
+    ).strip()
+    return name.casefold() == "root"
+
+
+def finish_filelist_kids(
+    rows: list[dict[str, Any]] | None,
+    *,
+    part_key: str = "",
+    cad_filename: str = "",
+) -> list[dict[str, Any]]:
+    """Exploded kids for AddItem_DXFFiles — not raw STEP, not Root-only."""
+    out: list[dict[str, Any]] = []
+    for row in filter_finish_filelist(rows):
+        if is_cadimport_root_row(row):
+            continue
+        if is_raw_step_upload_row(
+            row, part_key=part_key, cad_filename=cad_filename
+        ):
+            continue
+        out.append(row)
     return out
 
 
@@ -688,32 +721,41 @@ def is_raw_step_upload_row(
     part_key: str = "",
     cad_filename: str = "",
 ) -> bool:
-    """True when the row is the STEP file itself, not an exploded child PN."""
+    """True when the row is the STEP file itself, not an exploded child PN.
+
+    The job ``cad_filename`` is only a compare target. Do not treat every
+    kid as raw just because the upload was a STEP (live 34137-1 t.List).
+    """
     if not isinstance(row, dict):
         return False
     from .item_desc import normalize_part_token
 
-    fname = str(row.get("FileName") or row.get("Name") or "")
-    cad_name = cad_filename or fname
-    is_step = _step_like_name(fname) or _step_like_name(cad_name)
-    if not is_step:
-        return False
+    file_name = str(row.get("FileName") or "")
+    name = str(
+        row.get("Name") or row.get("Description") or row.get("PartName") or ""
+    )
+    stem = Path(cad_filename or file_name or name).stem
+    name_tok = normalize_part_token(name)
+    file_stem_tok = normalize_part_token(Path(file_name).stem) if file_name else ""
+    stem_tok = normalize_part_token(stem)
+    pk_tok = normalize_part_token(part_key)
+    file_is_job_step = _step_like_name(file_name) and (
+        file_stem_tok in {stem_tok, pk_tok}
+        or (
+            bool(cad_filename)
+            and file_name.casefold() == str(cad_filename).casefold()
+        )
+    )
+    own_step = file_is_job_step or _step_like_name(name)
     try:
         part_count = int(row.get("PartCount") or 0)
     except (TypeError, ValueError):
         part_count = 0
-    if part_count > 1:
-        return True
-    name = str(
-        row.get("Name") or row.get("Description") or row.get("PartName") or ""
-    )
-    stem = Path(cad_name).stem if cad_name else Path(fname).stem
-    name_tok = normalize_part_token(name)
-    stem_tok = normalize_part_token(stem)
-    pk_tok = normalize_part_token(part_key)
     if _step_like_name(name):
         return True
-    if name_tok in {"", stem_tok, pk_tok, normalize_part_token(Path(fname).stem)}:
+    if own_step and name_tok in {"", stem_tok, pk_tok}:
+        return True
+    if own_step and part_count > 1 and name_tok in {"", stem_tok, pk_tok}:
         return True
     return False
 
@@ -1821,8 +1863,9 @@ def overlay_classified_row(
 ) -> dict[str, Any]:
     """Apply Cad / Linear / Component + SKU/grade onto a CadImport grid row."""
     out = dict(row)
-    cat = category if category in {"Cad", "Linear", "Component"} else "Cad"
-    out["PartMode"] = part_mode_int(cat)
+    cat = category if category in {"Cad", "Linear", "Component", "Assembly"} else "Cad"
+    if cat != "Assembly":
+        out["PartMode"] = part_mode_int(cat)
     out["ItemType"] = cat
     out["Category"] = cat
     if qty is not None:
@@ -1854,6 +1897,13 @@ def overlay_classified_row(
         out["IsPlate"] = False
         out["IsPart"] = True
         out["Machine"] = machine
+    elif cat == "Assembly":
+        out["IsLinear"] = False
+        out["IsPlate"] = False
+        out["IsPart"] = False
+        out["ProductType"] = 300
+        out["Machine"] = None
+        out["IsAssembly"] = True
     else:
         out["IsLinear"] = False
         out["IsPlate"] = True

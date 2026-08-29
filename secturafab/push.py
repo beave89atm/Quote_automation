@@ -15,6 +15,8 @@ from quote_core.drawing_library import extract_part_key
 from quote_core.drawing_title import (
     extract_assembly_description,
     extract_drawing_number_from_pdf,
+    is_drawing_boilerplate_title,
+    title_from_stp_takeoff,
 )
 
 from .browser_session import CHROME_SESSION_REQUIRED, effective_website_cookie
@@ -69,6 +71,7 @@ from .website import (
     client_antiforgery_extracted,
     inventory_location_from_html,
     filelist_from_cadimport_upload,
+    finish_filelist_kids,
     is_raw_step_upload_row,
     filelist_row_from_attachment_upload,
     linear_add_product_type,
@@ -239,6 +242,10 @@ def classify_sectura_item(description: str) -> str:
     compact = text.replace(" ", "").replace("-", "")
     if "HOSEGUARD" in compact or "HOSE GUARD" in text:
         return "Linear"
+    if "HINGE" in text and "PLATE" not in text:
+        return "Component"
+    if "WELDMENT" in text or " ASSEMBLY" in text or " ASM," in text or " ASM " in text:
+        return "Assembly"
     if "KINGPIN" in compact:
         return "Component"
     if "FILLERNECK" in compact:
@@ -1621,7 +1628,12 @@ class SecturaFabPushService:
         extra_pdfs: list[Path] | None,
         qty: int = 1,
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        """Cad / Linear / Component + closest ProductID/SKU. A36 only if no grade."""
+        """Cad / Linear / Component / Assembly + closest ProductID/SKU.
+
+        Nested STEP names like Aluminum Platform Weldment are Assembly, not
+        Cad plate. Hinge (not hinge plate) is Component. ALUMINUM in the
+        name is not A36.
+        """
         from quote_core.part_materials import (
             build_part_material_map,
             lookup_part_material,
@@ -1640,7 +1652,7 @@ class SecturaFabPushService:
             extra_pdfs=extra_pdfs,
         )
         classified: list[dict[str, Any]] = []
-        counts = {"Cad": 0, "Linear": 0, "Component": 0}
+        counts = {"Cad": 0, "Linear": 0, "Component": 0, "Assembly": 0}
         for row in rows:
             name = row_name(row)
             stem = Path(str(row.get("FileName") or "")).stem
@@ -1662,10 +1674,13 @@ class SecturaFabPushService:
             if token in purchased or token.replace("-", "") in compact:
                 cat = "Component"
             pm = lookup_part_material(part_materials, name)
+            aluminum_named = bool(re.search(r"\bALUMINI?UM\b", name, re.I))
             material = default_material
             thickness: str | float = default_thickness
             if pm and pm.material:
                 material = pm.material
+            elif aluminum_named:
+                material = ""
             elif pm is None and default_material == "A36":
                 notes.append(
                     f"A36 on {name[:40]!r} — drawing named no grade"
@@ -1675,11 +1690,15 @@ class SecturaFabPushService:
             product_id = None
             sku = None
             machine = "Laser" if cat == "Cad" else None
+            if cat == "Assembly":
+                machine = None
             named = _named_grade_from_blob(
                 f"{name} {material} {(pm.material if pm else '')}"
             )
             if named:
                 material = _shop_material(named)
+            if aluminum_named and (not named or _shop_material(material) == "A36"):
+                material = ""
             bind: dict[str, Any] | None = None
             if cat == "Linear":
                 machine = "Saw"
@@ -1729,9 +1748,10 @@ class SecturaFabPushService:
             counts[cat] = counts.get(cat, 0) + 1
             row_id = str(overlaid.get("ID") or overlaid.get("ItemID") or EMPTY_GUID)
             try:
-                self.client.cadimport_set_part_mode(
-                    row_id=row_id, part_mode=int(overlaid["PartMode"])
-                )
+                if cat != "Assembly" and "PartMode" in overlaid:
+                    self.client.cadimport_set_part_mode(
+                        row_id=row_id, part_mode=int(overlaid["PartMode"])
+                    )
                 self.client.cadimport_update_data(overlaid)
             except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
                 notes.append(
@@ -1739,7 +1759,8 @@ class SecturaFabPushService:
                 )
         notes.append(
             f"Classified CAD Files kids — Cad: {counts['Cad']}, "
-            f"Linear: {counts['Linear']}, Component: {counts['Component']}"
+            f"Linear: {counts['Linear']}, Component: {counts['Component']}, "
+            f"Assembly: {counts['Assembly']}"
         )
         return classified, notes
 
@@ -1882,12 +1903,22 @@ class SecturaFabPushService:
                 "(AddItem_DXFFiles 200 with 1 STEP file is not success)"
             )
             return notes
+        kids = finish_filelist_kids(
+            data_rows, part_key=part_key, cad_filename=cad_filename
+        )
+        if len(kids) <= 1:
+            notes.append(
+                f"WARNING: Finish FileList len={len(kids)} after dropping "
+                "Root/raw STEP — not Finishing (need exploded kids, not "
+                "1 raw STEP or Root-only)"
+            )
+            return notes
         notes.append(
-            f"CadImport FileList using {len(data_rows)} exploded kid row(s) "
+            f"CadImport FileList using {len(kids)} exploded kid row(s) "
             f"(SourceDataID/FileID for Finish calculators)"
         )
         classified, class_notes = self.classify_cadimport_rows(
-            data_rows,
+            kids,
             default_material=material,
             default_thickness=thickness,
             bom_rows=bom_rows,
@@ -1907,16 +1938,45 @@ class SecturaFabPushService:
                 ready.append(r)
         if not ready:
             ready = classified
-        self.client.add_item_dxf_files(
+        ready = finish_filelist_kids(
+            ready, part_key=part_key, cad_filename=cad_filename
+        )
+        if len(ready) <= 1:
+            notes.append(
+                f"WARNING: classified Finish FileList len={len(ready)} — "
+                "not Finishing"
+            )
+            return notes
+        result = self.client.add_item_dxf_files(
             quote_id=quote_id,
             file_list=ready,
             item_id=EMPTY_GUID,
             customer_material=False,
         )
+        via = getattr(self.client, "_finish_via", "") or ""
+        if isinstance(via, str) and via:
+            notes.append(f"finish_via={via}")
         notes.append(
             f"Finish POST /Quote/AddItem_DXFFiles ({len(ready)} FileList row(s)) "
             f"— laser/saw packs come from Finish, not grafted Profile"
         )
+        empty_finish = False
+        if isinstance(result, dict):
+            body_type = str(result.get("body_type") or "")
+            body_keys = [str(k) for k in (result.get("body_keys") or [])]
+            if body_keys:
+                notes.append("finish_body_keys=" + ",".join(body_keys[:12]))
+            if result.get("empty_body") or (
+                body_type in {"empty", "str"}
+                and not result.get("has_NewItem")
+                and not result.get("has_QuoteItem")
+                and not body_keys
+            ):
+                empty_finish = True
+                notes.append(
+                    "WARNING: AddItem_DXFFiles HTTP 200 empty body / no NewItem "
+                    "— not success (cookie HTTP Finish is the ItemList-0 path)"
+                )
         posted = self._read_quote_items(quote_id)
         cad_n = count_cad_product_type(posted)
         lin_n = count_linear_product_type(posted)
@@ -1924,6 +1984,10 @@ class SecturaFabPushService:
             notes.append(
                 f"WARNING: AddItem_DXFFiles HTTP 200 with {len(ready)} FileList "
                 f"row(s) landed 0 ItemList lines — not success"
+            )
+        elif empty_finish:
+            notes.append(
+                "WARNING: Finish body empty even though GET later showed items"
             )
         return notes
 
@@ -2931,11 +2995,18 @@ class SecturaFabPushService:
                     library_folder=library.get("folder"),
                     related_pdf_names=list(library.get("related_pdfs") or []),
                 )
+                or title_from_stp_takeoff(takeoff)
                 or title_from_library_folder(library.get("folder"), part_key=part_key)
                 or title_from_library_folder(title, part_key=part_key)
                 or title_from_job_title(title, part_key=part_key)
                 or title_from_bom_family(bom_rows)
             )
+            if is_drawing_boilerplate_title(raw_title):
+                raw_title = (
+                    title_from_stp_takeoff(takeoff)
+                    or title_from_library_folder(library.get("folder"), part_key=part_key)
+                    or title_from_bom_family(bom_rows)
+                )
             assembly_description = format_assembly_description(part_key, raw_title)
             weldment_title = bool(
                 bom_rows

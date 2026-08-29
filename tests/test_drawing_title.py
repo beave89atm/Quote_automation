@@ -2,7 +2,47 @@ from quote_core.drawing_title import (
     extract_assembly_description,
     extract_drawing_number_from_pdf_text,
     extract_title_from_pdf_text,
+    is_drawing_boilerplate_title,
+    title_from_exploded_names,
 )
+
+
+def test_drawing_sole_property_is_not_a_title():
+    text = """
+34137-1
+DRAWING IS THE SOLE PROPERTY OF
+TIME MANUFACTURING
+ALUMINUM PLATFORM WELDMENT
+"""
+    title = extract_title_from_pdf_text(text, part_key="34137-1")
+    assert title is not None
+    assert "SOLE PROPERTY" not in title.upper()
+    assert "WELDMENT" in title.upper()
+    assert is_drawing_boilerplate_title("DRAWING IS THE SOLE PROPERTY OF")
+    assert is_drawing_boilerplate_title("34137-1 - DRAWING IS THE SOLE PROPERTY OF")
+    from secturafab.item_desc import format_quote_header_description
+
+    assert format_quote_header_description(
+        "DRAWING IS THE SOLE PROPERTY OF", part_key="34137-1"
+    ) == ""
+    assert title_from_exploded_names(
+        [
+            "Root",
+            "34137-1",
+            "88010 ALUMINUM HINGE-4209_88010-1 Flexible",
+            "34136-1 Aluminum Platform Weldment_34136-1",
+            "34134 ALUMINUM DOOR WELDMENT-4159_34134-1",
+        ]
+    )
+    weld = title_from_exploded_names(
+        [
+            "Root",
+            "34136-1 Aluminum Platform Weldment_34136-1",
+        ]
+    )
+    assert weld is not None
+    assert "PLATFORM" in weld.upper()
+    assert "WELDMENT" in weld.upper()
 
 
 def test_extract_title_coupler_asm():

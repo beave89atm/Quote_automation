@@ -74,6 +74,9 @@ def test_classify_plate_over_three_quarter_is_component():
     assert classify_sectura_item("15890-1 END CAP, BOOM") == "Cad"
     assert classify_sectura_item("50122-1 1 1/4 NPT PIPE CAP") == "Component"
     assert classify_sectura_item("21689-1 HOSE GUARD") == "Linear"
+    assert classify_sectura_item("34136-1 Aluminum Platform Weldment") == "Assembly"
+    assert classify_sectura_item("88010 ALUMINUM HINGE Flexible") == "Component"
+    assert classify_sectura_item("102196-5 PLATE (HINGE PLATE)") == "Cad"
 
 
 def test_never_a569_material():
@@ -805,6 +808,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "ed8cfcda-68e4-4655-a240-79cce4280d7e" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "ba7730a0-0848-42d2-8579-dc18f86ec27f" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "30940f1d-d262-4562-bfd3-1b17575dc83c" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "9a2bc798-f192-4e4c-9b12-78098305f7cc" in FORBIDDEN_LIVE_QUOTE_IDS
     from secturafab.forbidden_quotes import (
         FORBIDDEN_LIVE_QUOTE_NUMBERS,
         is_forbidden_quote_id,
@@ -814,6 +818,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "34639-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "11791-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "10072-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "34137-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert is_forbidden_quote_id("280f4dcb-1111-2222-3333-444444444444")
     for qid in (
         "5e111cd2-73d1-44e1-9602-f2a4a3de2fb4",
@@ -832,6 +837,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "ed8cfcda-68e4-4655-a240-79cce4280d7e",
         "ba7730a0-0848-42d2-8579-dc18f86ec27f",
         "30940f1d-d262-4562-bfd3-1b17575dc83c",
+        "9a2bc798-f192-4e4c-9b12-78098305f7cc",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(

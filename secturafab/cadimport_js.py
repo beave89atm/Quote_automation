@@ -110,6 +110,33 @@ UPDATE_DATA_NEXT_SNIPPET = (
     "data:{ItemList:i,SourceID:t,ReturnItemID:n}})}"
 )
 
+# QuoteOrderEdit Finish — same controllerName='/Quote' as GetItem_AddView.
+#   data:{ID, ItemID, customerMaterial, FileList}
+# FileList = #gridDXFParts rows (ErrorStatus===0, Qty>0), not the raw STEP.
+# Live 34137-1: cookie-HTTP POST 200 empty str / ItemList 0. Same claims
+# miss as /part/create — send via Quotes-tab fetch, do not invent a route.
+ADD_ITEM_DXF_FILES_PATH = "/Quote/AddItem_DXFFiles"
+ADD_ITEM_DXF_FILES_BODY_KEYS = ("ID", "ItemID", "customerMaterial", "FileList")
+ADD_ITEM_DXF_FILES_SNIPPET = (
+    '$.ajax({type:"POST",url:"/Quote/AddItem_DXFFiles",'
+    "data:{ID:id,ItemID:itemId,customerMaterial:cm,FileList:rows}})"
+)
+
+# CadImport classify (Kyle Cad / Linear / Component dropdown → PartMode).
+# SetPartMode: ID + integer PartMode (strings 500). 0 Cad, 1 Linear, 2 Component.
+# UpdateData: json List is a native array (same as other CadImport JSON).
+# Live 34137-1: 31× cookie-HTTP 200 often empty str. Quotes-tab fetch.
+SET_PART_MODE_PATH = "/CadImport/SetPartMode"
+SET_PART_MODE_SNIPPET = (
+    '$.ajax({type:"POST",url:"/CadImport/SetPartMode",'
+    "data:{ID:id,PartMode:mode}})"
+)
+UPDATE_DATA_PATH = "/CadImport/UpdateData"
+UPDATE_DATA_SNIPPET = (
+    '$.ajax({type:"POST",url:"/CadImport/UpdateData",'
+    "dataType:\"json\",data:{List:rows}})"
+)
+
 
 @dataclass
 class CadImportXhr:

@@ -420,7 +420,17 @@ def scrape_quotes_af_fields(base: str | None = None) -> list[tuple[str, str]]:
     return out
 
 
-_PART_CREATE_FETCH_JS = """(function(formPairs) {
+# QuoteOrderEdit / CadImport only — never invent a path.
+_QUOTES_TAB_FETCH_PATHS = frozenset(
+    {
+        "/part/create",
+        "/Quote/AddItem_DXFFiles",
+        "/CadImport/SetPartMode",
+        "/CadImport/UpdateData",
+    }
+)
+
+_QUOTES_TAB_FETCH_JS = """(function(spec) {
   var fields = [];
   document.querySelectorAll('input[name^="__RequestVerificationToken"]').forEach(function(el) {
     if (el.name && el.value) fields.push([el.name, el.value]);
@@ -434,36 +444,70 @@ _PART_CREATE_FETCH_JS = """(function(formPairs) {
       af_names: [],
       status: 0,
       body_keys: [],
+      body_type: "empty",
+      has_NewItem: false,
+      has_QuoteItem: false,
       list_len: 0,
+      text_len: 0,
       List: null
     });
   }
-  var params = new URLSearchParams();
-  (formPairs || []).forEach(function(pair) {
-    params.append(String(pair[0]), String(pair[1]));
-  });
-  fields.forEach(function(pair) { params.append(pair[0], pair[1]); });
-  return fetch("/part/create", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-      "X-Requested-With": "XMLHttpRequest",
-      "Accept": "application/json, text/javascript, */*; q=0.01"
-    },
-    body: params,
+  var path = String(spec.path || "/");
+  var method = String(spec.method || "POST");
+  var headers = {
+    "X-Requested-With": "XMLHttpRequest",
+    "Accept": "application/json, text/javascript, */*; q=0.01"
+  };
+  var body = undefined;
+  if (spec.query) {
+    var qs = new URLSearchParams();
+    Object.keys(spec.query).forEach(function(k) {
+      qs.append(k, String(spec.query[k]));
+    });
+    path = path + (path.indexOf("?") >= 0 ? "&" : "?") + qs.toString();
+  }
+  if (spec.json != null) {
+    var obj = spec.json;
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+      fields.forEach(function(p) { obj[p[0]] = p[1]; });
+    }
+    headers["Content-Type"] = "application/json; charset=UTF-8";
+    body = JSON.stringify(obj);
+  } else if (method !== "GET") {
+    var params = new URLSearchParams();
+    (spec.form || []).forEach(function(pair) {
+      params.append(String(pair[0]), String(pair[1]));
+    });
+    fields.forEach(function(pair) { params.append(pair[0], pair[1]); });
+    headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8";
+    body = params;
+  }
+  return fetch(path, {
+    method: method,
+    headers: headers,
+    body: body,
     credentials: "same-origin"
   }).then(function(r) {
     return r.text().then(function(text) {
       var json = null;
       try { json = JSON.parse(text); } catch (e) { json = null; }
-      var body_keys = (json && typeof json === "object") ? Object.keys(json) : [];
-      var list = (json && Array.isArray(json.List)) ? json.List : null;
+      var isObj = json && typeof json === "object" && !Array.isArray(json);
+      var body_keys = isObj ? Object.keys(json) : [];
+      var list = (isObj && Array.isArray(json.List)) ? json.List : null;
+      var body_type = "empty";
+      if (text) {
+        body_type = isObj ? "object" : (json == null ? "str" : typeof json);
+      }
       return {
         has_antiforgery: true,
         af_names: af_names,
         status: r.status,
         body_keys: body_keys,
+        body_type: body_type,
+        has_NewItem: !!(isObj && (json.NewItem || json.newItem)),
+        has_QuoteItem: !!(isObj && (json.QuoteItem || json.quoteItem)),
         list_len: list ? list.length : 0,
+        text_len: text ? String(text).length : 0,
         List: list
       };
     });
@@ -480,36 +524,53 @@ def _unwrap_evaluate(result: Any) -> Any:
     return inner if inner is not None else result
 
 
-def post_part_create_from_quotes_tab(
-    form_pairs: list[tuple[str, str]],
+def _empty_quotes_fetch(*, include_list: bool = True) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "has_antiforgery": False,
+        "af_names": [],
+        "status": 0,
+        "body_keys": [],
+        "body_type": "empty",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "list_len": 0,
+        "text_len": 0,
+        "via": "chrome_dom_fetch",
+    }
+    if include_list:
+        out["List"] = None
+    return out
+
+
+def quotes_tab_fetch(
     *,
+    path: str,
+    method: str = "POST",
+    form_pairs: list[tuple[str, str]] | None = None,
+    json_body: Any = None,
+    query: dict[str, Any] | None = None,
+    include_list: bool = False,
+    timeout: float = _PART_CREATE_TIMEOUT_S,
     base: str | None = None,
 ) -> dict[str, Any]:
-    """DoCreateDXFParts via fetch in the live Quotes document. Never logs AF."""
+    """POST from the live Quotes document. Never logs AF or body text."""
+    allowed = path if str(path or "").startswith("/") else f"/{path}"
+    if allowed not in _QUOTES_TAB_FETCH_PATHS:
+        return _empty_quotes_fetch(include_list=include_list)
     tab = quotes_tab(base)
     if not tab:
-        return {
-            "has_antiforgery": False,
-            "af_names": [],
-            "status": 0,
-            "body_keys": [],
-            "list_len": 0,
-            "List": None,
-            "via": "chrome_dom_fetch",
-        }
+        return _empty_quotes_fetch(include_list=include_list)
     ws = str(tab.get("webSocketDebuggerUrl") or "")
     if not ws:
-        return {
-            "has_antiforgery": False,
-            "af_names": [],
-            "status": 0,
-            "body_keys": [],
-            "list_len": 0,
-            "List": None,
-            "via": "chrome_dom_fetch",
-        }
-    pairs = [[str(k), str(v)] for k, v in form_pairs if k]
-    expression = _PART_CREATE_FETCH_JS + "(" + json.dumps(pairs) + ")"
+        return _empty_quotes_fetch(include_list=include_list)
+    spec: dict[str, Any] = {"path": allowed, "method": str(method or "POST").upper()}
+    if query:
+        spec["query"] = {str(k): str(v) for k, v in query.items() if k}
+    if json_body is not None:
+        spec["json"] = json_body
+    else:
+        spec["form"] = [[str(k), str(v)] for k, v in (form_pairs or []) if k]
+    expression = _QUOTES_TAB_FETCH_JS + "(" + json.dumps(spec, separators=(",", ":")) + ")"
     result = cdp_call(
         ws,
         "Runtime.evaluate",
@@ -518,20 +579,12 @@ def post_part_create_from_quotes_tab(
             "returnByValue": True,
             "awaitPromise": True,
         },
-        timeout=_PART_CREATE_TIMEOUT_S,
+        timeout=timeout,
     )
     value = _unwrap_evaluate(result)
     if not isinstance(value, dict):
-        return {
-            "has_antiforgery": False,
-            "af_names": [],
-            "status": 0,
-            "body_keys": [],
-            "list_len": 0,
-            "List": None,
-            "via": "chrome_dom_fetch",
-        }
-    out = {
+        return _empty_quotes_fetch(include_list=include_list)
+    out: dict[str, Any] = {
         "has_antiforgery": bool(value.get("has_antiforgery")),
         "af_names": [
             str(n)
@@ -540,8 +593,72 @@ def post_part_create_from_quotes_tab(
         ],
         "status": int(value.get("status") or 0),
         "body_keys": [str(k) for k in (value.get("body_keys") or [])],
+        "body_type": str(value.get("body_type") or "empty"),
+        "has_NewItem": bool(value.get("has_NewItem")),
+        "has_QuoteItem": bool(value.get("has_QuoteItem")),
         "list_len": int(value.get("list_len") or 0),
-        "List": value.get("List") if isinstance(value.get("List"), list) else None,
+        "text_len": int(value.get("text_len") or 0),
         "via": "chrome_dom_fetch",
     }
+    if include_list:
+        out["List"] = value.get("List") if isinstance(value.get("List"), list) else None
     return out
+
+
+def post_part_create_from_quotes_tab(
+    form_pairs: list[tuple[str, str]],
+    *,
+    base: str | None = None,
+) -> dict[str, Any]:
+    """DoCreateDXFParts via fetch in the live Quotes document. Never logs AF."""
+    return quotes_tab_fetch(
+        path="/part/create",
+        form_pairs=form_pairs,
+        include_list=True,
+        base=base,
+    )
+
+
+def post_add_item_dxf_files_from_quotes_tab(
+    payload: dict[str, Any],
+    *,
+    base: str | None = None,
+) -> dict[str, Any]:
+    """Finish POST /Quote/AddItem_DXFFiles from the Quotes document."""
+    return quotes_tab_fetch(
+        path="/Quote/AddItem_DXFFiles",
+        json_body=payload,
+        include_list=False,
+        base=base,
+    )
+
+
+def post_set_part_mode_from_quotes_tab(
+    *,
+    row_id: str,
+    part_mode: int,
+    base: str | None = None,
+) -> dict[str, Any]:
+    """POST /CadImport/SetPartMode from the Quotes document."""
+    return quotes_tab_fetch(
+        path="/CadImport/SetPartMode",
+        query={"ID": row_id, "PartMode": int(part_mode)},
+        include_list=False,
+        timeout=30.0,
+        base=base,
+    )
+
+
+def post_update_data_from_quotes_tab(
+    payload: dict[str, Any],
+    *,
+    base: str | None = None,
+) -> dict[str, Any]:
+    """POST /CadImport/UpdateData from the Quotes document."""
+    return quotes_tab_fetch(
+        path="/CadImport/UpdateData",
+        json_body=payload,
+        include_list=False,
+        timeout=30.0,
+        base=base,
+    )

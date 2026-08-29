@@ -998,7 +998,15 @@ def test_finish_cad_files_uses_upload_filelist_ids(tmp_path: Path):
                 "ErrorStatus": 0,
                 "Stock_X": 18.7,
                 "Stock_Y": 23.4,
-            }
+            },
+            {
+                "SourceDataID": "src-cad-2",
+                "FileID": "file-cad-2",
+                "FileName": "21681-1.STEP",
+                "Name": "21681-1 GUSSET",
+                "Qty": 1,
+                "ErrorStatus": 0,
+            },
         ],
     }
     client.cadimport_data.return_value = {}
@@ -1808,6 +1816,222 @@ def test_post_part_create_from_quotes_tab_uses_page_fetch():
     assert token not in blob
 
 
+def test_add_item_dxf_files_quotes_tab_fetch_not_cookie_http():
+    """Finish POST /Quote/AddItem_DXFFiles is fetch in the Quotes document."""
+    from secturafab.chrome_cdp import post_add_item_dxf_files_from_quotes_tab
+
+    token = "af-secret-token-value"
+    tab = {
+        "title": "Quotes",
+        "url": "https://www.secturafab.com/Quote",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        assert method == "Runtime.evaluate"
+        assert "fetch(" in expr
+        assert "/Quote/AddItem_DXFFiles" in expr
+        assert "credentials" in expr
+        assert "same-origin" in expr
+        assert params.get("awaitPromise") is True
+        assert token not in expr
+        return {
+            "result": {
+                "value": {
+                    "has_antiforgery": True,
+                    "af_names": ["__RequestVerificationToken"],
+                    "status": 200,
+                    "body_keys": ["NewItem"],
+                    "body_type": "object",
+                    "has_NewItem": True,
+                    "has_QuoteItem": False,
+                    "list_len": 0,
+                    "text_len": 40,
+                }
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quotes_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.cdp_call", side_effect=_call
+    ):
+        result = post_add_item_dxf_files_from_quotes_tab(
+            {"ID": "qid", "ItemID": EMPTY_GUID, "customerMaterial": False, "FileList": []}
+        )
+    assert result["status"] == 200
+    assert result["via"] == "chrome_dom_fetch"
+    assert result["has_NewItem"] is True
+    assert token not in json.dumps(result)
+
+
+def test_finish_empty_body_200_is_not_success(tmp_path: Path):
+    """Live 34137-1: Finish 200 empty str / no NewItem / GET 0 Cad → not ok."""
+    stp = tmp_path / "34996-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-a",
+            "FileID": "file-a",
+            "Name": "34996-2 PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+        {
+            "SourceDataID": "src-b",
+            "FileID": "file-b",
+            "Name": "34996-3 GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._finish_via = "chrome_dom_fetch"
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": [],
+        "body_type": "str",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "text_len": 0,
+        "empty_body": True,
+        "via": "chrome_dom_fetch",
+    }
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003496",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="34996-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    blob = " ".join(notes)
+    assert "finish_via=chrome_dom_fetch" in blob
+    assert "empty body" in blob.lower() or "no NewItem" in blob
+    assert "0 ItemList" in blob or "not success" in blob.lower()
+    client.add_item_dxf_files.assert_called()
+
+
+def test_finish_skips_root_only_filelist(tmp_path: Path):
+    stp = tmp_path / "34995-1.STEP"
+    stp.write_bytes(b"ISO")
+    rows = [
+        {
+            "SourceDataID": "src-root",
+            "FileID": "file-root",
+            "Name": "Root",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+        {
+            "SourceDataID": "src-step",
+            "FileID": "file-step",
+            "FileName": "34995-1.STEP",
+            "Name": "34995-1.STEP",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "PartCount": 8,
+            "Status": 1,
+        },
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": rows}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.cadimport_data.return_value = {"List": rows}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003495",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="34995-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "not Finishing" in blob or "Root" in blob
+
+
+def test_classify_nested_weldment_hinge_not_a36_plate():
+    assert classify_sectura_item(
+        "34136-1 Aluminum Platform Weldment_34136-1"
+    ) == "Assembly"
+    assert classify_sectura_item(
+        "34134 ALUMINUM DOOR WELDMENT-4159_34134-1"
+    ) == "Assembly"
+    assert classify_sectura_item(
+        "88010 ALUMINUM HINGE-4209_88010-1 Flexible"
+    ) == "Component"
+    assert classify_sectura_item("102196-5 PLATE (HINGE PLATE)") == "Cad"
+    service = SecturaFabPushService(client=MagicMock())
+    rows = [
+        {
+            "SourceDataID": "a",
+            "Name": "34136-1 Aluminum Platform Weldment_34136-1",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "SourceDataID": "b",
+            "Name": "88010 ALUMINUM HINGE-4209_88010-1 Flexible",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "SourceDataID": "c",
+            "Name": "34137-4 GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+    ]
+    classified, notes = service.classify_cadimport_rows(
+        rows,
+        default_material="A36",
+        default_thickness="0.25",
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+    )
+    cats = {r["Category"] for r in classified}
+    assert "Assembly" in cats
+    assert "Component" in cats
+    assert "Cad" in cats
+    weld = next(r for r in classified if r["Category"] == "Assembly")
+    assert weld.get("IsPlate") is False
+    assert weld.get("Material") in (None, "", weld.get("Material"))
+    assert str(weld.get("Material") or "") != "A36"
+    hinge = next(r for r in classified if r["Category"] == "Component")
+    assert str(hinge.get("Material") or "") != "A36"
+    blob = " ".join(notes)
+    assert "Assembly:" in blob
+
+
 def test_explode_skips_cookie_quote_html_even_when_fields_present(tmp_path: Path):
     """cookie_quote_html is the wrong claims user — no /part/create."""
     stp = tmp_path / "34997-1.STEP"
@@ -2363,52 +2587,62 @@ def test_step_job_does_not_call_image_files(tmp_path: Path, monkeypatch):
 
 
 def test_add_item_dxf_files_sends_js_contract():
-    client = MagicMock()
+    """Finish is Quotes-tab fetch (live 34137-1), not cookie HTTP."""
     from secturafab.client import SecturaFabClient
 
     real = SecturaFabClient.__new__(SecturaFabClient)
     real.config = MagicMock()
     real.config.timeout_seconds = 30
-    captured: dict[str, Any] = {}
+    real._af_source = "chrome_dom"
+    posted: list[dict[str, Any]] = []
 
-    def fake_website_request(method, path, **kwargs):
-        captured["method"] = method
-        captured["path"] = path
-        captured["json"] = kwargs.get("json")
-        captured["prefer_api_origin"] = kwargs.get("prefer_api_origin")
-        captured["headers"] = kwargs.get("headers")
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.content = b"{}"
-        resp.json.return_value = {"ok": True}
-        resp.headers = {}
-        resp.text = "{}"
-        resp.url = path
-        return resp
+    def _cdp(payload, **_k):
+        posted.append(payload)
+        return {
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["NewItem"],
+            "body_type": "object",
+            "has_NewItem": True,
+            "has_QuoteItem": False,
+            "text_len": 80,
+            "via": "chrome_dom_fetch",
+        }
 
-    real.website_request = fake_website_request  # type: ignore[method-assign]
-    real.add_item_dxf_files(
-        quote_id="qid",
-        file_list=[
-            {
-                "ErrorStatus": 0,
-                "Qty": 1,
-                "Machine": "Laser",
-                "Material": "100k",
-                "Thickness": 0.375,
-                "ProductID": None,
-            }
-        ],
-    )
-    assert captured["path"] == "/Quote/AddItem_DXFFiles"
-    assert captured["prefer_api_origin"] is False
-    assert (captured.get("headers") or {}).get("X-Requested-With") == "XMLHttpRequest"
-    body = captured["json"]
+    real.session = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.post_add_item_dxf_files_from_quotes_tab",
+        side_effect=_cdp,
+    ):
+        result = real.add_item_dxf_files(
+            quote_id="qid",
+            file_list=[
+                {
+                    "ErrorStatus": 0,
+                    "Qty": 1,
+                    "Machine": "Laser",
+                    "Material": "100k",
+                    "Thickness": 0.375,
+                    "ProductID": None,
+                }
+            ],
+        )
+    real.session.request.assert_not_called()
+    assert posted
+    body = posted[0]
     assert body["ID"] == "qid"
     assert body["ItemID"] == EMPTY_GUID
     assert body["customerMaterial"] is False
     assert isinstance(body["FileList"], list)
     assert body["FileList"][0]["Machine"] == "Laser"
+    assert result["via"] == "chrome_dom_fetch"
+    assert real._finish_via == "chrome_dom_fetch"
 
 
 def test_add_item_pdf_files_posts_quote_mvc():
