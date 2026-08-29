@@ -27,6 +27,7 @@ from .item_desc import (
     format_quote_header_description,
     is_bare_part_number,
     match_bom_part_no,
+    normalize_part_token,
     title_from_bom_family,
     title_from_job_title,
     title_from_library_folder,
@@ -216,6 +217,16 @@ def _looks_like_formed_plate(description: str) -> bool:
     return any(h in text for h in (" FORMED ", " ROLLED ", " BENT PLATE "))
 
 
+def _cad_plate_sheet_noun(description: str) -> bool:
+    """Plate/sheet/gusset is Cad. TRIANGLE GUSSET is not Linear (ANGLE substring)."""
+    text = f" {str(description or '').upper()} "
+    if any(h in text for h in (" CHANNEL ", " TUBE ", " PIPE ", " BEAM ", " HSS ")):
+        return False
+    if re.search(r"\bANGLE\b", text) or re.search(r"\bBARS?\b", text):
+        return False
+    return bool(re.search(r"\b(PLATE|GUSSET|SHEET|FLAT)\b", text))
+
+
 def classify_sectura_item(description: str) -> str:
     """
     Map a STEP/BOM description to SecturaFAB item category dropdown values:
@@ -256,6 +267,8 @@ def classify_sectura_item(description: str) -> str:
     if thk is not None and thk > 0.75:
         return "Component"
     if _looks_like_formed_plate(description):
+        return "Cad"
+    if _cad_plate_sheet_noun(description):
         return "Cad"
     if any(h in text for h in _LINEAR_HINTS):
         return "Linear"
@@ -1676,6 +1689,7 @@ class SecturaFabPushService:
         library: dict[str, Any] | None,
         extra_pdfs: list[Path] | None,
         qty: int = 1,
+        part_key: str = "",
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """Cad / Linear / Component / Assembly + closest ProductID/SKU.
 
@@ -1719,6 +1733,13 @@ class SecturaFabPushService:
                 row["Name"] = dashed
             cat = classify_sectura_item(name)
             token = dashed or (name.split()[0] if name else "")
+            stem = str(row.get("Name") or "").strip()
+            if (
+                part_key
+                and normalize_part_token(stem) == normalize_part_token(part_key)
+                and is_bare_part_number(stem)
+            ):
+                cat = "Assembly"
             compact = {k.replace("-", ""): v for k, v in purchased.items()}
             if token in purchased or token.replace("-", "") in compact:
                 cat = "Component"
@@ -1797,11 +1818,15 @@ class SecturaFabPushService:
             counts[cat] = counts.get(cat, 0) + 1
             row_id = str(overlaid.get("ID") or overlaid.get("ItemID") or EMPTY_GUID)
             try:
-                if cat != "Assembly" and "PartMode" in overlaid:
+                from .chrome_cdp import chrome_quotes_live
+
+                live_edit = chrome_quotes_live()
+                if cat != "Assembly" and "PartMode" in overlaid and not live_edit:
                     self.client.cadimport_set_part_mode(
                         row_id=row_id, part_mode=int(overlaid["PartMode"])
                     )
-                self.client.cadimport_update_data(overlaid)
+                if not live_edit:
+                    self.client.cadimport_update_data(overlaid)
             except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
                 notes.append(
                     f"WARNING: CadImport classify post failed for {name[:40]!r}: {exc}"
@@ -1896,7 +1921,7 @@ class SecturaFabPushService:
         explode_polls: int | None = None,
         explode_sleep_s: float | None = None,
     ) -> list[str]:
-        """CAD Files: upload STEP → fetch /part/create → bind #gridDXFParts → Finish."""
+        """CAD Files: upload → explode → bind → SetPartMode on #gridDXFParts → Finish."""
         notes: list[str] = []
         try:
             self.client.get_item_add_view(quote_id, item_type="dxf")
@@ -2006,8 +2031,31 @@ class SecturaFabPushService:
             library=library,
             extra_pdfs=extra_pdfs,
             qty=qty,
+            part_key=part_key,
         )
         notes.extend(class_notes)
+        from .chrome_cdp import apply_grid_dxf_part_modes
+
+        applied = apply_grid_dxf_part_modes(classified, quote_id=quote_id)
+        if isinstance(applied, dict) and applied.get("grid_present"):
+            notes.append(
+                f"grid_classify Cad:{int(applied.get('cad') or 0)} "
+                f"Linear:{int(applied.get('linear') or 0)} "
+                f"Assembly:{int(applied.get('assembly') or 0)} "
+                f"Component:{int(applied.get('component') or 0)}"
+            )
+            via = str(applied.get("setpartmode_via") or "")
+            if via:
+                notes.append(f"setpartmode_via={via}")
+            want_cad = sum(
+                1 for r in classified if str(r.get("Category") or "") == "Cad"
+            )
+            if want_cad > 0 and int(applied.get("cad") or 0) <= 0:
+                notes.append(
+                    "WARNING: #gridDXFParts Cad=0 after SetPartMode — laser "
+                    "plates still Component; not Finishing (live 105918-1)"
+                )
+                return notes
         ready = []
         for r in classified:
             try:
@@ -2062,6 +2110,11 @@ class SecturaFabPushService:
         posted = self._read_quote_items(quote_id)
         cad_n = count_cad_product_type(posted)
         lin_n = count_linear_product_type(posted)
+        if cad_n <= 0:
+            notes.append(
+                "WARNING: GET 0 Cad — laser plates still Component is not gold "
+                "(live 105918-1)"
+            )
         if cad_n <= 0 and lin_n <= 0:
             notes.append(
                 f"WARNING: AddItem_DXFFiles HTTP 200 with {len(ready)} FileList "

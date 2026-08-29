@@ -745,6 +745,7 @@ def post_set_part_mode_from_quotes_tab(
         include_list=False,
         timeout=30.0,
         base=base,
+        prefer_edit=True,
     )
 
 
@@ -1257,6 +1258,245 @@ def invoke_page_dxf_finish(
         "has_QuoteItem": bool(value.get("has_QuoteItem")),
         "text_len": int(value.get("text_len") or 0),
         "List": [r for r in rows if isinstance(r, dict)],
+    }
+
+
+# QuoteOrderEdit: $.ajax({type:"POST",url:"/CadImport/SetPartMode",data:{ID,PartMode}})
+# Kyle STP Loom: Component→CAD sets Machine=Laser; Structural→Linear + Product Type.
+# Live 105918-1: Finish without this left plates as Component (0 Cad).
+_APPLY_GRID_PART_MODES_JS = """(function(spec) {
+  function grid() {
+    try {
+      return window.jQuery && jQuery("#gridDXFParts").data("kendoGrid");
+    } catch (e) { return null; }
+  }
+  function catOf(row) {
+    var mode = Number(row.PartMode);
+    var pt = Number(row.ProductType);
+    var item = String(row.ItemType || row.Category || "");
+    var name = String(row.Name || row.Description || row.FileName || "");
+    if (row.IsAssembly || pt === 300 || /weldment/i.test(name) || item === "Assembly") {
+      return "Assembly";
+    }
+    if (mode === 0 || item === "Cad" || pt === 100) return "Cad";
+    if (mode === 1 || row.IsLinear || item === "Linear" || pt === 10 || pt === 30 || pt === 40) {
+      return "Linear";
+    }
+    return "Component";
+  }
+  function findSetFn() {
+    var names = [
+      "SetPartMode", "ChangePartMode", "OnPartModeChange", "OnFileTypeChange"
+    ];
+    for (var i = 0; i < names.length; i++) {
+      if (typeof window[names[i]] === "function") return names[i];
+    }
+    try {
+      for (var k in window) {
+        var fn = window[k];
+        if (typeof fn === "function"
+            && String(fn).indexOf("/CadImport/SetPartMode") >= 0) {
+          return k;
+        }
+      }
+    } catch (e) {}
+    return "";
+  }
+  function applyFields(row, want) {
+    var cat = String(want.Category || "");
+    var mode = Number(want.PartMode);
+    if (cat === "Assembly" || row.IsAssembly || Number(row.ProductType) === 300) {
+      return false;
+    }
+    if (row.set) {
+      row.set("PartMode", mode);
+      row.set("ItemType", cat);
+      row.set("Category", cat);
+      if (cat === "Cad") {
+        row.set("Machine", want.Machine || "Laser");
+        row.set("ProductType", 100);
+        row.set("IsPlate", true);
+        row.set("IsLinear", false);
+      } else if (cat === "Linear") {
+        row.set("Machine", want.Machine || "Saw");
+        row.set("ProductType", Number(want.ProductType) || 10);
+        row.set("IsLinear", true);
+        row.set("IsPlate", false);
+      } else if (cat === "Component") {
+        row.set("Machine", want.Machine || "");
+        row.set("IsLinear", false);
+        row.set("IsPlate", false);
+      }
+    } else {
+      row.PartMode = mode;
+      row.ItemType = cat;
+      row.Category = cat;
+      if (cat === "Cad") {
+        row.Machine = want.Machine || "Laser";
+        row.ProductType = 100;
+        row.IsPlate = true;
+        row.IsLinear = false;
+      } else if (cat === "Linear") {
+        row.Machine = want.Machine || "Saw";
+        row.ProductType = Number(want.ProductType) || 10;
+        row.IsLinear = true;
+        row.IsPlate = false;
+      }
+    }
+    return true;
+  }
+  function matchWant(row, wants) {
+    var id = String(row.ID || row.ItemID || "").toLowerCase();
+    var sid = String(row.SourceDataID || "").toLowerCase();
+    var name = String(row.Name || row.Description || "").toLowerCase();
+    for (var i = 0; i < wants.length; i++) {
+      var w = wants[i];
+      var wid = String(w.ID || "").toLowerCase();
+      var wsid = String(w.SourceDataID || "").toLowerCase();
+      var wname = String(w.Name || "").toLowerCase();
+      if ((wid && id && wid === id) || (wsid && sid && wsid === sid)
+          || (wname && name && wname === name)) {
+        return w;
+      }
+    }
+    return null;
+  }
+  function postMode(id, mode, fnName) {
+    return new Promise(function(resolve) {
+      if (!id || id === "00000000-0000-0000-0000-000000000000") {
+        resolve("");
+        return;
+      }
+      if (fnName && typeof window[fnName] === "function") {
+        try {
+          var fn = window[fnName];
+          if (fn.length >= 2) fn(id, mode);
+          else fn(id);
+          resolve("page_fn");
+          return;
+        } catch (e) {}
+      }
+      if (window.jQuery && jQuery.ajax) {
+        jQuery.ajax({
+          type: "POST",
+          url: "/CadImport/SetPartMode",
+          data: {ID: id, PartMode: mode}
+        }).always(function() { resolve("jquery_ajax"); });
+        return;
+      }
+      resolve("");
+    });
+  }
+  var g = grid();
+  if (!g || !g.dataSource) {
+    return Promise.resolve({
+      grid_present: false,
+      cad: 0, linear: 0, assembly: 0, component: 0,
+      set_count: 0, setpartmode_via: "", grid_dxf_row_count: 0
+    });
+  }
+  var wants = (spec && spec.rows) || [];
+  var data = g.dataSource.data();
+  var chain = Promise.resolve("");
+  var setCount = 0;
+  var via = "";
+  var fnName = findSetFn();
+  for (var i = 0; i < data.length; i++) {
+    (function(row) {
+      var want = matchWant(row, wants);
+      if (!want) return;
+      if (!applyFields(row, want)) return;
+      setCount += 1;
+      var id = String(row.ID || row.ItemID || want.ID || "");
+      chain = chain.then(function(prev) {
+        if (prev && !via) via = prev;
+        return postMode(id, Number(want.PartMode), fnName);
+      });
+    })(data[i]);
+  }
+  return chain.then(function(last) {
+    if (last && !via) via = last;
+    var counts = {Cad: 0, Linear: 0, Assembly: 0, Component: 0};
+    var fresh = g.dataSource.data();
+    for (var j = 0; j < fresh.length; j++) {
+      counts[catOf(fresh[j])] += 1;
+    }
+    return {
+      grid_present: true,
+      cad: counts.Cad,
+      linear: counts.Linear,
+      assembly: counts.Assembly,
+      component: counts.Component,
+      set_count: setCount,
+      setpartmode_via: via || (fnName ? "page_fn" : ""),
+      grid_dxf_row_count: fresh.length
+    };
+  });
+})"""
+
+
+def apply_grid_dxf_part_modes(
+    rows: list[dict[str, Any]],
+    *,
+    quote_id: str | None = None,
+    base: str | None = None,
+) -> dict[str, Any]:
+    """Set File type on EDIT #gridDXFParts via SetPartMode (QuoteOrderEdit).
+
+    Does not POST /Quote/AddItem_DXFFiles. Capture counts from the grid.
+    """
+    kids = [r for r in rows if isinstance(r, dict)]
+    spec_rows: list[dict[str, Any]] = []
+    for row in kids:
+        cat = str(row.get("Category") or row.get("ItemType") or "")
+        if cat not in {"Cad", "Linear", "Component", "Assembly"}:
+            continue
+        spec_rows.append(
+            {
+                "ID": str(row.get("ID") or row.get("ItemID") or ""),
+                "SourceDataID": str(row.get("SourceDataID") or ""),
+                "Name": str(row.get("Name") or row.get("Description") or ""),
+                "Category": cat,
+                "PartMode": int(row["PartMode"]) if "PartMode" in row else (
+                    0 if cat == "Cad" else 1 if cat == "Linear" else 2
+                ),
+                "ProductType": row.get("ProductType"),
+                "Machine": str(row.get("Machine") or ""),
+            }
+        )
+    empty = {
+        "grid_present": False,
+        "cad": 0,
+        "linear": 0,
+        "assembly": 0,
+        "component": 0,
+        "set_count": 0,
+        "setpartmode_via": "",
+        "grid_dxf_row_count": 0,
+    }
+    if not spec_rows:
+        return empty
+    edit = quote_edit_tab(base, quote_id=quote_id)
+    tab = edit if isinstance(edit, dict) and edit.get("webSocketDebuggerUrl") else None
+    expression = (
+        _APPLY_GRID_PART_MODES_JS
+        + "("
+        + json.dumps({"rows": spec_rows}, separators=(",", ":"))
+        + ")"
+    )
+    value = _cdp_evaluate_promise(expression, timeout=_PART_CREATE_TIMEOUT_S, base=base, tab=tab)
+    if not isinstance(value, dict):
+        return empty
+    present = bool(value.get("grid_present"))
+    return {
+        "grid_present": present,
+        "cad": int(value.get("cad") or 0) if present else 0,
+        "linear": int(value.get("linear") or 0) if present else 0,
+        "assembly": int(value.get("assembly") or 0) if present else 0,
+        "component": int(value.get("component") or 0) if present else 0,
+        "set_count": int(value.get("set_count") or 0) if present else 0,
+        "setpartmode_via": str(value.get("setpartmode_via") or "") if present else "",
+        "grid_dxf_row_count": int(value.get("grid_dxf_row_count") or 0) if present else 0,
     }
 
 

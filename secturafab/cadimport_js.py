@@ -131,8 +131,9 @@ ADD_ITEM_DXF_FILES_SNIPPET = (
 
 # CadImport classify (Kyle Cad / Linear / Component dropdown → PartMode).
 # SetPartMode: ID + integer PartMode (strings 500). 0 Cad, 1 Linear, 2 Component.
-# UpdateData: json List is a native array (same as other CadImport JSON).
-# Live 34137-1: 31× cookie-HTTP 200 often empty str. Quotes-tab fetch.
+# Kyle STP Loom: Component→CAD sets Machine=Laser; Structural→Linear + Product Type.
+# Live 105918-1: page Finish without grid SetPartMode → 66 Component/Assembly, 0 Cad.
+# Apply PartMode on #gridDXFParts (EDIT) before Finish. UpdateData JSON List.
 SET_PART_MODE_PATH = "/CadImport/SetPartMode"
 SET_PART_MODE_SNIPPET = (
     '$.ajax({type:"POST",url:"/CadImport/SetPartMode",'

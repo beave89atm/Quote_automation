@@ -1998,6 +1998,190 @@ def test_invoke_page_dxf_finish_evaluates_page_fn():
     assert result["grid_dxf_row_count"] == 30
 
 
+def test_apply_grid_dxf_part_modes_evaluates_setpartmode_on_edit():
+    """QuoteOrderEdit SetPartMode on #gridDXFParts before Finish."""
+    from secturafab.chrome_cdp import apply_grid_dxf_part_modes
+
+    tab = {
+        "title": "*Quote-105918-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        assert method == "Runtime.evaluate"
+        assert ws_url.endswith("/edit")
+        assert "/CadImport/SetPartMode" in expr
+        assert "gridDXFParts" in expr
+        assert "PartMode" in expr
+        assert "AddItem_DXFFiles" not in expr
+        assert params.get("awaitPromise") is True
+        return {
+            "result": {
+                "value": {
+                    "grid_present": True,
+                    "cad": 3,
+                    "linear": 2,
+                    "assembly": 1,
+                    "component": 1,
+                    "set_count": 6,
+                    "setpartmode_via": "jquery_ajax",
+                    "grid_dxf_row_count": 7,
+                }
+            }
+        }
+
+    rows = [
+        {"ID": "a", "SourceDataID": "s1", "Name": "PLATE", "Category": "Cad", "PartMode": 0},
+        {"ID": "b", "SourceDataID": "s2", "Name": "TUBE", "Category": "Linear", "PartMode": 1},
+    ]
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.cdp_call", side_effect=_call
+    ):
+        result = apply_grid_dxf_part_modes(rows, quote_id="qid")
+    assert result["grid_present"] is True
+    assert result["cad"] == 3
+    assert result["linear"] == 2
+    assert result["setpartmode_via"] == "jquery_ajax"
+
+
+def test_finish_skips_when_grid_classify_cad_is_zero(tmp_path: Path):
+    """Live 105918-1: plates still Component on #gridDXFParts → not Finish."""
+    stp = tmp_path / "105918-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-a",
+            "FileID": "file-a",
+            "Name": "PLATE-1297_30345-19",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+        {
+            "SourceDataID": "src-b",
+            "FileID": "file-b",
+            "Name": "TRIANGLE GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 0,
+            "linear": 0,
+            "assembly": 1,
+            "component": 61,
+            "set_count": 0,
+            "setpartmode_via": "",
+            "grid_dxf_row_count": 67,
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="11111111-aaaa-bbbb-cccc-000000001059",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="105918-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "grid_classify Cad:0" in blob
+    assert "not Finishing" in blob
+
+
+def test_finish_get_zero_cad_is_not_gold(tmp_path: Path):
+    """Live 105918-1: ItemList 66 with 0 Cad is not gold."""
+    stp = tmp_path / "105918-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-a",
+            "FileID": "file-a",
+            "Name": "PLATE-1297_30345-19",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+        {
+            "SourceDataID": "src-b",
+            "FileID": "file-b",
+            "Name": "TRIANGLE GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {
+        "Data": [
+            {"ProductType": 300, "Description": "105918-1"},
+            {"ProductType": 200, "Description": "PLATE-1297_30345-19"},
+        ],
+        "Total": 2,
+    }
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 2,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 2,
+            "setpartmode_via": "jquery_ajax",
+            "grid_dxf_row_count": 2,
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="11111111-aaaa-bbbb-cccc-000000001060",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="105918-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_called()
+    blob = " ".join(notes)
+    assert "grid_classify Cad:2" in blob
+    assert "GET 0 Cad" in blob
+    assert "not gold" in blob
+
+
 def test_finish_empty_body_200_is_not_success(tmp_path: Path):
     """Live 34137-1: Finish 200 empty str / no NewItem / GET 0 Cad → not ok."""
     stp = tmp_path / "34996-1.STEP"
@@ -2163,6 +2347,38 @@ def test_classify_nested_weldment_hinge_not_a36_plate():
     assert str(hinge.get("Material") or "") != "A36"
     blob = " ".join(notes)
     assert "Assembly:" in blob
+
+
+def test_classify_bare_part_key_is_assembly_not_cad():
+    """Live 105918-1 root landed Assembly with bare PN desc — keep that type."""
+    service = SecturaFabPushService(client=MagicMock())
+    rows = [
+        {
+            "SourceDataID": "root",
+            "Name": "105918-1",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "SourceDataID": "plate",
+            "Name": "PLATE-1297_30345-19",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+    ]
+    classified, _notes = service.classify_cadimport_rows(
+        rows,
+        default_material="A36",
+        default_thickness="0.25",
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+        part_key="105918-1",
+    )
+    by_src = {r["SourceDataID"]: r["Category"] for r in classified}
+    assert by_src["root"] == "Assembly"
+    assert by_src["plate"] == "Cad"
 
 
 def test_explode_skips_cookie_quote_html_even_when_fields_present(tmp_path: Path):
