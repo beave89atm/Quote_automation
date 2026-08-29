@@ -1221,7 +1221,7 @@ class SecturaFabClient:
         if isinstance(n_grid, (int, float)) and int(n_grid) <= 1:
             self._finish_via = "skipped"
             return self._dxf_finish_capture({}, via="skipped")
-        page = invoke_page_dxf_finish()
+        page = invoke_page_dxf_finish(quote_id=quote_id)
         via = str(page.get("via") or "")
         if via == "skipped":
             self._finish_via = "skipped"

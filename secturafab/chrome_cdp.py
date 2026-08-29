@@ -12,10 +12,12 @@ Live 34632-2: evaluating ``createAllParts`` / ``DoCreateDXFParts`` on the
 Quotes **list** (no CAD Files dialog) posts an empty ``#gridDXF`` IDList →
 t.List=0. HTTP Upload does not fill the browser grid.
 
-Explode = proven fetch with Upload IDs. Bind = click CAD Files in the
-live Quotes tab so ``#gridDXFParts`` exists, then run DoCreateDXFParts
-**success** on that t.List. Cookie GET GetItem_AddView is the wrong
-document (live 106386-1). Finish = page fn that reads that grid.
+Explode = proven fetch with Upload IDs (list or EDIT, same origin).
+Bind/Finish = QuoteOrderEdit ``/Quote/EDIT/{id}`` (title ``*Quote-`` /
+``Quote-``). Live a64509d: Quotes list has no ``#gridDXFParts``; cookie
+GetItem_AddView is markup without kendo; Chrome EDIT after ``#but_dxf`` /
+``AddNewItemHTML('dxf','top')`` has kendo ``#gridDXFParts``.
+Do not require title ``Quotes`` for bind/Finish.
 
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys / counts only.
@@ -175,19 +177,48 @@ def _is_rejected_tab(tab: dict[str, Any]) -> bool:
     return False
 
 
-def _is_live_quotes_tab(tab: dict[str, Any]) -> bool:
-    """Title Quotes + www /Quote — not Login, not claims-mismatch."""
+def _title_is_quote_order_edit(title: str) -> bool:
+    """QuoteOrderEdit titles look like *Quote-106386-1 or Quote-106386-1."""
+    norm = str(title or "").strip().lstrip("*").strip()
+    return norm.lower().startswith("quote-")
+
+
+def _url_is_quote_edit(url: str) -> bool:
+    u = str(url or "").lower()
+    return "/quote/edit/" in u or "/quote/edit?" in u
+
+
+def _is_quotes_list_tab(tab: dict[str, Any]) -> bool:
+    """Title Quotes on /Quote — the list, not QuoteOrderEdit."""
     if _is_rejected_tab(tab):
         return False
     title = str(tab.get("title") or "").strip()
     url = str(tab.get("url") or "").lower()
     if SECTURA_HOST not in url:
         return False
-    if "/account/" in url:
+    if "/account/" in url or "getitem_addview" in url:
         return False
-    if "/quote" not in url:
+    if "/quote" not in url or _url_is_quote_edit(url):
         return False
     return title == "Quotes" or title.startswith("Quotes")
+
+
+def _is_quote_edit_tab(tab: dict[str, Any]) -> bool:
+    """/Quote/EDIT/{id} or title *Quote- / Quote-. Not GetItem_AddView."""
+    if _is_rejected_tab(tab):
+        return False
+    title = str(tab.get("title") or "").strip()
+    url = str(tab.get("url") or "").lower()
+    if SECTURA_HOST not in url:
+        return False
+    if "/account/" in url or "getitem_addview" in url:
+        return False
+    return _url_is_quote_edit(url) or _title_is_quote_order_edit(title)
+
+
+def _is_live_quotes_tab(tab: dict[str, Any]) -> bool:
+    """Signed-in Quotes list *or* Quote/EDIT. Not Login / claims / AddView."""
+    return _is_quotes_list_tab(tab) or _is_quote_edit_tab(tab)
 
 
 def list_chrome_targets(base: str | None = None) -> list[dict[str, Any]]:
@@ -206,26 +237,41 @@ def list_chrome_targets(base: str | None = None) -> list[dict[str, Any]]:
     return [r for r in rows if isinstance(r, dict)]
 
 
-def quotes_tab(base: str | None = None) -> dict[str, Any] | None:
-    """Signed-in Quotes tab (title Quotes). Never Login / claims-mismatch."""
+def _chrome_page_targets(base: str | None = None) -> list[dict[str, Any]]:
     bases = [base] if base else chrome_debug_bases()
     found: list[dict[str, Any]] = []
     for root in bases:
         if not root:
             continue
-        pages = [
+        found.extend(
             t
             for t in list_chrome_targets(root)
             if str(t.get("type") or "page") == "page" and t.get("webSocketDebuggerUrl")
-        ]
-        found.extend(t for t in pages if _is_live_quotes_tab(t))
+        )
+    return found
+
+
+def quotes_tab(base: str | None = None) -> dict[str, Any] | None:
+    """Signed-in Quotes list, or Quote/EDIT when that is the only session.
+
+    Prefer title Quotes (explode fetch). Do not require it for liveness —
+    QuoteOrderEdit title is *Quote-{PN}. Never Login / claims / AddView.
+    """
+    found = [t for t in _chrome_page_targets(base) if _is_live_quotes_tab(t)]
     if not found:
         return None
 
     def _rank(tab: dict[str, Any]) -> tuple[int, int]:
         url = str(tab.get("url") or "").lower()
         title = str(tab.get("title") or "").strip()
-        exact = 0 if title == "Quotes" else 1
+        if title == "Quotes":
+            exact = 0
+        elif title.startswith("Quotes"):
+            exact = 1
+        elif _is_quote_edit_tab(tab):
+            exact = 2
+        else:
+            exact = 3
         edit = 0 if ("/quote/edit" in url or url.rstrip("/").endswith("/quote")) else 1
         return (exact, edit)
 
@@ -233,8 +279,46 @@ def quotes_tab(base: str | None = None) -> dict[str, Any] | None:
     return found[0]
 
 
+def quote_edit_tab(
+    base: str | None = None,
+    *,
+    quote_id: str | None = None,
+    quote_number: str | None = None,
+) -> dict[str, Any] | None:
+    """QuoteOrderEdit /Quote/EDIT/{id} or title *Quote- / Quote-."""
+    found = [t for t in _chrome_page_targets(base) if _is_quote_edit_tab(t)]
+    if not found:
+        return None
+    qid = str(quote_id or "").strip().lower()
+    qnum = str(quote_number or "").strip().lower()
+
+    def _rank(tab: dict[str, Any]) -> tuple[int, int, int]:
+        url = str(tab.get("url") or "").lower()
+        title = str(tab.get("title") or "").lower()
+        id_hit = 0 if (qid and qid in url) else 1
+        num_hit = 0 if (qnum and qnum in title) else 1
+        path_hit = 0 if _url_is_quote_edit(url) else 1
+        return (id_hit, num_hit, path_hit)
+
+    found.sort(key=_rank)
+    return found[0]
+
+
 def chrome_quotes_live(base: str | None = None) -> bool:
+    """True when the Quotes list *or* Quote/EDIT session is open."""
     return quotes_tab(base) is not None
+
+
+def _quotes_or_edit_tab(
+    base: str | None = None,
+    *,
+    prefer_edit: bool = True,
+) -> dict[str, Any] | None:
+    if prefer_edit:
+        edit = quote_edit_tab(base)
+        if isinstance(edit, dict) and edit.get("webSocketDebuggerUrl"):
+            return edit
+    return quotes_tab(base)
 
 
 def _ws_handshake(ws_url: str, timeout: float = _CDP_TIMEOUT_S) -> socket.socket:
@@ -360,8 +444,8 @@ def _host_is_sectura(host: str) -> bool:
 
 
 def sectura_cookies_from_cdp(base: str | None = None) -> list[tuple[str, str]]:
-    """(name, value) for secturafab.com from the Quotes tab. Values stay in RAM."""
-    tab = quotes_tab(base)
+    """(name, value) for secturafab.com from EDIT or Quotes. Values stay in RAM."""
+    tab = _quotes_or_edit_tab(base, prefer_edit=True)
     if not tab:
         return []
     ws = str(tab.get("webSocketDebuggerUrl") or "")
@@ -400,8 +484,8 @@ def cookie_header_from_pairs(pairs: list[tuple[str, str]]) -> str:
 
 
 def scrape_quotes_af_fields(base: str | None = None) -> list[tuple[str, str]]:
-    """kendo inputs from the open Chrome Quotes tab. Never log values."""
-    tab = quotes_tab(base)
+    """kendo inputs from Quote/EDIT or the Quotes list. Never log values."""
+    tab = _quotes_or_edit_tab(base, prefer_edit=True)
     if not tab:
         return []
     ws = str(tab.get("webSocketDebuggerUrl") or "")
@@ -565,12 +649,13 @@ def quotes_tab_fetch(
     include_list: bool = False,
     timeout: float = _PART_CREATE_TIMEOUT_S,
     base: str | None = None,
+    prefer_edit: bool = False,
 ) -> dict[str, Any]:
-    """POST from the live Quotes document. Never logs AF or body text."""
+    """POST from the live Quotes or Quote/EDIT document. Never logs AF."""
     allowed = path if str(path or "").startswith("/") else f"/{path}"
     if allowed not in _QUOTES_TAB_FETCH_PATHS:
         return _empty_quotes_fetch(include_list=include_list)
-    tab = quotes_tab(base)
+    tab = _quotes_or_edit_tab(base, prefer_edit=prefer_edit) if prefer_edit else quotes_tab(base)
     if not tab:
         return _empty_quotes_fetch(include_list=include_list)
     ws = str(tab.get("webSocketDebuggerUrl") or "")
@@ -637,12 +722,13 @@ def post_add_item_dxf_files_from_quotes_tab(
     *,
     base: str | None = None,
 ) -> dict[str, Any]:
-    """Finish POST /Quote/AddItem_DXFFiles from the Quotes document."""
+    """Finish POST /Quote/AddItem_DXFFiles from the Quote/EDIT document."""
     return quotes_tab_fetch(
         path="/Quote/AddItem_DXFFiles",
         json_body=payload,
         include_list=False,
         base=base,
+        prefer_edit=True,
     )
 
 
@@ -680,9 +766,9 @@ def post_update_data_from_quotes_tab(
 # QuoteOrderEdit DoCreateDXFParts success (cited):
 #   success:function(t){var i=$("#gridDXFParts").data("kendoGrid");
 #     for(var e=0;e<t.List.length;e++)i.dataSource.data().toJSON().push(t.List[e])}
-# Live 106386-1: cookie GET GetItem_AddView / HTML inject is the wrong
-# document — #gridDXFParts lives in the Chrome CAD Files dialog.
-# Click the Quotes-tab UI (quote row + CAD Files). Bind only if grid_present.
+# Live a64509d: #gridDXFParts kendo is on /Quote/EDIT after #but_dxf /
+# AddNewItemHTML('dxf','top'). Quotes list and cookie GetItem_AddView
+# are the wrong documents (markup without kendo). Bind only if kendo.
 _BIND_DO_CREATE_SUCCESS_JS = """(function(spec) {
   function gridWin() {
     try {
@@ -770,13 +856,17 @@ _BIND_DO_CREATE_SUCCESS_JS = """(function(spec) {
   }
   function callPageOpen(qid) {
     var names = [
-      "OnAddCADClick", "OnCADFilesClick", "AddDXF", "AddDXFItem",
-      "ShowCADFiles", "OpenCADFiles", "AddItemDXF"
+      "AddNewItemHTML", "OnAddCADClick", "OnCADFilesClick", "AddDXF",
+      "AddDXFItem", "ShowCADFiles", "OpenCADFiles", "AddItemDXF"
     ];
     for (var i = 0; i < names.length; i++) {
       if (typeof window[names[i]] === "function") {
         try {
           var fn = window[names[i]];
+          if (names[i] === "AddNewItemHTML") {
+            fn("dxf", "top");
+            return names[i];
+          }
           if (fn.length >= 2) fn(qid, "dxf");
           else if (fn.length === 1) fn(qid);
           else fn();
@@ -803,6 +893,13 @@ _BIND_DO_CREATE_SUCCESS_JS = """(function(spec) {
   }
   function openDialog() {
     if (gridPresent()) return "already";
+    var btn = document.querySelector("#but_dxf");
+    if (btn) {
+      try { btn.click(); return "but_dxf"; } catch (e0) {}
+    }
+    if (typeof AddNewItemHTML === "function") {
+      try { AddNewItemHTML("dxf", "top"); return "AddNewItemHTML"; } catch (e1) {}
+    }
     var qid = String((spec && spec.quoteId) || "");
     var qnum = String((spec && spec.quoteNumber) || "");
     var via = selectQuoteRow(qid, qnum);
@@ -992,11 +1089,14 @@ def _cdp_evaluate_promise(
     *,
     timeout: float = _PART_CREATE_TIMEOUT_S,
     base: str | None = None,
+    tab: dict[str, Any] | None = None,
 ) -> Any:
-    tab = quotes_tab(base)
-    if not tab:
+    target = tab if isinstance(tab, dict) else None
+    if not (target and target.get("webSocketDebuggerUrl")):
+        target = quotes_tab(base)
+    if not target:
         return None
-    ws = str(tab.get("webSocketDebuggerUrl") or "")
+    ws = str(target.get("webSocketDebuggerUrl") or "")
     if not ws:
         return None
     result = cdp_call(
@@ -1012,43 +1112,57 @@ def _cdp_evaluate_promise(
     return _unwrap_evaluate(result)
 
 
-def _quote_layout_url(quote_id: str) -> str:
-    """GET /Quote?ID= — same Quotes layout Kyle uses. Not GetItem_AddView."""
+def _quote_edit_url(quote_id: str) -> str:
+    """QuoteOrderEdit — kendo #gridDXFParts after #but_dxf. Not GetItem_AddView."""
     qid = str(quote_id or "").strip()
-    return f"https://www.secturafab.com/Quote?ID={qid}"
+    return f"https://www.secturafab.com/Quote/EDIT/{qid}"
 
 
-def _navigate_quotes_tab_to_quote(
+def _ensure_quote_edit_page(
     quote_id: str,
     *,
     base: str | None = None,
-) -> bool:
-    """Open the quote in the live Quotes tab so CAD Files can appear."""
+) -> dict[str, Any] | None:
+    """Open /Quote/EDIT/{id} in Chrome. Do not use /Quote?ID= or GetItem_AddView."""
     qid = str(quote_id or "").strip()
     if not qid:
-        return False
-    tab = quotes_tab(base)
-    if not tab:
-        return False
+        return None
+    existing = quote_edit_tab(base, quote_id=qid)
+    if isinstance(existing, dict) and existing.get("webSocketDebuggerUrl"):
+        here = str(existing.get("url") or "").lower()
+        if (qid.lower() in here and _url_is_quote_edit(here)) or _title_is_quote_order_edit(
+            str(existing.get("title") or "")
+        ):
+            return existing
+    tab = existing if isinstance(existing, dict) else quotes_tab(base)
+    if not isinstance(tab, dict):
+        return None
     here = str(tab.get("url") or "").lower()
-    if qid.lower() in here and "/quote" in here:
-        return True
+    if qid.lower() in here and _url_is_quote_edit(here):
+        return tab
     ws = str(tab.get("webSocketDebuggerUrl") or "")
     if not ws:
-        return False
-    cdp_call(ws, "Page.navigate", {"url": _quote_layout_url(qid)})
-    ready = _cdp_evaluate_promise(
+        return None
+    cdp_call(ws, "Page.navigate", {"url": _quote_edit_url(qid)})
+    _cdp_evaluate_promise(
         """(function(){
       return new Promise(function(resolve){
-        if (document.readyState === "complete") { resolve(true); return; }
+        function isEdit(){
+          var path = String(location.pathname || "").toLowerCase();
+          var title = String(document.title || "").replace(/^\\*+/, "").trim();
+          return path.indexOf("/quote/edit/") >= 0 || /^quote-/i.test(title);
+        }
+        function done(){ resolve(isEdit() || document.readyState === "complete"); }
+        if (document.readyState === "complete") { done(); return; }
         window.addEventListener("load", function(){ resolve(true); });
-        setTimeout(function(){ resolve(document.readyState === "complete"); }, 15000);
+        setTimeout(done, 15000);
       });
     })()""",
         timeout=20.0,
         base=base,
+        tab=tab,
     )
-    return bool(ready)
+    return tab
 
 
 def bind_do_create_dxf_parts_success(
@@ -1058,10 +1172,11 @@ def bind_do_create_dxf_parts_success(
     quote_number: str | None = None,
     base: str | None = None,
 ) -> dict[str, Any]:
-    """Bind t.List onto #gridDXFParts only if that kendo grid is in Chrome.
+    """Bind t.List onto kendo #gridDXFParts on /Quote/EDIT only.
 
-    Opens the quote + CAD Files via the Quotes-tab UI. Cookie GetItem_AddView
-    is the wrong document (live 106386-1). Does not POST /part/create.
+    Click #but_dxf / AddNewItemHTML('dxf','top'). Cookie GetItem_AddView
+    and the Quotes list are the wrong documents (live a64509d).
+    Does not POST /part/create.
     """
     kids = [r for r in list_rows if isinstance(r, dict)]
     spec = {
@@ -1072,15 +1187,18 @@ def bind_do_create_dxf_parts_success(
     expression = (
         _BIND_DO_CREATE_SUCCESS_JS + "(" + json.dumps(spec, separators=(",", ":")) + ")"
     )
-    value = _cdp_evaluate_promise(expression, base=base)
+    edit = quote_edit_tab(base, quote_id=quote_id, quote_number=quote_number)
+    tab = edit if isinstance(edit, dict) and edit.get("webSocketDebuggerUrl") else None
+    value = _cdp_evaluate_promise(expression, base=base, tab=tab)
     if (
         (not isinstance(value, dict) or not value.get("grid_present"))
         and quote_id
     ):
-        if _navigate_quotes_tab_to_quote(quote_id, base=base):
-            value = _cdp_evaluate_promise(expression, base=base)
+        ensured = _ensure_quote_edit_page(quote_id, base=base)
+        if ensured:
+            value = _cdp_evaluate_promise(expression, base=base, tab=ensured)
             if isinstance(value, dict) and not value.get("opened_via"):
-                value["opened_via"] = "quote_layout"
+                value["opened_via"] = "quote_edit"
     if not isinstance(value, dict):
         return {
             "grid_present": False,
@@ -1102,9 +1220,15 @@ def bind_do_create_dxf_parts_success(
     }
 
 
-def invoke_page_dxf_finish(*, base: str | None = None) -> dict[str, Any]:
-    """Kyle Finish: page fn / click that POSTs /Quote/AddItem_DXFFiles from #gridDXFParts."""
-    value = _cdp_evaluate_promise(_PAGE_FINISH_JS + "()", base=base)
+def invoke_page_dxf_finish(
+    *,
+    base: str | None = None,
+    quote_id: str | None = None,
+) -> dict[str, Any]:
+    """Kyle Finish on /Quote/EDIT: page fn that POSTs /Quote/AddItem_DXFFiles."""
+    edit = quote_edit_tab(base, quote_id=quote_id)
+    tab = edit if isinstance(edit, dict) and edit.get("webSocketDebuggerUrl") else None
+    value = _cdp_evaluate_promise(_PAGE_FINISH_JS + "()", base=base, tab=tab)
     if not isinstance(value, dict):
         return {
             "via": "",
@@ -1149,7 +1273,8 @@ def grid_dxf_parts_rows_from_quotes_tab(
         return (raw && raw.toJSON) ? raw.toJSON() : [];
       } catch (e) { return []; }
     })()"""
-    tab = quotes_tab(base)
+    edit = quote_edit_tab(base)
+    tab = edit if isinstance(edit, dict) and edit.get("webSocketDebuggerUrl") else quotes_tab(base)
     if not tab:
         return []
     ws = str(tab.get("webSocketDebuggerUrl") or "")

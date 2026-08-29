@@ -1888,9 +1888,9 @@ def test_add_item_dxf_files_quotes_tab_fetch_not_cookie_http():
             }
         }
 
-    with patch("secturafab.chrome_cdp.quotes_tab", return_value=tab), patch(
-        "secturafab.chrome_cdp.cdp_call", side_effect=_call
-    ):
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=None), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
         result = post_add_item_dxf_files_from_quotes_tab(
             {"ID": "qid", "ItemID": EMPTY_GUID, "customerMaterial": False, "FileList": []}
         )
@@ -1901,13 +1901,13 @@ def test_add_item_dxf_files_quotes_tab_fetch_not_cookie_http():
 
 
 def test_bind_do_create_dxf_parts_success_evaluates_quote_order_edit():
-    """Click CAD Files in Chrome, then DoCreateDXFParts success if grid_present."""
+    """Click #but_dxf on /Quote/EDIT, then DoCreateDXFParts success if kendo."""
     from secturafab.chrome_cdp import bind_do_create_dxf_parts_success
 
     tab = {
-        "title": "Quotes",
-        "url": "https://www.secturafab.com/Quote",
-        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+        "title": "*Quote-106386-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
         "type": "page",
     }
 
@@ -1916,8 +1916,11 @@ def test_bind_do_create_dxf_parts_success_evaluates_quote_order_edit():
         if method == "Page.navigate":
             raise AssertionError("grid_present true must not navigate")
         assert method == "Runtime.evaluate"
+        assert ws_url.endswith("/edit")
         assert "gridDXFParts" in expr
         assert "grid_present" in expr
+        assert "#but_dxf" in expr
+        assert "AddNewItemHTML" in expr
         assert "cad files" in expr
         assert "dataSource.data().toJSON().push" in expr
         assert "innerHTML" not in expr
@@ -1934,21 +1937,21 @@ def test_bind_do_create_dxf_parts_success_evaluates_quote_order_edit():
                     "grid_dxf_row_count": 31,
                     "bound": True,
                     "list_len": 31,
-                    "opened_via": "click",
+                    "opened_via": "but_dxf",
                 }
             }
         }
 
     kids = [{"SourceDataID": "a"}, {"SourceDataID": "b"}]
-    with patch("secturafab.chrome_cdp.quotes_tab", return_value=tab), patch(
-        "secturafab.chrome_cdp.cdp_call", side_effect=_call
-    ):
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
         result = bind_do_create_dxf_parts_success(kids, quote_id="qid")
     assert result["bound"] is True
     assert result["grid_present"] is True
     assert result["grid_dxf_row_count"] == 31
     assert result["has_gridDXFParts"] is True
-    assert result["opened_via"] == "click"
+    assert result["opened_via"] == "but_dxf"
 
 
 def test_invoke_page_dxf_finish_evaluates_page_fn():
@@ -1986,9 +1989,9 @@ def test_invoke_page_dxf_finish_evaluates_page_fn():
             }
         }
 
-    with patch("secturafab.chrome_cdp.quotes_tab", return_value=tab), patch(
-        "secturafab.chrome_cdp.cdp_call", side_effect=_call
-    ):
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=None), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
         result = invoke_page_dxf_finish()
     assert result["via"] == "page_fn"
     assert result["has_NewItem"] is True
@@ -2242,6 +2245,166 @@ def test_quotes_tab_skips_login_and_claims_mismatch():
     assert tab["webSocketDebuggerUrl"].endswith("/quotes")
 
 
+def test_quote_edit_tab_matches_star_quote_title_and_edit_url():
+    """Live a64509d: QuoteOrderEdit is *Quote-{PN} on /Quote/EDIT/{id}."""
+    from secturafab.chrome_cdp import (
+        chrome_quotes_live,
+        quote_edit_tab,
+        quotes_tab,
+    )
+
+    listing = {
+        "type": "page",
+        "title": "Quotes",
+        "url": "https://www.secturafab.com/Quote",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+    }
+    edit = {
+        "type": "page",
+        "title": "*Quote-106386-1",
+        "url": (
+            "https://www.secturafab.com/Quote/EDIT/"
+            "a6ef6891-e080-45de-b57c-1a55fee00c19"
+        ),
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+    }
+    addview = {
+        "type": "page",
+        "title": "Quote",
+        "url": (
+            "https://www.secturafab.com/Quote/GetItem_AddView/"
+            "a6ef6891-e080-45de-b57c-1a55fee00c19"
+        ),
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/addview",
+    }
+    with patch("secturafab.chrome_cdp.list_chrome_targets", return_value=[listing, edit, addview]):
+        assert quotes_tab("http://127.0.0.1:9224")["title"] == "Quotes"
+        picked = quote_edit_tab(
+            "http://127.0.0.1:9224",
+            quote_id="a6ef6891-e080-45de-b57c-1a55fee00c19",
+            quote_number="106386-1",
+        )
+        assert picked is not None
+        assert picked["webSocketDebuggerUrl"].endswith("/edit")
+        assert picked["title"] == "*Quote-106386-1"
+
+
+def test_chrome_quotes_live_when_only_quote_edit_tab():
+    """Session is live if Kyle has /Quote/EDIT open — do not require title Quotes."""
+    from secturafab.chrome_cdp import chrome_quotes_live, quote_edit_tab, quotes_tab
+
+    edit = {
+        "type": "page",
+        "title": "*Quote-106386-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+    }
+    with patch("secturafab.chrome_cdp.list_chrome_targets", return_value=[edit]), patch(
+        "secturafab.chrome_cdp.chrome_debug_bases", return_value=["http://127.0.0.1:9224"]
+    ):
+        assert quotes_tab("http://127.0.0.1:9224") is edit
+        assert quote_edit_tab("http://127.0.0.1:9224") is edit
+        assert chrome_quotes_live("http://127.0.0.1:9224") is True
+
+
+def test_quote_edit_tab_skips_getitem_addview_and_login():
+    from secturafab.chrome_cdp import quote_edit_tab, quotes_tab
+
+    tabs = [
+        {
+            "type": "page",
+            "title": "Login",
+            "url": "https://www.secturafab.com/Quote/EDIT/qid",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/login",
+        },
+        {
+            "type": "page",
+            "title": "*Quote-106386-1",
+            "url": "https://www.secturafab.com/Quote/GetItem_AddView/qid",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/addview",
+        },
+    ]
+    with patch("secturafab.chrome_cdp.list_chrome_targets", return_value=tabs):
+        assert quote_edit_tab("http://127.0.0.1:9224") is None
+        assert quotes_tab("http://127.0.0.1:9224") is None
+
+
+def test_bind_evaluates_on_quote_edit_not_list_tab():
+    """Bind must use /Quote/EDIT even when the Quotes list tab is also open."""
+    from secturafab.chrome_cdp import bind_do_create_dxf_parts_success
+
+    listing = {
+        "title": "Quotes",
+        "url": "https://www.secturafab.com/Quote",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+        "type": "page",
+    }
+    edit = {
+        "title": "*Quote-106386-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        assert method == "Runtime.evaluate"
+        assert ws_url.endswith("/edit")
+        assert "/quotes" not in ws_url
+        return {
+            "result": {
+                "value": {
+                    "grid_present": True,
+                    "has_gridDXFParts": True,
+                    "grid_dxf_row_count": 26,
+                    "bound": True,
+                    "list_len": 26,
+                    "opened_via": "but_dxf",
+                }
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=edit), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=listing
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        result = bind_do_create_dxf_parts_success(
+            [{"SourceDataID": "a"}, {"SourceDataID": "b"}],
+            quote_id="qid",
+        )
+    assert result["grid_present"] is True
+    assert result["grid_dxf_row_count"] == 26
+    assert result["opened_via"] == "but_dxf"
+
+
+def test_ensure_quote_edit_navigates_edit_path_not_quote_query():
+    """Live a64509d: /Quote?ID= is the list. Open /Quote/EDIT/{id}."""
+    from secturafab.chrome_cdp import _ensure_quote_edit_page, _quote_edit_url
+
+    qid = "a6ef6891-e080-45de-b57c-1a55fee00c19"
+    listing = {
+        "title": "Quotes",
+        "url": "https://www.secturafab.com/Quote",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+        "type": "page",
+    }
+    navigated: list[str] = []
+
+    def _call(ws_url, method, params=None, **kwargs):
+        if method == "Page.navigate":
+            navigated.append(str((params or {}).get("url") or ""))
+            return {}
+        return {"result": {"value": True}}
+
+    assert _quote_edit_url(qid) == f"https://www.secturafab.com/Quote/EDIT/{qid}"
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=None), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=listing
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        tab = _ensure_quote_edit_page(qid)
+    assert tab is listing
+    assert navigated == [f"https://www.secturafab.com/Quote/EDIT/{qid}"]
+    assert "Quote?ID=" not in navigated[0]
+    assert "GetItem_AddView" not in navigated[0]
+
+
 def test_scrape_quotes_af_fields_from_cdp_evaluate():
     from secturafab.chrome_cdp import scrape_quotes_af_fields
 
@@ -2261,9 +2424,9 @@ def test_scrape_quotes_af_fields_from_cdp_evaluate():
             }
         }
 
-    with patch("secturafab.chrome_cdp.quotes_tab", return_value=tab), patch(
-        "secturafab.chrome_cdp.cdp_call", side_effect=_call
-    ):
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=None), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
         fields = scrape_quotes_af_fields("http://127.0.0.1:9222")
     assert fields == [("__RequestVerificationToken", token)]
 

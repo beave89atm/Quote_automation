@@ -1435,9 +1435,9 @@ class SecturaFabPushService:
                     notes.append(f"grid_present={'true' if present else 'false'}")
                     if not present:
                         notes.append(
-                            "WARNING: #gridDXFParts not in the Chrome Quotes "
-                            "document — cookie GetItem_AddView is the wrong "
-                            "document (live 106386-1); not Finishing"
+                            "WARNING: #gridDXFParts kendo not on /Quote/EDIT "
+                            "(click #but_dxf) — cookie GetItem_AddView is the "
+                            "wrong document (live a64509d); not Finishing"
                         )
                         result = None
                 n_list = getattr(self.client, "_part_create_list_len", None)
