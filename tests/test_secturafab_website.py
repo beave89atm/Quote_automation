@@ -855,7 +855,221 @@ def test_finish_cad_files_uses_upload_filelist_ids(tmp_path: Path):
     )
     assert captured["file_list"][0]["SourceDataID"] == "src-cad"
     assert captured["file_list"][0]["FileID"] == "file-cad"
-    assert any("SourceDataID" in n for n in notes)
+    assert any("SourceDataID" in n or "exploded" in n.lower() for n in notes)
+
+
+def test_raw_step_upload_row_is_not_finish_success(tmp_path: Path):
+    """1 STEP upload-row FileList must not be posted as AddItem_DXFFiles success."""
+    from secturafab.website import (
+        cadimport_filelist_exploded,
+        is_raw_step_upload_row,
+    )
+
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "1010103-1.STEP",
+        "Name": "1010103-1.STEP",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 10,
+    }
+    assert is_raw_step_upload_row(
+        raw, part_key="1010103-1", cad_filename="1010103-1.STEP"
+    )
+    assert cadimport_filelist_exploded(
+        [raw], part_key="1010103-1", cad_filename="1010103-1.STEP"
+    ) is False
+    stp = tmp_path / "1010103-1.STEP"
+    stp.write_bytes(b"ISO")
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client.cadimport_data.return_value = {"List": [raw]}
+    client.cadimport_update_data_next.return_value = {"List": [raw]}
+    client.cadimport_get_dxf_data.return_value = {}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001010",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="1010103-1",
+        explode_polls=2,
+        explode_sleep_s=0,
+    )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "raw upload" in blob.lower() or "not explode" in blob.lower()
+    assert "not success" in blob.lower() or "not Finishing" in blob
+
+
+def test_cadimport_next_exploded_kids_are_finished(tmp_path: Path):
+    """UpdateDataNext / CadImport Data kids are the Finish FileList, not the STEP row."""
+    stp = tmp_path / "1010103-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "1010103-1.STEP",
+        "Name": "1010103-1",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 3,
+    }
+    kids = [
+        {
+            "SourceDataID": "src-plate",
+            "FileID": "file-plate",
+            "FileName": "1010104-1",
+            "Name": "1010104-1 GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+        {
+            "SourceDataID": "src-slug",
+            "FileID": "file-slug",
+            "FileName": "1010108-1",
+            "Name": "1010108-1 SLUG",
+            "Qty": 2,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+        {
+            "SourceDataID": "src-bar",
+            "FileID": "file-bar",
+            "FileName": "1010109-1",
+            "Name": "1010109-1 TUBE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client.cadimport_update_data_next.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.cadimport_get_dxf_data.return_value = {"FileList": kids}
+    client.get_item_add_view.return_value = {"FileList": kids}
+    client.quote_item_read.return_value = {
+        "Data": [
+            {"ProductType": 100, "Description": "1010104-1"},
+            {"ProductType": 10, "Description": "1010108-1"},
+        ],
+        "Total": 2,
+    }
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    client.add_item_dxf_files.side_effect = _add
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001011",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[
+            {"part_no": "1010104-1", "description": "GUSSET 100K", "qty": 1},
+            {"part_no": "1010108-1", "description": "SLUG A519", "qty": 2},
+            {"part_no": "1010109-1", "description": "TUBE A1011", "qty": 1},
+        ],
+        library={},
+        extra_pdfs=None,
+        part_key="1010103-1",
+        explode_polls=2,
+        explode_sleep_s=0,
+    )
+    client.cadimport_update_data_next.assert_called()
+    client.add_item_dxf_files.assert_called()
+    posted = captured["file_list"]
+    assert len(posted) == 3
+    names = {str(r.get("Name") or r.get("Description") or "") for r in posted}
+    assert any("1010104" in n for n in names)
+    assert any("1010108" in n for n in names)
+    assert not any(str(r.get("Name") or "").endswith(".STEP") for r in posted)
+    cats = {str(r.get("Category") or r.get("ItemType")) for r in posted}
+    assert "Cad" in cats
+    assert "Linear" in cats
+    mats = " ".join(str(r.get("Material") or "") for r in posted)
+    assert "A36" not in mats or "100K" in mats or "A519" in mats or "A1011" in mats
+    for row in posted:
+        assert float(row.get("Status") or 0) > 0
+    assert any("exploded" in n.lower() for n in notes)
+
+
+def test_step_job_does_not_call_image_files(tmp_path: Path, monkeypatch):
+    """Do not use Image Files when a STEP is on the job."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "1010103-1.pdf"
+    stp = tmp_path / "1010103-1.STEP"
+    pdf.write_bytes(b"%PDF")
+    stp.write_bytes(b"ISO")
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "1010104.pdf").write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {
+        "QuoteNumber": "1010103-1",
+        "ItemCount": 0,
+        "ItemList": [],
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    service = SecturaFabPushService(client=client)
+    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "create_quote", return_value="11111111-aaaa-bbbb-cccc-000000001012"
+    ), patch.object(
+        service, "allocate_quote_number", return_value="1010103-1"
+    ), patch.object(
+        service, "finish_cad_files", return_value=["CadImport exploded 3 FileList row(s)"]
+    ) as finish_cad, patch.object(
+        service, "finish_pdf_files"
+    ) as finish_pdf, patch(
+        "secturafab.push.refresh_bom_rows_for_push",
+        return_value=(
+            [{"part_no": "1010104-1", "qty": 1, "description": "GUSSET"}],
+            [],
+        ),
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value="WELDMENT"
+    ), patch(
+        "secturafab.push.apply_quote_organization", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
+    ), patch(
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_weld_ops", return_value=[]
+    ):
+        result = service.push_job(
+            title="1010103-1",
+            pdf_filename="1010103-1.pdf",
+            pdf_path=pdf,
+            stp_path=stp,
+            takeoff={
+                "library": {
+                    "part_key": "1010103-1",
+                    "folder": str(lib),
+                    "related_pdfs": ["1010104.pdf"],
+                }
+            },
+            times={},
+            job_id=10103,
+        )
+    finish_cad.assert_called()
+    finish_pdf.assert_not_called()
+    assert result.ok is False
 
 
 def test_add_item_dxf_files_sends_js_contract():

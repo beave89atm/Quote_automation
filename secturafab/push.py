@@ -64,7 +64,9 @@ from .website import (
     count_cad_product_type,
     is_tenant_guid,
     count_linear_product_type,
+    cadimport_filelist_exploded,
     filelist_from_cadimport_upload,
+    is_raw_step_upload_row,
     filelist_row_from_attachment_upload,
     linear_add_product_type,
     linear_bind_fields,
@@ -119,6 +121,7 @@ _LINEAR_HINTS = (
     "HOSEGUARD",
     "ROUND BAR",
     "FLAT BAR",
+    "SLUG",
 )
 _COMPONENT_HINTS = (
     "BOLT",
@@ -150,7 +153,7 @@ _COMPONENT_HINTS = (
     "UNION",
 )
 _COMPONENT_WORD_RE = re.compile(
-    r"\b(ELBOW|COUPLING|NIPPLE|PLUG|CAP|FITTING|REDUCER|UNION|FILLER\s*-?\s*NECK)\b",
+    r"\b(ELBOW|COUPLING|NIPPLE|PLUG|PIPE\s+CAP|FITTING|REDUCER|UNION|FILLER\s*-?\s*NECK)\b",
     re.IGNORECASE,
 )
 
@@ -446,6 +449,12 @@ def _shop_material(material: str | None) -> str:
     if "A572" in upper or "PL025" in upper:
         # A572 / PL025-50K is a named grade — never overwrite to A36.
         return text if "A572" in upper else "A572 Grade 50"
+    if "100K" in upper or upper == "100 K":
+        return "100K"
+    if "A1011" in upper:
+        return text if "A1011" in text.upper() else "A1011"
+    if "A519" in upper:
+        return text if "A519" in text.upper() else "A519"
     return text
 
 
@@ -458,6 +467,12 @@ def _named_grade_from_blob(text: str | None) -> str | None:
         return "5052-H32"
     if "A572" in upper or "PL025" in upper:
         return "A572 Grade 50"
+    if "100K" in upper:
+        return "100K"
+    if "A1011" in upper:
+        return "A1011"
+    if "A519" in upper:
+        return "A519"
     return None
 
 
@@ -1185,6 +1200,120 @@ class SecturaFabPushService:
                     return [r for r in val if isinstance(r, dict)]
         return []
 
+    def _dedupe_cadimport_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            key = str(
+                row.get("SourceDataID")
+                or row.get("FileID")
+                or row.get("PartID")
+                or row.get("Name")
+                or row.get("Description")
+                or id(row)
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(row)
+        return out
+
+    def _collect_cadimport_grid(
+        self,
+        *,
+        quote_id: str,
+        upload_rows: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """CadImport/Data + GetDXFData + GetItem_AddView FileList after Next."""
+        bags: list[dict[str, Any]] = []
+        fetchers = [
+            lambda: self.client.cadimport_data(),
+        ]
+        if hasattr(self.client, "cadimport_get_dxf_data"):
+            fetchers.append(
+                lambda: self.client.cadimport_get_dxf_data(quote_id=quote_id)
+            )
+        fetchers.append(
+            lambda: self.client.get_item_add_view(quote_id, item_type="dxf")
+        )
+        for fetch in fetchers:
+            try:
+                bags.extend(self._cadimport_rows(fetch()))
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError, ValueError):
+                continue
+        if upload_rows:
+            bags.extend(r for r in upload_rows if isinstance(r, dict))
+        return self._dedupe_cadimport_rows(bags)
+
+    def wait_for_cadimport_explode(
+        self,
+        *,
+        quote_id: str,
+        upload_rows: list[dict[str, Any]],
+        upload_payload: Any = None,
+        part_key: str,
+        cad_filename: str,
+        polls: int | None = None,
+        sleep_s: float | None = None,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Green Next then poll until CadImport splits the STEP into kids."""
+        notes: list[str] = []
+        polls_n = int(
+            polls
+            if polls is not None
+            else os.getenv("SECTURA_CADIMPORT_EXPLODE_POLLS", "20")
+        )
+        wait = float(
+            sleep_s
+            if sleep_s is not None
+            else os.getenv("SECTURA_CADIMPORT_EXPLODE_SLEEP", "1.5")
+        )
+        if cadimport_filelist_exploded(
+            upload_rows, part_key=part_key, cad_filename=cad_filename
+        ):
+            notes.append(
+                f"CadImport FileList already exploded ({len(upload_rows)} kid row(s))"
+            )
+            return upload_rows, notes
+        next_body: Any = upload_payload if upload_payload is not None else (
+            {"List": upload_rows, "ID": quote_id} if upload_rows else {"ID": quote_id}
+        )
+        try:
+            nxt = self.client.cadimport_update_data_next(next_body)
+            notes.append("CadImport UpdateDataNext (green Next)")
+            exploded = self._cadimport_rows(nxt)
+            if cadimport_filelist_exploded(
+                exploded, part_key=part_key, cad_filename=cad_filename
+            ):
+                notes.append(
+                    f"CadImport exploded {len(exploded)} FileList row(s) on Next"
+                )
+                return exploded, notes
+        except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
+            notes.append(f"WARNING: CadImport UpdateDataNext failed: {exc}")
+        grid = list(upload_rows)
+        for attempt in range(max(1, polls_n)):
+            if attempt and wait > 0:
+                time.sleep(wait)
+            grid = self._collect_cadimport_grid(
+                quote_id=quote_id, upload_rows=None
+            )
+            if cadimport_filelist_exploded(
+                grid, part_key=part_key, cad_filename=cad_filename
+            ):
+                notes.append(
+                    f"CadImport exploded {len(grid)} FileList row(s) "
+                    f"after Next (poll {attempt + 1})"
+                )
+                return grid, notes
+        notes.append(
+            f"CadImport FileList still {len(grid)} raw upload row(s) "
+            f"after Next — not Finishing the STEP file row"
+        )
+        return grid, notes
+
     def _linear_catalog(self) -> list[dict[str, Any]]:
         cached = getattr(self, "_linear_product_cache", None)
         if cached is not None:
@@ -1374,8 +1503,14 @@ class SecturaFabPushService:
             dashed = match_bom_part_no(name, bom_rows) or match_bom_part_no(
                 stem, bom_rows
             )
+            bom_noun = ""
+            for brow in bom_rows or []:
+                bpn = str(brow.get("part_no") or brow.get("part_number") or "").strip()
+                if dashed and (bpn == dashed or bpn == stem):
+                    bom_noun = str(brow.get("description") or "")
+                    break
             if dashed:
-                name = f"{dashed} {name}".strip()
+                name = f"{dashed} {bom_noun or name}".strip()
                 row["Name"] = dashed
             cat = classify_sectura_item(name)
             token = dashed or (name.split()[0] if name else "")
@@ -1396,6 +1531,12 @@ class SecturaFabPushService:
             product_id = None
             sku = None
             machine = "Laser" if cat == "Cad" else None
+            named = _named_grade_from_blob(
+                f"{name} {material} {(pm.material if pm else '')}"
+            )
+            if named:
+                material = _shop_material(named)
+            bind: dict[str, Any] | None = None
             if cat == "Linear":
                 machine = "Saw"
                 product_id, sku, mismatch = self._match_linear_sku(
@@ -1403,6 +1544,11 @@ class SecturaFabPushService:
                 )
                 if mismatch:
                     notes.append(f"WARNING: {mismatch}")
+                product, _sku2, _note2 = self._match_linear_product(
+                    name, material=material, row=row
+                )
+                del _sku2, _note2
+                bind = self._linear_catalog_bind(product)
             row_qty = _row_qty(row)
             if row_qty <= 0:
                 row_qty = max(1, int(qty or 1))
@@ -1416,6 +1562,14 @@ class SecturaFabPushService:
                 qty=row_qty,
                 machine=machine,
             )
+            if bind:
+                cfg = str(bind.get("productConfigID") or "")
+                pid = str(bind.get("productID") or product_id or "")
+                if cfg and pid and cfg != pid:
+                    overlaid["productConfigID"] = cfg
+                    overlaid["productID"] = pid
+                elif cfg and not pid:
+                    overlaid["productConfigID"] = cfg
             if dashed and cat == "Cad":
                 overlaid["Name"] = dashed
                 overlaid["Description"] = format_cad_description(
@@ -1524,8 +1678,10 @@ class SecturaFabPushService:
         library: dict[str, Any] | None,
         extra_pdfs: list[Path] | None,
         part_key: str,
+        explode_polls: int | None = None,
+        explode_sleep_s: float | None = None,
     ) -> list[str]:
-        """CAD Files: dialog → upload STEP → classify kids → Finish."""
+        """CAD Files: dialog → upload STEP → Next/explode kids → classify → Finish."""
         notes: list[str] = []
         try:
             self.client.get_item_add_view(quote_id, item_type="dxf")
@@ -1540,6 +1696,7 @@ class SecturaFabPushService:
 
         open_files = []
         upload_payload: Any = None
+        cad_filename = cad_files[0].name if cad_files else ""
         try:
             form_files = []
             for path in cad_files:
@@ -1548,7 +1705,7 @@ class SecturaFabPushService:
                 form_files.append(("files", (path.name, fh, _mime_for(path))))
             upload_payload = self.client.upload_item_dxf_files(form_files, quote_id=quote_id)
             notes.append(
-                f"Uploaded CAD via /CadImport/UploadItem_DXFFiles: {cad_files[0].name}"
+                f"Uploaded CAD via /CadImport/UploadItem_DXFFiles: {cad_filename}"
             )
         finally:
             for fh in open_files:
@@ -1559,28 +1716,30 @@ class SecturaFabPushService:
         except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
             notes.append(f"WARNING: CadImport SetUnits failed: {exc}")
 
-        # Prefer the upload List (SourceDataID / FileID / Stock). CadImport/Data
-        # is session-empty without a www cookie and must not replace those IDs
-        # with BOM-name stubs — Finish then has nothing to calculate.
-        data_rows = filelist_from_cadimport_upload(upload_payload)
-        if not data_rows:
-            data_rows = self._cadimport_rows(self.client.cadimport_data())
-        if not data_rows:
-            data_rows = self.seed_cadimport_rows(
-                cad_files=cad_files,
-                takeoff=takeoff,
-                bom_rows=bom_rows,
-                part_key=part_key,
-                qty=qty,
-            )
+        upload_rows = filelist_from_cadimport_upload(upload_payload)
+        data_rows, explode_notes = self.wait_for_cadimport_explode(
+            quote_id=quote_id,
+            upload_rows=upload_rows,
+            upload_payload=upload_payload,
+            part_key=part_key,
+            cad_filename=cad_filename,
+            polls=explode_polls,
+            sleep_s=explode_sleep_s,
+        )
+        notes.extend(explode_notes)
+        if not cadimport_filelist_exploded(
+            data_rows, part_key=part_key, cad_filename=cad_filename
+        ):
             notes.append(
-                "CadImport/Data was empty — seeded FileList from STEP/BOM names"
+                "WARNING: CadImport did not explode STEP into child FileList "
+                "rows — not Finishing the raw upload row "
+                "(AddItem_DXFFiles 200 with 1 STEP file is not success)"
             )
-        else:
-            notes.append(
-                f"CadImport FileList kept {len(data_rows)} upload row(s) "
-                f"(SourceDataID/FileID for Finish calculators)"
-            )
+            return notes
+        notes.append(
+            f"CadImport FileList using {len(data_rows)} exploded kid row(s) "
+            f"(SourceDataID/FileID for Finish calculators)"
+        )
         classified, class_notes = self.classify_cadimport_rows(
             data_rows,
             default_material=material,
@@ -1591,16 +1750,35 @@ class SecturaFabPushService:
             qty=qty,
         )
         notes.extend(class_notes)
+        ready = []
+        for r in classified:
+            try:
+                status = float(r.get("Status") or 0)
+                err = int(r.get("ErrorStatus") or 0)
+            except (TypeError, ValueError):
+                status, err = 0.0, 1
+            if status > 0 and err == 0:
+                ready.append(r)
+        if not ready:
+            ready = classified
         self.client.add_item_dxf_files(
             quote_id=quote_id,
-            file_list=classified,
+            file_list=ready,
             item_id=EMPTY_GUID,
             customer_material=False,
         )
         notes.append(
-            f"Finish POST /Quote/AddItem_DXFFiles ({len(classified)} FileList row(s)) "
+            f"Finish POST /Quote/AddItem_DXFFiles ({len(ready)} FileList row(s)) "
             f"— laser/saw packs come from Finish, not grafted Profile"
         )
+        posted = self._read_quote_items(quote_id)
+        cad_n = count_cad_product_type(posted)
+        lin_n = count_linear_product_type(posted)
+        if cad_n <= 0 and lin_n <= 0:
+            notes.append(
+                f"WARNING: AddItem_DXFFiles HTTP 200 with {len(ready)} FileList "
+                f"row(s) landed 0 ItemList lines — not success"
+            )
         return notes
 
     def finish_pdf_files(

@@ -580,6 +580,41 @@ class SecturaFabClient:
         )
         return self._parse_website_or_raise(response, require_session=False)
 
+    def cadimport_get_dxf_data(
+        self,
+        *,
+        quote_id: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        """GET GetDXFData — grid after green Next (CadImport, then Quote)."""
+        query = dict(params or {})
+        if quote_id:
+            query.setdefault("ID", quote_id)
+            query.setdefault("quoteID", quote_id)
+        last_exc: Exception | None = None
+        for path_key in ("cadimport_get_dxf_data", "quote_get_dxf_data"):
+            try:
+                response = self.website_request(
+                    "GET",
+                    WEBSITE_FINISH_PATHS[path_key],
+                    params=query or None,
+                    prefer_api_origin=True,
+                    require_session=False,
+                )
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
+                last_exc = exc
+                continue
+            if getattr(response, "status_code", 200) in {404, 405}:
+                continue
+            try:
+                return self._parse_website_or_raise(response, require_session=False)
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
+                last_exc = exc
+                continue
+        if last_exc:
+            raise last_exc
+        return {}
+
     def add_item_dxf_files(
         self,
         *,

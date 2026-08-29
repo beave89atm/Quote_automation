@@ -67,6 +67,12 @@ def test_classify_plate_over_three_quarter_is_component():
     assert classify_sectura_item("1 A572 26.375 SQ OUTSOURCE") == "Component"
     assert classify_sectura_item('1/4" A36 PLATE') == "Cad"
     assert classify_sectura_item("FORMED ANGLE 1/4 A36 PLATE") == "Cad"
+    assert classify_sectura_item("1010108-1 SLUG") == "Linear"
+    assert classify_sectura_item("1010109-1 BAR") == "Linear"
+    assert classify_sectura_item("1010104-1 GUSSET") == "Cad"
+    assert classify_sectura_item("1010105-1 MOUNT") == "Cad"
+    assert classify_sectura_item("15890-1 END CAP, BOOM") == "Cad"
+    assert classify_sectura_item("50122-1 1 1/4 NPT PIPE CAP") == "Component"
     assert classify_sectura_item("21689-1 HOSE GUARD") == "Linear"
 
 
@@ -75,6 +81,9 @@ def test_never_a569_material():
     assert _shop_material("A572") == "A572"
     assert _shop_material("A572 Grade 50") == "A572 Grade 50"
     assert _shop_material("PL025-50K") == "A572 Grade 50"
+    assert _shop_material("100K") == "100K"
+    assert _shop_material("A1011") == "A1011"
+    assert _shop_material("A519") == "A519"
     assert _shop_material("") == "A36"
     assert _shop_material("5052-H32") == "5052-H32"
     assert _shop_material("ALPL009-28K") == "5052-H32"
@@ -788,6 +797,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "7a555ac2-2a77-4bd9-a936-bf8a64eb60e7" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "8f87fbae-d2ef-40ee-abd4-47a8755ce19f" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "804172ea-f507-42fe-87ae-1b91d2cc0d29" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "f703b928-3475-45c2-ade5-fcce97e1709e" in FORBIDDEN_LIVE_QUOTE_IDS
     from secturafab.forbidden_quotes import is_forbidden_quote_id
 
     assert is_forbidden_quote_id("280f4dcb-1111-2222-3333-444444444444")
@@ -800,6 +810,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "7a555ac2-2a77-4bd9-a936-bf8a64eb60e7",
         "8f87fbae-d2ef-40ee-abd4-47a8755ce19f",
         "804172ea-f507-42fe-87ae-1b91d2cc0d29",
+        "f703b928-3475-45c2-ade5-fcce97e1709e",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(

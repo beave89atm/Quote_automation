@@ -80,6 +80,10 @@ _BARE_GRADE_KEYS: dict[str, str] = {
     "PL025-50K": "a572_gr50",
     "PL02550K": "a572_gr50",
     "PL025": "a572_gr50",
+    "100K": "a656_gr80",
+    "100 K": "a656_gr80",
+    "A1011": "a1011",
+    "A519": "a519",
 }
 
 _THICKNESS_LINE_RE = re.compile(
@@ -90,7 +94,7 @@ _THICKNESS_LINE_RE = re.compile(
 _GRADE_LINE_RE = re.compile(
     r"^(?P<grade>A\s*572(?:\s*(?:GR|GRADE|G)?\s*\d+)?|A\s*656(?:\s*(?:GR|GRADE|G)?\s*\d+)?|"
     r"A\s*36|A\s*514|A\s*992|GR\s*\d+|GRADE\s*\d+|G\s*\d+|STEEL|GALV(?:ANISED|ANIZED)?|"
-    r"5052(?:\s*-?\s*H32)?|ALPL[A-Z0-9\-]*|PL025(?:-50K)?)$",
+    r"5052(?:\s*-?\s*H32)?|ALPL[A-Z0-9\-]*|PL025(?:-50K)?|100\s*K|A\s*1011|A\s*519)$",
     re.IGNORECASE,
 )
 

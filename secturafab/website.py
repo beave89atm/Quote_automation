@@ -26,6 +26,7 @@ OperationCostList. Do not graft those names as item-level OperationName tags.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
@@ -76,6 +77,8 @@ WEBSITE_FINISH_PATHS = {
     "cadimport_set_part_mode": "/CadImport/SetPartMode",
     "cadimport_set_units": "/CadImport/SetUnits",
     "cadimport_convert_to": "/CadImport/ConvertTo",
+    "cadimport_get_dxf_data": "/CadImport/GetDXFData",
+    "quote_get_dxf_data": "/Quote/GetDXFData",
     "add_item_dxf_files": "/Quote/AddItem_DXFFiles",
     "add_item_pdf_files": "/Quote/AddItem_PDFFiles",
     "add_item_linear": "/Quote/AddItem_Linear",
@@ -261,11 +264,69 @@ def filelist_from_cadimport_upload(payload: Any) -> list[dict[str, Any]]:
         return [dict(r) for r in payload if isinstance(r, dict)]
     if not isinstance(payload, dict):
         return []
-    for key in ("List", "FileList", "Data", "Result"):
+    for key in ("List", "FileList", "Data", "Result", "Items", "rows"):
         rows = payload.get(key)
         if isinstance(rows, list):
             return [dict(r) for r in rows if isinstance(r, dict)]
     return []
+
+
+def _step_like_name(text: str | None) -> bool:
+    raw = str(text or "").strip().lower()
+    return raw.endswith(".step") or raw.endswith(".stp")
+
+
+def is_raw_step_upload_row(
+    row: dict[str, Any] | None,
+    *,
+    part_key: str = "",
+    cad_filename: str = "",
+) -> bool:
+    """True when the row is the STEP file itself, not an exploded child PN."""
+    if not isinstance(row, dict):
+        return False
+    from .item_desc import normalize_part_token
+
+    fname = str(row.get("FileName") or row.get("Name") or "")
+    cad_name = cad_filename or fname
+    is_step = _step_like_name(fname) or _step_like_name(cad_name)
+    if not is_step:
+        return False
+    try:
+        part_count = int(row.get("PartCount") or 0)
+    except (TypeError, ValueError):
+        part_count = 0
+    if part_count > 1:
+        return True
+    name = str(
+        row.get("Name") or row.get("Description") or row.get("PartName") or ""
+    )
+    stem = Path(cad_name).stem if cad_name else Path(fname).stem
+    name_tok = normalize_part_token(name)
+    stem_tok = normalize_part_token(stem)
+    pk_tok = normalize_part_token(part_key)
+    if _step_like_name(name):
+        return True
+    if name_tok in {"", stem_tok, pk_tok, normalize_part_token(Path(fname).stem)}:
+        return True
+    return False
+
+
+def cadimport_filelist_exploded(
+    rows: list[dict[str, Any]] | None,
+    *,
+    part_key: str = "",
+    cad_filename: str = "",
+) -> bool:
+    """True when CadImport split the STEP into child FileList rows (Kyle Next)."""
+    kids = [r for r in (rows or []) if isinstance(r, dict)]
+    if not kids:
+        return False
+    if len(kids) >= 2:
+        return True
+    return not is_raw_step_upload_row(
+        kids[0], part_key=part_key, cad_filename=cad_filename
+    )
 
 
 def build_dxf_finish_payload(
@@ -1396,6 +1457,8 @@ def overlay_classified_row(
         if str(out["Machine"]).casefold() == "laser":
             out["Machine"] = "Laser - Bay1"
     out["ErrorStatus"] = _error_status(out)
+    if out.get("Status") in (None, "", 0, "0"):
+        out["Status"] = 1
     return out
 
 

@@ -19,6 +19,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "7a555ac2-2a77-4bd9-a936-bf8a64eb60e7",  # 1004747-1 OPEN-DRAFT (1de052c)
         "8f87fbae-d2ef-40ee-abd4-47a8755ce19f",  # 1001775-1 empty shell (3325361)
         "804172ea-f507-42fe-87ae-1b91d2cc0d29",  # 1007049-1 live drop (a44790a) — leave it
+        "f703b928-3475-45c2-ade5-fcce97e1709e",  # 1010103-1 STEP drop (f1a7cc9) — leave it
     }
 )
 
