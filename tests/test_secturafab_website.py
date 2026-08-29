@@ -36,6 +36,51 @@ from secturafab.website import (
 )
 
 
+def test_quote_order_edit_bundle_cites_do_create_dxf_parts():
+    """/bundles/QuoteOrderEdit: createAllParts → DoCreateDXFParts POST /part/create."""
+    from secturafab.cadimport_js import (
+        CREATE_DXF_PARTS_PATH,
+        build_create_dxf_parts_fields,
+        create_dxf_parts_xhr,
+        explode_xhrs,
+        extract_cadimport_xhrs,
+        jquery_ajax_form,
+    )
+
+    js = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "quote_order_edit_create_parts.js"
+    ).read_text()
+    xhrs = extract_cadimport_xhrs(js)
+    create = next(x for x in xhrs if x.path == CREATE_DXF_PARTS_PATH)
+    assert create.function == "DoCreateDXFParts"
+    assert create.method == "POST"
+    assert create.content_type == "application/x-www-form-urlencoded"
+    for key in ("Location", "IDList", "unitList", "OtherFileIDList", "Height", "Width"):
+        assert key in create.body_keys
+    convert = next(x for x in xhrs if x.path == "/CadImport/ConvertTo")
+    assert convert.function == "ConvertTo"
+    assert convert.body_keys == ["IDList", "Units"] or "IDList" in convert.body_keys
+    nxt = next(x for x in xhrs if x.path == "/CadImport/UpdateDataNext")
+    assert nxt.function == "UpdateDXF_LoadNew"
+    exploded = explode_xhrs(xhrs)
+    assert exploded
+    assert exploded[0].path == CREATE_DXF_PARTS_PATH
+    assert all("ConvertTo" not in x.path for x in exploded)
+    assert all("UpdateDataNext" not in x.path for x in exploded)
+    cited = create_dxf_parts_xhr()
+    assert "DoCreateDXFParts POST /part/create" in cited.cite()
+    fields = build_create_dxf_parts_fields(
+        [{"SourceDataID": "src-1", "Units": "inch"}],
+        location="",
+    )
+    form_keys = [k for k, _ in jquery_ajax_form(fields)]
+    assert form_keys.count("IDList[]") == 1
+    assert "unitList[]" in form_keys
+    assert "List" not in form_keys
+
+
 def test_dxf_finish_payload_js_contract():
     rows = [
         {
@@ -1035,7 +1080,7 @@ def test_raw_step_upload_row_is_not_finish_success(tmp_path: Path):
 
 
 def test_cadimport_next_exploded_kids_are_finished(tmp_path: Path):
-    """UpdateDataNext / CadImport Data kids are the Finish FileList, not the STEP row."""
+    """DoCreateDXFParts /part/create t.List kids are the Finish FileList, not the STEP row."""
     stp = tmp_path / "1010103-1.STEP"
     stp.write_bytes(b"ISO")
     raw = {
@@ -1078,7 +1123,8 @@ def test_cadimport_next_exploded_kids_are_finished(tmp_path: Path):
     ]
     client = MagicMock()
     client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
-    client.cadimport_update_data_next.return_value = {"List": kids}
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_update_data_next.return_value = {"List": [raw]}
     client.cadimport_data.return_value = {"List": kids}
     client.cadimport_get_dxf_data.return_value = {"FileList": kids}
     client.get_item_add_view.return_value = {"FileList": kids}
@@ -1114,7 +1160,12 @@ def test_cadimport_next_exploded_kids_are_finished(tmp_path: Path):
         explode_polls=2,
         explode_sleep_s=0,
     )
-    client.cadimport_update_data_next.assert_called()
+    client.create_dxf_parts.assert_called()
+    ids, units = client.create_dxf_parts.call_args.args[:2]
+    assert ids == ["src-step"]
+    assert units
+    client.cadimport_convert_to.assert_not_called()
+    client.cadimport_update_data_next.assert_not_called()
     client.add_item_dxf_files.assert_called()
     posted = captured["file_list"]
     assert len(posted) == 3
@@ -1167,7 +1218,8 @@ def test_cadimport_next_json_string_body_is_finished(tmp_path: Path):
     ]
     client = MagicMock()
     client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
-    client.cadimport_update_data_next.return_value = json.dumps({"List": kids})
+    client.create_dxf_parts.return_value = json.dumps({"List": kids})
+    client.cadimport_update_data_next.return_value = json.dumps({"List": [raw]})
     client.cadimport_data.return_value = json.dumps({"Data": kids})
     client.cadimport_get_dxf_data.return_value = (
         '<div id="gridDXFParts"></div>' + json.dumps({"FileList": kids})
@@ -1212,8 +1264,8 @@ def test_cadimport_next_json_string_body_is_finished(tmp_path: Path):
     assert any("exploded" in n.lower() for n in notes)
 
 
-def test_step_convert_to_before_next_posts_native_list(tmp_path: Path):
-    """QuoteOrderEdit ConvertTo (STEP→parts) runs before Next; List is an array."""
+def test_step_create_all_parts_posts_part_create_not_convert_to(tmp_path: Path):
+    """QuoteOrderEdit createAllParts → DoCreateDXFParts POST /part/create."""
     stp = tmp_path / "34574-1.STEP"
     stp.write_bytes(b"ISO")
     raw = {
@@ -1227,6 +1279,7 @@ def test_step_convert_to_before_next_posts_native_list(tmp_path: Path):
         "PartMode": 0,
         "FileType": ".STEP",
         "CadType": 1,
+        "Units": "inch",
     }
     kids = [
         {
@@ -1245,8 +1298,9 @@ def test_step_convert_to_before_next_posts_native_list(tmp_path: Path):
         "List": [raw],
         "ListOther": [],
     }
-    client.cadimport_convert_to.return_value = {"List": kids}
-    client.cadimport_update_data_next.return_value = {"List": kids}
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_convert_to.return_value = {"List": []}
+    client.cadimport_update_data_next.return_value = {"List": []}
     client.cadimport_data.return_value = {"List": kids}
     client.get_item_add_view.return_value = {"FileList": kids}
     client.quote_item_read.return_value = {
@@ -1274,15 +1328,16 @@ def test_step_convert_to_before_next_posts_native_list(tmp_path: Path):
         explode_polls=2,
         explode_sleep_s=0,
     )
-    client.cadimport_convert_to.assert_called()
-    conv_body = client.cadimport_convert_to.call_args.args[0]
-    assert isinstance(conv_body["List"], list)
-    assert not isinstance(conv_body["List"], str)
-    assert conv_body["List"][0]["PartCount"] == 12
+    client.create_dxf_parts.assert_called()
+    ids, units = client.create_dxf_parts.call_args.args[:2]
+    assert ids == ["fc29e35e-aaaa-bbbb-cccc-000000003457"]
+    assert units == ["inch"]
+    client.cadimport_convert_to.assert_not_called()
+    client.cadimport_update_data_next.assert_not_called()
     client.cadimport_get_dxf_data.assert_not_called()
     client.add_item_dxf_files.assert_called()
     assert len(captured["file_list"]) == 3
-    assert any("ConvertTo" in n or "exploded" in n.lower() for n in notes)
+    assert any("DoCreateDXFParts" in n or "exploded" in n.lower() for n in notes)
 
 
 def test_collect_cadimport_grid_skips_get_dxf_data():
@@ -1329,6 +1384,7 @@ def test_cadimport_explode_routes_use_www():
     real.cadimport_data(params={"ID": "qid"})
     real.cadimport_update_data_next({"ID": "qid", "List": [], "ListOther": []})
     real.cadimport_convert_to({"ID": "qid", "List": [], "ListOther": []})
+    real.create_dxf_parts(["src-1"], ["inch"], location="")
     real.cadimport_set_units("inch")
     real.get_item_add_view("qid")
     real.upload_item_dxf_files(
@@ -1344,6 +1400,7 @@ def test_cadimport_explode_routes_use_www():
     paths = {row["path"] for row in captured}
     assert "/CadImport/UpdateDataNext" in paths
     assert "/CadImport/ConvertTo" in paths
+    assert "/part/create" in paths
     assert "/CadImport/Data" in paths
     assert "/CadImport/SetUnits" in paths
     assert "/CadImport/GetDXFData" not in paths
@@ -1351,6 +1408,18 @@ def test_cadimport_explode_routes_use_www():
     next_row = next(r for r in captured if r["path"] == "/CadImport/UpdateDataNext")
     assert isinstance((next_row.get("json") or {}).get("List"), list)
     assert next_row.get("data") is None
+    create_row = next(r for r in captured if r["path"] == "/part/create")
+    assert create_row.get("json") is None
+    form = create_row.get("data") or []
+    form_keys = [k for k, _ in form]
+    assert "IDList[]" in form_keys
+    assert "unitList[]" in form_keys
+    assert "Location" in form_keys
+    assert "Height" in form_keys
+    assert "Width" in form_keys
+    assert create_row["headers"].get("Content-Type", "").startswith(
+        "application/x-www-form-urlencoded"
+    )
     units = next(r for r in captured if r["path"] == "/CadImport/SetUnits")
     assert units["params"] == {"units": "inch"}
     assert units["json"] is None

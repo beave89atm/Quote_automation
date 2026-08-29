@@ -64,9 +64,9 @@ from .website import (
     count_cad_product_type,
     is_tenant_guid,
     count_linear_product_type,
-    build_cadimport_next_payload,
     cadimport_filelist_exploded,
     cadimport_payload_preview,
+    inventory_location_from_html,
     filelist_from_cadimport_upload,
     is_raw_step_upload_row,
     filelist_row_from_attachment_upload,
@@ -1271,7 +1271,7 @@ class SecturaFabPushService:
         polls: int | None = None,
         sleep_s: float | None = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        """Green Next then poll until CadImport splits the STEP into kids."""
+        """Kyle Next: createAllParts → DoCreateDXFParts POST /part/create."""
         notes: list[str] = []
         polls_n = int(
             polls
@@ -1290,51 +1290,66 @@ class SecturaFabPushService:
                 f"CadImport FileList already exploded ({len(upload_rows)} kid row(s))"
             )
             return upload_rows, notes
-        if isinstance(upload_payload, dict):
-            next_body = build_cadimport_next_payload(
-                quote_id,
-                upload_payload.get("List") or upload_rows,
-                list_other=upload_payload.get("ListOther"),
-                extra=upload_payload,
-            )
-        else:
-            next_body = build_cadimport_next_payload(quote_id, upload_rows)
-        step_row = any(
-            is_raw_step_upload_row(r, part_key=part_key, cad_filename=cad_filename)
-            for r in (upload_rows or [])
+        from .cadimport_js import (
+            CREATE_DXF_PARTS_CALLER,
+            CREATE_DXF_PARTS_FUNCTION,
+            CREATE_DXF_PARTS_PATH,
+            create_dxf_parts_xhr,
         )
-        if step_row and hasattr(self.client, "cadimport_convert_to"):
+
+        xhr = create_dxf_parts_xhr()
+        notes.append(
+            f"QuoteOrderEdit {CREATE_DXF_PARTS_CALLER} → {xhr.cite()} "
+            "(success t.List → #gridDXFParts)"
+        )
+        del upload_payload  # Next JSON List is not the explode body
+        html = getattr(self.client, "_last_item_add_view_html", "") or ""
+        location = inventory_location_from_html(html)
+        id_list: list[str] = []
+        unit_list: list[str] = []
+        for row in upload_rows:
+            if not isinstance(row, dict):
+                continue
+            sid = str(row.get("SourceDataID") or row.get("ID") or "").strip()
+            if not sid:
+                continue
+            id_list.append(sid)
+            unit_list.append(
+                str(row.get("Units") or row.get("Length_Units") or "inch").strip()
+                or "inch"
+            )
+        create_fn = getattr(self.client, "create_dxf_parts", None)
+        if callable(create_fn) and id_list:
             try:
-                conv = self.client.cadimport_convert_to(next_body)
-                notes.append("CadImport ConvertTo (STEP → parts)")
-                exploded = self._cadimport_rows(conv)
-                if cadimport_filelist_exploded(
-                    exploded, part_key=part_key, cad_filename=cad_filename
-                ):
-                    notes.append(
-                        f"CadImport exploded {len(exploded)} FileList row(s) "
-                        "on ConvertTo"
-                    )
-                    return exploded, notes
-            except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
-                notes.append(f"WARNING: CadImport ConvertTo failed: {exc}")
-        try:
-            nxt = self.client.cadimport_update_data_next(next_body)
-            notes.append("CadImport UpdateDataNext (green Next)")
-            exploded = self._cadimport_rows(nxt)
+                result = create_fn(
+                    id_list,
+                    unit_list,
+                    location=location,
+                    other_file_ids=[],
+                    height=0,
+                    width=0,
+                )
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError) as exc:
+                notes.append(f"WARNING: {xhr.cite()} failed: {exc}")
+                result = None
+            exploded = self._cadimport_rows(result)
             if cadimport_filelist_exploded(
                 exploded, part_key=part_key, cad_filename=cad_filename
             ):
                 notes.append(
-                    f"CadImport exploded {len(exploded)} FileList row(s) on Next"
+                    f"CadImport exploded {len(exploded)} FileList row(s) "
+                    f"on {CREATE_DXF_PARTS_FUNCTION} {CREATE_DXF_PARTS_PATH}"
                 )
                 return exploded, notes
             notes.append(
-                "CadImport UpdateDataNext had no kid FileList "
-                f"({cadimport_payload_preview(nxt)})"
+                f"{CREATE_DXF_PARTS_FUNCTION} {CREATE_DXF_PARTS_PATH} had no "
+                f"kid FileList ({cadimport_payload_preview(result)})"
             )
-        except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
-            notes.append(f"WARNING: CadImport UpdateDataNext failed: {exc}")
+        elif not id_list:
+            notes.append(
+                "QuoteOrderEdit DoCreateDXFParts skipped — upload row has no "
+                "SourceDataID (IDList)"
+            )
         grid = list(upload_rows)
         for attempt in range(max(1, polls_n)):
             if attempt and wait > 0:
@@ -1349,12 +1364,12 @@ class SecturaFabPushService:
             ):
                 notes.append(
                     f"CadImport exploded {len(grid)} FileList row(s) "
-                    f"after Next (poll {attempt + 1})"
+                    f"after {CREATE_DXF_PARTS_PATH} (poll {attempt + 1})"
                 )
                 return grid, notes
         notes.append(
             f"CadImport FileList still {len(grid)} raw upload row(s) "
-            f"after Next — not Finishing the STEP file row"
+            f"after {CREATE_DXF_PARTS_FUNCTION} — not Finishing the STEP file row"
         )
         return grid, notes
 
@@ -1726,7 +1741,7 @@ class SecturaFabPushService:
         explode_polls: int | None = None,
         explode_sleep_s: float | None = None,
     ) -> list[str]:
-        """CAD Files: dialog → upload STEP → Next/explode kids → classify → Finish."""
+        """CAD Files: dialog → upload STEP → createAllParts /part/create kids → Finish."""
         notes: list[str] = []
         try:
             self.client.get_item_add_view(quote_id, item_type="dxf")

@@ -10,22 +10,23 @@ treat an API 500/404 as final. CadImport stays on www — do not fall
 through SetUnits/GetDXFData 500/404 to the API host (live 1002381-1
 logged api after www already failed the same way).
 
-UpdateDataNext POST is application/json with List as a native array
-({"List": [{...}], "ListOther": [], "status": "OK"}). json.dumps(rows)
-stuffed into a form/JSON string field is still a string — live 34574-1
-list_type=str, Next 200 empty, no explode.
+Kyle CAD Files Next is QuoteOrderEdit createAllParts → DoCreateDXFParts
+POST /part/create (form Location, IDList, unitList, OtherFileIDList,
+Height, Width). success t.List is pushed onto #gridDXFParts — that is
+the XHR that returns child FileList rows. ConvertTo(n) is units on
+selected #gridDXF rows (IDList + Units). UpdateDXF_LoadNew is the CAD
+editor next-file (ItemList + SourceID + ReturnItemID), not Kyle Next.
+Live 34887-1 ConvertTo+Next JSON List 200 with FileList 0.
 
-ConvertTo is the recovered QuoteOrderEdit STEP→parts path; call it
-before Next when the upload row is a STEP / PartCount>1.
-
-GetDXFData does not exist on www (404 HTML). The classify grid is
-CadImport/Data after a real explode. Do not poll GetDXFData.
+GetDXFData does not exist in /bundles/QuoteOrderEdit (0 hits; www 404).
+#gridDXFParts is filled from DoCreateDXFParts t.List. Do not poll GetDXFData.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
   GET  /Quote/GetItem_AddView?ID={quoteId}&ItemType=dxf
   POST /Attachment/UploadItem_PDFFiles  (Image Files plates — not CadImport)
   POST /CadImport/UploadItem_DXFFiles   (STEP / DXF CAD Files only)
+  POST /part/create   DoCreateDXFParts form → #gridDXFParts kids
   GET  /CadImport/Data
   POST /CadImport/UpdateData, UpdateDataNext, SetPartMode, SetUnits, ConvertTo
   POST /Quote/AddItem_DXFFiles   data { ID, ItemID, customerMaterial, FileList }
@@ -100,6 +101,7 @@ WEBSITE_FINISH_PATHS = {
     "cadimport_set_part_mode": "/CadImport/SetPartMode",
     "cadimport_set_units": "/CadImport/SetUnits",
     "cadimport_convert_to": "/CadImport/ConvertTo",
+    "part_create": "/part/create",
     "cadimport_get_dxf_data": "/CadImport/GetDXFData",
     "quote_get_dxf_data": "/Quote/GetDXFData",
     "add_item_dxf_files": "/Quote/AddItem_DXFFiles",
@@ -419,6 +421,24 @@ _REQUEST_VERIFICATION_RE = re.compile(
     r'|value=["\']([^"\']+)["\'][^>]*name=["\']__RequestVerificationToken["\']',
     re.I,
 )
+
+
+_INVENTORY_LOCATION_RE = re.compile(
+    r'id=["\']InventoryLocation["\'][^>]*value=["\']([^"\']*)["\']'
+    r'|value=["\']([^"\']*)["\'][^>]*id=["\']InventoryLocation["\']',
+    re.I,
+)
+
+
+def inventory_location_from_html(html: Any) -> str:
+    """#InventoryLocation from GetItem_AddView — DoCreateDXFParts Location."""
+    text = html if isinstance(html, str) else ""
+    if not text:
+        return ""
+    match = _INVENTORY_LOCATION_RE.search(text)
+    if not match:
+        return ""
+    return (match.group(1) or match.group(2) or "").strip()
 
 
 def request_verification_token(html: Any) -> str | None:

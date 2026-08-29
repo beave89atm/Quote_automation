@@ -72,6 +72,7 @@ class SecturaFabClient:
         self.session = session or requests.Session()
         self._token: AccessToken | None = None
         self._request_verification_token: str | None = None
+        self._last_item_add_view_html: str = ""
 
     def authenticate(self, force: bool = False) -> AccessToken:
         if self._token and not self._token.is_expired and not force:
@@ -445,10 +446,134 @@ class SecturaFabClient:
             prefer_api_origin=False,
             www_only=True,
         )
-        token = request_verification_token(getattr(response, "text", "") or "")
+        html = getattr(response, "text", "") or ""
+        self._last_item_add_view_html = html
+        token = request_verification_token(html)
         if token:
             self._request_verification_token = token
         return self._parse_website_or_raise(response)
+
+    def harvest_cadimport_js(
+        self,
+        quote_id: str,
+        *,
+        extra_html: str | None = None,
+    ) -> list[Any]:
+        """Load QuoteOrderEdit / CadImport JS from the signed-in www dialog."""
+        from .cadimport_js import (
+            CadImportXhr,
+            extract_cadimport_xhrs,
+            same_origin_script,
+            script_srcs,
+        )
+
+        blobs: list[str] = []
+        html = extra_html or getattr(self, "_last_item_add_view_html", "") or ""
+        if not html:
+            try:
+                self.get_item_add_view(quote_id, item_type="dxf")
+                html = getattr(self, "_last_item_add_view_html", "") or ""
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError):
+                html = ""
+        if html:
+            blobs.append(html)
+        pages = (
+            ("/Quote/QuoteOrderEdit", {"ID": quote_id}),
+            ("/Quote", {"ID": quote_id}),
+        )
+        bundle_paths = ("/bundles/QuoteOrderEdit", "/bundles/quoteOrderEdit")
+        for path, params in pages:
+            try:
+                resp = self.website_request(
+                    "GET",
+                    path,
+                    params=params,
+                    headers=self._cadimport_ajax_headers(),
+                    prefer_api_origin=False,
+                    www_only=True,
+                    require_session=False,
+                )
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError):
+                continue
+            text = getattr(resp, "text", "") or ""
+            if text and not is_cloudflare_challenge(
+                getattr(resp, "status_code", 0), text
+            ):
+                blobs.append(text)
+                html = html + "\n" + text
+        from urllib.parse import urlparse
+
+        root = self.config.website_root.rstrip("/")
+        script_paths = list(bundle_paths)
+        for src in script_srcs(html, base=root):
+            if not same_origin_script(src, website_root=root):
+                continue
+            path = urlparse(src).path or ""
+            if path and path not in {p[0] for p in pages}:
+                script_paths.append(path)
+        seen_paths: set[str] = set()
+        for path in script_paths:
+            if not path or path in seen_paths:
+                continue
+            seen_paths.add(path)
+            try:
+                resp = self.website_request(
+                    "GET",
+                    path,
+                    headers=self._cadimport_ajax_headers(),
+                    prefer_api_origin=path.startswith("/bundles/"),
+                    www_only=not path.startswith("/bundles/"),
+                    require_session=False,
+                )
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError):
+                continue
+            text = getattr(resp, "text", "") or ""
+            if text and getattr(resp, "status_code", 0) < 400:
+                blobs.append(text)
+        xhrs: list[CadImportXhr] = []
+        seen: set[tuple[str, str, str]] = set()
+        for blob in blobs:
+            for xhr in extract_cadimport_xhrs(blob):
+                sig = (xhr.function, xhr.method, xhr.path)
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                xhrs.append(xhr)
+        return xhrs
+
+    def post_cadimport_js_xhr(
+        self,
+        xhr: Any,
+        payload: dict[str, Any],
+    ) -> Any:
+        """POST/GET one XHR extracted from QuoteOrderEdit / CadImport JS."""
+        headers = self._cadimport_json_headers()
+        content_type = str(getattr(xhr, "content_type", "") or "")
+        method = str(getattr(xhr, "method", "POST") or "POST").upper()
+        path = str(getattr(xhr, "path", "") or "")
+        json_body = None
+        data = None
+        params = None
+        if method == "GET":
+            params = payload or None
+        elif "json" in content_type.lower() or not content_type:
+            json_body = payload
+        else:
+            data = payload
+            headers["Content-Type"] = content_type
+        response = self.website_request(
+            method,
+            path,
+            params=params,
+            json=json_body,
+            data=data,
+            headers=headers,
+            prefer_api_origin=False,
+            www_only=True,
+            require_session=False,
+            timeout=max(self.config.timeout_seconds, 180.0),
+        )
+        return self._parse_website_or_raise(response, require_session=False)
 
     def upload_item_dxf_files(
         self,
@@ -647,8 +772,56 @@ class SecturaFabClient:
         )
         return self._parse_website_or_raise(response, require_session=False)
 
+    def create_dxf_parts(
+        self,
+        id_list: list[str],
+        unit_list: list[str],
+        *,
+        location: str = "",
+        other_file_ids: list[str] | None = None,
+        height: int | float = 0,
+        width: int | float = 0,
+    ) -> Any:
+        """POST /part/create — DoCreateDXFParts (Kyle Next → #gridDXFParts).
+
+        QuoteOrderEdit createAllParts collects #gridDXF SourceDataID + Units
+        and POSTs application/x-www-form-urlencoded
+        {Location, IDList, unitList, OtherFileIDList, Height, Width}.
+        success t.List is the child FileList (not the raw STEP row).
+        """
+        from .cadimport_js import build_create_dxf_parts_fields, jquery_ajax_form
+
+        fields = build_create_dxf_parts_fields(
+            [
+                {"SourceDataID": sid, "Units": units}
+                for sid, units in zip(id_list, unit_list)
+            ],
+            location=location,
+            other_file_ids=other_file_ids,
+            height=height,
+            width=width,
+        )
+        headers = self._cadimport_ajax_headers(
+            {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}
+        )
+        response = self.website_request(
+            "POST",
+            WEBSITE_FINISH_PATHS["part_create"],
+            json=None,
+            data=jquery_ajax_form(fields),
+            headers=headers,
+            prefer_api_origin=False,
+            www_only=True,
+            require_session=False,
+            timeout=max(self.config.timeout_seconds, 180.0),
+        )
+        return self._parse_website_or_raise(response, require_session=False)
+
     def cadimport_convert_to(self, payload: Any = None) -> Any:
-        """POST /CadImport/ConvertTo — STEP→parts (QuoteOrderEdit CadImport)."""
+        """POST /CadImport/ConvertTo — ConvertTo(n) units, not STEP explode.
+
+        QuoteOrderEdit: data:{IDList, Units}. Does not write #gridDXFParts.
+        """
         body = self._cadimport_json_body(payload)
         response = self.website_request(
             "POST",
