@@ -1763,6 +1763,231 @@ def test_explode_posts_part_create_when_quote_layout_has_token(tmp_path: Path):
     assert len(finish_args["file_list"]) == 2
 
 
+def test_cookie_name_presence_never_includes_values():
+    from secturafab.chrome_cdp import (
+        compare_cookie_name_presence,
+        cookie_names_from_header,
+    )
+
+    header = ".AspNet.ApplicationCookie=SECRET; ASP.NET_SessionId=sess"
+    names = cookie_names_from_header(header)
+    assert names == [".AspNet.ApplicationCookie", "ASP.NET_SessionId"]
+    diff = compare_cookie_name_presence(
+        header,
+        [".AspNet.ApplicationCookie", "ASP.NET_SessionId", "__RequestVerificationToken"],
+    )
+    blob = json.dumps(diff)
+    assert "SECRET" not in blob
+    assert "sess" not in blob
+    assert diff["chrome_only"] == ["__RequestVerificationToken"]
+
+
+def test_quotes_tab_prefers_quote_edit_url():
+    from secturafab.chrome_cdp import quotes_tab
+
+    tabs = [
+        {
+            "type": "page",
+            "url": "https://www.secturafab.com/Home",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/home",
+        },
+        {
+            "type": "page",
+            "url": "https://www.secturafab.com/Quote/Edit/?ID=abc",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/edit",
+        },
+        {
+            "type": "page",
+            "url": "https://www.secturafab.com/Quote?ID=abc",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/quote",
+        },
+    ]
+    with patch("secturafab.chrome_cdp.list_chrome_targets", return_value=tabs):
+        tab = quotes_tab("http://127.0.0.1:9222")
+    assert tab is not None
+    assert "/Quote/Edit" in str(tab.get("url") or "")
+
+
+def test_scrape_quotes_af_fields_from_cdp_evaluate():
+    from secturafab.chrome_cdp import scrape_quotes_af_fields
+
+    token = "af-secret-token-value"
+    tab = {
+        "url": "https://www.secturafab.com/Quote?ID=x",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/q",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **_k):
+        assert method == "Runtime.evaluate"
+        assert "querySelector" in str((params or {}).get("expression") or "")
+        return {
+            "result": {
+                "value": [{"name": "__RequestVerificationToken", "value": token}]
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quotes_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.cdp_call", side_effect=_call
+    ):
+        fields = scrape_quotes_af_fields("http://127.0.0.1:9222")
+    assert fields == [("__RequestVerificationToken", token)]
+
+
+def test_ensure_uses_chrome_dom_when_cookie_quote_is_access_denied():
+    """Live aa86d56: cookie GET /Quote 302 AccessDenied; Chrome Quotes has AF."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+    from secturafab.website import client_antiforgery_extracted
+
+    token = "af-secret-token-value"
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=filecookie",
+    )
+    client._token = MagicMock()
+    client._token.authorization_header = "Bearer tok"
+    client._token.is_expired = False
+    client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
+    client._request_verification_token = None
+    client._request_verification_fields = []
+    client._last_item_add_view_html = "<div id='gridDXF'>partial</div>"
+    client._af_source = ""
+    client._chrome_user_agent = ""
+    client._chrome_cookie_name_diff = {}
+    client._cookie_quote_access_denied = False
+    client._website_cookie_override = ""
+    captured: list[dict[str, Any]] = []
+
+    def _req(method, path, **kwargs):
+        captured.append(
+            {
+                "path": path,
+                "headers": kwargs.get("headers") or {},
+                "omit_authorization": kwargs.get("omit_authorization"),
+            }
+        )
+        resp = MagicMock()
+        resp.status_code = 302
+        resp.headers = {"Location": "/Account/AccessDenied"}
+        resp.text = ""
+        resp.content = b""
+        resp.url = path
+        return resp
+
+    client.website_request = _req  # type: ignore[method-assign]
+    with patch(
+        "secturafab.chrome_cdp.chrome_debug_base", return_value="http://127.0.0.1:9222"
+    ), patch(
+        "secturafab.chrome_cdp.chrome_version_user_agent",
+        return_value="Mozilla/5.0 Chrome/120",
+    ), patch(
+        "secturafab.chrome_cdp.sectura_cookies_from_cdp",
+        return_value=[
+            (".AspNet.ApplicationCookie", "livecookie"),
+            ("__RequestVerificationToken", "ck"),
+        ],
+    ), patch(
+        "secturafab.chrome_cdp.scrape_quotes_af_fields",
+        return_value=[("__RequestVerificationToken", token)],
+    ):
+        assert client.ensure_quote_antiforgery("qid") is True
+    assert client_antiforgery_extracted(client) is True
+    assert client._af_source == "chrome_dom"
+    assert client._cookie_quote_access_denied is True
+    assert captured
+    assert all(row["omit_authorization"] is True for row in captured)
+    assert all(row["headers"].get("X-Requested-With") is None for row in captured)
+    assert "__RequestVerificationToken" in client._chrome_cookie_name_diff.get(
+        "chrome_only", []
+    )
+    notes = SecturaFabPushService(client=client)._antiforgery_capture_notes()
+    blob = " ".join(notes)
+    assert "af_extracted=true" in blob
+    assert "af_source=chrome_dom" in blob
+    assert token not in blob
+    assert "livecookie" not in blob
+    assert "filecookie" not in blob
+
+
+def test_push_job_does_not_mint_when_af_extracted_false(tmp_path: Path):
+    """No AF from cookie or Chrome DOM → no new quote."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    stp = tmp_path / "10072-1.STEP"
+    stp.write_bytes(b"ISO")
+    pdf = tmp_path / "10072-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=box",
+    )
+    client._token = MagicMock()
+    client._token.authorization_header = "Bearer tok"
+    client._token.is_expired = False
+    client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
+    client._request_verification_token = None
+    client._request_verification_fields = []
+    client._last_item_add_view_html = ""
+    client._af_source = ""
+    client._chrome_user_agent = ""
+    client._chrome_cookie_name_diff = {}
+    client._cookie_quote_access_denied = False
+
+    def _req(method, path, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 302
+        resp.headers = {"Location": "/Account/AccessDenied"}
+        resp.text = ""
+        resp.content = b""
+        resp.url = path
+        return resp
+
+    client.website_request = _req  # type: ignore[method-assign]
+    client.get_json = MagicMock(return_value={"ItemList": []})  # type: ignore[method-assign]
+    service = SecturaFabPushService(client=client)
+    with patch(
+        "secturafab.chrome_cdp.chrome_debug_base", return_value=None
+    ), patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ), patch.object(
+        service, "create_quote", return_value="must-not-mint"
+    ) as create_q, patch.object(
+        service, "allocate_quote_number", return_value="10072-1"
+    ), patch.object(
+        service, "finish_cad_files", return_value=[]
+    ) as finish, patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value="WELDMENT"
+    ):
+        result = service.push_job(
+            title="10072-1",
+            pdf_filename="10072-1.pdf",
+            pdf_path=pdf,
+            stp_path=stp,
+            takeoff={"library": {"part_key": "10072-1"}},
+            times={},
+            job_id=7,
+        )
+    assert result.ok is False
+    create_q.assert_not_called()
+    finish.assert_not_called()
+    blob = " ".join(result.notes or []) + " " + (result.error or "")
+    assert "af_extracted=false" in blob
+    assert "not minting" in blob
+    assert "must-not-mint" not in blob
+
+
 def test_part_create_403_logonurl_does_not_finish_raw_step(tmp_path: Path):
     """Live 34639-1: www 403 LogOnUrl is not Login; withhold raw STEP Finish."""
     from secturafab.client import SecturaFabApiError

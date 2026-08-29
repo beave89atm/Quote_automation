@@ -1189,6 +1189,40 @@ class SecturaFabPushService:
         cfg = getattr(self.client, "config", None)
         return bool(effective_website_cookie(cfg))
 
+    def _antiforgery_capture_notes(self) -> list[str]:
+        """Bools + cookie name presence. Never token/cookie values."""
+        notes: list[str] = []
+        af = client_antiforgery_extracted(self.client)
+        notes.append(f"af_extracted={str(af).lower()}")
+        notes.append(f"has_antiforgery={str(af).lower()}")
+        source = getattr(self.client, "_af_source", "") or ""
+        if source:
+            notes.append(f"af_source={source}")
+        if getattr(self.client, "_cookie_quote_access_denied", False):
+            notes.append("cookie_quote_layout=302_AccessDenied")
+        diff = getattr(self.client, "_chrome_cookie_name_diff", None) or {}
+        chrome_only = diff.get("chrome_only") if isinstance(diff, dict) else None
+        if chrome_only:
+            notes.append("chrome_cookie_names_only=" + ",".join(chrome_only))
+        return notes
+
+    def preflight_step_antiforgery(self, quote_id: str = "") -> list[str]:
+        """Harvest AF before mint. Chrome Quotes DOM if cookie GET /Quote 302s."""
+        notes: list[str] = []
+        ensure_fn = getattr(type(self.client), "ensure_quote_antiforgery", None)
+        if callable(ensure_fn):
+            try:
+                ensure_fn(self.client, quote_id)
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError):
+                pass
+        notes.extend(self._antiforgery_capture_notes())
+        if not client_antiforgery_extracted(self.client):
+            notes.append(
+                "af_extracted=false — not minting "
+                "(cookie GET /Quote cannot see the layout field)"
+            )
+        return notes
+
     def require_website_finish_auth(self) -> dict[str, Any]:
         """Probe Finish auth. push_job fails closed if Finish 302s / no gold."""
         probe = self.client.probe_website_finish_auth()
@@ -1330,8 +1364,7 @@ class SecturaFabPushService:
             except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError):
                 pass
         af_extracted = client_antiforgery_extracted(self.client)
-        notes.append(f"af_extracted={str(af_extracted).lower()}")
-        notes.append(f"has_antiforgery={str(af_extracted).lower()}")
+        notes.extend(self._antiforgery_capture_notes())
         id_list: list[str] = []
         unit_list: list[str] = []
         for row in upload_rows:
@@ -2854,6 +2887,25 @@ class SecturaFabPushService:
 
             # Always create a brand-new quote. Display number is bare part key
             # (no "PN " prefix; temp RevNumber is cleared so the UI stays clean).
+            # STEP: no AF → no /part/create → do not mint (live aa86d56).
+            if cad:
+                notes.extend(self.preflight_step_antiforgery())
+                if (
+                    callable(
+                        getattr(type(self.client), "ensure_quote_antiforgery", None)
+                    )
+                    and not client_antiforgery_extracted(self.client)
+                ):
+                    return PushResult(
+                        ok=False,
+                        error=(
+                            "af_extracted=false — not minting a new quote "
+                            "(no /part/create)"
+                        ),
+                        notes=notes,
+                        status="failed",
+                        attempts=createfile_attempts,
+                    )
             quote_number = self.allocate_quote_number(part_key)
             raw_title = (
                 extract_assembly_description(

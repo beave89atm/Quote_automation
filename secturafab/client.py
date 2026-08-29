@@ -76,6 +76,11 @@ class SecturaFabClient:
         self._request_verification_token: str | None = None
         self._request_verification_fields: list[tuple[str, str]] = []
         self._last_item_add_view_html: str = ""
+        self._af_source: str = ""
+        self._chrome_user_agent: str = ""
+        self._chrome_cookie_name_diff: dict[str, list[str]] = {}
+        self._cookie_quote_access_denied: bool = False
+        self._website_cookie_override: str = ""
 
     def authenticate(self, force: bool = False) -> AccessToken:
         if self._token and not self._token.is_expired and not force:
@@ -237,7 +242,9 @@ class SecturaFabClient:
         }
         from .browser_session import effective_website_cookie
 
-        cookie = effective_website_cookie(self.config)
+        cookie = getattr(self, "_website_cookie_override", None)
+        if not (isinstance(cookie, str) and cookie.strip()):
+            cookie = effective_website_cookie(self.config)
         if cookie:
             headers["Cookie"] = cookie
         if extra:
@@ -274,6 +281,9 @@ class SecturaFabClient:
             # filters also read the RequestVerificationToken header.
             headers["RequestVerificationToken"] = token
             headers["__RequestVerificationToken"] = token
+        ua = getattr(self, "_chrome_user_agent", None)
+        if isinstance(ua, str) and ua.strip():
+            headers["User-Agent"] = ua
         if extra:
             headers.update(extra)
         return headers
@@ -305,6 +315,7 @@ class SecturaFabClient:
         require_session: bool = True,
         timeout: float | None = None,
         retry_on_auth_error: bool = False,
+        omit_authorization: bool = False,
     ) -> requests.Response:
         """
         Hit a www MVC route (no /api prefix). Never PATCH a forbidden live quote.
@@ -326,6 +337,8 @@ class SecturaFabClient:
         except ForbiddenQuoteError as exc:
             raise SecturaFabApiError(str(exc)) from exc
         req_headers = self._auth_headers(headers)
+        if omit_authorization:
+            req_headers.pop("Authorization", None)
         last: requests.Response | None = None
         last_cf = False
         if www_only:
@@ -370,6 +383,8 @@ class SecturaFabClient:
             ):
                 self.authenticate(force=True)
                 req_headers = self._auth_headers(headers)
+                if omit_authorization:
+                    req_headers.pop("Authorization", None)
                 response = self.session.request(
                     method=method.upper(),
                     url=url,
@@ -498,35 +513,82 @@ class SecturaFabClient:
         if have and not getattr(self, "_request_verification_token", None):
             self._request_verification_token = have[0][1]
 
-    def ensure_quote_antiforgery(self, quote_id: str) -> bool:
-        """Scrape kendo.antiForgeryTokens inputs from Quote layout + AddView.
+    def _quote_layout_headers(self) -> dict[str, str]:
+        """Full-page Quote GET: Chrome-like, no XHR, no API bearer."""
+        headers = {"Accept": "text/html,application/xhtml+xml"}
+        ua = getattr(self, "_chrome_user_agent", None)
+        if isinstance(ua, str) and ua.strip():
+            headers["User-Agent"] = ua
+        return headers
 
-        kendo.core ``antiForgeryTokens`` reads
-        ``input[name^='__RequestVerificationToken']`` on the **document**
-        (GET /Quote?ID= / /Quote/QuoteOrderEdit, no X-Requested-With).
-        GetItem_AddView is a partial — live 11791-2 AddView 200 ~123k had
-        no field. Never log token values.
-        """
-        blobs: list[str] = []
-        add_view = getattr(self, "_last_item_add_view_html", "") or ""
-        if add_view:
-            blobs.append(add_view)
-        pages = (
-            ("/Quote", {"ID": quote_id}),
-            ("/Quote/QuoteOrderEdit", {"ID": quote_id}),
-            ("/Quote", {"id": quote_id}),
+    def _apply_chrome_cookies(self, pairs: list[tuple[str, str]]) -> dict[str, list[str]]:
+        """Replace in-memory website cookie from CDP. Never log values."""
+        from .browser_session import effective_website_cookie
+        from .chrome_cdp import (
+            compare_cookie_name_presence,
+            cookie_header_from_pairs,
         )
-        accept = {"Accept": "text/html,application/xhtml+xml"}
+
+        before = getattr(self, "_website_cookie_override", None) or effective_website_cookie(
+            self.config
+        )
+        header = cookie_header_from_pairs(pairs)
+        if header:
+            self._website_cookie_override = header
+        names = [n for n, _ in pairs]
+        return compare_cookie_name_presence(before, names)
+
+    def harvest_chrome_antiforgery(self) -> str:
+        """Hypothesis A+B: CDP cookies / Quotes DOM. Returns af_source or ''."""
+        from .chrome_cdp import (
+            chrome_debug_base,
+            chrome_version_user_agent,
+            scrape_quotes_af_fields,
+            sectura_cookies_from_cdp,
+        )
+
+        base = chrome_debug_base()
+        if not base:
+            return ""
+        ua = chrome_version_user_agent(base)
+        if ua:
+            self._chrome_user_agent = ua
+        pairs = sectura_cookies_from_cdp(base)
+        if pairs:
+            self._chrome_cookie_name_diff = self._apply_chrome_cookies(pairs)
+        fields = scrape_quotes_af_fields(base)
+        if fields:
+            self._merge_antiforgery_fields(fields)
+            if client_antiforgery_extracted(self):
+                self._af_source = "chrome_dom"
+                return self._af_source
+        return ""
+
+    def _scrape_quote_layout_html(self, quote_id: str) -> bool:
+        """GET /Quote layout (cookie + Chrome UA, no bearer). AddView is skipped."""
+        blobs: list[str] = []
+        qid = str(quote_id or "").strip()
+        pages: list[tuple[str, dict[str, str] | None]] = [
+            ("/Quote", {"ID": qid} if qid else None),
+            ("/Quote/Edit", {"ID": qid} if qid else None),
+            ("/Quote/Edit/", {"ID": qid} if qid else None),
+            ("/Quote/QuoteOrderEdit", {"ID": qid} if qid else None),
+        ]
+        if qid:
+            pages.append(("/Quote", {"id": qid}))
+        headers = self._quote_layout_headers()
+        access_denied = False
         for path, params in pages:
             try:
                 resp = self.website_request(
                     "GET",
                     path,
                     params=params,
-                    headers=accept,
+                    headers=headers,
                     prefer_api_origin=False,
                     www_only=True,
                     require_session=False,
+                    omit_authorization=True,
                 )
             except (SecturaFabApiError, SecturaFabWebsiteAuthError):
                 continue
@@ -534,7 +596,10 @@ class SecturaFabClient:
             if hasattr(resp, "headers"):
                 loc = resp.headers.get("Location") or ""
             status = int(getattr(resp, "status_code", 0) or 0)
-            if is_website_login_redirect(status, loc) or "AccessDenied" in loc:
+            if "AccessDenied" in loc:
+                access_denied = True
+                continue
+            if is_website_login_redirect(status, loc):
                 continue
             if status in {301, 302, 303, 307, 308} and loc:
                 hop = loc
@@ -548,10 +613,11 @@ class SecturaFabClient:
                         "GET",
                         hop,
                         params=params,
-                        headers=accept,
+                        headers=headers,
                         prefer_api_origin=False,
                         www_only=True,
                         require_session=False,
+                        omit_authorization=True,
                     )
                 except (SecturaFabApiError, SecturaFabWebsiteAuthError):
                     continue
@@ -559,7 +625,8 @@ class SecturaFabClient:
                 if hasattr(resp, "headers"):
                     loc = resp.headers.get("Location") or ""
                 status = int(getattr(resp, "status_code", 0) or 0)
-                if is_website_login_redirect(status, loc) or "AccessDenied" in loc:
+                if "AccessDenied" in loc or is_website_login_redirect(status, loc):
+                    access_denied = access_denied or "AccessDenied" in loc
                     continue
             text = getattr(resp, "text", "") or ""
             if not text or status >= 400:
@@ -567,8 +634,30 @@ class SecturaFabClient:
             if is_cloudflare_challenge(status, text):
                 continue
             blobs.append(text)
+        self._cookie_quote_access_denied = access_denied
         for blob in blobs:
             self._merge_antiforgery_fields(request_verification_fields(blob))
+        if client_antiforgery_extracted(self):
+            self._af_source = "cookie_quote_html"
+            return True
+        return False
+
+    def ensure_quote_antiforgery(self, quote_id: str) -> bool:
+        """AF from Quote layout or Chrome Quotes DOM — never AddView.
+
+        Cookie GET /Quote is 302 AccessDenied (live aa86d56) while Chrome
+        Quotes is 200 with the kendo hidden input. Try cookie HTML, then
+        CDP cookie refresh + retry, then Chrome DOM. Never log values.
+        """
+        if client_antiforgery_extracted(self):
+            return True
+        if self._scrape_quote_layout_html(quote_id):
+            return True
+        source = self.harvest_chrome_antiforgery()
+        if source:
+            return True
+        if self._scrape_quote_layout_html(quote_id):
+            return True
         return client_antiforgery_extracted(self)
 
     def harvest_cadimport_js(
