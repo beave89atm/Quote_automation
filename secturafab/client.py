@@ -24,6 +24,7 @@ from .website import (
     is_cloudflare_challenge,
     is_website_login_redirect,
     jquery_ajax_form,
+    request_verification_fields,
     request_verification_token,
 )
 
@@ -72,6 +73,7 @@ class SecturaFabClient:
         self.session = session or requests.Session()
         self._token: AccessToken | None = None
         self._request_verification_token: str | None = None
+        self._request_verification_fields: list[tuple[str, str]] = []
         self._last_item_add_view_html: str = ""
 
     def authenticate(self, force: bool = False) -> AccessToken:
@@ -245,6 +247,30 @@ class SecturaFabClient:
     def _cadimport_ajax_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
         """QuoteOrderEdit jQuery ajax header so MVC returns JSON, not a view string."""
         headers = {"X-Requested-With": "XMLHttpRequest"}
+        if extra:
+            headers.update(extra)
+        return headers
+
+    def _quote_page_ajax_headers(
+        self, extra: dict[str, str] | None = None
+    ) -> dict[str, str]:
+        """Same-origin $.ajax from /Quote: XHR + Referer + optional AF headers.
+
+        DoCreateDXFParts does not set these; the browser does. Live 34639-1
+        /part/create 403+LogOnUrl with CadImport 200 on the same cookie.
+        """
+        root = self.config.website_root.rstrip("/")
+        headers = self._cadimport_ajax_headers(
+            {
+                "Referer": f"{root}/Quote",
+                "Origin": root,
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+            }
+        )
+        token = getattr(self, "_request_verification_token", None)
+        if token:
+            headers["RequestVerificationToken"] = token
+            headers["__RequestVerificationToken"] = token
         if extra:
             headers.update(extra)
         return headers
@@ -448,10 +474,18 @@ class SecturaFabClient:
         )
         html = getattr(response, "text", "") or ""
         self._last_item_add_view_html = html
-        token = request_verification_token(html)
+        parsed = self._parse_website_or_raise(response)
+        if isinstance(parsed, dict):
+            view = parsed.get("View") or parsed.get("view") or ""
+            if isinstance(view, str) and view:
+                html = html + "\n" + view
+                self._last_item_add_view_html = html
+        fields = request_verification_fields(html)
+        self._request_verification_fields = fields
+        token = fields[0][1] if fields else request_verification_token(html)
         if token:
             self._request_verification_token = token
-        return self._parse_website_or_raise(response)
+        return parsed
 
     def harvest_cadimport_js(
         self,
@@ -787,7 +821,8 @@ class SecturaFabClient:
         QuoteOrderEdit createAllParts collects #gridDXF SourceDataID + Units
         and POSTs application/x-www-form-urlencoded
         {Location, IDList, unitList, OtherFileIDList, Height, Width}.
-        success t.List is the child FileList (not the raw STEP row).
+        No traditional (IDList[]). PartController AF: hidden token from
+        GetItem_AddView (kendo.antiForgeryTokens). success t.List = kids.
         """
         from .cadimport_js import build_create_dxf_parts_fields, jquery_ajax_form
 
@@ -801,14 +836,22 @@ class SecturaFabClient:
             height=height,
             width=width,
         )
-        headers = self._cadimport_ajax_headers(
+        form = jquery_ajax_form(fields)
+        for name, value in getattr(self, "_request_verification_fields", None) or ():
+            if name and value:
+                form.append((str(name), str(value)))
+        if not any(k.startswith("__RequestVerificationToken") or k == "afToken" for k, _ in form):
+            token = getattr(self, "_request_verification_token", None)
+            if token:
+                form.append(("__RequestVerificationToken", str(token)))
+        headers = self._quote_page_ajax_headers(
             {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}
         )
         response = self.website_request(
             "POST",
             WEBSITE_FINISH_PATHS["part_create"],
             json=None,
-            data=jquery_ajax_form(fields),
+            data=form,
             headers=headers,
             prefer_api_origin=False,
             www_only=True,

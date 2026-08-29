@@ -86,6 +86,23 @@ from .weld_ops import ensure_weld_ops
 CREATEFILE_RETRY_INTERVAL_S = 300.0
 CREATEFILE_RETRY_MAX_S = 48 * 3600.0
 
+
+def _part_create_fail_note(exc: BaseException) -> str:
+    """403 LogOnUrl is not Login; never interpolate cookies or AF tokens."""
+    status = getattr(exc, "status_code", None)
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict) and (
+        "LogOnUrl" in body or str(body.get("Error") or "")
+    ):
+        return (
+            f"www {status} LogOnUrl login_redirect={body.get('login_redirect')} "
+            f"access_denied={body.get('access_denied')} (not Login; "
+            "GetItem_AddView was 200)"
+        )
+    if status:
+        return f"www {status}"
+    return type(exc).__name__
+
 ProgressCallback = Callable[[dict[str, Any]], None]
 
 
@@ -1330,7 +1347,10 @@ class SecturaFabPushService:
                     width=0,
                 )
             except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError) as exc:
-                notes.append(f"WARNING: {xhr.cite()} failed: {exc}")
+                notes.append(
+                    f"WARNING: {xhr.cite()} failed: "
+                    f"{_part_create_fail_note(exc)}"
+                )
                 result = None
             exploded = self._cadimport_rows(result)
             if cadimport_filelist_exploded(

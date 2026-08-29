@@ -69,6 +69,10 @@ QUOTE_ORDER_EDIT_BUNDLE = "/bundles/QuoteOrderEdit"
 #     $.ajax({type:"POST",url:"/part/create",dataType:"json",
 #       data:{Location:f,IDList:n,unitList:t,OtherFileIDList:r,Height:e,Width:o},
 #       success:function(t){ ... #gridDXFParts ... t.List[e] ... }}) }
+# No traditional / ajaxSetup in QuoteOrderEdit or tenant scripts — jQuery
+# default traditional=false → IDList[] / unitList[] (live 34639-1 form).
+# Token is not in data:{}; kendo.antiForgeryTokens() reads
+# input[name^=__RequestVerificationToken] (PartController AF; CadImport none).
 CREATE_DXF_PARTS_FUNCTION = "DoCreateDXFParts"
 CREATE_DXF_PARTS_CALLER = "createAllParts"
 CREATE_DXF_PARTS_PATH = "/part/create"

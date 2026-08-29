@@ -20,6 +20,9 @@ Live 34887-1 ConvertTo+Next JSON List 200 with FileList 0.
 
 GetDXFData does not exist in /bundles/QuoteOrderEdit (0 hits; www 404).
 #gridDXFParts is filled from DoCreateDXFParts t.List. Do not poll GetDXFData.
+DoCreateDXFParts has no traditional / ajaxSetup; jQuery default is IDList[].
+PartController 403+LogOnUrl (live 34639-1) — send kendo anti-forgery
+fields from GetItem_AddView plus Referer /Quote. CadImport has no AF.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -417,8 +420,12 @@ def filelist_from_cadimport_upload(payload: Any) -> list[dict[str, Any]]:
 
 
 _REQUEST_VERIFICATION_RE = re.compile(
-    r'name=["\']__RequestVerificationToken["\'][^>]*value=["\']([^"\']+)["\']'
-    r'|value=["\']([^"\']+)["\'][^>]*name=["\']__RequestVerificationToken["\']',
+    r'name=["\']((?:__RequestVerificationToken)[^"\']*|afToken)["\'][^>]*value=["\']([^"\']+)["\']'
+    r'|value=["\']([^"\']+)["\'][^>]*name=["\']((?:__RequestVerificationToken)[^"\']*|afToken)["\']',
+    re.I,
+)
+_META_CSRF_RE = re.compile(
+    r'<meta[^>]+name=["\'](?:csrf-token|_csrf)["\'][^>]+content=["\']([^"\']+)["\']',
     re.I,
 )
 
@@ -441,15 +448,41 @@ def inventory_location_from_html(html: Any) -> str:
     return (match.group(1) or match.group(2) or "").strip()
 
 
+def request_verification_fields(html: Any) -> list[tuple[str, str]]:
+    """kendo.antiForgeryTokens() — input[name^=__RequestVerificationToken] / afToken.
+
+    DoCreateDXFParts data:{} does not name the token; PartController still
+    validates it. Never log the values.
+    """
+    text = html if isinstance(html, str) else ""
+    if isinstance(html, dict):
+        text = str(html.get("View") or html.get("view") or "")
+        text = text + json.dumps(html)
+    if not text:
+        return []
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for match in _REQUEST_VERIFICATION_RE.finditer(text):
+        name = (match.group(1) or match.group(4) or "").strip()
+        value = (match.group(2) or match.group(3) or "").strip()
+        if not name or not value or name in seen:
+            continue
+        seen.add(name)
+        out.append((name, value))
+    meta = _META_CSRF_RE.search(text)
+    if meta and "csrf-token" not in seen:
+        val = (meta.group(1) or "").strip()
+        if val:
+            out.append(("csrf-token", val))
+    return out
+
+
 def request_verification_token(html: Any) -> str | None:
     """Hidden field from GetItem_AddView — QuoteOrderEdit posts it with MVC ajax."""
-    text = html if isinstance(html, str) else ""
-    if not text:
+    fields = request_verification_fields(html)
+    if not fields:
         return None
-    match = _REQUEST_VERIFICATION_RE.search(text)
-    if not match:
-        return None
-    return (match.group(1) or match.group(2) or "").strip() or None
+    return fields[0][1]
 
 
 def normalize_cadimport_list(value: Any) -> list[dict[str, Any]]:

@@ -1340,6 +1340,135 @@ def test_step_create_all_parts_posts_part_create_not_convert_to(tmp_path: Path):
     assert any("DoCreateDXFParts" in n or "exploded" in n.lower() for n in notes)
 
 
+def test_part_create_sends_antiforgery_referer_and_cookie():
+    """PartController AF + /Quote Referer; IDList[] unchanged; cookie kept."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+    from secturafab.website import request_verification_fields
+
+    html = (
+        '<input name="__RequestVerificationToken" type="hidden" '
+        'value="af-secret-token-value" />'
+        '<input id="InventoryLocation" value="" />'
+    )
+    fields = request_verification_fields(html)
+    assert fields[0][0] == "__RequestVerificationToken"
+    assert fields[0][1] == "af-secret-token-value"
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=boxcookie",
+    )
+    client._token = MagicMock()
+    client._token.authorization_header = "Bearer tok"
+    client._token.is_expired = False
+    client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
+    client._request_verification_token = "af-secret-token-value"
+    client._request_verification_fields = fields
+    captured: list[dict[str, Any]] = []
+
+    def _req(method, url, **kwargs):
+        captured.append(
+            {
+                "method": method,
+                "url": url,
+                "headers": kwargs.get("headers") or {},
+                "data": kwargs.get("data"),
+                "json": kwargs.get("json"),
+            }
+        )
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {}
+        resp.text = '{"List":[]}'
+        resp.content = b'{"List":[]}'
+        resp.url = url
+        resp.json.return_value = {"List": []}
+        return resp
+
+    client.session = MagicMock()
+    client.session.request.side_effect = _req
+    client.create_dxf_parts(["src-1"], ["inch"], location="")
+    assert captured
+    row = captured[0]
+    assert row["url"].endswith("/part/create")
+    assert row["json"] is None
+    headers = row["headers"]
+    assert headers.get("Cookie") == ".AspNet.ApplicationCookie=boxcookie"
+    assert headers.get("Referer") == "https://www.example.test/Quote"
+    assert headers.get("Origin") == "https://www.example.test"
+    assert headers.get("X-Requested-With") == "XMLHttpRequest"
+    assert headers.get("RequestVerificationToken") == "af-secret-token-value"
+    form = row["data"] or []
+    form_map = {k: v for k, v in form}
+    assert form_map.get("IDList[]") == "src-1"
+    assert form_map.get("unitList[]") == "inch"
+    assert form_map.get("Location") == ""
+    assert form_map.get("__RequestVerificationToken") == "af-secret-token-value"
+    assert "IDList" not in form_map
+
+
+def test_part_create_403_logonurl_does_not_finish_raw_step(tmp_path: Path):
+    """Live 34639-1: www 403 LogOnUrl is not Login; withhold raw STEP Finish."""
+    from secturafab.client import SecturaFabApiError
+
+    stp = tmp_path / "34639-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "34639-1.STEP",
+        "Name": "34639-1",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 8,
+        "Units": "inch",
+    }
+    token = "af-secret-token-value"
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client.create_dxf_parts.side_effect = SecturaFabApiError(
+        "API request failed (403) for https://www.secturafab.com/part/create",
+        status_code=403,
+        body={
+            "Error": "denied",
+            "LogOnUrl": "/Account/Login",
+            "login_redirect": False,
+            "access_denied": False,
+        },
+    )
+    client.cadimport_data.return_value = {"List": [raw]}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003463",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="34639-1",
+        explode_polls=2,
+        explode_sleep_s=0,
+    )
+    client.add_item_dxf_files.assert_not_called()
+    client.cadimport_convert_to.assert_not_called()
+    blob = " ".join(notes)
+    assert "403" in blob
+    assert "LogOnUrl" in blob
+    assert "not Login" in blob
+    assert token not in blob
+    assert "not Finishing" in blob or "raw upload" in blob.lower()
+
+
 def test_collect_cadimport_grid_skips_get_dxf_data():
     client = MagicMock()
     client.cadimport_data.return_value = {}
@@ -1356,6 +1485,9 @@ def test_cadimport_explode_routes_use_www():
     real = SecturaFabClient.__new__(SecturaFabClient)
     real.config = MagicMock()
     real.config.timeout_seconds = 30
+    real.config.website_root = "https://www.secturafab.com"
+    real._request_verification_token = None
+    real._request_verification_fields = []
     captured: list[dict[str, Any]] = []
 
     def fake_website_request(method, path, **kwargs):
@@ -1420,6 +1552,9 @@ def test_cadimport_explode_routes_use_www():
     assert create_row["headers"].get("Content-Type", "").startswith(
         "application/x-www-form-urlencoded"
     )
+    assert create_row["headers"].get("Referer") == "https://www.secturafab.com/Quote"
+    assert create_row["headers"].get("X-Requested-With") == "XMLHttpRequest"
+    assert "__RequestVerificationToken" not in form_keys
     units = next(r for r in captured if r["path"] == "/CadImport/SetUnits")
     assert units["params"] == {"units": "inch"}
     assert units["json"] is None
