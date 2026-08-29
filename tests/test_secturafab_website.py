@@ -982,6 +982,35 @@ def test_pick_closest_linear_prefers_round_bar_for_hose_guard():
     assert note is None or "mismatch" not in note.lower() or "A36" in (note or "")
 
 
+def test_finish_cad_files_refuses_oversize_step_no_chunk(tmp_path: Path):
+    """Live 106687-1: 43MB Upload 502 — do not POST or invent chunked upload."""
+    from secturafab.push import CADIMPORT_UPLOAD_MAX_BYTES
+
+    stp = tmp_path / "106687-1.STEP"
+    stp.write_bytes(b"ISO-10303")
+    client = MagicMock()
+    with patch("secturafab.push.CADIMPORT_UPLOAD_MAX_BYTES", 4):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="qid",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="106687-1",
+        )
+    client.upload_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "not POSTing" in blob
+    assert "not chunking" in blob
+    assert "not Image Files" in blob
+    assert CADIMPORT_UPLOAD_MAX_BYTES == 28 * 1024 * 1024
+
+
 def test_finish_cad_files_uses_upload_filelist_ids(tmp_path: Path):
     stp = tmp_path / "21678-1.STEP"
     stp.write_bytes(b"ISO")

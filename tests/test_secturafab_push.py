@@ -722,6 +722,41 @@ def test_push_ok_requires_nonzero_item_count(tmp_path: Path):
     assert "Title From Job" in desc
 
 
+def test_push_refuses_oversize_step_without_mint(tmp_path: Path):
+    """Live 106687-1: 43MB Upload 502 — do not mint or chunk."""
+    from secturafab.push import SecturaFabPushService
+
+    stp = tmp_path / "106687-1.STEP"
+    stp.write_bytes(b"ISO-10303-21")
+    client = MagicMock()
+    service = SecturaFabPushService(client=client)
+    with patch("secturafab.push.CADIMPORT_UPLOAD_MAX_BYTES", 4), patch.object(
+        service, "create_quote"
+    ) as create_q, patch.object(service, "finish_cad_files") as finish, patch.object(
+        service, "finish_pdf_files"
+    ) as pdf_finish, patch.object(
+        service, "allocate_quote_number", return_value="106687-1"
+    ), patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ):
+        result = service.push_job(
+            title="106687-1 PLATFORM WELDMENT",
+            pdf_filename="106687-1.STEP",
+            pdf_path=None,
+            stp_path=stp,
+            takeoff={"library": {"part_key": "106687-1"}},
+            times={},
+            job_id=1,
+        )
+    assert result.ok is False
+    assert result.status == "failed"
+    assert "not minting" in (result.error or "")
+    assert "not chunking" in (result.error or "")
+    create_q.assert_not_called()
+    finish.assert_not_called()
+    pdf_finish.assert_not_called()
+
+
 def test_push_success_sets_item_count_gt_zero(tmp_path: Path):
     pdf = tmp_path / "ok.pdf"
     stp = tmp_path / "ok.stp"

@@ -104,6 +104,28 @@ PLATFORM EXTENSION WELDMENT 42 IN
     assert "WELDMENT" in title.upper()
 
 
+def test_check_other_options_is_not_a_title():
+    """Live 106687-1 stamped CHECK OTHER OPTIONS — drawing note, not the title."""
+    from secturafab.item_desc import format_quote_header_description
+
+    assert is_drawing_boilerplate_title("CHECK OTHER OPTIONS")
+    assert is_drawing_boilerplate_title("CHECK OTHER OPTIONS…")
+    assert format_quote_header_description(
+        "CHECK OTHER OPTIONS", part_key="106687-1"
+    ) == ""
+    text = """
+106687-1
+CHECK OTHER OPTIONS
+DRAWING IS THE SOLE PROPERTY OF
+PLATFORM WELDMENT
+"""
+    title = extract_title_from_pdf_text(text, part_key="106687-1")
+    assert title is not None
+    assert "CHECK OTHER" not in title.upper()
+    assert "PLATFORM" in title.upper()
+    assert "WELDMENT" in title.upper()
+
+
 def test_extract_title_coupler_asm():
     text = """THIS DRAWING IS THE PROPERTY OF MAC TRAILER
 PART NO

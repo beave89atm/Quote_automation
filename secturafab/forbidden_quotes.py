@@ -32,6 +32,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "069da4fe-5818-4125-983a-197bd4188ed1",  # 34632-2 empty shell (f6ac309) — leave it
         "a6ef6891-e080-45de-b57c-1a55fee00c19",  # 106386-1 empty shell (1fd9b53) — leave it
         "997f1eb7-3eb0-4a76-83f9-4c3439e929b7",  # 105918-1 Finish 66 / 0 Cad (23b96a9) — leave it
+        "66a0271f-f2f7-42c1-ac01-cd879f1bfa22",  # 106687-1 Upload 502 43MB (bd4d75e) — leave it
     }
 )
 
@@ -39,7 +40,8 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
 FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
     {
         "280f4dcb",
-        "a484ba3b",  # 106384-1 spent (20MB+ Upload 502) — do not remint
+        "a484ba3b",  # 106384-1 spent (32MB Upload 502) — do not remint
+        "66a0271f",  # 106687-1 spent (43MB Upload 502) — do not remint
     }
 )
 
@@ -64,7 +66,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "106384-1",  # spent 20MB+ Upload 502 — do not remint
         "105918-1",  # spent 23b96a9 Finish 66 / 0 Cad — do not PATCH or remint
         "106386-1",  # spent empty shell (1fd9b53 explode-ok / bind miss) — leave it
-        "106687-1",  # 43MB — do not mint until a new quote has Cad PR + laser pack
+        "106687-1",  # spent bd4d75e Upload 502 43MB — do not remint or chunk
         "10107-1",  # occupied — do not remint
         "14284-2",  # occupied — do not remint
         "21807-1",  # occupied — do not remint

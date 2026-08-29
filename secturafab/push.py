@@ -364,6 +364,26 @@ class PushResult:
         }
 
 
+# Live UploadItem_DXFFiles: 20MB and 27MB HTTP 200; 32MB 106384-1 and
+# 43MB 106687-1 Cloudflare 502. Do not invent chunked upload. Do not mint
+# PDF-only as a SetPartMode stand-in. SetPartMode-on-grid is untested live.
+CADIMPORT_UPLOAD_MAX_BYTES = 28 * 1024 * 1024
+
+
+def cadimport_step_bytes(paths: list[Path] | None) -> int:
+    biggest = 0
+    for path in paths or []:
+        try:
+            biggest = max(biggest, int(path.stat().st_size))
+        except OSError:
+            continue
+    return biggest
+
+
+def cadimport_step_too_large(paths: list[Path] | None) -> bool:
+    return cadimport_step_bytes(paths) > CADIMPORT_UPLOAD_MAX_BYTES
+
+
 def _mime_for(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix == ".pdf":
@@ -1923,6 +1943,14 @@ class SecturaFabPushService:
     ) -> list[str]:
         """CAD Files: upload → explode → bind → SetPartMode on #gridDXFParts → Finish."""
         notes: list[str] = []
+        if cadimport_step_too_large(cad_files):
+            n = cadimport_step_bytes(cad_files)
+            notes.append(
+                f"WARNING: STEP {n} B — Cloudflare Upload 502 at 32MB+ "
+                "(live 106384-1 / 106687-1); not POSTing "
+                "/CadImport/UploadItem_DXFFiles, not chunking, not Image Files"
+            )
+            return notes
         try:
             self.client.get_item_add_view(quote_id, item_type="dxf")
             notes.append(
@@ -3104,7 +3132,23 @@ class SecturaFabPushService:
             # Always create a brand-new quote. Display number is bare part key
             # (no "PN " prefix; temp RevNumber is cleared so the UI stays clean).
             # STEP: no AF → no /part/create → do not mint (live aa86d56).
+            # 43MB Upload 502 (live 106687-1) — do not mint, do not chunk.
             if cad:
+                if cadimport_step_too_large(cad):
+                    n = cadimport_step_bytes(cad)
+                    msg = (
+                        f"STEP {n} B exceeds CadImport Upload proven size "
+                        f"({CADIMPORT_UPLOAD_MAX_BYTES} B; 27MB 200, 32MB+ 502) "
+                        "— not minting, not chunking, not Image Files"
+                    )
+                    notes.append(msg)
+                    return PushResult(
+                        ok=False,
+                        error=msg,
+                        notes=notes,
+                        status="failed",
+                        attempts=createfile_attempts,
+                    )
                 notes.extend(self.preflight_step_antiforgery())
                 if (
                     callable(
