@@ -71,8 +71,12 @@ QUOTE_ORDER_EDIT_BUNDLE = "/bundles/QuoteOrderEdit"
 #       success:function(t){ ... #gridDXFParts ... t.List[e] ... }}) }
 # No traditional / ajaxSetup in QuoteOrderEdit or tenant scripts — jQuery
 # default traditional=false → IDList[] / unitList[] (live 34639-1 form).
-# Token is not in data:{}; kendo.antiForgeryTokens() reads
-# input[name^=__RequestVerificationToken] (PartController AF; CadImport none).
+# Token is not in data:{}; kendo.core antiForgeryTokens (2023.3) is:
+#   e("input[name^='__RequestVerificationToken']").each(...)
+#   + meta csrf-token/_csrf with csrf-param/_csrf_header as the data key
+# It returns an object merged into $.ajax data — no RequestVerificationToken
+# header. Those inputs live on the Quote layout (GET /Quote?ID=), not the
+# GetItem_AddView partial (live 11791-2 af_extracted=false). CadImport none.
 CREATE_DXF_PARTS_FUNCTION = "DoCreateDXFParts"
 CREATE_DXF_PARTS_CALLER = "createAllParts"
 CREATE_DXF_PARTS_PATH = "/part/create"

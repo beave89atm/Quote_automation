@@ -1074,9 +1074,12 @@ def test_raw_step_upload_row_is_not_finish_success(tmp_path: Path):
         explode_sleep_s=0,
     )
     client.add_item_dxf_files.assert_not_called()
+    client.create_dxf_parts.assert_not_called()
     blob = " ".join(notes)
     assert "raw upload" in blob.lower() or "not explode" in blob.lower()
     assert "not success" in blob.lower() or "not Finishing" in blob
+    assert "af_extracted=false" in blob
+    assert "has_antiforgery=false" in blob
 
 
 def test_cadimport_next_exploded_kids_are_finished(tmp_path: Path):
@@ -1123,6 +1126,7 @@ def test_cadimport_next_exploded_kids_are_finished(tmp_path: Path):
     ]
     client = MagicMock()
     client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
     client.create_dxf_parts.return_value = {"List": kids}
     client.cadimport_update_data_next.return_value = {"List": [raw]}
     client.cadimport_data.return_value = {"List": kids}
@@ -1181,6 +1185,9 @@ def test_cadimport_next_exploded_kids_are_finished(tmp_path: Path):
     for row in posted:
         assert float(row.get("Status") or 0) > 0
     assert any("exploded" in n.lower() for n in notes)
+    blob = " ".join(notes)
+    assert "af_extracted=true" in blob
+    assert "has_antiforgery=true" in blob
 
 
 def test_cadimport_next_json_string_body_is_finished(tmp_path: Path):
@@ -1218,6 +1225,7 @@ def test_cadimport_next_json_string_body_is_finished(tmp_path: Path):
     ]
     client = MagicMock()
     client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
     client.create_dxf_parts.return_value = json.dumps({"List": kids})
     client.cadimport_update_data_next.return_value = json.dumps({"List": [raw]})
     client.cadimport_data.return_value = json.dumps({"Data": kids})
@@ -1298,6 +1306,7 @@ def test_step_create_all_parts_posts_part_create_not_convert_to(tmp_path: Path):
         "List": [raw],
         "ListOther": [],
     }
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
     client.create_dxf_parts.return_value = {"List": kids}
     client.cadimport_convert_to.return_value = {"List": []}
     client.cadimport_update_data_next.return_value = {"List": []}
@@ -1412,6 +1421,348 @@ def test_part_create_sends_antiforgery_referer_and_cookie():
     assert "IDList" not in form_map
 
 
+def test_request_verification_fields_matches_kendo_selectors():
+    """kendo.antiForgeryTokens: input[name^=] + csrf meta; AddView partial empty."""
+    from secturafab.website import request_verification_fields
+
+    add_view = (
+        "<div id='gridDXF'><input id='InventoryLocation' value='' /></div>"
+        + ("x" * 200)
+    )
+    assert request_verification_fields(add_view) == []
+
+    quote_html = (
+        "<!DOCTYPE html><html><head>"
+        '<meta name="csrf-param" content="__RequestVerificationToken" />'
+        '<meta name="csrf-token" content="meta-token-value" />'
+        "</head><body>"
+        '<input type="hidden" name="__RequestVerificationToken" '
+        'value="af-secret-token-value" />'
+        '<input type="hidden" name="afToken" value="af-alt-token" />'
+        "</body></html>"
+    )
+    fields = request_verification_fields(quote_html)
+    names = [n for n, _ in fields]
+    values = [v for _, v in fields]
+    assert "__RequestVerificationToken" in names
+    assert "afToken" in names
+    assert "af-secret-token-value" in values
+    assert "af-alt-token" in values
+
+    prefixed = (
+        '<input name="__RequestVerificationToken_Lw__" type="hidden" '
+        'value="prefixed-token" />'
+    )
+    pref = request_verification_fields(prefixed)
+    assert pref[0][0].startswith("__RequestVerificationToken")
+    assert pref[0][1] == "prefixed-token"
+
+
+def test_ensure_quote_antiforgery_reads_quote_layout_not_addview():
+    """GET /Quote (no XHR) has the token; AddView partial does not."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+    from secturafab.website import client_antiforgery_extracted
+
+    token = "af-secret-token-value"
+    add_view = "<div id='gridDXF'>partial no layout token</div>"
+    quote_html = (
+        '<!DOCTYPE html><html><body>'
+        f'<input type="hidden" name="__RequestVerificationToken" value="{token}" />'
+        "</body></html>"
+    )
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=boxcookie",
+    )
+    client._token = MagicMock()
+    client._token.authorization_header = "Bearer tok"
+    client._token.is_expired = False
+    client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
+    client._request_verification_token = None
+    client._request_verification_fields = []
+    client._last_item_add_view_html = add_view
+    captured: list[dict[str, Any]] = []
+
+    def _req(method, path, **kwargs):
+        captured.append(
+            {
+                "method": method,
+                "path": path,
+                "headers": kwargs.get("headers") or {},
+                "params": kwargs.get("params"),
+            }
+        )
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {}
+        resp.url = path
+        if path in {"/Quote", "/Quote/QuoteOrderEdit"}:
+            resp.text = quote_html
+            resp.content = quote_html.encode()
+        else:
+            resp.text = add_view
+            resp.content = add_view.encode()
+        return resp
+
+    client.website_request = _req  # type: ignore[method-assign]
+    assert client.ensure_quote_antiforgery("qid-new") is True
+    assert client_antiforgery_extracted(client) is True
+    quote_gets = [r for r in captured if r["path"] in {"/Quote", "/Quote/QuoteOrderEdit"}]
+    assert quote_gets
+    for row in quote_gets:
+        assert row["headers"].get("X-Requested-With") is None
+        assert "text/html" in (row["headers"].get("Accept") or "")
+    assert client._request_verification_fields[0][0] == "__RequestVerificationToken"
+
+
+def test_part_create_not_posted_when_af_extracted_false():
+    """Fail closed: empty AF must not POST /part/create."""
+    from secturafab.client import SecturaFabApiError, SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+    )
+    client._request_verification_token = None
+    client._request_verification_fields = []
+    called = []
+
+    def _req(*args, **kwargs):
+        called.append((args, kwargs))
+        raise AssertionError("website_request must not run when af_extracted=false")
+
+    client.website_request = _req  # type: ignore[method-assign]
+    with pytest.raises(SecturaFabApiError, match="af_extracted=false"):
+        client.create_dxf_parts(["src-1"], ["inch"], location="")
+    assert called == []
+
+
+def test_explode_skips_part_create_when_quote_html_has_no_token(tmp_path: Path):
+    """Quote + AddView both tokenless → no /part/create; Finish withheld."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+    from secturafab.website import client_antiforgery_extracted
+
+    token = "af-secret-token-value"
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+    )
+    client._request_verification_token = None
+    client._request_verification_fields = []
+    client._last_item_add_view_html = "<div id='gridDXF'>no token</div>"
+    posted: list[str] = []
+
+    def _website_request(method, path, **kwargs):
+        posted.append(f"{method} {path}")
+        if path == "/part/create":
+            raise AssertionError("must not POST /part/create when af_extracted=false")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {}
+        resp.text = "<html><body>quote page without antiforgery</body></html>"
+        resp.content = resp.text.encode()
+        resp.url = path
+        return resp
+
+    client.website_request = _website_request  # type: ignore[method-assign]
+    assert client.ensure_quote_antiforgery("qid") is False
+    assert client_antiforgery_extracted(client) is False
+    assert "/part/create" not in " ".join(posted)
+
+    stp = tmp_path / "34999-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "34999-1.STEP",
+        "Name": "34999-1",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 8,
+        "Units": "inch",
+    }
+    mock = MagicMock()
+    mock.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    mock.cadimport_data.return_value = {"List": [raw]}
+    mock.get_item_add_view.return_value = {}
+    mock.quote_item_read.return_value = {"Data": [], "Total": 0}
+    mock.get_json.return_value = {"ItemList": []}
+    mock._request_verification_fields = []
+    mock._request_verification_token = None
+    notes = SecturaFabPushService(client=mock).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003499",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="34999-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    blob = " ".join(notes)
+    assert "af_extracted=false" in blob
+    assert "has_antiforgery=false" in blob
+    assert token not in blob
+    mock.create_dxf_parts.assert_not_called()
+    mock.add_item_dxf_files.assert_not_called()
+
+
+def test_explode_posts_part_create_when_quote_layout_has_token(tmp_path: Path):
+    """Quote layout token → af_extracted=true, form has AF, token never in notes."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    stp = tmp_path / "34998-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "34998-1.STEP",
+        "Name": "34998-1",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 3,
+        "Units": "inch",
+    }
+    kids = [
+        {
+            "SourceDataID": "src-a",
+            "FileID": "file-a",
+            "Name": "34998-2 PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+        {
+            "SourceDataID": "src-b",
+            "FileID": "file-b",
+            "Name": "34998-3 GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+    ]
+    token = "af-secret-token-value"
+    quote_html = (
+        '<html><body><input type="hidden" name="__RequestVerificationToken" '
+        f'value="{token}" /></body></html>'
+    )
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=boxcookie",
+    )
+    client._token = MagicMock()
+    client._token.authorization_header = "Bearer tok"
+    client._token.is_expired = False
+    client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
+    client._request_verification_token = None
+    client._request_verification_fields = []
+    client._last_item_add_view_html = "<div id='gridDXF'>partial</div>"
+    captured: list[dict[str, Any]] = []
+
+    def _req(method, url, **kwargs):
+        path = str(url or "")
+        captured.append(
+            {
+                "method": method,
+                "url": path,
+                "headers": kwargs.get("headers") or {},
+                "data": kwargs.get("data"),
+                "json": kwargs.get("json"),
+            }
+        )
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {}
+        resp.url = path
+        if path.endswith("/part/create"):
+            resp.text = json.dumps({"List": kids})
+            resp.content = resp.text.encode()
+            resp.json.return_value = {"List": kids}
+        elif "/Quote" in path and "GetItem" not in path:
+            resp.text = quote_html
+            resp.content = quote_html.encode()
+            resp.json.side_effect = ValueError("html")
+        else:
+            resp.text = "{}"
+            resp.content = b"{}"
+            resp.json.return_value = {}
+        return resp
+
+    client.session = MagicMock()
+    client.session.request.side_effect = _req
+
+    def _upload(*_a, **_k):
+        return {"status": "OK", "List": [raw]}
+
+    client.upload_item_dxf_files = _upload  # type: ignore[method-assign]
+    client.cadimport_set_units = lambda *a, **k: {}  # type: ignore[method-assign]
+    client.get_item_add_view = lambda *a, **k: {}  # type: ignore[method-assign]
+    client.cadimport_data = lambda *a, **k: {"List": kids}  # type: ignore[method-assign]
+    client.quote_item_read = lambda *a, **k: {  # type: ignore[method-assign]
+        "Data": [{"ProductType": 100, "Description": "34998-2"}],
+        "Total": 1,
+    }
+    finish_args: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        finish_args.update(kwargs)
+        return {"ok": True}
+
+    client.add_item_dxf_files = _add  # type: ignore[method-assign]
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003498",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[{"part_no": "34998-2", "description": "PLATE", "qty": 1}],
+        library={},
+        extra_pdfs=None,
+        part_key="34998-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    blob = " ".join(notes)
+    assert "af_extracted=true" in blob
+    assert "has_antiforgery=true" in blob
+    assert token not in blob
+    create = [r for r in captured if str(r["url"]).endswith("/part/create")]
+    assert create
+    form = create[0]["data"] or []
+    form_map = {k: v for k, v in form}
+    assert form_map.get("__RequestVerificationToken") == token
+    from secturafab.website import form_has_antiforgery
+
+    assert form_has_antiforgery(form) is True
+    assert create[0]["headers"].get("Referer") == "https://www.example.test/Quote"
+    assert create[0]["headers"].get("RequestVerificationToken") == token
+    assert finish_args.get("file_list")
+    assert len(finish_args["file_list"]) == 2
+
+
 def test_part_create_403_logonurl_does_not_finish_raw_step(tmp_path: Path):
     """Live 34639-1: www 403 LogOnUrl is not Login; withhold raw STEP Finish."""
     from secturafab.client import SecturaFabApiError
@@ -1431,6 +1782,7 @@ def test_part_create_403_logonurl_does_not_finish_raw_step(tmp_path: Path):
     token = "af-secret-token-value"
     client = MagicMock()
     client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", token)]
     client.create_dxf_parts.side_effect = SecturaFabApiError(
         "API request failed (403) for https://www.secturafab.com/part/create",
         status_code=403,
@@ -1486,8 +1838,8 @@ def test_cadimport_explode_routes_use_www():
     real.config = MagicMock()
     real.config.timeout_seconds = 30
     real.config.website_root = "https://www.secturafab.com"
-    real._request_verification_token = None
-    real._request_verification_fields = []
+    real._request_verification_token = "x"
+    real._request_verification_fields = [("__RequestVerificationToken", "x")]
     captured: list[dict[str, Any]] = []
 
     def fake_website_request(method, path, **kwargs):
@@ -1554,7 +1906,7 @@ def test_cadimport_explode_routes_use_www():
     )
     assert create_row["headers"].get("Referer") == "https://www.secturafab.com/Quote"
     assert create_row["headers"].get("X-Requested-With") == "XMLHttpRequest"
-    assert "__RequestVerificationToken" not in form_keys
+    assert "__RequestVerificationToken" in form_keys
     units = next(r for r in captured if r["path"] == "/CadImport/SetUnits")
     assert units["params"] == {"units": "inch"}
     assert units["json"] is None

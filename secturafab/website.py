@@ -21,8 +21,10 @@ Live 34887-1 ConvertTo+Next JSON List 200 with FileList 0.
 GetDXFData does not exist in /bundles/QuoteOrderEdit (0 hits; www 404).
 #gridDXFParts is filled from DoCreateDXFParts t.List. Do not poll GetDXFData.
 DoCreateDXFParts has no traditional / ajaxSetup; jQuery default is IDList[].
-PartController 403+LogOnUrl (live 34639-1) — send kendo anti-forgery
-fields from GetItem_AddView plus Referer /Quote. CadImport has no AF.
+PartController 403+LogOnUrl (live 34639-1 / 11791-2) — kendo.antiForgeryTokens
+reads hidden inputs on the Quote **layout** (GET /Quote?ID=), not the
+GetItem_AddView partial. Merge those fields into /part/create form data.
+CadImport has no AF. Fail closed if af_extracted=false — do not POST.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -419,15 +421,82 @@ def filelist_from_cadimport_upload(payload: Any) -> list[dict[str, Any]]:
     return _filelist_rows_from_html(json.dumps(payload)) if payload else []
 
 
-_REQUEST_VERIFICATION_RE = re.compile(
-    r'name=["\']((?:__RequestVerificationToken)[^"\']*|afToken)["\'][^>]*value=["\']([^"\']+)["\']'
-    r'|value=["\']([^"\']+)["\'][^>]*name=["\']((?:__RequestVerificationToken)[^"\']*|afToken)["\']',
+_INPUT_TAG_RE = re.compile(r"<input\b[^>]*>", re.I | re.S)
+_META_TAG_RE = re.compile(r"<meta\b[^>]*>", re.I | re.S)
+_INPUT_ATTR_RE = re.compile(
+    r"""([^\s=]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""",
     re.I,
 )
-_META_CSRF_RE = re.compile(
-    r'<meta[^>]+name=["\'](?:csrf-token|_csrf)["\'][^>]+content=["\']([^"\']+)["\']',
+# kendo.core antiForgeryTokens (2023.3): e("input[name^='__RequestVerificationToken']")
+# plus meta csrf-token/_csrf with csrf-param/_csrf_header as the data key.
+# Does not set RequestVerificationToken header — merges into $.ajax data.
+_JSON_AF_RE = re.compile(
+    r"""['"](__RequestVerificationToken[^'"]*|afToken)['"]\s*[:=]\s*['"]([^'"]+)['"]""",
     re.I,
 )
+_AF_FORM_KEYS = frozenset(
+    {
+        "__RequestVerificationToken",
+        "afToken",
+        "csrf-token",
+    }
+)
+_CSRF_TOKEN_META = frozenset({"csrf-token", "_csrf"})
+_CSRF_PARAM_META = frozenset({"csrf-param", "_csrf_header"})
+
+
+def _decode_markup_blob(text: str) -> str:
+    """Unescape JSON/HTML wrappers so layout inputs are visible."""
+    import html as html_lib
+
+    blob = str(text or "")
+    blob = (
+        blob.replace("\\u0022", '"')
+        .replace("\\u003c", "<")
+        .replace("\\u003e", ">")
+        .replace("\\\"", '"')
+        .replace("\\'", "'")
+    )
+    return html_lib.unescape(blob)
+
+
+def _tag_attrs(tag: str) -> dict[str, str]:
+    attrs: dict[str, str] = {}
+    for match in _INPUT_ATTR_RE.finditer(tag):
+        key = (match.group(1) or "").strip()
+        val = match.group(2) or match.group(3) or match.group(4) or ""
+        if key:
+            attrs[key.lower()] = val
+    return attrs
+
+
+def _is_af_input_name(name: str) -> bool:
+    n = str(name or "").strip()
+    return n.startswith("__RequestVerificationToken") or n in _AF_FORM_KEYS
+
+
+def form_has_antiforgery(form: list[tuple[str, str]] | None) -> bool:
+    """True when form keys include an AF field with a value. Never log values."""
+    for key, value in form or []:
+        if _is_af_input_name(str(key)) and str(value or "").strip():
+            return True
+    return False
+
+
+def client_antiforgery_extracted(client: Any) -> bool:
+    """True when scraped AF fields/token are real strings (not MagicMock)."""
+    fields = getattr(client, "_request_verification_fields", None)
+    if isinstance(fields, (list, tuple)):
+        for item in fields:
+            if (
+                isinstance(item, (list, tuple))
+                and len(item) >= 2
+                and _is_af_input_name(str(item[0]))
+                and str(item[1] or "").strip()
+            ):
+                return True
+    token = getattr(client, "_request_verification_token", None)
+    return isinstance(token, str) and bool(token.strip())
 
 
 _INVENTORY_LOCATION_RE = re.compile(
@@ -449,36 +518,68 @@ def inventory_location_from_html(html: Any) -> str:
 
 
 def request_verification_fields(html: Any) -> list[tuple[str, str]]:
-    """kendo.antiForgeryTokens() — input[name^=__RequestVerificationToken] / afToken.
+    """kendo.antiForgeryTokens() — same selectors, Quote layout not AddView.
 
-    DoCreateDXFParts data:{} does not name the token; PartController still
-    validates it. Never log the values.
+    Cited from kendo.core.js 2023.3 (``s.antiForgeryTokens``):
+    ``e("input[name^='__RequestVerificationToken']")`` plus
+    ``meta[name=csrf-token],meta[name=_csrf]`` with
+    ``meta[name=csrf-param],meta[name=_csrf_header]`` as the data key.
+    Returns an object callers merge into $.ajax ``data`` — does **not**
+    set a ``RequestVerificationToken`` header.
+
+    Lives on GET ``/Quote?ID=`` (full page). GetItem_AddView is a partial
+    (live 11791-2 AddView ~123k / af_extracted=false). Never log values.
     """
-    text = html if isinstance(html, str) else ""
     if isinstance(html, dict):
         text = str(html.get("View") or html.get("view") or "")
-        text = text + json.dumps(html)
+        try:
+            text = text + json.dumps(html)
+        except TypeError:
+            text = text + str(html)
+    else:
+        text = html if isinstance(html, str) else ""
+    text = _decode_markup_blob(text)
     if not text:
         return []
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for match in _REQUEST_VERIFICATION_RE.finditer(text):
-        name = (match.group(1) or match.group(4) or "").strip()
-        value = (match.group(2) or match.group(3) or "").strip()
+
+    def _add(name: str, value: str, *, allow_any: bool = False) -> None:
+        name = str(name or "").strip()
+        value = str(value or "").strip()
         if not name or not value or name in seen:
-            continue
+            return
+        if not allow_any and not _is_af_input_name(name):
+            return
         seen.add(name)
         out.append((name, value))
-    meta = _META_CSRF_RE.search(text)
-    if meta and "csrf-token" not in seen:
-        val = (meta.group(1) or "").strip()
-        if val:
-            out.append(("csrf-token", val))
+
+    for tag in _INPUT_TAG_RE.findall(text):
+        attrs = _tag_attrs(tag)
+        _add(attrs.get("name") or "", attrs.get("value") or "")
+
+    csrf_token = ""
+    csrf_param = ""
+    for tag in _META_TAG_RE.findall(text):
+        attrs = _tag_attrs(tag)
+        meta_name = (attrs.get("name") or "").strip().lower()
+        content = (attrs.get("content") or "").strip()
+        if meta_name in _CSRF_TOKEN_META and content:
+            csrf_token = content
+        elif meta_name in _CSRF_PARAM_META and content:
+            csrf_param = content
+    if csrf_token:
+        # kendo: tokens[csrf-param || csrf-header] = csrf-token content
+        _add(csrf_param or "csrf-token", csrf_token, allow_any=True)
+
+    if not out:
+        for name, value in _JSON_AF_RE.findall(text):
+            _add(name, value)
     return out
 
 
 def request_verification_token(html: Any) -> str | None:
-    """Hidden field from GetItem_AddView — QuoteOrderEdit posts it with MVC ajax."""
+    """First AF field value — Quote layout or AddView. Never log it."""
     fields = request_verification_fields(html)
     if not fields:
         return None

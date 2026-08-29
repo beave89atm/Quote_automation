@@ -66,6 +66,7 @@ from .website import (
     count_linear_product_type,
     cadimport_filelist_exploded,
     cadimport_payload_preview,
+    client_antiforgery_extracted,
     inventory_location_from_html,
     filelist_from_cadimport_upload,
     is_raw_step_upload_row,
@@ -1322,6 +1323,15 @@ class SecturaFabPushService:
         del upload_payload  # Next JSON List is not the explode body
         html = getattr(self.client, "_last_item_add_view_html", "") or ""
         location = inventory_location_from_html(html)
+        ensure_fn = getattr(type(self.client), "ensure_quote_antiforgery", None)
+        if callable(ensure_fn):
+            try:
+                ensure_fn(self.client, quote_id)
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError):
+                pass
+        af_extracted = client_antiforgery_extracted(self.client)
+        notes.append(f"af_extracted={str(af_extracted).lower()}")
+        notes.append(f"has_antiforgery={str(af_extracted).lower()}")
         id_list: list[str] = []
         unit_list: list[str] = []
         for row in upload_rows:
@@ -1336,7 +1346,12 @@ class SecturaFabPushService:
                 or "inch"
             )
         create_fn = getattr(self.client, "create_dxf_parts", None)
-        if callable(create_fn) and id_list:
+        if not af_extracted:
+            notes.append(
+                "DoCreateDXFParts skipped — af_extracted=false "
+                "(no /part/create; GetItem_AddView is a partial)"
+            )
+        elif callable(create_fn) and id_list:
             try:
                 result = create_fn(
                     id_list,

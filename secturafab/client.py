@@ -21,11 +21,12 @@ from .website import (
     build_pdf_finish_payload,
     build_weld_add_operation_payload,
     cadimport_list_is_native_array,
+    client_antiforgery_extracted,
+    form_has_antiforgery,
     is_cloudflare_challenge,
     is_website_login_redirect,
     jquery_ajax_form,
     request_verification_fields,
-    request_verification_token,
 )
 
 
@@ -268,7 +269,9 @@ class SecturaFabClient:
             }
         )
         token = getattr(self, "_request_verification_token", None)
-        if token:
+        if isinstance(token, str) and token.strip():
+            # kendo.antiForgeryTokens merges into data only; some MVC AF
+            # filters also read the RequestVerificationToken header.
             headers["RequestVerificationToken"] = token
             headers["__RequestVerificationToken"] = token
         if extra:
@@ -480,12 +483,93 @@ class SecturaFabClient:
             if isinstance(view, str) and view:
                 html = html + "\n" + view
                 self._last_item_add_view_html = html
-        fields = request_verification_fields(html)
-        self._request_verification_fields = fields
-        token = fields[0][1] if fields else request_verification_token(html)
-        if token:
-            self._request_verification_token = token
+        self._merge_antiforgery_fields(request_verification_fields(html))
         return parsed
+
+    def _merge_antiforgery_fields(self, fields: list[tuple[str, str]]) -> None:
+        have = list(getattr(self, "_request_verification_fields", None) or [])
+        seen = {str(name) for name, _ in have}
+        for name, value in fields:
+            if not name or not value or name in seen:
+                continue
+            have.append((str(name), str(value)))
+            seen.add(str(name))
+        self._request_verification_fields = have
+        if have and not getattr(self, "_request_verification_token", None):
+            self._request_verification_token = have[0][1]
+
+    def ensure_quote_antiforgery(self, quote_id: str) -> bool:
+        """Scrape kendo.antiForgeryTokens inputs from Quote layout + AddView.
+
+        kendo.core ``antiForgeryTokens`` reads
+        ``input[name^='__RequestVerificationToken']`` on the **document**
+        (GET /Quote?ID= / /Quote/QuoteOrderEdit, no X-Requested-With).
+        GetItem_AddView is a partial — live 11791-2 AddView 200 ~123k had
+        no field. Never log token values.
+        """
+        blobs: list[str] = []
+        add_view = getattr(self, "_last_item_add_view_html", "") or ""
+        if add_view:
+            blobs.append(add_view)
+        pages = (
+            ("/Quote", {"ID": quote_id}),
+            ("/Quote/QuoteOrderEdit", {"ID": quote_id}),
+            ("/Quote", {"id": quote_id}),
+        )
+        accept = {"Accept": "text/html,application/xhtml+xml"}
+        for path, params in pages:
+            try:
+                resp = self.website_request(
+                    "GET",
+                    path,
+                    params=params,
+                    headers=accept,
+                    prefer_api_origin=False,
+                    www_only=True,
+                    require_session=False,
+                )
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError):
+                continue
+            loc = ""
+            if hasattr(resp, "headers"):
+                loc = resp.headers.get("Location") or ""
+            status = int(getattr(resp, "status_code", 0) or 0)
+            if is_website_login_redirect(status, loc) or "AccessDenied" in loc:
+                continue
+            if status in {301, 302, 303, 307, 308} and loc:
+                hop = loc
+                if "://" in hop:
+                    from urllib.parse import urlparse
+
+                    parsed = urlparse(hop)
+                    hop = parsed.path or path
+                try:
+                    resp = self.website_request(
+                        "GET",
+                        hop,
+                        params=params,
+                        headers=accept,
+                        prefer_api_origin=False,
+                        www_only=True,
+                        require_session=False,
+                    )
+                except (SecturaFabApiError, SecturaFabWebsiteAuthError):
+                    continue
+                loc = ""
+                if hasattr(resp, "headers"):
+                    loc = resp.headers.get("Location") or ""
+                status = int(getattr(resp, "status_code", 0) or 0)
+                if is_website_login_redirect(status, loc) or "AccessDenied" in loc:
+                    continue
+            text = getattr(resp, "text", "") or ""
+            if not text or status >= 400:
+                continue
+            if is_cloudflare_challenge(status, text):
+                continue
+            blobs.append(text)
+        for blob in blobs:
+            self._merge_antiforgery_fields(request_verification_fields(blob))
+        return client_antiforgery_extracted(self)
 
     def harvest_cadimport_js(
         self,
@@ -821,8 +905,10 @@ class SecturaFabClient:
         QuoteOrderEdit createAllParts collects #gridDXF SourceDataID + Units
         and POSTs application/x-www-form-urlencoded
         {Location, IDList, unitList, OtherFileIDList, Height, Width}.
-        No traditional (IDList[]). PartController AF: hidden token from
-        GetItem_AddView (kendo.antiForgeryTokens). success t.List = kids.
+        No traditional (IDList[]). PartController AF: kendo.antiForgeryTokens
+        merges ``input[name^='__RequestVerificationToken']`` from the Quote
+        layout into ``data`` (not GetItem_AddView). Fail closed if empty.
+        success t.List = kids.
         """
         from .cadimport_js import build_create_dxf_parts_fields, jquery_ajax_form
 
@@ -840,10 +926,14 @@ class SecturaFabClient:
         for name, value in getattr(self, "_request_verification_fields", None) or ():
             if name and value:
                 form.append((str(name), str(value)))
-        if not any(k.startswith("__RequestVerificationToken") or k == "afToken" for k, _ in form):
+        if not form_has_antiforgery(form):
             token = getattr(self, "_request_verification_token", None)
-            if token:
-                form.append(("__RequestVerificationToken", str(token)))
+            if isinstance(token, str) and token.strip():
+                form.append(("__RequestVerificationToken", token))
+        if not form_has_antiforgery(form):
+            raise SecturaFabApiError(
+                "af_extracted=false — not POSTing /part/create"
+            )
         headers = self._quote_page_ajax_headers(
             {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}
         )
