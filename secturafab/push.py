@@ -2684,11 +2684,14 @@ class SecturaFabPushService:
                 if attempted_pack_stamp:
                     peek = self._read_quote_items(quote_id)
                     if expect_cad and count_cad_product_type(peek) <= 0:
+                        msg = (
+                            "Image Files Finish landed 0 Cad lines — "
+                            "empty assembly shell is not success"
+                        )
+                        if not website_cookie:
+                            msg = f"{msg} {self._finish_session_error()}"
                         return self._fail_push(
-                            msg=(
-                                "Image Files Finish landed 0 Cad lines — "
-                                "empty assembly shell is not success"
-                            ),
+                            msg=msg,
                             notes=notes,
                             quote_id=quote_id,
                             quote_number=quote_number,
