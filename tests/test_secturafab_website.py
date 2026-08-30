@@ -3774,7 +3774,7 @@ def test_page_finish_js_posts_kendo_filelist_with_chrome_dom_af():
 
 
 def test_filelist_row_keys_name_cadimport_identity_miss():
-    """107292-1 vs 105918-1: log row keys; CadType/Stock_* are the List,Result miss."""
+    """Log posted FileList key names. Live 16629-1 miss is FileType (not CadType/Stock)."""
     from secturafab.chrome_cdp import _PAGE_FINISH_JS
     from secturafab.website import (
         filelist_missing_cadimport_identity_keys,
