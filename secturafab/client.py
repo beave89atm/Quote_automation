@@ -1350,6 +1350,13 @@ class SecturaFabClient:
                 if isinstance(result.get("filelist_filetype"), dict)
                 else {}
             ),
+            "filelist_errorstatus": result.get("filelist_errorstatus"),
+            "filelist_qty": result.get("filelist_qty"),
+            "filelist_filetype_value": str(result.get("filelist_filetype_value") or ""),
+            "filelist_filetype_type": str(result.get("filelist_filetype_type") or ""),
+            "filelist_cad_path_keys": [
+                str(k) for k in (result.get("filelist_cad_path_keys") or [])
+            ],
             "finish_af_present": bool(result.get("finish_af_present")),
             "finish_why": str(result.get("finish_why") or ""),
             "empty_body": (

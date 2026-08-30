@@ -43,6 +43,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "8de920f0-ea17-442d-898e-9a04367d91de",  # 11796-2 SourceDataID=0 (619ebf2) — leave it
         "d59318c8-9c39-43a2-aef6-cbd28203ee82",  # 107292-1 empty vs List,Result (ce5d2c1) — leave it
         "aab5b3e2-8771-47a2-b625-a3f379c5b0c2",  # 16629-1 leftover EAR empty FileType (76dd572) — leave it
+        "6a568912-5b19-4bfd-9e11-d06d7c149746",  # 10098-1 leftover PIVOTING FOOT FileType=Cad empty (315cb19) — leave it
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -64,6 +65,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "8de920f0",  # 11796-2 spent (SourceDataID=0) — do not remint
         "d59318c8",  # 107292-1 spent (empty body vs List,Result) — do not remint
         "aab5b3e2",  # 16629-1 spent leftover EAR (CadType+Stock, no FileType) — do not remint
+        "6a568912",  # 10098-1 spent leftover PIVOTING FOOT (FileType=Cad empty) — do not remint
     }
 )
 
@@ -105,7 +107,10 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "11796-2",  # spent 619ebf2 SourceDataID=0 / 200 empty — do not remint
         "107292-1",  # spent ce5d2c1 empty body vs List,Result — do not remint
         "16629-1",  # spent 76dd572 leftover EAR — CadType+Stock, no FileType — do not remint
-        # Do not mint. Named miss: posted FileList lacks FileType.
+        "10098-1",  # spent 315cb19 leftover PIVOTING FOOT — FileType=Cad + empty — do not remint
+        # Do not mint. Named miss: Cad leftover Finish is a different
+        # AddItem_DXFFiles path than Component List,Result. Capture
+        # InternalData/unfold/DXF* key names — do not invent them.
     }
 )
 

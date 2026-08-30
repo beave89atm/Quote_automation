@@ -3913,6 +3913,63 @@ def test_setpartmode_filetype_survives_into_filelist():
     bare = persist_setpartmode_filetype({"CadType": 0, "Stock_X": 1, "Stock_Y": 2})
     assert "FileType" not in bare
     assert "Status" not in bare
+    page = persist_setpartmode_filetype(
+        {"FileType": "Cad", "ItemType": "Cad", "ProductType": 100}
+    )
+    assert page["FileType"] == "Cad"
+    assert page["FileType"] != "CAD"
+    assert page["FileType"] != 100
+    assert persist_setpartmode_filetype({"FileType": "Cad"})["FileType"] == "Cad"
+    assert "FileType" not in persist_setpartmode_filetype({"ItemType": "CAD"})
+    assert persist_setpartmode_filetype({"FileType": 100}).get("FileType") == 100
+
+
+def test_filelist_errorstatus_qty_and_filetype_value_type():
+    """Log posted ErrorStatus/Qty values and FileType value/type — do not invent."""
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+    from secturafab.website import (
+        filelist_cad_path_keys,
+        filelist_errorstatus_qty,
+        filelist_filetype_value_type,
+        kendo_filelist_for_finish,
+    )
+
+    row = {
+        "ID": "x",
+        "FileID": "f",
+        "SourceDataID": "x",
+        "FileType": "Cad",
+        "CadType": 0,
+        "Stock_X": 11.0,
+        "Stock_Y": 6.25,
+        "ErrorStatus": 0,
+        "Qty": 1,
+        "ItemType": "Cad",
+        "Name": "PIVOTING FOOT",
+    }
+    vals = filelist_errorstatus_qty(row)
+    assert vals["filelist_errorstatus"] == 0
+    assert vals["filelist_qty"] == 1
+    ft = filelist_filetype_value_type(row)
+    assert ft["filelist_filetype_value"] == "Cad"
+    assert ft["filelist_filetype_type"] == "str"
+    assert filelist_cad_path_keys(row) == []
+    missing = filelist_filetype_value_type({"Qty": 1})
+    assert missing["filelist_filetype_type"] == "missing"
+    cap = kendo_filelist_for_finish([row], from_datasource=True)
+    assert cap["filelist_errorstatus"] == 0
+    assert cap["filelist_qty"] == 1
+    assert cap["filelist_filetype_value"] == "Cad"
+    assert cap["filelist_filetype_type"] == "str"
+    assert cap["filelist_cad_path_keys"] == []
+    assert cap["should_finish"] is True
+    js = _PAGE_FINISH_JS
+    assert "filelist_errorstatus" in js
+    assert "filelist_qty" in js
+    assert "filelist_filetype_value" in js
+    assert "filelist_filetype_type" in js
+    assert "InternalData" in js
+    assert "Unfold" in js
 
 
 def test_kendo_without_cadimport_identity_skips_finish(tmp_path: Path):
@@ -5385,6 +5442,165 @@ def test_cadtype_stock_without_filetype_empty_body_is_not_success(tmp_path: Path
     assert "filelist_missing_keys=" in blob
     assert "FileType" in blob
     assert "posted FileList lacks FileType" in blob
+    assert "empty body" in blob.lower()
+    assert "not success" in blob
+    assert "item_count=0" in blob or "GET item_count=0" in blob
+    client.add_item_dxf_files.assert_called()
+
+
+def test_filetype_cad_empty_body_is_not_success(tmp_path: Path):
+    """Live 10098-1: FileType=Cad + CadType+Stock + 200 empty + GET 0 is not gold."""
+    stp = tmp_path / "10098-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "ID": "id-1",
+            "Name": "PIVOTING FOOT",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "CadType": 0,
+            "Stock_X": 11.0,
+            "Stock_Y": 6.25,
+            "Stock_Z": 0.105,
+            "Width": 11.0,
+            "Length": 6.25,
+            "Thickness": 0.105,
+            "Material": "A1011",
+            "ProductType": 100,
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "FileType": "Cad",
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 1
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0098"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": [],
+        "body_type": "empty",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "text_len": 0,
+        "empty_body": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_filelist_n": 1,
+        "grid_dxf_row_count": 1,
+        "filelist_from_kendo": True,
+        "filelist_sourcedataid_n": 1,
+        "filelist_id_n": 1,
+        "filelist_fileid_n": 1,
+        "filelist_filetype": {
+            "Cad": 1,
+            "Linear": 0,
+            "Assembly": 0,
+            "Component": 0,
+            "blank": 0,
+        },
+        "filelist_errorstatus": 0,
+        "filelist_qty": 1,
+        "filelist_filetype_value": "Cad",
+        "filelist_filetype_type": "str",
+        "filelist_cad_path_keys": [],
+        "filelist_row_keys": [
+            "CadType",
+            "FileID",
+            "FileType",
+            "ID",
+            "ItemType",
+            "Length",
+            "Material",
+            "ProductType",
+            "SourceDataID",
+            "Stock_X",
+            "Stock_Y",
+            "Stock_Z",
+            "Thickness",
+            "Width",
+        ],
+        "filelist_missing_keys": ["Status"],
+        "filelist_missing_identity": [],
+        "finish_af_present": True,
+        "finish_why": "filelist_missing_keys=Status",
+        "request_keys": [
+            "ID",
+            "ItemID",
+            "customerMaterial",
+            "FileList",
+            "__RequestVerificationToken",
+        ],
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "FileType",
+                "ID",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0098",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.105",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="10098-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    ok = (
+        "not success" not in blob
+        and "item_count=0" not in blob
+        and "GET item_count=0" not in blob
+        and "empty body" not in blob.lower()
+    )
+    assert ok is False
+    assert "filelist_errorstatus=0" in blob
+    assert "filelist_qty=1" in blob
+    assert "filelist_filetype_value=Cad" in blob
+    assert "filelist_filetype_type=str" in blob
+    assert "filelist_cad_path_keys=" in blob
+    assert "filelist_missing_keys=" in blob
+    assert "Status" in blob
+    assert "FileType=Cad persist is not success" in blob
+    assert "66 Component" in blob
     assert "empty body" in blob.lower()
     assert "not success" in blob
     assert "item_count=0" in blob or "GET item_count=0" in blob

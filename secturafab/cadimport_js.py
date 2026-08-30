@@ -113,6 +113,11 @@ UPDATE_DATA_NEXT_SNIPPET = (
 # QuoteOrderEdit Finish — same controllerName='/Quote' as GetItem_AddView.
 #   data:{ID, ItemID, customerMaterial, FileList}
 # FileList = #gridDXFParts rows (ErrorStatus===0, Qty>0), not the raw STEP.
+# Cited OnAddDXFClick has no FileType=Cad vs Component branch and no
+# unfold / InternalData / DXF-child keys. Live 10098-1 FileType=Cad
+# (string) + HTTP 200 empty vs 105918-1 Component List,Result is a
+# different AddItem_DXFFiles server path, not a missing FileType key.
+# Do not invent InternalData, unfold, Status, or a FileType enum.
 # Live 34137-1: cookie-HTTP POST 200 empty str / ItemList 0.
 # Live 34137-2: fetch('/part/create') with Upload IDs → t.List=31, but
 # success never ran so #gridDXFParts stayed empty; reconstructed Finish

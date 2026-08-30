@@ -53,10 +53,20 @@ empty body vs 105918-1 List,Result. Leave d59318c8 / 107292-1.
 Live 16629-1: CadType+Stock on kendo and posted FileList; FileType
 and Status absent; 200 empty / GET 0. Persist FileType from
 SetPartMode ItemType/Category/PartMode onto the dataItem. Do not
-invent Status. Leave aab5b3e2 / 16629-1. Do not mint.
+invent Status. Leave aab5b3e2 / 16629-1.
+Live 10098-1 (315cb19 leftover PIVOTING FOOT, 6a568912): posted
+FileType=Cad (string) plus CadType+Stock+SID. Finish still 200
+empty / GET 0. FileType-on-the-row is not the List,Result miss.
+105918-1 List,Result was 66 Component / 0 Cad — not Cad leftover
+gold. Cad vs Component is a different AddItem_DXFFiles server path.
+Log posted ErrorStatus + Qty values and FileType value/type; Cad
+path key *names* only. Do not invent InternalData/unfold/Status
+or FileType "CAD"/100. Leave 6a568912 / 10098-1. Do not mint
+until a box capture names the Cad-path miss.
 
 Never scrape the Login tab or the claims-mismatch tab.
-Never log cookie or AF token values. Names / bools / body keys / counts only.
+Never log cookie or AF token values. Names / bools / body keys /
+counts, plus posted ErrorStatus, Qty, and FileType value/type.
 Do not unwrap Windows Chrome. Do not ask Kyle to log in.
 """
 
@@ -1284,6 +1294,11 @@ _PAGE_FINISH_JS = """(function() {
       filelist_row_keys: kendoIdentKeys,
       filelist_missing_keys: missingOf(kendoIdentKeys, COMPARE_KEYS),
       filelist_missing_identity: kendoIdentMiss,
+      filelist_errorstatus: Number((rows[0] || {}).ErrorStatus != null ? rows[0].ErrorStatus : 0),
+      filelist_qty: Number((rows[0] || {}).Qty != null ? rows[0].Qty : ((rows[0] || {}).Quantity != null ? rows[0].Quantity : 0)),
+      filelist_filetype_value: ((rows[0] || {}).FileType == null) ? "" : String(rows[0].FileType),
+      filelist_filetype_type: ((rows[0] || {}).FileType === undefined) ? "missing" : typeof rows[0].FileType,
+      filelist_cad_path_keys: [],
       finish_why: "filelist_missing_keys=" + kendoIdentMiss.join("+")
     }));
   }
@@ -1366,10 +1381,27 @@ _PAGE_FINISH_JS = """(function() {
         var afInReq = hasAf(d);
         var postedKeys = n > 0 ? rowKeys(fl[0]) : [];
         var identMiss = missingOf(postedKeys, IDENTITY_KEYS);
+        var first = n > 0 ? (fl[0] || {}) : {};
+        var ftRaw = first.FileType;
+        var ftType = (ftRaw === undefined) ? "missing" : typeof ftRaw;
+        var qtyRaw = first.Qty != null ? first.Qty : first.Quantity;
+        var cadPath = [
+          "InternalData", "Unfold", "HasUnfold", "Unfolded",
+          "DXF", "DxfId", "DXFID", "DxfFileID", "HasDXF"
+        ];
+        var cadPathHave = [];
+        for (var ck = 0; ck < cadPath.length; ck++) {
+          if (first[cadPath[ck]] !== undefined) cadPathHave.push(cadPath[ck]);
+        }
         var cap = {
           finish_filelist_n: n,
           request_keys: req_keys,
           kendo_row_keys: kendoIdentKeys,
+          filelist_errorstatus: Number(first.ErrorStatus != null ? first.ErrorStatus : 0),
+          filelist_qty: Number(qtyRaw != null ? qtyRaw : 0),
+          filelist_filetype_value: (ftRaw === undefined || ftRaw === null) ? "" : String(ftRaw),
+          filelist_filetype_type: ftType,
+          filelist_cad_path_keys: cadPathHave,
           filelist_from_kendo: fromKendo,
           filelist_sourcedataid_n: sid_n,
           filelist_id_n: id_n,
@@ -1472,6 +1504,11 @@ _PAGE_FINISH_JS = """(function() {
     extra.filelist_missing_keys = hit.filelist_missing_keys || [];
     extra.filelist_missing_identity = hit.filelist_missing_identity || [];
     extra.filelist_filetype = hit.filelist_filetype || {};
+    extra.filelist_errorstatus = hit.filelist_errorstatus;
+    extra.filelist_qty = hit.filelist_qty;
+    extra.filelist_filetype_value = String(hit.filelist_filetype_value || "");
+    extra.filelist_filetype_type = String(hit.filelist_filetype_type || "");
+    extra.filelist_cad_path_keys = hit.filelist_cad_path_keys || [];
     extra.finish_af_present = !!hit.finish_af_present;
     extra.finish_why = String(hit.finish_why || "");
     extra.body_empty = extra.body_type === "empty" && !extra.has_NewItem;
@@ -1791,6 +1828,11 @@ def invoke_page_dxf_finish(
         "filelist_missing_keys": [],
         "filelist_missing_identity": [],
         "kendo_row_keys": [],
+        "filelist_errorstatus": None,
+        "filelist_qty": None,
+        "filelist_filetype_value": "",
+        "filelist_filetype_type": "",
+        "filelist_cad_path_keys": [],
         "finish_af_present": False,
         "finish_why": "wrong_document",
     }
@@ -1835,6 +1877,13 @@ def invoke_page_dxf_finish(
             if isinstance(value.get("filelist_filetype"), dict)
             else {}
         ),
+        "filelist_errorstatus": value.get("filelist_errorstatus"),
+        "filelist_qty": value.get("filelist_qty"),
+        "filelist_filetype_value": str(value.get("filelist_filetype_value") or ""),
+        "filelist_filetype_type": str(value.get("filelist_filetype_type") or ""),
+        "filelist_cad_path_keys": [
+            str(k) for k in (value.get("filelist_cad_path_keys") or [])
+        ],
         "finish_af_present": bool(value.get("finish_af_present")),
         "finish_why": str(value.get("finish_why") or ""),
         "status": int(value.get("status") or 0),

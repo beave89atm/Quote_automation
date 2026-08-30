@@ -91,8 +91,18 @@ Qty>0. Status>0 is Image Files GetPDFData / New Line Item, not CadImport.
 (page File type default Component). n=1 leftover with CadType+Stock and
 no FileType is empty. SetPartMode POSTs {ID, PartMode} and paints
 ItemType/Category; persist FileType onto the dataItem before
-OnAddDXFClick. Do not invent Status. Leave aab5b3e2 / 16629-1. Do not
-mint until the next named miss.
+OnAddDXFClick. Do not invent Status. Leave aab5b3e2 / 16629-1.
+Live 10098-1 (315cb19 leftover PIVOTING FOOT, 6a568912): posted FileList
+had FileType=Cad (string) plus CadType/Stock_*/SID/FileID/ID/ErrorStatus/
+Qty/ItemType/Category/PartMode. Finish still 200 empty / GET 0.
+filelist_missing_keys=Status only (PDF path — do not invent Status).
+105918-1 List,Result stamped 66 Component / 0 Cad — page File-type
+default, not the Cad leftover spec. Gold Cad+PR+laser is 21678-1 /
+Q10056 UI. FileType=Cad vs Component is a different AddItem_DXFFiles
+server path, not a missing key. OnAddDXFClick (cited) filters
+ErrorStatus===0 && Qty>0 then POSTs FileList — no unfold/InternalData
+in that snippet. Do not invent a FileType enum or InternalData. Leave
+6a568912 / 10098-1. Do not mint until the next named miss.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -985,7 +995,9 @@ def persist_setpartmode_filetype(row: dict[str, Any] | None) -> dict[str, Any]:
     """Write FileType from SetPartMode ItemType/Category/PartMode.
 
     Live 16629-1: SetPartMode painted a badge (Cad:1 classify) but FileType
-    was not on the posted FileList. Do not invent Status or geometry.
+    was not on the posted FileList. Live 10098-1 posted FileType=Cad (str)
+    and Finish was still empty — do not guess CAD / 100. Keep a page
+    FileType if present. Do not invent Status or geometry.
     """
     out = dict(row) if isinstance(row, dict) else {}
     ft = out.get("FileType")
@@ -1003,6 +1015,57 @@ def persist_setpartmode_filetype(row: dict[str, Any] | None) -> dict[str, Any]:
     if mode in mapped:
         out["FileType"] = mapped[mode]
     return out
+
+
+# OnAddDXFClick filter values + FileType value/type. Live 10098-1 posted
+# FileType="Cad" (str) and still empty. Do not guess "CAD" / 100.
+# Cad-path key *names* only — never InternalData/unfold values.
+CAD_PATH_LOG_KEYS = (
+    "InternalData",
+    "Unfold",
+    "HasUnfold",
+    "Unfolded",
+    "DXF",
+    "DxfId",
+    "DXFID",
+    "DxfFileID",
+    "HasDXF",
+)
+
+
+def filelist_errorstatus_qty(row: dict[str, Any] | None) -> dict[str, Any]:
+    """Posted ErrorStatus and Qty values — OnAddDXFClick filter (not keys)."""
+    if not isinstance(row, dict):
+        return {"filelist_errorstatus": None, "filelist_qty": None}
+    return {
+        "filelist_errorstatus": _error_status(row),
+        "filelist_qty": _qty_of(row),
+    }
+
+
+def filelist_filetype_value_type(row: dict[str, Any] | None) -> dict[str, str]:
+    """Exact FileType value and Python/JS type name — do not invent an enum."""
+    if not isinstance(row, dict) or "FileType" not in row:
+        return {"filelist_filetype_value": "", "filelist_filetype_type": "missing"}
+    ft = row.get("FileType")
+    if isinstance(ft, bool):
+        typ = "bool"
+    elif isinstance(ft, int) and not isinstance(ft, bool):
+        typ = "int"
+    elif isinstance(ft, float):
+        typ = "float"
+    elif isinstance(ft, str):
+        typ = "str"
+    else:
+        typ = type(ft).__name__
+    return {"filelist_filetype_value": str(ft), "filelist_filetype_type": typ}
+
+
+def filelist_cad_path_keys(row: dict[str, Any] | None) -> list[str]:
+    """InternalData / Unfold / DXF* key names present — never values."""
+    if not isinstance(row, dict):
+        return []
+    return [k for k in CAD_PATH_LOG_KEYS if k in row]
 
 
 def kendo_filelist_for_finish(
@@ -1050,6 +1113,11 @@ def kendo_filelist_for_finish(
         "filelist_missing_identity": ident_miss,
         "kendo_row_keys": kendo_identity_log_keys(filled[0]) if filled else [],
         "should_finish": bool(from_kendo and not ident_miss),
+        **filelist_errorstatus_qty(filled[0] if filled else None),
+        **filelist_filetype_value_type(filled[0] if filled else None),
+        "filelist_cad_path_keys": filelist_cad_path_keys(
+            filled[0] if filled else None
+        ),
     }
 
 

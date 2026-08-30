@@ -2739,6 +2739,19 @@ class SecturaFabPushService:
                         for k in ("Cad", "Linear", "Assembly", "Component", "blank")
                     )
                 )
+            if result.get("filelist_errorstatus") is not None:
+                notes.append(
+                    f"filelist_errorstatus={result.get('filelist_errorstatus')}"
+                )
+            if result.get("filelist_qty") is not None:
+                notes.append(f"filelist_qty={result.get('filelist_qty')}")
+            ft_val = result.get("filelist_filetype_value")
+            ft_typ = result.get("filelist_filetype_type")
+            if ft_val not in (None, "") or ft_typ not in (None, ""):
+                notes.append(f"filelist_filetype_value={ft_val or ''}")
+                notes.append(f"filelist_filetype_type={ft_typ or ''}")
+            cad_path = [str(k) for k in (result.get("filelist_cad_path_keys") or [])]
+            notes.append("filelist_cad_path_keys=" + ",".join(cad_path))
             if "finish_af_present" in result:
                 notes.append(
                     "finish_af_present="
@@ -2799,8 +2812,11 @@ class SecturaFabPushService:
                     f"finish_filelist_n={finish_n} "
                     f"grid_dxf_row_count="
                     f"{int(grid_n) if isinstance(grid_n, (int, float)) else 0} "
-                    "— kendo+AF+SourceDataID+Cad FileType is not success "
-                    "(leave shell, no remint; live 107292-1 / P001545 / EHB3112)"
+                    "— FileType=Cad persist is not success "
+                    "(live 10098-1 leftover PIVOTING FOOT; 105918-1 "
+                    "List,Result was 66 Component / 0 Cad, not Cad gold). "
+                    "Cad vs Component is a different AddItem_DXFFiles path "
+                    "— do not invent InternalData/unfold/Status"
                 )
         if not getattr(self.client, "_setpartmode_via", ""):
             notes.append(
