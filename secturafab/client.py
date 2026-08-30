@@ -87,6 +87,10 @@ class SecturaFabClient:
         self._grid_dxf_row_count: int | None = None
         self._part_create_list_len: int | None = None
         self._grid_present: bool | None = None
+        self._edit_quote_id: str = ""
+        self._minted_id: str = ""
+        self._edit_gate: str = ""
+        self._stale_grid: bool = False
 
     def authenticate(self, force: bool = False) -> AccessToken:
         if self._token and not self._token.is_expired and not force:
@@ -1121,11 +1125,14 @@ class SecturaFabClient:
             quote_id=quote_id or None,
             quote_number=quote_number or None,
         )
+        self._edit_quote_id = str(bind.get("edit_quote_id") or "")
+        self._minted_id = str(bind.get("minted_id") or quote_id or "")
+        self._edit_gate = str(bind.get("edit_gate") or "")
+        self._stale_grid = bool(bind.get("stale_grid"))
         self._grid_present = bool(bind.get("grid_present"))
-        if not self._grid_present:
-            self._grid_dxf_row_count = 0
-            return {"List": kids}
         self._grid_dxf_row_count = int(bind.get("grid_dxf_row_count") or 0)
+        if not self._grid_present:
+            return {"List": kids}
         return {"List": kids}
 
     def cadimport_convert_to(self, payload: Any = None) -> Any:
@@ -1202,8 +1209,10 @@ class SecturaFabClient:
         """
         from .chrome_cdp import (
             chrome_quotes_live,
+            grid_dxf_count_is_stale,
             grid_dxf_parts_rows_from_quotes_tab,
             invoke_page_dxf_finish,
+            minted_edit_tab_ready,
             post_add_item_dxf_files_from_quotes_tab,
         )
 
@@ -1227,11 +1236,35 @@ class SecturaFabClient:
         if isinstance(n_grid, (int, float)) and int(n_grid) <= 1:
             self._finish_via = "skipped"
             return self._dxf_finish_capture({}, via="skipped")
+        if getattr(self, "_stale_grid", False) is True or grid_dxf_count_is_stale(
+            n_grid if isinstance(n_grid, (int, float)) else None,
+            n_list if isinstance(n_list, (int, float)) else None,
+        ):
+            self._finish_via = "skipped"
+            self._edit_gate = "stale_grid"
+            return self._dxf_finish_capture({}, via="skipped")
+        gate = minted_edit_tab_ready(quote_id, navigate=True)
+        self._edit_quote_id = str(gate.get("edit_quote_id") or "")
+        self._minted_id = str(gate.get("minted_id") or quote_id or "")
+        if not gate.get("ok"):
+            self._finish_via = "skipped"
+            self._edit_gate = str(gate.get("reason") or "edit_quote_id!=minted_id")
+            return self._dxf_finish_capture({}, via="skipped")
         page = invoke_page_dxf_finish(quote_id=quote_id)
         via = str(page.get("via") or "")
-        if via == "skipped":
+        if via == "skipped" or page.get("edit_gate"):
             self._finish_via = "skipped"
+            if page.get("edit_gate"):
+                self._edit_gate = str(page.get("edit_gate") or self._edit_gate)
             return self._dxf_finish_capture(page, via="skipped")
+        page_grid = page.get("grid_dxf_row_count")
+        if grid_dxf_count_is_stale(
+            int(page_grid) if isinstance(page_grid, (int, float)) else None,
+            int(n_list) if isinstance(n_list, (int, float)) else None,
+        ):
+            self._finish_via = "skipped"
+            self._edit_gate = "stale_grid"
+            return self._dxf_finish_capture({}, via="skipped")
         if via == "page_fn":
             self._finish_via = "page_fn"
             status = int(page.get("status") or 0)

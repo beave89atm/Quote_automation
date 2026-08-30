@@ -99,6 +99,37 @@ PEDESTAL WELDMENT
     assert "BASE PLATE" not in title.upper()
 
 
+def test_marmon_order_material_is_not_jib_head_weldment_header():
+    """Live 5003313-001: vendor note is not the quote header."""
+    from secturafab.item_desc import format_quote_header_description
+
+    assert is_drawing_boilerplate_title("Order Material from Marmon Keystone")
+    assert is_drawing_boilerplate_title(
+        "5003313-001 - Order Material from Marmon Keystone"
+    )
+    assert format_quote_header_description(
+        "5003313-001 - Order Material from Marmon Keystone",
+        part_key="5003313-001",
+    ) == ""
+    assert format_quote_header_description(
+        "ROT MB JIB HEAD WELDMENT", part_key="5003313-001"
+    ) == "ROT MB JIB HEAD WELDMENT"
+    text = """
+5003313-001
+TITLE:
+5003313-001 - Order Material from Marmon Keystone
+ROT MB JIB HEAD WELDMENT
+BASE PLATE
+"""
+    title = extract_title_from_pdf_text(text, part_key="5003313-001")
+    assert title is not None
+    assert "WELDMENT" in title.upper()
+    assert "JIB HEAD" in title.upper()
+    assert "MARMON" not in title.upper()
+    assert "ORDER MATERIAL" not in title.upper()
+    assert "BASE PLATE" not in title.upper()
+
+
 def test_three_place_decimal_is_not_a_title():
     """Live 34137-2 stamped THREE PLACE DECIMAL — drawing note, not the weldment."""
     from secturafab.item_desc import (

@@ -28,6 +28,8 @@ _SKIP_LINE = re.compile(
     r"THREE PLACE DECIMAL|PLACE DECIMAL|"
     r"TEST FIT WELDMENT|"
     r"CHECK OTHER OPTIONS|"
+    r"ORDER\s+MATERIAL|"
+    r"MARMON\s+KEYSTONE|"
     r"DWG\s*NO:?$|APPROVED:?$|QA$|MFG$|CHECKED$|DRAWN$"
     r")"
 )
@@ -72,7 +74,9 @@ _LEGAL_OR_BANNER = re.compile(
     r"three place decimal|"
     r"place decimal|"
     r"test fit weldment|"
-    r"check other options"
+    r"check other options|"
+    r"order\s+material|"
+    r"marmon\s+keystone"
     r")"
 )
 
@@ -148,6 +152,8 @@ def _score_title_candidate(s: str, *, from_title_block: bool) -> tuple[int, int,
     if any(tok in upper for tok in (" ASM", "ASM,", "ASSEMBLY", "WELDMENT", "COUPLER")):
         pts += 50
     if is_nested_child_weldment_title(s):
+        pts -= 80
+    if is_drawing_boilerplate_title(s) or is_child_part_title(s):
         pts -= 80
     if any(
         tok in upper
@@ -360,6 +366,8 @@ def is_drawing_boilerplate_title(text: str | None) -> bool:
         or "TEST FIT WELDMENT" in upper
         or upper.startswith("TEST FIT")
         or "CHECK OTHER OPTIONS" in upper
+        or "ORDER MATERIAL" in upper
+        or "MARMON KEYSTONE" in upper
     )
 
 
@@ -408,7 +416,9 @@ def title_from_exploded_names(names: list[str] | None) -> str | None:
         s = re.sub(r"^\d{4,}(?:-\d+)?\s+", "", s).strip()
         if not s or is_drawing_boilerplate_title(s):
             continue
-        if is_nested_child_weldment_title(s):
+        if is_nested_child_weldment_title(s) or is_drawing_boilerplate_title(s):
+            continue
+        if is_child_part_title(s):
             continue
         upper = s.upper()
         pts = 0

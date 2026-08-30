@@ -1989,9 +1989,9 @@ def test_invoke_page_dxf_finish_evaluates_page_fn():
     from secturafab.chrome_cdp import invoke_page_dxf_finish
 
     tab = {
-        "title": "Quotes",
-        "url": "https://www.secturafab.com/Quote",
-        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+        "title": "*Quote-106386-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
         "type": "page",
     }
 
@@ -2019,13 +2019,15 @@ def test_invoke_page_dxf_finish_evaluates_page_fn():
             }
         }
 
-    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=None), patch(
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=tab), patch(
         "secturafab.chrome_cdp.quotes_tab", return_value=tab
     ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
-        result = invoke_page_dxf_finish()
+        result = invoke_page_dxf_finish(quote_id="qid")
     assert result["via"] == "page_fn"
     assert result["has_NewItem"] is True
     assert result["grid_dxf_row_count"] == 30
+    assert result["edit_quote_id"] == "qid"
+    assert result["minted_id"] == "qid"
 
 
 def test_apply_grid_dxf_part_modes_evaluates_setpartmode_on_edit():
@@ -3300,17 +3302,220 @@ def test_ensure_quote_edit_navigates_edit_path_not_quote_query():
         if method == "Page.navigate":
             navigated.append(str((params or {}).get("url") or ""))
             return {}
-        return {"result": {"value": True}}
+        return {"result": {"value": {"edit_quote_id": qid, "ok": True}}}
 
     assert _quote_edit_url(qid) == f"https://www.secturafab.com/Quote/EDIT/{qid}"
     with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=None), patch(
         "secturafab.chrome_cdp.quotes_tab", return_value=listing
     ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
         tab = _ensure_quote_edit_page(qid)
-    assert tab is listing
+    assert tab is not None
+    assert tab["webSocketDebuggerUrl"] == listing["webSocketDebuggerUrl"]
+    assert tab["url"] == f"https://www.secturafab.com/Quote/EDIT/{qid}"
     assert navigated == [f"https://www.secturafab.com/Quote/EDIT/{qid}"]
     assert "Quote?ID=" not in navigated[0]
     assert "GetItem_AddView" not in navigated[0]
+
+
+def test_quote_edit_tab_does_not_return_leftover_when_id_requested():
+    """Live 5003313-001: leftover /Quote/EDIT/997f1eb7 is not the minted tab."""
+    from secturafab.chrome_cdp import edit_tab_quote_id, quote_edit_tab
+
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0001"
+    leftover_id = "997f1eb7-3eb0-4a76-83f9-4c3439e929b7"
+    leftover = {
+        "type": "page",
+        "title": "*Quote-105918-1",
+        "url": f"https://www.secturafab.com/Quote/EDIT/{leftover_id}",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/leftover",
+    }
+    with patch("secturafab.chrome_cdp.list_chrome_targets", return_value=[leftover]):
+        assert quote_edit_tab("http://127.0.0.1:9224", quote_id=minted) is None
+        picked = quote_edit_tab("http://127.0.0.1:9224")
+        assert picked is leftover
+        assert edit_tab_quote_id(picked) == leftover_id
+
+
+def test_leftover_edit_tab_does_not_bind_or_finish():
+    """Minted A, Chrome still EDIT/B → no #but_dxf and no AddItem_DXFFiles POST."""
+    from secturafab.chrome_cdp import (
+        bind_do_create_dxf_parts_success,
+        invoke_page_dxf_finish,
+    )
+
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0001"
+    leftover_id = "997f1eb7-3eb0-4a76-83f9-4c3439e929b7"
+    leftover = {
+        "type": "page",
+        "title": "*Quote-105918-1",
+        "url": f"https://www.secturafab.com/Quote/EDIT/{leftover_id}",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/leftover",
+    }
+    exprs: list[str] = []
+
+    def fake_edit(base=None, quote_id=None, quote_number=None):
+        qid = str(quote_id or "").strip().lower()
+        if qid and qid in leftover["url"].lower():
+            return leftover
+        if qid:
+            return None
+        return leftover
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        exprs.append(expr)
+        if method == "Page.navigate":
+            return {}
+        return {
+            "result": {
+                "value": {"edit_quote_id": leftover_id, "ok": False}
+            }
+        }
+
+    kids = [{"SourceDataID": "a", "Name": "5003313-001"}] * 12
+    with patch("secturafab.chrome_cdp.quote_edit_tab", side_effect=fake_edit), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=leftover
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        bound = bind_do_create_dxf_parts_success(kids, quote_id=minted)
+        finished = invoke_page_dxf_finish(quote_id=minted)
+    assert bound["bound"] is False
+    assert bound["grid_present"] is False
+    assert bound["edit_quote_id"] == leftover_id
+    assert bound["minted_id"] == minted
+    assert bound["edit_gate"]
+    assert finished["via"] == "skipped"
+    assert finished["status"] == 0
+    assert finished["edit_quote_id"] == leftover_id
+    assert finished["minted_id"] == minted
+    blob = "\n".join(exprs)
+    assert "#but_dxf" not in blob
+    assert "AddItem_DXFFiles" not in blob
+    assert "AddNewItemHTML" not in blob
+
+
+def test_add_item_dxf_files_leftover_edit_does_not_post():
+    """add_item_dxf_files must not POST Finish when the tab is still spent EDIT."""
+    from secturafab.client import SecturaFabClient
+
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0001"
+    leftover_id = "997f1eb7-3eb0-4a76-83f9-4c3439e929b7"
+    leftover = {
+        "type": "page",
+        "title": "*Quote-105918-1",
+        "url": f"https://www.secturafab.com/Quote/EDIT/{leftover_id}",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/leftover",
+    }
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.timeout_seconds = 30
+    real._af_source = "chrome_dom"
+    real._part_create_list_len = 12
+    real._grid_present = True
+    real._grid_dxf_row_count = 12
+    real._stale_grid = False
+    real.session = MagicMock()
+
+    def fake_edit(base=None, quote_id=None, quote_number=None):
+        qid = str(quote_id or "").strip().lower()
+        if qid and qid in leftover["url"].lower():
+            return leftover
+        if qid:
+            return None
+        return leftover
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        if "AddItem_DXFFiles" in expr:
+            raise AssertionError("must not POST AddItem_DXFFiles on leftover EDIT")
+        if method == "Page.navigate":
+            return {}
+        return {
+            "result": {
+                "value": {"edit_quote_id": leftover_id, "ok": False}
+            }
+        }
+
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.quote_edit_tab", side_effect=fake_edit
+    ), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=leftover
+    ), patch(
+        "secturafab.chrome_cdp.cdp_call", side_effect=_call
+    ), patch(
+        "secturafab.chrome_cdp.post_add_item_dxf_files_from_quotes_tab",
+    ) as fetch_finish:
+        result = real.add_item_dxf_files(
+            quote_id=minted,
+            file_list=[{"Name": "5003313-001", "Qty": 1}] * 12,
+        )
+    real.session.request.assert_not_called()
+    fetch_finish.assert_not_called()
+    assert result["via"] == "skipped"
+    assert real._finish_via == "skipped"
+    assert real._edit_quote_id == leftover_id
+    assert real._minted_id == minted
+
+
+def test_stale_grid_65_vs_filelist_12_skips_finish(tmp_path: Path):
+    """Live 5003313-001: leftover kendo 65 after bind of List=12 — do not Finish."""
+    from secturafab.chrome_cdp import grid_dxf_count_is_stale
+
+    assert grid_dxf_count_is_stale(65, 12) is True
+    assert grid_dxf_count_is_stale(15, 15) is False
+    assert grid_dxf_count_is_stale(12, 12) is False
+    stp = tmp_path / "5003313-001.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": f"src-{i}",
+            "FileID": f"file-{i}",
+            "Name": "5003313-001" if i else "Root",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        }
+        for i in range(12)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 12
+    client._grid_present = True
+    client._grid_dxf_row_count = 65
+    client._stale_grid = True
+    client._edit_quote_id = "997f1eb7-3eb0-4a76-83f9-4c3439e929b7"
+    client._edit_gate = ""
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0001",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="5003313-001",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "edit_quote_id=997f1eb7-3eb0-4a76-83f9-4c3439e929b7" in blob
+    assert "minted_id=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0001" in blob
+    assert "stale" in blob.lower()
+    assert "grid_dxf_row_count=65" in blob
 
 
 def test_scrape_quotes_af_fields_from_cdp_evaluate():
@@ -3807,11 +4012,19 @@ def test_add_item_dxf_files_sends_js_contract():
     real._af_source = "chrome_dom"
     real._grid_dxf_row_count = 3
     real.session = MagicMock()
+    edit = {
+        "title": "*Quote-x",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
     with patch(
         "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
     ), patch(
         "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
         return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.quote_edit_tab", return_value=edit
     ), patch(
         "secturafab.chrome_cdp.invoke_page_dxf_finish",
         return_value={
@@ -3859,6 +4072,12 @@ def test_add_item_dxf_files_grid_finish_uses_grid_rows_not_python():
     real._af_source = "chrome_dom"
     real._grid_dxf_row_count = 2
     real.session = MagicMock()
+    edit = {
+        "title": "*Quote-x",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
     grid_rows = [
         {
             "SourceDataID": "grid-a",
@@ -3894,6 +4113,8 @@ def test_add_item_dxf_files_grid_finish_uses_grid_rows_not_python():
     ), patch(
         "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
         return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.quote_edit_tab", return_value=edit
     ), patch(
         "secturafab.chrome_cdp.invoke_page_dxf_finish",
         return_value={

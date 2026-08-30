@@ -2404,10 +2404,24 @@ class SecturaFabPushService:
             if f"grid_present={'true' if present else 'false'}" not in " ".join(notes):
                 notes.append(f"grid_present={'true' if present else 'false'}")
             if not present:
-                notes.append(
-                    "WARNING: #gridDXFParts not in the Chrome Quotes document "
-                    "— not Finishing"
-                )
+                edit_id = getattr(self.client, "_edit_quote_id", "")
+                edit_gate = getattr(self.client, "_edit_gate", "")
+                if isinstance(edit_id, str) or isinstance(edit_gate, str):
+                    shown_edit = edit_id if isinstance(edit_id, str) else ""
+                    notes.append(
+                        f"edit_quote_id={shown_edit} minted_id={quote_id}"
+                    )
+                if isinstance(edit_gate, str) and edit_gate:
+                    notes.append(
+                        f"WARNING: Chrome EDIT tab is not the minted quote "
+                        f"({edit_gate}) — not Finishing (leave shell, no remint; "
+                        f"live 5003313-001 leftover 105918-1)"
+                    )
+                else:
+                    notes.append(
+                        "WARNING: #gridDXFParts not in the Chrome Quotes document "
+                        "— not Finishing"
+                    )
                 return notes
         n_list = getattr(self.client, "_part_create_list_len", None)
         if isinstance(n_list, (int, float)):
@@ -2428,6 +2442,36 @@ class SecturaFabPushService:
                     "(page createAllParts/DoCreateDXFParts did not bind the grid)"
                 )
                 return notes
+        edit_id = getattr(self.client, "_edit_quote_id", "")
+        minted = str(quote_id or "")
+        if isinstance(edit_id, str) or minted:
+            shown_edit = edit_id if isinstance(edit_id, str) else ""
+            note = f"edit_quote_id={shown_edit} minted_id={minted}"
+            if note not in " ".join(notes):
+                notes.append(note)
+        edit_gate = getattr(self.client, "_edit_gate", "")
+        if isinstance(edit_gate, str) and edit_gate:
+            notes.append(
+                f"WARNING: Chrome EDIT tab is not the minted quote "
+                f"({edit_gate}) — not Finishing (leave shell, no remint; "
+                f"live 5003313-001 leftover 105918-1)"
+            )
+            return notes
+        from .chrome_cdp import grid_dxf_count_is_stale
+
+        if getattr(self.client, "_stale_grid", False) is True or (
+            isinstance(n_grid, (int, float))
+            and isinstance(n_list, (int, float))
+            and grid_dxf_count_is_stale(int(n_grid), int(n_list))
+        ):
+            notes.append(
+                "WARNING: stale #gridDXFParts "
+                f"grid_dxf_row_count={int(n_grid) if isinstance(n_grid, (int, float)) else 0} "
+                f"vs FileList {int(n_list) if isinstance(n_list, (int, float)) else 0} "
+                "— leftover kendo, not Finishing "
+                "(live 5003313-001 65 vs 12)"
+            )
+            return notes
         if not cadimport_filelist_exploded(
             data_rows, part_key=part_key, cad_filename=cad_filename
         ):

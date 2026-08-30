@@ -36,6 +36,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "75b3a938-ff89-4525-80d9-c6000d055a48",  # 28110-2 Finish 200 / GET 0 (6c02c08) — leave it
         "e2cc0a7d-90fa-4629-b48f-db1e8163557b",  # 107877-1 explode_passes=1 / GET 0 (1e76c96) — leave it
         "e2305b3c-7316-4a96-8c94-7685fca2be54",  # 1020249-1 pass-2 wiped grid (e21bc43) — leave it
+        "80eb38af-3721-4049-a0d5-e4026d293a0c",  # 5003313-001 Finish on leftover 105918-1 (526d139) — leave it
     }
 )
 
@@ -48,6 +49,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "75b3a938",  # 28110-2 spent (Finish 200 / GET 0) — do not remint
         "e2cc0a7d",  # 107877-1 spent (explode_passes=1 / GET 0) — do not remint
         "e2305b3c",  # 1020249-1 spent (pass-2 List=0 wiped grid) — do not remint
+        "80eb38af",  # 5003313-001 spent (Finish on leftover 105918-1) — do not remint
     }
 )
 
@@ -80,6 +82,8 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "28110-2",  # spent 6c02c08 Finish 200 / GET 0 — do not PATCH or remint
         "107877-1",  # spent 1e76c96 explode_passes=1 / GET 0 — do not PATCH or remint
         "1020249-1",  # spent e21bc43 pass-2 wiped grid — do not PATCH or remint
+        "5003313-001",  # spent 526d139 Finish on leftover 105918-1 — do not PATCH or remint
+        # Next unused after the EDIT-id gate: P001545. Not 5003313-001.
         # No unused Time STEP ≤27MB. Do not mint 106687-1 (43MB).
     }
 )

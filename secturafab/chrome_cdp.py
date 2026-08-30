@@ -19,6 +19,14 @@ GetItem_AddView is markup without kendo; Chrome EDIT after ``#but_dxf`` /
 ``AddNewItemHTML('dxf','top')`` has kendo ``#gridDXFParts``.
 Do not require title ``Quotes`` for bind/Finish.
 
+Live 5003313-001 (526d139): Chrome was still ``/Quote/EDIT/997f1eb7``
+(105918-1 leftover). Title-only ``*Quote-`` accepted that tab, page
+Finish stamped ItemList 66→108 on 105918-1, minted shell stayed 0.
+Before ``#but_dxf`` / bind / SetPartMode / Finish the tab must be
+``/Quote/EDIT/{minted_id}``. Refuse if ``edit_quote_id != minted_id``,
+the tab is a spent id, or ``grid_dxf_row_count`` is leftover kendo
+(65 vs FileList 12). Do not POST ``AddItem_DXFFiles`` on the leftover.
+
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys / counts only.
 Do not unwrap Windows Chrome. Do not ask Kyle to log in.
@@ -29,6 +37,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import socket
 import struct
 import urllib.error
@@ -188,6 +197,38 @@ def _url_is_quote_edit(url: str) -> bool:
     return "/quote/edit/" in u or "/quote/edit?" in u
 
 
+_EDIT_QUOTE_ID_RE = re.compile(r"/Quote/EDIT/([^/?#]+)", re.I)
+
+
+def edit_tab_quote_id(tab: dict[str, Any] | None) -> str:
+    """GUID from ``/Quote/EDIT/{id}``. Empty when the tab is not that document."""
+    if not isinstance(tab, dict):
+        return ""
+    url = str(tab.get("url") or "")
+    match = _EDIT_QUOTE_ID_RE.search(url)
+    return str(match.group(1) or "").strip() if match else ""
+
+
+def edit_ids_match(left: str | None, right: str | None) -> bool:
+    a = str(left or "").strip().casefold()
+    b = str(right or "").strip().casefold()
+    return bool(a and b and a == b)
+
+
+def grid_dxf_count_is_stale(grid_count: int | None, list_len: int | None) -> bool:
+    """Leftover kendo (65) after bind of this t.List (12) is not a real bind.
+
+    Slack of 2 covers Root on/off the grid. 15==15 (28110-2) is not stale.
+    """
+    if not isinstance(grid_count, (int, float)) or not isinstance(list_len, (int, float)):
+        return False
+    n_grid = int(grid_count)
+    n_list = int(list_len)
+    if n_list <= 0:
+        return False
+    return n_grid > n_list + 2
+
+
 def _is_quotes_list_tab(tab: dict[str, Any]) -> bool:
     """Title Quotes on /Quote — the list, not QuoteOrderEdit."""
     if _is_rejected_tab(tab):
@@ -285,12 +326,24 @@ def quote_edit_tab(
     quote_id: str | None = None,
     quote_number: str | None = None,
 ) -> dict[str, Any] | None:
-    """QuoteOrderEdit /Quote/EDIT/{id} or title *Quote- / Quote-."""
+    """QuoteOrderEdit /Quote/EDIT/{id} or title *Quote- / Quote-.
+
+    When ``quote_id`` is set, return only a tab whose URL is that EDIT id.
+    Do not fall back to a leftover ``*Quote-`` tab (live 5003313-001).
+    """
     found = [t for t in _chrome_page_targets(base) if _is_quote_edit_tab(t)]
     if not found:
         return None
     qid = str(quote_id or "").strip().lower()
     qnum = str(quote_number or "").strip().lower()
+    if qid:
+        matches = [
+            tab
+            for tab in found
+            if qid in str(tab.get("url") or "").lower()
+            and _url_is_quote_edit(str(tab.get("url") or ""))
+        ]
+        return matches[0] if matches else None
 
     def _rank(tab: dict[str, Any]) -> tuple[int, int, int]:
         url = str(tab.get("url") or "").lower()
@@ -1091,9 +1144,12 @@ def _cdp_evaluate_promise(
     timeout: float = _PART_CREATE_TIMEOUT_S,
     base: str | None = None,
     tab: dict[str, Any] | None = None,
+    fallback: bool = True,
 ) -> Any:
     target = tab if isinstance(tab, dict) else None
     if not (target and target.get("webSocketDebuggerUrl")):
+        if not fallback:
+            return None
         target = quotes_tab(base)
     if not target:
         return None
@@ -1119,51 +1175,151 @@ def _quote_edit_url(quote_id: str) -> str:
     return f"https://www.secturafab.com/Quote/EDIT/{qid}"
 
 
+def minted_edit_tab_ready(
+    minted_id: str | None,
+    *,
+    quote_number: str | None = None,
+    base: str | None = None,
+    navigate: bool = True,
+) -> dict[str, Any]:
+    """Require Chrome ``/Quote/EDIT/{minted_id}`` before bind / SetPartMode / Finish.
+
+    Logs ``edit_quote_id`` vs ``minted_id``. ``ok`` is false when the tab is
+    still a leftover / spent EDIT (live 997f1eb7 / 5003313-001).
+    """
+    from .forbidden_quotes import is_forbidden_quote_id
+
+    minted = str(minted_id or "").strip()
+    leftover = quote_edit_tab(base)
+    leftover_id = edit_tab_quote_id(leftover)
+    tab = quote_edit_tab(base, quote_id=minted, quote_number=quote_number) if minted else None
+    edit_id = edit_tab_quote_id(tab) or leftover_id
+    if minted and is_forbidden_quote_id(minted):
+        return {
+            "ok": False,
+            "tab": None,
+            "edit_quote_id": edit_id,
+            "minted_id": minted,
+            "reason": "spent_minted_id",
+        }
+    if (
+        minted
+        and edit_ids_match(edit_id, minted)
+        and isinstance(tab, dict)
+        and tab.get("webSocketDebuggerUrl")
+        and not is_forbidden_quote_id(edit_id)
+    ):
+        return {
+            "ok": True,
+            "tab": tab,
+            "edit_quote_id": edit_id,
+            "minted_id": minted,
+            "reason": "",
+        }
+    if minted and navigate:
+        ensured = _ensure_quote_edit_page(minted, base=base)
+        edit_id = edit_tab_quote_id(ensured) or leftover_id
+        if (
+            edit_ids_match(edit_id, minted)
+            and isinstance(ensured, dict)
+            and ensured.get("webSocketDebuggerUrl")
+            and not is_forbidden_quote_id(edit_id)
+        ):
+            return {
+                "ok": True,
+                "tab": ensured,
+                "edit_quote_id": edit_id,
+                "minted_id": minted,
+                "reason": "",
+            }
+        tab = ensured
+    if not minted:
+        reason = "missing_minted_id"
+    elif is_forbidden_quote_id(edit_id) or is_forbidden_quote_id(leftover_id):
+        reason = "spent_edit_id"
+    elif edit_id and not edit_ids_match(edit_id, minted):
+        reason = "edit_quote_id!=minted_id"
+    else:
+        reason = "edit_tab_missing"
+    return {
+        "ok": False,
+        "tab": None,
+        "edit_quote_id": edit_id or leftover_id,
+        "minted_id": minted,
+        "reason": reason,
+    }
+
+
 def _ensure_quote_edit_page(
     quote_id: str,
     *,
     base: str | None = None,
 ) -> dict[str, Any] | None:
-    """Open /Quote/EDIT/{id} in Chrome. Do not use /Quote?ID= or GetItem_AddView."""
+    """Open /Quote/EDIT/{id} in Chrome. Do not use /Quote?ID= or GetItem_AddView.
+
+    Title ``*Quote-`` alone is not enough — leftover 105918-1 must not count
+    as the minted EDIT document. After navigate, URL id must equal minted.
+    """
     qid = str(quote_id or "").strip()
     if not qid:
         return None
     existing = quote_edit_tab(base, quote_id=qid)
     if isinstance(existing, dict) and existing.get("webSocketDebuggerUrl"):
-        here = str(existing.get("url") or "").lower()
-        if (qid.lower() in here and _url_is_quote_edit(here)) or _title_is_quote_order_edit(
-            str(existing.get("title") or "")
-        ):
+        here_id = edit_tab_quote_id(existing)
+        if edit_ids_match(here_id, qid):
             return existing
-    tab = existing if isinstance(existing, dict) else quotes_tab(base)
+    leftover = quote_edit_tab(base)
+    tab = leftover if isinstance(leftover, dict) else quotes_tab(base)
     if not isinstance(tab, dict):
         return None
-    here = str(tab.get("url") or "").lower()
-    if qid.lower() in here and _url_is_quote_edit(here):
+    here_id = edit_tab_quote_id(tab)
+    if edit_ids_match(here_id, qid) and tab.get("webSocketDebuggerUrl"):
         return tab
     ws = str(tab.get("webSocketDebuggerUrl") or "")
     if not ws:
         return None
     cdp_call(ws, "Page.navigate", {"url": _quote_edit_url(qid)})
-    _cdp_evaluate_promise(
-        """(function(){
+    want = json.dumps(qid)
+    waited = _cdp_evaluate_promise(
+        "(function(){"
+        f"  var want = {want};"
+        """
       return new Promise(function(resolve){
-        function isEdit(){
-          var path = String(location.pathname || "").toLowerCase();
-          var title = String(document.title || "").replace(/^\\*+/, "").trim();
-          return path.indexOf("/quote/edit/") >= 0 || /^quote-/i.test(title);
+        function editId(){
+          var path = String(location.pathname || "");
+          var m = path.match(/\\/Quote\\/EDIT\\/([^/?#]+)/i);
+          return m ? String(m[1]) : "";
         }
-        function done(){ resolve(isEdit() || document.readyState === "complete"); }
+        function done(){
+          var id = editId();
+          resolve({
+            edit_quote_id: id,
+            ok: !!(id && id.toLowerCase() === String(want || "").toLowerCase())
+          });
+        }
         if (document.readyState === "complete") { done(); return; }
-        window.addEventListener("load", function(){ resolve(true); });
+        window.addEventListener("load", function(){ setTimeout(done, 250); });
         setTimeout(done, 15000);
       });
     })()""",
         timeout=20.0,
         base=base,
         tab=tab,
+        fallback=False,
     )
-    return tab
+    page_id = ""
+    navigated_ok = False
+    if isinstance(waited, dict):
+        page_id = str(waited.get("edit_quote_id") or "").strip()
+        navigated_ok = bool(waited.get("ok")) and edit_ids_match(page_id, qid)
+    if navigated_ok:
+        stamped = dict(tab)
+        stamped["url"] = _quote_edit_url(qid)
+        return stamped
+    verified = quote_edit_tab(base, quote_id=qid)
+    if isinstance(verified, dict) and edit_ids_match(edit_tab_quote_id(verified), qid):
+        return verified
+    return None
 
 
 def bind_do_create_dxf_parts_success(
@@ -1188,36 +1344,43 @@ def bind_do_create_dxf_parts_success(
     expression = (
         _BIND_DO_CREATE_SUCCESS_JS + "(" + json.dumps(spec, separators=(",", ":")) + ")"
     )
-    edit = quote_edit_tab(base, quote_id=quote_id, quote_number=quote_number)
-    tab = edit if isinstance(edit, dict) and edit.get("webSocketDebuggerUrl") else None
-    value = _cdp_evaluate_promise(expression, base=base, tab=tab)
-    if (
-        (not isinstance(value, dict) or not value.get("grid_present"))
-        and quote_id
-    ):
-        ensured = _ensure_quote_edit_page(quote_id, base=base)
-        if ensured:
-            value = _cdp_evaluate_promise(expression, base=base, tab=ensured)
-            if isinstance(value, dict) and not value.get("opened_via"):
-                value["opened_via"] = "quote_edit"
+    gate = minted_edit_tab_ready(
+        quote_id, quote_number=quote_number, base=base, navigate=True
+    )
+    empty = {
+        "grid_present": False,
+        "has_gridDXFParts": False,
+        "grid_dxf_row_count": 0,
+        "bound": False,
+        "list_len": len(kids),
+        "opened_via": "",
+        "edit_quote_id": str(gate.get("edit_quote_id") or ""),
+        "minted_id": str(gate.get("minted_id") or quote_id or ""),
+        "edit_gate": str(gate.get("reason") or ""),
+        "stale_grid": False,
+    }
+    if not gate.get("ok"):
+        return empty
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    value = _cdp_evaluate_promise(expression, base=base, tab=tab, fallback=False)
     if not isinstance(value, dict):
-        return {
-            "grid_present": False,
-            "has_gridDXFParts": False,
-            "grid_dxf_row_count": 0,
-            "bound": False,
-            "list_len": len(kids),
-            "opened_via": "",
-        }
+        return empty
     present = bool(value.get("grid_present") or value.get("has_gridDXFParts"))
-    bound = bool(value.get("bound")) and present
+    n_grid = int(value.get("grid_dxf_row_count") or 0) if present else 0
+    n_list = int(value.get("list_len") or len(kids) or 0)
+    stale = grid_dxf_count_is_stale(n_grid, n_list)
+    bound = bool(value.get("bound")) and present and not stale
     return {
         "grid_present": present,
         "has_gridDXFParts": present,
-        "grid_dxf_row_count": int(value.get("grid_dxf_row_count") or 0) if present else 0,
+        "grid_dxf_row_count": n_grid,
         "bound": bound,
-        "list_len": int(value.get("list_len") or 0),
+        "list_len": n_list,
         "opened_via": str(value.get("opened_via") or ""),
+        "edit_quote_id": str(gate.get("edit_quote_id") or ""),
+        "minted_id": str(gate.get("minted_id") or quote_id or ""),
+        "edit_gate": "stale_grid" if stale else "",
+        "stale_grid": stale,
     }
 
 
@@ -1227,22 +1390,31 @@ def invoke_page_dxf_finish(
     quote_id: str | None = None,
 ) -> dict[str, Any]:
     """Kyle Finish on /Quote/EDIT: page fn that POSTs /Quote/AddItem_DXFFiles."""
-    edit = quote_edit_tab(base, quote_id=quote_id)
-    tab = edit if isinstance(edit, dict) and edit.get("webSocketDebuggerUrl") else None
-    value = _cdp_evaluate_promise(_PAGE_FINISH_JS + "()", base=base, tab=tab)
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
+    skipped = {
+        "via": "skipped",
+        "finish_fn": "",
+        "grid_dxf_row_count": 0,
+        "status": 0,
+        "body_keys": [],
+        "body_type": "empty",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "text_len": 0,
+        "List": [],
+        "edit_quote_id": str(gate.get("edit_quote_id") or ""),
+        "minted_id": str(gate.get("minted_id") or quote_id or ""),
+        "edit_gate": str(gate.get("reason") or "missing_minted_id"),
+    }
+    if not gate.get("ok"):
+        return skipped
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    value = _cdp_evaluate_promise(
+        _PAGE_FINISH_JS + "()", base=base, tab=tab, fallback=False
+    )
     if not isinstance(value, dict):
-        return {
-            "via": "",
-            "finish_fn": "",
-            "grid_dxf_row_count": 0,
-            "status": 0,
-            "body_keys": [],
-            "body_type": "empty",
-            "has_NewItem": False,
-            "has_QuoteItem": False,
-            "text_len": 0,
-            "List": [],
-        }
+        skipped["edit_gate"] = "finish_eval_empty"
+        return skipped
     rows = value.get("List") if isinstance(value.get("List"), list) else []
     via = str(value.get("via") or "")
     if via and via not in {"page_fn", "grid_finish", "skipped"}:
@@ -1258,6 +1430,9 @@ def invoke_page_dxf_finish(
         "has_QuoteItem": bool(value.get("has_QuoteItem")),
         "text_len": int(value.get("text_len") or 0),
         "List": [r for r in rows if isinstance(r, dict)],
+        "edit_quote_id": str(gate.get("edit_quote_id") or ""),
+        "minted_id": str(gate.get("minted_id") or quote_id or ""),
+        "edit_gate": "",
     }
 
 
@@ -1473,18 +1648,32 @@ def apply_grid_dxf_part_modes(
         "set_count": 0,
         "setpartmode_via": "",
         "grid_dxf_row_count": 0,
+        "edit_quote_id": "",
+        "minted_id": str(quote_id or ""),
+        "edit_gate": "",
     }
     if not spec_rows:
         return empty
-    edit = quote_edit_tab(base, quote_id=quote_id)
-    tab = edit if isinstance(edit, dict) and edit.get("webSocketDebuggerUrl") else None
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
+    empty["edit_quote_id"] = str(gate.get("edit_quote_id") or "")
+    empty["minted_id"] = str(gate.get("minted_id") or quote_id or "")
+    empty["edit_gate"] = str(gate.get("reason") or "")
+    if not gate.get("ok"):
+        return empty
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
     expression = (
         _APPLY_GRID_PART_MODES_JS
         + "("
         + json.dumps({"rows": spec_rows}, separators=(",", ":"))
         + ")"
     )
-    value = _cdp_evaluate_promise(expression, timeout=_PART_CREATE_TIMEOUT_S, base=base, tab=tab)
+    value = _cdp_evaluate_promise(
+        expression,
+        timeout=_PART_CREATE_TIMEOUT_S,
+        base=base,
+        tab=tab,
+        fallback=False,
+    )
     if not isinstance(value, dict):
         return empty
     present = bool(value.get("grid_present"))
@@ -1497,6 +1686,9 @@ def apply_grid_dxf_part_modes(
         "set_count": int(value.get("set_count") or 0) if present else 0,
         "setpartmode_via": str(value.get("setpartmode_via") or "") if present else "",
         "grid_dxf_row_count": int(value.get("grid_dxf_row_count") or 0) if present else 0,
+        "edit_quote_id": str(gate.get("edit_quote_id") or ""),
+        "minted_id": str(gate.get("minted_id") or quote_id or ""),
+        "edit_gate": "",
     }
 
 

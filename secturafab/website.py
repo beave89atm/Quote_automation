@@ -51,7 +51,14 @@ Leave e2cc0a7d / 107877-1. Live 1020249-1 (e21bc43): pass-2 IDList
 of 14 job-PN kids returned List=0 and wiped #gridDXFParts 65→0.
 Job-PN names are leaves after pass 1 — do not re-explode them.
 Empty pass-2 keeps the prior grid (not the 34632-2 first-pass miss).
-Leave e2305b3c / 1020249-1. No remint. No unused Time STEP ≤27MB.
+Leave e2305b3c / 1020249-1. Live 5003313-001 (526d139): job-PN leaves
+held (Root + 11× 5003313-001, explode_passes=1) but Chrome was still
+/Quote/EDIT/997f1eb7 — page Finish stamped 105918-1 (66→108). Minted
+80eb38af GET 0. Before #but_dxf / bind / SetPartMode / Finish the tab
+must be /Quote/EDIT/{minted_id} title *Quote-{PN}. Refuse leftover /
+spent EDIT and leftover kendo (65 vs FileList 12). Leave 80eb38af /
+5003313-001 and 997f1eb7 / 105918-1 (ItemList 108). No remint. Next
+unused after the EDIT-id gate: P001545. No unused Time STEP ≤27MB.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
