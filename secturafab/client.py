@@ -90,6 +90,7 @@ class SecturaFabClient:
         self._minted_id: str = ""
         self._edit_gate: str = ""
         self._stale_grid: bool = False
+        self._kendo_row_keys: list[str] | None = None
 
     def authenticate(self, force: bool = False) -> AccessToken:
         if self._token and not self._token.is_expired and not force:
@@ -1131,6 +1132,9 @@ class SecturaFabClient:
         self._stale_grid = bool(bind.get("stale_grid"))
         self._grid_present = bool(bind.get("grid_present"))
         self._grid_dxf_row_count = int(bind.get("grid_dxf_row_count") or 0)
+        raw_keys = bind.get("kendo_row_keys")
+        if isinstance(raw_keys, list):
+            self._kendo_row_keys = [str(k) for k in raw_keys if str(k)]
         if not self._grid_present:
             return {"List": kids}
         return {"List": kids}
@@ -1209,6 +1213,11 @@ class SecturaFabClient:
         GET 0). Live BB2000-ASM: do not skip when EDIT matches and the
         grid is present — invoke OnAddDXFClick even if its source lacks
         the literal ``#gridDXFParts``.
+
+        If EDIT kendo lacks CadType/Stock_X/Stock_Y after explode, that is
+        a /part/create bind miss — do not Finish and do not invent geometry.
+        Do not mint until a box capture shows those keys on kendo and the
+        posted FileList.
         """
         from .chrome_cdp import (
             chrome_quotes_live,
@@ -1216,6 +1225,7 @@ class SecturaFabClient:
             invoke_page_dxf_finish,
             minted_edit_tab_ready,
         )
+        from .website import filelist_missing_cadimport_identity_keys
 
         del file_list
         if chrome_quotes_live():
@@ -1247,6 +1257,22 @@ class SecturaFabClient:
             self._finish_via = "skipped"
             self._edit_gate = "stale_grid"
             return self._dxf_finish_capture({}, via="skipped")
+        kendo_keys = getattr(self, "_kendo_row_keys", None)
+        if isinstance(kendo_keys, list):
+            ident_miss = filelist_missing_cadimport_identity_keys(kendo_keys)
+            if ident_miss:
+                why = "filelist_missing_keys=" + "+".join(ident_miss)
+                self._finish_via = "skipped"
+                return self._dxf_finish_capture(
+                    {
+                        "kendo_row_keys": kendo_keys,
+                        "filelist_row_keys": kendo_keys,
+                        "filelist_missing_keys": ident_miss,
+                        "filelist_missing_identity": ident_miss,
+                        "finish_why": why,
+                    },
+                    via="skipped",
+                )
         gate = minted_edit_tab_ready(quote_id, navigate=True)
         self._edit_quote_id = str(gate.get("edit_quote_id") or "")
         self._minted_id = str(gate.get("minted_id") or quote_id or "")
@@ -1315,6 +1341,9 @@ class SecturaFabClient:
             ],
             "filelist_missing_identity": [
                 str(k) for k in (result.get("filelist_missing_identity") or [])
+            ],
+            "kendo_row_keys": [
+                str(k) for k in (result.get("kendo_row_keys") or [])
             ],
             "filelist_filetype": (
                 result.get("filelist_filetype")

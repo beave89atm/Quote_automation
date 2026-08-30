@@ -1007,8 +1007,43 @@ _BIND_DO_CREATE_SUCCESS_JS = """(function(spec) {
       i.dataSource.data().toJSON().push(t.List[e]);
     }
     if (gridCount() < 1) {
-      var cur = i.dataSource.data().toJSON ? i.dataSource.data().toJSON() : [];
-      i.dataSource.data(cur.concat(t.List));
+      i.dataSource.data(t.List);
+    }
+    function copyIdent(src, dest) {
+      var keys = [
+        "CadType", "Stock_X", "Stock_Y", "Stock_Z", "Stock_Units",
+        "Stock_Length", "Stock_Diameter"
+      ];
+      if (!src || !dest) return;
+      for (var ki = 0; ki < keys.length; ki++) {
+        var k = keys[ki];
+        if (src[k] === undefined) continue;
+        if (dest[k] !== undefined) continue;
+        if (typeof dest.set === "function") dest.set(k, src[k]);
+        else dest[k] = src[k];
+      }
+    }
+    var live = i.dataSource.data();
+    for (var bi = 0; bi < t.List.length; bi++) {
+      var src = t.List[bi] || {};
+      var sid = String(src.SourceDataID || src.ID || src.FileID || "");
+      for (var ri = 0; ri < live.length; ri++) {
+        var rid = String(live[ri].SourceDataID || live[ri].ID || live[ri].FileID || "");
+        if (sid && rid && sid === rid) copyIdent(src, live[ri]);
+      }
+    }
+    var first = {};
+    try {
+      first = (live[0] && live[0].toJSON) ? live[0].toJSON() : (live[0] || {});
+      copyIdent(live[0] || {}, first);
+    } catch (e3) {}
+    var logKeys = [
+      "CadType", "Stock_X", "Stock_Y", "Stock_Z", "Stock_Units",
+      "Stock_Length", "Stock_Diameter", "FileType", "SourceDataID", "FileID", "ID"
+    ];
+    var kendoKeys = [];
+    for (var lk = 0; lk < logKeys.length; lk++) {
+      if (first && first[logKeys[lk]] !== undefined) kendoKeys.push(logKeys[lk]);
     }
     try { gridWin().jQuery('#ulDXFTab a[href="#dxfparts"]').tab("show"); } catch (e2) {}
     return {
@@ -1016,7 +1051,8 @@ _BIND_DO_CREATE_SUCCESS_JS = """(function(spec) {
       has_gridDXFParts: true,
       grid_dxf_row_count: gridCount(),
       bound: true,
-      list_len: t.List.length
+      list_len: t.List.length,
+      kendo_row_keys: kendoKeys
     };
   }
   var opened = openDialog();
@@ -1043,6 +1079,20 @@ _PAGE_FINISH_JS = """(function() {
     else r.SourceDataID = id;
     return r;
   }
+  function keepIdentity(src, dest) {
+    var keys = [
+      "CadType", "Stock_X", "Stock_Y", "Stock_Z", "Stock_Units",
+      "Stock_Length", "Stock_Diameter", "FileType", "SourceDataID", "FileID", "ID"
+    ];
+    if (!src || !dest) return dest;
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (src[k] === undefined) continue;
+      if (dest[k] !== undefined) continue;
+      dest[k] = src[k];
+    }
+    return dest;
+  }
   function gridData() {
     try {
       var g = window.jQuery && jQuery("#gridDXFParts").data("kendoGrid");
@@ -1054,6 +1104,7 @@ _PAGE_FINISH_JS = """(function() {
         fillRowSid(raw[i]);
         var json = (raw[i] && raw[i].toJSON) ? raw[i].toJSON() : raw[i];
         if (json && typeof json === "object") {
+          keepIdentity(raw[i], json);
           fillRowSid(json);
           out.push(json);
         }
@@ -1200,6 +1251,23 @@ _PAGE_FINISH_JS = """(function() {
       finish_why: skipWhy
     }));
   }
+  var kendoIdentKeys = rowKeys(rows[0]);
+  var kendoIdentMiss = missingOf(kendoIdentKeys, IDENTITY_KEYS);
+  if (kendoIdentMiss.length) {
+    return Promise.resolve(Object.assign(summarize(0, null), {
+      via: "skipped",
+      finish_fn: "",
+      reads_kendo: kendoGridPresent(),
+      grid_dxf_row_count: count,
+      filelist_from_kendo: false,
+      finish_af_present: false,
+      kendo_row_keys: kendoIdentKeys,
+      filelist_row_keys: kendoIdentKeys,
+      filelist_missing_keys: missingOf(kendoIdentKeys, COMPARE_KEYS),
+      filelist_missing_identity: kendoIdentMiss,
+      finish_why: "filelist_missing_keys=" + kendoIdentMiss.join("+")
+    }));
+  }
   function fnSource(fn) {
     try { return Function.prototype.toString.call(fn); } catch (e) { return ""; }
   }
@@ -1282,6 +1350,7 @@ _PAGE_FINISH_JS = """(function() {
         var cap = {
           finish_filelist_n: n,
           request_keys: req_keys,
+          kendo_row_keys: kendoIdentKeys,
           filelist_from_kendo: fromKendo,
           filelist_sourcedataid_n: sid_n,
           filelist_id_n: id_n,
@@ -1379,6 +1448,7 @@ _PAGE_FINISH_JS = """(function() {
     extra.filelist_sourcedataid_n = Number(hit.filelist_sourcedataid_n || 0);
     extra.filelist_id_n = Number(hit.filelist_id_n || 0);
     extra.filelist_fileid_n = Number(hit.filelist_fileid_n || 0);
+    extra.kendo_row_keys = hit.kendo_row_keys || kendoIdentKeys || [];
     extra.filelist_row_keys = hit.filelist_row_keys || [];
     extra.filelist_missing_keys = hit.filelist_missing_keys || [];
     extra.filelist_missing_identity = hit.filelist_missing_identity || [];
@@ -1611,6 +1681,7 @@ def bind_do_create_dxf_parts_success(
         "minted_id": str(gate.get("minted_id") or quote_id or ""),
         "edit_gate": str(gate.get("reason") or ""),
         "stale_grid": False,
+        "kendo_row_keys": [],
     }
     if not gate.get("ok"):
         return empty
@@ -1623,6 +1694,10 @@ def bind_do_create_dxf_parts_success(
     n_list = int(value.get("list_len") or len(kids) or 0)
     stale = grid_dxf_count_is_stale(n_grid, n_list)
     bound = bool(value.get("bound")) and present and not stale
+    raw_keys = value.get("kendo_row_keys") if present else None
+    kendo_keys = (
+        [str(k) for k in raw_keys if str(k)] if isinstance(raw_keys, list) else []
+    )
     return {
         "grid_present": present,
         "has_gridDXFParts": present,
@@ -1634,6 +1709,7 @@ def bind_do_create_dxf_parts_success(
         "minted_id": str(gate.get("minted_id") or quote_id or ""),
         "edit_gate": "stale_grid" if stale else "",
         "stale_grid": stale,
+        "kendo_row_keys": kendo_keys,
     }
 
 
@@ -1695,6 +1771,7 @@ def invoke_page_dxf_finish(
         "filelist_row_keys": [],
         "filelist_missing_keys": [],
         "filelist_missing_identity": [],
+        "kendo_row_keys": [],
         "finish_af_present": False,
         "finish_why": "wrong_document",
     }
@@ -1730,6 +1807,9 @@ def invoke_page_dxf_finish(
         ],
         "filelist_missing_identity": [
             str(k) for k in (value.get("filelist_missing_identity") or [])
+        ],
+        "kendo_row_keys": [
+            str(k) for k in (value.get("kendo_row_keys") or [])
         ],
         "filelist_filetype": (
             value.get("filelist_filetype")
@@ -1923,6 +2003,18 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       for (var j = 0; j < fresh.length; j++) {
         counts[catOf(fresh[j])] += 1;
       }
+      var logKeys = [
+        "CadType", "Stock_X", "Stock_Y", "Stock_Z", "Stock_Units",
+        "Stock_Length", "Stock_Diameter", "FileType", "SourceDataID", "FileID", "ID"
+      ];
+      var first = {};
+      try {
+        first = (fresh[0] && fresh[0].toJSON) ? fresh[0].toJSON() : (fresh[0] || {});
+      } catch (eK) { first = fresh[0] || {}; }
+      var kendoKeys = [];
+      for (var lk = 0; lk < logKeys.length; lk++) {
+        if (first && first[logKeys[lk]] !== undefined) kendoKeys.push(logKeys[lk]);
+      }
       return {
         grid_present: true,
         cad: counts.Cad,
@@ -1931,7 +2023,8 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         component: counts.Component,
         set_count: setCount,
         setpartmode_via: via || (fnName ? "page_fn" : (setCount ? "grid_set" : "")),
-        grid_dxf_row_count: fresh.length
+        grid_dxf_row_count: fresh.length,
+        kendo_row_keys: kendoKeys
       };
     });
   }
@@ -1997,6 +2090,7 @@ def apply_grid_dxf_part_modes(
         "edit_quote_id": "",
         "minted_id": str(quote_id or ""),
         "edit_gate": "",
+        "kendo_row_keys": [],
     }
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     empty["edit_quote_id"] = str(gate.get("edit_quote_id") or "")
@@ -2021,7 +2115,11 @@ def apply_grid_dxf_part_modes(
     if not isinstance(value, dict):
         return empty
     present = bool(value.get("grid_present"))
-    return {
+    raw_keys = value.get("kendo_row_keys") if present else None
+    kendo_keys = (
+        [str(k) for k in raw_keys if str(k)] if isinstance(raw_keys, list) else []
+    )
+    out = {
         "grid_present": present,
         "cad": int(value.get("cad") or 0) if present else 0,
         "linear": int(value.get("linear") or 0) if present else 0,
@@ -2034,6 +2132,9 @@ def apply_grid_dxf_part_modes(
         "minted_id": str(gate.get("minted_id") or quote_id or ""),
         "edit_gate": "",
     }
+    if present:
+        out["kendo_row_keys"] = kendo_keys
+    return out
 
 
 def grid_dxf_parts_rows_from_quotes_tab(

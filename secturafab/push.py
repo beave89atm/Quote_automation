@@ -2385,7 +2385,15 @@ class SecturaFabPushService:
         explode_polls: int | None = None,
         explode_sleep_s: float | None = None,
     ) -> list[str]:
-        """CAD Files: upload → explode → bind → SetPartMode on #gridDXFParts → Finish."""
+        """CAD Files: upload → explode → bind → SetPartMode on #gridDXFParts → Finish.
+
+        After /part/create bind + SetPartMode, log kendo row key names (CadType,
+        Stock_*, FileType, SID/FileID/ID) and the same names on posted FileList.
+        If kendo has CadType/Stock_*, copy them through — do not invent values.
+        If kendo lacks them after explode, that is a /part/create bind miss
+        (not a Finish-hook miss): do not Finish. Do not mint until a box
+        capture shows CadType+Stock_X+Stock_Y on kendo and the posted FileList.
+        """
         notes: list[str] = []
         if cadimport_step_too_large(cad_files):
             n = cadimport_step_bytes(cad_files)
@@ -2566,6 +2574,7 @@ class SecturaFabPushService:
         )
         notes.extend(class_notes)
         from .chrome_cdp import apply_grid_dxf_part_modes
+        from .website import filelist_missing_cadimport_identity_keys
 
         applied = apply_grid_dxf_part_modes(classified, quote_id=quote_id)
         applied = applied if isinstance(applied, dict) else {}
@@ -2583,6 +2592,17 @@ class SecturaFabPushService:
                 "WARNING: SetPartMode did not run on this EDIT #gridDXFParts "
                 "— OnAddDXFClick empty-body path (live EHB3112)"
             )
+        applied_keys = applied.get("kendo_row_keys") if applied.get("grid_present") else None
+        if not isinstance(applied_keys, list):
+            applied_keys = None
+        bind_keys = getattr(self.client, "_kendo_row_keys", None)
+        if not isinstance(bind_keys, list):
+            bind_keys = None
+        kendo_keys = applied_keys if applied_keys is not None else bind_keys
+        if isinstance(kendo_keys, list):
+            notes.append("kendo_row_keys=" + ",".join(str(k) for k in kendo_keys[:24]))
+            if applied_keys is not None:
+                self.client._kendo_row_keys = [str(k) for k in applied_keys]
         if applied.get("grid_present"):
             want_cad = sum(
                 1 for r in classified if str(r.get("Category") or "") == "Cad"
@@ -2636,6 +2656,18 @@ class SecturaFabPushService:
                 "not Finishing"
             )
             return notes
+        if isinstance(kendo_keys, list):
+            ident_miss = filelist_missing_cadimport_identity_keys(kendo_keys)
+            if ident_miss:
+                notes.append("filelist_missing_keys=" + ",".join(ident_miss))
+                notes.append(
+                    "WARNING: CadImport identity keys missing on EDIT kendo "
+                    f"after explode ({'+'.join(ident_miss)}) — /part/create "
+                    "bind miss for n=1, not a Finish-hook miss "
+                    "(do not invent Stock_X/Y or CadType; not Finishing; "
+                    "live 107292-1)"
+                )
+                return notes
         result = self.client.add_item_dxf_files(
             quote_id=quote_id,
             file_list=ready,
@@ -2679,6 +2711,9 @@ class SecturaFabPushService:
             row_keys = [str(k) for k in (result.get("filelist_row_keys") or [])]
             if row_keys:
                 notes.append("filelist_row_keys=" + ",".join(row_keys[:24]))
+            posted_kendo = [str(k) for k in (result.get("kendo_row_keys") or [])]
+            if posted_kendo and f"kendo_row_keys={','.join(posted_kendo[:24])}" not in " ".join(notes):
+                notes.append("kendo_row_keys=" + ",".join(posted_kendo[:24]))
             miss_cmp = [str(k) for k in (result.get("filelist_missing_keys") or [])]
             if miss_cmp:
                 notes.append("filelist_missing_keys=" + ",".join(miss_cmp))

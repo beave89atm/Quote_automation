@@ -308,6 +308,21 @@ CADIMPORT_FINISH_IDENTITY_KEYS = (
     "Stock_X",
     "Stock_Y",
 )
+# Copy through from kendo / t.List — never invent values.
+CADIMPORT_KEEP_KEYS = (
+    "CadType",
+    "Stock_X",
+    "Stock_Y",
+    "Stock_Z",
+    "Stock_Units",
+    "Stock_Length",
+    "Stock_Diameter",
+    "FileType",
+    "SourceDataID",
+    "FileID",
+    "ID",
+)
+KENDO_IDENTITY_LOG_KEYS = CADIMPORT_KEEP_KEYS
 
 
 def filelist_posted_row_keys(row: dict[str, Any] | None) -> list[str]:
@@ -325,6 +340,50 @@ def filelist_missing_compare_keys(keys: list[str] | None) -> list[str]:
 def filelist_missing_cadimport_identity_keys(keys: list[str] | None) -> list[str]:
     have = {str(k) for k in (keys or [])}
     return [k for k in CADIMPORT_FINISH_IDENTITY_KEYS if k not in have]
+
+
+def kendo_identity_log_keys(row: dict[str, Any] | None) -> list[str]:
+    """CadType/Stock_*/FileType/SID/FileID/ID names present on a kendo row."""
+    if not isinstance(row, dict):
+        return []
+    named = [k for k in KENDO_IDENTITY_LOG_KEYS if k in row]
+    extra = sorted(
+        str(k)
+        for k in row
+        if str(k).startswith("Stock_") and str(k) not in named
+    )
+    return named + extra
+
+
+def copy_cadimport_identity_through(
+    src: dict[str, Any] | None,
+    dest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Copy CadType/Stock_* from src onto dest when dest dropped them.
+
+    Do not invent Stock_X/Y or CadType. Only copy keys that exist on src.
+    """
+    out = dict(dest) if isinstance(dest, dict) else {}
+    if not isinstance(src, dict):
+        return out
+    keep = list(CADIMPORT_KEEP_KEYS)
+    keep.extend(
+        str(k)
+        for k in src
+        if str(k).startswith("Stock_") and str(k) not in keep
+    )
+    for key in keep:
+        if key in src and key not in out:
+            out[key] = src[key]
+    return out
+
+
+def kendo_lacks_cadimport_identity(rows: list[dict[str, Any]] | None) -> list[str]:
+    """Missing CadType/Stock_X/Stock_Y on EDIT kendo after explode — bind miss."""
+    kids = [r for r in (rows or []) if isinstance(r, dict)]
+    if not kids:
+        return list(CADIMPORT_FINISH_IDENTITY_KEYS)
+    return filelist_missing_cadimport_identity_keys(kendo_identity_log_keys(kids[0]))
 
 
 class SecturaFabWebsiteAuthError(RuntimeError):
@@ -919,15 +978,23 @@ def kendo_filelist_for_finish(
     is true only when rows came from that dataSource and every row has a
     non-empty SourceDataID after the copy.
     """
-    filled = fill_kendo_filelist_sourcedataid(rows)
+    src_rows = [r for r in (rows or []) if isinstance(r, dict)]
+    filled = fill_kendo_filelist_sourcedataid(src_rows)
+    filled = [
+        copy_cadimport_identity_through(src_rows[i] if i < len(src_rows) else {}, dest)
+        for i, dest in enumerate(filled)
+    ]
     n = len(filled)
     sid_n = sum(1 for r in filled if not sourcedataid_empty(r.get("SourceDataID")))
     id_n = sum(1 for r in filled if not sourcedataid_empty(r.get("ID")))
     fileid_n = sum(1 for r in filled if not sourcedataid_empty(r.get("FileID")))
     from_kendo = bool(from_datasource and n > 0 and sid_n == n)
+    ident_miss = kendo_lacks_cadimport_identity(filled)
     why = ""
     if n > 0 and sid_n == 0:
         why = "filelist_missing_ids"
+    elif ident_miss:
+        why = "filelist_missing_keys=" + "+".join(ident_miss)
     elif not from_kendo:
         why = "filelist_not_kendo"
     return {
@@ -938,6 +1005,9 @@ def kendo_filelist_for_finish(
         "filelist_fileid_n": fileid_n,
         "finish_filelist_n": n,
         "finish_why": why,
+        "filelist_missing_identity": ident_miss,
+        "kendo_row_keys": kendo_identity_log_keys(filled[0]) if filled else [],
+        "should_finish": bool(from_kendo and not ident_miss),
     }
 
 
