@@ -174,6 +174,19 @@ def test_allocate_quote_number_is_bare_part():
     service = SecturaFabPushService(client=MagicMock())
     assert service.allocate_quote_number("21678-1") == "21678-1"
     assert service.allocate_quote_number("PN 21678-1") == "21678-1"
+    assert service.allocate_quote_number("P001545") == "P001545"
+
+
+def test_resolve_part_key_is_p001545_not_weldment_title():
+    """Live P001545: folder/title POWER FRAME WELDMENT-1 must not become QuoteNumber."""
+    from secturafab.push import _resolve_part_key
+
+    key = _resolve_part_key(
+        title="POWER FRAME WELDMENT",
+        pdf_filename="P001545.STEP",
+        library={"folder": r"C:\drawings\Profrac\POWER FRAME WELDMENT-1"},
+    )
+    assert key == "P001545"
 
 
 def test_repush_always_creates_new_quote_and_imports_cad():

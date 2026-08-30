@@ -99,6 +99,29 @@ PEDESTAL WELDMENT
     assert "BASE PLATE" not in title.upper()
 
 
+def test_inner_frame_plate_is_not_power_frame_weldment_header():
+    """Live P001545: child INNER FRAME PLATE is not the quote header."""
+    from quote_core.drawing_title import is_child_part_title
+    from secturafab.item_desc import format_quote_header_description
+
+    assert is_child_part_title("WELDMENT, FRAME PLATE, INNER")
+    assert is_child_part_title("INNER FRAME PLATE")
+    assert not is_child_part_title("POWER FRAME WELDMENT")
+    assert format_quote_header_description(
+        "POWER FRAME WELDMENT", part_key="P001545"
+    ) == "POWER FRAME WELDMENT"
+    text = """
+P001545
+TITLE:
+WELDMENT, FRAME PLATE, INNER
+POWER FRAME WELDMENT
+"""
+    title = extract_title_from_pdf_text(text, part_key="P001545")
+    assert title is not None
+    assert "POWER FRAME" in title.upper()
+    assert "INNER" not in title.upper()
+
+
 def test_marmon_order_material_is_not_jib_head_weldment_header():
     """Live 5003313-001: vendor note is not the quote header."""
     from secturafab.item_desc import format_quote_header_description

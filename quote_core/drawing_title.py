@@ -394,6 +394,12 @@ def is_child_part_title(text: str | None) -> bool:
     if is_nested_child_weldment_title(text):
         return True
     upper = f" {str(text or '').upper()} "
+    # Live P001545: INNER FRAME PLATE / WELDMENT, FRAME PLATE, INNER is a child.
+    # Header is POWER FRAME WELDMENT.
+    if re.search(r"\bINNER\b", upper) and re.search(r"\bPLATE\b", upper):
+        return True
+    if re.search(r"\bWELDMENT\s*,\s*FRAME\s+PLATE\b", upper):
+        return True
     if "WELDMENT" in upper or "ASSEMBLY" in upper or re.search(r"\bASSY\b", upper):
         return False
     return bool(

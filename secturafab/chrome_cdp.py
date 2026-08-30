@@ -27,6 +27,11 @@ Before ``#but_dxf`` / bind / SetPartMode / Finish the tab must be
 the tab is a spent id, or ``grid_dxf_row_count`` is leftover kendo
 (65 vs FileList 12). Do not POST ``AddItem_DXFFiles`` on the leftover.
 
+Live P001545 (9735155): EDIT-id matched, grid 53==FileList 53, page
+Finish 200 empty body. Invoke only a page fn whose source reads
+``#gridDXFParts``. Capture ``finish_filelist_n`` vs grid 53. Do not
+POST a Python-rebuilt FileList. HTTP 200 empty is not success.
+
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys / counts only.
 Do not unwrap Windows Chrome. Do not ask Kyle to log in.
@@ -1043,20 +1048,25 @@ _PAGE_FINISH_JS = """(function() {
       grid_dxf_row_count: count
     }));
   }
+  function readsGridFinish(fn) {
+    var src = String(fn || "");
+    return src.indexOf("gridDXFParts") >= 0
+      && src.indexOf("/Quote/AddItem_DXFFiles") >= 0;
+  }
   function findFinishName() {
     var names = [
       "OnAddDXFClick", "OnAddDXFFilesClick", "AddDXFFiles", "AddItemDXFFiles"
     ];
     for (var i = 0; i < names.length; i++) {
-      if (typeof window[names[i]] === "function") return names[i];
+      if (typeof window[names[i]] === "function"
+          && readsGridFinish(window[names[i]])) {
+        return names[i];
+      }
     }
     try {
       for (var k in window) {
         var fn = window[k];
-        if (typeof fn === "function"
-            && String(fn).indexOf("/Quote/AddItem_DXFFiles") >= 0) {
-          return k;
-        }
+        if (typeof fn === "function" && readsGridFinish(fn)) return k;
       }
     } catch (e) {}
     return "";
@@ -1075,12 +1085,24 @@ _PAGE_FINISH_JS = """(function() {
       if (!done && url.indexOf("/Quote/AddItem_DXFFiles") >= 0) {
         done = true;
         jQuery.ajax = orig;
+        var d = (opts && opts.data) || {};
+        var fl = d.FileList || d.fileList || [];
+        var n = Array.isArray(fl) ? fl.length : 0;
+        var req_keys = (d && typeof d === "object" && !Array.isArray(d))
+          ? Object.keys(d) : [];
         Promise.resolve(ret).then(function(data) {
-          resolve({status: 200, data: data});
+          resolve({
+            status: 200,
+            data: data,
+            finish_filelist_n: n,
+            request_keys: req_keys
+          });
         }).catch(function(xhr) {
           resolve({
             status: (xhr && xhr.status) || 0,
-            data: (xhr && xhr.responseJSON) || null
+            data: (xhr && xhr.responseJSON) || null,
+            finish_filelist_n: n,
+            request_keys: req_keys
           });
         });
       }
@@ -1109,8 +1131,8 @@ _PAGE_FINISH_JS = """(function() {
           (el.getAttribute("onclick") || "") + " " + (el.textContent || "")
           + " " + (el.value || "") + " " + (el.id || "")
         ).toLowerCase();
-        if (blob.indexOf("onadddxf") >= 0 || blob.indexOf("additem_dxf") >= 0
-            || ((blob.indexOf("finish") >= 0) && blob.indexOf("dxf") >= 0)) {
+        if (blob.indexOf("onadddxf") >= 0
+            || blob.indexOf("griddxfparts") >= 0) {
           el.click();
           clicked = true;
           via = "page_fn";
@@ -1129,10 +1151,22 @@ _PAGE_FINISH_JS = """(function() {
     }));
   }
   return hooked.then(function(hit) {
-    var extra = hit ? summarize(hit.status, hit.data) : summarize(0, null);
+    if (!hit) {
+      return Object.assign(summarize(0, null), {
+        via: "",
+        finish_fn: finishName,
+        grid_dxf_row_count: count,
+        finish_filelist_n: 0,
+        request_keys: [],
+        List: rows
+      });
+    }
+    var extra = summarize(hit.status, hit.data);
     extra.via = via || "page_fn";
     extra.finish_fn = finishName;
     extra.grid_dxf_row_count = count;
+    extra.finish_filelist_n = Number(hit.finish_filelist_n || 0);
+    extra.request_keys = hit.request_keys || [];
     return extra;
   });
 })"""
@@ -1395,6 +1429,8 @@ def invoke_page_dxf_finish(
         "via": "skipped",
         "finish_fn": "",
         "grid_dxf_row_count": 0,
+        "finish_filelist_n": 0,
+        "request_keys": [],
         "status": 0,
         "body_keys": [],
         "body_type": "empty",
@@ -1423,6 +1459,8 @@ def invoke_page_dxf_finish(
         "via": via,
         "finish_fn": str(value.get("finish_fn") or ""),
         "grid_dxf_row_count": int(value.get("grid_dxf_row_count") or 0),
+        "finish_filelist_n": int(value.get("finish_filelist_n") or 0),
+        "request_keys": [str(k) for k in (value.get("request_keys") or [])],
         "status": int(value.get("status") or 0),
         "body_keys": [str(k) for k in (value.get("body_keys") or [])],
         "body_type": str(value.get("body_type") or "empty"),

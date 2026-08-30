@@ -2409,6 +2409,63 @@ def test_classify_job_pn_only_leaves_are_cad():
     assert cats.count("Cad") == 14
 
 
+def test_classify_w001544_occurrence_is_assembly_w001531_is_cad():
+    """Live P001545: 34× W001544 is the weldment; W001531_* are Cad plates."""
+    service = SecturaFabPushService(client=MagicMock())
+    rows = (
+        [{"SourceDataID": "root", "Name": "Root", "Qty": 1, "ErrorStatus": 0}]
+        + [
+            {
+                "SourceDataID": f"weld-{i}",
+                "Name": "W001544",
+                "Qty": 1,
+                "ErrorStatus": 0,
+            }
+            for i in range(34)
+        ]
+        + [
+            {
+                "SourceDataID": "p2",
+                "Name": "W001531_2",
+                "Qty": 1,
+                "ErrorStatus": 0,
+            },
+            {
+                "SourceDataID": "p3",
+                "Name": "W001531_3",
+                "Qty": 1,
+                "ErrorStatus": 0,
+            },
+            {
+                "SourceDataID": "rev",
+                "Name": "P001545 Rev B",
+                "Qty": 1,
+                "ErrorStatus": 0,
+            },
+        ]
+    )
+    classified, _notes = service.classify_cadimport_rows(
+        rows,
+        default_material="A36",
+        default_thickness="0.25",
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+        part_key="P001545",
+    )
+    by_name = {str(r.get("Name") or ""): str(r.get("Category") or "") for r in classified}
+    weld_cats = [
+        str(r.get("Category") or "")
+        for r in classified
+        if str(r.get("Name") or "") == "W001544"
+    ]
+    assert weld_cats.count("Assembly") == 34
+    assert by_name.get("W001531_2") == "Cad"
+    assert by_name.get("W001531_3") == "Cad"
+    assert by_name.get("P001545 Rev B") == "Assembly"
+
+
 def test_classify_bare_part_key_is_assembly_not_cad():
     """Live 105918-1 root landed Assembly with bare PN desc — keep that type."""
     service = SecturaFabPushService(client=MagicMock())
@@ -3461,6 +3518,128 @@ def test_add_item_dxf_files_leftover_edit_does_not_post():
     assert real._minted_id == minted
 
 
+def test_reconstructed_filelist_is_not_page_grid_finish():
+    """EDIT-id match + grid==FileList + reconstructed POST → still not success."""
+    from secturafab.client import SecturaFabClient
+
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0545"
+    edit = {
+        "title": "*Quote-P001545",
+        "url": f"https://www.secturafab.com/Quote/EDIT/{minted}",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.timeout_seconds = 30
+    real._af_source = "chrome_dom"
+    real._part_create_list_len = 53
+    real._grid_present = True
+    real._grid_dxf_row_count = 53
+    real._stale_grid = False
+    real.session = MagicMock()
+    rebuilt = [{"Name": f"W001544-{i}", "Qty": 1, "ErrorStatus": 0} for i in range(52)]
+
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.quote_edit_tab", return_value=edit
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_dxf_finish",
+        return_value={
+            "via": "",
+            "finish_fn": "",
+            "grid_dxf_row_count": 53,
+            "finish_filelist_n": 0,
+            "status": 0,
+            "body_keys": [],
+            "body_type": "empty",
+            "has_NewItem": False,
+            "has_QuoteItem": False,
+            "text_len": 0,
+            "List": rebuilt,
+        },
+    ), patch(
+        "secturafab.chrome_cdp.post_add_item_dxf_files_from_quotes_tab",
+    ) as fetch_finish:
+        result = real.add_item_dxf_files(quote_id=minted, file_list=rebuilt)
+    real.session.request.assert_not_called()
+    fetch_finish.assert_not_called()
+    assert result["via"] == "skipped"
+    assert real._finish_via == "skipped"
+
+
+def test_page_grid_finish_empty_body_is_not_success(tmp_path: Path):
+    """Live P001545: page_fn 200 empty body + GET 0 is not success."""
+    stp = tmp_path / "P001545.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": f"src-{i}",
+            "FileID": f"file-{i}",
+            "Name": "W001544" if i < 50 else f"W001531_{i}",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        }
+        for i in range(53)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 53
+    client._grid_present = True
+    client._grid_dxf_row_count = 53
+    client._stale_grid = False
+    client._edit_quote_id = "31204345-6c91-4122-a859-09f7d7a3ea9f"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": [],
+        "body_type": "empty",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "text_len": 0,
+        "empty_body": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_filelist_n": 52,
+        "grid_dxf_row_count": 53,
+        "request_keys": ["ID", "ItemID", "customerMaterial", "FileList"],
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="31204345-6c91-4122-a859-09f7d7a3ea9f",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="P001545",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    blob = " ".join(notes)
+    assert "finish_via=page_fn" in blob
+    assert "finish_fn=OnAddDXFClick" in blob
+    assert "finish_filelist_n=52" in blob
+    assert "grid_dxf_row_count=53" in blob
+    assert "empty body" in blob.lower()
+    assert "not success" in blob.lower()
+
+
 def test_stale_grid_65_vs_filelist_12_skips_finish(tmp_path: Path):
     """Live 5003313-001: leftover kendo 65 after bind of List=12 — do not Finish."""
     from secturafab.chrome_cdp import grid_dxf_count_is_stale
@@ -4063,7 +4242,7 @@ def test_add_item_dxf_files_sends_js_contract():
 
 
 def test_add_item_dxf_files_grid_finish_uses_grid_rows_not_python():
-    """Live 34137-2: reconstructed FileList fetch is empty 200 — use grid rows."""
+    """Live P001545: reconstructed FileList POST is not success — skip it."""
     from secturafab.client import SecturaFabClient
 
     real = SecturaFabClient.__new__(SecturaFabClient)
@@ -4132,18 +4311,16 @@ def test_add_item_dxf_files_grid_finish_uses_grid_rows_not_python():
     ), patch(
         "secturafab.chrome_cdp.post_add_item_dxf_files_from_quotes_tab",
         side_effect=_fetch,
-    ):
+    ) as fetch_finish:
         result = real.add_item_dxf_files(
             quote_id="qid",
             file_list=[{"Name": "PYTHON_REBUILT", "Machine": "Laser", "Qty": 1}],
         )
     real.session.request.assert_not_called()
-    assert posted
-    names = [str(r.get("Name")) for r in posted[0]["FileList"]]
-    assert names == ["FROM_GRID_PLATE", "FROM_GRID_GUSSET"]
-    assert "PYTHON_REBUILT" not in names
-    assert result["via"] == "grid_finish"
-    assert real._finish_via == "grid_finish"
+    fetch_finish.assert_not_called()
+    assert not posted
+    assert result["via"] == "skipped"
+    assert real._finish_via == "skipped"
 
 
 def test_grid_dxf_row_count_le_1_skips_finish(tmp_path: Path):

@@ -22,7 +22,6 @@ from .website import (
     build_weld_add_operation_payload,
     cadimport_list_is_native_array,
     client_antiforgery_extracted,
-    filter_finish_filelist,
     is_cloudflare_challenge,
     is_website_login_redirect,
     jquery_ajax_form,
@@ -1204,16 +1203,14 @@ class SecturaFabClient:
         Live 34137-2: Quotes-tab fetch of a Python-rebuilt FileList is the
         same empty 200 — #gridDXFParts was never bound.
         Live 34632-2: page createAllParts explode returned t.List=0.
-        Invoke page Finish after fetch+bind. Fallback fetch uses the grid
-        dataSource rows only, never reconstructed kids.
+        Invoke page Finish after fetch+bind. Do not POST a Python-rebuilt
+        FileList (live P001545 empty 200 / GET 0).
         """
         from .chrome_cdp import (
             chrome_quotes_live,
             grid_dxf_count_is_stale,
-            grid_dxf_parts_rows_from_quotes_tab,
             invoke_page_dxf_finish,
             minted_edit_tab_ready,
-            post_add_item_dxf_files_from_quotes_tab,
         )
 
         del file_list
@@ -1265,45 +1262,21 @@ class SecturaFabClient:
             self._finish_via = "skipped"
             self._edit_gate = "stale_grid"
             return self._dxf_finish_capture({}, via="skipped")
-        if via == "page_fn":
-            self._finish_via = "page_fn"
-            status = int(page.get("status") or 0)
-            if status >= 400:
-                raise SecturaFabApiError(
-                    f"API request failed ({status}) for page_fn /Quote/AddItem_DXFFiles",
-                    status_code=status,
-                    body={key: True for key in (page.get("body_keys") or [])}
-                    or {"Error": True},
-                )
-            return self._dxf_finish_capture(page, via="page_fn")
-        grid_rows = [r for r in (page.get("List") or []) if isinstance(r, dict)]
-        if len(grid_rows) <= 1:
-            grid_rows = grid_dxf_parts_rows_from_quotes_tab()
-        kids = filter_finish_filelist(grid_rows)
-        if len(kids) <= 1:
+        if via != "page_fn":
+            # Live P001545: reconstructed FileList POST is empty 200 / GET 0.
+            # Success is the page fn that reads #gridDXFParts.
             self._finish_via = "skipped"
-            return self._dxf_finish_capture({}, via="skipped")
-        payload = {
-            "ID": quote_id,
-            "ItemID": item_id or EMPTY_GUID,
-            "customerMaterial": bool(customer_material),
-            "FileList": kids,
-        }
-        result = post_add_item_dxf_files_from_quotes_tab(payload)
-        self._finish_via = "grid_finish"
-        if not result.get("has_antiforgery"):
-            raise SecturaFabApiError(
-                "af_extracted=false — chrome_dom required, not POSTing Finish"
-            )
-        status = int(result.get("status") or 0)
-        body_keys = [str(k) for k in (result.get("body_keys") or [])]
+            return self._dxf_finish_capture(page, via="skipped")
+        self._finish_via = "page_fn"
+        status = int(page.get("status") or 0)
         if status >= 400:
             raise SecturaFabApiError(
-                f"API request failed ({status}) for grid_finish /Quote/AddItem_DXFFiles",
+                f"API request failed ({status}) for page_fn /Quote/AddItem_DXFFiles",
                 status_code=status,
-                body={key: True for key in body_keys} or {"Error": True},
+                body={key: True for key in (page.get("body_keys") or [])}
+                or {"Error": True},
             )
-        return self._dxf_finish_capture(result, via="grid_finish")
+        return self._dxf_finish_capture(page, via="page_fn")
 
     @staticmethod
     def _dxf_finish_capture(result: dict[str, Any], *, via: str) -> dict[str, Any]:
@@ -1316,6 +1289,10 @@ class SecturaFabClient:
             "has_QuoteItem": bool(result.get("has_QuoteItem")),
             "text_len": int(result.get("text_len") or 0),
             "via": via,
+            "finish_fn": str(result.get("finish_fn") or ""),
+            "finish_filelist_n": int(result.get("finish_filelist_n") or 0),
+            "grid_dxf_row_count": int(result.get("grid_dxf_row_count") or 0),
+            "request_keys": [str(k) for k in (result.get("request_keys") or [])],
             "empty_body": (
                 str(result.get("body_type") or "") in {"empty", "str"}
                 and not result.get("has_NewItem")

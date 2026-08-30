@@ -126,6 +126,17 @@ ProgressCallback = Callable[[dict[str, Any]], None]
 _QUOTE_REV_SUFFIX_RE = re.compile(r"(?i)[\s_-]*R\d{2}$")
 
 
+def _is_quote_number_token(key: str) -> bool:
+    """True for a Sectura QuoteNumber (P001545 / 35145-1), not a weldment title."""
+    text = str(key or "").strip()
+    if not text or any(ch.isspace() for ch in text):
+        return False
+    upper = text.upper()
+    if any(tok in upper for tok in ("WELDMENT", "ASSEMBLY", "FRAME PLATE")):
+        return bool(re.fullmatch(r"[A-Z]{1,3}\d{4,}(?:-[A-Z0-9]+)?", upper))
+    return True
+
+
 def _pn_quote_number(part_key: str) -> str:
     """SecturaFAB Quote Number = bare part key (no 'PN ' prefix, no rev suffix)."""
     key = (part_key or "").strip()
@@ -825,14 +836,15 @@ def _resolve_part_key(
     from quote_core.bom_config import normalize_bom_config
 
     library = library or {}
-    candidates: list[str] = []
+    strong: list[str] = []
+    weak: list[str] = []
     # Title-block DRAWING NUMBER is the search key in SecturaFAB — prefer it.
     if pdf_path:
         p = Path(pdf_path)
         if p.is_file():
             drawn = extract_drawing_number_from_pdf(p)
-            if drawn:
-                candidates.append(drawn)
+            if drawn and _is_quote_number_token(drawn):
+                strong.append(_pn_quote_number(drawn) or drawn)
     for raw in (
         library.get("part_key"),
         Path(library["folder"]).name if library.get("folder") else None,
@@ -842,15 +854,25 @@ def _resolve_part_key(
     ):
         if not raw:
             continue
-        key = extract_part_key(str(raw)) or str(raw).strip()
-        if key:
-            candidates.append(_pn_quote_number(key) or key)
-    if not candidates:
+        extracted = extract_part_key(str(raw))
+        if extracted and _is_quote_number_token(extracted):
+            strong.append(_pn_quote_number(extracted) or extracted)
+        stripped = str(raw).strip()
+        if not stripped:
+            continue
+        upper = stripped.upper()
+        if any(tok in upper for tok in ("WELDMENT", "ASSEMBLY", "FRAME PLATE")):
+            continue
+        stem = Path(stripped).stem if "." in stripped else stripped
+        if stem:
+            weak.append(stem)
+    pool = strong or weak
+    if not pool:
         return ""
-    dashed = [c for c in candidates if "-" in c]
+    dashed = [c for c in pool if "-" in c]
     if dashed:
         return max(dashed, key=len)
-    base = max(candidates, key=len)
+    base = max(pool, key=len)
     dash = normalize_bom_config(bom_config)
     if dash and base and "-" not in base:
         return f"{base}-{dash}"
@@ -2115,6 +2137,13 @@ class SecturaFabPushService:
             for r in rows
             if isinstance(r, dict)
         )
+        name_counts: dict[str, int] = {}
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            tok = str(row_name(r) or "").strip().upper()
+            if tok:
+                name_counts[tok] = name_counts.get(tok, 0) + 1
         lom_child_nouns = [
             str(brow.get("description") or "").strip()
             for brow in (bom_rows or [])
@@ -2142,6 +2171,21 @@ class SecturaFabPushService:
             cat = classify_sectura_item(name)
             token = dashed or (name.split()[0] if name else "")
             stem = str(row.get("Name") or "").strip()
+            stem_u = stem.upper()
+            # Live P001545: W001531_2 / _3 are Cad plates; W001544 x34 is the
+            # weldment occurrence (Assembly). P001545 Rev B is the STEP root.
+            if re.fullmatch(r"W\d{4,}_\d+", stem, re.I):
+                cat = "Cad"
+            elif (
+                re.fullmatch(r"W\d{4,}", stem, re.I)
+                and name_counts.get(stem_u, 0) >= 2
+            ):
+                cat = "Assembly"
+            elif (
+                part_key
+                and re.match(rf"^{re.escape(part_key)}\s+rev\b", stem, re.I)
+            ):
+                cat = "Assembly"
             if (
                 part_key
                 and normalize_part_token(stem) == normalize_part_token(part_key)
@@ -2582,11 +2626,33 @@ class SecturaFabPushService:
         via = getattr(self.client, "_finish_via", "") or ""
         if isinstance(via, str) and via:
             notes.append(f"finish_via={via}")
+        finish_fn = ""
+        finish_n = 0
+        grid_n = getattr(self.client, "_grid_dxf_row_count", None)
+        if isinstance(result, dict):
+            finish_fn = str(result.get("finish_fn") or "")
+            finish_n = int(result.get("finish_filelist_n") or 0)
+            if result.get("grid_dxf_row_count"):
+                grid_n = result.get("grid_dxf_row_count")
+            if finish_fn:
+                notes.append(f"finish_fn={finish_fn}")
+            if finish_n:
+                notes.append(f"finish_filelist_n={finish_n}")
+            req_keys = [str(k) for k in (result.get("request_keys") or [])]
+            if req_keys:
+                notes.append("finish_request_keys=" + ",".join(req_keys[:12]))
         notes.append(
-            f"Finish POST /Quote/AddItem_DXFFiles ({len(ready)} FileList row(s)) "
+            f"Finish POST /Quote/AddItem_DXFFiles "
+            f"(page-grid {int(grid_n) if isinstance(grid_n, (int, float)) else 0}"
+            f" / classified {len(ready)}) "
             f"— laser/saw packs come from Finish, not grafted Profile"
         )
         empty_finish = False
+        if via != "page_fn":
+            notes.append(
+                "WARNING: reconstructed FileList Finish is the ItemList-0 "
+                "path — need page #gridDXFParts Finish; not Finishing"
+            )
         if isinstance(result, dict):
             body_type = str(result.get("body_type") or "")
             body_keys = [str(k) for k in (result.get("body_keys") or [])]
@@ -2601,8 +2667,11 @@ class SecturaFabPushService:
                 empty_finish = True
                 notes.append(
                     "WARNING: AddItem_DXFFiles HTTP 200 empty body / no NewItem "
-                    "— not success (reconstructed FileList Finish is the "
-                    "ItemList-0 path; need page #gridDXFParts Finish)"
+                    f"— finish_fn={finish_fn or '?'} "
+                    f"finish_filelist_n={finish_n} "
+                    f"grid_dxf_row_count="
+                    f"{int(grid_n) if isinstance(grid_n, (int, float)) else 0} "
+                    "— not success (leave shell, no remint; live P001545)"
                 )
         posted = self._read_quote_items(quote_id)
         cad_n = count_cad_product_type(posted)
