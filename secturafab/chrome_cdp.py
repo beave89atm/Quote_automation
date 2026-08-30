@@ -42,8 +42,12 @@ a9497a26 / BB2000-ASM. Live EHB3112 (83c9200): OnAddDXFClick fired
 (4==4) but HTTP 200 empty / GET 0 — SetPartMode / grid_classify
 notes were missing (105918-1 had them, then GET 66). Set FileType
 on this EDIT #gridDXFParts before OnAddDXFClick. Leave cf8ec36e /
-EHB3112-1. Next unused after the empty-body cause is captured:
-11796-1. Not EHB3112. Not 11796-1 until then.
+EHB3112-1. Live 11796-1 (4c79659): SetPartMode + OnAddDXFClick on
+1 Cad, filelist_from_kendo=false / finish_af_present=false /
+200 empty. FileList must be this EDIT kendo dataSource with
+chrome_dom AF on that document. n=1 Cad is Finishable. Leave
+a8e1b40e / 11796-1. Next unused after kendo FileList + AF is
+proven in tests: 11796-2 only if still needed.
 
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys / counts only.
@@ -998,7 +1002,7 @@ _BIND_DO_CREATE_SUCCESS_JS = """(function(spec) {
     for (var e = 0; e < t.List.length; e++) {
       i.dataSource.data().toJSON().push(t.List[e]);
     }
-    if (gridCount() <= 1) {
+    if (gridCount() < 1) {
       var cur = i.dataSource.data().toJSON ? i.dataSource.data().toJSON() : [];
       i.dataSource.data(cur.concat(t.List));
     }
@@ -1052,14 +1056,123 @@ _PAGE_FINISH_JS = """(function() {
       grid_dxf_row_count: gridRows().length
     };
   }
+  function kendoGridPresent() {
+    try {
+      return !!(window.jQuery && jQuery("#gridDXFParts").data("kendoGrid"));
+    } catch (e) { return false; }
+  }
+  function rowKey(r) {
+    r = r || {};
+    return String(r.SourceDataID || "")
+      || String(r.ID || "")
+      || String(r.FileID || "")
+      || String(r.Name || "");
+  }
+  function looksKendoFileList(fl) {
+    if (!Array.isArray(fl) || !fl.length) return false;
+    var r = fl[0] || {};
+    return !!(r.SourceDataID || r.ID || r.FileID || r.Name);
+  }
+  function fileListFromThisKendo(fl, krows) {
+    if (!Array.isArray(fl) || !fl.length || !krows.length) return false;
+    if (fl === krows) return true;
+    var keys = {};
+    for (var i = 0; i < krows.length; i++) {
+      var k = rowKey(krows[i]);
+      if (k) keys[k] = true;
+    }
+    var hits = 0;
+    for (var j = 0; j < fl.length; j++) {
+      var fk = rowKey(fl[j]);
+      if (fk && keys[fk]) hits++;
+    }
+    return hits === fl.length;
+  }
+  function hasAf(data) {
+    if (!data || typeof data !== "object") return false;
+    var keys = Object.keys(data);
+    for (var i = 0; i < keys.length; i++) {
+      var kn = String(keys[i] || "");
+      if (kn.indexOf("RequestVerification") >= 0
+          || kn.toLowerCase() === "aftoken"
+          || /verif|forgery|antiforgery/i.test(kn)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function hasChromeDomAf() {
+    try {
+      var names = ["__RequestVerificationToken", "RequestVerificationToken"];
+      for (var i = 0; i < names.length; i++) {
+        var el = document.querySelector('input[name="' + names[i] + '"]');
+        if (el && String(el.value || "").trim()) return true;
+      }
+      var any = document.querySelector("input[name*='RequestVerification']");
+      if (any && String(any.value || "").trim()) return true;
+      if (window.kendo && typeof kendo.antiForgeryTokens === "function") {
+        var t = kendo.antiForgeryTokens();
+        if (t && typeof t === "object") {
+          var tk = Object.keys(t);
+          for (var j = 0; j < tk.length; j++) {
+            if (t[tk[j]]) return true;
+          }
+        }
+      }
+      return false;
+    } catch (e) { return false; }
+  }
+  function attachChromeDomAf(data) {
+    if (!data || typeof data !== "object" || hasAf(data)) return;
+    try {
+      var names = ["__RequestVerificationToken", "RequestVerificationToken"];
+      for (var i = 0; i < names.length; i++) {
+        var el = document.querySelector('input[name="' + names[i] + '"]');
+        if (el && String(el.value || "").trim()) {
+          data[names[i]] = el.value;
+          return;
+        }
+      }
+      var any = document.querySelector("input[name*='RequestVerification']");
+      if (any && String(any.value || "").trim()) {
+        data[any.getAttribute("name")] = any.value;
+        return;
+      }
+      if (window.kendo && typeof kendo.antiForgeryTokens === "function") {
+        var t = kendo.antiForgeryTokens();
+        if (t && typeof t === "object") {
+          var tk = Object.keys(t);
+          for (var j = 0; j < tk.length; j++) {
+            if (t[tk[j]]) {
+              data[tk[j]] = t[tk[j]];
+              return;
+            }
+          }
+        }
+      }
+    } catch (e) {}
+  }
+  function finishWhy(fromKendo, afOnDoc, afInReq, krows) {
+    var why = [];
+    if (!kendoGridPresent()) why.push("wrong_document");
+    if (kendoGridPresent() && !krows.length) why.push("empty_dataSource");
+    if (!fromKendo) why.push("filelist_not_kendo");
+    if (!afOnDoc) why.push("af_missing_on_document");
+    else if (!afInReq) why.push("af_not_in_request");
+    return why.join(",");
+  }
   var rows = gridRows();
   var count = rows.length;
-  if (count <= 1) {
+  if (count < 1) {
+    var skipWhy = kendoGridPresent() ? "empty_dataSource" : "wrong_document";
     return Promise.resolve(Object.assign(summarize(0, null), {
       via: "skipped",
       finish_fn: "",
       reads_kendo: false,
-      grid_dxf_row_count: count
+      grid_dxf_row_count: count,
+      filelist_from_kendo: false,
+      finish_af_present: false,
+      finish_why: skipWhy
     }));
   }
   function fnSource(fn) {
@@ -1099,29 +1212,31 @@ _PAGE_FINISH_JS = """(function() {
     var done = false;
     jQuery.ajax = function(opts) {
       var url = String((opts && opts.url) || "");
-      var ret = orig.apply(this, arguments);
       if (!done && url.indexOf("/Quote/AddItem_DXFFiles") >= 0) {
         done = true;
         jQuery.ajax = orig;
-        var d = (opts && opts.data) || {};
+        if (!opts || typeof opts !== "object") opts = {url: url};
+        if (typeof opts.data === "string") {
+          try { opts.data = JSON.parse(opts.data); } catch (e) { opts.data = {}; }
+        }
+        if (!opts.data || typeof opts.data !== "object" || Array.isArray(opts.data)) {
+          opts.data = {};
+        }
+        var krows = gridRows();
+        if (!looksKendoFileList(opts.data.FileList || opts.data.fileList) && krows.length) {
+          opts.data.FileList = krows;
+        }
+        attachChromeDomAf(opts.data);
+        arguments[0] = opts;
+        var d = opts.data;
         var fl = d.FileList || d.fileList || [];
         var n = Array.isArray(fl) ? fl.length : 0;
-        var req_keys = (d && typeof d === "object" && !Array.isArray(d))
-          ? Object.keys(d) : [];
-        var gridJson = gridRows();
-        var sidGrid = {};
-        for (var gi = 0; gi < gridJson.length; gi++) {
-          var gs = String(gridJson[gi].SourceDataID || "");
-          if (gs) sidGrid[gs] = true;
-        }
-        var sid_n = 0, kendo_hits = 0;
+        var req_keys = Object.keys(d);
+        var sid_n = 0;
         var ft = {Cad: 0, Linear: 0, Assembly: 0, Component: 0, blank: 0};
         for (var fi = 0; fi < n; fi++) {
           var r = fl[fi] || {};
-          if (r.SourceDataID) {
-            sid_n += 1;
-            if (sidGrid[String(r.SourceDataID)]) kendo_hits += 1;
-          }
+          if (r.SourceDataID) sid_n += 1;
           var cat = String(r.FileType || r.ItemType || r.Category || "");
           var mode = Number(r.PartMode);
           if (!cat) {
@@ -1132,22 +1247,19 @@ _PAGE_FINISH_JS = """(function() {
           if (ft[cat] !== undefined) ft[cat] += 1;
           else ft.blank += 1;
         }
-        var af_present = false;
-        for (var ak = 0; ak < req_keys.length; ak++) {
-          var kn = String(req_keys[ak] || "");
-          if (kn.indexOf("RequestVerification") >= 0
-              || kn.toLowerCase() === "aftoken") {
-            af_present = true;
-          }
-        }
+        var fromKendo = fileListFromThisKendo(fl, krows);
+        var afOnDoc = hasChromeDomAf();
+        var afInReq = hasAf(d);
         var cap = {
           finish_filelist_n: n,
           request_keys: req_keys,
-          filelist_from_kendo: n > 0 && kendo_hits === n,
+          filelist_from_kendo: fromKendo,
           filelist_sourcedataid_n: sid_n,
           filelist_filetype: ft,
-          finish_af_present: af_present
+          finish_af_present: afInReq,
+          finish_why: finishWhy(fromKendo, afOnDoc, afInReq, krows)
         };
+        var ret = orig.apply(this, arguments);
         Promise.resolve(ret).then(function(data) {
           cap.status = 200;
           cap.data = data;
@@ -1157,8 +1269,9 @@ _PAGE_FINISH_JS = """(function() {
           cap.data = (xhr && xhr.responseJSON) || null;
           resolve(cap);
         });
+        return ret;
       }
-      return ret;
+      return orig.apply(this, arguments);
     };
     setTimeout(function() {
       if (!done) {
@@ -1213,6 +1326,9 @@ _PAGE_FINISH_JS = """(function() {
         grid_dxf_row_count: count,
         finish_filelist_n: 0,
         request_keys: [],
+        filelist_from_kendo: false,
+        finish_af_present: false,
+        finish_why: finishWhy(false, hasChromeDomAf(), false, rows),
         body_empty: true
       });
     }
@@ -1227,6 +1343,7 @@ _PAGE_FINISH_JS = """(function() {
     extra.filelist_sourcedataid_n = Number(hit.filelist_sourcedataid_n || 0);
     extra.filelist_filetype = hit.filelist_filetype || {};
     extra.finish_af_present = !!hit.finish_af_present;
+    extra.finish_why = String(hit.finish_why || "");
     extra.body_empty = extra.body_type === "empty" && !extra.has_NewItem;
     return extra;
   });
@@ -1501,7 +1618,7 @@ def page_finish_skip_after_edit_match_is_fail(
         fn = int(filelist_n)
     except (TypeError, ValueError):
         return False
-    if gn <= 1 or gn != fn:
+    if gn < 1 or gn != fn:
         return False
     return str(via or "").strip() in {"", "skipped"}
 
@@ -1530,6 +1647,9 @@ def invoke_page_dxf_finish(
         "edit_quote_id": str(gate.get("edit_quote_id") or ""),
         "minted_id": str(gate.get("minted_id") or quote_id or ""),
         "edit_gate": str(gate.get("reason") or "missing_minted_id"),
+        "filelist_from_kendo": False,
+        "finish_af_present": False,
+        "finish_why": "wrong_document",
     }
     if not gate.get("ok"):
         return skipped
@@ -1559,6 +1679,7 @@ def invoke_page_dxf_finish(
             else {}
         ),
         "finish_af_present": bool(value.get("finish_af_present")),
+        "finish_why": str(value.get("finish_why") or ""),
         "status": int(value.get("status") or 0),
         "body_keys": [str(k) for k in (value.get("body_keys") or [])],
         "body_type": str(value.get("body_type") or "empty"),

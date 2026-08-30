@@ -39,6 +39,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "80eb38af-3721-4049-a0d5-e4026d293a0c",  # 5003313-001 Finish on leftover 105918-1 (526d139) — leave it
         "31204345-6c91-4122-a859-09f7d7a3ea9f",  # P001545 page Finish empty body (9735155) — leave it
         "a9497a26-cba8-4ec9-a849-cb8bef81cbcc",  # BB2000-ASM skip-Finish (ad38881) — leave it
+        "a8e1b40e-54c2-4515-9f36-67843a1e5286",  # 11796-1 kendo FileList miss (4c79659) — leave it
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -56,6 +57,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "31204345",  # P001545 spent (page Finish empty body / GET 0) — do not remint
         "a9497a26",  # BB2000-ASM spent (skip-Finish / GET 0) — do not remint
         "cf8ec36e",  # EHB3112-1 spent (OnAddDXFClick empty body) — do not remint
+        "a8e1b40e",  # 11796-1 spent (kendo FileList / AF miss) — do not remint
     }
 )
 
@@ -93,8 +95,9 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "BB2000-ASM",  # spent ad38881 skip-Finish / GET 0 — do not PATCH or remint
         "EHB3112",  # spent 83c9200 OnAddDXFClick empty body — do not remint
         "EHB3112-1",  # spent 83c9200 QuoteNumber auto -1 — do not remint
-        # Next unused after empty-body vs 105918-1 is explained: 11796-1.
-        # Not EHB3112. Not EHB3112-1. No unused Time STEP ≤27MB.
+        "11796-1",  # spent 4c79659 kendo FileList / AF miss — do not remint
+        # Next unused after kendo FileList + AF is proven in tests: 11796-2
+        # only if still needed. Prefer the empty-body cause first.
     }
 )
 

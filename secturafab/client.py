@@ -1067,7 +1067,8 @@ class SecturaFabClient:
         #gridDXF IDList → t.List=0. Do not eval createAllParts as explode.
 
         Cookie-file HTTP POST 403s (live 7b723b9). Fail closed if chrome_dom
-        is missing, part_create_list_len<=1, or #gridDXFParts row count<=1.
+        is missing, List=0, or #gridDXFParts is missing/empty (34632-2).
+        Bind and Finish a 1-row Cad piece-part (live 11796-1).
         """
         from .cadimport_js import build_create_dxf_parts_fields, jquery_ajax_form
         from .chrome_cdp import (
@@ -1111,12 +1112,12 @@ class SecturaFabClient:
         kids = result.get("List") if isinstance(result.get("List"), list) else []
         kids = [r for r in kids if isinstance(r, dict)]
         n_list = int(result.get("list_len") or len(kids))
-        if n_list <= 1 and not replace_grid:
+        if n_list <= 0 and not replace_grid:
             # Live 1020249-1: pass-2 List=0 is not the 34632-2 first-pass miss.
             # Keep prior #gridDXFParts counts; do not bind an empty t.List.
             return {"List": kids}
         self._part_create_list_len = n_list
-        if self._part_create_list_len <= 1:
+        if self._part_create_list_len <= 0:
             self._grid_dxf_row_count = 0
             return {"List": kids}
         bind = bind_do_create_dxf_parts_success(
@@ -1224,16 +1225,19 @@ class SecturaFabClient:
                 "af_extracted=false — chrome_dom required, "
                 "not POSTing /Quote/AddItem_DXFFiles via cookie HTTP"
             )
+        from .website import empty_griddxf_explode_miss
+
         n_list = getattr(self, "_part_create_list_len", None)
-        if isinstance(n_list, (int, float)) and int(n_list) <= 1:
-            self._finish_via = "skipped"
-            return self._dxf_finish_capture({}, via="skipped")
         present = getattr(self, "_grid_present", None)
-        if isinstance(present, bool) and not present:
+        n_grid = getattr(self, "_grid_dxf_row_count", None)
+        if empty_griddxf_explode_miss(
+            grid_present=present if isinstance(present, bool) else None,
+            n_grid=n_grid if isinstance(n_grid, (int, float)) else None,
+            n_list=n_list if isinstance(n_list, (int, float)) else None,
+        ):
             self._finish_via = "skipped"
             return self._dxf_finish_capture({}, via="skipped")
-        n_grid = getattr(self, "_grid_dxf_row_count", None)
-        if isinstance(n_grid, (int, float)) and int(n_grid) <= 1:
+        if isinstance(present, bool) and not present:
             self._finish_via = "skipped"
             return self._dxf_finish_capture({}, via="skipped")
         if getattr(self, "_stale_grid", False) is True or grid_dxf_count_is_stale(
@@ -1307,6 +1311,7 @@ class SecturaFabClient:
                 else {}
             ),
             "finish_af_present": bool(result.get("finish_af_present")),
+            "finish_why": str(result.get("finish_why") or ""),
             "empty_body": (
                 str(result.get("body_type") or "") in {"empty", "str"}
                 and not result.get("has_NewItem")

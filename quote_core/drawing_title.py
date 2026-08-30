@@ -205,20 +205,28 @@ def extract_title_from_pdf_text(text: str, *, part_key: str | None = None) -> st
             i += 1
             continue
         if _TITLE_LABEL.match(s):
-            parts: list[str] = []
+            block: list[str] = []
             j = i + 1
-            while j < len(lines) and len(parts) < 2:
+            while j < len(lines) and len(block) < 4:
                 nxt = lines[j]
                 if _TITLE_LABEL.match(nxt) or _TITLE_STOP.match(nxt):
                     break
                 if _is_noise_line(nxt, key=key, key_norm=key_norm, allow_plate_title=True):
                     j += 1
                     continue
-                if is_nested_child_weldment_title(nxt) or is_child_part_title(nxt):
+                if is_nested_child_weldment_title(nxt):
                     j += 1
                     continue
-                parts.append(nxt)
+                block.append(nxt)
                 j += 1
+            has_parent = any(is_weldment_or_assembly_title(line) for line in block)
+            parts: list[str] = []
+            for nxt in block:
+                if has_parent and is_child_part_title(nxt):
+                    continue
+                parts.append(nxt)
+                if len(parts) >= 2:
+                    break
             if parts:
                 joined = " ".join(parts)
                 scored.append((_score_title_candidate(joined, from_title_block=True), joined))
@@ -234,12 +242,13 @@ def extract_title_from_pdf_text(text: str, *, part_key: str | None = None) -> st
         return None
 
     ranked = sorted(scored, key=lambda row: row[0], reverse=True)
+    has_parent = any(is_weldment_or_assembly_title(row[1]) for row in scored)
     ranked = [
         row
         for row in ranked
         if not is_drawing_boilerplate_title(row[1])
         and not is_nested_child_weldment_title(row[1])
-        and not is_child_part_title(row[1])
+        and not (has_parent and is_child_part_title(row[1]))
     ]
     if not ranked:
         return None
@@ -375,6 +384,15 @@ def is_drawing_boilerplate_title(text: str | None) -> bool:
     )
 
 
+def is_weldment_or_assembly_title(text: str | None) -> bool:
+    """True for a parent weldment/assembly noun — not a leftover plate."""
+    if not text or is_nested_child_weldment_title(text):
+        return False
+    return bool(
+        re.search(r"WELDMENT|ASSEMBLY|\bASSY\b|\bASM\b", str(text), re.I)
+    )
+
+
 def is_nested_child_weldment_title(text: str | None) -> bool:
     """True for nested GATE / REST / SUB-WELDMENT — never the quote header.
 
@@ -390,9 +408,11 @@ def is_nested_child_weldment_title(text: str | None) -> bool:
 
 
 def is_child_part_title(text: str | None) -> bool:
-    """True for a child plate noun — never the weldment quote header.
+    """True for a child plate noun when a parent weldment title exists.
 
     Live 1020249-1 stamped BASE PLATE, PEDESTAL. Header is PEDESTAL WELDMENT.
+    Live 11796-1 leftover: TURRET SIDE PLATE *is* the quote — callers must
+    keep ``*PLATE*`` when no parent weldment/assembly title is present.
     Do not reject product titles like ``PLATE - DOUBLER``.
     """
     if is_nested_child_weldment_title(text):

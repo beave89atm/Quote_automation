@@ -3712,6 +3712,51 @@ def test_bb2000_edit_match_skip_finish_fails_fixture():
         filelist_n=19,
         via=result["via"],
     )
+    assert page_finish_skip_after_edit_match_is_fail(
+        edit_quote_id=minted,
+        minted_id=minted,
+        grid_n=1,
+        filelist_n=1,
+        via="skipped",
+    ) is True
+
+
+def test_page_finish_js_posts_kendo_filelist_with_chrome_dom_af():
+    """OnAddDXFClick FileList must be EDIT kendo + chrome_dom AF (live 11796-1)."""
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+
+    js = _PAGE_FINISH_JS
+    assert "if (count < 1)" in js
+    assert "count <= 1" not in js
+    assert "opts.data.FileList = krows" in js
+    assert "attachChromeDomAf" in js
+    assert "hasChromeDomAf" in js
+    assert "fileListFromThisKendo" in js
+    assert "r.SourceDataID || r.ID || r.FileID || r.Name" in js
+    assert "finish_why" in js
+    assert "wrong_document" in js
+    assert "empty_dataSource" in js
+    assert "filelist_not_kendo" in js
+    assert "af_missing_on_document" in js
+    assert "af_not_in_request" in js
+    assert "orig.apply(this, arguments)" in js.split("attachChromeDomAf(opts.data)")[1]
+
+
+def test_empty_griddxf_explode_miss_n1_cad_is_not_34632():
+    """1 Cad on EDIT is Finishable; empty/missing #gridDXFParts is the 34632-2 miss."""
+    from secturafab.website import empty_griddxf_explode_miss
+
+    assert empty_griddxf_explode_miss(
+        grid_present=True, n_grid=1, n_list=1
+    ) is False
+    assert empty_griddxf_explode_miss(n_grid=1) is False
+    assert empty_griddxf_explode_miss(
+        grid_present=True, n_grid=0, n_list=0
+    ) is True
+    assert empty_griddxf_explode_miss(n_list=0) is True
+    assert empty_griddxf_explode_miss(
+        grid_present=False, n_grid=1, n_list=1
+    ) is True
 
 
 def test_onadddxfclick_without_setpartmode_is_not_success(tmp_path: Path):
@@ -4560,8 +4605,8 @@ def test_add_item_dxf_files_grid_finish_uses_grid_rows_not_python():
     assert real._finish_via == "skipped"
 
 
-def test_grid_dxf_row_count_le_1_skips_finish(tmp_path: Path):
-    """Fail-closed: #gridDXFParts not bound → no Finish, no remint."""
+def test_grid_dxf_row_count_empty_skips_finish(tmp_path: Path):
+    """Fail-closed: #gridDXFParts missing/empty → no Finish, no remint."""
     stp = tmp_path / "34994-1.STEP"
     stp.write_bytes(b"ISO")
     kids = [
@@ -4586,7 +4631,9 @@ def test_grid_dxf_row_count_le_1_skips_finish(tmp_path: Path):
     client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
     client._request_verification_fields = [("__RequestVerificationToken", "x")]
     client._af_source = "chrome_dom"
-    client._grid_dxf_row_count = 1
+    client._part_create_list_len = 0
+    client._grid_present = True
+    client._grid_dxf_row_count = 0
     client.cadimport_data.return_value = {"List": kids}
     client.get_item_add_view.return_value = {}
     client.quote_item_read.return_value = {"Data": [], "Total": 0}
@@ -4606,9 +4653,202 @@ def test_grid_dxf_row_count_le_1_skips_finish(tmp_path: Path):
         explode_sleep_s=0,
     )
     blob = " ".join(notes)
-    assert "grid_dxf_row_count=1" in blob
+    assert "grid_dxf_row_count=0" in blob
     assert "not Finishing" in blob
     client.add_item_dxf_files.assert_not_called()
+
+
+def test_n1_cad_on_edit_allows_finish(tmp_path: Path):
+    """Live 11796-1: 1 Cad row on EDIT is Finishable (not the 34632-2 miss)."""
+    stp = tmp_path / "11796-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "ID": "id-1",
+            "Name": "TURRET SIDE PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 1
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1796"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": ["NewItem"],
+        "body_type": "object",
+        "has_NewItem": True,
+        "has_QuoteItem": False,
+        "text_len": 8,
+        "empty_body": False,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_filelist_n": 1,
+        "grid_dxf_row_count": 1,
+        "filelist_from_kendo": True,
+        "filelist_sourcedataid_n": 1,
+        "filelist_filetype": {"Cad": 1, "Linear": 0, "Assembly": 0, "Component": 0, "blank": 0},
+        "finish_af_present": True,
+        "finish_why": "",
+        "request_keys": [
+            "ID",
+            "ItemID",
+            "customerMaterial",
+            "FileList",
+            "__RequestVerificationToken",
+        ],
+    }
+    client.quote_item_read.return_value = {
+        "Data": [{"ProductType": 100, "Name": "TURRET SIDE PLATE"}],
+        "Total": 1,
+    }
+    client.get_json.return_value = {
+        "ItemList": [{"ProductType": 100, "Name": "TURRET SIDE PLATE"}]
+    }
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1796",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="11796-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    client.add_item_dxf_files.assert_called()
+    assert "empty #gridDXFParts" not in blob
+    assert "List=0" not in blob
+    assert "filelist_from_kendo=true" in blob
+    assert "finish_af_present=true" in blob
+    assert "not the 105918-1 path" not in blob
+
+
+def test_filelist_not_kendo_or_af_missing_is_not_success(tmp_path: Path):
+    """Live 11796-1: filelist_from_kendo=false or finish_af_present=false is not gold."""
+    stp = tmp_path / "11796-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "Name": "TURRET SIDE PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+        }
+    ]
+
+    def _run(*, from_kendo: bool, af: bool, why: str) -> str:
+        client = MagicMock()
+        client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+        client._request_verification_fields = [("__RequestVerificationToken", "x")]
+        client._af_source = "chrome_dom"
+        client._part_create_list_len = 1
+        client._grid_present = True
+        client._grid_dxf_row_count = 1
+        client._stale_grid = False
+        client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1796"
+        client._edit_gate = ""
+        client._finish_via = "page_fn"
+        client._setpartmode_via = "page_fn"
+        client.create_dxf_parts.return_value = {"List": kids}
+        client.cadimport_data.return_value = {"List": kids}
+        client.get_item_add_view.return_value = {}
+        client.add_item_dxf_files.return_value = {
+            "status": 200,
+            "body_keys": [],
+            "body_type": "empty",
+            "has_NewItem": False,
+            "has_QuoteItem": False,
+            "text_len": 0,
+            "empty_body": True,
+            "via": "page_fn",
+            "finish_fn": "OnAddDXFClick",
+            "finish_filelist_n": 1,
+            "grid_dxf_row_count": 1,
+            "filelist_from_kendo": from_kendo,
+            "finish_af_present": af,
+            "finish_why": why,
+            "request_keys": ["ID", "ItemID", "customerMaterial", "FileList"],
+        }
+        client.quote_item_read.return_value = {"Data": [], "Total": 0}
+        client.get_json.return_value = {"ItemList": []}
+        with patch(
+            "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+            return_value={
+                "grid_present": True,
+                "cad": 1,
+                "linear": 0,
+                "assembly": 0,
+                "component": 0,
+                "set_count": 1,
+                "setpartmode_via": "page_fn",
+                "grid_dxf_row_count": 1,
+            },
+        ):
+            notes = SecturaFabPushService(client=client).finish_cad_files(
+                quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1796",
+                cad_files=[stp],
+                material="A36",
+                thickness="0.25",
+                qty=1,
+                takeoff={},
+                bom_rows=[],
+                library={},
+                extra_pdfs=None,
+                part_key="11796-1",
+                explode_polls=1,
+                explode_sleep_s=0,
+            )
+        return " ".join(notes)
+
+    missing_kendo = _run(from_kendo=False, af=True, why="filelist_not_kendo")
+    assert "filelist_from_kendo=false" in missing_kendo
+    assert "not the 105918-1 path" in missing_kendo
+    assert "not success" in missing_kendo
+    missing_af = _run(from_kendo=True, af=False, why="af_missing_on_document")
+    assert "finish_af_present=false" in missing_af
+    assert "not the 105918-1 path" in missing_af
+    assert "not success" in missing_af
 
 
 def test_part_create_empty_list_skips_bind_and_finish():
@@ -4658,6 +4898,99 @@ def test_part_create_empty_list_skips_bind_and_finish():
     assert client._grid_dxf_row_count == 0
     assert finish["via"] == "skipped"
     assert client._finish_via == "skipped"
+
+
+def test_part_create_list_1_binds_and_allows_finish():
+    """Live 11796-1: List=1 Cad binds and Finish is allowed."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    kid = {
+        "SourceDataID": "src-1",
+        "FileID": "file-1",
+        "Name": "TURRET SIDE PLATE",
+        "Qty": 1,
+        "ErrorStatus": 0,
+    }
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=boxcookie",
+    )
+    client._af_source = "chrome_dom"
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._stale_grid = False
+    client.session = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.post_part_create_from_quotes_tab",
+        return_value={
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["List"],
+            "list_len": 1,
+            "List": [kid],
+            "via": "chrome_dom_fetch",
+        },
+    ), patch(
+        "secturafab.chrome_cdp.bind_do_create_dxf_parts_success",
+        return_value={
+            "grid_present": True,
+            "has_gridDXFParts": True,
+            "grid_dxf_row_count": 1,
+            "bound": True,
+            "list_len": 1,
+            "opened_via": "but_dxf",
+            "stale_grid": False,
+        },
+    ) as bind_fn, patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={
+            "ok": True,
+            "edit_quote_id": "qid",
+            "minted_id": "qid",
+            "reason": "",
+        },
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_dxf_finish",
+        return_value={
+            "via": "page_fn",
+            "finish_fn": "OnAddDXFClick",
+            "reads_kendo": True,
+            "grid_dxf_row_count": 1,
+            "finish_filelist_n": 1,
+            "filelist_from_kendo": True,
+            "finish_af_present": True,
+            "finish_why": "",
+            "status": 200,
+            "body_keys": ["NewItem"],
+            "body_type": "object",
+            "has_NewItem": True,
+            "has_QuoteItem": False,
+            "text_len": 8,
+            "request_keys": ["ID", "FileList", "__RequestVerificationToken"],
+        },
+    ) as finish_fn:
+        result = client.create_dxf_parts(
+            ["src-1"], ["inch"], location="", quote_id="qid"
+        )
+        finish = client.add_item_dxf_files(quote_id="qid", file_list=[kid])
+    bind_fn.assert_called()
+    finish_fn.assert_called()
+    assert len(result["List"]) == 1
+    assert client._part_create_list_len == 1
+    assert client._grid_dxf_row_count == 1
+    assert finish["via"] == "page_fn"
+    assert finish["filelist_from_kendo"] is True
+    assert finish["finish_af_present"] is True
 
 
 def test_grid_present_false_skips_bind_and_finish():

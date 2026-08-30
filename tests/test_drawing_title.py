@@ -99,6 +99,27 @@ PEDESTAL WELDMENT
     assert "BASE PLATE" not in title.upper()
 
 
+def test_turret_side_plate_is_header_for_piece_part_pn():
+    """Live 11796-1 leftover: TURRET SIDE PLATE is the quote, not a child."""
+    from quote_core.drawing_title import is_child_part_title
+    from secturafab.item_desc import format_quote_header_description
+
+    assert is_child_part_title("TURRET SIDE PLATE")
+    text = """
+11796-1
+TITLE:
+TURRET SIDE PLATE
+SIZE
+B
+"""
+    title = extract_title_from_pdf_text(text, part_key="11796-1")
+    assert title is not None
+    assert title.upper() == "TURRET SIDE PLATE"
+    assert format_quote_header_description(title, part_key="11796-1") == (
+        "TURRET SIDE PLATE"
+    )
+
+
 def test_ehb3112_right_door_assembly_is_header():
     """Live EHB3112: header is RIGHT DOOR ASSEMBLY, never bare PN."""
     from secturafab.item_desc import format_quote_header_description

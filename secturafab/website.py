@@ -70,8 +70,11 @@ BB2000-ASM (ad38881): skip-Finish after EDIT+grid 19 is a fail —
 BB1010-ASM, not job-PN BB2000-ASM leaves). Leave a9497a26 /
 BB2000-ASM. Live EHB3112 (83c9200): OnAddDXFClick page_fn 4==4
 200 empty / GET 0 without SetPartMode notes. Leave cf8ec36e /
-EHB3112-1. Next unused after empty-body vs 105918-1 is explained:
-11796-1. Not EHB3112. Not EHB3112-1.
+EHB3112-1. Live 11796-1 (4c79659): 1 Cad on EDIT, SetPartMode +
+OnAddDXFClick, filelist_from_kendo=false / finish_af_present=false /
+200 empty. A 1-row Cad piece-part is not the 34632-2 empty #gridDXF
+miss. Leave a8e1b40e / 11796-1. Next unused after kendo FileList +
+AF is proven in tests: 11796-2 only if still needed.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -798,6 +801,37 @@ def is_raw_step_upload_row(
         return True
     if own_step and part_count > 1 and name_tok in {"", stem_tok, pk_tok}:
         return True
+    return False
+
+
+def empty_griddxf_explode_miss(
+    *,
+    grid_present: bool | None = None,
+    n_grid: int | None = None,
+    n_list: int | None = None,
+) -> bool:
+    """34632-2: Quotes-list empty ``#gridDXF`` / List=0 — not a 1-row Cad.
+
+    Live 11796-1: single-plate STEP explodes to List=1 / EDIT Cad=1.
+    That is Finishable. Abort only when the grid is missing or empty.
+    """
+    if grid_present is False:
+        return True
+
+    def _as_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    grd = _as_int(n_grid)
+    lst = _as_int(n_list)
+    if grd is not None:
+        return grd <= 0
+    if lst is not None:
+        return lst <= 0
     return False
 
 

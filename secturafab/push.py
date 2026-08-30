@@ -70,6 +70,7 @@ from .website import (
     is_tenant_guid,
     count_linear_product_type,
     cadimport_filelist_exploded,
+    empty_griddxf_explode_miss,
     cadimport_payload_preview,
     client_antiforgery_extracted,
     filelist_has_nested_titles,
@@ -1551,21 +1552,19 @@ class SecturaFabPushService:
         n_list = getattr(self.client, "_part_create_list_len", None)
         if isinstance(n_list, (int, float)):
             notes.append(f"part_create_list_len={int(n_list)}")
-            if int(n_list) <= 1:
-                notes.append(
-                    "WARNING: /part/create List len<=1 — not Finishing "
-                    "(empty #gridDXF createAllParts is the 34632-2 miss)"
-                )
-                return exploded, notes, True
         n_grid = getattr(self.client, "_grid_dxf_row_count", None)
         if isinstance(n_grid, (int, float)):
             notes.append(f"grid_dxf_row_count={int(n_grid)}")
-            if int(n_grid) <= 1:
-                notes.append(
-                    "WARNING: #gridDXFParts row count<=1 after "
-                    "DoCreateDXFParts success bind — not Finishing"
-                )
-                return exploded, notes, True
+        if empty_griddxf_explode_miss(
+            grid_present=present if isinstance(present, bool) else None,
+            n_grid=n_grid if isinstance(n_grid, (int, float)) else None,
+            n_list=n_list if isinstance(n_list, (int, float)) else None,
+        ):
+            notes.append(
+                "WARNING: empty #gridDXFParts / List=0 — not Finishing "
+                "(empty #gridDXF createAllParts is the 34632-2 miss)"
+            )
+            return exploded, notes, True
         if not cadimport_filelist_exploded(exploded, part_key=part_key):
             notes.append(
                 f"{CREATE_DXF_PARTS_FUNCTION} {CREATE_DXF_PARTS_PATH} had no "
@@ -1825,21 +1824,19 @@ class SecturaFabPushService:
                 n_list = getattr(self.client, "_part_create_list_len", None)
                 if isinstance(n_list, (int, float)):
                     notes.append(f"part_create_list_len={int(n_list)}")
-                    if int(n_list) <= 1:
-                        notes.append(
-                            "WARNING: /part/create List len<=1 — not Finishing "
-                            "(empty #gridDXF createAllParts is the 34632-2 miss)"
-                        )
-                        result = None
                 n_grid = getattr(self.client, "_grid_dxf_row_count", None)
                 if isinstance(n_grid, (int, float)):
                     notes.append(f"grid_dxf_row_count={int(n_grid)}")
-                    if int(n_grid) <= 1:
-                        notes.append(
-                            "WARNING: #gridDXFParts row count<=1 after "
-                            "DoCreateDXFParts success bind — not Finishing"
-                        )
-                        result = None
+                if empty_griddxf_explode_miss(
+                    grid_present=present if isinstance(present, bool) else None,
+                    n_grid=n_grid if isinstance(n_grid, (int, float)) else None,
+                    n_list=n_list if isinstance(n_list, (int, float)) else None,
+                ):
+                    notes.append(
+                        "WARNING: empty #gridDXFParts / List=0 — not Finishing "
+                        "(empty #gridDXF createAllParts is the 34632-2 miss)"
+                    )
+                    result = None
             except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError) as exc:
                 notes.append(
                     f"WARNING: {xhr.cite()} failed: "
@@ -1860,17 +1857,11 @@ class SecturaFabPushService:
                     )
                 )
                 return exploded or upload_rows, notes
-            if isinstance(n_list, (int, float)) and int(n_list) <= 1:
-                notes.extend(
-                    self._explode_capture_notes(
-                        explode_passes=1,
-                        rows=exploded or upload_rows,
-                        part_key=part_key,
-                        cad_filename=cad_filename,
-                    )
-                )
-                return exploded or upload_rows, notes
-            if isinstance(n_grid, (int, float)) and int(n_grid) <= 1:
+            if empty_griddxf_explode_miss(
+                grid_present=present if isinstance(present, bool) else None,
+                n_grid=n_grid if isinstance(n_grid, (int, float)) else None,
+                n_list=n_list if isinstance(n_list, (int, float)) else None,
+            ):
                 notes.extend(
                     self._explode_capture_notes(
                         explode_passes=1,
@@ -2479,21 +2470,20 @@ class SecturaFabPushService:
         if isinstance(n_list, (int, float)):
             if f"part_create_list_len={int(n_list)}" not in " ".join(notes):
                 notes.append(f"part_create_list_len={int(n_list)}")
-            if int(n_list) <= 1:
-                notes.append(
-                    "WARNING: /part/create List len<=1 — not Finishing"
-                )
-                return notes
         n_grid = getattr(self.client, "_grid_dxf_row_count", None)
         if isinstance(n_grid, (int, float)):
             if f"grid_dxf_row_count={int(n_grid)}" not in " ".join(notes):
                 notes.append(f"grid_dxf_row_count={int(n_grid)}")
-            if int(n_grid) <= 1:
-                notes.append(
-                    "WARNING: #gridDXFParts row count<=1 — not Finishing "
-                    "(page createAllParts/DoCreateDXFParts did not bind the grid)"
-                )
-                return notes
+        if empty_griddxf_explode_miss(
+            grid_present=present if isinstance(present, bool) else None,
+            n_grid=n_grid if isinstance(n_grid, (int, float)) else None,
+            n_list=n_list if isinstance(n_list, (int, float)) else None,
+        ):
+            notes.append(
+                "WARNING: empty #gridDXFParts / List=0 — not Finishing "
+                "(empty #gridDXF createAllParts is the 34632-2 miss)"
+            )
+            return notes
         edit_id = getattr(self.client, "_edit_quote_id", "")
         minted = str(quote_id or "")
         if isinstance(edit_id, str) or minted:
@@ -2536,11 +2526,18 @@ class SecturaFabPushService:
         kids = finish_filelist_kids(
             data_rows, part_key=part_key, cad_filename=cad_filename
         )
-        if len(kids) <= 1:
+        if not kids:
             notes.append(
-                f"WARNING: Finish FileList len={len(kids)} after dropping "
-                "Root/raw STEP — not Finishing (need exploded kids, not "
-                "1 raw STEP or Root-only)"
+                "WARNING: Finish FileList empty after dropping Root/raw STEP "
+                "— not Finishing"
+            )
+            return notes
+        if len(kids) == 1 and is_raw_step_upload_row(
+            kids[0], part_key=part_key, cad_filename=cad_filename
+        ):
+            notes.append(
+                "WARNING: Finish FileList is 1 raw STEP — not Finishing "
+                "(need exploded kids, not Root-only)"
             )
             return notes
         if filelist_is_assembly_only(
@@ -2625,9 +2622,16 @@ class SecturaFabPushService:
         ready = finish_filelist_kids(
             ready, part_key=part_key, cad_filename=cad_filename
         )
-        if len(ready) <= 1:
+        if not ready:
             notes.append(
-                f"WARNING: classified Finish FileList len={len(ready)} — "
+                "WARNING: classified Finish FileList empty — not Finishing"
+            )
+            return notes
+        if len(ready) == 1 and is_raw_step_upload_row(
+            ready[0], part_key=part_key, cad_filename=cad_filename
+        ):
+            notes.append(
+                "WARNING: classified Finish FileList is 1 raw STEP — "
                 "not Finishing"
             )
             return notes
@@ -2678,6 +2682,17 @@ class SecturaFabPushService:
                 notes.append(
                     "finish_af_present="
                     + ("true" if result.get("finish_af_present") else "false")
+                )
+            why = str(result.get("finish_why") or "")
+            if why:
+                notes.append(f"finish_why={why}")
+            if not result.get("filelist_from_kendo") or not result.get(
+                "finish_af_present"
+            ):
+                notes.append(
+                    "WARNING: OnAddDXFClick is not the 105918-1 path "
+                    f"({why or 'filelist_from_kendo=false or finish_af_present=false'}) "
+                    "— not success (live 11796-1)"
                 )
             req_keys = [str(k) for k in (result.get("request_keys") or [])]
             if req_keys:
@@ -3770,12 +3785,10 @@ class SecturaFabPushService:
                 or title_from_job_title(title, part_key=part_key)
                 or title_from_bom_family(bom_rows)
             )
-            if is_drawing_boilerplate_title(raw_title) or is_child_part_title(
+            if is_drawing_boilerplate_title(raw_title) or is_nested_child_weldment_title(
                 raw_title
             ):
-                if is_nested_child_weldment_title(raw_title) or is_child_part_title(
-                    raw_title
-                ):
+                if is_nested_child_weldment_title(raw_title):
                     notes.append(
                         "WARNING: rejected child GATE/REST/PLATE quote title "
                         "— use assembly weldment header"
@@ -3787,15 +3800,35 @@ class SecturaFabPushService:
                     or title_from_job_title(title, part_key=part_key)
                     or title_from_bom_family(bom_rows)
                 )
-                if is_child_part_title(raw_title):
-                    raw_title = None
+            elif is_child_part_title(raw_title):
+                fallback = (
+                    title_from_stp_takeoff(takeoff)
+                    or title_from_library_folder(library.get("folder"), part_key=part_key)
+                    or title_from_library_folder(title, part_key=part_key)
+                    or title_from_job_title(title, part_key=part_key)
+                    or title_from_bom_family(bom_rows)
+                )
+                if fallback and not is_child_part_title(fallback) and re.search(
+                    r"WELDMENT|ASSEMBLY|\bASSY\b|\bASM\b",
+                    str(fallback),
+                    re.I,
+                ):
+                    notes.append(
+                        "WARNING: rejected child GATE/REST/PLATE quote title "
+                        "— use assembly weldment header"
+                    )
+                    raw_title = fallback
+            if is_nested_child_weldment_title(raw_title) or is_drawing_boilerplate_title(
+                raw_title
+            ):
+                raw_title = None
             assembly_description = format_assembly_description(part_key, raw_title)
             header_noun = bool(
                 bom_rows
                 or (
                     raw_title
                     and re.search(
-                        r"WELDMENT|ASSEMBLY|\bASSY\b|\bASM\b",
+                        r"WELDMENT|ASSEMBLY|\bASSY\b|\bASM\b|\bPLATE\b",
                         str(raw_title),
                         re.I,
                     )

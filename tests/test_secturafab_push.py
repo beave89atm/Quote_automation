@@ -179,6 +179,7 @@ def test_allocate_quote_number_is_bare_part():
     assert service.allocate_quote_number("EHB3112") == "EHB3112"
     assert service.allocate_quote_number("EHB3112-1") == "EHB3112"
     assert service.allocate_quote_number("105918-1") == "105918-1"
+    assert service.allocate_quote_number("11796-1") == "11796-1"
 
 
 def test_resolve_part_key_is_p001545_not_weldment_title():
