@@ -2669,6 +2669,12 @@ class SecturaFabPushService:
             sid_n = result.get("filelist_sourcedataid_n")
             if sid_n is not None:
                 notes.append(f"filelist_sourcedataid_n={int(sid_n)}")
+            id_n = result.get("filelist_id_n")
+            if id_n is not None:
+                notes.append(f"filelist_id_n={int(id_n)}")
+            fileid_n = result.get("filelist_fileid_n")
+            if fileid_n is not None:
+                notes.append(f"filelist_fileid_n={int(fileid_n)}")
             ft = result.get("filelist_filetype")
             if isinstance(ft, dict) and ft:
                 notes.append(
@@ -2686,7 +2692,18 @@ class SecturaFabPushService:
             why = str(result.get("finish_why") or "")
             if why:
                 notes.append(f"finish_why={why}")
-            if not result.get("filelist_from_kendo") or not result.get(
+            sid_n_int = 0
+            try:
+                sid_n_int = int(result.get("filelist_sourcedataid_n") or 0)
+            except (TypeError, ValueError):
+                sid_n_int = 0
+            if sid_n_int <= 0:
+                notes.append(
+                    "WARNING: OnAddDXFClick is not the 105918-1 path "
+                    f"({why or 'filelist_missing_ids'}) "
+                    "— not success (live 11796-2)"
+                )
+            elif not result.get("filelist_from_kendo") or not result.get(
                 "finish_af_present"
             ):
                 notes.append(

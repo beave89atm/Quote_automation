@@ -44,10 +44,12 @@ notes were missing (105918-1 had them, then GET 66). Set FileType
 on this EDIT #gridDXFParts before OnAddDXFClick. Leave cf8ec36e /
 EHB3112-1. Live 11796-1 (4c79659): SetPartMode + OnAddDXFClick on
 1 Cad, filelist_from_kendo=false / finish_af_present=false /
-200 empty. FileList must be this EDIT kendo dataSource with
-chrome_dom AF on that document. n=1 Cad is Finishable. Leave
-a8e1b40e / 11796-1. Next unused after kendo FileList + AF is
-proven in tests: 11796-2 only if still needed.
+200 empty. Live 11796-2 (619ebf2): AF on the request, FileList
+SourceDataID=0 / filelist_sourcedataid_n=0. FileList must be
+``#gridDXFParts.dataSource.data()`` with ID/FileID copied onto
+empty SourceDataID. Leave a8e1b40e / 11796-1 and 8de920f0 /
+11796-2. Do not mint another unused STEP until the ID copy
+fixture exists.
 
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys / counts only.
@@ -1026,17 +1028,43 @@ _BIND_DO_CREATE_SUCCESS_JS = """(function(spec) {
 
 
 _PAGE_FINISH_JS = """(function() {
-  function gridRows() {
+  function sidEmpty(v) {
+    return v == null || v === "" || v === 0 || v === "0";
+  }
+  function fillRowSid(r) {
+    if (!r || typeof r !== "object") return r;
+    if (!sidEmpty(r.SourceDataID)) return r;
+    var id = r.ID;
+    if (sidEmpty(id)) id = r.FileID;
+    if (sidEmpty(id)) return r;
+    if (typeof r.set === "function") r.set("SourceDataID", id);
+    else r.SourceDataID = id;
+    return r;
+  }
+  function gridData() {
     try {
       var g = window.jQuery && jQuery("#gridDXFParts").data("kendoGrid");
       if (!g || !g.dataSource) return [];
       var raw = g.dataSource.data();
-      var json = (raw && raw.toJSON) ? raw.toJSON() : [];
-      return json.filter(function(r) {
-        return (r.ErrorStatus === 0 || r.ErrorStatus === "0")
-          && Number(r.Qty || r.Quantity || 0) > 0;
-      });
+      if ((!raw || !raw.length) && g.dataSource.view) raw = g.dataSource.view();
+      var out = [];
+      for (var i = 0; i < (raw ? raw.length : 0); i++) {
+        fillRowSid(raw[i]);
+        var json = (raw[i] && raw[i].toJSON) ? raw[i].toJSON() : raw[i];
+        if (json && typeof json === "object") {
+          fillRowSid(json);
+          out.push(json);
+        }
+      }
+      return out;
     } catch (e) { return []; }
+  }
+  function countField(fl, field) {
+    var n = 0;
+    for (var i = 0; i < (fl ? fl.length : 0); i++) {
+      if (!sidEmpty((fl[i] || {})[field])) n++;
+    }
+    return n;
   }
   function summarize(status, data) {
     var isObj = data && typeof data === "object" && !Array.isArray(data);
@@ -1053,40 +1081,13 @@ _PAGE_FINISH_JS = """(function() {
       has_NewItem: !!(isObj && (data.NewItem || data.newItem)),
       has_QuoteItem: !!(isObj && (data.QuoteItem || data.quoteItem)),
       text_len: (typeof data === "string") ? data.length : (isObj ? 1 : 0),
-      grid_dxf_row_count: gridRows().length
+      grid_dxf_row_count: gridData().length
     };
   }
   function kendoGridPresent() {
     try {
       return !!(window.jQuery && jQuery("#gridDXFParts").data("kendoGrid"));
     } catch (e) { return false; }
-  }
-  function rowKey(r) {
-    r = r || {};
-    return String(r.SourceDataID || "")
-      || String(r.ID || "")
-      || String(r.FileID || "")
-      || String(r.Name || "");
-  }
-  function looksKendoFileList(fl) {
-    if (!Array.isArray(fl) || !fl.length) return false;
-    var r = fl[0] || {};
-    return !!(r.SourceDataID || r.ID || r.FileID || r.Name);
-  }
-  function fileListFromThisKendo(fl, krows) {
-    if (!Array.isArray(fl) || !fl.length || !krows.length) return false;
-    if (fl === krows) return true;
-    var keys = {};
-    for (var i = 0; i < krows.length; i++) {
-      var k = rowKey(krows[i]);
-      if (k) keys[k] = true;
-    }
-    var hits = 0;
-    for (var j = 0; j < fl.length; j++) {
-      var fk = rowKey(fl[j]);
-      if (fk && keys[fk]) hits++;
-    }
-    return hits === fl.length;
   }
   function hasAf(data) {
     if (!data || typeof data !== "object") return false;
@@ -1152,16 +1153,17 @@ _PAGE_FINISH_JS = """(function() {
       }
     } catch (e) {}
   }
-  function finishWhy(fromKendo, afOnDoc, afInReq, krows) {
+  function finishWhy(fromKendo, afOnDoc, afInReq, krows, sid_n, n) {
     var why = [];
     if (!kendoGridPresent()) why.push("wrong_document");
     if (kendoGridPresent() && !krows.length) why.push("empty_dataSource");
-    if (!fromKendo) why.push("filelist_not_kendo");
+    if (n > 0 && sid_n === 0) why.push("filelist_missing_ids");
+    else if (!fromKendo) why.push("filelist_not_kendo");
     if (!afOnDoc) why.push("af_missing_on_document");
     else if (!afInReq) why.push("af_not_in_request");
     return why.join(",");
   }
-  var rows = gridRows();
+  var rows = gridData();
   var count = rows.length;
   if (count < 1) {
     var skipWhy = kendoGridPresent() ? "empty_dataSource" : "wrong_document";
@@ -1222,8 +1224,8 @@ _PAGE_FINISH_JS = """(function() {
         if (!opts.data || typeof opts.data !== "object" || Array.isArray(opts.data)) {
           opts.data = {};
         }
-        var krows = gridRows();
-        if (!looksKendoFileList(opts.data.FileList || opts.data.fileList) && krows.length) {
+        var krows = gridData();
+        if (krows.length) {
           opts.data.FileList = krows;
         }
         attachChromeDomAf(opts.data);
@@ -1232,11 +1234,12 @@ _PAGE_FINISH_JS = """(function() {
         var fl = d.FileList || d.fileList || [];
         var n = Array.isArray(fl) ? fl.length : 0;
         var req_keys = Object.keys(d);
-        var sid_n = 0;
+        var sid_n = countField(fl, "SourceDataID");
+        var id_n = countField(fl, "ID");
+        var fileid_n = countField(fl, "FileID");
         var ft = {Cad: 0, Linear: 0, Assembly: 0, Component: 0, blank: 0};
         for (var fi = 0; fi < n; fi++) {
           var r = fl[fi] || {};
-          if (r.SourceDataID) sid_n += 1;
           var cat = String(r.FileType || r.ItemType || r.Category || "");
           var mode = Number(r.PartMode);
           if (!cat) {
@@ -1247,7 +1250,8 @@ _PAGE_FINISH_JS = """(function() {
           if (ft[cat] !== undefined) ft[cat] += 1;
           else ft.blank += 1;
         }
-        var fromKendo = fileListFromThisKendo(fl, krows);
+        var fromThisDs = kendoGridPresent() && krows.length > 0 && fl === krows;
+        var fromKendo = fromThisDs && n > 0 && sid_n === n;
         var afOnDoc = hasChromeDomAf();
         var afInReq = hasAf(d);
         var cap = {
@@ -1255,9 +1259,11 @@ _PAGE_FINISH_JS = """(function() {
           request_keys: req_keys,
           filelist_from_kendo: fromKendo,
           filelist_sourcedataid_n: sid_n,
+          filelist_id_n: id_n,
+          filelist_fileid_n: fileid_n,
           filelist_filetype: ft,
           finish_af_present: afInReq,
-          finish_why: finishWhy(fromKendo, afOnDoc, afInReq, krows)
+          finish_why: finishWhy(fromKendo, afOnDoc, afInReq, krows, sid_n, n)
         };
         var ret = orig.apply(this, arguments);
         Promise.resolve(ret).then(function(data) {
@@ -1328,7 +1334,7 @@ _PAGE_FINISH_JS = """(function() {
         request_keys: [],
         filelist_from_kendo: false,
         finish_af_present: false,
-        finish_why: finishWhy(false, hasChromeDomAf(), false, rows),
+        finish_why: finishWhy(false, hasChromeDomAf(), false, rows, 0, 0),
         body_empty: true
       });
     }
@@ -1341,6 +1347,8 @@ _PAGE_FINISH_JS = """(function() {
     extra.request_keys = hit.request_keys || [];
     extra.filelist_from_kendo = !!hit.filelist_from_kendo;
     extra.filelist_sourcedataid_n = Number(hit.filelist_sourcedataid_n || 0);
+    extra.filelist_id_n = Number(hit.filelist_id_n || 0);
+    extra.filelist_fileid_n = Number(hit.filelist_fileid_n || 0);
     extra.filelist_filetype = hit.filelist_filetype || {};
     extra.finish_af_present = !!hit.finish_af_present;
     extra.finish_why = String(hit.finish_why || "");
@@ -1648,6 +1656,9 @@ def invoke_page_dxf_finish(
         "minted_id": str(gate.get("minted_id") or quote_id or ""),
         "edit_gate": str(gate.get("reason") or "missing_minted_id"),
         "filelist_from_kendo": False,
+        "filelist_sourcedataid_n": 0,
+        "filelist_id_n": 0,
+        "filelist_fileid_n": 0,
         "finish_af_present": False,
         "finish_why": "wrong_document",
     }
@@ -1673,6 +1684,8 @@ def invoke_page_dxf_finish(
         "request_keys": [str(k) for k in (value.get("request_keys") or [])],
         "filelist_from_kendo": bool(value.get("filelist_from_kendo")),
         "filelist_sourcedataid_n": int(value.get("filelist_sourcedataid_n") or 0),
+        "filelist_id_n": int(value.get("filelist_id_n") or 0),
+        "filelist_fileid_n": int(value.get("filelist_fileid_n") or 0),
         "filelist_filetype": (
             value.get("filelist_filetype")
             if isinstance(value.get("filelist_filetype"), dict)

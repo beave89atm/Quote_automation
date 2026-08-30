@@ -1305,6 +1305,8 @@ class SecturaFabClient:
             "request_keys": [str(k) for k in (result.get("request_keys") or [])],
             "filelist_from_kendo": bool(result.get("filelist_from_kendo")),
             "filelist_sourcedataid_n": int(result.get("filelist_sourcedataid_n") or 0),
+            "filelist_id_n": int(result.get("filelist_id_n") or 0),
+            "filelist_fileid_n": int(result.get("filelist_fileid_n") or 0),
             "filelist_filetype": (
                 result.get("filelist_filetype")
                 if isinstance(result.get("filelist_filetype"), dict)

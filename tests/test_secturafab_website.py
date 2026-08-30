@@ -3729,10 +3729,13 @@ def test_page_finish_js_posts_kendo_filelist_with_chrome_dom_af():
     assert "if (count < 1)" in js
     assert "count <= 1" not in js
     assert "opts.data.FileList = krows" in js
+    assert "dataSource.data()" in js
+    assert "r.SourceDataID = id" in js
+    assert "sidEmpty(r.SourceDataID)" in js
     assert "attachChromeDomAf" in js
     assert "hasChromeDomAf" in js
-    assert "fileListFromThisKendo" in js
-    assert "r.SourceDataID || r.ID || r.FileID || r.Name" in js
+    assert "sid_n === n" in js
+    assert "filelist_missing_ids" in js
     assert "finish_why" in js
     assert "wrong_document" in js
     assert "empty_dataSource" in js
@@ -3740,6 +3743,29 @@ def test_page_finish_js_posts_kendo_filelist_with_chrome_dom_af():
     assert "af_missing_on_document" in js
     assert "af_not_in_request" in js
     assert "orig.apply(this, arguments)" in js.split("attachChromeDomAf(opts.data)")[1]
+
+
+def test_kendo_row_id_copied_to_sourcedataid():
+    """Live 11796-2: kendo {ID: x, FileType: Cad} posts SourceDataID x."""
+    from secturafab.website import kendo_filelist_for_finish
+
+    cap = kendo_filelist_for_finish(
+        [{"ID": "x", "FileType": "Cad"}],
+        from_datasource=True,
+    )
+    assert cap["FileList"][0]["SourceDataID"] == "x"
+    assert cap["filelist_from_kendo"] is True
+    assert cap["filelist_sourcedataid_n"] == 1
+    assert cap["filelist_id_n"] == 1
+    assert cap["finish_filelist_n"] == 1
+    assert cap["finish_why"] == ""
+    zero = kendo_filelist_for_finish(
+        [{"SourceDataID": 0, "FileType": "Cad"}],
+        from_datasource=True,
+    )
+    assert zero["filelist_from_kendo"] is False
+    assert zero["filelist_sourcedataid_n"] == 0
+    assert zero["finish_why"] == "filelist_missing_ids"
 
 
 def test_empty_griddxf_explode_miss_n1_cad_is_not_34632():
@@ -4777,7 +4803,7 @@ def test_filelist_not_kendo_or_af_missing_is_not_success(tmp_path: Path):
         }
     ]
 
-    def _run(*, from_kendo: bool, af: bool, why: str) -> str:
+    def _run(*, from_kendo: bool, af: bool, why: str, sid_n: int = 0) -> str:
         client = MagicMock()
         client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
         client._request_verification_fields = [("__RequestVerificationToken", "x")]
@@ -4806,6 +4832,9 @@ def test_filelist_not_kendo_or_af_missing_is_not_success(tmp_path: Path):
             "finish_filelist_n": 1,
             "grid_dxf_row_count": 1,
             "filelist_from_kendo": from_kendo,
+            "filelist_sourcedataid_n": sid_n,
+            "filelist_id_n": 1 if sid_n else 0,
+            "filelist_fileid_n": 0,
             "finish_af_present": af,
             "finish_why": why,
             "request_keys": ["ID", "ItemID", "customerMaterial", "FileList"],
@@ -4841,14 +4870,25 @@ def test_filelist_not_kendo_or_af_missing_is_not_success(tmp_path: Path):
             )
         return " ".join(notes)
 
-    missing_kendo = _run(from_kendo=False, af=True, why="filelist_not_kendo")
+    missing_kendo = _run(
+        from_kendo=False, af=True, why="filelist_not_kendo", sid_n=1
+    )
     assert "filelist_from_kendo=false" in missing_kendo
     assert "not the 105918-1 path" in missing_kendo
     assert "not success" in missing_kendo
-    missing_af = _run(from_kendo=True, af=False, why="af_missing_on_document")
+    missing_af = _run(
+        from_kendo=True, af=False, why="af_missing_on_document", sid_n=1
+    )
     assert "finish_af_present=false" in missing_af
     assert "not the 105918-1 path" in missing_af
     assert "not success" in missing_af
+    missing_ids = _run(
+        from_kendo=False, af=True, why="filelist_missing_ids", sid_n=0
+    )
+    assert "filelist_sourcedataid_n=0" in missing_ids
+    assert "filelist_missing_ids" in missing_ids
+    assert "not the 105918-1 path" in missing_ids
+    assert "not success" in missing_ids
 
 
 def test_part_create_empty_list_skips_bind_and_finish():

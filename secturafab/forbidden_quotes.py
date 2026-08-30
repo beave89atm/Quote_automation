@@ -40,6 +40,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "31204345-6c91-4122-a859-09f7d7a3ea9f",  # P001545 page Finish empty body (9735155) — leave it
         "a9497a26-cba8-4ec9-a849-cb8bef81cbcc",  # BB2000-ASM skip-Finish (ad38881) — leave it
         "a8e1b40e-54c2-4515-9f36-67843a1e5286",  # 11796-1 kendo FileList miss (4c79659) — leave it
+        "8de920f0-ea17-442d-898e-9a04367d91de",  # 11796-2 SourceDataID=0 (619ebf2) — leave it
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -58,6 +59,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "a9497a26",  # BB2000-ASM spent (skip-Finish / GET 0) — do not remint
         "cf8ec36e",  # EHB3112-1 spent (OnAddDXFClick empty body) — do not remint
         "a8e1b40e",  # 11796-1 spent (kendo FileList / AF miss) — do not remint
+        "8de920f0",  # 11796-2 spent (SourceDataID=0) — do not remint
     }
 )
 
@@ -96,8 +98,9 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "EHB3112",  # spent 83c9200 OnAddDXFClick empty body — do not remint
         "EHB3112-1",  # spent 83c9200 QuoteNumber auto -1 — do not remint
         "11796-1",  # spent 4c79659 kendo FileList / AF miss — do not remint
-        # Next unused after kendo FileList + AF is proven in tests: 11796-2
-        # only if still needed. Prefer the empty-body cause first.
+        "11796-2",  # spent 619ebf2 SourceDataID=0 / 200 empty — do not remint
+        # Do not mint another unused STEP until the ID→SourceDataID fixture
+        # exists. Not 11796-1. Not 11796-2.
     }
 )
 

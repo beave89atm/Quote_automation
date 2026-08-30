@@ -72,9 +72,12 @@ BB2000-ASM. Live EHB3112 (83c9200): OnAddDXFClick page_fn 4==4
 200 empty / GET 0 without SetPartMode notes. Leave cf8ec36e /
 EHB3112-1. Live 11796-1 (4c79659): 1 Cad on EDIT, SetPartMode +
 OnAddDXFClick, filelist_from_kendo=false / finish_af_present=false /
-200 empty. A 1-row Cad piece-part is not the 34632-2 empty #gridDXF
-miss. Leave a8e1b40e / 11796-1. Next unused after kendo FileList +
-AF is proven in tests: 11796-2 only if still needed.
+200 empty. Live 11796-2 (619ebf2): AF on the request, FileList
+SourceDataID=0 / filelist_sourcedataid_n=0 / filelist_not_kendo /
+200 empty. FileList must be EDIT #gridDXFParts dataSource.data()
+with ID/FileID copied onto empty SourceDataID. Leave a8e1b40e /
+11796-1 and 8de920f0 / 11796-2. Do not mint another unused STEP
+until the kendo ID→SourceDataID fixture exists.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -833,6 +836,66 @@ def empty_griddxf_explode_miss(
     if lst is not None:
         return lst <= 0
     return False
+
+
+def sourcedataid_empty(value: Any) -> bool:
+    """True when SourceDataID/ID/FileID is missing — including 0 (live 11796-2)."""
+    if value is None:
+        return True
+    text = str(value).strip()
+    return text in {"", "0"}
+
+
+def fill_kendo_filelist_sourcedataid(
+    rows: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Copy ID or FileID onto empty SourceDataID (105918-1 kendo rows)."""
+    filled: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        copy = dict(row)
+        if sourcedataid_empty(copy.get("SourceDataID")):
+            for key in ("ID", "FileID"):
+                val = copy.get(key)
+                if not sourcedataid_empty(val):
+                    copy["SourceDataID"] = val
+                    break
+        filled.append(copy)
+    return filled
+
+
+def kendo_filelist_for_finish(
+    rows: list[dict[str, Any]] | None,
+    *,
+    from_datasource: bool,
+) -> dict[str, Any]:
+    """EDIT kendo FileList for OnAddDXFClick — SID required after ID copy.
+
+    Live 11796-2: row had FileType Cad but SourceDataID=0. filelist_from_kendo
+    is true only when rows came from that dataSource and every row has a
+    non-empty SourceDataID after the copy.
+    """
+    filled = fill_kendo_filelist_sourcedataid(rows)
+    n = len(filled)
+    sid_n = sum(1 for r in filled if not sourcedataid_empty(r.get("SourceDataID")))
+    id_n = sum(1 for r in filled if not sourcedataid_empty(r.get("ID")))
+    fileid_n = sum(1 for r in filled if not sourcedataid_empty(r.get("FileID")))
+    from_kendo = bool(from_datasource and n > 0 and sid_n == n)
+    why = ""
+    if n > 0 and sid_n == 0:
+        why = "filelist_missing_ids"
+    elif not from_kendo:
+        why = "filelist_not_kendo"
+    return {
+        "FileList": filled,
+        "filelist_from_kendo": from_kendo,
+        "filelist_sourcedataid_n": sid_n,
+        "filelist_id_n": id_n,
+        "filelist_fileid_n": fileid_n,
+        "finish_filelist_n": n,
+        "finish_why": why,
+    }
 
 
 def cadimport_filelist_exploded(
