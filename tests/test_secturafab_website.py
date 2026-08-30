@@ -1900,25 +1900,28 @@ def test_cookie_name_presence_never_includes_values():
     assert diff["chrome_only"] == ["__RequestVerificationToken"]
 
 
-def test_post_part_create_from_quotes_tab_uses_page_fetch():
-    """DoCreateDXFParts is fetch() in the Quotes document, not cookie HTTP."""
+def test_post_part_create_from_quotes_tab_uses_page_jquery_ajax():
+    """DoCreateDXFParts is page $.ajax on EDIT, not chrome fetch / cookie HTTP."""
     from secturafab.chrome_cdp import post_part_create_from_quotes_tab
 
     token = "af-secret-token-value"
     tab = {
-        "title": "Quotes",
-        "url": "https://www.secturafab.com/Quote",
-        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+        "title": "*Quote-FA Assembly",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid-minted",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
         "type": "page",
     }
 
     def _call(ws_url, method, params=None, **kwargs):
         assert method == "Runtime.evaluate"
         expr = str((params or {}).get("expression") or "")
-        assert "fetch(" in expr
+        assert "jQuery.ajax" in expr or "$.ajax" in expr
         assert "/part/create" in expr
-        assert "credentials" in expr
-        assert "same-origin" in expr
+        assert 'dataType:"json"' in expr or "dataType: \"json\"" in expr
+        assert "antiForgeryTokens" in expr
+        assert "InternalData" not in expr
+        assert "Unfold" not in expr
+        assert "fetch(" not in expr
         assert params.get("awaitPromise") is True
         assert params.get("returnByValue") is True
         assert token not in expr
@@ -1932,23 +1935,82 @@ def test_post_part_create_from_quotes_tab_uses_page_fetch():
                     "body_keys": ["List"],
                     "list_len": 2,
                     "List": [{"SourceDataID": "a"}, {"SourceDataID": "b"}],
+                    "via": "jquery_ajax",
                 }
             }
         }
 
-    with patch("secturafab.chrome_cdp.quotes_tab", return_value=tab), patch(
-        "secturafab.chrome_cdp.cdp_call", side_effect=_call
-    ):
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
         result = post_part_create_from_quotes_tab(
-            [("IDList[]", "src-1"), ("unitList[]", "inch")]
+            [("IDList[]", "src-1"), ("unitList[]", "inch"), ("Height", "400.5"), ("Width", "300.25")],
+            quote_id="qid-minted",
         )
     assert result["status"] == 200
-    assert result["via"] == "chrome_dom_fetch"
+    assert result["via"] == "jquery_ajax"
+    assert result["from_edit"] is True
     assert result["body_keys"] == ["List"]
     assert result["list_len"] == 2
     assert len(result["List"]) == 2
     blob = json.dumps(result)
     assert token not in blob
+
+
+def test_post_part_create_falls_back_to_fetch_when_jquery_missing():
+    """Page $.ajax is the explode XHR; fetch only if jQuery is missing."""
+    from secturafab.chrome_cdp import post_part_create_from_quotes_tab
+
+    tab = {
+        "title": "Quotes",
+        "url": "https://www.secturafab.com/Quote",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+        "type": "page",
+    }
+    calls: list[str] = []
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        calls.append(expr)
+        if "jQuery.ajax" in expr or "$.ajax" in expr:
+            return {
+                "result": {
+                    "value": {
+                        "via": "jquery_ajax_missing",
+                        "has_antiforgery": False,
+                        "af_names": [],
+                        "status": 0,
+                        "body_keys": [],
+                        "list_len": 0,
+                        "List": None,
+                    }
+                }
+            }
+        assert "fetch(" in expr
+        assert "/part/create" in expr
+        return {
+            "result": {
+                "value": {
+                    "has_antiforgery": True,
+                    "af_names": ["__RequestVerificationToken"],
+                    "status": 200,
+                    "body_keys": ["List"],
+                    "list_len": 1,
+                    "List": [{"SourceDataID": "a"}],
+                }
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quotes_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.quote_edit_tab", return_value=None
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        result = post_part_create_from_quotes_tab(
+            [("IDList[]", "src-1"), ("unitList[]", "inch")]
+        )
+    assert any("jQuery.ajax" in e or "$.ajax" in e for e in calls)
+    assert any("fetch(" in e for e in calls)
+    assert result["via"] == "chrome_dom_fetch"
+    assert result["list_len"] == 1
 
 
 def test_add_item_dxf_files_quotes_tab_fetch_not_cookie_http():
@@ -5914,6 +5976,149 @@ def test_weldment_explode_internaldata_empty_skips_finish(tmp_path: Path):
     assert "tlist_name_root_n=1" in blob
     assert "tlist_name_jobpn_n=2" in blob
     assert "tlist_name_other_n=0" in blob
+    assert "InternalData present-and-empty" in blob
+    assert "not Finishing" in blob
+    assert "not success" in blob
+    client.add_item_dxf_files.assert_not_called()
+
+
+def test_img_hw_copy_empty_internaldata_is_not_success(tmp_path: Path):
+    """Live FA Assembly 0d4b8a46: #img H/W nonzero + AF + IDList[] still skip."""
+    stp = tmp_path / "FA-Assembly.STEP"
+    stp.write_bytes(b"ISO")
+
+    def kid(name: str, *, image: str) -> dict[str, Any]:
+        return {
+            "SourceDataID": f"src-{name}",
+            "FileID": f"file-{name}",
+            "ID": f"id-{name}",
+            "Name": name,
+            "PartName": name,
+            "FileName": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "CadType": 0,
+            "Stock_X": 8.0,
+            "Stock_Y": 4.0,
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "FileType": "Cad",
+            "InternalData": "",
+            "ImageString": image,
+        }
+
+    kids = [
+        kid("Root", image=""),
+        kid("PLATE-A", image="iVBORw0KGgo"),
+        kid("PLATE-B", image="iVBORw0KGgo"),
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 3
+    client._part_create_internaldata_empty = True
+    client._part_create_imagestring_empty = True
+    client._part_create_payload = {
+        "n": 3,
+        "internaldata_empty_n": 3,
+        "imagestring_empty_n": 1,
+        "internaldata_nonempty_n": 0,
+        "imagestring_nonempty_n": 2,
+    }
+    client._part_create_form_shape = {
+        "idlist_shape": "IDList[]",
+        "height_type": "float",
+        "width_type": "float",
+        "height_zero": False,
+        "width_zero": False,
+    }
+    client._part_create_img_hw = True
+    client._part_create_via = "chrome_dom_fetch"
+    client._part_create_from_edit = False
+    client._part_create_af_present = True
+    client._part_create_name_tokens = {
+        "tlist_name_root_n": 1,
+        "tlist_name_jobpn_n": 0,
+        "tlist_name_other_n": 2,
+        "tlist_partname_root_n": 1,
+        "tlist_partname_jobpn_n": 0,
+        "tlist_partname_other_n": 2,
+        "tlist_filename_root_n": 1,
+        "tlist_filename_jobpn_n": 0,
+        "tlist_filename_other_n": 2,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 3
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0d4b"
+    client._edit_gate = ""
+    client._finish_via = "skipped"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 3,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 3,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 3,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "FileType",
+                "ID",
+                "InternalData",
+                "ImageString",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0d4b",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="FA-ASM",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    ok = (
+        "not success" not in blob
+        and "not Finishing" not in blob
+        and "internaldata_empty_n=3/3" not in blob
+    )
+    assert ok is False
+    assert "part_create_img_hw=true" in blob
+    assert "part_create_height_zero=false" in blob
+    assert "part_create_width_zero=false" in blob
+    assert "part_create_height_type=float" in blob
+    assert "part_create_width_type=float" in blob
+    assert "part_create_idlist_shape=IDList[]" in blob
+    assert "part_create_af_present=true" in blob
+    assert "internaldata_empty_n=3/3" in blob
+    assert "internaldata_nonempty_n=0" in blob
+    assert "tlist_name_root_n=1" in blob
+    assert "tlist_name_jobpn_n=0" in blob
+    assert "tlist_name_other_n=2" in blob
+    assert "#img copy is not success" in blob
     assert "InternalData present-and-empty" in blob
     assert "not Finishing" in blob
     assert "not success" in blob

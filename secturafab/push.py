@@ -147,6 +147,14 @@ def _log_part_create_payload_empty(notes: list[str], client: Any) -> None:
     img_hw = getattr(client, "_part_create_img_hw", None)
     if isinstance(img_hw, bool):
         notes.append("part_create_img_hw=" + ("true" if img_hw else "false"))
+    via = getattr(client, "_part_create_via", None)
+    if isinstance(via, str) and via:
+        notes.append(f"part_create_via={via}")
+    from_edit = getattr(client, "_part_create_from_edit", None)
+    if isinstance(from_edit, bool):
+        notes.append(
+            "part_create_from_edit=" + ("true" if from_edit else "false")
+        )
     af = getattr(client, "_part_create_af_present", None)
     if isinstance(af, bool):
         notes.append("part_create_af_present=" + ("true" if af else "false"))
@@ -2755,9 +2763,9 @@ class SecturaFabPushService:
             notes.append(
                 "WARNING: Cad FileList InternalData present-and-empty — "
                 "required for Cad Finish (OnAddDXFClick copies InternalData; "
-                "ImageString is preview). Live SC0600 weldment 143/143 empty "
-                "after explode; not Finishing; do not invent InternalData; "
-                "not success"
+                "ImageString is preview). Live SC0600 143/143 and FA Assembly "
+                "0d4b8a46 28/28 empty after explode; #img copy is not success; "
+                "not Finishing; do not invent InternalData; not success"
             )
             return notes
         result = self.client.add_item_dxf_files(

@@ -82,6 +82,7 @@ class SecturaFabClient:
         self._website_cookie_override: str = ""
         self._quotes_tab_live: bool = False
         self._part_create_via: str = ""
+        self._part_create_from_edit: bool | None = None
         self._finish_via: str = ""
         self._grid_dxf_row_count: int | None = None
         self._part_create_list_len: int | None = None
@@ -1067,12 +1068,17 @@ class SecturaFabClient:
         quote_number: str | None = None,
         replace_grid: bool = True,
     ) -> Any:
-        """Explode via fetch /part/create (Upload IDs), then bind t.List.
+        """Explode via page $.ajax /part/create (Upload IDs), then bind t.List.
+
+        Live FA Assembly 0d4b8a46: fetch + #img H/W + AF + IDList[] still
+        returned InternalData empty 28/28. Named miss is fetch on the Quotes
+        list vs page DoCreateDXFParts $.ajax (Referer + XHR). Do not invent
+        InternalData. Do not eval createAllParts as explode (34632-2 List=0).
 
         Live 34137-2: CDP fetch with Upload file IDs → t.List>1. fetch does
         not run DoCreateDXFParts success, so #gridDXFParts stays empty.
         Live 34632-2: page createAllParts on the Quotes list posts empty
-        #gridDXF IDList → t.List=0. Do not eval createAllParts as explode.
+        #gridDXF IDList → t.List=0.
 
         Cookie-file HTTP POST 403s (live 7b723b9). Fail closed if chrome_dom
         is missing, List=0, or #gridDXFParts is missing/empty (34632-2).
@@ -1121,8 +1127,9 @@ class SecturaFabClient:
         self._part_create_form_shape = part_create_form_shape(
             form, height=height, width=width
         )
-        result = post_part_create_from_quotes_tab(form)
-        self._part_create_via = "chrome_dom_fetch"
+        result = post_part_create_from_quotes_tab(form, quote_id=quote_id)
+        self._part_create_via = str(result.get("via") or "chrome_dom_fetch")
+        self._part_create_from_edit = bool(result.get("from_edit"))
         self._part_create_af_present = bool(result.get("has_antiforgery"))
         if not result.get("has_antiforgery"):
             raise SecturaFabApiError(

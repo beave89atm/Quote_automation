@@ -12,7 +12,16 @@ Live 34632-2: evaluating ``createAllParts`` / ``DoCreateDXFParts`` on the
 Quotes **list** (no CAD Files dialog) posts an empty ``#gridDXF`` IDList →
 t.List=0. HTTP Upload does not fill the browser grid.
 
-Explode = proven fetch with Upload IDs (list or EDIT, same origin).
+Live FA Assembly ``0d4b8a46`` on cba5fa2: fetch + ``#img`` H/W copied
+(nonzero float) + AF + ``IDList[]`` → n=28 InternalData empty 28/28.
+``#img`` is not the miss. Remaining delta vs page ``DoCreateDXFParts``:
+``fetch`` on the Quotes **list** (Referer ``/Quote``) vs page ``$.ajax``
+(XHR) on ``/Quote/EDIT/{id}``. Content-Type, Accept, traditional
+``IDList[]``, and form keys already match. Explode POST is page
+``$.ajax`` ``/part/create`` with Upload IDs (not ``createAllParts``).
+Fetch is fallback when jQuery is missing. Leave ``0d4b8a46``.
+
+Explode = page ``$.ajax`` with Upload IDs (EDIT when minted id matches).
 Bind/Finish = QuoteOrderEdit ``/Quote/EDIT/{id}`` (title ``*Quote-`` /
 ``Quote-``). Live a64509d: Quotes list has no ``#gridDXFParts``; cookie
 GetItem_AddView is markup without kendo; Chrome EDIT after ``#but_dxf`` /
@@ -64,8 +73,10 @@ only; skip Finish. Do not invent unfold/geometry or FileType
 "CAD"/100. Bundle hunt: no fill after DoCreateDXFParts t.List;
 form keys match the UI (no missing key). Live SC0600 weldment
 n=143 InternalData empty 143/143 after fetch Height/Width=0.
-InternalData required for Cad Finish. Leave b8a62e76 / SC0600.
-Do not remint. Do not mint.
+Live FA Assembly ``0d4b8a46``: ``#img`` copy + AF + ``IDList[]`` still
+empty 28/28. Named miss is fetch vs page ``$.ajax`` (Referer + XHR).
+InternalData required for Cad Finish. Leave b8a62e76 / SC0600 and
+0d4b8a46 / FA Assembly. Do not remint. Do not mint.
 
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys /
@@ -846,18 +857,185 @@ def cad_dialog_img_hw(*, base: str | None = None) -> dict[str, Any]:
     }
 
 
+# QuoteOrderEdit DoCreateDXFParts (cited): $.ajax({type:"POST",url:"/part/create",
+# dataType:"json",data:{Location,IDList,unitList,OtherFileIDList,Height,Width}}).
+# Live FA Assembly 0d4b8a46: chrome fetch already sent those keys + #img H/W +
+# AF + IDList[] and InternalData was still empty 28/28. fetch ran on the
+# Quotes list (Referer /Quote) and skipped kendo.antiForgeryTokens ajax merge.
+# Copy the page XHR. Do not invent InternalData / Height / Width / extra keys.
+_DO_CREATE_DXF_PARTS_AJAX_JS = """(function(spec) {
+  function empty(via) {
+    return {
+      has_antiforgery: false,
+      af_names: [],
+      status: 0,
+      body_keys: [],
+      body_type: "empty",
+      has_NewItem: false,
+      has_QuoteItem: false,
+      list_len: 0,
+      text_len: 0,
+      List: null,
+      via: via || "jquery_ajax_missing"
+    };
+  }
+  if (!(window.jQuery && jQuery.ajax)) {
+    return Promise.resolve(empty("jquery_ajax_missing"));
+  }
+  var data = {};
+  var arrays = {};
+  (spec.form || []).forEach(function(pair) {
+    var k = String(pair[0] || "");
+    var v = pair[1];
+    if (!k) return;
+    if (k.slice(-2) === "[]") {
+      var name = k.slice(0, -2);
+      if (!arrays[name]) arrays[name] = [];
+      arrays[name].push(v);
+    } else if (k === "Height" || k === "Width") {
+      var n = Number(v);
+      data[k] = (v === "" || v == null || isNaN(n)) ? v : n;
+    } else {
+      data[k] = v;
+    }
+  });
+  Object.keys(arrays).forEach(function(k) { data[k] = arrays[k]; });
+  var af_names = [];
+  if (window.kendo && typeof kendo.antiForgeryTokens === "function") {
+    var tokens = kendo.antiForgeryTokens() || {};
+    Object.keys(tokens).forEach(function(k) {
+      data[k] = tokens[k];
+      if (k.indexOf("__RequestVerificationToken") === 0 || k === "afToken") {
+        af_names.push(k);
+      }
+    });
+  }
+  if (!af_names.length) {
+    document.querySelectorAll('input[name^="__RequestVerificationToken"]').forEach(function(el) {
+      if (el.name && el.value) {
+        data[el.name] = el.value;
+        af_names.push(el.name);
+      }
+    });
+    var af = document.querySelector('input[name="afToken"]');
+    if (af && af.value) {
+      data[af.name] = af.value;
+      af_names.push(af.name);
+    }
+  }
+  if (!af_names.length) {
+    return Promise.resolve(empty("jquery_ajax"));
+  }
+  return new Promise(function(resolve) {
+    jQuery.ajax({
+      type: "POST",
+      url: "/part/create",
+      dataType: "json",
+      data: data,
+      success: function(t, _status, xhr) {
+        var isObj = t && typeof t === "object" && !Array.isArray(t);
+        var list = (isObj && Array.isArray(t.List)) ? t.List : null;
+        resolve({
+          has_antiforgery: true,
+          af_names: af_names,
+          status: (xhr && xhr.status) || 200,
+          body_keys: isObj ? Object.keys(t) : [],
+          body_type: isObj ? "object" : (t == null ? "empty" : typeof t),
+          has_NewItem: !!(isObj && (t.NewItem || t.newItem)),
+          has_QuoteItem: !!(isObj && (t.QuoteItem || t.quoteItem)),
+          list_len: list ? list.length : 0,
+          text_len: 0,
+          List: list,
+          via: "jquery_ajax"
+        });
+      },
+      error: function(xhr) {
+        resolve({
+          has_antiforgery: true,
+          af_names: af_names,
+          status: (xhr && xhr.status) || 0,
+          body_keys: [],
+          body_type: "empty",
+          has_NewItem: false,
+          has_QuoteItem: false,
+          list_len: 0,
+          text_len: 0,
+          List: null,
+          via: "jquery_ajax"
+        });
+      }
+    });
+  });
+})"""
+
+
+def _part_create_tab(
+    *,
+    base: str | None = None,
+    quote_id: str | None = None,
+) -> dict[str, Any] | None:
+    """EDIT for the minted id (page DoCreateDXFParts Referer), else Quotes list."""
+    qid = str(quote_id or "").strip()
+    if qid:
+        edit = quote_edit_tab(base, quote_id=qid)
+        if isinstance(edit, dict) and edit.get("webSocketDebuggerUrl"):
+            return edit
+    return quotes_tab(base)
+
+
 def post_part_create_from_quotes_tab(
     form_pairs: list[tuple[str, str]],
     *,
     base: str | None = None,
+    quote_id: str | None = None,
 ) -> dict[str, Any]:
-    """DoCreateDXFParts via fetch in the live Quotes document. Never logs AF."""
-    return quotes_tab_fetch(
+    """DoCreateDXFParts via page $.ajax on EDIT when the minted tab matches.
+
+    Live FA Assembly 0d4b8a46: fetch + #img H/W was not the InternalData miss.
+    Named delta is fetch on the Quotes list vs page $.ajax (Referer + XHR).
+    Same six form keys. Never invent InternalData. Never logs AF.
+    """
+    tab = _part_create_tab(base=base, quote_id=quote_id)
+    from_edit = bool(tab and _is_quote_edit_tab(tab))
+    spec = {"form": [[str(k), str(v)] for k, v in (form_pairs or []) if k]}
+    expression = (
+        _DO_CREATE_DXF_PARTS_AJAX_JS + "(" + json.dumps(spec, separators=(",", ":")) + ")"
+    )
+    value = _cdp_evaluate_promise(
+        expression,
+        timeout=_PART_CREATE_TIMEOUT_S,
+        base=base,
+        tab=tab,
+        fallback=False,
+    )
+    if isinstance(value, dict) and str(value.get("via") or "") == "jquery_ajax":
+        out: dict[str, Any] = {
+            "has_antiforgery": bool(value.get("has_antiforgery")),
+            "af_names": [
+                str(n)
+                for n in (value.get("af_names") or [])
+                if str(n).startswith("__RequestVerificationToken") or str(n) == "afToken"
+            ],
+            "status": int(value.get("status") or 0),
+            "body_keys": [str(k) for k in (value.get("body_keys") or [])],
+            "body_type": str(value.get("body_type") or "empty"),
+            "has_NewItem": bool(value.get("has_NewItem")),
+            "has_QuoteItem": bool(value.get("has_QuoteItem")),
+            "list_len": int(value.get("list_len") or 0),
+            "text_len": int(value.get("text_len") or 0),
+            "via": "jquery_ajax",
+            "from_edit": from_edit,
+            "List": value.get("List") if isinstance(value.get("List"), list) else None,
+        }
+        return out
+    fetched = quotes_tab_fetch(
         path="/part/create",
         form_pairs=form_pairs,
         include_list=True,
         base=base,
     )
+    fetched["from_edit"] = from_edit
+    return fetched
 
 
 def post_add_item_dxf_files_from_quotes_tab(
