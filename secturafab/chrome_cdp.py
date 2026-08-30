@@ -62,9 +62,10 @@ Cad AddItem_DXFFiles no-ops when InternalData/ImageString are
 empty. Copy those keys through if present; log emptiness bools
 only; skip Finish. Do not invent unfold/geometry or FileType
 "CAD"/100. Bundle hunt: no fill after DoCreateDXFParts t.List;
-form keys match the UI (no missing key). Leftover n=1 plate
-t.List InternalData stays empty — next unused weldment STEP,
-do not mint. Leave 6a568912 / 10098-1. Do not remint.
+form keys match the UI (no missing key). Live SC0600 weldment
+n=143 InternalData empty 143/143 after fetch Height/Width=0.
+InternalData required for Cad Finish. Leave b8a62e76 / SC0600.
+Do not remint. Do not mint.
 
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys /
@@ -794,6 +795,55 @@ def quotes_tab_fetch(
     if include_list:
         out["List"] = value.get("List") if isinstance(value.get("List"), list) else None
     return out
+
+
+_CAD_DIALOG_IMG_HW_JS = """(function() {
+  var from_img = false;
+  var h = 0;
+  var w = 0;
+  try {
+    if (window.jQuery) {
+      var el = jQuery("#img");
+      if (el && el.length) {
+        from_img = true;
+        h = Number(el.height()) || 0;
+        w = Number(el.width()) || 0;
+      }
+    }
+  } catch (e) {}
+  return Promise.resolve({from_img: from_img, height: h, width: w});
+})()"""
+
+
+def cad_dialog_img_hw(*, base: str | None = None) -> dict[str, Any]:
+    """Copy #img height/width if present — UI DoCreateDXFParts e/o. Never invent."""
+    value = _cdp_evaluate_promise(
+        _CAD_DIALOG_IMG_HW_JS, base=base, fallback=True
+    )
+    if not isinstance(value, dict):
+        return {
+            "from_img": False,
+            "height": 0,
+            "width": 0,
+            "height_zero": True,
+            "width_zero": True,
+        }
+    try:
+        h = float(value.get("height") or 0)
+    except (TypeError, ValueError):
+        h = 0.0
+    try:
+        w = float(value.get("width") or 0)
+    except (TypeError, ValueError):
+        w = 0.0
+    from_img = bool(value.get("from_img"))
+    return {
+        "from_img": from_img,
+        "height": h,
+        "width": w,
+        "height_zero": h == 0,
+        "width_zero": w == 0,
+    }
 
 
 def post_part_create_from_quotes_tab(

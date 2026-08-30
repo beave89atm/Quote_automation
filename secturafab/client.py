@@ -87,6 +87,11 @@ class SecturaFabClient:
         self._part_create_list_len: int | None = None
         self._part_create_internaldata_empty: bool | None = None
         self._part_create_imagestring_empty: bool | None = None
+        self._part_create_payload: dict[str, Any] | None = None
+        self._part_create_name_tokens: dict[str, int] | None = None
+        self._part_create_form_shape: dict[str, Any] | None = None
+        self._part_create_img_hw: bool | None = None
+        self._part_create_af_present: bool | None = None
         self._grid_present: bool | None = None
         self._edit_quote_id: str = ""
         self._minted_id: str = ""
@@ -1073,9 +1078,14 @@ class SecturaFabClient:
         is missing, List=0, or #gridDXFParts is missing/empty (34632-2).
         Bind and Finish a 1-row Cad piece-part (live 11796-1).
         """
-        from .cadimport_js import build_create_dxf_parts_fields, jquery_ajax_form
+        from .cadimport_js import (
+            build_create_dxf_parts_fields,
+            jquery_ajax_form,
+            part_create_form_shape,
+        )
         from .chrome_cdp import (
             bind_do_create_dxf_parts_success,
+            cad_dialog_img_hw,
             chrome_quotes_live,
             post_part_create_from_quotes_tab,
         )
@@ -1087,6 +1097,16 @@ class SecturaFabClient:
                 "af_extracted=false — chrome_dom required, "
                 "not POSTing /part/create via cookie HTTP"
             )
+        img_hw = False
+        if chrome_quotes_live() and (not height or not width):
+            hw = cad_dialog_img_hw()
+            img_hw = bool(hw.get("from_img"))
+            if img_hw:
+                if not height:
+                    height = hw.get("height") or 0
+                if not width:
+                    width = hw.get("width") or 0
+        self._part_create_img_hw = img_hw
         fields = build_create_dxf_parts_fields(
             [
                 {"SourceDataID": sid, "Units": units}
@@ -1098,8 +1118,12 @@ class SecturaFabClient:
             width=width,
         )
         form = jquery_ajax_form(fields)
+        self._part_create_form_shape = part_create_form_shape(
+            form, height=height, width=width
+        )
         result = post_part_create_from_quotes_tab(form)
         self._part_create_via = "chrome_dom_fetch"
+        self._part_create_af_present = bool(result.get("has_antiforgery"))
         if not result.get("has_antiforgery"):
             raise SecturaFabApiError(
                 "af_extracted=false — chrome_dom required, not POSTing /part/create"
@@ -1115,13 +1139,20 @@ class SecturaFabClient:
         kids = result.get("List") if isinstance(result.get("List"), list) else []
         kids = [r for r in kids if isinstance(r, dict)]
         n_list = int(result.get("list_len") or len(kids))
-        from .website import part_create_list_payload_empty_bools
+        from .website import (
+            part_create_list_name_tokens,
+            part_create_list_payload_empty_bools,
+        )
 
         payload = part_create_list_payload_empty_bools(kids)
         if n_list <= 0 and not replace_grid:
             # Live 1020249-1: pass-2 List=0 is not the 34632-2 first-pass miss.
             # Keep prior #gridDXFParts counts; do not bind an empty t.List.
             return {"List": kids}
+        self._part_create_payload = payload
+        self._part_create_name_tokens = part_create_list_name_tokens(
+            kids, part_key=quote_number or ""
+        )
         self._part_create_list_len = n_list
         self._part_create_internaldata_empty = payload["internaldata_empty"]
         self._part_create_imagestring_empty = payload["imagestring_empty"]

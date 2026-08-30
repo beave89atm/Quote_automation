@@ -44,6 +44,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "d59318c8-9c39-43a2-aef6-cbd28203ee82",  # 107292-1 empty vs List,Result (ce5d2c1) — leave it
         "aab5b3e2-8771-47a2-b625-a3f379c5b0c2",  # 16629-1 leftover EAR empty FileType (76dd572) — leave it
         "6a568912-5b19-4bfd-9e11-d06d7c149746",  # 10098-1 leftover PIVOTING FOOT Cad payload empty (315cb19) — leave it
+        "b8a62e76-6439-46d3-b32e-d48de29f389d",  # SC0600 weldment explode InternalData empty (2c29618) — leave it
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -66,6 +67,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "d59318c8",  # 107292-1 spent (empty body vs List,Result) — do not remint
         "aab5b3e2",  # 16629-1 spent leftover EAR (CadType+Stock, no FileType) — do not remint
         "6a568912",  # 10098-1 spent leftover PIVOTING FOOT (InternalData/ImageString empty) — do not remint
+        "b8a62e76",  # SC0600 spent weldment explode InternalData empty 143/143 — do not remint
     }
 )
 
@@ -108,9 +110,9 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "107292-1",  # spent ce5d2c1 empty body vs List,Result — do not remint
         "16629-1",  # spent 76dd572 leftover EAR — CadType+Stock, no FileType — do not remint
         "10098-1",  # spent 315cb19 leftover PIVOTING FOOT — Cad InternalData/ImageString empty — do not remint
-        # Do not mint. Leftover n=1 plate /part/create t.List InternalData
-        # stays empty (no unfoldable DXF child, no later fill). Next live
-        # is an unused weldment STEP. Do not invent unfold or form keys.
+        "SC0600",  # spent 2c29618 weldment explode InternalData empty 143/143 — do not remint
+        # Do not mint. Fetch /part/create Height/Width=0 vs UI #img.
+        # InternalData required for Cad Finish. Do not invent payload.
     }
 )
 

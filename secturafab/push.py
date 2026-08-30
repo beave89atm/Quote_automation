@@ -107,7 +107,7 @@ CADIMPORT_EXPLODE_MAX_PASSES = 5
 
 
 def _log_part_create_payload_empty(notes: list[str], client: Any) -> None:
-    """Bind-time /part/create t.List emptiness bools — never values."""
+    """Bind-time /part/create t.List emptiness, form shape, name tokens."""
     idata = getattr(client, "_part_create_internaldata_empty", None)
     img = getattr(client, "_part_create_imagestring_empty", None)
     if isinstance(idata, bool):
@@ -118,6 +118,53 @@ def _log_part_create_payload_empty(notes: list[str], client: Any) -> None:
         line = "imagestring_empty=" + ("true" if img else "false")
         if line not in notes:
             notes.append(line)
+    payload = getattr(client, "_part_create_payload", None)
+    if isinstance(payload, dict):
+        n = int(payload.get("n") or 0)
+        if n:
+            notes.append(
+                f"internaldata_empty_n={int(payload.get('internaldata_empty_n') or 0)}/{n}"
+            )
+            notes.append(
+                f"imagestring_empty_n={int(payload.get('imagestring_empty_n') or 0)}/{n}"
+            )
+            notes.append(
+                f"internaldata_nonempty_n={int(payload.get('internaldata_nonempty_n') or 0)}"
+            )
+    shape = getattr(client, "_part_create_form_shape", None)
+    if isinstance(shape, dict) and shape:
+        notes.append(f"part_create_idlist_shape={shape.get('idlist_shape') or '?'}")
+        notes.append(f"part_create_height_type={shape.get('height_type') or '?'}")
+        notes.append(f"part_create_width_type={shape.get('width_type') or '?'}")
+        notes.append(
+            "part_create_height_zero="
+            + ("true" if shape.get("height_zero") else "false")
+        )
+        notes.append(
+            "part_create_width_zero="
+            + ("true" if shape.get("width_zero") else "false")
+        )
+    img_hw = getattr(client, "_part_create_img_hw", None)
+    if isinstance(img_hw, bool):
+        notes.append("part_create_img_hw=" + ("true" if img_hw else "false"))
+    af = getattr(client, "_part_create_af_present", None)
+    if isinstance(af, bool):
+        notes.append("part_create_af_present=" + ("true" if af else "false"))
+    tokens = getattr(client, "_part_create_name_tokens", None)
+    if isinstance(tokens, dict) and tokens:
+        for key in (
+            "tlist_name_root_n",
+            "tlist_name_jobpn_n",
+            "tlist_name_other_n",
+            "tlist_partname_root_n",
+            "tlist_partname_jobpn_n",
+            "tlist_partname_other_n",
+            "tlist_filename_root_n",
+            "tlist_filename_jobpn_n",
+            "tlist_filename_other_n",
+        ):
+            if key in tokens:
+                notes.append(f"{key}={int(tokens.get(key) or 0)}")
 
 
 def _part_create_fail_note(exc: BaseException) -> str:
@@ -2706,9 +2753,11 @@ class SecturaFabPushService:
                 + ("true" if bools["filelist_imagestring_empty"] else "false")
             )
             notes.append(
-                "WARNING: Cad FileList InternalData/ImageString empty — "
-                "AddItem_DXFFiles no-ops (live 10098-1 leftover PIVOTING FOOT); "
-                "not Finishing; do not invent unfold/geometry; not success"
+                "WARNING: Cad FileList InternalData present-and-empty — "
+                "required for Cad Finish (OnAddDXFClick copies InternalData; "
+                "ImageString is preview). Live SC0600 weldment 143/143 empty "
+                "after explode; not Finishing; do not invent InternalData; "
+                "not success"
             )
             return notes
         result = self.client.add_item_dxf_files(

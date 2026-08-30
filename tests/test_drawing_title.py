@@ -125,6 +125,39 @@ MATERIAL
     assert "A1011" not in title.upper()
 
 
+def test_lp_lift_cart_weldment_is_header_not_12ga():
+    """Live SC0600: LP Lift Cart - Weldment is the header (TITLE was Low Profile Lift Cart)."""
+    from quote_core.drawing_title import is_material_callout_title
+    from secturafab.item_desc import (
+        format_assembly_description,
+        format_quote_header_description,
+    )
+
+    stock = "12 GA PLATE A1011 CS TYPE B (38K)"
+    header = "LP Lift Cart - Weldment"
+    assert is_material_callout_title(stock)
+    assert not is_material_callout_title(header)
+    assert format_quote_header_description(stock, part_key="SC0600") == ""
+    assert format_quote_header_description(header, part_key="SC0600") == header
+    assert format_assembly_description("SC0600", header) == (
+        "SC0600 - LP Lift Cart - Weldment"
+    )
+    text = """
+SC0600
+TITLE:
+LP Lift Cart - Weldment
+Low Profile Lift Cart
+12 GA PLATE A1011 CS TYPE B (38K)
+MATERIAL
+12 GA
+"""
+    title = extract_title_from_pdf_text(text, part_key="SC0600")
+    assert title is not None
+    assert "WELDMENT" in title.upper()
+    assert "12 GA" not in title.upper()
+    assert "A1011" not in title.upper()
+
+
 def test_pivoting_foot_is_header_not_12ga():
     """Live 10098-1 leftover: PIVOTING FOOT is the header, not 12GA stock."""
     from quote_core.drawing_title import is_material_callout_title

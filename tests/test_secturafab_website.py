@@ -100,6 +100,15 @@ def test_docreate_dxf_parts_form_has_no_missing_ui_key():
     assert "InternalData" not in fields
     assert "ImageString" not in fields
     assert "Unfold" not in fields
+    from secturafab.cadimport_js import jquery_ajax_form, part_create_form_shape
+
+    form = jquery_ajax_form(fields)
+    shape = part_create_form_shape(form, height=0, width=0)
+    assert shape["idlist_shape"] == "IDList[]"
+    assert shape["height_type"] == "int"
+    assert shape["width_type"] == "int"
+    assert shape["height_zero"] is True
+    assert shape["width_zero"] is True
 
 
 def test_part_create_t_list_emptiness_bools_at_bind():
@@ -114,16 +123,32 @@ def test_part_create_t_list_emptiness_bools_at_bind():
         "Name": "PIVOTING FOOT",
     }
     bools = part_create_list_payload_empty_bools([leftover])
-    assert bools == {"internaldata_empty": True, "imagestring_empty": True}
-    assert "InternalData" not in str(bools.values())
+    assert bools["internaldata_empty"] is True
+    assert bools["imagestring_empty"] is True
+    assert bools["internaldata_empty_n"] == 1
+    assert bools["imagestring_empty_n"] == 1
+    assert bools["internaldata_nonempty_n"] == 0
     filled = part_create_list_payload_empty_bools(
         [{"InternalData": '[{"Type":"page"}]', "ImageString": "iVBORw0KGgo"}]
     )
-    assert filled == {"internaldata_empty": False, "imagestring_empty": False}
-    assert part_create_list_payload_empty_bools([]) == {
-        "internaldata_empty": True,
-        "imagestring_empty": True,
-    }
+    assert filled["internaldata_empty"] is False
+    assert filled["imagestring_empty"] is False
+    empty = part_create_list_payload_empty_bools([])
+    assert empty["internaldata_empty"] is True
+    assert empty["imagestring_empty"] is True
+    weldment = part_create_list_payload_empty_bools(
+        [
+            {"Name": "Root", "InternalData": "", "ImageString": ""},
+            {"Name": "SC0600", "InternalData": "", "ImageString": "iVBORw0KGgo"},
+            {"Name": "SC0600", "InternalData": "", "ImageString": "iVBORw0KGgo"},
+        ]
+    )
+    assert weldment["internaldata_empty"] is True
+    assert weldment["imagestring_empty"] is True
+    assert weldment["internaldata_empty_n"] == 3
+    assert weldment["imagestring_empty_n"] == 1
+    assert weldment["imagestring_nonempty_n"] == 2
+    assert weldment["internaldata_nonempty_n"] == 0
 
 
 def test_dxf_finish_payload_js_contract():
@@ -4049,6 +4074,25 @@ def test_cad_empty_internaldata_imagestring_skips_finish():
     assert "ImageString" not in invented
 
 
+def test_part_create_list_name_tokens_root_and_jobpn():
+    """Live SC0600: t.List Name/PartName/FileName are Root or job PN — counts only."""
+    from secturafab.website import part_create_list_name_tokens
+
+    rows = [
+        {"Name": "Root", "PartName": "Root", "FileName": "SC0600.STEP"},
+        {"Name": "SC0600", "PartName": "SC0600", "FileName": "SC0600"},
+        {"Name": "SC0600", "PartName": "SC0600", "FileName": "SC0600"},
+    ]
+    tok = part_create_list_name_tokens(rows, part_key="SC0600")
+    assert tok["tlist_name_root_n"] == 1
+    assert tok["tlist_name_jobpn_n"] == 2
+    assert tok["tlist_name_other_n"] == 0
+    assert tok["tlist_partname_root_n"] == 1
+    assert tok["tlist_partname_jobpn_n"] == 2
+    assert tok["tlist_filename_jobpn_n"] == 2
+    assert tok["tlist_filename_other_n"] == 1
+
+
 def test_filelist_errorstatus_qty_and_filetype_value_type():
     """Log posted ErrorStatus/Qty values and FileType value/type — do not invent."""
     from secturafab.chrome_cdp import _PAGE_FINISH_JS
@@ -5733,10 +5777,146 @@ def test_filetype_cad_empty_body_is_not_success(tmp_path: Path):
     assert "imagestring_empty=true" in blob
     assert "filelist_internaldata_empty=true" in blob
     assert "filelist_imagestring_empty=true" in blob
-    assert "InternalData/ImageString empty" in blob
+    assert "InternalData present-and-empty" in blob
     assert "not Finishing" in blob
     assert "not success" in blob
-    assert "unfold" in blob.lower()
+    client.add_item_dxf_files.assert_not_called()
+
+
+def test_weldment_explode_internaldata_empty_skips_finish(tmp_path: Path):
+    """Live SC0600: n>1 Cad kids, InternalData empty 100%, ImageString mostly on — skip."""
+    stp = tmp_path / "SC0600.STEP"
+    stp.write_bytes(b"ISO")
+
+    def kid(name: str, *, image: str) -> dict[str, Any]:
+        return {
+            "SourceDataID": f"src-{name}",
+            "FileID": f"file-{name}",
+            "ID": f"id-{name}",
+            "Name": name,
+            "PartName": name,
+            "FileName": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "CadType": 0,
+            "Stock_X": 11.0,
+            "Stock_Y": 6.25,
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "FileType": "Cad",
+            "InternalData": "",
+            "ImageString": image,
+        }
+
+    kids = [
+        kid("Root", image=""),
+        kid("SC0600", image="iVBORw0KGgo"),
+        kid("SC0600", image="iVBORw0KGgo"),
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 3
+    client._part_create_internaldata_empty = True
+    client._part_create_imagestring_empty = True
+    client._part_create_payload = {
+        "n": 3,
+        "internaldata_empty_n": 3,
+        "imagestring_empty_n": 1,
+        "internaldata_nonempty_n": 0,
+        "imagestring_nonempty_n": 2,
+    }
+    client._part_create_form_shape = {
+        "idlist_shape": "IDList[]",
+        "height_type": "int",
+        "width_type": "int",
+        "height_zero": True,
+        "width_zero": True,
+    }
+    client._part_create_img_hw = False
+    client._part_create_af_present = True
+    client._part_create_name_tokens = {
+        "tlist_name_root_n": 1,
+        "tlist_name_jobpn_n": 2,
+        "tlist_name_other_n": 0,
+        "tlist_partname_root_n": 1,
+        "tlist_partname_jobpn_n": 2,
+        "tlist_partname_other_n": 0,
+        "tlist_filename_root_n": 1,
+        "tlist_filename_jobpn_n": 2,
+        "tlist_filename_other_n": 0,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 3
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0600"
+    client._edit_gate = ""
+    client._finish_via = "skipped"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 3,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 3,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 3,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "FileType",
+                "ID",
+                "InternalData",
+                "ImageString",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0600",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.105",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="SC0600",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    ok = (
+        "not success" not in blob
+        and "not Finishing" not in blob
+        and "internaldata_empty_n=3/3" not in blob
+    )
+    assert ok is False
+    assert "internaldata_empty_n=3/3" in blob
+    assert "imagestring_empty_n=1/3" in blob
+    assert "internaldata_nonempty_n=0" in blob
+    assert "part_create_idlist_shape=IDList[]" in blob
+    assert "part_create_height_zero=true" in blob
+    assert "part_create_width_zero=true" in blob
+    assert "tlist_name_root_n=1" in blob
+    assert "tlist_name_jobpn_n=2" in blob
+    assert "tlist_name_other_n=0" in blob
+    assert "InternalData present-and-empty" in blob
+    assert "not Finishing" in blob
+    assert "not success" in blob
     client.add_item_dxf_files.assert_not_called()
 
 

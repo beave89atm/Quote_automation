@@ -112,9 +112,11 @@ t.List. GridDXFPart_OnChangeUpdate reads InternalData/ImageString;
 GET /part/PartImage is preview; GET /Quote/DXFInternal is Freestyle
 only. 0 Unfold*/GetDXF*. Form keys are Location, IDList, unitList,
 OtherFileIDList, Height, Width — no missing form key. Leftover n=1
-plate STEP t.List InternalData/ImageString stay empty (no unfoldable
-DXF child). Next live is an unused weldment STEP — do not mint.
-Leave 6a568912 / 10098-1. Do not remint.
+Live SC0600 weldment explode n=143 still InternalData empty 143/143
+(ImageString nonempty 141). Fetch posts Height/Width=0 vs UI #img
+numbers. InternalData is required for Cad Finish — keep skip. Do
+not invent InternalData/Height/Width. Leave b8a62e76 / SC0600 and
+6a568912 / 10098-1. Do not remint. Do not mint.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -1124,18 +1126,85 @@ def filelist_cad_payload_empty_bools(row: dict[str, Any] | None) -> dict[str, bo
 
 def part_create_list_payload_empty_bools(
     rows: list[dict[str, Any]] | None,
-) -> dict[str, bool]:
-    """Bind-time /part/create t.List emptiness bools — never values.
+) -> dict[str, Any]:
+    """Bind-time /part/create t.List emptiness — first-row bools plus counts.
 
-    QuoteOrderEdit pushes t.List as-is. Leftover n=1 plate InternalData
-    stays empty (no unfoldable DXF child, no later fill XHR).
+    Live SC0600: first-row ImageString can be empty while 141/143 are not.
+    Keep the two bools separate from ``*_empty_n``. Never log values.
+    InternalData is required for Cad Finish (OnAddDXFClick copies it;
+    cited bag has no ImageString). Nonempty ImageString is not enough.
     """
-    first = next((r for r in (rows or []) if isinstance(r, dict)), None)
+    kids = [r for r in (rows or []) if isinstance(r, dict)]
+    first = kids[0] if kids else None
     finish = filelist_cad_payload_empty_bools(first)
+    n = len(kids)
+    idata_empty_n = sum(
+        1 for r in kids if cad_payload_value_empty(r.get("InternalData"))
+    )
+    img_empty_n = sum(
+        1 for r in kids if cad_payload_value_empty(r.get("ImageString"))
+    )
     return {
         "internaldata_empty": finish["filelist_internaldata_empty"],
         "imagestring_empty": finish["filelist_imagestring_empty"],
+        "n": n,
+        "internaldata_empty_n": idata_empty_n,
+        "imagestring_empty_n": img_empty_n,
+        "internaldata_key_n": sum(1 for r in kids if "InternalData" in r),
+        "imagestring_key_n": sum(1 for r in kids if "ImageString" in r),
+        "internaldata_nonempty_n": n - idata_empty_n,
+        "imagestring_nonempty_n": n - img_empty_n,
     }
+
+
+def _tlist_name_token(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _tlist_token_is_root(value: str) -> bool:
+    return value.casefold() == "root"
+
+
+def _tlist_token_is_jobpn(value: str, part_key: str) -> bool:
+    pn = str(part_key or "").strip()
+    if not pn or not value:
+        return False
+    return value.casefold() == pn.casefold()
+
+
+def part_create_list_name_tokens(
+    rows: list[dict[str, Any]] | None,
+    *,
+    part_key: str = "",
+) -> dict[str, int]:
+    """t.List Name/PartName/FileName Root vs job-PN counts — not other nouns."""
+    kids = [r for r in (rows or []) if isinstance(r, dict)]
+    out = {
+        "tlist_name_root_n": 0,
+        "tlist_name_jobpn_n": 0,
+        "tlist_name_other_n": 0,
+        "tlist_partname_root_n": 0,
+        "tlist_partname_jobpn_n": 0,
+        "tlist_partname_other_n": 0,
+        "tlist_filename_root_n": 0,
+        "tlist_filename_jobpn_n": 0,
+        "tlist_filename_other_n": 0,
+    }
+    fields = (
+        ("Name", "tlist_name"),
+        ("PartName", "tlist_partname"),
+        ("FileName", "tlist_filename"),
+    )
+    for row in kids:
+        for src, prefix in fields:
+            tok = _tlist_name_token(row.get(src))
+            if _tlist_token_is_root(tok):
+                out[f"{prefix}_root_n"] += 1
+            elif _tlist_token_is_jobpn(tok, part_key):
+                out[f"{prefix}_jobpn_n"] += 1
+            elif tok:
+                out[f"{prefix}_other_n"] += 1
+    return out
 
 
 def is_cad_filelist_row(row: dict[str, Any] | None) -> bool:
