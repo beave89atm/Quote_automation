@@ -176,6 +176,9 @@ def test_allocate_quote_number_is_bare_part():
     assert service.allocate_quote_number("PN 21678-1") == "21678-1"
     assert service.allocate_quote_number("P001545") == "P001545"
     assert service.allocate_quote_number("BB2000-ASM") == "BB2000-ASM"
+    assert service.allocate_quote_number("EHB3112") == "EHB3112"
+    assert service.allocate_quote_number("EHB3112-1") == "EHB3112"
+    assert service.allocate_quote_number("105918-1") == "105918-1"
 
 
 def test_resolve_part_key_is_p001545_not_weldment_title():
@@ -188,6 +191,18 @@ def test_resolve_part_key_is_p001545_not_weldment_title():
         library={"folder": r"C:\drawings\Profrac\POWER FRAME WELDMENT-1"},
     )
     assert key == "P001545"
+
+
+def test_resolve_part_key_ehb3112_strips_auto_dash_one():
+    """Live EHB3112: drawing/file EHB3112-1 must not become QuoteNumber."""
+    from secturafab.push import _resolve_part_key
+
+    key = _resolve_part_key(
+        title="EHB3112-1 RIGHT DOOR ASSEMBLY",
+        pdf_filename="EHB3112-1.STEP",
+        library={"part_key": "EHB3112-1"},
+    )
+    assert key == "EHB3112"
 
 
 def test_repush_always_creates_new_quote_and_imports_cad():

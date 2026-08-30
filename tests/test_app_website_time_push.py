@@ -856,6 +856,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "5003313-001" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "P001545" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "BB2000-ASM" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "EHB3112" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "EHB3112-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert is_forbidden_quote_id("280f4dcb-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("75b3a938-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("e2cc0a7d-1111-2222-3333-444444444444")
@@ -863,6 +865,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("80eb38af-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("31204345-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("a9497a26-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("cf8ec36e-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("a484ba3b-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("66a0271f-1111-2222-3333-444444444444")
     for qid in (

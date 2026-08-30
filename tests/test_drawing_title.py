@@ -99,6 +99,27 @@ PEDESTAL WELDMENT
     assert "BASE PLATE" not in title.upper()
 
 
+def test_ehb3112_right_door_assembly_is_header():
+    """Live EHB3112: header is RIGHT DOOR ASSEMBLY, never bare PN."""
+    from secturafab.item_desc import format_quote_header_description
+
+    text = """
+EHB3112-1
+DWG NO
+TITLE
+RIGHT DOOR ASSEMBLY
+SIZE
+D
+"""
+    title = extract_title_from_pdf_text(text, part_key="EHB3112")
+    assert title is not None
+    assert title.upper() == "RIGHT DOOR ASSEMBLY"
+    assert format_quote_header_description(title, part_key="EHB3112") == (
+        "RIGHT DOOR ASSEMBLY"
+    )
+    assert format_quote_header_description("EHB3112", part_key="EHB3112") == ""
+
+
 def test_bb2000_dwg_no_is_not_quote_header():
     """Live BB2000-ASM: PN + DWG. NO. is drawing-block junk, not the header."""
     from secturafab.item_desc import (

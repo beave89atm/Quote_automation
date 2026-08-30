@@ -38,8 +38,12 @@ the literal ``#gridDXFParts`` in the page-fn source. 23b96a9 invoked
 matches and the grid is present, invoke that fn even if its source
 does not contain ``#gridDXFParts``. Log ``finish_fn`` and whether
 the source reads the kendo dataSource. Do not skip. Leave
-a9497a26 / BB2000-ASM. Next unused after the page fn fires:
-EHB3112. Not BB2000-ASM. Not 11796-1.
+a9497a26 / BB2000-ASM. Live EHB3112 (83c9200): OnAddDXFClick fired
+(4==4) but HTTP 200 empty / GET 0 — SetPartMode / grid_classify
+notes were missing (105918-1 had them, then GET 66). Set FileType
+on this EDIT #gridDXFParts before OnAddDXFClick. Leave cf8ec36e /
+EHB3112-1. Next unused after the empty-body cause is captured:
+11796-1. Not EHB3112. Not 11796-1 until then.
 
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys / counts only.
@@ -1104,20 +1108,54 @@ _PAGE_FINISH_JS = """(function() {
         var n = Array.isArray(fl) ? fl.length : 0;
         var req_keys = (d && typeof d === "object" && !Array.isArray(d))
           ? Object.keys(d) : [];
+        var gridJson = gridRows();
+        var sidGrid = {};
+        for (var gi = 0; gi < gridJson.length; gi++) {
+          var gs = String(gridJson[gi].SourceDataID || "");
+          if (gs) sidGrid[gs] = true;
+        }
+        var sid_n = 0, kendo_hits = 0;
+        var ft = {Cad: 0, Linear: 0, Assembly: 0, Component: 0, blank: 0};
+        for (var fi = 0; fi < n; fi++) {
+          var r = fl[fi] || {};
+          if (r.SourceDataID) {
+            sid_n += 1;
+            if (sidGrid[String(r.SourceDataID)]) kendo_hits += 1;
+          }
+          var cat = String(r.FileType || r.ItemType || r.Category || "");
+          var mode = Number(r.PartMode);
+          if (!cat) {
+            if (mode === 0) cat = "Cad";
+            else if (mode === 1) cat = "Linear";
+            else if (r.IsAssembly || Number(r.ProductType) === 300) cat = "Assembly";
+          }
+          if (ft[cat] !== undefined) ft[cat] += 1;
+          else ft.blank += 1;
+        }
+        var af_present = false;
+        for (var ak = 0; ak < req_keys.length; ak++) {
+          var kn = String(req_keys[ak] || "");
+          if (kn.indexOf("RequestVerification") >= 0
+              || kn.toLowerCase() === "aftoken") {
+            af_present = true;
+          }
+        }
+        var cap = {
+          finish_filelist_n: n,
+          request_keys: req_keys,
+          filelist_from_kendo: n > 0 && kendo_hits === n,
+          filelist_sourcedataid_n: sid_n,
+          filelist_filetype: ft,
+          finish_af_present: af_present
+        };
         Promise.resolve(ret).then(function(data) {
-          resolve({
-            status: 200,
-            data: data,
-            finish_filelist_n: n,
-            request_keys: req_keys
-          });
+          cap.status = 200;
+          cap.data = data;
+          resolve(cap);
         }).catch(function(xhr) {
-          resolve({
-            status: (xhr && xhr.status) || 0,
-            data: (xhr && xhr.responseJSON) || null,
-            finish_filelist_n: n,
-            request_keys: req_keys
-          });
+          cap.status = (xhr && xhr.status) || 0;
+          cap.data = (xhr && xhr.responseJSON) || null;
+          resolve(cap);
         });
       }
       return ret;
@@ -1185,6 +1223,10 @@ _PAGE_FINISH_JS = """(function() {
     extra.grid_dxf_row_count = count;
     extra.finish_filelist_n = Number(hit.finish_filelist_n || 0);
     extra.request_keys = hit.request_keys || [];
+    extra.filelist_from_kendo = !!hit.filelist_from_kendo;
+    extra.filelist_sourcedataid_n = Number(hit.filelist_sourcedataid_n || 0);
+    extra.filelist_filetype = hit.filelist_filetype || {};
+    extra.finish_af_present = !!hit.finish_af_present;
     extra.body_empty = extra.body_type === "empty" && !extra.has_NewItem;
     return extra;
   });
@@ -1509,6 +1551,14 @@ def invoke_page_dxf_finish(
         "grid_dxf_row_count": int(value.get("grid_dxf_row_count") or 0),
         "finish_filelist_n": int(value.get("finish_filelist_n") or 0),
         "request_keys": [str(k) for k in (value.get("request_keys") or [])],
+        "filelist_from_kendo": bool(value.get("filelist_from_kendo")),
+        "filelist_sourcedataid_n": int(value.get("filelist_sourcedataid_n") or 0),
+        "filelist_filetype": (
+            value.get("filelist_filetype")
+            if isinstance(value.get("filelist_filetype"), dict)
+            else {}
+        ),
+        "finish_af_present": bool(value.get("finish_af_present")),
         "status": int(value.get("status") or 0),
         "body_keys": [str(k) for k in (value.get("body_keys") or [])],
         "body_type": str(value.get("body_type") or "empty"),
@@ -1622,6 +1672,17 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     }
     return null;
   }
+  function wantFromName(row) {
+    var name = String(row.Name || row.Description || row.FileName || "");
+    if (!name || /^root$/i.test(name.trim())) return null;
+    if (/weldment|assembly|\bassy\b|\basm\b/i.test(name)) {
+      return {Category: "Assembly", PartMode: 2};
+    }
+    if (/\b(tube|channel|pipe|angle|beam|hss|bars?)\b/i.test(name)) {
+      return {Category: "Linear", PartMode: 1, Machine: "Saw"};
+    }
+    return {Category: "Cad", PartMode: 0, Machine: "Laser"};
+  }
   function postMode(id, mode, fnName) {
     return new Promise(function(resolve) {
       if (!id || id === "00000000-0000-0000-0000-000000000000") {
@@ -1648,50 +1709,70 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       resolve("");
     });
   }
-  var g = grid();
-  if (!g || !g.dataSource) {
-    return Promise.resolve({
-      grid_present: false,
-      cad: 0, linear: 0, assembly: 0, component: 0,
-      set_count: 0, setpartmode_via: "", grid_dxf_row_count: 0
+  function applyAll() {
+    var g = grid();
+    if (!g || !g.dataSource) {
+      return Promise.resolve({
+        grid_present: false,
+        cad: 0, linear: 0, assembly: 0, component: 0,
+        set_count: 0, setpartmode_via: "", grid_dxf_row_count: 0
+      });
+    }
+    var wants = (spec && spec.rows) || [];
+    var data = g.dataSource.data();
+    var chain = Promise.resolve("");
+    var setCount = 0;
+    var via = "";
+    var fnName = findSetFn();
+    for (var i = 0; i < data.length; i++) {
+      (function(row) {
+        var want = matchWant(row, wants) || wantFromName(row);
+        if (!want) return;
+        if (!applyFields(row, want)) return;
+        setCount += 1;
+        var id = String(row.ID || row.ItemID || want.ID || "");
+        chain = chain.then(function(prev) {
+          if (prev && !via) via = prev;
+          return postMode(id, Number(want.PartMode), fnName);
+        });
+      })(data[i]);
+    }
+    return chain.then(function(last) {
+      if (last && !via) via = last;
+      var counts = {Cad: 0, Linear: 0, Assembly: 0, Component: 0};
+      var fresh = g.dataSource.data();
+      for (var j = 0; j < fresh.length; j++) {
+        counts[catOf(fresh[j])] += 1;
+      }
+      return {
+        grid_present: true,
+        cad: counts.Cad,
+        linear: counts.Linear,
+        assembly: counts.Assembly,
+        component: counts.Component,
+        set_count: setCount,
+        setpartmode_via: via || (fnName ? "page_fn" : (setCount ? "grid_set" : "")),
+        grid_dxf_row_count: fresh.length
+      };
     });
   }
-  var wants = (spec && spec.rows) || [];
-  var data = g.dataSource.data();
-  var chain = Promise.resolve("");
-  var setCount = 0;
-  var via = "";
-  var fnName = findSetFn();
-  for (var i = 0; i < data.length; i++) {
-    (function(row) {
-      var want = matchWant(row, wants);
-      if (!want) return;
-      if (!applyFields(row, want)) return;
-      setCount += 1;
-      var id = String(row.ID || row.ItemID || want.ID || "");
-      chain = chain.then(function(prev) {
-        if (prev && !via) via = prev;
-        return postMode(id, Number(want.PartMode), fnName);
-      });
-    })(data[i]);
-  }
-  return chain.then(function(last) {
-    if (last && !via) via = last;
-    var counts = {Cad: 0, Linear: 0, Assembly: 0, Component: 0};
-    var fresh = g.dataSource.data();
-    for (var j = 0; j < fresh.length; j++) {
-      counts[catOf(fresh[j])] += 1;
-    }
-    return {
-      grid_present: true,
-      cad: counts.Cad,
-      linear: counts.Linear,
-      assembly: counts.Assembly,
-      component: counts.Component,
-      set_count: setCount,
-      setpartmode_via: via || (fnName ? "page_fn" : ""),
-      grid_dxf_row_count: fresh.length
-    };
+  if (grid() && grid().dataSource) return applyAll();
+  var btn = document.querySelector("#but_dxf");
+  if (btn) { try { btn.click(); } catch (e0) {} }
+  return new Promise(function(resolve) {
+    var t0 = Date.now();
+    (function tick() {
+      if (grid() && grid().dataSource) { applyAll().then(resolve); return; }
+      if (Date.now() - t0 >= 8000) {
+        resolve({
+          grid_present: false,
+          cad: 0, linear: 0, assembly: 0, component: 0,
+          set_count: 0, setpartmode_via: "", grid_dxf_row_count: 0
+        });
+        return;
+      }
+      setTimeout(tick, 200);
+    })();
   });
 })"""
 
@@ -1738,8 +1819,6 @@ def apply_grid_dxf_part_modes(
         "minted_id": str(quote_id or ""),
         "edit_gate": "",
     }
-    if not spec_rows:
-        return empty
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     empty["edit_quote_id"] = str(gate.get("edit_quote_id") or "")
     empty["minted_id"] = str(gate.get("minted_id") or quote_id or "")

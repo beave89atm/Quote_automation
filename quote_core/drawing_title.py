@@ -170,6 +170,7 @@ def _score_title_candidate(s: str, *, from_title_block: bool) -> tuple[int, int,
             "DOUBLER",
             "CLOSEOUT",
             "PLATFORM",
+            "DOOR",
         )
     ):
         pts += 30

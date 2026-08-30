@@ -3714,6 +3714,101 @@ def test_bb2000_edit_match_skip_finish_fails_fixture():
     )
 
 
+def test_onadddxfclick_without_setpartmode_is_not_success(tmp_path: Path):
+    """Live EHB3112: OnAddDXFClick without SetPartMode is not success."""
+    stp = tmp_path / "EHB3112.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": f"src-{i}",
+            "FileID": f"file-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        }
+        for i, name in enumerate(
+            ("EHB3111-1", "EHB3111-2", "EHB3111-2", "EHB3112-3")
+        )
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 4
+    client._grid_present = True
+    client._grid_dxf_row_count = 4
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa3112"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = ""
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": [],
+        "body_type": "empty",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "text_len": 0,
+        "empty_body": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_filelist_n": 4,
+        "grid_dxf_row_count": 4,
+        "filelist_from_kendo": True,
+        "filelist_sourcedataid_n": 4,
+        "filelist_filetype": {
+            "Cad": 0,
+            "Linear": 0,
+            "Assembly": 0,
+            "Component": 0,
+            "blank": 4,
+        },
+        "finish_af_present": True,
+        "request_keys": ["ID", "ItemID", "customerMaterial", "FileList"],
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": False,
+            "cad": 0,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 0,
+            "setpartmode_via": "",
+            "grid_dxf_row_count": 4,
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa3112",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="EHB3112",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert "setpartmode_via=?" in blob
+    assert "OnAddDXFClick without SetPartMode" in blob
+    assert "not success" in blob
+    assert "finish_fn=OnAddDXFClick" in blob
+    assert "filelist_from_kendo=true" in blob
+    assert "filelist_sourcedataid_n=4" in blob
+    client.add_item_dxf_files.assert_called()
+
+
 def test_page_grid_finish_empty_body_is_not_success(tmp_path: Path):
     """Live P001545: page_fn 200 empty body + GET 0 is not success."""
     stp = tmp_path / "P001545.STEP"

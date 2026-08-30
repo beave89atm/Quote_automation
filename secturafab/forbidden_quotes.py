@@ -41,6 +41,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "a9497a26-cba8-4ec9-a849-cb8bef81cbcc",  # BB2000-ASM skip-Finish (ad38881) — leave it
     }
 )
+# cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
 
 # Partial ids from live notes when the full GUID was not restated.
 FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
@@ -54,6 +55,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "80eb38af",  # 5003313-001 spent (Finish on leftover 105918-1) — do not remint
         "31204345",  # P001545 spent (page Finish empty body / GET 0) — do not remint
         "a9497a26",  # BB2000-ASM spent (skip-Finish / GET 0) — do not remint
+        "cf8ec36e",  # EHB3112-1 spent (OnAddDXFClick empty body) — do not remint
     }
 )
 
@@ -89,8 +91,10 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "5003313-001",  # spent 526d139 Finish on leftover 105918-1 — do not PATCH or remint
         "P001545",  # spent 9735155 page Finish empty body — do not PATCH or remint
         "BB2000-ASM",  # spent ad38881 skip-Finish / GET 0 — do not PATCH or remint
-        # Next unused after the page fn fires: EHB3112. Not BB2000-ASM. Not 11796-1.
-        # No unused Time STEP ≤27MB. Do not mint 106687-1 (43MB).
+        "EHB3112",  # spent 83c9200 OnAddDXFClick empty body — do not remint
+        "EHB3112-1",  # spent 83c9200 QuoteNumber auto -1 — do not remint
+        # Next unused after empty-body vs 105918-1 is explained: 11796-1.
+        # Not EHB3112. Not EHB3112-1. No unused Time STEP ≤27MB.
     }
 )
 

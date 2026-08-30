@@ -124,6 +124,8 @@ ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 _QUOTE_REV_SUFFIX_RE = re.compile(r"(?i)[\s_-]*R\d{2}$")
+# Cummins sheet/rev on a letter PN (EHB3112-1) — not shop 105918-1.
+_ALPHA_JOB_SHEET_REV_RE = re.compile(r"^([A-Z]{2,4}\d{3,})-1$", re.I)
 
 
 def _is_quote_number_token(key: str) -> bool:
@@ -147,6 +149,10 @@ def _pn_quote_number(part_key: str) -> str:
     elif key.upper().startswith("PN"):
         key = key[2:].lstrip(" _-")
     key = _QUOTE_REV_SUFFIX_RE.sub("", key).strip(" -_")
+    # Live EHB3112: drawing/file EHB3112-1 must not become QuoteNumber.
+    sheet = _ALPHA_JOB_SHEET_REV_RE.fullmatch(key)
+    if sheet:
+        return sheet.group(1)
     return key
 
 
@@ -872,12 +878,13 @@ def _resolve_part_key(
         return ""
     dashed = [c for c in pool if "-" in c]
     if dashed:
-        return max(dashed, key=len)
+        picked = max(dashed, key=len)
+        return _pn_quote_number(picked) or picked
     base = max(pool, key=len)
     dash = normalize_bom_config(bom_config)
     if dash and base and "-" not in base:
         return f"{base}-{dash}"
-    return base
+    return _pn_quote_number(base) or base
 
 
 def _resolve_related_pdf(folder: Path, name: str) -> Path | None:
@@ -2563,16 +2570,22 @@ class SecturaFabPushService:
         from .chrome_cdp import apply_grid_dxf_part_modes
 
         applied = apply_grid_dxf_part_modes(classified, quote_id=quote_id)
-        if isinstance(applied, dict) and applied.get("grid_present"):
+        applied = applied if isinstance(applied, dict) else {}
+        set_via = str(applied.get("setpartmode_via") or "")
+        self.client._setpartmode_via = set_via
+        notes.append(
+            f"grid_classify Cad:{int(applied.get('cad') or 0)} "
+            f"Linear:{int(applied.get('linear') or 0)} "
+            f"Assembly:{int(applied.get('assembly') or 0)} "
+            f"Component:{int(applied.get('component') or 0)}"
+        )
+        notes.append(f"setpartmode_via={set_via or '?'}")
+        if not set_via:
             notes.append(
-                f"grid_classify Cad:{int(applied.get('cad') or 0)} "
-                f"Linear:{int(applied.get('linear') or 0)} "
-                f"Assembly:{int(applied.get('assembly') or 0)} "
-                f"Component:{int(applied.get('component') or 0)}"
+                "WARNING: SetPartMode did not run on this EDIT #gridDXFParts "
+                "— OnAddDXFClick empty-body path (live EHB3112)"
             )
-            via = str(applied.get("setpartmode_via") or "")
-            if via:
-                notes.append(f"setpartmode_via={via}")
+        if applied.get("grid_present"):
             want_cad = sum(
                 1 for r in classified if str(r.get("Category") or "") == "Cad"
             )
@@ -2644,6 +2657,28 @@ class SecturaFabPushService:
                     "reads_kendo="
                     + ("true" if result.get("reads_kendo") else "false")
                 )
+            if "filelist_from_kendo" in result:
+                notes.append(
+                    "filelist_from_kendo="
+                    + ("true" if result.get("filelist_from_kendo") else "false")
+                )
+            sid_n = result.get("filelist_sourcedataid_n")
+            if sid_n is not None:
+                notes.append(f"filelist_sourcedataid_n={int(sid_n)}")
+            ft = result.get("filelist_filetype")
+            if isinstance(ft, dict) and ft:
+                notes.append(
+                    "filelist_filetype "
+                    + " ".join(
+                        f"{k}:{int(ft.get(k) or 0)}"
+                        for k in ("Cad", "Linear", "Assembly", "Component", "blank")
+                    )
+                )
+            if "finish_af_present" in result:
+                notes.append(
+                    "finish_af_present="
+                    + ("true" if result.get("finish_af_present") else "false")
+                )
             req_keys = [str(k) for k in (result.get("request_keys") or [])]
             if req_keys:
                 notes.append("finish_request_keys=" + ",".join(req_keys[:12]))
@@ -2677,8 +2712,13 @@ class SecturaFabPushService:
                     f"finish_filelist_n={finish_n} "
                     f"grid_dxf_row_count="
                     f"{int(grid_n) if isinstance(grid_n, (int, float)) else 0} "
-                    "— not success (leave shell, no remint; live P001545)"
+                    "— not success (leave shell, no remint; live P001545 / EHB3112)"
                 )
+        if not getattr(self.client, "_setpartmode_via", ""):
+            notes.append(
+                "WARNING: OnAddDXFClick without SetPartMode — not success "
+                "(live EHB3112 empty body vs 105918-1 GET 66)"
+            )
         posted = self._read_quote_items(quote_id)
         cad_n = count_cad_product_type(posted)
         lin_n = count_linear_product_type(posted)
@@ -3750,11 +3790,18 @@ class SecturaFabPushService:
                 if is_child_part_title(raw_title):
                     raw_title = None
             assembly_description = format_assembly_description(part_key, raw_title)
-            weldment_title = bool(
+            header_noun = bool(
                 bom_rows
-                or (raw_title and "WELDMENT" in str(raw_title).upper())
+                or (
+                    raw_title
+                    and re.search(
+                        r"WELDMENT|ASSEMBLY|\bASSY\b|\bASM\b",
+                        str(raw_title),
+                        re.I,
+                    )
+                )
             )
-            if weldment_title:
+            if header_noun:
                 quote_description = format_quote_header_description(
                     raw_title, part_key=part_key
                 )

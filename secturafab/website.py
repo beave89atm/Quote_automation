@@ -68,8 +68,10 @@ matches; reconstructed FileList POST is not success. Live
 BB2000-ASM (ad38881): skip-Finish after EDIT+grid 19 is a fail —
 *ASM / *-ASM are nested assemblies (re-explode BB1000-ASM /
 BB1010-ASM, not job-PN BB2000-ASM leaves). Leave a9497a26 /
-BB2000-ASM. Next unused after the page fn fires: EHB3112.
-Not BB2000-ASM. Not 11796-1.
+BB2000-ASM. Live EHB3112 (83c9200): OnAddDXFClick page_fn 4==4
+200 empty / GET 0 without SetPartMode notes. Leave cf8ec36e /
+EHB3112-1. Next unused after empty-body vs 105918-1 is explained:
+11796-1. Not EHB3112. Not EHB3112-1.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 

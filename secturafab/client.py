@@ -1299,6 +1299,14 @@ class SecturaFabClient:
             "finish_filelist_n": int(result.get("finish_filelist_n") or 0),
             "grid_dxf_row_count": int(result.get("grid_dxf_row_count") or 0),
             "request_keys": [str(k) for k in (result.get("request_keys") or [])],
+            "filelist_from_kendo": bool(result.get("filelist_from_kendo")),
+            "filelist_sourcedataid_n": int(result.get("filelist_sourcedataid_n") or 0),
+            "filelist_filetype": (
+                result.get("filelist_filetype")
+                if isinstance(result.get("filelist_filetype"), dict)
+                else {}
+            ),
+            "finish_af_present": bool(result.get("finish_af_present")),
             "empty_body": (
                 str(result.get("body_type") or "") in {"empty", "str"}
                 and not result.get("has_NewItem")
