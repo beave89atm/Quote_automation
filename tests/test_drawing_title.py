@@ -99,6 +99,32 @@ PEDESTAL WELDMENT
     assert "BASE PLATE" not in title.upper()
 
 
+def test_operator_platform_is_header_not_12ga_material():
+    """Live 107292-1: OPERATOR PLATFORM… is the header, not 12GA A1011 stock."""
+    from quote_core.drawing_title import is_material_callout_title
+    from secturafab.item_desc import format_quote_header_description
+
+    stock = "12 GA PLATE A1011 CS TYPE B (38K)"
+    header = "OPERATOR PLATFORM LOWER CONTROL MOUNT"
+    assert is_material_callout_title(stock)
+    assert not is_material_callout_title(header)
+    assert format_quote_header_description(stock, part_key="107292-1") == ""
+    assert format_quote_header_description(header, part_key="107292-1") == header
+    text = """
+107292-1
+TITLE:
+OPERATOR PLATFORM LOWER CONTROL MOUNT
+12 GA PLATE A1011 CS TYPE B (38K)
+MATERIAL
+12 GA
+"""
+    title = extract_title_from_pdf_text(text, part_key="107292-1")
+    assert title is not None
+    assert title.upper() == header
+    assert "12 GA" not in title.upper()
+    assert "A1011" not in title.upper()
+
+
 def test_turret_side_plate_is_header_for_piece_part_pn():
     """Live 11796-1 leftover: TURRET SIDE PLATE is the quote, not a child."""
     from quote_core.drawing_title import is_child_part_title

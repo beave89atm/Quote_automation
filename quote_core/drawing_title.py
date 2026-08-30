@@ -42,7 +42,17 @@ _WEIGHT_LBM = re.compile(r"(?i)^\d+(\.\d+)?\s*(lbm|lbs?)\b")
 _PART_NUM = re.compile(r"^\d{4,}(?:-\d+)?(?:_R\d+)?$", re.IGNORECASE)
 _DATE = re.compile(r"^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$|^\d{4}-\d{2}-\d{2}$")
 _STOCK_OR_BOM = re.compile(
-    r"(?i)^(GAUGE|P&O|HR\s|PLATE|BOLT|NUT|WASHER|SQ\s*IN)\b"
+    r"(?i)^(GAUGE|P&O|HR\s|PLATE|BOLT|NUT|WASHER|SQ\s*IN|\d+\s*GA\b)\b"
+)
+# Live 107292-1: 12 GA PLATE A1011 CS TYPE B (38K) is stock, not the header.
+_MATERIAL_CALLOUT = re.compile(
+    r"(?i)("
+    r"\b\d+\s*GA\b|"
+    r"\bA1011\b|"
+    r"\bCS\s+TYPE\b|"
+    r"\(\s*\d+K\s*\)|"
+    r"\bTYPE\s+[A-Z]\b"
+    r")"
 )
 # Product titles like "PLATE - DOUBLER…" are not stock callouts.
 _PRODUCT_PLATE_TITLE = re.compile(r"(?i)^PLATE\s*[-–—]")
@@ -137,6 +147,8 @@ def _is_noise_line(s: str, *, key: str, key_norm: str, allow_plate_title: bool) 
         return True
     if key and (s == key or _normalize_key(s) == key_norm):
         return True
+    if is_material_callout_title(s):
+        return True
     if _STOCK_OR_BOM.match(s) and not (allow_plate_title and _PRODUCT_PLATE_TITLE.match(s)):
         return True
     if len(s) < 6 or len(s) > 120:
@@ -154,7 +166,7 @@ def _score_title_candidate(s: str, *, from_title_block: bool) -> tuple[int, int,
         pts += 50
     if is_nested_child_weldment_title(s):
         pts -= 80
-    if is_drawing_boilerplate_title(s) or is_child_part_title(s):
+    if is_drawing_boilerplate_title(s) or is_child_part_title(s) or is_material_callout_title(s):
         pts -= 80
     if any(
         tok in upper
@@ -248,6 +260,7 @@ def extract_title_from_pdf_text(text: str, *, part_key: str | None = None) -> st
         for row in ranked
         if not is_drawing_boilerplate_title(row[1])
         and not is_nested_child_weldment_title(row[1])
+        and not is_material_callout_title(row[1])
         and not (has_parent and is_child_part_title(row[1]))
     ]
     if not ranked:
@@ -359,6 +372,18 @@ def title_from_library_folder(
     return re.sub(r"\s+", " ", cleaned).upper()
 
 
+def is_material_callout_title(text: str | None) -> bool:
+    """True for a stock/gauge material line — never the drawing header.
+
+    Live 107292-1 stamped ``12 GA PLATE A1011 CS TYPE B (38K)``. Header is
+    OPERATOR PLATFORM LOWER CONTROL MOUNT.
+    """
+    s = str(text or "").strip()
+    if not s:
+        return False
+    return bool(_MATERIAL_CALLOUT.search(s))
+
+
 def is_drawing_boilerplate_title(text: str | None) -> bool:
     """True for title-block legal lines — never a quote Description."""
     s = str(text or "").strip()
@@ -449,7 +474,7 @@ def title_from_exploded_names(names: list[str] | None) -> str | None:
         if not s or s.casefold() == "root" or is_drawing_boilerplate_title(s):
             continue
         s = re.sub(r"^\d{4,}(?:-\d+)?\s+", "", s).strip()
-        if not s or is_drawing_boilerplate_title(s):
+        if not s or is_drawing_boilerplate_title(s) or is_material_callout_title(s):
             continue
         if is_nested_child_weldment_title(s) or is_drawing_boilerplate_title(s):
             continue

@@ -48,8 +48,10 @@ EHB3112-1. Live 11796-1 (4c79659): SetPartMode + OnAddDXFClick on
 SourceDataID=0 / filelist_sourcedataid_n=0. FileList must be
 ``#gridDXFParts.dataSource.data()`` with ID/FileID copied onto
 empty SourceDataID. Leave a8e1b40e / 11796-1 and 8de920f0 /
-11796-2. Do not mint another unused STEP until the ID copy
-fixture exists.
+11796-2. Live 107292-1 (ce5d2c1): kendo+AF+SID+Cad FileType green,
+empty body vs 105918-1 List,Result. Log FileList row keys (names
+only). CadType/Stock_X/Stock_Y are the remaining CadImport identity
+fields. Leave d59318c8 / 107292-1. Do not mint another STEP.
 
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys / counts only.
@@ -1153,7 +1155,25 @@ _PAGE_FINISH_JS = """(function() {
       }
     } catch (e) {}
   }
-  function finishWhy(fromKendo, afOnDoc, afInReq, krows, sid_n, n) {
+  function rowKeys(row) {
+    if (!row || typeof row !== "object") return [];
+    return Object.keys(row).filter(function(k) { return k !== "uid"; }).sort();
+  }
+  var COMPARE_KEYS = [
+    "Status", "Thickness", "Material", "Width", "Length",
+    "CadType", "FileType", "SourceDataID", "FileID", "Stock_X", "Stock_Y"
+  ];
+  var IDENTITY_KEYS = ["CadType", "Stock_X", "Stock_Y"];
+  function missingOf(keys, need) {
+    var have = {};
+    for (var i = 0; i < keys.length; i++) have[keys[i]] = true;
+    var miss = [];
+    for (var j = 0; j < need.length; j++) {
+      if (!have[need[j]]) miss.push(need[j]);
+    }
+    return miss;
+  }
+  function finishWhy(fromKendo, afOnDoc, afInReq, krows, sid_n, n, identMiss) {
     var why = [];
     if (!kendoGridPresent()) why.push("wrong_document");
     if (kendoGridPresent() && !krows.length) why.push("empty_dataSource");
@@ -1161,6 +1181,9 @@ _PAGE_FINISH_JS = """(function() {
     else if (!fromKendo) why.push("filelist_not_kendo");
     if (!afOnDoc) why.push("af_missing_on_document");
     else if (!afInReq) why.push("af_not_in_request");
+    if (identMiss && identMiss.length) {
+      why.push("filelist_missing_keys=" + identMiss.join("+"));
+    }
     return why.join(",");
   }
   var rows = gridData();
@@ -1254,6 +1277,8 @@ _PAGE_FINISH_JS = """(function() {
         var fromKendo = fromThisDs && n > 0 && sid_n === n;
         var afOnDoc = hasChromeDomAf();
         var afInReq = hasAf(d);
+        var postedKeys = n > 0 ? rowKeys(fl[0]) : [];
+        var identMiss = missingOf(postedKeys, IDENTITY_KEYS);
         var cap = {
           finish_filelist_n: n,
           request_keys: req_keys,
@@ -1262,8 +1287,13 @@ _PAGE_FINISH_JS = """(function() {
           filelist_id_n: id_n,
           filelist_fileid_n: fileid_n,
           filelist_filetype: ft,
+          filelist_row_keys: postedKeys,
+          filelist_missing_keys: missingOf(postedKeys, COMPARE_KEYS),
+          filelist_missing_identity: identMiss,
           finish_af_present: afInReq,
-          finish_why: finishWhy(fromKendo, afOnDoc, afInReq, krows, sid_n, n)
+          finish_why: finishWhy(
+            fromKendo, afOnDoc, afInReq, krows, sid_n, n, identMiss
+          )
         };
         var ret = orig.apply(this, arguments);
         Promise.resolve(ret).then(function(data) {
@@ -1334,7 +1364,7 @@ _PAGE_FINISH_JS = """(function() {
         request_keys: [],
         filelist_from_kendo: false,
         finish_af_present: false,
-        finish_why: finishWhy(false, hasChromeDomAf(), false, rows, 0, 0),
+        finish_why: finishWhy(false, hasChromeDomAf(), false, rows, 0, 0, []),
         body_empty: true
       });
     }
@@ -1349,6 +1379,9 @@ _PAGE_FINISH_JS = """(function() {
     extra.filelist_sourcedataid_n = Number(hit.filelist_sourcedataid_n || 0);
     extra.filelist_id_n = Number(hit.filelist_id_n || 0);
     extra.filelist_fileid_n = Number(hit.filelist_fileid_n || 0);
+    extra.filelist_row_keys = hit.filelist_row_keys || [];
+    extra.filelist_missing_keys = hit.filelist_missing_keys || [];
+    extra.filelist_missing_identity = hit.filelist_missing_identity || [];
     extra.filelist_filetype = hit.filelist_filetype || {};
     extra.finish_af_present = !!hit.finish_af_present;
     extra.finish_why = String(hit.finish_why || "");
@@ -1659,6 +1692,9 @@ def invoke_page_dxf_finish(
         "filelist_sourcedataid_n": 0,
         "filelist_id_n": 0,
         "filelist_fileid_n": 0,
+        "filelist_row_keys": [],
+        "filelist_missing_keys": [],
+        "filelist_missing_identity": [],
         "finish_af_present": False,
         "finish_why": "wrong_document",
     }
@@ -1686,6 +1722,15 @@ def invoke_page_dxf_finish(
         "filelist_sourcedataid_n": int(value.get("filelist_sourcedataid_n") or 0),
         "filelist_id_n": int(value.get("filelist_id_n") or 0),
         "filelist_fileid_n": int(value.get("filelist_fileid_n") or 0),
+        "filelist_row_keys": [
+            str(k) for k in (value.get("filelist_row_keys") or [])
+        ],
+        "filelist_missing_keys": [
+            str(k) for k in (value.get("filelist_missing_keys") or [])
+        ],
+        "filelist_missing_identity": [
+            str(k) for k in (value.get("filelist_missing_identity") or [])
+        ],
         "filelist_filetype": (
             value.get("filelist_filetype")
             if isinstance(value.get("filelist_filetype"), dict)

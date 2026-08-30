@@ -17,6 +17,7 @@ from quote_core.drawing_title import (
     extract_drawing_number_from_pdf,
     is_drawing_boilerplate_title,
     is_child_part_title,
+    is_material_callout_title,
     is_nested_child_weldment_title,
     title_from_stp_takeoff,
 )
@@ -2675,6 +2676,19 @@ class SecturaFabPushService:
             fileid_n = result.get("filelist_fileid_n")
             if fileid_n is not None:
                 notes.append(f"filelist_fileid_n={int(fileid_n)}")
+            row_keys = [str(k) for k in (result.get("filelist_row_keys") or [])]
+            if row_keys:
+                notes.append("filelist_row_keys=" + ",".join(row_keys[:24]))
+            miss_cmp = [str(k) for k in (result.get("filelist_missing_keys") or [])]
+            if miss_cmp:
+                notes.append("filelist_missing_keys=" + ",".join(miss_cmp))
+            miss_id = [str(k) for k in (result.get("filelist_missing_identity") or [])]
+            if miss_id:
+                notes.append(
+                    "WARNING: CadImport identity keys missing on posted FileList "
+                    f"({'+'.join(miss_id)}) — empty body vs 105918-1 List,Result "
+                    "(live 107292-1; FileType Cad is SetPartMode)"
+                )
             ft = result.get("filelist_filetype")
             if isinstance(ft, dict) and ft:
                 notes.append(
@@ -2740,11 +2754,12 @@ class SecturaFabPushService:
                 empty_finish = True
                 notes.append(
                     "WARNING: AddItem_DXFFiles HTTP 200 empty body / no NewItem "
-                    f"— finish_fn={finish_fn or '?'} "
+                    f"(not List,Result) — finish_fn={finish_fn or '?'} "
                     f"finish_filelist_n={finish_n} "
                     f"grid_dxf_row_count="
                     f"{int(grid_n) if isinstance(grid_n, (int, float)) else 0} "
-                    "— not success (leave shell, no remint; live P001545 / EHB3112)"
+                    "— kendo+AF+SourceDataID+Cad FileType is not success "
+                    "(leave shell, no remint; live 107292-1 / P001545 / EHB3112)"
                 )
         if not getattr(self.client, "_setpartmode_via", ""):
             notes.append(
@@ -3802,13 +3817,20 @@ class SecturaFabPushService:
                 or title_from_job_title(title, part_key=part_key)
                 or title_from_bom_family(bom_rows)
             )
-            if is_drawing_boilerplate_title(raw_title) or is_nested_child_weldment_title(
-                raw_title
+            if (
+                is_drawing_boilerplate_title(raw_title)
+                or is_nested_child_weldment_title(raw_title)
+                or is_material_callout_title(raw_title)
             ):
                 if is_nested_child_weldment_title(raw_title):
                     notes.append(
                         "WARNING: rejected child GATE/REST/PLATE quote title "
                         "— use assembly weldment header"
+                    )
+                if is_material_callout_title(raw_title):
+                    notes.append(
+                        "WARNING: rejected 12GA/A1011 material quote title "
+                        "— use drawing header (live 107292-1)"
                     )
                 raw_title = (
                     title_from_stp_takeoff(takeoff)
@@ -3835,8 +3857,10 @@ class SecturaFabPushService:
                         "— use assembly weldment header"
                     )
                     raw_title = fallback
-            if is_nested_child_weldment_title(raw_title) or is_drawing_boilerplate_title(
-                raw_title
+            if (
+                is_nested_child_weldment_title(raw_title)
+                or is_drawing_boilerplate_title(raw_title)
+                or is_material_callout_title(raw_title)
             ):
                 raw_title = None
             assembly_description = format_assembly_description(part_key, raw_title)
@@ -3844,8 +3868,10 @@ class SecturaFabPushService:
                 bom_rows
                 or (
                     raw_title
+                    and not is_material_callout_title(raw_title)
                     and re.search(
-                        r"WELDMENT|ASSEMBLY|\bASSY\b|\bASM\b|\bPLATE\b",
+                        r"WELDMENT|ASSEMBLY|\bASSY\b|\bASM\b|\bPLATE\b|"
+                        r"\bPLATFORM\b|\bMOUNT\b",
                         str(raw_title),
                         re.I,
                     )

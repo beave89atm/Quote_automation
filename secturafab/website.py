@@ -78,6 +78,10 @@ SourceDataID=0 / filelist_sourcedataid_n=0 / filelist_not_kendo /
 with ID/FileID copied onto empty SourceDataID. Leave a8e1b40e /
 11796-1 and 8de920f0 / 11796-2. Do not mint another unused STEP
 until the kendo ID→SourceDataID fixture exists.
+Live 107292-1 (ce5d2c1): checklist green (kendo+AF+SID+Cad FileType)
+and Finish 200 empty / GET 0. 105918-1 body was List,Result. FileType
+Cad is SetPartMode — not CadImport CadType/Stock_X/Stock_Y. Leave
+d59318c8 / 107292-1. Do not mint another STEP.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -282,6 +286,45 @@ FILELIST_FIELDS = (
     "Units",
     *CADIMPORT_IDENTITY_FIELDS,
 )
+
+# Posted FileList row key names to log (not values). Live 107292-1 vs 105918-1.
+FINISH_FILELIST_COMPARE_KEYS = (
+    "Status",
+    "Thickness",
+    "Material",
+    "Width",
+    "Length",
+    "CadType",
+    "FileType",
+    "SourceDataID",
+    "FileID",
+    "Stock_X",
+    "Stock_Y",
+)
+# CadImport identity Finish needs for List,Result — not SetPartMode FileType.
+# Live 107292-1 logged FileType Cad + SID/FileID; empty body vs 105918-1 List,Result.
+CADIMPORT_FINISH_IDENTITY_KEYS = (
+    "CadType",
+    "Stock_X",
+    "Stock_Y",
+)
+
+
+def filelist_posted_row_keys(row: dict[str, Any] | None) -> list[str]:
+    """Sorted FileList row key names — never token/cookie/AF values."""
+    if not isinstance(row, dict):
+        return []
+    return sorted(str(k) for k in row if str(k) != "uid")
+
+
+def filelist_missing_compare_keys(keys: list[str] | None) -> list[str]:
+    have = {str(k) for k in (keys or [])}
+    return [k for k in FINISH_FILELIST_COMPARE_KEYS if k not in have]
+
+
+def filelist_missing_cadimport_identity_keys(keys: list[str] | None) -> list[str]:
+    have = {str(k) for k in (keys or [])}
+    return [k for k in CADIMPORT_FINISH_IDENTITY_KEYS if k not in have]
 
 
 class SecturaFabWebsiteAuthError(RuntimeError):

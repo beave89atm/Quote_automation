@@ -3745,6 +3745,51 @@ def test_page_finish_js_posts_kendo_filelist_with_chrome_dom_af():
     assert "orig.apply(this, arguments)" in js.split("attachChromeDomAf(opts.data)")[1]
 
 
+def test_filelist_row_keys_name_cadimport_identity_miss():
+    """107292-1 vs 105918-1: log row keys; CadType/Stock_* are the List,Result miss."""
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+    from secturafab.website import (
+        filelist_missing_cadimport_identity_keys,
+        filelist_missing_compare_keys,
+        filelist_posted_row_keys,
+    )
+
+    leftover = {
+        "ID": "x",
+        "FileID": "f",
+        "SourceDataID": "x",
+        "FileType": "Cad",
+        "Name": "OPERATOR PLATFORM LOWER CONTROL MOUNT",
+    }
+    keys = filelist_posted_row_keys(leftover)
+    assert "SourceDataID" in keys
+    assert "FileType" in keys
+    assert filelist_missing_cadimport_identity_keys(keys) == [
+        "CadType",
+        "Stock_X",
+        "Stock_Y",
+    ]
+    gold = {
+        **leftover,
+        "CadType": 0,
+        "Stock_X": 11.0,
+        "Stock_Y": 6.25,
+        "Status": 0,
+        "Thickness": 0.105,
+        "Material": "A1011",
+        "Width": 11.0,
+        "Length": 6.25,
+    }
+    assert filelist_missing_cadimport_identity_keys(filelist_posted_row_keys(gold)) == []
+    assert "CadType" not in filelist_missing_compare_keys(filelist_posted_row_keys(gold))
+    js = _PAGE_FINISH_JS
+    assert "filelist_row_keys" in js
+    assert "filelist_missing_keys" in js
+    assert "CadType" in js
+    assert "Stock_X" in js
+    assert "filelist_missing_keys=" in js
+
+
 def test_kendo_row_id_copied_to_sourcedataid():
     """Live 11796-2: kendo {ID: x, FileType: Cad} posts SourceDataID x."""
     from secturafab.website import kendo_filelist_for_finish
@@ -4889,6 +4934,120 @@ def test_filelist_not_kendo_or_af_missing_is_not_success(tmp_path: Path):
     assert "filelist_missing_ids" in missing_ids
     assert "not the 105918-1 path" in missing_ids
     assert "not success" in missing_ids
+
+
+def test_kendo_af_sid_cad_empty_body_is_not_success(tmp_path: Path):
+    """Live 107292-1: checklist green + 200 empty + GET 0 is not gold."""
+    stp = tmp_path / "107292-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "ID": "id-1",
+            "Name": "OPERATOR PLATFORM LOWER CONTROL MOUNT",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 1
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "d59318c8-9c39-43a2-aef6-cbd28203ee82"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": [],
+        "body_type": "empty",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "text_len": 0,
+        "empty_body": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_filelist_n": 1,
+        "grid_dxf_row_count": 1,
+        "filelist_from_kendo": True,
+        "filelist_sourcedataid_n": 1,
+        "filelist_id_n": 1,
+        "filelist_fileid_n": 1,
+        "filelist_filetype": {"Cad": 1, "Linear": 0, "Assembly": 0, "Component": 0, "blank": 0},
+        "filelist_row_keys": ["FileID", "FileType", "ID", "SourceDataID"],
+        "filelist_missing_keys": [
+            "CadType",
+            "Length",
+            "Material",
+            "Status",
+            "Stock_X",
+            "Stock_Y",
+            "Thickness",
+            "Width",
+        ],
+        "filelist_missing_identity": ["CadType", "Stock_X", "Stock_Y"],
+        "finish_af_present": True,
+        "finish_why": "filelist_missing_keys=CadType+Stock_X+Stock_Y",
+        "request_keys": [
+            "ID",
+            "ItemID",
+            "customerMaterial",
+            "FileList",
+            "__RequestVerificationToken",
+        ],
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="d59318c8-9c39-43a2-aef6-cbd28203ee82",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.105",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="107292-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert "filelist_from_kendo=true" in blob
+    assert "finish_af_present=true" in blob
+    assert "filelist_sourcedataid_n=1" in blob
+    assert "Cad:1" in blob
+    assert "filelist_row_keys=" in blob
+    assert "CadType" in blob and "Stock_X" in blob
+    assert "empty body" in blob.lower()
+    assert "List,Result" in blob
+    assert "not success" in blob
+    assert "item_count=0" in blob or "GET item_count=0" in blob
 
 
 def test_part_create_empty_list_skips_bind_and_finish():

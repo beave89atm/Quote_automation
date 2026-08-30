@@ -334,11 +334,19 @@ def format_component_line(part_no: str, name: str) -> str:
 
 def format_quote_header_description(title: str | None, *, part_key: str | None = None) -> str:
     """Quote Description is the weldment title only — never the part number."""
-    from quote_core.drawing_title import is_drawing_boilerplate_title
+    from quote_core.drawing_title import (
+        is_drawing_boilerplate_title,
+        is_material_callout_title,
+    )
 
     noun = (title or "").strip()
     pn = normalize_part_token(part_key)
-    if not noun or is_bare_part_number(noun, pn) or is_drawing_boilerplate_title(noun):
+    if (
+        not noun
+        or is_bare_part_number(noun, pn)
+        or is_drawing_boilerplate_title(noun)
+        or is_material_callout_title(noun)
+    ):
         return ""
     if pn and noun.upper().startswith(pn.upper()):
         noun = noun[len(pn) :].strip(" -")

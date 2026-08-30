@@ -1307,6 +1307,15 @@ class SecturaFabClient:
             "filelist_sourcedataid_n": int(result.get("filelist_sourcedataid_n") or 0),
             "filelist_id_n": int(result.get("filelist_id_n") or 0),
             "filelist_fileid_n": int(result.get("filelist_fileid_n") or 0),
+            "filelist_row_keys": [
+                str(k) for k in (result.get("filelist_row_keys") or [])
+            ],
+            "filelist_missing_keys": [
+                str(k) for k in (result.get("filelist_missing_keys") or [])
+            ],
+            "filelist_missing_identity": [
+                str(k) for k in (result.get("filelist_missing_identity") or [])
+            ],
             "filelist_filetype": (
                 result.get("filelist_filetype")
                 if isinstance(result.get("filelist_filetype"), dict)
