@@ -969,10 +969,12 @@ class SecturaFabClient:
         return self._parse_website_or_raise(response, require_session=False)
 
     def cadimport_update_data_next(self, payload: Any = None) -> Any:
-        """POST /CadImport/UpdateDataNext — json List is a native array.
+        """POST /CadImport/UpdateDataNext — editor-only, not gold persist.
 
-        Live 34574-1: form/JSON string List (list_type=str) 200s empty and
-        does not explode. Do not json.dumps the array into the List field.
+        UpdateDXF_LoadNew only after #DXFEdit is open (CADType==="DXF").
+        Live leftover EDIT: WebGLCADDisp undefined. Live 34887-1 FileList 0.
+        Do not call from finish_cad_files / classify→Finish. Do not invent
+        WebGLCADDisp.dataGroup. Do not json.dumps the array into List.
         """
         body = self._cadimport_json_body(payload)
         response = self.website_request(

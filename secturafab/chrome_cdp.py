@@ -17,7 +17,9 @@ Live FA Assembly ``0d4b8a46`` on cba5fa2: fetch + ``#img`` H/W copied
 Live Skin Assembly ``5b622a0d`` on 1a2274f: page ``$.ajax`` on minted
 EDIT + ``#img`` + AF + ``IDList[]`` → n=8 InternalData empty 8/8.
 Fetch-vs-``$.ajax`` is not the miss. Server never fills InternalData
-on explode. Keep the skip. Leave ``5b622a0d`` / ``0d4b8a46``.
+on explode. ``UpdateDXF_LoadNew`` is editor-only / not gold — do
+not fire ``UpdateDataNext``. Classify→Finish without ``#DXFEdit``
+has no InternalData-fill XHR. Keep the skip. Leave ``5b622a0d``.
 
 Explode = page ``$.ajax`` with Upload IDs (EDIT when minted id matches).
 Bind/Finish = QuoteOrderEdit ``/Quote/EDIT/{id}`` (title ``*Quote-`` /

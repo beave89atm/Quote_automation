@@ -8,6 +8,12 @@ success ``t.List`` is pushed onto #gridDXFParts (child FileList rows).
 
 ConvertTo / UpdateDataNext are different functions (units / editor next
 file). Live 34887-1 posted those with a JSON List body and got FileList 0.
+
+Kyle gold Loom is CAD Files → classify → Finish. No per-part CAD editor.
+Classify→Finish page functions (no #DXFEdit): createAllParts /
+DoCreateDXFParts, SetPartMode / SetDXFFilePartMode, OnAddDXFClick.
+None of those write InternalData. UpdateDXF_LoadNew is editor-only
+(not gold) — do not fire POST /CadImport/UpdateDataNext.
 """
 
 from __future__ import annotations
@@ -107,13 +113,44 @@ CONVERT_TO_SNIPPET = (
     'dataType:"json",data:{IDList:t,Units:n}})}'
 )
 
-# UpdateDXF_LoadNew is the CAD editor next-file, not Kyle Next:
-#   data:{ItemList:i, SourceID:t, ReturnItemID:n}
+# UpdateDXF_LoadNew is editor-only — not gold persist.
+# Runs only after #DXFEdit is open and the user clicks Previous / Next
+# or changes combobox_CADDXF_FileName, and only if CADType==="DXF".
+# POST /CadImport/UpdateDataNext {ItemList, SourceID (#DXFEditID), ReturnItemID}.
+# ItemList = GetUpdateList(WebGLCADDisp.dataGroup) keys ID, Index, visible,
+# attr, color (names only). Not called from DoCreateDXFParts / createAllParts,
+# SetDXFFilePartMode, OnAddDXFClick, or editor Open (editDXFFile → modal
+# shown → WebGLCADDisp + Load2DData/Load3DData). Close is UpdateDXF →
+# /CadImport/UpdateData then WebGLCADDisp=null. Live leftover EDIT
+# (Skin Assembly 5b622a0d): WebGLCADDisp undefined, #DXFEdit hidden,
+# #DXFEditID empty. Preview is WebGLDisp. Unfold* 0. Live 34887-1 FileList 0.
+# Do not fire UpdateDataNext. Do not invent WebGLCADDisp.dataGroup.
 UPDATE_DATA_NEXT_SNIPPET = (
     'function UpdateDXF_LoadNew(n){$.ajax({type:"POST",'
     'url:"/CadImport/UpdateDataNext",dataType:"json",'
     "data:{ItemList:i,SourceID:t,ReturnItemID:n}})}"
 )
+UPDATE_DXF_LOADNEW_ITEMLIST_KEYS = ("ID", "Index", "visible", "attr", "color")
+UPDATE_DXF_LOADNEW_NOT_CALLED_FROM = (
+    "DoCreateDXFParts",
+    "createAllParts",
+    "SetDXFFilePartMode",
+    "OnAddDXFClick",
+    "editDXFFile",
+)
+
+# Kyle gold Loom classify→Finish without #DXFEdit. None of these write
+# InternalData. Server never fills InternalData on explode. OnAddDXFClick
+# copies InternalData and filters ErrorStatus===0 && Qty>0 — it does not
+# require InternalData truthy. Skip-when-empty stays (10098-1 200 empty).
+CLASSIFY_FINISH_FUNCTIONS = (
+    "createAllParts",
+    "DoCreateDXFParts",
+    "SetPartMode",
+    "SetDXFFilePartMode",
+    "OnAddDXFClick",
+)
+CLASSIFY_FINISH_INTERNALDATA_FILL = None
 
 # QuoteOrderEdit Finish — same controllerName='/Quote' as GetItem_AddView.
 #   data:{ID, ItemID, customerMaterial, FileList}
@@ -130,12 +167,10 @@ UPDATE_DATA_NEXT_SNIPPET = (
 # plate. Live Skin Assembly 5b622a0d: page $.ajax on minted EDIT +
 # #img H/W + AF + IDList[] still empty 8/8. Fetch-vs-$.ajax is not
 # the miss. Server never fills InternalData on explode. Keep skip.
-# The only cited post-explode writer is UpdateDXF_LoadNew →
-# POST /CadImport/UpdateDataNext (CAD editor next-file: #DXFEditID +
-# GetUpdateList(WebGLCADDisp.dataGroup)). Live 34887-1 FileList 0.
-# GET /Quote/DXFInternal is Freestyle, not Cad unfold. 0 Unfold*.
-# Do not fire UpdateDataNext without the editor. Do not invent
-# InternalData, Height/Width, or a FileType enum (not CAD / 100).
+# UpdateDXF_LoadNew is editor-only / not gold — do not fire
+# UpdateDataNext. Classify→Finish without #DXFEdit has no page
+# function that writes InternalData. Do not invent InternalData,
+# Height/Width, or a FileType enum (not CAD / 100).
 # unfold, Status, Height/Width, or a FileType enum (not CAD / 100).
 # Live 34137-1: cookie-HTTP POST 200 empty str / ItemList 0.
 # Live 34137-2: fetch('/part/create') with Upload IDs → t.List=31, but
@@ -291,6 +326,15 @@ def explode_xhrs(xhrs: list[CadImportXhr]) -> list[CadImportXhr]:
         if path_l == CREATE_DXF_PARTS_PATH or xhr.function == CREATE_DXF_PARTS_FUNCTION:
             out.append(xhr)
     return out
+
+
+def classify_finish_internaldata_fill() -> str | None:
+    """Page function on classify→Finish without #DXFEdit that writes InternalData.
+
+    None exists. UpdateDXF_LoadNew is editor-only / not gold. Do not fire
+    POST /CadImport/UpdateDataNext.
+    """
+    return CLASSIFY_FINISH_INTERNALDATA_FILL
 
 
 def cite_xhrs(xhrs: list[CadImportXhr]) -> list[str]:

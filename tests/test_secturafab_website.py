@@ -6266,6 +6266,7 @@ def test_jquery_ajax_edit_empty_internaldata_is_not_success(tmp_path: Path):
     assert "not Finishing" in blob
     assert "not success" in blob
     client.add_item_dxf_files.assert_not_called()
+    client.cadimport_update_data_next.assert_not_called()
 
 
 def test_cad_editor_update_data_next_is_not_explode_fill():
@@ -6299,6 +6300,45 @@ def test_cad_editor_update_data_next_is_not_explode_fill():
     assert all("UpdateDataNext" not in x.path for x in exploded)
     assert "UpdateDataNext" in UPDATE_DATA_NEXT_SNIPPET
     assert "InternalData" not in UPDATE_DATA_NEXT_SNIPPET
+
+
+def test_updatedxf_loadnew_is_editor_only_not_gold():
+    """Box hunt: UpdateDXF_LoadNew is editor-only. Classify→Finish has no fill."""
+    from secturafab.cadimport_js import (
+        CLASSIFY_FINISH_FUNCTIONS,
+        CLASSIFY_FINISH_INTERNALDATA_FILL,
+        UPDATE_DXF_LOADNEW_ITEMLIST_KEYS,
+        UPDATE_DXF_LOADNEW_NOT_CALLED_FROM,
+        classify_finish_internaldata_fill,
+    )
+
+    hunt = json.loads(
+        (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "cad_updatedxf_loadnew.json"
+        ).read_text()
+    )
+    assert hunt["function"] == "UpdateDXF_LoadNew"
+    assert hunt["path"] == "/CadImport/UpdateDataNext"
+    assert hunt["editor_only"] is True
+    assert hunt["gold"] is False
+    assert hunt["itemlist_keys"] == list(UPDATE_DXF_LOADNEW_ITEMLIST_KEYS)
+    assert hunt["not_called_from"] == list(UPDATE_DXF_LOADNEW_NOT_CALLED_FROM)
+    assert hunt["classify_finish_internaldata_fill"] is None
+    assert hunt["live_leftover_edit"]["WebGLCADDisp"] is False
+    assert hunt["preview"] == "WebGLDisp"
+    assert classify_finish_internaldata_fill() is None
+    assert CLASSIFY_FINISH_INTERNALDATA_FILL is None
+    for name in (
+        "DoCreateDXFParts",
+        "createAllParts",
+        "SetDXFFilePartMode",
+        "OnAddDXFClick",
+    ):
+        assert name in CLASSIFY_FINISH_FUNCTIONS or name in UPDATE_DXF_LOADNEW_NOT_CALLED_FROM
+    assert "UpdateDXF_LoadNew" not in CLASSIFY_FINISH_FUNCTIONS
+    assert "editDXFFile" not in CLASSIFY_FINISH_FUNCTIONS
 
 
 def test_gold_q10056_itemlist_has_no_internaldata_field():

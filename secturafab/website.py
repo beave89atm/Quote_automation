@@ -117,11 +117,14 @@ Live SC0600 weldment explode n=143 still InternalData empty 143/143
 Assembly 5b622a0d: page $.ajax on EDIT + #img H/W still empty
 100%. Fetch-vs-$.ajax is not the miss. Server never fills
 InternalData on explode. Keep skip. Gold 21678-1 / Q10056 GET
-ItemList has no InternalData (FileList-at-Finish only). The
-cited click we do not fire is UpdateDXF_LoadNew →
-POST /CadImport/UpdateDataNext (CAD editor next-file). Do not
-invent that payload. Leave 5b622a0d / Skin Assembly, 0d4b8a46 /
-FA Assembly, b8a62e76 / SC0600, and 6a568912 / 10098-1.
+ItemList has no InternalData (FileList-at-Finish only). Kyle gold
+Loom is CAD Files → classify → Finish with no per-part editor.
+UpdateDXF_LoadNew is editor-only (not gold): #DXFEdit open +
+CADType==="DXF" + Previous/Next/combobox → UpdateDataNext.
+Live leftover EDIT: WebGLCADDisp undefined, #DXFEdit hidden.
+Do not fire UpdateDataNext. Classify→Finish without #DXFEdit
+has no InternalData-fill XHR. Leave 5b622a0d / Skin Assembly,
+0d4b8a46 / FA Assembly, b8a62e76 / SC0600, and 6a568912 / 10098-1.
 Do not remint. Do not mint.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
