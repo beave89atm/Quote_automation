@@ -14,12 +14,10 @@ t.List=0. HTTP Upload does not fill the browser grid.
 
 Live FA Assembly ``0d4b8a46`` on cba5fa2: fetch + ``#img`` H/W copied
 (nonzero float) + AF + ``IDList[]`` → n=28 InternalData empty 28/28.
-``#img`` is not the miss. Remaining delta vs page ``DoCreateDXFParts``:
-``fetch`` on the Quotes **list** (Referer ``/Quote``) vs page ``$.ajax``
-(XHR) on ``/Quote/EDIT/{id}``. Content-Type, Accept, traditional
-``IDList[]``, and form keys already match. Explode POST is page
-``$.ajax`` ``/part/create`` with Upload IDs (not ``createAllParts``).
-Fetch is fallback when jQuery is missing. Leave ``0d4b8a46``.
+Live Skin Assembly ``5b622a0d`` on 1a2274f: page ``$.ajax`` on minted
+EDIT + ``#img`` + AF + ``IDList[]`` → n=8 InternalData empty 8/8.
+Fetch-vs-``$.ajax`` is not the miss. Server never fills InternalData
+on explode. Keep the skip. Leave ``5b622a0d`` / ``0d4b8a46``.
 
 Explode = page ``$.ajax`` with Upload IDs (EDIT when minted id matches).
 Bind/Finish = QuoteOrderEdit ``/Quote/EDIT/{id}`` (title ``*Quote-`` /
@@ -73,10 +71,10 @@ only; skip Finish. Do not invent unfold/geometry or FileType
 "CAD"/100. Bundle hunt: no fill after DoCreateDXFParts t.List;
 form keys match the UI (no missing key). Live SC0600 weldment
 n=143 InternalData empty 143/143 after fetch Height/Width=0.
-Live FA Assembly ``0d4b8a46``: ``#img`` copy + AF + ``IDList[]`` still
-empty 28/28. Named miss is fetch vs page ``$.ajax`` (Referer + XHR).
-InternalData required for Cad Finish. Leave b8a62e76 / SC0600 and
-0d4b8a46 / FA Assembly. Do not remint. Do not mint.
+Live Skin Assembly ``5b622a0d``: page ``$.ajax`` on EDIT still empty
+8/8. Server never fills InternalData on explode. Leave b8a62e76 /
+SC0600, 0d4b8a46 / FA Assembly, and 5b622a0d / Skin Assembly.
+Do not remint. Do not mint.
 
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys /
@@ -991,9 +989,9 @@ def post_part_create_from_quotes_tab(
 ) -> dict[str, Any]:
     """DoCreateDXFParts via page $.ajax on EDIT when the minted tab matches.
 
-    Live FA Assembly 0d4b8a46: fetch + #img H/W was not the InternalData miss.
-    Named delta is fetch on the Quotes list vs page $.ajax (Referer + XHR).
-    Same six form keys. Never invent InternalData. Never logs AF.
+    Live Skin Assembly 5b622a0d: jquery_ajax + EDIT Referer + #img H/W
+    still returned InternalData empty 8/8. Server never fills InternalData
+    on explode. Same six form keys. Never invent InternalData. Never logs AF.
     """
     tab = _part_create_tab(base=base, quote_id=quote_id)
     from_edit = bool(tab and _is_quote_edit_tab(tab))

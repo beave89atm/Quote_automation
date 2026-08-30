@@ -113,13 +113,16 @@ GET /part/PartImage is preview; GET /Quote/DXFInternal is Freestyle
 only. 0 Unfold*/GetDXF*. Form keys are Location, IDList, unitList,
 OtherFileIDList, Height, Width — no missing form key. Leftover n=1
 Live SC0600 weldment explode n=143 still InternalData empty 143/143
-(ImageString nonempty 141). Live FA Assembly 0d4b8a46: #img H/W
-copied (nonzero float) + AF + IDList[] still empty 28/28. #img is
-not the miss. Remaining delta is fetch on the Quotes list vs page
-$.ajax (Referer /Quote/EDIT + XHR). InternalData is required for
-Cad Finish — keep skip. Do not invent InternalData/Height/Width.
-Leave b8a62e76 / SC0600, 0d4b8a46 / FA Assembly, and
-6a568912 / 10098-1. Do not remint. Do not mint.
+(ImageString nonempty 141). Live FA Assembly 0d4b8a46 and Skin
+Assembly 5b622a0d: page $.ajax on EDIT + #img H/W still empty
+100%. Fetch-vs-$.ajax is not the miss. Server never fills
+InternalData on explode. Keep skip. Gold 21678-1 / Q10056 GET
+ItemList has no InternalData (FileList-at-Finish only). The
+cited click we do not fire is UpdateDXF_LoadNew →
+POST /CadImport/UpdateDataNext (CAD editor next-file). Do not
+invent that payload. Leave 5b622a0d / Skin Assembly, 0d4b8a46 /
+FA Assembly, b8a62e76 / SC0600, and 6a568912 / 10098-1.
+Do not remint. Do not mint.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 

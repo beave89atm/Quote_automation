@@ -127,13 +127,15 @@ UPDATE_DATA_NEXT_SNIPPET = (
 # later Cad fill XHR (0 Unfold*/GetDXF*). InternalData/ImageString must
 # arrive on server t.List. Live SC0600 weldment explode n=143 still
 # InternalData empty 143/143 (ImageString empty 2/143). Not leftover
-# plate. Live FA Assembly 0d4b8a46: #img H/W copied (nonzero float) +
-# AF + IDList[] still empty 28/28. #img is not the miss. Remaining
-# delta is chrome fetch on the Quotes list vs page $.ajax (Referer
-# /Quote/EDIT + XHR / kendo.antiForgeryTokens). Content-Type, Accept,
-# traditional IDList[], and form keys already match. InternalData is
-# required for Cad Finish. Do not invent InternalData, Height/Width,
-# or a FileType enum (not CAD / 100).
+# plate. Live Skin Assembly 5b622a0d: page $.ajax on minted EDIT +
+# #img H/W + AF + IDList[] still empty 8/8. Fetch-vs-$.ajax is not
+# the miss. Server never fills InternalData on explode. Keep skip.
+# The only cited post-explode writer is UpdateDXF_LoadNew →
+# POST /CadImport/UpdateDataNext (CAD editor next-file: #DXFEditID +
+# GetUpdateList(WebGLCADDisp.dataGroup)). Live 34887-1 FileList 0.
+# GET /Quote/DXFInternal is Freestyle, not Cad unfold. 0 Unfold*.
+# Do not fire UpdateDataNext without the editor. Do not invent
+# InternalData, Height/Width, or a FileType enum (not CAD / 100).
 # unfold, Status, Height/Width, or a FileType enum (not CAD / 100).
 # Live 34137-1: cookie-HTTP POST 200 empty str / ItemList 0.
 # Live 34137-2: fetch('/part/create') with Upload IDs → t.List=31, but

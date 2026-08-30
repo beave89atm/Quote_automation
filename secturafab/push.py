@@ -2763,9 +2763,11 @@ class SecturaFabPushService:
             notes.append(
                 "WARNING: Cad FileList InternalData present-and-empty — "
                 "required for Cad Finish (OnAddDXFClick copies InternalData; "
-                "ImageString is preview). Live SC0600 143/143 and FA Assembly "
-                "0d4b8a46 28/28 empty after explode; #img copy is not success; "
-                "not Finishing; do not invent InternalData; not success"
+                "ImageString is preview). Server never fills InternalData on "
+                "explode (Skin Assembly 5b622a0d jquery_ajax+EDIT 8/8, FA "
+                "Assembly 0d4b8a46 28/28, SC0600 143/143). #img copy is not "
+                "success; ajax-on-EDIT is not success; not Finishing; do not "
+                "invent InternalData; not success"
             )
             return notes
         result = self.client.add_item_dxf_files(

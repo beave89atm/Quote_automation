@@ -6125,6 +6125,194 @@ def test_img_hw_copy_empty_internaldata_is_not_success(tmp_path: Path):
     client.add_item_dxf_files.assert_not_called()
 
 
+def test_jquery_ajax_edit_empty_internaldata_is_not_success(tmp_path: Path):
+    """Live Skin Assembly 5b622a0d: jquery_ajax + EDIT + #img still skip."""
+    stp = tmp_path / "Skin-Assembly.STEP"
+    stp.write_bytes(b"ISO")
+
+    def kid(name: str, *, image: str) -> dict[str, Any]:
+        return {
+            "SourceDataID": f"src-{name}",
+            "FileID": f"file-{name}",
+            "ID": f"id-{name}",
+            "Name": name,
+            "PartName": name,
+            "FileName": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "CadType": 0,
+            "Stock_X": 8.0,
+            "Stock_Y": 4.0,
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "FileType": "Cad",
+            "InternalData": "",
+            "ImageString": image,
+        }
+
+    kids = [
+        kid("Root", image=""),
+        kid("SKIN-A", image="iVBORw0KGgo"),
+        kid("SKIN-B", image="iVBORw0KGgo"),
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 3
+    client._part_create_internaldata_empty = True
+    client._part_create_imagestring_empty = True
+    client._part_create_payload = {
+        "n": 3,
+        "internaldata_empty_n": 3,
+        "imagestring_empty_n": 1,
+        "internaldata_nonempty_n": 0,
+        "imagestring_nonempty_n": 2,
+    }
+    client._part_create_form_shape = {
+        "idlist_shape": "IDList[]",
+        "height_type": "float",
+        "width_type": "float",
+        "height_zero": False,
+        "width_zero": False,
+    }
+    client._part_create_img_hw = True
+    client._part_create_via = "jquery_ajax"
+    client._part_create_from_edit = True
+    client._part_create_af_present = True
+    client._part_create_name_tokens = {
+        "tlist_name_root_n": 1,
+        "tlist_name_jobpn_n": 0,
+        "tlist_name_other_n": 2,
+        "tlist_partname_root_n": 1,
+        "tlist_partname_jobpn_n": 0,
+        "tlist_partname_other_n": 2,
+        "tlist_filename_root_n": 1,
+        "tlist_filename_jobpn_n": 0,
+        "tlist_filename_other_n": 2,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 3
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa5b62"
+    client._edit_gate = ""
+    client._finish_via = "skipped"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 3,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 3,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 3,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "FileType",
+                "ID",
+                "InternalData",
+                "ImageString",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa5b62",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="SKIN-ASM",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    ok = (
+        "not success" not in blob
+        and "not Finishing" not in blob
+        and "internaldata_empty_n=3/3" not in blob
+    )
+    assert ok is False
+    assert "part_create_via=jquery_ajax" in blob
+    assert "part_create_from_edit=true" in blob
+    assert "part_create_img_hw=true" in blob
+    assert "part_create_height_zero=false" in blob
+    assert "part_create_width_zero=false" in blob
+    assert "part_create_idlist_shape=IDList[]" in blob
+    assert "part_create_af_present=true" in blob
+    assert "internaldata_empty_n=3/3" in blob
+    assert "internaldata_nonempty_n=0" in blob
+    assert "ajax-on-EDIT is not success" in blob
+    assert "server never fills InternalData on explode" in blob.lower() or (
+        "Server never fills InternalData on explode" in blob
+    )
+    assert "InternalData present-and-empty" in blob
+    assert "not Finishing" in blob
+    assert "not success" in blob
+    client.add_item_dxf_files.assert_not_called()
+
+
+def test_cad_editor_update_data_next_is_not_explode_fill():
+    """UpdateDXF_LoadNew is CAD editor next-file, not /part/create InternalData."""
+    from secturafab.cadimport_js import (
+        CREATE_DXF_PARTS_PATH,
+        UPDATE_DATA_NEXT_SNIPPET,
+        explode_xhrs,
+        extract_cadimport_xhrs,
+    )
+
+    js = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "quote_order_edit_create_parts.js"
+    ).read_text()
+    assert "UpdateDXF_LoadNew" in js
+    assert "WebGLCADDisp" in js
+    assert "DXFEditID" in js
+    assert "GetUpdateList" in js
+    assert "/CadImport/UpdateDataNext" in js
+    assert "InternalData" not in js
+    xhrs = extract_cadimport_xhrs(js)
+    nxt = next(x for x in xhrs if x.path == "/CadImport/UpdateDataNext")
+    assert nxt.function == "UpdateDXF_LoadNew"
+    assert nxt.body_keys == ["ItemList", "SourceID", "ReturnItemID"] or set(
+        nxt.body_keys
+    ) >= {"ItemList", "SourceID", "ReturnItemID"}
+    exploded = explode_xhrs(xhrs)
+    assert exploded[0].path == CREATE_DXF_PARTS_PATH
+    assert all("UpdateDataNext" not in x.path for x in exploded)
+    assert "UpdateDataNext" in UPDATE_DATA_NEXT_SNIPPET
+    assert "InternalData" not in UPDATE_DATA_NEXT_SNIPPET
+
+
+def test_gold_q10056_itemlist_has_no_internaldata_field():
+    """21678-1 / Q10056 GET Cad gold is PR+laser. InternalData is FileList-at-Finish."""
+    from secturafab.line_item_ops import finish_produced_gold, item_has_laser_pack
+
+    cad = _gold_cad("21680-1 PLATE")
+    assert "InternalData" not in cad
+    assert "ImageString" not in cad
+    assert item_has_laser_pack(cad) is True
+    quote = {"QuoteNumber": "21678-1", "ItemList": [cad]}
+    assert finish_produced_gold(quote, expect_cad=True, expect_linear=False) is True
+
+
 def test_part_create_empty_list_skips_bind_and_finish():
     """Live 34632-2: /part/create List=0 → no bind, no Finish, no remint."""
     from secturafab.client import SecturaFabClient

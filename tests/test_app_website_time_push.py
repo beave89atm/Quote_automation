@@ -841,6 +841,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "6a568912-5b19-4bfd-9e11-d06d7c149746" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "b8a62e76-6439-46d3-b32e-d48de29f389d" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "0d4b8a46-cc66-4586-baed-4cad20a07ddb" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "5b622a0d-4dab-4099-97e4-d0184df4b770" in FORBIDDEN_LIVE_QUOTE_IDS
     from secturafab.forbidden_quotes import (
         FORBIDDEN_LIVE_QUOTE_NUMBERS,
         is_forbidden_quote_id,
@@ -872,6 +873,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "10098-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "SC0600" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "FA Assembly" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Skin Assembly" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert is_forbidden_quote_id("280f4dcb-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("75b3a938-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("e2cc0a7d-1111-2222-3333-444444444444")
@@ -887,6 +889,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("6a568912-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("b8a62e76-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("0d4b8a46-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("5b622a0d-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("a484ba3b-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("66a0271f-1111-2222-3333-444444444444")
     for qid in (
@@ -919,6 +922,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "31204345-6c91-4122-a859-09f7d7a3ea9f",
         "a9497a26-cba8-4ec9-a849-cb8bef81cbcc",
         "0d4b8a46-cc66-4586-baed-4cad20a07ddb",
+        "5b622a0d-4dab-4099-97e4-d0184df4b770",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(

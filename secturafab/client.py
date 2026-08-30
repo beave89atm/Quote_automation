@@ -1070,9 +1070,9 @@ class SecturaFabClient:
     ) -> Any:
         """Explode via page $.ajax /part/create (Upload IDs), then bind t.List.
 
-        Live FA Assembly 0d4b8a46: fetch + #img H/W + AF + IDList[] still
-        returned InternalData empty 28/28. Named miss is fetch on the Quotes
-        list vs page DoCreateDXFParts $.ajax (Referer + XHR). Do not invent
+        Live Skin Assembly 5b622a0d: page $.ajax on EDIT + #img H/W still
+        returned InternalData empty 8/8. Fetch-vs-$.ajax is not the miss.
+        Server never fills InternalData on explode. Do not invent
         InternalData. Do not eval createAllParts as explode (34632-2 List=0).
 
         Live 34137-2: CDP fetch with Upload file IDs → t.List>1. fetch does

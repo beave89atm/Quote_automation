@@ -46,6 +46,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "6a568912-5b19-4bfd-9e11-d06d7c149746",  # 10098-1 leftover PIVOTING FOOT Cad payload empty (315cb19) — leave it
         "b8a62e76-6439-46d3-b32e-d48de29f389d",  # SC0600 weldment explode InternalData empty (2c29618) — leave it
         "0d4b8a46-cc66-4586-baed-4cad20a07ddb",  # FA Assembly fetch+#img InternalData empty 28/28 (cba5fa2) — leave it
+        "5b622a0d-4dab-4099-97e4-d0184df4b770",  # Skin Assembly jquery_ajax+EDIT InternalData empty 8/8 (1a2274f) — leave it
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -70,6 +71,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "6a568912",  # 10098-1 spent leftover PIVOTING FOOT (InternalData/ImageString empty) — do not remint
         "b8a62e76",  # SC0600 spent weldment explode InternalData empty 143/143 — do not remint
         "0d4b8a46",  # FA Assembly spent fetch+#img InternalData empty 28/28 — do not remint
+        "5b622a0d",  # Skin Assembly spent jquery_ajax+EDIT InternalData empty 8/8 — do not remint
     }
 )
 
@@ -114,8 +116,9 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "10098-1",  # spent 315cb19 leftover PIVOTING FOOT — Cad InternalData/ImageString empty — do not remint
         "SC0600",  # spent 2c29618 weldment explode InternalData empty 143/143 — do not remint
         "FA Assembly",  # spent 0d4b8a46 fetch+#img InternalData empty 28/28 — do not remint
-        # Do not mint. #img copy is not the InternalData miss.
-        # Named miss is fetch vs page $.ajax. Do not invent payload.
+        "Skin Assembly",  # spent 5b622a0d jquery_ajax+EDIT InternalData empty 8/8 — do not remint
+        # Do not mint. Server never fills InternalData on explode.
+        # Do not invent payload. Next mint only after a new named persist.
     }
 )
 
