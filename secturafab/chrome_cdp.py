@@ -61,7 +61,10 @@ ImageString/HadOpenContours/OutsidePerimeter *keys*. Finish still
 Cad AddItem_DXFFiles no-ops when InternalData/ImageString are
 empty. Copy those keys through if present; log emptiness bools
 only; skip Finish. Do not invent unfold/geometry or FileType
-"CAD"/100. Leave 6a568912 / 10098-1. Do not remint. Do not mint.
+"CAD"/100. Bundle hunt: no fill after DoCreateDXFParts t.List;
+form keys match the UI (no missing key). Leftover n=1 plate
+t.List InternalData stays empty — next unused weldment STEP,
+do not mint. Leave 6a568912 / 10098-1. Do not remint.
 
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys /
@@ -1784,6 +1787,9 @@ def bind_do_create_dxf_parts_success(
     gate = minted_edit_tab_ready(
         quote_id, quote_number=quote_number, base=base, navigate=True
     )
+    from .website import part_create_list_payload_empty_bools
+
+    payload = part_create_list_payload_empty_bools(kids)
     empty = {
         "grid_present": False,
         "has_gridDXFParts": False,
@@ -1796,6 +1802,8 @@ def bind_do_create_dxf_parts_success(
         "edit_gate": str(gate.get("reason") or ""),
         "stale_grid": False,
         "kendo_row_keys": [],
+        "internaldata_empty": payload["internaldata_empty"],
+        "imagestring_empty": payload["imagestring_empty"],
     }
     if not gate.get("ok"):
         return empty
@@ -1824,6 +1832,8 @@ def bind_do_create_dxf_parts_success(
         "edit_gate": "stale_grid" if stale else "",
         "stale_grid": stale,
         "kendo_row_keys": kendo_keys,
+        "internaldata_empty": payload["internaldata_empty"],
+        "imagestring_empty": payload["imagestring_empty"],
     }
 
 

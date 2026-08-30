@@ -106,8 +106,15 @@ the page/ItemType string. Persist FileType remains "Cad" from ItemType
 when missing; do not guess "CAD" / 100. Named miss: Cad
 AddItem_DXFFiles no-ops when InternalData/ImageString are empty.
 Copy those keys through if present; log emptiness bools only; skip
-Finish (fail closed) — do not invent unfold/geometry. Leave
-6a568912 / 10098-1. Do not remint. Do not mint.
+Finish (fail closed) — do not invent unfold/geometry.
+Bundle hunt: QuoteOrderEdit has no fill after DoCreateDXFParts
+t.List. GridDXFPart_OnChangeUpdate reads InternalData/ImageString;
+GET /part/PartImage is preview; GET /Quote/DXFInternal is Freestyle
+only. 0 Unfold*/GetDXF*. Form keys are Location, IDList, unitList,
+OtherFileIDList, Height, Width — no missing form key. Leftover n=1
+plate STEP t.List InternalData/ImageString stay empty (no unfoldable
+DXF child). Next live is an unused weldment STEP — do not mint.
+Leave 6a568912 / 10098-1. Do not remint.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -1112,6 +1119,22 @@ def filelist_cad_payload_empty_bools(row: dict[str, Any] | None) -> dict[str, bo
     return {
         "filelist_internaldata_empty": cad_payload_value_empty(row.get("InternalData")),
         "filelist_imagestring_empty": cad_payload_value_empty(row.get("ImageString")),
+    }
+
+
+def part_create_list_payload_empty_bools(
+    rows: list[dict[str, Any]] | None,
+) -> dict[str, bool]:
+    """Bind-time /part/create t.List emptiness bools — never values.
+
+    QuoteOrderEdit pushes t.List as-is. Leftover n=1 plate InternalData
+    stays empty (no unfoldable DXF child, no later fill XHR).
+    """
+    first = next((r for r in (rows or []) if isinstance(r, dict)), None)
+    finish = filelist_cad_payload_empty_bools(first)
+    return {
+        "internaldata_empty": finish["filelist_internaldata_empty"],
+        "imagestring_empty": finish["filelist_imagestring_empty"],
     }
 
 

@@ -81,6 +81,51 @@ def test_quote_order_edit_bundle_cites_do_create_dxf_parts():
     assert "List" not in form_keys
 
 
+def test_docreate_dxf_parts_form_has_no_missing_ui_key():
+    """Cited DoCreateDXFParts data:{} is Location/IDList/unitList/OtherFileIDList/Height/Width."""
+    from secturafab.cadimport_js import (
+        CREATE_DXF_PARTS_BODY_KEYS,
+        build_create_dxf_parts_fields,
+        create_dxf_parts_missing_form_keys,
+    )
+
+    fields = build_create_dxf_parts_fields(
+        [{"SourceDataID": "src-1", "Units": "inch"}],
+        location="",
+        height=0,
+        width=0,
+    )
+    assert create_dxf_parts_missing_form_keys(fields) == []
+    assert set(fields) == set(CREATE_DXF_PARTS_BODY_KEYS)
+    assert "InternalData" not in fields
+    assert "ImageString" not in fields
+    assert "Unfold" not in fields
+
+
+def test_part_create_t_list_emptiness_bools_at_bind():
+    """Log /part/create t.List InternalData/ImageString emptiness at bind — not values."""
+    from secturafab.website import part_create_list_payload_empty_bools
+
+    leftover = {
+        "SourceDataID": "src-1",
+        "FileType": "Cad",
+        "InternalData": "",
+        "ImageString": "",
+        "Name": "PIVOTING FOOT",
+    }
+    bools = part_create_list_payload_empty_bools([leftover])
+    assert bools == {"internaldata_empty": True, "imagestring_empty": True}
+    assert "InternalData" not in str(bools.values())
+    filled = part_create_list_payload_empty_bools(
+        [{"InternalData": '[{"Type":"page"}]', "ImageString": "iVBORw0KGgo"}]
+    )
+    assert filled == {"internaldata_empty": False, "imagestring_empty": False}
+    assert part_create_list_payload_empty_bools([]) == {
+        "internaldata_empty": True,
+        "imagestring_empty": True,
+    }
+
+
 def test_dxf_finish_payload_js_contract():
     rows = [
         {
@@ -5571,6 +5616,8 @@ def test_filetype_cad_empty_body_is_not_success(tmp_path: Path):
     client._request_verification_fields = [("__RequestVerificationToken", "x")]
     client._af_source = "chrome_dom"
     client._part_create_list_len = 1
+    client._part_create_internaldata_empty = True
+    client._part_create_imagestring_empty = True
     client._grid_present = True
     client._grid_dxf_row_count = 1
     client._stale_grid = False
@@ -5682,6 +5729,8 @@ def test_filetype_cad_empty_body_is_not_success(tmp_path: Path):
         and "filelist_internaldata_empty=true" not in blob
     )
     assert ok is False
+    assert "internaldata_empty=true" in blob
+    assert "imagestring_empty=true" in blob
     assert "filelist_internaldata_empty=true" in blob
     assert "filelist_imagestring_empty=true" in blob
     assert "InternalData/ImageString empty" in blob
@@ -5836,6 +5885,8 @@ def test_part_create_list_1_binds_and_allows_finish():
     finish_fn.assert_called()
     assert len(result["List"]) == 1
     assert client._part_create_list_len == 1
+    assert client._part_create_internaldata_empty is True
+    assert client._part_create_imagestring_empty is True
     assert client._grid_dxf_row_count == 1
     assert finish["via"] == "page_fn"
     assert finish["filelist_from_kendo"] is True

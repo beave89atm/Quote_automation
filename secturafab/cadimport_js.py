@@ -89,6 +89,11 @@ CREATE_DXF_PARTS_BODY_KEYS = (
     "Height",
     "Width",
 )
+# Live QuoteOrderEdit DoCreateDXFParts data:{} is exactly these six keys
+# (Location from #InventoryLocation, Height/Width from #img, IDList/unitList
+# from #gridDXF, OtherFileIDList from #gridOther). No missing form key.
+# Do not invent Height/Width/InternalData. AF is merged by
+# kendo.antiForgeryTokens, not this bag.
 CREATE_DXF_PARTS_SNIPPET = (
     'function DoCreateDXFParts(n,t){$.ajax({type:"POST",url:"/part/create",'
     'dataType:"json",data:{Location:f,IDList:n,unitList:t,'
@@ -116,9 +121,14 @@ UPDATE_DATA_NEXT_SNIPPET = (
 # Cited OnAddDXFClick has no FileType=Cad vs Component branch and no
 # unfold / InternalData emptiness check. Live 10098-1 posted FileType=Cad
 # (string) plus InternalData/ImageString *keys* and still empty.
-# Unfold*/DXF* child keys were absent. Named miss: Cad AddItem_DXFFiles
-# no-ops when InternalData/ImageString are empty. Do not invent
-# InternalData, unfold, Status, or a FileType enum (not CAD / 100).
+# Unfold*/DXF* child keys were absent. Bundle hunt: DoCreateDXFParts
+# success pushes t.List as-is; GridDXFPart_OnChangeUpdate only *reads*
+# InternalData/ImageString; GET /part/PartImage is preview only; no
+# later Cad fill XHR (0 Unfold*/GetDXF*). InternalData/ImageString must
+# arrive on server t.List. Leftover n=1 plate STEP t.List those keys
+# are empty (no unfoldable DXF child). Next live is an unused weldment
+# STEP (exploded kids) — do not mint here. Do not invent InternalData,
+# unfold, Status, Height/Width, or a FileType enum (not CAD / 100).
 # Live 34137-1: cookie-HTTP POST 200 empty str / ItemList 0.
 # Live 34137-2: fetch('/part/create') with Upload IDs → t.List=31, but
 # success never ran so #gridDXFParts stayed empty; reconstructed Finish
@@ -330,6 +340,12 @@ def build_create_dxf_parts_fields(
         "Height": int(height or 0),
         "Width": int(width or 0),
     }
+
+
+def create_dxf_parts_missing_form_keys(fields: dict[str, Any] | None) -> list[str]:
+    """UI DoCreateDXFParts keys absent from the posted form — do not invent."""
+    have = {str(k) for k in (fields or {})}
+    return [k for k in CREATE_DXF_PARTS_BODY_KEYS if k not in have]
 
 
 def build_xhr_payload(

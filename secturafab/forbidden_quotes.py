@@ -108,9 +108,9 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "107292-1",  # spent ce5d2c1 empty body vs List,Result — do not remint
         "16629-1",  # spent 76dd572 leftover EAR — CadType+Stock, no FileType — do not remint
         "10098-1",  # spent 315cb19 leftover PIVOTING FOOT — Cad InternalData/ImageString empty — do not remint
-        # Do not mint. Named miss: Cad AddItem_DXFFiles no-ops when
-        # InternalData/ImageString are empty. Log emptiness bools only.
-        # Do not invent unfold/geometry or FileType CAD/100.
+        # Do not mint. Leftover n=1 plate /part/create t.List InternalData
+        # stays empty (no unfoldable DXF child, no later fill). Next live
+        # is an unused weldment STEP. Do not invent unfold or form keys.
     }
 )
 

@@ -106,6 +106,20 @@ CREATEFILE_RETRY_MAX_S = 48 * 3600.0
 CADIMPORT_EXPLODE_MAX_PASSES = 5
 
 
+def _log_part_create_payload_empty(notes: list[str], client: Any) -> None:
+    """Bind-time /part/create t.List emptiness bools — never values."""
+    idata = getattr(client, "_part_create_internaldata_empty", None)
+    img = getattr(client, "_part_create_imagestring_empty", None)
+    if isinstance(idata, bool):
+        line = "internaldata_empty=" + ("true" if idata else "false")
+        if line not in notes:
+            notes.append(line)
+    if isinstance(img, bool):
+        line = "imagestring_empty=" + ("true" if img else "false")
+        if line not in notes:
+            notes.append(line)
+
+
 def _part_create_fail_note(exc: BaseException) -> str:
     """403 LogOnUrl is not Login; never interpolate cookies or AF tokens."""
     status = getattr(exc, "status_code", None)
@@ -1553,6 +1567,7 @@ class SecturaFabPushService:
         n_list = getattr(self.client, "_part_create_list_len", None)
         if isinstance(n_list, (int, float)):
             notes.append(f"part_create_list_len={int(n_list)}")
+        _log_part_create_payload_empty(notes, self.client)
         n_grid = getattr(self.client, "_grid_dxf_row_count", None)
         if isinstance(n_grid, (int, float)):
             notes.append(f"grid_dxf_row_count={int(n_grid)}")
@@ -1825,6 +1840,7 @@ class SecturaFabPushService:
                 n_list = getattr(self.client, "_part_create_list_len", None)
                 if isinstance(n_list, (int, float)):
                     notes.append(f"part_create_list_len={int(n_list)}")
+                _log_part_create_payload_empty(notes, self.client)
                 n_grid = getattr(self.client, "_grid_dxf_row_count", None)
                 if isinstance(n_grid, (int, float)):
                     notes.append(f"grid_dxf_row_count={int(n_grid)}")
@@ -2481,6 +2497,7 @@ class SecturaFabPushService:
         if isinstance(n_list, (int, float)):
             if f"part_create_list_len={int(n_list)}" not in " ".join(notes):
                 notes.append(f"part_create_list_len={int(n_list)}")
+        _log_part_create_payload_empty(notes, self.client)
         n_grid = getattr(self.client, "_grid_dxf_row_count", None)
         if isinstance(n_grid, (int, float)):
             if f"grid_dxf_row_count={int(n_grid)}" not in " ".join(notes):

@@ -85,6 +85,8 @@ class SecturaFabClient:
         self._finish_via: str = ""
         self._grid_dxf_row_count: int | None = None
         self._part_create_list_len: int | None = None
+        self._part_create_internaldata_empty: bool | None = None
+        self._part_create_imagestring_empty: bool | None = None
         self._grid_present: bool | None = None
         self._edit_quote_id: str = ""
         self._minted_id: str = ""
@@ -1113,11 +1115,16 @@ class SecturaFabClient:
         kids = result.get("List") if isinstance(result.get("List"), list) else []
         kids = [r for r in kids if isinstance(r, dict)]
         n_list = int(result.get("list_len") or len(kids))
+        from .website import part_create_list_payload_empty_bools
+
+        payload = part_create_list_payload_empty_bools(kids)
         if n_list <= 0 and not replace_grid:
             # Live 1020249-1: pass-2 List=0 is not the 34632-2 first-pass miss.
             # Keep prior #gridDXFParts counts; do not bind an empty t.List.
             return {"List": kids}
         self._part_create_list_len = n_list
+        self._part_create_internaldata_empty = payload["internaldata_empty"]
+        self._part_create_imagestring_empty = payload["imagestring_empty"]
         if self._part_create_list_len <= 0:
             self._grid_dxf_row_count = 0
             return {"List": kids}
