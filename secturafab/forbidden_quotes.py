@@ -42,6 +42,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "a8e1b40e-54c2-4515-9f36-67843a1e5286",  # 11796-1 kendo FileList miss (4c79659) — leave it
         "8de920f0-ea17-442d-898e-9a04367d91de",  # 11796-2 SourceDataID=0 (619ebf2) — leave it
         "d59318c8-9c39-43a2-aef6-cbd28203ee82",  # 107292-1 empty vs List,Result (ce5d2c1) — leave it
+        "aab5b3e2-8771-47a2-b625-a3f379c5b0c2",  # 16629-1 leftover EAR empty FileType (76dd572) — leave it
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -62,6 +63,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "a8e1b40e",  # 11796-1 spent (kendo FileList / AF miss) — do not remint
         "8de920f0",  # 11796-2 spent (SourceDataID=0) — do not remint
         "d59318c8",  # 107292-1 spent (empty body vs List,Result) — do not remint
+        "aab5b3e2",  # 16629-1 spent leftover EAR (CadType+Stock, no FileType) — do not remint
     }
 )
 
@@ -102,7 +104,8 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "11796-1",  # spent 4c79659 kendo FileList / AF miss — do not remint
         "11796-2",  # spent 619ebf2 SourceDataID=0 / 200 empty — do not remint
         "107292-1",  # spent ce5d2c1 empty body vs List,Result — do not remint
-        # Do not mint another STEP. Named miss: CadType/Stock_X/Stock_Y.
+        "16629-1",  # spent 76dd572 leftover EAR — CadType+Stock, no FileType — do not remint
+        # Do not mint. Named miss: posted FileList lacks FileType.
     }
 )
 

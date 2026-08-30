@@ -49,9 +49,11 @@ SourceDataID=0 / filelist_sourcedataid_n=0. FileList must be
 ``#gridDXFParts.dataSource.data()`` with ID/FileID copied onto
 empty SourceDataID. Leave a8e1b40e / 11796-1 and 8de920f0 /
 11796-2. Live 107292-1 (ce5d2c1): kendo+AF+SID+Cad FileType green,
-empty body vs 105918-1 List,Result. Log FileList row keys (names
-only). CadType/Stock_X/Stock_Y are the remaining CadImport identity
-fields. Leave d59318c8 / 107292-1. Do not mint another STEP.
+empty body vs 105918-1 List,Result. Leave d59318c8 / 107292-1.
+Live 16629-1: CadType+Stock on kendo and posted FileList; FileType
+and Status absent; 200 empty / GET 0. Persist FileType from
+SetPartMode ItemType/Category/PartMode onto the dataItem. Do not
+invent Status. Leave aab5b3e2 / 16629-1. Do not mint.
 
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys / counts only.
@@ -1079,6 +1081,21 @@ _PAGE_FINISH_JS = """(function() {
     else r.SourceDataID = id;
     return r;
   }
+  function persistFileType(r) {
+    if (!r || typeof r !== "object") return r;
+    if (r.FileType != null && String(r.FileType) !== "") return r;
+    var cat = String(r.ItemType || r.Category || "");
+    if (cat !== "Cad" && cat !== "Linear" && cat !== "Assembly" && cat !== "Component") {
+      var mode = Number(r.PartMode);
+      if (mode === 0) cat = "Cad";
+      else if (mode === 1) cat = "Linear";
+      else if (mode === 2) cat = "Component";
+      else return r;
+    }
+    if (typeof r.set === "function") r.set("FileType", cat);
+    else r.FileType = cat;
+    return r;
+  }
   function keepIdentity(src, dest) {
     var keys = [
       "CadType", "Stock_X", "Stock_Y", "Stock_Z", "Stock_Units",
@@ -1102,9 +1119,11 @@ _PAGE_FINISH_JS = """(function() {
       var out = [];
       for (var i = 0; i < (raw ? raw.length : 0); i++) {
         fillRowSid(raw[i]);
+        persistFileType(raw[i]);
         var json = (raw[i] && raw[i].toJSON) ? raw[i].toJSON() : raw[i];
         if (json && typeof json === "object") {
           keepIdentity(raw[i], json);
+          persistFileType(json);
           fillRowSid(json);
           out.push(json);
         }
@@ -1882,6 +1901,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       row.set("PartMode", mode);
       row.set("ItemType", cat);
       row.set("Category", cat);
+      row.set("FileType", cat);
       if (cat === "Cad") {
         row.set("Machine", want.Machine || "Laser");
         row.set("ProductType", 100);
@@ -1901,6 +1921,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       row.PartMode = mode;
       row.ItemType = cat;
       row.Category = cat;
+      row.FileType = cat;
       if (cat === "Cad") {
         row.Machine = want.Machine || "Laser";
         row.ProductType = 100;

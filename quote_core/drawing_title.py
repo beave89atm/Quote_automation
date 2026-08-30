@@ -132,7 +132,19 @@ def extract_drawing_number_from_pdf(path: Path) -> str | None:
     return extract_drawing_number_from_pdf_text(text)
 
 
-def _is_noise_line(s: str, *, key: str, key_norm: str, allow_plate_title: bool) -> bool:
+def _is_title_block_piece_noun(s: str) -> bool:
+    """Leftover piece-part TITLE like EAR — shorter than the generic noise floor."""
+    return bool(re.fullmatch(r"[A-Za-z]{2,5}", str(s or "").strip()))
+
+
+def _is_noise_line(
+    s: str,
+    *,
+    key: str,
+    key_norm: str,
+    allow_plate_title: bool,
+    from_title_block: bool = False,
+) -> bool:
     if not s:
         return True
     if _LEGAL_OR_BANNER.search(s):
@@ -152,6 +164,8 @@ def _is_noise_line(s: str, *, key: str, key_norm: str, allow_plate_title: bool) 
     if _STOCK_OR_BOM.match(s) and not (allow_plate_title and _PRODUCT_PLATE_TITLE.match(s)):
         return True
     if len(s) < 6 or len(s) > 120:
+        if from_title_block and _is_title_block_piece_noun(s):
+            return False
         return True
     return False
 
@@ -223,7 +237,13 @@ def extract_title_from_pdf_text(text: str, *, part_key: str | None = None) -> st
                 nxt = lines[j]
                 if _TITLE_LABEL.match(nxt) or _TITLE_STOP.match(nxt):
                     break
-                if _is_noise_line(nxt, key=key, key_norm=key_norm, allow_plate_title=True):
+                if _is_noise_line(
+                    nxt,
+                    key=key,
+                    key_norm=key_norm,
+                    allow_plate_title=True,
+                    from_title_block=True,
+                ):
                     j += 1
                     continue
                 if is_nested_child_weldment_title(nxt):

@@ -837,6 +837,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "a8e1b40e-54c2-4515-9f36-67843a1e5286" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "8de920f0-ea17-442d-898e-9a04367d91de" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "d59318c8-9c39-43a2-aef6-cbd28203ee82" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "aab5b3e2-8771-47a2-b625-a3f379c5b0c2" in FORBIDDEN_LIVE_QUOTE_IDS
     from secturafab.forbidden_quotes import (
         FORBIDDEN_LIVE_QUOTE_NUMBERS,
         is_forbidden_quote_id,
@@ -864,6 +865,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "11796-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "11796-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "107292-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "16629-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert is_forbidden_quote_id("280f4dcb-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("75b3a938-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("e2cc0a7d-1111-2222-3333-444444444444")
@@ -875,6 +877,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("a8e1b40e-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("8de920f0-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d59318c8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("aab5b3e2-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("a484ba3b-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("66a0271f-1111-2222-3333-444444444444")
     for qid in (

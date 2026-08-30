@@ -79,9 +79,20 @@ with ID/FileID copied onto empty SourceDataID. Leave a8e1b40e /
 11796-1 and 8de920f0 / 11796-2. Do not mint another unused STEP
 until the kendo ID→SourceDataID fixture exists.
 Live 107292-1 (ce5d2c1): checklist green (kendo+AF+SID+Cad FileType)
-and Finish 200 empty / GET 0. 105918-1 body was List,Result. FileType
-Cad is SetPartMode — not CadImport CadType/Stock_X/Stock_Y. Leave
-d59318c8 / 107292-1. Do not mint another STEP.
+and Finish 200 empty / GET 0. Leave d59318c8 / 107292-1.
+Live 16629-1 (76dd572 leftover EAR, aab5b3e2): CadType+Stock_X+Stock_Y
+were on EDIT kendo and the posted FileList. Finish still 200 empty /
+GET 0. Posted FileList and /part/create t.List lacked FileType and
+Status. filelist_filetype Cad:1 was SetPartMode classify — that key
+was not on the posted row. GetDXFData is not in QuoteOrderEdit (404).
+OnAddDXFClick FileList is #gridDXFParts rows with ErrorStatus===0 and
+Qty>0. Status>0 is Image Files GetPDFData / New Line Item, not CadImport.
+105918-1 List,Result stamped 66 Component — those rows carried FileType
+(page File type default Component). n=1 leftover with CadType+Stock and
+no FileType is empty. SetPartMode POSTs {ID, PartMode} and paints
+ItemType/Category; persist FileType onto the dataItem before
+OnAddDXFClick. Do not invent Status. Leave aab5b3e2 / 16629-1. Do not
+mint until the next named miss.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -301,8 +312,8 @@ FINISH_FILELIST_COMPARE_KEYS = (
     "Stock_X",
     "Stock_Y",
 )
-# CadImport identity Finish needs for List,Result — not SetPartMode FileType.
-# Live 107292-1 logged FileType Cad + SID/FileID; empty body vs 105918-1 List,Result.
+# CadImport identity (DoCreateDXFParts t.List). Live 16629-1: these were
+# on kendo and the posted FileList — empty body was FileType missing.
 CADIMPORT_FINISH_IDENTITY_KEYS = (
     "CadType",
     "Stock_X",
@@ -967,6 +978,33 @@ def fill_kendo_filelist_sourcedataid(
     return filled
 
 
+SETPARTMODE_FILETYPES = ("Cad", "Linear", "Assembly", "Component")
+
+
+def persist_setpartmode_filetype(row: dict[str, Any] | None) -> dict[str, Any]:
+    """Write FileType from SetPartMode ItemType/Category/PartMode.
+
+    Live 16629-1: SetPartMode painted a badge (Cad:1 classify) but FileType
+    was not on the posted FileList. Do not invent Status or geometry.
+    """
+    out = dict(row) if isinstance(row, dict) else {}
+    ft = out.get("FileType")
+    if ft not in (None, ""):
+        return out
+    cat = str(out.get("ItemType") or out.get("Category") or "").strip()
+    if cat in SETPARTMODE_FILETYPES:
+        out["FileType"] = cat
+        return out
+    try:
+        mode = int(out.get("PartMode"))
+    except (TypeError, ValueError):
+        return out
+    mapped = {0: "Cad", 1: "Linear", 2: "Component"}
+    if mode in mapped:
+        out["FileType"] = mapped[mode]
+    return out
+
+
 def kendo_filelist_for_finish(
     rows: list[dict[str, Any]] | None,
     *,
@@ -981,7 +1019,11 @@ def kendo_filelist_for_finish(
     src_rows = [r for r in (rows or []) if isinstance(r, dict)]
     filled = fill_kendo_filelist_sourcedataid(src_rows)
     filled = [
-        copy_cadimport_identity_through(src_rows[i] if i < len(src_rows) else {}, dest)
+        persist_setpartmode_filetype(
+            copy_cadimport_identity_through(
+                src_rows[i] if i < len(src_rows) else {}, dest
+            )
+        )
         for i, dest in enumerate(filled)
     ]
     n = len(filled)
@@ -2406,6 +2448,8 @@ def overlay_classified_row(
         out["PartMode"] = part_mode_int(cat)
     out["ItemType"] = cat
     out["Category"] = cat
+    if cat in SETPARTMODE_FILETYPES:
+        out["FileType"] = cat
     if qty is not None:
         out["Qty"] = qty
         out["Quantity"] = qty

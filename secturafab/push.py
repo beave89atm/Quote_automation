@@ -2717,6 +2717,12 @@ class SecturaFabPushService:
             miss_cmp = [str(k) for k in (result.get("filelist_missing_keys") or [])]
             if miss_cmp:
                 notes.append("filelist_missing_keys=" + ",".join(miss_cmp))
+            if "FileType" in miss_cmp:
+                notes.append(
+                    "WARNING: posted FileList lacks FileType — SetPartMode "
+                    "badge/classify is not the posted key "
+                    "(live 16629-1 empty body vs 105918-1 List,Result Component)"
+                )
             miss_id = [str(k) for k in (result.get("filelist_missing_identity") or [])]
             if miss_id:
                 notes.append(
