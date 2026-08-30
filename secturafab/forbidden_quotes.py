@@ -38,6 +38,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "e2305b3c-7316-4a96-8c94-7685fca2be54",  # 1020249-1 pass-2 wiped grid (e21bc43) — leave it
         "80eb38af-3721-4049-a0d5-e4026d293a0c",  # 5003313-001 Finish on leftover 105918-1 (526d139) — leave it
         "31204345-6c91-4122-a859-09f7d7a3ea9f",  # P001545 page Finish empty body (9735155) — leave it
+        "a9497a26-cba8-4ec9-a849-cb8bef81cbcc",  # BB2000-ASM skip-Finish (ad38881) — leave it
     }
 )
 
@@ -52,6 +53,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "e2305b3c",  # 1020249-1 spent (pass-2 List=0 wiped grid) — do not remint
         "80eb38af",  # 5003313-001 spent (Finish on leftover 105918-1) — do not remint
         "31204345",  # P001545 spent (page Finish empty body / GET 0) — do not remint
+        "a9497a26",  # BB2000-ASM spent (skip-Finish / GET 0) — do not remint
     }
 )
 
@@ -86,7 +88,8 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "1020249-1",  # spent e21bc43 pass-2 wiped grid — do not PATCH or remint
         "5003313-001",  # spent 526d139 Finish on leftover 105918-1 — do not PATCH or remint
         "P001545",  # spent 9735155 page Finish empty body — do not PATCH or remint
-        # Next unused after page-grid Finish: BB2000-ASM or 11796-1 — you will be told.
+        "BB2000-ASM",  # spent ad38881 skip-Finish / GET 0 — do not PATCH or remint
+        # Next unused after the page fn fires: EHB3112. Not BB2000-ASM. Not 11796-1.
         # No unused Time STEP ≤27MB. Do not mint 106687-1 (43MB).
     }
 )

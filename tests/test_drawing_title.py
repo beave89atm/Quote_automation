@@ -99,6 +99,37 @@ PEDESTAL WELDMENT
     assert "BASE PLATE" not in title.upper()
 
 
+def test_bb2000_dwg_no_is_not_quote_header():
+    """Live BB2000-ASM: PN + DWG. NO. is drawing-block junk, not the header."""
+    from secturafab.item_desc import (
+        format_assembly_description,
+        format_quote_header_description,
+        title_from_job_title,
+    )
+
+    junk = "BB2000-ASM - DWG. NO."
+    assert is_drawing_boilerplate_title(junk)
+    assert is_drawing_boilerplate_title("DWG. NO.")
+    assert is_drawing_boilerplate_title("DWG NO")
+    assert format_quote_header_description(junk, part_key="BB2000-ASM") == ""
+    assert title_from_job_title(junk, part_key="BB2000-ASM") is None
+    assert format_assembly_description("BB2000-ASM", junk) == "BB2000-ASM"
+    assert title_from_exploded_names(
+        ["Root"] + ["BB2000-ASM"] * 10 + ["BB1000-ASM"] * 6 + ["BB1010-ASM"] * 2
+    ) is None
+    text = """
+BB2000-ASM
+DWG. NO.
+TITLE:
+BATTING CAGE BENCH
+"""
+    title = extract_title_from_pdf_text(text, part_key="BB2000-ASM")
+    assert title is not None
+    assert "BENCH" in title.upper()
+    assert "DWG" not in title.upper()
+    assert format_quote_header_description(title, part_key="BB2000-ASM") == title
+
+
 def test_inner_frame_plate_is_not_power_frame_weldment_header():
     """Live P001545: child INNER FRAME PLATE is not the quote header."""
     from quote_core.drawing_title import is_child_part_title

@@ -30,7 +30,7 @@ _SKIP_LINE = re.compile(
     r"CHECK OTHER OPTIONS|"
     r"ORDER\s+MATERIAL|"
     r"MARMON\s+KEYSTONE|"
-    r"DWG\s*NO:?$|APPROVED:?$|QA$|MFG$|CHECKED$|DRAWN$"
+    r"DWG\.?\s*NO\.?:?$|APPROVED:?$|QA$|MFG$|CHECKED$|DRAWN$"
     r")"
 )
 
@@ -76,7 +76,8 @@ _LEGAL_OR_BANNER = re.compile(
     r"test fit weldment|"
     r"check other options|"
     r"order\s+material|"
-    r"marmon\s+keystone"
+    r"marmon\s+keystone|"
+    r"dwg\.?\s*no"
     r")"
 )
 
@@ -358,6 +359,8 @@ def is_drawing_boilerplate_title(text: str | None) -> bool:
     if _SKIP_LINE.match(s):
         return True
     upper = s.upper()
+    if re.search(r"DWG\.?\s*NO", upper):
+        return True
     return (
         "SOLE PROPERTY" in upper
         or "DRAWING IS THE SOLE" in upper
@@ -400,7 +403,12 @@ def is_child_part_title(text: str | None) -> bool:
         return True
     if re.search(r"\bWELDMENT\s*,\s*FRAME\s+PLATE\b", upper):
         return True
-    if "WELDMENT" in upper or "ASSEMBLY" in upper or re.search(r"\bASSY\b", upper):
+    if (
+        "WELDMENT" in upper
+        or "ASSEMBLY" in upper
+        or re.search(r"\bASSY\b", upper)
+        or re.search(r"\bASM\b", upper)
+    ):
         return False
     return bool(
         re.search(
@@ -423,6 +431,10 @@ def title_from_exploded_names(names: list[str] | None) -> str | None:
         if not s or is_drawing_boilerplate_title(s):
             continue
         if is_nested_child_weldment_title(s) or is_drawing_boilerplate_title(s):
+            continue
+        # Bare BB2000 ASM / BB1000-ASM tokens are job-PN or nested ASM, not
+        # a bench/weldment header (live BB2000-ASM landed PN + DWG. NO.).
+        if re.fullmatch(r"[A-Z0-9]+[\s_\-]+(?:ASM|ASSY)", s.upper()):
             continue
         if is_child_part_title(s):
             continue

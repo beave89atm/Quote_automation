@@ -63,8 +63,13 @@ EDIT-id gate held (105918-1 still 108). grid 53==FileList 53. Page
 Finish 200 empty body / no NewItem on classified 52 kids. GET 0.
 QuoteNumber landed POWER FRAME WELDMENT-1 (must be P001545). Header
 landed WELDMENT, FRAME PLATE, INNER (child). Leave 31204345 / P001545.
-Page Finish must be the fn that reads #gridDXFParts; reconstructed
-FileList POST is not success. Next unused: BB2000-ASM or 11796-1.
+Page Finish must invoke the 23b96a9 OnAddDXFClick fn when EDIT
+matches; reconstructed FileList POST is not success. Live
+BB2000-ASM (ad38881): skip-Finish after EDIT+grid 19 is a fail —
+*ASM / *-ASM are nested assemblies (re-explode BB1000-ASM /
+BB1010-ASM, not job-PN BB2000-ASM leaves). Leave a9497a26 /
+BB2000-ASM. Next unused after the page fn fires: EHB3112.
+Not BB2000-ASM. Not 11796-1.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -828,13 +833,19 @@ def filelist_row_display_name(row: dict[str, Any] | None) -> str:
 
 
 def is_nested_assembly_name(name: str | None) -> bool:
-    """*ASSY* / *WELDMENT* / *ASSEMBLY* titles — not leaf plate/tube nouns."""
+    """*ASSY* / *ASM* / *WELDMENT* / *ASSEMBLY* titles — not leaf nouns.
+
+    ``*ASM`` / ``*-ASM`` is the same class as ``*ASSY*`` (live BB2000-ASM).
+    Do not match the letters ASM inside PLASMA / ASSEMBLY.
+    """
     text = str(name or "").strip().upper()
     if not text or text == "ROOT":
         return False
     if "WELDMENT" in text or "ASSEMBLY" in text:
         return True
-    return "ASSY" in text
+    if "ASSY" in text:
+        return True
+    return bool(re.search(r"(?:^|[\s_\-/])ASM(?:$|[\s_\-/.,])", text))
 
 
 def filelist_row_is_leaf_noun(name: str | None) -> bool:
@@ -973,9 +984,11 @@ def is_nested_assembly_row(
     part_key: str = "",
     cad_filename: str = "",
 ) -> bool:
-    """FileList row to re-explode: *ASSY* / *WELDMENT* / *ASSEMBLY* / unnamed -NNNN.
+    """FileList row to re-explode: *ASSY* / *ASM* / *WELDMENT* / unnamed -NNNN.
 
     Live 1020249-1: kids named the job PN are unnamed leaf solids, not nests.
+    Live BB2000-ASM: job-PN ``BB2000-ASM`` leaves are not nests even though
+    the name ends in ``-ASM``. Re-explode ``BB1000-ASM`` / ``BB1010-ASM``.
     Do not match ``normalize(name)==part_key``.
     """
     if not isinstance(row, dict):
@@ -985,6 +998,10 @@ def is_nested_assembly_row(
     if is_raw_step_upload_row(row, part_key=part_key, cad_filename=cad_filename):
         return False
     name = filelist_row_display_name(row)
+    from .item_desc import normalize_part_token
+
+    if part_key and normalize_part_token(name) == normalize_part_token(part_key):
+        return False
     return is_nested_assembly_name(name) or is_unnamed_step_node(name)
 
 

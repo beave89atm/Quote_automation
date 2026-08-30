@@ -384,7 +384,9 @@ def title_from_job_title(title: str | None, *, part_key: str | None = None) -> s
     key = normalize_part_token(part_key)
     if key and text.upper().startswith(key.upper()):
         rest = text[len(key) :].strip(" -")
-        return rest.upper() if rest else None
+        if not rest or is_drawing_boilerplate_title(rest):
+            return None
+        return rest.upper()
     return text
 
 

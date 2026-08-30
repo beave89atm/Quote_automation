@@ -2680,6 +2680,63 @@ def test_1020249_job_pn_kids_are_not_nests():
     assert nested == []
 
 
+def test_bb2000_asm_nested_names_build_pass2_idlist():
+    """Live BB2000-ASM: *ASM / *-ASM re-explode; job-PN leaves do not."""
+    from tests.fixtures.live_bb2000_asm import LIVE_BB2000_ASM_NAMES
+    from secturafab.website import (
+        filelist_is_assembly_only,
+        is_nested_assembly_name,
+        is_nested_assembly_row,
+        nested_assembly_id_list,
+    )
+
+    assert len(LIVE_BB2000_ASM_NAMES) == 19
+    assert is_nested_assembly_name("BB1000-ASM")
+    assert is_nested_assembly_name("BB1010-ASM")
+    assert is_nested_assembly_name("BB2000-ASM")
+    assert not is_nested_assembly_name("Root")
+    assert not is_nested_assembly_name("PLASMA CUT PLATE")
+    rows = [
+        {
+            "SourceDataID": "src-step" if i == 0 else f"id-{i}",
+            "ID": f"id-{i}",
+            "FileID": f"file-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+        for i, name in enumerate(LIVE_BB2000_ASM_NAMES)
+    ]
+    assert filelist_is_assembly_only(
+        rows, part_key="BB2000-ASM", cad_filename="BB2000-ASM.STEP"
+    )
+    assert not is_nested_assembly_row(
+        {"Name": "BB2000-ASM", "ID": "job-pn"},
+        part_key="BB2000-ASM",
+        cad_filename="BB2000-ASM.STEP",
+    )
+    assert is_nested_assembly_row(
+        {"Name": "BB1000-ASM", "ID": "nest-a"},
+        part_key="BB2000-ASM",
+        cad_filename="BB2000-ASM.STEP",
+    )
+    nested = nested_assembly_id_list(
+        rows,
+        part_key="BB2000-ASM",
+        cad_filename="BB2000-ASM.STEP",
+        used_ids={"src-step"},
+    )
+    ids = [sid for sid, _u in nested]
+    names_by_id = {f"id-{i}": name for i, name in enumerate(LIVE_BB2000_ASM_NAMES)}
+    nest_names = [names_by_id[sid] for sid in ids]
+    assert nest_names.count("BB1000-ASM") == 6
+    assert nest_names.count("BB1010-ASM") == 2
+    assert "BB2000-ASM" not in nest_names
+    assert "Root" not in nest_names
+    assert classify_sectura_item("BB1000-ASM") == "Assembly"
+    assert classify_sectura_item("BB1010-ASM") == "Assembly"
+
+
 def test_nested_assy_reexplode_then_finish_leaf_filelist(tmp_path: Path):
     """After /part/create, re-explode ASSY/WELDMENT IDs until plate/tube nouns."""
     from tests.fixtures.live_28110_nested import (
@@ -3570,6 +3627,90 @@ def test_reconstructed_filelist_is_not_page_grid_finish():
     fetch_finish.assert_not_called()
     assert result["via"] == "skipped"
     assert real._finish_via == "skipped"
+
+
+def test_bb2000_edit_match_skip_finish_fails_fixture():
+    """EDIT match + grid==filelist + skip-Finish is a fail — must call page fn."""
+    from secturafab.chrome_cdp import (
+        _PAGE_FINISH_JS,
+        page_finish_skip_after_edit_match_is_fail,
+    )
+    from secturafab.client import SecturaFabClient
+
+    minted = "a9497a26-cba8-4ec9-a849-cb8bef81cbcc"
+    assert page_finish_skip_after_edit_match_is_fail(
+        edit_quote_id=minted,
+        minted_id=minted,
+        grid_n=19,
+        filelist_n=19,
+        via="skipped",
+    ) is True
+    js = _PAGE_FINISH_JS
+    find_body = js.split("function findFinishName")[1].split("var finishName")[0]
+    assert "OnAddDXFClick" in find_body
+    assert "typeof window[preferred[i]] === \"function\"" in find_body
+    assert "gridDXFParts" not in find_body
+    assert "via: \"page_fn\"" in js.split("if (!hit)")[1]
+    edit = {
+        "title": "*Quote-BB2000-ASM",
+        "url": f"https://www.secturafab.com/Quote/EDIT/{minted}",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.timeout_seconds = 30
+    real._af_source = "chrome_dom"
+    real._part_create_list_len = 19
+    real._grid_present = True
+    real._grid_dxf_row_count = 19
+    real._stale_grid = False
+    real.session = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.quote_edit_tab", return_value=edit
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_dxf_finish",
+        return_value={
+            "via": "page_fn",
+            "finish_fn": "OnAddDXFClick",
+            "reads_kendo": False,
+            "grid_dxf_row_count": 19,
+            "finish_filelist_n": 19,
+            "status": 200,
+            "body_keys": [],
+            "body_type": "empty",
+            "has_NewItem": False,
+            "has_QuoteItem": False,
+            "text_len": 0,
+            "empty_body": True,
+            "request_keys": ["ID", "ItemID", "customerMaterial", "FileList"],
+        },
+    ), patch(
+        "secturafab.chrome_cdp.post_add_item_dxf_files_from_quotes_tab",
+    ) as fetch_finish:
+        result = real.add_item_dxf_files(
+            quote_id=minted,
+            file_list=[{"Name": "PYTHON_REBUILT", "Qty": 1}] * 18,
+        )
+    real.session.request.assert_not_called()
+    fetch_finish.assert_not_called()
+    assert result["via"] == "page_fn"
+    assert result["finish_fn"] == "OnAddDXFClick"
+    assert result["reads_kendo"] is False
+    assert result["empty_body"] is True
+    assert result["has_NewItem"] is False
+    assert not page_finish_skip_after_edit_match_is_fail(
+        edit_quote_id=minted,
+        minted_id=minted,
+        grid_n=19,
+        filelist_n=19,
+        via=result["via"],
+    )
 
 
 def test_page_grid_finish_empty_body_is_not_success(tmp_path: Path):

@@ -175,6 +175,7 @@ def test_allocate_quote_number_is_bare_part():
     assert service.allocate_quote_number("21678-1") == "21678-1"
     assert service.allocate_quote_number("PN 21678-1") == "21678-1"
     assert service.allocate_quote_number("P001545") == "P001545"
+    assert service.allocate_quote_number("BB2000-ASM") == "BB2000-ASM"
 
 
 def test_resolve_part_key_is_p001545_not_weldment_title():

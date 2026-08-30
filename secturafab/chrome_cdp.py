@@ -28,9 +28,18 @@ the tab is a spent id, or ``grid_dxf_row_count`` is leftover kendo
 (65 vs FileList 12). Do not POST ``AddItem_DXFFiles`` on the leftover.
 
 Live P001545 (9735155): EDIT-id matched, grid 53==FileList 53, page
-Finish 200 empty body. Invoke only a page fn whose source reads
-``#gridDXFParts``. Capture ``finish_filelist_n`` vs grid 53. Do not
-POST a Python-rebuilt FileList. HTTP 200 empty is not success.
+Finish 200 empty body. Do not POST a Python-rebuilt FileList. HTTP
+200 empty is not success.
+
+Live BB2000-ASM (ad38881): EDIT-id + quote number held, grid 19==
+FileList 19, then Finish was skipped because findFinishName required
+the literal ``#gridDXFParts`` in the page-fn source. 23b96a9 invoked
+``OnAddDXFClick`` (that is the QuoteOrderEdit Finish). When EDIT
+matches and the grid is present, invoke that fn even if its source
+does not contain ``#gridDXFParts``. Log ``finish_fn`` and whether
+the source reads the kendo dataSource. Do not skip. Leave
+a9497a26 / BB2000-ASM. Next unused after the page fn fires:
+EHB3112. Not BB2000-ASM. Not 11796-1.
 
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys / counts only.
@@ -1045,33 +1054,38 @@ _PAGE_FINISH_JS = """(function() {
     return Promise.resolve(Object.assign(summarize(0, null), {
       via: "skipped",
       finish_fn: "",
+      reads_kendo: false,
       grid_dxf_row_count: count
     }));
   }
-  function readsGridFinish(fn) {
-    var src = String(fn || "");
-    return src.indexOf("gridDXFParts") >= 0
-      && src.indexOf("/Quote/AddItem_DXFFiles") >= 0;
+  function fnSource(fn) {
+    try { return Function.prototype.toString.call(fn); } catch (e) { return ""; }
+  }
+  function readsKendo(src) {
+    src = String(src || "");
+    return src.indexOf("gridDXFParts") >= 0 || src.indexOf("dataSource") >= 0;
+  }
+  function postsFinish(src) {
+    return String(src || "").indexOf("/Quote/AddItem_DXFFiles") >= 0;
   }
   function findFinishName() {
-    var names = [
+    var preferred = [
       "OnAddDXFClick", "OnAddDXFFilesClick", "AddDXFFiles", "AddItemDXFFiles"
     ];
-    for (var i = 0; i < names.length; i++) {
-      if (typeof window[names[i]] === "function"
-          && readsGridFinish(window[names[i]])) {
-        return names[i];
-      }
+    for (var i = 0; i < preferred.length; i++) {
+      if (typeof window[preferred[i]] === "function") return preferred[i];
     }
     try {
       for (var k in window) {
         var fn = window[k];
-        if (typeof fn === "function" && readsGridFinish(fn)) return k;
+        if (typeof fn === "function" && postsFinish(fnSource(fn))) return k;
       }
     } catch (e) {}
     return "";
   }
   var finishName = findFinishName();
+  var finishSrc = finishName ? fnSource(window[finishName]) : "";
+  var reads_kendo = readsKendo(finishSrc);
   var hooked = new Promise(function(resolve) {
     if (!window.jQuery || !jQuery.ajax) {
       resolve(null);
@@ -1117,7 +1131,8 @@ _PAGE_FINISH_JS = """(function() {
   });
   var via = "";
   if (finishName) {
-    try { window[finishName](); via = "page_fn"; } catch (e) { via = ""; }
+    try { window[finishName](); } catch (e) {}
+    via = "page_fn";
   }
   if (!via) {
     var clicked = false;
@@ -1146,6 +1161,7 @@ _PAGE_FINISH_JS = """(function() {
     return Promise.resolve(Object.assign(summarize(0, null), {
       via: "",
       finish_fn: "",
+      reads_kendo: false,
       grid_dxf_row_count: count,
       List: rows
     }));
@@ -1153,20 +1169,23 @@ _PAGE_FINISH_JS = """(function() {
   return hooked.then(function(hit) {
     if (!hit) {
       return Object.assign(summarize(0, null), {
-        via: "",
+        via: "page_fn",
         finish_fn: finishName,
+        reads_kendo: reads_kendo,
         grid_dxf_row_count: count,
         finish_filelist_n: 0,
         request_keys: [],
-        List: rows
+        body_empty: true
       });
     }
     var extra = summarize(hit.status, hit.data);
     extra.via = via || "page_fn";
     extra.finish_fn = finishName;
+    extra.reads_kendo = reads_kendo;
     extra.grid_dxf_row_count = count;
     extra.finish_filelist_n = Number(hit.finish_filelist_n || 0);
     extra.request_keys = hit.request_keys || [];
+    extra.body_empty = extra.body_type === "empty" && !extra.has_NewItem;
     return extra;
   });
 })"""
@@ -1418,6 +1437,33 @@ def bind_do_create_dxf_parts_success(
     }
 
 
+def page_finish_skip_after_edit_match_is_fail(
+    *,
+    edit_quote_id: str | None,
+    minted_id: str | None,
+    grid_n: int,
+    filelist_n: int,
+    via: str | None,
+) -> bool:
+    """True when skip-Finish after EDIT match + equal counts is a fixture fail.
+
+    Live BB2000-ASM (ad38881): edit==minted, grid 19==FileList 19,
+    ``finish_via=skipped``. Must invoke the 23b96a9 page fn instead.
+    """
+    edit = str(edit_quote_id or "").strip()
+    minted = str(minted_id or "").strip()
+    if not edit or edit != minted:
+        return False
+    try:
+        gn = int(grid_n)
+        fn = int(filelist_n)
+    except (TypeError, ValueError):
+        return False
+    if gn <= 1 or gn != fn:
+        return False
+    return str(via or "").strip() in {"", "skipped"}
+
+
 def invoke_page_dxf_finish(
     *,
     base: str | None = None,
@@ -1428,6 +1474,7 @@ def invoke_page_dxf_finish(
     skipped = {
         "via": "skipped",
         "finish_fn": "",
+        "reads_kendo": False,
         "grid_dxf_row_count": 0,
         "finish_filelist_n": 0,
         "request_keys": [],
@@ -1458,6 +1505,7 @@ def invoke_page_dxf_finish(
     return {
         "via": via,
         "finish_fn": str(value.get("finish_fn") or ""),
+        "reads_kendo": bool(value.get("reads_kendo")),
         "grid_dxf_row_count": int(value.get("grid_dxf_row_count") or 0),
         "finish_filelist_n": int(value.get("finish_filelist_n") or 0),
         "request_keys": [str(k) for k in (value.get("request_keys") or [])],

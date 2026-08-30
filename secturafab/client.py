@@ -1197,14 +1197,17 @@ class SecturaFabClient:
         item_id: str | None = None,
         customer_material: bool = False,
     ) -> Any:
-        """POST /Quote/AddItem_DXFFiles — page Finish that reads #gridDXFParts.
+        """POST /Quote/AddItem_DXFFiles — page Finish (OnAddDXFClick).
 
         Live 34137-1: cookie-HTTP 200 empty / ItemList 0.
         Live 34137-2: Quotes-tab fetch of a Python-rebuilt FileList is the
         same empty 200 — #gridDXFParts was never bound.
         Live 34632-2: page createAllParts explode returned t.List=0.
-        Invoke page Finish after fetch+bind. Do not POST a Python-rebuilt
-        FileList (live P001545 empty 200 / GET 0).
+        Invoke the 23b96a9 QuoteOrderEdit Finish fn after fetch+bind.
+        Do not POST a Python-rebuilt FileList (live P001545 empty 200 /
+        GET 0). Live BB2000-ASM: do not skip when EDIT matches and the
+        grid is present — invoke OnAddDXFClick even if its source lacks
+        the literal ``#gridDXFParts``.
         """
         from .chrome_cdp import (
             chrome_quotes_live,
@@ -1264,7 +1267,9 @@ class SecturaFabClient:
             return self._dxf_finish_capture({}, via="skipped")
         if via != "page_fn":
             # Live P001545: reconstructed FileList POST is empty 200 / GET 0.
-            # Success is the page fn that reads #gridDXFParts.
+            # Live BB2000-ASM: skip after EDIT+equal grid is a fail — the
+            # page fn must have been invoked (via=page_fn), even without
+            # ``#gridDXFParts`` in its source.
             self._finish_via = "skipped"
             return self._dxf_finish_capture(page, via="skipped")
         self._finish_via = "page_fn"
@@ -1290,6 +1295,7 @@ class SecturaFabClient:
             "text_len": int(result.get("text_len") or 0),
             "via": via,
             "finish_fn": str(result.get("finish_fn") or ""),
+            "reads_kendo": bool(result.get("reads_kendo")),
             "finish_filelist_n": int(result.get("finish_filelist_n") or 0),
             "grid_dxf_row_count": int(result.get("grid_dxf_row_count") or 0),
             "request_keys": [str(k) for k in (result.get("request_keys") or [])],

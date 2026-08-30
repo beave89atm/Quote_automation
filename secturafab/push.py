@@ -291,6 +291,7 @@ def classify_sectura_item(description: str) -> str:
         "WELDMENT" in text
         or "ASSEMBLY" in text
         or re.search(r"\bASSY\b", text)
+        or re.search(r"\bASM\b", text)
         or " ASM," in text
         or " ASM " in text
     ):
@@ -2636,8 +2637,13 @@ class SecturaFabPushService:
                 grid_n = result.get("grid_dxf_row_count")
             if finish_fn:
                 notes.append(f"finish_fn={finish_fn}")
-            if finish_n:
+            if finish_n or via == "page_fn":
                 notes.append(f"finish_filelist_n={finish_n}")
+            if isinstance(result, dict) and "reads_kendo" in result:
+                notes.append(
+                    "reads_kendo="
+                    + ("true" if result.get("reads_kendo") else "false")
+                )
             req_keys = [str(k) for k in (result.get("request_keys") or [])]
             if req_keys:
                 notes.append("finish_request_keys=" + ",".join(req_keys[:12]))
