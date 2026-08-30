@@ -55,14 +55,13 @@ and Status absent; 200 empty / GET 0. Persist FileType from
 SetPartMode ItemType/Category/PartMode onto the dataItem. Do not
 invent Status. Leave aab5b3e2 / 16629-1.
 Live 10098-1 (315cb19 leftover PIVOTING FOOT, 6a568912): posted
-FileType=Cad (string) plus CadType+Stock+SID. Finish still 200
-empty / GET 0. FileType-on-the-row is not the List,Result miss.
-105918-1 List,Result was 66 Component / 0 Cad — not Cad leftover
-gold. Cad vs Component is a different AddItem_DXFFiles server path.
-Log posted ErrorStatus + Qty values and FileType value/type; Cad
-path key *names* only. Do not invent InternalData/unfold/Status
-or FileType "CAD"/100. Leave 6a568912 / 10098-1. Do not mint
-until a box capture names the Cad-path miss.
+FileType=Cad (string) plus CadType+Stock+SID and InternalData/
+ImageString/HadOpenContours/OutsidePerimeter *keys*. Finish still
+200 empty / GET 0. Unfold*/DXF* child keys absent. Named miss:
+Cad AddItem_DXFFiles no-ops when InternalData/ImageString are
+empty. Copy those keys through if present; log emptiness bools
+only; skip Finish. Do not invent unfold/geometry or FileType
+"CAD"/100. Leave 6a568912 / 10098-1. Do not remint. Do not mint.
 
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys /
@@ -1024,7 +1023,9 @@ _BIND_DO_CREATE_SUCCESS_JS = """(function(spec) {
     function copyIdent(src, dest) {
       var keys = [
         "CadType", "Stock_X", "Stock_Y", "Stock_Z", "Stock_Units",
-        "Stock_Length", "Stock_Diameter"
+        "Stock_Length", "Stock_Diameter",
+        "InternalData", "InternalHTML", "ImageString", "HadOpenContours",
+        "OutsidePerimeter", "OutsidePerimeter_Units", "OutsidePerimeter_UseLocal"
       ];
       if (!src || !dest) return;
       for (var ki = 0; ki < keys.length; ki++) {
@@ -1051,7 +1052,9 @@ _BIND_DO_CREATE_SUCCESS_JS = """(function(spec) {
     } catch (e3) {}
     var logKeys = [
       "CadType", "Stock_X", "Stock_Y", "Stock_Z", "Stock_Units",
-      "Stock_Length", "Stock_Diameter", "FileType", "SourceDataID", "FileID", "ID"
+      "Stock_Length", "Stock_Diameter", "FileType", "SourceDataID", "FileID", "ID",
+      "InternalData", "InternalHTML", "ImageString", "HadOpenContours",
+      "OutsidePerimeter"
     ];
     var kendoKeys = [];
     for (var lk = 0; lk < logKeys.length; lk++) {
@@ -1106,10 +1109,32 @@ _PAGE_FINISH_JS = """(function() {
     else r.FileType = cat;
     return r;
   }
+  function payloadEmpty(v) {
+    if (v == null) return true;
+    if (typeof v === "string") {
+      var s = String(v).trim().toLowerCase();
+      return !s || s === "[]" || s === "{}" || s === "null" || s === "undefined" || s === "none";
+    }
+    if (typeof v === "object") {
+      if (Array.isArray(v)) return v.length === 0;
+      return Object.keys(v).length === 0;
+    }
+    return false;
+  }
+  function isCadRow(r) {
+    if (!r || typeof r !== "object") return false;
+    var ft = String(r.FileType || "");
+    if (ft === "Cad") return true;
+    var cat = String(r.ItemType || r.Category || "");
+    if (cat === "Cad") return true;
+    return Number(r.PartMode) === 0;
+  }
   function keepIdentity(src, dest) {
     var keys = [
       "CadType", "Stock_X", "Stock_Y", "Stock_Z", "Stock_Units",
-      "Stock_Length", "Stock_Diameter", "FileType", "SourceDataID", "FileID", "ID"
+      "Stock_Length", "Stock_Diameter", "FileType", "SourceDataID", "FileID", "ID",
+      "InternalData", "InternalHTML", "ImageString", "HadOpenContours",
+      "OutsidePerimeter", "OutsidePerimeter_Units", "OutsidePerimeter_UseLocal"
     ];
     if (!src || !dest) return dest;
     for (var i = 0; i < keys.length; i++) {
@@ -1299,7 +1324,34 @@ _PAGE_FINISH_JS = """(function() {
       filelist_filetype_value: ((rows[0] || {}).FileType == null) ? "" : String(rows[0].FileType),
       filelist_filetype_type: ((rows[0] || {}).FileType === undefined) ? "missing" : typeof rows[0].FileType,
       filelist_cad_path_keys: [],
+      filelist_internaldata_empty: payloadEmpty((rows[0] || {}).InternalData),
+      filelist_imagestring_empty: payloadEmpty((rows[0] || {}).ImageString),
       finish_why: "filelist_missing_keys=" + kendoIdentMiss.join("+")
+    }));
+  }
+  if (isCadRow(rows[0]) && (
+      (rows[0].InternalData !== undefined && payloadEmpty(rows[0].InternalData))
+      || (rows[0].ImageString !== undefined && payloadEmpty(rows[0].ImageString))
+  )) {
+    return Promise.resolve(Object.assign(summarize(0, null), {
+      via: "skipped",
+      finish_fn: "",
+      reads_kendo: kendoGridPresent(),
+      grid_dxf_row_count: count,
+      filelist_from_kendo: false,
+      finish_af_present: false,
+      kendo_row_keys: kendoIdentKeys,
+      filelist_row_keys: kendoIdentKeys,
+      filelist_missing_keys: missingOf(kendoIdentKeys, COMPARE_KEYS),
+      filelist_missing_identity: [],
+      filelist_errorstatus: Number((rows[0] || {}).ErrorStatus != null ? rows[0].ErrorStatus : 0),
+      filelist_qty: Number((rows[0] || {}).Qty != null ? rows[0].Qty : ((rows[0] || {}).Quantity != null ? rows[0].Quantity : 0)),
+      filelist_filetype_value: ((rows[0] || {}).FileType == null) ? "" : String(rows[0].FileType),
+      filelist_filetype_type: ((rows[0] || {}).FileType === undefined) ? "missing" : typeof rows[0].FileType,
+      filelist_cad_path_keys: [],
+      filelist_internaldata_empty: payloadEmpty((rows[0] || {}).InternalData),
+      filelist_imagestring_empty: payloadEmpty((rows[0] || {}).ImageString),
+      finish_why: "filelist_cad_payload_empty"
     }));
   }
   function fnSource(fn) {
@@ -1386,7 +1438,9 @@ _PAGE_FINISH_JS = """(function() {
         var ftType = (ftRaw === undefined) ? "missing" : typeof ftRaw;
         var qtyRaw = first.Qty != null ? first.Qty : first.Quantity;
         var cadPath = [
-          "InternalData", "Unfold", "HasUnfold", "Unfolded",
+          "InternalData", "InternalHTML", "ImageString", "HadOpenContours",
+          "OutsidePerimeter", "OutsidePerimeter_Units", "OutsidePerimeter_UseLocal",
+          "Unfold", "HasUnfold", "Unfolded",
           "DXF", "DxfId", "DXFID", "DxfFileID", "HasDXF"
         ];
         var cadPathHave = [];
@@ -1402,6 +1456,8 @@ _PAGE_FINISH_JS = """(function() {
           filelist_filetype_value: (ftRaw === undefined || ftRaw === null) ? "" : String(ftRaw),
           filelist_filetype_type: ftType,
           filelist_cad_path_keys: cadPathHave,
+          filelist_internaldata_empty: payloadEmpty(first.InternalData),
+          filelist_imagestring_empty: payloadEmpty(first.ImageString),
           filelist_from_kendo: fromKendo,
           filelist_sourcedataid_n: sid_n,
           filelist_id_n: id_n,
@@ -1509,6 +1565,8 @@ _PAGE_FINISH_JS = """(function() {
     extra.filelist_filetype_value = String(hit.filelist_filetype_value || "");
     extra.filelist_filetype_type = String(hit.filelist_filetype_type || "");
     extra.filelist_cad_path_keys = hit.filelist_cad_path_keys || [];
+    extra.filelist_internaldata_empty = !!hit.filelist_internaldata_empty;
+    extra.filelist_imagestring_empty = !!hit.filelist_imagestring_empty;
     extra.finish_af_present = !!hit.finish_af_present;
     extra.finish_why = String(hit.finish_why || "");
     extra.body_empty = extra.body_type === "empty" && !extra.has_NewItem;
@@ -1833,6 +1891,8 @@ def invoke_page_dxf_finish(
         "filelist_filetype_value": "",
         "filelist_filetype_type": "",
         "filelist_cad_path_keys": [],
+        "filelist_internaldata_empty": True,
+        "filelist_imagestring_empty": True,
         "finish_af_present": False,
         "finish_why": "wrong_document",
     }
@@ -1884,6 +1944,8 @@ def invoke_page_dxf_finish(
         "filelist_cad_path_keys": [
             str(k) for k in (value.get("filelist_cad_path_keys") or [])
         ],
+        "filelist_internaldata_empty": bool(value.get("filelist_internaldata_empty")),
+        "filelist_imagestring_empty": bool(value.get("filelist_imagestring_empty")),
         "finish_af_present": bool(value.get("finish_af_present")),
         "finish_why": str(value.get("finish_why") or ""),
         "status": int(value.get("status") or 0),
@@ -2075,7 +2137,9 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       }
       var logKeys = [
         "CadType", "Stock_X", "Stock_Y", "Stock_Z", "Stock_Units",
-        "Stock_Length", "Stock_Diameter", "FileType", "SourceDataID", "FileID", "ID"
+        "Stock_Length", "Stock_Diameter", "FileType", "SourceDataID", "FileID", "ID",
+        "InternalData", "InternalHTML", "ImageString", "HadOpenContours",
+        "OutsidePerimeter"
       ];
       var first = {};
       try {

@@ -3884,6 +3884,16 @@ def test_kendo_cadimport_identity_survives_into_filelist():
     assert "CadType" not in invented
     assert "Stock_X" not in invented
     assert "Stock_Y" not in invented
+    assert "InternalData" not in invented
+    assert "ImageString" not in invented
+    src_payload = {**src, "InternalData": "", "ImageString": ""}
+    kept_payload = copy_cadimport_identity_through(
+        src_payload, {"ID": "x", "FileType": "Cad", "SourceDataID": "x"}
+    )
+    assert kept_payload["InternalData"] == ""
+    assert kept_payload["ImageString"] == ""
+    assert "Unfold" not in kept_payload
+    assert "DXF" not in kept_payload
 
 
 def test_setpartmode_filetype_survives_into_filelist():
@@ -3924,6 +3934,76 @@ def test_setpartmode_filetype_survives_into_filelist():
     assert persist_setpartmode_filetype({"FileType": 100}).get("FileType") == 100
 
 
+def test_cad_empty_internaldata_imagestring_skips_finish():
+    """Live 10098-1: Cad-path keys present and empty → fail-closed skip. Do not invent."""
+    from secturafab.website import (
+        cad_filelist_payload_blocks_finish,
+        cad_payload_value_empty,
+        copy_cadimport_identity_through,
+        filelist_cad_payload_empty_bools,
+        kendo_filelist_for_finish,
+    )
+
+    row = {
+        "ID": "x",
+        "FileID": "f",
+        "SourceDataID": "x",
+        "FileType": "Cad",
+        "CadType": 0,
+        "Stock_X": 11.0,
+        "Stock_Y": 6.25,
+        "ErrorStatus": 0,
+        "Qty": 1,
+        "ItemType": "Cad",
+        "InternalData": "",
+        "ImageString": "",
+        "InternalHTML": "",
+        "HadOpenContours": False,
+        "OutsidePerimeter": 0,
+        "Name": "PIVOTING FOOT",
+    }
+    bools = filelist_cad_payload_empty_bools(row)
+    assert bools["filelist_internaldata_empty"] is True
+    assert bools["filelist_imagestring_empty"] is True
+    assert cad_payload_value_empty("") is True
+    assert cad_payload_value_empty("[]") is True
+    assert cad_payload_value_empty({"holes": 1}) is False
+    assert cad_filelist_payload_blocks_finish(row) is True
+    cap = kendo_filelist_for_finish([row], from_datasource=True)
+    assert cap["should_finish"] is False
+    assert cap["finish_why"] == "filelist_cad_payload_empty"
+    assert cap["filelist_internaldata_empty"] is True
+    assert cap["filelist_imagestring_empty"] is True
+    assert cap["FileList"][0]["InternalData"] == ""
+    assert cap["FileList"][0]["ImageString"] == ""
+    assert "Unfold" not in cap["FileList"][0]
+    page = {
+        **row,
+        "InternalData": '[{"Type":"page"}]',
+        "ImageString": "iVBORw0KGgo",
+    }
+    filled = kendo_filelist_for_finish([page], from_datasource=True)
+    assert filled["should_finish"] is True
+    assert filled["filelist_internaldata_empty"] is False
+    assert filled["filelist_imagestring_empty"] is False
+    component = {
+        "ID": "x",
+        "FileType": "Component",
+        "CadType": 0,
+        "Stock_X": 1,
+        "Stock_Y": 2,
+        "InternalData": "",
+        "ImageString": "",
+    }
+    assert cad_filelist_payload_blocks_finish(component) is False
+    assert kendo_filelist_for_finish([component], from_datasource=True)[
+        "should_finish"
+    ] is True
+    invented = copy_cadimport_identity_through({"ID": "x", "FileType": "Cad"}, {})
+    assert "InternalData" not in invented
+    assert "ImageString" not in invented
+
+
 def test_filelist_errorstatus_qty_and_filetype_value_type():
     """Log posted ErrorStatus/Qty values and FileType value/type — do not invent."""
     from secturafab.chrome_cdp import _PAGE_FINISH_JS
@@ -3962,13 +4042,19 @@ def test_filelist_errorstatus_qty_and_filetype_value_type():
     assert cap["filelist_filetype_value"] == "Cad"
     assert cap["filelist_filetype_type"] == "str"
     assert cap["filelist_cad_path_keys"] == []
+    assert cap["filelist_internaldata_empty"] is True
+    assert cap["filelist_imagestring_empty"] is True
     assert cap["should_finish"] is True
     js = _PAGE_FINISH_JS
     assert "filelist_errorstatus" in js
     assert "filelist_qty" in js
     assert "filelist_filetype_value" in js
     assert "filelist_filetype_type" in js
+    assert "filelist_internaldata_empty" in js
+    assert "filelist_imagestring_empty" in js
+    assert "filelist_cad_payload_empty" in js
     assert "InternalData" in js
+    assert "ImageString" in js
     assert "Unfold" in js
 
 
@@ -5473,6 +5559,11 @@ def test_filetype_cad_empty_body_is_not_success(tmp_path: Path):
             "ItemType": "Cad",
             "PartMode": 0,
             "FileType": "Cad",
+            "InternalData": "",
+            "ImageString": "",
+            "InternalHTML": "",
+            "HadOpenContours": False,
+            "OutsidePerimeter": 0,
         }
     ]
     client = MagicMock()
@@ -5587,24 +5678,17 @@ def test_filetype_cad_empty_body_is_not_success(tmp_path: Path):
     blob = " ".join(notes)
     ok = (
         "not success" not in blob
-        and "item_count=0" not in blob
-        and "GET item_count=0" not in blob
-        and "empty body" not in blob.lower()
+        and "not Finishing" not in blob
+        and "filelist_internaldata_empty=true" not in blob
     )
     assert ok is False
-    assert "filelist_errorstatus=0" in blob
-    assert "filelist_qty=1" in blob
-    assert "filelist_filetype_value=Cad" in blob
-    assert "filelist_filetype_type=str" in blob
-    assert "filelist_cad_path_keys=" in blob
-    assert "filelist_missing_keys=" in blob
-    assert "Status" in blob
-    assert "FileType=Cad persist is not success" in blob
-    assert "66 Component" in blob
-    assert "empty body" in blob.lower()
+    assert "filelist_internaldata_empty=true" in blob
+    assert "filelist_imagestring_empty=true" in blob
+    assert "InternalData/ImageString empty" in blob
+    assert "not Finishing" in blob
     assert "not success" in blob
-    assert "item_count=0" in blob or "GET item_count=0" in blob
-    client.add_item_dxf_files.assert_called()
+    assert "unfold" in blob.lower()
+    client.add_item_dxf_files.assert_not_called()
 
 
 def test_part_create_empty_list_skips_bind_and_finish():

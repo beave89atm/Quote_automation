@@ -2391,8 +2391,10 @@ class SecturaFabPushService:
         Stock_*, FileType, SID/FileID/ID) and the same names on posted FileList.
         If kendo has CadType/Stock_*, copy them through — do not invent values.
         If kendo lacks them after explode, that is a /part/create bind miss
-        (not a Finish-hook miss): do not Finish. Do not mint until a box
-        capture shows CadType+Stock_X+Stock_Y on kendo and the posted FileList.
+        (not a Finish-hook miss): do not Finish.
+        Cad leftover Finish no-ops when InternalData/ImageString are empty
+        (live 10098-1). Copy those keys through if present; log emptiness
+        bools only; skip Finish. Do not invent unfold/geometry.
         """
         notes: list[str] = []
         if cadimport_step_too_large(cad_files):
@@ -2574,7 +2576,11 @@ class SecturaFabPushService:
         )
         notes.extend(class_notes)
         from .chrome_cdp import apply_grid_dxf_part_modes
-        from .website import filelist_missing_cadimport_identity_keys
+        from .website import (
+            cad_filelist_payload_blocks_finish,
+            filelist_cad_payload_empty_bools,
+            filelist_missing_cadimport_identity_keys,
+        )
 
         applied = apply_grid_dxf_part_modes(classified, quote_id=quote_id)
         applied = applied if isinstance(applied, dict) else {}
@@ -2668,6 +2674,26 @@ class SecturaFabPushService:
                     "live 107292-1)"
                 )
                 return notes
+        cad_block = next(
+            (r for r in ready if cad_filelist_payload_blocks_finish(r)),
+            None,
+        )
+        if cad_block is not None:
+            bools = filelist_cad_payload_empty_bools(cad_block)
+            notes.append(
+                "filelist_internaldata_empty="
+                + ("true" if bools["filelist_internaldata_empty"] else "false")
+            )
+            notes.append(
+                "filelist_imagestring_empty="
+                + ("true" if bools["filelist_imagestring_empty"] else "false")
+            )
+            notes.append(
+                "WARNING: Cad FileList InternalData/ImageString empty — "
+                "AddItem_DXFFiles no-ops (live 10098-1 leftover PIVOTING FOOT); "
+                "not Finishing; do not invent unfold/geometry; not success"
+            )
+            return notes
         result = self.client.add_item_dxf_files(
             quote_id=quote_id,
             file_list=ready,
@@ -2752,6 +2778,24 @@ class SecturaFabPushService:
                 notes.append(f"filelist_filetype_type={ft_typ or ''}")
             cad_path = [str(k) for k in (result.get("filelist_cad_path_keys") or [])]
             notes.append("filelist_cad_path_keys=" + ",".join(cad_path))
+            if "filelist_internaldata_empty" in result:
+                notes.append(
+                    "filelist_internaldata_empty="
+                    + (
+                        "true"
+                        if result.get("filelist_internaldata_empty")
+                        else "false"
+                    )
+                )
+            if "filelist_imagestring_empty" in result:
+                notes.append(
+                    "filelist_imagestring_empty="
+                    + (
+                        "true"
+                        if result.get("filelist_imagestring_empty")
+                        else "false"
+                    )
+                )
             if "finish_af_present" in result:
                 notes.append(
                     "finish_af_present="

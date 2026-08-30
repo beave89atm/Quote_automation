@@ -94,15 +94,20 @@ ItemType/Category; persist FileType onto the dataItem before
 OnAddDXFClick. Do not invent Status. Leave aab5b3e2 / 16629-1.
 Live 10098-1 (315cb19 leftover PIVOTING FOOT, 6a568912): posted FileList
 had FileType=Cad (string) plus CadType/Stock_*/SID/FileID/ID/ErrorStatus/
-Qty/ItemType/Category/PartMode. Finish still 200 empty / GET 0.
-filelist_missing_keys=Status only (PDF path — do not invent Status).
+Qty/ItemType/Category/PartMode and Cad-path keys InternalData,
+InternalHTML, ImageString, HadOpenContours, OutsidePerimeter*. Finish
+still 200 empty / GET 0. Unfold*/DXF*/GetDXF* child keys were absent.
+FileType-on-the-row and Cad-path *keys* are not the List,Result miss.
 105918-1 List,Result stamped 66 Component / 0 Cad — page File-type
 default, not the Cad leftover spec. Gold Cad+PR+laser is 21678-1 /
-Q10056 UI. FileType=Cad vs Component is a different AddItem_DXFFiles
-server path, not a missing key. OnAddDXFClick (cited) filters
-ErrorStatus===0 && Qty>0 then POSTs FileList — no unfold/InternalData
-in that snippet. Do not invent a FileType enum or InternalData. Leave
-6a568912 / 10098-1. Do not mint until the next named miss.
+Q10056 UI. Cited OnAddDXFClick filters ErrorStatus===0 && Qty>0 then
+POSTs FileList — no emptiness check and no FileType token other than
+the page/ItemType string. Persist FileType remains "Cad" from ItemType
+when missing; do not guess "CAD" / 100. Named miss: Cad
+AddItem_DXFFiles no-ops when InternalData/ImageString are empty.
+Copy those keys through if present; log emptiness bools only; skip
+Finish (fail closed) — do not invent unfold/geometry. Leave
+6a568912 / 10098-1. Do not remint. Do not mint.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -330,6 +335,8 @@ CADIMPORT_FINISH_IDENTITY_KEYS = (
     "Stock_Y",
 )
 # Copy through from kendo / t.List — never invent values.
+# Live 10098-1: InternalData/ImageString keys were on the posted FileList
+# (emptiness unknown on 315cb19). Copy if present. Do not invent unfold.
 CADIMPORT_KEEP_KEYS = (
     "CadType",
     "Stock_X",
@@ -342,6 +349,13 @@ CADIMPORT_KEEP_KEYS = (
     "SourceDataID",
     "FileID",
     "ID",
+    "InternalData",
+    "InternalHTML",
+    "ImageString",
+    "HadOpenContours",
+    "OutsidePerimeter",
+    "OutsidePerimeter_Units",
+    "OutsidePerimeter_UseLocal",
 )
 KENDO_IDENTITY_LOG_KEYS = CADIMPORT_KEEP_KEYS
 
@@ -997,7 +1011,7 @@ def persist_setpartmode_filetype(row: dict[str, Any] | None) -> dict[str, Any]:
     Live 16629-1: SetPartMode painted a badge (Cad:1 classify) but FileType
     was not on the posted FileList. Live 10098-1 posted FileType=Cad (str)
     and Finish was still empty — do not guess CAD / 100. Keep a page
-    FileType if present. Do not invent Status or geometry.
+    FileType if present. Do not invent Status, InternalData, or unfold.
     """
     out = dict(row) if isinstance(row, dict) else {}
     ft = out.get("FileType")
@@ -1022,6 +1036,12 @@ def persist_setpartmode_filetype(row: dict[str, Any] | None) -> dict[str, Any]:
 # Cad-path key *names* only — never InternalData/unfold values.
 CAD_PATH_LOG_KEYS = (
     "InternalData",
+    "InternalHTML",
+    "ImageString",
+    "HadOpenContours",
+    "OutsidePerimeter",
+    "OutsidePerimeter_Units",
+    "OutsidePerimeter_UseLocal",
     "Unfold",
     "HasUnfold",
     "Unfolded",
@@ -1031,6 +1051,7 @@ CAD_PATH_LOG_KEYS = (
     "DxfFileID",
     "HasDXF",
 )
+_EMPTY_CAD_PAYLOAD_STRINGS = frozenset({"", "[]", "{}", "null", "undefined", "none"})
 
 
 def filelist_errorstatus_qty(row: dict[str, Any] | None) -> dict[str, Any]:
@@ -1068,6 +1089,64 @@ def filelist_cad_path_keys(row: dict[str, Any] | None) -> list[str]:
     return [k for k in CAD_PATH_LOG_KEYS if k in row]
 
 
+def cad_payload_value_empty(value: Any) -> bool:
+    """True when InternalData/ImageString has no payload — never log the value."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip().casefold() in _EMPTY_CAD_PAYLOAD_STRINGS
+    if isinstance(value, (bytes, bytearray)):
+        return len(value) == 0
+    if isinstance(value, (list, tuple, dict, set)):
+        return len(value) == 0
+    return False
+
+
+def filelist_cad_payload_empty_bools(row: dict[str, Any] | None) -> dict[str, bool]:
+    """Posted InternalData/ImageString emptiness bools only (live 10098-1)."""
+    if not isinstance(row, dict):
+        return {
+            "filelist_internaldata_empty": True,
+            "filelist_imagestring_empty": True,
+        }
+    return {
+        "filelist_internaldata_empty": cad_payload_value_empty(row.get("InternalData")),
+        "filelist_imagestring_empty": cad_payload_value_empty(row.get("ImageString")),
+    }
+
+
+def is_cad_filelist_row(row: dict[str, Any] | None) -> bool:
+    """Posted FileType/ItemType/Category Cad — do not guess CAD / ProductType 100."""
+    if not isinstance(row, dict):
+        return False
+    ft = str(row.get("FileType") or "").strip()
+    if ft == "Cad":
+        return True
+    cat = str(row.get("ItemType") or row.get("Category") or "").strip()
+    if cat == "Cad":
+        return True
+    try:
+        return int(row.get("PartMode")) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def cad_filelist_payload_blocks_finish(row: dict[str, Any] | None) -> bool:
+    """Cad AddItem_DXFFiles no-ops when InternalData/ImageString keys are empty.
+
+    Live 10098-1 posted those keys. Skip only when a key is present and empty.
+    Do not invent unfold/geometry. Keys absent is not this miss.
+    """
+    if not isinstance(row, dict) or not is_cad_filelist_row(row):
+        return False
+    bools = filelist_cad_payload_empty_bools(row)
+    if "InternalData" in row and bools["filelist_internaldata_empty"]:
+        return True
+    if "ImageString" in row and bools["filelist_imagestring_empty"]:
+        return True
+    return False
+
+
 def kendo_filelist_for_finish(
     rows: list[dict[str, Any]] | None,
     *,
@@ -1095,11 +1174,16 @@ def kendo_filelist_for_finish(
     fileid_n = sum(1 for r in filled if not sourcedataid_empty(r.get("FileID")))
     from_kendo = bool(from_datasource and n > 0 and sid_n == n)
     ident_miss = kendo_lacks_cadimport_identity(filled)
+    payload_block = cad_filelist_payload_blocks_finish(
+        filled[0] if filled else None
+    )
     why = ""
     if n > 0 and sid_n == 0:
         why = "filelist_missing_ids"
     elif ident_miss:
         why = "filelist_missing_keys=" + "+".join(ident_miss)
+    elif payload_block:
+        why = "filelist_cad_payload_empty"
     elif not from_kendo:
         why = "filelist_not_kendo"
     return {
@@ -1112,12 +1196,13 @@ def kendo_filelist_for_finish(
         "finish_why": why,
         "filelist_missing_identity": ident_miss,
         "kendo_row_keys": kendo_identity_log_keys(filled[0]) if filled else [],
-        "should_finish": bool(from_kendo and not ident_miss),
+        "should_finish": bool(from_kendo and not ident_miss and not payload_block),
         **filelist_errorstatus_qty(filled[0] if filled else None),
         **filelist_filetype_value_type(filled[0] if filled else None),
         "filelist_cad_path_keys": filelist_cad_path_keys(
             filled[0] if filled else None
         ),
+        **filelist_cad_payload_empty_bools(filled[0] if filled else None),
     }
 
 

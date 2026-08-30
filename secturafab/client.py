@@ -1357,6 +1357,12 @@ class SecturaFabClient:
             "filelist_cad_path_keys": [
                 str(k) for k in (result.get("filelist_cad_path_keys") or [])
             ],
+            "filelist_internaldata_empty": bool(
+                result.get("filelist_internaldata_empty")
+            ),
+            "filelist_imagestring_empty": bool(
+                result.get("filelist_imagestring_empty")
+            ),
             "finish_af_present": bool(result.get("finish_af_present")),
             "finish_why": str(result.get("finish_why") or ""),
             "empty_body": (
