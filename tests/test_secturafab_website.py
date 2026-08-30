@@ -3637,10 +3637,10 @@ def test_bb2000_edit_match_skip_finish_fails_fixture():
     )
     from secturafab.client import SecturaFabClient
 
-    minted = "a9497a26-cba8-4ec9-a849-cb8bef81cbcc"
+    spent = "a9497a26-cba8-4ec9-a849-cb8bef81cbcc"
     assert page_finish_skip_after_edit_match_is_fail(
-        edit_quote_id=minted,
-        minted_id=minted,
+        edit_quote_id=spent,
+        minted_id=spent,
         grid_n=19,
         filelist_n=19,
         via="skipped",
@@ -3651,12 +3651,7 @@ def test_bb2000_edit_match_skip_finish_fails_fixture():
     assert "typeof window[preferred[i]] === \"function\"" in find_body
     assert "gridDXFParts" not in find_body
     assert "via: \"page_fn\"" in js.split("if (!hit)")[1]
-    edit = {
-        "title": "*Quote-BB2000-ASM",
-        "url": f"https://www.secturafab.com/Quote/EDIT/{minted}",
-        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
-        "type": "page",
-    }
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2000"
     real = SecturaFabClient.__new__(SecturaFabClient)
     real.config = MagicMock()
     real.config.timeout_seconds = 30
@@ -3672,7 +3667,13 @@ def test_bb2000_edit_match_skip_finish_fails_fixture():
         "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
         return_value="chrome_dom",
     ), patch(
-        "secturafab.chrome_cdp.quote_edit_tab", return_value=edit
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={
+            "ok": True,
+            "edit_quote_id": minted,
+            "minted_id": minted,
+            "reason": "",
+        },
     ), patch(
         "secturafab.chrome_cdp.invoke_page_dxf_finish",
         return_value={
