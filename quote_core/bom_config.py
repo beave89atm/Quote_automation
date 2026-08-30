@@ -86,12 +86,15 @@ def resolve_bom_config(
         return title_n
     if title_defaults_to_dash_one(title):
         return "1"
+    # Dashed job PN (1020249-1) beats folder -2 (live e21bc43 used LOM -2).
+    part_key_n = normalize_bom_config(part_key)
+    if part_key_n:
+        return part_key_n
     for candidate in (
         extract_bom_config_from_names(pdf_filename),
         extract_bom_config_from_names(
             Path(library_folder).name if library_folder else None
         ),
-        normalize_bom_config(part_key),
     ):
         if candidate:
             return candidate

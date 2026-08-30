@@ -1054,6 +1054,7 @@ class SecturaFabClient:
         width: int | float = 0,
         quote_id: str | None = None,
         quote_number: str | None = None,
+        replace_grid: bool = True,
     ) -> Any:
         """Explode via fetch /part/create (Upload IDs), then bind t.List.
 
@@ -1106,7 +1107,12 @@ class SecturaFabClient:
             )
         kids = result.get("List") if isinstance(result.get("List"), list) else []
         kids = [r for r in kids if isinstance(r, dict)]
-        self._part_create_list_len = int(result.get("list_len") or len(kids))
+        n_list = int(result.get("list_len") or len(kids))
+        if n_list <= 1 and not replace_grid:
+            # Live 1020249-1: pass-2 List=0 is not the 34632-2 first-pass miss.
+            # Keep prior #gridDXFParts counts; do not bind an empty t.List.
+            return {"List": kids}
+        self._part_create_list_len = n_list
         if self._part_create_list_len <= 1:
             self._grid_dxf_row_count = 0
             return {"List": kids}

@@ -80,6 +80,25 @@ GATE WELDMENT
     assert "GATE" not in title.upper()
 
 
+def test_base_plate_is_not_pedestal_weldment_header():
+    """Live 1020249-1: BASE PLATE, PEDESTAL is a child — not the quote title."""
+    from quote_core.drawing_title import is_child_part_title
+
+    assert is_child_part_title("BASE PLATE, PEDESTAL")
+    assert not is_child_part_title("PEDESTAL WELDMENT")
+    assert not is_child_part_title("PLATE - DOUBLER, 604 SM")
+    text = """
+1020249-1
+TITLE:
+BASE PLATE, PEDESTAL
+PEDESTAL WELDMENT
+"""
+    title = extract_title_from_pdf_text(text, part_key="1020249-1")
+    assert title is not None
+    assert "WELDMENT" in title.upper()
+    assert "BASE PLATE" not in title.upper()
+
+
 def test_three_place_decimal_is_not_a_title():
     """Live 34137-2 stamped THREE PLACE DECIMAL — drawing note, not the weldment."""
     from secturafab.item_desc import (

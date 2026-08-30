@@ -2379,6 +2379,34 @@ def test_classify_nested_weldment_hinge_not_a36_plate():
     assert "Assembly:" in blob
 
 
+def test_classify_job_pn_only_leaves_are_cad():
+    """Live 1020249-1: 14× job PN with no WELDMENT sibling → Cad, not Assembly."""
+    service = SecturaFabPushService(client=MagicMock())
+    rows = [
+        {
+            "SourceDataID": f"s{i}",
+            "Name": "1020249-1",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+        for i in range(14)
+    ]
+    classified, _notes = service.classify_cadimport_rows(
+        rows,
+        default_material="A36",
+        default_thickness="0.25",
+        bom_rows=[{"part_no": "99991-1", "description": "FLOOR PLATE", "qty": 1}],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+        part_key="1020249-1",
+    )
+    cats = [str(r.get("Category") or "") for r in classified]
+    assert cats
+    assert "Assembly" not in cats
+    assert cats.count("Cad") == 14
+
+
 def test_classify_bare_part_key_is_assembly_not_cad():
     """Live 105918-1 root landed Assembly with bare PN desc — keep that type."""
     service = SecturaFabPushService(client=MagicMock())
@@ -2496,7 +2524,7 @@ def test_28110_nested_names_are_assembly_only():
         rows, part_key="28110-2", cad_filename="28110-2.STEP"
     )]
     assert "nest-0" not in ids  # Root
-    assert "nest-1" in ids  # 28110-2 job PN
+    assert "nest-1" not in ids  # job PN is a leaf, not a nest
     assert "nest-2" in ids  # ASSY
     assert classify_sectura_item("28109 COMP LINK ASSY WITH INSERT") == "Assembly"
 
@@ -2556,6 +2584,41 @@ def test_107877_shared_sourcedataid_still_builds_pass2_idlist():
         filled, part_key="107877-1", used_ids=used
     )
     assert [sid for sid, _u in recovered]
+
+
+def test_1020249_job_pn_kids_are_not_nests():
+    """Live 1020249-1: 14× job PN after pass 1 must not build a pass-2 IDList."""
+    from tests.fixtures.live_1020249_pn_leaves import LIVE_1020249_PN_LEAF_NAMES
+    from secturafab.website import (
+        filelist_is_assembly_only,
+        is_nested_assembly_row,
+        nested_assembly_id_list,
+    )
+
+    rows = [
+        {
+            "SourceDataID": "src-step" if i == 0 else f"id-{i}",
+            "ID": f"id-{i}",
+            "FileID": f"file-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+        for i, name in enumerate(LIVE_1020249_PN_LEAF_NAMES)
+    ]
+    assert not filelist_is_assembly_only(
+        rows, part_key="1020249-1", cad_filename="1020249-1.STEP"
+    )
+    assert not is_nested_assembly_row(
+        rows[1], part_key="1020249-1", cad_filename="1020249-1.STEP"
+    )
+    nested = nested_assembly_id_list(
+        rows,
+        part_key="1020249-1",
+        cad_filename="1020249-1.STEP",
+        used_ids={"src-step"},
+    )
+    assert nested == []
 
 
 def test_nested_assy_reexplode_then_finish_leaf_filelist(tmp_path: Path):
@@ -2647,7 +2710,7 @@ def test_nested_assy_reexplode_then_finish_leaf_filelist(tmp_path: Path):
     second_ids = client.create_dxf_parts.call_args_list[1].args[0]
     assert first_ids == ["src-step"]
     assert "nest-0" not in second_ids
-    assert "nest-1" in second_ids
+    assert "nest-1" not in second_ids
     assert "nest-2" in second_ids
     client.add_item_dxf_files.assert_called()
     posted_names = {
@@ -2874,6 +2937,140 @@ def test_107877_shared_parent_id_reexplodes_unnamed_and_weldment(tmp_path: Path)
     posted = {str(r.get("Name") or "") for r in captured.get("file_list") or []}
     assert "FLOOR PLATE" in posted
     assert "GATE TUBE" in posted
+
+
+def test_1020249_pn_leaves_finish_without_pass2(tmp_path: Path):
+    """Root + 14× 1020249-1 → one /part/create, then Finish the 15."""
+    from tests.fixtures.live_1020249_pn_leaves import LIVE_1020249_PN_LEAF_NAMES
+
+    stp = tmp_path / "1020249-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "1020249-1.STEP",
+        "Name": "1020249-1.STEP",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 15,
+    }
+    kids = [
+        {
+            "SourceDataID": f"id-{i}",
+            "ID": f"id-{i}",
+            "FileID": f"file-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        }
+        for i, name in enumerate(LIVE_1020249_PN_LEAF_NAMES)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {
+        "Data": [{"ProductType": 100, "Description": "1020249-1"}],
+        "Total": 1,
+    }
+    client.get_json.return_value = {
+        "ItemList": [{"ProductType": 100, "Description": "1020249-1"}]
+    }
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"body_keys": ["List", "Result"], "has_NewItem": True}
+
+    client.add_item_dxf_files.side_effect = _add
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001020",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[{"part_no": "14500-1", "description": "PEDESTAL TOP PLATE", "qty": 1}],
+        library={},
+        extra_pdfs=None,
+        part_key="1020249-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    assert client.create_dxf_parts.call_count == 1
+    client.add_item_dxf_files.assert_called()
+    blob = " ".join(notes)
+    assert "explode_passes=1" in blob
+    posted = captured.get("file_list") or []
+    assert len(posted) >= 2
+    cats = {str(r.get("Category") or "") for r in posted}
+    assert "Assembly" not in cats or any(
+        str(r.get("Name") or "") != "1020249-1" for r in posted if r.get("Category") == "Assembly"
+    )
+    assert any(str(r.get("Category") or "") == "Cad" for r in posted)
+
+
+def test_empty_pass2_keeps_prior_grid(tmp_path: Path):
+    """If pass-2 List=0, keep the 15 kids — not the 34632-2 first-pass abort."""
+    from tests.fixtures.live_107877_nested import LIVE_107877_NESTED_NAMES
+
+    stp = tmp_path / "107877-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "107877-1.STEP",
+        "Name": "107877-1.STEP",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 15,
+    }
+    nested = [
+        {
+            "SourceDataID": f"id-{i}",
+            "ID": f"id-{i}",
+            "FileID": f"file-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        }
+        for i, name in enumerate(LIVE_107877_NESTED_NAMES)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.side_effect = [
+        {"List": nested},
+        {"List": []},
+    ]
+    client.cadimport_data.return_value = {"List": nested}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001078",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="107877-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    assert client.create_dxf_parts.call_count == 2
+    blob = " ".join(notes)
+    assert "kept_prior_grid=true" in blob
+    assert "34632-2" not in blob
 
 
 def test_explode_skips_cookie_quote_html_even_when_fields_present(tmp_path: Path):

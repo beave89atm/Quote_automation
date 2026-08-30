@@ -206,7 +206,7 @@ def extract_title_from_pdf_text(text: str, *, part_key: str | None = None) -> st
                 if _is_noise_line(nxt, key=key, key_norm=key_norm, allow_plate_title=True):
                     j += 1
                     continue
-                if is_nested_child_weldment_title(nxt):
+                if is_nested_child_weldment_title(nxt) or is_child_part_title(nxt):
                     j += 1
                     continue
                 parts.append(nxt)
@@ -231,6 +231,7 @@ def extract_title_from_pdf_text(text: str, *, part_key: str | None = None) -> st
         for row in ranked
         if not is_drawing_boilerplate_title(row[1])
         and not is_nested_child_weldment_title(row[1])
+        and not is_child_part_title(row[1])
     ]
     if not ranked:
         return None
@@ -374,6 +375,25 @@ def is_nested_child_weldment_title(text: str | None) -> bool:
     if "WELDMENT" in upper and re.search(r"\b(GATE|REST)\b", upper):
         return True
     return False
+
+
+def is_child_part_title(text: str | None) -> bool:
+    """True for a child plate noun — never the weldment quote header.
+
+    Live 1020249-1 stamped BASE PLATE, PEDESTAL. Header is PEDESTAL WELDMENT.
+    Do not reject product titles like ``PLATE - DOUBLER``.
+    """
+    if is_nested_child_weldment_title(text):
+        return True
+    upper = f" {str(text or '').upper()} "
+    if "WELDMENT" in upper or "ASSEMBLY" in upper or re.search(r"\bASSY\b", upper):
+        return False
+    return bool(
+        re.search(
+            r"\b(BASE|TOP|BOTTOM|SIDE|END|FLOOR|COVER)\s+PLATE\b",
+            upper,
+        )
+    )
 
 
 def title_from_exploded_names(names: list[str] | None) -> str | None:

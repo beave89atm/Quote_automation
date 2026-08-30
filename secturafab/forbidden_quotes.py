@@ -35,6 +35,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "66a0271f-f2f7-42c1-ac01-cd879f1bfa22",  # 106687-1 Upload 502 43MB (bd4d75e) — leave it
         "75b3a938-ff89-4525-80d9-c6000d055a48",  # 28110-2 Finish 200 / GET 0 (6c02c08) — leave it
         "e2cc0a7d-90fa-4629-b48f-db1e8163557b",  # 107877-1 explode_passes=1 / GET 0 (1e76c96) — leave it
+        "e2305b3c-7316-4a96-8c94-7685fca2be54",  # 1020249-1 pass-2 wiped grid (e21bc43) — leave it
     }
 )
 
@@ -46,6 +47,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "66a0271f",  # 106687-1 spent (43MB Upload 502) — do not remint
         "75b3a938",  # 28110-2 spent (Finish 200 / GET 0) — do not remint
         "e2cc0a7d",  # 107877-1 spent (explode_passes=1 / GET 0) — do not remint
+        "e2305b3c",  # 1020249-1 spent (pass-2 List=0 wiped grid) — do not remint
     }
 )
 
@@ -77,8 +79,8 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "1007830-1",  # occupied — do not remint
         "28110-2",  # spent 6c02c08 Finish 200 / GET 0 — do not PATCH or remint
         "107877-1",  # spent 1e76c96 explode_passes=1 / GET 0 — do not PATCH or remint
-        # 1020249-1 is the next unused 2.5MB STEP — mint only after a live
-        # capture has leaf FileList (plate/tube nouns) AND GET ItemList >0.
+        "1020249-1",  # spent e21bc43 pass-2 wiped grid — do not PATCH or remint
+        # No unused Time STEP ≤27MB. Do not mint 106687-1 (43MB).
     }
 )
 

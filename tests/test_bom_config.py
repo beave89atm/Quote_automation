@@ -40,6 +40,23 @@ def test_typed_dash_two_title_wins():
     assert cfg == "2"
 
 
+def test_dashed_part_key_beats_folder_dash_two():
+    """Title 1020249-1 / part_key 1020249-1 uses LOM -1, not folder -2."""
+    cfg = resolve_bom_config(
+        title="BASE PLATE, PEDESTAL",
+        pdf_filename="1020249-1.pdf",
+        library_folder=r"C:\drawings\Time\Pedestal Weldment - 1020249-2",
+        part_key="1020249-1",
+    )
+    assert cfg == "1"
+    cfg2 = resolve_bom_config(
+        title="1020249-1",
+        library_folder=r"C:\drawings\Time\Pedestal Weldment - 1020249-2",
+        part_key="1020249-1",
+    )
+    assert cfg2 == "1"
+
+
 def test_explicit_dash_overrides_bare_title():
     cfg = resolve_bom_config(explicit="-2", title="1004747")
     assert cfg == "2"

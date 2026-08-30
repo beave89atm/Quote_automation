@@ -47,8 +47,11 @@ FileList 65 (Root / -28656 / GATE WELDMENT / REST WELDMENT) but
 re-explode did not fire — child SourceDataID matched pass-1 used_ids
 or Python rows lacked ID/FileID. Extract SourceDataID + ID + FileID;
 unused child ID/FileID is the IDList. Unnamed -NNNN is a nest.
-Leave e2cc0a7d / 107877-1. Do not mint 1020249-1 until a live
-capture has leaf FileList and GET ItemList >0.
+Leave e2cc0a7d / 107877-1. Live 1020249-1 (e21bc43): pass-2 IDList
+of 14 job-PN kids returned List=0 and wiped #gridDXFParts 65→0.
+Job-PN names are leaves after pass 1 — do not re-explode them.
+Empty pass-2 keeps the prior grid (not the 34632-2 first-pass miss).
+Leave e2305b3c / 1020249-1. No remint. No unused Time STEP ≤27MB.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -957,7 +960,11 @@ def is_nested_assembly_row(
     part_key: str = "",
     cad_filename: str = "",
 ) -> bool:
-    """FileList row to re-explode: ASSY/WELDMENT, unnamed -NNNN, or job PN."""
+    """FileList row to re-explode: *ASSY* / *WELDMENT* / *ASSEMBLY* / unnamed -NNNN.
+
+    Live 1020249-1: kids named the job PN are unnamed leaf solids, not nests.
+    Do not match ``normalize(name)==part_key``.
+    """
     if not isinstance(row, dict):
         return False
     if is_cadimport_root_row(row):
@@ -965,14 +972,7 @@ def is_nested_assembly_row(
     if is_raw_step_upload_row(row, part_key=part_key, cad_filename=cad_filename):
         return False
     name = filelist_row_display_name(row)
-    if is_nested_assembly_name(name) or is_unnamed_step_node(name):
-        return True
-    if part_key:
-        from .item_desc import normalize_part_token
-
-        if normalize_part_token(name) == normalize_part_token(part_key):
-            return True
-    return False
+    return is_nested_assembly_name(name) or is_unnamed_step_node(name)
 
 
 def filelist_leaf_noun_names(
@@ -1004,17 +1004,25 @@ def filelist_is_assembly_only(
     part_key: str = "",
     cad_filename: str = "",
 ) -> bool:
-    """True when exploded kids exist but none are leaf Cad/Linear nouns.
+    """True when kids are only *ASSY*/*WELDMENT*/*-NNNN* (need another explode).
 
     Live 107877-1: unnamed ``-28656`` + GATE/REST WELDMENT is assembly-only.
+    Live 1020249-1: 14× job-PN leaves are not assembly-only — Finish them.
     """
     kids = finish_filelist_kids(
         rows, part_key=part_key, cad_filename=cad_filename
     )
     if not kids:
         return False
-    return not filelist_leaf_noun_names(
+    if filelist_leaf_noun_names(
         kids, part_key=part_key, cad_filename=cad_filename
+    ):
+        return False
+    return any(
+        is_nested_assembly_row(
+            row, part_key=part_key, cad_filename=cad_filename
+        )
+        for row in kids
     )
 
 

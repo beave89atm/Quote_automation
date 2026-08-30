@@ -16,6 +16,7 @@ from quote_core.drawing_title import (
     extract_assembly_description,
     extract_drawing_number_from_pdf,
     is_drawing_boilerplate_title,
+    is_child_part_title,
     is_nested_child_weldment_title,
     title_from_stp_takeoff,
 )
@@ -75,6 +76,8 @@ from .website import (
     filelist_id_fields_present,
     filelist_is_assembly_only,
     filelist_leaf_noun_names,
+    filelist_row_is_leaf_noun,
+    is_nested_assembly_name,
     nested_assembly_id_list,
     overlay_filelist_ids,
     inventory_location_from_html,
@@ -1408,6 +1411,8 @@ class SecturaFabPushService:
         id_list: list[str],
         unit_list: list[str],
         location: str,
+        keep_prior_on_empty: bool = False,
+        prior_rows: list[dict[str, Any]] | None = None,
     ) -> tuple[list[dict[str, Any]], list[str], bool]:
         """Same DoCreateDXFParts POST /part/create. abort=True → stop exploding."""
         from .cadimport_js import CREATE_DXF_PARTS_FUNCTION, CREATE_DXF_PARTS_PATH
@@ -1452,6 +1457,7 @@ class SecturaFabPushService:
                     width=0,
                     quote_id=quote_id,
                     quote_number=part_key,
+                    replace_grid=not keep_prior_on_empty,
                 )
             except TypeError:
                 result = create_fn(
@@ -1473,6 +1479,35 @@ class SecturaFabPushService:
         via = getattr(self.client, "_part_create_via", "") or ""
         if isinstance(via, str) and via:
             notes.append(f"part_create_via={via}")
+        exploded = self._cadimport_rows(result)
+        if keep_prior_on_empty and (
+            not exploded or not cadimport_filelist_exploded(
+                exploded, part_key=part_key
+            )
+        ):
+            notes.append("kept_prior_grid=true")
+            if prior_rows:
+                try:
+                    from .chrome_cdp import (
+                        bind_do_create_dxf_parts_success,
+                        chrome_quotes_live,
+                    )
+
+                    if chrome_quotes_live():
+                        bind = bind_do_create_dxf_parts_success(
+                            prior_rows,
+                            quote_id=quote_id or None,
+                            quote_number=part_key or None,
+                        )
+                        if isinstance(bind, dict):
+                            present = bool(bind.get("grid_present"))
+                            self.client._grid_present = present
+                            self.client._grid_dxf_row_count = int(
+                                bind.get("grid_dxf_row_count") or 0
+                            )
+                except (TypeError, ValueError, OSError):
+                    pass
+            return [], notes, False
         present = getattr(self.client, "_grid_present", None)
         if isinstance(present, bool):
             notes.append(f"grid_present={'true' if present else 'false'}")
@@ -1482,7 +1517,7 @@ class SecturaFabPushService:
                     "(click #but_dxf) — cookie GetItem_AddView is the "
                     "wrong document (live a64509d); not Finishing"
                 )
-                return self._cadimport_rows(result), notes, True
+                return exploded, notes, True
         n_list = getattr(self.client, "_part_create_list_len", None)
         if isinstance(n_list, (int, float)):
             notes.append(f"part_create_list_len={int(n_list)}")
@@ -1491,7 +1526,7 @@ class SecturaFabPushService:
                     "WARNING: /part/create List len<=1 — not Finishing "
                     "(empty #gridDXF createAllParts is the 34632-2 miss)"
                 )
-                return self._cadimport_rows(result), notes, True
+                return exploded, notes, True
         n_grid = getattr(self.client, "_grid_dxf_row_count", None)
         if isinstance(n_grid, (int, float)):
             notes.append(f"grid_dxf_row_count={int(n_grid)}")
@@ -1500,8 +1535,7 @@ class SecturaFabPushService:
                     "WARNING: #gridDXFParts row count<=1 after "
                     "DoCreateDXFParts success bind — not Finishing"
                 )
-                return self._cadimport_rows(result), notes, True
-        exploded = self._cadimport_rows(result)
+                return exploded, notes, True
         if not cadimport_filelist_exploded(exploded, part_key=part_key):
             notes.append(
                 f"{CREATE_DXF_PARTS_FUNCTION} {CREATE_DXF_PARTS_PATH} had no "
@@ -1602,6 +1636,8 @@ class SecturaFabPushService:
                 id_list=id_list,
                 unit_list=unit_list,
                 location=location,
+                keep_prior_on_empty=True,
+                prior_rows=rows,
             )
             notes.extend(pass_notes)
             extra += 1
@@ -1614,6 +1650,8 @@ class SecturaFabPushService:
                 )
                 rows = self._overlay_grid_filelist_ids(rows)
             else:
+                if "kept_prior_grid=true" not in " ".join(pass_notes):
+                    notes.append("kept_prior_grid=true")
                 break
         notes.extend(
             self._explode_capture_notes(
@@ -2071,6 +2109,21 @@ class SecturaFabPushService:
         )
         classified: list[dict[str, Any]] = []
         counts = {"Cad": 0, "Linear": 0, "Component": 0, "Assembly": 0}
+        sibling_nouns = any(
+            is_nested_assembly_name(row_name(r))
+            or filelist_row_is_leaf_noun(row_name(r))
+            for r in rows
+            if isinstance(r, dict)
+        )
+        lom_child_nouns = [
+            str(brow.get("description") or "").strip()
+            for brow in (bom_rows or [])
+            if str(brow.get("description") or "").strip()
+            and normalize_part_token(
+                str(brow.get("part_no") or brow.get("part_number") or "")
+            )
+            != normalize_part_token(part_key)
+        ]
         for row in rows:
             name = row_name(row)
             stem = Path(str(row.get("FileName") or "")).stem
@@ -2094,7 +2147,19 @@ class SecturaFabPushService:
                 and normalize_part_token(stem) == normalize_part_token(part_key)
                 and is_bare_part_number(stem)
             ):
-                cat = "Assembly"
+                if sibling_nouns:
+                    cat = "Assembly"
+                else:
+                    extra = ""
+                    idx = len(classified)
+                    if idx < len(lom_child_nouns):
+                        extra = lom_child_nouns[idx]
+                    if extra:
+                        cat = classify_sectura_item(f"{stem} {extra}")
+                    if cat == "Assembly" and not is_nested_assembly_name(
+                        extra or name
+                    ):
+                        cat = "Cad"
             compact = {k.replace("-", ""): v for k, v in purchased.items()}
             if token in purchased or token.replace("-", "") in compact:
                 cat = "Component"
@@ -3546,13 +3611,15 @@ class SecturaFabPushService:
                 or title_from_job_title(title, part_key=part_key)
                 or title_from_bom_family(bom_rows)
             )
-            if is_drawing_boilerplate_title(raw_title) or is_nested_child_weldment_title(
+            if is_drawing_boilerplate_title(raw_title) or is_child_part_title(
                 raw_title
             ):
-                if is_nested_child_weldment_title(raw_title):
+                if is_nested_child_weldment_title(raw_title) or is_child_part_title(
+                    raw_title
+                ):
                     notes.append(
-                        "WARNING: rejected nested GATE/REST/SUB-WELDMENT "
-                        "quote title — use assembly drawing header"
+                        "WARNING: rejected child GATE/REST/PLATE quote title "
+                        "— use assembly weldment header"
                     )
                 raw_title = (
                     title_from_stp_takeoff(takeoff)
@@ -3561,7 +3628,7 @@ class SecturaFabPushService:
                     or title_from_job_title(title, part_key=part_key)
                     or title_from_bom_family(bom_rows)
                 )
-                if is_nested_child_weldment_title(raw_title):
+                if is_child_part_title(raw_title):
                     raw_title = None
             assembly_description = format_assembly_description(part_key, raw_title)
             weldment_title = bool(
