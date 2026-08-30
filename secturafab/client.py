@@ -1429,36 +1429,84 @@ class SecturaFabClient:
         customer_material: bool = False,
         files: list[tuple[str, tuple[str, Any, str]]] | None = None,
     ) -> Any:
-        """POST /Quote/AddItem_PDFFiles — Image Files Finish (OnAddPDFClick)."""
+        """POST /Quote/AddItem_PDFFiles — page OnAddPDFClick (GetPDFData).
+
+        Live 1001898-5: reconstructed FileList + cookie-HTTP OnAddPDFClick
+        HTTP-looked success without the calculator (Cad unitcost, no PR).
+        FileList must be the page PDF kendo (GetPDFData / #gridPDF) rows
+        with Status>0. Do not POST a Python-built FileList.
+        """
         from .browser_session import effective_website_cookie
+        from .chrome_cdp import (
+            chrome_quotes_live,
+            invoke_page_pdf_finish,
+            minted_edit_tab_ready,
+        )
 
         if not effective_website_cookie(self.config):
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
-        payload = build_pdf_finish_payload(
-            quote_id,
-            file_list,
-            item_id=item_id,
-            customer_material=customer_material,
-        )
-        del files  # OnAddPDFClick is urlencoded {ID, ItemID, FileList}, not multipart
-        response = self.website_request(
-            "POST",
-            WEBSITE_FINISH_PATHS["add_item_pdf_files"],
-            json=None,
-            data=jquery_ajax_form(payload),
-            files=None,
-            prefer_api_origin=False,
-            require_session=True,
-            timeout=max(self.config.timeout_seconds, 180.0),
-        )
-        location = response.headers.get("Location") or ""
-        if is_website_login_redirect(response.status_code, location):
-            raise SecturaFabWebsiteAuthError(
-                WEBSITE_AUTH_GAP,
-                status_code=response.status_code,
-                body=location,
+        del file_list
+        del files
+        del item_id
+        del customer_material
+        if chrome_quotes_live():
+            self.harvest_chrome_antiforgery()
+        if getattr(self, "_af_source", "") != "chrome_dom":
+            self._pdf_finish_via = "skipped"
+            return self._pdf_finish_capture({}, via="skipped")
+        gate = minted_edit_tab_ready(quote_id, navigate=True)
+        if not gate.get("ok"):
+            self._pdf_finish_via = "skipped"
+            return self._pdf_finish_capture(
+                {"edit_gate": str(gate.get("reason") or "edit_quote_id!=minted_id")},
+                via="skipped",
             )
-        return self._parse_website_or_raise(response, require_session=True)
+        page = invoke_page_pdf_finish(quote_id=quote_id)
+        via = str(page.get("via") or "")
+        if via != "page_fn" or not page.get("filelist_from_kendo"):
+            self._pdf_finish_via = "skipped"
+            return self._pdf_finish_capture(page, via="skipped")
+        self._pdf_finish_via = "page_fn"
+        status = int(page.get("status") or 0)
+        if status >= 400:
+            raise SecturaFabApiError(
+                f"API request failed ({status}) for page_fn /Quote/AddItem_PDFFiles",
+                status_code=status,
+                body={"Error": True},
+            )
+        return self._pdf_finish_capture(page, via="page_fn")
+
+    @staticmethod
+    def _pdf_finish_capture(result: dict[str, Any], *, via: str) -> dict[str, Any]:
+        from_kendo = bool(result.get("filelist_from_kendo")) and via == "page_fn"
+        return {
+            "ok": from_kendo,
+            "status": int(result.get("status") or 0),
+            "via": via,
+            "finish_fn": str(result.get("finish_fn") or ""),
+            "reads_kendo": bool(result.get("reads_kendo")),
+            "filelist_from_kendo": from_kendo,
+            "finish_filelist_n": int(result.get("finish_filelist_n") or 0),
+            "grid_pdf_row_count": int(result.get("grid_pdf_row_count") or 0),
+            "grid_id": str(result.get("grid_id") or ""),
+            "request_keys": [str(k) for k in (result.get("request_keys") or [])],
+            "filelist_row_keys": [str(k) for k in (result.get("filelist_row_keys") or [])],
+            "kendo_row_keys": [str(k) for k in (result.get("kendo_row_keys") or [])],
+            "finish_af_present": bool(result.get("finish_af_present")),
+            "finish_why": str(result.get("finish_why") or ""),
+            "edit_gate": str(result.get("edit_gate") or ""),
+        }
+
+    def stamp_pdf_kendo_flats(
+        self,
+        *,
+        quote_id: str,
+        rows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Type L×W onto the page PDF kendo before OnAddPDFClick."""
+        from .chrome_cdp import stamp_pdf_kendo_flats as _stamp
+
+        return _stamp(rows, quote_id=quote_id)
 
     def add_item_linear(
         self,

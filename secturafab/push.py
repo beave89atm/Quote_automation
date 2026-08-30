@@ -66,7 +66,6 @@ from .website import (
     WEBSITE_AUTH_GAP,
     WEBSITE_SESSION_EXPIRED,
     SecturaFabWebsiteAuthError,
-    attachment_pdf_filelist_ready,
     count_cad_product_type,
     is_tenant_guid,
     count_linear_product_type,
@@ -86,14 +85,12 @@ from .website import (
     filelist_from_cadimport_upload,
     finish_filelist_kids,
     is_raw_step_upload_row,
-    filelist_row_from_attachment_upload,
     linear_add_product_type,
     linear_bind_fields,
     linear_lookup_rows,
     linear_website_product_type,
     overlay_classified_row,
     pick_closest_linear_product,
-    prepare_pdf_newline_fields,
     quote_item_rows,
     row_name,
 )
@@ -2982,7 +2979,11 @@ class SecturaFabPushService:
         extra_pdfs: list[Path] | None = None,
         takeoff: dict[str, Any] | None = None,
     ) -> list[str]:
-        """Image Files Finish: Attachment upload + per-part AddItem_PDFFiles."""
+        """Image Files Finish: upload → stamp page PDF kendo → OnAddPDFClick.
+
+        FileList must be GetPDFData() / #gridPDF rows with Status>0.
+        Reconstructed FileList is fail-closed even if GET>0 (live 1001898-5).
+        """
         if not self._website_cookie_present():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
         from .item_desc import (
@@ -3032,6 +3033,8 @@ class SecturaFabPushService:
             extra_pdfs=extra_pdfs,
         )
         posted_n = 0
+        stamp_rows: list[dict[str, Any]] = []
+        uploaded_n = 0
         for path in pdf_files:
             stem = path.stem
             pn = match_bom_part_no(stem, bom_rows) or stem
@@ -3123,60 +3126,45 @@ class SecturaFabPushService:
             notes.append(
                 f"Uploaded Image Files via /Attachment/UploadItem_PDFFiles {path.name}"
             )
-            row = filelist_row_from_attachment_upload(
-                upload,
-                part_name=part_name,
-                description=part_name,
-                qty=row_qty,
-                material=plate_mat,
-                thickness=plate_thk,
-                length=plate_l,
-                width=plate_w,
-                file_name=path.name,
-            )
-            holes = _holes_from_noun(f"{pn} {noun} {part_name}")
-            if holes:
-                from .website import internal_data_from_holes
-
-                row["InternalData"] = internal_data_from_holes(holes)
-            if plate_w and plate_l:
-                row["Width"] = plate_w
-                row["Length"] = plate_l
-                row["Width_Units"] = row.get("Width_Units") or "inch"
-                row["Length_Units"] = row.get("Length_Units") or "inch"
-            if plate_thk not in (None, ""):
-                row["Thickness"] = plate_thk
-            row["ItemType"] = "cad"
-            row["Machine"] = row.get("Machine") or "Laser - Bay1"
-            row["Material"] = plate_mat
-            if row.get("Status") in (None, "", 0, "0"):
-                row["Status"] = 1
-            row = prepare_pdf_newline_fields(row)
-            if not attachment_pdf_filelist_ready(row):
-                # LOM Cad kids with flats must still post a full Image Files row.
-                # Do not skip 1007014/1007015-style kids when takeoff listed flats.
-                if plat and (plate_w and plate_l and plate_thk not in (None, "", 0, "0")):
-                    row["Width"] = plate_w
-                    row["Length"] = plate_l
-                    row["Thickness"] = plate_thk
-                    row["ItemType"] = "cad"
-                    row["Status"] = 1
-                    row = prepare_pdf_newline_fields(row)
-            if not attachment_pdf_filelist_ready(row):
-                notes.append(
-                    f"WARNING: AddItem_PDFFiles skipped {path.name} — "
-                    "FileList missing Thickness/Length/Width/ItemType=cad "
-                    "(CadImport-only rows are not posted)"
+            uploaded_n += 1
+            if plate_w and plate_l and plate_thk not in (None, "", 0, "0"):
+                stamp_rows.append(
+                    {
+                        "FileName": path.name,
+                        "Length": plate_l,
+                        "Width": plate_w,
+                        "Thickness": plate_thk,
+                        "Material": plate_mat,
+                        "Machine": "Laser - Bay1",
+                        "Status": 1,
+                        "ItemType": "cad",
+                        "Qty": row_qty,
+                        "PartName": part_name,
+                        "Description": part_name,
+                    }
                 )
-                continue
+            else:
+                notes.append(
+                    f"WARNING: page PDF kendo stamp missing Thickness/Length/Width "
+                    f"for {path.name} — not inventing reconstructed FileList"
+                )
+        from_kendo = False
+        if uploaded_n:
+            if stamp_rows:
+                stamper = getattr(self.client, "stamp_pdf_kendo_flats", None)
+                if callable(stamper):
+                    stamper(quote_id=quote_id, rows=stamp_rows)
+                    notes.append(
+                        f"Stamped {len(stamp_rows)} L×W row(s) on page PDF kendo"
+                    )
             try:
-                self.client.add_item_pdf_files(
+                result = self.client.add_item_pdf_files(
                     quote_id=quote_id,
-                    file_list=[row],
+                    file_list=[],
                     item_id=EMPTY_GUID,
                     customer_material=False,
                 )
-                posted_n += 1
+                posted_n = 1
             except SecturaFabWebsiteAuthError as exc:
                 raise SecturaFabWebsiteAuthError(
                     f"{WEBSITE_SESSION_EXPIRED} — AddItem_PDFFiles 302 ({exc})",
@@ -3184,24 +3172,85 @@ class SecturaFabPushService:
                     body=getattr(exc, "body", None),
                 ) from exc
             except SecturaFabApiError as exc:
+                notes.append(f"WARNING: AddItem_PDFFiles: {exc}")
+                result = {}
+            from .website import (
+                pdf_finish_from_page_kendo,
+                reconstructed_pdf_filelist_is_fail,
+            )
+
+            from_kendo = (
+                pdf_finish_from_page_kendo(result)
+                if isinstance(result, dict)
+                else False
+            )
+            if isinstance(result, dict):
+                via = str(result.get("via") or "")
+                if via:
+                    notes.append(f"finish_via={via}")
+                finish_fn = str(result.get("finish_fn") or "")
+                if finish_fn:
+                    notes.append(f"finish_fn={finish_fn}")
                 notes.append(
-                    f"WARNING: AddItem_PDFFiles {path.name}: {exc}"
+                    "filelist_from_kendo="
+                    + ("true" if result.get("filelist_from_kendo") else "false")
+                )
+                why = str(result.get("finish_why") or "")
+                if why:
+                    notes.append(f"finish_why={why}")
+            if reconstructed_pdf_filelist_is_fail(
+                result if isinstance(result, dict) else None
+            ):
+                notes.append(
+                    "WARNING: reconstructed FileList Image Files is fail-closed "
+                    "even if GET>0 (live 1001898-5) — need page GetPDFData / "
+                    "#gridPDF OnAddPDFClick"
                 )
         posted = self._read_quote_items(quote_id)
         cad_persisted = count_cad_product_type(posted)
-        if cad_persisted <= 0:
+        from .line_item_ops import (
+            all_cad_kids_image_files_stamped,
+            cad_image_files_stamped,
+            cad_kids_unitcost_without_pr,
+            image_files_dod_pass,
+        )
+
+        if cad_kids_unitcost_without_pr(posted):
+            notes.append(
+                "WARNING: Cad unitcost filled + OperationCostList empty + no PR "
+                "— Image Files DoD FAIL (live 1001898-5); Linear saw PASS is "
+                "not DoD PASS"
+            )
+        if not from_kendo:
+            if cad_persisted > 0:
+                notes.append(
+                    "WARNING: GET>0 after reconstructed FileList is not success "
+                    "(live 1001898-5)"
+                )
+            elif uploaded_n:
+                notes.append(
+                    f"WARNING: AddItem_PDFFiles posted {posted_n} FileList "
+                    f"row(s) but item read has 0 ProductType 100 lines "
+                    f"(CadImport list is not success)"
+                )
+        elif cad_persisted <= 0:
             notes.append(
                 f"WARNING: AddItem_PDFFiles posted {posted_n} FileList "
                 f"row(s) but item read has 0 ProductType 100 lines "
                 f"(CadImport list is not success)"
             )
-        else:
+        elif all_cad_kids_image_files_stamped(posted) and image_files_dod_pass(
+            posted, expect_cad=True, expect_linear=False
+        ):
             notes.append(
                 f"Image Files persisted {cad_persisted} Cad ProductType 100 line(s) "
                 f"via /Quote/AddItem_PDFFiles"
             )
-        from .line_item_ops import cad_image_files_stamped
-
+        else:
+            notes.append(
+                "WARNING: page kendo Finish did not stamp PR + laser pack on "
+                "every Cad kid — not success"
+            )
         for it in quote_item_rows(posted):
             try:
                 if int(it.get("ProductType") or 0) != 100:

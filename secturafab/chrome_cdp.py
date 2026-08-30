@@ -78,6 +78,17 @@ Live Skin Assembly ``5b622a0d``: page ``$.ajax`` on EDIT still empty
 SC0600, 0d4b8a46 / FA Assembly, and 5b622a0d / Skin Assembly.
 Do not remint. Do not mint.
 
+Live 1001898-5 (491f6387): Image Files reconstructed FileList +
+Update Item ``OnAddPDFClick`` HTTP-looked success without the
+calculator. GET 8 (3 Cad unitcost filled, OperationCostList [],
+no PR tag). Kyle Loom: Image Files + typed L×W + green
+**New Line Item(s)** with Machine already Laser Bay 1 stamps PR
++ Primary Costs. ``POST /Quote/AddItem_PDFFiles`` body
+``{ ID, ItemID, FileList }`` where FileList is ``GetPDFData()``
+/ ``#gridPDF`` (or QuoteOrderEdit PDF kendo) rows with
+``Status>0``. Reconstructed FileList is fail-closed even if
+GET>0. Leave 491f6387 / 1001898-5. No STEP. Do not mint.
+
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys /
 counts, plus posted ErrorStatus, Qty, and FileType value/type.
@@ -2195,6 +2206,434 @@ def invoke_page_dxf_finish(
         "List": [r for r in rows if isinstance(r, dict)],
         "edit_quote_id": str(gate.get("edit_quote_id") or ""),
         "minted_id": str(gate.get("minted_id") or quote_id or ""),
+        "edit_gate": "",
+    }
+
+
+# QuoteOrderEdit Image Files: GetPDFData() / #gridPDF → OnAddPDFClick
+# POST /Quote/AddItem_PDFFiles { ID, ItemID, FileList } Status>0.
+# Live 1001898-5: reconstructed FileList is not this path.
+_PAGE_PDF_FINISH_JS = """(function() {
+  function pdfGrid() {
+    var ids = ["#gridPDF", "#gridPdf", "#grid_PDF", "#gridPDFFiles", "#grid"];
+    for (var i = 0; i < ids.length; i++) {
+      try {
+        var g = window.jQuery && jQuery(ids[i]).data("kendoGrid");
+        if (g && g.dataSource) return {id: ids[i], grid: g};
+      } catch (e) {}
+    }
+    return null;
+  }
+  function toRows(raw) {
+    if (!raw) return [];
+    try { if (raw.toJSON) return raw.toJSON(); } catch (e) {}
+    var out = [];
+    var n = raw.length || 0;
+    for (var i = 0; i < n; i++) {
+      var r = raw[i];
+      try { out.push(r && r.toJSON ? r.toJSON() : r); } catch (e2) { out.push(r); }
+    }
+    return out;
+  }
+  function statusOf(r) {
+    var s = r && (r.Status != null ? r.Status : r.status);
+    return Number(s || 0);
+  }
+  function getPdfData() {
+    if (typeof window.GetPDFData === "function") {
+      try {
+        var d = window.GetPDFData();
+        if (Array.isArray(d)) return d.filter(function(r) { return statusOf(r) > 0; });
+      } catch (e) {}
+    }
+    var hit = pdfGrid();
+    if (!hit) return [];
+    return toRows(hit.grid.dataSource.data()).filter(function(r) { return statusOf(r) > 0; });
+  }
+  function fnSource(fn) {
+    try { return Function.prototype.toString.call(fn); } catch (e) { return ""; }
+  }
+  function postsPdfFinish(src) {
+    return String(src || "").indexOf("/Quote/AddItem_PDFFiles") >= 0;
+  }
+  function readsPdfKendo(src) {
+    src = String(src || "");
+    return src.indexOf("GetPDFData") >= 0
+      || src.indexOf("gridPDF") >= 0
+      || src.indexOf("gridPdf") >= 0
+      || src.indexOf("dataSource") >= 0;
+  }
+  function findFinishName() {
+    var preferred = ["OnAddPDFClick", "OnAddPDFFilesClick", "AddPDFFiles", "AddItemPDFFiles"];
+    for (var i = 0; i < preferred.length; i++) {
+      if (typeof window[preferred[i]] === "function") return preferred[i];
+    }
+    try {
+      for (var k in window) {
+        var fn = window[k];
+        if (typeof fn === "function" && postsPdfFinish(fnSource(fn))) return k;
+      }
+    } catch (e) {}
+    return "";
+  }
+  function rowKeys(row) {
+    if (!row || typeof row !== "object") return [];
+    return Object.keys(row).filter(function(k) { return k !== "uid"; }).sort();
+  }
+  function hasAf(d) {
+    if (!d || typeof d !== "object") return false;
+    var keys = Object.keys(d);
+    for (var i = 0; i < keys.length; i++) {
+      if (/requestverificationtoken|__requestverificationtoken/i.test(keys[i]) && d[keys[i]]) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function attachChromeDomAf(data) {
+    try {
+      if (window.kendo && typeof kendo.antiForgeryTokens === "function") {
+        var t = kendo.antiForgeryTokens();
+        if (t && typeof t === "object") {
+          var tk = Object.keys(t);
+          for (var j = 0; j < tk.length; j++) {
+            if (t[tk[j]]) { data[tk[j]] = t[tk[j]]; return; }
+          }
+        }
+      }
+    } catch (e) {}
+  }
+  var krows = getPdfData();
+  var count = krows.length;
+  var hit = pdfGrid();
+  var gridId = hit ? hit.id : "";
+  if (count < 1) {
+    return Promise.resolve({
+      via: "skipped",
+      finish_fn: "",
+      reads_kendo: false,
+      filelist_from_kendo: false,
+      finish_filelist_n: 0,
+      grid_pdf_row_count: hit && hit.grid && hit.grid.dataSource
+        ? (hit.grid.dataSource.data() || []).length : 0,
+      grid_id: gridId,
+      finish_af_present: false,
+      finish_why: hit ? "empty_dataSource" : "wrong_document",
+      request_keys: [],
+      filelist_row_keys: [],
+      kendo_row_keys: [],
+      status: 0,
+      body_keys: [],
+      body_type: "empty",
+      has_NewItem: false,
+      has_QuoteItem: false,
+      text_len: 0,
+      List: []
+    });
+  }
+  var finishName = findFinishName();
+  var finishSrc = finishName ? fnSource(window[finishName]) : "";
+  var reads_kendo = readsPdfKendo(finishSrc) || typeof window.GetPDFData === "function" || !!hit;
+  var hooked = new Promise(function(resolve) {
+    if (!window.jQuery || !jQuery.ajax) {
+      resolve(null);
+      return;
+    }
+    var orig = jQuery.ajax;
+    var done = false;
+    jQuery.ajax = function(opts) {
+      var url = String((opts && opts.url) || "");
+      if (!done && url.indexOf("/Quote/AddItem_PDFFiles") >= 0) {
+        done = true;
+        jQuery.ajax = orig;
+        if (!opts || typeof opts !== "object") opts = {url: url};
+        if (typeof opts.data === "string") {
+          try { opts.data = JSON.parse(opts.data); } catch (e) { opts.data = {}; }
+        }
+        if (!opts.data || typeof opts.data !== "object" || Array.isArray(opts.data)) {
+          opts.data = {};
+        }
+        var pageRows = getPdfData();
+        if (pageRows.length) opts.data.FileList = pageRows;
+        attachChromeDomAf(opts.data);
+        arguments[0] = opts;
+        var d = opts.data;
+        var fl = d.FileList || d.fileList || [];
+        var n = Array.isArray(fl) ? fl.length : 0;
+        var fromKendo = n > 0 && fl === pageRows;
+        var first = n > 0 ? (fl[0] || {}) : {};
+        var cap = {
+          finish_filelist_n: n,
+          request_keys: Object.keys(d),
+          filelist_from_kendo: fromKendo,
+          filelist_row_keys: n > 0 ? rowKeys(first) : [],
+          kendo_row_keys: krows.length ? rowKeys(krows[0]) : [],
+          finish_af_present: hasAf(d),
+          finish_why: fromKendo ? "" : "filelist_not_kendo",
+          grid_id: gridId
+        };
+        var ret = orig.apply(this, arguments);
+        Promise.resolve(ret).then(function(data) {
+          cap.status = 200;
+          cap.data = data;
+          resolve(cap);
+        }).catch(function(xhr) {
+          cap.status = (xhr && xhr.status) || 0;
+          cap.data = (xhr && xhr.responseJSON) || null;
+          resolve(cap);
+        });
+        return ret;
+      }
+      return orig.apply(this, arguments);
+    };
+    setTimeout(function() {
+      if (!done) {
+        jQuery.ajax = orig;
+        resolve(null);
+      }
+    }, 170000);
+  });
+  var via = "";
+  if (finishName) {
+    try { window[finishName](); } catch (e) {}
+    via = "page_fn";
+  }
+  if (!via) {
+    try {
+      var nodes = document.querySelectorAll(
+        "button, a, input[type=button], input[type=submit]"
+      );
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        var blob = (
+          (el.getAttribute("onclick") || "") + " " + (el.textContent || "")
+          + " " + (el.value || "") + " " + (el.id || "")
+        ).toLowerCase();
+        if (blob.indexOf("onaddpdf") >= 0 || blob.indexOf("new line item") >= 0) {
+          el.click();
+          via = "page_fn";
+          break;
+        }
+      }
+    } catch (e) {}
+  }
+  if (!via) {
+    return Promise.resolve({
+      via: "",
+      finish_fn: "",
+      reads_kendo: reads_kendo,
+      filelist_from_kendo: false,
+      finish_filelist_n: 0,
+      grid_pdf_row_count: count,
+      grid_id: gridId,
+      finish_af_present: false,
+      finish_why: "no_onaddpdfclick",
+      request_keys: [],
+      filelist_row_keys: krows.length ? rowKeys(krows[0]) : [],
+      kendo_row_keys: krows.length ? rowKeys(krows[0]) : [],
+      status: 0,
+      body_keys: [],
+      body_type: "empty",
+      has_NewItem: false,
+      has_QuoteItem: false,
+      text_len: 0,
+      List: krows
+    });
+  }
+  return hooked.then(function(hitCap) {
+    var extra = hitCap || {};
+    extra.via = via || "page_fn";
+    extra.finish_fn = finishName || "OnAddPDFClick";
+    extra.reads_kendo = reads_kendo;
+    extra.grid_pdf_row_count = count;
+    extra.grid_id = extra.grid_id || gridId;
+    extra.List = krows;
+    if (!extra.filelist_from_kendo) extra.filelist_from_kendo = false;
+    return extra;
+  });
+})"""
+
+
+_STAMP_PDF_KENDO_JS = """(function(spec) {
+  function pdfGrid() {
+    var ids = ["#gridPDF", "#gridPdf", "#grid_PDF", "#gridPDFFiles", "#grid"];
+    for (var i = 0; i < ids.length; i++) {
+      try {
+        var g = window.jQuery && jQuery(ids[i]).data("kendoGrid");
+        if (g && g.dataSource) return {id: ids[i], grid: g};
+      } catch (e) {}
+    }
+    return null;
+  }
+  var hit = pdfGrid();
+  if (!hit) return Promise.resolve({ok: false, stamped: 0, grid_id: "", grid_pdf_row_count: 0});
+  var rows = (spec && spec.rows) || [];
+  var data = hit.grid.dataSource.data() || [];
+  var stamped = 0;
+  function setField(r, k, v) {
+    if (v == null || v === "") return;
+    if (typeof r.set === "function") r.set(k, v);
+    else r[k] = v;
+  }
+  for (var i = 0; i < rows.length; i++) {
+    var s = rows[i] || {};
+    var name = String(s.FileName || "");
+    for (var j = 0; j < data.length; j++) {
+      var r = data[j];
+      var fn = String((r.FileName || r.fileName || ""));
+      if (name && fn && fn.toLowerCase() !== name.toLowerCase()
+          && fn.toLowerCase().indexOf(name.toLowerCase()) < 0
+          && name.toLowerCase().indexOf(fn.toLowerCase()) < 0) {
+        continue;
+      }
+      if (!name && i !== j) continue;
+      setField(r, "Length", s.Length);
+      setField(r, "Width", s.Width);
+      setField(r, "Thickness", s.Thickness);
+      setField(r, "Machine", s.Machine || "Laser - Bay1");
+      setField(r, "Status", s.Status != null ? s.Status : 1);
+      setField(r, "ItemType", s.ItemType || "cad");
+      setField(r, "Material", s.Material);
+      if (s.Qty != null) setField(r, "Qty", s.Qty);
+      if (s.PartName) setField(r, "PartName", s.PartName);
+      stamped += 1;
+      break;
+    }
+  }
+  return Promise.resolve({
+    ok: stamped > 0,
+    stamped: stamped,
+    grid_id: hit.id,
+    grid_pdf_row_count: data.length
+  });
+})"""
+
+
+def invoke_page_pdf_finish(
+    *,
+    base: str | None = None,
+    quote_id: str | None = None,
+) -> dict[str, Any]:
+    """Kyle Image Files Finish: page OnAddPDFClick posts GetPDFData FileList."""
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
+    skipped = {
+        "via": "skipped",
+        "finish_fn": "",
+        "reads_kendo": False,
+        "grid_pdf_row_count": 0,
+        "grid_id": "",
+        "finish_filelist_n": 0,
+        "request_keys": [],
+        "status": 0,
+        "body_keys": [],
+        "body_type": "empty",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "text_len": 0,
+        "List": [],
+        "edit_quote_id": str(gate.get("edit_quote_id") or ""),
+        "minted_id": str(gate.get("minted_id") or quote_id or ""),
+        "edit_gate": str(gate.get("reason") or "missing_minted_id"),
+        "filelist_from_kendo": False,
+        "filelist_row_keys": [],
+        "kendo_row_keys": [],
+        "finish_af_present": False,
+        "finish_why": "wrong_document",
+        "ok": False,
+    }
+    if not gate.get("ok"):
+        return skipped
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    value = _cdp_evaluate_promise(
+        _PAGE_PDF_FINISH_JS + "()", base=base, tab=tab, fallback=False
+    )
+    if not isinstance(value, dict):
+        skipped["edit_gate"] = "finish_eval_empty"
+        return skipped
+    via = str(value.get("via") or "")
+    if via and via not in {"page_fn", "skipped"}:
+        via = "page_fn"
+    from_kendo = bool(value.get("filelist_from_kendo")) and via == "page_fn"
+    return {
+        "via": via,
+        "finish_fn": str(value.get("finish_fn") or ""),
+        "reads_kendo": bool(value.get("reads_kendo")),
+        "grid_pdf_row_count": int(value.get("grid_pdf_row_count") or 0),
+        "grid_id": str(value.get("grid_id") or ""),
+        "finish_filelist_n": int(value.get("finish_filelist_n") or 0),
+        "request_keys": [str(k) for k in (value.get("request_keys") or [])],
+        "filelist_from_kendo": from_kendo,
+        "filelist_row_keys": [str(k) for k in (value.get("filelist_row_keys") or [])],
+        "kendo_row_keys": [str(k) for k in (value.get("kendo_row_keys") or [])],
+        "finish_af_present": bool(value.get("finish_af_present")),
+        "finish_why": str(value.get("finish_why") or ""),
+        "status": int(value.get("status") or 0),
+        "body_keys": [str(k) for k in (value.get("body_keys") or [])],
+        "body_type": str(value.get("body_type") or "empty"),
+        "has_NewItem": bool(value.get("has_NewItem")),
+        "has_QuoteItem": bool(value.get("has_QuoteItem")),
+        "text_len": int(value.get("text_len") or 0),
+        "List": [r for r in (value.get("List") or []) if isinstance(r, dict)],
+        "edit_quote_id": str(gate.get("edit_quote_id") or ""),
+        "minted_id": str(gate.get("minted_id") or quote_id or ""),
+        "edit_gate": "",
+        "ok": from_kendo,
+    }
+
+
+def stamp_pdf_kendo_flats(
+    rows: list[dict[str, Any]],
+    *,
+    quote_id: str | None = None,
+    base: str | None = None,
+) -> dict[str, Any]:
+    """Type L×W + Machine + Status onto the page PDF kendo (Kyle typed flats)."""
+    spec_rows: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        spec_rows.append(
+            {
+                "FileName": str(row.get("FileName") or ""),
+                "Length": row.get("Length"),
+                "Width": row.get("Width"),
+                "Thickness": row.get("Thickness"),
+                "Machine": str(row.get("Machine") or "Laser - Bay1"),
+                "Status": row.get("Status") if row.get("Status") not in (None, "") else 1,
+                "ItemType": str(row.get("ItemType") or "cad"),
+                "Material": row.get("Material"),
+                "Qty": row.get("Qty"),
+                "PartName": row.get("PartName") or row.get("Description") or "",
+            }
+        )
+    empty = {
+        "ok": False,
+        "stamped": 0,
+        "grid_id": "",
+        "grid_pdf_row_count": 0,
+        "edit_gate": "",
+    }
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
+    empty["edit_gate"] = str(gate.get("reason") or "")
+    if not gate.get("ok"):
+        return empty
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    expression = (
+        _STAMP_PDF_KENDO_JS
+        + "("
+        + json.dumps({"rows": spec_rows}, separators=(",", ":"))
+        + ")"
+    )
+    value = _cdp_evaluate_promise(
+        expression, base=base, tab=tab, fallback=False
+    )
+    if not isinstance(value, dict):
+        return empty
+    return {
+        "ok": bool(value.get("ok")),
+        "stamped": int(value.get("stamped") or 0),
+        "grid_id": str(value.get("grid_id") or ""),
+        "grid_pdf_row_count": int(value.get("grid_pdf_row_count") or 0),
         "edit_gate": "",
     }
 

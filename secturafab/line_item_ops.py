@@ -360,6 +360,69 @@ def cad_image_files_stamped(item: dict[str, Any] | None) -> bool:
     )
 
 
+def _cad_product_type_100(item: dict[str, Any] | None) -> bool:
+    if not isinstance(item, dict):
+        return False
+    try:
+        return int(item.get("ProductType") or 0) == 100
+    except (TypeError, ValueError):
+        return False
+
+
+def all_cad_kids_image_files_stamped(quote: dict[str, Any] | None) -> bool:
+    """True when every ProductType 100 kid has PR + laser pack + UnitCost."""
+    from .website import quote_item_rows
+
+    cad = [it for it in quote_item_rows(quote) if _cad_product_type_100(it)]
+    if not cad:
+        return False
+    return all(cad_image_files_stamped(it) for it in cad)
+
+
+def cad_kids_unitcost_without_pr(quote: dict[str, Any] | None) -> bool:
+    """True when Cad kids have unitcost but empty OCL and no PR (1001898-5)."""
+    from .website import quote_item_rows
+
+    cad = [it for it in quote_item_rows(quote) if _cad_product_type_100(it)]
+    if not cad:
+        return False
+    return all(
+        _item_unit_cost(it) > 0
+        and not item_has_pr_tag(it)
+        and not list(it.get("OperationCostList") or [])
+        for it in cad
+    )
+
+
+def image_files_dod_pass(
+    quote: dict[str, Any] | None,
+    *,
+    expect_cad: bool = True,
+    expect_linear: bool = False,
+) -> bool:
+    """Image Files DoD: every Cad kid stamped. Linear saw PASS is not enough."""
+    from .website import quote_item_rows
+
+    items = [it for it in quote_item_rows(quote) if isinstance(it, dict)]
+    if expect_cad:
+        cad = [it for it in items if _cad_product_type_100(it)]
+        if not cad or not all(cad_image_files_stamped(it) for it in cad):
+            return False
+    if expect_linear:
+        lin_ok = any(
+            (
+                _is_linear(it)
+                and item_has_saw_pack(it)
+                and _item_unit_cost(it) > 0
+                and not item_has_grafted_saw_tags(it)
+            )
+            for it in items
+        )
+        if not lin_ok:
+            return False
+    return True
+
+
 def _persist_website_session(client: Any) -> bool:
     """True only for a real cookie string on the client (not a MagicMock)."""
     cfg = getattr(client, "config", None)

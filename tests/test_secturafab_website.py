@@ -803,6 +803,26 @@ def test_linear_add_product_type_is_website_string_not_int():
     assert payload["productType"] not in {10, 30, 40, "10", "30", "40"}
 
 
+def test_pdf_finish_from_page_kendo_rejects_reconstructed():
+    from secturafab.website import (
+        pdf_finish_from_page_kendo,
+        reconstructed_pdf_filelist_is_fail,
+    )
+
+    kendo = {
+        "via": "page_fn",
+        "filelist_from_kendo": True,
+        "finish_fn": "OnAddPDFClick",
+        "ok": True,
+    }
+    rebuilt = {"ok": True, "via": "", "filelist_from_kendo": False}
+    assert pdf_finish_from_page_kendo(kendo) is True
+    assert reconstructed_pdf_filelist_is_fail(kendo) is False
+    assert pdf_finish_from_page_kendo(rebuilt) is False
+    assert reconstructed_pdf_filelist_is_fail(rebuilt) is True
+    assert reconstructed_pdf_filelist_is_fail({"ok": True, "via": "page_fn"}) is True
+
+
 def test_additem_pdf_filelist_keeps_all_upload_list_keys():
     """FileList must not slim away Upload List calculator keys (SourceDataID may be absent)."""
     from secturafab.website import (
@@ -6604,69 +6624,101 @@ def test_grid_present_false_skips_bind_and_finish():
     assert finish["via"] == "skipped"
 
 
-def test_add_item_pdf_files_posts_quote_mvc():
+def test_add_item_pdf_files_reconstructed_filelist_is_fail_closed():
+    """Reconstructed FileList must not cookie-HTTP POST (live 1001898-5)."""
     from secturafab.client import SecturaFabClient
     from secturafab.config import SecturaFabConfig
 
     real = SecturaFabClient.__new__(SecturaFabClient)
     real.config = SecturaFabConfig(website_cookie="ASP.NET_SessionId=fixture")
-    captured: dict[str, Any] = {}
+    real._af_source = ""
+    called = {"n": 0}
 
-    def fake_website_request(method, path, **kwargs):
-        captured["method"] = method
-        captured["path"] = path
-        captured["json"] = kwargs.get("json")
-        captured["data"] = kwargs.get("data")
-        captured["files"] = kwargs.get("files")
-        captured["require_session"] = kwargs.get("require_session")
-        captured["prefer_api_origin"] = kwargs.get("prefer_api_origin")
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.content = b"{}"
-        resp.json.return_value = {"ok": True}
-        resp.headers = {}
-        resp.text = "{}"
-        resp.url = path
-        return resp
+    def boom(*_a, **_k):
+        called["n"] += 1
+        raise AssertionError("must not POST reconstructed FileList")
 
-    real.website_request = fake_website_request  # type: ignore[method-assign]
-    real.add_item_pdf_files(
-        quote_id="qid",
-        file_list=[
-            {
-                "Status": 1,
-                "Qty": 1,
-                "Machine": "Laser",
-                "Material": "A36",
-                "Thickness": 0.25,
-                "Length": 6.25,
-                "Width": 11.0,
-                "ItemType": "cad",
-                "FileName": "14500-1.pdf",
-                "Name": "14500-1 PEDESTAL TOP PLATE",
-            }
-        ],
-    )
-    assert captured["path"] == "/Quote/AddItem_PDFFiles"
-    assert captured["method"] == "POST"
-    assert captured["require_session"] is True
-    assert captured["prefer_api_origin"] is False
-    assert captured["json"] is None
-    assert captured["files"] is None
-    form = dict(captured["data"])
-    assert form["ID"] == "qid"
-    assert form["ItemID"] == EMPTY_GUID
-    assert form["FileList[0][Machine]"] == "Laser - Bay1"
-    assert form["FileList[0][ItemType]"] == "cad"
-    assert form["FileList[0][ProductType]"] == "100"
-    assert form["FileList[0][Status]"] == "1"
-    assert form["FileList[0][Thickness]"] == "0.25"
-    assert form["FileList[0][Length]"] == "6.25"
-    assert form["FileList[0][Width]"] == "11.0"
-    assert form["FileList[0][FileName]"] == "14500-1.pdf"
-    assert form["FileList[0][PartName]"] == "14500-1 PEDESTAL TOP PLATE"
-    assert "customerMaterial" not in form
-    assert "FileList[0][ErrorStatus]" not in form
+    real.website_request = boom  # type: ignore[method-assign]
+    with patch("secturafab.chrome_cdp.chrome_quotes_live", return_value=False):
+        result = real.add_item_pdf_files(
+            quote_id="qid",
+            file_list=[
+                {
+                    "Status": 1,
+                    "Qty": 1,
+                    "Machine": "Laser - Bay1",
+                    "Material": "A36",
+                    "Thickness": 0.25,
+                    "Length": 6.25,
+                    "Width": 11.0,
+                    "ItemType": "cad",
+                    "FileName": "14500-1.pdf",
+                }
+            ],
+        )
+    assert called["n"] == 0
+    assert result["ok"] is False
+    assert result["filelist_from_kendo"] is False
+    assert result["via"] == "skipped"
+
+
+def test_add_item_pdf_files_posts_page_kendo_via_onaddpdfclick():
+    """OnAddPDFClick FileList is GetPDFData / #gridPDF, not reconstructed."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.chrome_cdp import _PAGE_PDF_FINISH_JS
+
+    js = _PAGE_PDF_FINISH_JS
+    assert "GetPDFData" in js
+    assert "OnAddPDFClick" in js
+    assert "/Quote/AddItem_PDFFiles" in js
+    assert "gridPDF" in js
+    assert "Status>0" in js or "statusOf(r) > 0" in js
+    assert "opts.data.FileList = pageRows" in js
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1898"
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.timeout_seconds = 30
+    real.config.website_cookie = "ASP.NET_SessionId=box"
+    real._af_source = "chrome_dom"
+    real.session = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={
+            "ok": True,
+            "edit_quote_id": minted,
+            "minted_id": minted,
+            "reason": "",
+        },
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_pdf_finish",
+        return_value={
+            "via": "page_fn",
+            "finish_fn": "OnAddPDFClick",
+            "reads_kendo": True,
+            "filelist_from_kendo": True,
+            "grid_pdf_row_count": 3,
+            "finish_filelist_n": 3,
+            "status": 200,
+            "body_keys": [],
+            "body_type": "empty",
+            "request_keys": ["ID", "ItemID", "FileList"],
+        },
+    ):
+        result = real.add_item_pdf_files(
+            quote_id=minted,
+            file_list=[{"Status": 1, "FileName": "RECONSTRUCTED.pdf"}],
+        )
+    real.session.request.assert_not_called()
+    assert result["ok"] is True
+    assert result["via"] == "page_fn"
+    assert result["finish_fn"] == "OnAddPDFClick"
+    assert result["filelist_from_kendo"] is True
+    assert result["finish_filelist_n"] == 3
 
 
 def test_add_item_linear_posts_quote_mvc():

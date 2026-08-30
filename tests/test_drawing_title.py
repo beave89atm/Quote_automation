@@ -99,6 +99,34 @@ PEDESTAL WELDMENT
     assert "BASE PLATE" not in title.upper()
 
 
+def test_weldment_pedestal_is_header_not_child_plate():
+    """1001898-5 header is WELDMENT, PEDESTAL (or PEDESTAL WELDMENT)."""
+    from quote_core.drawing_title import is_child_part_title, is_weldment_or_assembly_title
+    from secturafab.item_desc import format_assembly_description, format_quote_header_description
+
+    for header in ("WELDMENT, PEDESTAL", "PEDESTAL WELDMENT"):
+        assert is_weldment_or_assembly_title(header)
+        assert not is_child_part_title(header)
+        assert format_quote_header_description(header, part_key="1001898-5") == header
+    assert format_assembly_description("1001898-5", "WELDMENT, PEDESTAL") == (
+        "1001898-5 - WELDMENT, PEDESTAL"
+    )
+    assert format_assembly_description("1001898-5", "PEDESTAL WELDMENT") == (
+        "1001898-5 - PEDESTAL WELDMENT"
+    )
+    text = """
+1001898-5
+TITLE:
+WELDMENT, PEDESTAL
+PEDESTAL TOP PLATE
+"""
+    title = extract_title_from_pdf_text(text, part_key="1001898-5")
+    assert title is not None
+    assert "WELDMENT" in title.upper()
+    assert "PEDESTAL" in title.upper()
+    assert "TOP PLATE" not in title.upper()
+
+
 def test_operator_platform_is_header_not_12ga_material():
     """Live 107292-1: OPERATOR PLATFORM… is the header, not 12GA A1011 stock."""
     from quote_core.drawing_title import is_material_callout_title

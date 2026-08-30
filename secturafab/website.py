@@ -92,6 +92,12 @@ Qty>0. Status>0 is Image Files GetPDFData / New Line Item, not CadImport.
 no FileType is empty. SetPartMode POSTs {ID, PartMode} and paints
 ItemType/Category; persist FileType onto the dataItem before
 OnAddDXFClick. Do not invent Status. Leave aab5b3e2 / 16629-1.
+Live 1001898-5 (491f6387 PDF-only): reconstructed FileList +
+Update Item OnAddPDFClick HTTP-looked success without the
+calculator. GET 8: 3 Cad unitcost filled, OperationCostList [],
+no PR. Linear saw PASS is not DoD PASS. FileList must be
+GetPDFData() / #gridPDF kendo rows with Status>0. Leave
+491f6387. Gold look remains 1001898-1 a7dc46bf.
 Live 10098-1 (315cb19 leftover PIVOTING FOOT, 6a568912): posted FileList
 had FileType=Cad (string) plus CadType/Stock_*/SID/FileID/ID/ErrorStatus/
 Qty/ItemType/Category/PartMode and Cad-path keys InternalData,
@@ -136,7 +142,10 @@ SetUnits sends one query key `units`. Do not Finish the raw STEP row.
   GET  /CadImport/Data
   POST /CadImport/UpdateData, UpdateDataNext, SetPartMode, SetUnits, ConvertTo
   POST /Quote/AddItem_DXFFiles   data { ID, ItemID, customerMaterial, FileList }
-  POST /Quote/AddItem_PDFFiles   urlencoded { ID, ItemID, FileList } one part
+  POST /Quote/AddItem_PDFFiles   urlencoded { ID, ItemID, FileList }
+      FileList = GetPDFData() / #gridPDF rows with Status>0
+      (OnAddPDFClick). Reconstructed FileList is fail-closed
+      even if GET>0 (live 1001898-5 491f6387).
   POST /Quote/AddItem_Linear     urlencoded OnAddLinearClick field bag
   GET  /Product/Read_DataLinearlookup?ProductID=  (20ft/21ft productConfigID)
   POST /Quote/NestQuote_Edit
@@ -1776,6 +1785,24 @@ def filter_pdf_filelist(rows: list[dict[str, Any]] | None) -> list[dict[str, Any
             continue
         out.append(dict(row))
     return out
+
+
+def pdf_finish_from_page_kendo(result: dict[str, Any] | None) -> bool:
+    """True only when OnAddPDFClick posted GetPDFData / #gridPDF FileList."""
+    if not isinstance(result, dict):
+        return False
+    if str(result.get("via") or "") != "page_fn":
+        return False
+    return bool(result.get("filelist_from_kendo"))
+
+
+def reconstructed_pdf_filelist_is_fail(result: dict[str, Any] | None) -> bool:
+    """Reconstructed Image Files FileList is fail-closed even if GET>0.
+
+    Live 1001898-5: HTTP-looking OnAddPDFClick of a Python-built FileList
+    filled Cad unitcost without PR / OperationCostList.
+    """
+    return not pdf_finish_from_page_kendo(result)
 
 
 def prepare_pdf_newline_fields(row: dict[str, Any]) -> dict[str, Any]:

@@ -491,7 +491,11 @@ def test_cadimport_rows_are_not_success_without_product_type_100_read(tmp_path, 
         "Length": 21.875,
         "Width": 21.875,
     }
-    client.add_item_pdf_files.return_value = {"ok": True}
+    client.add_item_pdf_files.return_value = {
+        "ok": False,
+        "via": "skipped",
+        "filelist_from_kendo": False,
+    }
     client.quote_item_read.return_value = {"Data": [], "Total": 0}
     client.get_json.return_value = {"ItemList": []}
 
@@ -506,19 +510,15 @@ def test_cadimport_rows_are_not_success_without_product_type_100_read(tmp_path, 
     client.upload_item_dxf_files.assert_not_called()
     assert client.upload_item_pdf_attachment.called
     assert client.add_item_pdf_files.called
-    posted = client.add_item_pdf_files.call_args_list[0].kwargs["file_list"][0]
-    assert posted["ItemType"] == "cad"
-    assert posted["Status"] == 1
-    assert posted["Machine"] == "Laser - Bay1"
-    assert posted["Thickness"] not in (None, "")
-    assert posted["Length"] not in (None, "")
-    assert posted["Width"] not in (None, "")
+    posted_list = client.add_item_pdf_files.call_args_list[0].kwargs.get("file_list")
+    assert posted_list in ([], None) or posted_list == []
     assert client.quote_item_read.called or client.get_json.called
     blob = " ".join(notes)
     assert "0 ProductType 100" in blob
     assert "CadImport list is not success" in blob
     assert "persisted" not in blob.lower()
     assert "/Attachment/UploadItem_PDFFiles" in blob
+    assert "reconstructed FileList" in blob
 
 
 def test_linear_http_500_does_not_abort_weld_or_nest(tmp_path, monkeypatch):
@@ -752,11 +752,26 @@ def test_additem_pdf_uses_takeoff_flats_when_lock_missing(tmp_path, monkeypatch)
         "ImageID": "img-1",
         "FileName": f"{pn}.pdf",
     }
-    client.add_item_pdf_files.return_value = {"ok": True}
-    client.quote_item_read.return_value = {
-        "Data": [{"ProductType": 100, "Description": pn}],
-        "Total": 1,
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
     }
+    gold_cad = {
+        "ID": "cad-1",
+        "Description": pn,
+        "ProductType": 100,
+        "BadgeString": "PR",
+        "UnitCost": 12.5,
+        "OperationCostList": [
+            {"OperationName": "Profile", "CalculatorName": "Laser"},
+            {"OperationName": "Profile", "CalculatorName": "Deburr"},
+            {"OperationName": "Profile", "CalculatorName": "Laser-Setup"},
+            {"OperationName": "Profile", "CalculatorName": "Sheet Loading"},
+        ],
+    }
+    client.quote_item_read.return_value = {"Data": [gold_cad], "Total": 1}
     notes = SecturaFabPushService(client=client).finish_pdf_files(
         quote_id="11111111-aaaa-bbbb-cccc-000000000020",
         pdf_files=[pdf],
@@ -776,11 +791,12 @@ def test_additem_pdf_uses_takeoff_flats_when_lock_missing(tmp_path, monkeypatch)
         takeoff={"items": [{"part_no": pn, "blank": [18.5, 6.25]}]},
     )
     client.add_item_pdf_files.assert_called()
-    posted = client.add_item_pdf_files.call_args.kwargs["file_list"][0]
-    assert float(posted["Width"]) == 18.5
-    assert float(posted["Length"]) == 6.25
-    assert float(posted["Thickness"]) > 0
-    assert posted["ItemType"] == "cad"
+    assert client.add_item_pdf_files.call_args.kwargs.get("file_list") == []
+    stamp = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
+    assert float(stamp["Width"]) == 18.5
+    assert float(stamp["Length"]) == 6.25
+    assert float(stamp["Thickness"]) > 0
+    assert stamp["ItemType"] == "cad"
     assert "persisted" in " ".join(notes).lower()
 
 
@@ -842,6 +858,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "b8a62e76-6439-46d3-b32e-d48de29f389d" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "0d4b8a46-cc66-4586-baed-4cad20a07ddb" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "5b622a0d-4dab-4099-97e4-d0184df4b770" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "491f6387-520f-4eee-aab3-6d20585ee740" in FORBIDDEN_LIVE_QUOTE_IDS
     from secturafab.forbidden_quotes import (
         FORBIDDEN_LIVE_QUOTE_NUMBERS,
         is_forbidden_quote_id,
@@ -874,6 +891,10 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "SC0600" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "FA Assembly" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Skin Assembly" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1001898-5" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "491f6387-520f-4eee-aab3-6d20585ee740" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert is_forbidden_quote_id("491f6387-520f-4eee-aab3-6d20585ee740")
+    assert is_forbidden_quote_id("491f6387-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("280f4dcb-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("75b3a938-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("e2cc0a7d-1111-2222-3333-444444444444")
@@ -923,6 +944,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "a9497a26-cba8-4ec9-a849-cb8bef81cbcc",
         "0d4b8a46-cc66-4586-baed-4cad20a07ddb",
         "5b622a0d-4dab-4099-97e4-d0184df4b770",
+        "491f6387-520f-4eee-aab3-6d20585ee740",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(
@@ -1191,7 +1213,11 @@ def test_filelist_missing_dims_is_not_counted_as_posted(tmp_path, monkeypatch):
         "FileID": "att-1",
         "FileName": "1001947.pdf",
     }
-    client.add_item_pdf_files.return_value = {"ok": True}
+    client.add_item_pdf_files.return_value = {
+        "ok": False,
+        "via": "skipped",
+        "filelist_from_kendo": False,
+    }
     client.quote_item_read.return_value = {"Data": [], "Total": 0}
     client.get_json.return_value = {"ItemList": []}
     notes = SecturaFabPushService(client=client).finish_pdf_files(
@@ -1204,10 +1230,8 @@ def test_filelist_missing_dims_is_not_counted_as_posted(tmp_path, monkeypatch):
             bom_rows=[{"part_no": "1001947-1", "qty": 1, "description": "1/8 5052-H32 SHEET"}],
         takeoff={},
     )
-    client.add_item_pdf_files.assert_not_called()
     blob = " ".join(notes)
-    assert "skipped" in blob.lower()
-    assert "FileList missing" in blob
+    assert "not inventing reconstructed FileList" in blob
     assert "0 ProductType 100" in blob
     assert "persisted" not in blob.lower()
 
@@ -1223,11 +1247,26 @@ def test_filelist_uses_lom_flats_and_5052_not_a36(tmp_path, monkeypatch):
         "FileID": "att-1",
         "FileName": "1001913.pdf",
     }
-    client.add_item_pdf_files.return_value = {"ok": True}
-    client.quote_item_read.return_value = {
-        "Data": [{"ProductType": 100, "Description": "1001913-1"}],
-        "Total": 1,
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
     }
+    gold_cad = {
+        "ID": "cad-1",
+        "Description": "1001913-1",
+        "ProductType": 100,
+        "BadgeString": "PR",
+        "UnitCost": 12.5,
+        "OperationCostList": [
+            {"OperationName": "Profile", "CalculatorName": "Laser"},
+            {"OperationName": "Profile", "CalculatorName": "Deburr"},
+            {"OperationName": "Profile", "CalculatorName": "Laser-Setup"},
+            {"OperationName": "Profile", "CalculatorName": "Sheet Loading"},
+        ],
+    }
+    client.quote_item_read.return_value = {"Data": [gold_cad], "Total": 1}
     notes = SecturaFabPushService(client=client).finish_pdf_files(
         quote_id="11111111-aaaa-bbbb-cccc-000000000191",
         pdf_files=[pdf],
@@ -1256,7 +1295,8 @@ def test_filelist_uses_lom_flats_and_5052_not_a36(tmp_path, monkeypatch):
         extra_pdfs=[],
     )
     client.add_item_pdf_files.assert_called()
-    posted = client.add_item_pdf_files.call_args.kwargs["file_list"][0]
+    assert client.add_item_pdf_files.call_args.kwargs.get("file_list") == []
+    posted = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
     assert posted["ItemType"] == "cad"
     assert posted["Machine"] == "Laser - Bay1"
     assert float(posted["Width"]) == 8.0
@@ -1388,11 +1428,29 @@ def test_filelist_built_for_every_cad_with_lom_flats(tmp_path, monkeypatch):
         "FileID": "att-1",
         "FileName": "kid.pdf",
     }
-    client.add_item_pdf_files.return_value = {"ok": True}
-    client.quote_item_read.return_value = {
-        "Data": [{"ProductType": 100, "Description": pn} for _n, pn, _w, _l in kids],
-        "Total": 4,
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
     }
+    gold_rows = [
+        {
+            "ID": f"cad-{pn}",
+            "Description": pn,
+            "ProductType": 100,
+            "BadgeString": "PR",
+            "UnitCost": 12.5,
+            "OperationCostList": [
+                {"OperationName": "Profile", "CalculatorName": "Laser"},
+                {"OperationName": "Profile", "CalculatorName": "Deburr"},
+                {"OperationName": "Profile", "CalculatorName": "Laser-Setup"},
+                {"OperationName": "Profile", "CalculatorName": "Sheet Loading"},
+            ],
+        }
+        for _n, pn, _w, _l in kids
+    ]
+    client.quote_item_read.return_value = {"Data": gold_rows, "Total": 4}
     notes = SecturaFabPushService(client=client).finish_pdf_files(
         quote_id="11111111-aaaa-bbbb-cccc-000000000704",
         pdf_files=pdfs,
@@ -1421,10 +1479,10 @@ def test_filelist_built_for_every_cad_with_lom_flats(tmp_path, monkeypatch):
             ]
         },
     )
-    assert client.add_item_pdf_files.call_count == 4
+    assert client.add_item_pdf_files.call_count == 1
+    assert client.add_item_pdf_files.call_args.kwargs.get("file_list") == []
     posted_names = []
-    for call in client.add_item_pdf_files.call_args_list:
-        row = call.kwargs["file_list"][0]
+    for row in client.stamp_pdf_kendo_flats.call_args.kwargs["rows"]:
         posted_names.append(row.get("FileName"))
         assert row["ItemType"] == "cad"
         assert row["Machine"] == "Laser - Bay1"
@@ -1454,9 +1512,27 @@ def test_filelist_rejects_page_outline_dims_for_1007013(tmp_path, monkeypatch):
         "FileID": "att-1",
         "FileName": "1007013.pdf",
     }
-    client.add_item_pdf_files.return_value = {"ok": True}
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+    }
     client.quote_item_read.return_value = {
-        "Data": [{"ProductType": 100, "Description": "1007013-1"}],
+        "Data": [
+            {
+                "ProductType": 100,
+                "Description": "1007013-1",
+                "BadgeString": "PR",
+                "UnitCost": 12.5,
+                "OperationCostList": [
+                    {"OperationName": "Profile", "CalculatorName": "Laser"},
+                    {"OperationName": "Profile", "CalculatorName": "Deburr"},
+                    {"OperationName": "Profile", "CalculatorName": "Laser-Setup"},
+                    {"OperationName": "Profile", "CalculatorName": "Sheet Loading"},
+                ],
+            }
+        ],
         "Total": 1,
     }
     SecturaFabPushService(client=client).finish_pdf_files(
@@ -1485,7 +1561,8 @@ def test_filelist_rejects_page_outline_dims_for_1007013(tmp_path, monkeypatch):
         },
     )
     client.add_item_pdf_files.assert_called()
-    row = client.add_item_pdf_files.call_args.kwargs["file_list"][0]
+    assert client.add_item_pdf_files.call_args.kwargs.get("file_list") == []
+    row = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
     assert {float(row["Width"]), float(row["Length"])} == {5.25, 5.75}
 
 
@@ -1639,3 +1716,74 @@ def test_ensure_weld_ops_empty_200_counts_as_posted():
     assert "returned empty" not in blob
     assert "graft" not in blob.lower() or "not grafting" in blob
     client.request.assert_not_called()
+
+
+def test_1001898_5_cad_unitcost_empty_ocl_no_pr_is_dod_fail(tmp_path, monkeypatch):
+    """3 Cad + unitcost + empty OCL + no PR is FAIL. Linear saw PASS is not DoD."""
+    from secturafab.line_item_ops import (
+        cad_image_files_stamped,
+        cad_kids_unitcost_without_pr,
+        finish_produced_gold,
+        image_files_dod_pass,
+        item_has_pr_tag,
+        item_has_saw_pack,
+    )
+    from tests.fixtures.live_1001898_5 import (
+        SPENT_QUOTE_ID,
+        live_1001898_5_quote,
+    )
+
+    quote = live_1001898_5_quote()
+    assert cad_kids_unitcost_without_pr(quote) is True
+    assert finish_produced_gold(quote, expect_cad=True, expect_linear=True) is False
+    assert image_files_dod_pass(quote, expect_cad=True, expect_linear=True) is False
+    cad = [it for it in quote["ItemList"] if it.get("ProductType") == 100]
+    assert len(cad) == 3
+    assert all(float(it["UnitCost"]) > 0 for it in cad)
+    assert all(not it.get("OperationCostList") for it in cad)
+    assert all(not item_has_pr_tag(it) for it in cad)
+    assert all(not cad_image_files_stamped(it) for it in cad)
+    linear = [it for it in quote["ItemList"] if it.get("IsLinear")]
+    assert len(linear) == 2
+    assert all(item_has_saw_pack(it) for it in linear)
+    assert image_files_dod_pass(quote, expect_cad=False, expect_linear=True) is True
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "14501-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_item_pdf_attachment.return_value = {
+        "FileID": "att-1",
+        "FileName": "14501-1.pdf",
+        "Length": 21.875,
+        "Width": 21.875,
+        "Thickness": 0.1875,
+    }
+    client.add_item_pdf_files.return_value = {
+        "ok": False,
+        "via": "skipped",
+        "filelist_from_kendo": False,
+        "finish_why": "filelist_not_kendo",
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 8}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id=SPENT_QUOTE_ID,
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.1875",
+        qty=1,
+        description="WELDMENT, PEDESTAL",
+        bom_rows=[
+            {"part_no": "14501-1", "qty": 1, "description": "PEDESTAL TOP PLATE"},
+        ],
+    )
+    blob = " ".join(notes)
+    assert "reconstructed FileList" in blob
+    assert "GET>0" in blob
+    assert "DoD FAIL" in blob
+    assert "Linear saw PASS is not DoD PASS" in blob
+    assert "persisted" not in blob.lower()
+    assert client.add_item_pdf_files.call_args.kwargs.get("file_list") == []
