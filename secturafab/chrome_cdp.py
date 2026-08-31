@@ -2592,6 +2592,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     outside_perimeter_n: 0,
     cutting_length_n: 0,
     weight_n: 0,
+    productid_n: 0,
     internaldata_n: 0,
     getperimeter_xhr: false,
     perimeter_via: "",
@@ -2753,6 +2754,13 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     }
     return {op: op, wt: wt};
   }
+  function pidOf(r) {
+    var v = r && (r.ProductID != null ? r.ProductID : r.productID);
+    if (v == null) return "";
+    var s = String(v).trim();
+    if (!s || s.toLowerCase() === "null" || s === "undefined") return "";
+    return s;
+  }
   function emptyVal(v) {
     if (v == null) return true;
     if (typeof v === "string") return !String(v).trim();
@@ -2776,15 +2784,17 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     var opN = 0;
     var clN = 0;
     var wtN = 0;
+    var pidN = 0;
     var idN = 0;
     var n = src.length || 0;
     for (var i = 0; i < n; i++) {
       var r = src[i] || {};
       if (Number(r.OutsidePerimeter) > 0) opN += 1;
       if (parseFloat(r.Weight) > 0) wtN += 1;
+      if (pidOf(r)) pidN += 1;
       if (!emptyVal(r.InternalData)) idN += 1;
     }
-    return {opN: opN, clN: clN, wtN: wtN, idN: idN};
+    return {opN: opN, clN: clN, wtN: wtN, pidN: pidN, idN: idN};
   }
   hookGetPerimeter();
   window.__kannonGetPerim = window.__kannonGetPerim || {
@@ -2804,6 +2814,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
             continue;
           }
           if (!name && idx !== j) continue;
+          var keepPid = pidOf(r);
           editSet(hit.grid, r, "Length", s.Length);
           editSet(hit.grid, r, "Width", s.Width);
           editSet(hit.grid, r, "Thickness", s.Thickness);
@@ -2814,7 +2825,9 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           if (s.Qty != null) editSet(hit.grid, r, "Qty", s.Qty);
           if (s.PartName) editSet(hit.grid, r, "PartName", s.PartName);
           stamped += 1;
-          return stampPerimeter(hit.grid, r);
+          return stampPerimeter(hit.grid, r).then(function() {
+            if (keepPid) setField(r, "ProductID", keepPid);
+          });
         }
       });
     })(rows[i] || {}, i);
@@ -2830,6 +2843,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       outside_perimeter_n: filled.opN,
       cutting_length_n: filled.clN,
       weight_n: filled.wtN,
+      productid_n: filled.pidN,
       internaldata_n: filled.idN,
       getperimeter_xhr: !!(window.__kannonGetPerim && window.__kannonGetPerim.any),
       perimeter_via: lastVia,
@@ -2931,9 +2945,10 @@ def stamp_pdf_kendo_flats(
     Live 1002323-1: bare UpdatePerimeterWeight() does not copy
     (n/t falsy). XHR OutsidePerimeter landed; List CuttingLength
     stayed 0. GetPDFData omits CuttingLength — do not invent
-    that key and do not set dataItem.CuttingLength. Copy bag
-    Weight / Weight_UseLocal from #Weight / the XHR (leftover
-    Weight=7.7607). Do not fire AddNewPDFFeature(). Empty
+    that key and do not set dataItem.CuttingLength.     Copy bag
+    Weight / Weight_UseLocal from #Weight / the XHR. Keep the
+    upload row ProductID through L×W / Weight stamp — do not
+    invent a GUID or SKU. Do not fire AddNewPDFFeature(). Empty
     InternalData is expected for no-hole rectangles.
     """
     spec_rows: list[dict[str, Any]] = []
@@ -2964,6 +2979,7 @@ def stamp_pdf_kendo_flats(
         "outside_perimeter_n": 0,
         "cutting_length_n": 0,
         "weight_n": 0,
+        "productid_n": 0,
         "internaldata_n": 0,
         "getperimeter_xhr": False,
         "perimeter_via": "",
@@ -2995,6 +3011,7 @@ def stamp_pdf_kendo_flats(
         "outside_perimeter_n": int(value.get("outside_perimeter_n") or 0),
         "cutting_length_n": int(value.get("cutting_length_n") or 0),
         "weight_n": int(value.get("weight_n") or 0),
+        "productid_n": int(value.get("productid_n") or 0),
         "internaldata_n": int(value.get("internaldata_n") or 0),
         "getperimeter_xhr": bool(value.get("getperimeter_xhr")),
         "perimeter_via": str(value.get("perimeter_via") or ""),
@@ -3456,8 +3473,13 @@ _READ_GRID_PDF_COUNT_JS = """(function() {
     } catch (e2) {}
   }
   var statusN = 0;
+  var pidN = 0;
   for (var j = 0; j < rows.length; j++) {
     if (statusOf(rows[j]) > 0) statusN += 1;
+    var pid = rows[j] && (rows[j].ProductID != null ? rows[j].ProductID : rows[j].productID);
+    if (pid != null && String(pid).trim() && String(pid).toLowerCase() !== "null") {
+      pidN += 1;
+    }
   }
   return Promise.resolve({
     grid_id: gridId,
@@ -3465,6 +3487,7 @@ _READ_GRID_PDF_COUNT_JS = """(function() {
     status_gt0_n: statusN,
     getpdfdata_n: getpdf ? statusN : 0,
     getpdfdata_is_xhr: false,
+    productid_n: pidN,
     files_kendo: filesKendo,
     transport_read_url: transportRead
   });
@@ -3538,6 +3561,7 @@ def upload_pdf_via_page_add_files(
         "status_gt0_n": 0,
         "getpdfdata_n": 0,
         "getpdfdata_is_xhr": False,
+        "productid_n": 0,
         "grid_id": "",
         "opened_via": "",
         "finish_why": "wrong_document",
@@ -3616,6 +3640,7 @@ def upload_pdf_via_page_add_files(
                     "status_gt0_n": int(count.get("status_gt0_n") or n),
                     "getpdfdata_n": int(count.get("getpdfdata_n") or n),
                     "getpdfdata_is_xhr": False,
+                    "productid_n": int(count.get("productid_n") or 0),
                     "grid_id": str(count.get("grid_id") or ""),
                     "opened_via": opened_via,
                     "finish_why": "",
@@ -3630,6 +3655,7 @@ def upload_pdf_via_page_add_files(
         "status_gt0_n": int(last.get("status_gt0_n") or 0),
         "getpdfdata_n": int(last.get("getpdfdata_n") or 0),
         "getpdfdata_is_xhr": False,
+        "productid_n": int(last.get("productid_n") or 0),
         "grid_id": str(last.get("grid_id") or ""),
         "opened_via": opened_via,
         "finish_why": "empty_dataSource",

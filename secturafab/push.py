@@ -3126,11 +3126,19 @@ class SecturaFabPushService:
         AddNewPDFFeature() with no args is not gold. Status is
         filter-only — do not overlay it onto the posted bag.
         Live 1002323-1 FileList keys were not logged. Perimeter
-        XHR is not gold pack. #files + GetPDFData + OnAddPDFClick
-        is not gold PR/laser unless Cad GET has Tag +
-        OperationCostList + UnitCost>0 + CuttingLength>0. Do not
-        treat UnitPrice / UnitWeightCost as UnitCost.
-        Do not AddOperation / nest / Operation→Profile. Do not graft.
+        XHR is not gold pack. Live 33819-1 posted bag Weight +
+        OutsidePerimeter with ProductID None — Weight is not the
+        pack. onSuccess_PDFUpload copies ProductID from upload
+        List; keep that value through L×W / Weight stamp. Do not
+        invent a GUID or plate SKU. Empty GetPDFData ProductID
+        after #files bind is fail-closed. Kyle Image Files still
+        picks plate stock when the Product box is empty — that
+        picker is a page control, not a reconstructed SKU.
+        #files + GetPDFData + OnAddPDFClick is not gold PR/laser
+        unless Cad GET has Tag + OperationCostList + UnitCost>0 +
+        CuttingLength>0. Do not treat UnitPrice / UnitWeightCost
+        as UnitCost. Do not AddOperation / nest / Operation→Profile.
+        Do not graft. Do not add CuttingLength to the bag.
         """
         if not self._website_cookie_present():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
@@ -3292,6 +3300,7 @@ class SecturaFabPushService:
                 cookie_http_pdf_upload_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
+                empty_productid_after_bind_is_fail,
                 empty_weight_after_perimeter_is_fail,
                 filelist_bag_snapshot,
                 pdf_finish_from_page_kendo,
@@ -3314,6 +3323,8 @@ class SecturaFabPushService:
             notes.append(f"upload_via={upload_via or 'missing'}")
             notes.append(f"grid_pdf_row_count={grid_n}")
             notes.append("bound=" + ("true" if bound else "false"))
+            if "productid_n" in bind:
+                notes.append(f"bind_productid_n={bind.get('productid_n')}")
             if cookie_http_pdf_upload_is_fail(upload_via) or not bound:
                 notes.append(
                     "WARNING: cookie HTTP UploadItem_PDFFiles does not bind "
@@ -3322,6 +3333,12 @@ class SecturaFabPushService:
                 notes.append(
                     "WARNING: empty_dataSource / #gridPDF not bound — "
                     "Image Files DoD FAIL (live 103535-1)"
+                )
+            elif empty_productid_after_bind_is_fail(bind):
+                notes.append(
+                    "WARNING: GetPDFData ProductID empty after #files bind "
+                    "(live 33819-1) — do not invent a GUID or plate SKU; "
+                    "do not Finish"
                 )
             else:
                 stamp_out: Any = None
@@ -3344,6 +3361,10 @@ class SecturaFabPushService:
                             via_perim = str(stamp_out.get("perimeter_via") or "")
                             if via_perim:
                                 notes.append(f"perimeter_via={via_perim}")
+                            if "productid_n" in stamp_out:
+                                notes.append(
+                                    f"stamp_productid_n={stamp_out.get('productid_n')}"
+                                )
                 if empty_perimeter_weight_is_fail(
                     stamp_out if isinstance(stamp_out, dict) else None
                 ):
@@ -3359,6 +3380,13 @@ class SecturaFabPushService:
                         "XHR (live 1002323-1) — GetPDFData omits CuttingLength; "
                         "do not post CuttingLength; do not Finish; "
                         "empty InternalData is expected for no-hole rectangles"
+                    )
+                elif empty_productid_after_bind_is_fail(
+                    stamp_out if isinstance(stamp_out, dict) else None
+                ):
+                    notes.append(
+                        "WARNING: GetPDFData ProductID empty after L×W stamp "
+                        "(live 33819-1) — do not invent a GUID; do not Finish"
                     )
                 else:
                     try:
@@ -3442,6 +3470,7 @@ class SecturaFabPushService:
             cad_kids_bind_without_pr_pack,
             cad_kids_perimeter_without_cut_pack,
             cad_kids_unitcost_without_pr,
+            cad_kids_weight_without_productid_pack,
             image_files_dod_pass,
         )
 
@@ -3465,6 +3494,13 @@ class SecturaFabPushService:
                 "UpdatePerimeterWeight is not gold pack; GetPDFData omits "
                 "CuttingLength; UnitCost==UnitPrice is material only — "
                 "Image Files DoD FAIL"
+            )
+        if cad_kids_weight_without_productid_pack(posted):
+            notes.append(
+                "WARNING: FileList Weight+OutsidePerimeter posted with "
+                "ProductID None / Tag empty / OCL [] (live 33819-1) — "
+                "do not invent a GUID; Kyle Product picker is a page "
+                "control — Image Files DoD FAIL"
             )
         if not from_kendo:
             if cad_persisted > 0:

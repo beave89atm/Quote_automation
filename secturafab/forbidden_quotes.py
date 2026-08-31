@@ -51,6 +51,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "bd5c2e3e-948d-463d-8844-4366910bb5ec",  # 103535-1 cookie HTTP upload / empty #gridPDF (leave it)
         "d2f7b031-a5a8-4020-a6a3-dba8de964ebf",  # 29743-1 #files bind / Cad no PR pack (leave it)
         "b2e12461-442b-436e-9445-772e992644f6",  # 1002323-1 perimeter XHR / CuttingLength 0 (leave it)
+        "47c393f8-db59-4b9a-a243-48d572011f77",  # 33819-1 Weight bag / ProductID None (leave it)
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -80,6 +81,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "bd5c2e3e",  # 103535-1 spent cookie HTTP / empty #gridPDF — do not remint
         "d2f7b031",  # 29743-1 spent #files bind / Cad no PR pack — do not remint
         "b2e12461",  # 1002323-1 spent perimeter XHR / CuttingLength 0 — do not remint
+        "47c393f8",  # 33819-1 spent Weight bag / ProductID None — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
         "95b8c186",  # 1007922-3 — do not open / PATCH / remint
     }
@@ -135,6 +137,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "1007922-3",  # spent 95b8c186 — do not remint
         "29743-1",  # spent d2f7b031 #files bind / Cad no PR pack — do not remint
         "1002323-1",  # spent b2e12461 perimeter XHR / CuttingLength 0 — do not remint
+        "33819-1",  # spent 47c393f8 Weight bag / ProductID None — do not remint
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

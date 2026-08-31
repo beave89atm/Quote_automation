@@ -456,6 +456,53 @@ def cad_kids_perimeter_without_cut_pack(quote: dict[str, Any] | None) -> bool:
     )
 
 
+def _item_weight(item: dict[str, Any] | None) -> float:
+    blob = item or {}
+    for src in (
+        blob,
+        blob.get("DataPartPDF") if isinstance(blob.get("DataPartPDF"), dict) else {},
+        (blob.get("FileList") or [{}])[0]
+        if blob.get("FileList") and isinstance((blob.get("FileList") or [None])[0], dict)
+        else {},
+    ):
+        try:
+            w = float(src.get("Weight") or 0)
+        except (TypeError, ValueError):
+            w = 0.0
+        if w > 0:
+            return w
+    return 0.0
+
+
+def _item_productid_empty(item: dict[str, Any] | None) -> bool:
+    blob = item or {}
+    sources = [blob]
+    dpp = blob.get("DataPartPDF")
+    if isinstance(dpp, dict):
+        sources.append(dpp)
+    fl = blob.get("FileList") or []
+    if fl and isinstance(fl[0], dict):
+        sources.append(fl[0])
+    return all(src.get("ProductID") in (None, "", "null") for src in sources)
+
+
+def cad_kids_weight_without_productid_pack(quote: dict[str, Any] | None) -> bool:
+    """33819-1 leftover GET: Weight+OP posted, ProductID None, no pack."""
+    from .website import quote_item_rows
+
+    cad = [it for it in quote_item_rows(quote) if _cad_product_type_100(it)]
+    if not cad:
+        return False
+    return all(
+        not item_has_pr_tag(it)
+        and not list(it.get("OperationCostList") or [])
+        and _item_weight(it) > 0
+        and _datapart_outside_perimeter(it) > 0
+        and _item_productid_empty(it)
+        for it in cad
+    )
+
+
 def cad_kids_bind_without_pr_pack(quote: dict[str, Any] | None) -> bool:
     """#files bind + OnAddPDFClick without gold PR/laser (live 29743-1).
 

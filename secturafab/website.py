@@ -2289,6 +2289,55 @@ def filelist_bag_snapshot(row: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+def leftover_weight_without_productid_is_fail(dump: dict[str, Any] | None) -> bool:
+    """33819-1: bag Weight+OutsidePerimeter posted, ProductID None, no pack."""
+    if not isinstance(dump, dict):
+        return False
+    bag = dump.get("filelist_bag") if isinstance(dump.get("filelist_bag"), dict) else {}
+    if bag.get("Weight_UseLocal") is not True:
+        return False
+    try:
+        if float(bag.get("Weight") or 0) <= 0:
+            return False
+        if float(bag.get("OutsidePerimeter") or 0) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    pid = bag.get("ProductID")
+    if pid not in (None, "", "null"):
+        return False
+    getpdf = dump.get("GetPDFData") if isinstance(dump.get("GetPDFData"), dict) else {}
+    if "CuttingLength" not in {str(k) for k in (getpdf.get("omits") or ())}:
+        return False
+    live = dump.get("live_33819_1") if isinstance(dump.get("live_33819_1"), dict) else {}
+    if not live:
+        return False
+    if str(live.get("tag") or "") != "":
+        return False
+    if list(live.get("operation_cost_list") or []):
+        return False
+    return True
+
+
+def empty_productid_after_bind_is_fail(result: dict[str, Any] | None) -> bool:
+    """GetPDFData ProductID empty after #files bind / stamp is FAIL (33819-1).
+
+    onSuccess_PDFUpload copies ProductID from upload List. Do not invent a
+    GUID or plate SKU. Kyle picks stock in the page Product box when empty.
+    Only when the result names ``productid_n``. MagicMock / older binds
+    without that key still Finish.
+    """
+    if not isinstance(result, dict):
+        return False
+    if "productid_n" not in result:
+        return False
+    try:
+        n = int(result.get("productid_n") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return n <= 0
+
+
 def empty_weight_after_perimeter_is_fail(
     result: dict[str, Any] | None,
 ) -> bool:

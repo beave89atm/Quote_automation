@@ -901,12 +901,14 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "1007922-3" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "29743-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1002323-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "33819-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21678-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10056" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "491f6387-520f-4eee-aab3-6d20585ee740" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "bd5c2e3e-948d-463d-8844-4366910bb5ec" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "d2f7b031-a5a8-4020-a6a3-dba8de964ebf" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "b2e12461-442b-436e-9445-772e992644f6" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "47c393f8-db59-4b9a-a243-48d572011f77" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "a7d6ca50-efec-409d-bd32-e68012e710c3" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "a7dc46bf-836a-4250-b038-9331cc0595a7" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -915,6 +917,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("d2f7b031-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("b2e12461-442b-436e-9445-772e992644f6")
     assert is_forbidden_quote_id("b2e12461-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("47c393f8-db59-4b9a-a243-48d572011f77")
+    assert is_forbidden_quote_id("47c393f8-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("425587a7-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("95b8c186-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("491f6387-520f-4eee-aab3-6d20585ee740")
@@ -975,6 +979,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d",
         "d2f7b031-a5a8-4020-a6a3-dba8de964ebf",
         "b2e12461-442b-436e-9445-772e992644f6",
+        "47c393f8-db59-4b9a-a243-48d572011f77",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(
@@ -2108,4 +2113,180 @@ def test_1002323_1_empty_weight_after_perimeter_does_not_finish(
     assert "bag Weight empty" in blob
     assert "GetPDFData omits CuttingLength" in blob
     assert "do not Finish" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_33819_1_empty_productid_after_bind_does_not_finish(
+    tmp_path, monkeypatch
+):
+    """GetPDFData ProductID empty after #files bind — do not Finish."""
+    from tests.fixtures.live_33819_1 import live_33819_1_quote
+
+    quote = live_33819_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "COMP-LINK-LUG.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    bind = _page_pdf_bind_ok(1)
+    bind["productid_n"] = 0
+    client.upload_pdf_via_page_add_files.return_value = bind
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003381",
+        pdf_files=[pdf],
+        material="A572",
+        thickness="0.625",
+        qty=1,
+        description="COMP LINK LUG",
+        bom_rows=[
+            {
+                "part_no": "COMP-LINK-LUG",
+                "qty": 1,
+                "description": "PLATE",
+                "width_in": 4.0,
+                "length_in": 16.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_not_called()
+    client.stamp_pdf_kendo_flats.assert_not_called()
+    blob = " ".join(notes)
+    assert "33819-1" in blob
+    assert "ProductID empty after #files bind" in blob
+    assert "do not invent a GUID" in blob
+    assert "do not Finish" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_33819_1_empty_productid_after_stamp_does_not_finish(
+    tmp_path, monkeypatch
+):
+    """Stamp wipe of upload ProductID — do not Finish."""
+    from tests.fixtures.live_33819_1 import live_33819_1_quote
+
+    quote = live_33819_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "COMP-LINK-LUG.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "cutting_length_n": 0,
+        "weight_n": 1,
+        "productid_n": 0,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003381",
+        pdf_files=[pdf],
+        material="A572",
+        thickness="0.625",
+        qty=1,
+        description="COMP LINK LUG",
+        bom_rows=[
+            {
+                "part_no": "COMP-LINK-LUG",
+                "qty": 1,
+                "description": "PLATE",
+                "width_in": 4.0,
+                "length_in": 16.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "33819-1" in blob
+    assert "ProductID empty after L×W stamp" in blob
+    assert "do not invent a GUID" in blob
+    assert "do not Finish" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_33819_1_bind_without_productid_n_still_finishes_leftover_fail(
+    tmp_path, monkeypatch
+):
+    """Older bind omitting productid_n still Finishes; leftover GET is FAIL."""
+    from tests.fixtures.live_33819_1 import live_33819_1_quote
+
+    quote = live_33819_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "COMP-LINK-LUG.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "cutting_length_n": 0,
+        "weight_n": 1,
+        "productid_n": 1,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+    }
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+        "filelist_bag": {
+            "Machine": "Laser - Bay1",
+            "ProductID": None,
+            "Qty": 1,
+            "Weight": 15.0875,
+            "Weight_UseLocal": True,
+            "OutsidePerimeter": 40,
+            "OutsidePerimeter_UseLocal": True,
+            "Material": "A572",
+            "Thickness": "0.625",
+            "Length": 16,
+            "Width": 4,
+        },
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003381",
+        pdf_files=[pdf],
+        material="A572",
+        thickness="0.625",
+        qty=1,
+        description="COMP LINK LUG",
+        bom_rows=[
+            {
+                "part_no": "COMP-LINK-LUG",
+                "qty": 1,
+                "description": "PLATE",
+                "width_in": 4.0,
+                "length_in": 16.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_called_once()
+    stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
+    assert stamp_rows
+    assert all("ProductID" not in row for row in stamp_rows)
+    blob = " ".join(notes)
+    assert "33819-1" in blob
+    assert "do not Finish" not in blob
+    assert "ProductID None" in blob
+    assert "DoD FAIL" in blob
     assert "persisted" not in blob.lower()
