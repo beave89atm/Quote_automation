@@ -906,6 +906,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "491f6387-520f-4eee-aab3-6d20585ee740" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "bd5c2e3e-948d-463d-8844-4366910bb5ec" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "d2f7b031-a5a8-4020-a6a3-dba8de964ebf" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "b2e12461-442b-436e-9445-772e992644f6" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "a7d6ca50-efec-409d-bd32-e68012e710c3" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "a7dc46bf-836a-4250-b038-9331cc0595a7" in FORBIDDEN_LIVE_QUOTE_IDS
