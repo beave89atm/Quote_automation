@@ -416,6 +416,46 @@ def unitprice_is_not_gold_unitcost(item: dict[str, Any] | None) -> bool:
     return _item_unit_price(item) > 0 and _item_unit_cost(item) <= 0
 
 
+def _datapart_outside_perimeter(item: dict[str, Any] | None) -> float:
+    blob = (item or {}).get("DataPartPDF") or (item or {}).get("DataPart") or {}
+    if not isinstance(blob, dict):
+        return 0.0
+    try:
+        return float(blob.get("OutsidePerimeter") or blob.get("Perimeter") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def unitcost_equals_unitprice_is_material_only(item: dict[str, Any] | None) -> bool:
+    """UnitCost == UnitPrice is material weight, not laser pack (live 1002323-1)."""
+    if not isinstance(item, dict):
+        return False
+    try:
+        cost = float(item.get("UnitCost") or 0)
+        price = float(item.get("UnitPrice") or 0)
+    except (TypeError, ValueError):
+        return False
+    if cost <= 0 or price <= 0:
+        return False
+    return abs(cost - price) < 1e-6
+
+
+def cad_kids_perimeter_without_cut_pack(quote: dict[str, Any] | None) -> bool:
+    """1002323-1: OutsidePerimeter landed, CuttingLength 0, no PR/OCL."""
+    from .website import quote_item_rows
+
+    cad = [it for it in quote_item_rows(quote) if _cad_product_type_100(it)]
+    if not cad:
+        return False
+    return all(
+        not item_has_pr_tag(it)
+        and not list(it.get("OperationCostList") or [])
+        and _datapart_cutting_length(it) <= 0
+        and _datapart_outside_perimeter(it) > 0
+        for it in cad
+    )
+
+
 def cad_kids_bind_without_pr_pack(quote: dict[str, Any] | None) -> bool:
     """#files bind + OnAddPDFClick without gold PR/laser (live 29743-1).
 

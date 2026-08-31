@@ -3113,14 +3113,18 @@ class SecturaFabPushService:
         does not fill the grid (live 103535-1 empty_dataSource / GET 0).
         GetPDFData() walks tbody dataItem Status>0 (not an XHR).
         Reconstructed FileList is fail-closed (live 1001898-5).
-        After #files bind, type L×W so UpdatePerimeterWeight →
-        POST /Quote/GetPerimeterAndWeight fills OutsidePerimeter +
-        CuttingLengthDisp before OnAddPDFClick. Empty perimeter →
-        do not Finish (live 29743-1 dataItem.set skipped that XHR;
-        server List Tag "" / OCL [] / UnitCost 0 / CuttingLength 0).
-        #files + GetPDFData + OnAddPDFClick is not gold PR/laser
-        unless Cad GET has Tag + OperationCostList + UnitCost>0 +
-        CuttingLength>0. Do not treat UnitPrice as UnitCost.
+        After #files bind, type L×W so UpdatePerimeterWeight(true,true)
+        → POST /Quote/GetPerimeterAndWeight fills OutsidePerimeter +
+        CuttingLengthDisp before OnAddPDFClick. Bare
+        UpdatePerimeterWeight() does not copy (n/t falsy). Empty
+        perimeter → do not Finish (live 29743-1). Live 1002323-1:
+        XHR OutsidePerimeter landed, CuttingLength stayed 0 —
+        GetPDFData omits CuttingLength; CuttingLengthDisp is
+        display-only; empty InternalData is fail-closed. Perimeter
+        XHR is not gold pack. #files + GetPDFData + OnAddPDFClick
+        is not gold PR/laser unless Cad GET has Tag +
+        OperationCostList + UnitCost>0 + CuttingLength>0. Do not
+        treat UnitPrice / UnitWeightCost as UnitCost.
         Do not AddOperation / nest / Operation→Profile. Do not graft.
         """
         if not self._website_cookie_present():
@@ -3282,6 +3286,7 @@ class SecturaFabPushService:
             from .website import (
                 cookie_http_pdf_upload_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
+                empty_internaldata_after_perimeter_is_fail,
                 empty_perimeter_weight_is_fail,
                 pdf_finish_from_page_kendo,
                 pdf_grid_upload_bound,
@@ -3333,12 +3338,24 @@ class SecturaFabPushService:
                             via_perim = str(stamp_out.get("perimeter_via") or "")
                             if via_perim:
                                 notes.append(f"perimeter_via={via_perim}")
+                            via_feat = str(stamp_out.get("feature_via") or "")
+                            if via_feat:
+                                notes.append(f"feature_via={via_feat}")
                 if empty_perimeter_weight_is_fail(
                     stamp_out if isinstance(stamp_out, dict) else None
                 ):
                     notes.append(
                         "WARNING: UpdatePerimeterWeight empty OutsidePerimeter "
                         "— do not Finish (live 29743-1)"
+                    )
+                elif empty_internaldata_after_perimeter_is_fail(
+                    stamp_out if isinstance(stamp_out, dict) else None
+                ):
+                    notes.append(
+                        "WARNING: UpdatePerimeterWeight is not the gold pack "
+                        "(live 1002323-1) — GetPDFData omits CuttingLength; "
+                        "CuttingLengthDisp is display-only; InternalData empty "
+                        "— do not Finish; do not invent CuttingLength"
                     )
                 else:
                     try:
@@ -3401,6 +3418,7 @@ class SecturaFabPushService:
             all_cad_kids_image_files_stamped,
             cad_image_files_stamped,
             cad_kids_bind_without_pr_pack,
+            cad_kids_perimeter_without_cut_pack,
             cad_kids_unitcost_without_pr,
             image_files_dod_pass,
         )
@@ -3417,6 +3435,14 @@ class SecturaFabPushService:
                 "PR/laser pack (live 29743-1); UnitPrice is not UnitCost; "
                 "CuttingLength 0 / empty OCL / Tag empty / UnitCost 0 — "
                 "Image Files DoD FAIL; Linear saw PASS is not DoD PASS"
+            )
+        if cad_kids_perimeter_without_cut_pack(posted):
+            notes.append(
+                "WARNING: perimeter XHR OutsidePerimeter landed but "
+                "CuttingLength 0 / Tag empty / OCL [] (live 1002323-1) — "
+                "UpdatePerimeterWeight is not gold pack; GetPDFData omits "
+                "CuttingLength; UnitCost==UnitPrice is material only — "
+                "Image Files DoD FAIL"
             )
         if not from_kendo:
             if cad_persisted > 0:

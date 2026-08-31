@@ -900,6 +900,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "34137-4" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1007922-3" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "29743-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1002323-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21678-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10056" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "491f6387-520f-4eee-aab3-6d20585ee740" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -911,6 +912,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
     assert is_forbidden_quote_id("bd5c2e3e-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d2f7b031-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("b2e12461-442b-436e-9445-772e992644f6")
+    assert is_forbidden_quote_id("b2e12461-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("425587a7-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("95b8c186-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("491f6387-520f-4eee-aab3-6d20585ee740")
@@ -970,6 +973,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "a7d6ca50-efec-409d-bd32-e68012e710c3",
         "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d",
         "d2f7b031-a5a8-4020-a6a3-dba8de964ebf",
+        "b2e12461-442b-436e-9445-772e992644f6",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(
@@ -1991,5 +1995,55 @@ def test_29743_1_empty_perimeter_does_not_finish(tmp_path, monkeypatch):
     assert "UpdatePerimeterWeight" in blob
     assert "empty OutsidePerimeter" in blob
     assert "29743-1" in blob
+    assert "do not Finish" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_1002323_1_perimeter_without_internaldata_does_not_finish(tmp_path, monkeypatch):
+    """Perimeter XHR without InternalData — do not Finish (1002323-1)."""
+    from tests.fixtures.live_1002323_1 import live_1002323_1_quote
+
+    quote = live_1002323_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "1002323-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "cutting_length_n": 1,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001002",
+        pdf_files=[pdf],
+        material="A572",
+        thickness="0.375",
+        qty=2,
+        description="WINCH ROLLER BRACKETS",
+        bom_rows=[
+            {
+                "part_no": "1002323-1",
+                "qty": 2,
+                "description": "PLATE",
+                "width_in": 2.5,
+                "length_in": 19.82,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "1002323-1" in blob
+    assert "not the gold pack" in blob
+    assert "GetPDFData omits CuttingLength" in blob
     assert "do not Finish" in blob
     assert "persisted" not in blob.lower()

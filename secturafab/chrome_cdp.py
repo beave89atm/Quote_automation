@@ -2576,8 +2576,10 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     grid_pdf_row_count: 0,
     outside_perimeter_n: 0,
     cutting_length_n: 0,
+    internaldata_n: 0,
     getperimeter_xhr: false,
-    perimeter_via: ""
+    perimeter_via: "",
+    feature_via: ""
   };
   var hit = pdfGrid();
   if (!hit) return Promise.resolve(emptyStamp);
@@ -2586,6 +2588,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
   var stamped = 0;
   var viaCell = 0;
   var lastVia = "";
+  var lastFeature = "";
   function setField(r, k, v) {
     if (v == null || v === "") return;
     if (typeof r.set === "function") r.set(k, v);
@@ -2660,7 +2663,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
   function fireUpdatePerimeterWeight() {
     try {
       if (typeof window.UpdatePerimeterWeight === "function") {
-        window.UpdatePerimeterWeight();
+        window.UpdatePerimeterWeight(true, true);
         return "UpdatePerimeterWeight";
       }
     } catch (e) {}
@@ -2717,6 +2720,24 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     if (cl) setField(r, "CuttingLengthDisp", cl);
     return {op: op, cl: cl};
   }
+  function emptyVal(v) {
+    if (v == null) return true;
+    if (typeof v === "string") return !String(v).trim();
+    if (Array.isArray(v)) return v.length === 0;
+    return false;
+  }
+  function firePdfInternal() {
+    var names = ["AddNewPDFFeature", "PDFGetData"];
+    for (var i = 0; i < names.length; i++) {
+      try {
+        if (typeof window[names[i]] === "function") {
+          window[names[i]]();
+          return names[i];
+        }
+      } catch (e) {}
+    }
+    return "";
+  }
   function stampPerimeter(grid, r) {
     try {
       var tr = grid.tbody.find("tr").filter(function() {
@@ -2728,18 +2749,21 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     lastVia = fireUpdatePerimeterWeight() || lastVia;
     return waitGetPerimeter(8000).then(function() {
       copyPerimeterOntoRow(r);
+      lastFeature = firePdfInternal() || lastFeature;
     });
   }
   function countFilled(src) {
     var opN = 0;
     var clN = 0;
+    var idN = 0;
     var n = src.length || 0;
     for (var i = 0; i < n; i++) {
       var r = src[i] || {};
       if (Number(r.OutsidePerimeter) > 0) opN += 1;
       if (Number(r.CuttingLengthDisp) > 0) clN += 1;
+      if (!emptyVal(r.InternalData)) idN += 1;
     }
-    return {opN: opN, clN: clN};
+    return {opN: opN, clN: clN, idN: idN};
   }
   hookGetPerimeter();
   window.__kannonGetPerim = window.__kannonGetPerim || {
@@ -2784,8 +2808,10 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       grid_pdf_row_count: data.length,
       outside_perimeter_n: filled.opN,
       cutting_length_n: filled.clN,
+      internaldata_n: filled.idN,
       getperimeter_xhr: !!(window.__kannonGetPerim && window.__kannonGetPerim.any),
-      perimeter_via: lastVia
+      perimeter_via: lastVia,
+      feature_via: lastFeature
     };
   });
 })"""
@@ -2869,11 +2895,14 @@ def stamp_pdf_kendo_flats(
     quote_id: str | None = None,
     base: str | None = None,
 ) -> dict[str, Any]:
-    """Type L×W in kendo cells, then UpdatePerimeterWeight before Finish.
+    """Type L×W in kendo cells, then UpdatePerimeterWeight(true,true).
 
     Live 29743-1: dataItem.set skipped UpdatePerimeterWeight /
     POST /Quote/GetPerimeterAndWeight. Posted OutsidePerimeter
     empty → server List no PR/laser pack. Do not invent perimeter.
+    Live 1002323-1: bare UpdatePerimeterWeight() does not copy
+    (n/t falsy). XHR OutsidePerimeter landed; CuttingLength stayed 0
+    because GetPDFData omits it. Do not invent CuttingLength.
     """
     spec_rows: list[dict[str, Any]] = []
     for row in rows or []:
@@ -2902,8 +2931,10 @@ def stamp_pdf_kendo_flats(
         "edit_gate": "",
         "outside_perimeter_n": 0,
         "cutting_length_n": 0,
+        "internaldata_n": 0,
         "getperimeter_xhr": False,
         "perimeter_via": "",
+        "feature_via": "",
     }
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     empty["edit_gate"] = str(gate.get("reason") or "")
@@ -2930,8 +2961,10 @@ def stamp_pdf_kendo_flats(
         "edit_gate": "",
         "outside_perimeter_n": int(value.get("outside_perimeter_n") or 0),
         "cutting_length_n": int(value.get("cutting_length_n") or 0),
+        "internaldata_n": int(value.get("internaldata_n") or 0),
         "getperimeter_xhr": bool(value.get("getperimeter_xhr")),
         "perimeter_via": str(value.get("perimeter_via") or ""),
+        "feature_via": str(value.get("feature_via") or ""),
     }
 
 
@@ -3022,7 +3055,7 @@ _STAMP_DXF_STOCK_JS = """(function(spec) {
   function fireUpdatePerimeterWeight() {
     try {
       if (typeof window.UpdatePerimeterWeight === "function") {
-        window.UpdatePerimeterWeight();
+        window.UpdatePerimeterWeight(true, true);
         return "UpdatePerimeterWeight";
       }
     } catch (e) {}

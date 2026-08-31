@@ -2160,6 +2160,73 @@ def leftover_cad_pack_is_on_additem_list(dump: dict[str, Any] | None) -> bool:
     return True
 
 
+def leftover_perimeter_xhr_is_not_gold_pack(dump: dict[str, Any] | None) -> bool:
+    """Live 1002323-1: UpdatePerimeterWeight(true,true) is not the gold pack."""
+    if not isinstance(dump, dict):
+        return False
+    xhr = dump.get("UpdatePerimeterWeight")
+    if not isinstance(xhr, dict):
+        return False
+    if xhr.get("is_gold_pack") is not False:
+        return False
+    if xhr.get("bare_does_not_copy") is not True:
+        return False
+    call = str(xhr.get("call") or "").replace(" ", "")
+    if "true,true" not in call:
+        return False
+    if "/Quote/GetPerimeterAndWeight" not in str(xhr.get("xhr") or ""):
+        return False
+    getpdf = dump.get("GetPDFData") if isinstance(dump.get("GetPDFData"), dict) else {}
+    omits = {str(k) for k in (getpdf.get("omits") or ())}
+    if "CuttingLength" not in omits:
+        return False
+    if getpdf.get("cuttinglengthdisp_display_only") is not True:
+        return False
+    live = dump.get("live_1002323_1") if isinstance(dump.get("live_1002323_1"), dict) else {}
+    if not live:
+        return False
+    try:
+        perim = float(live.get("outside_perimeter") or 0)
+        cut = float(live.get("cutting_length") or 0)
+    except (TypeError, ValueError):
+        return False
+    if perim <= 0 or cut > 0:
+        return False
+    if str(live.get("tag") or "") != "":
+        return False
+    if list(live.get("operation_cost_list") or []):
+        return False
+    nxt = dump.get("UpdateDataNext") if isinstance(dump.get("UpdateDataNext"), dict) else {}
+    if nxt.get("gold") is not False:
+        return False
+    return True
+
+
+def empty_internaldata_after_perimeter_is_fail(result: dict[str, Any] | None) -> bool:
+    """Perimeter XHR without InternalData cannot stamp CuttingLength (1002323-1).
+
+    GetPDFData posts InternalData and omits CuttingLength. CuttingLengthDisp
+    is display-only. Only when the stamp names ``internaldata_n`` and
+    ``outside_perimeter_n>0``. MagicMock / older stamps without that key
+    still Finish.
+    """
+    if not isinstance(result, dict):
+        return False
+    if "internaldata_n" not in result:
+        return False
+    if "outside_perimeter_n" not in result:
+        return False
+    try:
+        perim = int(result.get("outside_perimeter_n") or 0)
+    except (TypeError, ValueError):
+        perim = 0
+    try:
+        idata = int(result.get("internaldata_n") or 0)
+    except (TypeError, ValueError):
+        idata = 0
+    return perim > 0 and idata <= 0
+
+
 def empty_perimeter_weight_is_fail(result: dict[str, Any] | None) -> bool:
     """Empty OutsidePerimeter / CuttingLengthDisp after L×W is FAIL (29743-1).
 

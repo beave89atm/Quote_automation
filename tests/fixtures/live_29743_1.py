@@ -145,9 +145,11 @@ LEFTOVER_CAD_PACK_BIND = {
             "Status",
             "CadType",
             "CuttingLength",
+            "CuttingLengthDisp",
             "ProductionReady",
             "Tag",
         ),
+        "cuttinglengthdisp_display_only": True,
         "status_is_filter_only": True,
     },
     "AddNewPDFFeature": {

@@ -1084,6 +1084,7 @@ def test_leftover_cad_pack_is_on_additem_list():
 
     dump = leftover_cad_pack_bind_dump()
     assert leftover_cad_pack_is_on_additem_list(dump) is True
+    assert dump["GetPDFData"]["cuttinglengthdisp_display_only"] is True
     broken = dict(dump)
     broken["pack_xhr_named"] = True
     assert leftover_cad_pack_is_on_additem_list(broken) is False
@@ -1098,6 +1099,59 @@ def test_leftover_cad_pack_is_on_additem_list():
     assert live["tag"] == ""
     assert live["operation_cost_list"] == []
     assert live["unit_cost"] == 0
+    assert dump["GetPDFData"]["cuttinglengthdisp_display_only"] is True
+
+
+def test_leftover_perimeter_xhr_is_not_gold_pack():
+    """Live 1002323-1: perimeter XHR landed; CuttingLength 0 / no pack."""
+    from secturafab.line_item_ops import (
+        cad_image_files_stamped,
+        cad_kids_perimeter_without_cut_pack,
+        cad_kids_unitcost_without_pr,
+        image_files_dod_pass,
+        unitcost_equals_unitprice_is_material_only,
+    )
+    from secturafab.website import (
+        empty_internaldata_after_perimeter_is_fail,
+        leftover_perimeter_xhr_is_not_gold_pack,
+    )
+    from tests.fixtures.live_1002323_1 import (
+        leftover_perimeter_not_pack_dump,
+        live_1002323_1_quote,
+    )
+
+    dump = leftover_perimeter_not_pack_dump()
+    assert dump["readonly"] is True
+    assert dump["UpdatePerimeterWeight"]["is_gold_pack"] is False
+    assert dump["UpdatePerimeterWeight"]["bare_does_not_copy"] is True
+    assert "true,true" in dump["UpdatePerimeterWeight"]["call"].replace(" ", "")
+    assert dump["GetPDFData"]["cuttinglengthdisp_display_only"] is True
+    assert "CuttingLength" in dump["GetPDFData"]["omits"]
+    assert leftover_perimeter_xhr_is_not_gold_pack(dump) is True
+    broken = dict(dump)
+    broken["UpdatePerimeterWeight"] = dict(dump["UpdatePerimeterWeight"])
+    broken["UpdatePerimeterWeight"]["is_gold_pack"] = True
+    assert leftover_perimeter_xhr_is_not_gold_pack(broken) is False
+    quote = live_1002323_1_quote()
+    cad = quote["ItemList"][0]
+    assert cad["Tag"] == ""
+    assert cad["OperationCostList"] == []
+    assert cad["DataPartPDF"]["OutsidePerimeter"] == 44.64
+    assert cad["DataPartPDF"]["CuttingLength"] == 0
+    assert cad["DataPartPDF"]["InternalData"] == ""
+    assert cad["DataPartPDF"]["HasSelectedProductID"] is False
+    assert unitcost_equals_unitprice_is_material_only(cad) is True
+    assert cad_kids_perimeter_without_cut_pack(quote) is True
+    assert cad_kids_unitcost_without_pr(quote) is True
+    assert cad_image_files_stamped(cad) is False
+    assert image_files_dod_pass(quote, expect_cad=True) is False
+    assert empty_internaldata_after_perimeter_is_fail(
+        {"outside_perimeter_n": 1, "internaldata_n": 0}
+    ) is True
+    assert empty_internaldata_after_perimeter_is_fail(
+        {"outside_perimeter_n": 1, "internaldata_n": 1}
+    ) is False
+    assert empty_internaldata_after_perimeter_is_fail({"stamped": 1}) is False
 
 
 def test_empty_perimeter_weight_is_fail():
@@ -7357,6 +7411,10 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "editCell" in _STAMP_PDF_KENDO_JS
     assert "editSet" in _STAMP_PDF_KENDO_JS
     assert "UpdatePerimeterWeight" in _STAMP_PDF_KENDO_JS
+    assert "UpdatePerimeterWeight(true, true)" in _STAMP_PDF_KENDO_JS
+    assert "UpdatePerimeterWeight()" not in _STAMP_PDF_KENDO_JS
+    assert "AddNewPDFFeature" in _STAMP_PDF_KENDO_JS
+    assert "internaldata_n" in _STAMP_PDF_KENDO_JS
     assert "/Quote/GetPerimeterAndWeight" in _STAMP_PDF_KENDO_JS
     assert "outside_perimeter_n" in _STAMP_PDF_KENDO_JS
     assert "CuttingLengthDisp" in _STAMP_PDF_KENDO_JS
