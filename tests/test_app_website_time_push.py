@@ -1872,7 +1872,7 @@ def test_live_103535_1_cookie_http_empty_grid_is_fail(tmp_path, monkeypatch):
         description="GATE WELDMENT",
         bom_rows=[
             {
-                "part_no": f"{stem}-1",
+                "part_no": stem,
                 "qty": 1,
                 "description": "PLATE",
                 "width_in": 8.0 if stem != MISSING_FLATS_STEM else None,
