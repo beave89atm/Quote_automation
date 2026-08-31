@@ -406,6 +406,12 @@ def test_pdf_and_linear_payloads_share_id_itemid():
     )
     assert tube["productType"] == "tube"
     assert list(linear.keys()) == list(LINEAR_ADD_FIELDS)
+    assert linear["fixedPrice"] == 0
+    assert linear["productionReady"] is False
+    assert linear["outsource"] is False
+    assert not isinstance(linear["fixedPrice"], str)
+    assert isinstance(linear["productionReady"], bool)
+    assert isinstance(linear["outsource"], bool)
 
 
 def test_pdf_finish_payload_commits_cadimport_newline_fields():
@@ -801,6 +807,17 @@ def test_linear_add_product_type_is_website_string_not_int():
     assert payload["productType"] == "structural"
     assert not isinstance(payload["productType"], int)
     assert payload["productType"] not in {10, 30, 40, "10", "30", "40"}
+    empty_bools = build_linear_add_payload(
+        "qid",
+        product_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        qty=1,
+        length=125,
+        name="1004740-1 MASTER CYLINDER MOUNT CHANNEL",
+        extra={**extra, "fixedPrice": "", "productionReady": "", "outsource": ""},
+    )
+    assert empty_bools["fixedPrice"] == 0
+    assert empty_bools["productionReady"] is False
+    assert empty_bools["outsource"] is False
 
 
 def test_pdf_finish_from_page_kendo_rejects_reconstructed():
@@ -921,6 +938,48 @@ def test_leftover_gridpdf_bind_is_files_kendo_onsuccess():
     assert live["datasource_n"] == 0
     assert live["getpdfdata_n"] == 0
     assert live["finish_why"] == "empty_dataSource"
+
+
+def test_29743_1_files_kendo_bind_without_gold_pack_is_fail():
+    from secturafab.line_item_ops import (
+        cad_image_files_stamped,
+        cad_kids_bind_without_pr_pack,
+        cad_kids_unitcost_without_pr,
+        image_files_bind_without_gold_pack_is_fail,
+        image_files_dod_pass,
+        item_has_pr_tag,
+        item_has_saw_pack,
+        unitprice_is_not_gold_unitcost,
+    )
+    from tests.fixtures.live_29743_1 import live_29743_1_quote
+
+    quote = live_29743_1_quote()
+    cad = [it for it in quote["ItemList"] if it.get("ProductType") == 100]
+    linear = [it for it in quote["ItemList"] if it.get("IsLinear")]
+    assert len(cad) == 2
+    assert len(linear) == 2
+    assert all(it["Tag"] == "" for it in cad)
+    assert all(not it.get("OperationCostList") for it in cad)
+    assert all(float(it["UnitCost"]) == 0 for it in cad)
+    assert all(unitprice_is_not_gold_unitcost(it) for it in cad)
+    assert all(it["DataPartPDF"]["CuttingLength"] == 0 for it in cad)
+    assert all(not item_has_pr_tag(it) for it in cad)
+    assert all(not cad_image_files_stamped(it) for it in cad)
+    assert all(item_has_saw_pack(it) for it in linear)
+    assert cad_kids_bind_without_pr_pack(quote) is True
+    assert cad_kids_unitcost_without_pr(quote) is False
+    assert image_files_dod_pass(quote, expect_cad=True, expect_linear=True) is False
+    assert image_files_dod_pass(quote, expect_cad=False, expect_linear=True) is True
+    assert image_files_bind_without_gold_pack_is_fail(
+        files_kendo=True,
+        filelist_from_kendo=True,
+        cad_n=2,
+        tag_empty=True,
+        ocl_empty=True,
+        unit_cost=0,
+        cutting_length=0,
+        unit_price=28.82,
+    )
 
 
 def test_additem_pdf_filelist_keeps_all_upload_list_keys():
@@ -6846,6 +6905,11 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "#files" in _DISPATCH_FILES_CHANGE_JS
     assert "getPdfDataFromTbody" in _PAGE_PDF_FINISH_JS
     assert "dataItem" in _PAGE_PDF_FINISH_JS
+    assert "overlayStatusFromDataItem" in _PAGE_PDF_FINISH_JS
+    from secturafab.chrome_cdp import _STAMP_PDF_KENDO_JS
+
+    assert "editCell" in _STAMP_PDF_KENDO_JS
+    assert "editSet" in _STAMP_PDF_KENDO_JS
 
 
 def test_upload_pdf_via_page_add_files_is_not_cookie_http():

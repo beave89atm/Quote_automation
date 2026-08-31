@@ -49,6 +49,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "5b622a0d-4dab-4099-97e4-d0184df4b770",  # Skin Assembly jquery_ajax+EDIT InternalData empty 8/8 (1a2274f) — leave it
         "491f6387-520f-4eee-aab3-6d20585ee740",  # 1001898-5 reconstructed PDF FileList / Cad no PR (leave it)
         "bd5c2e3e-948d-463d-8844-4366910bb5ec",  # 103535-1 cookie HTTP upload / empty #gridPDF (leave it)
+        "d2f7b031-a5a8-4020-a6a3-dba8de964ebf",  # 29743-1 #files bind / Cad no PR pack (leave it)
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -76,6 +77,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "5b622a0d",  # Skin Assembly spent jquery_ajax+EDIT InternalData empty 8/8 — do not remint
         "491f6387",  # 1001898-5 spent reconstructed PDF FileList / Cad no PR — do not remint
         "bd5c2e3e",  # 103535-1 spent cookie HTTP / empty #gridPDF — do not remint
+        "d2f7b031",  # 29743-1 spent #files bind / Cad no PR pack — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
         "95b8c186",  # 1007922-3 — do not open / PATCH / remint
     }
@@ -129,6 +131,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "Q10095",  # spent 103535-1 GATE WELDMENT — do not remint
         "34137-4",  # spent 425587a7 — do not remint
         "1007922-3",  # spent 95b8c186 — do not remint
+        "29743-1",  # spent d2f7b031 #files bind / Cad no PR pack — do not remint
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

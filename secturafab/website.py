@@ -98,6 +98,16 @@ calculator. GET 8: 3 Cad unitcost filled, OperationCostList [],
 no PR. Linear saw PASS is not DoD PASS. FileList must be
 GetPDFData() / #gridPDF kendo rows with Status>0. Leave
 491f6387. Gold look remains 1001898-1 a7dc46bf.
+Live 29743-1 (d2f7b031 SUBFRAME WELDMENT Time Waco): in-page
+#files kendoUpload + GetPDFData n=2 + OnAddPDFClick
+filelist_from_kendo=true. GET 4: 2 Cad + 2 Linear. Linear Saw
++ Saw-Setup + unitcost 4.0 PASS. Cad FAIL: Tag empty,
+OperationCostList [], UnitCost 0, CuttingLength 0. UnitPrice
+28.82 / 44.49 is material weight, not gold. GetPDFData omitted
+the Status key (filtered on dataItem). #files bind is not the
+gold PR + laser Primary Costs stamp. Do not graft. Do not
+Operation→Profile. Do not treat nest as the pack. Leave
+d2f7b031 / 29743-1. Gold look remains 1001898-1 a7dc46bf.
 Live 103535-1 (bd5c2e3e Q10095 GATE WELDMENT): leftover Image
 Files dialog (read-only; closed; no Finish). GetItem_AddView
 ItemType=pdf injects empty #gridPDF (Data:[] Total:0) plus
@@ -2629,6 +2639,14 @@ def build_linear_add_payload(
         raise ValueError(
             "AddItem_Linear requires weightLength from the catalog lookup"
         )
+    # Live 29743-1: empty string fixedPrice / productionReady / outsource
+    # HTTP 500s. Website AddItem_Linear needs non-null decimal / bool / bool.
+    if payload.get("fixedPrice") in ("", None):
+        payload["fixedPrice"] = 0
+    if payload.get("productionReady") in ("", None):
+        payload["productionReady"] = False
+    if payload.get("outsource") in ("", None):
+        payload["outsource"] = False
     return payload
 
 

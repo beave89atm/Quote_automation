@@ -899,15 +899,18 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "Q10095" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "34137-4" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1007922-3" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "29743-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21678-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10056" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "491f6387-520f-4eee-aab3-6d20585ee740" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "bd5c2e3e-948d-463d-8844-4366910bb5ec" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "d2f7b031-a5a8-4020-a6a3-dba8de964ebf" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "a7d6ca50-efec-409d-bd32-e68012e710c3" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "a7dc46bf-836a-4250-b038-9331cc0595a7" in FORBIDDEN_LIVE_QUOTE_IDS
     assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
     assert is_forbidden_quote_id("bd5c2e3e-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("d2f7b031-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("425587a7-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("95b8c186-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("491f6387-520f-4eee-aab3-6d20585ee740")
@@ -966,6 +969,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "a7dc46bf-836a-4250-b038-9331cc0595a7",
         "a7d6ca50-efec-409d-bd32-e68012e710c3",
         "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d",
+        "d2f7b031-a5a8-4020-a6a3-dba8de964ebf",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(
@@ -1898,3 +1902,47 @@ def test_live_103535_1_cookie_http_empty_grid_is_fail(tmp_path, monkeypatch):
     assert "GET 0 Cad" in blob
     assert "persisted" not in blob.lower()
     assert "AddItem_PDFFiles posted 1 FileList" not in blob
+
+
+def test_29743_1_files_kendo_bind_is_not_gold_pack(tmp_path, monkeypatch):
+    """#files + GetPDFData + OnAddPDFClick with Cad UnitCost 0 / empty OCL is FAIL."""
+    from tests.fixtures.live_29743_1 import live_29743_1_quote
+
+    quote = live_29743_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdfs = []
+    for name in ("29743-a.pdf", "29743-b.pdf"):
+        p = tmp_path / name
+        p.write_bytes(b"%PDF")
+        pdfs.append(p)
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(2)
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 2,
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 4}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000002974",
+        pdf_files=pdfs,
+        material="A572",
+        thickness="0.1875",
+        qty=2,
+        description="SUBFRAME WELDMENT",
+        bom_rows=[
+            {"part_no": "29743-a", "qty": 2, "description": "PLATE", "width_in": 8.0, "length_in": 12.0},
+            {"part_no": "29743-b", "qty": 2, "description": "PLATE", "width_in": 10.0, "length_in": 14.0},
+        ],
+    )
+    client.upload_item_pdf_attachment.assert_not_called()
+    blob = " ".join(notes)
+    assert "29743-1" in blob or "not gold" in blob or "UnitPrice is not UnitCost" in blob
+    assert "DoD FAIL" in blob
+    assert "Linear saw PASS is not DoD PASS" in blob
+    assert "persisted" not in blob.lower()

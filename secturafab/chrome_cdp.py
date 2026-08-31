@@ -89,6 +89,13 @@ no PR tag). Kyle Loom: Image Files + typed L×W + green
 ``Status>0``. Reconstructed FileList is fail-closed even if
 GET>0. Leave 491f6387 / 1001898-5. No STEP. Do not mint.
 
+Live 29743-1 (d2f7b031 SUBFRAME WELDMENT): #files bind +
+GetPDFData + OnAddPDFClick is not gold PR/laser. GET Cad
+Tag empty, OperationCostList [], UnitCost 0, CuttingLength 0.
+UnitPrice is material weight. GetPDFData omitted Status.
+dataItem.set L×W skipped kendo cell-edit / perimeter calc.
+Copy Status from dataItem onto posted FileList; type L×W in
+kendo editors. Do not graft. Leave d2f7b031. Do not mint.
 Live 103535-1 (bd5c2e3e Q10095 GATE WELDMENT): leftover Image
 Files dialog (read-only; closed; no Finish). GetItem_AddView
 pdf injects empty #gridPDF + kendoUpload #files.
@@ -2263,14 +2270,37 @@ _PAGE_PDF_FINISH_JS = """(function() {
     } catch (e) {}
     return out;
   }
+  function overlayStatusFromDataItem(rows) {
+    var hit = pdfGrid();
+    if (!hit) return rows;
+    var data = toRows(hit.grid.dataSource.data());
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i] || {};
+      if (r.Status != null && Number(r.Status) > 0) continue;
+      var name = String(r.FileName || r.fileName || "");
+      for (var j = 0; j < data.length; j++) {
+        var d = data[j] || {};
+        var fn = String(d.FileName || d.fileName || "");
+        if (name && fn && fn.toLowerCase() === name.toLowerCase() && statusOf(d) > 0) {
+          r.Status = d.Status != null ? d.Status : d.status;
+          rows[i] = r;
+          break;
+        }
+      }
+    }
+    return rows;
+  }
   function getPdfData() {
+    var rows = [];
     if (typeof window.GetPDFData === "function") {
       try {
         var d = window.GetPDFData();
-        if (Array.isArray(d)) return d.filter(function(r) { return statusOf(r) > 0; });
+        if (Array.isArray(d)) rows = d.slice();
       } catch (e) {}
     }
-    return getPdfDataFromTbody();
+    if (!rows.length) rows = getPdfDataFromTbody();
+    rows = overlayStatusFromDataItem(rows);
+    return rows.filter(function(r) { return statusOf(r) > 0; });
   }
   function fnSource(fn) {
     try { return Function.prototype.toString.call(fn); } catch (e) { return ""; }
@@ -2492,10 +2522,43 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
   var rows = (spec && spec.rows) || [];
   var data = hit.grid.dataSource.data() || [];
   var stamped = 0;
+  var viaCell = 0;
   function setField(r, k, v) {
     if (v == null || v === "") return;
     if (typeof r.set === "function") r.set(k, v);
     else r[k] = v;
+  }
+  function editSet(grid, r, field, value) {
+    if (value == null || value === "") return;
+    try {
+      var tr = grid.tbody.find("tr").filter(function() {
+        return grid.dataItem(this) === r;
+      }).first();
+      if (tr.length && typeof grid.editCell === "function") {
+        var cell = tr.find("td[data-field='" + field + "']");
+        if (!cell.length) {
+          var cols = grid.columns || [];
+          for (var c = 0; c < cols.length; c++) {
+            if ((cols[c].field || "") === field) {
+              cell = tr.find("td").eq(c);
+              break;
+            }
+          }
+        }
+        if (cell.length) {
+          grid.editCell(cell);
+          var editor = cell.find("input, select, textarea").first();
+          if (editor.length) {
+            editor.val(value).trigger("change").trigger("blur");
+            if (typeof grid.closeCell === "function") grid.closeCell();
+            viaCell += 1;
+            return;
+          }
+          if (typeof grid.closeCell === "function") grid.closeCell();
+        }
+      }
+    } catch (e) {}
+    setField(r, field, value);
   }
   for (var i = 0; i < rows.length; i++) {
     var s = rows[i] || {};
@@ -2509,15 +2572,15 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
         continue;
       }
       if (!name && i !== j) continue;
-      setField(r, "Length", s.Length);
-      setField(r, "Width", s.Width);
-      setField(r, "Thickness", s.Thickness);
-      setField(r, "Machine", s.Machine || "Laser - Bay1");
-      setField(r, "Status", s.Status != null ? s.Status : 1);
-      setField(r, "ItemType", s.ItemType || "cad");
-      setField(r, "Material", s.Material);
-      if (s.Qty != null) setField(r, "Qty", s.Qty);
-      if (s.PartName) setField(r, "PartName", s.PartName);
+      editSet(hit.grid, r, "Length", s.Length);
+      editSet(hit.grid, r, "Width", s.Width);
+      editSet(hit.grid, r, "Thickness", s.Thickness);
+      editSet(hit.grid, r, "Machine", s.Machine || "Laser - Bay1");
+      editSet(hit.grid, r, "Status", s.Status != null ? s.Status : 1);
+      editSet(hit.grid, r, "ItemType", s.ItemType || "cad");
+      editSet(hit.grid, r, "Material", s.Material);
+      if (s.Qty != null) editSet(hit.grid, r, "Qty", s.Qty);
+      if (s.PartName) editSet(hit.grid, r, "PartName", s.PartName);
       stamped += 1;
       break;
     }
@@ -2525,6 +2588,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
   return Promise.resolve({
     ok: stamped > 0,
     stamped: stamped,
+    cell_edit: viaCell,
     grid_id: hit.id,
     grid_pdf_row_count: data.length
   });
@@ -2609,7 +2673,11 @@ def stamp_pdf_kendo_flats(
     quote_id: str | None = None,
     base: str | None = None,
 ) -> dict[str, Any]:
-    """Type L×W + Machine + Status onto the page PDF kendo (Kyle typed flats)."""
+    """Type L×W in kendo cell editors (not dataItem.set-only).
+
+    Live 29743-1: dataItem.set skipped Status / perimeter calc that
+    typing in the grid cells runs. GetPDFData omitted Status.
+    """
     spec_rows: list[dict[str, Any]] = []
     for row in rows or []:
         if not isinstance(row, dict):

@@ -2987,6 +2987,9 @@ class SecturaFabPushService:
         does not fill the grid (live 103535-1 empty_dataSource / GET 0).
         GetPDFData() walks tbody dataItem Status>0 (not an XHR).
         Reconstructed FileList is fail-closed (live 1001898-5).
+        #files + GetPDFData + OnAddPDFClick is not gold PR/laser
+        (live 29743-1 UnitCost 0 / empty OCL / CuttingLength 0).
+        Do not treat UnitPrice as UnitCost. Do not graft.
         """
         if not self._website_cookie_present():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
@@ -3243,6 +3246,7 @@ class SecturaFabPushService:
         from .line_item_ops import (
             all_cad_kids_image_files_stamped,
             cad_image_files_stamped,
+            cad_kids_bind_without_pr_pack,
             cad_kids_unitcost_without_pr,
             image_files_dod_pass,
         )
@@ -3252,6 +3256,13 @@ class SecturaFabPushService:
                 "WARNING: Cad unitcost filled + OperationCostList empty + no PR "
                 "— Image Files DoD FAIL (live 1001898-5); Linear saw PASS is "
                 "not DoD PASS"
+            )
+        if cad_kids_bind_without_pr_pack(posted):
+            notes.append(
+                "WARNING: #files bind + GetPDFData + OnAddPDFClick is not gold "
+                "PR/laser pack (live 29743-1); UnitPrice is not UnitCost; "
+                "CuttingLength 0 / empty OCL / Tag empty / UnitCost 0 — "
+                "Image Files DoD FAIL; Linear saw PASS is not DoD PASS"
             )
         if not from_kendo:
             if cad_persisted > 0:

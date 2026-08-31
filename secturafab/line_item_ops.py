@@ -394,6 +394,72 @@ def cad_kids_unitcost_without_pr(quote: dict[str, Any] | None) -> bool:
     )
 
 
+def _item_unit_price(item: dict[str, Any] | None) -> float:
+    try:
+        return float((item or {}).get("UnitPrice") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _datapart_cutting_length(item: dict[str, Any] | None) -> float:
+    blob = (item or {}).get("DataPartPDF") or (item or {}).get("DataPart") or {}
+    if not isinstance(blob, dict):
+        return 0.0
+    try:
+        return float(blob.get("CuttingLength") or blob.get("Perimeter") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def unitprice_is_not_gold_unitcost(item: dict[str, Any] | None) -> bool:
+    """UnitPrice is material weight price, not gold UnitCost (live 29743-1)."""
+    return _item_unit_price(item) > 0 and _item_unit_cost(item) <= 0
+
+
+def cad_kids_bind_without_pr_pack(quote: dict[str, Any] | None) -> bool:
+    """#files bind + OnAddPDFClick without gold PR/laser (live 29743-1).
+
+    Tag empty, OperationCostList [], UnitCost 0, CuttingLength 0.
+    UnitPrice is not gold. Linear saw PASS is not DoD.
+    """
+    from .website import quote_item_rows
+
+    cad = [it for it in quote_item_rows(quote) if _cad_product_type_100(it)]
+    if not cad:
+        return False
+    return all(
+        not item_has_pr_tag(it)
+        and not list(it.get("OperationCostList") or [])
+        and _item_unit_cost(it) <= 0
+        for it in cad
+    )
+
+
+def image_files_bind_without_gold_pack_is_fail(
+    *,
+    files_kendo: bool,
+    filelist_from_kendo: bool,
+    cad_n: int,
+    tag_empty: bool,
+    ocl_empty: bool,
+    unit_cost: float,
+    cutting_length: float,
+    unit_price: float = 0,
+) -> bool:
+    """29743-1: files_kendo + GetPDFData + Cad n + empty pack + UnitCost 0."""
+    if not files_kendo or not filelist_from_kendo:
+        return True
+    if int(cad_n or 0) <= 0:
+        return True
+    if tag_empty and ocl_empty and float(unit_cost or 0) <= 0:
+        return True
+    if float(cutting_length or 0) <= 0:
+        return True
+    if float(unit_price or 0) > 0 and float(unit_cost or 0) <= 0:
+        return True
+    return False
+
+
 def image_files_dod_pass(
     quote: dict[str, Any] | None,
     *,
