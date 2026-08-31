@@ -1279,6 +1279,104 @@ def test_leftover_weight_without_productid_is_fail():
     assert empty_productid_after_bind_is_fail(None) is False
 
 
+def test_leftover_productid_is_not_the_pack():
+    """Live 1007092-1: GET ProductID set + Tag empty / OCL [] — pack miss is not ProductID."""
+    from secturafab.line_item_ops import (
+        cad_image_files_stamped,
+        cad_kids_productid_without_pack,
+        cad_kids_weight_without_productid_pack,
+        image_files_dod_pass,
+        unitcost_equals_unitprice_is_material_only,
+    )
+    from secturafab.website import (
+        leftover_productid_is_not_the_pack,
+        leftover_weight_without_productid_is_fail,
+        leftover_perimeter_xhr_is_not_gold_pack,
+        leftover_empty_bind_productid_skip_is_wrong,
+        empty_productid_after_bind_is_fail,
+        filelist_bag_snapshot,
+        PDF_GETDATA_FIELDS,
+    )
+    from tests.fixtures.live_1002323_1 import (
+        leftover_perimeter_not_pack_dump,
+        live_1002323_1_quote,
+    )
+    from tests.fixtures.live_1007092_1 import (
+        leftover_productid_not_pack_dump,
+        live_1007092_1_quote,
+        FILELIST_BAG,
+        GET_PRODUCT_ID,
+    )
+    from tests.fixtures.live_21681_1 import leftover_empty_bind_productid_skip_dump
+    from tests.fixtures.live_33819_1 import (
+        leftover_weight_without_productid_dump,
+        live_33819_1_quote,
+    )
+
+    dump = leftover_productid_not_pack_dump()
+    assert dump["readonly"] is True
+    assert dump["filelist_bag"]["ProductID"] is None
+    assert dump["filelist_bag"]["Weight"] == 0.2718
+    assert dump["filelist_bag"]["OutsidePerimeter"] == 5
+    assert dump["filelist_bag"]["Material"] == "A572"
+    assert dump["filelist_bag"]["Thickness"] == "0.3125"
+    assert dump["filelist_bag"]["Machine"] == "Laser - Bay1"
+    assert "CuttingLength" not in dump["filelist_bag"]
+    assert leftover_productid_is_not_the_pack(dump) is True
+    none_get = dict(dump)
+    none_get["live_1007092_1"] = dict(dump["live_1007092_1"])
+    none_get["live_1007092_1"]["get_productid"] = None
+    assert leftover_productid_is_not_the_pack(none_get) is False
+    tagged = dict(dump)
+    tagged["live_1007092_1"] = dict(dump["live_1007092_1"])
+    tagged["live_1007092_1"]["tag"] = "PR"
+    assert leftover_productid_is_not_the_pack(tagged) is False
+    ocl = dict(dump)
+    ocl["live_1007092_1"] = dict(dump["live_1007092_1"])
+    ocl["live_1007092_1"]["operation_cost_list"] = [{"OperationName": "Profile"}]
+    assert leftover_productid_is_not_the_pack(ocl) is False
+    bag_pid = dict(dump)
+    bag_pid["filelist_bag"] = dict(dump["filelist_bag"])
+    bag_pid["filelist_bag"]["ProductID"] = "not-a-sku"
+    assert leftover_productid_is_not_the_pack(bag_pid) is False
+    assert leftover_productid_is_not_the_pack(
+        leftover_weight_without_productid_dump()
+    ) is False
+    assert leftover_productid_is_not_the_pack(
+        leftover_perimeter_not_pack_dump()
+    ) is False
+    assert leftover_productid_is_not_the_pack(
+        leftover_empty_bind_productid_skip_dump()
+    ) is False
+    assert leftover_productid_is_not_the_pack(MagicMock()) is False
+    assert leftover_productid_is_not_the_pack(None) is False
+    assert leftover_weight_without_productid_is_fail(dump) is False
+    assert leftover_perimeter_xhr_is_not_gold_pack(dump) is False
+    assert leftover_empty_bind_productid_skip_is_wrong(dump) is False
+    quote = live_1007092_1_quote()
+    cad = quote["ItemList"][0]
+    assert cad["Tag"] == ""
+    assert cad["OperationCostList"] == []
+    assert cad["ProductID"] == GET_PRODUCT_ID
+    assert cad["FileList"][0]["ProductID"] is None
+    assert cad["FileList"][0]["Weight"] == 0.2718
+    assert cad["DataPartPDF"]["OutsidePerimeter"] == 5
+    assert cad["DataPartPDF"]["CuttingLength"] == 0
+    assert cad["DataPartPDF"]["InternalData"] == ""
+    assert cad["UnitCost"] == cad["UnitPrice"] == cad["UnitWeightCost"] == 0.11
+    assert unitcost_equals_unitprice_is_material_only(cad) is True
+    assert cad_kids_productid_without_pack(quote) is True
+    assert cad_kids_productid_without_pack(live_33819_1_quote()) is False
+    assert cad_kids_productid_without_pack(live_1002323_1_quote()) is True
+    assert cad_kids_weight_without_productid_pack(quote) is False
+    assert cad_image_files_stamped(cad) is False
+    assert image_files_dod_pass(quote, expect_cad=True) is False
+    assert filelist_bag_snapshot(FILELIST_BAG)["ProductID"] is None
+    assert "CuttingLength" not in filelist_bag_snapshot(FILELIST_BAG)
+    assert "CuttingLength" not in PDF_GETDATA_FIELDS
+    assert empty_productid_after_bind_is_fail({"productid_n": 0}) is False
+
+
 def test_empty_perimeter_weight_is_fail():
     from secturafab.website import empty_perimeter_weight_is_fail
 
@@ -7557,6 +7655,14 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "s.ProductSku" in _STAMP_PDF_KENDO_JS
     assert "s.ProductID" not in _STAMP_PDF_KENDO_JS
     assert "picker_via" in _STAMP_PDF_KENDO_JS
+    assert "isProductTypeBar" in _STAMP_PDF_KENDO_JS
+    assert "isPlateProductWidget" in _STAMP_PDF_KENDO_JS
+    assert "none_plate_widget" in _STAMP_PDF_KENDO_JS
+    assert "list0Pack" in _PAGE_PDF_FINISH_JS
+    assert "response_tag" in _PAGE_PDF_FINISH_JS
+    assert "response_ocl_n" in _PAGE_PDF_FINISH_JS
+    assert "response_list_n" in _PAGE_PDF_FINISH_JS
+    assert "response_unit_cost" in _PAGE_PDF_FINISH_JS
     assert "empty_perimeter" in _PAGE_PDF_FINISH_JS
     assert "OutsidePerimeter" in _PAGE_PDF_FINISH_JS
     from secturafab.chrome_cdp import _STAMP_DXF_STOCK_JS

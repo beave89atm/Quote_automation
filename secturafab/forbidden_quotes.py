@@ -53,6 +53,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "b2e12461-442b-436e-9445-772e992644f6",  # 1002323-1 perimeter XHR / CuttingLength 0 (leave it)
         "47c393f8-db59-4b9a-a243-48d572011f77",  # 33819-1 Weight bag / ProductID None (leave it)
         "646a3d98-cd73-4f94-be67-6e40eeb2c309",  # 21681-1 empty bind ProductID skip (leave it)
+        "8930f65a-c1e3-44b0-8024-9075b2a5ab80",  # 1007092-1 GET ProductID / empty Tag OCL (leave it)
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -84,6 +85,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "b2e12461",  # 1002323-1 spent perimeter XHR / CuttingLength 0 — do not remint
         "47c393f8",  # 33819-1 spent Weight bag / ProductID None — do not remint
         "646a3d98",  # 21681-1 spent empty bind ProductID skip — do not remint
+        "8930f65a",  # 1007092-1 spent GET ProductID / empty Tag OCL — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
         "95b8c186",  # 1007922-3 — do not open / PATCH / remint
     }
@@ -141,6 +143,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "1002323-1",  # spent b2e12461 perimeter XHR / CuttingLength 0 — do not remint
         "33819-1",  # spent 47c393f8 Weight bag / ProductID None — do not remint
         "21681-1",  # spent 646a3d98 empty bind ProductID skip — do not remint
+        "1007092-1",  # spent 8930f65a GET ProductID / empty Tag OCL — do not remint
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

@@ -2323,6 +2323,33 @@ def leftover_empty_bind_productid_skip_is_wrong(dump: dict[str, Any] | None) -> 
     return True
 
 
+def leftover_productid_is_not_the_pack(dump: dict[str, Any] | None) -> bool:
+    """1007092-1 leftover GET: FileList ProductID null, GET ProductID set, no pack.
+
+    Pack miss is not ProductID. GET ProductID + empty Tag / OCL is FAIL.
+    Do not skip Finish for null FileList ProductID (live 21681-1).
+    """
+    if not isinstance(dump, dict):
+        return False
+    bag = dump.get("filelist_bag") if isinstance(dump.get("filelist_bag"), dict) else {}
+    if bag.get("ProductID") not in (None, "", "null"):
+        return False
+    live = dump.get("live_1007092_1") if isinstance(dump.get("live_1007092_1"), dict) else {}
+    if not live:
+        return False
+    if live.get("get_productid") in (None, "", "null"):
+        return False
+    if str(live.get("tag") or "") != "":
+        return False
+    if list(live.get("operation_cost_list") or []):
+        return False
+    if live.get("production_ready") is not False:
+        return False
+    if live.get("pack_is_productid") is not False:
+        return False
+    return True
+
+
 def leftover_weight_without_productid_is_fail(dump: dict[str, Any] | None) -> bool:
     """33819-1 leftover GET after full stamp: Weight+OP, ProductID None, no pack.
 

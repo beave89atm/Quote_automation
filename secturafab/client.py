@@ -1490,6 +1490,18 @@ class SecturaFabClient:
     @staticmethod
     def _pdf_finish_capture(result: dict[str, Any], *, via: str) -> dict[str, Any]:
         from_kendo = bool(result.get("filelist_from_kendo")) and via == "page_fn"
+        try:
+            response_list_n = int(result.get("response_list_n") or 0)
+        except (TypeError, ValueError):
+            response_list_n = 0
+        try:
+            response_ocl_n = int(result.get("response_ocl_n") or 0)
+        except (TypeError, ValueError):
+            response_ocl_n = 0
+        try:
+            response_unit_cost = float(result.get("response_unit_cost") or 0)
+        except (TypeError, ValueError):
+            response_unit_cost = 0.0
         return {
             "ok": from_kendo,
             "status": int(result.get("status") or 0),
@@ -1511,6 +1523,11 @@ class SecturaFabClient:
             "finish_af_present": bool(result.get("finish_af_present")),
             "finish_why": str(result.get("finish_why") or ""),
             "edit_gate": str(result.get("edit_gate") or ""),
+            "response_list_n": response_list_n,
+            "response_tag": str(result.get("response_tag") or ""),
+            "response_production_ready": bool(result.get("response_production_ready")),
+            "response_ocl_n": response_ocl_n,
+            "response_unit_cost": response_unit_cost,
         }
 
     def stamp_pdf_kendo_flats(

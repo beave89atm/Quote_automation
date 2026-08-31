@@ -3139,14 +3139,19 @@ class SecturaFabPushService:
         is the Image Files default. After #files bind, stamp drawing
         Material / Thickness / Machine=Laser Bay 1 (overwrite
         316 Polished / 0.0178), Status>0, L×W, bag Weight. Drive
-        Kyle's page Product picker to the closest tenant plate SKU
-        so GetPDFData ProductID is the selected List Value. Do not
-        invent a GUID or reconstruct ProductID off-page.
-        #files + GetPDFData + OnAddPDFClick is not gold PR/laser
-        unless Cad GET has Tag + OperationCostList + UnitCost>0 +
-        CuttingLength>0. Do not treat UnitPrice / UnitWeightCost
-        as UnitCost. Do not AddOperation / nest / Operation→Profile.
-        Do not graft. Do not add CuttingLength to the bag.
+        the plate Product kendo (not the ProductType bar) to the
+        closest tenant plate SKU so GetPDFData ProductID is the
+        selected List Value. Do not invent a GUID or reconstruct
+        ProductID off-page. Log OnAddPDFClick response n.List[0]
+        Tag / ProductionReady / OperationCostList / UnitCost —
+        that is the server pack stamp. GET ProductID + empty
+        Tag/OCL is FAIL (live 1007092-1); pack miss is not
+        ProductID. #files + GetPDFData + OnAddPDFClick is not
+        gold PR/laser unless Cad GET has Tag + OperationCostList
+        + UnitCost>0 + CuttingLength>0. Do not treat UnitPrice /
+        UnitWeightCost as UnitCost. Do not AddOperation / nest /
+        Operation→Profile. Do not graft. Do not add CuttingLength
+        to the bag.
         """
         if not self._website_cookie_present():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
@@ -3469,6 +3474,31 @@ class SecturaFabPushService:
                                 for k in snap
                             ]
                             notes.append("filelist_bag=" + ",".join(parts[:16]))
+                        if "response_list_n" in result:
+                            notes.append(
+                                f"response_list_n={result.get('response_list_n')}"
+                            )
+                        if "response_tag" in result:
+                            notes.append(
+                                f"response_tag={result.get('response_tag')!r}"
+                            )
+                        if "response_production_ready" in result:
+                            notes.append(
+                                "response_production_ready="
+                                + (
+                                    "true"
+                                    if result.get("response_production_ready")
+                                    else "false"
+                                )
+                            )
+                        if "response_ocl_n" in result:
+                            notes.append(
+                                f"response_ocl_n={result.get('response_ocl_n')}"
+                            )
+                        if "response_unit_cost" in result:
+                            notes.append(
+                                f"response_unit_cost={result.get('response_unit_cost')}"
+                            )
                         if from_kendo:
                             try:
                                 posted_n = int(result.get("finish_filelist_n") or 0)
@@ -3497,6 +3527,7 @@ class SecturaFabPushService:
             cad_kids_perimeter_without_cut_pack,
             cad_kids_unitcost_without_pr,
             cad_kids_weight_without_productid_pack,
+            cad_kids_productid_without_pack,
             image_files_dod_pass,
         )
 
@@ -3525,8 +3556,16 @@ class SecturaFabPushService:
             notes.append(
                 "WARNING: FileList Weight+OutsidePerimeter posted with "
                 "ProductID None / Tag empty / OCL [] (live 33819-1) — "
-                "do not invent a GUID; Kyle Product picker is a page "
+                "pack miss is not ProductID (live 1007092-1); do not "
+                "invent a GUID; Kyle Product picker is a page "
                 "control — Image Files DoD FAIL"
+            )
+        if cad_kids_productid_without_pack(posted):
+            notes.append(
+                "WARNING: GET ProductID set + Tag empty / OCL [] "
+                "(live 1007092-1) — FileList ProductID null is not the "
+                "pack; pack is AddItem_PDFFiles response List Tag/OCL "
+                "— Image Files DoD FAIL"
             )
         if not from_kendo:
             if cad_persisted > 0:

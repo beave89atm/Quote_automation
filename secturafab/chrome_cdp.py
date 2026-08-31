@@ -2359,6 +2359,22 @@ _PAGE_PDF_FINISH_JS = """(function() {
     }
     return o;
   }
+  function list0Pack(data) {
+    var o = {list_n: 0, tag: "", production_ready: false, ocl_n: 0, unit_cost: 0};
+    if (!data || typeof data !== "object") return o;
+    var list = data.List || data.list;
+    if (!Array.isArray(list)) return o;
+    o.list_n = list.length;
+    if (!list.length) return o;
+    var row = list[0] || {};
+    o.tag = row.Tag != null ? String(row.Tag) : "";
+    o.production_ready = !!(row.ProductionReady === true || row.ProductionReady === "true");
+    var ocl = row.OperationCostList || row.operationCostList || [];
+    o.ocl_n = Array.isArray(ocl) ? ocl.length : 0;
+    var uc = parseFloat(row.UnitCost != null ? row.UnitCost : 0);
+    o.unit_cost = isFinite(uc) ? uc : 0;
+    return o;
+  }
   function hasAf(d) {
     if (!d || typeof d !== "object") return false;
     var keys = Object.keys(d);
@@ -2417,7 +2433,12 @@ _PAGE_PDF_FINISH_JS = """(function() {
       has_NewItem: false,
       has_QuoteItem: false,
       text_len: 0,
-      List: []
+      List: [],
+      response_list_n: 0,
+      response_tag: "",
+      response_production_ready: false,
+      response_ocl_n: 0,
+      response_unit_cost: 0
     });
   }
   var perimN = 0;
@@ -2445,7 +2466,12 @@ _PAGE_PDF_FINISH_JS = """(function() {
       has_NewItem: false,
       has_QuoteItem: false,
       text_len: 0,
-      List: []
+      List: [],
+      response_list_n: 0,
+      response_tag: "",
+      response_production_ready: false,
+      response_ocl_n: 0,
+      response_unit_cost: 0
     });
   }
   var finishName = findFinishName();
@@ -2488,16 +2514,33 @@ _PAGE_PDF_FINISH_JS = """(function() {
           kendo_row_keys: krows.length ? rowKeys(krows[0]) : [],
           finish_af_present: hasAf(d),
           finish_why: fromKendo ? "" : "filelist_not_kendo",
-          grid_id: gridId
+          grid_id: gridId,
+          response_list_n: 0,
+          response_tag: "",
+          response_production_ready: false,
+          response_ocl_n: 0,
+          response_unit_cost: 0
         };
         var ret = orig.apply(this, arguments);
         Promise.resolve(ret).then(function(data) {
           cap.status = 200;
           cap.data = data;
+          var pack = list0Pack(data);
+          cap.response_list_n = pack.list_n;
+          cap.response_tag = pack.tag;
+          cap.response_production_ready = pack.production_ready;
+          cap.response_ocl_n = pack.ocl_n;
+          cap.response_unit_cost = pack.unit_cost;
           resolve(cap);
         }).catch(function(xhr) {
           cap.status = (xhr && xhr.status) || 0;
           cap.data = (xhr && xhr.responseJSON) || null;
+          var packE = list0Pack(xhr && xhr.responseJSON);
+          cap.response_list_n = packE.list_n;
+          cap.response_tag = packE.tag;
+          cap.response_production_ready = packE.production_ready;
+          cap.response_ocl_n = packE.ocl_n;
+          cap.response_unit_cost = packE.unit_cost;
           resolve(cap);
         });
         return ret;
@@ -2555,7 +2598,12 @@ _PAGE_PDF_FINISH_JS = """(function() {
       has_NewItem: false,
       has_QuoteItem: false,
       text_len: 0,
-      List: krows
+      List: krows,
+      response_list_n: 0,
+      response_tag: "",
+      response_production_ready: false,
+      response_ocl_n: 0,
+      response_unit_cost: 0
     });
   }
   return hooked.then(function(hitCap) {
@@ -2771,35 +2819,64 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     if (Array.isArray(v)) return v.length === 0;
     return false;
   }
+  function isProductTypeBar(id, url) {
+    var s = (String(id || "") + " " + String(url || "")).toLowerCase();
+    return s.indexOf("producttype") >= 0
+      || s.indexOf("product_type") >= 0
+      || s.indexOf("productsubtype") >= 0
+      || s.indexOf("linearlookup") >= 0;
+  }
+  function isPlateProductWidget(id, url) {
+    if (isProductTypeBar(id, url)) return false;
+    var s = (String(id || "") + " " + String(url || "")).toLowerCase();
+    if (s.indexOf("plate") >= 0) return true;
+    if (s.indexOf("read_data") >= 0 && s.indexOf("linear") < 0) return true;
+    if (s.indexOf("/product/read") >= 0 && s.indexOf("type") < 0
+        && s.indexOf("linear") < 0) return true;
+    var idl = String(id || "").toLowerCase();
+    if (idl.indexOf("pdfproduct") >= 0) return true;
+    if (idl.indexOf("cmbproduct") >= 0) return true;
+    if (idl.indexOf("txtproduct") >= 0) return true;
+    if (idl.indexOf("productid") >= 0 && idl.indexOf("type") < 0) return true;
+    return false;
+  }
+  function widgetOf($el) {
+    if (!$el || !$el.length) return null;
+    return $el.data("kendoComboBox") || $el.data("kendoDropDownList")
+      || $el.data("kendoAutoComplete") || $el.data("kendoMultiColumnComboBox")
+      || null;
+  }
+  function widgetUrl(w) {
+    try {
+      return String((w && w.dataSource && w.dataSource.transport
+        && w.dataSource.transport.options && w.dataSource.transport.options.read
+        && w.dataSource.transport.options.read.url) || "");
+    } catch (e) { return ""; }
+  }
   function findProductWidget() {
     var ids = ["#Product", "#ProductID", "#cmbProduct", "#pdfProduct",
                "#txtProduct", "input[name='ProductID']", "input[name='Product']"];
     for (var i = 0; i < ids.length; i++) {
       try {
         var $el = window.jQuery && jQuery(ids[i]);
-        if (!$el || !$el.length) continue;
-        var w = $el.data("kendoComboBox") || $el.data("kendoDropDownList")
-          || $el.data("kendoAutoComplete") || $el.data("kendoMultiColumnComboBox");
-        if (w) return {el: $el, widget: w, via: ids[i]};
+        var w = widgetOf($el);
+        if (!w) continue;
+        var id = String($el.attr("id") || $el.attr("name") || ids[i] || "");
+        var url = widgetUrl(w);
+        if (!isPlateProductWidget(id, url)) continue;
+        return {el: $el, widget: w, via: ids[i]};
       } catch (e) {}
     }
     try {
       var widgets = jQuery("[data-role='combobox'], [data-role='dropdownlist']");
       for (var j = 0; j < widgets.length; j++) {
         var $w = jQuery(widgets[j]);
-        var id = String($w.attr("id") || $w.attr("name") || "").toLowerCase();
-        var url = "";
-        try {
-          var ww = $w.data("kendoComboBox") || $w.data("kendoDropDownList");
-          url = String((ww && ww.dataSource && ww.dataSource.transport
-            && ww.dataSource.transport.options && ww.dataSource.transport.options.read
-            && ww.dataSource.transport.options.read.url) || "");
-        } catch (e2) { url = ""; }
-        if (id.indexOf("product") >= 0 || url.indexOf("/Product/Read") >= 0) {
-          var ww2 = $w.data("kendoComboBox") || $w.data("kendoDropDownList")
-            || $w.data("kendoAutoComplete");
-          if (ww2) return {el: $w, widget: ww2, via: id || url};
-        }
+        var ww = widgetOf($w);
+        if (!ww) continue;
+        var wid = String($w.attr("id") || $w.attr("name") || "");
+        var wurl = widgetUrl(ww);
+        if (!isPlateProductWidget(wid, wurl)) continue;
+        return {el: $w, widget: ww, via: wid || wurl};
       }
     } catch (e3) {}
     return null;
@@ -2821,7 +2898,10 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     lastPickerSku = "";
     if (!sku || !window.jQuery) return Promise.resolve("");
     var hitW = findProductWidget();
-    if (!hitW) return Promise.resolve("");
+    if (!hitW) {
+      lastPicker = "none_plate_widget";
+      return Promise.resolve("");
+    }
     var w = hitW.widget;
     lastPicker = hitW.via;
     lastPickerSku = sku;
@@ -2990,6 +3070,11 @@ def invoke_page_pdf_finish(
         "finish_af_present": False,
         "finish_why": "wrong_document",
         "ok": False,
+        "response_list_n": 0,
+        "response_tag": "",
+        "response_production_ready": False,
+        "response_ocl_n": 0,
+        "response_unit_cost": 0.0,
     }
     if not gate.get("ok"):
         return skipped
@@ -3004,6 +3089,18 @@ def invoke_page_pdf_finish(
     if via and via not in {"page_fn", "skipped"}:
         via = "page_fn"
     from_kendo = bool(value.get("filelist_from_kendo")) and via == "page_fn"
+    try:
+        response_list_n = int(value.get("response_list_n") or 0)
+    except (TypeError, ValueError):
+        response_list_n = 0
+    try:
+        response_ocl_n = int(value.get("response_ocl_n") or 0)
+    except (TypeError, ValueError):
+        response_ocl_n = 0
+    try:
+        response_unit_cost = float(value.get("response_unit_cost") or 0)
+    except (TypeError, ValueError):
+        response_unit_cost = 0.0
     return {
         "via": via,
         "finish_fn": str(value.get("finish_fn") or ""),
@@ -3033,6 +3130,11 @@ def invoke_page_pdf_finish(
         "minted_id": str(gate.get("minted_id") or quote_id or ""),
         "edit_gate": "",
         "ok": from_kendo,
+        "response_list_n": response_list_n,
+        "response_tag": str(value.get("response_tag") or ""),
+        "response_production_ready": bool(value.get("response_production_ready")),
+        "response_ocl_n": response_ocl_n,
+        "response_unit_cost": response_unit_cost,
     }
 
 
@@ -3055,10 +3157,12 @@ def stamp_pdf_kendo_flats(
     ProductID is always null on Image Files PDFs (live 21681-1) —
     keepPid has nothing to restore. Stamp drawing Material /
     Thickness / Machine=Laser Bay 1 (overwrite 316 Polished /
-    0.0178) and Status>0. Drive Kyle's page Product picker by
-    tenant SKU text so GetPDFData ProductID is the selected List
-    Value. Do not invent a GUID. Do not fire AddNewPDFFeature().
-    Empty InternalData is expected for no-hole rectangles.
+    0.0178) and Status>0. Drive the plate Product kendo (not
+    the ProductType bar) by tenant SKU text so GetPDFData
+    ProductID is the selected List Value. Do not invent a GUID.
+    Do not fire AddNewPDFFeature(). Empty InternalData is
+    expected for no-hole rectangles. Live 1007092-1: first
+    ``#Product`` is ProductType — skip it.
     """
     spec_rows: list[dict[str, Any]] = []
     for row in rows or []:

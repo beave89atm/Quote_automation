@@ -503,6 +503,21 @@ def cad_kids_weight_without_productid_pack(quote: dict[str, Any] | None) -> bool
     )
 
 
+def cad_kids_productid_without_pack(quote: dict[str, Any] | None) -> bool:
+    """1007092-1 leftover GET: ProductID set, Tag empty / OCL [] — pack miss is not ProductID."""
+    from .website import quote_item_rows
+
+    cad = [it for it in quote_item_rows(quote) if _cad_product_type_100(it)]
+    if not cad:
+        return False
+    return all(
+        not item_has_pr_tag(it)
+        and not list(it.get("OperationCostList") or [])
+        and not _item_productid_empty(it)
+        for it in cad
+    )
+
+
 def cad_kids_bind_without_pr_pack(quote: dict[str, Any] | None) -> bool:
     """#files bind + OnAddPDFClick without gold PR/laser (live 29743-1).
 
