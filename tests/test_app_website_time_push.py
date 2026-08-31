@@ -813,7 +813,8 @@ def test_additem_pdf_uses_takeoff_flats_when_lock_missing(tmp_path, monkeypatch)
     assert "persisted" in " ".join(notes).lower()
 
 
-def test_finish_pdf_files_302_raises_session_expired(tmp_path, monkeypatch):
+def test_finish_pdf_files_cookie_302_is_not_logout(tmp_path, monkeypatch):
+    """Cookie GetItem_AddView 302 is not logout — continue in-page #files."""
     monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=stale")
     pdf = tmp_path / "1001913.pdf"
     pdf.write_bytes(b"%PDF")
@@ -822,16 +823,83 @@ def test_finish_pdf_files_302_raises_session_expired(tmp_path, monkeypatch):
     client.get_item_add_view.side_effect = SecturaFabWebsiteAuthError(
         f"{WEBSITE_SESSION_EXPIRED} — GetItem_AddView 302"
     )
-    with pytest.raises(SecturaFabWebsiteAuthError, match="website session expired"):
-        SecturaFabPushService(client=client).finish_pdf_files(
-            quote_id="qid",
-            pdf_files=[pdf],
-            material="A36",
-            thickness="0.25",
-            qty=1,
-            description="PLATE",
-        )
+    client.upload_pdf_via_page_add_files.return_value = {
+        "upload_via": "cookie_http",
+        "bound": False,
+        "files_kendo": False,
+        "grid_pdf_row_count": 0,
+        "finish_why": "empty_dataSource",
+    }
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="qid",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE",
+    )
+    blob = " ".join(notes)
+    assert "cookie 302 is not logout" in blob
+    assert "29340-1" in blob
     client.add_item_pdf_files.assert_not_called()
+
+
+def test_cookie_addview_302_does_not_block_inpage_mint_when_chrome_signed_in():
+    """Live 34603-2: cookie 302 after refresh is not a mint gate."""
+    from secturafab.website import cookie_http_additem_pdffiles_is_not_success
+
+    class _ProbeClient:
+        def probe_addview_session(self):
+            return {
+                "ok": False,
+                "still_302": True,
+                "refreshed": True,
+                "status_code": 302,
+                "path": "/Quote/GetItem_AddView",
+            }
+
+    service = SecturaFabPushService(client=_ProbeClient())
+    with patch(
+        "secturafab.chrome_cdp.chrome_edit_signed_in", return_value=True
+    ), patch(
+        "secturafab.chrome_cdp.chrome_login_page", return_value=False
+    ):
+        ok, notes = service.preflight_website_addview_session()
+    assert ok is True
+    blob = " ".join(notes)
+    assert "chrome_edit_signed_in=true" in blob
+    assert "cookie HTTP fail-closed" in blob
+    assert "in-page mint proceeds" in blob
+    assert "not minting" not in blob
+    assert cookie_http_additem_pdffiles_is_not_success(
+        {"via": "cookie_http", "ok": True}
+    )
+
+
+def test_chrome_login_page_aborts_mint():
+    """Chrome Login (no signed-in EDIT) still aborts — do not ask Kyle to sign in."""
+
+    class _ProbeClient:
+        def probe_addview_session(self):
+            return {
+                "ok": False,
+                "still_302": True,
+                "refreshed": True,
+                "status_code": 302,
+            }
+
+    service = SecturaFabPushService(client=_ProbeClient())
+    with patch(
+        "secturafab.chrome_cdp.chrome_edit_signed_in", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.chrome_login_page", return_value=True
+    ):
+        ok, notes = service.preflight_website_addview_session()
+    assert ok is False
+    blob = " ".join(notes)
+    assert "Chrome Login page — not minting" in blob
+    assert "sign in" not in blob.lower()
+    assert "Kyle" not in blob
 
 
 def test_forbidden_includes_empty_1004747_draft():
@@ -917,6 +985,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "1007092-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "33204-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1009213-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "29340-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21678-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10056" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "491f6387-520f-4eee-aab3-6d20585ee740" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -927,6 +996,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "646a3d98-cd73-4f94-be67-6e40eeb2c309" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "8930f65a-c1e3-44b0-8024-9075b2a5ab80" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "e57633b6-7bfc-4235-80de-a0e3be6cc5cc" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "8fb3da71-1948-4da2-a70f-8ef06b78cf32" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "a7d6ca50-efec-409d-bd32-e68012e710c3" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "a7dc46bf-836a-4250-b038-9331cc0595a7" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -943,6 +1013,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("8930f65a-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("e57633b6-7bfc-4235-80de-a0e3be6cc5cc")
     assert is_forbidden_quote_id("e57633b6-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("8fb3da71-1948-4da2-a70f-8ef06b78cf32")
+    assert is_forbidden_quote_id("8fb3da71-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("3102870a-0000-4000-8000-000000000001")
     assert is_forbidden_quote_id("3102870a-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("425587a7-1111-2222-3333-444444444444")

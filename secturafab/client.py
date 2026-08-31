@@ -23,6 +23,7 @@ from .website import (
     cadimport_list_is_native_array,
     client_antiforgery_extracted,
     is_cloudflare_challenge,
+    is_website_cookie_302,
     is_website_login_redirect,
     jquery_ajax_form,
     request_verification_fields,
@@ -491,6 +492,78 @@ class SecturaFabClient:
             "gap": None if (html_ok and not login) else WEBSITE_AUTH_GAP,
             "website_root": self.config.website_root,
             "has_website_cookie": bool(effective_website_cookie(self.config)),
+        }
+
+    def _probe_addview_or_quote_get(self) -> dict[str, Any]:
+        """GET /Quote/GetItem_AddView or /Quote. 302 is not ok."""
+        pages: list[tuple[str, dict[str, str] | None]] = [
+            (
+                WEBSITE_FINISH_PATHS["get_item_add_view"],
+                {"ID": EMPTY_GUID, "ItemType": "pdf"},
+            ),
+            ("/Quote", None),
+        ]
+        last_status = 0
+        last_path = ""
+        last_loc = ""
+        for path, params in pages:
+            try:
+                response = self.website_request(
+                    "GET",
+                    path,
+                    params=params,
+                    require_session=False,
+                    prefer_api_origin=False,
+                    www_only=True,
+                )
+            except SecturaFabWebsiteAuthError as exc:
+                last_status = int(exc.status_code or 302)
+                last_path = path
+                last_loc = str(exc.body or "")
+                continue
+            status = int(getattr(response, "status_code", 0) or 0)
+            loc = ""
+            if hasattr(response, "headers"):
+                loc = response.headers.get("Location") or ""
+            last_status = status
+            last_path = path
+            last_loc = loc
+            if is_website_cookie_302(status, loc):
+                continue
+            if status and status < 400:
+                return {
+                    "ok": True,
+                    "status_code": status,
+                    "path": path,
+                    "location": loc or None,
+                    "still_302": False,
+                }
+        return {
+            "ok": False,
+            "status_code": last_status,
+            "path": last_path,
+            "location": last_loc or None,
+            "still_302": True,
+        }
+
+    def probe_addview_session(self) -> dict[str, Any]:
+        """Cookie-file session probe. 302 is not logout (live 34603-2).
+
+        Refresh from signed-in Chrome 9224 first. Still 302 means
+        cookie HTTP is fail-closed — not that Chrome is logged out.
+        In-page mint uses chrome_edit_signed_in, not this probe.
+        """
+        first = self._probe_addview_or_quote_get()
+        if first.get("ok") is True:
+            return {**first, "refreshed": False, "still_302": False}
+        self.harvest_chrome_antiforgery()
+        second = self._probe_addview_or_quote_get()
+        still_302 = second.get("ok") is not True
+        return {
+            **second,
+            "refreshed": True,
+            "still_302": still_302,
+            "first_status": first.get("status_code"),
         }
 
     def get_item_add_view(

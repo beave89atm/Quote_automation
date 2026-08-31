@@ -1451,6 +1451,63 @@ class SecturaFabPushService:
             (probe.get("gap") if isinstance(probe, dict) else None) or WEBSITE_AUTH_GAP
         )
 
+    def preflight_website_addview_session(self) -> tuple[bool, list[str]]:
+        """Before mint: cookie HTTP 302 is fail-closed; in-page mint is not.
+
+        Cookie GET /Quote or GetItem_AddView 302 after Chrome refresh is
+        not logout (CDP omits HttpOnly .AspNet.ApplicationCookie). Do not
+        v1/quote then cookie Finish (live 29340-1). In-page mint proceeds
+        when Chrome Quotes/EDIT is signed in (footer amtech). Login page
+        still aborts. Do not ask Kyle to sign in.
+        """
+        from .chrome_cdp import chrome_edit_signed_in, chrome_login_page
+        from .website import addview_302_after_refresh_is_fail, inpage_mint_allowed
+
+        notes: list[str] = []
+        signed_in = False
+        login = False
+        try:
+            signed_in = bool(chrome_edit_signed_in())
+            login = bool(chrome_login_page())
+        except (OSError, TypeError, ValueError):
+            signed_in = False
+            login = False
+        notes.append("chrome_edit_signed_in=" + ("true" if signed_in else "false"))
+        cookie_302 = False
+        probe_fn = getattr(type(self.client), "probe_addview_session", None)
+        if callable(probe_fn):
+            probe = probe_fn(self.client)
+            if isinstance(probe, dict):
+                status = probe.get("status_code")
+                if status is not None:
+                    notes.append(f"addview_status={status}")
+                if probe.get("refreshed") is True:
+                    notes.append("chrome_cookie_refresh=true")
+                cookie_302 = addview_302_after_refresh_is_fail(probe)
+                if cookie_302:
+                    notes.append(
+                        "cookie GetItem_AddView 302 — cookie HTTP fail-closed "
+                        "(live 29340-1)"
+                    )
+        if inpage_mint_allowed(
+            chrome_edit_signed_in=signed_in,
+            chrome_login=login,
+            cookie_addview_302=cookie_302,
+        ):
+            if cookie_302 and signed_in:
+                notes.append(
+                    "in-page mint proceeds (cookie 302 is not logout)"
+                )
+            return True, notes
+        if login and not signed_in:
+            notes.append("Chrome Login page — not minting")
+        else:
+            notes.append(
+                "GetItem_AddView 302 and Chrome not signed in — not minting "
+                "(live 29340-1)"
+            )
+        return False, notes
+
     def _peek_item_count(self, quote_id: str) -> int:
         try:
             peek = self.client.get_json(f"v1/quote/{quote_id}")
@@ -3235,13 +3292,16 @@ class SecturaFabPushService:
             plate_catalog = []
         try:
             self.client.get_item_add_view(quote_id, item_type="pdf")
-            notes.append("Opened Image Files dialog (GetItem_AddView ItemType=pdf)")
+            notes.append(
+                "GetItem_AddView cookie-HTTP (AF scrape, not the Chrome "
+                "Image Files dialog) — #ButtonAdd / #files is gold"
+            )
         except SecturaFabWebsiteAuthError as exc:
-            raise SecturaFabWebsiteAuthError(
-                f"{WEBSITE_SESSION_EXPIRED} — GetItem_AddView(pdf) 302 ({exc})",
-                status_code=getattr(exc, "status_code", None),
-                body=getattr(exc, "body", None),
-            ) from exc
+            notes.append(
+                "GetItem_AddView(pdf) 302 — cookie 302 is not logout "
+                f"(live 29340-1; {exc}); continuing in-page "
+                "#ButtonAdd / #files kendo"
+            )
         except SecturaFabApiError as exc:
             notes.append(f"WARNING: GetItem_AddView(pdf) returned {exc}")
 
@@ -4499,6 +4559,26 @@ class SecturaFabPushService:
                         notes=notes,
                         status="failed",
                         attempts=createfile_attempts,
+                    )
+            else:
+                addview_ok, addview_notes = self.preflight_website_addview_session()
+                notes.extend(addview_notes)
+                if not addview_ok:
+                    msg = (
+                        addview_notes[-1]
+                        if addview_notes
+                        else (
+                            "GetItem_AddView 302 after Chrome refresh — "
+                            "not minting (live 29340-1)"
+                        )
+                    )
+                    return PushResult(
+                        ok=False,
+                        error=msg,
+                        notes=notes,
+                        status="failed",
+                        attempts=createfile_attempts,
+                        created_new_quote=False,
                     )
             quote_number = self.allocate_quote_number(part_key)
             raw_title = (

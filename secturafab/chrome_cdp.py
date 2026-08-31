@@ -118,6 +118,18 @@ response.List). transport.read.url is "". GetPDFData() walks
 saveUrl off-page does not run onSuccess → empty_dataSource.
 Kyle: drag onto +Add Files (dropZoneElement), not Select files.
 Leave bd5c2e3e / 103535-1. Do not mint.
+Live 29340-1 (8fb3da71): API-mint then cookie GetItem_AddView(pdf)
+302 / GET ItemList 0. Image Files never ran. Chrome 9224
+*Quote-Q10xxx EDIT was signed in (not Login). Cookie 302 is
+not logout. Image Files is in-page only: Quotes list
+#ButtonAdd same tab → #files kendoUpload →
+AddNewPDFFeature("Hole","cad") → PDFGetData() → OnAddPDFClick.
+Cookie HTTP GetItem_AddView / AddItem_PDFFiles that skips
+#files is fail-closed. In-page mint is not gated on the
+cookie file — gate is Chrome Quotes/EDIT signed in (footer
+amtech, not Login). CDP Network.getCookies may omit
+HttpOnly .AspNet.ApplicationCookie; page fetch/XHR still
+sends it. Leave 8fb3da71. Do not mint.
 
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys /
@@ -457,6 +469,73 @@ def chrome_quotes_live(base: str | None = None) -> bool:
     return quotes_tab(base) is not None
 
 
+_SIGNED_IN_FOOTER_JS = """(function() {
+  var footer = "";
+  try {
+    var nodes = document.querySelectorAll(
+      "footer, .footer, #footer, .k-footer, .navbar-text, .user-name"
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      footer += " " + String(nodes[i].innerText || nodes[i].textContent || "");
+    }
+  } catch (e) {}
+  var blob = String(footer || "").toLowerCase();
+  return {
+    amtech: blob.indexOf("amtech") >= 0,
+    login: blob.indexOf("log in") >= 0 || /\\blogin\\b/.test(blob)
+  };
+})"""
+
+
+def _chrome_footer_signed_in(
+    tab: dict[str, Any] | None,
+    *,
+    base: str | None = None,
+) -> dict[str, Any] | None:
+    """Footer amtech vs Login. None when CDP evaluate is unavailable."""
+    if not isinstance(tab, dict) or not tab.get("webSocketDebuggerUrl"):
+        return None
+    raw = _cdp_evaluate_promise(
+        _SIGNED_IN_FOOTER_JS + "()",
+        base=base,
+        tab=tab,
+        fallback=False,
+    )
+    return raw if isinstance(raw, dict) else None
+
+
+def chrome_edit_signed_in(base: str | None = None) -> bool:
+    """Quotes/EDIT signed in (footer amtech). Not Login.
+
+    Cookie GET 302 / missing .AspNet.ApplicationCookie from CDP is not
+    logout. Page fetch/XHR sends HttpOnly cookies.
+    """
+    tab = quotes_tab(base)
+    if not isinstance(tab, dict):
+        return False
+    if _is_rejected_tab(tab):
+        return False
+    footer = _chrome_footer_signed_in(tab, base=base)
+    if isinstance(footer, dict):
+        if footer.get("amtech") is True:
+            return True
+        if footer.get("login") is True:
+            return False
+    return True
+
+
+def chrome_login_page(base: str | None = None) -> bool:
+    """True when Chrome shows Login and no signed-in Quotes/EDIT."""
+    if chrome_edit_signed_in(base):
+        return False
+    for tab in _chrome_page_targets(base):
+        title = str(tab.get("title") or "").lower()
+        url = str(tab.get("url") or "").lower()
+        if "login" in title or "/account/login" in url:
+            return True
+    return False
+
+
 def _quotes_or_edit_tab(
     base: str | None = None,
     *,
@@ -592,7 +671,13 @@ def _host_is_sectura(host: str) -> bool:
 
 
 def sectura_cookies_from_cdp(base: str | None = None) -> list[tuple[str, str]]:
-    """(name, value) for secturafab.com from EDIT or Quotes. Values stay in RAM."""
+    """(name, value) for secturafab.com from EDIT or Quotes. Values stay in RAM.
+
+    Network.getCookies often omits HttpOnly .AspNet.ApplicationCookie
+    (live 34603-2: SessionId + cf_clearance + ARRAffinity +
+    SecturaFAB_AuthenticationType only). Cookie HTTP 302 is not logout.
+    In-page fetch/XHR still sends that cookie. Do not ask Kyle to sign in.
+    """
     tab = _quotes_or_edit_tab(base, prefer_edit=True)
     if not tab:
         return []
@@ -3819,9 +3904,15 @@ _OPEN_IMAGE_FILES_JS = """(function() {
   }
   var via = "";
   try {
+    if (window.jQuery && jQuery("#ButtonAdd").length) {
+      jQuery("#ButtonAdd").click();
+      via = "#ButtonAdd";
+    }
+  } catch (e0) {}
+  try {
     if (typeof window.AddNewItemHTML === "function") {
       window.AddNewItemHTML("pdf", "top");
-      via = "AddNewItemHTML";
+      via = via ? (via + "+AddNewItemHTML") : "AddNewItemHTML";
     }
   } catch (e) {}
   if (!via) {

@@ -842,6 +842,7 @@ def test_pdf_finish_from_page_kendo_rejects_reconstructed():
 
 def test_pdf_grid_upload_bound_requires_page_add_files():
     from secturafab.website import (
+        cookie_http_additem_pdffiles_is_not_success,
         cookie_http_pdf_upload_is_fail,
         empty_gridpdf_after_stamp_is_fail,
         image_files_cookie_http_empty_grid_is_fail,
@@ -888,6 +889,15 @@ def test_pdf_grid_upload_bound_requires_page_add_files():
     assert cookie_http_pdf_upload_is_fail("cookie_http")
     assert cookie_http_pdf_upload_is_fail("")
     assert not cookie_http_pdf_upload_is_fail("page_add_files")
+    assert cookie_http_additem_pdffiles_is_not_success(
+        {"via": "cookie_http", "ok": True}
+    )
+    assert cookie_http_additem_pdffiles_is_not_success(
+        {"via": "http", "filelist_from_kendo": False}
+    )
+    assert not cookie_http_additem_pdffiles_is_not_success(
+        {"via": "page_fn", "filelist_from_kendo": True}
+    )
     assert empty_gridpdf_after_stamp_is_fail(
         {"finish_why": "empty_dataSource", "filelist_from_kendo": False}
     )
@@ -938,6 +948,105 @@ def test_leftover_gridpdf_bind_is_files_kendo_onsuccess():
     assert live["datasource_n"] == 0
     assert live["getpdfdata_n"] == 0
     assert live["finish_why"] == "empty_dataSource"
+
+
+def test_leftover_29340_1_api_mint_cookie_finish_is_fail():
+    """Live 29340-1: API mint + cookie AddView 302 / Image Files never ran."""
+    from secturafab.website import (
+        addview_302_after_refresh_is_fail,
+        cookie_http_additem_pdffiles_is_not_success,
+        inpage_mint_allowed,
+        leftover_api_mint_cookie_finish_is_fail,
+        leftover_gridpdf_fills_only_via_onsuccess,
+        list0_pack_badge_ocl_is_gold,
+    )
+    from tests.fixtures.live_103535_1 import leftover_gridpdf_bind_dump
+    from tests.fixtures.live_29340_1 import (
+        leftover_api_mint_cookie_finish_dump,
+        live_29340_1_quote,
+        SPENT_QUOTE_ID,
+        SPENT_QUOTE_NUMBER,
+    )
+
+    dump = leftover_api_mint_cookie_finish_dump()
+    assert dump["readonly"] is True
+    assert dump["itemlist_n"] == 0
+    assert dump["image_files_ran"] is False
+    assert dump["created_via"] == "api"
+    assert dump["finish_via"] == "cookie_http"
+    assert dump["getitem_addview"]["status"] == 302
+    assert dump["chrome_9224"]["login"] is False
+    assert dump["chrome_9224"]["signed_in"] is True
+    assert dump["cookie_302_is_logout"] is False
+    assert leftover_api_mint_cookie_finish_is_fail(dump) is True
+    quote = live_29340_1_quote()
+    assert quote["ID"] == SPENT_QUOTE_ID
+    assert quote["QuoteNumber"] == SPENT_QUOTE_NUMBER
+    assert quote["ItemList"] == []
+    signed_out = dict(dump)
+    signed_out["live_29340_1"] = dict(dump["live_29340_1"])
+    signed_out["live_29340_1"]["chrome_signed_in"] = False
+    assert leftover_api_mint_cookie_finish_is_fail(signed_out) is False
+    ran = dict(dump)
+    ran["live_29340_1"] = dict(dump["live_29340_1"])
+    ran["live_29340_1"]["image_files_ran"] = True
+    assert leftover_api_mint_cookie_finish_is_fail(ran) is False
+    assert leftover_api_mint_cookie_finish_is_fail(leftover_gridpdf_bind_dump()) is False
+    assert leftover_api_mint_cookie_finish_is_fail(MagicMock()) is False
+    assert leftover_api_mint_cookie_finish_is_fail(None) is False
+    assert leftover_gridpdf_fills_only_via_onsuccess(dump) is False
+    assert cookie_http_additem_pdffiles_is_not_success(
+        {"via": "cookie_http", "ok": True, "filelist_from_kendo": False}
+    ) is True
+    assert cookie_http_additem_pdffiles_is_not_success(
+        {"via": "page_fn", "filelist_from_kendo": True}
+    ) is False
+    assert addview_302_after_refresh_is_fail(
+        {"ok": False, "still_302": True, "refreshed": True, "status_code": 302}
+    ) is True
+    assert addview_302_after_refresh_is_fail(
+        {"ok": True, "still_302": False, "refreshed": True, "status_code": 200}
+    ) is False
+    assert addview_302_after_refresh_is_fail(
+        {"ok": False, "still_302": True, "refreshed": False, "status_code": 302}
+    ) is False
+    assert inpage_mint_allowed(
+        chrome_edit_signed_in=True,
+        chrome_login=False,
+        cookie_addview_302=True,
+    ) is True
+    assert inpage_mint_allowed(
+        chrome_edit_signed_in=False,
+        chrome_login=True,
+        cookie_addview_302=True,
+    ) is False
+    assert inpage_mint_allowed(
+        chrome_edit_signed_in=False,
+        chrome_login=False,
+        cookie_addview_302=True,
+    ) is False
+    assert list0_pack_badge_ocl_is_gold(
+        {
+            "response_badge_string": "PR",
+            "response_ocl_names": [
+                "Laser",
+                "Drafting",
+                "Laser-Setup",
+                "Sheet Loading",
+                "Deburr",
+            ],
+            "response_unit_cost": 36.22,
+            "response_unit_weight_cost": 14.65,
+        }
+    ) is True
+    assert list0_pack_badge_ocl_is_gold(
+        {
+            "response_badge_string": "",
+            "response_ocl_names": [],
+            "response_unit_cost": 126.66,
+            "response_unit_weight_cost": 126.66,
+        }
+    ) is False
 
 
 def test_leftover_griddxf_bind_is_files_kendo_onsuccess():
@@ -4405,6 +4514,42 @@ def test_quotes_tab_skips_login_and_claims_mismatch():
     assert tab is not None
     assert tab["title"] == "Quotes"
     assert tab["webSocketDebuggerUrl"].endswith("/quotes")
+
+
+def test_chrome_edit_signed_in_not_login_and_login_aborts():
+    """Footer/tab signed-in EDIT is not cookie 302. Login-only still aborts."""
+    from secturafab.chrome_cdp import chrome_edit_signed_in, chrome_login_page
+
+    edit = {
+        "type": "page",
+        "title": "*Quote-Q10101",
+        "url": (
+            "https://www.secturafab.com/Quote/EDIT/"
+            "11111111-aaaa-bbbb-cccc-000000010101"
+        ),
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+    }
+    login = {
+        "type": "page",
+        "title": "Login",
+        "url": "https://www.secturafab.com/Account/Login",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/login",
+    }
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[edit, login]
+    ), patch(
+        "secturafab.chrome_cdp._chrome_footer_signed_in",
+        return_value={"amtech": True, "login": False},
+    ):
+        assert chrome_edit_signed_in("http://127.0.0.1:9224") is True
+        assert chrome_login_page("http://127.0.0.1:9224") is False
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[login]
+    ), patch(
+        "secturafab.chrome_cdp._chrome_footer_signed_in", return_value=None
+    ):
+        assert chrome_edit_signed_in("http://127.0.0.1:9224") is False
+        assert chrome_login_page("http://127.0.0.1:9224") is True
 
 
 def test_quote_edit_tab_matches_star_quote_title_and_edit_url():
@@ -7941,6 +8086,7 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     )
 
     assert "AddNewItemHTML" in _OPEN_IMAGE_FILES_JS
+    assert "#ButtonAdd" in _OPEN_IMAGE_FILES_JS
     assert "image files" in _OPEN_IMAGE_FILES_JS
     assert '"#files"' in _FIND_PDF_ADD_FILES_INPUT_JS
     assert "kendoUpload" in _FIND_PDF_ADD_FILES_INPUT_JS

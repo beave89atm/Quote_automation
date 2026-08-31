@@ -140,6 +140,19 @@ off-page cookie POST does not run onSuccess_PDFUpload →
 datasource_n=0 / getpdfdata_n=0 / empty_dataSource. Kyle:
 drag onto +Add Files (dropZoneElement), not Select files,
 then type L×W → OnAddPDFClick. Leave bd5c2e3e / 103535-1.
+Live 29340-1 (8fb3da71): GET ItemList 0. Image Files never ran.
+Cookie GET /Quote/GetItem_AddView(pdf) 302 while Chrome 9224
+*Quote-Q10xxx EDIT was signed in (not Login). API-mint then
+cookie Finish aborted. Cookie HTTP that 302s is fail-closed —
+do not mint via v1/quote then cookie Finish. In-page Chrome
+mint is not gated on the cookie file. Gate is Chrome
+Quotes/EDIT signed in (footer amtech, not Login). Session is
+the page's own fetch/XHR (HttpOnly cookies CDP
+Network.getCookies may omit, including
+.AspNet.ApplicationCookie). Live 34603-2 was not minted
+(cookie 302 after refresh) — that leftover class is 29340-1.
+Login page still aborts. Do not ask Kyle to sign in. Leave
+8fb3da71 / 29340-1. Do not PATCH. Do not remint.
 Live 10098-1 (315cb19 leftover PIVOTING FOOT, 6a568912): posted FileList
 had FileType=Cad (string) plus CadType/Stock_*/SID/FileID/ID/ErrorStatus/
 Qty/ItemType/Category/PartMode and Cad-path keys InternalData,
@@ -1855,6 +1868,69 @@ def reconstructed_pdf_filelist_is_fail(result: dict[str, Any] | None) -> bool:
 PDF_UPLOAD_VIA_PAGE_ADD_FILES = "page_add_files"
 
 
+def leftover_api_mint_cookie_finish_is_fail(dump: dict[str, Any] | None) -> bool:
+    """Live 29340-1: API mint then cookie GetItem_AddView 302 / GET 0."""
+    if not isinstance(dump, dict):
+        return False
+    live = dump.get("live_29340_1") if isinstance(dump.get("live_29340_1"), dict) else {}
+    if not live:
+        return False
+    try:
+        if live.get("itemlist_n") is None or int(live.get("itemlist_n")) != 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if live.get("image_files_ran") is not False:
+        return False
+    if live.get("api_mint") is not True:
+        return False
+    if live.get("getitem_addview_302") is not True:
+        return False
+    if live.get("chrome_signed_in") is not True:
+        return False
+    if dump.get("cookie_302_is_logout") is not False:
+        return False
+    return True
+
+
+def addview_302_after_refresh_is_fail(probe: dict[str, Any] | None) -> bool:
+    """Cookie HTTP GetItem_AddView /Quote still 302 after Chrome refresh.
+
+    Fail-closed for cookie-file GET/POST only (live 29340-1). Does not
+    block in-page mint when Chrome EDIT is signed in.
+    """
+    if not isinstance(probe, dict):
+        return False
+    if probe.get("ok") is True:
+        return False
+    if probe.get("refreshed") is not True:
+        return False
+    if probe.get("still_302") is True:
+        return True
+    return probe.get("ok") is False
+
+
+def inpage_mint_allowed(
+    *,
+    chrome_edit_signed_in: bool,
+    chrome_login: bool = False,
+    cookie_addview_302: bool = False,
+) -> bool:
+    """In-page mint is not gated on the cookie file (live 34603-2).
+
+    Cookie GetItem_AddView 302 does not block when chrome_edit_signed_in.
+    Chrome Login page still aborts. Cookie-only path (302 + not signed in)
+    is the 29340-1 leftover — do not v1/quote then cookie Finish.
+    """
+    if chrome_edit_signed_in:
+        return True
+    if chrome_login:
+        return False
+    if cookie_addview_302:
+        return False
+    return True
+
+
 def leftover_gridpdf_fills_only_via_onsuccess(dump: dict[str, Any] | None) -> bool:
     """Leftover dialog: #files kendoUpload + onSuccess_PDFUpload is the only fill."""
     if not isinstance(dump, dict):
@@ -1902,6 +1978,13 @@ def cookie_http_pdf_upload_is_fail(upload_via: str | None) -> bool:
     """Cookie HTTP skips #files kendo / AddNewPDFFeature (live 103535-1)."""
     via = str(upload_via or "").strip()
     return via != PDF_UPLOAD_VIA_PAGE_ADD_FILES
+
+
+def cookie_http_additem_pdffiles_is_not_success(
+    result: dict[str, Any] | None,
+) -> bool:
+    """Cookie-only AddItem_PDFFiles is not success (live 29340-1 / 103535-1)."""
+    return not pdf_finish_from_page_kendo(result)
 
 
 def empty_gridpdf_after_stamp_is_fail(
@@ -3512,9 +3595,15 @@ def internal_data_from_holes(holes: list[dict[str, Any]] | None) -> str:
     return json.dumps(rows) if rows else ""
 
 
+def is_website_cookie_302(status_code: int, location: str | None = None) -> bool:
+    """Cookie GET 302 is not logout (live 29340-1 Chrome signed in)."""
+    del location
+    return int(status_code or 0) in {301, 302, 303, 307, 308}
+
+
 def is_website_login_redirect(status_code: int, location: str | None) -> bool:
     loc = str(location or "")
-    return status_code in {301, 302, 303, 307, 308} and "Login" in loc
+    return is_website_cookie_302(status_code, loc) and "Login" in loc
 
 
 def is_cloudflare_challenge(status_code: int, text: str | None) -> bool:
