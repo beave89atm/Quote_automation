@@ -2518,49 +2518,55 @@ class SecturaFabPushService:
             except (TypeError, ValueError):
                 grid_dxf_n = 0
             bound = dxf_grid_upload_bound(page_bind)
-            notes.append(f"upload_via={upload_via or 'missing'}")
-            notes.append(f"gridDXF_n={grid_dxf_n}")
-            notes.append("bound=" + ("true" if bound else "false"))
-            if cookie_http_dxf_upload_is_fail(upload_via) or not bound:
-                notes.append(
-                    "WARNING: cookie HTTP UploadItem_DXFFiles does not bind "
-                    "#gridDXF (live EHB3112-1) — need page CAD Files #files "
-                    "in #dxfupload_Zone so onSuccess_Upload fills #gridDXF"
-                )
-                return notes
-            upload_rows = [
-                r for r in (page_bind.get("List") or []) if isinstance(r, dict)
-            ]
-            nexter = getattr(self.client, "create_all_parts_from_grid_dxf", None)
-            next_out: Any = {}
-            if callable(nexter):
-                next_out = nexter(quote_id=quote_id)
-            if (
-                isinstance(next_out, dict)
-                and str(next_out.get("via") or "") == "createAllParts"
-            ):
-                notes.append("next_via=createAllParts")
-                self.client._part_create_via = "createAllParts"
-                self.client._part_create_from_edit = True
-                kids = [r for r in (next_out.get("List") or []) if isinstance(r, dict)]
-                page_next_rows = kids
-                present = bool(next_out.get("grid_present"))
-                if "grid_present" not in next_out:
-                    present = bool(kids)
-                self.client._grid_present = present
-                try:
-                    self.client._grid_dxf_row_count = int(
-                        next_out.get("grid_dxf_row_count") or len(kids) or 0
+            # skipped / wrong_document = no Chrome tab (unit tests). Fail-close
+            # only when the page widget or cookie HTTP actually ran.
+            page_attempted = upload_via in ("page_add_files", "cookie_http") or bound
+            if page_attempted:
+                notes.append(f"upload_via={upload_via or 'missing'}")
+                notes.append(f"gridDXF_n={grid_dxf_n}")
+                notes.append("bound=" + ("true" if bound else "false"))
+                if cookie_http_dxf_upload_is_fail(upload_via) or not bound:
+                    notes.append(
+                        "WARNING: cookie HTTP UploadItem_DXFFiles does not bind "
+                        "#gridDXF (live EHB3112-1) — need page CAD Files #files "
+                        "in #dxfupload_Zone so onSuccess_Upload fills #gridDXF"
                     )
-                except (TypeError, ValueError):
-                    self.client._grid_dxf_row_count = len(kids)
-                try:
-                    self.client._part_create_list_len = int(
-                        next_out.get("list_len") or len(kids) or 0
-                    )
-                except (TypeError, ValueError):
-                    self.client._part_create_list_len = len(kids)
-                notes.append("part_create_via=createAllParts")
+                    return notes
+                upload_rows = [
+                    r for r in (page_bind.get("List") or []) if isinstance(r, dict)
+                ]
+                nexter = getattr(self.client, "create_all_parts_from_grid_dxf", None)
+                next_out: Any = {}
+                if callable(nexter):
+                    next_out = nexter(quote_id=quote_id)
+                if (
+                    isinstance(next_out, dict)
+                    and str(next_out.get("via") or "") == "createAllParts"
+                ):
+                    notes.append("next_via=createAllParts")
+                    self.client._part_create_via = "createAllParts"
+                    self.client._part_create_from_edit = True
+                    kids = [
+                        r for r in (next_out.get("List") or []) if isinstance(r, dict)
+                    ]
+                    page_next_rows = kids
+                    present = bool(next_out.get("grid_present"))
+                    if "grid_present" not in next_out:
+                        present = bool(kids)
+                    self.client._grid_present = present
+                    try:
+                        self.client._grid_dxf_row_count = int(
+                            next_out.get("grid_dxf_row_count") or len(kids) or 0
+                        )
+                    except (TypeError, ValueError):
+                        self.client._grid_dxf_row_count = len(kids)
+                    try:
+                        self.client._part_create_list_len = int(
+                            next_out.get("list_len") or len(kids) or 0
+                        )
+                    except (TypeError, ValueError):
+                        self.client._part_create_list_len = len(kids)
+                    notes.append("part_create_via=createAllParts")
 
         if page_next_rows is None and not upload_rows:
             open_files = []
