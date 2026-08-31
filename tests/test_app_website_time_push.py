@@ -2017,7 +2017,8 @@ def test_1002323_1_no_hole_rectangle_still_finishes(tmp_path, monkeypatch):
         "stamped": 1,
         "cell_edit": 2,
         "outside_perimeter_n": 1,
-        "cutting_length_n": 1,
+        "cutting_length_n": 0,
+        "weight_n": 1,
         "internaldata_n": 0,
         "getperimeter_xhr": True,
         "perimeter_via": "UpdatePerimeterWeight",
@@ -2057,10 +2058,10 @@ def test_1002323_1_no_hole_rectangle_still_finishes(tmp_path, monkeypatch):
     assert "persisted" not in blob.lower()
 
 
-def test_1002323_1_empty_cuttinglength_after_perimeter_does_not_finish(
+def test_1002323_1_empty_weight_after_perimeter_does_not_finish(
     tmp_path, monkeypatch
 ):
-    """#CuttingLength empty after landed perimeter — do not Finish."""
+    """GetPDFData bag Weight empty after landed perimeter — do not Finish."""
     from tests.fixtures.live_1002323_1 import live_1002323_1_quote
 
     quote = live_1002323_1_quote()
@@ -2077,6 +2078,7 @@ def test_1002323_1_empty_cuttinglength_after_perimeter_does_not_finish(
         "cell_edit": 2,
         "outside_perimeter_n": 1,
         "cutting_length_n": 0,
+        "weight_n": 0,
         "internaldata_n": 0,
         "getperimeter_xhr": True,
         "perimeter_via": "UpdatePerimeterWeight",
@@ -2103,7 +2105,7 @@ def test_1002323_1_empty_cuttinglength_after_perimeter_does_not_finish(
     client.add_item_pdf_files.assert_not_called()
     blob = " ".join(notes)
     assert "1002323-1" in blob
-    assert "#CuttingLength empty" in blob
+    assert "bag Weight empty" in blob
     assert "GetPDFData omits CuttingLength" in blob
     assert "do not Finish" in blob
     assert "persisted" not in blob.lower()

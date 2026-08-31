@@ -2215,56 +2215,103 @@ def empty_internaldata_after_perimeter_is_fail(result: dict[str, Any] | None) ->
     return False
 
 
-def leftover_cuttinglength_is_page_field_not_getpdfdata(
+GETPDFDATA_BAG_COMPARE_KEYS = (
+    "Machine",
+    "ProductID",
+    "Qty",
+    "Weight",
+    "Weight_UseLocal",
+    "OutsidePerimeter",
+    "OutsidePerimeter_UseLocal",
+    "NumberOfHeads",
+    "WeightBorder",
+    "Material",
+    "Thickness",
+    "Length",
+    "Width",
+)
+
+
+def leftover_weight_is_getpdfdata_bag_not_cuttinglength(
     dump: dict[str, Any] | None,
 ) -> bool:
-    """List CuttingLength comes from #CuttingLength, not a GetPDFData key.
+    """Pack is not post CuttingLength. Weight is already in the GetPDFData bag.
 
-    GetPDFData omits CuttingLength / CuttingLengthDisp. Display-only
-    ``#CuttingLengthDisp`` / ``.pdfcuttinglength`` is not the List field.
-    Do not invent a GetPDFData key. Do not graft. Do not require holes.
+    Live 1002323-1 FileList keys/values were not logged. GetPDFData omits
+    CuttingLength. ``#CuttingLength`` / dataItem.CuttingLength is not
+    posted. HasSelectedProductID is not a bag key. Do not invent
+    CuttingLength on FileList. Do not graft.
     """
     if not isinstance(dump, dict):
         return False
     getpdf = dump.get("GetPDFData") if isinstance(dump.get("GetPDFData"), dict) else {}
     omits = {str(k) for k in (getpdf.get("omits") or ())}
+    posts = {str(k) for k in (getpdf.get("posts") or ())}
     if "CuttingLength" not in omits:
         return False
     if getpdf.get("cuttinglengthdisp_display_only") is not True:
         return False
-    cut = dump.get("CuttingLength") if isinstance(dump.get("CuttingLength"), dict) else {}
-    if str(cut.get("page_field") or "") != "#CuttingLength":
+    if dump.get("filelist_keys_logged") is not False:
         return False
-    if cut.get("invent_getpdfdata_key") is not False:
+    wt = dump.get("Weight") if isinstance(dump.get("Weight"), dict) else {}
+    if str(wt.get("bag_field") or "") != "Weight":
         return False
-    xhr = str(cut.get("xhr") or "")
-    if "/Quote/GetPerimeterAndWeight" not in xhr:
+    if wt.get("invent_getpdfdata_key") is not False:
+        return False
+    if "Weight" not in PDF_GETDATA_FIELDS or "Weight_UseLocal" not in PDF_GETDATA_FIELDS:
+        return False
+    if "CuttingLength" in PDF_GETDATA_FIELDS:
+        return False
+    if "HasSelectedProductID" in PDF_GETDATA_FIELDS:
+        return False
+    if "HasSelectedProductID" in posts:
+        return False
+    xhr = dump.get("UpdatePerimeterWeight")
+    if not isinstance(xhr, dict):
+        return False
+    result = xhr.get("result") if isinstance(xhr.get("result"), dict) else {}
+    try:
+        if float(result.get("Weight") or 0) <= 0:
+            return False
+    except (TypeError, ValueError):
         return False
     return True
 
 
-def empty_cuttinglength_after_perimeter_is_fail(
+def filelist_bag_snapshot(row: dict[str, Any] | None) -> dict[str, Any]:
+    """Posted GetPDFData bag candidates — names/values, no tokens."""
+    if not isinstance(row, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key in GETPDFDATA_BAG_COMPARE_KEYS:
+        if key in row:
+            out[key] = row[key]
+    return out
+
+
+def empty_weight_after_perimeter_is_fail(
     result: dict[str, Any] | None,
 ) -> bool:
-    """Landed OutsidePerimeter without numeric #CuttingLength is the 1002323-1 miss.
+    """Landed OutsidePerimeter without bag Weight is the 1002323-1 miss.
 
-    Empty InternalData is not this gate. Only when the stamp names both
-    counts (live Chrome). MagicMock / older stamps without those keys
-    still Finish.
+    GetPDFData posts Weight / Weight_UseLocal. It omits CuttingLength.
+    Empty InternalData is not this gate. Only when the stamp names
+    ``weight_n`` and ``outside_perimeter_n``. MagicMock / older stamps
+    without those keys still Finish.
     """
     if not isinstance(result, dict):
         return False
-    if "cutting_length_n" not in result or "outside_perimeter_n" not in result:
+    if "weight_n" not in result or "outside_perimeter_n" not in result:
         return False
     try:
         perim = int(result.get("outside_perimeter_n") or 0)
     except (TypeError, ValueError):
         perim = 0
     try:
-        cut = int(result.get("cutting_length_n") or 0)
+        weight = int(result.get("weight_n") or 0)
     except (TypeError, ValueError):
-        cut = 0
-    return perim > 0 and cut <= 0
+        weight = 0
+    return perim > 0 and weight <= 0
 
 
 def empty_perimeter_weight_is_fail(result: dict[str, Any] | None) -> bool:

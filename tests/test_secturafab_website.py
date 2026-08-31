@@ -1112,10 +1112,11 @@ def test_leftover_perimeter_xhr_is_not_gold_pack():
         unitcost_equals_unitprice_is_material_only,
     )
     from secturafab.website import (
-        empty_cuttinglength_after_perimeter_is_fail,
         empty_internaldata_after_perimeter_is_fail,
-        leftover_cuttinglength_is_page_field_not_getpdfdata,
+        empty_weight_after_perimeter_is_fail,
         leftover_perimeter_xhr_is_not_gold_pack,
+        leftover_weight_is_getpdfdata_bag_not_cuttinglength,
+        filelist_bag_snapshot,
         PDF_GETDATA_FIELDS,
     )
     from tests.fixtures.live_1002323_1 import (
@@ -1148,12 +1149,19 @@ def test_leftover_perimeter_xhr_is_not_gold_pack():
     assert cad_kids_unitcost_without_pr(quote) is True
     assert cad_image_files_stamped(cad) is False
     assert image_files_dod_pass(quote, expect_cad=True) is False
-    assert leftover_cuttinglength_is_page_field_not_getpdfdata(dump) is True
-    broken_cut = dict(dump)
-    broken_cut["CuttingLength"] = dict(dump["CuttingLength"])
-    broken_cut["CuttingLength"]["invent_getpdfdata_key"] = True
-    assert leftover_cuttinglength_is_page_field_not_getpdfdata(broken_cut) is False
+    assert dump["filelist_keys_logged"] is False
+    assert leftover_weight_is_getpdfdata_bag_not_cuttinglength(dump) is True
+    assert filelist_bag_snapshot(
+        {"Weight": 7.7607, "CuttingLength": 44.64, "Status": 1, "Machine": "Laser - Bay1"}
+    ) == {"Weight": 7.7607, "Machine": "Laser - Bay1"}
+    broken_wt = dict(dump)
+    broken_wt["Weight"] = dict(dump["Weight"])
+    broken_wt["Weight"]["invent_getpdfdata_key"] = True
+    assert leftover_weight_is_getpdfdata_bag_not_cuttinglength(broken_wt) is False
     assert "CuttingLength" not in PDF_GETDATA_FIELDS
+    assert "HasSelectedProductID" not in PDF_GETDATA_FIELDS
+    assert "Weight" in PDF_GETDATA_FIELDS
+    assert "Weight_UseLocal" in PDF_GETDATA_FIELDS
     assert empty_internaldata_after_perimeter_is_fail(
         {"outside_perimeter_n": 1, "internaldata_n": 0}
     ) is False
@@ -1161,13 +1169,13 @@ def test_leftover_perimeter_xhr_is_not_gold_pack():
         {"outside_perimeter_n": 1, "internaldata_n": 1}
     ) is False
     assert empty_internaldata_after_perimeter_is_fail({"stamped": 1}) is False
-    assert empty_cuttinglength_after_perimeter_is_fail(
-        {"outside_perimeter_n": 1, "cutting_length_n": 0}
+    assert empty_weight_after_perimeter_is_fail(
+        {"outside_perimeter_n": 1, "weight_n": 0}
     ) is True
-    assert empty_cuttinglength_after_perimeter_is_fail(
-        {"outside_perimeter_n": 1, "cutting_length_n": 1}
+    assert empty_weight_after_perimeter_is_fail(
+        {"outside_perimeter_n": 1, "weight_n": 1}
     ) is False
-    assert empty_cuttinglength_after_perimeter_is_fail({"stamped": 1}) is False
+    assert empty_weight_after_perimeter_is_fail({"stamped": 1}) is False
 
 
 def test_empty_perimeter_weight_is_fail():
@@ -7431,12 +7439,14 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "window.UpdatePerimeterWeight()" not in _STAMP_PDF_KENDO_JS
     assert "AddNewPDFFeature" not in _STAMP_PDF_KENDO_JS
     assert "PDFGetData" not in _STAMP_PDF_KENDO_JS
-    assert "#CuttingLength" in _STAMP_PDF_KENDO_JS
-    assert "parseFloat" in _STAMP_PDF_KENDO_JS
+    assert "setField(r, \"CuttingLength\"" not in _STAMP_PDF_KENDO_JS
+    assert "Weight_UseLocal" in _STAMP_PDF_KENDO_JS
+    assert "#Weight" in _STAMP_PDF_KENDO_JS
+    assert "bag omits Status" in _PAGE_PDF_FINISH_JS
     assert "internaldata_n" in _STAMP_PDF_KENDO_JS
     assert "/Quote/GetPerimeterAndWeight" in _STAMP_PDF_KENDO_JS
     assert "outside_perimeter_n" in _STAMP_PDF_KENDO_JS
-    assert "CuttingLengthDisp" in _STAMP_PDF_KENDO_JS
+    assert "weight_n" in _STAMP_PDF_KENDO_JS
     assert "empty_perimeter" in _PAGE_PDF_FINISH_JS
     assert "OutsidePerimeter" in _PAGE_PDF_FINISH_JS
     from secturafab.chrome_cdp import _STAMP_DXF_STOCK_JS

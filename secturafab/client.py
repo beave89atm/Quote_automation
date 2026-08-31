@@ -1502,6 +1502,11 @@ class SecturaFabClient:
             "grid_id": str(result.get("grid_id") or ""),
             "request_keys": [str(k) for k in (result.get("request_keys") or [])],
             "filelist_row_keys": [str(k) for k in (result.get("filelist_row_keys") or [])],
+            "filelist_bag": (
+                dict(result["filelist_bag"])
+                if isinstance(result.get("filelist_bag"), dict)
+                else {}
+            ),
             "kendo_row_keys": [str(k) for k in (result.get("kendo_row_keys") or [])],
             "finish_af_present": bool(result.get("finish_af_present")),
             "finish_why": str(result.get("finish_why") or ""),

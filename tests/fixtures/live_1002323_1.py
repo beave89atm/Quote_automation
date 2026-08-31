@@ -12,9 +12,9 @@ Cad FAIL: GET 1 Cad PT 100 qty 2 Machine Laser Bay 1. Tag empty,
 ProductionReady false, OperationCostList [], PrimaryTime 0.
 UnitCost 3.18 = UnitPrice = UnitWeightCost (material only).
 DataPartPDF OutsidePerimeter 44.64, CuttingLength 0, InternalData '',
-HasSelectedProductID false. GetPDFData omits CuttingLength.
-Page field for List CuttingLength is #CuttingLength (numeric), not
-InternalData holes and not display-only CuttingLengthDisp.
+HasSelectedProductID false (not a GetPDFData bag key). GetPDFData
+omits CuttingLength. Posted FileList keys/values were not logged.
+XHR Weight=7.7607 was not copied onto the bag Weight field.
 
 DoD: Tag empty / OCL [] / CuttingLength 0 = FAIL. Leave b2e12461.
 Do not PATCH. Do not remint. No graft. No Operation→Profile. No nest.
@@ -119,6 +119,7 @@ LEFTOVER_PERIMETER_NOT_PACK = {
     "quote_number": SPENT_QUOTE_NUMBER,
     "readonly": True,
     "finish_posted": True,
+    "filelist_keys_logged": False,
     "pack_xhr_named": False,
     "addrow_stamps_pr": False,
     "pack_already_on_additem_list": True,
@@ -160,12 +161,13 @@ LEFTOVER_PERIMETER_NOT_PACK = {
         "cuttinglengthdisp_display_only": True,
         "status_is_filter_only": True,
     },
-    "CuttingLength": {
-        "page_field": "#CuttingLength",
+    "Weight": {
+        "bag_field": "Weight",
+        "also": "Weight_UseLocal",
         "xhr": "POST /Quote/GetPerimeterAndWeight",
-        "display_only": "#CuttingLengthDisp",
+        "page_field": "#Weight",
         "invent_getpdfdata_key": False,
-        "require_internaldata_holes": False,
+        "leftover_xhr_weight": 7.7607,
     },
     "AddNewPDFFeature": {
         "optional": True,

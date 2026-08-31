@@ -3115,18 +3115,19 @@ class SecturaFabPushService:
         Reconstructed FileList is fail-closed (live 1001898-5).
         After #files bind, type L×W so UpdatePerimeterWeight(true,true)
         → POST /Quote/GetPerimeterAndWeight fills OutsidePerimeter +
-        #CuttingLength (numeric) + CuttingLengthDisp before OnAddPDFClick.
-        Bare UpdatePerimeterWeight() does not copy (n/t falsy). Empty
-        perimeter → do not Finish (live 29743-1). GetPDFData omits
-        CuttingLength — do not invent that key. List CuttingLength
-        comes from page #CuttingLength, not InternalData holes.
-        Empty InternalData after a landed perimeter is expected for
-        no-hole rectangles (Kyle Loom: Add Feature Hole only when
-        the drawing has holes). AddNewPDFFeature() with no args is
-        not gold. Live 1002323-1 leftover: OutsidePerimeter 44.64
-        and CuttingLength 0 because #CuttingLength was never filled.
-        Perimeter XHR is not gold pack. #files + GetPDFData +
-        OnAddPDFClick is not gold PR/laser unless Cad GET has Tag +
+        Weight before OnAddPDFClick. Bare UpdatePerimeterWeight()
+        does not copy (n/t falsy). Empty perimeter → do not Finish
+        (live 29743-1). GetPDFData omits CuttingLength — do not
+        invent that key and do not add it to FileList. Gold uses
+        the same bag; pack is not “post CuttingLength”. Copy bag
+        Weight / Weight_UseLocal from the XHR / #Weight (leftover
+        XHR Weight=7.7607 was not on the row). Empty InternalData
+        after a landed perimeter is expected for no-hole rectangles.
+        AddNewPDFFeature() with no args is not gold. Status is
+        filter-only — do not overlay it onto the posted bag.
+        Live 1002323-1 FileList keys were not logged. Perimeter
+        XHR is not gold pack. #files + GetPDFData + OnAddPDFClick
+        is not gold PR/laser unless Cad GET has Tag +
         OperationCostList + UnitCost>0 + CuttingLength>0. Do not
         treat UnitPrice / UnitWeightCost as UnitCost.
         Do not AddOperation / nest / Operation→Profile. Do not graft.
@@ -3289,9 +3290,10 @@ class SecturaFabPushService:
         if cad_paths:
             from .website import (
                 cookie_http_pdf_upload_is_fail,
-                empty_cuttinglength_after_perimeter_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
+                empty_weight_after_perimeter_is_fail,
+                filelist_bag_snapshot,
                 pdf_finish_from_page_kendo,
                 pdf_grid_upload_bound,
                 reconstructed_pdf_filelist_is_fail,
@@ -3349,15 +3351,14 @@ class SecturaFabPushService:
                         "WARNING: UpdatePerimeterWeight empty OutsidePerimeter "
                         "— do not Finish (live 29743-1)"
                     )
-                elif empty_cuttinglength_after_perimeter_is_fail(
+                elif empty_weight_after_perimeter_is_fail(
                     stamp_out if isinstance(stamp_out, dict) else None
                 ):
                     notes.append(
-                        "WARNING: #CuttingLength empty after perimeter XHR "
-                        "(live 1002323-1) — GetPDFData omits CuttingLength; "
-                        "CuttingLengthDisp is display-only; do not Finish; "
-                        "do not invent a GetPDFData key; empty InternalData "
-                        "is expected for no-hole rectangles"
+                        "WARNING: GetPDFData bag Weight empty after perimeter "
+                        "XHR (live 1002323-1) — GetPDFData omits CuttingLength; "
+                        "do not post CuttingLength; do not Finish; "
+                        "empty InternalData is expected for no-hole rectangles"
                     )
                 else:
                     try:
@@ -3395,6 +3396,25 @@ class SecturaFabPushService:
                         why = str(result.get("finish_why") or "")
                         if why:
                             notes.append(f"finish_why={why}")
+                        row_keys = [
+                            str(k) for k in (result.get("filelist_row_keys") or [])
+                        ]
+                        if row_keys:
+                            notes.append(
+                                "filelist_row_keys=" + ",".join(row_keys[:24])
+                            )
+                        bag = result.get("filelist_bag")
+                        snap = (
+                            filelist_bag_snapshot(bag)
+                            if isinstance(bag, dict)
+                            else {}
+                        )
+                        if snap:
+                            parts = [
+                                f"{k}={snap[k]!r}"
+                                for k in snap
+                            ]
+                            notes.append("filelist_bag=" + ",".join(parts[:16]))
                         if from_kendo:
                             try:
                                 posted_n = int(result.get("finish_filelist_n") or 0)

@@ -2304,14 +2304,14 @@ _PAGE_PDF_FINISH_JS = """(function() {
     return rows;
   }
   function getPdfData() {
-    var rows = [];
     if (typeof window.GetPDFData === "function") {
       try {
         var d = window.GetPDFData();
-        if (Array.isArray(d)) rows = d.slice();
+        // bag omits Status — do not overlay onto posted FileList
+        if (Array.isArray(d) && d.length) return d.slice();
       } catch (e) {}
     }
-    if (!rows.length) rows = getPdfDataFromTbody();
+    var rows = getPdfDataFromTbody();
     rows = overlayStatusFromDataItem(rows);
     return rows.filter(function(r) { return statusOf(r) > 0; });
   }
@@ -2345,6 +2345,20 @@ _PAGE_PDF_FINISH_JS = """(function() {
     if (!row || typeof row !== "object") return [];
     return Object.keys(row).filter(function(k) { return k !== "uid"; }).sort();
   }
+  var BAG_KEYS = [
+    "Machine", "ProductID", "Qty", "Weight", "Weight_UseLocal",
+    "OutsidePerimeter", "OutsidePerimeter_UseLocal", "NumberOfHeads",
+    "WeightBorder", "Material", "Thickness", "Length", "Width"
+  ];
+  function bagSnap(row) {
+    var o = {};
+    if (!row || typeof row !== "object") return o;
+    for (var bi = 0; bi < BAG_KEYS.length; bi++) {
+      var bk = BAG_KEYS[bi];
+      if (row[bk] !== undefined) o[bk] = row[bk];
+    }
+    return o;
+  }
   function hasAf(d) {
     if (!d || typeof d !== "object") return false;
     var keys = Object.keys(d);
@@ -2371,14 +2385,11 @@ _PAGE_PDF_FINISH_JS = """(function() {
   function rowHasPerimeter(r) {
     if (!r || typeof r !== "object") return false;
     var op = r.OutsidePerimeter != null ? r.OutsidePerimeter : r.outsidePerimeter;
-    var cl = r.CuttingLength != null ? r.CuttingLength : r.cuttingLength;
-    if (cl == null) {
-      cl = r.CuttingLengthDisp != null ? r.CuttingLengthDisp : r.cuttingLengthDisp;
-    }
+    var wt = r.Weight != null ? r.Weight : r.weight;
     var opN = parseFloat(op);
-    var clN = parseFloat(cl);
+    var wtN = parseFloat(wt);
     if (isFinite(opN) && opN > 0) return true;
-    if (isFinite(clN) && clN > 0) return true;
+    if (isFinite(wtN) && wtN > 0) return true;
     return false;
   }
   var krows = getPdfData();
@@ -2473,6 +2484,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
           request_keys: Object.keys(d),
           filelist_from_kendo: fromKendo,
           filelist_row_keys: n > 0 ? rowKeys(first) : [],
+          filelist_bag: n > 0 ? bagSnap(first) : {},
           kendo_row_keys: krows.length ? rowKeys(krows[0]) : [],
           finish_af_present: hasAf(d),
           finish_why: fromKendo ? "" : "filelist_not_kendo",
@@ -2579,6 +2591,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     grid_pdf_row_count: 0,
     outside_perimeter_n: 0,
     cutting_length_n: 0,
+    weight_n: 0,
     internaldata_n: 0,
     getperimeter_xhr: false,
     perimeter_via: "",
@@ -2647,10 +2660,9 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           var prev = opts.success;
           opts.success = function(data) {
             try {
-              var n = data && (data.CuttingLength != null
-                ? data.CuttingLength : data.cuttingLength);
-              if (n != null && parseFloat(n) > 0) {
-                window.__kannonGetPerim.cuttingLength = parseFloat(n);
+              var w = data && (data.Weight != null ? data.Weight : data.weight);
+              if (w != null && parseFloat(w) > 0) {
+                window.__kannonGetPerim.weight = parseFloat(w);
               }
             } catch (e0) {}
             if (typeof prev === "function") return prev.apply(this, arguments);
@@ -2716,42 +2728,30 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     } catch (e4) {}
     return "";
   }
-  function parseCut(v) {
+  function parseNum(v) {
     var n = parseFloat(v);
     if (!isFinite(n) || n <= 0) return "";
     return String(n);
   }
   function copyPerimeterOntoRow(grid, r) {
     var op = "";
-    var clDisp = "";
-    var cl = "";
+    var wt = "";
     try {
       if (window.jQuery) {
         op = String(jQuery("#OutsidePerimeter").val() || "");
-        clDisp = String(
-          jQuery(".pdfcuttinglength").val()
-          || jQuery("#CuttingLengthDisp").val()
-          || ""
-        );
-        cl = parseCut(jQuery("#CuttingLength").val())
-          || parseCut(window.__kannonGetPerim && window.__kannonGetPerim.cuttingLength)
-          || parseCut(clDisp);
-        if (cl) {
-          var $cl = jQuery("#CuttingLength");
-          if ($cl.length) $cl.val(cl).trigger("change");
-        }
+        wt = parseNum(jQuery("#Weight").val())
+          || parseNum(window.__kannonGetPerim && window.__kannonGetPerim.weight);
       }
     } catch (e) {}
     if (op) {
       setField(r, "OutsidePerimeter", op);
       setField(r, "OutsidePerimeter_UseLocal", true);
     }
-    if (clDisp) setField(r, "CuttingLengthDisp", clDisp);
-    if (cl) {
-      if (grid) editSet(grid, r, "CuttingLength", cl);
-      else setField(r, "CuttingLength", cl);
+    if (wt) {
+      setField(r, "Weight", wt);
+      setField(r, "Weight_UseLocal", true);
     }
-    return {op: op, cl: cl, clDisp: clDisp};
+    return {op: op, wt: wt};
   }
   function emptyVal(v) {
     if (v == null) return true;
@@ -2775,17 +2775,16 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
   function countFilled(src) {
     var opN = 0;
     var clN = 0;
+    var wtN = 0;
     var idN = 0;
     var n = src.length || 0;
     for (var i = 0; i < n; i++) {
       var r = src[i] || {};
       if (Number(r.OutsidePerimeter) > 0) opN += 1;
-      if (parseFloat(r.CuttingLength) > 0 || parseFloat(r.CuttingLengthDisp) > 0) {
-        clN += 1;
-      }
+      if (parseFloat(r.Weight) > 0) wtN += 1;
       if (!emptyVal(r.InternalData)) idN += 1;
     }
-    return {opN: opN, clN: clN, idN: idN};
+    return {opN: opN, clN: clN, wtN: wtN, idN: idN};
   }
   hookGetPerimeter();
   window.__kannonGetPerim = window.__kannonGetPerim || {
@@ -2830,6 +2829,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       grid_pdf_row_count: data.length,
       outside_perimeter_n: filled.opN,
       cutting_length_n: filled.clN,
+      weight_n: filled.wtN,
       internaldata_n: filled.idN,
       getperimeter_xhr: !!(window.__kannonGetPerim && window.__kannonGetPerim.any),
       perimeter_via: lastVia,
@@ -2866,6 +2866,7 @@ def invoke_page_pdf_finish(
         "edit_gate": str(gate.get("reason") or "missing_minted_id"),
         "filelist_from_kendo": False,
         "filelist_row_keys": [],
+        "filelist_bag": {},
         "kendo_row_keys": [],
         "finish_af_present": False,
         "finish_why": "wrong_document",
@@ -2894,6 +2895,11 @@ def invoke_page_pdf_finish(
         "request_keys": [str(k) for k in (value.get("request_keys") or [])],
         "filelist_from_kendo": from_kendo,
         "filelist_row_keys": [str(k) for k in (value.get("filelist_row_keys") or [])],
+        "filelist_bag": (
+            dict(value["filelist_bag"])
+            if isinstance(value.get("filelist_bag"), dict)
+            else {}
+        ),
         "kendo_row_keys": [str(k) for k in (value.get("kendo_row_keys") or [])],
         "finish_af_present": bool(value.get("finish_af_present")),
         "finish_why": str(value.get("finish_why") or ""),
@@ -2924,10 +2930,10 @@ def stamp_pdf_kendo_flats(
     empty → server List no PR/laser pack. Do not invent perimeter.
     Live 1002323-1: bare UpdatePerimeterWeight() does not copy
     (n/t falsy). XHR OutsidePerimeter landed; List CuttingLength
-    stayed 0 because #CuttingLength was never filled. GetPDFData
-    omits CuttingLength — do not invent that key. Fill page
-    #CuttingLength from the XHR / CuttingLengthDisp parseFloat.
-    Do not fire AddNewPDFFeature() (no-arg opens UI). Empty
+    stayed 0. GetPDFData omits CuttingLength — do not invent
+    that key and do not set dataItem.CuttingLength. Copy bag
+    Weight / Weight_UseLocal from #Weight / the XHR (leftover
+    Weight=7.7607). Do not fire AddNewPDFFeature(). Empty
     InternalData is expected for no-hole rectangles.
     """
     spec_rows: list[dict[str, Any]] = []
@@ -2957,6 +2963,7 @@ def stamp_pdf_kendo_flats(
         "edit_gate": "",
         "outside_perimeter_n": 0,
         "cutting_length_n": 0,
+        "weight_n": 0,
         "internaldata_n": 0,
         "getperimeter_xhr": False,
         "perimeter_via": "",
@@ -2987,6 +2994,7 @@ def stamp_pdf_kendo_flats(
         "edit_gate": "",
         "outside_perimeter_n": int(value.get("outside_perimeter_n") or 0),
         "cutting_length_n": int(value.get("cutting_length_n") or 0),
+        "weight_n": int(value.get("weight_n") or 0),
         "internaldata_n": int(value.get("internaldata_n") or 0),
         "getperimeter_xhr": bool(value.get("getperimeter_xhr")),
         "perimeter_via": str(value.get("perimeter_via") or ""),
