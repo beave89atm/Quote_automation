@@ -1390,6 +1390,7 @@ def test_leftover_list0_pack_is_not_gold():
     )
     from secturafab.website import (
         leftover_list0_pack_is_not_gold,
+        leftover_plate_modal_is_not_the_pack,
         leftover_getpdfdata_candidates_named_not_invented,
         leftover_productid_is_not_the_pack,
         leftover_weight_without_productid_is_fail,
@@ -1459,6 +1460,7 @@ def test_leftover_list0_pack_is_not_gold():
     ) is False
     assert leftover_list0_pack_is_not_gold(MagicMock()) is False
     assert leftover_list0_pack_is_not_gold(None) is False
+    assert leftover_plate_modal_is_not_the_pack(dump) is False
     assert leftover_productid_is_not_the_pack(dump) is False
     assert leftover_weight_without_productid_is_fail(dump) is False
     assert leftover_perimeter_xhr_is_not_gold_pack(dump) is False
@@ -1502,6 +1504,156 @@ def test_leftover_list0_pack_is_not_gold():
     no_cands = dict(dump)
     no_cands.pop("getpdfdata_candidates_to_verify")
     assert leftover_getpdfdata_candidates_named_not_invented(no_cands) is False
+
+
+def test_leftover_plate_modal_is_not_the_pack():
+    """Live 1009213-1: modal SKU + FileList ProductID null + list0_pack empty."""
+    from secturafab.line_item_ops import (
+        cad_image_files_stamped,
+        cad_kids_productid_without_pack,
+        cad_kids_weight_without_productid_pack,
+        image_files_dod_pass,
+        unitcost_equals_unitprice_is_material_only,
+    )
+    from secturafab.website import (
+        leftover_plate_modal_is_not_the_pack,
+        leftover_getpdfdata_values_named_not_invented,
+        leftover_getpdfdata_candidates_named_not_invented,
+        leftover_list0_pack_is_not_gold,
+        leftover_productid_is_not_the_pack,
+        leftover_weight_without_productid_is_fail,
+        leftover_perimeter_xhr_is_not_gold_pack,
+        leftover_empty_bind_productid_skip_is_wrong,
+        plate_modal_without_filelist_productid_is_fail,
+        list0_pack_without_tag_ocl_is_fail,
+        empty_productid_after_bind_is_fail,
+        filelist_bag_snapshot,
+        PDF_GETDATA_FIELDS,
+    )
+    from tests.fixtures.live_1009213_1 import (
+        leftover_plate_modal_not_pack_dump,
+        live_1009213_1_quote,
+        FILELIST_BAG,
+        GET_PRODUCT_ID,
+        LIST0_PACK,
+        SKU,
+    )
+    from tests.fixtures.live_33204_1 import leftover_list0_pack_not_gold_dump
+    from tests.fixtures.live_1007092_1 import leftover_productid_not_pack_dump
+    from tests.fixtures.live_21681_1 import leftover_empty_bind_productid_skip_dump
+    from tests.fixtures.live_33819_1 import leftover_weight_without_productid_dump
+
+    dump = leftover_plate_modal_not_pack_dump()
+    assert dump["readonly"] is True
+    assert dump["modal_driven"] is True
+    assert dump["filelist_bag"]["ProductID"] is None
+    assert dump["filelist_bag"]["Weight"] == 308.9387
+    assert dump["filelist_bag"]["OutsidePerimeter"] == 114
+    assert dump["filelist_bag"]["Length"] == 28.5
+    assert dump["filelist_bag"]["Width"] == 28.5
+    assert dump["filelist_bag"]["Material"] == "A572"
+    assert dump["filelist_bag"]["Thickness"] == "1.25"
+    assert dump["filelist_bag"]["Machine"] == "Laser - Bay1"
+    assert "CuttingLength" not in dump["filelist_bag"]
+    assert dump["list0_pack"]["tag"] == ""
+    assert dump["list0_pack"]["ocl_n"] == 0
+    assert dump["list0_pack"]["unit_cost"] == 126.66
+    assert dump["live_1009213_1"]["sku"] == SKU
+    assert dump["live_1009213_1"]["modal_is_gold"] is False
+    assert leftover_plate_modal_is_not_the_pack(dump) is True
+    assert leftover_getpdfdata_values_named_not_invented(dump) is True
+    bag_pid = dict(dump)
+    bag_pid["filelist_bag"] = dict(dump["filelist_bag"])
+    bag_pid["filelist_bag"]["ProductID"] = GET_PRODUCT_ID
+    assert leftover_plate_modal_is_not_the_pack(bag_pid) is False
+    tagged = dict(dump)
+    tagged["list0_pack"] = dict(dump["list0_pack"])
+    tagged["list0_pack"]["tag"] = "PR"
+    assert leftover_plate_modal_is_not_the_pack(tagged) is False
+    ocl = dict(dump)
+    ocl["list0_pack"] = dict(dump["list0_pack"])
+    ocl["list0_pack"]["ocl_n"] = 1
+    assert leftover_plate_modal_is_not_the_pack(ocl) is False
+    not_modal = dict(dump)
+    not_modal["modal_driven"] = False
+    assert leftover_plate_modal_is_not_the_pack(not_modal) is False
+    assert leftover_plate_modal_is_not_the_pack(
+        leftover_list0_pack_not_gold_dump()
+    ) is False
+    assert leftover_plate_modal_is_not_the_pack(
+        leftover_productid_not_pack_dump()
+    ) is False
+    assert leftover_plate_modal_is_not_the_pack(
+        leftover_weight_without_productid_dump()
+    ) is False
+    assert leftover_plate_modal_is_not_the_pack(
+        leftover_empty_bind_productid_skip_dump()
+    ) is False
+    assert leftover_plate_modal_is_not_the_pack(MagicMock()) is False
+    assert leftover_plate_modal_is_not_the_pack(None) is False
+    assert leftover_list0_pack_is_not_gold(dump) is False
+    assert leftover_getpdfdata_candidates_named_not_invented(dump) is False
+    assert leftover_getpdfdata_values_named_not_invented(
+        leftover_list0_pack_not_gold_dump()
+    ) is False
+    assert leftover_productid_is_not_the_pack(dump) is False
+    assert leftover_weight_without_productid_is_fail(dump) is False
+    assert leftover_perimeter_xhr_is_not_gold_pack(dump) is False
+    assert leftover_empty_bind_productid_skip_is_wrong(dump) is False
+    quote = live_1009213_1_quote()
+    cad = quote["ItemList"][0]
+    assert cad["Tag"] == ""
+    assert cad["OperationCostList"] == []
+    assert cad["ProductID"] == GET_PRODUCT_ID
+    assert cad["FileList"][0]["ProductID"] is None
+    assert cad["FileList"][0]["Weight"] == 308.9387
+    assert cad["DataPartPDF"]["OutsidePerimeter"] == 114
+    assert cad["DataPartPDF"]["CuttingLength"] == 0
+    assert cad["DataPartPDF"]["InternalData"] == ""
+    assert cad["UnitCost"] == cad["UnitPrice"] == cad["UnitWeightCost"] == 126.66
+    assert unitcost_equals_unitprice_is_material_only(cad) is True
+    assert cad_kids_productid_without_pack(quote) is True
+    assert cad_kids_weight_without_productid_pack(quote) is False
+    assert cad_image_files_stamped(cad) is False
+    assert image_files_dod_pass(quote, expect_cad=True) is False
+    assert filelist_bag_snapshot(FILELIST_BAG)["ProductID"] is None
+    assert "CuttingLength" not in filelist_bag_snapshot(FILELIST_BAG)
+    assert "CuttingLength" not in PDF_GETDATA_FIELDS
+    assert empty_productid_after_bind_is_fail({"productid_n": 0}) is False
+    assert empty_productid_after_bind_is_fail({"productid_n": 1}) is False
+    assert list0_pack_without_tag_ocl_is_fail(
+        {
+            "response_tag": "",
+            "response_ocl_n": 0,
+            "response_unit_cost": LIST0_PACK["unit_cost"],
+        }
+    ) is True
+    assert plate_modal_without_filelist_productid_is_fail(
+        {"picker_via": "#gridSelectProductPlate"},
+        {
+            "filelist_bag": {"ProductID": None},
+            "response_tag": "",
+            "response_ocl_n": 0,
+            "response_unit_cost": 126.66,
+        },
+    ) is True
+    assert plate_modal_without_filelist_productid_is_fail(
+        {"picker_via": "none_plate_widget"},
+        {
+            "filelist_bag": {"ProductID": None},
+            "response_tag": "",
+            "response_ocl_n": 0,
+            "response_unit_cost": 126.66,
+        },
+    ) is False
+    invented = dict(dump)
+    invented["invent_cuttinglength"] = True
+    assert leftover_getpdfdata_values_named_not_invented(invented) is False
+    no_named = dict(dump)
+    no_named.pop("getpdfdata_values_named")
+    assert leftover_getpdfdata_values_named_not_invented(no_named) is False
+    assert leftover_getpdfdata_values_named_not_invented(MagicMock()) is False
+    assert leftover_getpdfdata_values_named_not_invented(None) is False
 
 
 def test_empty_perimeter_weight_is_fail():
@@ -7790,6 +7942,17 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "Read_DataThicknessGauge" in _STAMP_PDF_KENDO_JS
     assert "thicknesspdf" in _STAMP_PDF_KENDO_JS
     assert "pickPlateModal" in _STAMP_PDF_KENDO_JS
+    assert "modal_apply" in _STAMP_PDF_KENDO_JS
+    assert "search_only" in _STAMP_PDF_KENDO_JS
+    assert "dblclick" in _STAMP_PDF_KENDO_JS
+    assert "clickSheetsAndPlates" in _STAMP_PDF_KENDO_JS
+    assert "sheets_and_plates" in _STAMP_PDF_KENDO_JS
+    assert "picker_apply" in _STAMP_PDF_KENDO_JS
+    assert "normSku" in _STAMP_PDF_KENDO_JS
+    assert "OnSelectProductPlate" in _STAMP_PDF_KENDO_JS
+    assert "SelectProductPlateOK" in _STAMP_PDF_KENDO_JS
+    assert "ApplySelectProductPlate" in _STAMP_PDF_KENDO_JS
+    assert "s.ProductID" not in _STAMP_PDF_KENDO_JS
     assert "list0Pack" in _PAGE_PDF_FINISH_JS
     assert "response_tag" in _PAGE_PDF_FINISH_JS
     assert "response_ocl_n" in _PAGE_PDF_FINISH_JS

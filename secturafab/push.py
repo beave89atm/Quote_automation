@@ -3147,9 +3147,11 @@ class SecturaFabPushService:
         that is the server pack stamp. Live 33204-1 list0_pack
         Tag empty / OCL 0 / UnitCost 5.05 is FAIL even with a
         full L×W/Weight/OP/Machine/Material bag. GET ProductID
-        is not the pack. Drive ``#gridSelectProductPlate`` modal
-        (not ThicknessPDF gauge / ``#Product`` bar). Do not
-        invent a GUID. GET ProductID + empty Tag/OCL is FAIL
+        is not the pack.         Drive ``#gridSelectProductPlate`` modal apply/select
+        (dblclick + modal Select), not search-only and not
+        ThicknessPDF / ``#Product`` bar. Live 1009213-1: modal
+        SKU did not land FileList ProductID — modal is not gold.
+        Do not invent a GUID. GET ProductID + empty Tag/OCL is FAIL
         (live 1007092-1); pack miss is not ProductID.
         #files + GetPDFData + OnAddPDFClick is not
         gold PR/laser unless Cad GET has Tag + OperationCostList
@@ -3336,6 +3338,7 @@ class SecturaFabPushService:
                 empty_weight_after_perimeter_is_fail,
                 filelist_bag_snapshot,
                 list0_pack_without_tag_ocl_is_fail,
+                plate_modal_without_filelist_productid_is_fail,
                 pdf_finish_from_page_kendo,
                 pdf_grid_upload_bound,
                 reconstructed_pdf_filelist_is_fail,
@@ -3426,6 +3429,9 @@ class SecturaFabPushService:
                         sku_pick = str(stamp_out.get("picker_sku") or "")
                         if sku_pick:
                             notes.append(f"product_sku={sku_pick}")
+                        via_apply = str(stamp_out.get("picker_apply") or "")
+                        if via_apply:
+                            notes.append(f"picker_apply={via_apply}")
                     try:
                         result = self.client.add_item_pdf_files(
                             quote_id=quote_id,
@@ -3511,6 +3517,16 @@ class SecturaFabPushService:
                                 "Tag empty / OCL 0 (live 33204-1) — list0_pack "
                                 "is the server stamp; GET ProductID is not the "
                                 "pack — Image Files DoD FAIL"
+                            )
+                        if plate_modal_without_filelist_productid_is_fail(
+                            stamp_out if isinstance(stamp_out, dict) else None,
+                            result,
+                        ):
+                            notes.append(
+                                "WARNING: #gridSelectProductPlate modal SKU + "
+                                "FileList ProductID null + list0_pack Tag empty "
+                                "/ OCL 0 (live 1009213-1) — modal is not gold; "
+                                "picker is not the pack — Image Files DoD FAIL"
                             )
                         if from_kendo:
                             try:

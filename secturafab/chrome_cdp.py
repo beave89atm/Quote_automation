@@ -2646,7 +2646,8 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     perimeter_via: "",
     feature_via: "",
     picker_via: "",
-    picker_sku: ""
+    picker_sku: "",
+    picker_apply: ""
   };
   var hit = pdfGrid();
   if (!hit) return Promise.resolve(emptyStamp);
@@ -2658,6 +2659,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
   var lastFeature = "";
   var lastPicker = "";
   var lastPickerSku = "";
+  var lastApply = "";
   function setField(r, k, v) {
     if (v == null || v === "") return;
     if (typeof r.set === "function") r.set(k, v);
@@ -2893,15 +2895,20 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
   }
   function itemSku(it) {
     if (!it) return "";
-    return String(it.ProductName || it.SKU || it.Text || it.Name || it.text || "");
+    return String(it.ProductName || it.SKU || it.ProductCode || it.Text
+      || it.Name || it.text || it.DisplayName || "");
   }
   function itemValue(it) {
     if (!it) return "";
     var v = it.Value != null ? it.Value : (it.ID != null ? it.ID : it.ProductID);
+    if (v == null) v = it.ProductId || it.productId || it.ListValue;
     if (v == null) return "";
     var s = String(v).trim();
     if (!s || s.toLowerCase() === "null") return "";
     return s;
+  }
+  function normSku(s) {
+    return String(s || "").toLowerCase().replace(/[\\s_\\-]+/g, "");
   }
   function plateModalGrid() {
     var ids = ["#gridSelectProductPlate"];
@@ -2912,6 +2919,20 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       } catch (e) {}
     }
     return null;
+  }
+  function clickSheetsAndPlates() {
+    try {
+      if (!window.jQuery) return "";
+      var nodes = document.querySelectorAll("a, button, li, span, label, div");
+      for (var i = 0; i < nodes.length; i++) {
+        var t = String(nodes[i].textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
+        if (t.indexOf("sheet") >= 0 && t.indexOf("plate") >= 0 && t.length < 40) {
+          nodes[i].click();
+          return "sheets_and_plates";
+        }
+      }
+    } catch (e) {}
+    return "";
   }
   function openPlateModal() {
     var names = ["SelectProductPlate", "OnSelectProductPlate",
@@ -2944,8 +2965,9 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     } catch (e2) {}
     return "";
   }
-  function pickPlateModal(sku) {
+  function pickPlateModal(sku, pdfRow) {
     lastPickerSku = sku;
+    lastApply = "search_only";
     var hit = plateModalGrid();
     if (!hit) {
       openPlateModal();
@@ -2956,35 +2978,68 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       return Promise.resolve("");
     }
     lastPicker = hit.id;
+    clickSheetsAndPlates();
     var g = hit.grid;
     var want = String(sku).toLowerCase();
+    var wantN = normSku(sku);
     function matchRow(it) {
       var nm = itemSku(it).toLowerCase();
-      return !!(nm && (nm === want || nm.indexOf(want) >= 0 || want.indexOf(nm) >= 0));
+      var nn = normSku(itemSku(it));
+      return !!(nm && (nm === want || nm.indexOf(want) >= 0 || want.indexOf(nm) >= 0
+        || (nn && nn === wantN)));
+    }
+    function modalApplyClick() {
+      try {
+        var $root = jQuery(hit.id).closest(".k-window, .k-widget, .modal, .k-dialog");
+        if (!$root || !$root.length) $root = jQuery(hit.id).parent();
+        var btns = $root.find("button, a, input[type=button], input[type=submit]");
+        for (var b = 0; b < btns.length; b++) {
+          var t = String(btns[b].textContent || btns[b].value || "").toLowerCase().trim();
+          var oid = String(btns[b].id || "").toLowerCase();
+          if (t === "select" || t === "ok" || t === "apply"
+              || oid.indexOf("selectproduct") >= 0
+              || oid.indexOf("apply") >= 0) {
+            btns[b].click();
+            return true;
+          }
+        }
+      } catch (e) {}
+      return false;
+    }
+    function pageApplyFn() {
+      var names = ["OnSelectProductPlate", "SelectProductPlateOK",
+                   "ApplySelectProductPlate", "gridSelectProductPlate_Change"];
+      for (var i = 0; i < names.length; i++) {
+        try {
+          if (typeof window[names[i]] === "function") {
+            window[names[i]]();
+            return names[i];
+          }
+        } catch (e) {}
+      }
+      return "";
     }
     function applyRow(it) {
-      var val = itemValue(it);
-      if (!val) return "";
+      lastApply = "modal_apply";
       try {
         var tr = g.tbody.find("tr").filter(function() {
           return g.dataItem(this) === it;
         }).first();
         if (tr.length && typeof g.select === "function") g.select(tr);
-      } catch (e) {}
-      try {
-        var btns = document.querySelectorAll(
-          "button, a, input[type=button], input[type=submit]"
-        );
-        for (var b = 0; b < btns.length; b++) {
-          var t = String(btns[b].textContent || btns[b].value || "").toLowerCase();
-          var oid = String(btns[b].id || "").toLowerCase();
-          if (t === "select" || t === "ok" || oid.indexOf("selectproduct") >= 0) {
-            btns[b].click();
-            break;
-          }
+        try { if (typeof g.trigger === "function") g.trigger("change"); } catch (e0) {}
+        if (tr.length) {
+          tr.trigger("dblclick");
+          tr.trigger("click");
         }
-      } catch (e2) {}
-      return val;
+      } catch (e) {}
+      modalApplyClick();
+      pageApplyFn();
+      return new Promise(function(resolve) {
+        setTimeout(function() {
+          var landed = pidOf(pdfRow) || itemValue(it);
+          resolve(landed || "");
+        }, 250);
+      });
     }
     try {
       if (g.dataSource && typeof g.dataSource.filter === "function") {
@@ -2997,23 +3052,25 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       for (var i = 0; i < rows.length; i++) {
         if (matchRow(rows[i])) return applyRow(rows[i]);
       }
+      return Promise.resolve("");
+    }
+    return scan().then(function(now) {
+      if (now) return now;
+      if (g.dataSource && typeof g.dataSource.read === "function") {
+        return Promise.resolve(g.dataSource.read()).then(function() {
+          return scan();
+        }).catch(function() { return ""; });
+      }
       return "";
-    }
-    var now = scan();
-    if (now) return Promise.resolve(now);
-    if (g.dataSource && typeof g.dataSource.read === "function") {
-      return Promise.resolve(g.dataSource.read()).then(function() {
-        return scan();
-      }).catch(function() { return ""; });
-    }
-    return Promise.resolve("");
+    });
   }
-  function pickProduct(sku) {
+  function pickProduct(sku, pdfRow) {
     lastPicker = "";
     lastPickerSku = "";
+    lastApply = "";
     if (!sku || !window.jQuery) return Promise.resolve("");
     var hitW = findProductWidget();
-    if (!hitW) return pickPlateModal(sku);
+    if (!hitW) return pickPlateModal(sku, pdfRow);
     var w = hitW.widget;
     lastPicker = hitW.via;
     lastPickerSku = sku;
@@ -3119,7 +3176,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           stamped += 1;
           return stampPerimeter(hit.grid, r).then(function() {
             if (keepPid) setField(r, "ProductID", keepPid);
-            return pickProduct(s.ProductSku).then(function(val) {
+            return pickProduct(s.ProductSku, r).then(function(val) {
               if (val) setField(r, "ProductID", val);
             });
           });
@@ -3144,7 +3201,8 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       perimeter_via: lastVia,
       feature_via: lastFeature,
       picker_via: lastPicker,
-      picker_sku: lastPickerSku
+      picker_sku: lastPickerSku,
+      picker_apply: lastApply
     };
   });
 })"""
@@ -3276,7 +3334,9 @@ def stamp_pdf_kendo_flats(
     expected for no-hole rectangles. Live 1007092-1: first
     ``#Product`` is ProductType — skip it. Live 33204-1:
     ThicknessPDF is gauge (Read_DataThicknessGauge2). Drive
-    ``#gridSelectProductPlate`` modal, not a kendo combo.
+    ``#gridSelectProductPlate`` modal apply/select (dblclick +
+    modal Select), not search-only. Live 1009213-1: modal SKU
+    did not land FileList ProductID. ProductID is not the pack.
     """
     spec_rows: list[dict[str, Any]] = []
     for row in rows or []:
@@ -3314,6 +3374,7 @@ def stamp_pdf_kendo_flats(
         "feature_via": "",
         "picker_via": "",
         "picker_sku": "",
+        "picker_apply": "",
     }
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     empty["edit_gate"] = str(gate.get("reason") or "")
@@ -3348,6 +3409,7 @@ def stamp_pdf_kendo_flats(
         "feature_via": str(value.get("feature_via") or ""),
         "picker_via": str(value.get("picker_via") or ""),
         "picker_sku": str(value.get("picker_sku") or ""),
+        "picker_apply": str(value.get("picker_apply") or ""),
     }
 
 

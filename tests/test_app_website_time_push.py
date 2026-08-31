@@ -905,6 +905,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "21681-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1007092-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "33204-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1009213-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21678-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10056" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "491f6387-520f-4eee-aab3-6d20585ee740" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -931,6 +932,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("8930f65a-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("e57633b6-7bfc-4235-80de-a0e3be6cc5cc")
     assert is_forbidden_quote_id("e57633b6-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("3102870a-0000-4000-8000-000000000001")
+    assert is_forbidden_quote_id("3102870a-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("425587a7-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("95b8c186-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("491f6387-520f-4eee-aab3-6d20585ee740")
@@ -995,6 +998,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "646a3d98-cd73-4f94-be67-6e40eeb2c309",
         "8930f65a-c1e3-44b0-8024-9075b2a5ab80",
         "e57633b6-7bfc-4235-80de-a0e3be6cc5cc",
+        "3102870a-1111-2222-3333-444444444444",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(
@@ -2555,5 +2559,104 @@ def test_33204_1_list0_pack_empty_is_fail_still_finishes(
     assert "response_production_ready=false" in blob
     assert "response_ocl_n=0" in blob
     assert "response_unit_cost=5.05" in blob
+    assert "DoD FAIL" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_1009213_1_plate_modal_is_not_pack_still_finishes(
+    tmp_path, monkeypatch
+):
+    """Null FileList ProductID still Finishes; leftover modal SKU is FAIL."""
+    from tests.fixtures.live_1009213_1 import live_1009213_1_quote
+
+    quote = live_1009213_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "PEDESTAL-BASE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    bind = _page_pdf_bind_ok(1)
+    bind["productid_n"] = 0
+    client.upload_pdf_via_page_add_files.return_value = bind
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "cutting_length_n": 0,
+        "weight_n": 1,
+        "productid_n": 0,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "picker_via": "#gridSelectProductPlate",
+        "picker_sku": "PL1 1/4-A572",
+        "picker_apply": "search_only",
+    }
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+        "filelist_bag": {
+            "Machine": "Laser - Bay1",
+            "ProductID": None,
+            "Qty": 1,
+            "Weight": 308.9387,
+            "Weight_UseLocal": True,
+            "OutsidePerimeter": 114,
+            "OutsidePerimeter_UseLocal": True,
+            "Material": "A572",
+            "Thickness": "1.25",
+            "Length": 28.5,
+            "Width": 28.5,
+        },
+        "response_list_n": 1,
+        "response_tag": "",
+        "response_production_ready": False,
+        "response_ocl_n": 0,
+        "response_unit_cost": 126.66,
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000100921",
+        pdf_files=[pdf],
+        material="A572",
+        thickness="1.25",
+        qty=1,
+        description="PEDESTAL BASE PLATE",
+        bom_rows=[
+            {
+                "part_no": "PEDESTAL-BASE-PLATE",
+                "qty": 1,
+                "description": "PLATE",
+                "width_in": 28.5,
+                "length_in": 28.5,
+            }
+        ],
+    )
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    client.add_item_pdf_files.assert_called_once()
+    stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
+    assert stamp_rows
+    assert all("ProductID" not in row for row in stamp_rows)
+    assert stamp_rows[0]["Material"] != "316 Polished"
+    assert stamp_rows[0]["Machine"] == "Laser - Bay1"
+    assert stamp_rows[0]["Status"] == 1
+    blob = " ".join(notes)
+    assert "1009213-1" in blob
+    assert "do not Finish" not in blob
+    assert "modal is not gold" in blob
+    assert "product_picker=#gridSelectProductPlate" in blob
+    assert "picker_apply=search_only" in blob
+    assert "FileList ProductID null" in blob
+    assert "response_list_n=1" in blob
+    assert "response_tag=''" in blob
+    assert "response_production_ready=false" in blob
+    assert "response_ocl_n=0" in blob
+    assert "response_unit_cost=126.66" in blob
     assert "DoD FAIL" in blob
     assert "persisted" not in blob.lower()

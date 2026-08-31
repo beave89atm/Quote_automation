@@ -2323,6 +2323,92 @@ def leftover_empty_bind_productid_skip_is_wrong(dump: dict[str, Any] | None) -> 
     return True
 
 
+def leftover_plate_modal_is_not_the_pack(dump: dict[str, Any] | None) -> bool:
+    """1009213-1: modal SKU + FileList ProductID null + list0_pack empty.
+
+    ``#gridSelectProductPlate`` apply/select vs search-only. Modal is
+    not gold. GET ProductID is not the pack. Do not skip Finish.
+    """
+    if not isinstance(dump, dict):
+        return False
+    if dump.get("modal_driven") is not True:
+        return False
+    bag = dump.get("filelist_bag") if isinstance(dump.get("filelist_bag"), dict) else {}
+    if bag.get("ProductID") not in (None, "", "null"):
+        return False
+    pack = dump.get("list0_pack") if isinstance(dump.get("list0_pack"), dict) else {}
+    if not pack:
+        return False
+    if str(pack.get("tag") or "") != "":
+        return False
+    try:
+        if int(pack.get("ocl_n") or 0) != 0:
+            return False
+        if float(pack.get("unit_cost") or 0) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    getpdf = dump.get("GetPDFData") if isinstance(dump.get("GetPDFData"), dict) else {}
+    if "CuttingLength" not in {str(k) for k in (getpdf.get("omits") or ())}:
+        return False
+    live = dump.get("live_1009213_1") if isinstance(dump.get("live_1009213_1"), dict) else {}
+    if not live:
+        return False
+    if str(live.get("sku") or "") == "":
+        return False
+    if live.get("modal_is_gold") is not False:
+        return False
+    if live.get("pack_is_productid") is not False:
+        return False
+    if live.get("list0_pack_is_gold") is not False:
+        return False
+    return True
+
+
+def leftover_getpdfdata_values_named_not_invented(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """1009213-1: name leftover GetPDFData values; do not invent keys/CuttingLength."""
+    if not isinstance(dump, dict):
+        return False
+    want = {
+        "ProductionReady checkbox",
+        "ItemType",
+        "ProductType/prt_pdf",
+        "FileID/ImageID present",
+        "InternalData empty vs rectangle",
+        "Machine string exact",
+    }
+    named = dump.get("getpdfdata_values_named")
+    if not isinstance(named, (list, tuple)):
+        return False
+    if set(named) != want:
+        return False
+    if dump.get("invent_cuttinglength") is not False:
+        return False
+    getpdf = dump.get("GetPDFData") if isinstance(dump.get("GetPDFData"), dict) else {}
+    if "CuttingLength" not in {str(k) for k in (getpdf.get("omits") or ())}:
+        return False
+    live = dump.get("live_1009213_1") if isinstance(dump.get("live_1009213_1"), dict) else {}
+    return bool(live)
+
+
+def plate_modal_without_filelist_productid_is_fail(
+    stamp_out: dict[str, Any] | None,
+    result: dict[str, Any] | None,
+) -> bool:
+    """Modal driven + FileList ProductID null + list0_pack empty (1009213-1)."""
+    if not isinstance(stamp_out, dict) or not isinstance(result, dict):
+        return False
+    via = str(stamp_out.get("picker_via") or "").lower()
+    if "gridselectproductplate" not in via:
+        return False
+    bag = result.get("filelist_bag") if isinstance(result.get("filelist_bag"), dict) else {}
+    if bag.get("ProductID") not in (None, "", "null"):
+        return False
+    return list0_pack_without_tag_ocl_is_fail(result)
+
+
 def leftover_list0_pack_is_not_gold(dump: dict[str, Any] | None) -> bool:
     """33204-1: AddItem_PDFFiles response List[0] has no pack.
 

@@ -88,6 +88,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "646a3d98",  # 21681-1 spent empty bind ProductID skip — do not remint
         "8930f65a",  # 1007092-1 spent GET ProductID / empty Tag OCL — do not remint
         "e57633b6",  # 33204-1 spent list0_pack empty Tag/OCL — do not remint
+        "3102870a",  # 1009213-1 spent modal SKU / list0_pack empty — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
         "95b8c186",  # 1007922-3 — do not open / PATCH / remint
     }
@@ -147,6 +148,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "21681-1",  # spent 646a3d98 empty bind ProductID skip — do not remint
         "1007092-1",  # spent 8930f65a GET ProductID / empty Tag OCL — do not remint
         "33204-1",  # spent e57633b6 list0_pack empty Tag/OCL — do not remint
+        "1009213-1",  # spent 3102870a modal SKU / list0_pack empty — do not remint
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }
