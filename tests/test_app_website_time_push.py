@@ -2006,7 +2006,7 @@ def test_1002323_1_perimeter_without_internaldata_does_not_finish(tmp_path, monk
 
     quote = live_1002323_1_quote()
     monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
-    pdf = tmp_path / "1002323-1.pdf"
+    pdf = tmp_path / "WRB-PLATE.pdf"
     pdf.write_bytes(b"%PDF")
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=box"
@@ -2033,7 +2033,7 @@ def test_1002323_1_perimeter_without_internaldata_does_not_finish(tmp_path, monk
         description="WINCH ROLLER BRACKETS",
         bom_rows=[
             {
-                "part_no": "1002323-1",
+                "part_no": "WRB-PLATE",
                 "qty": 2,
                 "description": "PLATE",
                 "width_in": 2.5,
