@@ -813,7 +813,13 @@ class SecturaFabClient:
         quote_id: str | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        """POST /CadImport/UploadItem_DXFFiles (Kendo saveUrl; .stp/.step allowed)."""
+        """POST /CadImport/UploadItem_DXFFiles — widget saveUrl only.
+
+        Live leftover CAD Files dialog: jQuery("#files").kendoUpload
+        async.saveUrl inside #dxfupload_Zone. Off-page cookie POST does
+        not run onSuccess_Upload, so #gridDXF stays empty. Drive in-page
+        #files via upload_dxf_via_page_add_files.
+        """
         query = dict(params or {})
         if quote_id:
             query.setdefault("ID", quote_id)
@@ -1534,6 +1540,27 @@ class SecturaFabClient:
         from .chrome_cdp import upload_pdf_via_page_add_files as _upload
 
         return _upload(files, quote_id=quote_id)
+
+    def upload_dxf_via_page_add_files(
+        self,
+        *,
+        quote_id: str,
+        files: list[Any],
+    ) -> dict[str, Any]:
+        """CAD Files in-page #files in #dxfupload_Zone. Not cookie HTTP."""
+        from .chrome_cdp import upload_dxf_via_page_add_files as _upload
+
+        return _upload(files, quote_id=quote_id)
+
+    def create_all_parts_from_grid_dxf(
+        self,
+        *,
+        quote_id: str,
+    ) -> dict[str, Any]:
+        """Page Next createAllParts on minted EDIT after #gridDXF bind."""
+        from .chrome_cdp import create_all_parts_from_grid_dxf as _next
+
+        return _next(quote_id=quote_id)
 
     def add_item_linear(
         self,

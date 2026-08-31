@@ -4,10 +4,10 @@ Kyle UI: CAD Files drop → classify → Finish (OnAddDXFClick /
 AddItem_DXFFiles) with no per-part #DXFEdit. GET Cad is PR + laser
 pack + UnitCost. ItemList has no InternalData field (FileList-at-Finish).
 
-Named analog: type Stock_X/Stock_Y so UpdatePerimeterWeight →
-POST /Quote/GetPerimeterAndWeight fills CuttingLength before Finish.
-Pack is on AddItem_DXFFiles List. Do not fire UpdateDataNext.
-Leave a7d6ca50.
+UI-only gold — do not open/PATCH. GetPerimeterAndWeight remains
+#gridPDF only (not the CAD Files InternalData analog). CAD Files
+bind is in-page #files → onSuccess_Upload → #gridDXF, then page
+Next createAllParts. Do not fire UpdateDataNext. Leave a7d6ca50.
 """
 
 from __future__ import annotations
@@ -35,6 +35,10 @@ LEFTOVER_DXF_PACK_BIND = {
         "on": ("Stock_X", "Stock_Y", "Length", "Width"),
         "xhr": "POST /Quote/GetPerimeterAndWeight",
         "when": "change_before_AddItem",
+    },
+    "GetPerimeterAndWeight": {
+        "targets": "gridPDF",
+        "fills_dxf_internaldata": False,
     },
     "UpdateDataNext": {
         "gold": False,

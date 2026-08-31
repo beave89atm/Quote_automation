@@ -19,9 +19,12 @@ EDIT + ``#img`` + AF + ``IDList[]`` → n=8 InternalData empty 8/8.
 Fetch-vs-``$.ajax`` is not the miss. Server never fills InternalData
 on explode. ``UpdateDXF_LoadNew`` is editor-only / not gold — do
 not fire ``UpdateDataNext``. Classify→Finish without ``#DXFEdit``
-has no editor InternalData-fill XHR. Unpark STEP: type Stock_X/Y
-then ``UpdatePerimeterWeight`` / ``GetPerimeterAndWeight`` before
-``OnAddDXFClick``. Do not fire ``UpdateDataNext``. Leave ``5b622a0d``.
+has no editor InternalData-fill XHR. CAD Files bind is in-page
+``#files`` in ``#dxfupload_Zone`` (saveUrl ``/CadImport/UploadItem_DXFFiles``)
+so ``onSuccess_Upload`` fills ``#gridDXF``. Page Next is
+``createAllParts`` / ``DoCreateDXFParts`` on minted EDIT.
+``GetPerimeterAndWeight`` remains ``#gridPDF`` only. Do not fire
+``UpdateDataNext``. Leave ``5b622a0d``.
 
 Explode = page ``$.ajax`` with Upload IDs (EDIT when minted id matches).
 Bind/Finish = QuoteOrderEdit ``/Quote/EDIT/{id}`` (title ``*Quote-`` /
@@ -3564,6 +3567,460 @@ def upload_pdf_via_page_add_files(
         "opened_via": opened_via,
         "finish_why": "empty_dataSource",
         "edit_gate": "",
+    }
+
+
+_OPEN_CAD_FILES_JS = """(function() {
+  function dxfGrid() {
+    try {
+      var g = window.jQuery && jQuery("#gridDXF").data("kendoGrid");
+      return !!(g && g.dataSource);
+    } catch (e) { return false; }
+  }
+  var via = "";
+  try {
+    if (typeof window.AddNewItemHTML === "function") {
+      window.AddNewItemHTML("dxf", "top");
+      via = "AddNewItemHTML";
+    }
+  } catch (e) {}
+  if (!via) {
+    try {
+      if (window.jQuery && jQuery("#but_dxf").length) {
+        jQuery("#but_dxf").click();
+        via = "#but_dxf";
+      }
+    } catch (e2) {}
+  }
+  if (!via) {
+    try {
+      var nodes = document.querySelectorAll("button, a, input[type=button], span");
+      for (var i = 0; i < nodes.length; i++) {
+        var t = String(nodes[i].textContent || nodes[i].value || "").toLowerCase();
+        if (t.indexOf("cad files") >= 0) {
+          nodes[i].click();
+          via = "cad-files";
+          break;
+        }
+      }
+    } catch (e3) {}
+  }
+  return Promise.resolve({opened_via: via, grid_present: dxfGrid()});
+})"""
+
+
+_FIND_DXF_ADD_FILES_INPUT_JS = """(function() {
+  function filesKendo() {
+    try {
+      var zone = document.querySelector("#dxfupload_Zone");
+      var el = zone && zone.querySelector("#files");
+      if (!el || !window.jQuery) return false;
+      return !!jQuery(el).data("kendoUpload");
+    } catch (e) { return false; }
+  }
+  function saveUrl() {
+    try {
+      var zone = document.querySelector("#dxfupload_Zone");
+      var el = zone && zone.querySelector("#files");
+      var ku = el && window.jQuery && jQuery(el).data("kendoUpload");
+      var opts = ku && ku.options && ku.options.async;
+      return String((opts && opts.saveUrl) || "");
+    } catch (e) { return ""; }
+  }
+  var zone = document.querySelector("#dxfupload_Zone");
+  var dropZone = !!(zone && zone.querySelector(".dropZoneElement"));
+  var files = zone ? zone.querySelector("#files") : null;
+  if (files && String(files.tagName || "").toLowerCase() === "input") {
+    return Promise.resolve({
+      selector: "#dxfupload_Zone #files",
+      grid_id: "#gridDXF",
+      files_kendo: filesKendo(),
+      drop_zone: dropZone,
+      save_url: saveUrl(),
+      zone: "#dxfupload_Zone"
+    });
+  }
+  if (files) {
+    var inner = files.querySelector("input[type=file]");
+    if (inner) {
+      if (!inner.id) inner.setAttribute("data-kannon-dxf-add-files", "1");
+      return Promise.resolve({
+        selector: inner.id ? ("#dxfupload_Zone #" + inner.id)
+          : "#dxfupload_Zone input[type=file][data-kannon-dxf-add-files='1']",
+        grid_id: "#gridDXF",
+        files_kendo: filesKendo(),
+        drop_zone: dropZone,
+        save_url: saveUrl(),
+        zone: "#dxfupload_Zone"
+      });
+    }
+  }
+  var drop = zone && zone.querySelector(".dropZoneElement");
+  if (drop) {
+    var wrap = drop.closest(".k-upload, .k-widget") || drop.parentElement;
+    var dropInput = (wrap && wrap.querySelector("input[type=file]"))
+      || drop.querySelector("input[type=file]");
+    if (dropInput) {
+      if (!dropInput.id) dropInput.setAttribute("data-kannon-dxf-add-files", "1");
+      return Promise.resolve({
+        selector: dropInput.id ? ("#dxfupload_Zone #" + dropInput.id)
+          : "#dxfupload_Zone input[type=file][data-kannon-dxf-add-files='1']",
+        grid_id: "#gridDXF",
+        files_kendo: filesKendo(),
+        drop_zone: true,
+        save_url: saveUrl(),
+        zone: "#dxfupload_Zone"
+      });
+    }
+  }
+  return Promise.resolve({
+    selector: "",
+    grid_id: "",
+    files_kendo: filesKendo(),
+    drop_zone: dropZone,
+    save_url: saveUrl(),
+    zone: zone ? "#dxfupload_Zone" : ""
+  });
+})"""
+
+
+_READ_GRID_DXF_COUNT_JS = """(function() {
+  function toJSON(r) {
+    try { if (r && r.toJSON) return r.toJSON(); } catch (e) {}
+    return r;
+  }
+  var gridId = "";
+  var rows = [];
+  var filesKendo = false;
+  var saveUrl = "";
+  try {
+    var zone = document.querySelector("#dxfupload_Zone");
+    var el = zone && zone.querySelector("#files");
+    filesKendo = !!(el && window.jQuery && jQuery(el).data("kendoUpload"));
+    var ku = el && window.jQuery && jQuery(el).data("kendoUpload");
+    var opts = ku && ku.options && ku.options.async;
+    saveUrl = String((opts && opts.saveUrl) || "");
+  } catch (e) {}
+  try {
+    var g = window.jQuery && jQuery("#gridDXF").data("kendoGrid");
+    if (g && g.dataSource) {
+      gridId = "#gridDXF";
+      var raw = g.dataSource.data();
+      var arr = (raw && raw.toJSON) ? raw.toJSON() : raw;
+      if (Array.isArray(arr)) {
+        for (var i = 0; i < arr.length; i++) rows.push(toJSON(arr[i]));
+      }
+    }
+  } catch (e2) {}
+  return Promise.resolve({
+    grid_id: gridId,
+    gridDXF_n: rows.length,
+    files_kendo: filesKendo,
+    save_url: saveUrl,
+    List: rows
+  });
+})"""
+
+
+_DISPATCH_DXF_FILES_CHANGE_JS = """(function() {
+  var zone = document.querySelector("#dxfupload_Zone");
+  var el = (zone && (zone.querySelector("#files")
+    || zone.querySelector("input[type=file][data-kannon-dxf-add-files='1']")))
+    || document.querySelector("#dxfupload_Zone #files");
+  if (!el) return Promise.resolve({changed: false, files_kendo: false});
+  try {
+    el.dispatchEvent(new Event("change", {bubbles: true}));
+  } catch (e) {}
+  var ku = false;
+  try {
+    ku = !!(window.jQuery && jQuery(el).data("kendoUpload"));
+  } catch (e2) {}
+  return Promise.resolve({changed: true, files_kendo: ku});
+})"""
+
+
+_INVOKE_CREATE_ALL_PARTS_JS = """(function() {
+  var gridN = 0;
+  try {
+    var g = window.jQuery && jQuery("#gridDXF").data("kendoGrid");
+    if (g && g.dataSource) gridN = g.dataSource.data().length;
+  } catch (e) {}
+  if (gridN <= 0) {
+    return Promise.resolve({
+      invoked: false,
+      via: "",
+      gridDXF_n: 0,
+      why: "empty_gridDXF"
+    });
+  }
+  if (typeof window.createAllParts === "function") {
+    window.createAllParts();
+    return Promise.resolve({
+      invoked: true,
+      via: "createAllParts",
+      gridDXF_n: gridN,
+      why: ""
+    });
+  }
+  return Promise.resolve({
+    invoked: false,
+    via: "",
+    gridDXF_n: gridN,
+    why: "no_createAllParts"
+  });
+})"""
+
+
+_READ_GRID_DXF_PARTS_AFTER_NEXT_JS = """(function() {
+  function toJSON(r) {
+    try { if (r && r.toJSON) return r.toJSON(); } catch (e) {}
+    return r;
+  }
+  function emptyVal(v) {
+    if (v == null) return true;
+    if (typeof v === "string") return !String(v).trim();
+    if (Array.isArray(v)) return v.length === 0;
+    return false;
+  }
+  var rows = [];
+  var present = false;
+  try {
+    var g = window.jQuery && jQuery("#gridDXFParts").data("kendoGrid");
+    if (g && g.dataSource) {
+      present = true;
+      var raw = g.dataSource.data();
+      var arr = (raw && raw.toJSON) ? raw.toJSON() : raw;
+      if (Array.isArray(arr)) {
+        for (var i = 0; i < arr.length; i++) rows.push(toJSON(arr[i]));
+      }
+    }
+  } catch (e) {}
+  var emptyN = 0;
+  var keyN = 0;
+  for (var j = 0; j < rows.length; j++) {
+    if (rows[j] && Object.prototype.hasOwnProperty.call(rows[j], "InternalData")) {
+      keyN += 1;
+      if (emptyVal(rows[j].InternalData)) emptyN += 1;
+    }
+  }
+  return Promise.resolve({
+    grid_present: present,
+    has_gridDXFParts: present,
+    grid_dxf_row_count: rows.length,
+    list_len: rows.length,
+    List: rows,
+    internaldata_key_n: keyN,
+    internaldata_empty_n: emptyN,
+    internaldata_nonempty_n: keyN - emptyN
+  });
+})"""
+
+
+def upload_dxf_via_page_add_files(
+    files: list[Any],
+    *,
+    quote_id: str | None = None,
+    base: str | None = None,
+) -> dict[str, Any]:
+    """In-page #files in #dxfupload_Zone so onSuccess_Upload fills #gridDXF.
+
+    Leftover dialog: cookie POST /CadImport/UploadItem_DXFFiles is only
+    the widget saveUrl. Off-page cookie HTTP does not run
+    onSuccess_Upload. Drive CAD Files +Add Files (dropZoneElement).
+    """
+    paths = [str(Path(p).resolve()) for p in (files or []) if p]
+    empty = {
+        "bound": False,
+        "upload_via": "skipped",
+        "files_kendo": False,
+        "gridDXF_n": 0,
+        "grid_dxf_row_count": 0,
+        "grid_id": "",
+        "opened_via": "",
+        "finish_why": "wrong_document",
+        "edit_gate": "",
+        "List": [],
+        "save_url": "",
+        "zone": "",
+    }
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
+    empty["edit_gate"] = str(gate.get("reason") or "")
+    if not gate.get("ok"):
+        return empty
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    opened = _cdp_evaluate_promise(
+        _OPEN_CAD_FILES_JS + "()", base=base, tab=tab, fallback=False
+    )
+    opened_via = ""
+    if isinstance(opened, dict):
+        opened_via = str(opened.get("opened_via") or "")
+    time.sleep(0.35)
+    found = _cdp_evaluate_promise(
+        _FIND_DXF_ADD_FILES_INPUT_JS + "()", base=base, tab=tab, fallback=False
+    )
+    selector = str((found or {}).get("selector") or "") if isinstance(found, dict) else ""
+    files_kendo = bool((found or {}).get("files_kendo")) if isinstance(found, dict) else False
+    save_url = str((found or {}).get("save_url") or "") if isinstance(found, dict) else ""
+    if not selector or not paths:
+        return {
+            **empty,
+            "upload_via": "skipped",
+            "files_kendo": files_kendo,
+            "opened_via": opened_via,
+            "finish_why": "no_add_files_input",
+            "grid_id": str((found or {}).get("grid_id") or "") if isinstance(found, dict) else "",
+            "save_url": save_url,
+            "zone": str((found or {}).get("zone") or ""),
+        }
+    ws = str((tab or {}).get("webSocketDebuggerUrl") or "")
+    if not _cdp_set_file_input_files(ws, selector, paths):
+        return {
+            **empty,
+            "upload_via": "page_add_files",
+            "files_kendo": files_kendo,
+            "opened_via": opened_via,
+            "finish_why": "set_files_failed",
+            "save_url": save_url,
+            "zone": "#dxfupload_Zone",
+        }
+    changed = _cdp_evaluate_promise(
+        _DISPATCH_DXF_FILES_CHANGE_JS + "()", base=base, tab=tab, fallback=False
+    )
+    if isinstance(changed, dict) and changed.get("files_kendo"):
+        files_kendo = True
+    last: dict[str, Any] = {
+        "grid_id": "",
+        "gridDXF_n": 0,
+        "files_kendo": files_kendo,
+        "List": [],
+        "save_url": save_url,
+    }
+    for _ in range(24):
+        count = _cdp_evaluate_promise(
+            _READ_GRID_DXF_COUNT_JS + "()", base=base, tab=tab, fallback=False
+        )
+        if isinstance(count, dict):
+            last = count
+            if count.get("files_kendo"):
+                files_kendo = True
+            try:
+                n = int(count.get("gridDXF_n") or 0)
+            except (TypeError, ValueError):
+                n = 0
+            rows = [r for r in (count.get("List") or []) if isinstance(r, dict)]
+            if n > 0 and files_kendo:
+                return {
+                    "bound": True,
+                    "upload_via": "page_add_files",
+                    "files_kendo": True,
+                    "gridDXF_n": n,
+                    "grid_dxf_row_count": n,
+                    "grid_id": str(count.get("grid_id") or "#gridDXF"),
+                    "opened_via": opened_via,
+                    "finish_why": "",
+                    "edit_gate": "",
+                    "List": rows,
+                    "save_url": str(count.get("save_url") or save_url),
+                    "zone": "#dxfupload_Zone",
+                }
+        time.sleep(0.25)
+    return {
+        "bound": False,
+        "upload_via": "page_add_files",
+        "files_kendo": files_kendo,
+        "gridDXF_n": int(last.get("gridDXF_n") or 0),
+        "grid_dxf_row_count": int(last.get("gridDXF_n") or 0),
+        "grid_id": str(last.get("grid_id") or ""),
+        "opened_via": opened_via,
+        "finish_why": "empty_gridDXF",
+        "edit_gate": "",
+        "List": [r for r in (last.get("List") or []) if isinstance(r, dict)],
+        "save_url": str(last.get("save_url") or save_url),
+        "zone": "#dxfupload_Zone",
+    }
+
+
+def create_all_parts_from_grid_dxf(
+    *,
+    quote_id: str | None = None,
+    base: str | None = None,
+) -> dict[str, Any]:
+    """Page Next createAllParts on minted EDIT after #gridDXF bind.
+
+    Do not eval createAllParts on the Quotes list (live 34632-2 empty
+    #gridDXF IDList). Cookie HTTP /part/create is not the gold bind.
+    InternalData appears on t.List only if the server already stamped it.
+    Do not invent InternalData. Do not fire UpdateDataNext.
+    """
+    empty = {
+        "invoked": False,
+        "via": "",
+        "List": [],
+        "grid_present": False,
+        "has_gridDXFParts": False,
+        "grid_dxf_row_count": 0,
+        "list_len": 0,
+        "gridDXF_n": 0,
+        "why": "wrong_document",
+        "internaldata_key_n": 0,
+        "internaldata_empty_n": 0,
+        "internaldata_nonempty_n": 0,
+    }
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
+    if not gate.get("ok"):
+        empty["why"] = str(gate.get("reason") or "wrong_document")
+        return empty
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    invoked = _cdp_evaluate_promise(
+        _INVOKE_CREATE_ALL_PARTS_JS + "()", base=base, tab=tab, fallback=False
+    )
+    if not isinstance(invoked, dict) or not invoked.get("invoked"):
+        why = str((invoked or {}).get("why") or "no_createAllParts") if isinstance(invoked, dict) else "no_createAllParts"
+        empty["why"] = why
+        empty["gridDXF_n"] = int((invoked or {}).get("gridDXF_n") or 0) if isinstance(invoked, dict) else 0
+        return empty
+    last: dict[str, Any] = {}
+    for _ in range(32):
+        count = _cdp_evaluate_promise(
+            _READ_GRID_DXF_PARTS_AFTER_NEXT_JS + "()", base=base, tab=tab, fallback=False
+        )
+        if isinstance(count, dict):
+            last = count
+            try:
+                n = int(count.get("grid_dxf_row_count") or count.get("list_len") or 0)
+            except (TypeError, ValueError):
+                n = 0
+            if n > 0 and count.get("grid_present"):
+                rows = [r for r in (count.get("List") or []) if isinstance(r, dict)]
+                return {
+                    "invoked": True,
+                    "via": "createAllParts",
+                    "List": rows,
+                    "grid_present": True,
+                    "has_gridDXFParts": True,
+                    "grid_dxf_row_count": n,
+                    "list_len": int(count.get("list_len") or n),
+                    "gridDXF_n": int(invoked.get("gridDXF_n") or 0),
+                    "why": "",
+                    "internaldata_key_n": int(count.get("internaldata_key_n") or 0),
+                    "internaldata_empty_n": int(count.get("internaldata_empty_n") or 0),
+                    "internaldata_nonempty_n": int(count.get("internaldata_nonempty_n") or 0),
+                }
+        time.sleep(0.25)
+    rows = [r for r in (last.get("List") or []) if isinstance(r, dict)]
+    return {
+        "invoked": True,
+        "via": "createAllParts",
+        "List": rows,
+        "grid_present": bool(last.get("grid_present")),
+        "has_gridDXFParts": bool(last.get("has_gridDXFParts")),
+        "grid_dxf_row_count": int(last.get("grid_dxf_row_count") or 0),
+        "list_len": int(last.get("list_len") or 0),
+        "gridDXF_n": int(invoked.get("gridDXF_n") or 0),
+        "why": "empty_gridDXFParts",
+        "internaldata_key_n": int(last.get("internaldata_key_n") or 0),
+        "internaldata_empty_n": int(last.get("internaldata_empty_n") or 0),
+        "internaldata_nonempty_n": int(last.get("internaldata_nonempty_n") or 0),
     }
 
 

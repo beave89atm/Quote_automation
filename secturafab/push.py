@@ -2453,20 +2453,22 @@ class SecturaFabPushService:
         explode_polls: int | None = None,
         explode_sleep_s: float | None = None,
     ) -> list[str]:
-        """CAD Files: upload → explode → bind → SetPartMode on #gridDXFParts → Finish.
+        """CAD Files: page #files → #gridDXF → page Next → SetPartMode → Finish.
 
-        After /part/create bind + SetPartMode, log kendo row key names (CadType,
+        Drive in-page CAD Files ``#files`` inside ``#dxfupload_Zone`` so
+        ``onSuccess_Upload`` fills ``#gridDXF``. Cookie HTTP
+        ``UploadItem_DXFFiles`` leaves ``#gridDXF`` empty (live EHB3112-1).
+        Page Next is ``createAllParts`` / ``DoCreateDXFParts`` on minted EDIT.
+        Cookie HTTP ``/part/create`` is not the gold bind.
+        After bind + SetPartMode, log kendo row key names (CadType,
         Stock_*, FileType, SID/FileID/ID) and the same names on posted FileList.
         If kendo has CadType/Stock_*, copy them through — do not invent values.
         If kendo lacks them after explode, that is a /part/create bind miss
         (not a Finish-hook miss): do not Finish.
-        After SetPartMode, type explode Stock_X/Y so UpdatePerimeterWeight
-        → POST /Quote/GetPerimeterAndWeight fills CuttingLength before
-        OnAddDXFClick (DXF analog of Image Files L×W). Empty after that
-        stamp → fail-closed. Do not fire UpdateDataNext. Do not invent
-        InternalData. Unpark STEP: classify→Finish is gold (21678-1).
-        Cad leftover explode-empty without a stock/perimeter fill still
-        skip-Finishes (live 10098-1 / Skin Assembly).
+        ``GetPerimeterAndWeight`` remains ``#gridPDF`` only — not CAD
+        InternalData. Skip Finish when ``#gridDXFParts`` InternalData is
+        present-and-empty (SC0600 143/143). Do not invent InternalData.
+        Do not fire UpdateDataNext. 21678-1 is UI-only gold — do not open.
         """
         notes: list[str] = []
         if cadimport_step_too_large(cad_files):
@@ -2491,30 +2493,144 @@ class SecturaFabPushService:
         except SecturaFabApiError as exc:
             notes.append(f"WARNING: GetItem_AddView returned {exc}")
 
-        open_files = []
-        upload_payload: Any = None
         cad_filename = cad_files[0].name if cad_files else ""
-        try:
-            form_files = []
-            for path in cad_files:
-                fh = path.open("rb")
-                open_files.append(fh)
-                form_files.append(("files", (path.name, fh, _mime_for(path))))
-            upload_payload = self.client.upload_item_dxf_files(form_files, quote_id=quote_id)
-            notes.append(
-                f"Uploaded CAD via /CadImport/UploadItem_DXFFiles: {cad_filename}"
-            )
-        finally:
-            for fh in open_files:
-                fh.close()
+        upload_payload: Any = None
+        upload_rows: list[dict[str, Any]] = []
+        page_next_rows: list[dict[str, Any]] | None = None
+        from .website import (
+            cookie_http_dxf_upload_is_fail,
+            dxf_grid_upload_bound,
+        )
+
+        page_bind: dict[str, Any] | None = None
+        uploader = getattr(self.client, "upload_dxf_via_page_add_files", None)
+        if callable(uploader):
+            raw_bind = uploader(quote_id=quote_id, files=list(cad_files))
+            if isinstance(raw_bind, dict) and raw_bind:
+                page_bind = raw_bind
+
+        if page_bind is not None:
+            upload_via = str(page_bind.get("upload_via") or "")
+            try:
+                grid_dxf_n = int(
+                    page_bind.get("gridDXF_n") or page_bind.get("grid_dxf_row_count") or 0
+                )
+            except (TypeError, ValueError):
+                grid_dxf_n = 0
+            bound = dxf_grid_upload_bound(page_bind)
+            notes.append(f"upload_via={upload_via or 'missing'}")
+            notes.append(f"gridDXF_n={grid_dxf_n}")
+            notes.append("bound=" + ("true" if bound else "false"))
+            if cookie_http_dxf_upload_is_fail(upload_via) or not bound:
+                notes.append(
+                    "WARNING: cookie HTTP UploadItem_DXFFiles does not bind "
+                    "#gridDXF (live EHB3112-1) — need page CAD Files #files "
+                    "in #dxfupload_Zone so onSuccess_Upload fills #gridDXF"
+                )
+                return notes
+            upload_rows = [
+                r for r in (page_bind.get("List") or []) if isinstance(r, dict)
+            ]
+            nexter = getattr(self.client, "create_all_parts_from_grid_dxf", None)
+            next_out: Any = {}
+            if callable(nexter):
+                next_out = nexter(quote_id=quote_id)
+            if (
+                isinstance(next_out, dict)
+                and str(next_out.get("via") or "") == "createAllParts"
+            ):
+                notes.append("next_via=createAllParts")
+                self.client._part_create_via = "createAllParts"
+                self.client._part_create_from_edit = True
+                kids = [r for r in (next_out.get("List") or []) if isinstance(r, dict)]
+                page_next_rows = kids
+                present = bool(next_out.get("grid_present"))
+                if "grid_present" not in next_out:
+                    present = bool(kids)
+                self.client._grid_present = present
+                try:
+                    self.client._grid_dxf_row_count = int(
+                        next_out.get("grid_dxf_row_count") or len(kids) or 0
+                    )
+                except (TypeError, ValueError):
+                    self.client._grid_dxf_row_count = len(kids)
+                try:
+                    self.client._part_create_list_len = int(
+                        next_out.get("list_len") or len(kids) or 0
+                    )
+                except (TypeError, ValueError):
+                    self.client._part_create_list_len = len(kids)
+                notes.append("part_create_via=createAllParts")
+
+        if page_next_rows is None and not upload_rows:
+            open_files = []
+            try:
+                form_files = []
+                for path in cad_files:
+                    fh = path.open("rb")
+                    open_files.append(fh)
+                    form_files.append(("files", (path.name, fh, _mime_for(path))))
+                upload_payload = self.client.upload_item_dxf_files(
+                    form_files, quote_id=quote_id
+                )
+                notes.append(
+                    f"Uploaded CAD via /CadImport/UploadItem_DXFFiles: {cad_filename}"
+                )
+            finally:
+                for fh in open_files:
+                    fh.close()
+            upload_rows = filelist_from_cadimport_upload(upload_payload)
 
         try:
             self.client.cadimport_set_units("inch")
         except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
             notes.append(f"WARNING: CadImport SetUnits failed: {exc}")
 
-        upload_rows = filelist_from_cadimport_upload(upload_payload)
-        data_rows, explode_notes = self.wait_for_cadimport_explode(
+        if page_next_rows is not None:
+            from .cadimport_js import (
+                CREATE_DXF_PARTS_CALLER,
+                CREATE_DXF_PARTS_FUNCTION,
+                CREATE_DXF_PARTS_PATH,
+            )
+
+            notes.append(
+                f"QuoteOrderEdit {CREATE_DXF_PARTS_CALLER} → "
+                f"{CREATE_DXF_PARTS_FUNCTION} {CREATE_DXF_PARTS_PATH} "
+                "(page $.ajax on minted EDIT; success t.List → #gridDXFParts)"
+            )
+            data_rows = page_next_rows
+            explode_notes: list[str] = []
+            if cadimport_filelist_exploded(
+                data_rows, part_key=part_key, cad_filename=cad_filename
+            ):
+                html = getattr(self.client, "_last_item_add_view_html", "") or ""
+                location = inventory_location_from_html(html)
+                used = {
+                    str(r.get("SourceDataID") or r.get("ID") or r.get("FileID") or "")
+                    for r in data_rows
+                    if isinstance(r, dict)
+                }
+                used.discard("")
+                data_rows, nest_notes = self._reexplode_nested_assemblies(
+                    quote_id=quote_id,
+                    part_key=part_key,
+                    cad_filename=cad_filename,
+                    grid=data_rows,
+                    used_ids=used,
+                    location=location,
+                    first_pass=1,
+                )
+                explode_notes.extend(nest_notes)
+            explode_notes.extend(
+                self._explode_capture_notes(
+                    explode_passes=1,
+                    rows=data_rows,
+                    part_key=part_key,
+                    cad_filename=cad_filename,
+                )
+            )
+        else:
+            data_rows, explode_notes = self.wait_for_cadimport_explode(
             quote_id=quote_id,
             upload_rows=upload_rows,
             upload_payload=upload_payload,
@@ -2651,8 +2767,6 @@ class SecturaFabPushService:
         from .chrome_cdp import apply_grid_dxf_part_modes
         from .website import (
             cad_filelist_payload_blocks_finish,
-            dxf_stock_perimeter_filled,
-            empty_dxf_stock_perimeter_is_fail,
             filelist_cad_payload_empty_bools,
             filelist_missing_cadimport_identity_keys,
         )
@@ -2749,35 +2863,11 @@ class SecturaFabPushService:
                     "live 107292-1)"
                 )
                 return notes
-        stamp_out: Any = None
-        stamper = getattr(self.client, "stamp_dxf_kendo_stock", None)
-        if callable(stamper):
-            stamp_out = stamper(quote_id=quote_id, rows=ready)
-            notes.append("Typed Stock_X/Y on #gridDXFParts for GetPerimeterAndWeight")
-            if isinstance(stamp_out, dict):
-                notes.append(
-                    "getperimeter_xhr="
-                    + ("true" if stamp_out.get("getperimeter_xhr") else "false")
-                )
-                via_perim = str(stamp_out.get("perimeter_via") or "")
-                if via_perim:
-                    notes.append(f"perimeter_via={via_perim}")
-        if empty_dxf_stock_perimeter_is_fail(
-            stamp_out if isinstance(stamp_out, dict) else None
-        ):
-            notes.append(
-                "WARNING: UpdatePerimeterWeight empty CuttingLength/"
-                "InternalData after Stock type — do not Finish "
-                "(DXF analog of live 29743-1)"
-            )
-            return notes
         cad_block = next(
             (r for r in ready if cad_filelist_payload_blocks_finish(r)),
             None,
         )
-        if cad_block is not None and not dxf_stock_perimeter_filled(
-            stamp_out if isinstance(stamp_out, dict) else None
-        ):
+        if cad_block is not None:
             bools = filelist_cad_payload_empty_bools(cad_block)
             notes.append(
                 "filelist_internaldata_empty="

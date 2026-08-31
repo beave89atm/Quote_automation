@@ -1950,8 +1950,111 @@ def image_files_cookie_http_empty_grid_is_fail(
     return int(cad_n or 0) <= 0
 
 
+DXF_UPLOAD_VIA_PAGE_ADD_FILES = "page_add_files"
+
+
+def leftover_griddxf_fills_only_via_onsuccess(dump: dict[str, Any] | None) -> bool:
+    """Leftover CAD Files: #files in #dxfupload_Zone + onSuccess_Upload is the only #gridDXF fill."""
+    if not isinstance(dump, dict):
+        return False
+    ku = dump.get("kendoUpload") if isinstance(dump.get("kendoUpload"), dict) else {}
+    if str(ku.get("selector") or "") != "#files":
+        return False
+    if str(ku.get("zone") or "") != "#dxfupload_Zone":
+        return False
+    if str(ku.get("success") or "") != "onSuccess_Upload":
+        return False
+    if str(ku.get("complete") or "") != "onComplete_Upload":
+        return False
+    if str(ku.get("upload") or "") != "onUpload_DXFUpload":
+        return False
+    async_opt = ku.get("async") if isinstance(ku.get("async"), dict) else {}
+    if str(async_opt.get("saveUrl") or "") != "/CadImport/UploadItem_DXFFiles":
+        return False
+    fill = dump.get("onSuccess_Upload")
+    if not isinstance(fill, dict) or not fill.get("only_fill"):
+        return False
+    adds = str(fill.get("adds") or "")
+    if "#gridDXF" not in adds:
+        return False
+    if str(fill.get("not_grid") or "") != "#gridDXFParts":
+        return False
+    if fill.get("writes_gridDXFParts_internaldata") is not False:
+        return False
+    if fill.get("writes_gridDXFParts_cuttinglength") is not False:
+        return False
+    getdxf = dump.get("GetDXFData") if isinstance(dump.get("GetDXFData"), dict) else {}
+    if getdxf.get("exists") is not False:
+        return False
+    nxt = dump.get("Next") if isinstance(dump.get("Next"), dict) else {}
+    if str(nxt.get("caller") or "") != "createAllParts":
+        return False
+    if str(nxt.get("function") or "") != "DoCreateDXFParts":
+        return False
+    if str(nxt.get("path") or "") != "/part/create":
+        return False
+    if nxt.get("cookie_http_part_create_is_gold") is not False:
+        return False
+    onadd = dump.get("OnAddDXFClick") if isinstance(dump.get("OnAddDXFClick"), dict) else {}
+    if "gridDXFParts" not in str(onadd.get("walks") or ""):
+        return False
+    if onadd.get("fills_internaldata") is not False:
+        return False
+    return leftover_getperimeter_is_gridpdf_only(dump)
+
+
+def leftover_getperimeter_is_gridpdf_only(dump: dict[str, Any] | None) -> bool:
+    """GetPerimeterAndWeight remains #gridPDF only — not CAD Files InternalData."""
+    if not isinstance(dump, dict):
+        return False
+    gp = dump.get("GetPerimeterAndWeight")
+    if not isinstance(gp, dict):
+        return False
+    if str(gp.get("targets") or "") != "gridPDF":
+        return False
+    return gp.get("fills_dxf_internaldata") is False
+
+
+def dxf_grid_upload_bound(result: dict[str, Any] | None) -> bool:
+    """True when in-page #files kendoUpload filled #gridDXF via onSuccess_Upload."""
+    if not isinstance(result, dict):
+        return False
+    if str(result.get("upload_via") or "") != DXF_UPLOAD_VIA_PAGE_ADD_FILES:
+        return False
+    if not result.get("bound"):
+        return False
+    if not result.get("files_kendo"):
+        return False
+    try:
+        n = int(result.get("gridDXF_n") or result.get("grid_dxf_row_count") or 0)
+    except (TypeError, ValueError):
+        return False
+    return n > 0
+
+
+def cookie_http_dxf_upload_is_fail(upload_via: str | None) -> bool:
+    """Cookie HTTP UploadItem_DXFFiles does not bind #gridDXF (live EHB3112-1)."""
+    via = str(upload_via or "").strip()
+    return via != DXF_UPLOAD_VIA_PAGE_ADD_FILES
+
+
+def leftover_cookie_http_dxf_empty_grid_is_fail(
+    *,
+    cookie_http_uploads: int,
+    gridDXF_n: int,
+    finish_posted: bool,
+    cad_n: int,
+) -> bool:
+    """Live EHB3112-1: cookie HTTP upload + empty #gridDXF + GET 0."""
+    if int(cookie_http_uploads or 0) >= 1:
+        return True
+    if bool(finish_posted):
+        return int(cad_n or 0) <= 0
+    return int(gridDXF_n or 0) <= 0 or int(cad_n or 0) <= 0
+
+
 def leftover_dxf_pack_is_on_additem_list(dump: dict[str, Any] | None) -> bool:
-    """Pack is on AddItem_DXFFiles List after Stock type + GetPerimeterAndWeight."""
+    """21678-1 UI analog only. GetPerimeterAndWeight is #gridPDF — not CAD pack."""
     if not isinstance(dump, dict):
         return False
     if dump.get("pack_xhr_named") is not False:

@@ -940,6 +940,101 @@ def test_leftover_gridpdf_bind_is_files_kendo_onsuccess():
     assert live["finish_why"] == "empty_dataSource"
 
 
+def test_leftover_griddxf_bind_is_files_kendo_onsuccess():
+    from secturafab.website import (
+        leftover_cookie_http_dxf_empty_grid_is_fail,
+        leftover_getperimeter_is_gridpdf_only,
+        leftover_griddxf_fills_only_via_onsuccess,
+    )
+    from tests.fixtures.live_21678_1 import leftover_dxf_pack_bind_dump
+    from tests.fixtures.live_ehb3112_1 import (
+        leftover_griddxf_bind_dump,
+        live_ehb3112_1_cookie_http_empty_grid,
+    )
+
+    dump = leftover_griddxf_bind_dump()
+    assert dump["readonly"] is True
+    assert dump["dialog_closed"] is True
+    assert dump["finish_posted"] is False
+    assert dump["getitem_addview"]["ItemType"] == "dxf"
+    assert dump["kendoUpload"]["selector"] == "#files"
+    assert dump["kendoUpload"]["zone"] == "#dxfupload_Zone"
+    assert dump["kendoUpload"]["success"] == "onSuccess_Upload"
+    assert dump["kendoUpload"]["complete"] == "onComplete_Upload"
+    assert dump["kendoUpload"]["upload"] == "onUpload_DXFUpload"
+    assert dump["kendoUpload"]["dropZone"] == ".dropZoneElement"
+    assert dump["kendoUpload"]["async"]["saveUrl"] == "/CadImport/UploadItem_DXFFiles"
+    assert dump["onSuccess_Upload"]["only_fill"] is True
+    assert "#gridDXF" in dump["onSuccess_Upload"]["adds"]
+    assert dump["onSuccess_Upload"]["not_grid"] == "#gridDXFParts"
+    assert dump["GetDXFData"]["exists"] is False
+    assert dump["Next"]["caller"] == "createAllParts"
+    assert dump["Next"]["function"] == "DoCreateDXFParts"
+    assert dump["Next"]["path"] == "/part/create"
+    assert dump["Next"]["cookie_http_part_create_is_gold"] is False
+    assert dump["OnAddDXFClick"]["fills_internaldata"] is False
+    assert leftover_griddxf_fills_only_via_onsuccess(dump) is True
+    assert leftover_getperimeter_is_gridpdf_only(dump) is True
+    broken = dict(dump)
+    broken["onSuccess_Upload"] = {"only_fill": False}
+    assert leftover_griddxf_fills_only_via_onsuccess(broken) is False
+    live = dump["live_ehb3112_1"]
+    assert live["gridDXF_n"] == 0
+    assert live["finish_posted"] is False
+    snap = live_ehb3112_1_cookie_http_empty_grid()
+    assert leftover_cookie_http_dxf_empty_grid_is_fail(
+        cookie_http_uploads=snap["cookie_http_uploads"],
+        gridDXF_n=snap["gridDXF_n"],
+        finish_posted=snap["finish_posted"],
+        cad_n=snap["cad_n"],
+    )
+    gold = leftover_dxf_pack_bind_dump()
+    assert leftover_getperimeter_is_gridpdf_only(gold) is True
+
+
+def test_dxf_grid_upload_bound_requires_page_add_files():
+    from secturafab.website import (
+        cookie_http_dxf_upload_is_fail,
+        dxf_grid_upload_bound,
+    )
+
+    assert dxf_grid_upload_bound(
+        {
+            "upload_via": "page_add_files",
+            "bound": True,
+            "files_kendo": True,
+            "gridDXF_n": 1,
+        }
+    )
+    assert not dxf_grid_upload_bound(
+        {
+            "upload_via": "page_add_files",
+            "bound": True,
+            "files_kendo": False,
+            "gridDXF_n": 1,
+        }
+    )
+    assert not dxf_grid_upload_bound(
+        {
+            "upload_via": "cookie_http",
+            "bound": True,
+            "files_kendo": True,
+            "gridDXF_n": 1,
+        }
+    )
+    assert not dxf_grid_upload_bound(
+        {
+            "upload_via": "page_add_files",
+            "bound": True,
+            "files_kendo": True,
+            "gridDXF_n": 0,
+        }
+    )
+    assert cookie_http_dxf_upload_is_fail("cookie_http")
+    assert cookie_http_dxf_upload_is_fail("")
+    assert not cookie_http_dxf_upload_is_fail("page_add_files")
+
+
 def test_29743_1_files_kendo_bind_without_gold_pack_is_fail():
     from secturafab.line_item_ops import (
         cad_image_files_stamped,
@@ -6547,8 +6642,47 @@ def test_jquery_ajax_edit_empty_internaldata_is_not_success(tmp_path: Path):
     client.cadimport_update_data_next.assert_not_called()
 
 
-def test_dxf_empty_stock_perimeter_does_not_finish(tmp_path: Path):
-    """Stock type + empty GetPerimeterAndWeight — do not Finish."""
+def test_dxf_cookie_http_upload_does_not_bind_griddxf(tmp_path: Path):
+    """Cookie HTTP UploadItem_DXFFiles leaves #gridDXF empty — do not Finish."""
+    stp = tmp_path / "EHB3112.STEP"
+    stp.write_bytes(b"ISO")
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": False,
+        "upload_via": "cookie_http",
+        "files_kendo": False,
+        "gridDXF_n": 0,
+        "List": [],
+    }
+    client.get_item_add_view.return_value = {}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0ehb",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="EHB3112",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    client.upload_item_dxf_files.assert_not_called()
+    client.create_dxf_parts.assert_not_called()
+    client.add_item_dxf_files.assert_not_called()
+    client.cadimport_update_data_next.assert_not_called()
+    client.stamp_dxf_kendo_stock.assert_not_called()
+    blob = " ".join(notes)
+    assert "upload_via=cookie_http" in blob
+    assert "gridDXF_n=0" in blob
+    assert "does not bind #gridDXF" in blob
+    assert "onSuccess_Upload" in blob
+
+
+def test_dxf_page_next_empty_internaldata_does_not_finish(tmp_path: Path):
+    """Page #gridDXF bind + Next with present-and-empty InternalData — skip Finish."""
     stp = tmp_path / "21680-1.STEP"
     stp.write_bytes(b"ISO")
     kid = {
@@ -6570,7 +6704,24 @@ def test_dxf_empty_stock_perimeter_does_not_finish(tmp_path: Path):
         "ImageString": "",
     }
     client = MagicMock()
-    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [kid]}
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": [kid],
+        "grid_present": True,
+        "grid_dxf_row_count": 1,
+        "list_len": 1,
+        "internaldata_key_n": 1,
+        "internaldata_empty_n": 1,
+        "internaldata_nonempty_n": 0,
+    }
     client._grid_present = True
     client._grid_dxf_row_count = 1
     client._stale_grid = False
@@ -6578,17 +6729,7 @@ def test_dxf_empty_stock_perimeter_does_not_finish(tmp_path: Path):
     client._edit_gate = ""
     client._setpartmode_via = "page_fn"
     client._part_create_list_len = 1
-    client.create_dxf_parts.return_value = {"List": [kid]}
-    client.cadimport_data.return_value = {"List": [kid]}
     client.get_item_add_view.return_value = {}
-    client.stamp_dxf_kendo_stock.return_value = {
-        "ok": True,
-        "stamped": 1,
-        "outside_perimeter_n": 0,
-        "cutting_length_n": 0,
-        "internaldata_n": 0,
-        "getperimeter_xhr": False,
-    }
     client.quote_item_read.return_value = {"Data": [], "Total": 0}
     client.get_json.return_value = {"ItemList": []}
     with patch(
@@ -6619,16 +6760,18 @@ def test_dxf_empty_stock_perimeter_does_not_finish(tmp_path: Path):
             explode_polls=1,
             explode_sleep_s=0,
         )
+    client.upload_item_dxf_files.assert_not_called()
     client.add_item_dxf_files.assert_not_called()
     client.cadimport_update_data_next.assert_not_called()
+    client.stamp_dxf_kendo_stock.assert_not_called()
     blob = " ".join(notes)
-    assert "UpdatePerimeterWeight" in blob
-    assert "do not Finish" in blob
-    assert "Stock" in blob
+    assert "next_via=createAllParts" in blob
+    assert "InternalData present-and-empty" in blob
+    assert "not Finishing" in blob
 
 
-def test_dxf_stock_perimeter_fill_unparks_finish(tmp_path: Path):
-    """After GetPerimeterAndWeight fills CuttingLength, classify→Finish runs."""
+def test_dxf_page_next_nonempty_internaldata_finishes(tmp_path: Path):
+    """Page #gridDXF bind + Next with nonempty InternalData on t.List → Finish."""
     stp = tmp_path / "21680-1.STEP"
     stp.write_bytes(b"ISO")
     kid = {
@@ -6646,11 +6789,28 @@ def test_dxf_stock_perimeter_fill_unparks_finish(tmp_path: Path):
         "ItemType": "Cad",
         "PartMode": 0,
         "FileType": "Cad",
-        "InternalData": "",
-        "ImageString": "",
+        "InternalData": "server-stamped",
+        "ImageString": "preview",
     }
     client = MagicMock()
-    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [kid]}
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": [kid],
+        "grid_present": True,
+        "grid_dxf_row_count": 1,
+        "list_len": 1,
+        "internaldata_key_n": 1,
+        "internaldata_empty_n": 0,
+        "internaldata_nonempty_n": 1,
+    }
     client._grid_present = True
     client._grid_dxf_row_count = 1
     client._stale_grid = False
@@ -6659,18 +6819,7 @@ def test_dxf_stock_perimeter_fill_unparks_finish(tmp_path: Path):
     client._setpartmode_via = "page_fn"
     client._finish_via = "page_fn"
     client._part_create_list_len = 1
-    client.create_dxf_parts.return_value = {"List": [kid]}
-    client.cadimport_data.return_value = {"List": [kid]}
     client.get_item_add_view.return_value = {}
-    client.stamp_dxf_kendo_stock.return_value = {
-        "ok": True,
-        "stamped": 1,
-        "outside_perimeter_n": 1,
-        "cutting_length_n": 1,
-        "internaldata_n": 1,
-        "getperimeter_xhr": True,
-        "perimeter_via": "UpdatePerimeterWeight",
-    }
     client.add_item_dxf_files.return_value = {
         "ok": True,
         "via": "page_fn",
@@ -6708,11 +6857,13 @@ def test_dxf_stock_perimeter_fill_unparks_finish(tmp_path: Path):
             explode_polls=1,
             explode_sleep_s=0,
         )
+    client.upload_item_dxf_files.assert_not_called()
     client.add_item_dxf_files.assert_called_once()
     client.cadimport_update_data_next.assert_not_called()
+    client.stamp_dxf_kendo_stock.assert_not_called()
     blob = " ".join(notes)
-    assert "getperimeter_xhr=true" in blob
-    assert "UpdatePerimeterWeight" in blob
+    assert "next_via=createAllParts" in blob
+    assert "part_create_via=createAllParts" in blob
 
 
 def test_cad_editor_update_data_next_is_not_explode_fill():
@@ -7219,6 +7370,32 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "/Quote/GetPerimeterAndWeight" in _STAMP_DXF_STOCK_JS
     assert "gridDXFParts" in _STAMP_DXF_STOCK_JS
     assert "UpdateDataNext" not in _STAMP_DXF_STOCK_JS
+    from secturafab.chrome_cdp import (
+        _DISPATCH_DXF_FILES_CHANGE_JS,
+        _FIND_DXF_ADD_FILES_INPUT_JS,
+        _INVOKE_CREATE_ALL_PARTS_JS,
+        _OPEN_CAD_FILES_JS,
+        _READ_GRID_DXF_COUNT_JS,
+        _READ_GRID_DXF_PARTS_AFTER_NEXT_JS,
+    )
+
+    assert "AddNewItemHTML" in _OPEN_CAD_FILES_JS
+    assert "cad files" in _OPEN_CAD_FILES_JS
+    assert "#but_dxf" in _OPEN_CAD_FILES_JS
+    assert "#dxfupload_Zone" in _FIND_DXF_ADD_FILES_INPUT_JS
+    assert "#files" in _FIND_DXF_ADD_FILES_INPUT_JS
+    assert "kendoUpload" in _FIND_DXF_ADD_FILES_INPUT_JS
+    assert "dropZoneElement" in _FIND_DXF_ADD_FILES_INPUT_JS
+    assert "#gridDXF" in _READ_GRID_DXF_COUNT_JS
+    assert "gridDXFParts" not in _READ_GRID_DXF_COUNT_JS
+    assert "GetDXFData" not in _READ_GRID_DXF_COUNT_JS
+    assert "#dxfupload_Zone" in _DISPATCH_DXF_FILES_CHANGE_JS
+    assert "createAllParts" in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "empty_gridDXF" in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "gridDXFParts" in _READ_GRID_DXF_PARTS_AFTER_NEXT_JS
+    assert "InternalData" in _READ_GRID_DXF_PARTS_AFTER_NEXT_JS
+    assert "UpdateDataNext" not in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "GetPerimeterAndWeight" not in _INVOKE_CREATE_ALL_PARTS_JS
 
 
 def test_upload_pdf_via_page_add_files_is_not_cookie_http():
@@ -7246,6 +7423,31 @@ def test_upload_pdf_via_page_add_files_is_not_cookie_http():
     cookie.assert_not_called()
     assert result["upload_via"] == "page_add_files"
     assert not cookie_http_pdf_upload_is_fail(result["upload_via"])
+
+
+def test_upload_dxf_via_page_add_files_is_not_cookie_http():
+    from secturafab.client import SecturaFabClient
+    from secturafab.website import cookie_http_dxf_upload_is_fail
+
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.upload_dxf_via_page_add_files",
+        return_value={
+            "bound": True,
+            "upload_via": "page_add_files",
+            "files_kendo": True,
+            "gridDXF_n": 1,
+        },
+    ) as page, patch.object(real, "upload_item_dxf_files") as cookie:
+        result = real.upload_dxf_via_page_add_files(
+            quote_id="11111111-aaaa-bbbb-cccc-000000000011",
+            files=["a.step"],
+        )
+    page.assert_called_once()
+    cookie.assert_not_called()
+    assert result["upload_via"] == "page_add_files"
+    assert not cookie_http_dxf_upload_is_fail(result["upload_via"])
 
 
 def test_add_item_linear_posts_quote_mvc():
