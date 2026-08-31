@@ -162,6 +162,13 @@ class PartMaterial:
 
 def _parse_thickness_token(raw: str) -> float | None:
     text = (raw or "").strip().upper().replace('"', "").replace("″", "").replace("'", "")
+    mixed = re.fullmatch(r"(\d+)\s+(\d+)\s*/\s*(\d+)", text)
+    if mixed:
+        whole, num, den = int(mixed.group(1)), int(mixed.group(2)), int(mixed.group(3))
+        if den:
+            val = whole + (num / den)
+            if 0.01 <= val <= 2.0:
+                return val
     text = re.sub(r"\s+", "", text)
     if not text:
         return None

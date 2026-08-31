@@ -1391,7 +1391,10 @@ def test_leftover_list0_pack_is_not_gold():
     from secturafab.website import (
         leftover_list0_pack_is_not_gold,
         leftover_plate_modal_is_not_the_pack,
+        leftover_thick_plate_cad_laser_is_wrong,
+        leftover_addnewpdffeature_skipped_is_named_miss,
         leftover_getpdfdata_candidates_named_not_invented,
+        list0_pack_badge_ocl_is_gold,
         leftover_productid_is_not_the_pack,
         leftover_weight_without_productid_is_fail,
         leftover_perimeter_xhr_is_not_gold_pack,
@@ -1431,7 +1434,7 @@ def test_leftover_list0_pack_is_not_gold():
     assert leftover_getpdfdata_candidates_named_not_invented(dump) is True
     tagged = dict(dump)
     tagged["list0_pack"] = dict(dump["list0_pack"])
-    tagged["list0_pack"]["tag"] = "PR"
+    tagged["list0_pack"]["badge_string"] = "PR"
     assert leftover_list0_pack_is_not_gold(tagged) is False
     ocl = dict(dump)
     ocl["list0_pack"] = dict(dump["list0_pack"])
@@ -1461,6 +1464,39 @@ def test_leftover_list0_pack_is_not_gold():
     assert leftover_list0_pack_is_not_gold(MagicMock()) is False
     assert leftover_list0_pack_is_not_gold(None) is False
     assert leftover_plate_modal_is_not_the_pack(dump) is False
+    assert leftover_thick_plate_cad_laser_is_wrong(dump) is False
+    assert leftover_addnewpdffeature_skipped_is_named_miss(dump) is False
+    assert list0_pack_badge_ocl_is_gold(
+        {
+            "response_badge_string": "PR",
+            "response_ocl_names": [
+                "Laser",
+                "Drafting",
+                "Laser-Setup",
+                "Sheet Loading",
+                "Deburr",
+            ],
+            "response_unit_cost": 36.22,
+            "response_unit_weight_cost": 14.65,
+        }
+    ) is True
+    assert list0_pack_badge_ocl_is_gold(
+        {
+            "response_badge_string": "",
+            "response_ocl_names": [],
+            "response_unit_cost": 126.66,
+            "response_unit_weight_cost": 126.66,
+        }
+    ) is False
+    assert list0_pack_badge_ocl_is_gold(
+        {
+            "response_tag": "",
+            "response_badge_string": "PR",
+            "response_ocl_names": ["Laser"],
+            "response_unit_cost": 36.22,
+            "response_unit_weight_cost": 14.65,
+        }
+    ) is False
     assert leftover_productid_is_not_the_pack(dump) is False
     assert leftover_weight_without_productid_is_fail(dump) is False
     assert leftover_perimeter_xhr_is_not_gold_pack(dump) is False
@@ -1487,13 +1523,16 @@ def test_leftover_list0_pack_is_not_gold():
     assert empty_productid_after_bind_is_fail({"productid_n": 0}) is False
     assert list0_pack_without_tag_ocl_is_fail(
         {
-            "response_tag": "",
+            "response_badge_string": "",
             "response_ocl_n": 0,
             "response_unit_cost": LIST0_PACK["unit_cost"],
         }
     ) is True
     assert list0_pack_without_tag_ocl_is_fail(
-        {"response_tag": "PR", "response_ocl_n": 0}
+        {"response_tag": "", "response_ocl_n": 0}
+    ) is False
+    assert list0_pack_without_tag_ocl_is_fail(
+        {"response_badge_string": "PR", "response_ocl_n": 0}
     ) is False
     assert list0_pack_without_tag_ocl_is_fail({"stamped": 1}) is False
     assert list0_pack_without_tag_ocl_is_fail(MagicMock()) is False
@@ -1517,6 +1556,8 @@ def test_leftover_plate_modal_is_not_the_pack():
     )
     from secturafab.website import (
         leftover_plate_modal_is_not_the_pack,
+        leftover_thick_plate_cad_laser_is_wrong,
+        leftover_addnewpdffeature_skipped_is_named_miss,
         leftover_getpdfdata_values_named_not_invented,
         leftover_getpdfdata_candidates_named_not_invented,
         leftover_list0_pack_is_not_gold,
@@ -1568,7 +1609,7 @@ def test_leftover_plate_modal_is_not_the_pack():
     assert leftover_plate_modal_is_not_the_pack(bag_pid) is False
     tagged = dict(dump)
     tagged["list0_pack"] = dict(dump["list0_pack"])
-    tagged["list0_pack"]["tag"] = "PR"
+    tagged["list0_pack"]["badge_string"] = "PR"
     assert leftover_plate_modal_is_not_the_pack(tagged) is False
     ocl = dict(dump)
     ocl["list0_pack"] = dict(dump["list0_pack"])
@@ -1592,6 +1633,14 @@ def test_leftover_plate_modal_is_not_the_pack():
     assert leftover_plate_modal_is_not_the_pack(MagicMock()) is False
     assert leftover_plate_modal_is_not_the_pack(None) is False
     assert leftover_list0_pack_is_not_gold(dump) is False
+    assert leftover_thick_plate_cad_laser_is_wrong(dump) is True
+    assert leftover_addnewpdffeature_skipped_is_named_miss(dump) is True
+    assert leftover_thick_plate_cad_laser_is_wrong(
+        leftover_list0_pack_not_gold_dump()
+    ) is False
+    assert leftover_addnewpdffeature_skipped_is_named_miss(
+        leftover_list0_pack_not_gold_dump()
+    ) is False
     assert leftover_getpdfdata_candidates_named_not_invented(dump) is False
     assert leftover_getpdfdata_values_named_not_invented(
         leftover_list0_pack_not_gold_dump()
@@ -1623,7 +1672,7 @@ def test_leftover_plate_modal_is_not_the_pack():
     assert empty_productid_after_bind_is_fail({"productid_n": 1}) is False
     assert list0_pack_without_tag_ocl_is_fail(
         {
-            "response_tag": "",
+            "response_badge_string": "",
             "response_ocl_n": 0,
             "response_unit_cost": LIST0_PACK["unit_cost"],
         }
@@ -1632,7 +1681,7 @@ def test_leftover_plate_modal_is_not_the_pack():
         {"picker_via": "#gridSelectProductPlate"},
         {
             "filelist_bag": {"ProductID": None},
-            "response_tag": "",
+            "response_badge_string": "",
             "response_ocl_n": 0,
             "response_unit_cost": 126.66,
         },
@@ -1641,7 +1690,7 @@ def test_leftover_plate_modal_is_not_the_pack():
         {"picker_via": "none_plate_widget"},
         {
             "filelist_bag": {"ProductID": None},
-            "response_tag": "",
+            "response_badge_string": "",
             "response_ocl_n": 0,
             "response_unit_cost": 126.66,
         },
@@ -7915,8 +7964,16 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "UpdatePerimeterWeight" in _STAMP_PDF_KENDO_JS
     assert "UpdatePerimeterWeight(true, true)" in _STAMP_PDF_KENDO_JS
     assert "window.UpdatePerimeterWeight()" not in _STAMP_PDF_KENDO_JS
-    assert "AddNewPDFFeature" not in _STAMP_PDF_KENDO_JS
-    assert "PDFGetData" not in _STAMP_PDF_KENDO_JS
+    assert "AddNewPDFFeature" in _STAMP_PDF_KENDO_JS
+    assert 'AddNewPDFFeature("Hole", "cad")' in _STAMP_PDF_KENDO_JS
+    assert "PDFGetData" in _STAMP_PDF_KENDO_JS
+    assert 'url.indexOf("/Quote/AddFeature")' not in _STAMP_PDF_KENDO_JS
+    assert "add_item_feature" not in _STAMP_PDF_KENDO_JS
+    assert "onInternalDataChange" in _STAMP_PDF_KENDO_JS
+    assert "badge_string" in _PAGE_PDF_FINISH_JS
+    assert "ocl_names" in _PAGE_PDF_FINISH_JS
+    assert "number_of_contours" in _PAGE_PDF_FINISH_JS
+    assert "number_of_pierces" in _PAGE_PDF_FINISH_JS
     assert "setField(r, \"CuttingLength\"" not in _STAMP_PDF_KENDO_JS
     assert "Weight_UseLocal" in _STAMP_PDF_KENDO_JS
     assert "#Weight" in _STAMP_PDF_KENDO_JS

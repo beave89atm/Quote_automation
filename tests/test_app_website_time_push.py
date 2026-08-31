@@ -75,8 +75,19 @@ def test_classify_1004747_angles_channel_tube_are_linear():
 
 
 def test_classify_plate_over_three_quarter_is_component():
+    from secturafab.push import classify_image_files_item
+
     assert classify_sectura_item("1.25 A572 RING Ø23.5/Ø12 OUTSOURCE") == "Component"
     assert classify_sectura_item("1 A572 26.375 SQ OUTSOURCE") == "Component"
+    assert classify_sectura_item('1.25" A572 PLATE') == "Component"
+    assert classify_sectura_item('1 1/4" A572 PLATE') == "Component"
+    assert classify_sectura_item("PEDESTAL BASE PLATE") == "Cad"
+    assert classify_image_files_item("PEDESTAL BASE PLATE", 1.25) == "Component"
+    assert classify_image_files_item("PEDESTAL BASE PLATE", 0.75) == "Cad"
+    assert classify_sectura_item('3/4" A36 PLATE') == "Cad"
+    assert classify_sectura_item("0.75 A36 PLATE") == "Cad"
+    assert classify_sectura_item('3/16" A36 PLATE') == "Cad"
+    assert classify_image_files_item('3/16" A36 PLATE', 0.1875) == "Cad"
     assert classify_sectura_item('1/4" A36 PLATE') == "Cad"
     assert classify_sectura_item("FORMED ANGLE 1/4 A36 PLATE") == "Cad"
     assert classify_sectura_item("1010108-1 SLUG") == "Linear"
@@ -2421,9 +2432,14 @@ def test_1007092_1_get_productid_is_not_pack_still_finishes(
         },
         "response_list_n": 1,
         "response_tag": "",
+        "response_badge_string": "",
         "response_production_ready": False,
         "response_ocl_n": 0,
+        "response_ocl_names": [],
         "response_unit_cost": 0.11,
+        "response_unit_weight_cost": 0.11,
+        "response_number_of_contours": 0,
+        "response_number_of_pierces": 0,
     }
     client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
     client.get_json.return_value = quote
@@ -2459,6 +2475,7 @@ def test_1007092_1_get_productid_is_not_pack_still_finishes(
     assert "product_picker=none_plate_widget" in blob
     assert "response_list_n=1" in blob
     assert "response_tag=''" in blob
+    assert "list0_pack.badge_string=''" in blob
     assert "response_production_ready=false" in blob
     assert "response_ocl_n=0" in blob
     assert "response_unit_cost=0.11" in blob
@@ -2469,7 +2486,7 @@ def test_1007092_1_get_productid_is_not_pack_still_finishes(
 def test_33204_1_list0_pack_empty_is_fail_still_finishes(
     tmp_path, monkeypatch
 ):
-    """Full bag still Finishes; list0_pack Tag empty / OCL 0 is FAIL."""
+    """Full bag still Finishes; list0_pack BadgeString empty / OCL 0 is FAIL."""
     from tests.fixtures.live_33204_1 import live_33204_1_quote
 
     quote = live_33204_1_quote()
@@ -2517,9 +2534,14 @@ def test_33204_1_list0_pack_empty_is_fail_still_finishes(
         },
         "response_list_n": 1,
         "response_tag": "",
+        "response_badge_string": "",
         "response_production_ready": False,
         "response_ocl_n": 0,
+        "response_ocl_names": [],
         "response_unit_cost": 5.05,
+        "response_unit_weight_cost": 5.05,
+        "response_number_of_contours": 0,
+        "response_number_of_pierces": 0,
     }
     client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
     client.get_json.return_value = quote
@@ -2552,8 +2574,10 @@ def test_33204_1_list0_pack_empty_is_fail_still_finishes(
     assert "33204-1" in blob
     assert "do not Finish" not in blob
     assert "list0_pack" in blob
-    assert "GET ProductID is not the pack" in blob
+    assert "BadgeString empty" in blob
+    assert "gold Tag is empty" in blob
     assert "product_picker=none_plate_widget" in blob
+    assert "list0_pack.badge_string=''" in blob
     assert "response_list_n=1" in blob
     assert "response_tag=''" in blob
     assert "response_production_ready=false" in blob
@@ -2563,64 +2587,16 @@ def test_33204_1_list0_pack_empty_is_fail_still_finishes(
     assert "persisted" not in blob.lower()
 
 
-def test_1009213_1_plate_modal_is_not_pack_still_finishes(
+def test_1009213_1_thick_plate_is_component_not_cad_laser(
     tmp_path, monkeypatch
 ):
-    """Null FileList ProductID still Finishes; leftover modal SKU is FAIL."""
-    from tests.fixtures.live_1009213_1 import live_1009213_1_quote
-
-    quote = live_1009213_1_quote()
+    """1.25 in plate is Component — do not Cad-laser Image Files."""
     monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
     pdf = tmp_path / "PEDESTAL-BASE-PLATE.pdf"
     pdf.write_bytes(b"%PDF")
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=box"
     client.get_item_add_view.return_value = {}
-    bind = _page_pdf_bind_ok(1)
-    bind["productid_n"] = 0
-    client.upload_pdf_via_page_add_files.return_value = bind
-    client.stamp_pdf_kendo_flats.return_value = {
-        "ok": True,
-        "stamped": 1,
-        "cell_edit": 2,
-        "outside_perimeter_n": 1,
-        "cutting_length_n": 0,
-        "weight_n": 1,
-        "productid_n": 0,
-        "internaldata_n": 0,
-        "getperimeter_xhr": True,
-        "perimeter_via": "UpdatePerimeterWeight",
-        "picker_via": "#gridSelectProductPlate",
-        "picker_sku": "PL1 1/4-A572",
-        "picker_apply": "search_only",
-    }
-    client.add_item_pdf_files.return_value = {
-        "ok": True,
-        "via": "page_fn",
-        "finish_fn": "OnAddPDFClick",
-        "filelist_from_kendo": True,
-        "finish_filelist_n": 1,
-        "filelist_bag": {
-            "Machine": "Laser - Bay1",
-            "ProductID": None,
-            "Qty": 1,
-            "Weight": 308.9387,
-            "Weight_UseLocal": True,
-            "OutsidePerimeter": 114,
-            "OutsidePerimeter_UseLocal": True,
-            "Material": "A572",
-            "Thickness": "1.25",
-            "Length": 28.5,
-            "Width": 28.5,
-        },
-        "response_list_n": 1,
-        "response_tag": "",
-        "response_production_ready": False,
-        "response_ocl_n": 0,
-        "response_unit_cost": 126.66,
-    }
-    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
-    client.get_json.return_value = quote
     notes = SecturaFabPushService(client=client).finish_pdf_files(
         quote_id="11111111-aaaa-bbbb-cccc-000000100921",
         pdf_files=[pdf],
@@ -2638,25 +2614,21 @@ def test_1009213_1_plate_modal_is_not_pack_still_finishes(
             }
         ],
     )
-    client.stamp_pdf_kendo_flats.assert_called_once()
-    client.add_item_pdf_files.assert_called_once()
-    stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
-    assert stamp_rows
-    assert all("ProductID" not in row for row in stamp_rows)
-    assert stamp_rows[0]["Material"] != "316 Polished"
-    assert stamp_rows[0]["Machine"] == "Laser - Bay1"
-    assert stamp_rows[0]["Status"] == 1
+    client.upload_pdf_via_page_add_files.assert_not_called()
+    client.stamp_pdf_kendo_flats.assert_not_called()
+    client.add_item_pdf_files.assert_not_called()
     blob = " ".join(notes)
     assert "1009213-1" in blob
+    assert "Component" in blob
+    assert "Skipped Image Files" in blob
     assert "do not Finish" not in blob
-    assert "modal is not gold" in blob
-    assert "product_picker=#gridSelectProductPlate" in blob
-    assert "picker_apply=search_only" in blob
-    assert "FileList ProductID null" in blob
-    assert "response_list_n=1" in blob
-    assert "response_tag=''" in blob
-    assert "response_production_ready=false" in blob
-    assert "response_ocl_n=0" in blob
-    assert "response_unit_cost=126.66" in blob
-    assert "DoD FAIL" in blob
     assert "persisted" not in blob.lower()
+
+
+def test_075_and_3_16_plate_stay_cad_for_image_files():
+    from secturafab.push import classify_image_files_item
+
+    assert classify_image_files_item("0.75 A36 PLATE", 0.75) == "Cad"
+    assert classify_image_files_item('3/4" A36 PLATE', 0.75) == "Cad"
+    assert classify_image_files_item('3/16" A36 PLATE', 0.1875) == "Cad"
+    assert classify_image_files_item('14501-1 3/16" A36', 0.1875) == "Cad"

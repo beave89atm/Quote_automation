@@ -305,8 +305,7 @@ def _plate_thickness_in(description: str) -> float | None:
     )
     if not m:
         return None
-    token = re.sub(r"\s+", "", m.group(1))
-    return _parse_thickness_token(token)
+    return _parse_thickness_token(m.group(1))
 
 
 def _looks_like_formed_plate(description: str) -> bool:
@@ -386,6 +385,54 @@ def classify_sectura_item(description: str) -> str:
     if any(h in text for h in _LINEAR_HINTS):
         return "Linear"
     return "Cad"
+
+
+def plate_over_three_quarter(thickness: Any) -> bool:
+    """Kannon does not laser plate thicker than 3/4 in (live 1009213-1)."""
+    try:
+        return float(thickness) > 0.75
+    except (TypeError, ValueError):
+        return False
+
+
+def _row_thickness_in(row: dict[str, Any] | None, fallback: Any = None) -> float | None:
+    from quote_core.part_materials import _parse_thickness_token
+
+    sources: list[Any] = []
+    if isinstance(row, dict):
+        for key in ("thickness_in", "thickness", "Thickness"):
+            if row.get(key) not in (None, ""):
+                sources.append(row.get(key))
+    if fallback not in (None, ""):
+        sources.append(fallback)
+    for raw in sources:
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            parsed = _parse_thickness_token(str(raw))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def classify_image_files_item(description: str, thickness: Any = None) -> str:
+    """Image Files classify: plate >3/4 in is Component (no invented $).
+
+    Live 1009213-1 PEDESTAL BASE PLATE was Cad-lasered at 1.25 in.
+    ``classify_sectura_item`` already gates ``thk > 0.75`` when thickness
+    is in the description; the runner must also pass the resolved
+    drawing/BOM thickness so a plate noun without a gauge still skips
+    Image Files. 0.75 in and 3/16 in stay Cad.
+    """
+    cat = classify_sectura_item(description)
+    thk = _row_thickness_in(None, thickness)
+    if thk is None:
+        thk = _plate_thickness_in(description)
+    if plate_over_three_quarter(thk) and (
+        cat == "Cad" or _cad_plate_sheet_noun(description)
+    ):
+        return "Component"
+    return cat
 
 
 _HOLE_NOUN_RE = re.compile(
@@ -3125,9 +3172,14 @@ class SecturaFabPushService:
         invent that key and do not add it to FileList. Gold uses
         the same bag; pack is not “post CuttingLength”. Copy bag
         Weight / Weight_UseLocal from the XHR / #Weight (leftover
-        XHR Weight=7.7607 was not on the row). Empty InternalData
+        XHR Weight=7.7607 was not on the row).         Empty InternalData
         after a landed perimeter is expected for no-hole rectangles.
-        AddNewPDFFeature() with no args is not gold. Status is
+        AddNewPDFFeature() with no args is not gold. Named hole step
+        is ``AddNewPDFFeature(feature, "cad")`` then page
+        ``PDFGetData()`` onto InternalData before OnAddPDFClick.
+        Do not cookie-POST /Quote/AddFeature. Do not invent
+        InternalData JSON. Plate thicker than 3/4 in is Component
+        (live 1009213-1) — do not Cad-laser it. Status is
         filter-only — do not overlay it onto the posted bag.
         Live 1002323-1 FileList keys were not logged. Perimeter
         XHR is not gold pack. Live 33819-1 posted bag Weight +
@@ -3197,7 +3249,8 @@ class SecturaFabPushService:
         for row in bom_rows or []:
             pn = str(row.get("part_no") or row.get("part_number") or "").strip()
             noun = str(row.get("description") or "")
-            cat = classify_sectura_item(f"{pn} {noun}")
+            row_thk = _row_thickness_in(row if isinstance(row, dict) else None, thickness)
+            cat = classify_image_files_item(f"{pn} {noun}", row_thk)
             if cat == "Cad":
                 cad_n += 1
             elif cat == "Linear":
@@ -3233,12 +3286,6 @@ class SecturaFabPushService:
                     except (TypeError, ValueError):
                         row_qty = max(1, int(qty or 1))
                     break
-            cat = classify_sectura_item(f"{pn} {noun}")
-            if cat != "Cad":
-                notes.append(
-                    f"Skipped Image Files {path.name} — {cat} goes Long/Component"
-                )
-                continue
             plat = takeoff_plate_row(takeoff, pn) or takeoff_plate_row(takeoff, stem)
             if plat:
                 if matched_row is None:
@@ -3253,6 +3300,18 @@ class SecturaFabPushService:
             pm = lookup_part_material(part_materials, pn) or lookup_part_material(
                 part_materials, f"{pn} {noun}"
             )
+            plate_thk_early = locked.get("thickness")
+            if plate_thk_early is None and pm and pm.thickness_in:
+                plate_thk_early = pm.thickness_in
+            if plate_thk_early is None:
+                plate_thk_early = _row_thickness_in(matched_row, thickness)
+            cat = classify_image_files_item(f"{pn} {noun}", plate_thk_early)
+            if cat != "Cad":
+                notes.append(
+                    f"Skipped Image Files {path.name} — {cat} "
+                    f"(plate >3/4 in is Component, no invented $; live 1009213-1)"
+                )
+                continue
             named_grade = None
             grade_blob = f"{noun} {pn} {path.name} {material}"
             if plat:
@@ -3333,6 +3392,7 @@ class SecturaFabPushService:
         if cad_paths:
             from .website import (
                 cookie_http_pdf_upload_is_fail,
+                list0_pack_badge_ocl_is_gold,
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
                 empty_weight_after_perimeter_is_fail,
@@ -3363,8 +3423,9 @@ class SecturaFabPushService:
                 notes.append(f"bind_productid_n={bind.get('productid_n')}")
             if cookie_http_pdf_upload_is_fail(upload_via) or not bound:
                 notes.append(
-                    "WARNING: cookie HTTP UploadItem_PDFFiles does not bind "
-                    "#gridPDF (live 103535-1) — need page +Add Files"
+                    "WARNING: cookie HTTP UploadItem_PDFFiles skips "
+                    "#files kendo / AddNewPDFFeature (live 103535-1) "
+                    "— fail-closed; need page +Add Files"
                 )
                 notes.append(
                     "WARNING: empty_dataSource / #gridPDF not bound — "
@@ -3432,6 +3493,9 @@ class SecturaFabPushService:
                         via_apply = str(stamp_out.get("picker_apply") or "")
                         if via_apply:
                             notes.append(f"picker_apply={via_apply}")
+                        via_feat = str(stamp_out.get("feature_via") or "")
+                        if via_feat:
+                            notes.append(f"feature_via={via_feat}")
                     try:
                         result = self.client.add_item_pdf_files(
                             quote_id=quote_id,
@@ -3494,6 +3558,32 @@ class SecturaFabPushService:
                             notes.append(
                                 f"response_tag={result.get('response_tag')!r}"
                             )
+                        if "response_badge_string" in result:
+                            notes.append(
+                                "list0_pack.badge_string="
+                                f"{result.get('response_badge_string')!r}"
+                            )
+                        if "response_ocl_names" in result:
+                            names = result.get("response_ocl_names") or []
+                            notes.append(
+                                "list0_pack.ocl_names="
+                                + ",".join(str(n) for n in names)
+                            )
+                        if "response_number_of_contours" in result:
+                            notes.append(
+                                "DataPartPDF.NumberOfContours="
+                                f"{result.get('response_number_of_contours')}"
+                            )
+                        if "response_number_of_pierces" in result:
+                            notes.append(
+                                "DataPartPDF.NumberOfPierces="
+                                f"{result.get('response_number_of_pierces')}"
+                            )
+                        if "response_unit_weight_cost" in result:
+                            notes.append(
+                                "response_unit_weight_cost="
+                                f"{result.get('response_unit_weight_cost')}"
+                            )
                         if "response_production_ready" in result:
                             notes.append(
                                 "response_production_ready="
@@ -3514,9 +3604,15 @@ class SecturaFabPushService:
                         if list0_pack_without_tag_ocl_is_fail(result):
                             notes.append(
                                 "WARNING: AddItem_PDFFiles response List[0] "
-                                "Tag empty / OCL 0 (live 33204-1) — list0_pack "
-                                "is the server stamp; GET ProductID is not the "
-                                "pack — Image Files DoD FAIL"
+                                "BadgeString empty / OCL 0 (gold Tag is empty) "
+                                "— pack is BadgeString PR + Laser/Drafting/"
+                                "Laser-Setup/Sheet Loading/Deburr + "
+                                "UnitCost>UnitWeightCost — Image Files DoD FAIL"
+                            )
+                        if list0_pack_badge_ocl_is_gold(result):
+                            notes.append(
+                                "list0_pack BadgeString PR + laser OCL + "
+                                "UnitCost>UnitWeightCost"
                             )
                         if plate_modal_without_filelist_productid_is_fail(
                             stamp_out if isinstance(stamp_out, dict) else None,
@@ -3524,9 +3620,10 @@ class SecturaFabPushService:
                         ):
                             notes.append(
                                 "WARNING: #gridSelectProductPlate modal SKU + "
-                                "FileList ProductID null + list0_pack Tag empty "
-                                "/ OCL 0 (live 1009213-1) — modal is not gold; "
-                                "picker is not the pack — Image Files DoD FAIL"
+                                "FileList ProductID null + list0_pack "
+                                "BadgeString empty / OCL 0 (live 1009213-1) "
+                                "— modal is not gold; picker is not the pack "
+                                "— Image Files DoD FAIL"
                             )
                         if from_kendo:
                             try:

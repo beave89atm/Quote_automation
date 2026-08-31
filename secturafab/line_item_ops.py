@@ -351,13 +351,22 @@ def _item_unit_cost(item: dict[str, Any] | None) -> float:
         return 0.0
 
 
+def _item_unit_weight_cost(item: dict[str, Any] | None) -> float:
+    try:
+        return float((item or {}).get("UnitWeightCost") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def cad_image_files_stamped(item: dict[str, Any] | None) -> bool:
-    """True when Image Files Finish already wrote PR + laser pack + UnitCost."""
-    return (
-        item_has_pr_tag(item)
-        and item_has_laser_pack(item)
-        and _item_unit_cost(item) > 0
-    )
+    """True when BadgeString PR + laser OCL + UnitCost > UnitWeightCost.
+
+    Gold 1001898-1 Tag is empty — pack is BadgeString + CalculatorNames,
+    not Tag / ProductionReady.
+    """
+    if not item_has_pr_tag(item) or not item_has_laser_pack(item):
+        return False
+    return _item_unit_cost(item) > _item_unit_weight_cost(item)
 
 
 def _cad_product_type_100(item: dict[str, Any] | None) -> bool:

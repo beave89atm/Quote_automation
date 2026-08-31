@@ -1502,6 +1502,25 @@ class SecturaFabClient:
             response_unit_cost = float(result.get("response_unit_cost") or 0)
         except (TypeError, ValueError):
             response_unit_cost = 0.0
+        try:
+            response_unit_weight_cost = float(result.get("response_unit_weight_cost") or 0)
+        except (TypeError, ValueError):
+            response_unit_weight_cost = 0.0
+        try:
+            response_number_of_contours = int(
+                result.get("response_number_of_contours") or 0
+            )
+        except (TypeError, ValueError):
+            response_number_of_contours = 0
+        try:
+            response_number_of_pierces = int(
+                result.get("response_number_of_pierces") or 0
+            )
+        except (TypeError, ValueError):
+            response_number_of_pierces = 0
+        ocl_names = [
+            str(n) for n in (result.get("response_ocl_names") or []) if str(n).strip()
+        ]
         return {
             "ok": from_kendo,
             "status": int(result.get("status") or 0),
@@ -1525,9 +1544,14 @@ class SecturaFabClient:
             "edit_gate": str(result.get("edit_gate") or ""),
             "response_list_n": response_list_n,
             "response_tag": str(result.get("response_tag") or ""),
+            "response_badge_string": str(result.get("response_badge_string") or ""),
             "response_production_ready": bool(result.get("response_production_ready")),
             "response_ocl_n": response_ocl_n,
+            "response_ocl_names": ocl_names,
             "response_unit_cost": response_unit_cost,
+            "response_unit_weight_cost": response_unit_weight_cost,
+            "response_number_of_contours": response_number_of_contours,
+            "response_number_of_pierces": response_number_of_pierces,
         }
 
     def stamp_pdf_kendo_flats(

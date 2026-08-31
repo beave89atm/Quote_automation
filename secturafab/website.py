@@ -1899,7 +1899,7 @@ def pdf_grid_upload_bound(result: dict[str, Any] | None) -> bool:
 
 
 def cookie_http_pdf_upload_is_fail(upload_via: str | None) -> bool:
-    """Cookie HTTP UploadItem_PDFFiles does not bind #gridPDF (live 103535-1)."""
+    """Cookie HTTP skips #files kendo / AddNewPDFFeature (live 103535-1)."""
     via = str(upload_via or "").strip()
     return via != PDF_UPLOAD_VIA_PAGE_ADD_FILES
 
@@ -2339,7 +2339,7 @@ def leftover_plate_modal_is_not_the_pack(dump: dict[str, Any] | None) -> bool:
     pack = dump.get("list0_pack") if isinstance(dump.get("list0_pack"), dict) else {}
     if not pack:
         return False
-    if str(pack.get("tag") or "") != "":
+    if str(pack.get("badge_string") or "") != "":
         return False
     try:
         if int(pack.get("ocl_n") or 0) != 0:
@@ -2409,20 +2409,60 @@ def plate_modal_without_filelist_productid_is_fail(
     return list0_pack_without_tag_ocl_is_fail(result)
 
 
+def leftover_thick_plate_cad_laser_is_wrong(dump: dict[str, Any] | None) -> bool:
+    """1009213-1: 1.25 in plate was Cad-lasered; must be Component."""
+    if not isinstance(dump, dict):
+        return False
+    live = dump.get("live_1009213_1") if isinstance(dump.get("live_1009213_1"), dict) else {}
+    if not live:
+        return False
+    try:
+        if abs(float(live.get("thickness") or 0) - 1.25) > 1e-6:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if str(live.get("should_be") or "") != "Component":
+        return False
+    if str(live.get("was") or "") != "Cad":
+        return False
+    return True
+
+
+def leftover_addnewpdffeature_skipped_is_named_miss(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """1009213-1: page AddNewPDFFeature(feature, cad) did not run."""
+    if not isinstance(dump, dict):
+        return False
+    live = dump.get("live_1009213_1") if isinstance(dump.get("live_1009213_1"), dict) else {}
+    if not live:
+        return False
+    if live.get("addnewpdffeature") is not False:
+        return False
+    if live.get("invent_internaldata") is not False:
+        return False
+    if live.get("cookie_addfeature") is not False:
+        return False
+    feat = dump.get("AddNewPDFFeature") if isinstance(dump.get("AddNewPDFFeature"), dict) else {}
+    if feat.get("no_arg_not_gold") is not True:
+        return False
+    return True
+
+
 def leftover_list0_pack_is_not_gold(dump: dict[str, Any] | None) -> bool:
     """33204-1: AddItem_PDFFiles response List[0] has no pack.
 
     Full L×W / Weight / OP / Machine / Material bag still FAIL when
-    list0_pack Tag empty / OCL 0 / UnitCost 5.05. Pack is on the
-    response List. GET ProductID is not the pack. No later XHR
-    adds Tag/OCL. Do not add CuttingLength (gold GetPDFData omits it).
+    list0_pack BadgeString empty / OCL 0 / UnitCost 5.05. Gold Tag
+    is empty — not a fail. Pack is BadgeString + CalculatorNames.
+    GET ProductID is not the pack. Do not add CuttingLength.
     """
     if not isinstance(dump, dict):
         return False
     pack = dump.get("list0_pack") if isinstance(dump.get("list0_pack"), dict) else {}
     if not pack:
         return False
-    if str(pack.get("tag") or "") != "":
+    if str(pack.get("badge_string") or "") != "":
         return False
     if pack.get("production_ready") is not False:
         return False
@@ -2501,18 +2541,28 @@ def leftover_getpdfdata_candidates_named_not_invented(
     return True
 
 
-def list0_pack_without_tag_ocl_is_fail(result: dict[str, Any] | None) -> bool:
-    """Response List[0] Tag empty / OCL 0 is FAIL (live 33204-1).
+GOLD_LASER_CALCULATOR_NAMES = (
+    "Laser",
+    "Drafting",
+    "Laser-Setup",
+    "Sheet Loading",
+    "Deburr",
+)
 
-    Only when the Finish capture names ``response_tag`` and
-    ``response_ocl_n``. Older mocks without those keys still Finish.
-    Material UnitCost>0 is still FAIL — pack is Tag/OCL, not cost.
+
+def list0_pack_without_tag_ocl_is_fail(result: dict[str, Any] | None) -> bool:
+    """BadgeString empty / OCL 0 is FAIL. Gold Tag is empty — not a fail.
+
+    Live GET 1001898-1 first Cad: Tag "" / ProductionReady false /
+    BadgeString PR + laser CalculatorNames + UnitCost > UnitWeightCost.
+    Only when the Finish capture names ``response_badge_string`` and
+    ``response_ocl_n``. Tag-only captures do not fail.
     """
     if not isinstance(result, dict):
         return False
-    if "response_tag" not in result or "response_ocl_n" not in result:
+    if "response_badge_string" not in result or "response_ocl_n" not in result:
         return False
-    if str(result.get("response_tag") or "") != "":
+    if str(result.get("response_badge_string") or "") != "":
         return False
     try:
         if int(result.get("response_ocl_n") or 0) != 0:
@@ -2520,6 +2570,29 @@ def list0_pack_without_tag_ocl_is_fail(result: dict[str, Any] | None) -> bool:
     except (TypeError, ValueError):
         return False
     return True
+
+
+def list0_pack_badge_ocl_is_gold(result: dict[str, Any] | None) -> bool:
+    """PASS: BadgeString PR + Laser/Drafting/Laser-Setup/Sheet Loading/Deburr
+    + UnitCost > UnitWeightCost. Not Tag. Not ProductionReady.
+    """
+    if not isinstance(result, dict):
+        return False
+    if str(result.get("response_badge_string") or "") != "PR":
+        return False
+    names = result.get("response_ocl_names")
+    if not isinstance(names, (list, tuple)):
+        return False
+    have = {str(n).strip().lower() for n in names if str(n).strip()}
+    want = {n.lower() for n in GOLD_LASER_CALCULATOR_NAMES}
+    if not want <= have:
+        return False
+    try:
+        uc = float(result.get("response_unit_cost") or 0)
+        uwc = float(result.get("response_unit_weight_cost") or 0)
+    except (TypeError, ValueError):
+        return False
+    return uc > uwc
 
 
 def leftover_productid_is_not_the_pack(dump: dict[str, Any] | None) -> bool:

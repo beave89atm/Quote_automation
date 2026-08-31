@@ -71,6 +71,7 @@ FILELIST_BAG: dict[str, Any] = {
 LIST0_PACK: dict[str, Any] = {
     "list_n": 1,
     "tag": "",
+    "badge_string": "",
     "production_ready": False,
     "ocl_n": 0,
     "unit_cost": UNIT_COST,

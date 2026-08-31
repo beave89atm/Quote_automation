@@ -2359,8 +2359,23 @@ _PAGE_PDF_FINISH_JS = """(function() {
     }
     return o;
   }
+  function oclNames(row) {
+    var ocl = row.OperationCostList || row.operationCostList || [];
+    var out = [];
+    if (!Array.isArray(ocl)) return out;
+    for (var i = 0; i < ocl.length; i++) {
+      var op = ocl[i] || {};
+      var n = op.CalculatorName || op.calculatorName || "";
+      if (n) out.push(String(n));
+    }
+    return out;
+  }
   function list0Pack(data) {
-    var o = {list_n: 0, tag: "", production_ready: false, ocl_n: 0, unit_cost: 0};
+    var o = {
+      list_n: 0, tag: "", badge_string: "", production_ready: false,
+      ocl_n: 0, ocl_names: [], unit_cost: 0, unit_weight_cost: 0,
+      number_of_contours: 0, number_of_pierces: 0
+    };
     if (!data || typeof data !== "object") return o;
     var list = data.List || data.list;
     if (!Array.isArray(list)) return o;
@@ -2368,11 +2383,20 @@ _PAGE_PDF_FINISH_JS = """(function() {
     if (!list.length) return o;
     var row = list[0] || {};
     o.tag = row.Tag != null ? String(row.Tag) : "";
+    o.badge_string = row.BadgeString != null ? String(row.BadgeString) : "";
     o.production_ready = !!(row.ProductionReady === true || row.ProductionReady === "true");
     var ocl = row.OperationCostList || row.operationCostList || [];
+    o.ocl_names = oclNames(row);
     o.ocl_n = Array.isArray(ocl) ? ocl.length : 0;
     var uc = parseFloat(row.UnitCost != null ? row.UnitCost : 0);
     o.unit_cost = isFinite(uc) ? uc : 0;
+    var uwc = parseFloat(row.UnitWeightCost != null ? row.UnitWeightCost : 0);
+    o.unit_weight_cost = isFinite(uwc) ? uwc : 0;
+    var dpp = row.DataPartPDF || row.dataPartPDF || {};
+    var nc = parseInt(dpp.NumberOfContours || dpp.numberOfContours || 0, 10);
+    var np = parseInt(dpp.NumberOfPierces || dpp.numberOfPierces || 0, 10);
+    o.number_of_contours = isFinite(nc) ? nc : 0;
+    o.number_of_pierces = isFinite(np) ? np : 0;
     return o;
   }
   function hasAf(d) {
@@ -2436,9 +2460,14 @@ _PAGE_PDF_FINISH_JS = """(function() {
       List: [],
       response_list_n: 0,
       response_tag: "",
+      response_badge_string: "",
       response_production_ready: false,
       response_ocl_n: 0,
-      response_unit_cost: 0
+      response_ocl_names: [],
+      response_unit_cost: 0,
+      response_unit_weight_cost: 0,
+      response_number_of_contours: 0,
+      response_number_of_pierces: 0
     });
   }
   var perimN = 0;
@@ -2469,9 +2498,14 @@ _PAGE_PDF_FINISH_JS = """(function() {
       List: [],
       response_list_n: 0,
       response_tag: "",
+      response_badge_string: "",
       response_production_ready: false,
       response_ocl_n: 0,
-      response_unit_cost: 0
+      response_ocl_names: [],
+      response_unit_cost: 0,
+      response_unit_weight_cost: 0,
+      response_number_of_contours: 0,
+      response_number_of_pierces: 0
     });
   }
   var finishName = findFinishName();
@@ -2517,9 +2551,14 @@ _PAGE_PDF_FINISH_JS = """(function() {
           grid_id: gridId,
           response_list_n: 0,
           response_tag: "",
+          response_badge_string: "",
           response_production_ready: false,
           response_ocl_n: 0,
-          response_unit_cost: 0
+          response_ocl_names: [],
+          response_unit_cost: 0,
+          response_unit_weight_cost: 0,
+          response_number_of_contours: 0,
+          response_number_of_pierces: 0
         };
         var ret = orig.apply(this, arguments);
         Promise.resolve(ret).then(function(data) {
@@ -2528,9 +2567,14 @@ _PAGE_PDF_FINISH_JS = """(function() {
           var pack = list0Pack(data);
           cap.response_list_n = pack.list_n;
           cap.response_tag = pack.tag;
+          cap.response_badge_string = pack.badge_string;
           cap.response_production_ready = pack.production_ready;
           cap.response_ocl_n = pack.ocl_n;
+          cap.response_ocl_names = pack.ocl_names;
           cap.response_unit_cost = pack.unit_cost;
+          cap.response_unit_weight_cost = pack.unit_weight_cost;
+          cap.response_number_of_contours = pack.number_of_contours;
+          cap.response_number_of_pierces = pack.number_of_pierces;
           resolve(cap);
         }).catch(function(xhr) {
           cap.status = (xhr && xhr.status) || 0;
@@ -2538,9 +2582,14 @@ _PAGE_PDF_FINISH_JS = """(function() {
           var packE = list0Pack(xhr && xhr.responseJSON);
           cap.response_list_n = packE.list_n;
           cap.response_tag = packE.tag;
+          cap.response_badge_string = packE.badge_string;
           cap.response_production_ready = packE.production_ready;
           cap.response_ocl_n = packE.ocl_n;
+          cap.response_ocl_names = packE.ocl_names;
           cap.response_unit_cost = packE.unit_cost;
+          cap.response_unit_weight_cost = packE.unit_weight_cost;
+          cap.response_number_of_contours = packE.number_of_contours;
+          cap.response_number_of_pierces = packE.number_of_pierces;
           resolve(cap);
         });
         return ret;
@@ -2601,9 +2650,14 @@ _PAGE_PDF_FINISH_JS = """(function() {
       List: krows,
       response_list_n: 0,
       response_tag: "",
+      response_badge_string: "",
       response_production_ready: false,
       response_ocl_n: 0,
-      response_unit_cost: 0
+      response_ocl_names: [],
+      response_unit_cost: 0,
+      response_unit_weight_cost: 0,
+      response_number_of_contours: 0,
+      response_number_of_pierces: 0
     });
   }
   return hooked.then(function(hitCap) {
@@ -3116,6 +3170,47 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     }
     return Promise.resolve("");
   }
+  function pagePdfGetData() {
+    try {
+      if (typeof window.PDFGetData === "function") {
+        var feat = window.PDFGetData();
+        if (feat == null) return "";
+        if (typeof feat === "string") return feat;
+        return JSON.stringify(feat);
+      }
+    } catch (e) {}
+    return "";
+  }
+  function addPdfHoleFeature(r) {
+    // Kyle Loom: Add Feature Hole then green New Line Item.
+    // Do not cookie-POST AddFeature (item-level). Do not invent JSON.
+    lastFeature = "";
+    if (typeof window.AddNewPDFFeature !== "function") {
+      lastFeature = "none_addnewpdffeature";
+      return Promise.resolve("");
+    }
+    try {
+      window.AddNewPDFFeature("Hole", "cad");
+      lastFeature = "AddNewPDFFeature";
+    } catch (e) {
+      lastFeature = "AddNewPDFFeature_err";
+      return Promise.resolve("");
+    }
+    return new Promise(function(resolve) {
+      setTimeout(function() {
+        var raw = pagePdfGetData();
+        if (raw && raw !== "[]" && raw !== "{}" && raw !== "null") {
+          setField(r, "InternalData", raw);
+        }
+        try {
+          if (typeof window.onInternalDataChange === "function") {
+            window.onInternalDataChange();
+          }
+        } catch (e2) {}
+        resolve(lastFeature);
+      }, 400);
+    });
+  }
   function stampPerimeter(grid, r) {
     try {
       var tr = grid.tbody.find("tr").filter(function() {
@@ -3174,10 +3269,12 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           if (s.Qty != null) editSet(hit.grid, r, "Qty", s.Qty);
           if (s.PartName) editSet(hit.grid, r, "PartName", s.PartName);
           stamped += 1;
-          return stampPerimeter(hit.grid, r).then(function() {
-            if (keepPid) setField(r, "ProductID", keepPid);
-            return pickProduct(s.ProductSku, r).then(function(val) {
-              if (val) setField(r, "ProductID", val);
+          return addPdfHoleFeature(r).then(function() {
+            return stampPerimeter(hit.grid, r).then(function() {
+              if (keepPid) setField(r, "ProductID", keepPid);
+              return pickProduct(s.ProductSku, r).then(function(val) {
+                if (val) setField(r, "ProductID", val);
+              });
             });
           });
         }
@@ -3242,9 +3339,14 @@ def invoke_page_pdf_finish(
         "ok": False,
         "response_list_n": 0,
         "response_tag": "",
+        "response_badge_string": "",
         "response_production_ready": False,
         "response_ocl_n": 0,
+        "response_ocl_names": [],
         "response_unit_cost": 0.0,
+        "response_unit_weight_cost": 0.0,
+        "response_number_of_contours": 0,
+        "response_number_of_pierces": 0,
     }
     if not gate.get("ok"):
         return skipped
@@ -3271,6 +3373,21 @@ def invoke_page_pdf_finish(
         response_unit_cost = float(value.get("response_unit_cost") or 0)
     except (TypeError, ValueError):
         response_unit_cost = 0.0
+    try:
+        response_unit_weight_cost = float(value.get("response_unit_weight_cost") or 0)
+    except (TypeError, ValueError):
+        response_unit_weight_cost = 0.0
+    try:
+        response_number_of_contours = int(value.get("response_number_of_contours") or 0)
+    except (TypeError, ValueError):
+        response_number_of_contours = 0
+    try:
+        response_number_of_pierces = int(value.get("response_number_of_pierces") or 0)
+    except (TypeError, ValueError):
+        response_number_of_pierces = 0
+    ocl_names = [
+        str(n) for n in (value.get("response_ocl_names") or []) if str(n).strip()
+    ]
     return {
         "via": via,
         "finish_fn": str(value.get("finish_fn") or ""),
@@ -3302,9 +3419,14 @@ def invoke_page_pdf_finish(
         "ok": from_kendo,
         "response_list_n": response_list_n,
         "response_tag": str(value.get("response_tag") or ""),
+        "response_badge_string": str(value.get("response_badge_string") or ""),
         "response_production_ready": bool(value.get("response_production_ready")),
         "response_ocl_n": response_ocl_n,
+        "response_ocl_names": ocl_names,
         "response_unit_cost": response_unit_cost,
+        "response_unit_weight_cost": response_unit_weight_cost,
+        "response_number_of_contours": response_number_of_contours,
+        "response_number_of_pierces": response_number_of_pierces,
     }
 
 
@@ -3330,8 +3452,13 @@ def stamp_pdf_kendo_flats(
     0.0178) and Status>0. Drive the plate Product kendo (not
     the ProductType bar) by tenant SKU text so GetPDFData
     ProductID is the selected List Value. Do not invent a GUID.
-    Do not fire AddNewPDFFeature(). Empty InternalData is
-    expected for no-hole rectangles. Live 1007092-1: first
+    Named hole step is ``AddNewPDFFeature(feature, "cad")``
+    then page ``PDFGetData()`` onto the selected #gridPDF
+    InternalData (do not invent JSON; do not cookie-POST
+    /Quote/AddFeature). Then UpdatePerimeterWeight(true,true)
+    / onInternalDataChange. AddNewPDFFeature() with no args
+    is not gold. Empty InternalData is still expected for
+    no-hole rectangles. Live 1007092-1: first
     ``#Product`` is ProductType — skip it. Live 33204-1:
     ThicknessPDF is gauge (Read_DataThicknessGauge2). Drive
     ``#gridSelectProductPlate`` modal apply/select (dblclick +
