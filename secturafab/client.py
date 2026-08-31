@@ -1508,7 +1508,7 @@ class SecturaFabClient:
         quote_id: str,
         rows: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Type L×W onto the page PDF kendo before OnAddPDFClick."""
+        """Type L×W then UpdatePerimeterWeight before OnAddPDFClick."""
         from .chrome_cdp import stamp_pdf_kendo_flats as _stamp
 
         return _stamp(rows, quote_id=quote_id)

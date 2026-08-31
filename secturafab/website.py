@@ -98,16 +98,21 @@ calculator. GET 8: 3 Cad unitcost filled, OperationCostList [],
 no PR. Linear saw PASS is not DoD PASS. FileList must be
 GetPDFData() / #gridPDF kendo rows with Status>0. Leave
 491f6387. Gold look remains 1001898-1 a7dc46bf.
-Live 29743-1 (d2f7b031 SUBFRAME WELDMENT Time Waco): in-page
-#files kendoUpload + GetPDFData n=2 + OnAddPDFClick
-filelist_from_kendo=true. GET 4: 2 Cad + 2 Linear. Linear Saw
-+ Saw-Setup + unitcost 4.0 PASS. Cad FAIL: Tag empty,
-OperationCostList [], UnitCost 0, CuttingLength 0. UnitPrice
-28.82 / 44.49 is material weight, not gold. GetPDFData omitted
-the Status key (filtered on dataItem). #files bind is not the
-gold PR + laser Primary Costs stamp. Do not graft. Do not
-Operation→Profile. Do not treat nest as the pack. Leave
-d2f7b031 / 29743-1. Gold look remains 1001898-1 a7dc46bf.
+Live 29743-1 (d2f7b031 SUBFRAME WELDMENT Time Waco): leftover
+EDIT dump pack_xhr_named=false addrow_stamps_pr=false.
+OnAddPDFClick success is only DisplaySummaryData + AddRow /
+FastUpdateRow of the server List. PR + laser pack + UnitCost
+must already be on AddItem_PDFFiles List (Tag, ProductionReady,
+OperationCostList). QuoteOrderEdit has zero JS strings Laser /
+Deburr / Sheet Loading / Laser-Setup. UpdatePerimeterWeight →
+POST /Quote/GetPerimeterAndWeight fires on L×W change (not after
+AddItem) and writes #OutsidePerimeter + CuttingLengthDisp.
+dataItem.set L×W skipped that XHR → posted OutsidePerimeter
+empty → server List Tag "" / OCL [] / UnitCost 0 / CuttingLength
+0. Type L×W so UpdatePerimeterWeight runs before OnAddPDFClick.
+Empty OutsidePerimeter/weight → do not Finish. Do not
+AddOperation / nest / Operation→Profile. Leave d2f7b031. Gold
+look remains 1001898-1 a7dc46bf.
 Live 103535-1 (bd5c2e3e Q10095 GATE WELDMENT): leftover Image
 Files dialog (read-only; closed; no Finish). GetItem_AddView
 ItemType=pdf injects empty #gridPDF (Data:[] Total:0) plus
@@ -252,6 +257,7 @@ WEBSITE_FINISH_PATHS = {
     "quote_get_dxf_data": "/Quote/GetDXFData",
     "add_item_dxf_files": "/Quote/AddItem_DXFFiles",
     "add_item_pdf_files": "/Quote/AddItem_PDFFiles",
+    "get_perimeter_and_weight": "/Quote/GetPerimeterAndWeight",
     "add_item_linear": "/Quote/AddItem_Linear",
     "add_operation": "/Quote/AddOperation",
     "copy_move_to_assembly": "/Quote/CopyMoveItemToAssembly",
@@ -1932,6 +1938,54 @@ def image_files_cookie_http_empty_grid_is_fail(
     if not filelist_from_kendo:
         return True
     return int(cad_n or 0) <= 0
+
+
+def leftover_cad_pack_is_on_additem_list(dump: dict[str, Any] | None) -> bool:
+    """Pack is on AddItem_PDFFiles List. AddRow only copies. No later XHR."""
+    if not isinstance(dump, dict):
+        return False
+    if dump.get("pack_xhr_named") is not False:
+        return False
+    if dump.get("addrow_stamps_pr") is not False:
+        return False
+    if not dump.get("pack_already_on_additem_list"):
+        return False
+    xhr = dump.get("UpdatePerimeterWeight")
+    if not isinstance(xhr, dict):
+        return False
+    if "/Quote/GetPerimeterAndWeight" not in str(xhr.get("xhr") or ""):
+        return False
+    if str(xhr.get("when") or "") != "change_before_AddItem":
+        return False
+    getpdf = dump.get("GetPDFData") if isinstance(dump.get("GetPDFData"), dict) else {}
+    posts = {str(k) for k in (getpdf.get("posts") or ())}
+    if "OutsidePerimeter" not in posts:
+        return False
+    omits = {str(k) for k in (getpdf.get("omits") or ())}
+    if "Status" not in omits or "CuttingLength" not in omits:
+        return False
+    return True
+
+
+def empty_perimeter_weight_is_fail(result: dict[str, Any] | None) -> bool:
+    """Empty OutsidePerimeter / CuttingLengthDisp after L×W is FAIL (29743-1).
+
+    Only when the stamp result names the counts (live Chrome). MagicMock /
+    older ``{stamped: n}`` mocks without those keys still Finish.
+    """
+    if not isinstance(result, dict):
+        return False
+    if "outside_perimeter_n" not in result and "cutting_length_n" not in result:
+        return False
+    try:
+        perim = int(result.get("outside_perimeter_n") or 0)
+    except (TypeError, ValueError):
+        perim = 0
+    try:
+        cut = int(result.get("cutting_length_n") or 0)
+    except (TypeError, ValueError):
+        cut = 0
+    return perim <= 0 and cut <= 0
 
 
 def prepare_pdf_newline_fields(row: dict[str, Any]) -> dict[str, Any]:

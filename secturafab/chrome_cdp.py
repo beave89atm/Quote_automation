@@ -89,13 +89,21 @@ no PR tag). Kyle Loom: Image Files + typed L×W + green
 ``Status>0``. Reconstructed FileList is fail-closed even if
 GET>0. Leave 491f6387 / 1001898-5. No STEP. Do not mint.
 
-Live 29743-1 (d2f7b031 SUBFRAME WELDMENT): #files bind +
-GetPDFData + OnAddPDFClick is not gold PR/laser. GET Cad
-Tag empty, OperationCostList [], UnitCost 0, CuttingLength 0.
-UnitPrice is material weight. GetPDFData omitted Status.
-dataItem.set L×W skipped kendo cell-edit / perimeter calc.
-Copy Status from dataItem onto posted FileList; type L×W in
-kendo editors. Do not graft. Leave d2f7b031. Do not mint.
+Live 29743-1 (d2f7b031 SUBFRAME WELDMENT): leftover EDIT
+pack_xhr_named=false addrow_stamps_pr=false. Pack is on
+AddItem_PDFFiles List (Tag / ProductionReady /
+OperationCostList). AddRow only copies. QuoteOrderEdit has
+zero JS strings Laser / Deburr / Sheet Loading / Laser-Setup.
+#files bind + dataItem.set L×W skipped UpdatePerimeterWeight
+→ POST /Quote/GetPerimeterAndWeight. Posted OutsidePerimeter
+empty → server List Tag "" / OCL [] / UnitCost 0 /
+CuttingLength 0. Type L×W in kendo cells then fire
+UpdatePerimeterWeight (onLength/onWidth) so the page XHR
+fills #OutsidePerimeter + CuttingLengthDisp before
+OnAddPDFClick. Empty perimeter → do not Finish. Copy Status
+from dataItem onto posted FileList. Do not AddOperation /
+nest / Operation→Profile. Do not graft. Leave d2f7b031.
+Do not mint.
 Live 103535-1 (bd5c2e3e Q10095 GATE WELDMENT): leftover Image
 Files dialog (read-only; closed; no Finish). GetItem_AddView
 pdf injects empty #gridPDF + kendoUpload #files.
@@ -2355,6 +2363,16 @@ _PAGE_PDF_FINISH_JS = """(function() {
       }
     } catch (e) {}
   }
+  function rowHasPerimeter(r) {
+    if (!r || typeof r !== "object") return false;
+    var op = r.OutsidePerimeter != null ? r.OutsidePerimeter : r.outsidePerimeter;
+    var cl = r.CuttingLengthDisp != null ? r.CuttingLengthDisp : r.cuttingLengthDisp;
+    var opN = Number(op);
+    var clN = Number(cl);
+    if (isFinite(opN) && opN > 0) return true;
+    if (isFinite(clN) && clN > 0) return true;
+    return false;
+  }
   var krows = getPdfData();
   var count = krows.length;
   var hit = pdfGrid();
@@ -2374,6 +2392,34 @@ _PAGE_PDF_FINISH_JS = """(function() {
       request_keys: [],
       filelist_row_keys: [],
       kendo_row_keys: [],
+      status: 0,
+      body_keys: [],
+      body_type: "empty",
+      has_NewItem: false,
+      has_QuoteItem: false,
+      text_len: 0,
+      List: []
+    });
+  }
+  var perimN = 0;
+  for (var pi = 0; pi < krows.length; pi++) {
+    if (rowHasPerimeter(krows[pi])) perimN += 1;
+  }
+  if (perimN < 1) {
+    return Promise.resolve({
+      via: "skipped",
+      finish_fn: "",
+      reads_kendo: false,
+      filelist_from_kendo: false,
+      finish_filelist_n: 0,
+      grid_pdf_row_count: hit && hit.grid && hit.grid.dataSource
+        ? (hit.grid.dataSource.data() || []).length : 0,
+      grid_id: gridId,
+      finish_af_present: false,
+      finish_why: "empty_perimeter",
+      request_keys: [],
+      filelist_row_keys: [],
+      kendo_row_keys: krows.length ? rowKeys(krows[0]) : [],
       status: 0,
       body_keys: [],
       body_type: "empty",
@@ -2517,12 +2563,24 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     }
     return null;
   }
+  var emptyStamp = {
+    ok: false,
+    stamped: 0,
+    cell_edit: 0,
+    grid_id: "",
+    grid_pdf_row_count: 0,
+    outside_perimeter_n: 0,
+    cutting_length_n: 0,
+    getperimeter_xhr: false,
+    perimeter_via: ""
+  };
   var hit = pdfGrid();
-  if (!hit) return Promise.resolve({ok: false, stamped: 0, grid_id: "", grid_pdf_row_count: 0});
+  if (!hit) return Promise.resolve(emptyStamp);
   var rows = (spec && spec.rows) || [];
   var data = hit.grid.dataSource.data() || [];
   var stamped = 0;
   var viaCell = 0;
+  var lastVia = "";
   function setField(r, k, v) {
     if (v == null || v === "") return;
     if (typeof r.set === "function") r.set(k, v);
@@ -2560,37 +2618,170 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     } catch (e) {}
     setField(r, field, value);
   }
-  for (var i = 0; i < rows.length; i++) {
-    var s = rows[i] || {};
-    var name = String(s.FileName || "");
-    for (var j = 0; j < data.length; j++) {
-      var r = data[j];
-      var fn = String((r.FileName || r.fileName || ""));
-      if (name && fn && fn.toLowerCase() !== name.toLowerCase()
-          && fn.toLowerCase().indexOf(name.toLowerCase()) < 0
-          && name.toLowerCase().indexOf(fn.toLowerCase()) < 0) {
-        continue;
+  function hookGetPerimeter() {
+    if (window.__kannonGetPerimHooked) return;
+    if (!window.jQuery || !jQuery.ajax) return;
+    window.__kannonGetPerimHooked = true;
+    var orig = jQuery.ajax;
+    jQuery.ajax = function(opts) {
+      var url = String((opts && (opts.url || opts)) || "");
+      var method = String((opts && (opts.type || opts.method)) || "GET").toUpperCase();
+      if (url.indexOf("/Quote/GetPerimeterAndWeight") >= 0) {
+        window.__kannonGetPerim = window.__kannonGetPerim || {};
+        window.__kannonGetPerim.xhr = true;
+        window.__kannonGetPerim.any = true;
+        window.__kannonGetPerim.url = url;
+        window.__kannonGetPerim.method = method;
       }
-      if (!name && i !== j) continue;
-      editSet(hit.grid, r, "Length", s.Length);
-      editSet(hit.grid, r, "Width", s.Width);
-      editSet(hit.grid, r, "Thickness", s.Thickness);
-      editSet(hit.grid, r, "Machine", s.Machine || "Laser - Bay1");
-      editSet(hit.grid, r, "Status", s.Status != null ? s.Status : 1);
-      editSet(hit.grid, r, "ItemType", s.ItemType || "cad");
-      editSet(hit.grid, r, "Material", s.Material);
-      if (s.Qty != null) editSet(hit.grid, r, "Qty", s.Qty);
-      if (s.PartName) editSet(hit.grid, r, "PartName", s.PartName);
-      stamped += 1;
-      break;
-    }
+      return orig.apply(this, arguments);
+    };
   }
-  return Promise.resolve({
-    ok: stamped > 0,
-    stamped: stamped,
-    cell_edit: viaCell,
-    grid_id: hit.id,
-    grid_pdf_row_count: data.length
+  function waitGetPerimeter(timeoutMs) {
+    return new Promise(function(resolve) {
+      var t0 = Date.now();
+      (function poll() {
+        if (window.__kannonGetPerim && window.__kannonGetPerim.xhr) {
+          resolve(true);
+          return;
+        }
+        if (Date.now() - t0 > timeoutMs) {
+          resolve(false);
+          return;
+        }
+        setTimeout(poll, 40);
+      })();
+    });
+  }
+  function fireUpdatePerimeterWeight() {
+    try {
+      if (typeof window.UpdatePerimeterWeight === "function") {
+        window.UpdatePerimeterWeight();
+        return "UpdatePerimeterWeight";
+      }
+    } catch (e) {}
+    try {
+      if (typeof window.onLength === "function") {
+        window.onLength();
+        return "onLength";
+      }
+    } catch (e2) {}
+    try {
+      if (typeof window.onWidth === "function") {
+        window.onWidth();
+        return "onWidth";
+      }
+    } catch (e3) {}
+    try {
+      if (window.jQuery) {
+        var $len = jQuery("#Length");
+        if ($len.length) {
+          $len.trigger("change");
+          return "#Length.change";
+        }
+        var $w = jQuery("#Width");
+        if ($w.length) {
+          $w.trigger("change");
+          return "#Width.change";
+        }
+        var $op = jQuery("#OutsidePerimeter");
+        if ($op.length) {
+          $op.trigger("change");
+          return "#OutsidePerimeter.change";
+        }
+      }
+    } catch (e4) {}
+    return "";
+  }
+  function copyPerimeterOntoRow(r) {
+    var op = "";
+    var cl = "";
+    try {
+      if (window.jQuery) {
+        op = String(jQuery("#OutsidePerimeter").val() || "");
+        cl = String(
+          jQuery(".pdfcuttinglength").val()
+          || jQuery("#CuttingLengthDisp").val()
+          || ""
+        );
+      }
+    } catch (e) {}
+    if (op) {
+      setField(r, "OutsidePerimeter", op);
+      setField(r, "OutsidePerimeter_UseLocal", true);
+    }
+    if (cl) setField(r, "CuttingLengthDisp", cl);
+    return {op: op, cl: cl};
+  }
+  function stampPerimeter(grid, r) {
+    try {
+      var tr = grid.tbody.find("tr").filter(function() {
+        return grid.dataItem(this) === r;
+      }).first();
+      if (tr.length && typeof grid.select === "function") grid.select(tr);
+    } catch (e) {}
+    if (window.__kannonGetPerim) window.__kannonGetPerim.xhr = false;
+    lastVia = fireUpdatePerimeterWeight() || lastVia;
+    return waitGetPerimeter(8000).then(function() {
+      copyPerimeterOntoRow(r);
+    });
+  }
+  function countFilled(src) {
+    var opN = 0;
+    var clN = 0;
+    var n = src.length || 0;
+    for (var i = 0; i < n; i++) {
+      var r = src[i] || {};
+      if (Number(r.OutsidePerimeter) > 0) opN += 1;
+      if (Number(r.CuttingLengthDisp) > 0) clN += 1;
+    }
+    return {opN: opN, clN: clN};
+  }
+  hookGetPerimeter();
+  window.__kannonGetPerim = window.__kannonGetPerim || {
+    xhr: false, url: "", method: "", any: false
+  };
+  var chain = Promise.resolve();
+  for (var i = 0; i < rows.length; i++) {
+    (function(s, idx) {
+      chain = chain.then(function() {
+        var name = String(s.FileName || "");
+        for (var j = 0; j < data.length; j++) {
+          var r = data[j];
+          var fn = String((r.FileName || r.fileName || ""));
+          if (name && fn && fn.toLowerCase() !== name.toLowerCase()
+              && fn.toLowerCase().indexOf(name.toLowerCase()) < 0
+              && name.toLowerCase().indexOf(fn.toLowerCase()) < 0) {
+            continue;
+          }
+          if (!name && idx !== j) continue;
+          editSet(hit.grid, r, "Length", s.Length);
+          editSet(hit.grid, r, "Width", s.Width);
+          editSet(hit.grid, r, "Thickness", s.Thickness);
+          editSet(hit.grid, r, "Machine", s.Machine || "Laser - Bay1");
+          editSet(hit.grid, r, "Status", s.Status != null ? s.Status : 1);
+          editSet(hit.grid, r, "ItemType", s.ItemType || "cad");
+          editSet(hit.grid, r, "Material", s.Material);
+          if (s.Qty != null) editSet(hit.grid, r, "Qty", s.Qty);
+          if (s.PartName) editSet(hit.grid, r, "PartName", s.PartName);
+          stamped += 1;
+          return stampPerimeter(hit.grid, r);
+        }
+      });
+    })(rows[i] || {}, i);
+  }
+  return chain.then(function() {
+    var filled = countFilled(data);
+    return {
+      ok: stamped > 0,
+      stamped: stamped,
+      cell_edit: viaCell,
+      grid_id: hit.id,
+      grid_pdf_row_count: data.length,
+      outside_perimeter_n: filled.opN,
+      cutting_length_n: filled.clN,
+      getperimeter_xhr: !!(window.__kannonGetPerim && window.__kannonGetPerim.any),
+      perimeter_via: lastVia
+    };
   });
 })"""
 
@@ -2673,10 +2864,11 @@ def stamp_pdf_kendo_flats(
     quote_id: str | None = None,
     base: str | None = None,
 ) -> dict[str, Any]:
-    """Type L×W in kendo cell editors (not dataItem.set-only).
+    """Type L×W in kendo cells, then UpdatePerimeterWeight before Finish.
 
-    Live 29743-1: dataItem.set skipped Status / perimeter calc that
-    typing in the grid cells runs. GetPDFData omitted Status.
+    Live 29743-1: dataItem.set skipped UpdatePerimeterWeight /
+    POST /Quote/GetPerimeterAndWeight. Posted OutsidePerimeter
+    empty → server List no PR/laser pack. Do not invent perimeter.
     """
     spec_rows: list[dict[str, Any]] = []
     for row in rows or []:
@@ -2699,9 +2891,14 @@ def stamp_pdf_kendo_flats(
     empty = {
         "ok": False,
         "stamped": 0,
+        "cell_edit": 0,
         "grid_id": "",
         "grid_pdf_row_count": 0,
         "edit_gate": "",
+        "outside_perimeter_n": 0,
+        "cutting_length_n": 0,
+        "getperimeter_xhr": False,
+        "perimeter_via": "",
     }
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     empty["edit_gate"] = str(gate.get("reason") or "")
@@ -2722,9 +2919,14 @@ def stamp_pdf_kendo_flats(
     return {
         "ok": bool(value.get("ok")),
         "stamped": int(value.get("stamped") or 0),
+        "cell_edit": int(value.get("cell_edit") or 0),
         "grid_id": str(value.get("grid_id") or ""),
         "grid_pdf_row_count": int(value.get("grid_pdf_row_count") or 0),
         "edit_gate": "",
+        "outside_perimeter_n": int(value.get("outside_perimeter_n") or 0),
+        "cutting_length_n": int(value.get("cutting_length_n") or 0),
+        "getperimeter_xhr": bool(value.get("getperimeter_xhr")),
+        "perimeter_via": str(value.get("perimeter_via") or ""),
     }
 
 

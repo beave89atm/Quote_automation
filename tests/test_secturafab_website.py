@@ -982,6 +982,43 @@ def test_29743_1_files_kendo_bind_without_gold_pack_is_fail():
     )
 
 
+def test_leftover_cad_pack_is_on_additem_list():
+    """Leftover 29743-1 EDIT: pack is on AddItem_PDFFiles List; no later XHR."""
+    from secturafab.website import leftover_cad_pack_is_on_additem_list
+    from tests.fixtures.live_29743_1 import leftover_cad_pack_bind_dump
+
+    dump = leftover_cad_pack_bind_dump()
+    assert leftover_cad_pack_is_on_additem_list(dump) is True
+    broken = dict(dump)
+    broken["pack_xhr_named"] = True
+    assert leftover_cad_pack_is_on_additem_list(broken) is False
+    broken2 = dict(dump)
+    broken2["addrow_stamps_pr"] = True
+    assert leftover_cad_pack_is_on_additem_list(broken2) is False
+    live = dump["live_29743_1"]
+    assert live["lw_via"] == "dataItem.set"
+    assert live["update_perimeter_weight"] is False
+    assert live["outside_perimeter"] == ""
+    assert live["cutting_length"] == 0
+    assert live["tag"] == ""
+    assert live["operation_cost_list"] == []
+    assert live["unit_cost"] == 0
+
+
+def test_empty_perimeter_weight_is_fail():
+    from secturafab.website import empty_perimeter_weight_is_fail
+
+    assert empty_perimeter_weight_is_fail(
+        {"outside_perimeter_n": 0, "cutting_length_n": 0}
+    ) is True
+    assert empty_perimeter_weight_is_fail(
+        {"outside_perimeter_n": 2, "cutting_length_n": 2}
+    ) is False
+    assert empty_perimeter_weight_is_fail({"stamped": 2}) is False
+    assert empty_perimeter_weight_is_fail(MagicMock()) is False
+    assert empty_perimeter_weight_is_fail(None) is False
+
+
 def test_additem_pdf_filelist_keeps_all_upload_list_keys():
     """FileList must not slim away Upload List calculator keys (SourceDataID may be absent)."""
     from secturafab.website import (
@@ -1131,6 +1168,7 @@ def test_getpdfdata_keeps_status_gt_zero_only():
 def test_website_paths_are_quote_mvc_not_quickadd():
     assert WEBSITE_FINISH_PATHS["add_item_dxf_files"] == "/Quote/AddItem_DXFFiles"
     assert WEBSITE_FINISH_PATHS["add_item_pdf_files"] == "/Quote/AddItem_PDFFiles"
+    assert WEBSITE_FINISH_PATHS["get_perimeter_and_weight"] == "/Quote/GetPerimeterAndWeight"
     assert WEBSITE_FINISH_PATHS["add_item_linear"] == "/Quote/AddItem_Linear"
     assert WEBSITE_FINISH_PATHS["add_operation"] == "/Quote/AddOperation"
     assert WEBSITE_FINISH_PATHS["copy_move_to_assembly"] == "/Quote/CopyMoveItemToAssembly"
@@ -6910,6 +6948,12 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
 
     assert "editCell" in _STAMP_PDF_KENDO_JS
     assert "editSet" in _STAMP_PDF_KENDO_JS
+    assert "UpdatePerimeterWeight" in _STAMP_PDF_KENDO_JS
+    assert "/Quote/GetPerimeterAndWeight" in _STAMP_PDF_KENDO_JS
+    assert "outside_perimeter_n" in _STAMP_PDF_KENDO_JS
+    assert "CuttingLengthDisp" in _STAMP_PDF_KENDO_JS
+    assert "empty_perimeter" in _PAGE_PDF_FINISH_JS
+    assert "OutsidePerimeter" in _PAGE_PDF_FINISH_JS
 
 
 def test_upload_pdf_via_page_add_files_is_not_cookie_http():

@@ -100,4 +100,73 @@ def live_29743_1_quote() -> dict[str, Any]:
         "cad_n": CAD_N,
         "linear_n": LINEAR_N,
         "getpdfdata_omitted_status": True,
+        "pack_xhr_named": False,
+        "addrow_stamps_pr": False,
+        "lw_via": "dataItem.set",
+        "update_perimeter_weight": False,
     }
+
+
+# Leftover 29743-1 EDIT dump (read-only; no Finish). Capture named
+# /workspace/live-29743-1-cad-pack-bind.json — not on this VM.
+LEFTOVER_CAD_PACK_BIND = {
+    "quote_id": SPENT_QUOTE_ID,
+    "quote_number": SPENT_QUOTE_NUMBER,
+    "readonly": True,
+    "finish_posted": False,
+    "pack_xhr_named": False,
+    "addrow_stamps_pr": False,
+    "OnAddPDFClick_success": (
+        "DisplaySummaryData",
+        "AddRow",
+        "FastUpdateRow",
+    ),
+    "quoteorderedit_js_pack_strings": (),
+    "pack_already_on_additem_list": True,
+    "list_pack_keys": ("Tag", "ProductionReady", "OperationCostList"),
+    "UpdatePerimeterWeight": {
+        "on": ("Length", "Width", "OutsidePerimeter"),
+        "xhr": "POST /Quote/GetPerimeterAndWeight",
+        "writes": ("#OutsidePerimeter", ".pdfcuttinglength CuttingLengthDisp"),
+        "when": "change_before_AddItem",
+    },
+    "GetPDFData": {
+        "posts": (
+            "OutsidePerimeter",
+            "OutsidePerimeter_UseLocal",
+            "Length",
+            "Width",
+            "Machine",
+            "Material",
+            "Thickness",
+            "InternalData",
+        ),
+        "omits": (
+            "Status",
+            "CadType",
+            "CuttingLength",
+            "ProductionReady",
+            "Tag",
+        ),
+        "status_is_filter_only": True,
+    },
+    "AddNewPDFFeature": {
+        "optional": True,
+        "xhr": ("GET /Quote/PDFInternal", "PDFGetData"),
+        "writes": "InternalData",
+    },
+    "live_29743_1": {
+        "lw_via": "dataItem.set",
+        "update_perimeter_weight": False,
+        "outside_perimeter": "",
+        "cutting_length": 0,
+        "tag": "",
+        "operation_cost_list": [],
+        "unit_cost": 0,
+    },
+}
+
+
+def leftover_cad_pack_bind_dump() -> dict[str, Any]:
+    """Leftover EDIT: pack is on AddItem_PDFFiles List; no later XHR."""
+    return dict(LEFTOVER_CAD_PACK_BIND)

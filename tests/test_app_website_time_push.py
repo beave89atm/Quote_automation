@@ -1946,3 +1946,50 @@ def test_29743_1_files_kendo_bind_is_not_gold_pack(tmp_path, monkeypatch):
     assert "DoD FAIL" in blob
     assert "Linear saw PASS is not DoD PASS" in blob
     assert "persisted" not in blob.lower()
+
+
+def test_29743_1_empty_perimeter_does_not_finish(tmp_path, monkeypatch):
+    """UpdatePerimeterWeight empty OutsidePerimeter — do not Finish."""
+    from tests.fixtures.live_29743_1 import live_29743_1_quote
+
+    quote = live_29743_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdfs = []
+    for name in ("29743-a.pdf", "29743-b.pdf"):
+        p = tmp_path / name
+        p.write_bytes(b"%PDF")
+        pdfs.append(p)
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(2)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 2,
+        "cell_edit": 4,
+        "outside_perimeter_n": 0,
+        "cutting_length_n": 0,
+        "getperimeter_xhr": False,
+        "perimeter_via": "",
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 4}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000002974",
+        pdf_files=pdfs,
+        material="A572",
+        thickness="0.1875",
+        qty=2,
+        description="SUBFRAME WELDMENT",
+        bom_rows=[
+            {"part_no": "29743-a", "qty": 2, "description": "PLATE", "width_in": 8.0, "length_in": 12.0},
+            {"part_no": "29743-b", "qty": 2, "description": "PLATE", "width_in": 10.0, "length_in": 14.0},
+        ],
+    )
+    client.add_item_pdf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "UpdatePerimeterWeight" in blob
+    assert "empty OutsidePerimeter" in blob
+    assert "29743-1" in blob
+    assert "do not Finish" in blob
+    assert "persisted" not in blob.lower()

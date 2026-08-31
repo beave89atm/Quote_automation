@@ -2987,9 +2987,15 @@ class SecturaFabPushService:
         does not fill the grid (live 103535-1 empty_dataSource / GET 0).
         GetPDFData() walks tbody dataItem Status>0 (not an XHR).
         Reconstructed FileList is fail-closed (live 1001898-5).
+        After #files bind, type L×W so UpdatePerimeterWeight →
+        POST /Quote/GetPerimeterAndWeight fills OutsidePerimeter +
+        CuttingLengthDisp before OnAddPDFClick. Empty perimeter →
+        do not Finish (live 29743-1 dataItem.set skipped that XHR;
+        server List Tag "" / OCL [] / UnitCost 0 / CuttingLength 0).
         #files + GetPDFData + OnAddPDFClick is not gold PR/laser
-        (live 29743-1 UnitCost 0 / empty OCL / CuttingLength 0).
-        Do not treat UnitPrice as UnitCost. Do not graft.
+        unless Cad GET has Tag + OperationCostList + UnitCost>0 +
+        CuttingLength>0. Do not treat UnitPrice as UnitCost.
+        Do not AddOperation / nest / Operation→Profile. Do not graft.
         """
         if not self._website_cookie_present():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
@@ -3150,6 +3156,7 @@ class SecturaFabPushService:
             from .website import (
                 cookie_http_pdf_upload_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
+                empty_perimeter_weight_is_fail,
                 pdf_finish_from_page_kendo,
                 pdf_grid_upload_bound,
                 reconstructed_pdf_filelist_is_fail,
@@ -3180,67 +3187,88 @@ class SecturaFabPushService:
                     "Image Files DoD FAIL (live 103535-1)"
                 )
             else:
+                stamp_out: Any = None
                 if stamp_rows:
                     stamper = getattr(self.client, "stamp_pdf_kendo_flats", None)
                     if callable(stamper):
-                        stamper(quote_id=quote_id, rows=stamp_rows)
+                        stamp_out = stamper(quote_id=quote_id, rows=stamp_rows)
                         notes.append(
                             f"Stamped {len(stamp_rows)} L×W row(s) on page PDF kendo"
                         )
-                try:
-                    result = self.client.add_item_pdf_files(
-                        quote_id=quote_id,
-                        file_list=[],
-                        item_id=EMPTY_GUID,
-                        customer_material=False,
-                    )
-                except SecturaFabWebsiteAuthError as exc:
-                    raise SecturaFabWebsiteAuthError(
-                        f"{WEBSITE_SESSION_EXPIRED} — AddItem_PDFFiles 302 ({exc})",
-                        status_code=getattr(exc, "status_code", None),
-                        body=getattr(exc, "body", None),
-                    ) from exc
-                except SecturaFabApiError as exc:
-                    notes.append(f"WARNING: AddItem_PDFFiles: {exc}")
-                    result = {}
-                from_kendo = (
-                    pdf_finish_from_page_kendo(result)
-                    if isinstance(result, dict)
-                    else False
-                )
-                if isinstance(result, dict):
-                    via = str(result.get("via") or "")
-                    if via:
-                        notes.append(f"finish_via={via}")
-                    finish_fn = str(result.get("finish_fn") or "")
-                    if finish_fn:
-                        notes.append(f"finish_fn={finish_fn}")
-                    notes.append(
-                        "filelist_from_kendo="
-                        + ("true" if result.get("filelist_from_kendo") else "false")
-                    )
-                    why = str(result.get("finish_why") or "")
-                    if why:
-                        notes.append(f"finish_why={why}")
-                    if from_kendo:
-                        try:
-                            posted_n = int(result.get("finish_filelist_n") or 0)
-                        except (TypeError, ValueError):
-                            posted_n = 0
-                if empty_gridpdf_after_stamp_is_fail(
-                    result if isinstance(result, dict) else None,
-                    grid_pdf_row_count=grid_n,
-                ) or reconstructed_pdf_filelist_is_fail(
-                    result if isinstance(result, dict) else None
+                        if isinstance(stamp_out, dict):
+                            notes.append(
+                                "getperimeter_xhr="
+                                + (
+                                    "true"
+                                    if stamp_out.get("getperimeter_xhr")
+                                    else "false"
+                                )
+                            )
+                            via_perim = str(stamp_out.get("perimeter_via") or "")
+                            if via_perim:
+                                notes.append(f"perimeter_via={via_perim}")
+                if empty_perimeter_weight_is_fail(
+                    stamp_out if isinstance(stamp_out, dict) else None
                 ):
-                    from_kendo = False
-                    posted_n = 0
                     notes.append(
-                        "WARNING: empty_dataSource / reconstructed FileList "
-                        "Image Files is fail-closed even if GET>0 "
-                        "(live 103535-1 / 1001898-5) — need bound #gridPDF "
-                        "GetPDFData OnAddPDFClick"
+                        "WARNING: UpdatePerimeterWeight empty OutsidePerimeter "
+                        "— do not Finish (live 29743-1)"
                     )
+                else:
+                    try:
+                        result = self.client.add_item_pdf_files(
+                            quote_id=quote_id,
+                            file_list=[],
+                            item_id=EMPTY_GUID,
+                            customer_material=False,
+                        )
+                    except SecturaFabWebsiteAuthError as exc:
+                        raise SecturaFabWebsiteAuthError(
+                            f"{WEBSITE_SESSION_EXPIRED} — AddItem_PDFFiles 302 ({exc})",
+                            status_code=getattr(exc, "status_code", None),
+                            body=getattr(exc, "body", None),
+                        ) from exc
+                    except SecturaFabApiError as exc:
+                        notes.append(f"WARNING: AddItem_PDFFiles: {exc}")
+                        result = {}
+                    from_kendo = (
+                        pdf_finish_from_page_kendo(result)
+                        if isinstance(result, dict)
+                        else False
+                    )
+                    if isinstance(result, dict):
+                        via = str(result.get("via") or "")
+                        if via:
+                            notes.append(f"finish_via={via}")
+                        finish_fn = str(result.get("finish_fn") or "")
+                        if finish_fn:
+                            notes.append(f"finish_fn={finish_fn}")
+                        notes.append(
+                            "filelist_from_kendo="
+                            + ("true" if result.get("filelist_from_kendo") else "false")
+                        )
+                        why = str(result.get("finish_why") or "")
+                        if why:
+                            notes.append(f"finish_why={why}")
+                        if from_kendo:
+                            try:
+                                posted_n = int(result.get("finish_filelist_n") or 0)
+                            except (TypeError, ValueError):
+                                posted_n = 0
+                    if empty_gridpdf_after_stamp_is_fail(
+                        result if isinstance(result, dict) else None,
+                        grid_pdf_row_count=grid_n,
+                    ) or reconstructed_pdf_filelist_is_fail(
+                        result if isinstance(result, dict) else None
+                    ):
+                        from_kendo = False
+                        posted_n = 0
+                        notes.append(
+                            "WARNING: empty_dataSource / reconstructed FileList "
+                            "Image Files is fail-closed even if GET>0 "
+                            "(live 103535-1 / 1001898-5) — need bound #gridPDF "
+                            "GetPDFData OnAddPDFClick"
+                        )
         posted = self._read_quote_items(quote_id)
         cad_persisted = count_cad_product_type(posted)
         from .line_item_ops import (
