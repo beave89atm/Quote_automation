@@ -838,7 +838,11 @@ class SecturaFabClient:
         quote_id: str | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        """POST /Attachment/UploadItem_PDFFiles — Image Files plate upload."""
+        """POST /Attachment/UploadItem_PDFFiles — cookie HTTP, does not bind #gridPDF.
+
+        Live 103535-1: this path left GetPDFData empty. Image Files upload
+        must be page +Add Files via upload_pdf_via_page_add_files.
+        """
         from .browser_session import effective_website_cookie
 
         if not effective_website_cookie(self.config):
@@ -1507,6 +1511,17 @@ class SecturaFabClient:
         from .chrome_cdp import stamp_pdf_kendo_flats as _stamp
 
         return _stamp(rows, quote_id=quote_id)
+
+    def upload_pdf_via_page_add_files(
+        self,
+        *,
+        quote_id: str,
+        files: list[Any],
+    ) -> dict[str, Any]:
+        """Image Files +Add Files on EDIT #gridPDF. Not cookie HTTP upload."""
+        from .chrome_cdp import upload_pdf_via_page_add_files as _upload
+
+        return _upload(files, quote_id=quote_id)
 
     def add_item_linear(
         self,

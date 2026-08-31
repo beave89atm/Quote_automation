@@ -2979,10 +2979,12 @@ class SecturaFabPushService:
         extra_pdfs: list[Path] | None = None,
         takeoff: dict[str, Any] | None = None,
     ) -> list[str]:
-        """Image Files Finish: upload → stamp page PDF kendo → OnAddPDFClick.
+        """Image Files Finish: page +Add Files bind → stamp → OnAddPDFClick.
 
-        FileList must be GetPDFData() / #gridPDF rows with Status>0.
-        Reconstructed FileList is fail-closed even if GET>0 (live 1001898-5).
+        Upload must fill #gridPDF / GetPDFData (Kyle +Add Files). Cookie HTTP
+        UploadItem_PDFFiles + later stamp is fail-closed even if GET>0
+        (live 103535-1 empty_dataSource / GET 0). Reconstructed FileList
+        is fail-closed (live 1001898-5).
         """
         if not self._website_cookie_present():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
@@ -3034,7 +3036,7 @@ class SecturaFabPushService:
         )
         posted_n = 0
         stamp_rows: list[dict[str, Any]] = []
-        uploaded_n = 0
+        cad_paths: list[Path] = []
         for path in pdf_files:
             stem = path.stem
             pn = match_bom_part_no(stem, bom_rows) or stem
@@ -3112,21 +3114,7 @@ class SecturaFabPushService:
                 length_in=plate_l,
                 noun=locked.get("noun") or noun or description,
             )
-            try:
-                with path.open("rb") as fh:
-                    upload = self.client.upload_item_pdf_attachment(
-                        [("files", (path.name, fh, _mime_for(path)))],
-                        quote_id=quote_id,
-                    )
-            except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
-                notes.append(
-                    f"WARNING: Attachment/UploadItem_PDFFiles {path.name}: {exc}"
-                )
-                continue
-            notes.append(
-                f"Uploaded Image Files via /Attachment/UploadItem_PDFFiles {path.name}"
-            )
-            uploaded_n += 1
+            cad_paths.append(path)
             if plate_w and plate_l and plate_thk not in (None, "", 0, "0"):
                 stamp_rows.append(
                     {
@@ -3149,63 +3137,105 @@ class SecturaFabPushService:
                     f"for {path.name} — not inventing reconstructed FileList"
                 )
         from_kendo = False
-        if uploaded_n:
-            if stamp_rows:
-                stamper = getattr(self.client, "stamp_pdf_kendo_flats", None)
-                if callable(stamper):
-                    stamper(quote_id=quote_id, rows=stamp_rows)
-                    notes.append(
-                        f"Stamped {len(stamp_rows)} L×W row(s) on page PDF kendo"
-                    )
-            try:
-                result = self.client.add_item_pdf_files(
-                    quote_id=quote_id,
-                    file_list=[],
-                    item_id=EMPTY_GUID,
-                    customer_material=False,
-                )
-                posted_n = 1
-            except SecturaFabWebsiteAuthError as exc:
-                raise SecturaFabWebsiteAuthError(
-                    f"{WEBSITE_SESSION_EXPIRED} — AddItem_PDFFiles 302 ({exc})",
-                    status_code=getattr(exc, "status_code", None),
-                    body=getattr(exc, "body", None),
-                ) from exc
-            except SecturaFabApiError as exc:
-                notes.append(f"WARNING: AddItem_PDFFiles: {exc}")
-                result = {}
+        bound = False
+        upload_via = ""
+        grid_n = 0
+        result: dict[str, Any] | None = None
+        if cad_paths:
             from .website import (
+                cookie_http_pdf_upload_is_fail,
+                empty_gridpdf_after_stamp_is_fail,
                 pdf_finish_from_page_kendo,
+                pdf_grid_upload_bound,
                 reconstructed_pdf_filelist_is_fail,
             )
 
-            from_kendo = (
-                pdf_finish_from_page_kendo(result)
-                if isinstance(result, dict)
-                else False
-            )
-            if isinstance(result, dict):
-                via = str(result.get("via") or "")
-                if via:
-                    notes.append(f"finish_via={via}")
-                finish_fn = str(result.get("finish_fn") or "")
-                if finish_fn:
-                    notes.append(f"finish_fn={finish_fn}")
+            uploader = getattr(self.client, "upload_pdf_via_page_add_files", None)
+            bind: Any = {}
+            if callable(uploader):
+                bind = uploader(quote_id=quote_id, files=cad_paths)
+            if not isinstance(bind, dict):
+                bind = {}
+            upload_via = str(bind.get("upload_via") or "")
+            try:
+                grid_n = int(bind.get("grid_pdf_row_count") or 0)
+            except (TypeError, ValueError):
+                grid_n = 0
+            bound = pdf_grid_upload_bound(bind)
+            notes.append(f"upload_via={upload_via or 'missing'}")
+            notes.append(f"grid_pdf_row_count={grid_n}")
+            notes.append("bound=" + ("true" if bound else "false"))
+            if cookie_http_pdf_upload_is_fail(upload_via) or not bound:
                 notes.append(
-                    "filelist_from_kendo="
-                    + ("true" if result.get("filelist_from_kendo") else "false")
+                    "WARNING: cookie HTTP UploadItem_PDFFiles does not bind "
+                    "#gridPDF (live 103535-1) — need page +Add Files"
                 )
-                why = str(result.get("finish_why") or "")
-                if why:
-                    notes.append(f"finish_why={why}")
-            if reconstructed_pdf_filelist_is_fail(
-                result if isinstance(result, dict) else None
-            ):
                 notes.append(
-                    "WARNING: reconstructed FileList Image Files is fail-closed "
-                    "even if GET>0 (live 1001898-5) — need page GetPDFData / "
-                    "#gridPDF OnAddPDFClick"
+                    "WARNING: empty_dataSource / #gridPDF not bound — "
+                    "Image Files DoD FAIL (live 103535-1)"
                 )
+            else:
+                if stamp_rows:
+                    stamper = getattr(self.client, "stamp_pdf_kendo_flats", None)
+                    if callable(stamper):
+                        stamper(quote_id=quote_id, rows=stamp_rows)
+                        notes.append(
+                            f"Stamped {len(stamp_rows)} L×W row(s) on page PDF kendo"
+                        )
+                try:
+                    result = self.client.add_item_pdf_files(
+                        quote_id=quote_id,
+                        file_list=[],
+                        item_id=EMPTY_GUID,
+                        customer_material=False,
+                    )
+                except SecturaFabWebsiteAuthError as exc:
+                    raise SecturaFabWebsiteAuthError(
+                        f"{WEBSITE_SESSION_EXPIRED} — AddItem_PDFFiles 302 ({exc})",
+                        status_code=getattr(exc, "status_code", None),
+                        body=getattr(exc, "body", None),
+                    ) from exc
+                except SecturaFabApiError as exc:
+                    notes.append(f"WARNING: AddItem_PDFFiles: {exc}")
+                    result = {}
+                from_kendo = (
+                    pdf_finish_from_page_kendo(result)
+                    if isinstance(result, dict)
+                    else False
+                )
+                if isinstance(result, dict):
+                    via = str(result.get("via") or "")
+                    if via:
+                        notes.append(f"finish_via={via}")
+                    finish_fn = str(result.get("finish_fn") or "")
+                    if finish_fn:
+                        notes.append(f"finish_fn={finish_fn}")
+                    notes.append(
+                        "filelist_from_kendo="
+                        + ("true" if result.get("filelist_from_kendo") else "false")
+                    )
+                    why = str(result.get("finish_why") or "")
+                    if why:
+                        notes.append(f"finish_why={why}")
+                    if from_kendo:
+                        try:
+                            posted_n = int(result.get("finish_filelist_n") or 0)
+                        except (TypeError, ValueError):
+                            posted_n = 0
+                if empty_gridpdf_after_stamp_is_fail(
+                    result if isinstance(result, dict) else None,
+                    grid_pdf_row_count=grid_n,
+                ) or reconstructed_pdf_filelist_is_fail(
+                    result if isinstance(result, dict) else None
+                ):
+                    from_kendo = False
+                    posted_n = 0
+                    notes.append(
+                        "WARNING: empty_dataSource / reconstructed FileList "
+                        "Image Files is fail-closed even if GET>0 "
+                        "(live 103535-1 / 1001898-5) — need bound #gridPDF "
+                        "GetPDFData OnAddPDFClick"
+                    )
         posted = self._read_quote_items(quote_id)
         cad_persisted = count_cad_product_type(posted)
         from .line_item_ops import (
@@ -3224,14 +3254,13 @@ class SecturaFabPushService:
         if not from_kendo:
             if cad_persisted > 0:
                 notes.append(
-                    "WARNING: GET>0 after reconstructed FileList is not success "
-                    "(live 1001898-5)"
+                    "WARNING: GET>0 after reconstructed FileList / unbound "
+                    "#gridPDF is not success (live 1001898-5 / 103535-1)"
                 )
-            elif uploaded_n:
+            elif cad_paths:
                 notes.append(
-                    f"WARNING: AddItem_PDFFiles posted {posted_n} FileList "
-                    f"row(s) but item read has 0 ProductType 100 lines "
-                    f"(CadImport list is not success)"
+                    "WARNING: #gridPDF not bound / OnAddPDFClick skipped — "
+                    "GET 0 Cad (live 103535-1; CadImport list is not success)"
                 )
         elif cad_persisted <= 0:
             notes.append(

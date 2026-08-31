@@ -89,6 +89,13 @@ no PR tag). Kyle Loom: Image Files + typed L×W + green
 ``Status>0``. Reconstructed FileList is fail-closed even if
 GET>0. Leave 491f6387 / 1001898-5. No STEP. Do not mint.
 
+Live 103535-1 (bd5c2e3e Q10095 GATE WELDMENT): cookie HTTP
+UploadItem_PDFFiles (5 PDFs) then Python stamp on empty #gridPDF.
+OnAddPDFClick skipped empty_dataSource / GET 0. Kyle: Image Files
+→ drag onto +Add Files (not Select files, not cookie HTTP) so
+gridPDF.dataSource has Status>0 rows before OnAddPDFClick. Leave
+bd5c2e3e / 103535-1. Do not mint.
+
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys /
 counts, plus posted ErrorStatus, Qty, and FileType value/type.
@@ -103,8 +110,10 @@ import os
 import re
 import socket
 import struct
+import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -2634,6 +2643,267 @@ def stamp_pdf_kendo_flats(
         "stamped": int(value.get("stamped") or 0),
         "grid_id": str(value.get("grid_id") or ""),
         "grid_pdf_row_count": int(value.get("grid_pdf_row_count") or 0),
+        "edit_gate": "",
+    }
+
+
+_OPEN_IMAGE_FILES_JS = """(function() {
+  function pdfGrid() {
+    var ids = ["#gridPDF", "#gridPdf", "#grid_PDF", "#gridPDFFiles"];
+    for (var i = 0; i < ids.length; i++) {
+      try {
+        var g = window.jQuery && jQuery(ids[i]).data("kendoGrid");
+        if (g && g.dataSource) return true;
+      } catch (e) {}
+    }
+    return false;
+  }
+  var via = "";
+  try {
+    if (typeof window.AddNewItemHTML === "function") {
+      window.AddNewItemHTML("pdf", "top");
+      via = "AddNewItemHTML";
+    }
+  } catch (e) {}
+  if (!via) {
+    try {
+      if (window.jQuery && jQuery("#but_pdf").length) {
+        jQuery("#but_pdf").click();
+        via = "#but_pdf";
+      }
+    } catch (e2) {}
+  }
+  if (!via) {
+    try {
+      var nodes = document.querySelectorAll("button, a, input[type=button], span");
+      for (var i = 0; i < nodes.length; i++) {
+        var t = String(nodes[i].textContent || nodes[i].value || "").toLowerCase();
+        if (t.indexOf("image files") >= 0) {
+          nodes[i].click();
+          via = "image-files";
+          break;
+        }
+      }
+    } catch (e3) {}
+  }
+  return Promise.resolve({opened_via: via, grid_present: pdfGrid()});
+})"""
+
+
+_FIND_PDF_ADD_FILES_INPUT_JS = """(function() {
+  function pdfGrid() {
+    var ids = ["#gridPDF", "#gridPdf", "#grid_PDF", "#gridPDFFiles"];
+    for (var i = 0; i < ids.length; i++) {
+      try {
+        var g = window.jQuery && jQuery(ids[i]).data("kendoGrid");
+        if (g && g.dataSource) return ids[i];
+      } catch (e) {}
+    }
+    return "";
+  }
+  var inputs = document.querySelectorAll("input[type=file]");
+  var addFiles = null;
+  for (var i = 0; i < inputs.length; i++) {
+    var el = inputs[i];
+    var wrap = el.closest(".k-upload, .k-widget, label, div, span, td") || el.parentElement;
+    var text = wrap ? String(wrap.textContent || "").toLowerCase() : "";
+    var blob = ((el.id || "") + " " + (el.name || "") + " " + (el.className || "")).toLowerCase();
+    if (text.indexOf("select files") >= 0 && text.indexOf("add files") < 0) {
+      continue;
+    }
+    if (text.indexOf("add files") >= 0 || text.indexOf("+add") >= 0
+        || blob.indexOf("addfile") >= 0 || blob.indexOf("add-files") >= 0) {
+      addFiles = el;
+      break;
+    }
+  }
+  if (!addFiles) {
+    addFiles = document.querySelector("#gridPDF input[type=file]")
+      || document.querySelector("#gridPdf input[type=file]");
+  }
+  if (!addFiles) {
+    return Promise.resolve({selector: "", grid_id: pdfGrid()});
+  }
+  if (addFiles.id) {
+    return Promise.resolve({selector: "#" + addFiles.id, grid_id: pdfGrid()});
+  }
+  addFiles.setAttribute("data-kannon-add-files", "1");
+  return Promise.resolve({
+    selector: "input[type=file][data-kannon-add-files='1']",
+    grid_id: pdfGrid()
+  });
+})"""
+
+
+_READ_GRID_PDF_COUNT_JS = """(function() {
+  function statusOf(r) {
+    var s = r && (r.Status != null ? r.Status : r.status);
+    return Number(s || 0);
+  }
+  function toRows(raw) {
+    if (!raw) return [];
+    try { if (raw.toJSON) return raw.toJSON(); } catch (e) {}
+    var out = [];
+    var n = raw.length || 0;
+    for (var i = 0; i < n; i++) {
+      var r = raw[i];
+      try { out.push(r && r.toJSON ? r.toJSON() : r); } catch (e2) { out.push(r); }
+    }
+    return out;
+  }
+  var gridId = "";
+  var rows = [];
+  if (typeof window.GetPDFData === "function") {
+    try {
+      var d = window.GetPDFData();
+      if (Array.isArray(d)) rows = d;
+    } catch (e) {}
+  }
+  var ids = ["#gridPDF", "#gridPdf", "#grid_PDF", "#gridPDFFiles"];
+  for (var i = 0; i < ids.length; i++) {
+    try {
+      var g = window.jQuery && jQuery(ids[i]).data("kendoGrid");
+      if (g && g.dataSource) {
+        gridId = ids[i];
+        if (!rows.length) rows = toRows(g.dataSource.data());
+        break;
+      }
+    } catch (e2) {}
+  }
+  var statusN = 0;
+  for (var j = 0; j < rows.length; j++) {
+    if (statusOf(rows[j]) > 0) statusN += 1;
+  }
+  return Promise.resolve({
+    grid_id: gridId,
+    grid_pdf_row_count: rows.length,
+    status_gt0_n: statusN
+  });
+})"""
+
+
+def _cdp_set_file_input_files(
+    ws: str,
+    selector: str,
+    paths: list[str],
+) -> bool:
+    """DOM.setFileInputFiles on the page +Add Files input. Never logs paths."""
+    if not ws or not selector or not paths:
+        return False
+    cdp_call(ws, "DOM.enable", {}, call_id=80)
+    doc = cdp_call(ws, "DOM.getDocument", {"depth": 1}, call_id=81)
+    if not isinstance(doc, dict):
+        return False
+    root = (doc.get("root") or {}).get("nodeId") if isinstance(doc.get("root"), dict) else None
+    if not root:
+        return False
+    found = cdp_call(
+        ws,
+        "DOM.querySelector",
+        {"nodeId": root, "selector": selector},
+        call_id=82,
+    )
+    node_id = found.get("nodeId") if isinstance(found, dict) else None
+    if not node_id:
+        return False
+    result = cdp_call(
+        ws,
+        "DOM.setFileInputFiles",
+        {"files": list(paths), "nodeId": node_id},
+        call_id=83,
+    )
+    return result is not None
+
+
+def upload_pdf_via_page_add_files(
+    files: list[Any],
+    *,
+    quote_id: str | None = None,
+    base: str | None = None,
+) -> dict[str, Any]:
+    """Kyle Image Files +Add Files — binds #gridPDF. Not cookie HTTP upload.
+
+    Live 103535-1: cookie POST /Attachment/UploadItem_PDFFiles left
+    gridPDF.dataSource empty. Drag onto +Add Files (not Select files).
+    """
+    paths = [str(Path(p).resolve()) for p in (files or []) if p]
+    empty = {
+        "bound": False,
+        "upload_via": "skipped",
+        "grid_pdf_row_count": 0,
+        "status_gt0_n": 0,
+        "grid_id": "",
+        "opened_via": "",
+        "finish_why": "wrong_document",
+        "edit_gate": "",
+    }
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
+    empty["edit_gate"] = str(gate.get("reason") or "")
+    if not gate.get("ok"):
+        return empty
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    opened = _cdp_evaluate_promise(
+        _OPEN_IMAGE_FILES_JS + "()", base=base, tab=tab, fallback=False
+    )
+    opened_via = ""
+    if isinstance(opened, dict):
+        opened_via = str(opened.get("opened_via") or "")
+    time.sleep(0.35)
+    found = _cdp_evaluate_promise(
+        _FIND_PDF_ADD_FILES_INPUT_JS + "()", base=base, tab=tab, fallback=False
+    )
+    selector = str((found or {}).get("selector") or "") if isinstance(found, dict) else ""
+    if not selector or not paths:
+        return {
+            **empty,
+            "upload_via": "skipped",
+            "opened_via": opened_via,
+            "finish_why": "no_add_files_input",
+            "grid_id": str((found or {}).get("grid_id") or "") if isinstance(found, dict) else "",
+        }
+    ws = str((tab or {}).get("webSocketDebuggerUrl") or "")
+    if not _cdp_set_file_input_files(ws, selector, paths):
+        return {
+            **empty,
+            "upload_via": "page_add_files",
+            "opened_via": opened_via,
+            "finish_why": "set_files_failed",
+        }
+    last = {
+        "grid_id": "",
+        "grid_pdf_row_count": 0,
+        "status_gt0_n": 0,
+    }
+    for _ in range(24):
+        count = _cdp_evaluate_promise(
+            _READ_GRID_PDF_COUNT_JS + "()", base=base, tab=tab, fallback=False
+        )
+        if isinstance(count, dict):
+            last = count
+            try:
+                n = int(count.get("status_gt0_n") or count.get("grid_pdf_row_count") or 0)
+            except (TypeError, ValueError):
+                n = 0
+            if n > 0:
+                return {
+                    "bound": True,
+                    "upload_via": "page_add_files",
+                    "grid_pdf_row_count": int(count.get("grid_pdf_row_count") or n),
+                    "status_gt0_n": int(count.get("status_gt0_n") or n),
+                    "grid_id": str(count.get("grid_id") or ""),
+                    "opened_via": opened_via,
+                    "finish_why": "",
+                    "edit_gate": "",
+                }
+        time.sleep(0.25)
+    return {
+        "bound": False,
+        "upload_via": "page_add_files",
+        "grid_pdf_row_count": int(last.get("grid_pdf_row_count") or 0),
+        "status_gt0_n": int(last.get("status_gt0_n") or 0),
+        "grid_id": str(last.get("grid_id") or ""),
+        "opened_via": opened_via,
+        "finish_why": "empty_dataSource",
         "edit_gate": "",
     }
 

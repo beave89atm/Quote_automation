@@ -48,6 +48,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "0d4b8a46-cc66-4586-baed-4cad20a07ddb",  # FA Assembly fetch+#img InternalData empty 28/28 (cba5fa2) — leave it
         "5b622a0d-4dab-4099-97e4-d0184df4b770",  # Skin Assembly jquery_ajax+EDIT InternalData empty 8/8 (1a2274f) — leave it
         "491f6387-520f-4eee-aab3-6d20585ee740",  # 1001898-5 reconstructed PDF FileList / Cad no PR (leave it)
+        "bd5c2e3e-948d-463d-8844-4366910bb5ec",  # 103535-1 cookie HTTP upload / empty #gridPDF (leave it)
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -74,6 +75,9 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "0d4b8a46",  # FA Assembly spent fetch+#img InternalData empty 28/28 — do not remint
         "5b622a0d",  # Skin Assembly spent jquery_ajax+EDIT InternalData empty 8/8 — do not remint
         "491f6387",  # 1001898-5 spent reconstructed PDF FileList / Cad no PR — do not remint
+        "bd5c2e3e",  # 103535-1 spent cookie HTTP / empty #gridPDF — do not remint
+        "425587a7",  # 34137-4 — do not open / PATCH / remint
+        "95b8c186",  # 1007922-3 — do not open / PATCH / remint
     }
 )
 
@@ -119,7 +123,12 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "SC0600",  # spent 2c29618 weldment explode InternalData empty 143/143 — do not remint
         "FA Assembly",  # spent 0d4b8a46 fetch+#img InternalData empty 28/28 — do not remint
         "Skin Assembly",  # spent 5b622a0d jquery_ajax+EDIT InternalData empty 8/8 — do not remint
+        "1001898-1",  # Kyle-confirmed gold a7dc46bf — do not remint
         "1001898-5",  # spent 491f6387 reconstructed PDF FileList / Cad no PR — do not remint
+        "103535-1",  # spent bd5c2e3e cookie HTTP / empty #gridPDF — do not remint
+        "Q10095",  # spent 103535-1 GATE WELDMENT — do not remint
+        "34137-4",  # spent 425587a7 — do not remint
+        "1007922-3",  # spent 95b8c186 — do not remint
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

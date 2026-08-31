@@ -823,6 +823,65 @@ def test_pdf_finish_from_page_kendo_rejects_reconstructed():
     assert reconstructed_pdf_filelist_is_fail({"ok": True, "via": "page_fn"}) is True
 
 
+def test_pdf_grid_upload_bound_requires_page_add_files():
+    from secturafab.website import (
+        cookie_http_pdf_upload_is_fail,
+        empty_gridpdf_after_stamp_is_fail,
+        image_files_cookie_http_empty_grid_is_fail,
+        pdf_grid_upload_bound,
+    )
+    from tests.fixtures.live_103535_1 import live_103535_1_cookie_http_empty_grid
+
+    assert pdf_grid_upload_bound(
+        {
+            "upload_via": "page_add_files",
+            "bound": True,
+            "status_gt0_n": 5,
+            "grid_pdf_row_count": 5,
+        }
+    )
+    assert not pdf_grid_upload_bound(
+        {
+            "upload_via": "cookie_http",
+            "bound": True,
+            "status_gt0_n": 5,
+            "grid_pdf_row_count": 5,
+        }
+    )
+    assert not pdf_grid_upload_bound(
+        {
+            "upload_via": "page_add_files",
+            "bound": True,
+            "status_gt0_n": 0,
+            "grid_pdf_row_count": 0,
+        }
+    )
+    assert cookie_http_pdf_upload_is_fail("cookie_http")
+    assert cookie_http_pdf_upload_is_fail("")
+    assert not cookie_http_pdf_upload_is_fail("page_add_files")
+    assert empty_gridpdf_after_stamp_is_fail(
+        {"finish_why": "empty_dataSource", "filelist_from_kendo": False}
+    )
+    assert empty_gridpdf_after_stamp_is_fail(
+        {"finish_why": "", "filelist_from_kendo": False, "grid_pdf_row_count": 4}
+    )
+    assert not empty_gridpdf_after_stamp_is_fail(
+        {
+            "finish_why": "",
+            "filelist_from_kendo": True,
+            "grid_pdf_row_count": 4,
+        }
+    )
+    snap = live_103535_1_cookie_http_empty_grid()
+    assert image_files_cookie_http_empty_grid_is_fail(
+        cookie_http_uploads=snap["cookie_http_uploads"],
+        stamp_n=snap["stamp_n"],
+        finish_why=snap["finish_why"],
+        filelist_from_kendo=snap["filelist_from_kendo"],
+        cad_n=snap["cad_n"],
+    )
+
+
 def test_additem_pdf_filelist_keeps_all_upload_list_keys():
     """FileList must not slim away Upload List calculator keys (SourceDataID may be absent)."""
     from secturafab.website import (
@@ -6719,6 +6778,47 @@ def test_add_item_pdf_files_posts_page_kendo_via_onaddpdfclick():
     assert result["finish_fn"] == "OnAddPDFClick"
     assert result["filelist_from_kendo"] is True
     assert result["finish_filelist_n"] == 3
+
+
+def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
+    from secturafab.chrome_cdp import (
+        _FIND_PDF_ADD_FILES_INPUT_JS,
+        _OPEN_IMAGE_FILES_JS,
+        _READ_GRID_PDF_COUNT_JS,
+    )
+
+    assert "AddNewItemHTML" in _OPEN_IMAGE_FILES_JS
+    assert "image files" in _OPEN_IMAGE_FILES_JS
+    assert "select files" in _FIND_PDF_ADD_FILES_INPUT_JS
+    assert "add files" in _FIND_PDF_ADD_FILES_INPUT_JS
+    assert "GetPDFData" in _READ_GRID_PDF_COUNT_JS
+    assert "gridPDF" in _READ_GRID_PDF_COUNT_JS
+    assert "status_gt0_n" in _READ_GRID_PDF_COUNT_JS
+
+
+def test_upload_pdf_via_page_add_files_is_not_cookie_http():
+    from secturafab.client import SecturaFabClient
+    from secturafab.website import cookie_http_pdf_upload_is_fail
+
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.upload_pdf_via_page_add_files",
+        return_value={
+            "bound": True,
+            "upload_via": "page_add_files",
+            "grid_pdf_row_count": 2,
+            "status_gt0_n": 2,
+        },
+    ) as page, patch.object(real, "upload_item_pdf_attachment") as cookie:
+        result = real.upload_pdf_via_page_add_files(
+            quote_id="11111111-aaaa-bbbb-cccc-000000000011",
+            files=["a.pdf", "b.pdf"],
+        )
+    page.assert_called_once()
+    cookie.assert_not_called()
+    assert result["upload_via"] == "page_add_files"
+    assert not cookie_http_pdf_upload_is_fail(result["upload_via"])
 
 
 def test_add_item_linear_posts_quote_mvc():

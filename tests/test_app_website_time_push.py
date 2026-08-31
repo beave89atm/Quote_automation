@@ -49,6 +49,16 @@ from tests.fixtures.time_gold import DASH_1001898
 from tests.test_lom_xlsx import _1001898_lom_rows, write_excel_absolute_target_xlsx
 
 
+def _page_pdf_bind_ok(n: int = 1) -> dict:
+    return {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "grid_pdf_row_count": n,
+        "status_gt0_n": n,
+        "grid_id": "#gridPDF",
+    }
+
+
 def _bom_rows() -> list[dict]:
     return [
         {"part_no": pn, "qty": qty, "description": desc}
@@ -476,25 +486,19 @@ def test_ensure_weld_ops_uses_add_operation_when_cookie():
 
 
 def test_cadimport_rows_are_not_success_without_product_type_100_read(tmp_path, monkeypatch):
-    """Attachment FileList + AddItem_PDFFiles 200 is not success until item read shows PT 100."""
+    """Cookie HTTP upload + empty #gridPDF is not success (live 103535-1)."""
     monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
     pdf = tmp_path / "14501-1.pdf"
     pdf.write_bytes(b"%PDF")
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=box"
     client.get_item_add_view.return_value = {}
-    client.upload_item_pdf_attachment.return_value = {
-        "FileID": "att-1",
-        "ImageID": "img-1",
-        "FileName": "14501-1.pdf",
-        "Thickness": 0.1875,
-        "Length": 21.875,
-        "Width": 21.875,
-    }
-    client.add_item_pdf_files.return_value = {
-        "ok": False,
-        "via": "skipped",
-        "filelist_from_kendo": False,
+    client.upload_pdf_via_page_add_files.return_value = {
+        "bound": False,
+        "upload_via": "skipped",
+        "grid_pdf_row_count": 0,
+        "status_gt0_n": 0,
+        "finish_why": "empty_dataSource",
     }
     client.quote_item_read.return_value = {"Data": [], "Total": 0}
     client.get_json.return_value = {"ItemList": []}
@@ -508,17 +512,14 @@ def test_cadimport_rows_are_not_success_without_product_type_100_read(tmp_path, 
         description="14501-1 PEDESTAL TOP PLATE",
     )
     client.upload_item_dxf_files.assert_not_called()
-    assert client.upload_item_pdf_attachment.called
-    assert client.add_item_pdf_files.called
-    posted_list = client.add_item_pdf_files.call_args_list[0].kwargs.get("file_list")
-    assert posted_list in ([], None) or posted_list == []
+    client.upload_item_pdf_attachment.assert_not_called()
+    client.add_item_pdf_files.assert_not_called()
     assert client.quote_item_read.called or client.get_json.called
     blob = " ".join(notes)
-    assert "0 ProductType 100" in blob
-    assert "CadImport list is not success" in blob
+    assert "GET 0 Cad" in blob or "not bound" in blob
     assert "persisted" not in blob.lower()
-    assert "/Attachment/UploadItem_PDFFiles" in blob
-    assert "reconstructed FileList" in blob
+    assert "cookie HTTP" in blob
+    assert "#gridPDF" in blob
 
 
 def test_linear_http_500_does_not_abort_weld_or_nest(tmp_path, monkeypatch):
@@ -747,16 +748,13 @@ def test_additem_pdf_uses_takeoff_flats_when_lock_missing(tmp_path, monkeypatch)
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=box"
     client.get_item_add_view.return_value = {}
-    client.upload_item_pdf_attachment.return_value = {
-        "FileID": "att-1",
-        "ImageID": "img-1",
-        "FileName": f"{pn}.pdf",
-    }
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
     client.add_item_pdf_files.return_value = {
         "ok": True,
         "via": "page_fn",
         "finish_fn": "OnAddPDFClick",
         "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
     }
     gold_cad = {
         "ID": "cad-1",
@@ -790,6 +788,8 @@ def test_additem_pdf_uses_takeoff_flats_when_lock_missing(tmp_path, monkeypatch)
         ],
         takeoff={"items": [{"part_no": pn, "blank": [18.5, 6.25]}]},
     )
+    client.upload_item_pdf_attachment.assert_not_called()
+    client.upload_pdf_via_page_add_files.assert_called_once()
     client.add_item_pdf_files.assert_called()
     assert client.add_item_pdf_files.call_args.kwargs.get("file_list") == []
     stamp = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
@@ -892,7 +892,22 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "FA Assembly" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Skin Assembly" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1001898-5" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1001898-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "103535-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10095" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "34137-4" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1007922-3" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21678-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10056" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "491f6387-520f-4eee-aab3-6d20585ee740" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "bd5c2e3e-948d-463d-8844-4366910bb5ec" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "a7d6ca50-efec-409d-bd32-e68012e710c3" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "a7dc46bf-836a-4250-b038-9331cc0595a7" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
+    assert is_forbidden_quote_id("bd5c2e3e-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("425587a7-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("95b8c186-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("491f6387-520f-4eee-aab3-6d20585ee740")
     assert is_forbidden_quote_id("491f6387-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("280f4dcb-1111-2222-3333-444444444444")
@@ -945,6 +960,10 @@ def test_forbidden_includes_empty_1004747_draft():
         "0d4b8a46-cc66-4586-baed-4cad20a07ddb",
         "5b622a0d-4dab-4099-97e4-d0184df4b770",
         "491f6387-520f-4eee-aab3-6d20585ee740",
+        "bd5c2e3e-948d-463d-8844-4366910bb5ec",
+        "a7dc46bf-836a-4250-b038-9331cc0595a7",
+        "a7d6ca50-efec-409d-bd32-e68012e710c3",
+        "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(
@@ -1209,14 +1228,12 @@ def test_filelist_missing_dims_is_not_counted_as_posted(tmp_path, monkeypatch):
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=box"
     client.get_item_add_view.return_value = {}
-    client.upload_item_pdf_attachment.return_value = {
-        "FileID": "att-1",
-        "FileName": "1001947.pdf",
-    }
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
     client.add_item_pdf_files.return_value = {
         "ok": False,
         "via": "skipped",
         "filelist_from_kendo": False,
+        "finish_why": "empty_dataSource",
     }
     client.quote_item_read.return_value = {"Data": [], "Total": 0}
     client.get_json.return_value = {"ItemList": []}
@@ -1230,9 +1247,10 @@ def test_filelist_missing_dims_is_not_counted_as_posted(tmp_path, monkeypatch):
             bom_rows=[{"part_no": "1001947-1", "qty": 1, "description": "1/8 5052-H32 SHEET"}],
         takeoff={},
     )
+    client.upload_item_pdf_attachment.assert_not_called()
     blob = " ".join(notes)
     assert "not inventing reconstructed FileList" in blob
-    assert "0 ProductType 100" in blob
+    assert "0 ProductType 100" in blob or "GET 0 Cad" in blob
     assert "persisted" not in blob.lower()
 
 
@@ -1243,15 +1261,13 @@ def test_filelist_uses_lom_flats_and_5052_not_a36(tmp_path, monkeypatch):
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=box"
     client.get_item_add_view.return_value = {}
-    client.upload_item_pdf_attachment.return_value = {
-        "FileID": "att-1",
-        "FileName": "1001913.pdf",
-    }
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
     client.add_item_pdf_files.return_value = {
         "ok": True,
         "via": "page_fn",
         "finish_fn": "OnAddPDFClick",
         "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
     }
     gold_cad = {
         "ID": "cad-1",
@@ -1294,6 +1310,7 @@ def test_filelist_uses_lom_flats_and_5052_not_a36(tmp_path, monkeypatch):
         library={},
         extra_pdfs=[],
     )
+    client.upload_item_pdf_attachment.assert_not_called()
     client.add_item_pdf_files.assert_called()
     assert client.add_item_pdf_files.call_args.kwargs.get("file_list") == []
     posted = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
@@ -1424,15 +1441,13 @@ def test_filelist_built_for_every_cad_with_lom_flats(tmp_path, monkeypatch):
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=box"
     client.get_item_add_view.return_value = {}
-    client.upload_item_pdf_attachment.return_value = {
-        "FileID": "att-1",
-        "FileName": "kid.pdf",
-    }
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(4)
     client.add_item_pdf_files.return_value = {
         "ok": True,
         "via": "page_fn",
         "finish_fn": "OnAddPDFClick",
         "filelist_from_kendo": True,
+        "finish_filelist_n": 4,
     }
     gold_rows = [
         {
@@ -1479,6 +1494,8 @@ def test_filelist_built_for_every_cad_with_lom_flats(tmp_path, monkeypatch):
             ]
         },
     )
+    client.upload_item_pdf_attachment.assert_not_called()
+    client.upload_pdf_via_page_add_files.assert_called_once()
     assert client.add_item_pdf_files.call_count == 1
     assert client.add_item_pdf_files.call_args.kwargs.get("file_list") == []
     posted_names = []
@@ -1508,15 +1525,13 @@ def test_filelist_rejects_page_outline_dims_for_1007013(tmp_path, monkeypatch):
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=box"
     client.get_item_add_view.return_value = {}
-    client.upload_item_pdf_attachment.return_value = {
-        "FileID": "att-1",
-        "FileName": "1007013.pdf",
-    }
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
     client.add_item_pdf_files.return_value = {
         "ok": True,
         "via": "page_fn",
         "finish_fn": "OnAddPDFClick",
         "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
     }
     client.quote_item_read.return_value = {
         "Data": [
@@ -1560,6 +1575,7 @@ def test_filelist_rejects_page_outline_dims_for_1007013(tmp_path, monkeypatch):
             ]
         },
     )
+    client.upload_item_pdf_attachment.assert_not_called()
     client.add_item_pdf_files.assert_called()
     assert client.add_item_pdf_files.call_args.kwargs.get("file_list") == []
     row = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
@@ -1754,18 +1770,13 @@ def test_1001898_5_cad_unitcost_empty_ocl_no_pr_is_dod_fail(tmp_path, monkeypatc
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=box"
     client.get_item_add_view.return_value = {}
-    client.upload_item_pdf_attachment.return_value = {
-        "FileID": "att-1",
-        "FileName": "14501-1.pdf",
-        "Length": 21.875,
-        "Width": 21.875,
-        "Thickness": 0.1875,
-    }
-    client.add_item_pdf_files.return_value = {
+    client.upload_pdf_via_page_add_files.return_value = {
         "ok": False,
-        "via": "skipped",
-        "filelist_from_kendo": False,
-        "finish_why": "filelist_not_kendo",
+        "bound": False,
+        "upload_via": "cookie_http",
+        "grid_pdf_row_count": 0,
+        "status_gt0_n": 0,
+        "finish_why": "empty_dataSource",
     }
     client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 8}
     client.get_json.return_value = quote
@@ -1780,10 +1791,102 @@ def test_1001898_5_cad_unitcost_empty_ocl_no_pr_is_dod_fail(tmp_path, monkeypatc
             {"part_no": "14501-1", "qty": 1, "description": "PEDESTAL TOP PLATE"},
         ],
     )
+    client.upload_item_pdf_attachment.assert_not_called()
+    client.add_item_pdf_files.assert_not_called()
     blob = " ".join(notes)
-    assert "reconstructed FileList" in blob
+    assert "cookie HTTP" in blob or "did not bind" in blob or "not bound" in blob
     assert "GET>0" in blob
     assert "DoD FAIL" in blob
     assert "Linear saw PASS is not DoD PASS" in blob
     assert "persisted" not in blob.lower()
-    assert client.add_item_pdf_files.call_args.kwargs.get("file_list") == []
+
+
+def test_live_103535_1_cookie_http_empty_grid_is_fail(tmp_path, monkeypatch):
+    """5 cookie HTTP uploads + 4 L×W stamps + empty_dataSource + GET 0 = FAIL."""
+    from secturafab.website import (
+        cookie_http_pdf_upload_is_fail,
+        empty_gridpdf_after_stamp_is_fail,
+        image_files_cookie_http_empty_grid_is_fail,
+        pdf_grid_upload_bound,
+    )
+    from tests.fixtures.live_103535_1 import (
+        COOKIE_HTTP_PLATE_STEMS,
+        MISSING_FLATS_STEM,
+        SPENT_QUOTE_ID,
+        STAMP_N,
+        live_103535_1_cookie_http_empty_grid,
+    )
+
+    snap = live_103535_1_cookie_http_empty_grid()
+    assert snap["ID"] == SPENT_QUOTE_ID
+    assert snap["cookie_http_uploads"] == 5
+    assert snap["stamp_n"] == STAMP_N == 4
+    assert MISSING_FLATS_STEM == "103544"
+    assert image_files_cookie_http_empty_grid_is_fail(
+        cookie_http_uploads=snap["cookie_http_uploads"],
+        stamp_n=snap["stamp_n"],
+        finish_why=snap["finish_why"],
+        filelist_from_kendo=snap["filelist_from_kendo"],
+        cad_n=snap["cad_n"],
+    )
+    assert cookie_http_pdf_upload_is_fail("cookie_http")
+    assert cookie_http_pdf_upload_is_fail("http")
+    assert not cookie_http_pdf_upload_is_fail("page_add_files")
+    assert empty_gridpdf_after_stamp_is_fail(
+        {"finish_why": "empty_dataSource", "filelist_from_kendo": False},
+        grid_pdf_row_count=0,
+    )
+    assert not pdf_grid_upload_bound(
+        {
+            "upload_via": "cookie_http",
+            "bound": False,
+            "status_gt0_n": 0,
+            "grid_pdf_row_count": 0,
+        }
+    )
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdfs = []
+    for stem in COOKIE_HTTP_PLATE_STEMS:
+        p = tmp_path / f"{stem}.pdf"
+        p.write_bytes(b"%PDF")
+        pdfs.append(p)
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = {
+        "bound": False,
+        "upload_via": "cookie_http",
+        "grid_pdf_row_count": 0,
+        "status_gt0_n": 0,
+        "finish_why": "empty_dataSource",
+    }
+    client.quote_item_read.return_value = {"Data": snap["ItemList"], "Total": 1}
+    client.get_json.return_value = snap
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001035",
+        pdf_files=pdfs,
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="GATE WELDMENT",
+        bom_rows=[
+            {
+                "part_no": f"{stem}-1",
+                "qty": 1,
+                "description": "PLATE",
+                "width_in": 8.0 if stem != MISSING_FLATS_STEM else None,
+                "length_in": 12.0 if stem != MISSING_FLATS_STEM else None,
+            }
+            for stem in COOKIE_HTTP_PLATE_STEMS
+        ],
+    )
+    client.upload_item_pdf_attachment.assert_not_called()
+    client.stamp_pdf_kendo_flats.assert_not_called()
+    client.add_item_pdf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "cookie HTTP" in blob
+    assert "#gridPDF" in blob
+    assert "GET 0 Cad" in blob
+    assert "persisted" not in blob.lower()
+    assert "AddItem_PDFFiles posted 1 FileList" not in blob

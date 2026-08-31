@@ -98,6 +98,14 @@ calculator. GET 8: 3 Cad unitcost filled, OperationCostList [],
 no PR. Linear saw PASS is not DoD PASS. FileList must be
 GetPDFData() / #gridPDF kendo rows with Status>0. Leave
 491f6387. Gold look remains 1001898-1 a7dc46bf.
+Live 103535-1 (bd5c2e3e Q10095 GATE WELDMENT): cookie HTTP
+POST /Attachment/UploadItem_PDFFiles (5 plate PDFs) then Python
+stamp on an empty #gridPDF. OnAddPDFClick skipped
+empty_dataSource / filelist_from_kendo=false / GET 0.
+Kyle Loom: Image Files → drag PDF onto +Add Files (not Select
+files, not cookie HTTP) → type L×W on the bound #gridPDF →
+OnAddPDFClick. Cookie HTTP upload + later stamp is fail-closed
+even if GET>0. Leave bd5c2e3e / 103535-1.
 Live 10098-1 (315cb19 leftover PIVOTING FOOT, 6a568912): posted FileList
 had FileType=Cad (string) plus CadType/Stock_*/SID/FileID/ID/ErrorStatus/
 Qty/ItemType/Category/PartMode and Cad-path keys InternalData,
@@ -136,7 +144,8 @@ Do not remint. Do not mint.
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
   GET  /Quote/GetItem_AddView?ID={quoteId}&ItemType=dxf
-  POST /Attachment/UploadItem_PDFFiles  (Image Files plates — not CadImport)
+  POST /Attachment/UploadItem_PDFFiles  (cookie HTTP does NOT bind #gridPDF;
+      live 103535-1. Page +Add Files fills gridPDF.dataSource.)
   POST /CadImport/UploadItem_DXFFiles   (STEP / DXF CAD Files only)
   POST /part/create   DoCreateDXFParts form → #gridDXFParts kids
   GET  /CadImport/Data
@@ -1803,6 +1812,76 @@ def reconstructed_pdf_filelist_is_fail(result: dict[str, Any] | None) -> bool:
     filled Cad unitcost without PR / OperationCostList.
     """
     return not pdf_finish_from_page_kendo(result)
+
+
+PDF_UPLOAD_VIA_PAGE_ADD_FILES = "page_add_files"
+
+
+def pdf_grid_upload_bound(result: dict[str, Any] | None) -> bool:
+    """True when page +Add Files filled #gridPDF / GetPDFData before Finish."""
+    if not isinstance(result, dict):
+        return False
+    if str(result.get("upload_via") or "") != PDF_UPLOAD_VIA_PAGE_ADD_FILES:
+        return False
+    if not result.get("bound"):
+        return False
+    try:
+        n = int(result.get("status_gt0_n") or result.get("grid_pdf_row_count") or 0)
+    except (TypeError, ValueError):
+        return False
+    return n > 0
+
+
+def cookie_http_pdf_upload_is_fail(upload_via: str | None) -> bool:
+    """Cookie HTTP UploadItem_PDFFiles does not bind #gridPDF (live 103535-1)."""
+    via = str(upload_via or "").strip()
+    return via != PDF_UPLOAD_VIA_PAGE_ADD_FILES
+
+
+def empty_gridpdf_after_stamp_is_fail(
+    result: dict[str, Any] | None,
+    *,
+    grid_pdf_row_count: int | None = None,
+) -> bool:
+    """empty_dataSource / filelist_from_kendo=false after stamp is FAIL."""
+    why = ""
+    from_kendo = False
+    n = grid_pdf_row_count
+    if isinstance(result, dict):
+        why = str(result.get("finish_why") or "")
+        from_kendo = bool(result.get("filelist_from_kendo"))
+        if n is None:
+            try:
+                n = int(result.get("grid_pdf_row_count") or 0)
+            except (TypeError, ValueError):
+                n = 0
+    if why == "empty_dataSource":
+        return True
+    if not from_kendo:
+        return True
+    try:
+        return int(n or 0) <= 0
+    except (TypeError, ValueError):
+        return True
+
+
+def image_files_cookie_http_empty_grid_is_fail(
+    *,
+    cookie_http_uploads: int,
+    stamp_n: int,
+    finish_why: str | None,
+    filelist_from_kendo: bool,
+    cad_n: int,
+) -> bool:
+    """Live 103535-1: 5 cookie HTTP uploads + 4 stamps + empty grid + GET 0."""
+    del stamp_n
+    if int(cookie_http_uploads or 0) >= 1:
+        return True
+    if str(finish_why or "") == "empty_dataSource":
+        return True
+    if not filelist_from_kendo:
+        return True
+    return int(cad_n or 0) <= 0
 
 
 def prepare_pdf_newline_fields(row: dict[str, Any]) -> dict[str, Any]:
