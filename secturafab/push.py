@@ -2981,10 +2981,12 @@ class SecturaFabPushService:
     ) -> list[str]:
         """Image Files Finish: page +Add Files bind → stamp → OnAddPDFClick.
 
-        Upload must fill #gridPDF / GetPDFData (Kyle +Add Files). Cookie HTTP
-        UploadItem_PDFFiles + later stamp is fail-closed even if GET>0
-        (live 103535-1 empty_dataSource / GET 0). Reconstructed FileList
-        is fail-closed (live 1001898-5).
+        Upload must drive in-page #files kendoUpload so
+        onSuccess_PDFUpload adds response.List to #gridPDF. Cookie HTTP
+        UploadItem_PDFFiles is only the widget saveUrl — off-page it
+        does not fill the grid (live 103535-1 empty_dataSource / GET 0).
+        GetPDFData() walks tbody dataItem Status>0 (not an XHR).
+        Reconstructed FileList is fail-closed (live 1001898-5).
         """
         if not self._website_cookie_present():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)

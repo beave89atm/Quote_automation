@@ -98,14 +98,23 @@ calculator. GET 8: 3 Cad unitcost filled, OperationCostList [],
 no PR. Linear saw PASS is not DoD PASS. FileList must be
 GetPDFData() / #gridPDF kendo rows with Status>0. Leave
 491f6387. Gold look remains 1001898-1 a7dc46bf.
-Live 103535-1 (bd5c2e3e Q10095 GATE WELDMENT): cookie HTTP
-POST /Attachment/UploadItem_PDFFiles (5 plate PDFs) then Python
-stamp on an empty #gridPDF. OnAddPDFClick skipped
-empty_dataSource / filelist_from_kendo=false / GET 0.
-Kyle Loom: Image Files → drag PDF onto +Add Files (not Select
-files, not cookie HTTP) → type L×W on the bound #gridPDF →
-OnAddPDFClick. Cookie HTTP upload + later stamp is fail-closed
-even if GET>0. Leave bd5c2e3e / 103535-1.
+Live 103535-1 (bd5c2e3e Q10095 GATE WELDMENT): leftover Image
+Files dialog (read-only; closed; no Finish). GetItem_AddView
+ItemType=pdf injects empty #gridPDF (Data:[] Total:0) plus
+kendoUpload #files. jQuery("#files").kendoUpload({ success:
+onSuccess_PDFUpload, complete: onComplete_PDFUpload, upload:
+onUpload_PDFUpload, dropZone: ".dropZoneElement", async:
+{ saveUrl: "/Attachment/UploadItem_PDFFiles", autoUpload:
+true, batch: true } }). onSuccess_PDFUpload does
+$("#gridPDF").data("kendoGrid").dataSource.add from
+n.response.List — that is the only fill. transport.read.url
+is "". GetPDFData() is not an XHR; it walks #gridPDF tbody
+dataItem and keeps Status>0. Cookie HTTP POST
+/Attachment/UploadItem_PDFFiles is only the widget saveUrl;
+off-page cookie POST does not run onSuccess_PDFUpload →
+datasource_n=0 / getpdfdata_n=0 / empty_dataSource. Kyle:
+drag onto +Add Files (dropZoneElement), not Select files,
+then type L×W → OnAddPDFClick. Leave bd5c2e3e / 103535-1.
 Live 10098-1 (315cb19 leftover PIVOTING FOOT, 6a568912): posted FileList
 had FileType=Cad (string) plus CadType/Stock_*/SID/FileID/ID/ErrorStatus/
 Qty/ItemType/Category/PartMode and Cad-path keys InternalData,
@@ -143,17 +152,20 @@ Do not remint. Do not mint.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
+  GET  /Quote/GetItem_AddView?ID={quoteId}&ItemType=pdf
+      injects empty #gridPDF + kendoUpload #files
   GET  /Quote/GetItem_AddView?ID={quoteId}&ItemType=dxf
-  POST /Attachment/UploadItem_PDFFiles  (cookie HTTP does NOT bind #gridPDF;
-      live 103535-1. Page +Add Files fills gridPDF.dataSource.)
+  POST /Attachment/UploadItem_PDFFiles  (kendoUpload #files saveUrl only.
+      onSuccess_PDFUpload is the only #gridPDF fill. Cookie HTTP
+      off-page does NOT run onSuccess — live 103535-1.)
   POST /CadImport/UploadItem_DXFFiles   (STEP / DXF CAD Files only)
   POST /part/create   DoCreateDXFParts form → #gridDXFParts kids
   GET  /CadImport/Data
   POST /CadImport/UpdateData, UpdateDataNext, SetPartMode, SetUnits, ConvertTo
   POST /Quote/AddItem_DXFFiles   data { ID, ItemID, customerMaterial, FileList }
   POST /Quote/AddItem_PDFFiles   urlencoded { ID, ItemID, FileList }
-      FileList = GetPDFData() / #gridPDF rows with Status>0
-      (OnAddPDFClick). Reconstructed FileList is fail-closed
+      FileList = GetPDFData() (#gridPDF tbody dataItem Status>0,
+      not an XHR). Reconstructed FileList is fail-closed
       even if GET>0 (live 1001898-5 491f6387).
   POST /Quote/AddItem_Linear     urlencoded OnAddLinearClick field bag
   GET  /Product/Read_DataLinearlookup?ProductID=  (20ft/21ft productConfigID)
@@ -1817,16 +1829,44 @@ def reconstructed_pdf_filelist_is_fail(result: dict[str, Any] | None) -> bool:
 PDF_UPLOAD_VIA_PAGE_ADD_FILES = "page_add_files"
 
 
+def leftover_gridpdf_fills_only_via_onsuccess(dump: dict[str, Any] | None) -> bool:
+    """Leftover dialog: #files kendoUpload + onSuccess_PDFUpload is the only fill."""
+    if not isinstance(dump, dict):
+        return False
+    ku = dump.get("kendoUpload") if isinstance(dump.get("kendoUpload"), dict) else {}
+    if str(ku.get("selector") or "") != "#files":
+        return False
+    if str(ku.get("success") or "") != "onSuccess_PDFUpload":
+        return False
+    fill = dump.get("onSuccess_PDFUpload")
+    if not isinstance(fill, dict) or not fill.get("only_fill"):
+        return False
+    transport = dump.get("gridPDF_transport")
+    read = transport.get("read") if isinstance(transport, dict) else {}
+    if not isinstance(read, dict) or str(read.get("url") if read.get("url") is not None else "missing") != "":
+        return False
+    getpdf = dump.get("GetPDFData") if isinstance(dump.get("GetPDFData"), dict) else {}
+    if getpdf.get("is_xhr"):
+        return False
+    if "tbody" not in str(getpdf.get("walks") or "").casefold():
+        return False
+    if "Status>0" not in str(getpdf.get("keeps") or ""):
+        return False
+    return True
+
+
 def pdf_grid_upload_bound(result: dict[str, Any] | None) -> bool:
-    """True when page +Add Files filled #gridPDF / GetPDFData before Finish."""
+    """True when in-page #files kendoUpload filled #gridPDF via onSuccess."""
     if not isinstance(result, dict):
         return False
     if str(result.get("upload_via") or "") != PDF_UPLOAD_VIA_PAGE_ADD_FILES:
         return False
     if not result.get("bound"):
         return False
+    if not result.get("files_kendo"):
+        return False
     try:
-        n = int(result.get("status_gt0_n") or result.get("grid_pdf_row_count") or 0)
+        n = int(result.get("status_gt0_n") or result.get("getpdfdata_n") or result.get("grid_pdf_row_count") or 0)
     except (TypeError, ValueError):
         return False
     return n > 0

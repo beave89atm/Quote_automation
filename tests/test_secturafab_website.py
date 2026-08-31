@@ -836,14 +836,7 @@ def test_pdf_grid_upload_bound_requires_page_add_files():
         {
             "upload_via": "page_add_files",
             "bound": True,
-            "status_gt0_n": 5,
-            "grid_pdf_row_count": 5,
-        }
-    )
-    assert not pdf_grid_upload_bound(
-        {
-            "upload_via": "cookie_http",
-            "bound": True,
+            "files_kendo": True,
             "status_gt0_n": 5,
             "grid_pdf_row_count": 5,
         }
@@ -852,6 +845,25 @@ def test_pdf_grid_upload_bound_requires_page_add_files():
         {
             "upload_via": "page_add_files",
             "bound": True,
+            "files_kendo": False,
+            "status_gt0_n": 5,
+            "grid_pdf_row_count": 5,
+        }
+    )
+    assert not pdf_grid_upload_bound(
+        {
+            "upload_via": "cookie_http",
+            "bound": True,
+            "files_kendo": True,
+            "status_gt0_n": 5,
+            "grid_pdf_row_count": 5,
+        }
+    )
+    assert not pdf_grid_upload_bound(
+        {
+            "upload_via": "page_add_files",
+            "bound": True,
+            "files_kendo": True,
             "status_gt0_n": 0,
             "grid_pdf_row_count": 0,
         }
@@ -880,6 +892,35 @@ def test_pdf_grid_upload_bound_requires_page_add_files():
         filelist_from_kendo=snap["filelist_from_kendo"],
         cad_n=snap["cad_n"],
     )
+
+
+def test_leftover_gridpdf_bind_is_files_kendo_onsuccess():
+    from secturafab.website import leftover_gridpdf_fills_only_via_onsuccess
+    from tests.fixtures.live_103535_1 import leftover_gridpdf_bind_dump
+
+    dump = leftover_gridpdf_bind_dump()
+    assert dump["readonly"] is True
+    assert dump["dialog_closed"] is True
+    assert dump["finish_posted"] is False
+    assert dump["getitem_addview"]["gridPDF"] == {"Data": [], "Total": 0}
+    assert dump["kendoUpload"]["selector"] == "#files"
+    assert dump["kendoUpload"]["success"] == "onSuccess_PDFUpload"
+    assert dump["kendoUpload"]["dropZone"] == ".dropZoneElement"
+    assert dump["kendoUpload"]["async"]["saveUrl"] == "/Attachment/UploadItem_PDFFiles"
+    assert dump["onSuccess_PDFUpload"]["only_fill"] is True
+    assert dump["gridPDF_transport"]["read"]["url"] == ""
+    assert dump["GetPDFData"]["is_xhr"] is False
+    assert "tbody" in dump["GetPDFData"]["walks"]
+    assert dump["GetPDFData"]["keeps"] == "Status>0"
+    assert dump["OnAddPDFClick"]["FileList"] == "GetPDFData()"
+    assert leftover_gridpdf_fills_only_via_onsuccess(dump) is True
+    broken = dict(dump)
+    broken["onSuccess_PDFUpload"] = {"only_fill": False}
+    assert leftover_gridpdf_fills_only_via_onsuccess(broken) is False
+    live = dump["live_103535_1"]
+    assert live["datasource_n"] == 0
+    assert live["getpdfdata_n"] == 0
+    assert live["finish_why"] == "empty_dataSource"
 
 
 def test_additem_pdf_filelist_keeps_all_upload_list_keys():
@@ -6782,18 +6823,29 @@ def test_add_item_pdf_files_posts_page_kendo_via_onaddpdfclick():
 
 def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     from secturafab.chrome_cdp import (
+        _DISPATCH_FILES_CHANGE_JS,
         _FIND_PDF_ADD_FILES_INPUT_JS,
         _OPEN_IMAGE_FILES_JS,
+        _PAGE_PDF_FINISH_JS,
         _READ_GRID_PDF_COUNT_JS,
     )
 
     assert "AddNewItemHTML" in _OPEN_IMAGE_FILES_JS
     assert "image files" in _OPEN_IMAGE_FILES_JS
+    assert '"#files"' in _FIND_PDF_ADD_FILES_INPUT_JS
+    assert "kendoUpload" in _FIND_PDF_ADD_FILES_INPUT_JS
+    assert "dropZoneElement" in _FIND_PDF_ADD_FILES_INPUT_JS
     assert "select files" in _FIND_PDF_ADD_FILES_INPUT_JS
     assert "add files" in _FIND_PDF_ADD_FILES_INPUT_JS
     assert "GetPDFData" in _READ_GRID_PDF_COUNT_JS
     assert "gridPDF" in _READ_GRID_PDF_COUNT_JS
+    assert "dataItem" in _READ_GRID_PDF_COUNT_JS
+    assert "tbody" in _READ_GRID_PDF_COUNT_JS
+    assert "getpdfdata_is_xhr: false" in _READ_GRID_PDF_COUNT_JS
     assert "status_gt0_n" in _READ_GRID_PDF_COUNT_JS
+    assert "#files" in _DISPATCH_FILES_CHANGE_JS
+    assert "getPdfDataFromTbody" in _PAGE_PDF_FINISH_JS
+    assert "dataItem" in _PAGE_PDF_FINISH_JS
 
 
 def test_upload_pdf_via_page_add_files_is_not_cookie_http():
@@ -6807,8 +6859,10 @@ def test_upload_pdf_via_page_add_files_is_not_cookie_http():
         return_value={
             "bound": True,
             "upload_via": "page_add_files",
+            "files_kendo": True,
             "grid_pdf_row_count": 2,
             "status_gt0_n": 2,
+            "getpdfdata_n": 2,
         },
     ) as page, patch.object(real, "upload_item_pdf_attachment") as cookie:
         result = real.upload_pdf_via_page_add_files(

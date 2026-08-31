@@ -53,8 +53,10 @@ def _page_pdf_bind_ok(n: int = 1) -> dict:
     return {
         "bound": True,
         "upload_via": "page_add_files",
+        "files_kendo": True,
         "grid_pdf_row_count": n,
         "status_gt0_n": n,
+        "getpdfdata_n": n,
         "grid_id": "#gridPDF",
     }
 
@@ -1807,6 +1809,7 @@ def test_live_103535_1_cookie_http_empty_grid_is_fail(tmp_path, monkeypatch):
         cookie_http_pdf_upload_is_fail,
         empty_gridpdf_after_stamp_is_fail,
         image_files_cookie_http_empty_grid_is_fail,
+        leftover_gridpdf_fills_only_via_onsuccess,
         pdf_grid_upload_bound,
     )
     from tests.fixtures.live_103535_1 import (
@@ -1815,8 +1818,13 @@ def test_live_103535_1_cookie_http_empty_grid_is_fail(tmp_path, monkeypatch):
         SPENT_QUOTE_ID,
         STAMP_N,
         live_103535_1_cookie_http_empty_grid,
+        leftover_gridpdf_bind_dump,
     )
 
+    dump = leftover_gridpdf_bind_dump()
+    assert leftover_gridpdf_fills_only_via_onsuccess(dump) is True
+    assert dump["kendoUpload"]["selector"] == "#files"
+    assert dump["GetPDFData"]["is_xhr"] is False
     snap = live_103535_1_cookie_http_empty_grid()
     assert snap["ID"] == SPENT_QUOTE_ID
     assert snap["cookie_http_uploads"] == 5

@@ -838,10 +838,11 @@ class SecturaFabClient:
         quote_id: str | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        """POST /Attachment/UploadItem_PDFFiles — cookie HTTP, does not bind #gridPDF.
+        """POST /Attachment/UploadItem_PDFFiles — widget saveUrl only.
 
-        Live 103535-1: this path left GetPDFData empty. Image Files upload
-        must be page +Add Files via upload_pdf_via_page_add_files.
+        Live leftover dialog: jQuery("#files").kendoUpload async.saveUrl.
+        Off-page cookie POST does not run onSuccess_PDFUpload, so #gridPDF
+        stays empty. Drive in-page #files via upload_pdf_via_page_add_files.
         """
         from .browser_session import effective_website_cookie
 
@@ -1518,7 +1519,7 @@ class SecturaFabClient:
         quote_id: str,
         files: list[Any],
     ) -> dict[str, Any]:
-        """Image Files +Add Files on EDIT #gridPDF. Not cookie HTTP upload."""
+        """Image Files in-page #files kendoUpload on EDIT. Not cookie HTTP."""
         from .chrome_cdp import upload_pdf_via_page_add_files as _upload
 
         return _upload(files, quote_id=quote_id)
