@@ -2323,6 +2323,119 @@ def leftover_empty_bind_productid_skip_is_wrong(dump: dict[str, Any] | None) -> 
     return True
 
 
+def leftover_list0_pack_is_not_gold(dump: dict[str, Any] | None) -> bool:
+    """33204-1: AddItem_PDFFiles response List[0] has no pack.
+
+    Full L×W / Weight / OP / Machine / Material bag still FAIL when
+    list0_pack Tag empty / OCL 0 / UnitCost 5.05. Pack is on the
+    response List. GET ProductID is not the pack. No later XHR
+    adds Tag/OCL. Do not add CuttingLength (gold GetPDFData omits it).
+    """
+    if not isinstance(dump, dict):
+        return False
+    pack = dump.get("list0_pack") if isinstance(dump.get("list0_pack"), dict) else {}
+    if not pack:
+        return False
+    if str(pack.get("tag") or "") != "":
+        return False
+    if pack.get("production_ready") is not False:
+        return False
+    try:
+        if int(pack.get("list_n") or 0) < 1:
+            return False
+        if int(pack.get("ocl_n") or 0) != 0:
+            return False
+        if abs(float(pack.get("unit_cost") or 0) - 5.05) > 1e-6:
+            return False
+    except (TypeError, ValueError):
+        return False
+    bag = dump.get("filelist_bag") if isinstance(dump.get("filelist_bag"), dict) else {}
+    if not bag:
+        return False
+    if bag.get("ProductID") not in (None, "", "null"):
+        return False
+    try:
+        if float(bag.get("Weight") or 0) <= 0:
+            return False
+        if float(bag.get("OutsidePerimeter") or 0) <= 0:
+            return False
+        if float(bag.get("Length") or 0) <= 0:
+            return False
+        if float(bag.get("Width") or 0) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if str(bag.get("Machine") or "") == "":
+        return False
+    if str(bag.get("Material") or "") == "":
+        return False
+    if str(bag.get("Thickness") or "") == "":
+        return False
+    getpdf = dump.get("GetPDFData") if isinstance(dump.get("GetPDFData"), dict) else {}
+    if "CuttingLength" not in {str(k) for k in (getpdf.get("omits") or ())}:
+        return False
+    live = dump.get("live_33204_1") if isinstance(dump.get("live_33204_1"), dict) else {}
+    if not live:
+        return False
+    if str(live.get("tag") or "") != "":
+        return False
+    if list(live.get("operation_cost_list") or []):
+        return False
+    if live.get("list0_pack_is_gold") is not False:
+        return False
+    if live.get("pack_is_productid") is not False:
+        return False
+    return True
+
+
+def leftover_getpdfdata_candidates_named_not_invented(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """33204-1: name leftover bag candidates; do not invent CuttingLength."""
+    if not isinstance(dump, dict):
+        return False
+    want = {
+        "ProductionReady checkbox",
+        "ItemType",
+        "ProductType/prt_pdf",
+        "FileID/ImageID from upload",
+        "InternalData rectangle vs empty",
+        "Machine string vs Laser - Bay 1",
+    }
+    cands = dump.get("getpdfdata_candidates_to_verify")
+    if not isinstance(cands, (list, tuple)):
+        return False
+    if set(cands) != want:
+        return False
+    if dump.get("invent_cuttinglength") is not False:
+        return False
+    getpdf = dump.get("GetPDFData") if isinstance(dump.get("GetPDFData"), dict) else {}
+    if "CuttingLength" not in {str(k) for k in (getpdf.get("omits") or ())}:
+        return False
+    return True
+
+
+def list0_pack_without_tag_ocl_is_fail(result: dict[str, Any] | None) -> bool:
+    """Response List[0] Tag empty / OCL 0 is FAIL (live 33204-1).
+
+    Only when the Finish capture names ``response_tag`` and
+    ``response_ocl_n``. Older mocks without those keys still Finish.
+    Material UnitCost>0 is still FAIL — pack is Tag/OCL, not cost.
+    """
+    if not isinstance(result, dict):
+        return False
+    if "response_tag" not in result or "response_ocl_n" not in result:
+        return False
+    if str(result.get("response_tag") or "") != "":
+        return False
+    try:
+        if int(result.get("response_ocl_n") or 0) != 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def leftover_productid_is_not_the_pack(dump: dict[str, Any] | None) -> bool:
     """1007092-1 leftover GET: FileList ProductID null, GET ProductID set, no pack.
 

@@ -904,6 +904,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "33819-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21681-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1007092-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "33204-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21678-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10056" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "491f6387-520f-4eee-aab3-6d20585ee740" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -913,6 +914,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "47c393f8-db59-4b9a-a243-48d572011f77" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "646a3d98-cd73-4f94-be67-6e40eeb2c309" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "8930f65a-c1e3-44b0-8024-9075b2a5ab80" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "e57633b6-7bfc-4235-80de-a0e3be6cc5cc" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "a7d6ca50-efec-409d-bd32-e68012e710c3" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "a7dc46bf-836a-4250-b038-9331cc0595a7" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -927,6 +929,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("646a3d98-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("8930f65a-c1e3-44b0-8024-9075b2a5ab80")
     assert is_forbidden_quote_id("8930f65a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("e57633b6-7bfc-4235-80de-a0e3be6cc5cc")
+    assert is_forbidden_quote_id("e57633b6-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("425587a7-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("95b8c186-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("491f6387-520f-4eee-aab3-6d20585ee740")
@@ -990,6 +994,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "47c393f8-db59-4b9a-a243-48d572011f77",
         "646a3d98-cd73-4f94-be67-6e40eeb2c309",
         "8930f65a-c1e3-44b0-8024-9075b2a5ab80",
+        "e57633b6-7bfc-4235-80de-a0e3be6cc5cc",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(
@@ -2453,5 +2458,102 @@ def test_1007092_1_get_productid_is_not_pack_still_finishes(
     assert "response_production_ready=false" in blob
     assert "response_ocl_n=0" in blob
     assert "response_unit_cost=0.11" in blob
+    assert "DoD FAIL" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_33204_1_list0_pack_empty_is_fail_still_finishes(
+    tmp_path, monkeypatch
+):
+    """Full bag still Finishes; list0_pack Tag empty / OCL 0 is FAIL."""
+    from tests.fixtures.live_33204_1 import live_33204_1_quote
+
+    quote = live_33204_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "TOP-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    bind = _page_pdf_bind_ok(1)
+    bind["productid_n"] = 0
+    client.upload_pdf_via_page_add_files.return_value = bind
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "cutting_length_n": 0,
+        "weight_n": 1,
+        "productid_n": 0,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "picker_via": "none_plate_widget",
+        "picker_sku": "PL1/2-A572",
+    }
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+        "filelist_bag": {
+            "Machine": "Laser - Bay1",
+            "ProductID": None,
+            "Qty": 1,
+            "Weight": 1.4378,
+            "Weight_UseLocal": True,
+            "OutsidePerimeter": 18.25,
+            "OutsidePerimeter_UseLocal": True,
+            "Material": "A572",
+            "Thickness": "0.5",
+            "Length": 9.125,
+            "Width": 7.5625,
+        },
+        "response_list_n": 1,
+        "response_tag": "",
+        "response_production_ready": False,
+        "response_ocl_n": 0,
+        "response_unit_cost": 5.05,
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003320",
+        pdf_files=[pdf],
+        material="A572",
+        thickness="0.5",
+        qty=1,
+        description="TOP PLATE",
+        bom_rows=[
+            {
+                "part_no": "TOP-PLATE",
+                "qty": 1,
+                "description": "PLATE",
+                "width_in": 7.5625,
+                "length_in": 9.125,
+            }
+        ],
+    )
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    client.add_item_pdf_files.assert_called_once()
+    stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
+    assert stamp_rows
+    assert all("ProductID" not in row for row in stamp_rows)
+    assert stamp_rows[0]["Material"] != "316 Polished"
+    assert stamp_rows[0]["Machine"] == "Laser - Bay1"
+    assert stamp_rows[0]["Status"] == 1
+    blob = " ".join(notes)
+    assert "33204-1" in blob
+    assert "do not Finish" not in blob
+    assert "list0_pack" in blob
+    assert "GET ProductID is not the pack" in blob
+    assert "product_picker=none_plate_widget" in blob
+    assert "response_list_n=1" in blob
+    assert "response_tag=''" in blob
+    assert "response_production_ready=false" in blob
+    assert "response_ocl_n=0" in blob
+    assert "response_unit_cost=5.05" in blob
     assert "DoD FAIL" in blob
     assert "persisted" not in blob.lower()

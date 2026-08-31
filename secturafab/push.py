@@ -3144,9 +3144,14 @@ class SecturaFabPushService:
         selected List Value. Do not invent a GUID or reconstruct
         ProductID off-page. Log OnAddPDFClick response n.List[0]
         Tag / ProductionReady / OperationCostList / UnitCost —
-        that is the server pack stamp. GET ProductID + empty
-        Tag/OCL is FAIL (live 1007092-1); pack miss is not
-        ProductID. #files + GetPDFData + OnAddPDFClick is not
+        that is the server pack stamp. Live 33204-1 list0_pack
+        Tag empty / OCL 0 / UnitCost 5.05 is FAIL even with a
+        full L×W/Weight/OP/Machine/Material bag. GET ProductID
+        is not the pack. Drive ``#gridSelectProductPlate`` modal
+        (not ThicknessPDF gauge / ``#Product`` bar). Do not
+        invent a GUID. GET ProductID + empty Tag/OCL is FAIL
+        (live 1007092-1); pack miss is not ProductID.
+        #files + GetPDFData + OnAddPDFClick is not
         gold PR/laser unless Cad GET has Tag + OperationCostList
         + UnitCost>0 + CuttingLength>0. Do not treat UnitPrice /
         UnitWeightCost as UnitCost. Do not AddOperation / nest /
@@ -3330,6 +3335,7 @@ class SecturaFabPushService:
                 empty_perimeter_weight_is_fail,
                 empty_weight_after_perimeter_is_fail,
                 filelist_bag_snapshot,
+                list0_pack_without_tag_ocl_is_fail,
                 pdf_finish_from_page_kendo,
                 pdf_grid_upload_bound,
                 reconstructed_pdf_filelist_is_fail,
@@ -3370,7 +3376,7 @@ class SecturaFabPushService:
                     notes.append(
                         "bind ProductID null is Image Files default "
                         "(live 21681-1) — stamp drawing Material/Thickness/"
-                        "Laser Bay 1; drive page Product picker"
+                        "Laser Bay 1; drive #gridSelectProductPlate modal"
                     )
                 stamp_out: Any = None
                 if stamp_rows:
@@ -3498,6 +3504,13 @@ class SecturaFabPushService:
                         if "response_unit_cost" in result:
                             notes.append(
                                 f"response_unit_cost={result.get('response_unit_cost')}"
+                            )
+                        if list0_pack_without_tag_ocl_is_fail(result):
+                            notes.append(
+                                "WARNING: AddItem_PDFFiles response List[0] "
+                                "Tag empty / OCL 0 (live 33204-1) — list0_pack "
+                                "is the server stamp; GET ProductID is not the "
+                                "pack — Image Files DoD FAIL"
                             )
                         if from_kendo:
                             try:

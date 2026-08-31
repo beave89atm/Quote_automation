@@ -2826,13 +2826,23 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       || s.indexOf("productsubtype") >= 0
       || s.indexOf("linearlookup") >= 0;
   }
+  function isThicknessGauge(id, url) {
+    // ThicknessPDF is gauge Read_DataThicknessGauge2 — not the plate picker
+    var s = (String(id || "") + " " + String(url || "")).toLowerCase();
+    return s.indexOf("thicknesspdf") >= 0
+      || s.indexOf("thicknessgauge") >= 0
+      || s.indexOf("read_datathickness") >= 0
+      || s.indexOf("gauge") >= 0;
+  }
   function isPlateProductWidget(id, url) {
     if (isProductTypeBar(id, url)) return false;
+    if (isThicknessGauge(id, url)) return false;
     var s = (String(id || "") + " " + String(url || "")).toLowerCase();
+    if (s.indexOf("gridselectproductplate") >= 0) return false;
     if (s.indexOf("plate") >= 0) return true;
-    if (s.indexOf("read_data") >= 0 && s.indexOf("linear") < 0) return true;
     if (s.indexOf("/product/read") >= 0 && s.indexOf("type") < 0
-        && s.indexOf("linear") < 0) return true;
+        && s.indexOf("linear") < 0 && s.indexOf("thickness") < 0
+        && s.indexOf("gauge") < 0) return true;
     var idl = String(id || "").toLowerCase();
     if (idl.indexOf("pdfproduct") >= 0) return true;
     if (idl.indexOf("cmbproduct") >= 0) return true;
@@ -2893,15 +2903,117 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     if (!s || s.toLowerCase() === "null") return "";
     return s;
   }
+  function plateModalGrid() {
+    var ids = ["#gridSelectProductPlate"];
+    for (var i = 0; i < ids.length; i++) {
+      try {
+        var g = window.jQuery && jQuery(ids[i]).data("kendoGrid");
+        if (g && g.dataSource) return {id: ids[i], grid: g};
+      } catch (e) {}
+    }
+    return null;
+  }
+  function openPlateModal() {
+    var names = ["SelectProductPlate", "OnSelectProductPlate",
+                 "OpenSelectProductPlate", "ShowSelectProductPlate"];
+    for (var i = 0; i < names.length; i++) {
+      try {
+        if (typeof window[names[i]] === "function") {
+          window[names[i]]();
+          return names[i];
+        }
+      } catch (e) {}
+    }
+    try {
+      if (!window.jQuery) return "";
+      var nodes = document.querySelectorAll(
+        "button, a, input[type=button], span, i"
+      );
+      for (var j = 0; j < nodes.length; j++) {
+        var el = nodes[j];
+        var blob = (
+          (el.getAttribute("onclick") || "") + " " + (el.id || "")
+          + " " + (el.className || "") + " " + (el.textContent || "")
+        ).toLowerCase();
+        if (blob.indexOf("selectproductplate") >= 0
+            || blob.indexOf("gridselectproductplate") >= 0) {
+          el.click();
+          return "click";
+        }
+      }
+    } catch (e2) {}
+    return "";
+  }
+  function pickPlateModal(sku) {
+    lastPickerSku = sku;
+    var hit = plateModalGrid();
+    if (!hit) {
+      openPlateModal();
+      hit = plateModalGrid();
+    }
+    if (!hit) {
+      lastPicker = "none_plate_widget";
+      return Promise.resolve("");
+    }
+    lastPicker = hit.id;
+    var g = hit.grid;
+    var want = String(sku).toLowerCase();
+    function matchRow(it) {
+      var nm = itemSku(it).toLowerCase();
+      return !!(nm && (nm === want || nm.indexOf(want) >= 0 || want.indexOf(nm) >= 0));
+    }
+    function applyRow(it) {
+      var val = itemValue(it);
+      if (!val) return "";
+      try {
+        var tr = g.tbody.find("tr").filter(function() {
+          return g.dataItem(this) === it;
+        }).first();
+        if (tr.length && typeof g.select === "function") g.select(tr);
+      } catch (e) {}
+      try {
+        var btns = document.querySelectorAll(
+          "button, a, input[type=button], input[type=submit]"
+        );
+        for (var b = 0; b < btns.length; b++) {
+          var t = String(btns[b].textContent || btns[b].value || "").toLowerCase();
+          var oid = String(btns[b].id || "").toLowerCase();
+          if (t === "select" || t === "ok" || oid.indexOf("selectproduct") >= 0) {
+            btns[b].click();
+            break;
+          }
+        }
+      } catch (e2) {}
+      return val;
+    }
+    try {
+      if (g.dataSource && typeof g.dataSource.filter === "function") {
+        g.dataSource.filter({field: "ProductName", operator: "contains", value: sku});
+      }
+    } catch (e3) {}
+    function scan() {
+      var rows = [];
+      try { rows = (g.dataSource.data && g.dataSource.data()) || []; } catch (e4) {}
+      for (var i = 0; i < rows.length; i++) {
+        if (matchRow(rows[i])) return applyRow(rows[i]);
+      }
+      return "";
+    }
+    var now = scan();
+    if (now) return Promise.resolve(now);
+    if (g.dataSource && typeof g.dataSource.read === "function") {
+      return Promise.resolve(g.dataSource.read()).then(function() {
+        return scan();
+      }).catch(function() { return ""; });
+    }
+    return Promise.resolve("");
+  }
   function pickProduct(sku) {
     lastPicker = "";
     lastPickerSku = "";
     if (!sku || !window.jQuery) return Promise.resolve("");
     var hitW = findProductWidget();
-    if (!hitW) {
-      lastPicker = "none_plate_widget";
-      return Promise.resolve("");
-    }
+    if (!hitW) return pickPlateModal(sku);
     var w = hitW.widget;
     lastPicker = hitW.via;
     lastPickerSku = sku;
@@ -3162,7 +3274,9 @@ def stamp_pdf_kendo_flats(
     ProductID is the selected List Value. Do not invent a GUID.
     Do not fire AddNewPDFFeature(). Empty InternalData is
     expected for no-hole rectangles. Live 1007092-1: first
-    ``#Product`` is ProductType — skip it.
+    ``#Product`` is ProductType — skip it. Live 33204-1:
+    ThicknessPDF is gauge (Read_DataThicknessGauge2). Drive
+    ``#gridSelectProductPlate`` modal, not a kendo combo.
     """
     spec_rows: list[dict[str, Any]] = []
     for row in rows or []:
