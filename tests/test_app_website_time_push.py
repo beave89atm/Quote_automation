@@ -2000,8 +2000,8 @@ def test_29743_1_empty_perimeter_does_not_finish(tmp_path, monkeypatch):
     assert "persisted" not in blob.lower()
 
 
-def test_1002323_1_perimeter_without_internaldata_does_not_finish(tmp_path, monkeypatch):
-    """Perimeter XHR without InternalData — do not Finish (1002323-1)."""
+def test_1002323_1_no_hole_rectangle_still_finishes(tmp_path, monkeypatch):
+    """Empty InternalData after perimeter is expected — still Finish."""
     from tests.fixtures.live_1002323_1 import live_1002323_1_quote
 
     quote = live_1002323_1_quote()
@@ -2018,6 +2018,65 @@ def test_1002323_1_perimeter_without_internaldata_does_not_finish(tmp_path, monk
         "cell_edit": 2,
         "outside_perimeter_n": 1,
         "cutting_length_n": 1,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+    }
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001002",
+        pdf_files=[pdf],
+        material="A572",
+        thickness="0.375",
+        qty=2,
+        description="WINCH ROLLER BRACKETS",
+        bom_rows=[
+            {
+                "part_no": "WRB-PLATE",
+                "qty": 2,
+                "description": "PLATE",
+                "width_in": 2.5,
+                "length_in": 19.82,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_called_once()
+    blob = " ".join(notes)
+    assert "1002323-1" in blob
+    assert "do not Finish" not in blob
+    assert "AddNewPDFFeature" not in blob
+    assert "DoD FAIL" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_1002323_1_empty_cuttinglength_after_perimeter_does_not_finish(
+    tmp_path, monkeypatch
+):
+    """#CuttingLength empty after landed perimeter — do not Finish."""
+    from tests.fixtures.live_1002323_1 import live_1002323_1_quote
+
+    quote = live_1002323_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "WRB-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "cutting_length_n": 0,
         "internaldata_n": 0,
         "getperimeter_xhr": True,
         "perimeter_via": "UpdatePerimeterWeight",
@@ -2044,7 +2103,7 @@ def test_1002323_1_perimeter_without_internaldata_does_not_finish(tmp_path, monk
     client.add_item_pdf_files.assert_not_called()
     blob = " ".join(notes)
     assert "1002323-1" in blob
-    assert "not the gold pack" in blob
+    assert "#CuttingLength empty" in blob
     assert "GetPDFData omits CuttingLength" in blob
     assert "do not Finish" in blob
     assert "persisted" not in blob.lower()

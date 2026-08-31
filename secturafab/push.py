@@ -3115,14 +3115,18 @@ class SecturaFabPushService:
         Reconstructed FileList is fail-closed (live 1001898-5).
         After #files bind, type L×W so UpdatePerimeterWeight(true,true)
         → POST /Quote/GetPerimeterAndWeight fills OutsidePerimeter +
-        CuttingLengthDisp before OnAddPDFClick. Bare
-        UpdatePerimeterWeight() does not copy (n/t falsy). Empty
-        perimeter → do not Finish (live 29743-1). Live 1002323-1:
-        XHR OutsidePerimeter landed, CuttingLength stayed 0 —
-        GetPDFData omits CuttingLength; CuttingLengthDisp is
-        display-only; empty InternalData is fail-closed. Perimeter
-        XHR is not gold pack. #files + GetPDFData + OnAddPDFClick
-        is not gold PR/laser unless Cad GET has Tag +
+        #CuttingLength (numeric) + CuttingLengthDisp before OnAddPDFClick.
+        Bare UpdatePerimeterWeight() does not copy (n/t falsy). Empty
+        perimeter → do not Finish (live 29743-1). GetPDFData omits
+        CuttingLength — do not invent that key. List CuttingLength
+        comes from page #CuttingLength, not InternalData holes.
+        Empty InternalData after a landed perimeter is expected for
+        no-hole rectangles (Kyle Loom: Add Feature Hole only when
+        the drawing has holes). AddNewPDFFeature() with no args is
+        not gold. Live 1002323-1 leftover: OutsidePerimeter 44.64
+        and CuttingLength 0 because #CuttingLength was never filled.
+        Perimeter XHR is not gold pack. #files + GetPDFData +
+        OnAddPDFClick is not gold PR/laser unless Cad GET has Tag +
         OperationCostList + UnitCost>0 + CuttingLength>0. Do not
         treat UnitPrice / UnitWeightCost as UnitCost.
         Do not AddOperation / nest / Operation→Profile. Do not graft.
@@ -3285,8 +3289,8 @@ class SecturaFabPushService:
         if cad_paths:
             from .website import (
                 cookie_http_pdf_upload_is_fail,
+                empty_cuttinglength_after_perimeter_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
-                empty_internaldata_after_perimeter_is_fail,
                 empty_perimeter_weight_is_fail,
                 pdf_finish_from_page_kendo,
                 pdf_grid_upload_bound,
@@ -3338,9 +3342,6 @@ class SecturaFabPushService:
                             via_perim = str(stamp_out.get("perimeter_via") or "")
                             if via_perim:
                                 notes.append(f"perimeter_via={via_perim}")
-                            via_feat = str(stamp_out.get("feature_via") or "")
-                            if via_feat:
-                                notes.append(f"feature_via={via_feat}")
                 if empty_perimeter_weight_is_fail(
                     stamp_out if isinstance(stamp_out, dict) else None
                 ):
@@ -3348,14 +3349,15 @@ class SecturaFabPushService:
                         "WARNING: UpdatePerimeterWeight empty OutsidePerimeter "
                         "— do not Finish (live 29743-1)"
                     )
-                elif empty_internaldata_after_perimeter_is_fail(
+                elif empty_cuttinglength_after_perimeter_is_fail(
                     stamp_out if isinstance(stamp_out, dict) else None
                 ):
                     notes.append(
-                        "WARNING: UpdatePerimeterWeight is not the gold pack "
+                        "WARNING: #CuttingLength empty after perimeter XHR "
                         "(live 1002323-1) — GetPDFData omits CuttingLength; "
-                        "CuttingLengthDisp is display-only; InternalData empty "
-                        "— do not Finish; do not invent CuttingLength"
+                        "CuttingLengthDisp is display-only; do not Finish; "
+                        "do not invent a GetPDFData key; empty InternalData "
+                        "is expected for no-hole rectangles"
                     )
                 else:
                     try:

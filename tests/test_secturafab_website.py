@@ -1112,8 +1112,11 @@ def test_leftover_perimeter_xhr_is_not_gold_pack():
         unitcost_equals_unitprice_is_material_only,
     )
     from secturafab.website import (
+        empty_cuttinglength_after_perimeter_is_fail,
         empty_internaldata_after_perimeter_is_fail,
+        leftover_cuttinglength_is_page_field_not_getpdfdata,
         leftover_perimeter_xhr_is_not_gold_pack,
+        PDF_GETDATA_FIELDS,
     )
     from tests.fixtures.live_1002323_1 import (
         leftover_perimeter_not_pack_dump,
@@ -1145,13 +1148,26 @@ def test_leftover_perimeter_xhr_is_not_gold_pack():
     assert cad_kids_unitcost_without_pr(quote) is True
     assert cad_image_files_stamped(cad) is False
     assert image_files_dod_pass(quote, expect_cad=True) is False
+    assert leftover_cuttinglength_is_page_field_not_getpdfdata(dump) is True
+    broken_cut = dict(dump)
+    broken_cut["CuttingLength"] = dict(dump["CuttingLength"])
+    broken_cut["CuttingLength"]["invent_getpdfdata_key"] = True
+    assert leftover_cuttinglength_is_page_field_not_getpdfdata(broken_cut) is False
+    assert "CuttingLength" not in PDF_GETDATA_FIELDS
     assert empty_internaldata_after_perimeter_is_fail(
         {"outside_perimeter_n": 1, "internaldata_n": 0}
-    ) is True
+    ) is False
     assert empty_internaldata_after_perimeter_is_fail(
         {"outside_perimeter_n": 1, "internaldata_n": 1}
     ) is False
     assert empty_internaldata_after_perimeter_is_fail({"stamped": 1}) is False
+    assert empty_cuttinglength_after_perimeter_is_fail(
+        {"outside_perimeter_n": 1, "cutting_length_n": 0}
+    ) is True
+    assert empty_cuttinglength_after_perimeter_is_fail(
+        {"outside_perimeter_n": 1, "cutting_length_n": 1}
+    ) is False
+    assert empty_cuttinglength_after_perimeter_is_fail({"stamped": 1}) is False
 
 
 def test_empty_perimeter_weight_is_fail():
@@ -7413,7 +7429,10 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "UpdatePerimeterWeight" in _STAMP_PDF_KENDO_JS
     assert "UpdatePerimeterWeight(true, true)" in _STAMP_PDF_KENDO_JS
     assert "window.UpdatePerimeterWeight()" not in _STAMP_PDF_KENDO_JS
-    assert "AddNewPDFFeature" in _STAMP_PDF_KENDO_JS
+    assert "AddNewPDFFeature" not in _STAMP_PDF_KENDO_JS
+    assert "PDFGetData" not in _STAMP_PDF_KENDO_JS
+    assert "#CuttingLength" in _STAMP_PDF_KENDO_JS
+    assert "parseFloat" in _STAMP_PDF_KENDO_JS
     assert "internaldata_n" in _STAMP_PDF_KENDO_JS
     assert "/Quote/GetPerimeterAndWeight" in _STAMP_PDF_KENDO_JS
     assert "outside_perimeter_n" in _STAMP_PDF_KENDO_JS

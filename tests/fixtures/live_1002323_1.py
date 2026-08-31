@@ -13,6 +13,8 @@ ProductionReady false, OperationCostList [], PrimaryTime 0.
 UnitCost 3.18 = UnitPrice = UnitWeightCost (material only).
 DataPartPDF OutsidePerimeter 44.64, CuttingLength 0, InternalData '',
 HasSelectedProductID false. GetPDFData omits CuttingLength.
+Page field for List CuttingLength is #CuttingLength (numeric), not
+InternalData holes and not display-only CuttingLengthDisp.
 
 DoD: Tag empty / OCL [] / CuttingLength 0 = FAIL. Leave b2e12461.
 Do not PATCH. Do not remint. No graft. No Operation→Profile. No nest.
@@ -158,11 +160,19 @@ LEFTOVER_PERIMETER_NOT_PACK = {
         "cuttinglengthdisp_display_only": True,
         "status_is_filter_only": True,
     },
+    "CuttingLength": {
+        "page_field": "#CuttingLength",
+        "xhr": "POST /Quote/GetPerimeterAndWeight",
+        "display_only": "#CuttingLengthDisp",
+        "invent_getpdfdata_key": False,
+        "require_internaldata_holes": False,
+    },
     "AddNewPDFFeature": {
         "optional": True,
         "xhr": ("GET /Quote/PDFInternal", "PDFGetData"),
         "writes": "InternalData",
         "invent_internaldata": False,
+        "no_arg_not_gold": True,
     },
     "UpdateDataNext": {
         "gold": False,

@@ -2203,28 +2203,68 @@ def leftover_perimeter_xhr_is_not_gold_pack(dump: dict[str, Any] | None) -> bool
 
 
 def empty_internaldata_after_perimeter_is_fail(result: dict[str, Any] | None) -> bool:
-    """Perimeter XHR without InternalData cannot stamp CuttingLength (1002323-1).
+    """Empty InternalData after a landed perimeter is not an Image Files fail.
 
-    GetPDFData posts InternalData and omits CuttingLength. CuttingLengthDisp
-    is display-only. Only when the stamp names ``internaldata_n`` and
-    ``outside_perimeter_n>0``. MagicMock / older stamps without that key
+    Kyle Loom: Add Feature Hole only when the drawing has holes. A no-hole
+    rectangle still gets PR + laser pack. Live 1002323-1 leftover had
+    InternalData '' with OutsidePerimeter 44.64 — that skip was wrong for
+    PDF. STEP explode skip-when-InternalData-empty stays on CadImport.
+    ``result`` is unused; kept so callers do not invent a new gate.
+    """
+    del result
+    return False
+
+
+def leftover_cuttinglength_is_page_field_not_getpdfdata(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """List CuttingLength comes from #CuttingLength, not a GetPDFData key.
+
+    GetPDFData omits CuttingLength / CuttingLengthDisp. Display-only
+    ``#CuttingLengthDisp`` / ``.pdfcuttinglength`` is not the List field.
+    Do not invent a GetPDFData key. Do not graft. Do not require holes.
+    """
+    if not isinstance(dump, dict):
+        return False
+    getpdf = dump.get("GetPDFData") if isinstance(dump.get("GetPDFData"), dict) else {}
+    omits = {str(k) for k in (getpdf.get("omits") or ())}
+    if "CuttingLength" not in omits:
+        return False
+    if getpdf.get("cuttinglengthdisp_display_only") is not True:
+        return False
+    cut = dump.get("CuttingLength") if isinstance(dump.get("CuttingLength"), dict) else {}
+    if str(cut.get("page_field") or "") != "#CuttingLength":
+        return False
+    if cut.get("invent_getpdfdata_key") is not False:
+        return False
+    xhr = str(cut.get("xhr") or "")
+    if "/Quote/GetPerimeterAndWeight" not in xhr:
+        return False
+    return True
+
+
+def empty_cuttinglength_after_perimeter_is_fail(
+    result: dict[str, Any] | None,
+) -> bool:
+    """Landed OutsidePerimeter without numeric #CuttingLength is the 1002323-1 miss.
+
+    Empty InternalData is not this gate. Only when the stamp names both
+    counts (live Chrome). MagicMock / older stamps without those keys
     still Finish.
     """
     if not isinstance(result, dict):
         return False
-    if "internaldata_n" not in result:
-        return False
-    if "outside_perimeter_n" not in result:
+    if "cutting_length_n" not in result or "outside_perimeter_n" not in result:
         return False
     try:
         perim = int(result.get("outside_perimeter_n") or 0)
     except (TypeError, ValueError):
         perim = 0
     try:
-        idata = int(result.get("internaldata_n") or 0)
+        cut = int(result.get("cutting_length_n") or 0)
     except (TypeError, ValueError):
-        idata = 0
-    return perim > 0 and idata <= 0
+        cut = 0
+    return perim > 0 and cut <= 0
 
 
 def empty_perimeter_weight_is_fail(result: dict[str, Any] | None) -> bool:
