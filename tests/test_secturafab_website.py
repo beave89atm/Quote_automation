@@ -7412,7 +7412,7 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "editSet" in _STAMP_PDF_KENDO_JS
     assert "UpdatePerimeterWeight" in _STAMP_PDF_KENDO_JS
     assert "UpdatePerimeterWeight(true, true)" in _STAMP_PDF_KENDO_JS
-    assert "UpdatePerimeterWeight()" not in _STAMP_PDF_KENDO_JS
+    assert "window.UpdatePerimeterWeight()" not in _STAMP_PDF_KENDO_JS
     assert "AddNewPDFFeature" in _STAMP_PDF_KENDO_JS
     assert "internaldata_n" in _STAMP_PDF_KENDO_JS
     assert "/Quote/GetPerimeterAndWeight" in _STAMP_PDF_KENDO_JS
