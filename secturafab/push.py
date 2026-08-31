@@ -624,6 +624,8 @@ def _shop_material(material: str | None) -> str:
         return text if "A572" in upper else "A572 Grade 50"
     if "100K" in upper or upper == "100 K":
         return "100K"
+    if "DOMEX" in upper or "WELDOX" in upper:
+        return "DOMEX/WELDOX"
     if "A1011" in upper:
         return text if "A1011" in text.upper() else "A1011"
     if "A519" in upper:
@@ -642,6 +644,8 @@ def _named_grade_from_blob(text: str | None) -> str | None:
         return "A572 Grade 50"
     if "100K" in upper:
         return "100K"
+    if "DOMEX" in upper or "WELDOX" in upper:
+        return "DOMEX/WELDOX"
     if "A1011" in upper:
         return "A1011"
     if "A519" in upper:
@@ -3128,12 +3132,16 @@ class SecturaFabPushService:
         Live 1002323-1 FileList keys were not logged. Perimeter
         XHR is not gold pack. Live 33819-1 posted bag Weight +
         OutsidePerimeter with ProductID None — Weight is not the
-        pack. onSuccess_PDFUpload copies ProductID from upload
-        List; keep that value through L×W / Weight stamp. Do not
-        invent a GUID or plate SKU. Empty GetPDFData ProductID
-        after #files bind is fail-closed. Kyle Image Files still
-        picks plate stock when the Product box is empty — that
-        picker is a page control, not a reconstructed SKU.
+        pack. Live 21681-1: upload List ProductID is always null
+        on Image Files PDFs. keepPid never has anything to restore.
+        Do not fail-close Finish solely because bind ProductID is
+        null — that blocked L×W and taught nothing. Empty ProductID
+        is the Image Files default. After #files bind, stamp drawing
+        Material / Thickness / Machine=Laser Bay 1 (overwrite
+        316 Polished / 0.0178), Status>0, L×W, bag Weight. Drive
+        Kyle's page Product picker to the closest tenant plate SKU
+        so GetPDFData ProductID is the selected List Value. Do not
+        invent a GUID or reconstruct ProductID off-page.
         #files + GetPDFData + OnAddPDFClick is not gold PR/laser
         unless Cad GET has Tag + OperationCostList + UnitCost>0 +
         CuttingLength>0. Do not treat UnitPrice / UnitWeightCost
@@ -3153,8 +3161,14 @@ class SecturaFabPushService:
             build_part_material_map,
             lookup_part_material,
         )
+        from .plate_ops import fetch_plate_catalog, match_plate_product
 
         notes: list[str] = []
+        plate_catalog: list[dict[str, Any]] = []
+        try:
+            plate_catalog = fetch_plate_catalog(self.client)
+        except Exception:  # noqa: BLE001
+            plate_catalog = []
         try:
             self.client.get_item_add_view(quote_id, item_type="pdf")
             notes.append("Opened Image Files dialog (GetItem_AddView ItemType=pdf)")
@@ -3238,6 +3252,8 @@ class SecturaFabPushService:
                 named_grade = "5052-H32"
             elif re.search(r"(?i)A\s*572|PL025", grade_blob):
                 named_grade = "A572 Grade 50"
+            elif re.search(r"(?i)DOMEX|WELDOX|100\s*K", grade_blob):
+                named_grade = "DOMEX/WELDOX"
             plate_mat = _shop_material(
                 locked.get("grade")
                 or (pm.material if pm and pm.material else None)
@@ -3270,21 +3286,28 @@ class SecturaFabPushService:
             )
             cad_paths.append(path)
             if plate_w and plate_l and plate_thk not in (None, "", 0, "0"):
-                stamp_rows.append(
-                    {
-                        "FileName": path.name,
-                        "Length": plate_l,
-                        "Width": plate_w,
-                        "Thickness": plate_thk,
-                        "Material": plate_mat,
-                        "Machine": "Laser - Bay1",
-                        "Status": 1,
-                        "ItemType": "cad",
-                        "Qty": row_qty,
-                        "PartName": part_name,
-                        "Description": part_name,
-                    }
+                stamp_row: dict[str, Any] = {
+                    "FileName": path.name,
+                    "Length": plate_l,
+                    "Width": plate_w,
+                    "Thickness": plate_thk,
+                    "Material": plate_mat,
+                    "Machine": "Laser - Bay1",
+                    "Status": 1,
+                    "ItemType": "cad",
+                    "Qty": row_qty,
+                    "PartName": part_name,
+                    "Description": part_name,
+                }
+                plate_sku = match_plate_product(
+                    plate_catalog,
+                    thickness=plate_thk,
+                    material=plate_mat,
                 )
+                sku_name = str((plate_sku or {}).get("ProductName") or "").strip()
+                if sku_name:
+                    stamp_row["ProductSku"] = sku_name
+                stamp_rows.append(stamp_row)
             else:
                 notes.append(
                     f"WARNING: page PDF kendo stamp missing Thickness/Length/Width "
@@ -3300,7 +3323,6 @@ class SecturaFabPushService:
                 cookie_http_pdf_upload_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
-                empty_productid_after_bind_is_fail,
                 empty_weight_after_perimeter_is_fail,
                 filelist_bag_snapshot,
                 pdf_finish_from_page_kendo,
@@ -3334,13 +3356,17 @@ class SecturaFabPushService:
                     "WARNING: empty_dataSource / #gridPDF not bound — "
                     "Image Files DoD FAIL (live 103535-1)"
                 )
-            elif empty_productid_after_bind_is_fail(bind):
-                notes.append(
-                    "WARNING: GetPDFData ProductID empty after #files bind "
-                    "(live 33819-1) — do not invent a GUID or plate SKU; "
-                    "do not Finish"
-                )
             else:
+                try:
+                    bind_pid_n = int(bind.get("productid_n")) if "productid_n" in bind else None
+                except (TypeError, ValueError):
+                    bind_pid_n = None
+                if bind_pid_n is not None and bind_pid_n <= 0:
+                    notes.append(
+                        "bind ProductID null is Image Files default "
+                        "(live 21681-1) — stamp drawing Material/Thickness/"
+                        "Laser Bay 1; drive page Product picker"
+                    )
                 stamp_out: Any = None
                 if stamp_rows:
                     stamper = getattr(self.client, "stamp_pdf_kendo_flats", None)
@@ -3381,14 +3407,14 @@ class SecturaFabPushService:
                         "do not post CuttingLength; do not Finish; "
                         "empty InternalData is expected for no-hole rectangles"
                     )
-                elif empty_productid_after_bind_is_fail(
-                    stamp_out if isinstance(stamp_out, dict) else None
-                ):
-                    notes.append(
-                        "WARNING: GetPDFData ProductID empty after L×W stamp "
-                        "(live 33819-1) — do not invent a GUID; do not Finish"
-                    )
                 else:
+                    if isinstance(stamp_out, dict):
+                        via_pick = str(stamp_out.get("picker_via") or "")
+                        if via_pick:
+                            notes.append(f"product_picker={via_pick}")
+                        sku_pick = str(stamp_out.get("picker_sku") or "")
+                        if sku_pick:
+                            notes.append(f"product_sku={sku_pick}")
                     try:
                         result = self.client.add_item_pdf_files(
                             quote_id=quote_id,

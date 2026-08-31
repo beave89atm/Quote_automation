@@ -2289,8 +2289,46 @@ def filelist_bag_snapshot(row: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+def leftover_empty_bind_productid_skip_is_wrong(dump: dict[str, Any] | None) -> bool:
+    """21681-1: bind ProductID null + 316 Polished default + Finish skipped.
+
+    Upload List ProductID is always null on Image Files PDFs. keepPid
+    never has anything to restore. Fail-closing Finish on empty bind
+    ProductID blocked L×W and taught nothing. Empty ProductID is the
+    Image Files default, not a skip.
+    """
+    if not isinstance(dump, dict):
+        return False
+    if dump.get("finish_skipped") is not True:
+        return False
+    if str(dump.get("skip_reason") or "") != "empty_bind_productid":
+        return False
+    live = dump.get("live_21681_1") if isinstance(dump.get("live_21681_1"), dict) else {}
+    if not live:
+        return False
+    try:
+        pid_n = live.get("bind_productid_n")
+        if pid_n is None or int(pid_n) != 0:
+            return False
+        if abs(float(live.get("upload_thickness") or 0) - 0.0178) > 1e-6:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if str(live.get("upload_material") or "") != "316 Polished":
+        return False
+    if live.get("stamped") is not False:
+        return False
+    if str(live.get("drawing_material") or "") == "":
+        return False
+    return True
+
+
 def leftover_weight_without_productid_is_fail(dump: dict[str, Any] | None) -> bool:
-    """33819-1: bag Weight+OutsidePerimeter posted, ProductID None, no pack."""
+    """33819-1 leftover GET after full stamp: Weight+OP, ProductID None, no pack.
+
+    Empty ProductID is not a Finish skip (live 21681-1). Pack is still
+    missing when FileList ProductID is null after L×W / Weight stamp.
+    """
     if not isinstance(dump, dict):
         return False
     bag = dump.get("filelist_bag") if isinstance(dump.get("filelist_bag"), dict) else {}
@@ -2320,22 +2358,15 @@ def leftover_weight_without_productid_is_fail(dump: dict[str, Any] | None) -> bo
 
 
 def empty_productid_after_bind_is_fail(result: dict[str, Any] | None) -> bool:
-    """GetPDFData ProductID empty after #files bind / stamp is FAIL (33819-1).
+    """Upload List ProductID is always null on Image Files PDFs (21681-1).
 
-    onSuccess_PDFUpload copies ProductID from upload List. Do not invent a
-    GUID or plate SKU. Kyle picks stock in the page Product box when empty.
-    Only when the result names ``productid_n``. MagicMock / older binds
-    without that key still Finish.
+    keepPid never has anything to restore. Fail-closing Finish on empty
+    bind ProductID blocked L×W and taught nothing (live 21681-1 GET 0).
+    Empty ProductID is the Image Files default, not a skip. Drive Kyle's
+    Product box — do not invent a GUID. ``result`` unused.
     """
-    if not isinstance(result, dict):
-        return False
-    if "productid_n" not in result:
-        return False
-    try:
-        n = int(result.get("productid_n") or 0)
-    except (TypeError, ValueError):
-        n = 0
-    return n <= 0
+    del result
+    return False
 
 
 def empty_weight_after_perimeter_is_fail(

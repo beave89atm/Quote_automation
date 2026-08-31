@@ -2596,7 +2596,9 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     internaldata_n: 0,
     getperimeter_xhr: false,
     perimeter_via: "",
-    feature_via: ""
+    feature_via: "",
+    picker_via: "",
+    picker_sku: ""
   };
   var hit = pdfGrid();
   if (!hit) return Promise.resolve(emptyStamp);
@@ -2606,6 +2608,8 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
   var viaCell = 0;
   var lastVia = "";
   var lastFeature = "";
+  var lastPicker = "";
+  var lastPickerSku = "";
   function setField(r, k, v) {
     if (v == null || v === "") return;
     if (typeof r.set === "function") r.set(k, v);
@@ -2767,6 +2771,102 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     if (Array.isArray(v)) return v.length === 0;
     return false;
   }
+  function findProductWidget() {
+    var ids = ["#Product", "#ProductID", "#cmbProduct", "#pdfProduct",
+               "#txtProduct", "input[name='ProductID']", "input[name='Product']"];
+    for (var i = 0; i < ids.length; i++) {
+      try {
+        var $el = window.jQuery && jQuery(ids[i]);
+        if (!$el || !$el.length) continue;
+        var w = $el.data("kendoComboBox") || $el.data("kendoDropDownList")
+          || $el.data("kendoAutoComplete") || $el.data("kendoMultiColumnComboBox");
+        if (w) return {el: $el, widget: w, via: ids[i]};
+      } catch (e) {}
+    }
+    try {
+      var widgets = jQuery("[data-role='combobox'], [data-role='dropdownlist']");
+      for (var j = 0; j < widgets.length; j++) {
+        var $w = jQuery(widgets[j]);
+        var id = String($w.attr("id") || $w.attr("name") || "").toLowerCase();
+        var url = "";
+        try {
+          var ww = $w.data("kendoComboBox") || $w.data("kendoDropDownList");
+          url = String((ww && ww.dataSource && ww.dataSource.transport
+            && ww.dataSource.transport.options && ww.dataSource.transport.options.read
+            && ww.dataSource.transport.options.read.url) || "");
+        } catch (e2) { url = ""; }
+        if (id.indexOf("product") >= 0 || url.indexOf("/Product/Read") >= 0) {
+          var ww2 = $w.data("kendoComboBox") || $w.data("kendoDropDownList")
+            || $w.data("kendoAutoComplete");
+          if (ww2) return {el: $w, widget: ww2, via: id || url};
+        }
+      }
+    } catch (e3) {}
+    return null;
+  }
+  function itemSku(it) {
+    if (!it) return "";
+    return String(it.ProductName || it.SKU || it.Text || it.Name || it.text || "");
+  }
+  function itemValue(it) {
+    if (!it) return "";
+    var v = it.Value != null ? it.Value : (it.ID != null ? it.ID : it.ProductID);
+    if (v == null) return "";
+    var s = String(v).trim();
+    if (!s || s.toLowerCase() === "null") return "";
+    return s;
+  }
+  function pickProduct(sku) {
+    lastPicker = "";
+    lastPickerSku = "";
+    if (!sku || !window.jQuery) return Promise.resolve("");
+    var hitW = findProductWidget();
+    if (!hitW) return Promise.resolve("");
+    var w = hitW.widget;
+    lastPicker = hitW.via;
+    lastPickerSku = sku;
+    try {
+      if (typeof w.search === "function") w.search(sku);
+    } catch (e) {}
+    function applyItem(it) {
+      var val = itemValue(it);
+      if (!val) return "";
+      try {
+        if (typeof w.value === "function") w.value(val);
+        if (typeof w.trigger === "function") w.trigger("change");
+        else if (hitW.el && hitW.el.trigger) hitW.el.trigger("change");
+      } catch (e2) {}
+      return val;
+    }
+    var data = [];
+    try { data = (w.dataSource && w.dataSource.data && w.dataSource.data()) || []; } catch (e3) {}
+    var want = String(sku).toLowerCase();
+    for (var i = 0; i < data.length; i++) {
+      var nm = itemSku(data[i]).toLowerCase();
+      if (nm && (nm === want || nm.indexOf(want) >= 0 || want.indexOf(nm) >= 0)) {
+        return Promise.resolve(applyItem(data[i]));
+      }
+    }
+    if (w.dataSource && typeof w.dataSource.filter === "function") {
+      try {
+        w.dataSource.filter({field: "ProductName", operator: "contains", value: sku});
+      } catch (e4) {}
+    }
+    if (w.dataSource && typeof w.dataSource.read === "function") {
+      return Promise.resolve(w.dataSource.read()).then(function() {
+        var rows = [];
+        try { rows = (w.dataSource.data && w.dataSource.data()) || []; } catch (e5) {}
+        for (var j = 0; j < rows.length; j++) {
+          var nm2 = itemSku(rows[j]).toLowerCase();
+          if (nm2 && (nm2 === want || nm2.indexOf(want) >= 0 || want.indexOf(nm2) >= 0)) {
+            return applyItem(rows[j]);
+          }
+        }
+        return "";
+      }).catch(function() { return ""; });
+    }
+    return Promise.resolve("");
+  }
   function stampPerimeter(grid, r) {
     try {
       var tr = grid.tbody.find("tr").filter(function() {
@@ -2827,6 +2927,9 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           stamped += 1;
           return stampPerimeter(hit.grid, r).then(function() {
             if (keepPid) setField(r, "ProductID", keepPid);
+            return pickProduct(s.ProductSku).then(function(val) {
+              if (val) setField(r, "ProductID", val);
+            });
           });
         }
       });
@@ -2847,7 +2950,9 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       internaldata_n: filled.idN,
       getperimeter_xhr: !!(window.__kannonGetPerim && window.__kannonGetPerim.any),
       perimeter_via: lastVia,
-      feature_via: lastFeature
+      feature_via: lastFeature,
+      picker_via: lastPicker,
+      picker_sku: lastPickerSku
     };
   });
 })"""
@@ -2946,10 +3051,14 @@ def stamp_pdf_kendo_flats(
     (n/t falsy). XHR OutsidePerimeter landed; List CuttingLength
     stayed 0. GetPDFData omits CuttingLength — do not invent
     that key and do not set dataItem.CuttingLength.     Copy bag
-    Weight / Weight_UseLocal from #Weight / the XHR. Keep the
-    upload row ProductID through L×W / Weight stamp — do not
-    invent a GUID or SKU. Do not fire AddNewPDFFeature(). Empty
-    InternalData is expected for no-hole rectangles.
+    Weight / Weight_UseLocal from #Weight / the XHR. Upload List
+    ProductID is always null on Image Files PDFs (live 21681-1) —
+    keepPid has nothing to restore. Stamp drawing Material /
+    Thickness / Machine=Laser Bay 1 (overwrite 316 Polished /
+    0.0178) and Status>0. Drive Kyle's page Product picker by
+    tenant SKU text so GetPDFData ProductID is the selected List
+    Value. Do not invent a GUID. Do not fire AddNewPDFFeature().
+    Empty InternalData is expected for no-hole rectangles.
     """
     spec_rows: list[dict[str, Any]] = []
     for row in rows or []:
@@ -2967,6 +3076,7 @@ def stamp_pdf_kendo_flats(
                 "Material": row.get("Material"),
                 "Qty": row.get("Qty"),
                 "PartName": row.get("PartName") or row.get("Description") or "",
+                "ProductSku": str(row.get("ProductSku") or row.get("SKU") or "").strip(),
             }
         )
     empty = {
@@ -2984,6 +3094,8 @@ def stamp_pdf_kendo_flats(
         "getperimeter_xhr": False,
         "perimeter_via": "",
         "feature_via": "",
+        "picker_via": "",
+        "picker_sku": "",
     }
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     empty["edit_gate"] = str(gate.get("reason") or "")
@@ -3016,6 +3128,8 @@ def stamp_pdf_kendo_flats(
         "getperimeter_xhr": bool(value.get("getperimeter_xhr")),
         "perimeter_via": str(value.get("perimeter_via") or ""),
         "feature_via": str(value.get("feature_via") or ""),
+        "picker_via": str(value.get("picker_via") or ""),
+        "picker_sku": str(value.get("picker_sku") or ""),
     }
 
 

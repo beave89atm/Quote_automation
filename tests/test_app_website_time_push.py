@@ -902,6 +902,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "29743-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1002323-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "33819-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21681-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21678-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10056" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "491f6387-520f-4eee-aab3-6d20585ee740" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -909,6 +910,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "d2f7b031-a5a8-4020-a6a3-dba8de964ebf" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "b2e12461-442b-436e-9445-772e992644f6" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "47c393f8-db59-4b9a-a243-48d572011f77" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "646a3d98-cd73-4f94-be67-6e40eeb2c309" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "a7d6ca50-efec-409d-bd32-e68012e710c3" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "a7dc46bf-836a-4250-b038-9331cc0595a7" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -919,6 +921,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("b2e12461-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("47c393f8-db59-4b9a-a243-48d572011f77")
     assert is_forbidden_quote_id("47c393f8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("646a3d98-cd73-4f94-be67-6e40eeb2c309")
+    assert is_forbidden_quote_id("646a3d98-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("425587a7-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("95b8c186-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("491f6387-520f-4eee-aab3-6d20585ee740")
@@ -980,6 +984,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "d2f7b031-a5a8-4020-a6a3-dba8de964ebf",
         "b2e12461-442b-436e-9445-772e992644f6",
         "47c393f8-db59-4b9a-a243-48d572011f77",
+        "646a3d98-cd73-4f94-be67-6e40eeb2c309",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(
@@ -2116,15 +2121,42 @@ def test_1002323_1_empty_weight_after_perimeter_does_not_finish(
     assert "persisted" not in blob.lower()
 
 
-def test_33819_1_empty_productid_after_bind_does_not_finish(
+def test_21681_1_empty_bind_productid_still_stamps_and_finishes(
     tmp_path, monkeypatch
 ):
-    """GetPDFData ProductID empty after #files bind — do not Finish."""
-    from tests.fixtures.live_33819_1 import live_33819_1_quote
+    """Bind ProductID null is Image Files default — still stamp + Finish."""
+    from tests.fixtures.live_21681_1 import live_21681_1_quote
 
-    quote = live_33819_1_quote()
+    quote = live_21681_1_quote()
+    leftover = {
+        "ID": quote["ID"],
+        "QuoteNumber": quote["QuoteNumber"],
+        "Description": quote["Description"],
+        "ItemList": [
+            {
+                "ID": "cad-21681-1",
+                "Description": "21681-1 KNUCKLE PLATE",
+                "ProductType": 100,
+                "Category": "Cad",
+                "Quantity": 1,
+                "Tag": "",
+                "ProductionReady": False,
+                "UnitCost": 0,
+                "UnitPrice": 0,
+                "OperationCostList": [],
+                "DataPartPDF": {
+                    "OutsidePerimeter": 0,
+                    "CuttingLength": 0,
+                    "Weight": 0,
+                    "ProductID": None,
+                },
+                "ProductID": None,
+                "Machine": "Laser - Bay1",
+            }
+        ],
+    }
     monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
-    pdf = tmp_path / "COMP-LINK-LUG.pdf"
+    pdf = tmp_path / "KNUCKLE-PLATE.pdf"
     pdf.write_bytes(b"%PDF")
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=box"
@@ -2132,39 +2164,66 @@ def test_33819_1_empty_productid_after_bind_does_not_finish(
     bind = _page_pdf_bind_ok(1)
     bind["productid_n"] = 0
     client.upload_pdf_via_page_add_files.return_value = bind
-    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
-    client.get_json.return_value = quote
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "cutting_length_n": 0,
+        "weight_n": 1,
+        "productid_n": 0,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "picker_via": "#Product",
+        "picker_sku": "PL1/2-100k",
+    }
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+    }
+    client.quote_item_read.return_value = {"Data": leftover["ItemList"], "Total": 1}
+    client.get_json.return_value = leftover
     notes = SecturaFabPushService(client=client).finish_pdf_files(
-        quote_id="11111111-aaaa-bbbb-cccc-000000003381",
+        quote_id="11111111-aaaa-bbbb-cccc-000000002168",
         pdf_files=[pdf],
-        material="A572",
-        thickness="0.625",
+        material="DOMEX/WELDOX",
+        thickness="0.5",
         qty=1,
-        description="COMP LINK LUG",
+        description="KNUCKLE PLATE",
         bom_rows=[
             {
-                "part_no": "COMP-LINK-LUG",
+                "part_no": "KNUCKLE-PLATE",
                 "qty": 1,
-                "description": "PLATE",
-                "width_in": 4.0,
-                "length_in": 16.0,
+                "description": "1/2 DOMEX/WELDOX",
+                "width_in": 6.0,
+                "length_in": 8.0,
             }
         ],
     )
-    client.add_item_pdf_files.assert_not_called()
-    client.stamp_pdf_kendo_flats.assert_not_called()
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    client.add_item_pdf_files.assert_called_once()
+    stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
+    assert stamp_rows
+    assert all("ProductID" not in row for row in stamp_rows)
+    assert stamp_rows[0]["Material"] != "316 Polished"
+    assert stamp_rows[0]["Machine"] == "Laser - Bay1"
+    assert stamp_rows[0]["Status"] == 1
     blob = " ".join(notes)
-    assert "33819-1" in blob
-    assert "ProductID empty after #files bind" in blob
-    assert "do not invent a GUID" in blob
-    assert "do not Finish" in blob
+    assert "21681-1" in blob
+    assert "Image Files default" in blob
+    assert "do not Finish" not in blob
+    assert "DoD FAIL" in blob
     assert "persisted" not in blob.lower()
 
 
-def test_33819_1_empty_productid_after_stamp_does_not_finish(
+def test_33819_1_empty_productid_after_stamp_still_finishes(
     tmp_path, monkeypatch
 ):
-    """Stamp wipe of upload ProductID — do not Finish."""
+    """Stamp ProductID still null after L×W — Finish; leftover GET is FAIL."""
     from tests.fixtures.live_33819_1 import live_33819_1_quote
 
     quote = live_33819_1_quote()
@@ -2187,6 +2246,13 @@ def test_33819_1_empty_productid_after_stamp_does_not_finish(
         "getperimeter_xhr": True,
         "perimeter_via": "UpdatePerimeterWeight",
     }
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+    }
     client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
     client.get_json.return_value = quote
     notes = SecturaFabPushService(client=client).finish_pdf_files(
@@ -2206,12 +2272,12 @@ def test_33819_1_empty_productid_after_stamp_does_not_finish(
             }
         ],
     )
-    client.add_item_pdf_files.assert_not_called()
+    client.add_item_pdf_files.assert_called_once()
     blob = " ".join(notes)
     assert "33819-1" in blob
-    assert "ProductID empty after L×W stamp" in blob
-    assert "do not invent a GUID" in blob
-    assert "do not Finish" in blob
+    assert "do not Finish" not in blob
+    assert "ProductID None" in blob
+    assert "DoD FAIL" in blob
     assert "persisted" not in blob.lower()
 
 

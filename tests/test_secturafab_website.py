@@ -1239,6 +1239,15 @@ def test_leftover_weight_without_productid_is_fail():
     ) is False
     assert leftover_weight_without_productid_is_fail(MagicMock()) is False
     assert leftover_weight_without_productid_is_fail(None) is False
+    from secturafab.website import leftover_empty_bind_productid_skip_is_wrong
+    from tests.fixtures.live_21681_1 import leftover_empty_bind_productid_skip_dump
+
+    skip_dump = leftover_empty_bind_productid_skip_dump()
+    assert leftover_empty_bind_productid_skip_is_wrong(skip_dump) is True
+    assert leftover_empty_bind_productid_skip_is_wrong(dump) is False
+    stamped_skip = dict(skip_dump)
+    stamped_skip["finish_skipped"] = False
+    assert leftover_empty_bind_productid_skip_is_wrong(stamped_skip) is False
     assert leftover_perimeter_xhr_is_not_gold_pack(dump) is False
     assert leftover_cad_pack_is_on_additem_list(dump) is False
     assert leftover_weight_is_getpdfdata_bag_not_cuttinglength(dump) is False
@@ -1263,7 +1272,7 @@ def test_leftover_weight_without_productid_is_fail():
     assert "CuttingLength" not in filelist_bag_snapshot(FILELIST_BAG)
     assert "ProductID" in PDF_GETDATA_FIELDS
     assert "CuttingLength" not in PDF_GETDATA_FIELDS
-    assert empty_productid_after_bind_is_fail({"productid_n": 0}) is True
+    assert empty_productid_after_bind_is_fail({"productid_n": 0}) is False
     assert empty_productid_after_bind_is_fail({"productid_n": 1}) is False
     assert empty_productid_after_bind_is_fail({"stamped": 1}) is False
     assert empty_productid_after_bind_is_fail(MagicMock()) is False
@@ -7542,6 +7551,12 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "productid_n" in _STAMP_PDF_KENDO_JS
     assert "keepPid" in _STAMP_PDF_KENDO_JS
     assert "setField(r, \"ProductID\", keepPid)" in _STAMP_PDF_KENDO_JS
+    assert "pickProduct" in _STAMP_PDF_KENDO_JS
+    assert "findProductWidget" in _STAMP_PDF_KENDO_JS
+    assert "kendoComboBox" in _STAMP_PDF_KENDO_JS
+    assert "s.ProductSku" in _STAMP_PDF_KENDO_JS
+    assert "s.ProductID" not in _STAMP_PDF_KENDO_JS
+    assert "picker_via" in _STAMP_PDF_KENDO_JS
     assert "empty_perimeter" in _PAGE_PDF_FINISH_JS
     assert "OutsidePerimeter" in _PAGE_PDF_FINISH_JS
     from secturafab.chrome_cdp import _STAMP_DXF_STOCK_JS

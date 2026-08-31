@@ -29,6 +29,8 @@ def catalog_plate_grade(drawing: str | None) -> str:
     )
     if "100K" in compact:
         return "100k"
+    if "DOMEX" in compact or "WELDOX" in compact:
+        return "100k"
     if "A572" in compact:
         return "A572"
     if "A36" in compact:
