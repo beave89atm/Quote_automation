@@ -1051,8 +1051,21 @@ def test_empty_dxf_stock_perimeter_is_fail():
     )
 
     assert empty_dxf_stock_perimeter_is_fail(
-        {"cutting_length_n": 0, "outside_perimeter_n": 0, "internaldata_n": 0}
+        {
+            "stamped": 1,
+            "cutting_length_n": 0,
+            "outside_perimeter_n": 0,
+            "internaldata_n": 0,
+        }
     ) is True
+    assert empty_dxf_stock_perimeter_is_fail(
+        {
+            "stamped": 0,
+            "cutting_length_n": 0,
+            "outside_perimeter_n": 0,
+            "internaldata_n": 0,
+        }
+    ) is False
     assert empty_dxf_stock_perimeter_is_fail({"cutting_length_n": 2}) is False
     assert empty_dxf_stock_perimeter_is_fail({"stamped": 2}) is False
     assert empty_dxf_stock_perimeter_is_fail(MagicMock()) is False

@@ -1979,13 +1979,20 @@ def leftover_dxf_pack_is_on_additem_list(dump: dict[str, Any] | None) -> bool:
 def empty_dxf_stock_perimeter_is_fail(result: dict[str, Any] | None) -> bool:
     """Empty CuttingLength / perimeter / InternalData after Stock type is FAIL.
 
-    Only when the stamp result names the counts. MagicMock / older mocks
-    without those keys still use the explode-empty fail-closed check.
+    Only when the stamp actually typed rows (``stamped>0`` or the
+    GetPerimeterAndWeight XHR). Chrome-gate empty (stamped=0) falls through
+    to the explode-empty check so unit tests without a box tab still Finish.
     """
     if not isinstance(result, dict):
         return False
     keys = ("outside_perimeter_n", "cutting_length_n", "internaldata_n")
     if not any(k in result for k in keys):
+        return False
+    try:
+        stamped = int(result.get("stamped") or 0)
+    except (TypeError, ValueError):
+        stamped = 0
+    if stamped <= 0 and not result.get("getperimeter_xhr"):
         return False
     counts: list[int] = []
     for key in keys:
@@ -1995,7 +2002,7 @@ def empty_dxf_stock_perimeter_is_fail(result: dict[str, Any] | None) -> bool:
             counts.append(int(result.get(key) or 0))
         except (TypeError, ValueError):
             counts.append(0)
-    return all(n <= 0 for n in counts)
+    return bool(counts) and all(n <= 0 for n in counts)
 
 
 def dxf_stock_perimeter_filled(result: dict[str, Any] | None) -> bool:
