@@ -248,8 +248,24 @@ def apply_bom_quantities(
     if not updated:
         return ["BOM quantities already matched quote lines"]
 
-    detail["ItemList"] = items
-    save = client.request("POST", "v1/quote", json=detail)
-    if save.status_code >= 400:
-        return [f"Saving BOM quantities failed ({save.status_code})"]
+    from .quote_update import quote_online_update
+
+    params: list[dict[str, Any]] = []
+    for it in items:
+        iid = str(it.get("ID") or "")
+        if not iid:
+            continue
+        token = _desc_token(str(it.get("Description") or ""))
+        key = normalize_part_key(token)
+        if not key or key not in qty_by_pn:
+            continue
+        per = qty_by_pn[key]
+        total = per * root_qty
+        params.append({"ID": iid, "ParamName": "Quantity", "Value": total})
+        params.append({"ID": iid, "ParamName": "AssemblyQty", "Value": per})
+    if not quote_online_update(client, quote_id, params):
+        return [
+            "WARNING: BOM qty via quoteOnline/update failed — "
+            "not POSTing v1/quote ItemList (wipes gold stamp)"
+        ]
     return [f"Applied BOM quantities on {len(updated)} item(s): " + ", ".join(updated)]

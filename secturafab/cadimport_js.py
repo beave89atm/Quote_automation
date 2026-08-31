@@ -140,9 +140,12 @@ UPDATE_DXF_LOADNEW_NOT_CALLED_FROM = (
 )
 
 # Kyle gold Loom classify→Finish without #DXFEdit. None of these write
-# InternalData. Server never fills InternalData on explode. OnAddDXFClick
-# copies InternalData and filters ErrorStatus===0 && Qty>0 — it does not
-# require InternalData truthy. Skip-when-empty stays (10098-1 200 empty).
+# InternalData. Named analog (unpark STEP): type Stock_X/Stock_Y then
+# UpdatePerimeterWeight → POST /Quote/GetPerimeterAndWeight before
+# OnAddDXFClick (same XHR as Image Files L×W). Pack is on
+# AddItem_DXFFiles List. Explode InternalData empty after that stamp
+# is fail-closed, not a park. OnAddDXFClick copies InternalData and
+# filters ErrorStatus===0 && Qty>0. Do not fire UpdateDataNext.
 CLASSIFY_FINISH_FUNCTIONS = (
     "createAllParts",
     "DoCreateDXFParts",
@@ -151,6 +154,8 @@ CLASSIFY_FINISH_FUNCTIONS = (
     "OnAddDXFClick",
 )
 CLASSIFY_FINISH_INTERNALDATA_FILL = None
+STOCK_PERIMETER_FILL_XHR = "/Quote/GetPerimeterAndWeight"
+STOCK_PERIMETER_FILL_ON = ("Stock_X", "Stock_Y", "Length", "Width")
 
 # QuoteOrderEdit Finish — same controllerName='/Quote' as GetItem_AddView.
 #   data:{ID, ItemID, customerMaterial, FileList}
@@ -331,10 +336,16 @@ def explode_xhrs(xhrs: list[CadImportXhr]) -> list[CadImportXhr]:
 def classify_finish_internaldata_fill() -> str | None:
     """Page function on classify→Finish without #DXFEdit that writes InternalData.
 
-    None exists. UpdateDXF_LoadNew is editor-only / not gold. Do not fire
-    POST /CadImport/UpdateDataNext.
+    None exists (editor UpdateDXF_LoadNew is not gold). The named analog
+    is Stock_X/Y → UpdatePerimeterWeight → GetPerimeterAndWeight.
+    Do not fire POST /CadImport/UpdateDataNext.
     """
     return CLASSIFY_FINISH_INTERNALDATA_FILL
+
+
+def stock_perimeter_fill_xhr() -> str:
+    """DXF analog of Image Files GetPerimeterAndWeight (Stock_X/Y change)."""
+    return STOCK_PERIMETER_FILL_XHR
 
 
 def cite_xhrs(xhrs: list[CadImportXhr]) -> list[str]:

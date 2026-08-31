@@ -2460,9 +2460,13 @@ class SecturaFabPushService:
         If kendo has CadType/Stock_*, copy them through — do not invent values.
         If kendo lacks them after explode, that is a /part/create bind miss
         (not a Finish-hook miss): do not Finish.
-        Cad leftover Finish no-ops when InternalData/ImageString are empty
-        (live 10098-1). Copy those keys through if present; log emptiness
-        bools only; skip Finish. Do not invent unfold/geometry.
+        After SetPartMode, type explode Stock_X/Y so UpdatePerimeterWeight
+        → POST /Quote/GetPerimeterAndWeight fills CuttingLength before
+        OnAddDXFClick (DXF analog of Image Files L×W). Empty after that
+        stamp → fail-closed. Do not fire UpdateDataNext. Do not invent
+        InternalData. Unpark STEP: classify→Finish is gold (21678-1).
+        Cad leftover explode-empty without a stock/perimeter fill still
+        skip-Finishes (live 10098-1 / Skin Assembly).
         """
         notes: list[str] = []
         if cadimport_step_too_large(cad_files):
@@ -2647,6 +2651,8 @@ class SecturaFabPushService:
         from .chrome_cdp import apply_grid_dxf_part_modes
         from .website import (
             cad_filelist_payload_blocks_finish,
+            dxf_stock_perimeter_filled,
+            empty_dxf_stock_perimeter_is_fail,
             filelist_cad_payload_empty_bools,
             filelist_missing_cadimport_identity_keys,
         )
@@ -2743,11 +2749,35 @@ class SecturaFabPushService:
                     "live 107292-1)"
                 )
                 return notes
+        stamp_out: Any = None
+        stamper = getattr(self.client, "stamp_dxf_kendo_stock", None)
+        if callable(stamper):
+            stamp_out = stamper(quote_id=quote_id, rows=ready)
+            notes.append("Typed Stock_X/Y on #gridDXFParts for GetPerimeterAndWeight")
+            if isinstance(stamp_out, dict):
+                notes.append(
+                    "getperimeter_xhr="
+                    + ("true" if stamp_out.get("getperimeter_xhr") else "false")
+                )
+                via_perim = str(stamp_out.get("perimeter_via") or "")
+                if via_perim:
+                    notes.append(f"perimeter_via={via_perim}")
+        if empty_dxf_stock_perimeter_is_fail(
+            stamp_out if isinstance(stamp_out, dict) else None
+        ):
+            notes.append(
+                "WARNING: UpdatePerimeterWeight empty CuttingLength/"
+                "InternalData after Stock type — do not Finish "
+                "(DXF analog of live 29743-1)"
+            )
+            return notes
         cad_block = next(
             (r for r in ready if cad_filelist_payload_blocks_finish(r)),
             None,
         )
-        if cad_block is not None:
+        if cad_block is not None and not dxf_stock_perimeter_filled(
+            stamp_out if isinstance(stamp_out, dict) else None
+        ):
             bools = filelist_cad_payload_empty_bools(cad_block)
             notes.append(
                 "filelist_internaldata_empty="
@@ -4506,6 +4536,10 @@ class SecturaFabPushService:
                     ) as weldment_exc:
                         notes.append(f"WARNING: website weldment continue failed: {weldment_exc}")
 
+            if website_cookie and attempted_pack_stamp:
+                notes.append(
+                    "Skipped POST v1/quote ItemList after website gold stamp (no-wipe)"
+                )
             notes.extend(ensure_imperial_item_units(self.client, quote_id))
             notes.extend(
                 apply_bom_quantities(

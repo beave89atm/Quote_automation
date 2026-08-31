@@ -1513,6 +1513,17 @@ class SecturaFabClient:
 
         return _stamp(rows, quote_id=quote_id)
 
+    def stamp_dxf_kendo_stock(
+        self,
+        *,
+        quote_id: str,
+        rows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Type Stock_X/Y then UpdatePerimeterWeight before OnAddDXFClick."""
+        from .chrome_cdp import stamp_dxf_kendo_stock as _stamp
+
+        return _stamp(rows, quote_id=quote_id)
+
     def upload_pdf_via_page_add_files(
         self,
         *,

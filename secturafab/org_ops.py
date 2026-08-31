@@ -186,7 +186,9 @@ def apply_quote_organization(
     ):
         detail["PrimaryContactID"] = contact_id
 
-    save = client.request("POST", "v1/quote", json=detail)
+    from .website import v1_quote_body_without_itemlist
+
+    save = client.request("POST", "v1/quote", json=v1_quote_body_without_itemlist(detail))
     try:
         status = int(getattr(save, "status_code", 200) or 200)
     except (TypeError, ValueError):
@@ -242,7 +244,9 @@ def persist_quote_header(
     if str(detail.get("Description") or "").strip() == desc:
         return notes
     detail["Description"] = desc[:500]
-    save = client.request("POST", "v1/quote", json=detail)
+    from .website import v1_quote_body_without_itemlist
+
+    save = client.request("POST", "v1/quote", json=v1_quote_body_without_itemlist(detail))
     try:
         status = int(getattr(save, "status_code", 200) or 200)
     except (TypeError, ValueError):

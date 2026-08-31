@@ -98,6 +98,16 @@ calculator. GET 8: 3 Cad unitcost filled, OperationCostList [],
 no PR. Linear saw PASS is not DoD PASS. FileList must be
 GetPDFData() / #gridPDF kendo rows with Status>0. Leave
 491f6387. Gold look remains 1001898-1 a7dc46bf.
+Kyle 2026-08-30: unpark STEP. Gold UI is CAD Files drop →
+classify → Finish (OnAddDXFClick / AddItem_DXFFiles) with no
+per-part #DXFEdit. Do not fire UpdateDataNext. Named analog:
+type Stock_X/Stock_Y (CadImport flats) so UpdatePerimeterWeight
+→ POST /Quote/GetPerimeterAndWeight fills CuttingLength /
+OutsidePerimeter before OnAddDXFClick — same XHR as Image Files
+L×W. Pack is on AddItem_DXFFiles List. Explode InternalData
+empty is fail-closed after that stamp, not a park. Never POST
+v1/quote ItemList after a gold stamp (wipe). Gold look remains
+21678-1 a7d6ca50. Leave a7d6ca50 / leftover STEP empties.
 Live 29743-1 (d2f7b031 SUBFRAME WELDMENT Time Waco): leftover
 EDIT dump pack_xhr_named=false addrow_stamps_pr=false.
 OnAddPDFClick success is only DisplaySummaryData + AddRow /
@@ -1938,6 +1948,79 @@ def image_files_cookie_http_empty_grid_is_fail(
     if not filelist_from_kendo:
         return True
     return int(cad_n or 0) <= 0
+
+
+def leftover_dxf_pack_is_on_additem_list(dump: dict[str, Any] | None) -> bool:
+    """Pack is on AddItem_DXFFiles List after Stock type + GetPerimeterAndWeight."""
+    if not isinstance(dump, dict):
+        return False
+    if dump.get("pack_xhr_named") is not False:
+        return False
+    if dump.get("addrow_stamps_pr") is not False:
+        return False
+    if not dump.get("pack_already_on_additem_list"):
+        return False
+    xhr = dump.get("UpdatePerimeterWeight")
+    if not isinstance(xhr, dict):
+        return False
+    if "/Quote/GetPerimeterAndWeight" not in str(xhr.get("xhr") or ""):
+        return False
+    if str(xhr.get("when") or "") != "change_before_AddItem":
+        return False
+    on = {str(k) for k in (xhr.get("on") or ())}
+    if "Stock_X" not in on or "Stock_Y" not in on:
+        return False
+    nxt = dump.get("UpdateDataNext") if isinstance(dump.get("UpdateDataNext"), dict) else {}
+    if nxt.get("gold") is not False:
+        return False
+    return True
+
+
+def empty_dxf_stock_perimeter_is_fail(result: dict[str, Any] | None) -> bool:
+    """Empty CuttingLength / perimeter / InternalData after Stock type is FAIL.
+
+    Only when the stamp result names the counts. MagicMock / older mocks
+    without those keys still use the explode-empty fail-closed check.
+    """
+    if not isinstance(result, dict):
+        return False
+    keys = ("outside_perimeter_n", "cutting_length_n", "internaldata_n")
+    if not any(k in result for k in keys):
+        return False
+    counts: list[int] = []
+    for key in keys:
+        if key not in result:
+            continue
+        try:
+            counts.append(int(result.get(key) or 0))
+        except (TypeError, ValueError):
+            counts.append(0)
+    return all(n <= 0 for n in counts)
+
+
+def dxf_stock_perimeter_filled(result: dict[str, Any] | None) -> bool:
+    """True when Stock type + GetPerimeterAndWeight filled kendo before Finish."""
+    if not isinstance(result, dict):
+        return False
+    for key in ("outside_perimeter_n", "cutting_length_n", "internaldata_n"):
+        try:
+            if int(result.get(key) or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def v1_quote_itemlist_post_wipes_gold(body: dict[str, Any] | None) -> bool:
+    """POST v1/quote with ItemList wipes a website PR/laser stamp."""
+    return isinstance(body, dict) and "ItemList" in body
+
+
+def v1_quote_body_without_itemlist(detail: dict[str, Any] | None) -> dict[str, Any]:
+    """Header/imperial POST must not resend ItemList after a gold stamp."""
+    out = dict(detail or {})
+    out.pop("ItemList", None)
+    return out
 
 
 def leftover_cad_pack_is_on_additem_list(dump: dict[str, Any] | None) -> bool:

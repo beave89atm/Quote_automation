@@ -1019,6 +1019,54 @@ def test_empty_perimeter_weight_is_fail():
     assert empty_perimeter_weight_is_fail(None) is False
 
 
+def test_leftover_dxf_pack_is_on_additem_list():
+    """Gold 21678-1 analog: pack is on AddItem_DXFFiles List after Stock type."""
+    from secturafab.cadimport_js import (
+        STOCK_PERIMETER_FILL_ON,
+        STOCK_PERIMETER_FILL_XHR,
+        classify_finish_internaldata_fill,
+        stock_perimeter_fill_xhr,
+    )
+    from secturafab.website import leftover_dxf_pack_is_on_additem_list
+    from tests.fixtures.live_21678_1 import leftover_dxf_pack_bind_dump
+
+    dump = leftover_dxf_pack_bind_dump()
+    assert leftover_dxf_pack_is_on_additem_list(dump) is True
+    broken = dict(dump)
+    broken["pack_xhr_named"] = True
+    assert leftover_dxf_pack_is_on_additem_list(broken) is False
+    assert classify_finish_internaldata_fill() is None
+    assert stock_perimeter_fill_xhr() == "/Quote/GetPerimeterAndWeight"
+    assert STOCK_PERIMETER_FILL_XHR == "/Quote/GetPerimeterAndWeight"
+    assert "Stock_X" in STOCK_PERIMETER_FILL_ON
+    assert dump["UpdateDataNext"]["gold"] is False
+
+
+def test_empty_dxf_stock_perimeter_is_fail():
+    from secturafab.website import (
+        dxf_stock_perimeter_filled,
+        empty_dxf_stock_perimeter_is_fail,
+        v1_quote_body_without_itemlist,
+        v1_quote_itemlist_post_wipes_gold,
+    )
+
+    assert empty_dxf_stock_perimeter_is_fail(
+        {"cutting_length_n": 0, "outside_perimeter_n": 0, "internaldata_n": 0}
+    ) is True
+    assert empty_dxf_stock_perimeter_is_fail({"cutting_length_n": 2}) is False
+    assert empty_dxf_stock_perimeter_is_fail({"stamped": 2}) is False
+    assert empty_dxf_stock_perimeter_is_fail(MagicMock()) is False
+    assert dxf_stock_perimeter_filled({"cutting_length_n": 2}) is True
+    assert dxf_stock_perimeter_filled({"internaldata_n": 0}) is False
+    assert v1_quote_itemlist_post_wipes_gold({"ItemList": [], "ID": "x"}) is True
+    assert v1_quote_itemlist_post_wipes_gold({"ID": "x", "Description": "n"}) is False
+    stripped = v1_quote_body_without_itemlist(
+        {"ID": "x", "ItemList": [{"ID": "c"}], "Description": "n"}
+    )
+    assert "ItemList" not in stripped
+    assert stripped["Description"] == "n"
+
+
 def test_additem_pdf_filelist_keeps_all_upload_list_keys():
     """FileList must not slim away Upload List calculator keys (SourceDataID may be absent)."""
     from secturafab.website import (
@@ -6486,6 +6534,174 @@ def test_jquery_ajax_edit_empty_internaldata_is_not_success(tmp_path: Path):
     client.cadimport_update_data_next.assert_not_called()
 
 
+def test_dxf_empty_stock_perimeter_does_not_finish(tmp_path: Path):
+    """Stock type + empty GetPerimeterAndWeight — do not Finish."""
+    stp = tmp_path / "21680-1.STEP"
+    stp.write_bytes(b"ISO")
+    kid = {
+        "SourceDataID": "src-21680",
+        "FileID": "file-21680",
+        "ID": "id-21680",
+        "Name": "21680-1 PLATE",
+        "FileName": "21680-1 PLATE",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "CadType": 0,
+        "Stock_X": 8.0,
+        "Stock_Y": 4.0,
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "PartMode": 0,
+        "FileType": "Cad",
+        "InternalData": "",
+        "ImageString": "",
+    }
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [kid]}
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2168"
+    client._edit_gate = ""
+    client._setpartmode_via = "page_fn"
+    client._part_create_list_len = 1
+    client.create_dxf_parts.return_value = {"List": [kid]}
+    client.cadimport_data.return_value = {"List": [kid]}
+    client.get_item_add_view.return_value = {}
+    client.stamp_dxf_kendo_stock.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "outside_perimeter_n": 0,
+        "cutting_length_n": 0,
+        "internaldata_n": 0,
+        "getperimeter_xhr": False,
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": ["CadType", "Stock_X", "Stock_Y", "FileType", "SourceDataID"],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2168",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="21680-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    client.cadimport_update_data_next.assert_not_called()
+    blob = " ".join(notes)
+    assert "UpdatePerimeterWeight" in blob
+    assert "do not Finish" in blob
+    assert "Stock" in blob
+
+
+def test_dxf_stock_perimeter_fill_unparks_finish(tmp_path: Path):
+    """After GetPerimeterAndWeight fills CuttingLength, classify→Finish runs."""
+    stp = tmp_path / "21680-1.STEP"
+    stp.write_bytes(b"ISO")
+    kid = {
+        "SourceDataID": "src-21680",
+        "FileID": "file-21680",
+        "ID": "id-21680",
+        "Name": "21680-1 PLATE",
+        "FileName": "21680-1 PLATE",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "CadType": 0,
+        "Stock_X": 8.0,
+        "Stock_Y": 4.0,
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "PartMode": 0,
+        "FileType": "Cad",
+        "InternalData": "",
+        "ImageString": "",
+    }
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [kid]}
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2168"
+    client._edit_gate = ""
+    client._setpartmode_via = "page_fn"
+    client._finish_via = "page_fn"
+    client._part_create_list_len = 1
+    client.create_dxf_parts.return_value = {"List": [kid]}
+    client.cadimport_data.return_value = {"List": [kid]}
+    client.get_item_add_view.return_value = {}
+    client.stamp_dxf_kendo_stock.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "outside_perimeter_n": 1,
+        "cutting_length_n": 1,
+        "internaldata_n": 1,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+    }
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": ["CadType", "Stock_X", "Stock_Y", "FileType", "SourceDataID"],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2168",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="21680-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_called_once()
+    client.cadimport_update_data_next.assert_not_called()
+    blob = " ".join(notes)
+    assert "getperimeter_xhr=true" in blob
+    assert "UpdatePerimeterWeight" in blob
+
+
 def test_cad_editor_update_data_next_is_not_explode_fill():
     """UpdateDXF_LoadNew is CAD editor next-file, not /part/create InternalData."""
     from secturafab.cadimport_js import (
@@ -6517,6 +6733,34 @@ def test_cad_editor_update_data_next_is_not_explode_fill():
     assert all("UpdateDataNext" not in x.path for x in exploded)
     assert "UpdateDataNext" in UPDATE_DATA_NEXT_SNIPPET
     assert "InternalData" not in UPDATE_DATA_NEXT_SNIPPET
+
+
+def test_apply_bom_quantities_does_not_post_itemlist():
+    from secturafab.qty_ops import apply_bom_quantities
+
+    client = MagicMock()
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "cad-1",
+                "Description": "21680-1 PLATE",
+                "ProductType": 100,
+                "Quantity": 1,
+            }
+        ]
+    }
+    with patch("secturafab.quote_update.quote_online_update", return_value=True) as upd:
+        notes = apply_bom_quantities(
+            client,
+            "qid",
+            bom_rows=[{"part_no": "21680-1", "qty": 2, "description": "PLATE"}],
+        )
+    upd.assert_called_once()
+    for call in client.request.call_args_list:
+        path = call.args[1] if len(call.args) > 1 else ""
+        body = (call.kwargs or {}).get("json") or {}
+        assert path != "v1/quote" or "ItemList" not in body
+    assert any("BOM quantities" in n for n in notes)
 
 
 def test_updatedxf_loadnew_is_editor_only_not_gold():
@@ -6954,6 +7198,14 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "CuttingLengthDisp" in _STAMP_PDF_KENDO_JS
     assert "empty_perimeter" in _PAGE_PDF_FINISH_JS
     assert "OutsidePerimeter" in _PAGE_PDF_FINISH_JS
+    from secturafab.chrome_cdp import _STAMP_DXF_STOCK_JS
+
+    assert "Stock_X" in _STAMP_DXF_STOCK_JS
+    assert "Stock_Y" in _STAMP_DXF_STOCK_JS
+    assert "UpdatePerimeterWeight" in _STAMP_DXF_STOCK_JS
+    assert "/Quote/GetPerimeterAndWeight" in _STAMP_DXF_STOCK_JS
+    assert "gridDXFParts" in _STAMP_DXF_STOCK_JS
+    assert "UpdateDataNext" not in _STAMP_DXF_STOCK_JS
 
 
 def test_upload_pdf_via_page_add_files_is_not_cookie_http():

@@ -19,7 +19,9 @@ EDIT + ``#img`` + AF + ``IDList[]`` → n=8 InternalData empty 8/8.
 Fetch-vs-``$.ajax`` is not the miss. Server never fills InternalData
 on explode. ``UpdateDXF_LoadNew`` is editor-only / not gold — do
 not fire ``UpdateDataNext``. Classify→Finish without ``#DXFEdit``
-has no InternalData-fill XHR. Keep the skip. Leave ``5b622a0d``.
+has no editor InternalData-fill XHR. Unpark STEP: type Stock_X/Y
+then ``UpdatePerimeterWeight`` / ``GetPerimeterAndWeight`` before
+``OnAddDXFClick``. Do not fire ``UpdateDataNext``. Leave ``5b622a0d``.
 
 Explode = page ``$.ajax`` with Upload IDs (EDIT when minted id matches).
 Bind/Finish = QuoteOrderEdit ``/Quote/EDIT/{id}`` (title ``*Quote-`` /
@@ -2925,6 +2927,272 @@ def stamp_pdf_kendo_flats(
         "edit_gate": "",
         "outside_perimeter_n": int(value.get("outside_perimeter_n") or 0),
         "cutting_length_n": int(value.get("cutting_length_n") or 0),
+        "getperimeter_xhr": bool(value.get("getperimeter_xhr")),
+        "perimeter_via": str(value.get("perimeter_via") or ""),
+    }
+
+
+_STAMP_DXF_STOCK_JS = """(function(spec) {
+  function dxfGrid() {
+    try {
+      var g = window.jQuery && jQuery("#gridDXFParts").data("kendoGrid");
+      if (g && g.dataSource) return g;
+    } catch (e) {}
+    return null;
+  }
+  var emptyStamp = {
+    ok: false, stamped: 0, cell_edit: 0, grid_id: "#gridDXFParts",
+    grid_dxf_row_count: 0, outside_perimeter_n: 0, cutting_length_n: 0,
+    internaldata_n: 0, getperimeter_xhr: false, perimeter_via: ""
+  };
+  var grid = dxfGrid();
+  if (!grid) return Promise.resolve(emptyStamp);
+  var rows = (spec && spec.rows) || [];
+  var data = grid.dataSource.data() || [];
+  var stamped = 0;
+  var viaCell = 0;
+  var lastVia = "";
+  function setField(r, k, v) {
+    if (v == null || v === "") return;
+    if (typeof r.set === "function") r.set(k, v);
+    else r[k] = v;
+  }
+  function editSet(r, field, value) {
+    if (value == null || value === "") return;
+    try {
+      var tr = grid.tbody.find("tr").filter(function() {
+        return grid.dataItem(this) === r;
+      }).first();
+      if (tr.length && typeof grid.editCell === "function") {
+        var cell = tr.find("td[data-field='" + field + "']");
+        if (!cell.length) {
+          var cols = grid.columns || [];
+          for (var c = 0; c < cols.length; c++) {
+            if ((cols[c].field || "") === field) {
+              cell = tr.find("td").eq(c);
+              break;
+            }
+          }
+        }
+        if (cell.length) {
+          grid.editCell(cell);
+          var editor = cell.find("input, select, textarea").first();
+          if (editor.length) {
+            editor.val(value).trigger("change").trigger("blur");
+            if (typeof grid.closeCell === "function") grid.closeCell();
+            viaCell += 1;
+            return;
+          }
+          if (typeof grid.closeCell === "function") grid.closeCell();
+        }
+      }
+    } catch (e) {}
+    setField(r, field, value);
+  }
+  function hookGetPerimeter() {
+    if (window.__kannonDxfPerimHooked) return;
+    if (!window.jQuery || !jQuery.ajax) return;
+    window.__kannonDxfPerimHooked = true;
+    var orig = jQuery.ajax;
+    jQuery.ajax = function(opts) {
+      var url = String((opts && (opts.url || opts)) || "");
+      if (url.indexOf("/Quote/GetPerimeterAndWeight") >= 0) {
+        window.__kannonDxfPerim = window.__kannonDxfPerim || {};
+        window.__kannonDxfPerim.xhr = true;
+        window.__kannonDxfPerim.any = true;
+      }
+      return orig.apply(this, arguments);
+    };
+  }
+  function waitGetPerimeter(timeoutMs) {
+    return new Promise(function(resolve) {
+      var t0 = Date.now();
+      (function poll() {
+        if (window.__kannonDxfPerim && window.__kannonDxfPerim.xhr) {
+          resolve(true); return;
+        }
+        if (Date.now() - t0 > timeoutMs) { resolve(false); return; }
+        setTimeout(poll, 40);
+      })();
+    });
+  }
+  function fireUpdatePerimeterWeight() {
+    try {
+      if (typeof window.UpdatePerimeterWeight === "function") {
+        window.UpdatePerimeterWeight();
+        return "UpdatePerimeterWeight";
+      }
+    } catch (e) {}
+    try {
+      if (typeof window.GridDXFPart_OnChangeUpdate === "function") {
+        window.GridDXFPart_OnChangeUpdate();
+        return "GridDXFPart_OnChangeUpdate";
+      }
+    } catch (e2) {}
+    try {
+      if (window.jQuery) {
+        var $sx = jQuery("[data-field='Stock_X'] input, #Stock_X");
+        if ($sx.length) { $sx.trigger("change"); return "Stock_X.change"; }
+      }
+    } catch (e3) {}
+    return "";
+  }
+  function copyPerimeterOntoRow(r) {
+    var op = "";
+    var cl = "";
+    try {
+      if (window.jQuery) {
+        op = String(jQuery("#OutsidePerimeter").val() || "");
+        cl = String(
+          jQuery(".pdfcuttinglength").val()
+          || jQuery("#CuttingLengthDisp").val()
+          || ""
+        );
+      }
+    } catch (e) {}
+    if (op) {
+      setField(r, "OutsidePerimeter", op);
+      setField(r, "OutsidePerimeter_UseLocal", true);
+    }
+    if (cl) {
+      setField(r, "CuttingLengthDisp", cl);
+      setField(r, "CuttingLength", cl);
+    }
+  }
+  function stampPerimeter(r) {
+    try {
+      var tr = grid.tbody.find("tr").filter(function() {
+        return grid.dataItem(this) === r;
+      }).first();
+      if (tr.length && typeof grid.select === "function") grid.select(tr);
+    } catch (e) {}
+    if (window.__kannonDxfPerim) window.__kannonDxfPerim.xhr = false;
+    lastVia = fireUpdatePerimeterWeight() || lastVia;
+    return waitGetPerimeter(8000).then(function() {
+      copyPerimeterOntoRow(r);
+    });
+  }
+  hookGetPerimeter();
+  window.__kannonDxfPerim = window.__kannonDxfPerim || {
+    xhr: false, any: false
+  };
+  var chain = Promise.resolve();
+  for (var i = 0; i < rows.length; i++) {
+    (function(s, idx) {
+      chain = chain.then(function() {
+        var name = String(s.FileName || s.Name || "");
+        for (var j = 0; j < data.length; j++) {
+          var r = data[j];
+          var fn = String((r.FileName || r.Name || r.PartName || ""));
+          if (name && fn && fn.toLowerCase() !== name.toLowerCase()
+              && fn.toLowerCase().indexOf(name.toLowerCase()) < 0
+              && name.toLowerCase().indexOf(fn.toLowerCase()) < 0) {
+            continue;
+          }
+          if (!name && idx !== j) continue;
+          editSet(r, "Stock_X", s.Stock_X);
+          editSet(r, "Stock_Y", s.Stock_Y);
+          editSet(r, "Length", s.Length || s.Stock_X);
+          editSet(r, "Width", s.Width || s.Stock_Y);
+          stamped += 1;
+          return stampPerimeter(r);
+        }
+      });
+    })(rows[i] || {}, i);
+  }
+  return chain.then(function() {
+    var opN = 0, clN = 0, idN = 0;
+    for (var k = 0; k < data.length; k++) {
+      var row = data[k] || {};
+      if (Number(row.OutsidePerimeter) > 0) opN += 1;
+      if (Number(row.CuttingLengthDisp || row.CuttingLength) > 0) clN += 1;
+      var idata = row.InternalData;
+      if (idata != null && String(idata).replace(/\\s+/g, "") !== "") idN += 1;
+    }
+    return {
+      ok: stamped > 0,
+      stamped: stamped,
+      cell_edit: viaCell,
+      grid_id: "#gridDXFParts",
+      grid_dxf_row_count: data.length,
+      outside_perimeter_n: opN,
+      cutting_length_n: clN,
+      internaldata_n: idN,
+      getperimeter_xhr: !!(window.__kannonDxfPerim && window.__kannonDxfPerim.any),
+      perimeter_via: lastVia
+    };
+  });
+})"""
+
+
+def stamp_dxf_kendo_stock(
+    rows: list[dict[str, Any]],
+    *,
+    quote_id: str | None = None,
+    base: str | None = None,
+) -> dict[str, Any]:
+    """Type Stock_X/Y on #gridDXFParts, then UpdatePerimeterWeight before Finish.
+
+    DXF analog of Image Files L×W. Uses explode Stock values — do not invent.
+    Do not fire UpdateDataNext.
+    """
+    spec_rows: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        sx = row.get("Stock_X")
+        sy = row.get("Stock_Y")
+        if sx in (None, "") and sy in (None, ""):
+            continue
+        spec_rows.append(
+            {
+                "FileName": str(row.get("FileName") or row.get("Name") or ""),
+                "Name": str(row.get("Name") or row.get("FileName") or ""),
+                "Stock_X": sx,
+                "Stock_Y": sy,
+                "Length": row.get("Length") or sx,
+                "Width": row.get("Width") or sy,
+            }
+        )
+    empty = {
+        "ok": False,
+        "stamped": 0,
+        "cell_edit": 0,
+        "grid_id": "#gridDXFParts",
+        "grid_dxf_row_count": 0,
+        "edit_gate": "",
+        "outside_perimeter_n": 0,
+        "cutting_length_n": 0,
+        "internaldata_n": 0,
+        "getperimeter_xhr": False,
+        "perimeter_via": "",
+    }
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
+    empty["edit_gate"] = str(gate.get("reason") or "")
+    if not gate.get("ok"):
+        return empty
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    expression = (
+        _STAMP_DXF_STOCK_JS
+        + "("
+        + json.dumps({"rows": spec_rows}, separators=(",", ":"))
+        + ")"
+    )
+    value = _cdp_evaluate_promise(
+        expression, base=base, tab=tab, fallback=False
+    )
+    if not isinstance(value, dict):
+        return empty
+    return {
+        "ok": bool(value.get("ok")),
+        "stamped": int(value.get("stamped") or 0),
+        "cell_edit": int(value.get("cell_edit") or 0),
+        "grid_id": str(value.get("grid_id") or "#gridDXFParts"),
+        "grid_dxf_row_count": int(value.get("grid_dxf_row_count") or 0),
+        "edit_gate": "",
+        "outside_perimeter_n": int(value.get("outside_perimeter_n") or 0),
+        "cutting_length_n": int(value.get("cutting_length_n") or 0),
+        "internaldata_n": int(value.get("internaldata_n") or 0),
         "getperimeter_xhr": bool(value.get("getperimeter_xhr")),
         "perimeter_via": str(value.get("perimeter_via") or ""),
     }
