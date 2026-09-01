@@ -2704,3 +2704,137 @@ def test_075_and_3_16_plate_stay_cad_for_image_files():
     assert classify_image_files_item('3/4" A36 PLATE', 0.75) == "Cad"
     assert classify_image_files_item('3/16" A36 PLATE', 0.1875) == "Cad"
     assert classify_image_files_item('14501-1 3/16" A36', 0.1875) == "Cad"
+
+
+def test_hole_noun_stamps_diameter_and_skips_finish_without_pdfinternal(
+    tmp_path, monkeypatch
+):
+    """Drawing 1/2 HOLE + no GET /Quote/PDFInternal → do not Finish."""
+    from secturafab.push import _holes_from_noun
+
+    assert _holes_from_noun("PLATE 1/2 HOLE") == [{"diameter": 0.5, "qty": 1}]
+    assert _holes_from_noun("HOLE Ø0.75") == [{"diameter": 0.75, "qty": 1}]
+    assert _holes_from_noun("Ø21.875") == []
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "HOLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "weight_n": 1,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "feature_via": "AddNewPDFFeature",
+        "pdfinternal_xhr": False,
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-00000000hole",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE 1/2 HOLE",
+        bom_rows=[
+            {
+                "part_no": "HOLE-PLATE",
+                "qty": 1,
+                "description": "PLATE 1/2 HOLE",
+                "width_in": 4.0,
+                "length_in": 6.0,
+            }
+        ],
+    )
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    client.add_item_pdf_files.assert_not_called()
+    stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
+    assert stamp_rows
+    assert stamp_rows[0]["HoleDiameter"] == 0.5
+    blob = " ".join(notes)
+    assert "PDFInternal" in blob
+    assert "do not Finish" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_hole_pdfinternal_list0_pack_contours_is_gold(tmp_path, monkeypatch):
+    """Hole + PDFInternal + list0_pack PR/laser/UnitCost + 1/1 contours."""
+    from tests.fixtures.live_gold_cad_pack import gold_list0_pack_result
+    from tests.test_secturafab_website import _gold_cad
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "HOLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "weight_n": 1,
+        "internaldata_n": 1,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "feature_via": "AddNewPDFFeature",
+        "pdfinternal_xhr": True,
+    }
+    gold_cad = _gold_cad("HOLE-PLATE 1/4 A36")
+    gold_cad["UnitWeightCost"] = 1.1
+    gold_cad["DataPartPDF"] = {
+        "NumberOfContours": 1,
+        "NumberOfPierces": 1,
+        "InternalData": "page",
+    }
+    result = gold_list0_pack_result()
+    result["filelist_bag"] = {
+        "Machine": "Laser - Bay1",
+        "ProductID": None,
+        "Qty": 1,
+        "Weight": 1.2,
+        "Weight_UseLocal": True,
+        "OutsidePerimeter": 20.0,
+        "OutsidePerimeter_UseLocal": True,
+        "Material": "A36",
+        "Thickness": "0.25",
+        "Length": 6.0,
+        "Width": 4.0,
+    }
+    client.add_item_pdf_files.return_value = result
+    client.quote_item_read.return_value = {"Data": [gold_cad], "Total": 1}
+    client.get_json.return_value = {"ItemList": [gold_cad]}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-00000000gold",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE 1/2 HOLE",
+        bom_rows=[
+            {
+                "part_no": "HOLE-PLATE",
+                "qty": 1,
+                "description": "PLATE 1/2 HOLE",
+                "width_in": 4.0,
+                "length_in": 6.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_called_once()
+    blob = " ".join(notes)
+    assert "pdfinternal_xhr=true" in blob
+    assert "list0_pack.badge_string='PR'" in blob
+    assert "NumberOfContours/Pierces 1/1" in blob
+    assert "filelist_from_kendo=true" in blob
+    assert "DoD FAIL" not in blob
+    assert "persisted" in blob.lower()

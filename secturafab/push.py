@@ -436,7 +436,8 @@ def classify_image_files_item(description: str, thickness: Any = None) -> str:
 
 
 _HOLE_NOUN_RE = re.compile(
-    r"(?i)(\d+(?:\s+\d+/\d+)?|\d+/\d+|\d+\.\d+)\s*(?:\"|IN)?\s*HOLES?"
+    r"(?i)(?:(?:ø|Ø|DIA\.?)\s*)?(\d+\.\d+|\d+(?:\s+\d+/\d+)?|\d+/\d+)\s*(?:\"|IN)?\s*HOLES?"
+    r"|HOLES?\s*(?:ø|Ø|DIA\.?)?\s*(\d+\.\d+|\d+(?:\s+\d+/\d+)?|\d+/\d+)"
 )
 
 
@@ -456,7 +457,8 @@ def _holes_from_noun(text: str) -> list[dict[str, Any]]:
 
     holes: list[dict[str, Any]] = []
     for m in _HOLE_NOUN_RE.finditer(str(text or "")):
-        dia = _parse_thickness_token(re.sub(r"\s+", "", m.group(1)))
+        raw = m.group(1) or m.group(2)
+        dia = _parse_thickness_token(re.sub(r"\s+", "", raw or ""))
         if dia and 0.1 <= dia <= 6.0:
             holes.append({"diameter": dia, "qty": 1})
     return holes
@@ -3232,10 +3234,14 @@ class SecturaFabPushService:
         XHR Weight=7.7607 was not on the row).         Empty InternalData
         after a landed perimeter is expected for no-hole rectangles.
         AddNewPDFFeature() with no args is not gold. Named hole step
-        is ``AddNewPDFFeature(feature, "cad")`` then page
+        is ``AddNewPDFFeature(feature, "cad")`` then wait for GET
+        ``/Quote/PDFInternal`` (not a 400ms race) then page
         ``PDFGetData()`` onto InternalData before OnAddPDFClick.
+        That creates NumberOfContours/Pierces (gold 14501-1 is
+        1/1). GetPDFData omits those keys — do not invent them.
         Do not cookie-POST /Quote/AddFeature. Do not invent
-        InternalData JSON. Plate thicker than 3/4 in is Component
+        InternalData JSON. Drawing has a hole + no PDFInternal
+        XHR → do not Finish. Plate thicker than 3/4 in is Component
         (live 1009213-1) — do not Cad-laser it. Status is
         filter-only — do not overlay it onto the posted bag.
         Live 1002323-1 FileList keys were not logged. Perimeter
@@ -3438,6 +3444,13 @@ class SecturaFabPushService:
                 sku_name = str((plate_sku or {}).get("ProductName") or "").strip()
                 if sku_name:
                     stamp_row["ProductSku"] = sku_name
+                holes = _holes_from_noun(
+                    f"{pn} {noun} {part_name} {path.name}"
+                )
+                if not holes and plat:
+                    holes = _holes_from_noun(str(plat.get("description") or ""))
+                if holes:
+                    stamp_row["HoleDiameter"] = holes[0]["diameter"]
                 stamp_rows.append(stamp_row)
             else:
                 notes.append(
@@ -3452,6 +3465,8 @@ class SecturaFabPushService:
         if cad_paths:
             from .website import (
                 cookie_http_pdf_upload_is_fail,
+                hole_feature_without_pdfinternal_is_fail,
+                list0_pack_badge_ocl_contours_is_gold,
                 list0_pack_badge_ocl_is_gold,
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
@@ -3542,6 +3557,15 @@ class SecturaFabPushService:
                         "do not post CuttingLength; do not Finish; "
                         "empty InternalData is expected for no-hole rectangles"
                     )
+                elif hole_feature_without_pdfinternal_is_fail(
+                    stamp_out if isinstance(stamp_out, dict) else None,
+                    stamp_rows,
+                ):
+                    notes.append(
+                        "WARNING: AddNewPDFFeature without GET /Quote/PDFInternal "
+                        "(gold 14501-1 NumberOfContours/Pierces 1/1) — "
+                        "do not Finish; do not invent InternalData"
+                    )
                 else:
                     if isinstance(stamp_out, dict):
                         via_pick = str(stamp_out.get("picker_via") or "")
@@ -3556,6 +3580,14 @@ class SecturaFabPushService:
                         via_feat = str(stamp_out.get("feature_via") or "")
                         if via_feat:
                             notes.append(f"feature_via={via_feat}")
+                        notes.append(
+                            "pdfinternal_xhr="
+                            + (
+                                "true"
+                                if stamp_out.get("pdfinternal_xhr")
+                                else "false"
+                            )
+                        )
                     try:
                         result = self.client.add_item_pdf_files(
                             quote_id=quote_id,
@@ -3669,7 +3701,13 @@ class SecturaFabPushService:
                                 "Laser-Setup/Sheet Loading/Deburr + "
                                 "UnitCost>UnitWeightCost — Image Files DoD FAIL"
                             )
-                        if list0_pack_badge_ocl_is_gold(result):
+                        if list0_pack_badge_ocl_contours_is_gold(result):
+                            notes.append(
+                                "list0_pack BadgeString PR + laser OCL + "
+                                "UnitCost>UnitWeightCost + "
+                                "NumberOfContours/Pierces 1/1"
+                            )
+                        elif list0_pack_badge_ocl_is_gold(result):
                             notes.append(
                                 "list0_pack BadgeString PR + laser OCL + "
                                 "UnitCost>UnitWeightCost"

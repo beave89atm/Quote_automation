@@ -1652,6 +1652,95 @@ def test_leftover_list0_pack_is_not_gold():
     no_cands = dict(dump)
     no_cands.pop("getpdfdata_candidates_to_verify")
     assert leftover_getpdfdata_candidates_named_not_invented(no_cands) is False
+    assert cad["DataPartPDF"]["NumberOfContours"] == 0
+    assert cad["DataPartPDF"]["NumberOfPierces"] == 0
+    assert "NumberOfContours" not in PDF_GETDATA_FIELDS
+    assert "NumberOfPierces" not in PDF_GETDATA_FIELDS
+
+
+def test_gold_cad_pack_is_contours_pierces_and_list0_pack():
+    """Gold 14501-1: 1/1 + BadgeString PR + laser OCL + UnitCost>UWC.
+
+    Leftover Cad misses with L×W/weight/machine still had 0/0.
+    Missing step is wait-for GET /Quote/PDFInternal.
+    """
+    from secturafab.website import (
+        leftover_contours_pierces_zero_is_not_gold,
+        leftover_list0_pack_is_not_gold,
+        list0_pack_badge_ocl_contours_is_gold,
+        list0_pack_badge_ocl_is_gold,
+        list0_pack_without_tag_ocl_is_fail,
+        hole_feature_without_pdfinternal_is_fail,
+        PDF_GETDATA_FIELDS,
+        GOLD_LASER_CALCULATOR_NAMES,
+    )
+    from tests.fixtures.live_gold_cad_pack import (
+        GOLD_PART_NO,
+        GOLD_QUOTE_ID,
+        gold_cad_pack_bind_dump,
+        gold_list0_pack_result,
+        leftover_list0_pack_zero_contours_result,
+    )
+    from tests.fixtures.live_33204_1 import leftover_list0_pack_not_gold_dump
+
+    dump = gold_cad_pack_bind_dump()
+    assert dump["readonly"] is True
+    assert dump["quote_id"] == GOLD_QUOTE_ID
+    assert dump["part_no"] == GOLD_PART_NO
+    assert dump["gold_14501_1"]["number_of_contours"] == 1
+    assert dump["gold_14501_1"]["number_of_pierces"] == 1
+    assert dump["gold_14501_1"]["badge_string"] == "PR"
+    assert set(dump["gold_14501_1"]["ocl_names"]) == set(GOLD_LASER_CALCULATOR_NAMES)
+    assert dump["leftover_miss"]["number_of_contours"] == 0
+    assert dump["leftover_miss"]["number_of_pierces"] == 0
+    assert dump["leftover_miss"]["pdfinternal_xhr"] is False
+    assert dump["AddNewPDFFeature"]["xhr"] == "GET /Quote/PDFInternal"
+    assert dump["AddNewPDFFeature"]["wait_for_pdfinternal"] is True
+    assert dump["AddNewPDFFeature"]["race_400ms_not_gold"] is True
+    assert dump["AddNewPDFFeature"]["invent_internaldata"] is False
+    assert dump["GetPDFData"]["contours_not_a_bag_key"] is True
+    assert leftover_contours_pierces_zero_is_not_gold(dump) is True
+    raced = dict(dump)
+    raced["AddNewPDFFeature"] = dict(dump["AddNewPDFFeature"])
+    raced["AddNewPDFFeature"]["wait_for_pdfinternal"] = False
+    assert leftover_contours_pierces_zero_is_not_gold(raced) is False
+    invented = dict(dump)
+    invented["invent_contours_on_filelist"] = True
+    assert leftover_contours_pierces_zero_is_not_gold(invented) is False
+    assert leftover_contours_pierces_zero_is_not_gold(
+        leftover_list0_pack_not_gold_dump()
+    ) is False
+    assert leftover_contours_pierces_zero_is_not_gold(MagicMock()) is False
+    assert leftover_contours_pierces_zero_is_not_gold(None) is False
+    gold = gold_list0_pack_result()
+    assert list0_pack_badge_ocl_is_gold(gold) is True
+    assert list0_pack_badge_ocl_contours_is_gold(gold) is True
+    zero = leftover_list0_pack_zero_contours_result()
+    assert list0_pack_without_tag_ocl_is_fail(zero) is True
+    assert list0_pack_badge_ocl_is_gold(zero) is False
+    assert list0_pack_badge_ocl_contours_is_gold(zero) is False
+    no_cont = dict(gold)
+    no_cont["response_number_of_contours"] = 0
+    no_cont["response_number_of_pierces"] = 0
+    assert list0_pack_badge_ocl_is_gold(no_cont) is True
+    assert list0_pack_badge_ocl_contours_is_gold(no_cont) is False
+    assert leftover_list0_pack_is_not_gold(dump) is False
+    assert "NumberOfContours" not in PDF_GETDATA_FIELDS
+    assert "NumberOfPierces" not in PDF_GETDATA_FIELDS
+    assert hole_feature_without_pdfinternal_is_fail(
+        {"pdfinternal_xhr": False, "internaldata_n": 0},
+        [{"HoleDiameter": 0.5}],
+    ) is True
+    assert hole_feature_without_pdfinternal_is_fail(
+        {"pdfinternal_xhr": True, "internaldata_n": 1},
+        [{"HoleDiameter": 0.5}],
+    ) is False
+    assert hole_feature_without_pdfinternal_is_fail(
+        {"pdfinternal_xhr": False, "internaldata_n": 0},
+        [{"Length": 9.125, "Width": 7.5625}],
+    ) is False
+    assert hole_feature_without_pdfinternal_is_fail(None, [{"HoleDiameter": 0.75}]) is True
+    assert hole_feature_without_pdfinternal_is_fail({"pdfinternal_xhr": True}, None) is False
 
 
 def test_leftover_plate_modal_is_not_the_pack():
@@ -8113,6 +8202,11 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "AddNewPDFFeature" in _STAMP_PDF_KENDO_JS
     assert 'AddNewPDFFeature("Hole", "cad")' in _STAMP_PDF_KENDO_JS
     assert "PDFGetData" in _STAMP_PDF_KENDO_JS
+    assert "/Quote/PDFInternal" in _STAMP_PDF_KENDO_JS
+    assert "waitPdfInternal" in _STAMP_PDF_KENDO_JS
+    assert "s.HoleDiameter" in _STAMP_PDF_KENDO_JS
+    assert "pdfinternal_xhr" in _STAMP_PDF_KENDO_JS
+    assert "400ms race is leftover 0/0" in _STAMP_PDF_KENDO_JS
     assert 'url.indexOf("/Quote/AddFeature")' not in _STAMP_PDF_KENDO_JS
     assert "add_item_feature" not in _STAMP_PDF_KENDO_JS
     assert "onInternalDataChange" in _STAMP_PDF_KENDO_JS

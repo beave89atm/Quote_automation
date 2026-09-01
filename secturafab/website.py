@@ -153,6 +153,17 @@ Network.getCookies may omit, including
 (cookie 302 after refresh) — that leftover class is 29340-1.
 Login page still aborts. Do not ask Kyle to sign in. Leave
 8fb3da71 / 29340-1. Do not PATCH. Do not remint.
+Gold Cad pack (1001898-1 a7dc46bf first Cad 14501-1):
+DataPartPDF NumberOfContours/Pierces 1/1 + BadgeString PR +
+laser CalculatorNames + UnitCost>UnitWeightCost. Leftover
+Cad misses that already had L×W/Weight/Machine still landed
+0/0 + empty InternalData + empty pack. Missing pre-Finish
+step: AddNewPDFFeature("Hole","cad") must wait for GET
+/Quote/PDFInternal (not a 400ms race), then page PDFGetData()
+onto InternalData. GetPDFData omits NumberOfContours/Pierces
+(same as CuttingLength) — do not invent those FileList keys.
+Do not cookie-POST /Quote/AddFeature. Do not invent
+InternalData JSON. Pack is on AddItem_PDFFiles List[0].
 Live 10098-1 (315cb19 leftover PIVOTING FOOT, 6a568912): posted FileList
 had FileType=Cad (string) plus CadType/Stock_*/SID/FileID/ID/ErrorStatus/
 Qty/ItemType/Category/PartMode and Cad-path keys InternalData,
@@ -2676,6 +2687,131 @@ def list0_pack_badge_ocl_is_gold(result: dict[str, Any] | None) -> bool:
     except (TypeError, ValueError):
         return False
     return uc > uwc
+
+
+def list0_pack_badge_ocl_contours_is_gold(result: dict[str, Any] | None) -> bool:
+    """Gold 14501-1: list0_pack + DataPartPDF NumberOfContours/Pierces >= 1.
+
+    Leftover Cad misses with a full L×W bag still had 0/0. Pack is not
+    those FileList keys — GetPDFData omits NumberOfContours/Pierces.
+    """
+    if not list0_pack_badge_ocl_is_gold(result):
+        return False
+    try:
+        if int(result.get("response_number_of_contours") or 0) < 1:
+            return False
+        if int(result.get("response_number_of_pierces") or 0) < 1:
+            return False
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def leftover_contours_pierces_zero_is_not_gold(dump: dict[str, Any] | None) -> bool:
+    """Named persist: leftover 0/0 vs gold 14501-1 1/1 + list0_pack.
+
+    Missing step is wait-for GET /Quote/PDFInternal after
+    AddNewPDFFeature("Hole","cad"), then PDFGetData InternalData.
+    Do not invent NumberOfContours on FileList.
+    """
+    if not isinstance(dump, dict):
+        return False
+    gold = dump.get("gold_14501_1") if isinstance(dump.get("gold_14501_1"), dict) else {}
+    miss = dump.get("leftover_miss") if isinstance(dump.get("leftover_miss"), dict) else {}
+    if not gold or not miss:
+        return False
+    try:
+        if int(gold.get("number_of_contours") or 0) != 1:
+            return False
+        if int(gold.get("number_of_pierces") or 0) != 1:
+            return False
+        if miss.get("number_of_contours") is None or int(miss.get("number_of_contours")) != 0:
+            return False
+        if miss.get("number_of_pierces") is None or int(miss.get("number_of_pierces")) != 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if str(gold.get("badge_string") or "") != "PR":
+        return False
+    ocl = gold.get("ocl_names")
+    if not isinstance(ocl, (list, tuple)):
+        return False
+    have = {str(n).strip().lower() for n in ocl if str(n).strip()}
+    want = {n.lower() for n in GOLD_LASER_CALCULATOR_NAMES}
+    if not want <= have:
+        return False
+    try:
+        if float(gold.get("unit_cost") or 0) <= float(gold.get("unit_weight_cost") or 0):
+            return False
+    except (TypeError, ValueError):
+        return False
+    if str(miss.get("badge_string") or "") != "":
+        return False
+    try:
+        if miss.get("ocl_n") is None or int(miss.get("ocl_n")) != 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if miss.get("internaldata") not in ("", None):
+        return False
+    if miss.get("pdfinternal_xhr") is not False:
+        return False
+    if miss.get("invent_contours_on_filelist") is not False:
+        return False
+    feat = dump.get("AddNewPDFFeature") if isinstance(dump.get("AddNewPDFFeature"), dict) else {}
+    if feat.get("wait_for_pdfinternal") is not True:
+        return False
+    if feat.get("race_400ms_not_gold") is not True:
+        return False
+    if feat.get("invent_internaldata") is not False:
+        return False
+    if feat.get("cookie_addfeature") is not False:
+        return False
+    getpdf = dump.get("GetPDFData") if isinstance(dump.get("GetPDFData"), dict) else {}
+    omits = {str(k) for k in (getpdf.get("omits") or ())}
+    if "NumberOfContours" not in omits or "NumberOfPierces" not in omits:
+        return False
+    if getpdf.get("contours_not_a_bag_key") is not True:
+        return False
+    if dump.get("invent_contours_on_filelist") is not False:
+        return False
+    return True
+
+
+def hole_feature_without_pdfinternal_is_fail(
+    stamp_out: dict[str, Any] | None,
+    stamp_rows: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Drawing has a hole but page GET /Quote/PDFInternal did not land.
+
+    AddNewPDFFeature("Hole","cad") without waiting for PDFInternal
+    leaves InternalData empty and NumberOfContours/Pierces 0/0.
+    Do not Finish. Do not invent InternalData.
+    """
+    rows = stamp_rows if isinstance(stamp_rows, list) else []
+    has_hole = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            dia = float(row.get("HoleDiameter") or 0)
+        except (TypeError, ValueError):
+            dia = 0.0
+        if dia > 0:
+            has_hole = True
+            break
+    if not has_hole:
+        return False
+    if not isinstance(stamp_out, dict):
+        return True
+    if not stamp_out.get("pdfinternal_xhr"):
+        return True
+    try:
+        if int(stamp_out.get("internaldata_n") or 0) <= 0:
+            return True
+    except (TypeError, ValueError):
+        return True
+    return False
 
 
 def leftover_productid_is_not_the_pack(dump: dict[str, Any] | None) -> bool:

@@ -123,13 +123,17 @@ Live 29340-1 (8fb3da71): API-mint then cookie GetItem_AddView(pdf)
 *Quote-Q10xxx EDIT was signed in (not Login). Cookie 302 is
 not logout. Image Files is in-page only: Quotes list
 #ButtonAdd same tab → #files kendoUpload →
-AddNewPDFFeature("Hole","cad") → PDFGetData() → OnAddPDFClick.
-Cookie HTTP GetItem_AddView / AddItem_PDFFiles that skips
-#files is fail-closed. In-page mint is not gated on the
-cookie file — gate is Chrome Quotes/EDIT signed in (footer
-amtech, not Login). CDP Network.getCookies may omit
-HttpOnly .AspNet.ApplicationCookie; page fetch/XHR still
-sends it. Leave 8fb3da71. Do not mint.
+AddNewPDFFeature("Hole","cad") must wait for GET
+/Quote/PDFInternal (not a 400ms race) → PDFGetData() onto
+InternalData → OnAddPDFClick. That page step creates
+NumberOfContours/Pierces (gold 14501-1 is 1/1). Do not
+invent those FileList keys. Cookie HTTP GetItem_AddView /
+AddItem_PDFFiles that skips #files is fail-closed. In-page
+mint is not gated on the cookie file — gate is Chrome
+Quotes/EDIT signed in (footer amtech, not Login). CDP
+Network.getCookies may omit HttpOnly
+.AspNet.ApplicationCookie; page fetch/XHR still sends it.
+Leave 8fb3da71. Do not mint.
 
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys /
@@ -2786,7 +2790,8 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     feature_via: "",
     picker_via: "",
     picker_sku: "",
-    picker_apply: ""
+    picker_apply: "",
+    pdfinternal_xhr: false
   };
   var hit = pdfGrid();
   if (!hit) return Promise.resolve(emptyStamp);
@@ -2863,8 +2868,30 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           };
         }
       }
+      if (url.indexOf("/Quote/PDFInternal") >= 0) {
+        window.__kannonPdfInt = window.__kannonPdfInt || {};
+        window.__kannonPdfInt.xhr = true;
+        window.__kannonPdfInt.any = true;
+        window.__kannonPdfInt.url = url;
+        window.__kannonPdfInt.method = method;
+      }
       return orig.apply(this, arguments);
     };
+    if (window.fetch && !window.__kannonPdfIntFetchHooked) {
+      window.__kannonPdfIntFetchHooked = true;
+      var origFetch = window.fetch;
+      window.fetch = function(input, init) {
+        var furl = String((typeof input === "string" ? input
+          : (input && input.url)) || "");
+        if (furl.indexOf("/Quote/PDFInternal") >= 0) {
+          window.__kannonPdfInt = window.__kannonPdfInt || {};
+          window.__kannonPdfInt.xhr = true;
+          window.__kannonPdfInt.any = true;
+          window.__kannonPdfInt.url = furl;
+        }
+        return origFetch.apply(this, arguments);
+      };
+    }
   }
   function waitGetPerimeter(timeoutMs) {
     return new Promise(function(resolve) {
@@ -3266,14 +3293,73 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     } catch (e) {}
     return "";
   }
-  function addPdfHoleFeature(r) {
+  function waitPdfInternal(timeoutMs) {
+    return new Promise(function(resolve) {
+      var t0 = Date.now();
+      (function poll() {
+        if (window.__kannonPdfInt && window.__kannonPdfInt.xhr) {
+          resolve(true);
+          return;
+        }
+        if (Date.now() - t0 > timeoutMs) {
+          resolve(false);
+          return;
+        }
+        setTimeout(poll, 40);
+      })();
+    });
+  }
+  function fillHoleDiameter(dia) {
+    if (dia == null || dia === "" || !window.jQuery) return "";
+    var ids = ["#Diameter", "#PDFDiameter", "#HoleDiameter",
+               "input[name='Diameter']", "input[name='diameter']"];
+    for (var i = 0; i < ids.length; i++) {
+      try {
+        var $el = jQuery(ids[i]);
+        if ($el && $el.length) {
+          $el.val(String(dia)).trigger("change").trigger("blur");
+          return ids[i];
+        }
+      } catch (e) {}
+    }
+    return "";
+  }
+  function confirmPdfFeature() {
+    var names = ["OnAddPDFFeature", "AddPDFFeatureOK", "PDFInternalOK",
+                 "SavePDFFeature", "onPDFFeatureSave"];
+    for (var i = 0; i < names.length; i++) {
+      try {
+        if (typeof window[names[i]] === "function") {
+          window[names[i]]();
+          return names[i];
+        }
+      } catch (e) {}
+    }
+    try {
+      if (!window.jQuery) return "";
+      var $dlg = jQuery(".k-window, .k-dialog, .modal").filter(":visible").last();
+      if (!$dlg.length) $dlg = jQuery("body");
+      var btns = $dlg.find("button, a, input[type=button], input[type=submit]");
+      for (var b = 0; b < btns.length; b++) {
+        var t = String(btns[b].textContent || btns[b].value || "").toLowerCase().trim();
+        if (t === "ok" || t === "add" || t === "save" || t === "apply") {
+          btns[b].click();
+          return "click";
+        }
+      }
+    } catch (e2) {}
+    return "";
+  }
+  function addPdfHoleFeature(r, holeDia) {
     // Kyle Loom: Add Feature Hole then green New Line Item.
+    // Wait for GET /Quote/PDFInternal — 400ms race is leftover 0/0.
     // Do not cookie-POST AddFeature (item-level). Do not invent JSON.
     lastFeature = "";
     if (typeof window.AddNewPDFFeature !== "function") {
       lastFeature = "none_addnewpdffeature";
       return Promise.resolve("");
     }
+    if (window.__kannonPdfInt) window.__kannonPdfInt.xhr = false;
     try {
       window.AddNewPDFFeature("Hole", "cad");
       lastFeature = "AddNewPDFFeature";
@@ -3281,19 +3367,23 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       lastFeature = "AddNewPDFFeature_err";
       return Promise.resolve("");
     }
-    return new Promise(function(resolve) {
-      setTimeout(function() {
-        var raw = pagePdfGetData();
-        if (raw && raw !== "[]" && raw !== "{}" && raw !== "null") {
-          setField(r, "InternalData", raw);
-        }
-        try {
-          if (typeof window.onInternalDataChange === "function") {
-            window.onInternalDataChange();
+    return waitPdfInternal(8000).then(function() {
+      if (holeDia) fillHoleDiameter(holeDia);
+      confirmPdfFeature();
+      return new Promise(function(resolve) {
+        setTimeout(function() {
+          var raw = pagePdfGetData();
+          if (raw && raw !== "[]" && raw !== "{}" && raw !== "null") {
+            setField(r, "InternalData", raw);
           }
-        } catch (e2) {}
-        resolve(lastFeature);
-      }, 400);
+          try {
+            if (typeof window.onInternalDataChange === "function") {
+              window.onInternalDataChange();
+            }
+          } catch (e2) {}
+          resolve(lastFeature);
+        }, 400);
+      });
     });
   }
   function stampPerimeter(grid, r) {
@@ -3329,6 +3419,9 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
   window.__kannonGetPerim = window.__kannonGetPerim || {
     xhr: false, url: "", method: "", any: false
   };
+  window.__kannonPdfInt = window.__kannonPdfInt || {
+    xhr: false, url: "", method: "", any: false
+  };
   var chain = Promise.resolve();
   for (var i = 0; i < rows.length; i++) {
     (function(s, idx) {
@@ -3354,8 +3447,8 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           if (s.Qty != null) editSet(hit.grid, r, "Qty", s.Qty);
           if (s.PartName) editSet(hit.grid, r, "PartName", s.PartName);
           stamped += 1;
-          return addPdfHoleFeature(r).then(function() {
-            return stampPerimeter(hit.grid, r).then(function() {
+          return stampPerimeter(hit.grid, r).then(function() {
+            return addPdfHoleFeature(r, s.HoleDiameter).then(function() {
               if (keepPid) setField(r, "ProductID", keepPid);
               return pickProduct(s.ProductSku, r).then(function(val) {
                 if (val) setField(r, "ProductID", val);
@@ -3384,7 +3477,8 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       feature_via: lastFeature,
       picker_via: lastPicker,
       picker_sku: lastPickerSku,
-      picker_apply: lastApply
+      picker_apply: lastApply,
+      pdfinternal_xhr: !!(window.__kannonPdfInt && window.__kannonPdfInt.any)
     };
   });
 })"""
@@ -3538,14 +3632,18 @@ def stamp_pdf_kendo_flats(
     the ProductType bar) by tenant SKU text so GetPDFData
     ProductID is the selected List Value. Do not invent a GUID.
     Named hole step is ``AddNewPDFFeature(feature, "cad")``
-    then page ``PDFGetData()`` onto the selected #gridPDF
-    InternalData (do not invent JSON; do not cookie-POST
-    /Quote/AddFeature). Then UpdatePerimeterWeight(true,true)
-    / onInternalDataChange. AddNewPDFFeature() with no args
-    is not gold. Empty InternalData is still expected for
-    no-hole rectangles. Live 1007092-1: first
-    ``#Product`` is ProductType — skip it. Live 33204-1:
-    ThicknessPDF is gauge (Read_DataThicknessGauge2). Drive
+    then wait for GET ``/Quote/PDFInternal`` (not a 400ms
+    race) then page ``PDFGetData()`` onto the selected
+    #gridPDF InternalData. That creates NumberOfContours/
+    Pierces (gold 14501-1 is 1/1). Do not invent those
+    FileList keys. Do not invent InternalData JSON. Do not
+    cookie-POST /Quote/AddFeature. Type L×W /
+    UpdatePerimeterWeight(true,true) first, then the hole
+    step. AddNewPDFFeature() with no args is not gold.
+    Empty InternalData is still expected for no-hole
+    rectangles. Live 1007092-1: first ``#Product`` is
+    ProductType — skip it. Live 33204-1: ThicknessPDF is
+    gauge (Read_DataThicknessGauge2). Drive
     ``#gridSelectProductPlate`` modal apply/select (dblclick +
     modal Select), not search-only. Live 1009213-1: modal SKU
     did not land FileList ProductID. ProductID is not the pack.
@@ -3567,6 +3665,7 @@ def stamp_pdf_kendo_flats(
                 "Qty": row.get("Qty"),
                 "PartName": row.get("PartName") or row.get("Description") or "",
                 "ProductSku": str(row.get("ProductSku") or row.get("SKU") or "").strip(),
+                "HoleDiameter": row.get("HoleDiameter"),
             }
         )
     empty = {
@@ -3587,6 +3686,7 @@ def stamp_pdf_kendo_flats(
         "picker_via": "",
         "picker_sku": "",
         "picker_apply": "",
+        "pdfinternal_xhr": False,
     }
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     empty["edit_gate"] = str(gate.get("reason") or "")
@@ -3622,6 +3722,7 @@ def stamp_pdf_kendo_flats(
         "picker_via": str(value.get("picker_via") or ""),
         "picker_sku": str(value.get("picker_sku") or ""),
         "picker_apply": str(value.get("picker_apply") or ""),
+        "pdfinternal_xhr": bool(value.get("pdfinternal_xhr")),
     }
 
 
