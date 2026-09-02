@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import Any
 
 from secturafab.item_desc import format_linear_description, item_length_in, normalize_part_token
 from secturafab.qty_ops import normalize_part_key
-from secturafab.website import EMPTY_GUID, linear_website_product_type, pick_closest_linear_product
+from secturafab.website import linear_website_product_type, pick_closest_linear_product
 from secturafab.weld_ops import _desc_token
 
 _LINEAR_TYPE = 10
@@ -345,8 +344,9 @@ def add_linear_item_from_bom(
     if pid:
         try:
             from secturafab.client import SecturaFabWebsiteAuthError
+            from secturafab.website import linear_finish_from_page_fn
 
-            client.add_item_linear(
+            result = client.add_item_linear(
                 quote_id=quote_id,
                 product_id=pid,
                 qty=max(1, int(qty or 1)),
@@ -356,68 +356,31 @@ def add_linear_item_from_bom(
                 name=format_linear_description(
                     part_no, sku=sku, length_in=length_in, noun=description
                 ),
+                extra={"sku": sku or ""},
             )
+            if linear_finish_from_page_fn(
+                result if isinstance(result, dict) else None
+            ):
+                notes.append(
+                    f"Long in-page OnAddLinearClick ProductID={pid} SKU={sku or '?'} "
+                    f"{part_no} qty={qty} length={length_in}"
+                )
+                return notes
             notes.append(
-                f"Long addLinear ProductID={pid} SKU={sku or '?'} "
-                f"{part_no} qty={qty} length={length_in}"
+                "WARNING: Long without page Long click / cookie HTTP "
+                "AddItem_Linear fail-closed — not v1/quote (live 29340-1)"
             )
             return notes
-        except SecturaFabWebsiteAuthError:
+        except SecturaFabWebsiteAuthError as exc:
             notes.append(
-                "Long AddItem_Linear 302'd — create-new addLinear (itemID=EMPTY_GUID)"
+                f"WARNING: Long AddItem_Linear fail-closed ({exc}) — "
+                "not v1/quote then cookie Long"
             )
+            return notes
         except Exception as exc:  # noqa: BLE001
             notes.append(f"WARNING: addLinear failed for {part_no}: {exc}")
-
-    if pid and length_in and length_in > 0:
-        product = next(
-            (p for p in products if str(p.get("ID") or "") == str(pid)),
-            None,
-        ) or fetch_linear_product(client, pid)
-        if product and update_linear_via_api(
-            client,
-            quote_id,
-            EMPTY_GUID,
-            product,
-            length_in=float(length_in),
-            qty=max(1, int(qty or 1)),
-            name=format_linear_description(
-                part_no, sku=sku, length_in=length_in, noun=description
-            ),
-        ):
-            notes.append(
-                f"Long addLinear create-new ProductID={pid} SKU={sku or '?'} "
-                f"{part_no} qty={qty} length={length_in}"
-            )
             return notes
-
-    detail = client.get_json(f"v1/quote/{quote_id}")
-    items = list(detail.get("ItemList") or [])
-    desc = format_linear_description(
-        part_no, sku=sku, length_in=length_in, noun=description
+    notes.append(
+        f"WARNING: Linear {part_no} has no catalog ProductID — skipped Long"
     )
-    line = {
-        "ID": str(uuid.uuid4()),
-        "Description": desc[:500],
-        "Quantity": max(1, int(qty or 1)),
-        "ProductType": linear_website_product_type(f"{part_no} {description}", sku),
-        "ItemType": "Linear",
-        "Category": "Linear",
-        "IsLinear": True,
-        "IsPlate": False,
-        "IsPart": True,
-        "Machine": "Saw",
-        "ProductID": pid,
-        "SKU": sku,
-        "Length": length_in,
-        "OperationCostList": [],
-    }
-    detail["ItemList"] = items + [line]
-    save = client.request("POST", "v1/quote", json=detail)
-    if save.status_code >= 400:
-        notes.append(f"Adding Linear {part_no} failed ({save.status_code})")
-    else:
-        notes.append(
-            f"Added Linear {part_no} ProductID={pid or 'unset'} SKU={sku or '?'} qty={qty}"
-        )
     return notes

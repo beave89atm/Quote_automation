@@ -709,12 +709,118 @@ def test_finish_linear_bom_rows_500_is_warning_not_raise(monkeypatch):
     assert extra.get("weightLength") not in (None, "")
 
 
-def test_linear_without_catalog_config_does_not_post(monkeypatch):
+def test_finish_linear_cookie_302_is_not_logout(monkeypatch):
+    """Cookie GetItem_AddView 302 is not logout — continue in-page Long."""
+    from tests.fixtures.live_gold_linear_pack import gold_linear_list0_pack_result
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=stale")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=stale"
+    client.get_item_add_view.side_effect = SecturaFabWebsiteAuthError(
+        f"{WEBSITE_SESSION_EXPIRED} — GetItem_AddView 302"
+    )
+    gold = gold_linear_list0_pack_result()
+    client.add_item_linear.return_value = gold
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    svc = SecturaFabPushService(client=client)
+    product = {
+        "ID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "ProductName": "RT4X0.375-A519",
+    }
+    with patch.object(
+        svc, "_match_linear_product", return_value=(product, "RT4X0.375-A519", None)
+    ), patch.object(svc, "_linear_catalog_bind", return_value={"sku": "RT4X0.375-A519"}):
+        notes = svc.finish_linear_bom_rows(
+            quote_id="qid",
+            linear_rows=[
+                {
+                    "part_no": "1001880-2",
+                    "description": "TUBE",
+                    "qty": 1,
+                    "cut_length_in": 16.0,
+                }
+            ],
+            material="A519",
+            library={},
+            extra_pdfs=[],
+        )
+    blob = " ".join(notes)
+    assert "cookie 302 is not logout" in blob
+    assert "29340-1" in blob
+    client.add_item_linear.assert_called_once()
+    assert "list0_pack.ocl_names=Saw,Saw-Setup" in blob
+    assert "list0_pack Saw + Saw-Setup" in blob
+
+
+def test_finish_linear_without_page_long_click_is_fail(monkeypatch):
+    """No orange Long click → do not treat cookie HTTP as success."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.add_item_linear.return_value = {
+        "ok": False,
+        "via": "skipped",
+        "finish_fn": "",
+        "long_from_page": False,
+        "long_clicked": False,
+        "finish_why": "no_long_click",
+        "response_ocl_names": [],
+        "response_ocl_n": 0,
+        "response_unit_cost": 0,
+        "response_product_id": "",
+        "response_sku": "",
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    svc = SecturaFabPushService(client=client)
+    product = {
+        "ID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "ProductName": "RT4X0.375-A519",
+    }
+    with patch.object(
+        svc, "_match_linear_product", return_value=(product, "RT4X0.375-A519", None)
+    ), patch.object(svc, "_linear_catalog_bind", return_value={"sku": "RT4X0.375-A519"}):
+        notes = svc.finish_linear_bom_rows(
+            quote_id="qid",
+            linear_rows=[
+                {
+                    "part_no": "1001880-2",
+                    "description": "TUBE",
+                    "qty": 1,
+                    "cut_length_in": 16.0,
+                }
+            ],
+            material="A519",
+            library={},
+            extra_pdfs=[],
+        )
+    blob = " ".join(notes)
+    assert "no_long_click" in blob or "without page Long click" in blob
+    assert "fail-closed" in blob
+    assert "list0_pack Saw + Saw-Setup + UnitCost filled" not in blob
+
+
+def test_linear_without_catalog_config_still_inpage_with_sku(monkeypatch):
+    """In-page Long searches tenant SKU text; productConfigID is page-filled."""
     monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=box"
     client.quote_item_read.return_value = {"Data": [], "Total": 0}
     client.get_json.return_value = {"ItemList": []}
+    client.add_item_linear.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddLinearClick",
+        "long_from_page": True,
+        "long_clicked": True,
+        "response_ocl_names": ["Saw", "Saw-Setup"],
+        "response_ocl_n": 2,
+        "response_unit_cost": 7.63,
+        "response_product_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "response_sku": "C3X4.1-A36",
+    }
     svc = SecturaFabPushService(client=client)
     product = {"ID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "ProductName": "C3X4.1-A36"}
     with patch.object(
@@ -734,8 +840,12 @@ def test_linear_without_catalog_config_does_not_post(monkeypatch):
             library={},
             extra_pdfs=[],
         )
-    client.add_item_linear.assert_not_called()
-    assert any("productConfigID" in n for n in notes)
+    client.add_item_linear.assert_called_once()
+    extra = client.add_item_linear.call_args.kwargs.get("extra") or {}
+    assert extra.get("sku") == "C3X4.1-A36"
+    blob = " ".join(notes)
+    assert "OnAddLinearClick" in blob
+    assert "list0_pack.ocl_names=Saw,Saw-Setup" in blob
 
 
 def test_additem_pdf_uses_takeoff_flats_when_lock_missing(tmp_path, monkeypatch):

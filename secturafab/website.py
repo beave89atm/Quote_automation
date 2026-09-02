@@ -216,7 +216,12 @@ SetUnits sends one query key `units`. Do not Finish the raw STEP row.
       FileList = GetPDFData() (#gridPDF tbody dataItem Status>0,
       not an XHR). Reconstructed FileList is fail-closed
       even if GET>0 (live 1001898-5 491f6387).
-  POST /Quote/AddItem_Linear     urlencoded OnAddLinearClick field bag
+  POST /Quote/AddItem_Linear     page OnAddLinearClick / New Line Item
+      after orange Long → tenant SKU picker → cut length. Cookie
+      HTTP AddItem_Linear 302 is fail-closed (same leftover class
+      as 29340-1). List[0] already has Saw + Saw-Setup in Primary
+      Costs. Internal stays empty (no holes on Long). ItemID empty
+      for new rows. Do not graft Operation→Saw.
   GET  /Product/Read_DataLinearlookup?ProductID=  (20ft/21ft productConfigID)
   POST /Quote/NestQuote_Edit
   POST /Quote/NestQuoteMultiPart_Renest
@@ -2707,6 +2712,145 @@ def list0_pack_badge_ocl_contours_is_gold(result: dict[str, Any] | None) -> bool
     return True
 
 
+GOLD_SAW_CALCULATOR_NAMES = (
+    "Saw",
+    "Saw-Setup",
+)
+
+
+def _ocl_names_have_saw_pack(names: Any) -> bool:
+    """True when CalculatorNames include Saw and Saw-Setup / Saw Setup."""
+    if not isinstance(names, (list, tuple)):
+        return False
+    have = {str(n).strip().lower() for n in names if str(n).strip()}
+    has_saw = any(n == "saw" or (n.startswith("saw") and "setup" not in n) for n in have)
+    has_setup = any("saw" in n and "setup" in n for n in have)
+    return has_saw and has_setup
+
+
+def linear_finish_from_page_fn(result: dict[str, Any] | None) -> bool:
+    """True only when OnAddLinearClick ran after the page Long click."""
+    if not isinstance(result, dict):
+        return False
+    if str(result.get("via") or "") != "page_fn":
+        return False
+    finish = str(result.get("finish_fn") or "").casefold()
+    if "onaddlinear" not in finish and "newlineitem" not in finish:
+        return False
+    if result.get("long_from_page") is False:
+        return False
+    return bool(result.get("long_from_page") or result.get("long_clicked"))
+
+
+def cookie_http_additem_linear_is_not_success(
+    result: dict[str, Any] | None,
+) -> bool:
+    """Cookie-only AddItem_Linear is not success (302 leftover class)."""
+    return not linear_finish_from_page_fn(result)
+
+
+def long_without_page_click_is_fail(stamp_out: dict[str, Any] | None) -> bool:
+    """Long without the orange Long page click is fail-closed.
+
+    Analog of hole-without-PDFInternal: do not Finish / OnAddLinearClick
+    when the Long dialog was never opened on signed-in Chrome.
+    """
+    if not isinstance(stamp_out, dict):
+        return True
+    if stamp_out.get("long_clicked") is True:
+        return False
+    via = str(
+        stamp_out.get("opened_via") or stamp_out.get("long_via") or ""
+    ).casefold()
+    if "long" in via or "addnewitemhtml" in via or "linear" in via:
+        return False
+    return True
+
+
+def leftover_cookie_linear_empty_saw_is_fail(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """Leftover cookie AddItem_Linear 302 / empty Saw OCL is FAIL.
+
+    Gold is page OnAddLinearClick List[0] Saw + Saw-Setup + UnitCost
+    filled + ProductID/SKU. Cookie HTTP 302 is not logout.
+    """
+    if not isinstance(dump, dict):
+        return False
+    live = dump.get("live_leftover") if isinstance(dump.get("live_leftover"), dict) else {}
+    if not live:
+        live = dump
+    via = str(live.get("finish_via") or live.get("via") or "").casefold()
+    if via in {"page_fn", "page"}:
+        return False
+    try:
+        status = int(live.get("status") or live.get("additem_linear_status") or 0)
+    except (TypeError, ValueError):
+        status = 0
+    cookie_302 = (
+        live.get("additem_linear_302") is True
+        or status in {301, 302, 303, 307, 308}
+        or via in {"cookie_http", "http", "cookie"}
+    )
+    pack = dump.get("list0_pack") if isinstance(dump.get("list0_pack"), dict) else {}
+    if not pack:
+        pack = live.get("list0_pack") if isinstance(live.get("list0_pack"), dict) else {}
+    try:
+        ocl_n = int(pack.get("ocl_n") or 0)
+    except (TypeError, ValueError):
+        ocl_n = 0
+    empty_saw = ocl_n == 0 or not _ocl_names_have_saw_pack(pack.get("ocl_names"))
+    if live.get("cookie_302_is_logout") is True:
+        return False
+    return bool(cookie_302 and empty_saw)
+
+
+def list0_pack_empty_saw_ocl_is_fail(result: dict[str, Any] | None) -> bool:
+    """Empty Saw OCL on AddItem_Linear List[0] is FAIL (leftover cookie 302)."""
+    if not isinstance(result, dict):
+        return False
+    if "response_ocl_names" not in result and "response_ocl_n" not in result:
+        return False
+    names = result.get("response_ocl_names")
+    if _ocl_names_have_saw_pack(names):
+        return False
+    try:
+        if int(result.get("response_ocl_n") or 0) != 0 and _ocl_names_have_saw_pack(
+            names
+        ):
+            return False
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def list0_pack_saw_ocl_is_gold(result: dict[str, Any] | None) -> bool:
+    """PASS: Saw + Saw-Setup in Primary Costs + UnitCost filled + ProductID/SKU.
+
+    Gold linear pack is on AddItem_Linear List[0] (Long + New Line Item),
+    not Operation→Saw. Badge/Tag may be empty — not a fail. Do not
+    treat orange Saw tags as gold.
+    """
+    if not isinstance(result, dict):
+        return False
+    if not _ocl_names_have_saw_pack(result.get("response_ocl_names")):
+        return False
+    try:
+        if float(result.get("response_unit_cost") or 0) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    pid = str(
+        result.get("response_product_id")
+        or result.get("response_sku")
+        or ""
+    ).strip()
+    if not pid:
+        bag = result.get("request_bag") if isinstance(result.get("request_bag"), dict) else {}
+        pid = str(bag.get("productID") or bag.get("sku") or bag.get("name") or "").strip()
+    return bool(pid)
+
+
 def leftover_contours_pierces_zero_is_not_gold(dump: dict[str, Any] | None) -> bool:
     """Named persist: leftover 0/0 vs gold 14501-1 1/1 + list0_pack.
 
@@ -3646,6 +3790,9 @@ def build_linear_add_payload(
         payload["productionReady"] = False
     if payload.get("outsource") in ("", None):
         payload["outsource"] = False
+    # New rows: empty ItemID. Do not send Internal holes / NREs on Long.
+    payload["ItemID"] = item_id or EMPTY_GUID
+    payload["Internal"] = ""
     return payload
 
 

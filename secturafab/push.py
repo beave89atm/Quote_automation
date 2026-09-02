@@ -3871,10 +3871,30 @@ class SecturaFabPushService:
         qty: int,
         length: float | None = None,
     ) -> list[str]:
-        """Long: POST /Quote/AddItem_Linear for a job that is itself a linear."""
+        """Long: in-page OnAddLinearClick for a job that is itself a linear."""
         if not self._website_cookie_present():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
+        from .website import (
+            cookie_http_additem_linear_is_not_success,
+            list0_pack_empty_saw_ocl_is_fail,
+            list0_pack_saw_ocl_is_gold,
+            long_without_page_click_is_fail,
+        )
+
         notes: list[str] = []
+        try:
+            self.client.get_item_add_view(quote_id, item_type="linear")
+            notes.append(
+                "GetItem_AddView cookie-HTTP (AF scrape, not the Chrome "
+                "Long dialog) — orange Long is gold"
+            )
+        except SecturaFabWebsiteAuthError as exc:
+            notes.append(
+                "GetItem_AddView(linear) 302 — cookie 302 is not logout "
+                f"(live 29340-1; {exc}); continuing in-page Long"
+            )
+        except SecturaFabApiError as exc:
+            notes.append(f"WARNING: GetItem_AddView(linear) returned {exc}")
         product_id, sku, mismatch = self._match_linear_sku(
             description, material=material
         )
@@ -3884,16 +3904,18 @@ class SecturaFabPushService:
             description, material=material
         )
         del sku2, _note2
-        bind = self._linear_catalog_bind(product)
-        if not product_id or not bind:
+        sku = sku or str((product or {}).get("ProductName") or "")
+        bind = self._linear_catalog_bind(product) or {}
+        if not product_id and not sku:
             raise SecturaFabApiError(
-                "Loose linear has no matching ProductID/productConfigID in the catalog"
+                "Loose linear has no matching ProductID/SKU in the catalog"
             )
         extra = {k: v for k, v in bind.items() if k != "sku"}
+        extra["sku"] = sku
         extra["productType"] = linear_add_product_type(description, sku=sku)
-        self.client.add_item_linear(
+        result = self.client.add_item_linear(
             quote_id=quote_id,
-            product_id=product_id,
+            product_id=product_id or sku,
             qty=qty,
             length=length,
             material=material,
@@ -3901,9 +3923,29 @@ class SecturaFabPushService:
             name=description,
             extra=extra,
         )
+        notes.extend(self._log_linear_list0_pack(result, sku=sku))
+        if long_without_page_click_is_fail(
+            result if isinstance(result, dict) else None
+        ) or cookie_http_additem_linear_is_not_success(
+            result if isinstance(result, dict) else None
+        ):
+            notes.append(
+                "WARNING: Long without page Long click / cookie HTTP "
+                "AddItem_Linear fail-closed (live 29340-1)"
+            )
+            return notes
+        if isinstance(result, dict) and list0_pack_empty_saw_ocl_is_fail(result):
+            notes.append(
+                "WARNING: AddItem_Linear List[0] empty Saw OCL — "
+                "cookie HTTP / leftover miss is FAIL"
+            )
+        elif isinstance(result, dict) and list0_pack_saw_ocl_is_gold(result):
+            notes.append(
+                "list0_pack Saw + Saw-Setup + UnitCost filled + ProductID/SKU"
+            )
         notes.append(
-            f"Long POST /Quote/AddItem_Linear SKU={sku or product_id} "
-            f"qty={qty} length={length}"
+            f"Long in-page OnAddLinearClick /Quote/AddItem_Linear "
+            f"SKU={sku or product_id} qty={qty} length={length}"
         )
         return notes
 
@@ -4083,7 +4125,7 @@ class SecturaFabPushService:
         library: dict[str, Any] | None,
         extra_pdfs: list[Path] | None,
     ) -> list[str]:
-        """Long Finish: POST /Quote/AddItem_Linear (10 bar / 30 tube / 40 angle)."""
+        """Long Finish: in-page OnAddLinearClick (10 bar / 30 tube / 40 angle)."""
         if not self._website_cookie_present():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
         from .line_item_ops import (
@@ -4092,8 +4134,27 @@ class SecturaFabPushService:
             confirmed_cut_length_in,
             parse_cut_length,
         )
+        from .website import (
+            cookie_http_additem_linear_is_not_success,
+            list0_pack_empty_saw_ocl_is_fail,
+            list0_pack_saw_ocl_is_gold,
+            long_without_page_click_is_fail,
+        )
 
         notes: list[str] = []
+        try:
+            self.client.get_item_add_view(quote_id, item_type="linear")
+            notes.append(
+                "GetItem_AddView cookie-HTTP (AF scrape, not the Chrome "
+                "Long dialog) — orange Long is gold"
+            )
+        except SecturaFabWebsiteAuthError as exc:
+            notes.append(
+                "GetItem_AddView(linear) 302 — cookie 302 is not logout "
+                f"(live 29340-1; {exc}); continuing in-page Long"
+            )
+        except SecturaFabApiError as exc:
+            notes.append(f"WARNING: GetItem_AddView(linear) returned {exc}")
         folder = (library or {}).get("folder")
         related = list((library or {}).get("related_pdfs") or [])
         for row in linear_rows:
@@ -4129,31 +4190,22 @@ class SecturaFabPushService:
                     f"WARNING: Linear {pn} has no catalog ProductID — skipped Finish"
                 )
                 continue
-            bind = self._linear_catalog_bind(product)
-            if (
-                not bind
-                or not is_tenant_guid(bind.get("productConfigID"))
-                or str(bind.get("productConfigID") or "") == str(product_id)
-            ):
+            bind = self._linear_catalog_bind(product) or {}
+            sku = sku or str(bind.get("sku") or (product or {}).get("ProductName") or "")
+            if not sku:
                 notes.append(
-                    f"WARNING: Linear {pn} has no tenant productConfigID from "
-                    "Read_DataLinearlookup — skipped AddItem_Linear "
-                    "(empty GUID 500s; productConfigID must not equal productID)"
+                    f"WARNING: Linear {pn} has no catalog SKU — skipped Long "
+                    "(page picker needs tenant SKU text)"
                 )
                 continue
             name = format_linear_description(
-                pn, sku=sku or bind.get("sku"), length_in=length, noun=noun
+                pn, sku=sku, length_in=length, noun=noun
             )
             extra = {k: v for k, v in bind.items() if k != "sku"}
+            extra["sku"] = sku
             extra["productType"] = linear_add_product_type(
                 f"{pn} {noun} {name}", sku
             )
-            if not _looks_like_product_id(product_id):
-                notes.append(
-                    f"WARNING: Linear {pn} ProductID {product_id!r} is not a "
-                    "catalog GUID — skipped AddItem_Linear"
-                )
-                continue
             try:
                 length_f = float(length) if length is not None else 0.0
             except (TypeError, ValueError):
@@ -4163,26 +4215,8 @@ class SecturaFabPushService:
                     f"WARNING: Linear {pn} has no cut length — skipped AddItem_Linear"
                 )
                 continue
-            from .website import build_linear_add_payload, redact_linear_add_keys
-
             try:
-                bag = build_linear_add_payload(
-                    quote_id,
-                    product_id=product_id,
-                    qty=qty,
-                    length=length_f,
-                    material=material,
-                    machine="Saw",
-                    name=name,
-                    extra=extra,
-                )
-            except ValueError as exc:
-                notes.append(
-                    f"WARNING: Linear {pn} AddItem_Linear payload incomplete ({exc})"
-                )
-                continue
-            try:
-                self.client.add_item_linear(
+                result = self.client.add_item_linear(
                     quote_id=quote_id,
                     product_id=product_id,
                     qty=qty,
@@ -4193,21 +4227,48 @@ class SecturaFabPushService:
                     extra=extra,
                 )
             except SecturaFabWebsiteAuthError as exc:
-                raise SecturaFabWebsiteAuthError(
-                    f"{WEBSITE_SESSION_EXPIRED} — AddItem_Linear 302 ({exc})",
-                    status_code=getattr(exc, "status_code", None),
-                    body=getattr(exc, "body", None),
-                ) from exc
+                notes.append(
+                    f"WARNING: Long AddItem_Linear {pn} auth gap ({exc}) — "
+                    "cookie 302 is not logout; in-page Long fail-closed"
+                )
+                continue
             except Exception as exc:
                 notes.append(
                     f"WARNING: Long AddItem_Linear {pn} SKU={sku or product_id} "
-                    f"PT={bag.get('productType')} length={length_f} failed ({exc}) "
-                    f"form[{redact_linear_add_keys(bag)}] — continuing"
+                    f"PT={extra.get('productType')} length={length_f} failed ({exc}) "
+                    "— continuing"
                 )
                 continue
+            notes.extend(self._log_linear_list0_pack(result, sku=sku, pn=pn))
+            if long_without_page_click_is_fail(
+                result if isinstance(result, dict) else None
+            ):
+                notes.append(
+                    f"WARNING: Long without page Long click {pn} — "
+                    "do not Finish (cookie HTTP AddItem_Linear fail-closed)"
+                )
+                continue
+            if cookie_http_additem_linear_is_not_success(
+                result if isinstance(result, dict) else None
+            ):
+                notes.append(
+                    f"WARNING: cookie HTTP AddItem_Linear {pn} is not success "
+                    "(live 29340-1 302 leftover) — fail-closed"
+                )
+                continue
+            if isinstance(result, dict) and list0_pack_empty_saw_ocl_is_fail(result):
+                notes.append(
+                    f"WARNING: AddItem_Linear List[0] empty Saw OCL {pn} — "
+                    "leftover cookie 302 / empty pack is FAIL"
+                )
+            elif isinstance(result, dict) and list0_pack_saw_ocl_is_gold(result):
+                notes.append(
+                    "list0_pack Saw + Saw-Setup + UnitCost filled + ProductID/SKU"
+                )
             notes.append(
-                f"Long POST /Quote/AddItem_Linear {pn} SKU={sku or product_id} "
-                f"qty={qty} length={length_f} PT={bag.get('productType')}"
+                f"Long in-page OnAddLinearClick /Quote/AddItem_Linear {pn} "
+                f"SKU={sku or product_id} qty={qty} length={length_f} "
+                f"PT={extra.get('productType')}"
             )
         after = count_linear_product_type(self._read_quote_items(quote_id))
         if linear_rows and after <= 0:
@@ -4215,6 +4276,52 @@ class SecturaFabPushService:
                 "WARNING: AddItem_Linear produced 0 Linear ProductType 10/30/40 "
                 "lines — not aborting weld/nest"
             )
+        return notes
+
+    def _log_linear_list0_pack(
+        self,
+        result: Any,
+        *,
+        sku: str | None = None,
+        pn: str | None = None,
+    ) -> list[str]:
+        """Log AddItem_Linear List[0] Saw CalculatorNames + UnitCost."""
+        notes: list[str] = []
+        if not isinstance(result, dict):
+            return notes
+        via = str(result.get("via") or "")
+        if via:
+            notes.append(f"finish_via={via}")
+        finish_fn = str(result.get("finish_fn") or "")
+        if finish_fn:
+            notes.append(f"finish_fn={finish_fn}")
+        opened = str(result.get("opened_via") or "")
+        if opened:
+            notes.append(f"long_via={opened}")
+        why = str(result.get("finish_why") or "")
+        if why:
+            notes.append(f"finish_why={why}")
+        notes.append(
+            "long_clicked=" + ("true" if result.get("long_clicked") else "false")
+        )
+        if "response_ocl_names" in result:
+            names = result.get("response_ocl_names") or []
+            notes.append(
+                "list0_pack.ocl_names=" + ",".join(str(n) for n in names)
+            )
+        if "response_unit_cost" in result:
+            notes.append(
+                f"response_unit_cost={result.get('response_unit_cost')}"
+            )
+        if "response_product_id" in result:
+            notes.append(
+                f"list0_pack.product_id={result.get('response_product_id')!r}"
+            )
+        if "response_sku" in result:
+            notes.append(f"list0_pack.sku={result.get('response_sku')!r}")
+        if "response_ocl_n" in result:
+            notes.append(f"response_ocl_n={result.get('response_ocl_n')}")
+        del sku, pn
         return notes
 
     def _finish_session_error(self, exc: BaseException | None = None) -> str:

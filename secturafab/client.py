@@ -1695,40 +1695,150 @@ class SecturaFabClient:
         customer_material: bool = False,
         extra: dict[str, Any] | None = None,
     ) -> Any:
-        """POST /Quote/AddItem_Linear — Long."""
+        """Page OnAddLinearClick after orange Long — not cookie HTTP.
+
+        Cookie POST /Quote/AddItem_Linear 302s (leftover class 29340-1).
+        Gold Saw + Saw-Setup pack is List[0] from the page New Line Item.
+        Internal stays empty. ItemID empty for new rows.
+        """
         from .browser_session import effective_website_cookie
+        from .chrome_cdp import (
+            chrome_quotes_live,
+            invoke_page_linear_finish,
+            minted_edit_tab_ready,
+        )
+        from .website import long_without_page_click_is_fail
 
         if not effective_website_cookie(self.config):
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
-        payload = build_linear_add_payload(
-            quote_id,
-            product_id=product_id,
-            qty=qty,
-            length=length,
-            material=material,
-            machine=machine,
-            name=name,
-            item_id=item_id,
-            customer_material=customer_material,
-            extra=extra,
-        )
-        response = self.website_request(
-            "POST",
-            WEBSITE_FINISH_PATHS["add_item_linear"],
-            json=None,
-            data=jquery_ajax_form(payload),
-            files=None,
-            prefer_api_origin=False,
-            require_session=True,
-        )
-        location = response.headers.get("Location") or ""
-        if is_website_login_redirect(response.status_code, location):
-            raise SecturaFabWebsiteAuthError(
-                WEBSITE_AUTH_GAP,
-                status_code=response.status_code,
-                body=location,
+        del product_id
+        del item_id
+        del customer_material
+        del material
+        del machine
+        if chrome_quotes_live():
+            self.harvest_chrome_antiforgery()
+        if getattr(self, "_af_source", "") != "chrome_dom":
+            self._linear_finish_via = "skipped"
+            return self._linear_finish_capture({}, via="skipped")
+        gate = minted_edit_tab_ready(quote_id, navigate=True)
+        if not gate.get("ok"):
+            self._linear_finish_via = "skipped"
+            return self._linear_finish_capture(
+                {"edit_gate": str(gate.get("reason") or "edit_quote_id!=minted_id")},
+                via="skipped",
             )
-        return self._parse_website_or_raise(response, require_session=True)
+        extra = extra if isinstance(extra, dict) else {}
+        stamp = self.stamp_linear_form(
+            quote_id=quote_id,
+            spec={
+                "sku": str(extra.get("sku") or "").strip(),
+                "name": name,
+                "length": length,
+                "qty": qty,
+                "productType": str(extra.get("productType") or "").strip(),
+            },
+        )
+        if long_without_page_click_is_fail(
+            stamp if isinstance(stamp, dict) else None
+        ):
+            self._linear_finish_via = "skipped"
+            cap = self._linear_finish_capture(
+                {
+                    "finish_why": "no_long_click",
+                    "long_clicked": False,
+                    "long_from_page": False,
+                    "opened_via": str((stamp or {}).get("opened_via") or ""),
+                },
+                via="skipped",
+            )
+            if isinstance(stamp, dict):
+                cap["opened_via"] = str(stamp.get("opened_via") or "")
+                cap["picker_via"] = str(stamp.get("picker_via") or "")
+                cap["picker_sku"] = str(stamp.get("picker_sku") or "")
+            return cap
+        page = invoke_page_linear_finish(quote_id=quote_id)
+        via = str(page.get("via") or "")
+        if via != "page_fn" or not page.get("long_from_page"):
+            self._linear_finish_via = "skipped"
+            return self._linear_finish_capture(page, via="skipped")
+        self._linear_finish_via = "page_fn"
+        status = int(page.get("status") or 0)
+        if status >= 400:
+            raise SecturaFabApiError(
+                f"API request failed ({status}) for page_fn /Quote/AddItem_Linear",
+                status_code=status,
+                body={"Error": True},
+            )
+        cap = self._linear_finish_capture(page, via="page_fn")
+        if isinstance(stamp, dict):
+            cap["opened_via"] = str(stamp.get("opened_via") or "")
+            cap["picker_via"] = str(stamp.get("picker_via") or "")
+            cap["picker_sku"] = str(stamp.get("picker_sku") or "")
+            cap["long_clicked"] = True
+        return cap
+
+    @staticmethod
+    def _linear_finish_capture(result: dict[str, Any], *, via: str) -> dict[str, Any]:
+        long_from_page = bool(result.get("long_from_page")) and via == "page_fn"
+        try:
+            response_list_n = int(result.get("response_list_n") or 0)
+        except (TypeError, ValueError):
+            response_list_n = 0
+        try:
+            response_ocl_n = int(result.get("response_ocl_n") or 0)
+        except (TypeError, ValueError):
+            response_ocl_n = 0
+        try:
+            response_unit_cost = float(result.get("response_unit_cost") or 0)
+        except (TypeError, ValueError):
+            response_unit_cost = 0.0
+        ocl_names = [
+            str(n) for n in (result.get("response_ocl_names") or []) if str(n).strip()
+        ]
+        bag = (
+            dict(result["request_bag"])
+            if isinstance(result.get("request_bag"), dict)
+            else {}
+        )
+        return {
+            "ok": long_from_page,
+            "status": int(result.get("status") or 0),
+            "via": via,
+            "finish_fn": str(result.get("finish_fn") or ""),
+            "long_from_page": long_from_page,
+            "long_clicked": long_from_page or bool(result.get("long_clicked")),
+            "request_keys": [str(k) for k in (result.get("request_keys") or [])],
+            "request_itemid": str(result.get("request_itemid") or ""),
+            "request_internal": str(result.get("request_internal") or ""),
+            "request_bag": bag,
+            "finish_af_present": bool(result.get("finish_af_present")),
+            "finish_why": str(result.get("finish_why") or ""),
+            "edit_gate": str(result.get("edit_gate") or ""),
+            "opened_via": str(result.get("opened_via") or ""),
+            "picker_via": str(result.get("picker_via") or ""),
+            "picker_sku": str(result.get("picker_sku") or ""),
+            "response_list_n": response_list_n,
+            "response_tag": str(result.get("response_tag") or ""),
+            "response_badge_string": str(result.get("response_badge_string") or ""),
+            "response_production_ready": bool(result.get("response_production_ready")),
+            "response_ocl_n": response_ocl_n,
+            "response_ocl_names": ocl_names,
+            "response_unit_cost": response_unit_cost,
+            "response_product_id": str(result.get("response_product_id") or ""),
+            "response_sku": str(result.get("response_sku") or ""),
+        }
+
+    def stamp_linear_form(
+        self,
+        *,
+        quote_id: str,
+        spec: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Orange Long → tenant SKU picker → cut length. Not cookie HTTP."""
+        from .chrome_cdp import stamp_linear_form as _stamp
+
+        return _stamp(spec, quote_id=quote_id)
 
     def quote_item_read(self, quote_id: str) -> Any:
         """GET /Quote/QuoteItem_Read?ParentID=&LoadAssemblies=True."""

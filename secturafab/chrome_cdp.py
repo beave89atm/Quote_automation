@@ -135,6 +135,16 @@ Network.getCookies may omit HttpOnly
 .AspNet.ApplicationCookie; page fetch/XHR still sends it.
 Leave 8fb3da71. Do not mint.
 
+Long / AddItem_Linear is the same leftover class: cookie HTTP
+POST /Quote/AddItem_Linear 302s (CDP omits ApplicationCookie).
+Gold Saw + Saw-Setup pack is in-page only: orange Long → tenant
+SKU picker → cut length → page OnAddLinearClick / New Line Item.
+List[0] already has Saw + Saw-Setup in Primary Costs + UnitCost
++ ProductID/SKU. Do not enter holes on Long (Internal empty).
+Empty ItemID for new rows. Cookie HTTP AddItem_Linear /
+GetItem_AddView that skips the page Long click is fail-closed.
+Do not v1/quote then cookie Long. Do not graft Operation→Saw.
+
 Never scrape the Login tab or the claims-mismatch tab.
 Never log cookie or AF token values. Names / bools / body keys /
 counts, plus posted ErrorStatus, Qty, and FileType value/type.
@@ -3723,6 +3733,667 @@ def stamp_pdf_kendo_flats(
         "picker_sku": str(value.get("picker_sku") or ""),
         "picker_apply": str(value.get("picker_apply") or ""),
         "pdfinternal_xhr": bool(value.get("pdfinternal_xhr")),
+    }
+
+
+# QuoteOrderEdit Long: orange Long → SKU picker → length → OnAddLinearClick.
+# Cookie HTTP POST /Quote/AddItem_Linear 302s (leftover class 29340-1).
+# Do not enter holes. Internal stays empty. ItemID empty for new rows.
+_OPEN_LONG_JS = """(function() {
+  function linearForm() {
+    var ids = [
+      "#length", "#Length", "input[name=length]", "#qty", "#Qty",
+      "#name", "#Name", "#productID", "#Product"
+    ];
+    for (var i = 0; i < ids.length; i++) {
+      try {
+        if (window.jQuery && jQuery(ids[i]).length) return true;
+      } catch (e) {}
+    }
+    return false;
+  }
+  var via = "";
+  try {
+    if (typeof window.AddNewItemHTML === "function") {
+      window.AddNewItemHTML("linear", "top");
+      via = "AddNewItemHTML";
+    }
+  } catch (e) {}
+  if (!via) {
+    try {
+      if (window.jQuery && jQuery("#but_linear").length) {
+        jQuery("#but_linear").click();
+        via = "#but_linear";
+      }
+    } catch (e2) {}
+  }
+  if (!via) {
+    try {
+      if (window.jQuery && jQuery("#but_long").length) {
+        jQuery("#but_long").click();
+        via = "#but_long";
+      }
+    } catch (e3) {}
+  }
+  if (!via) {
+    try {
+      var nodes = document.querySelectorAll(
+        "button, a, input[type=button], span, li"
+      );
+      for (var i = 0; i < nodes.length; i++) {
+        var t = String(nodes[i].textContent || nodes[i].value || "").toLowerCase();
+        var id = String(nodes[i].id || "").toLowerCase();
+        if (t.indexOf("image files") >= 0 || t.indexOf("cad files") >= 0) continue;
+        if (t.trim() === "long" || t.indexOf("long") === 0
+            || id.indexOf("but_linear") >= 0 || id.indexOf("but_long") >= 0
+            || (t.indexOf("linear") >= 0 && t.indexOf("new") >= 0)) {
+          nodes[i].click();
+          via = "long";
+          break;
+        }
+      }
+    } catch (e4) {}
+  }
+  return Promise.resolve({
+    opened_via: via,
+    long_clicked: !!via,
+    form_present: linearForm()
+  });
+})"""
+
+
+_STAMP_LINEAR_FORM_JS = """(function(spec) {
+  function $(sel) {
+    try { return window.jQuery ? jQuery(sel) : null; } catch (e) { return null; }
+  }
+  function setInput(sels, val) {
+    if (val == null || val === "") return false;
+    for (var i = 0; i < sels.length; i++) {
+      try {
+        var el = $(sels[i]);
+        if (!el || !el.length) continue;
+        var w = el.data && (el.data("kendoNumericTextBox")
+          || el.data("kendoComboBox") || el.data("kendoDropDownList")
+          || el.data("kendoAutoComplete"));
+        if (w && typeof w.value === "function") {
+          w.value(val);
+          if (typeof w.trigger === "function") w.trigger("change");
+          return true;
+        }
+        el.val(val);
+        el.trigger("change");
+        el.trigger("input");
+        return true;
+      } catch (e) {}
+    }
+    return false;
+  }
+  function itemSku(it) {
+    if (!it || typeof it !== "object") return "";
+    return String(it.ProductName || it.SKU || it.Text || it.Name || it.text || "");
+  }
+  function itemValue(it) {
+    if (!it || typeof it !== "object") return "";
+    return String(it.Value || it.ID || it.id || it.ProductID || "");
+  }
+  function isProductTypeBar(el, w) {
+    var blob = "";
+    try {
+      blob = String((el && el.attr && el.attr("id")) || "")
+        + " " + String((el && el.attr && el.attr("name")) || "");
+    } catch (e) {}
+    blob = blob.toLowerCase();
+    if (blob.indexOf("producttype") >= 0) return true;
+    try {
+      var data = (w && w.dataSource && w.dataSource.data && w.dataSource.data()) || [];
+      var n = 0;
+      for (var i = 0; i < data.length && i < 8; i++) {
+        var s = itemSku(data[i]).toLowerCase();
+        if (s === "tube" || s === "bar" || s === "structural" || s === "pipe") n += 1;
+      }
+      if (n >= 2 && data.length <= 8) return true;
+    } catch (e2) {}
+    return false;
+  }
+  function findLinearProductWidget() {
+    var ids = [
+      "#Product", "#productID", "#product", "#linearProduct",
+      "#SelectProductLinear", "#gridSelectProductLinear"
+    ];
+    for (var i = 0; i < ids.length; i++) {
+      try {
+        var el = $(ids[i]);
+        if (!el || !el.length) continue;
+        var w = el.data("kendoComboBox") || el.data("kendoDropDownList")
+          || el.data("kendoAutoComplete") || el.data("kendoGrid");
+        if (w && !isProductTypeBar(el, w)) return {el: el, widget: w, via: ids[i]};
+      } catch (e) {}
+    }
+    try {
+      var boxes = jQuery(".k-combobox, .k-dropdown, .k-autocomplete");
+      for (var j = 0; j < boxes.length; j++) {
+        var $b = jQuery(boxes[j]);
+        var inp = $b.find("input").first();
+        var w2 = inp.data("kendoComboBox") || inp.data("kendoDropDownList")
+          || inp.data("kendoAutoComplete");
+        if (!w2) continue;
+        if (isProductTypeBar(inp, w2)) continue;
+        var blob = String($b.attr("id") || "") + " " + String(inp.attr("id") || "");
+        if (/product|sku|linear/i.test(blob)) {
+          return {el: inp, widget: w2, via: "kendo"};
+        }
+      }
+    } catch (e3) {}
+    return null;
+  }
+  function pickLinearSku(sku) {
+    lastPicker = "";
+    lastPickerSku = sku || "";
+    lastApply = "";
+    if (!sku || !window.jQuery) return Promise.resolve("");
+    var hit = findLinearProductWidget();
+    if (!hit) {
+      lastPicker = "none_linear_widget";
+      return Promise.resolve("");
+    }
+    lastPicker = hit.via;
+    var w = hit.widget;
+    try {
+      if (typeof w.search === "function") w.search(sku);
+    } catch (e) {}
+    function applyItem(it) {
+      var val = itemValue(it);
+      lastApply = "select";
+      try {
+        if (typeof w.value === "function") w.value(val || itemSku(it));
+        if (typeof w.trigger === "function") w.trigger("change");
+        else if (hit.el && hit.el.trigger) hit.el.trigger("change");
+      } catch (e2) {}
+      return val || itemSku(it);
+    }
+    var data = [];
+    try { data = (w.dataSource && w.dataSource.data && w.dataSource.data()) || []; } catch (e3) {}
+    var want = String(sku).toLowerCase();
+    var best = null;
+    for (var i = 0; i < data.length; i++) {
+      var nm = itemSku(data[i]).toLowerCase();
+      if (nm && (nm === want || nm.indexOf(want) >= 0 || want.indexOf(nm) >= 0)) {
+        best = data[i];
+        break;
+      }
+    }
+    if (best) return Promise.resolve(applyItem(best));
+    if (w.dataSource && typeof w.dataSource.filter === "function") {
+      try {
+        w.dataSource.filter({field: "ProductName", operator: "contains", value: sku});
+      } catch (e4) {}
+    }
+    if (w.dataSource && typeof w.dataSource.read === "function") {
+      return Promise.resolve(w.dataSource.read()).then(function() {
+        var rows = [];
+        try { rows = (w.dataSource.data && w.dataSource.data()) || []; } catch (e5) {}
+        for (var j = 0; j < rows.length; j++) {
+          var nm2 = itemSku(rows[j]).toLowerCase();
+          if (nm2 && (nm2 === want || nm2.indexOf(want) >= 0 || want.indexOf(nm2) >= 0)) {
+            return applyItem(rows[j]);
+          }
+        }
+        if (rows.length) return applyItem(rows[0]);
+        return "";
+      }).catch(function() { return ""; });
+    }
+    return Promise.resolve("");
+  }
+  var lastPicker = "";
+  var lastPickerSku = "";
+  var lastApply = "";
+  var sku = String((spec && spec.sku) || "").trim();
+  var name = String((spec && spec.name) || "").trim();
+  var productType = String((spec && spec.productType) || "").trim();
+  var length = spec && spec.length;
+  var qty = spec && spec.qty;
+  if (qty == null || qty === "") qty = 1;
+  var lengthSet = setInput(
+    ["#length", "#Length", "input[name=length]", "input[name=Length]"],
+    length
+  );
+  var qtySet = setInput(
+    ["#qty", "#Qty", "input[name=qty]", "input[name=Qty]"],
+    qty
+  );
+  var nameSet = setInput(
+    ["#name", "#Name", "input[name=name]", "input[name=Name]"],
+    name
+  );
+  if (productType) {
+    setInput(
+      ["#productType", "#ProductType", "input[name=productType]"],
+      productType
+    );
+  }
+  setInput(["#Internal", "input[name=Internal]", "#internal"], "");
+  setInput(
+    ["#ItemID", "input[name=ItemID]", "#itemID"],
+    "00000000-0000-0000-0000-000000000000"
+  );
+  return pickLinearSku(sku).then(function(picked) {
+    return {
+      ok: !!(lengthSet || nameSet || picked || lastPicker),
+      long_clicked: true,
+      opened_via: String((spec && spec.opened_via) || ""),
+      picker_via: lastPicker,
+      picker_sku: lastPickerSku || sku,
+      picker_apply: lastApply,
+      picker_value: picked || "",
+      length_set: !!lengthSet,
+      qty_set: !!qtySet,
+      name_set: !!nameSet,
+      internal_empty: true,
+      itemid_empty: true,
+      machine: "Saw"
+    };
+  });
+})"""
+
+
+_PAGE_LINEAR_FINISH_JS = """(function() {
+  function fnSource(fn) {
+    try { return Function.prototype.toString.call(fn); } catch (e) { return ""; }
+  }
+  function postsLinearFinish(src) {
+    return String(src || "").indexOf("/Quote/AddItem_Linear") >= 0;
+  }
+  function findFinishName() {
+    var preferred = ["OnAddLinearClick", "OnAddLinear", "AddLinearClick", "AddItemLinear"];
+    for (var i = 0; i < preferred.length; i++) {
+      if (typeof window[preferred[i]] === "function") return preferred[i];
+    }
+    try {
+      for (var k in window) {
+        var fn = window[k];
+        if (typeof fn === "function" && postsLinearFinish(fnSource(fn))) return k;
+      }
+    } catch (e) {}
+    return "";
+  }
+  function oclNames(row) {
+    var ocl = (row && (row.OperationCostList || row.operationCostList)) || [];
+    var out = [];
+    if (!Array.isArray(ocl)) return out;
+    for (var i = 0; i < ocl.length; i++) {
+      var op = ocl[i] || {};
+      var n = op.CalculatorName || op.calculatorName || "";
+      if (n) out.push(String(n));
+    }
+    return out;
+  }
+  function list0Pack(data) {
+    var o = {
+      list_n: 0, tag: "", badge_string: "", production_ready: false,
+      ocl_n: 0, ocl_names: [], unit_cost: 0, product_id: "", sku: ""
+    };
+    if (!data || typeof data !== "object") return o;
+    var list = data.List || data.list;
+    if (!Array.isArray(list)) return o;
+    o.list_n = list.length;
+    if (!list.length) return o;
+    var row = list[0] || {};
+    o.tag = row.Tag != null ? String(row.Tag) : "";
+    o.badge_string = row.BadgeString != null ? String(row.BadgeString) : "";
+    o.production_ready = !!(row.ProductionReady === true || row.ProductionReady === "true");
+    var ocl = row.OperationCostList || row.operationCostList || [];
+    o.ocl_names = oclNames(row);
+    o.ocl_n = Array.isArray(ocl) ? ocl.length : 0;
+    var uc = parseFloat(row.UnitCost != null ? row.UnitCost : 0);
+    o.unit_cost = isFinite(uc) ? uc : 0;
+    o.product_id = String(row.ProductID || row.productID || "");
+    o.sku = String(row.SKU || row.ProductName || row.sku || "");
+    return o;
+  }
+  function hasAf(d) {
+    if (!d || typeof d !== "object") return false;
+    var keys = Object.keys(d);
+    for (var i = 0; i < keys.length; i++) {
+      if (/requestverificationtoken|__requestverificationtoken/i.test(keys[i]) && d[keys[i]]) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function attachChromeDomAf(data) {
+    try {
+      if (window.kendo && typeof kendo.antiForgeryTokens === "function") {
+        var t = kendo.antiForgeryTokens();
+        if (t && typeof t === "object") {
+          var tk = Object.keys(t);
+          for (var j = 0; j < tk.length; j++) {
+            if (t[tk[j]]) { data[tk[j]] = t[tk[j]]; return; }
+          }
+        }
+      }
+    } catch (e) {}
+  }
+  function emptyGuid() { return "00000000-0000-0000-0000-000000000000"; }
+  var finishName = findFinishName();
+  var hooked = new Promise(function(resolve) {
+    if (!window.jQuery || !jQuery.ajax) {
+      resolve(null);
+      return;
+    }
+    var orig = jQuery.ajax;
+    var done = false;
+    jQuery.ajax = function(opts) {
+      var url = String((opts && opts.url) || "");
+      if (!done && url.indexOf("/Quote/AddItem_Linear") >= 0) {
+        done = true;
+        jQuery.ajax = orig;
+        if (!opts || typeof opts !== "object") opts = {url: url};
+        if (typeof opts.data === "string") {
+          try { opts.data = JSON.parse(opts.data); } catch (e) { opts.data = {}; }
+        }
+        if (!opts.data || typeof opts.data !== "object" || Array.isArray(opts.data)) {
+          opts.data = {};
+        }
+        opts.data.Internal = "";
+        opts.data.ItemID = emptyGuid();
+        attachChromeDomAf(opts.data);
+        arguments[0] = opts;
+        var d = opts.data;
+        var cap = {
+          request_keys: Object.keys(d),
+          request_itemid: String(d.ItemID != null ? d.ItemID : ""),
+          request_internal: String(d.Internal != null ? d.Internal : ""),
+          request_bag: {
+            productID: d.productID || d.ProductID || "",
+            sku: d.sku || d.SKU || "",
+            name: d.name || d.Name || "",
+            length: d.length || d.Length || "",
+            machine: d.machine || d.Machine || ""
+          },
+          finish_af_present: hasAf(d),
+          finish_why: "",
+          response_list_n: 0,
+          response_tag: "",
+          response_badge_string: "",
+          response_production_ready: false,
+          response_ocl_n: 0,
+          response_ocl_names: [],
+          response_unit_cost: 0,
+          response_product_id: "",
+          response_sku: ""
+        };
+        var ret = orig.apply(this, arguments);
+        Promise.resolve(ret).then(function(data) {
+          cap.status = 200;
+          cap.data = data;
+          var pack = list0Pack(data);
+          cap.response_list_n = pack.list_n;
+          cap.response_tag = pack.tag;
+          cap.response_badge_string = pack.badge_string;
+          cap.response_production_ready = pack.production_ready;
+          cap.response_ocl_n = pack.ocl_n;
+          cap.response_ocl_names = pack.ocl_names;
+          cap.response_unit_cost = pack.unit_cost;
+          cap.response_product_id = pack.product_id;
+          cap.response_sku = pack.sku;
+          resolve(cap);
+        }).catch(function(xhr) {
+          cap.status = (xhr && xhr.status) || 0;
+          cap.data = (xhr && xhr.responseJSON) || null;
+          var packE = list0Pack(xhr && xhr.responseJSON);
+          cap.response_list_n = packE.list_n;
+          cap.response_tag = packE.tag;
+          cap.response_badge_string = packE.badge_string;
+          cap.response_production_ready = packE.production_ready;
+          cap.response_ocl_n = packE.ocl_n;
+          cap.response_ocl_names = packE.ocl_names;
+          cap.response_unit_cost = packE.unit_cost;
+          cap.response_product_id = packE.product_id;
+          cap.response_sku = packE.sku;
+          resolve(cap);
+        });
+        return ret;
+      }
+      return orig.apply(this, arguments);
+    };
+    setTimeout(function() {
+      if (!done) {
+        jQuery.ajax = orig;
+        resolve(null);
+      }
+    }, 170000);
+  });
+  var via = "";
+  if (finishName) {
+    try { window[finishName](); } catch (e) {}
+    via = "page_fn";
+  }
+  if (!via) {
+    try {
+      var nodes = document.querySelectorAll(
+        "button, a, input[type=button], input[type=submit]"
+      );
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        var blob = (
+          (el.getAttribute("onclick") || "") + " " + (el.textContent || "")
+          + " " + (el.value || "") + " " + (el.id || "")
+        ).toLowerCase();
+        if (blob.indexOf("onaddlinear") >= 0 || blob.indexOf("new line item") >= 0) {
+          el.click();
+          via = "page_fn";
+          break;
+        }
+      }
+    } catch (e) {}
+  }
+  if (!via) {
+    return Promise.resolve({
+      via: "skipped",
+      finish_fn: "",
+      long_from_page: false,
+      finish_why: "no_onaddlinearclick",
+      request_keys: [],
+      status: 0,
+      response_list_n: 0,
+      response_ocl_n: 0,
+      response_ocl_names: [],
+      response_unit_cost: 0,
+      response_product_id: "",
+      response_sku: ""
+    });
+  }
+  return hooked.then(function(hitCap) {
+    var extra = hitCap || {};
+    extra.via = via || "page_fn";
+    extra.finish_fn = finishName || "OnAddLinearClick";
+    extra.long_from_page = true;
+    extra.long_clicked = true;
+    if (!extra.finish_why) extra.finish_why = "";
+    return extra;
+  });
+})"""
+
+
+def invoke_page_linear_finish(
+    *,
+    base: str | None = None,
+    quote_id: str | None = None,
+) -> dict[str, Any]:
+    """Kyle Long Finish: page OnAddLinearClick after orange Long + SKU + length."""
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
+    skipped = {
+        "via": "skipped",
+        "finish_fn": "",
+        "long_from_page": False,
+        "long_clicked": False,
+        "request_keys": [],
+        "request_itemid": "",
+        "request_internal": "",
+        "request_bag": {},
+        "status": 0,
+        "edit_quote_id": str(gate.get("edit_quote_id") or ""),
+        "minted_id": str(gate.get("minted_id") or quote_id or ""),
+        "edit_gate": str(gate.get("reason") or "missing_minted_id"),
+        "finish_af_present": False,
+        "finish_why": "wrong_document",
+        "ok": False,
+        "response_list_n": 0,
+        "response_tag": "",
+        "response_badge_string": "",
+        "response_production_ready": False,
+        "response_ocl_n": 0,
+        "response_ocl_names": [],
+        "response_unit_cost": 0.0,
+        "response_product_id": "",
+        "response_sku": "",
+    }
+    if not gate.get("ok"):
+        return skipped
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    value = _cdp_evaluate_promise(
+        _PAGE_LINEAR_FINISH_JS + "()", base=base, tab=tab, fallback=False
+    )
+    if not isinstance(value, dict):
+        skipped["edit_gate"] = "finish_eval_empty"
+        return skipped
+    via = str(value.get("via") or "")
+    if via and via not in {"page_fn", "skipped"}:
+        via = "page_fn"
+    long_from_page = bool(value.get("long_from_page")) and via == "page_fn"
+    try:
+        response_list_n = int(value.get("response_list_n") or 0)
+    except (TypeError, ValueError):
+        response_list_n = 0
+    try:
+        response_ocl_n = int(value.get("response_ocl_n") or 0)
+    except (TypeError, ValueError):
+        response_ocl_n = 0
+    try:
+        response_unit_cost = float(value.get("response_unit_cost") or 0)
+    except (TypeError, ValueError):
+        response_unit_cost = 0.0
+    ocl_names = [
+        str(n) for n in (value.get("response_ocl_names") or []) if str(n).strip()
+    ]
+    bag = (
+        dict(value["request_bag"])
+        if isinstance(value.get("request_bag"), dict)
+        else {}
+    )
+    return {
+        "via": via,
+        "finish_fn": str(value.get("finish_fn") or ""),
+        "long_from_page": long_from_page,
+        "long_clicked": long_from_page,
+        "request_keys": [str(k) for k in (value.get("request_keys") or [])],
+        "request_itemid": str(value.get("request_itemid") or ""),
+        "request_internal": str(value.get("request_internal") or ""),
+        "request_bag": bag,
+        "finish_af_present": bool(value.get("finish_af_present")),
+        "finish_why": str(value.get("finish_why") or ""),
+        "status": int(value.get("status") or 0),
+        "edit_quote_id": str(gate.get("edit_quote_id") or ""),
+        "minted_id": str(gate.get("minted_id") or quote_id or ""),
+        "edit_gate": "",
+        "ok": long_from_page,
+        "response_list_n": response_list_n,
+        "response_tag": str(value.get("response_tag") or ""),
+        "response_badge_string": str(value.get("response_badge_string") or ""),
+        "response_production_ready": bool(value.get("response_production_ready")),
+        "response_ocl_n": response_ocl_n,
+        "response_ocl_names": ocl_names,
+        "response_unit_cost": response_unit_cost,
+        "response_product_id": str(value.get("response_product_id") or ""),
+        "response_sku": str(value.get("response_sku") or ""),
+    }
+
+
+def stamp_linear_form(
+    spec: dict[str, Any] | None,
+    *,
+    quote_id: str | None = None,
+    base: str | None = None,
+) -> dict[str, Any]:
+    """Open orange Long, pick tenant SKU, type cut length. No holes.
+
+    Fail-close without the page Long click (analog of hole-without-
+    PDFInternal). Do not cookie-POST AddItem_Linear.
+    """
+    empty = {
+        "ok": False,
+        "long_clicked": False,
+        "opened_via": "",
+        "picker_via": "",
+        "picker_sku": "",
+        "picker_apply": "",
+        "picker_value": "",
+        "length_set": False,
+        "qty_set": False,
+        "name_set": False,
+        "internal_empty": True,
+        "itemid_empty": True,
+        "machine": "Saw",
+        "edit_gate": "",
+    }
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
+    empty["edit_gate"] = str(gate.get("reason") or "")
+    if not gate.get("ok"):
+        return empty
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    opened = _cdp_evaluate_promise(
+        _OPEN_LONG_JS + "()", base=base, tab=tab, fallback=False
+    )
+    opened_via = ""
+    long_clicked = False
+    if isinstance(opened, dict):
+        opened_via = str(opened.get("opened_via") or "")
+        long_clicked = bool(opened.get("long_clicked"))
+    if not long_clicked:
+        empty["opened_via"] = opened_via
+        return empty
+    time.sleep(0.35)
+    row = spec if isinstance(spec, dict) else {}
+    expression = (
+        _STAMP_LINEAR_FORM_JS
+        + "("
+        + json.dumps(
+            {
+                "sku": str(row.get("sku") or row.get("SKU") or "").strip(),
+                "name": str(row.get("name") or row.get("Name") or "").strip(),
+                "length": row.get("length"),
+                "qty": row.get("qty") if row.get("qty") not in (None, "") else 1,
+                "productType": str(row.get("productType") or "").strip(),
+                "opened_via": opened_via,
+            },
+            separators=(",", ":"),
+        )
+        + ")"
+    )
+    value = _cdp_evaluate_promise(
+        expression, base=base, tab=tab, fallback=False
+    )
+    if not isinstance(value, dict):
+        return {
+            **empty,
+            "long_clicked": True,
+            "opened_via": opened_via,
+        }
+    return {
+        "ok": bool(value.get("ok")),
+        "long_clicked": True,
+        "opened_via": opened_via or str(value.get("opened_via") or ""),
+        "picker_via": str(value.get("picker_via") or ""),
+        "picker_sku": str(value.get("picker_sku") or ""),
+        "picker_apply": str(value.get("picker_apply") or ""),
+        "picker_value": str(value.get("picker_value") or ""),
+        "length_set": bool(value.get("length_set")),
+        "qty_set": bool(value.get("qty_set")),
+        "name_set": bool(value.get("name_set")),
+        "internal_empty": bool(value.get("internal_empty", True)),
+        "itemid_empty": bool(value.get("itemid_empty", True)),
+        "machine": str(value.get("machine") or "Saw"),
+        "edit_gate": "",
     }
 
 

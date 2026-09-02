@@ -406,6 +406,8 @@ def test_pdf_and_linear_payloads_share_id_itemid():
     )
     assert tube["productType"] == "tube"
     assert list(linear.keys()) == list(LINEAR_ADD_FIELDS)
+    assert linear["Internal"] == ""
+    assert linear["ItemID"] == EMPTY_GUID
     assert linear["fixedPrice"] == 0
     assert linear["productionReady"] is False
     assert linear["outsource"] is False
@@ -1741,6 +1743,80 @@ def test_gold_cad_pack_is_contours_pierces_and_list0_pack():
     ) is False
     assert hole_feature_without_pdfinternal_is_fail(None, [{"HoleDiameter": 0.75}]) is True
     assert hole_feature_without_pdfinternal_is_fail({"pdfinternal_xhr": True}, None) is False
+
+
+def test_gold_linear_pack_is_saw_and_list0_pack():
+    """Gold Long: Saw + Saw-Setup + UnitCost filled + ProductID/SKU.
+
+    Leftover cookie AddItem_Linear 302 / empty Saw OCL is FAIL.
+    Missing step is the page Long click (not cookie HTTP).
+    """
+    from secturafab.website import (
+        GOLD_SAW_CALCULATOR_NAMES,
+        cookie_http_additem_linear_is_not_success,
+        leftover_cookie_linear_empty_saw_is_fail,
+        linear_finish_from_page_fn,
+        list0_pack_empty_saw_ocl_is_fail,
+        list0_pack_saw_ocl_is_gold,
+        long_without_page_click_is_fail,
+    )
+    from tests.fixtures.live_gold_linear_pack import (
+        GOLD_QUOTE_ID,
+        gold_linear_list0_pack_result,
+        gold_linear_pack_bind_dump,
+        leftover_cookie_linear_302_result,
+        leftover_cookie_linear_empty_saw_dump,
+    )
+
+    dump = gold_linear_pack_bind_dump()
+    assert dump["readonly"] is True
+    assert dump["quote_id"] == GOLD_QUOTE_ID
+    assert dump["invent_internal"] is False
+    assert dump["cookie_additem_linear"] is False
+    assert dump["graft_operation_saw"] is False
+    assert set(dump["gold_linear"]["ocl_names"]) == set(GOLD_SAW_CALCULATOR_NAMES)
+    assert dump["gold_linear"]["internal"] == ""
+    assert dump["OnAddLinearClick"]["via"] == "page_fn"
+    assert dump["OnAddLinearClick"]["cookie_http_fail_closed"] is True
+    gold = gold_linear_list0_pack_result()
+    assert list0_pack_saw_ocl_is_gold(gold) is True
+    assert list0_pack_empty_saw_ocl_is_fail(gold) is False
+    assert linear_finish_from_page_fn(gold) is True
+    assert cookie_http_additem_linear_is_not_success(gold) is False
+    leftover = leftover_cookie_linear_302_result()
+    assert leftover["via"] == "cookie_http"
+    assert leftover["status"] == 302
+    assert leftover["cookie_302_is_logout"] is False
+    assert list0_pack_saw_ocl_is_gold(leftover) is False
+    assert list0_pack_empty_saw_ocl_is_fail(leftover) is True
+    assert cookie_http_additem_linear_is_not_success(leftover) is True
+    assert leftover_cookie_linear_empty_saw_is_fail(
+        leftover_cookie_linear_empty_saw_dump()
+    ) is True
+    page = dict(leftover_cookie_linear_empty_saw_dump())
+    page["live_leftover"] = dict(page["live_leftover"])
+    page["live_leftover"]["finish_via"] = "page_fn"
+    assert leftover_cookie_linear_empty_saw_is_fail(page) is False
+    assert leftover_cookie_linear_empty_saw_is_fail(MagicMock()) is False
+    assert leftover_cookie_linear_empty_saw_is_fail(None) is False
+    assert long_without_page_click_is_fail(None) is True
+    assert long_without_page_click_is_fail({"long_clicked": False}) is True
+    assert long_without_page_click_is_fail(
+        {"long_clicked": True, "opened_via": "AddNewItemHTML"}
+    ) is False
+    cheap = dict(gold)
+    cheap["response_unit_cost"] = 0
+    assert list0_pack_saw_ocl_is_gold(cheap) is False
+    no_sku = dict(gold)
+    no_sku["response_product_id"] = ""
+    no_sku["response_sku"] = ""
+    assert list0_pack_saw_ocl_is_gold(no_sku) is False
+    setup_only = dict(gold)
+    setup_only["response_ocl_names"] = ["Saw-Setup"]
+    assert list0_pack_saw_ocl_is_gold(setup_only) is False
+    assert list0_pack_empty_saw_ocl_is_fail({"stamped": 1}) is False
+    assert list0_pack_saw_ocl_is_gold(MagicMock()) is False
+    assert list0_pack_saw_ocl_is_gold(None) is False
 
 
 def test_leftover_plate_modal_is_not_the_pack():
@@ -8291,6 +8367,32 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "InternalData" in _READ_GRID_DXF_PARTS_AFTER_NEXT_JS
     assert "UpdateDataNext" not in _INVOKE_CREATE_ALL_PARTS_JS
     assert "GetPerimeterAndWeight" not in _INVOKE_CREATE_ALL_PARTS_JS
+    from secturafab.chrome_cdp import (
+        _OPEN_LONG_JS,
+        _PAGE_LINEAR_FINISH_JS,
+        _STAMP_LINEAR_FORM_JS,
+    )
+
+    assert "AddNewItemHTML" in _OPEN_LONG_JS
+    assert '"linear"' in _OPEN_LONG_JS
+    assert "but_linear" in _OPEN_LONG_JS
+    assert "long" in _OPEN_LONG_JS
+    assert "image files" in _OPEN_LONG_JS
+    assert "OnAddLinearClick" in _PAGE_LINEAR_FINISH_JS
+    assert "/Quote/AddItem_Linear" in _PAGE_LINEAR_FINISH_JS
+    assert "opts.data.Internal = \"\"" in _PAGE_LINEAR_FINISH_JS
+    assert "ItemID" in _PAGE_LINEAR_FINISH_JS
+    assert "new line item" in _PAGE_LINEAR_FINISH_JS
+    assert "list0Pack" in _PAGE_LINEAR_FINISH_JS
+    assert "ocl_names" in _PAGE_LINEAR_FINISH_JS
+    assert "product_id" in _PAGE_LINEAR_FINISH_JS
+    assert "findLinearProductWidget" in _STAMP_LINEAR_FORM_JS
+    assert "isProductTypeBar" in _STAMP_LINEAR_FORM_JS
+    assert "s.sku" in _STAMP_LINEAR_FORM_JS or "spec.sku" in _STAMP_LINEAR_FORM_JS
+    assert "Internal" in _STAMP_LINEAR_FORM_JS
+    assert "Hole" not in _STAMP_LINEAR_FORM_JS or "holes" in _STAMP_LINEAR_FORM_JS.lower()
+    assert "AddNewPDFFeature" not in _STAMP_LINEAR_FORM_JS
+    assert "AddFeature" not in _STAMP_LINEAR_FORM_JS
 
 
 def test_upload_pdf_via_page_add_files_is_not_cookie_http():
@@ -8345,73 +8447,92 @@ def test_upload_dxf_via_page_add_files_is_not_cookie_http():
     assert not cookie_http_dxf_upload_is_fail(result["upload_via"])
 
 
-def test_add_item_linear_posts_quote_mvc():
+def test_add_item_linear_does_not_cookie_http():
+    """Cookie HTTP AddItem_Linear is fail-closed — same leftover class as 29340-1."""
     from secturafab.client import SecturaFabClient
-    from secturafab.config import SecturaFabConfig
 
     real = SecturaFabClient.__new__(SecturaFabClient)
-    real.config = SecturaFabConfig(website_cookie="ASP.NET_SessionId=fixture")
-    captured: dict[str, Any] = {}
+    real.config = MagicMock()
+    real.config.website_cookie = "ASP.NET_SessionId=box"
+    real._af_source = "chrome_dom"
+    real.session = MagicMock()
+    called = {"n": 0}
 
-    def fake_website_request(method, path, **kwargs):
-        captured["method"] = method
-        captured["path"] = path
-        captured["json"] = kwargs.get("json")
-        captured["data"] = kwargs.get("data")
-        captured["files"] = kwargs.get("files")
-        captured["require_session"] = kwargs.get("require_session")
-        captured["prefer_api_origin"] = kwargs.get("prefer_api_origin")
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.content = b"{}"
-        resp.json.return_value = {"ok": True}
-        resp.headers = {}
-        resp.text = "{}"
-        resp.url = path
-        return resp
+    def boom(*_a, **_k):
+        called["n"] += 1
+        raise AssertionError("must not cookie-POST /Quote/AddItem_Linear")
 
-    real.website_request = fake_website_request  # type: ignore[method-assign]
-    real.add_item_linear(
-        quote_id="qid",
-        product_id="pid-tube",
-        qty=2,
-        length=10.9,
-        material="A500",
-        machine="Saw",
-        name="1001880-2 TUBE",
-        extra={
-            "productConfigID": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-            "productSubType": "tube",
-            "dim1": 2,
-            "dim2": 4,
-            "dim3": 0.25,
-            "dim4": 0,
-            "weightLength": 3.1,
+    real.website_request = boom  # type: ignore[method-assign]
+    with patch("secturafab.chrome_cdp.chrome_quotes_live", return_value=False):
+        result = real.add_item_linear(
+            quote_id="qid",
+            product_id="pid-tube",
+            extra={"sku": "RT4X0.375-A519"},
+        )
+    assert called["n"] == 0
+    assert result["ok"] is False
+    assert result["via"] == "skipped"
+    assert result["long_from_page"] is False
+
+
+def test_add_item_linear_posts_page_onaddlinearclick():
+    """OnAddLinearClick after orange Long — not cookie HTTP."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.chrome_cdp import _PAGE_LINEAR_FINISH_JS
+    from tests.fixtures.live_gold_linear_pack import gold_linear_list0_pack_result
+
+    js = _PAGE_LINEAR_FINISH_JS
+    assert "OnAddLinearClick" in js
+    assert "/Quote/AddItem_Linear" in js
+    assert "opts.data.Internal = \"\"" in js
+    assert "00000000-0000-0000-0000-000000000000" in js
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1898"
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.website_cookie = "ASP.NET_SessionId=box"
+    real._af_source = "chrome_dom"
+    real.session = MagicMock()
+    gold = gold_linear_list0_pack_result()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={
+            "ok": True,
+            "edit_quote_id": minted,
+            "minted_id": minted,
+            "reason": "",
         },
-    )
-    assert captured["path"] == "/Quote/AddItem_Linear"
-    assert captured["method"] == "POST"
-    assert captured["require_session"] is True
-    assert captured["prefer_api_origin"] is False
-    assert captured["json"] is None
-    assert captured["files"] is None
-    body = dict(captured["data"])
-    assert list(body.keys()) == list(LINEAR_ADD_FIELDS)
-    assert body["ID"] == "qid"
-    assert body["ItemID"] == EMPTY_GUID
-    assert body["productID"] == "pid-tube"
-    assert body["qty"] == "2"
-    assert body["length"] == "10.9"
-    assert body["productType"] == "tube"
-    assert body["machine"] == "Saw"
-    assert body["name"] == "1001880-2 TUBE"
-    assert body["productConfigID"] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-    assert body["productConfigID"] != EMPTY_GUID
-    assert body["productSubType"] == "tube"
-    assert body["dim1"] == "2"
-    assert body["weightLength"] == "3.1"
-    assert "SKU" not in body
-    assert "ProductID" not in body
+    ), patch(
+        "secturafab.client.SecturaFabClient.stamp_linear_form",
+        return_value={
+            "ok": True,
+            "long_clicked": True,
+            "opened_via": "AddNewItemHTML",
+            "picker_sku": "RT4X0.375-A519",
+        },
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_linear_finish",
+        return_value=gold,
+    ):
+        result = real.add_item_linear(
+            quote_id=minted,
+            product_id="pid-tube",
+            qty=1,
+            length=16.0,
+            name="1001880-2 RT4X0.375-A519",
+            extra={"sku": "RT4X0.375-A519", "productType": "tube"},
+        )
+    real.session.request.assert_not_called()
+    assert result["ok"] is True
+    assert result["via"] == "page_fn"
+    assert result["finish_fn"] == "OnAddLinearClick"
+    assert result["long_from_page"] is True
+    assert result["response_ocl_names"] == ["Saw", "Saw-Setup"]
+    assert result["response_unit_cost"] == 7.63
 
 
 def test_add_item_pdf_files_fails_closed_without_cookie(monkeypatch):
