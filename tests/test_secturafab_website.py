@@ -2214,6 +2214,131 @@ def test_website_paths_are_quote_mvc_not_quickadd():
     assert "quickAddCAD" not in str(WEBSITE_FINISH_PATHS)
 
 
+def test_copy_move_and_weld_page_fn_helpers():
+    from secturafab.website import (
+        cookie_http_add_operation_is_not_success,
+        cookie_http_copy_move_is_not_success,
+        copy_move_from_page_fn,
+        weld_add_from_page_fn,
+    )
+
+    gold_move = {
+        "via": "page_fn",
+        "copy_move_from_page": True,
+        "ok": True,
+        "finish_fn": "CopyMoveItemToAssembly",
+    }
+    leftover_move = {"via": "cookie_http", "status": 302, "ok": False}
+    assert copy_move_from_page_fn(gold_move) is True
+    assert cookie_http_copy_move_is_not_success(gold_move) is False
+    assert cookie_http_copy_move_is_not_success(leftover_move) is True
+    gold_weld = {
+        "via": "page_fn",
+        "weld_from_page": True,
+        "ok": True,
+        "finish_fn": "OnAddOperationClick",
+    }
+    leftover_weld = {"via": "skipped", "weld_from_page": False, "ok": False}
+    assert weld_add_from_page_fn(gold_weld) is True
+    assert cookie_http_add_operation_is_not_success(gold_weld) is False
+    assert cookie_http_add_operation_is_not_success(leftover_weld) is True
+
+
+def test_invoke_page_copy_move_evaluates_page_fn():
+    from secturafab.chrome_cdp import invoke_page_copy_move_to_assembly
+
+    tab = {
+        "title": "*Quote-1001898-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        assert method == "Runtime.evaluate"
+        assert "/Quote/CopyMoveItemToAssembly" in expr
+        assert "CopyMoveItemToAssembly" in expr
+        assert "fetch(" not in expr
+        assert params.get("awaitPromise") is True
+        return {
+            "result": {
+                "value": {
+                    "via": "page_fn",
+                    "finish_fn": "CopyMoveItemToAssembly",
+                    "copy_move_from_page": True,
+                    "request_itemid": "cad-1",
+                    "request_assemblyid": "asm-1",
+                    "request_mode": "Move",
+                    "status": 200,
+                }
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        result = invoke_page_copy_move_to_assembly(
+            quote_id="qid", item_id="cad-1", assembly_id="asm-1", mode="Move"
+        )
+    assert result["via"] == "page_fn"
+    assert result["ok"] is True
+    assert result["request_itemid"] == "cad-1"
+    assert result["request_assemblyid"] == "asm-1"
+
+
+def test_invoke_page_add_weld_evaluates_page_fn():
+    from secturafab.chrome_cdp import invoke_page_add_weld_operation
+
+    tab = {
+        "title": "*Quote-1001898-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        assert method == "Runtime.evaluate"
+        assert "/Quote/AddOperation" in expr
+        assert "OnAddOperationClick" in expr
+        assert "op_weld" in expr
+        assert "fetch(" not in expr
+        assert params.get("awaitPromise") is True
+        return {
+            "result": {
+                "value": {
+                    "via": "page_fn",
+                    "finish_fn": "OnAddOperationClick",
+                    "weld_from_page": True,
+                    "request_itemid": "asm-1",
+                    "request_operation_code": "op_weld",
+                    "request_weld": 308.66,
+                    "request_perunittime": 154.33 / 60.0,
+                    "request_perunittime2": 108.0 / 60.0,
+                    "request_fixedtime": 0.25,
+                    "status": 200,
+                }
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        result = invoke_page_add_weld_operation(
+            quote_id="qid",
+            item_id="asm-1",
+            weld_inches=308.66,
+            weld_hours=154.33 / 60.0,
+            fitup_hours=108.0 / 60.0,
+            setup_hours=0.25,
+        )
+    assert result["via"] == "page_fn"
+    assert result["ok"] is True
+    assert result["request_itemid"] == "asm-1"
+    assert result["request_weld"] == pytest.approx(308.66)
+
+
 def test_classify_hose_guard_is_linear():
     assert classify_sectura_item("21689-1 HOSE GUARD") == "Linear"
     assert classify_sectura_item("HOSEGUARD FORMED VIEW") == "Linear"

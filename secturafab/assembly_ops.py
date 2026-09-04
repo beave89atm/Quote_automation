@@ -14,14 +14,13 @@ from __future__ import annotations
 from typing import Any
 
 from .client import SecturaFabClient
-from .weld_ops import _desc_token, pick_weld_target_item
+from .weld_ops import _desc_token, is_assembly_item, pick_weld_target_item
 
 _ASSEMBLY_TYPE = 300
 
 
 def _is_assembly_type(item: dict[str, Any]) -> bool:
-    pt = item.get("ProductType")
-    return pt in (_ASSEMBLY_TYPE, "300", "assembly") or bool(item.get("IsAssembly"))
+    return is_assembly_item(item)
 
 
 def needs_assembly_structure(
@@ -217,25 +216,44 @@ def relink_assembly_children(
 
     cookie = effective_website_cookie(getattr(client, "config", None))
     if cookie and hasattr(client, "copy_move_item_to_assembly"):
+        from .website import copy_move_from_page_fn
+
         moved = 0
+        assembly_ids = {
+            str(it.get("ID") or "")
+            for it in items
+            if is_assembly_item(it) and it.get("ID")
+        }
         for it in items:
             cid = str(it.get("ID") or "")
             if not cid or cid == tid:
                 continue
+            parent = str(it.get("AssemblyID") or "")
+            if parent and parent in assembly_ids and parent != tid:
+                # Nested weldment already owns this kid — do not flatten.
+                continue
             try:
-                client.copy_move_item_to_assembly(
+                posted = client.copy_move_item_to_assembly(
                     quote_id=quote_id,
                     item_id=cid,
                     assembly_id=tid,
                     mode="Move",
                 )
-                moved += 1
             except SecturaFabWebsiteAuthError as exc:
                 return [
                     f"WARNING: Copy/Move into Assembly fail-closed ({exc})"
                 ]
             except Exception as exc:  # noqa: BLE001
                 return [f"WARNING: Copy/Move into Assembly failed ({exc})"]
+            skipped = isinstance(posted, dict) and (
+                posted.get("via") == "skipped" or posted.get("ok") is False
+            )
+            if skipped and not copy_move_from_page_fn(posted):
+                return [
+                    "WARNING: Copy/Move into Assembly fail-closed "
+                    "(in-page page_fn required) — kids stay at quote root"
+                ]
+            moved += 1
         check = client.get_json(f"v1/quote/{quote_id}")
         ok = sum(
             1

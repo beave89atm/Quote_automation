@@ -15,11 +15,9 @@ from .website import (
     SecturaFabWebsiteAuthError,
     build_add_feature_payload,
     build_cadimport_next_payload,
-    build_copy_move_assembly_payload,
     build_dxf_finish_payload,
     build_linear_add_payload,
     build_pdf_finish_payload,
-    build_weld_add_operation_payload,
     cadimport_list_is_native_array,
     client_antiforgery_extracted,
     is_cloudflare_challenge,
@@ -1862,40 +1860,93 @@ class SecturaFabClient:
         setup_hours: float,
         grind_cost: float = 0.0,
     ) -> Any:
-        """POST /Quote/AddOperation — weld on the assembly (Q10056 shape)."""
+        """Page AddOperation Weld on the assembly — not cookie HTTP.
+
+        Cookie POST /Quote/AddOperation 302s (same leftover class as
+        AddItem_*). Gold Q10056 shape is in-page only: signed-in EDIT
+        OnAddOperationClick / page $.ajax with Cursor weld + fit-up
+        + setup hours. Do not graft Laser.
+        """
         from .browser_session import effective_website_cookie
+        from .chrome_cdp import (
+            chrome_quotes_live,
+            invoke_page_add_weld_operation,
+            minted_edit_tab_ready,
+        )
+        from .website import (
+            WELD_CALC_PARAM_TYPE,
+            WELD_EQUIPMENT,
+            WELD_OPERATION_CODE,
+            cookie_http_add_operation_is_not_success,
+            weld_add_from_page_fn,
+        )
 
         if not effective_website_cookie(self.config):
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
         refuse_forbidden_quote_write(
             method="POST", path=WEBSITE_FINISH_PATHS["add_operation"], payload={"ID": quote_id}
         )
-        payload = build_weld_add_operation_payload(
-            quote_id,
-            item_id,
+        if chrome_quotes_live():
+            self.harvest_chrome_antiforgery()
+        if getattr(self, "_af_source", "") != "chrome_dom":
+            self._weld_finish_via = "skipped"
+            return self._weld_finish_capture({}, via="skipped")
+        gate = minted_edit_tab_ready(quote_id, navigate=True)
+        if not gate.get("ok"):
+            self._weld_finish_via = "skipped"
+            return self._weld_finish_capture(
+                {"edit_gate": str(gate.get("reason") or "edit_quote_id!=minted_id")},
+                via="skipped",
+            )
+        page = invoke_page_add_weld_operation(
+            quote_id=quote_id,
+            item_id=item_id,
             weld_inches=weld_inches,
             weld_hours=weld_hours,
             fitup_hours=fitup_hours,
             setup_hours=setup_hours,
             grind_cost=grind_cost,
+            operation_code=WELD_OPERATION_CODE,
+            equipment=WELD_EQUIPMENT,
+            calc_param_type=WELD_CALC_PARAM_TYPE,
         )
-        response = self.website_request(
-            "POST",
-            WEBSITE_FINISH_PATHS["add_operation"],
-            json=None,
-            data=jquery_ajax_form(payload),
-            files=None,
-            prefer_api_origin=False,
-            require_session=True,
-        )
-        location = response.headers.get("Location") or ""
-        if is_website_login_redirect(response.status_code, location):
-            raise SecturaFabWebsiteAuthError(
-                WEBSITE_AUTH_GAP,
-                status_code=response.status_code,
-                body=location,
+        via = str(page.get("via") or "")
+        if via != "page_fn" or not weld_add_from_page_fn({**page, "via": via}):
+            self._weld_finish_via = "skipped"
+            cap = self._weld_finish_capture(page, via="skipped")
+            if cookie_http_add_operation_is_not_success(cap):
+                cap["cookie_http_fail_closed"] = True
+            return cap
+        self._weld_finish_via = "page_fn"
+        status = int(page.get("status") or 0)
+        if status >= 400:
+            raise SecturaFabApiError(
+                f"API request failed ({status}) for page_fn /Quote/AddOperation",
+                status_code=status,
+                body={"Error": True},
             )
-        return self._parse_website_or_raise(response, require_session=True)
+        return self._weld_finish_capture(page, via="page_fn")
+
+    @staticmethod
+    def _weld_finish_capture(result: dict[str, Any], *, via: str) -> dict[str, Any]:
+        from_page = bool(result.get("weld_from_page")) and via == "page_fn"
+        return {
+            "ok": from_page,
+            "status": int(result.get("status") or 0),
+            "via": via,
+            "finish_fn": str(result.get("finish_fn") or ""),
+            "weld_from_page": from_page,
+            "request_keys": [str(k) for k in (result.get("request_keys") or [])],
+            "request_itemid": str(result.get("request_itemid") or ""),
+            "request_operation_code": str(result.get("request_operation_code") or ""),
+            "request_weld": float(result.get("request_weld") or 0),
+            "request_perunittime": float(result.get("request_perunittime") or 0),
+            "request_perunittime2": float(result.get("request_perunittime2") or 0),
+            "request_fixedtime": float(result.get("request_fixedtime") or 0),
+            "finish_af_present": bool(result.get("finish_af_present")),
+            "finish_why": str(result.get("finish_why") or ""),
+            "edit_gate": str(result.get("edit_gate") or ""),
+        }
 
     def copy_move_item_to_assembly(
         self,
@@ -1905,8 +1956,22 @@ class SecturaFabClient:
         assembly_id: str,
         mode: str = "Move",
     ) -> Any:
-        """POST /Quote/CopyMoveItemToAssembly — kid under the top-level assembly."""
+        """Page Copy/Move into Assembly — not cookie HTTP.
+
+        Kyle UI: parent Edit Properties → Copy/Move items into Assembly.
+        Cookie POST /Quote/CopyMoveItemToAssembly 302s (AddItem_* class).
+        In-page only: signed-in EDIT page fn / page $.ajax.
+        """
         from .browser_session import effective_website_cookie
+        from .chrome_cdp import (
+            chrome_quotes_live,
+            invoke_page_copy_move_to_assembly,
+            minted_edit_tab_ready,
+        )
+        from .website import (
+            cookie_http_copy_move_is_not_success,
+            copy_move_from_page_fn,
+        )
 
         if not effective_website_cookie(self.config):
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
@@ -1915,26 +1980,58 @@ class SecturaFabClient:
             path=WEBSITE_FINISH_PATHS["copy_move_to_assembly"],
             payload={"ID": quote_id},
         )
-        payload = build_copy_move_assembly_payload(
-            quote_id, item_id, assembly_id, mode=mode
-        )
-        response = self.website_request(
-            "POST",
-            WEBSITE_FINISH_PATHS["copy_move_to_assembly"],
-            json=None,
-            data=jquery_ajax_form(payload),
-            files=None,
-            prefer_api_origin=False,
-            require_session=True,
-        )
-        location = response.headers.get("Location") or ""
-        if is_website_login_redirect(response.status_code, location):
-            raise SecturaFabWebsiteAuthError(
-                WEBSITE_AUTH_GAP,
-                status_code=response.status_code,
-                body=location,
+        if chrome_quotes_live():
+            self.harvest_chrome_antiforgery()
+        if getattr(self, "_af_source", "") != "chrome_dom":
+            self._copy_move_via = "skipped"
+            return self._copy_move_capture({}, via="skipped")
+        gate = minted_edit_tab_ready(quote_id, navigate=True)
+        if not gate.get("ok"):
+            self._copy_move_via = "skipped"
+            return self._copy_move_capture(
+                {"edit_gate": str(gate.get("reason") or "edit_quote_id!=minted_id")},
+                via="skipped",
             )
-        return self._parse_website_or_raise(response, require_session=True)
+        page = invoke_page_copy_move_to_assembly(
+            quote_id=quote_id,
+            item_id=item_id,
+            assembly_id=assembly_id,
+            mode=mode,
+        )
+        via = str(page.get("via") or "")
+        if via != "page_fn" or not copy_move_from_page_fn({**page, "via": via}):
+            self._copy_move_via = "skipped"
+            cap = self._copy_move_capture(page, via="skipped")
+            if cookie_http_copy_move_is_not_success(cap):
+                cap["cookie_http_fail_closed"] = True
+            return cap
+        self._copy_move_via = "page_fn"
+        status = int(page.get("status") or 0)
+        if status >= 400:
+            raise SecturaFabApiError(
+                f"API request failed ({status}) for page_fn /Quote/CopyMoveItemToAssembly",
+                status_code=status,
+                body={"Error": True},
+            )
+        return self._copy_move_capture(page, via="page_fn")
+
+    @staticmethod
+    def _copy_move_capture(result: dict[str, Any], *, via: str) -> dict[str, Any]:
+        from_page = bool(result.get("copy_move_from_page")) and via == "page_fn"
+        return {
+            "ok": from_page,
+            "status": int(result.get("status") or 0),
+            "via": via,
+            "finish_fn": str(result.get("finish_fn") or ""),
+            "copy_move_from_page": from_page,
+            "request_keys": [str(k) for k in (result.get("request_keys") or [])],
+            "request_itemid": str(result.get("request_itemid") or ""),
+            "request_assemblyid": str(result.get("request_assemblyid") or ""),
+            "request_mode": str(result.get("request_mode") or ""),
+            "finish_af_present": bool(result.get("finish_af_present")),
+            "finish_why": str(result.get("finish_why") or ""),
+            "edit_gate": str(result.get("edit_gate") or ""),
+        }
 
     def add_item_feature(
         self,

@@ -2948,3 +2948,319 @@ def test_hole_pdfinternal_list0_pack_contours_is_gold(tmp_path, monkeypatch):
     assert "filelist_from_kendo=true" in blob
     assert "DoD FAIL" not in blob
     assert "persisted" in blob.lower()
+
+
+def test_gold_weldment_shape_kids_under_assembly_weld_on_assembly_only():
+    """Gold 1001898-1: kids under assembly, Weld on assembly, never Cad/Linear."""
+    payload = gold_1001898_get()
+    items = list(payload["ItemList"])
+    assemblies = [it for it in items if it.get("ProductType") == 300]
+    kids = [it for it in items if it.get("ProductType") != 300]
+    assert len(assemblies) == 1
+    root = assemblies[0]
+    weld_names = [
+        o.get("CalculatorName")
+        for o in (root.get("OperationCostList") or [])
+        if o.get("OperationName") == "Weld"
+    ]
+    assert "Weld-Time" in weld_names
+    assert "Weld-Fitting" in weld_names
+    assert "Weld-Setup" in weld_names
+    assert kids
+    for kid in kids:
+        assert kid.get("AssemblyID") == root["ID"], kid.get("Description")
+        assert not any(
+            o.get("OperationName") == "Weld"
+            for o in (kid.get("OperationCostList") or [])
+        )
+        pt = kid.get("ProductType")
+        if pt == 100:
+            assert kid.get("BadgeString") == "PR"
+            assert float(kid.get("UnitCost") or 0) > 0
+        if pt in (10, 30, 40):
+            names = [
+                o.get("CalculatorName")
+                for o in (kid.get("OperationCostList") or [])
+            ]
+            assert "Saw" in names
+            assert any("Setup" in str(n) for n in names)
+            assert float(kid.get("UnitCost") or 0) > 0
+    qa = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert qa.ok is True
+
+
+def test_weld_on_cad_or_linear_fails_gold_shape():
+    payload = gold_1001898_get()
+    for it in payload["ItemList"]:
+        if it.get("ProductType") == 100:
+            it["OperationCostList"] = list(it.get("OperationCostList") or []) + [
+                {"OperationName": "Weld", "CalculatorName": "Weld-Time"}
+            ]
+            break
+    qa = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert qa.ok is False
+    assert any("Weld is assemblies only" in f for f in qa.failures)
+
+
+def test_pick_assembly_weld_target_skips_cad_and_linear():
+    from secturafab.weld_ops import (
+        iter_assembly_weld_targets,
+        pick_assembly_weld_target,
+    )
+
+    items = [
+        {
+            "ID": "cad-1",
+            "Description": "14501-1 PLATE",
+            "ProductType": 100,
+        },
+        {
+            "ID": "lin-1",
+            "Description": "1001880-2 TUBE",
+            "ProductType": 30,
+        },
+        {
+            "ID": "asm-1",
+            "Description": "1001898-1 - PEDESTAL WELDMENT",
+            "ProductType": 300,
+            "IsAssembly": True,
+        },
+    ]
+    assert pick_assembly_weld_target(items, part_key="1001898-1")["ID"] == "asm-1"
+    assert pick_assembly_weld_target(items[:2], part_key="1001898-1") is None
+    times = {"weld_minutes": 10, "fitup_with_fixture_minutes": 5}
+    targets = iter_assembly_weld_targets(items, times=times, part_key="1001898-1")
+    assert [t[0]["ID"] for t in targets] == ["asm-1"]
+
+
+def test_nested_weldment_gets_own_weld_minutes():
+    from secturafab.weld_ops import ensure_weld_ops, iter_assembly_weld_targets
+
+    items = [
+        {
+            "ID": "root",
+            "Description": "1001898-1 - PEDESTAL WELDMENT",
+            "ProductType": 300,
+            "IsAssembly": True,
+            "OperationCostList": [],
+        },
+        {
+            "ID": "nest",
+            "Description": "102711-1 - CABLE TUBE WELDMENT",
+            "ProductType": 300,
+            "IsAssembly": True,
+            "AssemblyID": "root",
+            "OperationCostList": [],
+        },
+        {
+            "ID": "cad-1",
+            "Description": "14501-1 PLATE",
+            "ProductType": 100,
+            "AssemblyID": "root",
+            "OperationCostList": [],
+        },
+    ]
+    job_times = {
+        "weld_minutes": 154.33,
+        "total_inches": 308.66,
+        "fitup_with_fixture_minutes": 108.0,
+        "nested": {
+            "102711-1": {
+                "weld_minutes": 12.0,
+                "total_inches": 8.0,
+                "fitup_with_fixture_minutes": 6.0,
+            }
+        },
+    }
+    pairs = iter_assembly_weld_targets(
+        items, times=job_times, part_key="1001898-1"
+    )
+    assert {p[0]["ID"] for p in pairs} == {"root", "nest"}
+    no_nested = dict(job_times)
+    no_nested.pop("nested")
+    only_root = iter_assembly_weld_targets(
+        items, times=no_nested, part_key="1001898-1"
+    )
+    assert [p[0]["ID"] for p in only_root] == ["root"]
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {"ItemList": items}
+    client.add_operation.return_value = {"ok": True, "via": "page_fn", "weld_from_page": True}
+    notes = ensure_weld_ops(
+        client, "new-qid", times=job_times, part_key="1001898-1"
+    )
+    assert client.add_operation.call_count == 2
+    ids = [c.kwargs["item_id"] for c in client.add_operation.call_args_list]
+    assert ids == ["root", "nest"]
+    assert all("AddOperation" in n for n in notes)
+    client.request.assert_not_called()
+
+
+def test_ensure_weld_ops_never_stamps_cad_or_linear():
+    from secturafab.weld_ops import ensure_weld_ops
+
+    client = MagicMock()
+    client.config.website_cookie = None
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "cad-1",
+                "Description": "14501-1 PLATE",
+                "ProductType": 100,
+                "OperationCostList": [],
+            },
+            {
+                "ID": "lin-1",
+                "Description": "1001880-2 TUBE",
+                "ProductType": 30,
+                "OperationCostList": [],
+            },
+        ]
+    }
+    notes = ensure_weld_ops(
+        client,
+        "qid",
+        times={"weld_minutes": 20, "total_inches": 40, "fitup_with_fixture_minutes": 8},
+        part_key="1001898-1",
+    )
+    client.add_operation.assert_not_called()
+    client.request.assert_not_called()
+    assert any("assemblies only" in n for n in notes)
+
+
+def test_relink_copy_move_uses_page_path_and_skips_nested_kids():
+    from secturafab.assembly_ops import relink_assembly_children
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    items = [
+        {
+            "ID": "asm",
+            "Description": "1001898-1 - PEDESTAL WELDMENT",
+            "ProductType": 300,
+            "IsAssembly": True,
+            "Quantity": 1,
+        },
+        {
+            "ID": "nest",
+            "Description": "102711-1 - CABLE TUBE WELDMENT",
+            "ProductType": 300,
+            "IsAssembly": True,
+            "AssemblyID": "asm",
+            "Quantity": 1,
+        },
+        {
+            "ID": "cad-root",
+            "Description": "14501-1 PLATE",
+            "ProductType": 100,
+            "AssemblyID": None,
+            "Quantity": 1,
+        },
+        {
+            "ID": "cad-nest",
+            "Description": "102712-1 PLATE",
+            "ProductType": 100,
+            "AssemblyID": "nest",
+            "Quantity": 1,
+        },
+    ]
+    client.get_json.return_value = {"ItemList": items}
+    client.copy_move_item_to_assembly.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "copy_move_from_page": True,
+    }
+    notes = relink_assembly_children(client, "qid", part_key="1001898-1")
+    moved_ids = [
+        c.kwargs["item_id"] for c in client.copy_move_item_to_assembly.call_args_list
+    ]
+    assert "cad-root" in moved_ids
+    assert "nest" in moved_ids
+    assert "cad-nest" not in moved_ids
+    assert any("Copy/Move" in n for n in notes)
+
+
+def test_relink_copy_move_cookie_skip_is_fail_closed():
+    from secturafab.assembly_ops import relink_assembly_children
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "asm",
+                "Description": "1001898-1",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "Quantity": 1,
+            },
+            {
+                "ID": "cad",
+                "Description": "14501-1",
+                "ProductType": 100,
+                "Quantity": 1,
+            },
+        ]
+    }
+    client.copy_move_item_to_assembly.return_value = {
+        "ok": False,
+        "via": "skipped",
+        "copy_move_from_page": False,
+    }
+    notes = relink_assembly_children(client, "qid", part_key="1001898-1")
+    assert any("fail-closed" in n for n in notes)
+    client.request.assert_not_called()
+
+
+def test_ensure_weld_ops_page_skip_is_fail_closed_not_graft():
+    from secturafab.weld_ops import ensure_weld_ops
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "asm-1",
+                "Description": "1001898-1 - PEDESTAL WELDMENT",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+            {
+                "ID": "cad-1",
+                "Description": "14501-1",
+                "ProductType": 100,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+        ]
+    }
+    client.add_operation.return_value = {
+        "ok": False,
+        "via": "skipped",
+        "weld_from_page": False,
+    }
+    notes = ensure_weld_ops(
+        client,
+        "qid",
+        times={"weld_minutes": 20, "total_inches": 40, "fitup_with_fixture_minutes": 8},
+        part_key="1001898-1",
+    )
+    assert any("fail-closed" in n and "not grafting" in n for n in notes)
+    client.request.assert_not_called()

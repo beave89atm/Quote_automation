@@ -5840,3 +5840,527 @@ def grid_dxf_parts_rows_from_quotes_tab(
     if not isinstance(value, list):
         return []
     return [r for r in value if isinstance(r, dict)]
+
+
+# QuoteOrderEdit Copy/Move (Kyle: parent Edit Properties → Copy/Move
+# items into Assembly). Cookie HTTP POST /Quote/CopyMoveItemToAssembly
+# 302s the same leftover class as AddItem_*. In-page only: signed-in
+# EDIT $.ajax / page fn. Do not cookie-POST.
+_PAGE_COPY_MOVE_JS = """(function(spec) {
+  function fnSource(fn) {
+    try { return Function.prototype.toString.call(fn); } catch (e) { return ""; }
+  }
+  function postsCopyMove(src) {
+    return String(src || "").indexOf("/Quote/CopyMoveItemToAssembly") >= 0;
+  }
+  function findFnName() {
+    var preferred = [
+      "CopyMoveItemToAssembly", "OnCopyMoveItemToAssembly",
+      "OnCopyMoveClick", "CopyMoveToAssembly", "UpdateAssembly",
+      "OnUpdateAssembly", "OnCopyMoveItems"
+    ];
+    for (var i = 0; i < preferred.length; i++) {
+      if (typeof window[preferred[i]] === "function") return preferred[i];
+    }
+    try {
+      for (var k in window) {
+        var fn = window[k];
+        if (typeof fn === "function" && postsCopyMove(fnSource(fn))) return k;
+      }
+    } catch (e) {}
+    return "";
+  }
+  function attachChromeDomAf(data) {
+    try {
+      if (window.kendo && typeof kendo.antiForgeryTokens === "function") {
+        var t = kendo.antiForgeryTokens();
+        if (t && typeof t === "object") {
+          var tk = Object.keys(t);
+          for (var j = 0; j < tk.length; j++) {
+            if (t[tk[j]]) { data[tk[j]] = t[tk[j]]; return; }
+          }
+        }
+      }
+    } catch (e) {}
+  }
+  function hasAf(d) {
+    if (!d || typeof d !== "object") return false;
+    var keys = Object.keys(d);
+    for (var i = 0; i < keys.length; i++) {
+      if (/requestverificationtoken|__requestverificationtoken/i.test(keys[i]) && d[keys[i]]) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function applyBag(data) {
+    if (!data || typeof data !== "object" || Array.isArray(data)) data = {};
+    data.ID = spec.quote_id;
+    data.ItemID = spec.item_id;
+    data.AssemblyID = spec.assembly_id;
+    data.Mode = spec.mode || "Move";
+    attachChromeDomAf(data);
+    return data;
+  }
+  var fnName = findFnName();
+  var hooked = new Promise(function(resolve) {
+    if (!window.jQuery || !jQuery.ajax) {
+      resolve(null);
+      return;
+    }
+    var orig = jQuery.ajax;
+    var done = false;
+    jQuery.ajax = function(opts) {
+      var url = String((opts && opts.url) || "");
+      if (!done && url.indexOf("/Quote/CopyMoveItemToAssembly") >= 0) {
+        done = true;
+        jQuery.ajax = orig;
+        if (!opts || typeof opts !== "object") opts = {url: url};
+        if (typeof opts.data === "string") {
+          try { opts.data = JSON.parse(opts.data); } catch (e) { opts.data = {}; }
+        }
+        opts.data = applyBag(opts.data);
+        arguments[0] = opts;
+        var d = opts.data;
+        var cap = {
+          request_keys: Object.keys(d),
+          request_itemid: String(d.ItemID || ""),
+          request_assemblyid: String(d.AssemblyID || ""),
+          request_mode: String(d.Mode || ""),
+          finish_af_present: hasAf(d)
+        };
+        var ret = orig.apply(this, arguments);
+        Promise.resolve(ret).then(function() {
+          cap.status = 200;
+          resolve(cap);
+        }).catch(function(xhr) {
+          cap.status = (xhr && xhr.status) || 0;
+          resolve(cap);
+        });
+        return ret;
+      }
+      return orig.apply(this, arguments);
+    };
+    setTimeout(function() {
+      if (!done) {
+        jQuery.ajax = orig;
+        resolve(null);
+      }
+    }, 30000);
+  });
+  var via = "";
+  if (fnName) {
+    try {
+      var fn = window[fnName];
+      if (fn.length >= 2) fn(spec.item_id, spec.assembly_id, spec.mode || "Move");
+      else fn();
+    } catch (e) {}
+    via = "page_fn";
+  }
+  if (!via) {
+    try {
+      var nodes = document.querySelectorAll(
+        "button, a, input[type=button], input[type=submit]"
+      );
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        var blob = (
+          (el.getAttribute("onclick") || "") + " " + (el.textContent || "")
+          + " " + (el.value || "") + " " + (el.id || "")
+        ).toLowerCase();
+        if (
+          blob.indexOf("copy/move") >= 0 || blob.indexOf("copymove") >= 0
+          || blob.indexOf("update assembly") >= 0
+        ) {
+          el.click();
+          via = "page_fn";
+          break;
+        }
+      }
+    } catch (e) {}
+  }
+  if (!via && window.jQuery && jQuery.ajax) {
+    var data = applyBag({});
+    jQuery.ajax({
+      url: "/Quote/CopyMoveItemToAssembly",
+      type: "POST",
+      data: data
+    });
+    via = "page_fn";
+    fnName = fnName || "page_ajax";
+  }
+  if (!via) {
+    return Promise.resolve({
+      via: "skipped",
+      finish_fn: "",
+      copy_move_from_page: false,
+      finish_why: "no_copymove_page_fn",
+      request_keys: [],
+      status: 0
+    });
+  }
+  return hooked.then(function(hitCap) {
+    var extra = hitCap || {};
+    extra.via = via || "page_fn";
+    extra.finish_fn = fnName || "CopyMoveItemToAssembly";
+    extra.copy_move_from_page = true;
+    extra.finish_why = extra.finish_why || "";
+    return extra;
+  });
+})"""
+
+
+# QuoteOrderEdit Weld (Kyle: Add operation on the assembly, Cursor minutes).
+# Cookie HTTP POST /Quote/AddOperation 302s. In-page only. Assemblies only.
+_PAGE_ADD_WELD_JS = """(function(spec) {
+  function fnSource(fn) {
+    try { return Function.prototype.toString.call(fn); } catch (e) { return ""; }
+  }
+  function postsAddOp(src) {
+    return String(src || "").indexOf("/Quote/AddOperation") >= 0;
+  }
+  function findFnName() {
+    var preferred = [
+      "OnAddOperationClick", "AddOperation", "OnAddWeldClick",
+      "AddWeld", "OnAddOperation"
+    ];
+    for (var i = 0; i < preferred.length; i++) {
+      if (typeof window[preferred[i]] === "function") return preferred[i];
+    }
+    try {
+      for (var k in window) {
+        var fn = window[k];
+        if (typeof fn === "function" && postsAddOp(fnSource(fn))) return k;
+      }
+    } catch (e) {}
+    return "";
+  }
+  function attachChromeDomAf(data) {
+    try {
+      if (window.kendo && typeof kendo.antiForgeryTokens === "function") {
+        var t = kendo.antiForgeryTokens();
+        if (t && typeof t === "object") {
+          var tk = Object.keys(t);
+          for (var j = 0; j < tk.length; j++) {
+            if (t[tk[j]]) { data[tk[j]] = t[tk[j]]; return; }
+          }
+        }
+      }
+    } catch (e) {}
+  }
+  function hasAf(d) {
+    if (!d || typeof d !== "object") return false;
+    var keys = Object.keys(d);
+    for (var i = 0; i < keys.length; i++) {
+      if (/requestverificationtoken|__requestverificationtoken/i.test(keys[i]) && d[keys[i]]) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function setInput(sels, val) {
+    for (var i = 0; i < sels.length; i++) {
+      var el = document.querySelector(sels[i]);
+      if (!el) continue;
+      el.value = val;
+      try {
+        el.dispatchEvent(new Event("input", {bubbles: true}));
+        el.dispatchEvent(new Event("change", {bubbles: true}));
+      } catch (e) {}
+      return true;
+    }
+    return false;
+  }
+  function applyBag(data) {
+    if (!data || typeof data !== "object" || Array.isArray(data)) data = {};
+    data.ID = spec.quote_id;
+    data.ItemID = spec.item_id;
+    data.operation_code = spec.operation_code || "op_weld";
+    data.Equipment = spec.equipment || "Welding";
+    data.ApplyTo = spec.apply_to || "ITEM";
+    data.CalcParamType = spec.calc_param_type || "";
+    data.weld = spec.weld_inches;
+    data.perunittime = spec.weld_hours;
+    data.perunittime2 = spec.fitup_hours;
+    data.fixedtime = spec.setup_hours;
+    data.perunitcost = spec.grind_cost || 0;
+    attachChromeDomAf(data);
+    return data;
+  }
+  setInput(["#weld", "input[name=weld]"], spec.weld_inches);
+  setInput(
+    ["#perunittime", "input[name=perunittime]"],
+    spec.weld_hours
+  );
+  setInput(
+    ["#perunittime2", "input[name=perunittime2]"],
+    spec.fitup_hours
+  );
+  setInput(["#fixedtime", "input[name=fixedtime]"], spec.setup_hours);
+  var fnName = findFnName();
+  var hooked = new Promise(function(resolve) {
+    if (!window.jQuery || !jQuery.ajax) {
+      resolve(null);
+      return;
+    }
+    var orig = jQuery.ajax;
+    var done = false;
+    jQuery.ajax = function(opts) {
+      var url = String((opts && opts.url) || "");
+      if (!done && url.indexOf("/Quote/AddOperation") >= 0) {
+        done = true;
+        jQuery.ajax = orig;
+        if (!opts || typeof opts !== "object") opts = {url: url};
+        if (typeof opts.data === "string") {
+          try { opts.data = JSON.parse(opts.data); } catch (e) { opts.data = {}; }
+        }
+        opts.data = applyBag(opts.data);
+        arguments[0] = opts;
+        var d = opts.data;
+        var cap = {
+          request_keys: Object.keys(d),
+          request_itemid: String(d.ItemID || ""),
+          request_operation_code: String(d.operation_code || ""),
+          request_weld: d.weld,
+          request_perunittime: d.perunittime,
+          request_perunittime2: d.perunittime2,
+          request_fixedtime: d.fixedtime,
+          finish_af_present: hasAf(d)
+        };
+        var ret = orig.apply(this, arguments);
+        Promise.resolve(ret).then(function() {
+          cap.status = 200;
+          resolve(cap);
+        }).catch(function(xhr) {
+          cap.status = (xhr && xhr.status) || 0;
+          resolve(cap);
+        });
+        return ret;
+      }
+      return orig.apply(this, arguments);
+    };
+    setTimeout(function() {
+      if (!done) {
+        jQuery.ajax = orig;
+        resolve(null);
+      }
+    }, 30000);
+  });
+  var via = "";
+  if (fnName) {
+    try { window[fnName](); } catch (e) {}
+    via = "page_fn";
+  }
+  if (!via) {
+    try {
+      var nodes = document.querySelectorAll(
+        "button, a, input[type=button], input[type=submit]"
+      );
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        var blob = (
+          (el.getAttribute("onclick") || "") + " " + (el.textContent || "")
+          + " " + (el.value || "") + " " + (el.id || "")
+        ).toLowerCase();
+        if (
+          blob.indexOf("add operation") >= 0 || blob.indexOf("addoperation") >= 0
+          || (blob.indexOf("weld") >= 0 && blob.indexOf("add") >= 0)
+        ) {
+          el.click();
+          via = "page_fn";
+          break;
+        }
+      }
+    } catch (e) {}
+  }
+  if (!via && window.jQuery && jQuery.ajax) {
+    var data = applyBag({});
+    jQuery.ajax({
+      url: "/Quote/AddOperation",
+      type: "POST",
+      data: data
+    });
+    via = "page_fn";
+    fnName = fnName || "page_ajax";
+  }
+  if (!via) {
+    return Promise.resolve({
+      via: "skipped",
+      finish_fn: "",
+      weld_from_page: false,
+      finish_why: "no_addoperation_page_fn",
+      request_keys: [],
+      status: 0
+    });
+  }
+  return hooked.then(function(hitCap) {
+    var extra = hitCap || {};
+    extra.via = via || "page_fn";
+    extra.finish_fn = fnName || "OnAddOperationClick";
+    extra.weld_from_page = true;
+    extra.finish_why = extra.finish_why || "";
+    return extra;
+  });
+})"""
+
+
+def invoke_page_copy_move_to_assembly(
+    *,
+    quote_id: str,
+    item_id: str,
+    assembly_id: str,
+    mode: str = "Move",
+    base: str | None = None,
+) -> dict[str, Any]:
+    """Kyle Copy/Move into Assembly: in-page EDIT, not cookie HTTP."""
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
+    skipped = {
+        "via": "skipped",
+        "finish_fn": "",
+        "copy_move_from_page": False,
+        "request_keys": [],
+        "request_itemid": "",
+        "request_assemblyid": "",
+        "request_mode": "",
+        "status": 0,
+        "edit_quote_id": str(gate.get("edit_quote_id") or ""),
+        "minted_id": str(gate.get("minted_id") or quote_id or ""),
+        "edit_gate": str(gate.get("reason") or "missing_minted_id"),
+        "finish_af_present": False,
+        "finish_why": "wrong_document",
+        "ok": False,
+    }
+    if not gate.get("ok"):
+        return skipped
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    expression = (
+        _PAGE_COPY_MOVE_JS
+        + "("
+        + json.dumps(
+            {
+                "quote_id": str(quote_id or ""),
+                "item_id": str(item_id or ""),
+                "assembly_id": str(assembly_id or ""),
+                "mode": mode or "Move",
+            },
+            separators=(",", ":"),
+        )
+        + ")"
+    )
+    value = _cdp_evaluate_promise(
+        expression, base=base, tab=tab, fallback=False
+    )
+    if not isinstance(value, dict):
+        skipped["edit_gate"] = "copy_move_eval_empty"
+        return skipped
+    via = str(value.get("via") or "")
+    if via and via not in {"page_fn", "skipped"}:
+        via = "page_fn"
+    from_page = bool(value.get("copy_move_from_page")) and via == "page_fn"
+    return {
+        "via": via,
+        "finish_fn": str(value.get("finish_fn") or ""),
+        "copy_move_from_page": from_page,
+        "request_keys": [str(k) for k in (value.get("request_keys") or [])],
+        "request_itemid": str(value.get("request_itemid") or ""),
+        "request_assemblyid": str(value.get("request_assemblyid") or ""),
+        "request_mode": str(value.get("request_mode") or ""),
+        "finish_af_present": bool(value.get("finish_af_present")),
+        "finish_why": str(value.get("finish_why") or ""),
+        "status": int(value.get("status") or 0),
+        "edit_quote_id": str(gate.get("edit_quote_id") or ""),
+        "minted_id": str(gate.get("minted_id") or quote_id or ""),
+        "edit_gate": "",
+        "ok": from_page,
+    }
+
+
+def invoke_page_add_weld_operation(
+    *,
+    quote_id: str,
+    item_id: str,
+    weld_inches: float,
+    weld_hours: float,
+    fitup_hours: float,
+    setup_hours: float,
+    grind_cost: float = 0.0,
+    operation_code: str = "op_weld",
+    equipment: str = "Welding",
+    apply_to: str = "ITEM",
+    calc_param_type: str = "",
+    base: str | None = None,
+) -> dict[str, Any]:
+    """Kyle Add Weld on the assembly: in-page EDIT, not cookie HTTP."""
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
+    skipped = {
+        "via": "skipped",
+        "finish_fn": "",
+        "weld_from_page": False,
+        "request_keys": [],
+        "request_itemid": "",
+        "request_operation_code": "",
+        "request_weld": 0.0,
+        "request_perunittime": 0.0,
+        "request_perunittime2": 0.0,
+        "request_fixedtime": 0.0,
+        "status": 0,
+        "edit_quote_id": str(gate.get("edit_quote_id") or ""),
+        "minted_id": str(gate.get("minted_id") or quote_id or ""),
+        "edit_gate": str(gate.get("reason") or "missing_minted_id"),
+        "finish_af_present": False,
+        "finish_why": "wrong_document",
+        "ok": False,
+    }
+    if not gate.get("ok"):
+        return skipped
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    expression = (
+        _PAGE_ADD_WELD_JS
+        + "("
+        + json.dumps(
+            {
+                "quote_id": str(quote_id or ""),
+                "item_id": str(item_id or ""),
+                "weld_inches": float(weld_inches or 0),
+                "weld_hours": float(weld_hours or 0),
+                "fitup_hours": float(fitup_hours or 0),
+                "setup_hours": float(setup_hours or 0),
+                "grind_cost": float(grind_cost or 0),
+                "operation_code": operation_code,
+                "equipment": equipment,
+                "apply_to": apply_to,
+                "calc_param_type": calc_param_type,
+            },
+            separators=(",", ":"),
+        )
+        + ")"
+    )
+    value = _cdp_evaluate_promise(
+        expression, base=base, tab=tab, fallback=False
+    )
+    if not isinstance(value, dict):
+        skipped["edit_gate"] = "add_operation_eval_empty"
+        return skipped
+    via = str(value.get("via") or "")
+    if via and via not in {"page_fn", "skipped"}:
+        via = "page_fn"
+    from_page = bool(value.get("weld_from_page")) and via == "page_fn"
+    return {
+        "via": via,
+        "finish_fn": str(value.get("finish_fn") or ""),
+        "weld_from_page": from_page,
+        "request_keys": [str(k) for k in (value.get("request_keys") or [])],
+        "request_itemid": str(value.get("request_itemid") or ""),
+        "request_operation_code": str(value.get("request_operation_code") or ""),
+        "request_weld": float(value.get("request_weld") or 0),
+        "request_perunittime": float(value.get("request_perunittime") or 0),
+        "request_perunittime2": float(value.get("request_perunittime2") or 0),
+        "request_fixedtime": float(value.get("request_fixedtime") or 0),
+        "finish_af_present": bool(value.get("finish_af_present")),
+        "finish_why": str(value.get("finish_why") or ""),
+        "status": int(value.get("status") or 0),
+        "edit_quote_id": str(gate.get("edit_quote_id") or ""),
+        "minted_id": str(gate.get("minted_id") or quote_id or ""),
+        "edit_gate": "",
+        "ok": from_page,
+    }

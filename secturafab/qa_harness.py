@@ -421,6 +421,24 @@ def evaluate_quote_get(
                 + ", ".join(flat[:6])
             )
 
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        has_weld = any(
+            o.get("OperationName") == "Weld"
+            for o in (it.get("OperationCostList") or [])
+        )
+        if not has_weld:
+            continue
+        cat = _item_category(
+            it, bom_hints.get(_desc_key(str(it.get("Description") or ""))) or ""
+        )
+        if cat in {"Cad", "Linear", "Component"}:
+            failures.append(
+                f"{cat} {it.get('Description')!r} has Weld "
+                "(Weld is assemblies only)"
+            )
+
     notes.append(f"Checked {cad_n} Cad / {lin_n} Linear line(s)")
     if assembly_desc:
         notes.append(f"Assembly={assembly_desc}")

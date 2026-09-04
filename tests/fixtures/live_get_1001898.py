@@ -49,6 +49,33 @@ def _profile_primary_costs(item_id: str) -> list[dict[str, Any]]:
     return ops
 
 
+def _weld_secondary_ops(item_id: str) -> list[dict[str, Any]]:
+    """Gold Q10056 / 1001898-1: Weld on the assembly only (not Cad/Linear)."""
+    times = {
+        "Weld-Time": 154.33 / 60.0,
+        "Weld-Fitting": 108.0 / 60.0,
+        "Weld-Setup": 15.0 / 60.0,
+    }
+    ops: list[dict[str, Any]] = []
+    for name, hours in times.items():
+        ops.append(
+            {
+                "ID": f"{item_id}-{name}",
+                "ItemID": item_id,
+                "OperationName": "Weld",
+                "OperationLabel": "Weld",
+                "CalculatorName": name,
+                "PrimaryOperation": False,
+                "CostCategory": "Weld" if name != "Weld-Setup" else "Weld-Setup",
+                "UnitTime": hours,
+                "Value": hours,
+                "Time": hours,
+                "UnitCost": 1.25 if hours else 0.0,
+            }
+        )
+    return ops
+
+
 def _saw_primary_costs(item_id: str) -> list[dict[str, Any]]:
     """Gold STP Long: OperationName=Saw for both; Saw-Setup is a calculator."""
     return [
@@ -104,7 +131,7 @@ def gold_1001898_get(*, fail: str | None = None) -> dict[str, Any]:
             "ProductType": 300,
             "IsAssembly": True,
             "Quantity": 1,
-            "OperationCostList": [],
+            "OperationCostList": _weld_secondary_ops("asm-1001898"),
         }
     ]
     for _item, qty, pn, noun in DASH_1001898:

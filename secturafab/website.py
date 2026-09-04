@@ -2717,6 +2717,12 @@ GOLD_SAW_CALCULATOR_NAMES = (
     "Saw-Setup",
 )
 
+GOLD_WELD_CALCULATOR_NAMES = (
+    "Weld-Time",
+    "Weld-Fitting",
+    "Weld-Setup",
+)
+
 
 def _ocl_names_have_saw_pack(names: Any) -> bool:
     """True when CalculatorNames include Saw and Saw-Setup / Saw Setup."""
@@ -2747,6 +2753,42 @@ def cookie_http_additem_linear_is_not_success(
 ) -> bool:
     """Cookie-only AddItem_Linear is not success (302 leftover class)."""
     return not linear_finish_from_page_fn(result)
+
+
+def copy_move_from_page_fn(result: dict[str, Any] | None) -> bool:
+    """True only when Copy/Move ran on signed-in EDIT (not cookie HTTP)."""
+    if not isinstance(result, dict):
+        return False
+    if str(result.get("via") or "") != "page_fn":
+        return False
+    if result.get("copy_move_from_page") is False:
+        return False
+    return bool(result.get("copy_move_from_page") or result.get("ok"))
+
+
+def cookie_http_copy_move_is_not_success(
+    result: dict[str, Any] | None,
+) -> bool:
+    """Cookie-only CopyMoveItemToAssembly is not success (302 leftover class)."""
+    return not copy_move_from_page_fn(result)
+
+
+def weld_add_from_page_fn(result: dict[str, Any] | None) -> bool:
+    """True only when AddOperation Weld ran on signed-in EDIT."""
+    if not isinstance(result, dict):
+        return False
+    if str(result.get("via") or "") != "page_fn":
+        return False
+    if result.get("weld_from_page") is False:
+        return False
+    return bool(result.get("weld_from_page") or result.get("ok"))
+
+
+def cookie_http_add_operation_is_not_success(
+    result: dict[str, Any] | None,
+) -> bool:
+    """Cookie-only AddOperation is not success (302 leftover class)."""
+    return not weld_add_from_page_fn(result)
 
 
 def long_without_page_click_is_fail(stamp_out: dict[str, Any] | None) -> bool:
