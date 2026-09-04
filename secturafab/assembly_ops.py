@@ -58,6 +58,11 @@ def _attach_children(
 ) -> int:
     """Set AssemblyID / Level / Name / Qty on every non-root line. Returns count."""
     root_qty = max(1, int(assembly_qty or 1))
+    assembly_ids = {
+        str(it.get("ID") or "")
+        for it in items
+        if is_assembly_item(it) and it.get("ID")
+    }
     linked = 0
     for it in items:
         if it.get("ID") == assembly_id:
@@ -66,6 +71,14 @@ def _attach_children(
             it["AssemblyName"] = None
             it["AssemblyQty"] = 0
             it["isAssemblyItem"] = False
+            continue
+        existing_parent = str(it.get("AssemblyID") or "")
+        if (
+            existing_parent
+            and existing_parent in assembly_ids
+            and existing_parent != assembly_id
+        ):
+            # Nested weldment already owns this kid — do not flatten to root.
             continue
         qty = max(1, int(it.get("Quantity") or it.get("Qty") or 1))
         # Pieces per one assembly (Kyle: qty 20 with assembly 10 → AssemblyQty 2).
