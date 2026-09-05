@@ -1,0 +1,28 @@
+{
+  "function": "UpdateDXF_LoadNew",
+  "path": "/CadImport/UpdateDataNext",
+  "editor_only": true,
+  "gold": false,
+  "requires": ["#DXFEdit open", "CADType===DXF", "WebGLCADDisp"],
+  "triggers": ["Previous", "Next", "combobox_CADDXF_FileName"],
+  "body_keys": ["ItemList", "SourceID", "ReturnItemID"],
+  "itemlist_keys": ["ID", "Index", "visible", "attr", "color"],
+  "not_called_from": [
+    "DoCreateDXFParts",
+    "createAllParts",
+    "SetDXFFilePartMode",
+    "OnAddDXFClick",
+    "editDXFFile"
+  ],
+  "open": "editDXFFile → modal shown → WebGLCADDisp + Load2DData/Load3DData",
+  "close": "UpdateDXF → /CadImport/UpdateData then WebGLCADDisp=null",
+  "preview": "WebGLDisp",
+  "live_leftover_edit": {
+    "quote_id_prefix": "5b622a0d",
+    "WebGLCADDisp": false,
+    "dxfedit_hidden": true,
+    "dxfeditid_empty": true,
+    "unfold_n": 0
+  },
+  "classify_finish_internaldata_fill": null
+}

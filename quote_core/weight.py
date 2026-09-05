@@ -429,6 +429,22 @@ def estimate_assembly_weight(
         bom_config=bom_config,
     )
     pdf_bom = bom.to_dict()
+    if bom.method == "lom_clip_empty":
+        return {
+            "assembly_weight_lb": None,
+            "component_weights_lb": [],
+            "piece_count": 0,
+            "part_number_count": 0,
+            "material_key": mat_key,
+            "material_label": mat.get("label") or mat_key,
+            "material_family": family,
+            "density_lb_in3": density,
+            "part_weights": [],
+            "method": "lom_clip_empty",
+            "pdf_bom": pdf_bom,
+            "bom": pdf_bom,
+            "needs_info": True,
+        }
     # Keep legacy lbm-hit fallback when structured BOM rows are absent.
     if not bom.rows:
         pdf_bom = extract_pdf_bom_weights(pdf_path=pdf_path, text=raw_pdf or None)

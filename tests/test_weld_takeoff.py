@@ -32,6 +32,39 @@ def test_takeoff_73476047_if_present():
     assert result.to_dict()["total_inches"] >= 0
 
 
+def test_fillet_1_8_symbols_use_plate_perimeters():
+    """1/8 fillet symbols must produce weld inches from Cad plate blanks."""
+    from quote_core.weld.takeoff import _build_items_from_signals, _ingest_page_text
+
+    text = """
+    1001775-1 WELDMENT
+    1/8 FILLET TYP
+    """
+    sizes, notes, hits, _dims = _ingest_page_text(1, text)
+    assert "1/8" in sizes
+    items, flags = _build_items_from_signals(
+        sizes=sizes,
+        notes=notes,
+        page_hits=hits,
+        stp_summary={},
+        pdf_name="1001775.pdf",
+        pdf_dimensions=[],
+        pdf_path=None,
+        plates=[
+            {
+                "part_no": "1001913-1",
+                "width_in": 4.0,
+                "length_in": 6.0,
+                "qty": 1,
+            }
+        ],
+    )
+    assert items
+    assert sum(i.inches for i in items) == 20.0
+    assert any(i.size == "1/8" for i in items)
+    assert any("perimeter" in f.lower() or "fillet" in f.lower() for f in flags)
+
+
 def test_tycrop_electrode_note_is_not_a_weld_symbol():
     """Title-block 'MINIMUM WELD ELECTRODE' + plate 3/16 must not invent weld time."""
     from quote_core.weld.takeoff import _ingest_page_text, _build_items_from_signals
@@ -69,3 +102,24 @@ def test_job68_pdf_no_weld_if_present():
     assert result.items == []
     assert result.to_dict()["total_inches"] == 0
     assert any("No weld symbols" in f for f in result.flags)
+
+
+def test_plate_blank_reads_whole_inch_and_overall():
+    from quote_core.weld.takeoff import _flats_near_part_no, _plate_blank_size_from_text
+
+    assert _plate_blank_size_from_text('2" X 9"', min_side=0.26, max_side=240) == (2.0, 9.0)
+    assert _plate_blank_size_from_text(
+        "OVERALL 18.50 X 6.25", min_side=0.26, max_side=240
+    ) == (18.5, 6.25)
+    assert _plate_blank_size_from_text("11 X 17", min_side=0.26, max_side=240) is None
+    assert _plate_blank_size_from_text("1 x 2", min_side=0.26, max_side=240) is None
+    assert _plate_blank_size_from_text("1 x 16", min_side=0.26, max_side=240) is None
+    assert _plate_blank_size_from_text(
+        "SCALE 1 X 2  OVERALL 5.25 X 5.75", min_side=0.26, max_side=240
+    ) == (5.25, 5.75)
+    assert _plate_blank_size_from_text(
+        "1 x 16  14.625 X 7.375", min_side=0.26, max_side=240
+    ) == (14.625, 7.375)
+    text = "ITEM 17 6993-1 HOSE GUIDE  4.00 X 1.50 A36"
+    assert _flats_near_part_no(text, "6993-1") == (4.0, 1.5)
+    assert _flats_near_part_no(text, "6993") == (4.0, 1.5)

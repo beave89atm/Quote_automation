@@ -150,6 +150,21 @@ def normalize_part_no(raw: str) -> str | None:
         .replace(" ", "")
     )
     cleaned = re.sub(r"[^0-9A-Z-]", "", cleaned)
+    # Vendor / stock prefixes: P904225-1, S80054-1, ME12345-1.
+    # Single-letter is only P/S so OCR "A35121-1" still strips to 35121-1.
+    m_pref = re.match(r"^((?:[PS]|[A-Z]{2,3}))(\d{4,7})-(\d{1,3}[A-Z]?)$", cleaned)
+    if m_pref:
+        return f"{m_pref.group(1)}{m_pref.group(2)}-{m_pref.group(3)}"
+    # Drawing-as-row: 1004611-DWG.
+    m_dwg = re.match(r"^(\d{5,7})-(DWG)$", cleaned)
+    if m_dwg:
+        return f"{m_dwg.group(1)}-{m_dwg.group(2)}"
+    # Time catalog with no dash: 94560, 460200, 432710. Keep 6-digit
+    # values that end in 0; 351211 still splits to 35121-1 below.
+    if re.fullmatch(r"\d{5}", cleaned):
+        return cleaned
+    if re.fullmatch(r"\d{6,7}", cleaned) and cleaned.endswith("0"):
+        return cleaned
     # If dash missing but looks like ###### + suffix (351211 → 35121-1)
     m = re.match(r"^(\d{4,7})-(\d{1,3}[A-Z]?)$", cleaned)
     if not m:
@@ -1141,6 +1156,9 @@ def extract_bom_from_ocr_time_style(
 
         multi_hits: list[dict[str, Any]] = []
         texts_for_supp: list[str] = []
+        if not config and texts_have_multi_qty_headers(texts):
+            config = "1"
+            supp_notes.append("Multi-dash Time BOM — defaulted to -1 qty column")
         if config and (
             texts_have_multi_qty_headers(texts)
             or _parse_multi_qty_time_hits(texts, bases, bom_config=config)
@@ -1228,13 +1246,45 @@ def extract_bom(
     """
     Multi-strategy BOM extraction.
 
-    1) Native MAC text/blocks (high confidence when present)
-    2) Native PARTS LIST (Cummins / NGFS style)
-    3) OCR Time-style LIST OF MATERIAL (vector CAD drawings)
+    1) Time LIST OF MATERIAL: clip the printed grid to ``*LOM.xlsx`` (or use
+       a Kyle-confirmed workbook) and read only that sheet
+    2) Native MAC text/blocks (high confidence when present)
+    3) Native PARTS LIST (Cummins / NGFS style)
+
+    Whole-page OCR/regex is not takeoff truth when a LOM grid exists.
+    Folder PDF stems are not invented as rows.
     """
+    del related_pdf_names
     notes: list[str] = []
+    from quote_core.lom_clip import ensure_lom_xlsx
+    from quote_core.lom_xlsx import extract_bom_from_lom_xlsx
+
+    stem_key = Path(pdf_path).stem if pdf_path else None
+    from quote_core.drawing_library import extract_part_key
+
+    lom_path, lom_notes = ensure_lom_xlsx(
+        pdf_path,
+        library_folder=library_folder,
+        part_key=extract_part_key(stem_key) or stem_key,
+        bom_config=bom_config,
+    )
+    notes.extend(lom_notes)
+    if lom_path:
+        lom = extract_bom_from_lom_xlsx(lom_path, bom_config=bom_config)
+        if lom.rows:
+            lom.notes = notes + list(lom.notes)
+            return lom
+        notes.extend(lom.notes)
+    clip_empty = any(
+        "clip produced 0 rows" in n or "produced no usable rows" in n or "(needs_info)" in n
+        for n in notes
+    )
+    if clip_empty:
+        return BomResult(method="lom_clip_empty", confidence=0.0, notes=notes)
+
     native = extract_bom_from_native_mac(pdf_path, text=text)
     if native.rows and native.piece_count > 0 and native.confidence >= 0.9:
+        native.notes = notes + list(native.notes)
         return native
     if native.notes:
         notes.extend(native.notes)
@@ -1245,18 +1295,6 @@ def extract_bom(
         return parts_list
     if parts_list.notes:
         notes.extend(parts_list.notes)
-
-    if pdf_path:
-        ocr = extract_bom_from_ocr_time_style(
-            pdf_path,
-            library_folder=library_folder,
-            related_pdf_names=related_pdf_names,
-            bom_config=bom_config,
-        )
-        notes.extend(ocr.notes)
-        if ocr.rows:
-            ocr.notes = notes + list(ocr.notes)
-            return ocr
 
     if native.rows:
         native.notes = notes + native.notes

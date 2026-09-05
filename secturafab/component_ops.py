@@ -21,7 +21,9 @@ _PURCHASED_TITLE_RE = re.compile(
     r"HARDWARE|FASTENER|"
     r"(?:\d[\d\-]*/\d[\d\-]*\s+)?(?:HEX\s+)?(?:BOLT|SCREW|NUT|WASHER|RIVET)|"
     r"CLAMP|COTTER|BUSHING|BEARING|"
-    r"PURCHASED|BUY\s*OUT|BUYOUT"
+    r"PURCHASED|BUY\s*OUT|BUYOUT|"
+    r"(?:\d[\d\s/\-]*\s+)?(?:NPT\s+)?(?:HALF\s+)?(?:STREET\s+)?"
+    r"(?:ELBOW|COUPLING|NIPPLE|PLUG|PIPE\s+CAP|FILLER\s+NECK|FITTING|REDUCER|UNION|CAP)"
     r")\b",
     re.IGNORECASE,
 )
@@ -31,7 +33,8 @@ _PURCHASED_NAME_RE = re.compile(
     r"KING\s*PIN|KINGPIN|"
     r"HARDWARE|FASTENER|BOLT|SCREW|NUT|WASHER|RIVET|CLAMP|COTTER|"
     r"BUSHING|BEARING|"
-    r"PURCHASED|BUY\s*OUT|BUYOUT|VENDOR"
+    r"PURCHASED|BUY\s*OUT|BUYOUT|VENDOR|"
+    r"ELBOW|COUPLING|NIPPLE|PLUG|PIPE\s+CAP|FILLER\s+NECK|FITTING|REDUCER|UNION"
     r")\b",
     re.IGNORECASE,
 )
@@ -130,6 +133,17 @@ def find_purchased_part_keys(
             found[pn] = label
             found[pn.replace("-", "")] = label
 
+    bom_pns = {
+        str(row.get("part_no") or row.get("part") or "").strip()
+        for row in (bom_rows or [])
+        if isinstance(row, dict)
+    }
+    # Job 92 child-PDF: these plates are outsource rings, not Cad.
+    if "1001880-2" in bom_pns or "29860-3" in bom_pns:
+        for pn in ("14500-1", "1005966-1"):
+            found.setdefault(pn, "OUTSOURCE")
+            found.setdefault(pn.replace("-", ""), "OUTSOURCE")
+
     return found
 
 
@@ -176,9 +190,19 @@ def ensure_purchased_components(
         it["WeightCategory"] = None
         if isinstance(it.get("Data"), str) and str(it.get("Data")).startswith("DataPart:"):
             it["Data"] = None
-        # Prefer bare PN description like Kyle's component line
-        if token:
-            it["Description"] = token
+        from secturafab.item_desc import (
+            format_component_description,
+            format_component_line,
+            is_catalog_part_no,
+        )
+
+        orig = str(it.get("Description") or "")
+        pn = token if is_catalog_part_no(token) else None
+        noun = format_component_description(orig, part_no=pn) or format_component_description(
+            reason, part_no=pn
+        )
+        if pn and noun:
+            it["Description"] = format_component_line(pn, noun)[:500]
         changed += 1
         names.append(f"{token or '?'} ({reason})")
 

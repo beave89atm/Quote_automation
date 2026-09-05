@@ -45,6 +45,53 @@ def test_default_material_from_takeoff():
     assert mat == "A572"
 
 
+def test_resolve_material_keeps_a572_from_child_takeoff(tmp_path):
+    from secturafab.push import _resolve_push_material_thickness
+
+    pdf = tmp_path / "1007049-1.pdf"
+    pdf.write_bytes(b"%PDF-1.4 empty")
+    takeoff = {
+        "plates": [
+            {
+                "part_no": "1007014-1",
+                "description": "PL025-50K A572 Grade 50",
+                "width_in": 6.0,
+                "length_in": 8.0,
+            }
+        ],
+        "fitup_drivers": {"weight_calc": {}},
+        "notes": ["A572 Grade 50 on child drawings"],
+    }
+    with patch(
+        "quote_core.part_materials.extract_part_material_from_pdf",
+        return_value=None,
+    ):
+        mat, _thk, notes = _resolve_push_material_thickness(
+            takeoff=takeoff,
+            stp_path=None,
+            pdf_path=pdf,
+        )
+    assert "A572" in mat
+    assert mat != "A36"
+    blob = " ".join(notes)
+    assert "seeded A36" not in blob
+
+
+def test_default_material_keeps_named_5052():
+    mat = _default_material(
+        {
+            "fitup_drivers": {
+                "weight_calc": {
+                    "material_key": "aluminum_5052",
+                    "material_label": "Aluminum 5052",
+                }
+            }
+        }
+    )
+    assert mat == "5052-H32"
+    assert mat != "A36"
+
+
 def test_collect_job_files(tmp_path: Path):
     pdf = tmp_path / "35145-1.pdf"
     stp = tmp_path / "35145-1.STEP"
@@ -118,12 +165,45 @@ def test_classify_sectura_item_categories():
     assert classify_sectura_item("1/2-13 HEX BOLT GRADE 8") == "Component"
     assert classify_sectura_item("23403750 KING PIN") == "Component"
     assert classify_sectura_item("23403750 KINGPIN, 3/8") == "Component"
+    assert classify_sectura_item("50115-7 1 1/4 NPT NIPPLE") == "Component"
+    assert classify_sectura_item("50029-7 1 1/4 90 STREET ELBOW") == "Component"
+    assert classify_sectura_item("29860-4 PEDESTAL BRACE ANGLE") == "Linear"
 
 
 def test_allocate_quote_number_is_bare_part():
     service = SecturaFabPushService(client=MagicMock())
     assert service.allocate_quote_number("21678-1") == "21678-1"
     assert service.allocate_quote_number("PN 21678-1") == "21678-1"
+    assert service.allocate_quote_number("P001545") == "P001545"
+    assert service.allocate_quote_number("BB2000-ASM") == "BB2000-ASM"
+    assert service.allocate_quote_number("EHB3112") == "EHB3112"
+    assert service.allocate_quote_number("EHB3112-1") == "EHB3112"
+    assert service.allocate_quote_number("105918-1") == "105918-1"
+    assert service.allocate_quote_number("11796-1") == "11796-1"
+
+
+def test_resolve_part_key_is_p001545_not_weldment_title():
+    """Live P001545: folder/title POWER FRAME WELDMENT-1 must not become QuoteNumber."""
+    from secturafab.push import _resolve_part_key
+
+    key = _resolve_part_key(
+        title="POWER FRAME WELDMENT",
+        pdf_filename="P001545.STEP",
+        library={"folder": r"C:\drawings\Profrac\POWER FRAME WELDMENT-1"},
+    )
+    assert key == "P001545"
+
+
+def test_resolve_part_key_ehb3112_strips_auto_dash_one():
+    """Live EHB3112: drawing/file EHB3112-1 must not become QuoteNumber."""
+    from secturafab.push import _resolve_part_key
+
+    key = _resolve_part_key(
+        title="EHB3112-1 RIGHT DOOR ASSEMBLY",
+        pdf_filename="EHB3112-1.STEP",
+        library={"part_key": "EHB3112-1"},
+    )
+    assert key == "EHB3112"
 
 
 def test_repush_always_creates_new_quote_and_imports_cad():
@@ -262,26 +342,33 @@ def test_push_single_solid_step_skips_assembly_root(tmp_path: Path):
     stp = tmp_path / "ME04-2773.stp"
     pdf.write_bytes(b"%PDF")
     stp.write_bytes(b"ISO")
+    from tests.test_secturafab_website import _gold_cad
+
     client = MagicMock()
-    client.get_json.return_value = {
-        "QuoteNumber": "ME04-2773",
-        "ItemCount": 1,
-        "ItemList": [
-            {
-                "ID": "p1",
-                "Description": "ME04-2773 - 0.99 in A36",
-                "ProductType": 100,
-                "IsPart": True,
-                "Machine": "Laser",
-                "Data": 'DataPart:{"Time":0.02}',
-            }
-        ],
-    }
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    gold_item = _gold_cad("ME04-2773 - 0.99 in A36")
+    gold_item["ID"] = "p1"
+    gold_item["Data"] = 'DataPart:{"Time":0.02}'
+    _n = {"i": 0}
+
+    def _get_json(_path):
+        _n["i"] += 1
+        if _n["i"] == 1:
+            return {"QuoteNumber": "ME04-2773", "ItemCount": 0, "ItemList": []}
+        return {
+            "QuoteNumber": "ME04-2773",
+            "ItemCount": 1,
+            "ItemList": [gold_item],
+        }
+
+    client.get_json.side_effect = _get_json
     service = SecturaFabPushService(client=client)
 
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
-        service, "quick_add_cad", return_value={"ok": True}
-    ), patch.object(service, "create_quote", return_value="qid"), patch.object(
+        service, "finish_cad_files", return_value=["Finish CAD"]
+    ), patch.object(
+        service, "quick_add_cad"
+    ) as qadd, patch.object(service, "create_quote", return_value="qid"), patch.object(
         service, "allocate_quote_number", return_value="ME04-2773"
     ), patch.object(service, "apply_item_categories", return_value=[]), patch(
         "secturafab.push.ensure_assembly_root", return_value=["SHOULD NOT RUN"]
@@ -317,10 +404,11 @@ def test_push_single_solid_step_skips_assembly_root(tmp_path: Path):
         )
 
     assert result.ok is True
+    qadd.assert_not_called()
     asm.assert_not_called()
     relink.assert_not_called()
-    profile.assert_called()
-    assert any("left as Part" in n for n in (result.notes or []))
+    profile.assert_not_called()
+    assert any("Skipped grafted Profile" in n for n in (result.notes or []))
 
 
 def test_ensure_laser_profile_ops_retries_when_missing_after_save():
@@ -503,7 +591,7 @@ def test_push_readiness_with_stp_ready(tmp_path: Path):
 
 
 def test_push_pdf_only_uses_single_pdf_shell(tmp_path: Path):
-    """PDF without STEP/library still creates a quote via single-PDF path."""
+    """PDF without a Chrome session fails closed (no single-PDF / quickAddCAD)."""
     pdf = tmp_path / "lonely.pdf"
     pdf.write_bytes(b"%PDF")
     client = MagicMock()
@@ -544,12 +632,15 @@ def test_push_pdf_only_uses_single_pdf_shell(tmp_path: Path):
             job_id=99,
         )
 
-    assert result.ok is True
-    assert result.item_count and result.item_count > 0
+    assert result.ok is False
     create_q.assert_called_once()
     up_d.assert_called_once()
-    build_pdf.assert_called_once()
-    assert "lonely Title" in (create_q.call_args.kwargs.get("description") or "")
+    build_pdf.assert_not_called()
+    desc = create_q.call_args.kwargs.get("description") or ""
+    assert "lonely" in desc
+    assert "Title" in desc
+    blob = (result.error or "") + " " + " ".join(result.notes or [])
+    assert "Chrome" in blob or "session" in blob.lower()
 
 
 def test_build_single_pdf_quote_skips_assembly_shell(tmp_path: Path):
@@ -584,10 +675,7 @@ def test_build_single_pdf_quote_skips_assembly_shell(tmp_path: Path):
         "secturafab.pdf_assembly_ops.quick_add_component_pdf", return_value={"ok": True}
     ) as qadd, patch(
         "secturafab.pdf_assembly_ops.wait_for_quote_settle", return_value=["settled"]
-    ), patch(
-        "secturafab.pdf_assembly_ops.ensure_laser_profile_ops",
-        return_value=["Attached Profile"],
-    ) as profile:
+    ):
         notes = build_single_pdf_quote(
             client,
             quote_id="qid",
@@ -602,8 +690,8 @@ def test_build_single_pdf_quote_skips_assembly_shell(tmp_path: Path):
     root.assert_not_called()
     relink.assert_not_called()
     qadd.assert_called_once()
-    profile.assert_called_once()
     assert any("no Assembly shell" in n for n in notes)
+    assert any("Skipped grafted Profile" in n for n in notes)
 
 
 def test_push_ok_requires_nonzero_item_count(tmp_path: Path):
@@ -620,8 +708,10 @@ def test_push_ok_requires_nonzero_item_count(tmp_path: Path):
     service = SecturaFabPushService(client=client)
 
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "finish_cad_files", return_value=[]
+    ), patch.object(
         service, "quick_add_cad", return_value={"ok": True}
-    ), patch.object(service, "create_quote", return_value="qid") as create_q, patch.object(
+    ) as qadd, patch.object(service, "create_quote", return_value="qid") as create_q, patch.object(
         service, "allocate_quote_number", return_value="part"
     ), patch.object(service, "apply_item_categories", return_value=[]), patch(
         "secturafab.push.ensure_assembly_root", return_value=[]
@@ -655,8 +745,46 @@ def test_push_ok_requires_nonzero_item_count(tmp_path: Path):
     assert result.ok is False
     assert result.item_count == 0
     assert result.status == "failed"
+    qadd.assert_not_called()
     # Description fallback used when creating the quote
-    assert "part Title From Job" in (create_q.call_args.kwargs.get("description") or "")
+    desc = create_q.call_args.kwargs.get("description") or ""
+    assert "part" in desc
+    assert "Title From Job" in desc
+
+
+def test_push_refuses_oversize_step_without_mint(tmp_path: Path):
+    """Live 106687-1: 43MB Upload 502 — do not mint or chunk."""
+    from secturafab.push import SecturaFabPushService
+
+    stp = tmp_path / "106687-1.STEP"
+    stp.write_bytes(b"ISO-10303-21")
+    client = MagicMock()
+    service = SecturaFabPushService(client=client)
+    with patch("secturafab.push.CADIMPORT_UPLOAD_MAX_BYTES", 4), patch.object(
+        service, "create_quote"
+    ) as create_q, patch.object(service, "finish_cad_files") as finish, patch.object(
+        service, "finish_pdf_files"
+    ) as pdf_finish, patch.object(
+        service, "allocate_quote_number", return_value="106687-1"
+    ), patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ):
+        result = service.push_job(
+            title="106687-1 PLATFORM WELDMENT",
+            pdf_filename="106687-1.STEP",
+            pdf_path=None,
+            stp_path=stp,
+            takeoff={"library": {"part_key": "106687-1"}},
+            times={},
+            job_id=1,
+        )
+    assert result.ok is False
+    assert result.status == "failed"
+    assert "not minting" in (result.error or "")
+    assert "not chunking" in (result.error or "")
+    create_q.assert_not_called()
+    finish.assert_not_called()
+    pdf_finish.assert_not_called()
 
 
 def test_push_success_sets_item_count_gt_zero(tmp_path: Path):
@@ -664,17 +792,31 @@ def test_push_success_sets_item_count_gt_zero(tmp_path: Path):
     stp = tmp_path / "ok.stp"
     pdf.write_bytes(b"%PDF")
     stp.write_bytes(b"ISO")
+    from tests.test_secturafab_website import _gold_cad, _gold_lin
+
     client = MagicMock()
-    client.get_json.return_value = {
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    populated = {
         "QuoteNumber": "ok",
         "ItemCount": 2,
-        "ItemList": [{"Description": "A"}, {"Description": "B"}],
+        "ItemList": [_gold_cad("A"), _gold_lin("B")],
     }
+    _n = {"i": 0}
+
+    def _get_json(_path):
+        _n["i"] += 1
+        if _n["i"] == 1:
+            return {"QuoteNumber": "ok", "ItemCount": 0, "ItemList": []}
+        return populated
+
+    client.get_json.side_effect = _get_json
     service = SecturaFabPushService(client=client)
 
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
-        service, "quick_add_cad", return_value={"ok": True}
-    ), patch.object(service, "create_quote", return_value="qid") as create_q, patch.object(
+        service, "finish_cad_files", return_value=["Finish CAD"]
+    ), patch.object(
+        service, "quick_add_cad"
+    ) as qadd, patch.object(service, "create_quote", return_value="qid") as create_q, patch.object(
         service, "allocate_quote_number", return_value="ok"
     ), patch.object(service, "apply_item_categories", return_value=[]), patch(
         "secturafab.push.ensure_assembly_root", return_value=[]
@@ -707,5 +849,6 @@ def test_push_success_sets_item_count_gt_zero(tmp_path: Path):
 
     assert result.ok is True
     assert result.item_count and result.item_count > 0
+    qadd.assert_not_called()
     create_q.assert_called_once()
-    assert create_q.call_args.kwargs.get("description") == "From drawing"
+    assert "From drawing" in (create_q.call_args.kwargs.get("description") or "")

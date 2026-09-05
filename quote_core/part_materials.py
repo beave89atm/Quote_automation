@@ -72,6 +72,18 @@ _BARE_GRADE_KEYS: dict[str, str] = {
     "A36": "a36",
     "A572": "a572_gr50",
     "STEEL": "a36",
+    "5052": "aluminum_5052",
+    "5052-H32": "aluminum_5052",
+    "5052 H32": "aluminum_5052",
+    "AL 5052": "aluminum_5052",
+    "ALUMINUM 5052": "aluminum_5052",
+    "PL025-50K": "a572_gr50",
+    "PL02550K": "a572_gr50",
+    "PL025": "a572_gr50",
+    "100K": "a656_gr80",
+    "100 K": "a656_gr80",
+    "A1011": "a1011",
+    "A519": "a519",
 }
 
 _THICKNESS_LINE_RE = re.compile(
@@ -81,7 +93,8 @@ _THICKNESS_LINE_RE = re.compile(
 )
 _GRADE_LINE_RE = re.compile(
     r"^(?P<grade>A\s*572(?:\s*(?:GR|GRADE|G)?\s*\d+)?|A\s*656(?:\s*(?:GR|GRADE|G)?\s*\d+)?|"
-    r"A\s*36|A\s*514|A\s*992|GR\s*\d+|GRADE\s*\d+|G\s*\d+|STEEL|GALV(?:ANISED|ANIZED)?)$",
+    r"A\s*36|A\s*514|A\s*992|GR\s*\d+|GRADE\s*\d+|G\s*\d+|STEEL|GALV(?:ANISED|ANIZED)?|"
+    r"5052(?:\s*-?\s*H32)?|ALPL[A-Z0-9\-]*|PL025(?:-50K)?|100\s*K|A\s*1011|A\s*519)$",
     re.IGNORECASE,
 )
 
@@ -100,7 +113,8 @@ _MATERIAL_INLINE_RE = re.compile(
     r"(?P<thk>[0-9]+\s*/\s*[0-9]+|[0-9]+\s*GA(?:UGE)?)"
     r"\s+"
     r"(?P<grade>A\s*572(?:\s*(?:GR|GRADE)?\s*50)?|A\s*36|GR\s*50|GRADE\s*50|"
-    r"GALV(?:ANISED|ANIZED)?|A\s*656(?:\s*(?:GR|GRADE)?\s*\d+)?)"
+    r"GALV(?:ANISED|ANIZED)?|A\s*656(?:\s*(?:GR|GRADE)?\s*\d+)?|"
+    r"5052(?:\s*-?\s*H32)?|ALPL[A-Z0-9\-]*)"
 )
 
 # Time plate callouts: 1/4 PLATE ASTM A-572 (50K) / 1/4" HR PLATE (A572 GRADE 50)
@@ -148,6 +162,13 @@ class PartMaterial:
 
 def _parse_thickness_token(raw: str) -> float | None:
     text = (raw or "").strip().upper().replace('"', "").replace("″", "").replace("'", "")
+    mixed = re.fullmatch(r"(\d+)\s+(\d+)\s*/\s*(\d+)", text)
+    if mixed:
+        whole, num, den = int(mixed.group(1)), int(mixed.group(2)), int(mixed.group(3))
+        if den:
+            val = whole + (num / den)
+            if 0.01 <= val <= 2.0:
+                return val
     text = re.sub(r"\s+", "", text)
     if not text:
         return None
@@ -184,6 +205,10 @@ def _grade_to_material_key(grade: str) -> str:
         return "a572_gr50"
     if compact in {"A36", "ASTMA36"}:
         return "a36"
+    if "5052" in compact or compact.startswith("ALPL"):
+        return "aluminum_5052"
+    if "PL025" in compact or (compact.startswith("PL") and "50K" in compact):
+        return "a572_gr50"
     # Fall back to shared detector on the grade token only (not whole PDF).
     return detect_material_key([grade])
 
@@ -200,6 +225,10 @@ def _sectura_material_string(material_key: str) -> str:
         return label
     if material_key == "a36":
         return "A36"
+    if material_key == "aluminum_5052":
+        return "5052-H32"
+    if material_key == "aluminum_6061":
+        return "6061-T6"
     # First token of label for other steels (A514, A992, …)
     return label.split()[0] if label else "A36"
 
@@ -318,6 +347,21 @@ def parse_material_block(text: str) -> tuple[float | None, str | None, str]:
         thk = _parse_thickness_token(f"{m_ga.group(1)}GA")
         if thk is not None:
             return thk, "a36", f"gauge callout on {ln!r}"
+
+    named_al = re.search(
+        r"(?i)\b(?:5052(?:\s*-?\s*H32)?|ALPL[A-Z0-9\-]*)\b",
+        text,
+    )
+    if named_al:
+        thk = None
+        for ln in lines:
+            tm = _THICKNESS_LINE_RE.fullmatch(ln)
+            if not tm:
+                continue
+            thk = _parse_thickness_token(tm.group("thk"))
+            if thk is not None:
+                break
+        return thk, "aluminum_5052", f"named grade {named_al.group(0)}"
 
     # Thickness-only line (e.g. 3/16 with no grade neighbor)
     for ln in lines:

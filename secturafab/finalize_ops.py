@@ -59,6 +59,7 @@ def finalize_quote_ops(
     part_key: str | None,
     bom_rows: list[dict[str, Any]] | None,
     attempts: int = 3,
+    attach_profile: bool = False,
 ) -> list[str]:
     """
     Attach/verify Profile + Weld + BOM qty until stable, then roll up assembly costs.
@@ -86,7 +87,7 @@ def finalize_quote_ops(
         has_weld = assembly_has_weld(detail, part_key=part_key)
         qty_bad = bom_qty_mismatches(detail, bom_rows, part_key=part_key)
 
-        need_profile = profiles == 0
+        need_profile = attach_profile and profiles == 0
         need_weld = want_weld and not has_weld
         need_qty = bool(qty_bad)
 
@@ -102,12 +103,12 @@ def finalize_quote_ops(
                 profiles = count_profile_items(detail)
                 has_weld = assembly_has_weld(detail, part_key=part_key)
                 qty_bad = bom_qty_mismatches(detail, bom_rows, part_key=part_key)
-                if profiles == 0 or (want_weld and not has_weld) or qty_bad:
+                if (attach_profile and profiles == 0) or (want_weld and not has_weld) or qty_bad:
                     notes.append(
                         "Delayed wipe detected after verify — re-attaching"
                     )
                     # fall through to re-attach on next loop iteration logic below
-                    need_profile = profiles == 0
+                    need_profile = attach_profile and profiles == 0
                     need_weld = want_weld and not has_weld
                     need_qty = bool(qty_bad)
                 else:
@@ -147,7 +148,7 @@ def finalize_quote_ops(
                     client, quote_id, bom_rows=bom_rows, part_key=part_key
                 )
             )
-        if need_profile or need_qty:
+        if need_profile:
             notes.extend(
                 ensure_laser_profile_ops(
                     client, quote_id, material=material, thickness=thickness
@@ -179,7 +180,7 @@ def finalize_quote_ops(
     profiles = count_profile_items(detail)
     has_weld = assembly_has_weld(detail, part_key=part_key)
     qty_bad = bom_qty_mismatches(detail, bom_rows, part_key=part_key)
-    if profiles == 0 or (want_weld and not has_weld) or qty_bad:
+    if (attach_profile and profiles == 0) or (want_weld and not has_weld) or qty_bad:
         notes.append(
             f"WARNING: after {attempts} finalize attempts still "
             f"profile={profiles} weld={has_weld} bom_mismatch={qty_bad}"

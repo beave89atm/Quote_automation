@@ -56,6 +56,17 @@ def process_job(job_id: int) -> None:
             job.bom_config = bom_config
             db.commit()
 
+        from quote_core.lom_clip import ensure_lom_xlsx
+
+        lom_path, lom_notes = ensure_lom_xlsx(
+            Path(job.pdf_path) if job.pdf_path else None,
+            library_folder=library_info.get("folder"),
+            part_key=library_info.get("part_key") or job.title,
+            bom_config=bom_config,
+        )
+        if lom_path:
+            library_info["lom_xlsx"] = str(lom_path)
+
         rates = load_shop_rates(RATES_PATH)
         result = run_weld_takeoff(
             pdf_path=Path(job.pdf_path),
@@ -80,6 +91,9 @@ def process_job(job_id: int) -> None:
         )
 
         flags = list(result.flags)
+        for note in lom_notes:
+            if note not in flags:
+                flags.insert(0, note)
         if bom_config:
             flags.insert(
                 0,
@@ -104,7 +118,11 @@ def process_job(job_id: int) -> None:
         job.set_takeoff(takeoff)
         job.set_times(times.to_dict())
         job.set_flags(flags)
-        job.status = "review"
+        drivers_info = takeoff.get("fitup_drivers") or {}
+        lom_needs_info = bool(drivers_info.get("needs_info")) or any(
+            "needs_info" in n or "clip produced 0 rows" in n for n in flags
+        )
+        job.status = "needs_info" if lom_needs_info else "review"
         db.commit()
     except Exception as exc:  # noqa: BLE001
         job = db.get(Job, job_id)

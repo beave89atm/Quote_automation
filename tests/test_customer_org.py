@@ -38,6 +38,21 @@ PANEL - BACK, UPPER, 604 SERIES SM, 60
     )
 
 
+def test_detect_time_manufacturing_waco():
+    folder = (
+        r"C:\Users\Kyle\Kannon Manufacturing Inc\Fort Worth - Documents"
+        r"\Engineering\Customer Drawings\Time\Pedestal Weldment - 1001898-1"
+    )
+    assert detect_organization_from_folder(folder) == "Time Manufacturing Waco"
+    assert detect_organization_from_text("TIME MANUFACTURING\n1001898") == (
+        "Time Manufacturing Waco"
+    )
+    assert detect_organization(
+        library_folder="Pedestal Weldment - 1001898-1",
+        extra_paths=[folder],
+    ) == "Time Manufacturing Waco"
+
+
 def test_detect_organization_from_library_folder():
     folder = (
         r"C:\Users\Kyle\Kannon Manufacturing Inc\Fort Worth - Documents"
@@ -75,29 +90,57 @@ def test_find_organization_by_name_matches_display():
     assert org["ID"] == "abc"
 
 
+def test_find_organization_fuzzy_time_waco_when_display_differs():
+    client = MagicMock()
+    client.get_json.return_value = {
+        "HasNext": False,
+        "Results": [
+            {
+                "ID": "time-real",
+                "OrganizationName": "Time Mfg - Waco",
+                "DisplayName": "Time Mfg - Waco",
+                "Active": True,
+            },
+            {
+                "ID": "other",
+                "OrganizationName": "Propell",
+                "DisplayName": "Propell",
+                "Active": True,
+            },
+        ],
+    }
+    org = find_organization_by_name(client, "Time Manufacturing Waco")
+    assert org is not None
+    assert org["ID"] == "time-real"
+
+
 def test_apply_quote_organization_sets_primary_and_list():
     client = MagicMock()
-    client.get_json.side_effect = [
-        {
-            "HasNext": False,
-            "Results": [
-                {
-                    "ID": "org-1",
-                    "OrganizationName": "Propell",
-                    "DisplayName": "Propell",
-                    "NameAndLocation": "Propell",
-                    "PrimaryContactID": "00000000-0000-0000-0000-000000000000",
-                }
-            ],
-        },
-        {"ID": "qid", "ItemList": []},
-        {
-            "ID": "qid",
-            "OrganizationName": "Propell",
-            "PrimaryOrganizationID": "org-1",
-            "OrganizationList": [{"OrganizationName": "Propell"}],
-        },
-    ]
+
+    def _get(path: str):
+        if "organization" in str(path).lower():
+            return {
+                "HasNext": False,
+                "Results": [
+                    {
+                        "ID": "org-1",
+                        "OrganizationName": "Propell",
+                        "DisplayName": "Propell",
+                        "NameAndLocation": "Propell",
+                        "PrimaryContactID": "00000000-0000-0000-0000-000000000000",
+                    }
+                ],
+            }
+        if "PrimaryOrganizationID" in str(client.request.call_args):
+            return {
+                "ID": "qid",
+                "OrganizationName": "Propell",
+                "PrimaryOrganizationID": "org-1",
+                "OrganizationList": [{"OrganizationName": "Propell"}],
+            }
+        return {"ID": "qid", "ItemList": []}
+
+    client.get_json.side_effect = _get
     save = MagicMock()
     save.status_code = 200
     client.request.return_value = save

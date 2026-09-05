@@ -14,14 +14,13 @@ from __future__ import annotations
 from typing import Any
 
 from .client import SecturaFabClient
-from .weld_ops import _desc_token, pick_weld_target_item
+from .weld_ops import _desc_token, is_assembly_item, pick_weld_target_item
 
 _ASSEMBLY_TYPE = 300
 
 
 def _is_assembly_type(item: dict[str, Any]) -> bool:
-    pt = item.get("ProductType")
-    return pt in (_ASSEMBLY_TYPE, "300", "assembly") or bool(item.get("IsAssembly"))
+    return is_assembly_item(item)
 
 
 def needs_assembly_structure(
@@ -59,6 +58,11 @@ def _attach_children(
 ) -> int:
     """Set AssemblyID / Level / Name / Qty on every non-root line. Returns count."""
     root_qty = max(1, int(assembly_qty or 1))
+    assembly_ids = {
+        str(it.get("ID") or "")
+        for it in items
+        if is_assembly_item(it) and it.get("ID")
+    }
     linked = 0
     for it in items:
         if it.get("ID") == assembly_id:
@@ -67,6 +71,14 @@ def _attach_children(
             it["AssemblyName"] = None
             it["AssemblyQty"] = 0
             it["isAssemblyItem"] = False
+            continue
+        existing_parent = str(it.get("AssemblyID") or "")
+        if (
+            existing_parent
+            and existing_parent in assembly_ids
+            and existing_parent != assembly_id
+        ):
+            # Nested weldment already owns this kid — do not flatten to root.
             continue
         qty = max(1, int(it.get("Quantity") or it.get("Qty") or 1))
         # Pieces per one assembly (Kyle: qty 20 with assembly 10 → AssemblyQty 2).
@@ -85,6 +97,7 @@ def ensure_assembly_root(
     quote_id: str,
     *,
     part_key: str | None,
+    description: str | None = None,
 ) -> list[str]:
     """
     Mark the top-level PN line as Assembly and attach all other lines under it.
@@ -119,10 +132,15 @@ def ensure_assembly_root(
     tid = str(target["ID"])
     prior_desc = str(target.get("Description") or "").strip()
 
-    # Rewrite root to match Kyle's assembly line — keep drawing title when present.
+    # Rewrite root to match Kyle's assembly line — ``{PN} - {weldment title}``.
+    from secturafab.item_desc import format_assembly_description, is_bare_part_number
+
     target["ProductType"] = _ASSEMBLY_TYPE
-    if prior_desc and prior_desc != key and len(prior_desc) >= 6:
-        target["Description"] = prior_desc[:500]
+    wanted = (description or "").strip()
+    if wanted and not is_bare_part_number(wanted, key):
+        target["Description"] = wanted[:500]
+    elif prior_desc and prior_desc != key and not is_bare_part_number(prior_desc, key):
+        target["Description"] = format_assembly_description(key, prior_desc)[:500]
     else:
         target["Description"] = key
     target["Machine"] = None
@@ -206,6 +224,63 @@ def relink_assembly_children(
     )
     if not linked:
         return []
+    from .browser_session import effective_website_cookie
+    from .website import SecturaFabWebsiteAuthError
+
+    cookie = effective_website_cookie(getattr(client, "config", None))
+    if cookie and hasattr(client, "copy_move_item_to_assembly"):
+        from .website import copy_move_from_page_fn
+
+        moved = 0
+        assembly_ids = {
+            str(it.get("ID") or "")
+            for it in items
+            if is_assembly_item(it) and it.get("ID")
+        }
+        for it in items:
+            cid = str(it.get("ID") or "")
+            if not cid or cid == tid:
+                continue
+            parent = str(it.get("AssemblyID") or "")
+            if parent and parent in assembly_ids and parent != tid:
+                # Nested weldment already owns this kid — do not flatten.
+                continue
+            try:
+                posted = client.copy_move_item_to_assembly(
+                    quote_id=quote_id,
+                    item_id=cid,
+                    assembly_id=tid,
+                    mode="Move",
+                )
+            except SecturaFabWebsiteAuthError as exc:
+                return [
+                    f"WARNING: Copy/Move into Assembly fail-closed ({exc})"
+                ]
+            except Exception as exc:  # noqa: BLE001
+                return [f"WARNING: Copy/Move into Assembly failed ({exc})"]
+            skipped = isinstance(posted, dict) and (
+                posted.get("via") == "skipped" or posted.get("ok") is False
+            )
+            if skipped and not copy_move_from_page_fn(posted):
+                return [
+                    "WARNING: Copy/Move into Assembly fail-closed "
+                    "(in-page page_fn required) — kids stay at quote root"
+                ]
+            moved += 1
+        check = client.get_json(f"v1/quote/{quote_id}")
+        ok = sum(
+            1
+            for it in (check.get("ItemList") or [])
+            if it.get("ID") != tid and it.get("AssemblyID") == tid
+        )
+        notes = [f"Copy/Move {moved} child item(s) into Assembly"]
+        if ok < moved:
+            notes.append(
+                f"WARNING: only {ok}/{moved} children retained AssemblyID — "
+                "flat root kids fail QA"
+            )
+        return notes
+
     detail["ItemList"] = items
     save = client.request("POST", "v1/quote", json=detail)
     if save.status_code >= 400:

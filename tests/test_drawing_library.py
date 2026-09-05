@@ -3,6 +3,13 @@ from pathlib import Path
 from quote_core.drawing_library import extract_part_key, find_drawings, library_roots_from_config
 
 
+def test_extract_part_key_keeps_letter_pn():
+    """Live P001545: Quote Number is P001545, not 001545 or the weldment title."""
+    assert extract_part_key("P001545.STEP") == "P001545"
+    assert extract_part_key("P001545 Rev B.STEP") == "P001545"
+    assert extract_part_key("POWER FRAME WELDMENT") is None
+
+
 def test_extract_part_key_from_pdf_names():
     assert extract_part_key("80341805.pdf") == "80341805"
     assert extract_part_key("73476047-FAB Packet.pdf") == "73476047"
