@@ -19,6 +19,61 @@ def org_empty_guid_is_fail(org_id: str | None) -> bool:
     return raw in ("", EMPTY_GUID)
 
 
+def time_waco_org_id_for_name(name: str | None) -> str | None:
+    """Known Time Waco ID only — do not search-guess (live 34603-2)."""
+    blob = str(name or "").casefold()
+    if "time" in blob and "waco" in blob:
+        return TIME_WACO_ORG_ID
+    return None
+
+
+def leftover_org_empty_guid_after_bind_post_201_is_fail(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """6d4373bc: org bind + POST 201 still PrimaryOrganizationID empty GUID.
+
+    Linear DoD (Saw + Saw-Setup / UC) can still PASS. Org header is separate.
+    Do not remint/PATCH 6d4373bc. Cad 3ac04f8a is a separate PASS.
+    """
+    if not isinstance(dump, dict):
+        return False
+    live = dump.get("live_6d4373bc") if isinstance(dump.get("live_6d4373bc"), dict) else {}
+    if not live:
+        return False
+    if live.get("linear_dod_pass") is not True:
+        return False
+    try:
+        if int(live.get("post_status") or 0) != 201:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if not org_empty_guid_is_fail(live.get("primary_organization_id")):
+        return False
+    if str(live.get("want_org_id") or "") != TIME_WACO_ORG_ID:
+        return False
+    return True
+
+
+def org_empty_guid_after_bind_post_is_fail(
+    got_id: str | None,
+    *,
+    post_status: int | None = None,
+) -> bool:
+    """True when persist returned 2xx and GET PrimaryOrganizationID is empty.
+
+    Live 6d4373bc POST 201. Older callers without a persist status pass through
+    only when got_id is already a real GUID.
+    """
+    if not org_empty_guid_is_fail(got_id):
+        return False
+    if post_status is None:
+        return True
+    try:
+        return 200 <= int(post_status) < 300
+    except (TypeError, ValueError):
+        return True
+
+
 def org_autocomplete_search_only_is_fail(result: dict[str, Any] | None) -> bool:
     """Time Waco autocomplete 0 hits is not a Quotes UI bind (live 34603-2)."""
     if not isinstance(result, dict):
@@ -245,11 +300,32 @@ def apply_quote_organization(
 
     check = client.get_json(f"v1/quote/{quote_id}")
     got = str(check.get("OrganizationName") or "").strip()
-    got_id = str(check.get("PrimaryOrganizationID") or "").strip()
-    if org_empty_guid_is_fail(got_id):
+    got_id = str(check.get("PrimaryOrganizationID") or check.get("OrganizationID") or "").strip()
+    if org_empty_guid_after_bind_post_is_fail(got_id, post_status=status):
+        slim = {
+            "ID": quote_id,
+            "PrimaryOrganizationID": org_id,
+            "OrganizationID": org_id,
+            "OrganizationName": actual_name,
+            "Organization": entry,
+            "OrganizationList": [entry],
+        }
+        retry = client.request("POST", "v1/quote", json=slim)
+        try:
+            status = int(getattr(retry, "status_code", status) or status)
+        except (TypeError, ValueError):
+            pass
+        check = client.get_json(f"v1/quote/{quote_id}")
+        got = str(check.get("OrganizationName") or "").strip()
+        got_id = str(
+            check.get("PrimaryOrganizationID") or check.get("OrganizationID") or ""
+        ).strip()
+    if org_empty_guid_after_bind_post_is_fail(got_id, post_status=status):
         notes.append(
             f"WARNING: PrimaryOrganizationID empty GUID ({got_id!r}) "
-            "— org bind FAIL (live 34603-2)"
+            f"after org bind/POST {status} (live 6d4373bc) — Time Waco "
+            f"{TIME_WACO_ORG_ID} did not stick on mint — Linear/Cad pack "
+            "is separate — org header FAIL"
         )
         return notes
     if got_id == org_id or (

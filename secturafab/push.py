@@ -1181,6 +1181,8 @@ class SecturaFabPushService:
         description: str = "",
         memo: str = "",
         quote_request_id: str | None = None,
+        organization_name: str | None = None,
+        organization_id: str | None = None,
     ) -> str:
         """
         Create a new SecturaFAB quote that displays as the bare part number only.
@@ -1202,6 +1204,16 @@ class SecturaFabPushService:
             payload["Memo"] = memo[:900]
         if quote_request_id:
             payload["QuoteRequestID"] = quote_request_id
+        from .org_ops import org_empty_guid_is_fail, time_waco_org_id_for_name
+
+        org_id = str(organization_id or "").strip()
+        if org_empty_guid_is_fail(org_id):
+            org_id = str(time_waco_org_id_for_name(organization_name) or "").strip()
+        if org_id and not org_empty_guid_is_fail(org_id):
+            # Live 6d4373bc: org bind + POST 201 left empty GUID. Stamp the
+            # known Time Waco ID on mint and rev-strip so it can stick.
+            payload["PrimaryOrganizationID"] = org_id
+            payload["OrganizationID"] = org_id
         response = self.client.request("POST", "v1/quote", json=payload)
         if response.status_code >= 400:
             raise SecturaFabApiError(
@@ -1222,6 +1234,9 @@ class SecturaFabPushService:
         }
         if description:
             strip_payload["Description"] = description[:500]
+        if org_id and not org_empty_guid_is_fail(org_id):
+            strip_payload["PrimaryOrganizationID"] = org_id
+            strip_payload["OrganizationID"] = org_id
         strip = self.client.request(
             "POST",
             "v1/quote",
@@ -5259,6 +5274,7 @@ class SecturaFabPushService:
                 description=quote_description or "",
                 memo="",
                 quote_request_id=quote_request_id,
+                organization_name=organization_name,
             )
             from .forbidden_quotes import is_forbidden_quote_id
 

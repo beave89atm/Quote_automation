@@ -5143,7 +5143,10 @@ _BIND_QUOTE_ORG_JS = """(function(spec) {
     } catch (e3) {}
   }
   try {
-    var $hid = jQuery("#PrimaryOrganizationID, input[name='PrimaryOrganizationID']");
+    var $hid = jQuery(
+      "#PrimaryOrganizationID, input[name='PrimaryOrganizationID'], "
+      + "#OrganizationID, input[name='OrganizationID']"
+    );
     if ($hid && $hid.length) $hid.val(orgId).trigger("change");
   } catch (e4) {}
   var landed = "";

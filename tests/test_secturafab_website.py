@@ -1967,6 +1967,8 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_id("2a83a96b-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("9ef2fedd-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("97ae3e4f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("3ac04f8a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("6d4373bc-1111-2222-3333-444444444444")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -9043,6 +9045,7 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
 
     assert "b7dbc294-3fd2-43aa-99be-268a6c4fce14" in _BIND_QUOTE_ORG_JS
     assert "PrimaryOrganizationID" in _BIND_QUOTE_ORG_JS
+    assert "OrganizationID" in _BIND_QUOTE_ORG_JS
     assert "w.search" not in _BIND_QUOTE_ORG_JS
     assert "autocomplete_hits" in _BIND_QUOTE_ORG_JS
     assert "search: false" in _BIND_QUOTE_ORG_JS

@@ -12,9 +12,12 @@ from secturafab.org_ops import (
     TIME_WACO_ORG_NAME,
     apply_quote_organization,
     find_organization_by_name,
+    leftover_org_empty_guid_after_bind_post_201_is_fail,
     org_autocomplete_search_only_is_fail,
+    org_empty_guid_after_bind_post_is_fail,
     org_empty_guid_is_fail,
     time_waco_org_entry,
+    time_waco_org_id_for_name,
 )
 from secturafab.website import EMPTY_GUID
 
@@ -231,4 +234,92 @@ def test_apply_time_waco_empty_guid_is_fail():
     blob = " ".join(notes)
     assert "empty GUID" in blob
     assert "FAIL" in blob
+    assert "6d4373bc" in blob
     assert "Set Organization:" not in blob
+    assert client.request.call_count == 2
+
+
+def test_time_waco_org_id_for_name_and_leftover_6d4373bc():
+    assert time_waco_org_id_for_name("Time Manufacturing Waco") == TIME_WACO_ORG_ID
+    assert time_waco_org_id_for_name("TIME WACO") == TIME_WACO_ORG_ID
+    assert time_waco_org_id_for_name("Propell") is None
+    assert org_empty_guid_after_bind_post_is_fail(EMPTY_GUID, post_status=201) is True
+    assert org_empty_guid_after_bind_post_is_fail(TIME_WACO_ORG_ID, post_status=201) is False
+    dump = {
+        "live_6d4373bc": {
+            "quote_id_prefix": "6d4373bc",
+            "quote_number": "21684-1",
+            "linear_dod_pass": True,
+            "post_status": 201,
+            "primary_organization_id": EMPTY_GUID,
+            "want_org_id": TIME_WACO_ORG_ID,
+            "machine": "Saw",
+            "product_type": 30,
+            "sku": "RTD4X0.375-A513",
+            "unit_cost": 9.52,
+        }
+    }
+    assert leftover_org_empty_guid_after_bind_post_201_is_fail(dump) is True
+    ok = dict(dump)
+    ok["live_6d4373bc"] = dict(dump["live_6d4373bc"])
+    ok["live_6d4373bc"]["primary_organization_id"] = TIME_WACO_ORG_ID
+    assert leftover_org_empty_guid_after_bind_post_201_is_fail(ok) is False
+    assert leftover_org_empty_guid_after_bind_post_201_is_fail(None) is False
+    assert leftover_org_empty_guid_after_bind_post_201_is_fail({"linear_dod_pass": True}) is False
+
+
+def test_apply_time_waco_retry_slim_post_sticks():
+    client = MagicMock()
+    n = {"i": 0}
+
+    def _get(path: str):
+        n["i"] += 1
+        if n["i"] < 3:
+            return {"ID": "qid", "ItemList": [], "PrimaryOrganizationID": EMPTY_GUID}
+        return {
+            "ID": "qid",
+            "OrganizationName": TIME_WACO_ORG_NAME,
+            "PrimaryOrganizationID": TIME_WACO_ORG_ID,
+        }
+
+    client.get_json.side_effect = _get
+    save = MagicMock()
+    save.status_code = 201
+    client.request.return_value = save
+
+    with patch("secturafab.chrome_cdp.chrome_edit_signed_in", return_value=False):
+        notes = apply_quote_organization(
+            client, "qid", organization_name="Time Manufacturing Waco"
+        )
+    assert any("Set Organization:" in n and TIME_WACO_ORG_ID in n for n in notes)
+    assert client.request.call_count == 2
+    slim = client.request.call_args_list[1].kwargs["json"]
+    assert slim["PrimaryOrganizationID"] == TIME_WACO_ORG_ID
+    assert slim["ID"] == "qid"
+    assert "ItemList" not in slim
+
+
+def test_create_quote_stamps_time_waco_on_mint_and_strip():
+    from secturafab.push import SecturaFabPushService
+
+    client = MagicMock()
+    minted = MagicMock()
+    minted.status_code = 201
+    minted.text = ""
+    strip = MagicMock()
+    strip.status_code = 200
+    strip.text = ""
+    client.request.side_effect = [minted, strip]
+    client._parse_or_raise.return_value = "new-qid"
+    notes = SecturaFabPushService(client=client).create_quote(
+        quote_number="21684-1",
+        description="TUBE, CYLINDER ANCHOR",
+        organization_name="Time Manufacturing Waco",
+    )
+    assert notes == "new-qid"
+    mint_body = client.request.call_args_list[0].kwargs["json"]
+    strip_body = client.request.call_args_list[1].kwargs["json"]
+    assert mint_body["PrimaryOrganizationID"] == TIME_WACO_ORG_ID
+    assert mint_body["OrganizationID"] == TIME_WACO_ORG_ID
+    assert strip_body["PrimaryOrganizationID"] == TIME_WACO_ORG_ID
+    assert strip_body["ID"] == "new-qid"
