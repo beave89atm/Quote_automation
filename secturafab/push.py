@@ -3585,6 +3585,8 @@ class SecturaFabPushService:
                 list0_pack_badge_empty_after_productid_hole_is_fail,
                 list0_pack_contours_zero_after_productid_hole_is_fail,
                 form_lw_unsynced_or_empty_perimeter_is_fail,
+                getpdfdata_empty_or_incomplete_before_finish_is_fail,
+                finish_empty_filelist_after_good_stamp_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
                 empty_weight_after_perimeter_is_fail,
@@ -3735,6 +3737,16 @@ class SecturaFabPushService:
                         "WARNING: FileList ProductID null after plate SKU bind "
                         "(live 34603-2) — do not Finish; do not invent a GUID"
                     )
+                elif getpdfdata_empty_or_incomplete_before_finish_is_fail(
+                    stamp_out if isinstance(stamp_out, dict) else None,
+                    stamp_rows,
+                ):
+                    notes.append(
+                        "WARNING: GetPDFData FileList n=0 after "
+                        "form_lw_synced=true + OP>0 (live 1ca884cc) — "
+                        "OnAddPDFClick posted empty FileList; do not Finish; "
+                        "do not invent Contours FileList keys"
+                    )
                 else:
                     if isinstance(stamp_out, dict):
                         via_pick = str(stamp_out.get("picker_via") or "")
@@ -3788,6 +3800,15 @@ class SecturaFabPushService:
                             notes.append(
                                 "getperim_internal_dim1_n="
                                 f"{stamp_out.get('getperim_internal_dim1_n')}"
+                            )
+                        if "getpdfdata_n" in stamp_out:
+                            notes.append(
+                                f"getpdfdata_n={stamp_out.get('getpdfdata_n')}"
+                            )
+                        if "getpdfdata_internal_dim1_n" in stamp_out:
+                            notes.append(
+                                "getpdfdata_internal_dim1_n="
+                                f"{stamp_out.get('getpdfdata_internal_dim1_n')}"
                             )
                         notes.append(
                             "pdfinternal_xhr="
@@ -3923,6 +3944,21 @@ class SecturaFabPushService:
                                 "then page PDFGetData onto InternalData — "
                                 "GetPDFData omits contours — pack is BadgeString "
                                 "PR + laser OCL — Image Files DoD FAIL"
+                            )
+                        if finish_empty_filelist_after_good_stamp_is_fail(
+                            result,
+                            stamp_out if isinstance(stamp_out, dict) else None,
+                        ):
+                            notes.append(
+                                "WARNING: OnAddPDFClick FileList n=0 after "
+                                "form_lw_synced=true + OP>0 (live 1ca884cc) — "
+                                "server never received GetPDFData ProductID/"
+                                "InternalData/OP — do not invent Contours "
+                                "FileList keys — Image Files DoD FAIL"
+                            )
+                        if "getpdfdata_n" in result:
+                            notes.append(
+                                f"finish_getpdfdata_n={result.get('getpdfdata_n')}"
                             )
                         if list0_pack_contours_zero_after_productid_hole_is_fail(
                             result,

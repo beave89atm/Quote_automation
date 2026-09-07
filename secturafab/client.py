@@ -1686,6 +1686,16 @@ class SecturaFabClient:
             "response_unit_weight_cost": response_unit_weight_cost,
             "response_number_of_contours": response_number_of_contours,
             "response_number_of_pierces": response_number_of_pierces,
+            "filelist_raw": str(result.get("filelist_raw") or ""),
+            "posted_keys": [str(k) for k in (result.get("posted_keys") or [])],
+            "getpdfdata_n": int(result.get("getpdfdata_n") or 0),
+            "getpdfdata_productid_n": int(result.get("getpdfdata_productid_n") or 0),
+            "getpdfdata_internal_dim1_n": int(
+                result.get("getpdfdata_internal_dim1_n") or 0
+            ),
+            "getpdfdata_outside_perimeter_n": int(
+                result.get("getpdfdata_outside_perimeter_n") or 0
+            ),
         }
 
     def stamp_pdf_kendo_flats(

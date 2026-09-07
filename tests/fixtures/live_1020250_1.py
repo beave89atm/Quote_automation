@@ -22,10 +22,12 @@ Do not Operation→Profile graft.
 
 5a231aa live 3e222215 (ZZ-DEL): getperim_internal_dim1_n=1 but
 form_lw_synced=false / outside_perimeter_n=0 / Weight~0.05
-(hole-only). Prior pre-5a231aa run had OP 69.5 / Weight 17.98
-and Contours still 0 — form L×W is necessary, not sufficient.
-Do not invent Contours FileList keys. Leave gold a7dc46bf /
-8bcc226b / 21678-1. No mint. No PATCH.
+(hole-only). fc94ca9 live 1ca884cc (ZZ-DEL, prior 111633b8):
+form_lw_synced=true (17.375×17.375) + OP 69.5 / Weight 17.98
+but OnAddPDFClick posted FileList n=0 (row0 null). Stamp
+dataSource n=1 Status=1 is not GetPDFData(). Do not invent
+Contours FileList keys. Leave gold a7dc46bf / 8bcc226b /
+21678-1. No mint. No PATCH.
 """
 
 from __future__ import annotations
@@ -105,6 +107,9 @@ def leftover_contours_zero_after_productid_hole_dump() -> dict[str, Any]:
             "7_nest_best_sheet": "falsified_nest_is_later",
             "8_form_lw_synced_false": (
                 QUOTE_ORDER_EDIT_UPW_INTERNAL["form_lw_synced_false_miss"]
+            ),
+            "9_finish_filelist_n0": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_filelist_n0_miss"]
             ),
         },
         "live_1020250_1": {
@@ -201,24 +206,29 @@ def leftover_form_lw_unsynced_stamp() -> dict[str, Any]:
     }
 
 
-def leftover_form_lw_unsynced_after_internal_dim1_dump() -> dict[str, Any]:
-    """5a231aa / 3e222215: Internal Dim1 UPW, form_lw_synced=false, OP=0."""
+def leftover_finish_filelist_n0_after_form_lw_dump() -> dict[str, Any]:
+    """fc94ca9 / 1ca884cc: form_lw_synced + OP>0, Finish FileList n=0."""
     return {
-        "quote_id": "3e222215-0000-4000-8000-000000000001",
+        "quote_id": "1ca884cc-0000-4000-8000-000000000001",
         "quote_number": SPENT_QUOTE_NUMBER,
         "readonly": True,
         "invent_contours_on_filelist": False,
         "operation_profile_graft": False,
         "UpdatePerimeterWeight": dict(QUOTE_ORDER_EDIT_UPW_INTERNAL),
-        "live_5a231aa": {
-            "quote_id_prefix": "3e222215",
-            "getperim_internal_n": 1,
+        "live_1ca884cc": {
+            "quote_id_prefix": "1ca884cc",
+            "form_lw_synced": True,
+            "form_length": 17.375,
+            "form_width": 17.375,
+            "outside_perimeter": OUTSIDE_PERIMETER,
+            "weight": WEIGHT,
+            "productid": FILELIST_PRODUCT_ID,
+            "hole_dim1": HOLE_DIM1,
             "getperim_internal_dim1_n": 1,
-            "form_lw_synced": False,
-            "outside_perimeter_n": 0,
-            "weight": 0.05,
-            "hole_dim1_via": "data-edit=dim1",
             "pdfinternal_html": True,
+            "finish_filelist_n": 0,
+            "filelist_raw": "[]",
+            "posted_keys": ["ID", "ItemID", "FileList_raw", "FileList"],
             "badge_string": "",
             "ocl_n": 0,
             "number_of_contours": 0,
@@ -226,22 +236,47 @@ def leftover_form_lw_unsynced_after_internal_dim1_dump() -> dict[str, Any]:
     }
 
 
-def leftover_form_lw_unsynced_stamp() -> dict[str, Any]:
-    """Stamp result that must skip Finish (form L×W miss)."""
+def leftover_finish_filelist_n0_stamp() -> dict[str, Any]:
+    """Stamp that looks good (form L×W + OP) but GetPDFData n=0."""
     return {
         "ok": True,
         "stamped": 1,
-        "outside_perimeter_n": 0,
+        "outside_perimeter_n": 1,
         "weight_n": 1,
         "productid_n": 1,
         "internaldata_n": 1,
-        "form_lw_synced": False,
-        "form_length": "",
-        "form_width": "",
+        "form_lw_synced": True,
+        "form_length": "17.375",
+        "form_width": "17.375",
         "getperim_internal_n": 1,
         "getperim_internal_dim1_n": 1,
         "pdfinternal_html": True,
         "pdfinternal_xhr": True,
         "hole_dim1_via": "data-edit=dim1",
         "getperimeter_xhr": True,
+        "getpdfdata_n": 0,
+        "getpdfdata_productid_n": 0,
+        "getpdfdata_internal_dim1_n": 0,
+        "getpdfdata_outside_perimeter_n": 0,
+    }
+
+
+def leftover_finish_filelist_n0_result() -> dict[str, Any]:
+    """OnAddPDFClick posted empty FileList after a good stamp."""
+    return {
+        "via": "skipped",
+        "finish_fn": "OnAddPDFClick",
+        "finish_why": "empty_getpdfdata",
+        "finish_filelist_n": 0,
+        "filelist_from_kendo": False,
+        "filelist_raw": "[]",
+        "posted_keys": ["ID", "ItemID", "FileList"],
+        "getpdfdata_n": 0,
+        "getpdfdata_productid_n": 0,
+        "getpdfdata_internal_dim1_n": 0,
+        "getpdfdata_outside_perimeter_n": 0,
+        "response_list_n": 0,
+        "response_badge_string": "",
+        "response_ocl_n": 0,
+        "response_number_of_contours": 0,
     }

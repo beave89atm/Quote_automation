@@ -1959,6 +1959,46 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert form_lw_unsynced_or_empty_perimeter_is_fail({"outside_perimeter_n": 1}) is False
     assert form_lw_unsynced_or_empty_perimeter_is_fail(None) is False
     assert is_forbidden_quote_id("3e222215-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("1ca884cc-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("111633b8-1111-2222-3333-444444444444")
+
+    from tests.fixtures.live_1020250_1 import (
+        leftover_finish_filelist_n0_after_form_lw_dump,
+        leftover_finish_filelist_n0_stamp,
+        leftover_finish_filelist_n0_result,
+    )
+    from secturafab.website import (
+        leftover_finish_filelist_n0_after_form_lw_is_fail,
+        getpdfdata_empty_or_incomplete_before_finish_is_fail,
+        finish_empty_filelist_after_good_stamp_is_fail,
+    )
+
+    fl0 = leftover_finish_filelist_n0_after_form_lw_dump()
+    assert leftover_finish_filelist_n0_after_form_lw_is_fail(fl0) is True
+    fl0_ok = dict(fl0)
+    fl0_ok["live_1ca884cc"] = dict(fl0["live_1ca884cc"])
+    fl0_ok["live_1ca884cc"]["finish_filelist_n"] = 1
+    assert leftover_finish_filelist_n0_after_form_lw_is_fail(fl0_ok) is False
+    stamp_empty = leftover_finish_filelist_n0_stamp()
+    assert getpdfdata_empty_or_incomplete_before_finish_is_fail(
+        stamp_empty, [{"HoleDiameter": HOLE_DIM1}]
+    ) is True
+    stamp_ready = dict(stamp_empty)
+    stamp_ready["getpdfdata_n"] = 1
+    stamp_ready["getpdfdata_productid_n"] = 1
+    stamp_ready["getpdfdata_outside_perimeter_n"] = 1
+    stamp_ready["getpdfdata_internal_dim1_n"] = 1
+    assert getpdfdata_empty_or_incomplete_before_finish_is_fail(
+        stamp_ready, [{"HoleDiameter": HOLE_DIM1}]
+    ) is False
+    assert getpdfdata_empty_or_incomplete_before_finish_is_fail(
+        {"outside_perimeter_n": 1, "form_lw_synced": True}
+    ) is False
+    fl0_result = leftover_finish_filelist_n0_result()
+    assert finish_empty_filelist_after_good_stamp_is_fail(
+        fl0_result, stamp_empty
+    ) is True
+    assert finish_empty_filelist_after_good_stamp_is_fail(None) is False
 
     leftover = leftover_contours_zero_after_productid_hole_result()
     assert list0_pack_badge_ocl_is_gold(leftover) is False
@@ -8548,7 +8588,7 @@ def test_add_item_pdf_files_posts_page_kendo_via_onaddpdfclick():
     assert "/Quote/AddItem_PDFFiles" in js
     assert "gridPDF" in js
     assert "Status>0" in js or "statusOf(r) > 0" in js
-    assert "opts.data.FileList = pageRows" in js
+    assert "d.FileList = pageRows" in js
     minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1898"
     real = SecturaFabClient.__new__(SecturaFabClient)
     real.config = MagicMock()
@@ -8649,6 +8689,15 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "onChange_GridPDF cannot win" in _STAMP_PDF_KENDO_JS
     assert "form_lw_synced=false" in _STAMP_PDF_KENDO_JS
     assert "3e222215" in _STAMP_PDF_KENDO_JS
+    assert "1ca884cc" in _STAMP_PDF_KENDO_JS
+    assert "ensureGetPdfDataReady" in _STAMP_PDF_KENDO_JS
+    assert "SetStatus" in _STAMP_PDF_KENDO_JS
+    assert "getpdfdata_n" in _STAMP_PDF_KENDO_JS
+    assert "empty_getpdfdata" in _PAGE_PDF_FINISH_JS
+    assert "ensureGetPdfDataReady" in _PAGE_PDF_FINISH_JS
+    assert "filelist_raw" in _PAGE_PDF_FINISH_JS
+    assert "n < 1" in _PAGE_PDF_FINISH_JS
+    assert "d.FileList_raw" not in _PAGE_PDF_FINISH_JS
     assert "fireOnInternalDataChange" in _STAMP_PDF_KENDO_JS
     assert "getperim_internal_dim1_n" in _STAMP_PDF_KENDO_JS
     assert "form_lw_synced" in _STAMP_PDF_KENDO_JS

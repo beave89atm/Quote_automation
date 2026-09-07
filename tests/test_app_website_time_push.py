@@ -3149,6 +3149,46 @@ def test_form_lw_unsynced_after_internal_dim1_skips_finish(tmp_path, monkeypatch
     assert "persisted" not in blob.lower()
 
 
+def test_finish_filelist_n0_after_form_lw_skips_finish(tmp_path, monkeypatch):
+    """GetPDFData n=0 after form_lw_synced + OP>0 — do not Finish (1ca884cc)."""
+    from tests.fixtures.live_1020250_1 import leftover_finish_filelist_n0_stamp
+    from tests.fixtures.live_sheets_plates import sheets_plates_page_payload
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "HOLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.get_json.return_value = sheets_plates_page_payload()
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = leftover_finish_filelist_n0_stamp()
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000102025",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE 1/2 HOLE",
+        bom_rows=[
+            {
+                "part_no": "HOLE-PLATE",
+                "qty": 1,
+                "description": "PLATE 1/2 HOLE",
+                "width_in": 4.0,
+                "length_in": 6.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "1ca884cc" in blob
+    assert "GetPDFData FileList n=0" in blob
+    assert "do not Finish" in blob
+    assert "persisted" not in blob.lower()
+
+
 def test_gold_weldment_shape_kids_under_assembly_weld_on_assembly_only():
     """Gold 1001898-1: kids under assembly, Weld on assembly, never Cad/Linear."""
     payload = gold_1001898_get()

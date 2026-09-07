@@ -182,8 +182,11 @@ BadgeString '' / OCL [] / UnitCost==UnitWeightCost. Named miss:
 UpdatePerimeterWeight posts Internal: PDFGetData() and reads
 #length/#width form fields; onInternalDataChange then
 UpdatePerimeterWeight(true, false). Last geometry XHR must include
-filled Dim1 Internal. NumberOfContours is 0 hits in QuoteOrderEdit
-— do not invent those FileList keys. Nest is later. No graft.
+filled Dim1 Internal. fc94ca9 1ca884cc: form_lw_synced=true +
+OP 69.5 still Finish FileList n=0 — GetPDFData tbody Status>0
+must be n≥1 before OnAddPDFClick. NumberOfContours is 0 hits
+in QuoteOrderEdit — do not invent those FileList keys. Nest
+is later. No graft.
 Do not PATCH. Do not remint. Gold look remains 1001898-1 a7dc46bf.
 Live 10098-1 (315cb19 leftover PIVOTING FOOT, 6a568912): posted FileList
 had FileType=Cad (string) plus CadType/Stock_*/SID/FileID/ID/ErrorStatus/
@@ -1881,6 +1884,7 @@ QUOTE_ORDER_EDIT_UPW_INTERNAL: dict[str, Any] = {
     "nest_is_later": True,
     "named_miss": "upw_internal_dim1_and_form_lw",
     "form_lw_synced_false_miss": "form_lw_synced_false_after_internal_dim1_upw",
+    "finish_filelist_n0_miss": "finish_filelist_n0_after_form_lw_synced_and_op",
     "invent_contours_on_filelist": False,
 }
 
@@ -3414,6 +3418,10 @@ def leftover_1020250_1_hypotheses_named(dump: dict[str, Any] | None) -> bool:
         "form_lw_synced_false_miss"
     ):
         return False
+    if hyps.get("9_finish_filelist_n0") != QUOTE_ORDER_EDIT_UPW_INTERNAL.get(
+        "finish_filelist_n0_miss"
+    ):
+        return False
     return True
 
 
@@ -3463,6 +3471,126 @@ def form_lw_unsynced_or_empty_perimeter_is_fail(
     except (TypeError, ValueError):
         return True
     return False
+
+
+def getpdfdata_empty_or_incomplete_before_finish_is_fail(
+    stamp_out: dict[str, Any] | None,
+    stamp_rows: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Do not Finish when GetPDFData n=0 after a good stamp.
+
+    Live 1ca884cc: form_lw_synced=true + OP 69.5 + ProductID + Dim1
+    but OnAddPDFClick posted FileList n=0. Older stamps without
+    getpdfdata_n still Finish. Hole rows also require Internal Dim1
+    + ProductID + OP on the GetPDFData bag. Do not invent Contours.
+    """
+    if not isinstance(stamp_out, dict):
+        return False
+    if "getpdfdata_n" not in stamp_out:
+        return False
+    try:
+        n = int(stamp_out.get("getpdfdata_n") or 0)
+    except (TypeError, ValueError):
+        return True
+    if n < 1:
+        return True
+    try:
+        if int(stamp_out.get("getpdfdata_productid_n") or 0) < 1:
+            return True
+        if int(stamp_out.get("getpdfdata_outside_perimeter_n") or 0) <= 0:
+            return True
+    except (TypeError, ValueError):
+        return True
+    hole = False
+    if isinstance(stamp_out, dict):
+        try:
+            if int(stamp_out.get("internaldata_n") or 0) >= 1:
+                hole = True
+        except (TypeError, ValueError):
+            hole = False
+        try:
+            if float(stamp_out.get("hole_dim1") or 0) > 0:
+                hole = True
+        except (TypeError, ValueError):
+            pass
+    for row in stamp_rows or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            if float(row.get("HoleDiameter") or 0) > 0:
+                hole = True
+                break
+        except (TypeError, ValueError):
+            continue
+    if hole:
+        try:
+            if int(stamp_out.get("getpdfdata_internal_dim1_n") or 0) < 1:
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
+def leftover_finish_filelist_n0_after_form_lw_is_fail(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """1ca884cc: form_lw_synced=true + OP>0 but Finish FileList n=0."""
+    if not isinstance(dump, dict):
+        return False
+    live = dump.get("live_1ca884cc") if isinstance(dump.get("live_1ca884cc"), dict) else {}
+    if not live:
+        return False
+    if live.get("form_lw_synced") is not True:
+        return False
+    try:
+        if float(live.get("outside_perimeter") or 0) <= 0:
+            return False
+        if "finish_filelist_n" not in live:
+            return False
+        if int(live.get("finish_filelist_n")) != 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if dump.get("invent_contours_on_filelist") is not False:
+        return False
+    if dump.get("operation_profile_graft") is not False:
+        return False
+    return True
+
+
+def finish_empty_filelist_after_good_stamp_is_fail(
+    result: dict[str, Any] | None,
+    stamp_out: dict[str, Any] | None = None,
+) -> bool:
+    """OnAddPDFClick FileList n=0 after form_lw_synced + OP>0.
+
+    Live 1ca884cc. HTTP 200 + ItemList=1 empty pack is not success.
+    """
+    if not isinstance(result, dict):
+        return False
+    if "finish_filelist_n" not in result and "getpdfdata_n" not in result:
+        return False
+    try:
+        posted = int(result.get("finish_filelist_n") or 0)
+    except (TypeError, ValueError):
+        posted = 0
+    try:
+        getn = int(result.get("getpdfdata_n") or 0)
+    except (TypeError, ValueError):
+        getn = 0
+    if posted >= 1 and getn >= 1:
+        return False
+    if str(result.get("finish_why") or "") == "empty_getpdfdata":
+        return True
+    if not isinstance(stamp_out, dict):
+        return posted < 1 or getn < 1
+    if stamp_out.get("form_lw_synced") is True:
+        try:
+            if int(stamp_out.get("outside_perimeter_n") or 0) > 0:
+                return posted < 1 or getn < 1
+        except (TypeError, ValueError):
+            return True
+    return posted < 1 or getn < 1
 
 
 def list0_pack_contours_zero_after_productid_hole_is_fail(
