@@ -4051,13 +4051,12 @@ class SecturaFabPushService:
                             stamp_rows,
                         ):
                             notes.append(
-                                "WARNING: OnAddPDFClick plate ProductID + "
-                                "OutsideArea/TrueWeight still MaterialCost "
-                                "empty (live 2a83a96b) — GetPDFData copies "
-                                "catalog $/lb from the selected plate row; "
-                                "do not invent MaterialCost — Nest is later "
-                                "— do not invent Contours FileList keys — "
-                                "Image Files DoD FAIL"
+                                "WARNING: FileList MaterialCost empty after "
+                                "plate ProductID (live 2a83a96b / 9ef2fedd) "
+                                "— Kyle allows default Material $/lb; catalog "
+                                "PL7 Ga-A572 has no rate; do not invent $/lb; "
+                                "do not abort Finish; empty MaterialCost is "
+                                "not the Contours miss — Nest is later"
                             )
                         if finish_empty_filelist_after_good_stamp_is_fail(
                             result,

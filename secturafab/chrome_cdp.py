@@ -2554,8 +2554,10 @@ _PAGE_PDF_FINISH_JS = """(function() {
   }
   function cadPlateNeedsMaterialCost(row) {
     // Live 2a83a96b: plate ProductID + OutsideArea + TrueWeight still
-    // posted MaterialCost "". GetPDFData copies catalog $/lb from the
-    // selected plate row. Do not invent a rate.
+    // posted MaterialCost "". Live 9ef2fedd: empty_materialcost abort
+    // blocked OnAddPDFClick. Kyle allows default Material $/lb.
+    // Catalog PL7 Ga-A572 has no MaterialCost / CostPerPound.
+    // Empty MaterialCost is not the Contours miss. Do not invent a rate.
     var itemType = typeTok(row && (row.ItemType != null ? row.ItemType : row.itemType));
     var pid = row && (row.ProductID != null ? row.ProductID : row.productID);
     var hasPid = pid != null && String(pid).trim() && String(pid).toLowerCase() !== "null";
@@ -2601,9 +2603,11 @@ _PAGE_PDF_FINISH_JS = """(function() {
     // GetPDFData copies OutsideArea/TrueWeight/Description/MaterialCost
     // from dataItem. Live c751780e: JSON dropped undefined OutsideArea;
     // TrueWeight 0; Description null. Live 2a83a96b: OutsideArea+
-    // TrueWeight present, MaterialCost "". UPW writes OP/Weight only.
+    // TrueWeight present, MaterialCost "". Live 9ef2fedd: aborting
+    // Finish on empty MaterialCost blocked Contours investigation.
+    // Kyle allows default Material $/lb. Catalog PL7 Ga-A572 has no
+    // rate. Copy catalog/page MaterialCost only — do not invent a $/lb.
     // Nest is later. Do not invent Contours FileList keys.
-    // Do not invent a $/lb — copy catalog/page MaterialCost only.
     if (!r) return false;
     var L = parseFloat(r.Length), W = parseFloat(r.Width);
     var area = parseFloat(r.OutsideArea);
@@ -3050,13 +3054,14 @@ _PAGE_PDF_FINISH_JS = """(function() {
           filelist_productsubtype: first.ProductSubType != null ? first.ProductSubType : "",
           filelist_itemtype: first.ItemType != null ? first.ItemType : "",
           filelist_materialcost: first.MaterialCost != null ? first.MaterialCost : "",
+          filelist_materialcost_empty: emptyMc,
           posted_keys: Object.keys(d),
           getpdfdata_n: pageRows.length,
           getpdfdata_productid_n: snapGetPdfRow(pageRows).getpdfdata_productid_n,
           getpdfdata_internal_dim1_n: snapGetPdfRow(pageRows).getpdfdata_internal_dim1_n,
           getpdfdata_outside_perimeter_n: snapGetPdfRow(pageRows).getpdfdata_outside_perimeter_n,
           request_keys: Object.keys(d),
-          filelist_from_kendo: fromKendo && !emptyInternal && !barType && !emptyMc,
+          filelist_from_kendo: fromKendo && !emptyInternal && !barType,
           filelist_row_keys: n > 0 ? rowKeys(first) : [],
           filelist_bag: n > 0 ? bagSnap(first) : {},
           kendo_row_keys: krows.length ? rowKeys(krows[0]) : [],
@@ -3064,8 +3069,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
           finish_why: n < 1 ? "empty_getpdfdata"
             : (emptyInternal ? "empty_internaldata"
               : (barType ? "bar_producttype"
-                : (emptyMc ? "empty_materialcost"
-                  : (fromKendo ? "" : "filelist_not_kendo")))),
+                : (fromKendo ? "" : "filelist_not_kendo"))),
           grid_id: gridId,
           response_list_n: 0,
           response_tag: "",
@@ -3078,7 +3082,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
           response_number_of_contours: 0,
           response_number_of_pierces: 0
         };
-        if (n < 1 || emptyInternal || barType || emptyMc) {
+        if (n < 1 || emptyInternal || barType) {
           jQuery.ajax = orig;
           cap.status = 0;
           cap.via = "skipped";
@@ -4251,8 +4255,9 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
   function writeGetPdfShapeFields(r, s) {
     // Live c751780e: GetPDFData-shaped row missing OutsideArea;
     // TrueWeight 0; Description null. Live 2a83a96b: those present,
-    // MaterialCost "". Copy L×W area + Weight + catalog $/lb.
-    // Do not invent a MaterialCost rate.
+    // MaterialCost "". Live 9ef2fedd: empty_materialcost abort blocked
+    // Finish. Kyle allows default Material $/lb. Catalog PL7 Ga-A572
+    // has no rate. Copy catalog $/lb only — do not invent.
     if (!r) return false;
     var L = parseFloat(r.Length), W = parseFloat(r.Width);
     var area = parseFloat(r.OutsideArea);

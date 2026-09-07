@@ -37,10 +37,14 @@ c751780e (ZZ-DEL): ProductType/SubType prt_pdf + hole Dim1
 (undefined), TrueWeight 0, Description null. 4f68c9d live
 2a83a96b (ZZ-DEL): OutsideArea 301.890625 + TrueWeight
 17.9794 + Description 1020250-1 + prt_pdf, still posted
-MaterialCost "" / Contours=0. GetPDFData copies MaterialCost
-from the dataItem; page plate-select copies catalog $/lb.
-Do not invent a rate. OnAddPDFClick AddRow n.List — Nest is
-later. Do not invent Contours keys.
+MaterialCost "" / Contours=0. 1b0dd01 live 9ef2fedd (ZZ-DEL):
+empty_materialcost abort skipped OnAddPDFClick. Catalog
+PL7 Ga-A572 has no MaterialCost / CostPerPound. Kyle allows
+default Material $/lb. Empty MaterialCost is not the Contours
+miss — prior Finish already returned List[0] UC==UWC 7.37
+with MaterialCost "". Do not invent a rate. Do not abort
+Finish. OnAddPDFClick AddRow n.List — Nest is later.
+Do not invent Contours keys.
 Leave gold a7dc46bf / 8bcc226b / 21678-1. No mint. No PATCH.
 """
 
@@ -136,6 +140,9 @@ def leftover_contours_zero_after_productid_hole_dump() -> dict[str, Any]:
             ),
             "13_finish_materialcost_empty": (
                 QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_materialcost_empty_miss"]
+            ),
+            "14_finish_materialcost_abort_blocked": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_materialcost_abort_blocked_miss"]
             ),
         },
         "live_1020250_1": {
@@ -343,6 +350,9 @@ def leftover_finish_internaldata_null_dump() -> dict[str, Any]:
             "13_finish_materialcost_empty": (
                 QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_materialcost_empty_miss"]
             ),
+            "14_finish_materialcost_abort_blocked": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_materialcost_abort_blocked_miss"]
+            ),
         },
         "live_6150c5c7": {
             "quote_id_prefix": "6150c5c7",
@@ -428,6 +438,9 @@ def leftover_finish_producttype_bar_dump() -> dict[str, Any]:
             ),
             "13_finish_materialcost_empty": (
                 QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_materialcost_empty_miss"]
+            ),
+            "14_finish_materialcost_abort_blocked": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_materialcost_abort_blocked_miss"]
             ),
         },
         "live_bab8f668": {
@@ -528,6 +541,9 @@ def leftover_finish_prt_pdf_still_contours_zero_dump() -> dict[str, Any]:
             ),
             "13_finish_materialcost_empty": (
                 QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_materialcost_empty_miss"]
+            ),
+            "14_finish_materialcost_abort_blocked": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_materialcost_abort_blocked_miss"]
             ),
         },
         "live_c751780e": {
@@ -640,6 +656,9 @@ def leftover_finish_materialcost_empty_after_plate_dump() -> dict[str, Any]:
             "13_finish_materialcost_empty": (
                 QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_materialcost_empty_miss"]
             ),
+            "14_finish_materialcost_abort_blocked": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_materialcost_abort_blocked_miss"]
+            ),
         },
         "live_2a83a96b": {
             "quote_id_prefix": "2a83a96b",
@@ -681,6 +700,130 @@ def leftover_finish_materialcost_empty_after_plate_result() -> dict[str, Any]:
     bag["Description"] = SPENT_QUOTE_NUMBER
     bag["MaterialCost"] = ""
     return {
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "finish_why": "",
+        "finish_filelist_n": 1,
+        "filelist_from_kendo": True,
+        "filelist_internaldata": bag["InternalData"],
+        "filelist_internaldata_dim1_n": 1,
+        "filelist_producttype": "prt_pdf",
+        "filelist_productsubtype": "prt_pdf",
+        "filelist_itemtype": "cad",
+        "filelist_materialcost": "",
+        "filelist_materialcost_empty": True,
+        "getpdfdata_n": 1,
+        "getpdfdata_productid_n": 1,
+        "getpdfdata_internal_dim1_n": 1,
+        "getpdfdata_outside_perimeter_n": 1,
+        "filelist_bag": bag,
+        "response_list_n": 1,
+        "response_badge_string": "",
+        "response_ocl_n": 0,
+        "response_unit_cost": UNIT_COST,
+        "response_unit_weight_cost": UNIT_WEIGHT_COST,
+        "response_number_of_contours": 0,
+    }
+
+
+def leftover_empty_materialcost_abort_blocked_dump() -> dict[str, Any]:
+    """1b0dd01 / 9ef2fedd: empty_materialcost abort skipped OnAddPDFClick."""
+    bag = dict(FILELIST_BAG)
+    bag["InternalData"] = (
+        '[{"Type":"hole","Dim1":5.375,"Dim2":0,"Qty":1,"Qty2":0,"Note":""}]'
+    )
+    bag["ProductType"] = "prt_pdf"
+    bag["ProductSubType"] = "prt_pdf"
+    bag["ItemType"] = "cad"
+    bag["OutsideArea"] = OUTSIDE_AREA
+    bag["OutsideArea_Units"] = "inch"
+    bag["TrueWeight"] = TRUE_WEIGHT
+    bag["Weight"] = TRUE_WEIGHT
+    bag["Description"] = SPENT_QUOTE_NUMBER
+    bag["MaterialCost"] = ""
+    return {
+        "quote_id": "9ef2fedd-0000-4000-8000-000000000001",
+        "quote_number": SPENT_QUOTE_NUMBER,
+        "readonly": True,
+        "invent_contours_on_filelist": False,
+        "operation_profile_graft": False,
+        "nest_best_sheet": False,
+        "UpdatePerimeterWeight": dict(QUOTE_ORDER_EDIT_UPW_INTERNAL),
+        "filelist_bag": bag,
+        "hypotheses": {
+            "6_upw_internal_dim1_form_lw": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["named_miss"]
+            ),
+            "7_nest_best_sheet": "falsified_nest_is_later",
+            "8_form_lw_synced_false": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["form_lw_synced_false_miss"]
+            ),
+            "9_finish_filelist_n0": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_filelist_n0_miss"]
+            ),
+            "10_finish_internaldata_null": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_internaldata_null_miss"]
+            ),
+            "11_finish_producttype_bar": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_producttype_bar_miss"]
+            ),
+            "12_finish_prt_pdf_still_contours_zero": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_prt_pdf_still_contours_zero_miss"]
+            ),
+            "13_finish_materialcost_empty": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_materialcost_empty_miss"]
+            ),
+            "14_finish_materialcost_abort_blocked": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_materialcost_abort_blocked_miss"]
+            ),
+        },
+        "live_9ef2fedd": {
+            "quote_id_prefix": "9ef2fedd",
+            "form_lw_synced": True,
+            "outside_perimeter": OUTSIDE_PERIMETER,
+            "weight": TRUE_WEIGHT,
+            "productid": FILELIST_PRODUCT_ID,
+            "sku": SKU,
+            "hole_dim1": HOLE_DIM1,
+            "getpdfdata_n": 1,
+            "getpdfdata_productid_n": 1,
+            "getpdfdata_internal_dim1_n": 1,
+            "getpdfdata_outside_perimeter_n": 1,
+            "finish_filelist_n": 1,
+            "filelist_internaldata_dim1_n": 1,
+            "filelist_producttype": "prt_pdf",
+            "filelist_productsubtype": "prt_pdf",
+            "outsidearea": OUTSIDE_AREA,
+            "outsidearea_units": "inch",
+            "trueweight": TRUE_WEIGHT,
+            "materialcost": "",
+            "kannon_plate_materialcost": None,
+            "catalog_materialcost": None,
+            "via": "skipped",
+            "finish_why": "empty_materialcost",
+            "description": SPENT_QUOTE_NUMBER,
+            "badge_string": "",
+            "ocl_n": 0,
+            "number_of_contours": 0,
+        },
+    }
+
+
+def leftover_empty_materialcost_abort_blocked_result() -> dict[str, Any]:
+    """1b0dd01 skipped OnAddPDFClick for empty MaterialCost — wrong abort."""
+    bag = dict(FILELIST_BAG)
+    bag["InternalData"] = (
+        '[{"Type":"hole","Dim1":5.375,"Dim2":0,"Qty":1,"Qty2":0,"Note":""}]'
+    )
+    bag["ProductType"] = "prt_pdf"
+    bag["ProductSubType"] = "prt_pdf"
+    bag["ItemType"] = "cad"
+    bag["OutsideArea"] = OUTSIDE_AREA
+    bag["OutsideArea_Units"] = "inch"
+    bag["TrueWeight"] = TRUE_WEIGHT
+    bag["Description"] = SPENT_QUOTE_NUMBER
+    bag["MaterialCost"] = ""
+    return {
         "via": "skipped",
         "finish_fn": "OnAddPDFClick",
         "finish_why": "empty_materialcost",
@@ -692,6 +835,7 @@ def leftover_finish_materialcost_empty_after_plate_result() -> dict[str, Any]:
         "filelist_productsubtype": "prt_pdf",
         "filelist_itemtype": "cad",
         "filelist_materialcost": "",
+        "filelist_materialcost_empty": True,
         "getpdfdata_n": 1,
         "getpdfdata_productid_n": 1,
         "getpdfdata_internal_dim1_n": 1,

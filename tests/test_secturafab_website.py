@@ -1965,6 +1965,7 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_id("bab8f668-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("c751780e-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("2a83a96b-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("9ef2fedd-1111-2222-3333-444444444444")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -2125,12 +2126,16 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_materialcost_empty_after_plate_dump,
         leftover_finish_materialcost_empty_after_plate_result,
+        leftover_empty_materialcost_abort_blocked_dump,
+        leftover_empty_materialcost_abort_blocked_result,
         OUTSIDE_AREA,
         TRUE_WEIGHT,
     )
     from secturafab.website import (
         leftover_finish_materialcost_empty_after_plate_is_fail,
+        leftover_empty_materialcost_abort_blocked_finish_is_fail,
         finish_empty_materialcost_after_plate_is_fail,
+        finish_empty_materialcost_must_not_skip,
         filelist_material_cost_empty,
         catalog_material_cost_value,
     )
@@ -2165,8 +2170,23 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
         stamp_id,
         [{"HoleDiameter": HOLE_DIM1, "ProductID": FILELIST_PRODUCT_ID, "ItemType": "cad"}],
     ) is True
+    assert finish_empty_materialcost_must_not_skip(mc_result) is False
     assert finish_empty_materialcost_after_plate_is_fail(fl0_result) is False
     assert finish_empty_materialcost_after_plate_is_fail(None) is False
+    abort = leftover_empty_materialcost_abort_blocked_dump()
+    assert leftover_1020250_1_hypotheses_named(abort) is True
+    assert leftover_empty_materialcost_abort_blocked_finish_is_fail(abort) is True
+    assert leftover_empty_materialcost_abort_blocked_finish_is_fail(None) is False
+    assert leftover_empty_materialcost_abort_blocked_finish_is_fail(mc) is False
+    abort_ok = dict(abort)
+    abort_ok["live_9ef2fedd"] = dict(abort["live_9ef2fedd"])
+    abort_ok["live_9ef2fedd"]["finish_why"] = ""
+    abort_ok["live_9ef2fedd"]["via"] = "page_fn"
+    assert leftover_empty_materialcost_abort_blocked_finish_is_fail(abort_ok) is False
+    abort_result = leftover_empty_materialcost_abort_blocked_result()
+    assert finish_empty_materialcost_must_not_skip(abort_result) is True
+    assert abort_result["via"] == "skipped"
+    assert abort_result["finish_why"] == "empty_materialcost"
 
     leftover = leftover_contours_zero_after_productid_hole_result()
     assert list0_pack_badge_ocl_is_gold(leftover) is False
@@ -8888,12 +8908,17 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "readFormMaterialCost" in _STAMP_PDF_KENDO_JS
     assert "empty_materialcost" in _PAGE_PDF_FINISH_JS
     assert "filelist_materialcost" in _PAGE_PDF_FINISH_JS
+    assert "filelist_materialcost_empty" in _PAGE_PDF_FINISH_JS
     assert "2a83a96b" in _PAGE_PDF_FINISH_JS
     assert "2a83a96b" in _STAMP_PDF_KENDO_JS
+    assert "9ef2fedd" in _PAGE_PDF_FINISH_JS
+    assert "9ef2fedd" in _STAMP_PDF_KENDO_JS
     assert "__kannonPlateMaterialCost" in _STAMP_PDF_KENDO_JS
-    assert "Do not invent a $/lb" in _PAGE_PDF_FINISH_JS
+    assert "do not invent a $/lb" in _PAGE_PDF_FINISH_JS
     assert "cadPlateNeedsMaterialCost" in _PAGE_PDF_FINISH_JS
     assert "OutsideArea_Units" in _PAGE_PDF_FINISH_JS
+    assert "|| emptyMc" not in _PAGE_PDF_FINISH_JS
+    assert 'emptyMc ? "empty_materialcost"' not in _PAGE_PDF_FINISH_JS
     assert "ensureGetPdfDataReady" in _PAGE_PDF_FINISH_JS
     assert "filelist_raw" in _PAGE_PDF_FINISH_JS
     assert "n < 1" in _PAGE_PDF_FINISH_JS

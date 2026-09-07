@@ -1895,7 +1895,10 @@ QUOTE_ORDER_EDIT_UPW_INTERNAL: dict[str, Any] = {
         "finish_prt_pdf_still_contours_zero_after_internaldata_dim1_and_op"
     ),
     "finish_materialcost_empty_miss": (
-        "finish_materialcost_empty_after_plate_productid_outsidearea_trueweight"
+        "falsified_empty_materialcost_not_contours_miss"
+    ),
+    "finish_materialcost_abort_blocked_miss": (
+        "empty_materialcost_abort_blocked_finish_catalog_has_no_rate"
     ),
     "invent_contours_on_filelist": False,
 }
@@ -3465,6 +3468,10 @@ def leftover_1020250_1_hypotheses_named(dump: dict[str, Any] | None) -> bool:
         "finish_materialcost_empty_miss"
     ):
         return False
+    if hyps.get("14_finish_materialcost_abort_blocked") != QUOTE_ORDER_EDIT_UPW_INTERNAL.get(
+        "finish_materialcost_abort_blocked_miss"
+    ):
+        return False
     return True
 
 
@@ -3953,7 +3960,10 @@ def finish_prt_pdf_still_contours_zero_is_fail(
 def leftover_finish_materialcost_empty_after_plate_is_fail(
     dump: dict[str, Any] | None,
 ) -> bool:
-    """2a83a96b: OutsideArea+TrueWeight+prt_pdf, MaterialCost empty, Contours=0."""
+    """2a83a96b: OutsideArea+TrueWeight+prt_pdf, MaterialCost empty, Contours=0.
+
+    Empty MaterialCost is not the Contours miss. Kyle allows default $/lb.
+    """
     if not isinstance(dump, dict):
         return False
     live = dump.get("live_2a83a96b") if isinstance(dump.get("live_2a83a96b"), dict) else {}
@@ -3994,16 +4004,69 @@ def leftover_finish_materialcost_empty_after_plate_is_fail(
     return True
 
 
+def leftover_empty_materialcost_abort_blocked_finish_is_fail(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """9ef2fedd: empty_materialcost abort skipped OnAddPDFClick.
+
+    Catalog PL7 Ga-A572 has no $/lb. Kyle allows default Material $/lb.
+    Aborting Finish blocked Contours investigation. Soft WARNING only.
+    """
+    if not isinstance(dump, dict):
+        return False
+    live = dump.get("live_9ef2fedd") if isinstance(dump.get("live_9ef2fedd"), dict) else {}
+    if not live:
+        return False
+    if str(live.get("finish_why") or "") != "empty_materialcost":
+        return False
+    if str(live.get("via") or "") != "skipped":
+        return False
+    try:
+        if int(live.get("getpdfdata_n") or 0) < 1:
+            return False
+        if int(live.get("finish_filelist_n") or 0) < 1:
+            return False
+        if float(live.get("outsidearea") or 0) <= 0:
+            return False
+        if float(live.get("trueweight") or 0) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if live.get("productid") in (None, "", "null"):
+        return False
+    if dump.get("invent_contours_on_filelist") is not False:
+        return False
+    if dump.get("operation_profile_graft") is not False:
+        return False
+    if dump.get("nest_best_sheet") is not False:
+        return False
+    return True
+
+
+def finish_empty_materialcost_must_not_skip(
+    result: dict[str, Any] | None,
+) -> bool:
+    """True when Finish was skipped solely for empty MaterialCost.
+
+    Live 9ef2fedd. Soft WARNING only — do not abort OnAddPDFClick.
+    """
+    if not isinstance(result, dict):
+        return False
+    return str(result.get("finish_why") or "") == "empty_materialcost"
+
+
 def finish_empty_materialcost_after_plate_is_fail(
     result: dict[str, Any] | None,
     stamp_out: dict[str, Any] | None = None,
     stamp_rows: list[dict[str, Any]] | None = None,
 ) -> bool:
-    """Cad + plate ProductID posted with empty/0 MaterialCost is FAIL.
+    """Soft WARNING: Cad + plate ProductID with empty/0 MaterialCost.
 
-    Live 2a83a96b. GetPDFData copies MaterialCost; page product-select
-    fills it from the catalog row. Older mocks without MaterialCost
-    still pass through. Do not invent a $/lb. Do not invent Contours.
+    Live 2a83a96b posted MaterialCost "" and AddItem still returned
+    List[0] UC==UWC / Contours=0. Live 9ef2fedd abort blocked Finish.
+    Kyle allows default Material $/lb. Catalog PL7 Ga-A572 has no rate.
+    Do not invent a $/lb. Do not skip OnAddPDFClick.
+    Older mocks without MaterialCost still pass through.
     """
     if not isinstance(result, dict):
         return False
