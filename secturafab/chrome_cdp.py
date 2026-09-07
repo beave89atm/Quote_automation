@@ -5210,14 +5210,15 @@ def bind_quote_organization(
     }
 
 
-# QuoteOrderEdit Long: orange Long → SKU picker → length → OnAddLinearClick.
-# Cookie HTTP POST /Quote/AddItem_Linear 302s (leftover class 29340-1).
-# Do not enter holes. Internal stays empty. ItemID empty for new rows.
+# QuoteOrderEdit Long mint (live 6d4373bc / d2ec4357): AddNewItemHTML('bar')
+# / #but_bar → LinearProduct + LinearConfigList 20ft → OnAddLinearClick.
+# Do NOT AddNewItemHTML('linear'). Cookie HTTP AddItem_Linear 302s
+# (leftover class 29340-1). No holes. Internal empty. ItemID empty.
 _OPEN_LONG_JS = """(function() {
   function linearForm() {
     var ids = [
       "#length", "#Length", "input[name=length]", "#qty", "#Qty",
-      "#name", "#Name", "#productID", "#Product"
+      "#name", "#Name", "#productID", "#Product", "#LinearProduct"
     ];
     for (var i = 0; i < ids.length; i++) {
       try {
@@ -5229,15 +5230,18 @@ _OPEN_LONG_JS = """(function() {
   var via = "";
   try {
     if (typeof window.AddNewItemHTML === "function") {
-      window.AddNewItemHTML("linear", "top");
-      via = "AddNewItemHTML";
+      try { window.AddNewItemHTML("bar"); via = "AddNewItemHTML(bar)"; }
+      catch (eBar) {
+        try { window.AddNewItemHTML("bar", "top"); via = "AddNewItemHTML(bar)"; }
+        catch (eBar2) {}
+      }
     }
   } catch (e) {}
   if (!via) {
     try {
-      if (window.jQuery && jQuery("#but_linear").length) {
-        jQuery("#but_linear").click();
-        via = "#but_linear";
+      if (window.jQuery && jQuery("#but_bar").length) {
+        jQuery("#but_bar").click();
+        via = "#but_bar";
       }
     } catch (e2) {}
   }
@@ -5258,11 +5262,10 @@ _OPEN_LONG_JS = """(function() {
         var t = String(nodes[i].textContent || nodes[i].value || "").toLowerCase();
         var id = String(nodes[i].id || "").toLowerCase();
         if (t.indexOf("image files") >= 0 || t.indexOf("cad files") >= 0) continue;
-        if (t.trim() === "long" || t.indexOf("long") === 0
-            || id.indexOf("but_linear") >= 0 || id.indexOf("but_long") >= 0
-            || (t.indexOf("linear") >= 0 && t.indexOf("new") >= 0)) {
+        if (t.trim() === "long" || t.trim() === "bar" || t.indexOf("long") === 0
+            || id.indexOf("but_bar") >= 0 || id.indexOf("but_long") >= 0) {
           nodes[i].click();
-          via = "long";
+          via = id.indexOf("but_bar") >= 0 ? "#but_bar" : "long";
           break;
         }
       }
@@ -5331,8 +5334,8 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
   }
   function findLinearProductWidget() {
     var ids = [
-      "#Product", "#productID", "#product", "#linearProduct",
-      "#SelectProductLinear", "#gridSelectProductLinear"
+      "#LinearProduct", "#linearProduct", "#Product", "#productID",
+      "#product", "#SelectProductLinear", "#gridSelectProductLinear"
     ];
     for (var i = 0; i < ids.length; i++) {
       try {
@@ -5418,12 +5421,69 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
     }
     return Promise.resolve("");
   }
+  function findLinearConfigWidget() {
+    var ids = [
+      "#LinearConfigList", "#linearConfigList", "#productConfigID",
+      "#ProductConfig", "select[name='LinearConfigList']",
+      "select[name='productConfigID']"
+    ];
+    for (var i = 0; i < ids.length; i++) {
+      try {
+        var el = $(ids[i]);
+        if (!el || !el.length) continue;
+        var w = el.data("kendoComboBox") || el.data("kendoDropDownList")
+          || el.data("kendoAutoComplete");
+        return {el: el, widget: w, via: ids[i]};
+      } catch (e) {}
+    }
+    return null;
+  }
+  function rowLooks20ft(it) {
+    var blob = (itemSku(it) + " " + String((it && (it.Text || it.Name)) || "")).toLowerCase();
+    return blob.indexOf("20 ft") >= 0 || blob.indexOf("20ft") >= 0 || blob.indexOf("20-ft") >= 0;
+  }
+  function pickLinearConfig20ft(wantId) {
+    lastConfigVia = "";
+    lastConfigValue = "";
+    var hit = findLinearConfigWidget();
+    if (!hit) return "";
+    lastConfigVia = hit.via;
+    var w = hit.widget;
+    var data = [];
+    try { data = (w && w.dataSource && w.dataSource.data && w.dataSource.data()) || []; } catch (e) {}
+    var want = String(wantId || "").toLowerCase();
+    var best = null;
+    for (var i = 0; i < data.length; i++) {
+      var val = itemValue(data[i]);
+      if (want && val && val.toLowerCase() === want) { best = data[i]; break; }
+    }
+    if (!best) {
+      for (var j = 0; j < data.length; j++) {
+        if (rowLooks20ft(data[j])) { best = data[j]; break; }
+      }
+    }
+    var picked = best ? (itemValue(best) || itemSku(best)) : (wantId || "");
+    if (!picked) return "";
+    try {
+      if (w && typeof w.value === "function") {
+        w.value(picked);
+        if (typeof w.trigger === "function") w.trigger("change");
+      } else if (hit.el && hit.el.val) {
+        hit.el.val(picked).trigger("change");
+      }
+    } catch (e2) {}
+    lastConfigValue = picked;
+    return picked;
+  }
   var lastPicker = "";
   var lastPickerSku = "";
   var lastApply = "";
+  var lastConfigVia = "";
+  var lastConfigValue = "";
   var sku = String((spec && spec.sku) || "").trim();
   var name = String((spec && spec.name) || "").trim();
   var productType = String((spec && spec.productType) || "").trim();
+  var productConfigID = String((spec && spec.productConfigID) || "").trim();
   var length = spec && spec.length;
   var qty = spec && spec.qty;
   if (qty == null || qty === "") qty = 1;
@@ -5451,6 +5511,7 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
     "00000000-0000-0000-0000-000000000000"
   );
   return pickLinearSku(sku).then(function(picked) {
+    var cfg = pickLinearConfig20ft(productConfigID);
     return {
       ok: !!(lengthSet || nameSet || picked || lastPicker),
       long_clicked: true,
@@ -5459,6 +5520,8 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
       picker_sku: lastPickerSku || sku,
       picker_apply: lastApply,
       picker_value: picked || "",
+      config_via: lastConfigVia,
+      config_value: cfg || lastConfigValue,
       length_set: !!lengthSet,
       qty_set: !!qtySet,
       name_set: !!nameSet,
@@ -5838,6 +5901,7 @@ def stamp_linear_form(
                 "length": row.get("length"),
                 "qty": row.get("qty") if row.get("qty") not in (None, "") else 1,
                 "productType": str(row.get("productType") or "").strip(),
+                "productConfigID": str(row.get("productConfigID") or "").strip(),
                 "opened_via": opened_via,
             },
             separators=(",", ":"),
@@ -5861,6 +5925,8 @@ def stamp_linear_form(
         "picker_sku": str(value.get("picker_sku") or ""),
         "picker_apply": str(value.get("picker_apply") or ""),
         "picker_value": str(value.get("picker_value") or ""),
+        "config_via": str(value.get("config_via") or ""),
+        "config_value": str(value.get("config_value") or ""),
         "length_set": bool(value.get("length_set")),
         "qty_set": bool(value.get("qty_set")),
         "name_set": bool(value.get("name_set")),

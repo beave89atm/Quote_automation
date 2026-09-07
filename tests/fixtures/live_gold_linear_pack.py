@@ -4,11 +4,13 @@ Gold look remains 1001898-1 a7dc46bf linear rows (readonly). Do not GET
 that quote from this agent. Do not PATCH. Do not remint.
 
 Leftover cookie HTTP POST /Quote/AddItem_Linear 302s (same class as
-29340-1) and lands empty Saw OperationCostList. Gold is page orange
-Long → tenant SKU picker → cut length → OnAddLinearClick / New Line
-Item. List[0] already has Saw + Saw-Setup in Primary Costs, UnitCost
-filled, ProductID/SKU set. Internal is empty. ItemID is empty for new
-rows. Do not graft Operation→Saw. Do not enter holes on Long.
+29340-1) and lands empty Saw OperationCostList. Gold Long mint
+(live 6d4373bc / d2ec4357) is AddNewItemHTML('bar') / #but_bar →
+LinearProduct + LinearConfigList 20ft → cut length → OnAddLinearClick.
+Do NOT AddNewItemHTML('linear'). List[0] already has Saw + Saw-Setup
+in Primary Costs, UnitCost filled, ProductID/SKU set. Internal is
+empty. ItemID is empty for new rows. Do not graft Operation→Saw.
+Do not enter holes on Long.
 
 Kyle Loom Long: Product Type auto Tube, search RCT, Name = PN + SKU,
 length decimal inches, qty 1, Machine already Saw. Saw 0:19 and Saw
@@ -72,12 +74,24 @@ GOLD_LINEAR_PACK_BIND: dict[str, Any] = {
     "leftover_miss": dict(LEFTOVER_MISS),
     "list0_pack": dict(GOLD_LIST0_PACK),
     "OnAddLinearClick": {
-        "after": ("orange Long", "tenant SKU picker", "cut length"),
+        "after": (
+            "AddNewItemHTML('bar') / #but_bar",
+            "LinearProduct",
+            "LinearConfigList 20ft",
+            "cut length",
+        ),
+        "not": "AddNewItemHTML('linear')",
         "xhr": "POST /Quote/AddItem_Linear",
         "via": "page_fn",
         "internal": "",
         "itemid": "00000000-0000-0000-0000-000000000000",
         "cookie_http_fail_closed": True,
+    },
+    "Long": {
+        "open": "AddNewItemHTML('bar') / #but_bar",
+        "not": "AddNewItemHTML('linear')",
+        "then": ("LinearProduct", "LinearConfigList 20ft", "OnAddLinearClick"),
+        "live_pass": ("6d4373bc", "d2ec4357"),
     },
 }
 

@@ -1819,6 +1819,7 @@ class SecturaFabClient:
                 "length": length,
                 "qty": qty,
                 "productType": str(extra.get("productType") or "").strip(),
+                "productConfigID": str(extra.get("productConfigID") or "").strip(),
             },
         )
         if long_without_page_click_is_fail(

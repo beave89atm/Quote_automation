@@ -1131,6 +1131,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("97ae3e4f-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("3ac04f8a-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("6d4373bc-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("d2ec4357-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
     assert is_forbidden_quote_id("bd5c2e3e-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d2f7b031-1111-2222-3333-444444444444")

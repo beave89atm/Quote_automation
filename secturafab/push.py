@@ -4308,6 +4308,7 @@ class SecturaFabPushService:
             cookie_http_additem_linear_is_not_success,
             list0_pack_empty_saw_ocl_is_fail,
             list0_pack_saw_ocl_is_gold,
+            long_opened_via_addnewitemhtml_linear_is_fail,
             long_without_page_click_is_fail,
         )
 
@@ -4364,6 +4365,15 @@ class SecturaFabPushService:
                 "AddItem_Linear fail-closed (live 29340-1)"
             )
             return notes
+        if long_opened_via_addnewitemhtml_linear_is_fail(
+            result if isinstance(result, dict) else None
+        ):
+            notes.append(
+                "WARNING: Long opened via AddNewItemHTML('linear') / "
+                "#but_linear (live 6d4373bc / d2ec4357) — gold mint is "
+                "AddNewItemHTML('bar') / #but_bar + LinearProduct + "
+                "LinearConfigList 20ft — Linear pack is separate"
+            )
         if isinstance(result, dict) and list0_pack_empty_saw_ocl_is_fail(result):
             notes.append(
                 "WARNING: AddItem_Linear List[0] empty Saw OCL — "
@@ -4593,6 +4603,7 @@ class SecturaFabPushService:
             cookie_http_additem_linear_is_not_success,
             list0_pack_empty_saw_ocl_is_fail,
             list0_pack_saw_ocl_is_gold,
+            long_opened_via_addnewitemhtml_linear_is_fail,
             long_without_page_click_is_fail,
         )
 
@@ -4711,6 +4722,15 @@ class SecturaFabPushService:
                     "(live 29340-1 302 leftover) — fail-closed"
                 )
                 continue
+            if long_opened_via_addnewitemhtml_linear_is_fail(
+                result if isinstance(result, dict) else None
+            ):
+                notes.append(
+                    f"WARNING: Long opened via AddNewItemHTML('linear') / "
+                    f"#but_linear {pn} (live 6d4373bc / d2ec4357) — gold mint "
+                    "is AddNewItemHTML('bar') / #but_bar + LinearProduct + "
+                    "LinearConfigList 20ft — Linear pack is separate"
+                )
             if isinstance(result, dict) and list0_pack_empty_saw_ocl_is_fail(result):
                 notes.append(
                     f"WARNING: AddItem_Linear List[0] empty Saw OCL {pn} — "

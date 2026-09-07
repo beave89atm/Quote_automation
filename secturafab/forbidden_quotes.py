@@ -111,6 +111,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "97ae3e4f",  # 1020250-1 c213d42 Finish 200 List[0] Data=None ErrorCount=1 / Contours=0 — ZZ-DEL
         "3ac04f8a",  # 1020250-1 PR18 3bacf2a Cad Image Files PASS — do not remint / PATCH
         "6d4373bc",  # 21684-1 PR18 3bacf2a Long/Saw PASS; PrimaryOrganizationID empty GUID after POST 201 — do not remint / PATCH
+        "d2ec4357",  # 1007922-3 OUTRIGGER nest+packs PASS (Cad 10099-1 PR + Linear RT2 1/4X0.5-A519 + Copy/Move) — do not remint / PATCH
         "b1036d7d",  # 33819-2 spent plate_sku_missing — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
         "95b8c186",  # 1007922-3 — do not open / PATCH / remint

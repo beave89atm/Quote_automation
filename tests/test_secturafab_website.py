@@ -1969,6 +1969,7 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_id("97ae3e4f-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("3ac04f8a-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("6d4373bc-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("d2ec4357-1111-2222-3333-444444444444")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -2280,6 +2281,9 @@ def test_gold_linear_pack_is_saw_and_list0_pack():
     assert dump["gold_linear"]["internal"] == ""
     assert dump["OnAddLinearClick"]["via"] == "page_fn"
     assert dump["OnAddLinearClick"]["cookie_http_fail_closed"] is True
+    assert dump["OnAddLinearClick"]["not"] == "AddNewItemHTML('linear')"
+    assert dump["Long"]["open"] == "AddNewItemHTML('bar') / #but_bar"
+    assert dump["Long"]["not"] == "AddNewItemHTML('linear')"
     gold = gold_linear_list0_pack_result()
     assert list0_pack_saw_ocl_is_gold(gold) is True
     assert list0_pack_empty_saw_ocl_is_fail(gold) is False
@@ -2306,6 +2310,25 @@ def test_gold_linear_pack_is_saw_and_list0_pack():
     assert long_without_page_click_is_fail(
         {"long_clicked": True, "opened_via": "AddNewItemHTML"}
     ) is False
+    assert long_without_page_click_is_fail(
+        {"long_clicked": False, "opened_via": "#but_bar"}
+    ) is False
+    from secturafab.website import long_opened_via_addnewitemhtml_linear_is_fail
+
+    assert long_opened_via_addnewitemhtml_linear_is_fail(
+        {"opened_via": 'AddNewItemHTML("linear")'}
+    ) is True
+    assert long_opened_via_addnewitemhtml_linear_is_fail(
+        {"opened_via": "#but_linear"}
+    ) is True
+    assert long_opened_via_addnewitemhtml_linear_is_fail(
+        {"opened_via": "AddNewItemHTML(bar)"}
+    ) is False
+    assert long_opened_via_addnewitemhtml_linear_is_fail(
+        {"opened_via": "#but_bar"}
+    ) is False
+    assert long_opened_via_addnewitemhtml_linear_is_fail(None) is False
+    assert long_opened_via_addnewitemhtml_linear_is_fail({"long_clicked": True}) is False
     cheap = dict(gold)
     cheap["response_unit_cost"] = 0
     assert list0_pack_saw_ocl_is_gold(cheap) is False
@@ -9097,8 +9120,12 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     )
 
     assert "AddNewItemHTML" in _OPEN_LONG_JS
-    assert '"linear"' in _OPEN_LONG_JS
-    assert "but_linear" in _OPEN_LONG_JS
+    assert 'AddNewItemHTML("bar")' in _OPEN_LONG_JS
+    assert 'AddNewItemHTML("linear"' not in _OPEN_LONG_JS
+    assert "#but_bar" in _OPEN_LONG_JS
+    assert "LinearProduct" in _STAMP_LINEAR_FORM_JS
+    assert "LinearConfigList" in _STAMP_LINEAR_FORM_JS
+    assert "20 ft" in _STAMP_LINEAR_FORM_JS
     assert "long" in _OPEN_LONG_JS
     assert "image files" in _OPEN_LONG_JS
     assert "OnAddLinearClick" in _PAGE_LINEAR_FINISH_JS

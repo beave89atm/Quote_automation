@@ -241,11 +241,13 @@ SetUnits sends one query key `units`. Do not Finish the raw STEP row.
       not an XHR). Reconstructed FileList is fail-closed
       even if GET>0 (live 1001898-5 491f6387).
   POST /Quote/AddItem_Linear     page OnAddLinearClick / New Line Item
-      after orange Long → tenant SKU picker → cut length. Cookie
-      HTTP AddItem_Linear 302 is fail-closed (same leftover class
-      as 29340-1). List[0] already has Saw + Saw-Setup in Primary
-      Costs. Internal stays empty (no holes on Long). ItemID empty
-      for new rows. Do not graft Operation→Saw.
+      after AddNewItemHTML('bar') / #but_bar → LinearProduct +
+      LinearConfigList 20ft → cut length. Do NOT AddNewItemHTML('linear')
+      (live 6d4373bc / d2ec4357). Cookie HTTP AddItem_Linear 302 is
+      fail-closed (same leftover class as 29340-1). List[0] already
+      has Saw + Saw-Setup in Primary Costs. Internal stays empty
+      (no holes on Long). ItemID empty for new rows. Do not graft
+      Operation→Saw.
   GET  /Product/Read_DataLinearlookup?ProductID=  (20ft/21ft productConfigID)
   GET  v1/product/plate  (Products → Sheets & Plates; live 1341 names.
       Bind FileList ProductID from local thickness+grade match.
@@ -2940,9 +2942,35 @@ def long_without_page_click_is_fail(stamp_out: dict[str, Any] | None) -> bool:
     via = str(
         stamp_out.get("opened_via") or stamp_out.get("long_via") or ""
     ).casefold()
-    if "long" in via or "addnewitemhtml" in via or "linear" in via:
+    compact = via.replace(" ", "")
+    if (
+        "long" in via
+        or "but_bar" in via
+        or "addnewitemhtml(bar)" in compact
+        or "addnewitemhtml" in via
+    ):
         return False
     return True
+
+
+def long_opened_via_addnewitemhtml_linear_is_fail(
+    stamp_out: dict[str, Any] | None,
+) -> bool:
+    """AddNewItemHTML('linear') / #but_linear is not the gold Long mint.
+
+    Live 6d4373bc / d2ec4357: bar / #but_bar + LinearProduct +
+    LinearConfigList 20ft + OnAddLinearClick. Older mocks without
+    opened_via pass through.
+    """
+    if not isinstance(stamp_out, dict):
+        return False
+    if "opened_via" not in stamp_out and "long_via" not in stamp_out:
+        return False
+    via = str(stamp_out.get("opened_via") or stamp_out.get("long_via") or "")
+    compact = via.replace(" ", "").lower()
+    if 'addnewitemhtml("linear"' in compact or "addnewitemhtml('linear'" in compact:
+        return True
+    return via in {"#but_linear", "linear"}
 
 
 def leftover_cookie_linear_empty_saw_is_fail(
