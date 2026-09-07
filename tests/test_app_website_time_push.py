@@ -3615,7 +3615,7 @@ def test_cad_pick_prefers_hole_with_tenant_productid(tmp_path):
             },
             {
                 "part_no": "A36HOLE",
-                "description": "3/16 A36 1/2 HOLE",
+                "description": "PLATE 1/2 HOLE",
                 "thickness_in": 0.1875,
             },
         ],
