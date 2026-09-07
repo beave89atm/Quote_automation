@@ -1894,6 +1894,9 @@ QUOTE_ORDER_EDIT_UPW_INTERNAL: dict[str, Any] = {
     "finish_prt_pdf_still_contours_zero_miss": (
         "finish_prt_pdf_still_contours_zero_after_internaldata_dim1_and_op"
     ),
+    "finish_materialcost_empty_miss": (
+        "finish_materialcost_empty_after_plate_productid_outsidearea_trueweight"
+    ),
     "invent_contours_on_filelist": False,
 }
 
@@ -2449,6 +2452,7 @@ GETPDFDATA_BAG_COMPARE_KEYS = (
     "OutsideArea",
     "TrueWeight",
     "MaterialCost",
+    "MaterialCost_Units",
     "Description",
 )
 
@@ -3429,7 +3433,7 @@ def leftover_contours_zero_after_productid_hole_is_fail(
 
 
 def leftover_1020250_1_hypotheses_named(dump: dict[str, Any] | None) -> bool:
-    """1020250-1 capture names UPW Internal Dim1 + Nest-later + form L×W."""
+    """1020250-1 capture names UPW Internal Dim1 + Nest-later + form L×W + MaterialCost."""
     if not isinstance(dump, dict):
         return False
     hyps = dump.get("hypotheses") if isinstance(dump.get("hypotheses"), dict) else {}
@@ -3455,6 +3459,10 @@ def leftover_1020250_1_hypotheses_named(dump: dict[str, Any] | None) -> bool:
         return False
     if hyps.get("12_finish_prt_pdf_still_contours_zero") != QUOTE_ORDER_EDIT_UPW_INTERNAL.get(
         "finish_prt_pdf_still_contours_zero_miss"
+    ):
+        return False
+    if hyps.get("13_finish_materialcost_empty") != QUOTE_ORDER_EDIT_UPW_INTERNAL.get(
+        "finish_materialcost_empty_miss"
     ):
         return False
     return True
@@ -3841,6 +3849,36 @@ def cad_plate_filelist_bar_producttype_is_fail(
     return False
 
 
+def filelist_material_cost_empty(value: Any) -> bool:
+    """True when FileList MaterialCost is missing, blank, or 0.
+
+    GetPDFData copies MaterialCost from the #gridPDF dataItem. Gold GET
+    Cad (1001898-1) persists a catalog $/lb. Do not invent that rate.
+    """
+    if value is None or value == "":
+        return True
+    try:
+        return float(value) <= 0
+    except (TypeError, ValueError):
+        return not str(value).strip()
+
+
+def catalog_material_cost_value(row: dict[str, Any] | None) -> Any:
+    """Copy-only catalog $/lb. Do not invent a rate (gold GET 0.55).
+
+    QuoteOrderEdit product-select copies MaterialCost onto the grid row.
+    Prefer MaterialCost; accept CostPerPound / CostPerLb. Do not take
+    generic Cost (sheet price, not necessarily $/lb).
+    """
+    if not isinstance(row, dict):
+        return None
+    for key in ("MaterialCost", "materialCost", "CostPerPound", "CostPerLb"):
+        val = row.get(key)
+        if not filelist_material_cost_empty(val):
+            return val
+    return None
+
+
 def leftover_finish_prt_pdf_still_contours_zero_is_fail(
     dump: dict[str, Any] | None,
 ) -> bool:
@@ -3910,6 +3948,100 @@ def finish_prt_pdf_still_contours_zero_is_fail(
     if contours >= 1 and badge == "PR":
         return False
     return contours < 1 or badge == ""
+
+
+def leftover_finish_materialcost_empty_after_plate_is_fail(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """2a83a96b: OutsideArea+TrueWeight+prt_pdf, MaterialCost empty, Contours=0."""
+    if not isinstance(dump, dict):
+        return False
+    live = dump.get("live_2a83a96b") if isinstance(dump.get("live_2a83a96b"), dict) else {}
+    if not live:
+        return False
+    try:
+        if int(live.get("getpdfdata_n") or 0) < 1:
+            return False
+        if int(live.get("getpdfdata_internal_dim1_n") or 0) < 1:
+            return False
+        if int(live.get("finish_filelist_n") or 0) < 1:
+            return False
+        if int(live.get("number_of_contours") or 0) != 0:
+            return False
+        if float(live.get("outsidearea") or 0) <= 0:
+            return False
+        if float(live.get("trueweight") or 0) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if live.get("productid") in (None, "", "null"):
+        return False
+    pt = str(live.get("filelist_producttype") or "").strip().lower()
+    if pt != CAD_IMAGE_FILES_PLATE_PRODUCT_TYPE:
+        return False
+    bag = dump.get("filelist_bag") if isinstance(dump.get("filelist_bag"), dict) else {}
+    mc = live.get("materialcost")
+    if mc is None:
+        mc = bag.get("MaterialCost")
+    if not filelist_material_cost_empty(mc):
+        return False
+    if dump.get("invent_contours_on_filelist") is not False:
+        return False
+    if dump.get("operation_profile_graft") is not False:
+        return False
+    if dump.get("nest_best_sheet") is not False:
+        return False
+    return True
+
+
+def finish_empty_materialcost_after_plate_is_fail(
+    result: dict[str, Any] | None,
+    stamp_out: dict[str, Any] | None = None,
+    stamp_rows: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Cad + plate ProductID posted with empty/0 MaterialCost is FAIL.
+
+    Live 2a83a96b. GetPDFData copies MaterialCost; page product-select
+    fills it from the catalog row. Older mocks without MaterialCost
+    still pass through. Do not invent a $/lb. Do not invent Contours.
+    """
+    if not isinstance(result, dict):
+        return False
+    bag = result.get("filelist_bag") if isinstance(result.get("filelist_bag"), dict) else {}
+    has_cap = (
+        "filelist_materialcost" in result
+        or "MaterialCost" in bag
+        or str(result.get("finish_why") or "") == "empty_materialcost"
+    )
+    if not has_cap:
+        return False
+    if str(result.get("finish_why") or "") == "empty_materialcost":
+        return True
+    pid = bag.get("ProductID")
+    stamp_pid = 0
+    if isinstance(stamp_out, dict):
+        try:
+            stamp_pid = int(stamp_out.get("productid_n") or 0)
+        except (TypeError, ValueError):
+            stamp_pid = 0
+    row_pid = False
+    item_cad = False
+    for row in stamp_rows or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("ProductID") or "").strip():
+            row_pid = True
+        if str(row.get("ItemType") or "").strip().lower() == "cad":
+            item_cad = True
+    if pid in (None, "", "null") and stamp_pid < 1 and not row_pid:
+        return False
+    item = str(bag.get("ItemType") or result.get("filelist_itemtype") or "").lower()
+    if item and item != "cad" and not item_cad:
+        return False
+    mc = result.get("filelist_materialcost")
+    if mc is None:
+        mc = bag.get("MaterialCost")
+    return filelist_material_cost_empty(mc)
 
 
 def list0_pack_contours_zero_after_productid_hole_is_fail(

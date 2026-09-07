@@ -2546,11 +2546,64 @@ _PAGE_PDF_FINISH_JS = """(function() {
     if (!isPlateOrSheetType(pt) && !isPlateOrSheetType(pst)) return true;
     return false;
   }
-  function writeGetPdfShapeFields(r) {
-    // GetPDFData copies OutsideArea/TrueWeight/Description from dataItem.
-    // Live c751780e: JSON dropped undefined OutsideArea; TrueWeight 0;
-    // Description null. UPW writes OP/Weight only. Nest is later.
-    // Do not invent Contours FileList keys. Do not invent MaterialCost.
+  function materialCostEmpty(row) {
+    var v = row && (row.MaterialCost != null ? row.MaterialCost : row.materialCost);
+    if (v == null || v === "") return true;
+    var n = parseFloat(v);
+    return !(isFinite(n) && n > 0);
+  }
+  function cadPlateNeedsMaterialCost(row) {
+    // Live 2a83a96b: plate ProductID + OutsideArea + TrueWeight still
+    // posted MaterialCost "". GetPDFData copies catalog $/lb from the
+    // selected plate row. Do not invent a rate.
+    var itemType = typeTok(row && (row.ItemType != null ? row.ItemType : row.itemType));
+    var pid = row && (row.ProductID != null ? row.ProductID : row.productID);
+    var hasPid = pid != null && String(pid).trim() && String(pid).toLowerCase() !== "null";
+    if (itemType && itemType !== "cad") return false;
+    return !!(hasPid && materialCostEmpty(row));
+  }
+  function writeCatalogMaterialCost(r, s) {
+    if (!r) return false;
+    if (!materialCostEmpty(r)) return true;
+    var src = null;
+    if (s && !materialCostEmpty(s)) src = s.MaterialCost != null ? s.MaterialCost : s.materialCost;
+    if (src == null) {
+      var mem = window.__kannonPlateMaterialCost;
+      var mn = parseFloat(mem);
+      if (isFinite(mn) && mn > 0) src = mem;
+    }
+    if (src == null) return false;
+    if (typeof r.set === "function") r.set("MaterialCost", src);
+    else r.MaterialCost = src;
+    var units = "";
+    if (s && s.MaterialCost_Units) units = String(s.MaterialCost_Units);
+    else if (window.__kannonPlateMaterialCostUnits) {
+      units = String(window.__kannonPlateMaterialCostUnits);
+    }
+    if (units) {
+      if (typeof r.set === "function") r.set("MaterialCost_Units", units);
+      else r.MaterialCost_Units = units;
+    }
+    return true;
+  }
+  function writeOutsideAreaUnits(r) {
+    var area = parseFloat(r && r.OutsideArea);
+    if (!(area > 0)) return false;
+    var have = r.OutsideArea_Units;
+    if (have != null && String(have).trim()) return true;
+    var units = r.Length_Units || r.Width_Units || "";
+    if (!units) return false;
+    if (typeof r.set === "function") r.set("OutsideArea_Units", units);
+    else r.OutsideArea_Units = units;
+    return true;
+  }
+  function writeGetPdfShapeFields(r, s) {
+    // GetPDFData copies OutsideArea/TrueWeight/Description/MaterialCost
+    // from dataItem. Live c751780e: JSON dropped undefined OutsideArea;
+    // TrueWeight 0; Description null. Live 2a83a96b: OutsideArea+
+    // TrueWeight present, MaterialCost "". UPW writes OP/Weight only.
+    // Nest is later. Do not invent Contours FileList keys.
+    // Do not invent a $/lb — copy catalog/page MaterialCost only.
     if (!r) return false;
     var L = parseFloat(r.Length), W = parseFloat(r.Width);
     var area = parseFloat(r.OutsideArea);
@@ -2571,6 +2624,8 @@ _PAGE_PDF_FINISH_JS = """(function() {
         else r.Description = desc;
       }
     }
+    writeCatalogMaterialCost(r, s);
+    writeOutsideAreaUnits(r);
     return true;
   }
   function ensureGetPdfDataReady() {
@@ -2698,7 +2753,8 @@ _PAGE_PDF_FINISH_JS = """(function() {
     "OutsidePerimeter", "OutsidePerimeter_UseLocal", "NumberOfHeads",
     "WeightBorder", "Material", "Thickness", "Length", "Width",
     "InternalData", "ProductType", "ProductSubType", "ItemType",
-    "OutsideArea", "TrueWeight", "MaterialCost", "Description"
+    "OutsideArea", "OutsideArea_Units", "TrueWeight", "MaterialCost",
+    "MaterialCost_Units", "Description"
   ];
   function bagSnap(row) {
     var o = {};
@@ -2984,6 +3040,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
           || preSnap.getpdfdata_internal_dim1_n > 0;
         var emptyInternal = holeNeeded && idataDim1 < 1;
         var barType = n > 0 && cadPlateBarProductType(first);
+        var emptyMc = n > 0 && cadPlateNeedsMaterialCost(first);
         var cap = {
           finish_filelist_n: n,
           filelist_raw: filelistRaw,
@@ -2992,13 +3049,14 @@ _PAGE_PDF_FINISH_JS = """(function() {
           filelist_producttype: first.ProductType != null ? first.ProductType : "",
           filelist_productsubtype: first.ProductSubType != null ? first.ProductSubType : "",
           filelist_itemtype: first.ItemType != null ? first.ItemType : "",
+          filelist_materialcost: first.MaterialCost != null ? first.MaterialCost : "",
           posted_keys: Object.keys(d),
           getpdfdata_n: pageRows.length,
           getpdfdata_productid_n: snapGetPdfRow(pageRows).getpdfdata_productid_n,
           getpdfdata_internal_dim1_n: snapGetPdfRow(pageRows).getpdfdata_internal_dim1_n,
           getpdfdata_outside_perimeter_n: snapGetPdfRow(pageRows).getpdfdata_outside_perimeter_n,
           request_keys: Object.keys(d),
-          filelist_from_kendo: fromKendo && !emptyInternal && !barType,
+          filelist_from_kendo: fromKendo && !emptyInternal && !barType && !emptyMc,
           filelist_row_keys: n > 0 ? rowKeys(first) : [],
           filelist_bag: n > 0 ? bagSnap(first) : {},
           kendo_row_keys: krows.length ? rowKeys(krows[0]) : [],
@@ -3006,7 +3064,8 @@ _PAGE_PDF_FINISH_JS = """(function() {
           finish_why: n < 1 ? "empty_getpdfdata"
             : (emptyInternal ? "empty_internaldata"
               : (barType ? "bar_producttype"
-                : (fromKendo ? "" : "filelist_not_kendo"))),
+                : (emptyMc ? "empty_materialcost"
+                  : (fromKendo ? "" : "filelist_not_kendo")))),
           grid_id: gridId,
           response_list_n: 0,
           response_tag: "",
@@ -3019,7 +3078,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
           response_number_of_contours: 0,
           response_number_of_pierces: 0
         };
-        if (n < 1 || emptyInternal || barType) {
+        if (n < 1 || emptyInternal || barType || emptyMc) {
           jQuery.ajax = orig;
           cap.status = 0;
           cap.via = "skipped";
@@ -3739,6 +3798,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
         }
         function applyRow(it) {
           rememberPlateTypes(it);
+          rememberPlateMaterialCost(it);
           lastApply = "modal_apply";
           try {
             var tr = g.tbody.find("tr").filter(function() {
@@ -3754,6 +3814,9 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           modalApplyClick();
           pageApplyFn();
           return waitMs(400).then(function() {
+            rememberPlateMaterialCost(it);
+            var formMc = readFormMaterialCost();
+            if (formMc) window.__kannonPlateMaterialCost = formMc;
             return pidOf(pdfRow) || itemValue(it) || "";
           });
         }
@@ -3792,6 +3855,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     lastPickerSku = sku;
     function applyItem(it) {
       rememberPlateTypes(it);
+      rememberPlateMaterialCost(it);
       var val = itemValue(it);
       if (!val) return "";
       try {
@@ -3945,6 +4009,15 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     var s = String($el.val() || "").trim();
     return parseFloat(s) > 0 ? s : "";
   }
+  function readFormMaterialCost() {
+    // QuoteOrderEdit product-select may fill #MaterialCost after apply.
+    // Copy only if the form has a positive $/lb. Do not invent.
+    var $el = formInput([
+      "#MaterialCost", "#materialCost", "#pdfMaterialCost",
+      "[name='MaterialCost']", "#txtMaterialCost"
+    ]);
+    return readFormNumeric($el);
+  }
   function typeFormLengthWidth(s) {
     // QuoteOrderEdit UpdatePerimeterWeight reads #length/#width form
     // fields + Internal: PDFGetData() — not kendo Length/Width.
@@ -4073,6 +4146,24 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     // QuoteOrderEdit leftover-named GetPDFData candidate ProductType/prt_pdf.
     return "prt_pdf";
   }
+  function rememberPlateMaterialCost(it) {
+    // QuoteOrderEdit GetPDFData copies MaterialCost from dataItem.
+    // Page OnSelectProductPlate / modal apply copies catalog $/lb.
+    // Live 2a83a96b: ProductID bound, MaterialCost "". Do not invent.
+    if (!it) return;
+    var keys = ["MaterialCost", "materialCost", "CostPerPound", "CostPerLb"];
+    for (var i = 0; i < keys.length; i++) {
+      var v = it[keys[i]];
+      var n = parseFloat(v);
+      if (isFinite(n) && n > 0) {
+        window.__kannonPlateMaterialCost = v;
+        var units = it.MaterialCost_Units != null ? it.MaterialCost_Units
+          : (it.materialCost_Units != null ? it.materialCost_Units : "");
+        if (units) window.__kannonPlateMaterialCostUnits = String(units);
+        return;
+      }
+    }
+  }
   function rememberPlateTypes(it) {
     if (!it) return;
     var pt = it.ProductType != null ? it.ProductType : it.productType;
@@ -4082,6 +4173,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       window.__kannonPlateProductType = pt != null ? String(pt) : "";
       window.__kannonPlateProductSubType = pst != null ? String(pst) : "";
     }
+    rememberPlateMaterialCost(it);
   }
   function writePlateProductType(r, s) {
     // Live bab8f668: plate ProductID left ProductType=bar / bar_flat.
@@ -4111,9 +4203,56 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     }
     return true;
   }
-  function writeGetPdfShapeFields(r) {
+  function materialCostEmpty(row) {
+    var v = row && (row.MaterialCost != null ? row.MaterialCost : row.materialCost);
+    if (v == null || v === "") return true;
+    var n = parseFloat(v);
+    return !(isFinite(n) && n > 0);
+  }
+  function writeCatalogMaterialCost(r, s) {
+    if (!r) return false;
+    if (!materialCostEmpty(r)) return true;
+    var src = null;
+    if (s && !materialCostEmpty(s)) src = s.MaterialCost != null ? s.MaterialCost : s.materialCost;
+    if (src == null) {
+      var mem = window.__kannonPlateMaterialCost;
+      var mn = parseFloat(mem);
+      if (isFinite(mn) && mn > 0) src = mem;
+    }
+    if (src == null) {
+      var formMc = readFormMaterialCost();
+      if (formMc) src = formMc;
+    }
+    if (src == null) return false;
+    if (typeof r.set === "function") r.set("MaterialCost", src);
+    else r.MaterialCost = src;
+    var units = "";
+    if (s && s.MaterialCost_Units) units = String(s.MaterialCost_Units);
+    else if (window.__kannonPlateMaterialCostUnits) {
+      units = String(window.__kannonPlateMaterialCostUnits);
+    }
+    if (units) {
+      if (typeof r.set === "function") r.set("MaterialCost_Units", units);
+      else r.MaterialCost_Units = units;
+    }
+    return true;
+  }
+  function writeOutsideAreaUnits(r) {
+    var area = parseFloat(r && r.OutsideArea);
+    if (!(area > 0)) return false;
+    var have = r.OutsideArea_Units;
+    if (have != null && String(have).trim()) return true;
+    var units = r.Length_Units || r.Width_Units || "";
+    if (!units) return false;
+    if (typeof r.set === "function") r.set("OutsideArea_Units", units);
+    else r.OutsideArea_Units = units;
+    return true;
+  }
+  function writeGetPdfShapeFields(r, s) {
     // Live c751780e: GetPDFData-shaped row missing OutsideArea;
-    // TrueWeight 0; Description null. Copy L×W area + Weight.
+    // TrueWeight 0; Description null. Live 2a83a96b: those present,
+    // MaterialCost "". Copy L×W area + Weight + catalog $/lb.
+    // Do not invent a MaterialCost rate.
     if (!r) return false;
     var L = parseFloat(r.Length), W = parseFloat(r.Width);
     var area = parseFloat(r.OutsideArea);
@@ -4134,6 +4273,8 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
         else r.Description = desc;
       }
     }
+    writeCatalogMaterialCost(r, s);
+    writeOutsideAreaUnits(r);
     return true;
   }
   function ensureGetPdfDataReady() {
@@ -4399,7 +4540,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
                 if (s.ProductID) setField(r, "ProductID", s.ProductID);
                 else if (val) setField(r, "ProductID", val);
                 writePlateProductType(r, s);
-                writeGetPdfShapeFields(r);
+                writeGetPdfShapeFields(r, s);
                 // Last geometry XHR: form L×W THEN Internal Dim1
                 // (live 5a231aa form_lw_synced=false / OP=0).
                 var formVia = typeFormLengthWidth(s);
@@ -4709,6 +4850,8 @@ def stamp_pdf_kendo_flats(
                 "ProductID": str(row.get("ProductID") or "").strip(),
                 "ProductType": str(row.get("ProductType") or "").strip(),
                 "ProductSubType": str(row.get("ProductSubType") or "").strip(),
+                "MaterialCost": row.get("MaterialCost"),
+                "MaterialCost_Units": row.get("MaterialCost_Units"),
                 "HoleDiameter": row.get("HoleDiameter"),
             }
         )

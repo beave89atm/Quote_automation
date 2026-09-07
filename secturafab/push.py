@@ -3562,6 +3562,7 @@ class SecturaFabPushService:
                         CAD_IMAGE_FILES_PLATE_PRODUCT_TYPE,
                         CAD_IMAGE_FILES_PLATE_PRODUCT_SUBTYPE,
                         filelist_producttype_is_plate_or_sheet,
+                        catalog_material_cost_value,
                     )
 
                     stamp_row["ProductType"] = (
@@ -3574,6 +3575,16 @@ class SecturaFabPushService:
                         if filelist_producttype_is_plate_or_sheet(sku_pst)
                         else CAD_IMAGE_FILES_PLATE_PRODUCT_SUBTYPE
                     )
+                    sku_mc = catalog_material_cost_value(plate_sku)
+                    if sku_mc is not None:
+                        stamp_row["MaterialCost"] = sku_mc
+                    sku_mcu = str(
+                        (plate_sku or {}).get("MaterialCost_Units")
+                        or (plate_sku or {}).get("materialCost_Units")
+                        or ""
+                    ).strip()
+                    if sku_mcu:
+                        stamp_row["MaterialCost_Units"] = sku_mcu
                 elif (
                     is_full_sheets_plates_catalog(plate_catalog)
                     and plate_sku is None
@@ -3614,6 +3625,7 @@ class SecturaFabPushService:
                 finish_bag_internaldata_empty_after_hole_is_fail,
                 cad_plate_filelist_bar_producttype_is_fail,
                 finish_prt_pdf_still_contours_zero_is_fail,
+                finish_empty_materialcost_after_plate_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
                 empty_weight_after_perimeter_is_fail,
@@ -4027,6 +4039,25 @@ class SecturaFabPushService:
                                 "OutsideArea/TrueWeight/Description; Nest is "
                                 "later (AddRow n.List) — do not invent Contours "
                                 "FileList keys — Image Files DoD FAIL"
+                            )
+                        if "filelist_materialcost" in result:
+                            notes.append(
+                                "filelist_materialcost="
+                                + repr(result.get("filelist_materialcost"))
+                            )
+                        if finish_empty_materialcost_after_plate_is_fail(
+                            result,
+                            stamp_out if isinstance(stamp_out, dict) else None,
+                            stamp_rows,
+                        ):
+                            notes.append(
+                                "WARNING: OnAddPDFClick plate ProductID + "
+                                "OutsideArea/TrueWeight still MaterialCost "
+                                "empty (live 2a83a96b) — GetPDFData copies "
+                                "catalog $/lb from the selected plate row; "
+                                "do not invent MaterialCost — Nest is later "
+                                "— do not invent Contours FileList keys — "
+                                "Image Files DoD FAIL"
                             )
                         if finish_empty_filelist_after_good_stamp_is_fail(
                             result,
