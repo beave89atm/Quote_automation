@@ -3587,6 +3587,7 @@ class SecturaFabPushService:
                 form_lw_unsynced_or_empty_perimeter_is_fail,
                 getpdfdata_empty_or_incomplete_before_finish_is_fail,
                 finish_empty_filelist_after_good_stamp_is_fail,
+                finish_bag_internaldata_empty_after_hole_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
                 empty_weight_after_perimeter_is_fail,
@@ -3944,6 +3945,30 @@ class SecturaFabPushService:
                                 "then page PDFGetData onto InternalData — "
                                 "GetPDFData omits contours — pack is BadgeString "
                                 "PR + laser OCL — Image Files DoD FAIL"
+                            )
+                        if "filelist_internaldata" in result:
+                            notes.append(
+                                "filelist_internaldata="
+                                + repr(result.get("filelist_internaldata"))
+                            )
+                        if "filelist_internaldata_dim1_n" in result:
+                            notes.append(
+                                "filelist_internaldata_dim1_n="
+                                f"{result.get('filelist_internaldata_dim1_n')}"
+                            )
+                        if finish_bag_internaldata_empty_after_hole_is_fail(
+                            result,
+                            stamp_out if isinstance(stamp_out, dict) else None,
+                            stamp_rows,
+                        ):
+                            notes.append(
+                                "WARNING: OnAddPDFClick FileList InternalData "
+                                "null after getpdfdata_internal_dim1_n=1 "
+                                "(live 6150c5c7) — SetStatus/redraw wiped "
+                                "dataItem.InternalData; gold writes "
+                                "PDFGetData() onto InternalData — do not "
+                                "invent Contours FileList keys — "
+                                "Image Files DoD FAIL"
                             )
                         if finish_empty_filelist_after_good_stamp_is_fail(
                             result,

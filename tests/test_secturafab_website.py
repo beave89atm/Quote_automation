@@ -1961,6 +1961,7 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_id("3e222215-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("1ca884cc-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("111633b8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("6150c5c7-1111-2222-3333-444444444444")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -1999,6 +2000,62 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
         fl0_result, stamp_empty
     ) is True
     assert finish_empty_filelist_after_good_stamp_is_fail(None) is False
+
+    from tests.fixtures.live_1020250_1 import (
+        leftover_finish_internaldata_null_dump,
+        leftover_finish_internaldata_null_result,
+    )
+    from secturafab.website import (
+        leftover_finish_internaldata_null_after_dim1_count_is_fail,
+        finish_bag_internaldata_empty_after_hole_is_fail,
+    )
+
+    id_null = leftover_finish_internaldata_null_dump()
+    assert leftover_1020250_1_hypotheses_named(id_null) is True
+    assert leftover_finish_internaldata_null_after_dim1_count_is_fail(id_null) is True
+    assert leftover_finish_internaldata_null_after_dim1_count_is_fail(None) is False
+    assert id_null["filelist_bag"]["InternalData"] is None
+    id_ok = dict(id_null)
+    id_ok["live_6150c5c7"] = dict(id_null["live_6150c5c7"])
+    id_ok["live_6150c5c7"]["filelist_internaldata"] = (
+        '[{"Type":"hole","Dim1":0.5,"Dim2":0,"Qty":1,"Qty2":0,"Note":""}]'
+    )
+    id_ok["live_6150c5c7"]["filelist_internaldata_dim1_n"] = 1
+    id_ok["filelist_bag"] = dict(id_null["filelist_bag"])
+    id_ok["filelist_bag"]["InternalData"] = (
+        id_ok["live_6150c5c7"]["filelist_internaldata"]
+    )
+    assert leftover_finish_internaldata_null_after_dim1_count_is_fail(id_ok) is False
+    id_result = leftover_finish_internaldata_null_result()
+    assert list0_pack_badge_ocl_is_gold(id_result) is False
+    stamp_id = leftover_finish_filelist_n0_stamp()
+    stamp_id["getpdfdata_n"] = 1
+    stamp_id["getpdfdata_productid_n"] = 1
+    stamp_id["getpdfdata_outside_perimeter_n"] = 1
+    stamp_id["getpdfdata_internal_dim1_n"] = 1
+    assert finish_bag_internaldata_empty_after_hole_is_fail(
+        id_result, stamp_id, [{"HoleDiameter": HOLE_DIM1}]
+    ) is True
+    assert finish_bag_internaldata_empty_after_hole_is_fail(fl0_result) is False
+    assert leftover_finish_internaldata_null_after_dim1_count_is_fail(
+        {
+            "invent_contours_on_filelist": False,
+            "operation_profile_graft": False,
+            "live_6150c5c7": {
+                "getpdfdata_n": 1,
+                "getpdfdata_internal_dim1_n": 1,
+                "finish_filelist_n": 1,
+                "filelist_internaldata": None,
+                "filelist_internaldata_dim1_n": 0,
+                "finish_why": "ok",
+            },
+            "filelist_bag": {
+                "ProductID": FILELIST_PRODUCT_ID,
+                "OutsidePerimeter": 69.5,
+                "InternalData": None,
+            },
+        }
+    ) is True
 
     leftover = leftover_contours_zero_after_productid_hole_result()
     assert list0_pack_badge_ocl_is_gold(leftover) is False
@@ -8694,6 +8751,13 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "SetStatus" in _STAMP_PDF_KENDO_JS
     assert "getpdfdata_n" in _STAMP_PDF_KENDO_JS
     assert "empty_getpdfdata" in _PAGE_PDF_FINISH_JS
+    assert "empty_internaldata" in _PAGE_PDF_FINISH_JS
+    assert "writeHoleInternalData" in _PAGE_PDF_FINISH_JS
+    assert "writeHoleInternalData" in _STAMP_PDF_KENDO_JS
+    assert "filelist_internaldata" in _PAGE_PDF_FINISH_JS
+    assert "filelist_internaldata_dim1_n" in _PAGE_PDF_FINISH_JS
+    assert "6150c5c7" in _PAGE_PDF_FINISH_JS
+    assert "6150c5c7" in _STAMP_PDF_KENDO_JS
     assert "ensureGetPdfDataReady" in _PAGE_PDF_FINISH_JS
     assert "filelist_raw" in _PAGE_PDF_FINISH_JS
     assert "n < 1" in _PAGE_PDF_FINISH_JS

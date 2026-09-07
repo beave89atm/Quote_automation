@@ -25,8 +25,10 @@ form_lw_synced=false / outside_perimeter_n=0 / Weight~0.05
 (hole-only). fc94ca9 live 1ca884cc (ZZ-DEL, prior 111633b8):
 form_lw_synced=true (17.375×17.375) + OP 69.5 / Weight 17.98
 but OnAddPDFClick posted FileList n=0 (row0 null). Stamp
-dataSource n=1 Status=1 is not GetPDFData(). Do not invent
-Contours FileList keys. Leave gold a7dc46bf / 8bcc226b /
+dataSource n=1 Status=1 is not GetPDFData(). 77ddb70 live
+6150c5c7 (ZZ-DEL): GetPDFData/FileList n=1 + ProductID + OP
+but Finish bag InternalData null — Contours stay 0. Do not
+invent Contours FileList keys. Leave gold a7dc46bf / 8bcc226b /
 21678-1. No mint. No PATCH.
 """
 
@@ -110,6 +112,9 @@ def leftover_contours_zero_after_productid_hole_dump() -> dict[str, Any]:
             ),
             "9_finish_filelist_n0": (
                 QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_filelist_n0_miss"]
+            ),
+            "10_finish_internaldata_null": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_internaldata_null_miss"]
             ),
         },
         "live_1020250_1": {
@@ -275,6 +280,78 @@ def leftover_finish_filelist_n0_result() -> dict[str, Any]:
         "getpdfdata_productid_n": 0,
         "getpdfdata_internal_dim1_n": 0,
         "getpdfdata_outside_perimeter_n": 0,
+        "response_list_n": 0,
+        "response_badge_string": "",
+        "response_ocl_n": 0,
+        "response_number_of_contours": 0,
+    }
+
+
+def leftover_finish_internaldata_null_dump() -> dict[str, Any]:
+    """77ddb70 / 6150c5c7: GetPDFData n=1 but Finish bag InternalData null."""
+    bag = dict(FILELIST_BAG)
+    bag["InternalData"] = None
+    return {
+        "quote_id": "6150c5c7-0000-4000-8000-000000000001",
+        "quote_number": SPENT_QUOTE_NUMBER,
+        "readonly": True,
+        "invent_contours_on_filelist": False,
+        "operation_profile_graft": False,
+        "UpdatePerimeterWeight": dict(QUOTE_ORDER_EDIT_UPW_INTERNAL),
+        "filelist_bag": bag,
+        "hypotheses": {
+            "6_upw_internal_dim1_form_lw": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["named_miss"]
+            ),
+            "7_nest_best_sheet": "falsified_nest_is_later",
+            "8_form_lw_synced_false": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["form_lw_synced_false_miss"]
+            ),
+            "9_finish_filelist_n0": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_filelist_n0_miss"]
+            ),
+            "10_finish_internaldata_null": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_internaldata_null_miss"]
+            ),
+        },
+        "live_6150c5c7": {
+            "quote_id_prefix": "6150c5c7",
+            "form_lw_synced": True,
+            "outside_perimeter": OUTSIDE_PERIMETER,
+            "weight": WEIGHT,
+            "productid": FILELIST_PRODUCT_ID,
+            "hole_dim1": HOLE_DIM1,
+            "getpdfdata_n": 1,
+            "getpdfdata_productid_n": 1,
+            "getpdfdata_internal_dim1_n": 1,
+            "getpdfdata_outside_perimeter_n": 1,
+            "finish_filelist_n": 1,
+            "filelist_internaldata": None,
+            "filelist_internaldata_dim1_n": 0,
+            "badge_string": "",
+            "ocl_n": 0,
+            "number_of_contours": 0,
+        },
+    }
+
+
+def leftover_finish_internaldata_null_result() -> dict[str, Any]:
+    """OnAddPDFClick FileList n=1 with InternalData null after stamp dim1_n=1."""
+    bag = dict(FILELIST_BAG)
+    bag["InternalData"] = None
+    return {
+        "via": "skipped",
+        "finish_fn": "OnAddPDFClick",
+        "finish_why": "empty_internaldata",
+        "finish_filelist_n": 1,
+        "filelist_from_kendo": False,
+        "filelist_internaldata": None,
+        "filelist_internaldata_dim1_n": 0,
+        "getpdfdata_n": 1,
+        "getpdfdata_productid_n": 1,
+        "getpdfdata_internal_dim1_n": 1,
+        "getpdfdata_outside_perimeter_n": 1,
+        "filelist_bag": bag,
         "response_list_n": 0,
         "response_badge_string": "",
         "response_ocl_n": 0,

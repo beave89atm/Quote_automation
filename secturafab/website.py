@@ -1885,6 +1885,9 @@ QUOTE_ORDER_EDIT_UPW_INTERNAL: dict[str, Any] = {
     "named_miss": "upw_internal_dim1_and_form_lw",
     "form_lw_synced_false_miss": "form_lw_synced_false_after_internal_dim1_upw",
     "finish_filelist_n0_miss": "finish_filelist_n0_after_form_lw_synced_and_op",
+    "finish_internaldata_null_miss": (
+        "finish_bag_internaldata_null_after_getpdfdata_internal_dim1_n1"
+    ),
     "invent_contours_on_filelist": False,
 }
 
@@ -2427,6 +2430,7 @@ GETPDFDATA_BAG_COMPARE_KEYS = (
     "Thickness",
     "Length",
     "Width",
+    "InternalData",
 )
 
 
@@ -3422,6 +3426,10 @@ def leftover_1020250_1_hypotheses_named(dump: dict[str, Any] | None) -> bool:
         "finish_filelist_n0_miss"
     ):
         return False
+    if hyps.get("10_finish_internaldata_null") != QUOTE_ORDER_EDIT_UPW_INTERNAL.get(
+        "finish_internaldata_null_miss"
+    ):
+        return False
     return True
 
 
@@ -3591,6 +3599,97 @@ def finish_empty_filelist_after_good_stamp_is_fail(
         except (TypeError, ValueError):
             return True
     return posted < 1 or getn < 1
+
+
+def leftover_finish_internaldata_null_after_dim1_count_is_fail(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """6150c5c7: getpdfdata_internal_dim1_n=1 but Finish bag InternalData null."""
+    if not isinstance(dump, dict):
+        return False
+    live = dump.get("live_6150c5c7") if isinstance(dump.get("live_6150c5c7"), dict) else {}
+    if not live:
+        return False
+    try:
+        if int(live.get("getpdfdata_n") or 0) < 1:
+            return False
+        if int(live.get("getpdfdata_internal_dim1_n") or 0) < 1:
+            return False
+        if int(live.get("finish_filelist_n") or 0) < 1:
+            return False
+    except (TypeError, ValueError):
+        return False
+    idata = live.get("filelist_internaldata")
+    if idata not in (None, "", "null", "[]"):
+        return False
+    if dump.get("invent_contours_on_filelist") is not False:
+        return False
+    if dump.get("operation_profile_graft") is not False:
+        return False
+    return True
+
+
+def finish_bag_internaldata_empty_after_hole_is_fail(
+    result: dict[str, Any] | None,
+    stamp_out: dict[str, Any] | None = None,
+    stamp_rows: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Posted GetPDFData InternalData null/empty or missing Dim1 after a hole.
+
+    Live 6150c5c7. Older mocks without filelist_internaldata still pass
+    through. Do not invent Contours FileList keys.
+    """
+    if not isinstance(result, dict):
+        return False
+    has_cap = (
+        "filelist_internaldata" in result
+        or "filelist_internaldata_dim1_n" in result
+    )
+    bag = result.get("filelist_bag") if isinstance(result.get("filelist_bag"), dict) else {}
+    if not has_cap and "InternalData" not in bag:
+        return False
+    hole = False
+    if isinstance(stamp_out, dict):
+        try:
+            if int(stamp_out.get("internaldata_n") or 0) >= 1:
+                hole = True
+        except (TypeError, ValueError):
+            hole = False
+        try:
+            if int(stamp_out.get("getpdfdata_internal_dim1_n") or 0) >= 1:
+                hole = True
+        except (TypeError, ValueError):
+            pass
+        try:
+            if float(stamp_out.get("hole_dim1") or 0) > 0:
+                hole = True
+        except (TypeError, ValueError):
+            pass
+    for row in stamp_rows or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            if float(row.get("HoleDiameter") or 0) > 0:
+                hole = True
+                break
+        except (TypeError, ValueError):
+            continue
+    if not hole:
+        return False
+    if str(result.get("finish_why") or "") == "empty_internaldata":
+        return True
+    idata = result.get("filelist_internaldata")
+    if idata is None and "InternalData" in bag:
+        idata = bag.get("InternalData")
+    if idata in (None, "", "null", "[]", "{}"):
+        return True
+    try:
+        if "filelist_internaldata_dim1_n" in result:
+            if int(result.get("filelist_internaldata_dim1_n") or 0) < 1:
+                return True
+    except (TypeError, ValueError):
+        return True
+    return False
 
 
 def list0_pack_contours_zero_after_productid_hole_is_fail(

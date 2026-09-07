@@ -2436,11 +2436,63 @@ _PAGE_PDF_FINISH_JS = """(function() {
     } catch (e) {}
     return [];
   }
+  function saveInternalRaw(r) {
+    var v = r && (r.InternalData != null ? r.InternalData : r.internalData);
+    if (v == null || v === "") return "";
+    if (typeof v === "string") return v;
+    try { return JSON.stringify(v); } catch (e) { return ""; }
+  }
+  function writeInternalOnRow(r, raw) {
+    if (!r || raw == null || raw === "" || raw === "[]" || raw === "{}" || raw === "null") {
+      return false;
+    }
+    if (typeof r.set === "function") r.set("InternalData", raw);
+    else r.InternalData = raw;
+    return true;
+  }
+  function pagePdfGetDataRaw() {
+    try {
+      if (typeof window.PDFGetData === "function") {
+        var feat = window.PDFGetData();
+        if (feat == null) return "";
+        if (typeof feat === "string") return feat;
+        return JSON.stringify(feat);
+      }
+    } catch (e) {}
+    return "";
+  }
+  function writeHoleInternalData(g, r) {
+    // Gold: onInternalDataChange writes JSON.stringify(PDFGetData())
+    // onto the selected dataItem. Live 6150c5c7: SetStatus/redraw
+    // left GetPDFData InternalData null after stamp dim1_n=1.
+    var kept = saveInternalRaw(r);
+    var fromForm = pagePdfGetDataRaw();
+    var raw = "";
+    if (internalDim1Count(fromForm) > 0) raw = fromForm;
+    else if (internalDim1Count(kept) > 0) raw = kept;
+    if (!raw) return "";
+    try {
+      var tr = g && g.tbody ? g.tbody.find("tr").filter(function() {
+        return g.dataItem(this) === r;
+      }).first() : null;
+      if (tr && tr.length && typeof g.select === "function") g.select(tr);
+    } catch (e0) {}
+    writeInternalOnRow(r, raw);
+    try {
+      if (typeof window.onInternalDataChange === "function") {
+        window.onInternalDataChange();
+      }
+    } catch (e1) {}
+    if (internalDim1Count(saveInternalRaw(r)) < 1) writeInternalOnRow(r, raw);
+    return raw;
+  }
   function ensureGetPdfDataReady() {
     // Live 1ca884cc: stamp dataSource n=1 Status=1 / form_lw_synced /
     // OP>0 but OnAddPDFClick posted FileList n=0. GetPDFData walks
     // tbody dataItem Status>0; onLengthChangePDF SetStatus only the
     // selected row. Restore selection + Status then re-read GetPDFData.
+    // Live 6150c5c7: that restore wiped InternalData — rewrite from
+    // PDFGetData() / kept dataItem after SetStatus/redraw.
     var hitE = pdfGrid();
     if (!hitE) return pageGetPdfDataSafe();
     var g = hitE.grid;
@@ -2448,6 +2500,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
     try { src = g.dataSource.data() || []; } catch (e0) {}
     for (var ei = 0; ei < src.length; ei++) {
       var r = src[ei];
+      var kept = saveInternalRaw(r);
       try {
         var tr = g.tbody.find("tr").filter(function() {
           return g.dataItem(this) === r;
@@ -2469,12 +2522,17 @@ _PAGE_PDF_FINISH_JS = """(function() {
           if (tr2.length) window.kendoFastRedrawRow(g, tr2[0]);
         }
       } catch (e3) {}
+      writeHoleInternalData(g, r);
+      if (internalDim1Count(saveInternalRaw(r)) < 1 && internalDim1Count(kept) > 0) {
+        writeInternalOnRow(r, kept);
+      }
     }
     try {
       var tbodyN = 0;
       try { tbodyN = g.tbody.find("tr").length; } catch (e4) {}
       if ((!tbodyN || tbodyN < 1) && src.length && typeof g.refresh === "function") {
         g.refresh();
+        for (var ej = 0; ej < src.length; ej++) writeHoleInternalData(g, src[ej]);
       }
     } catch (e5) {}
     try {
@@ -2483,6 +2541,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
         var item = g.dataItem(trs[t]);
         if (item && statusOf(item) > 0) {
           if (typeof g.select === "function") g.select(trs[t]);
+          writeHoleInternalData(g, item);
           break;
         }
       }
@@ -2542,7 +2601,8 @@ _PAGE_PDF_FINISH_JS = """(function() {
   var BAG_KEYS = [
     "Machine", "ProductID", "Qty", "Weight", "Weight_UseLocal",
     "OutsidePerimeter", "OutsidePerimeter_UseLocal", "NumberOfHeads",
-    "WeightBorder", "Material", "Thickness", "Length", "Width"
+    "WeightBorder", "Material", "Thickness", "Length", "Width",
+    "InternalData"
   ];
   function bagSnap(row) {
     var o = {};
@@ -2552,6 +2612,12 @@ _PAGE_PDF_FINISH_JS = """(function() {
       if (row[bk] !== undefined) o[bk] = row[bk];
     }
     return o;
+  }
+  function internalRawOf(row) {
+    var v = row && (row.InternalData != null ? row.InternalData : row.internalData);
+    if (v == null) return "";
+    if (typeof v === "string") return v;
+    try { return JSON.stringify(v); } catch (e) { return ""; }
   }
   function oclNames(row) {
     var ocl = row.OperationCostList || row.operationCostList || [];
@@ -2712,6 +2778,52 @@ _PAGE_PDF_FINISH_JS = """(function() {
       response_number_of_pierces: 0
     });
   }
+  var holeNeededPre = !!(window.__kannonHoleDia)
+    || internalDim1Count(pagePdfGetDataRaw()) > 0
+    || preSnap.getpdfdata_internal_dim1_n > 0;
+  var postedIdata = krows.length ? internalRawOf(krows[0]) : "";
+  if (holeNeededPre && internalDim1Count(postedIdata) < 1) {
+    return Promise.resolve({
+      via: "skipped",
+      finish_fn: "",
+      reads_kendo: true,
+      filelist_from_kendo: false,
+      finish_filelist_n: count,
+      filelist_raw: "[]",
+      filelist_internaldata: postedIdata,
+      filelist_internaldata_dim1_n: 0,
+      posted_keys: [],
+      getpdfdata_n: preSnap.getpdfdata_n,
+      getpdfdata_productid_n: preSnap.getpdfdata_productid_n,
+      getpdfdata_internal_dim1_n: preSnap.getpdfdata_internal_dim1_n,
+      getpdfdata_outside_perimeter_n: preSnap.getpdfdata_outside_perimeter_n,
+      grid_pdf_row_count: dsN,
+      grid_id: gridId,
+      finish_af_present: false,
+      finish_why: "empty_internaldata",
+      request_keys: [],
+      filelist_row_keys: krows.length ? rowKeys(krows[0]) : [],
+      filelist_bag: krows.length ? bagSnap(krows[0]) : {},
+      kendo_row_keys: krows.length ? rowKeys(krows[0]) : [],
+      status: 0,
+      body_keys: [],
+      body_type: "empty",
+      has_NewItem: false,
+      has_QuoteItem: false,
+      text_len: 0,
+      List: krows,
+      response_list_n: 0,
+      response_tag: "",
+      response_badge_string: "",
+      response_production_ready: false,
+      response_ocl_n: 0,
+      response_ocl_names: [],
+      response_unit_cost: 0,
+      response_unit_weight_cost: 0,
+      response_number_of_contours: 0,
+      response_number_of_pierces: 0
+    });
+  }
   var finishName = findFinishName();
   var finishSrc = finishName ? fnSource(window[finishName]) : "";
   var reads_kendo = readsPdfKendo(finishSrc) || typeof window.GetPDFData === "function" || !!hit;
@@ -2736,7 +2848,16 @@ _PAGE_PDF_FINISH_JS = """(function() {
         }
         // Gold FileList is page GetPDFData() after Status/select restore.
         // Live 1ca884cc posted FileList n=0 (server ItemList=1 empty pack).
+        // Live 6150c5c7: FileList n=1 but InternalData null after stamp dim1_n=1.
         var pageRows = ensureGetPdfDataReady();
+        var hitW = pdfGrid();
+        if (hitW && pageRows.length) {
+          try {
+            var srcW = hitW.grid.dataSource.data() || [];
+            if (srcW[0]) writeHoleInternalData(hitW.grid, srcW[0]);
+          } catch (eW) {}
+          pageRows = pageGetPdfDataSafe();
+        }
         var d = opts.data;
         if (pageRows.length) d.FileList = pageRows;
         attachChromeDomAf(d);
@@ -2747,22 +2868,31 @@ _PAGE_PDF_FINISH_JS = """(function() {
         try { filelistRaw = JSON.stringify(fl); } catch (eRaw) { filelistRaw = ""; }
         var fromKendo = n > 0;
         var first = n > 0 ? (fl[0] || {}) : {};
+        var idataRaw = internalRawOf(first);
+        var idataDim1 = internalDim1Count(idataRaw);
+        var holeNeeded = !!(window.__kannonHoleDia)
+          || internalDim1Count(pagePdfGetDataRaw()) > 0
+          || preSnap.getpdfdata_internal_dim1_n > 0;
+        var emptyInternal = holeNeeded && idataDim1 < 1;
         var cap = {
           finish_filelist_n: n,
           filelist_raw: filelistRaw,
+          filelist_internaldata: idataRaw,
+          filelist_internaldata_dim1_n: idataDim1,
           posted_keys: Object.keys(d),
           getpdfdata_n: pageRows.length,
           getpdfdata_productid_n: snapGetPdfRow(pageRows).getpdfdata_productid_n,
           getpdfdata_internal_dim1_n: snapGetPdfRow(pageRows).getpdfdata_internal_dim1_n,
           getpdfdata_outside_perimeter_n: snapGetPdfRow(pageRows).getpdfdata_outside_perimeter_n,
           request_keys: Object.keys(d),
-          filelist_from_kendo: fromKendo,
+          filelist_from_kendo: fromKendo && !emptyInternal,
           filelist_row_keys: n > 0 ? rowKeys(first) : [],
           filelist_bag: n > 0 ? bagSnap(first) : {},
           kendo_row_keys: krows.length ? rowKeys(krows[0]) : [],
           finish_af_present: hasAf(d),
           finish_why: n < 1 ? "empty_getpdfdata"
-            : (fromKendo ? "" : "filelist_not_kendo"),
+            : (emptyInternal ? "empty_internaldata"
+              : (fromKendo ? "" : "filelist_not_kendo")),
           grid_id: gridId,
           response_list_n: 0,
           response_tag: "",
@@ -2775,7 +2905,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
           response_number_of_contours: 0,
           response_number_of_pierces: 0
         };
-        if (n < 1) {
+        if (n < 1 || emptyInternal) {
           jQuery.ajax = orig;
           cap.status = 0;
           cap.via = "skipped";
@@ -3764,14 +3894,53 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     } catch (e) {}
     return [];
   }
+  function saveInternalRaw(r) {
+    var v = r && (r.InternalData != null ? r.InternalData : r.internalData);
+    if (v == null || v === "") return "";
+    if (typeof v === "string") return v;
+    try { return JSON.stringify(v); } catch (e) { return ""; }
+  }
+  function writeInternalOnRow(r, raw) {
+    if (!r || raw == null || raw === "" || raw === "[]" || raw === "{}" || raw === "null") {
+      return false;
+    }
+    if (typeof r.set === "function") r.set("InternalData", raw);
+    else r.InternalData = raw;
+    return true;
+  }
+  function writeHoleInternalData(g, r) {
+    // Live 6150c5c7: SetStatus/redraw left GetPDFData InternalData null.
+    var kept = saveInternalRaw(r);
+    var fromForm = pagePdfGetData();
+    var raw = "";
+    if (internalDim1Count(fromForm) > 0) raw = fromForm;
+    else if (internalDim1Count(kept) > 0) raw = kept;
+    if (!raw) return "";
+    try {
+      var tr = g && g.tbody ? g.tbody.find("tr").filter(function() {
+        return g.dataItem(this) === r;
+      }).first() : null;
+      if (tr && tr.length && typeof g.select === "function") g.select(tr);
+    } catch (e0) {}
+    writeInternalOnRow(r, raw);
+    try {
+      if (typeof window.onInternalDataChange === "function") {
+        window.onInternalDataChange();
+      }
+    } catch (e1) {}
+    if (internalDim1Count(saveInternalRaw(r)) < 1) writeInternalOnRow(r, raw);
+    return raw;
+  }
   function ensureGetPdfDataReady() {
     // Live 1ca884cc: Finish filelist_n=0 after form_lw_synced=true + OP>0.
     // GetPDFData keeps Status>0 tbody rows; SetStatus runs on selected only.
+    // Live 6150c5c7: rewrite InternalData after SetStatus/redraw.
     var g = hit.grid;
     var src = [];
     try { src = g.dataSource.data() || []; } catch (e0) {}
     for (var ei = 0; ei < src.length; ei++) {
       var r = src[ei];
+      var kept = saveInternalRaw(r);
       try {
         var tr = g.tbody.find("tr").filter(function() {
           return g.dataItem(this) === r;
@@ -3793,12 +3962,17 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           if (tr2.length) window.kendoFastRedrawRow(g, tr2[0]);
         }
       } catch (e3) {}
+      writeHoleInternalData(g, r);
+      if (internalDim1Count(saveInternalRaw(r)) < 1 && internalDim1Count(kept) > 0) {
+        writeInternalOnRow(r, kept);
+      }
     }
     try {
       var tbodyN = 0;
       try { tbodyN = g.tbody.find("tr").length; } catch (e4) {}
       if ((!tbodyN || tbodyN < 1) && src.length && typeof g.refresh === "function") {
         g.refresh();
+        for (var ej = 0; ej < src.length; ej++) writeHoleInternalData(g, src[ej]);
       }
     } catch (e5) {}
     try {
@@ -3807,6 +3981,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
         var item = g.dataItem(trs[t]);
         if (item && Number(item.Status) > 0) {
           if (typeof g.select === "function") g.select(trs[t]);
+          writeHoleInternalData(g, item);
           break;
         }
       }
@@ -3903,6 +4078,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     if (holeDia == null || holeDia === "") {
       return Promise.resolve("");
     }
+    window.__kannonHoleDia = holeDia;
     if (typeof window.AddNewPDFFeature !== "function") {
       lastFeature = "none_addnewpdffeature";
       return Promise.resolve("");
@@ -4018,6 +4194,16 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
                 else lastVia = fireUpdatePerimeterWeight() || lastVia;
                 return waitGetPerimeter(8000).then(function() {
                   copyPerimeterOntoRow(hit.grid, r);
+                  if (s.HoleDiameter) {
+                    var rawEnd = pagePdfGetData();
+                    if (rawEnd && rawEnd !== "[]" && rawEnd !== "{}" && rawEnd !== "null") {
+                      setField(r, "InternalData", rawEnd);
+                    }
+                    fireOnInternalDataChange();
+                    if (internalDim1Count(saveInternalRaw(r)) < 1 && rawEnd) {
+                      setField(r, "InternalData", rawEnd);
+                    }
+                  }
                   return "";
                 });
               });
@@ -4116,6 +4302,8 @@ def invoke_page_pdf_finish(
         "response_number_of_contours": 0,
         "response_number_of_pierces": 0,
         "filelist_raw": "",
+        "filelist_internaldata": "",
+        "filelist_internaldata_dim1_n": 0,
         "posted_keys": [],
         "getpdfdata_n": 0,
         "getpdfdata_productid_n": 0,
@@ -4202,6 +4390,14 @@ def invoke_page_pdf_finish(
         "response_number_of_contours": response_number_of_contours,
         "response_number_of_pierces": response_number_of_pierces,
         "filelist_raw": str(value.get("filelist_raw") or ""),
+        "filelist_internaldata": (
+            value.get("filelist_internaldata")
+            if value.get("filelist_internaldata") is not None
+            else ""
+        ),
+        "filelist_internaldata_dim1_n": int(
+            value.get("filelist_internaldata_dim1_n") or 0
+        ),
         "posted_keys": [str(k) for k in (value.get("posted_keys") or [])],
         "getpdfdata_n": int(value.get("getpdfdata_n") or 0),
         "getpdfdata_productid_n": int(value.get("getpdfdata_productid_n") or 0),
