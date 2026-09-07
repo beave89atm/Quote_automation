@@ -3357,6 +3357,13 @@ class SecturaFabPushService:
         InternalData n=1 is not gold 1/1 contours — PDFGetData
         Dim1 is ``[data-edit='dim1']``. Fail-close if BadgeString
         empty after ProductID+hole. Leave c23fba3d.
+        Live 1020250-1: ProductID + Dim1 5.375 + InternalData +
+        OP/Weight + OnAddPDFClick 200 still Contours=0 / empty
+        BadgeString. QuoteOrderEdit UpdatePerimeterWeight posts
+        Internal: PDFGetData() and reads #length/#width. After
+        Dim1, page onInternalDataChange → UpdatePerimeterWeight
+        (true, false). Last geometry XHR must include Dim1.
+        Do not invent Contours FileList keys. Nest is later.
         #files + GetPDFData + OnAddPDFClick is not
         gold PR/laser unless Cad GET has Tag + OperationCostList
         + UnitCost>0 + CuttingLength>0. Do not treat UnitPrice /
@@ -3576,6 +3583,7 @@ class SecturaFabPushService:
                 list0_pack_badge_ocl_contours_is_gold,
                 list0_pack_badge_ocl_is_gold,
                 list0_pack_badge_empty_after_productid_hole_is_fail,
+                list0_pack_contours_zero_after_productid_hole_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
                 empty_weight_after_perimeter_is_fail,
@@ -3720,6 +3728,37 @@ class SecturaFabPushService:
                         via_dim = str(stamp_out.get("hole_dim1_via") or "")
                         if via_dim:
                             notes.append(f"hole_dim1_via={via_dim}")
+                        via_confirm = str(stamp_out.get("confirm_via") or "")
+                        if via_confirm:
+                            notes.append(f"confirm_via={via_confirm}")
+                        if "form_lw_synced" in stamp_out:
+                            notes.append(
+                                "form_lw_synced="
+                                + (
+                                    "true"
+                                    if stamp_out.get("form_lw_synced")
+                                    else "false"
+                                )
+                            )
+                        if "pdfinternal_html" in stamp_out:
+                            notes.append(
+                                "pdfinternal_html="
+                                + (
+                                    "true"
+                                    if stamp_out.get("pdfinternal_html")
+                                    else "false"
+                                )
+                            )
+                        if "getperim_internal_n" in stamp_out:
+                            notes.append(
+                                "getperim_internal_n="
+                                f"{stamp_out.get('getperim_internal_n')}"
+                            )
+                        if "getperim_internal_dim1_n" in stamp_out:
+                            notes.append(
+                                "getperim_internal_dim1_n="
+                                f"{stamp_out.get('getperim_internal_dim1_n')}"
+                            )
                         notes.append(
                             "pdfinternal_xhr="
                             + (
@@ -3854,6 +3893,21 @@ class SecturaFabPushService:
                                 "then page PDFGetData onto InternalData — "
                                 "GetPDFData omits contours — pack is BadgeString "
                                 "PR + laser OCL — Image Files DoD FAIL"
+                            )
+                        if list0_pack_contours_zero_after_productid_hole_is_fail(
+                            result,
+                            stamp_out if isinstance(stamp_out, dict) else None,
+                            stamp_rows,
+                        ):
+                            notes.append(
+                                "WARNING: AddItem_PDFFiles List[0] Contours=0 "
+                                "or BadgeString empty after ProductID+hole "
+                                "(live 1020250-1) — UpdatePerimeterWeight posts "
+                                "Internal: PDFGetData() and reads #length/#width; "
+                                "onInternalDataChange then UpdatePerimeterWeight"
+                                "(true, false) — GetPDFData omits Contours — "
+                                "do not invent FileList keys — Nest is later — "
+                                "Image Files DoD FAIL"
                             )
                         if list0_pack_badge_ocl_contours_is_gold(result):
                             notes.append(

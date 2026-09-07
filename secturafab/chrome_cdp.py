@@ -2802,6 +2802,11 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     picker_sku: "",
     picker_apply: "",
     hole_dim1_via: "",
+    confirm_via: "",
+    form_lw_synced: false,
+    pdfinternal_html: false,
+    getperim_internal_n: 0,
+    getperim_internal_dim1_n: 0,
     pdfinternal_xhr: false
   };
   var hit = pdfGrid();
@@ -2816,6 +2821,9 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
   var lastPickerSku = "";
   var lastApply = "";
   var lastHoleDim = "";
+  var lastConfirm = "";
+  var formLwSynced = false;
+  var pdfInternalHtml = false;
   function setField(r, k, v) {
     if (v == null || v === "") return;
     if (typeof r.set === "function") r.set(k, v);
@@ -2867,6 +2875,20 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
         window.__kannonGetPerim.any = true;
         window.__kannonGetPerim.url = url;
         window.__kannonGetPerim.method = method;
+        try {
+          var payload = (opts && opts.data) || {};
+          var internal = payload.Internal != null ? payload.Internal : payload.internal;
+          var arr = internal;
+          if (typeof internal === "string" && internal) arr = JSON.parse(internal);
+          if (Array.isArray(arr)) {
+            window.__kannonGetPerim.internal_n = arr.length;
+            var dimN = 0;
+            for (var ii = 0; ii < arr.length; ii++) {
+              if (parseFloat(arr[ii] && arr[ii].Dim1) > 0) dimN += 1;
+            }
+            window.__kannonGetPerim.internal_dim1_n = dimN;
+          }
+        } catch (eInt) {}
         if (opts && typeof opts === "object") {
           var prev = opts.success;
           opts.success = function(data) {
@@ -3459,6 +3481,89 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       })();
     });
   }
+  function waitPdfInternalHtml(timeoutMs) {
+    // AddNewPDFFeature success appends [data-featureid] then PDFGetData.
+    // XHR-start is not HTML-ready (live 1020250-1 Dim1 filled, Contours=0).
+    return new Promise(function(resolve) {
+      var t0 = Date.now();
+      (function poll() {
+        try {
+          if (window.jQuery) {
+            var $feat = jQuery("#pdfInternalData [data-featureid]");
+            var $dim = jQuery("#pdfInternalData [data-edit='dim1']");
+            if (!$dim.length) $dim = jQuery("[data-edit='dim1']");
+            if ($feat.length && $dim.length) {
+              resolve(true);
+              return;
+            }
+          }
+        } catch (e) {}
+        if (Date.now() - t0 > timeoutMs) {
+          resolve(false);
+          return;
+        }
+        setTimeout(poll, 40);
+      })();
+    });
+  }
+  function typeFormLengthWidth(s) {
+    // QuoteOrderEdit UpdatePerimeterWeight reads #length/#width form
+    // fields + Internal: PDFGetData() — not kendo Length/Width.
+    if (!window.jQuery) return "";
+    var via = "";
+    try {
+      if (s.Length != null && s.Length !== "") {
+        jQuery("#length").val(String(s.Length));
+      }
+      if (s.Width != null && s.Width !== "") {
+        jQuery("#width").val(String(s.Width));
+      }
+      if (s.Thickness != null && s.Thickness !== "") {
+        jQuery("#LoadThickness").val(String(s.Thickness));
+      }
+      if (s.Material) {
+        var $mat = jQuery("#MaterialEdit");
+        var w = $mat.data && $mat.data("kendoComboBox");
+        if (w && typeof w.value === "function") w.value(s.Material);
+        else $mat.val(s.Material);
+      }
+    } catch (e0) {}
+    try {
+      if (typeof window.onChange_GridPDF === "function") {
+        window.onChange_GridPDF();
+        via = "onChange_GridPDF";
+      }
+    } catch (e1) {}
+    try {
+      if (typeof window.onLengthChangePDF === "function" && s.Length != null
+          && s.Length !== "") {
+        window.onLengthChangePDF(jQuery("#length")[0] || "#length");
+        via = via ? via + "+onLengthChangePDF" : "onLengthChangePDF";
+      }
+    } catch (e2) {}
+    try {
+      if (typeof window.onWidthChangePDF === "function" && s.Width != null
+          && s.Width !== "") {
+        window.onWidthChangePDF(jQuery("#width")[0] || "#width");
+        via = via ? via + "+onWidthChangePDF" : "onWidthChangePDF";
+      }
+    } catch (e3) {}
+    try {
+      formLwSynced = !!(jQuery("#length").val() && jQuery("#width").val());
+    } catch (e4) { formLwSynced = false; }
+    return via;
+  }
+  function fireOnInternalDataChange() {
+    // Writes InternalData from PDFGetData then UpdatePerimeterWeight(true, false)
+    // with Internal: feature array (gold hole Dim1 path).
+    try {
+      if (typeof window.onInternalDataChange === "function") {
+        window.onInternalDataChange();
+        return "onInternalDataChange";
+      }
+    } catch (e) {}
+    return "";
+  }
   function fillHoleDiameter(dia) {
     if (dia == null || dia === "" || !window.jQuery) return "";
     // QuoteOrderEdit PDFGetData reads [data-edit='dim1'] — bundle has
@@ -3515,6 +3620,9 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     // Wait for GET /Quote/PDFInternal — 400ms race is leftover 0/0.
     // Do not cookie-POST AddFeature (item-level). Do not invent JSON.
     lastFeature = "";
+    if (holeDia == null || holeDia === "") {
+      return Promise.resolve("");
+    }
     if (typeof window.AddNewPDFFeature !== "function") {
       lastFeature = "none_addnewpdffeature";
       return Promise.resolve("");
@@ -3527,26 +3635,28 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       lastFeature = "AddNewPDFFeature_err";
       return Promise.resolve("");
     }
-    return waitPdfInternal(8000).then(function() {
+    return waitPdfInternalHtml(8000).then(function(htmlOk) {
+      pdfInternalHtml = !!htmlOk;
+      if (!htmlOk) {
+        return waitPdfInternal(8000).then(function() { return false; });
+      }
+      return true;
+    }).then(function() {
       if (holeDia) lastHoleDim = fillHoleDiameter(holeDia);
-      confirmPdfFeature();
-      return new Promise(function(resolve) {
-        setTimeout(function() {
-          var raw = pagePdfGetData();
-          if (raw && raw !== "[]" && raw !== "{}" && raw !== "null") {
-            setField(r, "InternalData", raw);
-          }
-          try {
-            if (typeof window.onInternalDataChange === "function") {
-              window.onInternalDataChange();
-            }
-          } catch (e2) {}
-          resolve(lastFeature);
-        }, 400);
+      lastConfirm = confirmPdfFeature();
+      if (window.__kannonGetPerim) window.__kannonGetPerim.xhr = false;
+      fireOnInternalDataChange();
+      return waitGetPerimeter(8000).then(function() {
+        var raw = pagePdfGetData();
+        if (raw && raw !== "[]" && raw !== "{}" && raw !== "null") {
+          setField(r, "InternalData", raw);
+        }
+        fireOnInternalDataChange();
+        return lastFeature;
       });
     });
   }
-  function stampPerimeter(grid, r) {
+  function stampPerimeter(grid, r, s) {
     try {
       var tr = grid.tbody.find("tr").filter(function() {
         return grid.dataItem(this) === r;
@@ -3554,7 +3664,9 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       if (tr.length && typeof grid.select === "function") grid.select(tr);
     } catch (e) {}
     if (window.__kannonGetPerim) window.__kannonGetPerim.xhr = false;
-    lastVia = fireUpdatePerimeterWeight() || lastVia;
+    var formVia = typeFormLengthWidth(s || {});
+    if (formVia) lastVia = formVia;
+    else lastVia = fireUpdatePerimeterWeight() || lastVia;
     return waitGetPerimeter(8000).then(function() {
       copyPerimeterOntoRow(grid, r);
     });
@@ -3607,7 +3719,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           if (s.Qty != null) editSet(hit.grid, r, "Qty", s.Qty);
           if (s.PartName) editSet(hit.grid, r, "PartName", s.PartName);
           stamped += 1;
-          return stampPerimeter(hit.grid, r).then(function() {
+          return stampPerimeter(hit.grid, r, s).then(function() {
             return addPdfHoleFeature(r, s.HoleDiameter).then(function() {
               if (s.ProductID) setField(r, "ProductID", s.ProductID);
               else if (keepPid) setField(r, "ProductID", keepPid);
@@ -3616,6 +3728,16 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
                 // PlateConfig Total=3 modal Value.
                 if (s.ProductID) setField(r, "ProductID", s.ProductID);
                 else if (val) setField(r, "ProductID", val);
+                // Last geometry XHR: Internal Dim1 + form L×W (1020250-1).
+                if (s.HoleDiameter && window.__kannonGetPerim) {
+                  window.__kannonGetPerim.xhr = false;
+                }
+                if (s.HoleDiameter) fireOnInternalDataChange();
+                if (!s.HoleDiameter) return "";
+                return waitGetPerimeter(8000).then(function() {
+                  copyPerimeterOntoRow(hit.grid, r);
+                  return "";
+                });
               });
             });
           });
@@ -3643,6 +3765,15 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       picker_sku: lastPickerSku,
       picker_apply: lastApply,
       hole_dim1_via: lastHoleDim,
+      confirm_via: lastConfirm,
+      form_lw_synced: !!formLwSynced,
+      pdfinternal_html: !!pdfInternalHtml,
+      getperim_internal_n: Number(
+        (window.__kannonGetPerim && window.__kannonGetPerim.internal_n) || 0
+      ),
+      getperim_internal_dim1_n: Number(
+        (window.__kannonGetPerim && window.__kannonGetPerim.internal_dim1_n) || 0
+      ),
       pdfinternal_xhr: !!(window.__kannonPdfInt && window.__kannonPdfInt.any)
     };
   });
@@ -3797,14 +3928,17 @@ def stamp_pdf_kendo_flats(
     the ProductType bar) by tenant SKU text so GetPDFData
     ProductID is the selected List Value. Do not invent a GUID.
     Named hole step is ``AddNewPDFFeature(feature, "cad")``
-    then wait for GET ``/Quote/PDFInternal`` (not a 400ms
-    race) then fill ``[data-edit='dim1']`` (QuoteOrderEdit
-    PDFGetData — bundle has 0 Diameter) then page
-    ``PDFGetData()`` onto the selected #gridPDF InternalData.
-    That creates NumberOfContours/Pierces (gold 14501-1 is
-    1/1). InternalData n=1 with empty Dim1 is leftover
-    29341-1. Do not invent those FileList keys. Do not invent
-    InternalData JSON. Do not cookie-POST /Quote/AddFeature.
+    then wait for GET ``/Quote/PDFInternal`` HTML
+    (``[data-featureid]`` + ``[data-edit='dim1']``, not XHR
+    start) then fill Dim1 then page ``onInternalDataChange()``.
+    That writes InternalData and ``UpdatePerimeterWeight(true,
+    false)`` with ``Internal: PDFGetData()``. UpdatePerimeterWeight
+    reads ``#length`` / ``#width`` form fields (onLengthChangePDF
+    / onWidthChangePDF). Live 1020250-1 ProductID+Dim1+OP/Weight
+    still Contours=0 when that last Internal XHR missed Dim1.
+    GetPDFData omits NumberOfContours/Pierces (0 bundle hits) —
+    do not invent those FileList keys. Nest is later. Do not
+    invent InternalData JSON. Do not cookie-POST /Quote/AddFeature.
     Type L×W / UpdatePerimeterWeight(true,true) first, then
     the hole step. AddNewPDFFeature() with no args is not gold.
     Empty InternalData is still expected for no-hole
@@ -3862,6 +3996,11 @@ def stamp_pdf_kendo_flats(
         "picker_sku": "",
         "picker_apply": "",
         "hole_dim1_via": "",
+        "confirm_via": "",
+        "form_lw_synced": False,
+        "pdfinternal_html": False,
+        "getperim_internal_n": 0,
+        "getperim_internal_dim1_n": 0,
         "pdfinternal_xhr": False,
     }
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
@@ -3899,6 +4038,11 @@ def stamp_pdf_kendo_flats(
         "picker_sku": str(value.get("picker_sku") or ""),
         "picker_apply": str(value.get("picker_apply") or ""),
         "hole_dim1_via": str(value.get("hole_dim1_via") or ""),
+        "confirm_via": str(value.get("confirm_via") or ""),
+        "form_lw_synced": bool(value.get("form_lw_synced")),
+        "pdfinternal_html": bool(value.get("pdfinternal_html")),
+        "getperim_internal_n": int(value.get("getperim_internal_n") or 0),
+        "getperim_internal_dim1_n": int(value.get("getperim_internal_dim1_n") or 0),
         "pdfinternal_xhr": bool(value.get("pdfinternal_xhr")),
     }
 

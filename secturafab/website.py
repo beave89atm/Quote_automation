@@ -176,6 +176,14 @@ AddNewPDFFeature writes JSON.stringify(PDFGetData()) immediately;
 PDFGetData Dim1 is [data-edit='dim1'] (bundle has 0 Diameter).
 GetPDFData omits NumberOfContours/Pierces. Fail-close if list0_pack
 BadgeString empty after ProductID+hole. Leave c23fba3d / 29341-1.
+Live 1020250-1: ProductID + Dim1 5.375 + InternalData + OP 69.5 /
+Weight 17.98 + OnAddPDFClick 200 ItemList=1 still Contours=0 /
+BadgeString '' / OCL [] / UnitCost==UnitWeightCost. Named miss:
+UpdatePerimeterWeight posts Internal: PDFGetData() and reads
+#length/#width form fields; onInternalDataChange then
+UpdatePerimeterWeight(true, false). Last geometry XHR must include
+filled Dim1 Internal. NumberOfContours is 0 hits in QuoteOrderEdit
+— do not invent those FileList keys. Nest is later. No graft.
 Do not PATCH. Do not remint. Gold look remains 1001898-1 a7dc46bf.
 Live 10098-1 (315cb19 leftover PIVOTING FOOT, 6a568912): posted FileList
 had FileType=Cad (string) plus CadType/Stock_*/SID/FileID/ID/ErrorStatus/
@@ -1856,6 +1864,25 @@ QUOTE_ORDER_EDIT_PDF_FINISH_HYPOTHESES: dict[str, str] = {
     "5_finish_success_list": "badge_ocl_unitcost_and_datapdf_contours",
 }
 
+# QuoteOrderEdit UpdatePerimeterWeight / onInternalDataChange (2026-09-07
+# /bundles/QuoteOrderEdit 353603 bytes). NumberOfContours is 0 hits.
+# Live 1020250-1: ProductID + Dim1 5.375 + InternalData + OP/Weight still
+# Contours=0 / empty BadgeString. Last GetPerimeterAndWeight must post
+# Internal: PDFGetData() (Dim1 filled) and #length/#width form fields.
+# onInternalDataChange does that via UpdatePerimeterWeight(true, false).
+# Nest / Renest_BestSheet is later. Do not invent Contours FileList keys.
+QUOTE_ORDER_EDIT_UPW_INTERNAL: dict[str, Any] = {
+    "xhr": "POST /Quote/GetPerimeterAndWeight",
+    "reads_form": ("#length", "#width", "#MaterialEdit", "#LoadThickness"),
+    "posts_internal": "PDFGetData()",
+    "oninternaldatachange_call": "UpdatePerimeterWeight(true, false)",
+    "onlengthchangepdf_call": "UpdatePerimeterWeight(true, true)",
+    "number_of_contours_bundle_hits": 0,
+    "nest_is_later": True,
+    "named_miss": "upw_internal_dim1_and_form_lw",
+    "invent_contours_on_filelist": False,
+}
+
 # OnAddLinearClick body keys. Do not add others.
 LINEAR_ADD_FIELDS = (
     "ID",
@@ -3317,6 +3344,133 @@ def list0_pack_badge_empty_after_productid_hole_is_fail(
         except (TypeError, ValueError):
             continue
     return hole
+
+
+def leftover_contours_zero_after_productid_hole_is_fail(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """1020250-1: ProductID+Dim1+InternalData still Contours=0 / empty pack.
+
+    GetPDFData omits NumberOfContours. Last GetPerimeterAndWeight must
+    post Internal: PDFGetData() with Dim1 and #length/#width. Do not
+    invent Contours FileList keys. Nest is later.
+    """
+    if not isinstance(dump, dict):
+        return False
+    bag = dump.get("filelist_bag") if isinstance(dump.get("filelist_bag"), dict) else {}
+    if bag.get("ProductID") in (None, "", "null"):
+        return False
+    pack = dump.get("list0_pack") if isinstance(dump.get("list0_pack"), dict) else {}
+    if str(pack.get("badge_string") or "") != "":
+        return False
+    try:
+        if int(pack.get("number_of_contours") or 0) != 0:
+            return False
+        if int(pack.get("ocl_n") or 0) != 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    live = dump.get("live_1020250_1") if isinstance(dump.get("live_1020250_1"), dict) else {}
+    if not live:
+        return False
+    if live.get("hole") is not True:
+        return False
+    try:
+        if float(live.get("hole_dim1") or 0) <= 0:
+            return False
+        if int(live.get("internaldata_n") or 0) < 1:
+            return False
+        if int(live.get("number_of_contours") or 0) != 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if live.get("invented_contours") is not False:
+        return False
+    if live.get("nest_best_sheet") is not False:
+        return False
+    if dump.get("invent_contours_on_filelist") is not False:
+        return False
+    if dump.get("operation_profile_graft") is not False:
+        return False
+    upw = dump.get("UpdatePerimeterWeight") if isinstance(dump.get("UpdatePerimeterWeight"), dict) else {}
+    if upw.get("named_miss") != QUOTE_ORDER_EDIT_UPW_INTERNAL["named_miss"]:
+        return False
+    if upw.get("posts_internal") != "PDFGetData()":
+        return False
+    return True
+
+
+def leftover_1020250_1_hypotheses_named(dump: dict[str, Any] | None) -> bool:
+    """1020250-1 capture names UPW Internal Dim1 + Nest-later."""
+    if not isinstance(dump, dict):
+        return False
+    hyps = dump.get("hypotheses") if isinstance(dump.get("hypotheses"), dict) else {}
+    if hyps.get("6_upw_internal_dim1_form_lw") != QUOTE_ORDER_EDIT_UPW_INTERNAL["named_miss"]:
+        return False
+    if hyps.get("7_nest_best_sheet") != "falsified_nest_is_later":
+        return False
+    return True
+
+
+def list0_pack_contours_zero_after_productid_hole_is_fail(
+    result: dict[str, Any] | None,
+    stamp_out: dict[str, Any] | None = None,
+    stamp_rows: list[dict[str, Any]] | None = None,
+) -> bool:
+    """OnAddPDFClick 200 but Contours=0 or BadgeString empty after ProductID+hole.
+
+    Live 1020250-1. Fail-close. Do not invent Contours FileList keys.
+    """
+    if not isinstance(result, dict):
+        return False
+    if (
+        "response_badge_string" not in result
+        and "response_number_of_contours" not in result
+    ):
+        return False
+    try:
+        contours = int(result.get("response_number_of_contours") or 0)
+    except (TypeError, ValueError):
+        contours = 0
+    badge = str(result.get("response_badge_string") or "")
+    if contours >= 1 and badge == "PR":
+        return False
+    if contours >= 1 and badge != "":
+        return False
+    bag = result.get("filelist_bag") if isinstance(result.get("filelist_bag"), dict) else {}
+    pid = bag.get("ProductID")
+    stamp_pid = 0
+    if isinstance(stamp_out, dict):
+        try:
+            stamp_pid = int(stamp_out.get("productid_n") or 0)
+        except (TypeError, ValueError):
+            stamp_pid = 0
+    if pid in (None, "", "null") and stamp_pid <= 0:
+        return False
+    hole = False
+    if isinstance(stamp_out, dict):
+        try:
+            if int(stamp_out.get("internaldata_n") or 0) >= 1:
+                hole = True
+        except (TypeError, ValueError):
+            hole = False
+        try:
+            if float(stamp_out.get("hole_dim1") or 0) > 0:
+                hole = True
+        except (TypeError, ValueError):
+            pass
+    for row in stamp_rows or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            if float(row.get("HoleDiameter") or 0) > 0:
+                hole = True
+                break
+        except (TypeError, ValueError):
+            continue
+    if not hole:
+        return False
+    return contours < 1 or badge == ""
 
 
 def leftover_filelist_productid_null_after_bind_is_fail(

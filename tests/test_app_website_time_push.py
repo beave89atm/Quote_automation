@@ -3021,6 +3021,90 @@ def test_29341_1_productid_hole_empty_badge_is_fail(tmp_path, monkeypatch):
     assert "persisted" not in blob.lower()
 
 
+def test_1020250_1_contours_zero_after_productid_hole_is_fail(tmp_path, monkeypatch):
+    """ProductID+Dim1+InternalData still Contours=0 — DoD FAIL (1020250-1)."""
+    from tests.fixtures.live_1020250_1 import (
+        FILELIST_PRODUCT_ID,
+        leftover_contours_zero_after_productid_hole_result,
+    )
+    from tests.fixtures.live_sheets_plates import sheets_plates_page_payload
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "HOLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.get_json.return_value = sheets_plates_page_payload()
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "weight_n": 1,
+        "productid_n": 1,
+        "internaldata_n": 1,
+        "getperimeter_xhr": True,
+        "perimeter_via": "onLengthChangePDF+onWidthChangePDF",
+        "feature_via": "AddNewPDFFeature",
+        "hole_dim1_via": "data-edit=dim1",
+        "confirm_via": "",
+        "form_lw_synced": True,
+        "pdfinternal_html": True,
+        "getperim_internal_n": 1,
+        "getperim_internal_dim1_n": 0,
+        "pdfinternal_xhr": True,
+    }
+    result = leftover_contours_zero_after_productid_hole_result()
+    result["finish_filelist_n"] = 1
+    client.add_item_pdf_files.return_value = result
+    client.quote_item_read.return_value = {
+        "Data": [
+            {
+                "Description": "HOLE-PLATE 7GA A572",
+                "ProductType": 100,
+                "BadgeString": "",
+                "UnitCost": 7.37,
+                "UnitWeightCost": 7.37,
+                "ProductID": FILELIST_PRODUCT_ID,
+                "OperationCostList": [],
+                "DataPartPDF": {
+                    "NumberOfContours": 0,
+                    "NumberOfPierces": None,
+                },
+            }
+        ],
+        "Total": 1,
+    }
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000102025",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE 1/2 HOLE",
+        bom_rows=[
+            {
+                "part_no": "HOLE-PLATE",
+                "qty": 1,
+                "description": "PLATE 1/2 HOLE",
+                "width_in": 4.0,
+                "length_in": 6.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_called_once()
+    blob = " ".join(notes)
+    assert "1020250-1" in blob
+    assert "Contours=0" in blob
+    assert "DoD FAIL" in blob
+    assert "form_lw_synced=true" in blob
+    assert "getperim_internal_dim1_n=0" in blob
+    assert "persisted" not in blob.lower()
+    assert "NumberOfContours" not in str(client.add_item_pdf_files.call_args)
+
+
 def test_gold_weldment_shape_kids_under_assembly_weld_on_assembly_only():
     """Gold 1001898-1: kids under assembly, Weld on assembly, never Cad/Linear."""
     payload = gold_1001898_get()

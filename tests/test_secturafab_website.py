@@ -1883,6 +1883,70 @@ def test_leftover_29341_1_productid_hole_empty_badge():
     assert is_forbidden_quote_number(SPENT_QUOTE_NUMBER)
 
 
+def test_leftover_1020250_1_contours_zero_after_productid_hole():
+    """Live 1020250-1: ProductID+Dim1+InternalData; Contours=0 / empty pack."""
+    from secturafab.website import (
+        leftover_1020250_1_hypotheses_named,
+        leftover_contours_zero_after_productid_hole_is_fail,
+        list0_pack_badge_ocl_is_gold,
+        list0_pack_contours_zero_after_productid_hole_is_fail,
+        QUOTE_ORDER_EDIT_UPW_INTERNAL,
+    )
+    from tests.fixtures.live_1020250_1 import (
+        FILELIST_PRODUCT_ID,
+        HOLE_DIM1,
+        leftover_contours_zero_after_productid_hole_dump,
+        leftover_contours_zero_after_productid_hole_result,
+    )
+    from tests.fixtures.live_gold_cad_pack import gold_list0_pack_result
+
+    js = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "quote_order_edit_update_pdf_internal.js"
+    ).read_text()
+    assert "function UpdatePerimeterWeight" in js
+    assert "Internal:b" in js
+    assert '$("#length").val()' in js
+    assert "function onInternalDataChange" in js
+    assert "UpdatePerimeterWeight(!0,!1)" in js
+    assert "function onLengthChangePDF" in js
+    assert "NumberOfContours" not in js
+    assert QUOTE_ORDER_EDIT_UPW_INTERNAL["posts_internal"] == "PDFGetData()"
+    assert QUOTE_ORDER_EDIT_UPW_INTERNAL["number_of_contours_bundle_hits"] == 0
+    assert QUOTE_ORDER_EDIT_UPW_INTERNAL["nest_is_later"] is True
+    assert QUOTE_ORDER_EDIT_UPW_INTERNAL["invent_contours_on_filelist"] is False
+
+    dump = leftover_contours_zero_after_productid_hole_dump()
+    assert dump["filelist_bag"]["ProductID"] == FILELIST_PRODUCT_ID
+    assert dump["live_1020250_1"]["hole_dim1"] == HOLE_DIM1
+    assert dump["list0_pack"]["number_of_contours"] == 0
+    assert dump["list0_pack"]["badge_string"] == ""
+    assert leftover_contours_zero_after_productid_hole_is_fail(dump) is True
+    assert leftover_1020250_1_hypotheses_named(dump) is True
+    invented = dict(dump)
+    invented["invent_contours_on_filelist"] = True
+    assert leftover_contours_zero_after_productid_hole_is_fail(invented) is False
+    nest = dict(dump)
+    nest["live_1020250_1"] = dict(dump["live_1020250_1"])
+    nest["live_1020250_1"]["nest_best_sheet"] = True
+    assert leftover_contours_zero_after_productid_hole_is_fail(nest) is False
+    assert leftover_contours_zero_after_productid_hole_is_fail(None) is False
+
+    leftover = leftover_contours_zero_after_productid_hole_result()
+    assert list0_pack_badge_ocl_is_gold(leftover) is False
+    assert list0_pack_contours_zero_after_productid_hole_is_fail(
+        leftover,
+        {"productid_n": 1, "internaldata_n": 1, "getperim_internal_dim1_n": 0},
+        [{"HoleDiameter": HOLE_DIM1, "ProductID": FILELIST_PRODUCT_ID}],
+    ) is True
+    gold = gold_list0_pack_result()
+    assert list0_pack_contours_zero_after_productid_hole_is_fail(
+        gold, {"productid_n": 1, "internaldata_n": 1}, [{"HoleDiameter": 0.5}]
+    ) is False
+    assert list0_pack_contours_zero_after_productid_hole_is_fail(None) is False
+
+
 def test_gold_linear_pack_is_saw_and_list0_pack():
     """Gold Long: Saw + Saw-Setup + UnitCost filled + ProductID/SKU.
 
@@ -8548,6 +8612,16 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "data-edit='dim1'" in _STAMP_PDF_KENDO_JS
     assert "hole_dim1_via" in _STAMP_PDF_KENDO_JS
     assert "29341-1" in _STAMP_PDF_KENDO_JS
+    assert "waitPdfInternalHtml" in _STAMP_PDF_KENDO_JS
+    assert "onLengthChangePDF" in _STAMP_PDF_KENDO_JS
+    assert "onWidthChangePDF" in _STAMP_PDF_KENDO_JS
+    assert "onChange_GridPDF" in _STAMP_PDF_KENDO_JS
+    assert "typeFormLengthWidth" in _STAMP_PDF_KENDO_JS
+    assert "fireOnInternalDataChange" in _STAMP_PDF_KENDO_JS
+    assert "getperim_internal_dim1_n" in _STAMP_PDF_KENDO_JS
+    assert "form_lw_synced" in _STAMP_PDF_KENDO_JS
+    assert "1020250-1" in _STAMP_PDF_KENDO_JS
+    assert 'setField(r, "NumberOfContours"' not in _STAMP_PDF_KENDO_JS
     assert "pdfinternal_xhr" in _STAMP_PDF_KENDO_JS
     assert "400ms race is leftover 0/0" in _STAMP_PDF_KENDO_JS
     assert 'url.indexOf("/Quote/AddFeature")' not in _STAMP_PDF_KENDO_JS
