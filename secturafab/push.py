@@ -3344,12 +3344,13 @@ class SecturaFabPushService:
         SKU did not land FileList ProductID — modal is not gold.
         Do not invent a GUID. GET ProductID + empty Tag/OCL is FAIL
         (live 1007092-1); pack miss is not ProductID.
-        Live 21682-1: ``POST /Product/ReadData_PlateConfig`` Total=3
-        (PL3-A572 thk=3 + PL0.125-Tread) missed PL050-100K / 0.5
-        Domex. Fetch that XHR unfiltered (Quotes UI picker that can
-        select PL7 Ga-A36 / PL1/4-A36). Catalog miss after that
-        lookup is ``plate_sku_missing`` — do not Finish, do not
-        invent a GUID, do not bind the wrong SKU.
+        Live 21682-1: quote-time ``POST /Product/ReadData_PlateConfig``
+        Total=3 (PL3-A572 thk=3 + PL0.125-Tread) is the wrong
+        source — even unfiltered. Bind FileList ProductID from
+        Products → Sheets & Plates (``GET v1/product/plate``,
+        1341 names; gold PL7 Ga-A36). ``plate_sku_missing`` only
+        after that full list has no ≤3/4 match (Domex / PL050
+        has no row). Do not invent a GUID.
         #files + GetPDFData + OnAddPDFClick is not
         gold PR/laser unless Cad GET has Tag + OperationCostList
         + UnitCost>0 + CuttingLength>0. Do not treat UnitPrice /
@@ -3373,8 +3374,10 @@ class SecturaFabPushService:
         from .plate_ops import (
             PLATE_SKU_MISSING,
             fetch_plate_catalog,
+            is_full_sheets_plates_catalog,
             match_plate_product,
             plate_sku_missing_after_lookup,
+            tenant_plate_product_id,
         )
 
         notes: list[str] = []
@@ -3529,9 +3532,15 @@ class SecturaFabPushService:
                     material=plate_mat,
                 )
                 sku_name = str((plate_sku or {}).get("ProductName") or "").strip()
+                sku_pid = tenant_plate_product_id(plate_sku)
                 if sku_name:
                     stamp_row["ProductSku"] = sku_name
-                elif plate_catalog:
+                if sku_pid:
+                    stamp_row["ProductID"] = sku_pid
+                elif (
+                    is_full_sheets_plates_catalog(plate_catalog)
+                    and plate_sku is None
+                ):
                     notes.append(
                         f"{PLATE_SKU_MISSING} no tenant ProductID for "
                         f"{plate_thk} {plate_mat} (live 21682-1)"
@@ -3590,7 +3599,15 @@ class SecturaFabPushService:
             if "productid_n" in bind:
                 notes.append(f"bind_productid_n={bind.get('productid_n')}")
             if plate_catalog:
-                notes.append(f"plate_config_total={len(plate_catalog)}")
+                notes.append(f"plate_catalog_total={len(plate_catalog)}")
+                if is_full_sheets_plates_catalog(plate_catalog):
+                    notes.append("plate_catalog=v1/product/plate")
+                else:
+                    notes.append(
+                        "WARNING: quote-time ReadData_PlateConfig "
+                        "Total=3 is not Products → Sheets & Plates "
+                        "(live 1341 names) — not a catalog read"
+                    )
             if cookie_http_pdf_upload_is_fail(upload_via) or not bound:
                 notes.append(
                     "WARNING: cookie HTTP UploadItem_PDFFiles skips "
@@ -3666,9 +3683,9 @@ class SecturaFabPushService:
                 ):
                     notes.append(
                         f"WARNING: {PLATE_SKU_MISSING} — "
-                        "ReadData_PlateConfig / plate catalog has no tenant "
-                        "ProductID for this thickness/grade "
-                        "(live 21682-1 Total=3 miss) — do not Finish; "
+                        "v1/product/plate Sheets & Plates has no ≤3/4 "
+                        "tenant ProductID for this thickness/grade "
+                        "(Domex/PL050 has no row) — do not Finish; "
                         "do not invent a GUID; do not bind the wrong SKU"
                     )
                 elif filelist_productid_null_after_sku_bind_is_fail(

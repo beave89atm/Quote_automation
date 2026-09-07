@@ -953,10 +953,10 @@ class SecturaFabClient:
         page: int = 1,
         page_size: int = 200,
     ) -> Any:
-        """POST /Product/ReadData_PlateConfig — Quotes UI plate picker grid.
+        """POST /Product/ReadData_PlateConfig — quote-time picker XHR.
 
-        Broad kendo page (no Thickness / Material / ProductName filter).
-        Live 21682-1 Total=3 was a too-tight filter — do not send those.
+        Live unfiltered Total=3 (PL3-A572 + PL0.125-Tread). That is
+        not Products → Sheets & Plates. Use read_sheets_plates_products.
         """
         from .browser_session import effective_website_cookie
         from .plate_ops import KENDO_PLATE_CONFIG_READ
@@ -992,6 +992,23 @@ class SecturaFabClient:
                 body=location,
             )
         return self._parse_website_or_raise(response, require_session=True)
+
+    def read_sheets_plates_products(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 200,
+    ) -> Any:
+        """GET v1/product/plate — Products → Sheets & Plates grid.
+
+        Live 2026-09-07: TotalCount=1341 unique names (PL7 Ga-A36,
+        PL1/4-A36, PL3/4-A36, …). Quote-time PlateConfig Total=3 is
+        the wrong source.
+        """
+        take = max(1, int(page_size or 200))
+        return self.get_json(
+            f"v1/product/plate?pageNumber={max(1, int(page or 1))}&pageSize={take}"
+        )
 
     def read_data_linear_lookup(self, product_id: str) -> Any:
         """GET /Product/Read_DataLinearlookup — 20ft/21ft productConfigID."""

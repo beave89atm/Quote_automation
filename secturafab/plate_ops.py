@@ -6,12 +6,15 @@ ThicknessDisp / WeightCategory from a plate product (e.g. ``PL1/4-A36``,
 ``POST v1/quote`` or a 200 on ``UpdateItem_Part``. New Line items have no
 DataPart, so UpdateItem_Part is a no-op — addplate is the write GET reads.
 
-Image Files ProductID is the Quotes UI plate picker
-(``POST /Product/ReadData_PlateConfig`` → ``#gridSelectProductPlate``).
-Gold 14501-1 binds ``PL7 Ga-A36``. Live 21682-1 filtered that XHR too
-tight (Total=3: PL3-A572 thk=3 + PL0.125-Tread) and missed
-PL050-100K / 0.5 Domex — fail-close ``plate_sku_missing``, do not
-invent a GUID or bind the wrong SKU.
+FileList ProductID is a local thickness+grade match against
+Products → Sheets & Plates (``GET v1/product/plate``, 1341 unique
+names / 2789 active configs on 2026-09-07). Gold 14501-1 is
+``PL7 Ga-A36``. Quote-time ``POST /Product/ReadData_PlateConfig``
+(``#gridSelectProductPlate``) is the wrong/filtered source —
+unfiltered it still returns Total=3 (PL3-A572 thk=3 +
+PL0.125-Tread). That XHR is not the catalog. ``plate_sku_missing``
+only after the full Sheets & Plates list has no ≤3/4 match.
+Do not invent a GUID. Domex / PL050 has no tenant row.
 """
 
 from __future__ import annotations
@@ -26,6 +29,10 @@ from .website import EMPTY_GUID
 _PLATE_PAGE = 200
 PLATE_SKU_MISSING = "plate_sku_missing"
 PLATE_CONFIG_PATH = "/Product/ReadData_PlateConfig"
+SHEETS_PLATES_PATH = "v1/product/plate"
+# Live 2026-09-07 Products → Sheets & Plates grid.
+SHEETS_PLATES_UNIQUE_NAMES = 1341
+FILTERED_PLATE_CONFIG_TOTAL = 3
 
 # Quotes UI class names (gold 14501-1 is PL7 Ga-A36, not PL3/16-A36).
 # USS 7 ga ≈ 0.1793 in — close enough to 3/16 (0.1875) for picker match.
@@ -52,8 +59,8 @@ _PLATE_NAME_RE = re.compile(
     r"(?P<grade>A\s*36|A\s*572|100\s*K|DOMEX|WELDOX|TREAD|[A-Z0-9]+)?",
 )
 
-# Broad kendo read — no Thickness / Material / ProductName filter.
-# Live 21682-1 Total=3 was a too-tight filter (wrong grid / thk / grade).
+# Quote-time #gridSelectProductPlate XHR. Live Total=3 even unfiltered.
+# Do not use this as the Products → Sheets & Plates catalog.
 KENDO_PLATE_CONFIG_READ: dict[str, Any] = {
     "take": _PLATE_PAGE,
     "skip": 0,
@@ -242,7 +249,7 @@ def merge_plate_catalogs(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def fetch_plate_config_catalog(client: Any) -> list[dict[str, Any]]:
-    """Quotes UI picker catalog — unfiltered ``ReadData_PlateConfig`` pages."""
+    """Quote-time ``ReadData_PlateConfig``. Live Total=3 is not the catalog."""
     reader = getattr(client, "read_data_plate_config", None)
     if not callable(reader):
         return []
@@ -267,12 +274,14 @@ def fetch_plate_config_catalog(client: Any) -> list[dict[str, Any]]:
 
 
 def fetch_plate_api_catalog(client: Any) -> list[dict[str, Any]]:
+    """Products → Sheets & Plates: ``GET v1/product/plate`` (1341 names)."""
     products: list[dict[str, Any]] = []
     try:
         page = 1
+        total = 0
         while page <= 20:
             data = client.get_json(
-                f"v1/product/plate?pageNumber={page}&pageSize={_PLATE_PAGE}"
+                f"{SHEETS_PLATES_PATH}?pageNumber={page}&pageSize={_PLATE_PAGE}"
             )
             if isinstance(data, list):
                 products.extend(r for r in data if isinstance(r, dict))
@@ -281,21 +290,93 @@ def fetch_plate_api_catalog(client: Any) -> list[dict[str, Any]]:
                 break
             if data.get("ItemList") is not None and not data.get("Results"):
                 break
-            batch = list(data.get("Results") or [])
-            products.extend(r for r in batch if isinstance(r, dict))
+            batch = [r for r in (data.get("Results") or []) if isinstance(r, dict)]
+            products.extend(batch)
+            try:
+                total = int(data.get("TotalCount") or data.get("Total") or 0)
+            except (TypeError, ValueError):
+                total = 0
+            if total and len(products) >= total:
+                break
             if not data.get("HasNext"):
+                break
+            if not batch:
                 break
             page += 1
     except Exception:  # noqa: BLE001
-        return []
+        return products
     return products
 
 
+def is_filtered_quote_plate_config(catalog: list[dict[str, Any]] | None) -> bool:
+    """True for the quote-time PlateConfig Total=3 XHR (not Sheets & Plates)."""
+    if not catalog:
+        return False
+    if len(catalog) > FILTERED_PLATE_CONFIG_TOTAL:
+        return False
+    names = " ".join(
+        str(r.get("ProductName") or r.get("SKU") or "")
+        for r in catalog
+        if isinstance(r, dict)
+    ).upper()
+    return "PL3-A572" in names or "TREAD" in names
+
+
+def is_full_sheets_plates_catalog(catalog: list[dict[str, Any]] | None) -> bool:
+    """Products → Sheets & Plates list, not quote-time Total=3.
+
+    Live grid is 1341 unique names. A fixture that includes a ≤3/4
+    mild SKU (PL7 Ga-A36 / PL1/4-A36) is a stand-in for that list.
+    """
+    if not catalog:
+        return False
+    if is_filtered_quote_plate_config(catalog):
+        return False
+    if len(catalog) >= 20:
+        return True
+    for product in catalog:
+        if not isinstance(product, dict):
+            continue
+        name = str(product.get("ProductName") or product.get("SKU") or "")
+        name_thk, name_grade = parse_plate_product_name(name)
+        try:
+            pthk = float(product.get("Thickness") or 0)
+        except (TypeError, ValueError):
+            pthk = 0.0
+        if pthk <= 0 and name_thk:
+            pthk = name_thk
+        grade = str(
+            product.get("MaterialGrade") or product.get("Material") or name_grade or ""
+        )
+        if pthk and 0 < pthk <= 0.75 and grade and "tread" not in grade.casefold():
+            return True
+    return False
+
+
+def tenant_plate_product_id(product: dict[str, Any] | None) -> str | None:
+    """Real tenant ProductID from the Sheets & Plates row. Do not invent."""
+    from .website import is_tenant_guid
+
+    if not isinstance(product, dict):
+        return None
+    pid = str(product.get("ID") or product.get("ProductID") or "").strip()
+    return pid if is_tenant_guid(pid) else None
+
+
 def fetch_plate_catalog(client: Any) -> list[dict[str, Any]]:
-    """Tenant plate SKUs: Quotes UI PlateConfig first, then ``v1/product/plate``."""
-    config_rows = fetch_plate_config_catalog(client)
+    """Tenant plate SKUs from Products → Sheets & Plates (``v1/product/plate``).
+
+    Quote-time ``ReadData_PlateConfig`` Total=3 is FAIL as a catalog
+    source — do not merge it in front of the 1341-name list.
+    """
     api_rows = fetch_plate_api_catalog(client)
-    return merge_plate_catalogs(config_rows, api_rows)
+    if is_full_sheets_plates_catalog(api_rows):
+        return api_rows
+    config_rows = fetch_plate_config_catalog(client)
+    if is_full_sheets_plates_catalog(config_rows):
+        return merge_plate_catalogs(api_rows, config_rows)
+    # Filtered Total=3 (or empty) is not a successful catalog read.
+    return api_rows
 
 
 def match_plate_product(
@@ -361,12 +442,14 @@ def plate_sku_missing_after_lookup(
     material: str | None = None,
     stamp_rows: list[dict[str, Any]] | None = None,
 ) -> bool:
-    """True when a real catalog was read and no tenant SKU matches.
+    """True when the full Sheets & Plates list has no ≤3/4 match.
 
     Empty catalog (cookie/API miss, MagicMock) is not this gate.
-    Live 21682-1 Total=3 (PL3-A572 / PL0.125-Tread) vs 0.5 Domex.
+    Quote-time ReadData_PlateConfig Total=3 is not a full catalog
+    read — that XHR is FAIL as a source, not plate_sku_missing.
+    Domex / PL050 with no row on the 1341-name list is this gate.
     """
-    if not catalog:
+    if not is_full_sheets_plates_catalog(catalog):
         return False
     rows = [r for r in (stamp_rows or []) if isinstance(r, dict)]
     if rows:

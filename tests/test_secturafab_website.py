@@ -1410,8 +1410,10 @@ def test_leftover_weight_without_productid_is_fail():
     filled_34603 = dict(dump_34603)
     filled_34603["filelist_bag"] = {"ProductID": "not-null"}
     assert leftover_filelist_productid_null_after_bind_is_fail(filled_34603) is False
+    from secturafab.forbidden_quotes import is_forbidden_quote_id
     from secturafab.website import leftover_plate_sku_missing_is_fail
     from tests.fixtures.live_21682_1 import leftover_plate_sku_missing_dump
+    from tests.fixtures.live_33819_2 import SPENT_QUOTE_ID_PREFIX, SPENT_QUOTE_NUMBER
 
     dump_21682 = leftover_plate_sku_missing_dump()
     assert leftover_plate_sku_missing_is_fail(dump_21682) is True
@@ -1422,6 +1424,8 @@ def test_leftover_weight_without_productid_is_fail():
     invented["live_21682_1"] = dict(invented["live_21682_1"])
     invented["live_21682_1"]["invented_guid"] = True
     assert leftover_plate_sku_missing_is_fail(invented) is False
+    assert SPENT_QUOTE_NUMBER == "33819-2"
+    assert is_forbidden_quote_id(f"{SPENT_QUOTE_ID_PREFIX}-1111-2222-3333-444444444444")
 
 
 def test_leftover_productid_is_not_the_pack():
@@ -8466,7 +8470,7 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "findProductWidget" in _STAMP_PDF_KENDO_JS
     assert "kendoComboBox" in _STAMP_PDF_KENDO_JS
     assert "s.ProductSku" in _STAMP_PDF_KENDO_JS
-    assert "s.ProductID" not in _STAMP_PDF_KENDO_JS
+    assert "s.ProductID" in _STAMP_PDF_KENDO_JS
     assert "picker_via" in _STAMP_PDF_KENDO_JS
     assert "isProductTypeBar" in _STAMP_PDF_KENDO_JS
     assert "isPlateProductWidget" in _STAMP_PDF_KENDO_JS
@@ -8486,7 +8490,8 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "OnSelectProductPlate" in _STAMP_PDF_KENDO_JS
     assert "SelectProductPlateOK" in _STAMP_PDF_KENDO_JS
     assert "ApplySelectProductPlate" in _STAMP_PDF_KENDO_JS
-    assert "s.ProductID" not in _STAMP_PDF_KENDO_JS
+    assert "s.ProductID" in _STAMP_PDF_KENDO_JS
+    assert "v1/product/plate" in _STAMP_PDF_KENDO_JS
     assert "waitModalRows" in _STAMP_PDF_KENDO_JS
     assert "modalSearchInput" in _STAMP_PDF_KENDO_JS
     assert "34603-2" in _STAMP_PDF_KENDO_JS

@@ -7,14 +7,12 @@ What worked: in-page mint, Time Waco org bind, Image Files upload,
 L×W 15×14.5 UPW OP=59 Wt=30.885, AddNewPDFFeature Hole +
 PDFInternal InternalData true.
 
-Fail-close: ProductID null. Tenant POST /Product/ReadData_PlateConfig
-returned Total=3 only (PL3-A572 thk=3; PL0.125-Tread). No
-PL050-100K / 0.5 Domex row. Correctly did not invent GUID or bind
-wrong SKU. OnAddPDFClick skipped.
-
-Gold 1001898-1 Cad 14501-1 has ProductName PL7 Ga-A36 and ProductID
-present — A36 gauge plates exist in tenant. Named reason is
-plate_sku_missing (not silent ProductID null).
+Fail-close: ProductID null. Used quote-time POST
+/Product/ReadData_PlateConfig Total=3 (PL3-A572 thk=3;
+PL0.125-Tread) — that XHR is the wrong/filtered source.
+Products → Sheets & Plates GET v1/product/plate is 1341
+names (PL7 Ga-A36, PL1/4-A36, …) and also has no Domex /
+PL050. Named reason stays plate_sku_missing. Leave it.
 """
 
 from __future__ import annotations

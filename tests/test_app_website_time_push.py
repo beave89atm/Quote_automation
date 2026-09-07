@@ -1114,6 +1114,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "34603-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "9be15b62-a824-442c-b911-50ca1016cc5e" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "21682-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "33819-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("b1036d7d-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("14219adc-f7f5-401a-b707-0bf200ef8c74")
     assert is_forbidden_quote_id("14219adc-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("9be15b62-a824-442c-b911-50ca1016cc5e")
@@ -3371,10 +3373,10 @@ def test_cad_laser_pack_proof_requires_labeled_hole_not_rad(tmp_path):
     assert "THICK.pdf" not in names
 
 
-def test_21682_1_plate_config_total_3_fail_closes_plate_sku_missing(
+def test_21682_1_plate_config_total_3_is_not_a_catalog_success(
     tmp_path, monkeypatch
 ):
-    """Live 21682-1: Total=3 catalog miss → plate_sku_missing, no Finish."""
+    """Quote-time Total=3 is not Products → Sheets & Plates. Not plate_sku_missing."""
     from secturafab.plate_ops import PLATE_SKU_MISSING
     from tests.fixtures.live_21682_1 import plate_config_miss_payload
 
@@ -3422,21 +3424,29 @@ def test_21682_1_plate_config_total_3_fail_closes_plate_sku_missing(
         ],
     )
     client.stamp_pdf_kendo_flats.assert_called_once()
-    client.add_item_pdf_files.assert_not_called()
     stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
     assert stamp_rows
     assert all("ProductID" not in row for row in stamp_rows)
     assert all(not str(row.get("ProductSku") or "").strip() for row in stamp_rows)
     blob = " ".join(notes)
-    assert PLATE_SKU_MISSING in blob
-    assert "21682-1" in blob
-    assert "do not Finish" in blob
-    assert "do not invent a GUID" in blob
+    assert PLATE_SKU_MISSING not in blob
+    plate_gets = [
+        str(c.args[0])
+        for c in client.get_json.call_args_list
+        if c.args
+    ]
+    assert any(u.startswith("v1/product/plate") for u in plate_gets)
+    assert "plate_catalog=v1/product/plate" not in blob
     assert "persisted" not in blob.lower()
 
 
 def test_a36_gold_plate_sku_binds_pl7_ga_a36(tmp_path, monkeypatch):
     """Gold 14501-1 style: 3/16 A36 binds tenant ProductName PL7 Ga-A36."""
+    from tests.fixtures.live_sheets_plates import (
+        PL7_GA_A36_ID,
+        sheets_plates_page_payload,
+    )
+
     monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
     pdf = tmp_path / "14501-1.pdf"
     pdf.write_bytes(b"%PDF")
@@ -3446,23 +3456,16 @@ def test_a36_gold_plate_sku_binds_pl7_ga_a36(tmp_path, monkeypatch):
     client.read_data_plate_config.return_value = {
         "Data": [
             {
-                "ID": "gold-pid",
-                "ProductName": "PL7 Ga-A36",
-                "MaterialGrade": "A36",
-                "Thickness": 0.1793,
+                "ID": "pl3-a572",
+                "ProductName": "PL3-A572",
+                "MaterialGrade": "A572",
+                "Thickness": 3,
                 "Active": True,
-            },
-            {
-                "ID": "pl14",
-                "ProductName": "PL1/4-A36",
-                "MaterialGrade": "A36",
-                "Thickness": 0.25,
-                "Active": True,
-            },
+            }
         ],
-        "Total": 2,
+        "Total": 3,
     }
-    client.get_json.return_value = {"Results": [], "HasNext": False}
+    client.get_json.return_value = sheets_plates_page_payload()
     client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
     client.stamp_pdf_kendo_flats.return_value = {
         "ok": True,
@@ -3524,31 +3527,83 @@ def test_a36_gold_plate_sku_binds_pl7_ga_a36(tmp_path, monkeypatch):
     stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
     assert stamp_rows
     assert stamp_rows[0]["ProductSku"] == "PL7 Ga-A36"
-    assert "ProductID" not in stamp_rows[0]
+    assert stamp_rows[0]["ProductID"] == PL7_GA_A36_ID
     blob = " ".join(notes)
     assert "plate_sku_missing" not in blob
+    assert "plate_catalog=v1/product/plate" in blob
     client.add_item_pdf_files.assert_called_once()
+
+
+def test_domex_full_catalog_miss_is_plate_sku_missing(tmp_path, monkeypatch):
+    """Full Sheets & Plates list with no Domex/PL050 → plate_sku_missing."""
+    from secturafab.plate_ops import PLATE_SKU_MISSING
+    from tests.fixtures.live_sheets_plates import sheets_plates_page_payload
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "KNUCKLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.read_data_plate_config.return_value = {"Data": [], "Total": 3}
+    client.get_json.return_value = sheets_plates_page_payload()
+    bind = _page_pdf_bind_ok(1)
+    bind["productid_n"] = 0
+    client.upload_pdf_via_page_add_files.return_value = bind
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "weight_n": 1,
+        "productid_n": 0,
+        "internaldata_n": 1,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "pdfinternal_xhr": True,
+        "feature_via": "AddNewPDFFeature",
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-0000000021682",
+        pdf_files=[pdf],
+        material="DOMEX/WELDOX",
+        thickness="0.5",
+        qty=1,
+        description="KNUCKLE PLATE",
+        bom_rows=[
+            {
+                "part_no": "KNUCKLE-PLATE",
+                "qty": 1,
+                "description": "1/2 DOMEX 1.0 HOLE",
+                "width_in": 14.5,
+                "length_in": 15.0,
+                "thickness_in": 0.5,
+            }
+        ],
+    )
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    client.add_item_pdf_files.assert_not_called()
+    stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
+    assert stamp_rows
+    assert all("ProductID" not in row for row in stamp_rows)
+    blob = " ".join(notes)
+    assert PLATE_SKU_MISSING in blob
+    assert "do not Finish" in blob
+    assert "do not invent a GUID" in blob
+    assert "persisted" not in blob.lower()
 
 
 def test_cad_pick_prefers_hole_with_tenant_productid(tmp_path):
     """Runner pick: Cad ≤3/4 + hole + tenant ProductID over catalog-miss Domex."""
-    from tests.fixtures.live_21682_1 import PLATE_CONFIG_ROWS
+    from tests.fixtures.live_sheets_plates import sheets_plates_catalog_rows
 
     lib = tmp_path / "lib"
     lib.mkdir()
     (lib / "NOHOLE.pdf").write_bytes(b"%PDF")
     (lib / "A36HOLE.pdf").write_bytes(b"%PDF")
     (lib / "DOMEX.pdf").write_bytes(b"%PDF")
-    catalog = [
-        {
-            "ID": "gold-pid",
-            "ProductName": "PL7 Ga-A36",
-            "MaterialGrade": "A36",
-            "Thickness": 0.1793,
-            "Active": True,
-        },
-        *PLATE_CONFIG_ROWS,
-    ]
+    catalog = sheets_plates_catalog_rows()
     service = SecturaFabPushService(client=MagicMock())
     paths = service._library_cad_pdfs(
         [

@@ -95,6 +95,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "8fb3da71",  # 29340-1 spent API mint / cookie AddView 302 — do not remint
         "14219adc",  # 34603-2 spent ProductID/org/no-hole Cad — do not remint
         "9be15b62",  # 21682-1 spent plate_sku_missing / ProductID null — do not remint
+        "b1036d7d",  # 33819-2 spent plate_sku_missing — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
         "95b8c186",  # 1007922-3 — do not open / PATCH / remint
     }
@@ -158,6 +159,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "29340-1",  # spent 8fb3da71 API mint / cookie AddView 302 — do not remint
         "34603-2",  # spent 14219adc ProductID null / org empty GUID / no-hole Cad — do not remint
         "21682-1",  # spent 9be15b62 plate_sku_missing / ProductID null — do not remint
+        "33819-2",  # spent b1036d7d plate_sku_missing — do not remint
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

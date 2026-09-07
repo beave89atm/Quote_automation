@@ -223,9 +223,11 @@ SetUnits sends one query key `units`. Do not Finish the raw STEP row.
       Costs. Internal stays empty (no holes on Long). ItemID empty
       for new rows. Do not graft Operation→Saw.
   GET  /Product/Read_DataLinearlookup?ProductID=  (20ft/21ft productConfigID)
-  POST /Product/ReadData_PlateConfig  (Quotes UI plate picker; unfiltered
-      pageSize 200. Live 21682-1 Total=3 was a too-tight Thickness /
-      Material / invented-SKU filter — miss is plate_sku_missing.)
+  GET  v1/product/plate  (Products → Sheets & Plates; live 1341 names.
+      Bind FileList ProductID from local thickness+grade match.
+      Gold PL7 Ga-A36. Quote-time POST /Product/ReadData_PlateConfig
+      Total=3 is the wrong/filtered source — not the catalog.
+      plate_sku_missing only after this full list has no ≤3/4 match.)
   POST /Quote/NestQuote_Edit
   POST /Quote/NestQuoteMultiPart_Renest
 
@@ -3116,11 +3118,11 @@ def filelist_productid_null_after_sku_bind_is_fail(
 
 
 def leftover_plate_sku_missing_is_fail(dump: dict[str, Any] | None) -> bool:
-    """21682-1 leftover: ReadData_PlateConfig miss → ProductID null / OnAddPDFClick skipped.
+    """21682-1 leftover: used quote-time PlateConfig Total=3, then skipped.
 
-    Total=3 (PL3-A572 thk=3 + PL0.125-Tread) is not PL050-100K.
-    Named reason is plate_sku_missing — not silent ProductID null.
-    Do not invent a GUID. Do not bind the wrong SKU. Do not PATCH.
+    Leftover stay. Full Sheets & Plates (v1/product/plate 1341) also
+    has no Domex / PL050 — named reason stays plate_sku_missing.
+    Do not invent a GUID. Do not PATCH. Do not remint.
     """
     if not isinstance(dump, dict):
         return False

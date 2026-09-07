@@ -281,12 +281,21 @@ def test_cookie_less_push_does_not_graft_profile(tmp_path: Path):
 def test_plate_catalog_grade_and_match():
     from secturafab.plate_ops import (
         catalog_plate_grade,
+        fetch_plate_catalog,
+        is_full_sheets_plates_catalog,
         match_plate_product,
         plate_config_rows,
         plate_config_total,
         plate_sku_missing_after_lookup,
+        tenant_plate_product_id,
     )
     from tests.fixtures.live_21682_1 import plate_config_miss_payload
+    from tests.fixtures.live_sheets_plates import (
+        PL7_GA_A36,
+        PL7_GA_A36_ID,
+        sheets_plates_catalog_rows,
+        sheets_plates_page_payload,
+    )
 
     assert catalog_plate_grade("A572 Grade 50") == "A572"
     assert catalog_plate_grade("A572 G50") == "A572"
@@ -319,18 +328,11 @@ def test_plate_catalog_grade_and_match():
     hit36 = match_plate_product(catalog, thickness=0.5, material="A36")
     assert hit36["ID"] == "pl-half"
 
-    gold = [
-        {
-            "ID": "gold-pid",
-            "ProductName": "PL7 Ga-A36",
-            "MaterialGrade": "A36",
-            "Thickness": 0.1793,
-            "Active": True,
-        }
-    ]
+    gold = [dict(PL7_GA_A36)]
     gold_hit = match_plate_product(gold, thickness=0.1875, material="A36")
-    assert gold_hit["ID"] == "gold-pid"
+    assert gold_hit["ID"] == PL7_GA_A36_ID
     assert gold_hit["ProductName"] == "PL7 Ga-A36"
+    assert tenant_plate_product_id(gold_hit) == PL7_GA_A36_ID
     assert plate_sku_missing_after_lookup(
         gold, thickness=0.1875, material="A36"
     ) is False
@@ -339,11 +341,32 @@ def test_plate_catalog_grade_and_match():
     assert plate_config_total(miss) == 3
     rows = plate_config_rows(miss)
     assert len(rows) == 3
+    assert is_full_sheets_plates_catalog(rows) is False
     assert match_plate_product(rows, thickness=0.5, material="DOMEX/WELDOX") is None
+    # Total=3-only is not a successful full-catalog read.
     assert plate_sku_missing_after_lookup(
         rows, thickness=0.5, material="DOMEX/WELDOX"
-    ) is True
+    ) is False
     assert plate_sku_missing_after_lookup([], thickness=0.5, material="DOMEX/WELDOX") is False
+
+    full = sheets_plates_catalog_rows()
+    assert is_full_sheets_plates_catalog(full) is True
+    assert match_plate_product(full, thickness=0.1875, material="A36")["ProductName"] == (
+        "PL7 Ga-A36"
+    )
+    assert match_plate_product(full, thickness=0.5, material="DOMEX/WELDOX") is None
+    assert plate_sku_missing_after_lookup(
+        full, thickness=0.5, material="DOMEX/WELDOX"
+    ) is True
+
+    client = MagicMock()
+    client.read_data_plate_config.return_value = plate_config_miss_payload()
+    client.get_json.return_value = {"Results": [], "HasNext": False}
+    assert fetch_plate_catalog(client) == []
+    client.get_json.return_value = sheets_plates_page_payload()
+    fetched = fetch_plate_catalog(client)
+    assert any(r.get("ProductName") == "PL7 Ga-A36" for r in fetched)
+    assert client.get_json.call_args.args[0].startswith("v1/product/plate")
 
 
 def test_purchased_component_keeps_dashed_pn():

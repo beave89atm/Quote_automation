@@ -3228,10 +3228,9 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     return "";
   }
   function readPlateGridBroad(g) {
-    // Live 21682-1: POST /Product/ReadData_PlateConfig filtered by
-    // Thickness/Material/PL050-100K → Total=3 (PL3-A572 thk=3 +
-    // PL0.125-Tread). Quotes UI picker that can select PL7 Ga-A36 /
-    // PL1/4-A36 reads unfiltered pages.
+    // Live 21682-1: quote-time ReadData_PlateConfig Total=3 even
+    // unfiltered (PL3-A572 thk=3 + PL0.125-Tread). FileList
+    // ProductID is bound from v1/product/plate (PL7 Ga-A36).
     try {
       if (g.dataSource && typeof g.dataSource.pageSize === "function") {
         g.dataSource.pageSize(200);
@@ -3598,9 +3597,13 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           stamped += 1;
           return stampPerimeter(hit.grid, r).then(function() {
             return addPdfHoleFeature(r, s.HoleDiameter).then(function() {
-              if (keepPid) setField(r, "ProductID", keepPid);
+              if (s.ProductID) setField(r, "ProductID", s.ProductID);
+              else if (keepPid) setField(r, "ProductID", keepPid);
               return pickProduct(s.ProductSku, r).then(function(val) {
-                if (val) setField(r, "ProductID", val);
+                // Local Sheets & Plates match wins over quote-time
+                // PlateConfig Total=3 modal Value.
+                if (s.ProductID) setField(r, "ProductID", s.ProductID);
+                else if (val) setField(r, "ProductID", val);
               });
             });
           });
@@ -3798,12 +3801,11 @@ def stamp_pdf_kendo_flats(
     the modal filter, not ``#Product`` (live 34603-2 0-rows /
     wrong input).     Live 1009213-1: modal SKU did not land
     FileList ProductID. ProductID is not the pack.
-    Live 21682-1: ReadData_PlateConfig filtered by thickness /
-    Material / invented PL050-100K returned Total=3 (PL3-A572
-    thk=3 + PL0.125-Tread). Read the modal unfiltered
-    (pageSize 200) and match PL7 Ga-A36 / PL1/4-A36 class
-    names. Catalog miss is plate_sku_missing — do not invent
-    a GUID.
+    Live 21682-1: quote-time ReadData_PlateConfig Total=3
+    (PL3-A572 thk=3 + PL0.125-Tread) even unfiltered. That
+    XHR is not Products → Sheets & Plates. Bind FileList
+    ProductID from the local v1/product/plate match (gold
+    PL7 Ga-A36). Do not invent a GUID.
     """
     spec_rows: list[dict[str, Any]] = []
     for row in rows or []:
@@ -3822,6 +3824,7 @@ def stamp_pdf_kendo_flats(
                 "Qty": row.get("Qty"),
                 "PartName": row.get("PartName") or row.get("Description") or "",
                 "ProductSku": str(row.get("ProductSku") or row.get("SKU") or "").strip(),
+                "ProductID": str(row.get("ProductID") or "").strip(),
                 "HoleDiameter": row.get("HoleDiameter"),
             }
         )
