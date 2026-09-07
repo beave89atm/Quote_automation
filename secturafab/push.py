@@ -3550,6 +3550,30 @@ class SecturaFabPushService:
                     stamp_row["ProductSku"] = sku_name
                 if sku_pid:
                     stamp_row["ProductID"] = sku_pid
+                    sku_pt = str(
+                        (plate_sku or {}).get("ProductType")
+                        or (plate_sku or {}).get("ProductTypeName")
+                        or ""
+                    ).strip()
+                    sku_pst = str(
+                        (plate_sku or {}).get("ProductSubType") or ""
+                    ).strip()
+                    from .website import (
+                        CAD_IMAGE_FILES_PLATE_PRODUCT_TYPE,
+                        CAD_IMAGE_FILES_PLATE_PRODUCT_SUBTYPE,
+                        filelist_producttype_is_plate_or_sheet,
+                    )
+
+                    stamp_row["ProductType"] = (
+                        sku_pt
+                        if filelist_producttype_is_plate_or_sheet(sku_pt)
+                        else CAD_IMAGE_FILES_PLATE_PRODUCT_TYPE
+                    )
+                    stamp_row["ProductSubType"] = (
+                        sku_pst
+                        if filelist_producttype_is_plate_or_sheet(sku_pst)
+                        else CAD_IMAGE_FILES_PLATE_PRODUCT_SUBTYPE
+                    )
                 elif (
                     is_full_sheets_plates_catalog(plate_catalog)
                     and plate_sku is None
@@ -3588,6 +3612,7 @@ class SecturaFabPushService:
                 getpdfdata_empty_or_incomplete_before_finish_is_fail,
                 finish_empty_filelist_after_good_stamp_is_fail,
                 finish_bag_internaldata_empty_after_hole_is_fail,
+                cad_plate_filelist_bar_producttype_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
                 empty_weight_after_perimeter_is_fail,
@@ -3969,6 +3994,26 @@ class SecturaFabPushService:
                                 "PDFGetData() onto InternalData — do not "
                                 "invent Contours FileList keys — "
                                 "Image Files DoD FAIL"
+                            )
+                        if "filelist_producttype" in result or "filelist_productsubtype" in result:
+                            notes.append(
+                                "filelist_producttype="
+                                + repr(result.get("filelist_producttype"))
+                                + " filelist_productsubtype="
+                                + repr(result.get("filelist_productsubtype"))
+                            )
+                        if cad_plate_filelist_bar_producttype_is_fail(
+                            result,
+                            stamp_out if isinstance(stamp_out, dict) else None,
+                            stamp_rows,
+                        ):
+                            notes.append(
+                                "WARNING: OnAddPDFClick FileList ProductType="
+                                "bar/bar_flat after plate ProductID + "
+                                "InternalData Dim1 (live bab8f668) — Image "
+                                "Files grid default is linear; QuoteOrderEdit "
+                                "Cad plate is prt_pdf — do not invent Contours "
+                                "FileList keys — Image Files DoD FAIL"
                             )
                         if finish_empty_filelist_after_good_stamp_is_fail(
                             result,

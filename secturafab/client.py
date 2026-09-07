@@ -1695,6 +1695,9 @@ class SecturaFabClient:
             "filelist_internaldata_dim1_n": int(
                 result.get("filelist_internaldata_dim1_n") or 0
             ),
+            "filelist_producttype": str(result.get("filelist_producttype") or ""),
+            "filelist_productsubtype": str(result.get("filelist_productsubtype") or ""),
+            "filelist_itemtype": str(result.get("filelist_itemtype") or ""),
             "posted_keys": [str(k) for k in (result.get("posted_keys") or [])],
             "getpdfdata_n": int(result.get("getpdfdata_n") or 0),
             "getpdfdata_productid_n": int(result.get("getpdfdata_productid_n") or 0),

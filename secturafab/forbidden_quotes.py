@@ -104,6 +104,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "1ca884cc",  # 1020250-1 fc94ca9 form_lw_synced + OP, FileList n=0 — ZZ-DEL
         "111633b8",  # 1020250-1 fc94ca9 companion ZZ-DEL — do not remint
         "6150c5c7",  # 1020250-1 77ddb70 FileList n=1 InternalData null — ZZ-DEL
+        "bab8f668",  # 1020250-1 55a0294 plate ProductID + InternalData, ProductType=bar — ZZ-DEL
         "b1036d7d",  # 33819-2 spent plate_sku_missing — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
         "95b8c186",  # 1007922-3 — do not open / PATCH / remint

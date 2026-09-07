@@ -1962,6 +1962,7 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_id("1ca884cc-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("111633b8-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("6150c5c7-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("bab8f668-1111-2222-3333-444444444444")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -2056,6 +2057,45 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
             },
         }
     ) is True
+
+    from tests.fixtures.live_1020250_1 import (
+        leftover_finish_producttype_bar_dump,
+        leftover_finish_producttype_bar_result,
+    )
+    from secturafab.website import (
+        leftover_finish_producttype_bar_after_plate_is_fail,
+        cad_plate_filelist_bar_producttype_is_fail,
+        CAD_IMAGE_FILES_PLATE_PRODUCT_TYPE,
+        filelist_producttype_is_linear_bar,
+        filelist_producttype_is_plate_or_sheet,
+    )
+
+    assert CAD_IMAGE_FILES_PLATE_PRODUCT_TYPE == "prt_pdf"
+    assert filelist_producttype_is_linear_bar("bar") is True
+    assert filelist_producttype_is_linear_bar("bar_flat") is True
+    assert filelist_producttype_is_linear_bar("prt_pdf") is False
+    assert filelist_producttype_is_plate_or_sheet("prt_pdf") is True
+    assert filelist_producttype_is_plate_or_sheet("bar") is False
+    pt_bar = leftover_finish_producttype_bar_dump()
+    assert leftover_1020250_1_hypotheses_named(pt_bar) is True
+    assert leftover_finish_producttype_bar_after_plate_is_fail(pt_bar) is True
+    assert leftover_finish_producttype_bar_after_plate_is_fail(None) is False
+    pt_ok = dict(pt_bar)
+    pt_ok["live_bab8f668"] = dict(pt_bar["live_bab8f668"])
+    pt_ok["live_bab8f668"]["filelist_producttype"] = "prt_pdf"
+    pt_ok["live_bab8f668"]["filelist_productsubtype"] = "prt_pdf"
+    pt_ok["filelist_bag"] = dict(pt_bar["filelist_bag"])
+    pt_ok["filelist_bag"]["ProductType"] = "prt_pdf"
+    pt_ok["filelist_bag"]["ProductSubType"] = "prt_pdf"
+    assert leftover_finish_producttype_bar_after_plate_is_fail(pt_ok) is False
+    pt_result = leftover_finish_producttype_bar_result()
+    assert list0_pack_badge_ocl_is_gold(pt_result) is False
+    assert cad_plate_filelist_bar_producttype_is_fail(
+        pt_result,
+        stamp_id,
+        [{"HoleDiameter": HOLE_DIM1, "ProductID": FILELIST_PRODUCT_ID, "ItemType": "cad"}],
+    ) is True
+    assert cad_plate_filelist_bar_producttype_is_fail(fl0_result) is False
 
     leftover = leftover_contours_zero_after_productid_hole_result()
     assert list0_pack_badge_ocl_is_gold(leftover) is False
@@ -8758,6 +8798,14 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "filelist_internaldata_dim1_n" in _PAGE_PDF_FINISH_JS
     assert "6150c5c7" in _PAGE_PDF_FINISH_JS
     assert "6150c5c7" in _STAMP_PDF_KENDO_JS
+    assert "writePlateProductType" in _PAGE_PDF_FINISH_JS
+    assert "writePlateProductType" in _STAMP_PDF_KENDO_JS
+    assert "bar_producttype" in _PAGE_PDF_FINISH_JS
+    assert "prt_pdf" in _PAGE_PDF_FINISH_JS
+    assert "prt_pdf" in _STAMP_PDF_KENDO_JS
+    assert "bab8f668" in _PAGE_PDF_FINISH_JS
+    assert "bab8f668" in _STAMP_PDF_KENDO_JS
+    assert "filelist_producttype" in _PAGE_PDF_FINISH_JS
     assert "ensureGetPdfDataReady" in _PAGE_PDF_FINISH_JS
     assert "filelist_raw" in _PAGE_PDF_FINISH_JS
     assert "n < 1" in _PAGE_PDF_FINISH_JS

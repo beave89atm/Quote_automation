@@ -27,9 +27,13 @@ form_lw_synced=true (17.375×17.375) + OP 69.5 / Weight 17.98
 but OnAddPDFClick posted FileList n=0 (row0 null). Stamp
 dataSource n=1 Status=1 is not GetPDFData(). 77ddb70 live
 6150c5c7 (ZZ-DEL): GetPDFData/FileList n=1 + ProductID + OP
-but Finish bag InternalData null — Contours stay 0. Do not
-invent Contours FileList keys. Leave gold a7dc46bf / 8bcc226b /
-21678-1. No mint. No PATCH.
+but Finish bag InternalData null — Contours stay 0. 55a0294
+live bab8f668 (ZZ-DEL): InternalData Type=hole Dim1=5.375
+proven, FileList n=1, but ProductType=bar / ProductSubType=
+bar_flat on a Sheets & Plates ProductID. Gold 14501-1 is Cad
++ plate SKU, not bar_flat. QuoteOrderEdit leftover-named
+ProductType/prt_pdf. Do not invent Contours FileList keys.
+Leave gold a7dc46bf / 8bcc226b / 21678-1. No mint. No PATCH.
 """
 
 from __future__ import annotations
@@ -115,6 +119,9 @@ def leftover_contours_zero_after_productid_hole_dump() -> dict[str, Any]:
             ),
             "10_finish_internaldata_null": (
                 QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_internaldata_null_miss"]
+            ),
+            "11_finish_producttype_bar": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_producttype_bar_miss"]
             ),
         },
         "live_1020250_1": {
@@ -313,6 +320,9 @@ def leftover_finish_internaldata_null_dump() -> dict[str, Any]:
             "10_finish_internaldata_null": (
                 QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_internaldata_null_miss"]
             ),
+            "11_finish_producttype_bar": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_producttype_bar_miss"]
+            ),
         },
         "live_6150c5c7": {
             "quote_id_prefix": "6150c5c7",
@@ -347,6 +357,96 @@ def leftover_finish_internaldata_null_result() -> dict[str, Any]:
         "filelist_from_kendo": False,
         "filelist_internaldata": None,
         "filelist_internaldata_dim1_n": 0,
+        "getpdfdata_n": 1,
+        "getpdfdata_productid_n": 1,
+        "getpdfdata_internal_dim1_n": 1,
+        "getpdfdata_outside_perimeter_n": 1,
+        "filelist_bag": bag,
+        "response_list_n": 0,
+        "response_badge_string": "",
+        "response_ocl_n": 0,
+        "response_number_of_contours": 0,
+    }
+
+
+def leftover_finish_producttype_bar_dump() -> dict[str, Any]:
+    """55a0294 / bab8f668: plate ProductID + hole InternalData, ProductType=bar."""
+    bag = dict(FILELIST_BAG)
+    bag["InternalData"] = (
+        '[{"Type":"hole","Dim1":5.375,"Dim2":0,"Qty":1,"Qty2":0,"Note":""}]'
+    )
+    bag["ProductType"] = "bar"
+    bag["ProductSubType"] = "bar_flat"
+    bag["ItemType"] = "cad"
+    return {
+        "quote_id": "bab8f668-0000-4000-8000-000000000001",
+        "quote_number": SPENT_QUOTE_NUMBER,
+        "readonly": True,
+        "invent_contours_on_filelist": False,
+        "operation_profile_graft": False,
+        "UpdatePerimeterWeight": dict(QUOTE_ORDER_EDIT_UPW_INTERNAL),
+        "filelist_bag": bag,
+        "hypotheses": {
+            "6_upw_internal_dim1_form_lw": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["named_miss"]
+            ),
+            "7_nest_best_sheet": "falsified_nest_is_later",
+            "8_form_lw_synced_false": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["form_lw_synced_false_miss"]
+            ),
+            "9_finish_filelist_n0": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_filelist_n0_miss"]
+            ),
+            "10_finish_internaldata_null": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_internaldata_null_miss"]
+            ),
+            "11_finish_producttype_bar": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["finish_producttype_bar_miss"]
+            ),
+        },
+        "live_bab8f668": {
+            "quote_id_prefix": "bab8f668",
+            "form_lw_synced": True,
+            "outside_perimeter": OUTSIDE_PERIMETER,
+            "weight": WEIGHT,
+            "productid": FILELIST_PRODUCT_ID,
+            "hole_dim1": HOLE_DIM1,
+            "getpdfdata_n": 1,
+            "getpdfdata_productid_n": 1,
+            "getpdfdata_internal_dim1_n": 1,
+            "getpdfdata_outside_perimeter_n": 1,
+            "finish_filelist_n": 1,
+            "filelist_internaldata_dim1_n": 1,
+            "filelist_producttype": "bar",
+            "filelist_productsubtype": "bar_flat",
+            "filelist_itemtype": "cad",
+            "badge_string": "",
+            "ocl_n": 0,
+            "number_of_contours": 0,
+        },
+    }
+
+
+def leftover_finish_producttype_bar_result() -> dict[str, Any]:
+    """OnAddPDFClick FileList n=1 with ProductType=bar after plate ProductID."""
+    bag = dict(FILELIST_BAG)
+    bag["InternalData"] = (
+        '[{"Type":"hole","Dim1":5.375,"Dim2":0,"Qty":1,"Qty2":0,"Note":""}]'
+    )
+    bag["ProductType"] = "bar"
+    bag["ProductSubType"] = "bar_flat"
+    bag["ItemType"] = "cad"
+    return {
+        "via": "skipped",
+        "finish_fn": "OnAddPDFClick",
+        "finish_why": "bar_producttype",
+        "finish_filelist_n": 1,
+        "filelist_from_kendo": False,
+        "filelist_internaldata": bag["InternalData"],
+        "filelist_internaldata_dim1_n": 1,
+        "filelist_producttype": "bar",
+        "filelist_productsubtype": "bar_flat",
+        "filelist_itemtype": "cad",
         "getpdfdata_n": 1,
         "getpdfdata_productid_n": 1,
         "getpdfdata_internal_dim1_n": 1,

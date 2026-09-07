@@ -1888,8 +1888,18 @@ QUOTE_ORDER_EDIT_UPW_INTERNAL: dict[str, Any] = {
     "finish_internaldata_null_miss": (
         "finish_bag_internaldata_null_after_getpdfdata_internal_dim1_n1"
     ),
+    "finish_producttype_bar_miss": (
+        "finish_producttype_bar_bar_flat_after_plate_productid_and_internaldata_dim1"
+    ),
     "invent_contours_on_filelist": False,
 }
+
+# QuoteOrderEdit leftover-named GetPDFData candidate (33204-1 / 1009213-1):
+# ProductType/prt_pdf. Gold imported Cad uses ProductSubType prt_dxf.
+# Image Files grid template defaults to bar / bar_flat (live bab8f668).
+# Do not leave that linear combo on a Sheets & Plates ProductID.
+CAD_IMAGE_FILES_PLATE_PRODUCT_TYPE = "prt_pdf"
+CAD_IMAGE_FILES_PLATE_PRODUCT_SUBTYPE = "prt_pdf"
 
 # OnAddLinearClick body keys. Do not add others.
 LINEAR_ADD_FIELDS = (
@@ -2431,6 +2441,8 @@ GETPDFDATA_BAG_COMPARE_KEYS = (
     "Length",
     "Width",
     "InternalData",
+    "ProductType",
+    "ProductSubType",
 )
 
 
@@ -3430,6 +3442,10 @@ def leftover_1020250_1_hypotheses_named(dump: dict[str, Any] | None) -> bool:
         "finish_internaldata_null_miss"
     ):
         return False
+    if hyps.get("11_finish_producttype_bar") != QUOTE_ORDER_EDIT_UPW_INTERNAL.get(
+        "finish_producttype_bar_miss"
+    ):
+        return False
     return True
 
 
@@ -3688,6 +3704,128 @@ def finish_bag_internaldata_empty_after_hole_is_fail(
             if int(result.get("filelist_internaldata_dim1_n") or 0) < 1:
                 return True
     except (TypeError, ValueError):
+        return True
+    return False
+
+
+def filelist_producttype_is_linear_bar(value: Any) -> bool:
+    """FileList ProductType/ProductSubType bar / bar_flat (grid default)."""
+    text = str(value or "").strip().lower()
+    return text == "bar" or text.startswith("bar_")
+
+
+def filelist_producttype_is_plate_or_sheet(value: Any) -> bool:
+    """Cad Image Files plate/sheet family — QuoteOrderEdit prt_pdf / plate / sheet."""
+    text = str(value or "").strip().lower()
+    if not text or filelist_producttype_is_linear_bar(text):
+        return False
+    if text.startswith("prt_"):
+        return True
+    return (
+        text in {"plate", "sheet", "plates", "sheets"}
+        or "plate" in text
+        or "sheet" in text
+    )
+
+
+def leftover_finish_producttype_bar_after_plate_is_fail(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """bab8f668: plate ProductID + InternalData Dim1, ProductType=bar/bar_flat."""
+    if not isinstance(dump, dict):
+        return False
+    live = dump.get("live_bab8f668") if isinstance(dump.get("live_bab8f668"), dict) else {}
+    if not live:
+        return False
+    try:
+        if int(live.get("getpdfdata_n") or 0) < 1:
+            return False
+        if int(live.get("getpdfdata_internal_dim1_n") or 0) < 1:
+            return False
+        if int(live.get("finish_filelist_n") or 0) < 1:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if live.get("productid") in (None, "", "null"):
+        return False
+    pt = live.get("filelist_producttype")
+    pst = live.get("filelist_productsubtype")
+    bag = dump.get("filelist_bag") if isinstance(dump.get("filelist_bag"), dict) else {}
+    if pt is None:
+        pt = bag.get("ProductType")
+    if pst is None:
+        pst = bag.get("ProductSubType")
+    if not (
+        filelist_producttype_is_linear_bar(pt)
+        or filelist_producttype_is_linear_bar(pst)
+        or (
+            not filelist_producttype_is_plate_or_sheet(pt)
+            and not filelist_producttype_is_plate_or_sheet(pst)
+        )
+    ):
+        return False
+    if dump.get("invent_contours_on_filelist") is not False:
+        return False
+    if dump.get("operation_profile_graft") is not False:
+        return False
+    return True
+
+
+def cad_plate_filelist_bar_producttype_is_fail(
+    result: dict[str, Any] | None,
+    stamp_out: dict[str, Any] | None = None,
+    stamp_rows: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Cad + plate ProductID posted as ProductType bar/bar_* is FAIL.
+
+    Live bab8f668. Older mocks without ProductType still pass through.
+    Do not invent Contours FileList keys.
+    """
+    if not isinstance(result, dict):
+        return False
+    bag = result.get("filelist_bag") if isinstance(result.get("filelist_bag"), dict) else {}
+    has_cap = (
+        "filelist_producttype" in result
+        or "filelist_productsubtype" in result
+        or "ProductType" in bag
+        or "ProductSubType" in bag
+    )
+    if not has_cap and str(result.get("finish_why") or "") != "bar_producttype":
+        return False
+    pid = bag.get("ProductID")
+    stamp_pid = 0
+    if isinstance(stamp_out, dict):
+        try:
+            stamp_pid = int(stamp_out.get("productid_n") or 0)
+        except (TypeError, ValueError):
+            stamp_pid = 0
+    row_pid = False
+    item_cad = False
+    for row in stamp_rows or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("ProductID") or "").strip():
+            row_pid = True
+        if str(row.get("ItemType") or "").strip().lower() == "cad":
+            item_cad = True
+    if pid in (None, "", "null") and stamp_pid < 1 and not row_pid:
+        return False
+    if str(result.get("finish_why") or "") == "bar_producttype":
+        return True
+    pt = result.get("filelist_producttype")
+    pst = result.get("filelist_productsubtype")
+    if pt is None:
+        pt = bag.get("ProductType")
+    if pst is None:
+        pst = bag.get("ProductSubType")
+    item = str(bag.get("ItemType") or result.get("filelist_itemtype") or "").lower()
+    if item and item != "cad" and not item_cad:
+        return False
+    if filelist_producttype_is_linear_bar(pt) or filelist_producttype_is_linear_bar(pst):
+        return True
+    if not filelist_producttype_is_plate_or_sheet(pt) and not filelist_producttype_is_plate_or_sheet(
+        pst
+    ):
         return True
     return False
 

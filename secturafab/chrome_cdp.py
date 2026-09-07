@@ -2486,6 +2486,66 @@ _PAGE_PDF_FINISH_JS = """(function() {
     if (internalDim1Count(saveInternalRaw(r)) < 1) writeInternalOnRow(r, raw);
     return raw;
   }
+  function typeTok(v) {
+    return String(v == null ? "" : v).toLowerCase().trim();
+  }
+  function isBarProductType(v) {
+    var s = typeTok(v);
+    return s === "bar" || s.indexOf("bar_") === 0;
+  }
+  function isPlateOrSheetType(v) {
+    var s = typeTok(v);
+    if (!s || isBarProductType(s)) return false;
+    if (s.indexOf("prt_") === 0) return true;
+    return s === "plate" || s === "sheet" || s === "sheets" || s === "plates"
+      || s.indexOf("plate") >= 0 || s.indexOf("sheet") >= 0;
+  }
+  function cadImageFilesPlateType() {
+    // QuoteOrderEdit leftover-named GetPDFData candidate ProductType/prt_pdf.
+    // Gold imported Cad uses prt_dxf. Do not leave grid default bar/bar_flat.
+    return "prt_pdf";
+  }
+  function writePlateProductType(r, s) {
+    // Live bab8f668: plate ProductID + hole InternalData, ProductType=bar /
+    // ProductSubType=bar_flat from the Image Files grid template.
+    var itemType = typeTok(r && (r.ItemType != null ? r.ItemType : r.itemType));
+    var pid = r && (r.ProductID != null ? r.ProductID : r.productID);
+    var hasPid = pid != null && String(pid).trim() && String(pid).toLowerCase() !== "null";
+    if (itemType && itemType !== "cad") return false;
+    if (!hasPid && !(s && (s.ProductID || s.ProductSku))) return false;
+    var wantType = "";
+    var wantSub = "";
+    if (s && isPlateOrSheetType(s.ProductType)) wantType = String(s.ProductType);
+    if (s && isPlateOrSheetType(s.ProductSubType)) wantSub = String(s.ProductSubType);
+    if (!wantType && isPlateOrSheetType(window.__kannonPlateProductType)) {
+      wantType = String(window.__kannonPlateProductType);
+    }
+    if (!wantSub && isPlateOrSheetType(window.__kannonPlateProductSubType)) {
+      wantSub = String(window.__kannonPlateProductSubType);
+    }
+    if (!wantType) wantType = cadImageFilesPlateType();
+    if (!wantSub) wantSub = cadImageFilesPlateType();
+    if (typeof r.set === "function") {
+      r.set("ProductType", wantType);
+      r.set("ProductSubType", wantSub);
+    } else {
+      r.ProductType = wantType;
+      r.ProductSubType = wantSub;
+    }
+    return true;
+  }
+  function cadPlateBarProductType(row) {
+    var itemType = typeTok(row && (row.ItemType != null ? row.ItemType : row.itemType));
+    var pid = row && (row.ProductID != null ? row.ProductID : row.productID);
+    var hasPid = pid != null && String(pid).trim() && String(pid).toLowerCase() !== "null";
+    if (itemType && itemType !== "cad") return false;
+    if (!hasPid) return false;
+    var pt = row.ProductType != null ? row.ProductType : row.productType;
+    var pst = row.ProductSubType != null ? row.ProductSubType : row.productSubType;
+    if (isBarProductType(pt) || isBarProductType(pst)) return true;
+    if (!isPlateOrSheetType(pt) && !isPlateOrSheetType(pst)) return true;
+    return false;
+  }
   function ensureGetPdfDataReady() {
     // Live 1ca884cc: stamp dataSource n=1 Status=1 / form_lw_synced /
     // OP>0 but OnAddPDFClick posted FileList n=0. GetPDFData walks
@@ -2523,6 +2583,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
         }
       } catch (e3) {}
       writeHoleInternalData(g, r);
+      writePlateProductType(r, null);
       if (internalDim1Count(saveInternalRaw(r)) < 1 && internalDim1Count(kept) > 0) {
         writeInternalOnRow(r, kept);
       }
@@ -2532,7 +2593,10 @@ _PAGE_PDF_FINISH_JS = """(function() {
       try { tbodyN = g.tbody.find("tr").length; } catch (e4) {}
       if ((!tbodyN || tbodyN < 1) && src.length && typeof g.refresh === "function") {
         g.refresh();
-        for (var ej = 0; ej < src.length; ej++) writeHoleInternalData(g, src[ej]);
+        for (var ej = 0; ej < src.length; ej++) {
+          writeHoleInternalData(g, src[ej]);
+          writePlateProductType(src[ej], null);
+        }
       }
     } catch (e5) {}
     try {
@@ -2542,6 +2606,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
         if (item && statusOf(item) > 0) {
           if (typeof g.select === "function") g.select(trs[t]);
           writeHoleInternalData(g, item);
+          writePlateProductType(item, null);
           break;
         }
       }
@@ -2602,7 +2667,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
     "Machine", "ProductID", "Qty", "Weight", "Weight_UseLocal",
     "OutsidePerimeter", "OutsidePerimeter_UseLocal", "NumberOfHeads",
     "WeightBorder", "Material", "Thickness", "Length", "Width",
-    "InternalData"
+    "InternalData", "ProductType", "ProductSubType", "ItemType"
   ];
   function bagSnap(row) {
     var o = {};
@@ -2708,6 +2773,9 @@ _PAGE_PDF_FINISH_JS = """(function() {
       filelist_from_kendo: false,
       finish_filelist_n: 0,
       filelist_raw: "[]",
+      filelist_producttype: "",
+      filelist_productsubtype: "",
+      filelist_itemtype: "",
       posted_keys: [],
       getpdfdata_n: preSnap.getpdfdata_n,
       getpdfdata_productid_n: preSnap.getpdfdata_productid_n,
@@ -2756,6 +2824,9 @@ _PAGE_PDF_FINISH_JS = """(function() {
       grid_id: gridId,
       finish_af_present: false,
       finish_why: "empty_perimeter",
+      filelist_producttype: krows.length ? (krows[0].ProductType != null ? krows[0].ProductType : "") : "",
+      filelist_productsubtype: krows.length ? (krows[0].ProductSubType != null ? krows[0].ProductSubType : "") : "",
+      filelist_itemtype: krows.length ? (krows[0].ItemType != null ? krows[0].ItemType : "") : "",
       request_keys: [],
       filelist_row_keys: [],
       kendo_row_keys: krows.length ? rowKeys(krows[0]) : [],
@@ -2792,6 +2863,9 @@ _PAGE_PDF_FINISH_JS = """(function() {
       filelist_raw: "[]",
       filelist_internaldata: postedIdata,
       filelist_internaldata_dim1_n: 0,
+      filelist_producttype: krows.length ? (krows[0].ProductType != null ? krows[0].ProductType : "") : "",
+      filelist_productsubtype: krows.length ? (krows[0].ProductSubType != null ? krows[0].ProductSubType : "") : "",
+      filelist_itemtype: krows.length ? (krows[0].ItemType != null ? krows[0].ItemType : "") : "",
       posted_keys: [],
       getpdfdata_n: preSnap.getpdfdata_n,
       getpdfdata_productid_n: preSnap.getpdfdata_productid_n,
@@ -2854,7 +2928,10 @@ _PAGE_PDF_FINISH_JS = """(function() {
         if (hitW && pageRows.length) {
           try {
             var srcW = hitW.grid.dataSource.data() || [];
-            if (srcW[0]) writeHoleInternalData(hitW.grid, srcW[0]);
+            if (srcW[0]) {
+              writeHoleInternalData(hitW.grid, srcW[0]);
+              writePlateProductType(srcW[0], null);
+            }
           } catch (eW) {}
           pageRows = pageGetPdfDataSafe();
         }
@@ -2874,25 +2951,30 @@ _PAGE_PDF_FINISH_JS = """(function() {
           || internalDim1Count(pagePdfGetDataRaw()) > 0
           || preSnap.getpdfdata_internal_dim1_n > 0;
         var emptyInternal = holeNeeded && idataDim1 < 1;
+        var barType = n > 0 && cadPlateBarProductType(first);
         var cap = {
           finish_filelist_n: n,
           filelist_raw: filelistRaw,
           filelist_internaldata: idataRaw,
           filelist_internaldata_dim1_n: idataDim1,
+          filelist_producttype: first.ProductType != null ? first.ProductType : "",
+          filelist_productsubtype: first.ProductSubType != null ? first.ProductSubType : "",
+          filelist_itemtype: first.ItemType != null ? first.ItemType : "",
           posted_keys: Object.keys(d),
           getpdfdata_n: pageRows.length,
           getpdfdata_productid_n: snapGetPdfRow(pageRows).getpdfdata_productid_n,
           getpdfdata_internal_dim1_n: snapGetPdfRow(pageRows).getpdfdata_internal_dim1_n,
           getpdfdata_outside_perimeter_n: snapGetPdfRow(pageRows).getpdfdata_outside_perimeter_n,
           request_keys: Object.keys(d),
-          filelist_from_kendo: fromKendo && !emptyInternal,
+          filelist_from_kendo: fromKendo && !emptyInternal && !barType,
           filelist_row_keys: n > 0 ? rowKeys(first) : [],
           filelist_bag: n > 0 ? bagSnap(first) : {},
           kendo_row_keys: krows.length ? rowKeys(krows[0]) : [],
           finish_af_present: hasAf(d),
           finish_why: n < 1 ? "empty_getpdfdata"
             : (emptyInternal ? "empty_internaldata"
-              : (fromKendo ? "" : "filelist_not_kendo")),
+              : (barType ? "bar_producttype"
+                : (fromKendo ? "" : "filelist_not_kendo"))),
           grid_id: gridId,
           response_list_n: 0,
           response_tag: "",
@@ -2905,7 +2987,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
           response_number_of_contours: 0,
           response_number_of_pierces: 0
         };
-        if (n < 1 || emptyInternal) {
+        if (n < 1 || emptyInternal || barType) {
           jQuery.ajax = orig;
           cap.status = 0;
           cap.via = "skipped";
@@ -3616,6 +3698,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           return "";
         }
         function applyRow(it) {
+          rememberPlateTypes(it);
           lastApply = "modal_apply";
           try {
             var tr = g.tbody.find("tr").filter(function() {
@@ -3668,6 +3751,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     lastPicker = hitW.via;
     lastPickerSku = sku;
     function applyItem(it) {
+      rememberPlateTypes(it);
       var val = itemValue(it);
       if (!val) return "";
       try {
@@ -3931,6 +4015,62 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     if (internalDim1Count(saveInternalRaw(r)) < 1) writeInternalOnRow(r, raw);
     return raw;
   }
+  function typeTok(v) {
+    return String(v == null ? "" : v).toLowerCase().trim();
+  }
+  function isBarProductType(v) {
+    var s = typeTok(v);
+    return s === "bar" || s.indexOf("bar_") === 0;
+  }
+  function isPlateOrSheetType(v) {
+    var s = typeTok(v);
+    if (!s || isBarProductType(s)) return false;
+    if (s.indexOf("prt_") === 0) return true;
+    return s === "plate" || s === "sheet" || s === "sheets" || s === "plates"
+      || s.indexOf("plate") >= 0 || s.indexOf("sheet") >= 0;
+  }
+  function cadImageFilesPlateType() {
+    // QuoteOrderEdit leftover-named GetPDFData candidate ProductType/prt_pdf.
+    return "prt_pdf";
+  }
+  function rememberPlateTypes(it) {
+    if (!it) return;
+    var pt = it.ProductType != null ? it.ProductType : it.productType;
+    var pst = it.ProductSubType != null ? it.ProductSubType : it.productSubType;
+    if (isBarProductType(pt) || isBarProductType(pst)) return;
+    if (isPlateOrSheetType(pt) || isPlateOrSheetType(pst)) {
+      window.__kannonPlateProductType = pt != null ? String(pt) : "";
+      window.__kannonPlateProductSubType = pst != null ? String(pst) : "";
+    }
+  }
+  function writePlateProductType(r, s) {
+    // Live bab8f668: plate ProductID left ProductType=bar / bar_flat.
+    var itemType = typeTok(r && (r.ItemType != null ? r.ItemType : r.itemType));
+    var pid = r && (r.ProductID != null ? r.ProductID : r.productID);
+    var hasPid = pid != null && String(pid).trim() && String(pid).toLowerCase() !== "null";
+    if (itemType && itemType !== "cad") return false;
+    if (!hasPid && !(s && (s.ProductID || s.ProductSku))) return false;
+    var wantType = "";
+    var wantSub = "";
+    if (s && isPlateOrSheetType(s.ProductType)) wantType = String(s.ProductType);
+    if (s && isPlateOrSheetType(s.ProductSubType)) wantSub = String(s.ProductSubType);
+    if (!wantType && isPlateOrSheetType(window.__kannonPlateProductType)) {
+      wantType = String(window.__kannonPlateProductType);
+    }
+    if (!wantSub && isPlateOrSheetType(window.__kannonPlateProductSubType)) {
+      wantSub = String(window.__kannonPlateProductSubType);
+    }
+    if (!wantType) wantType = cadImageFilesPlateType();
+    if (!wantSub) wantSub = cadImageFilesPlateType();
+    if (typeof r.set === "function") {
+      r.set("ProductType", wantType);
+      r.set("ProductSubType", wantSub);
+    } else {
+      r.ProductType = wantType;
+      r.ProductSubType = wantSub;
+    }
+    return true;
+  }
   function ensureGetPdfDataReady() {
     // Live 1ca884cc: Finish filelist_n=0 after form_lw_synced=true + OP>0.
     // GetPDFData keeps Status>0 tbody rows; SetStatus runs on selected only.
@@ -3963,6 +4103,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
         }
       } catch (e3) {}
       writeHoleInternalData(g, r);
+      writePlateProductType(r, null);
       if (internalDim1Count(saveInternalRaw(r)) < 1 && internalDim1Count(kept) > 0) {
         writeInternalOnRow(r, kept);
       }
@@ -3972,7 +4113,10 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       try { tbodyN = g.tbody.find("tr").length; } catch (e4) {}
       if ((!tbodyN || tbodyN < 1) && src.length && typeof g.refresh === "function") {
         g.refresh();
-        for (var ej = 0; ej < src.length; ej++) writeHoleInternalData(g, src[ej]);
+        for (var ej = 0; ej < src.length; ej++) {
+          writeHoleInternalData(g, src[ej]);
+          writePlateProductType(src[ej], null);
+        }
       }
     } catch (e5) {}
     try {
@@ -3982,6 +4126,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
         if (item && Number(item.Status) > 0) {
           if (typeof g.select === "function") g.select(trs[t]);
           writeHoleInternalData(g, item);
+          writePlateProductType(item, null);
           break;
         }
       }
@@ -4185,6 +4330,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
                 // PlateConfig Total=3 modal Value.
                 if (s.ProductID) setField(r, "ProductID", s.ProductID);
                 else if (val) setField(r, "ProductID", val);
+                writePlateProductType(r, s);
                 // Last geometry XHR: form L×W THEN Internal Dim1
                 // (live 5a231aa form_lw_synced=false / OP=0).
                 var formVia = typeFormLengthWidth(s);
@@ -4304,6 +4450,9 @@ def invoke_page_pdf_finish(
         "filelist_raw": "",
         "filelist_internaldata": "",
         "filelist_internaldata_dim1_n": 0,
+        "filelist_producttype": "",
+        "filelist_productsubtype": "",
+        "filelist_itemtype": "",
         "posted_keys": [],
         "getpdfdata_n": 0,
         "getpdfdata_productid_n": 0,
@@ -4398,6 +4547,9 @@ def invoke_page_pdf_finish(
         "filelist_internaldata_dim1_n": int(
             value.get("filelist_internaldata_dim1_n") or 0
         ),
+        "filelist_producttype": str(value.get("filelist_producttype") or ""),
+        "filelist_productsubtype": str(value.get("filelist_productsubtype") or ""),
+        "filelist_itemtype": str(value.get("filelist_itemtype") or ""),
         "posted_keys": [str(k) for k in (value.get("posted_keys") or [])],
         "getpdfdata_n": int(value.get("getpdfdata_n") or 0),
         "getpdfdata_productid_n": int(value.get("getpdfdata_productid_n") or 0),
@@ -4486,6 +4638,8 @@ def stamp_pdf_kendo_flats(
                 "PartName": row.get("PartName") or row.get("Description") or "",
                 "ProductSku": str(row.get("ProductSku") or row.get("SKU") or "").strip(),
                 "ProductID": str(row.get("ProductID") or "").strip(),
+                "ProductType": str(row.get("ProductType") or "").strip(),
+                "ProductSubType": str(row.get("ProductSubType") or "").strip(),
                 "HoleDiameter": row.get("HoleDiameter"),
             }
         )
