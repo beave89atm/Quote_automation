@@ -3261,7 +3261,7 @@ def test_34603_2_filelist_productid_null_after_sku_bind_does_not_finish(
     from secturafab.website import filelist_productid_null_after_sku_bind_is_fail
 
     monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
-    pdf = tmp_path / "34606-1.pdf"
+    pdf = tmp_path / "PROOF-PLATE.pdf"
     pdf.write_bytes(b"%PDF")
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=box"
@@ -3298,7 +3298,7 @@ def test_34603_2_filelist_productid_null_after_sku_bind_does_not_finish(
         description="PLATE",
         bom_rows=[
             {
-                "part_no": "34606-1",
+                "part_no": "PROOF-PLATE",
                 "qty": 1,
                 "description": "PLATE",
                 "width_in": 12.0,
