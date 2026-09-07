@@ -4979,19 +4979,17 @@ class SecturaFabPushService:
 
             extra_pdfs = [job_pdf] if has_job_pdf else None
             plate_catalog: list[dict[str, Any]] = []
-            try:
-                from .plate_ops import fetch_plate_catalog
+            cad_pdfs: list[Path] = []
+            if not cad:
+                try:
+                    from .plate_ops import fetch_plate_catalog
 
-                plate_catalog = fetch_plate_catalog(self.client)
-            except Exception:  # noqa: BLE001
-                plate_catalog = []
-            cad_pdfs = (
-                []
-                if cad
-                else self._library_cad_pdfs(
+                    plate_catalog = fetch_plate_catalog(self.client)
+                except Exception:  # noqa: BLE001
+                    plate_catalog = []
+                cad_pdfs = self._library_cad_pdfs(
                     bom_rows, library, plate_catalog=plate_catalog
                 )
-            )
             if cad_pdfs and not any(
                 cad_laser_pack_proof_row(r) for r in (bom_rows or [])
             ):

@@ -279,6 +279,8 @@ def fetch_plate_api_catalog(client: Any) -> list[dict[str, Any]]:
                 break
             if not isinstance(data, dict):
                 break
+            if data.get("ItemList") is not None and not data.get("Results"):
+                break
             batch = list(data.get("Results") or [])
             products.extend(r for r in batch if isinstance(r, dict))
             if not data.get("HasNext"):
