@@ -82,6 +82,7 @@ GOLD_CAD_PACK_BIND: dict[str, Any] = {
         "number_of_contours": 1,
         "number_of_pierces": 1,
         "thickness_in": 0.1875,
+        "product_name": "PL7 Ga-A36",
         "should_be": "Cad",
     },
     "leftover_miss": dict(LEFTOVER_MISS),

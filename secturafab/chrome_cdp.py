@@ -3194,6 +3194,57 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     }
     return false;
   }
+  function plateItemThk(it) {
+    var t = parseFloat(it && (it.Thickness != null ? it.Thickness : it.thickness));
+    if (isFinite(t) && t > 0) return t;
+    var nm = itemSku(it);
+    var ga = nm.match(/PL\\s*(\\d+)\\s*Ga/i);
+    if (ga) {
+      var gmap = {7: 0.1793, 8: 0.1644, 9: 0.1495, 10: 0.1345};
+      var gv = gmap[parseInt(ga[1], 10)];
+      if (gv) return gv;
+    }
+    var frac = nm.match(/PL\\s*(\\d+)\\s*\\/\\s*(\\d+)/i);
+    if (frac && parseInt(frac[2], 10)) {
+      return parseInt(frac[1], 10) / parseInt(frac[2], 10);
+    }
+    return NaN;
+  }
+  function plateItemGrade(it) {
+    var blob = String((it && (it.MaterialGrade || it.Material || itemSku(it))) || "").toLowerCase();
+    if (blob.indexOf("tread") >= 0) return "tread";
+    if (blob.indexOf("100k") >= 0 || blob.indexOf("domex") >= 0
+        || blob.indexOf("weldox") >= 0) return "100k";
+    if (blob.indexOf("a572") >= 0) return "a572";
+    if (blob.indexOf("a36") >= 0) return "a36";
+    return blob;
+  }
+  function wantGradeOf(s) {
+    var blob = String(s || "").toLowerCase();
+    if (blob.indexOf("100k") >= 0 || blob.indexOf("domex") >= 0
+        || blob.indexOf("weldox") >= 0) return "100k";
+    if (blob.indexOf("a572") >= 0) return "a572";
+    if (blob.indexOf("a36") >= 0) return "a36";
+    return "";
+  }
+  function readPlateGridBroad(g) {
+    // Live 21682-1: POST /Product/ReadData_PlateConfig filtered by
+    // Thickness/Material/PL050-100K → Total=3 (PL3-A572 thk=3 +
+    // PL0.125-Tread). Quotes UI picker that can select PL7 Ga-A36 /
+    // PL1/4-A36 reads unfiltered pages.
+    try {
+      if (g.dataSource && typeof g.dataSource.pageSize === "function") {
+        g.dataSource.pageSize(200);
+      }
+      if (g.dataSource && typeof g.dataSource.filter === "function") {
+        g.dataSource.filter({});
+      }
+    } catch (e0) {}
+    if (g.dataSource && typeof g.dataSource.read === "function") {
+      return Promise.resolve(g.dataSource.read()).catch(function() { return null; });
+    }
+    return Promise.resolve(null);
+  }
   function pickPlateModal(sku, pdfRow) {
     lastPickerSku = sku;
     lastApply = "search_only";
@@ -3215,17 +3266,25 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
         var g = hit.grid;
         var want = String(sku).toLowerCase();
         var wantN = normSku(sku);
+        var wantThk = parseFloat(pdfRow && pdfRow.Thickness);
+        var wantGrade = wantGradeOf((pdfRow && pdfRow.Material) || sku);
+        return readPlateGridBroad(g).then(function() {
         typeModalSearch(hit, sku);
-        try {
-          if (g.dataSource && typeof g.dataSource.filter === "function") {
-            g.dataSource.filter({field: "ProductName", operator: "contains", value: sku});
-          }
-        } catch (e3) {}
         function matchRow(it) {
           var nm = itemSku(it).toLowerCase();
           var nn = normSku(itemSku(it));
-          return !!(nm && (nm === want || nm.indexOf(want) >= 0 || want.indexOf(nm) >= 0
-            || (nn && nn === wantN)));
+          if (nm && (nm === want || nm.indexOf(want) >= 0 || want.indexOf(nm) >= 0
+            || (nn && nn === wantN))) return true;
+          // Gold 14501-1: PL7 Ga-A36 matches 3/16 A36 (delta < 0.02).
+          var ithk = plateItemThk(it);
+          var igrade = plateItemGrade(it);
+          if (igrade === "tread") return false;
+          if (isFinite(ithk) && ithk > 2) return false;
+          if (isFinite(wantThk) && isFinite(ithk) && wantGrade && igrade
+              && wantGrade === igrade && Math.abs(ithk - wantThk) <= 0.02) {
+            return true;
+          }
+          return false;
         }
         function modalApplyClick() {
           try {
@@ -3300,6 +3359,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
             return pidOf(pdfRow) || val || "";
           });
         });
+        });
       });
     });
   }
@@ -3319,34 +3379,41 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       } catch (e2) {}
       return val;
     }
-    var data = [];
-    try { data = (w.dataSource && w.dataSource.data && w.dataSource.data()) || []; } catch (e3) {}
-    var want = String(sku).toLowerCase();
-    for (var i = 0; i < data.length; i++) {
-      var nm = itemSku(data[i]).toLowerCase();
+    function widgetMatch(it) {
+      var nm = itemSku(it).toLowerCase();
+      var want = String(sku).toLowerCase();
       if (nm && (nm === want || nm.indexOf(want) >= 0 || want.indexOf(nm) >= 0)) {
-        return Promise.resolve(applyItem(data[i]));
+        return true;
       }
+      var wantThk = parseFloat(pdfRow && pdfRow.Thickness);
+      var wantGrade = wantGradeOf((pdfRow && pdfRow.Material) || sku);
+      var ithk = plateItemThk(it);
+      var igrade = plateItemGrade(it);
+      if (igrade === "tread") return false;
+      if (isFinite(ithk) && ithk > 2) return false;
+      return !!(isFinite(wantThk) && isFinite(ithk) && wantGrade && igrade
+        && wantGrade === igrade && Math.abs(ithk - wantThk) <= 0.02);
     }
-    if (w.dataSource && typeof w.dataSource.filter === "function") {
-      try {
-        w.dataSource.filter({field: "ProductName", operator: "contains", value: sku});
-      } catch (e4) {}
+    function scanWidget(rows) {
+      for (var i = 0; i < (rows || []).length; i++) {
+        if (widgetMatch(rows[i])) return applyItem(rows[i]);
+      }
+      return "";
     }
-    if (w.dataSource && typeof w.dataSource.read === "function") {
-      return Promise.resolve(w.dataSource.read()).then(function() {
-        var rows = [];
-        try { rows = (w.dataSource.data && w.dataSource.data()) || []; } catch (e5) {}
-        for (var j = 0; j < rows.length; j++) {
-          var nm2 = itemSku(rows[j]).toLowerCase();
-          if (nm2 && (nm2 === want || nm2.indexOf(want) >= 0 || want.indexOf(nm2) >= 0)) {
-            return applyItem(rows[j]);
-          }
-        }
-        return "";
-      }).catch(function() { return ""; });
-    }
-    return Promise.resolve("");
+    return readPlateGridBroad(w).then(function() {
+      var data = [];
+      try { data = (w.dataSource && w.dataSource.data && w.dataSource.data()) || []; } catch (e3) {}
+      var hitVal = scanWidget(data);
+      if (hitVal) return hitVal;
+      if (w.dataSource && typeof w.dataSource.read === "function") {
+        return Promise.resolve(w.dataSource.read()).then(function() {
+          var rows = [];
+          try { rows = (w.dataSource.data && w.dataSource.data()) || []; } catch (e5) {}
+          return scanWidget(rows);
+        }).catch(function() { return ""; });
+      }
+      return "";
+    });
   }
   function pickProduct(sku, pdfRow) {
     lastPicker = "";
@@ -3729,8 +3796,14 @@ def stamp_pdf_kendo_flats(
     ``#gridSelectProductPlate`` modal apply/select (dblclick +
     modal Select), not search-only. Wait for modal rows; type
     the modal filter, not ``#Product`` (live 34603-2 0-rows /
-    wrong input). Live 1009213-1: modal SKU did not land
+    wrong input).     Live 1009213-1: modal SKU did not land
     FileList ProductID. ProductID is not the pack.
+    Live 21682-1: ReadData_PlateConfig filtered by thickness /
+    Material / invented PL050-100K returned Total=3 (PL3-A572
+    thk=3 + PL0.125-Tread). Read the modal unfiltered
+    (pageSize 200) and match PL7 Ga-A36 / PL1/4-A36 class
+    names. Catalog miss is plate_sku_missing — do not invent
+    a GUID.
     """
     spec_rows: list[dict[str, Any]] = []
     for row in rows or []:

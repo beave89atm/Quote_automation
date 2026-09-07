@@ -464,6 +464,54 @@ def _holes_from_noun(text: str) -> list[dict[str, Any]]:
     return holes
 
 
+def _row_plate_material(row: dict[str, Any] | None) -> str | None:
+    """Drawing/BOM grade for plate SKU pick (A36, A572, Domex/100K)."""
+    if not isinstance(row, dict):
+        return None
+    blob = " ".join(
+        str(row.get(k) or "")
+        for k in (
+            "material",
+            "grade",
+            "Material",
+            "description",
+            "part_no",
+            "part_number",
+        )
+    )
+    named = _named_grade_from_blob(blob)
+    if named:
+        return named
+    if re.search(r"(?i)A\s*36", blob):
+        return "A36"
+    return None
+
+
+def cad_row_has_tenant_plate_sku(
+    row: dict[str, Any] | None,
+    catalog: list[dict[str, Any]] | None,
+    thickness: Any = None,
+) -> bool:
+    """True when this Cad thickness/grade has a tenant ProductID."""
+    if not catalog or not isinstance(row, dict):
+        return False
+    from .plate_ops import match_plate_product
+
+    thk = _row_thickness_in(row, thickness)
+    if thk is None:
+        thk = _plate_thickness_in(
+            f"{row.get('part_no') or ''} {row.get('description') or ''}"
+        )
+    return (
+        match_plate_product(
+            catalog,
+            thickness=thk,
+            material=_row_plate_material(row) or "A36",
+        )
+        is not None
+    )
+
+
 def cad_laser_pack_proof_row(
     row: dict[str, Any] | None,
     thickness: Any = None,
@@ -3296,6 +3344,12 @@ class SecturaFabPushService:
         SKU did not land FileList ProductID — modal is not gold.
         Do not invent a GUID. GET ProductID + empty Tag/OCL is FAIL
         (live 1007092-1); pack miss is not ProductID.
+        Live 21682-1: ``POST /Product/ReadData_PlateConfig`` Total=3
+        (PL3-A572 thk=3 + PL0.125-Tread) missed PL050-100K / 0.5
+        Domex. Fetch that XHR unfiltered (Quotes UI picker that can
+        select PL7 Ga-A36 / PL1/4-A36). Catalog miss after that
+        lookup is ``plate_sku_missing`` — do not Finish, do not
+        invent a GUID, do not bind the wrong SKU.
         #files + GetPDFData + OnAddPDFClick is not
         gold PR/laser unless Cad GET has Tag + OperationCostList
         + UnitCost>0 + CuttingLength>0. Do not treat UnitPrice /
@@ -3316,7 +3370,12 @@ class SecturaFabPushService:
             build_part_material_map,
             lookup_part_material,
         )
-        from .plate_ops import fetch_plate_catalog, match_plate_product
+        from .plate_ops import (
+            PLATE_SKU_MISSING,
+            fetch_plate_catalog,
+            match_plate_product,
+            plate_sku_missing_after_lookup,
+        )
 
         notes: list[str] = []
         plate_catalog: list[dict[str, Any]] = []
@@ -3472,6 +3531,11 @@ class SecturaFabPushService:
                 sku_name = str((plate_sku or {}).get("ProductName") or "").strip()
                 if sku_name:
                     stamp_row["ProductSku"] = sku_name
+                elif plate_catalog:
+                    notes.append(
+                        f"{PLATE_SKU_MISSING} no tenant ProductID for "
+                        f"{plate_thk} {plate_mat} (live 21682-1)"
+                    )
                 holes = _holes_from_noun(
                     f"{pn} {noun} {part_name} {path.name}"
                 )
@@ -3525,6 +3589,8 @@ class SecturaFabPushService:
             notes.append("bound=" + ("true" if bound else "false"))
             if "productid_n" in bind:
                 notes.append(f"bind_productid_n={bind.get('productid_n')}")
+            if plate_catalog:
+                notes.append(f"plate_config_total={len(plate_catalog)}")
             if cookie_http_pdf_upload_is_fail(upload_via) or not bound:
                 notes.append(
                     "WARNING: cookie HTTP UploadItem_PDFFiles skips "
@@ -3594,6 +3660,16 @@ class SecturaFabPushService:
                         "WARNING: AddNewPDFFeature without GET /Quote/PDFInternal "
                         "(gold 14501-1 NumberOfContours/Pierces 1/1) — "
                         "do not Finish; do not invent InternalData"
+                    )
+                elif plate_sku_missing_after_lookup(
+                    plate_catalog, stamp_rows=stamp_rows
+                ):
+                    notes.append(
+                        f"WARNING: {PLATE_SKU_MISSING} — "
+                        "ReadData_PlateConfig / plate catalog has no tenant "
+                        "ProductID for this thickness/grade "
+                        "(live 21682-1 Total=3 miss) — do not Finish; "
+                        "do not invent a GUID; do not bind the wrong SKU"
                     )
                 elif filelist_productid_null_after_sku_bind_is_fail(
                     stamp_out if isinstance(stamp_out, dict) else None,
@@ -3990,12 +4066,15 @@ class SecturaFabPushService:
         self,
         bom_rows: list[dict[str, Any]] | None,
         library: dict[str, Any] | None,
+        plate_catalog: list[dict[str, Any]] | None = None,
     ) -> list[Path]:
         from .pdf_assembly_ops import resolve_component_pdf
 
         folder = (library or {}).get("folder")
         related = list((library or {}).get("related_pdfs") or [])
+        proof_hits: list[Path] = []
         proof: list[Path] = []
+        other_hits: list[Path] = []
         other: list[Path] = []
         seen: set[str] = set()
         for row in bom_rows or []:
@@ -4013,14 +4092,28 @@ class SecturaFabPushService:
             if key in seen:
                 continue
             seen.add(key)
-            # Gold Cad pack proof first (≤3/4 in + labeled hole).
-            # No-hole rectangle is not the contours/pierces test
-            # (live 34603-2 34606-1 RAD is not a hole).
-            if cad_laser_pack_proof_row(row if isinstance(row, dict) else None, thk):
+            # Prefer Cad ≤3/4 with hole AND a tenant ProductID
+            # (live 21682-1 0.5 Domex catalog miss). Gold 14501-1
+            # is PL7 Ga-A36. Empty catalog keeps hole-first order.
+            has_sku = cad_row_has_tenant_plate_sku(
+                row if isinstance(row, dict) else None,
+                plate_catalog,
+                thk,
+            )
+            proof_row = cad_laser_pack_proof_row(
+                row if isinstance(row, dict) else None, thk
+            )
+            if proof_row and has_sku:
+                proof_hits.append(pdf)
+            elif proof_row:
                 proof.append(pdf)
+            elif has_sku:
+                other_hits.append(pdf)
             else:
                 other.append(pdf)
-        return proof + other
+        if plate_catalog and (proof_hits or other_hits):
+            return proof_hits + other_hits
+        return proof_hits + proof + other_hits + other
 
     def _library_linear_rows(
         self, bom_rows: list[dict[str, Any]] | None
@@ -4885,7 +4978,20 @@ class SecturaFabPushService:
                 )
 
             extra_pdfs = [job_pdf] if has_job_pdf else None
-            cad_pdfs = [] if cad else self._library_cad_pdfs(bom_rows, library)
+            plate_catalog: list[dict[str, Any]] = []
+            try:
+                from .plate_ops import fetch_plate_catalog
+
+                plate_catalog = fetch_plate_catalog(self.client)
+            except Exception:  # noqa: BLE001
+                plate_catalog = []
+            cad_pdfs = (
+                []
+                if cad
+                else self._library_cad_pdfs(
+                    bom_rows, library, plate_catalog=plate_catalog
+                )
+            )
             if cad_pdfs and not any(
                 cad_laser_pack_proof_row(r) for r in (bom_rows or [])
             ):

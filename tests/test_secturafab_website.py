@@ -1410,6 +1410,18 @@ def test_leftover_weight_without_productid_is_fail():
     filled_34603 = dict(dump_34603)
     filled_34603["filelist_bag"] = {"ProductID": "not-null"}
     assert leftover_filelist_productid_null_after_bind_is_fail(filled_34603) is False
+    from secturafab.website import leftover_plate_sku_missing_is_fail
+    from tests.fixtures.live_21682_1 import leftover_plate_sku_missing_dump
+
+    dump_21682 = leftover_plate_sku_missing_dump()
+    assert leftover_plate_sku_missing_is_fail(dump_21682) is True
+    filled_21682 = dict(dump_21682)
+    filled_21682["filelist_bag"] = {"ProductID": "not-null"}
+    assert leftover_plate_sku_missing_is_fail(filled_21682) is False
+    invented = leftover_plate_sku_missing_dump()
+    invented["live_21682_1"] = dict(invented["live_21682_1"])
+    invented["live_21682_1"]["invented_guid"] = True
+    assert leftover_plate_sku_missing_is_fail(invented) is False
 
 
 def test_leftover_productid_is_not_the_pack():
@@ -1714,6 +1726,7 @@ def test_gold_cad_pack_is_contours_pierces_and_list0_pack():
     assert dump["gold_14501_1"]["number_of_contours"] == 1
     assert dump["gold_14501_1"]["number_of_pierces"] == 1
     assert dump["gold_14501_1"]["badge_string"] == "PR"
+    assert dump["gold_14501_1"]["product_name"] == "PL7 Ga-A36"
     assert set(dump["gold_14501_1"]["ocl_names"]) == set(GOLD_LASER_CALCULATOR_NAMES)
     assert dump["leftover_miss"]["number_of_contours"] == 0
     assert dump["leftover_miss"]["number_of_pierces"] == 0
@@ -2233,6 +2246,7 @@ def test_website_paths_are_quote_mvc_not_quickadd():
     assert WEBSITE_FINISH_PATHS["upload_dxf"] == "/CadImport/UploadItem_DXFFiles"
     assert WEBSITE_FINISH_PATHS["upload_pdf_attachment"] == "/Attachment/UploadItem_PDFFiles"
     assert WEBSITE_FINISH_PATHS["linear_lookup"] == "/Product/Read_DataLinearlookup"
+    assert WEBSITE_FINISH_PATHS["plate_config"] == "/Product/ReadData_PlateConfig"
     assert "quickAddCAD" not in str(WEBSITE_FINISH_PATHS)
 
 
@@ -8476,6 +8490,11 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "waitModalRows" in _STAMP_PDF_KENDO_JS
     assert "modalSearchInput" in _STAMP_PDF_KENDO_JS
     assert "34603-2" in _STAMP_PDF_KENDO_JS
+    assert "21682-1" in _STAMP_PDF_KENDO_JS
+    assert "ReadData_PlateConfig" in _STAMP_PDF_KENDO_JS
+    assert "readPlateGridBroad" in _STAMP_PDF_KENDO_JS
+    assert "pageSize(200)" in _STAMP_PDF_KENDO_JS
+    assert "PL7 Ga-A36" in _STAMP_PDF_KENDO_JS
     assert "pickPlateModal(sku, pdfRow)" in _STAMP_PDF_KENDO_JS
     from secturafab.chrome_cdp import _BIND_QUOTE_ORG_JS
 

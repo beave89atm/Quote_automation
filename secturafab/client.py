@@ -947,6 +947,52 @@ class SecturaFabClient:
             )
         return self._parse_website_or_raise(response, require_session=True)
 
+    def read_data_plate_config(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 200,
+    ) -> Any:
+        """POST /Product/ReadData_PlateConfig — Quotes UI plate picker grid.
+
+        Broad kendo page (no Thickness / Material / ProductName filter).
+        Live 21682-1 Total=3 was a too-tight filter — do not send those.
+        """
+        from .browser_session import effective_website_cookie
+        from .plate_ops import KENDO_PLATE_CONFIG_READ
+
+        if not effective_website_cookie(self.config):
+            raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
+        take = max(1, int(page_size or 200))
+        skip = max(0, (max(1, int(page or 1)) - 1) * take)
+        body = dict(KENDO_PLATE_CONFIG_READ)
+        body.update(
+            {
+                "take": take,
+                "skip": skip,
+                "page": max(1, int(page or 1)),
+                "pageSize": take,
+                "sort": "",
+                "group": "",
+                "filter": "",
+            }
+        )
+        response = self.website_request(
+            "POST",
+            WEBSITE_FINISH_PATHS["plate_config"],
+            data=body,
+            prefer_api_origin=False,
+            require_session=True,
+        )
+        location = response.headers.get("Location") or ""
+        if is_website_login_redirect(response.status_code, location):
+            raise SecturaFabWebsiteAuthError(
+                WEBSITE_AUTH_GAP,
+                status_code=response.status_code,
+                body=location,
+            )
+        return self._parse_website_or_raise(response, require_session=True)
+
     def read_data_linear_lookup(self, product_id: str) -> Any:
         """GET /Product/Read_DataLinearlookup — 20ft/21ft productConfigID."""
         from .browser_session import effective_website_cookie

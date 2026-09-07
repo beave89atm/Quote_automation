@@ -279,7 +279,14 @@ def test_cookie_less_push_does_not_graft_profile(tmp_path: Path):
 
 
 def test_plate_catalog_grade_and_match():
-    from secturafab.plate_ops import catalog_plate_grade, match_plate_product
+    from secturafab.plate_ops import (
+        catalog_plate_grade,
+        match_plate_product,
+        plate_config_rows,
+        plate_config_total,
+        plate_sku_missing_after_lookup,
+    )
+    from tests.fixtures.live_21682_1 import plate_config_miss_payload
 
     assert catalog_plate_grade("A572 Grade 50") == "A572"
     assert catalog_plate_grade("A572 G50") == "A572"
@@ -311,6 +318,32 @@ def test_plate_catalog_grade_and_match():
     assert hit["ID"] == "pl-a572"
     hit36 = match_plate_product(catalog, thickness=0.5, material="A36")
     assert hit36["ID"] == "pl-half"
+
+    gold = [
+        {
+            "ID": "gold-pid",
+            "ProductName": "PL7 Ga-A36",
+            "MaterialGrade": "A36",
+            "Thickness": 0.1793,
+            "Active": True,
+        }
+    ]
+    gold_hit = match_plate_product(gold, thickness=0.1875, material="A36")
+    assert gold_hit["ID"] == "gold-pid"
+    assert gold_hit["ProductName"] == "PL7 Ga-A36"
+    assert plate_sku_missing_after_lookup(
+        gold, thickness=0.1875, material="A36"
+    ) is False
+
+    miss = plate_config_miss_payload()
+    assert plate_config_total(miss) == 3
+    rows = plate_config_rows(miss)
+    assert len(rows) == 3
+    assert match_plate_product(rows, thickness=0.5, material="DOMEX/WELDOX") is None
+    assert plate_sku_missing_after_lookup(
+        rows, thickness=0.5, material="DOMEX/WELDOX"
+    ) is True
+    assert plate_sku_missing_after_lookup([], thickness=0.5, material="DOMEX/WELDOX") is False
 
 
 def test_purchased_component_keeps_dashed_pn():

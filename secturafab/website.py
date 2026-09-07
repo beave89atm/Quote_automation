@@ -223,6 +223,9 @@ SetUnits sends one query key `units`. Do not Finish the raw STEP row.
       Costs. Internal stays empty (no holes on Long). ItemID empty
       for new rows. Do not graft Operation→Saw.
   GET  /Product/Read_DataLinearlookup?ProductID=  (20ft/21ft productConfigID)
+  POST /Product/ReadData_PlateConfig  (Quotes UI plate picker; unfiltered
+      pageSize 200. Live 21682-1 Total=3 was a too-tight Thickness /
+      Material / invented-SKU filter — miss is plate_sku_missing.)
   POST /Quote/NestQuote_Edit
   POST /Quote/NestQuoteMultiPart_Renest
 
@@ -284,6 +287,7 @@ WEBSITE_FINISH_PATHS = {
     "get_item_add_view": "/Quote/GetItem_AddView",
     "upload_pdf_attachment": "/Attachment/UploadItem_PDFFiles",
     "linear_lookup": "/Product/Read_DataLinearlookup",
+    "plate_config": "/Product/ReadData_PlateConfig",
     "upload_dxf": "/CadImport/UploadItem_DXFFiles",
     "cadimport_data": "/CadImport/Data",
     "cadimport_update_data": "/CadImport/UpdateData",
@@ -3109,6 +3113,35 @@ def filelist_productid_null_after_sku_bind_is_fail(
     except (TypeError, ValueError):
         n = 0
     return n <= 0
+
+
+def leftover_plate_sku_missing_is_fail(dump: dict[str, Any] | None) -> bool:
+    """21682-1 leftover: ReadData_PlateConfig miss → ProductID null / OnAddPDFClick skipped.
+
+    Total=3 (PL3-A572 thk=3 + PL0.125-Tread) is not PL050-100K.
+    Named reason is plate_sku_missing — not silent ProductID null.
+    Do not invent a GUID. Do not bind the wrong SKU. Do not PATCH.
+    """
+    if not isinstance(dump, dict):
+        return False
+    bag = dump.get("filelist_bag") if isinstance(dump.get("filelist_bag"), dict) else {}
+    if bag.get("ProductID") not in (None, "", "null"):
+        return False
+    live = dump.get("live_21682_1") if isinstance(dump.get("live_21682_1"), dict) else {}
+    if not live:
+        return False
+    if str(live.get("skip_reason") or "") != "plate_sku_missing":
+        return False
+    try:
+        if int(live.get("plate_config_total") or 0) != 3:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if live.get("invented_guid") is True:
+        return False
+    if live.get("onaddpdfclick") is True:
+        return False
+    return True
 
 
 def leftover_filelist_productid_null_after_bind_is_fail(
