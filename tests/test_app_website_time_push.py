@@ -1562,7 +1562,8 @@ def test_filelist_uses_lom_flats_and_5052_not_a36(tmp_path, monkeypatch):
     assert client.add_item_pdf_files.call_args.kwargs.get("file_list") == []
     posted = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
     assert posted["ItemType"] == "cad"
-    assert posted["Machine"] == "Laser - Bay1"
+    assert posted["Machine"] == "Laser"
+    assert posted["Location"] == "Bay1"
     assert float(posted["Width"]) == 8.0
     assert float(posted["Length"]) == 12.0
     assert float(posted["Status"]) > 0

@@ -2606,7 +2606,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
     if (!r) return false;
     var itemType = typeTok(r.ItemType != null ? r.ItemType : r.itemType);
     if (itemType && itemType !== "cad") return false;
-    var m = String(r.Machine || "").toLowerCase().replace(/\s+/g, " ").trim();
+    var m = String(r.Machine || "").toLowerCase().replace(/\\s+/g, " ").trim();
     if (!m || m === "laser - bay1" || m === "laser-bay1" || m === "laser bay 1") {
       if (typeof r.set === "function") r.set("Machine", "Laser");
       else r.Machine = "Laser";
@@ -4364,7 +4364,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     if (!r) return false;
     var itemType = typeTok(r.ItemType != null ? r.ItemType : r.itemType);
     if (itemType && itemType !== "cad") return false;
-    var m = String(r.Machine || "").toLowerCase().replace(/\s+/g, " ").trim();
+    var m = String(r.Machine || "").toLowerCase().replace(/\\s+/g, " ").trim();
     if (!m || m === "laser - bay1" || m === "laser-bay1" || m === "laser bay 1") {
       if (typeof r.set === "function") r.set("Machine", "Laser");
       else r.Machine = "Laser";
