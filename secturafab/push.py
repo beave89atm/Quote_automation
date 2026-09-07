@@ -3532,7 +3532,8 @@ class SecturaFabPushService:
                     "Width": plate_w,
                     "Thickness": plate_thk,
                     "Material": plate_mat,
-                    "Machine": "Laser - Bay1",
+                    "Machine": "Laser",
+                    "Location": "Bay1",
                     "Status": 1,
                     "ItemType": "cad",
                     "Qty": row_qty,
@@ -3626,6 +3627,7 @@ class SecturaFabPushService:
                 cad_plate_filelist_bar_producttype_is_fail,
                 finish_prt_pdf_still_contours_zero_is_fail,
                 finish_empty_materialcost_after_plate_is_fail,
+                finish_list0_data_null_or_errorcount_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
                 empty_weight_after_perimeter_is_fail,
@@ -4057,6 +4059,32 @@ class SecturaFabPushService:
                                 "PL7 Ga-A572 has no rate; do not invent $/lb; "
                                 "do not abort Finish; empty MaterialCost is "
                                 "not the Contours miss — Nest is later"
+                            )
+                        if (
+                            "response_data_kind" in result
+                            or "response_error_count" in result
+                        ):
+                            notes.append(
+                                "list0_data_kind="
+                                + repr(result.get("response_data_kind"))
+                                + " error_count="
+                                + repr(result.get("response_error_count"))
+                                + " error_text="
+                                + repr(result.get("response_error_text"))
+                                + " filelist_machine="
+                                + repr(result.get("filelist_machine"))
+                                + " filelist_location="
+                                + repr(result.get("filelist_location"))
+                            )
+                        if finish_list0_data_null_or_errorcount_is_fail(result):
+                            notes.append(
+                                "WARNING: AddItem List[0] Data=None "
+                                "ErrorCount=1 vs gold DataPartPDF Contours 1/1 "
+                                "(live 97ae3e4f) — gold Cad 14501-1 "
+                                "Machine=Laser Location=Bay1; leftover "
+                                "Machine=Laser - Bay1 Location=null Data=None "
+                                "— do not invent Contours FileList keys — "
+                                "Nest is later — Image Files DoD FAIL"
                             )
                         if finish_empty_filelist_after_good_stamp_is_fail(
                             result,

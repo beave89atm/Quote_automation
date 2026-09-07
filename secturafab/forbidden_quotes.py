@@ -108,6 +108,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "c751780e",  # 1020250-1 533ef0f prt_pdf + InternalData Dim1, Contours=0 / no PR — ZZ-DEL
         "2a83a96b",  # 1020250-1 4f68c9d OutsideArea+TrueWeight, MaterialCost empty / Contours=0 — ZZ-DEL
         "9ef2fedd",  # 1020250-1 1b0dd01 empty_materialcost abort blocked Finish — ZZ-DEL
+        "97ae3e4f",  # 1020250-1 c213d42 Finish 200 List[0] Data=None ErrorCount=1 / Contours=0 — ZZ-DEL
         "b1036d7d",  # 33819-2 spent plate_sku_missing — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
         "95b8c186",  # 1007922-3 — do not open / PATCH / remint

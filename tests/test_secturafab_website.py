@@ -1966,6 +1966,7 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_id("c751780e-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("2a83a96b-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("9ef2fedd-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("97ae3e4f-1111-2222-3333-444444444444")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -2187,6 +2188,48 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert finish_empty_materialcost_must_not_skip(abort_result) is True
     assert abort_result["via"] == "skipped"
     assert abort_result["finish_why"] == "empty_materialcost"
+
+    from tests.fixtures.live_1020250_1 import (
+        leftover_list0_data_null_errorcount_dump,
+        leftover_list0_data_null_errorcount_result,
+    )
+    from secturafab.website import (
+        leftover_list0_data_null_errorcount_is_fail,
+        finish_list0_data_null_or_errorcount_is_fail,
+        CAD_IMAGE_FILES_MACHINE,
+        CAD_IMAGE_FILES_LOCATION,
+    )
+
+    assert CAD_IMAGE_FILES_MACHINE == "Laser"
+    assert CAD_IMAGE_FILES_LOCATION == "Bay1"
+    data_none = leftover_list0_data_null_errorcount_dump()
+    assert leftover_1020250_1_hypotheses_named(data_none) is True
+    assert leftover_list0_data_null_errorcount_is_fail(data_none) is True
+    assert leftover_list0_data_null_errorcount_is_fail(None) is False
+    assert leftover_list0_data_null_errorcount_is_fail(mc) is False
+    assert leftover_list0_data_null_errorcount_is_fail(abort) is False
+    assert data_none["filelist_bag"]["Machine"] == "Laser - Bay1"
+    assert data_none["filelist_bag"]["Location"] is None
+    assert data_none["live_97ae3e4f"]["data"] is None
+    assert data_none["live_97ae3e4f"]["error_count"] == 1
+    data_ok = dict(data_none)
+    data_ok["live_97ae3e4f"] = dict(data_none["live_97ae3e4f"])
+    data_ok["live_97ae3e4f"]["data"] = "DataPartPDF"
+    data_ok["live_97ae3e4f"]["data_kind"] = "DataPartPDF"
+    data_ok["live_97ae3e4f"]["data_present"] = True
+    data_ok["live_97ae3e4f"]["error_count"] = 0
+    data_ok["live_97ae3e4f"]["number_of_contours"] = 1
+    assert leftover_list0_data_null_errorcount_is_fail(data_ok) is False
+    data_result = leftover_list0_data_null_errorcount_result()
+    assert list0_pack_badge_ocl_is_gold(data_result) is False
+    assert finish_list0_data_null_or_errorcount_is_fail(data_result) is True
+    assert finish_list0_data_null_or_errorcount_is_fail(fl0_result) is False
+    assert finish_list0_data_null_or_errorcount_is_fail(mc_result) is False
+    assert finish_list0_data_null_or_errorcount_is_fail(None) is False
+    gold_data = gold_list0_pack_result()
+    assert finish_list0_data_null_or_errorcount_is_fail(gold_data) is False
+    assert gold_data["response_data_kind"] == "DataPartPDF"
+    assert gold_data["response_error_count"] == 0
 
     leftover = leftover_contours_zero_after_productid_hole_result()
     assert list0_pack_badge_ocl_is_gold(leftover) is False
@@ -8913,6 +8956,19 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "2a83a96b" in _STAMP_PDF_KENDO_JS
     assert "9ef2fedd" in _PAGE_PDF_FINISH_JS
     assert "9ef2fedd" in _STAMP_PDF_KENDO_JS
+    assert "97ae3e4f" in _PAGE_PDF_FINISH_JS
+    assert "97ae3e4f" in _STAMP_PDF_KENDO_JS
+    assert "writeGoldCadMachineLocation" in _PAGE_PDF_FINISH_JS
+    assert "writeGoldCadMachineLocation" in _STAMP_PDF_KENDO_JS
+    assert "writeGoldPdfUseLocal" in _PAGE_PDF_FINISH_JS
+    assert "writeGoldPdfUseLocal" in _STAMP_PDF_KENDO_JS
+    assert "response_error_count" in _PAGE_PDF_FINISH_JS
+    assert "response_data_kind" in _PAGE_PDF_FINISH_JS
+    assert "list0DataKind" in _PAGE_PDF_FINISH_JS
+    assert 'r.set("Machine", "Laser")' in _PAGE_PDF_FINISH_JS
+    assert 'r.set("Location", "Bay1")' in _PAGE_PDF_FINISH_JS
+    assert 's.Machine || "Laser"' in _STAMP_PDF_KENDO_JS
+    assert 's.Machine || "Laser - Bay1"' not in _STAMP_PDF_KENDO_JS
     assert "__kannonPlateMaterialCost" in _STAMP_PDF_KENDO_JS
     assert "do not invent a $/lb" in _PAGE_PDF_FINISH_JS
     assert "cadPlateNeedsMaterialCost" in _PAGE_PDF_FINISH_JS

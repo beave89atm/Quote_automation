@@ -1900,6 +1900,9 @@ QUOTE_ORDER_EDIT_UPW_INTERNAL: dict[str, Any] = {
     "finish_materialcost_abort_blocked_miss": (
         "empty_materialcost_abort_blocked_finish_catalog_has_no_rate"
     ),
+    "finish_list0_data_null_errorcount_miss": (
+        "finish_list0_data_none_errorcount_1_vs_gold_datapartpdf_contours"
+    ),
     "invent_contours_on_filelist": False,
 }
 
@@ -1909,6 +1912,10 @@ QUOTE_ORDER_EDIT_UPW_INTERNAL: dict[str, Any] = {
 # Do not leave that linear combo on a Sheets & Plates ProductID.
 CAD_IMAGE_FILES_PLATE_PRODUCT_TYPE = "prt_pdf"
 CAD_IMAGE_FILES_PLATE_PRODUCT_SUBTYPE = "prt_pdf"
+# Gold 14501-1 Cad List[0]: Machine="Laser" Location="Bay1".
+# Leftover 97ae3e4f posted Machine="Laser - Bay1" Location=null → Data=None.
+CAD_IMAGE_FILES_MACHINE = "Laser"
+CAD_IMAGE_FILES_LOCATION = "Bay1"
 
 # OnAddLinearClick body keys. Do not add others.
 LINEAR_ADD_FIELDS = (
@@ -3436,7 +3443,7 @@ def leftover_contours_zero_after_productid_hole_is_fail(
 
 
 def leftover_1020250_1_hypotheses_named(dump: dict[str, Any] | None) -> bool:
-    """1020250-1 capture names UPW Internal Dim1 + Nest-later + form L×W + MaterialCost."""
+    """1020250-1 capture names UPW Internal Dim1 + Nest-later + form L×W + MaterialCost + Data=None."""
     if not isinstance(dump, dict):
         return False
     hyps = dump.get("hypotheses") if isinstance(dump.get("hypotheses"), dict) else {}
@@ -3470,6 +3477,10 @@ def leftover_1020250_1_hypotheses_named(dump: dict[str, Any] | None) -> bool:
         return False
     if hyps.get("14_finish_materialcost_abort_blocked") != QUOTE_ORDER_EDIT_UPW_INTERNAL.get(
         "finish_materialcost_abort_blocked_miss"
+    ):
+        return False
+    if hyps.get("15_finish_list0_data_null_errorcount") != QUOTE_ORDER_EDIT_UPW_INTERNAL.get(
+        "finish_list0_data_null_errorcount_miss"
     ):
         return False
     return True
@@ -4105,6 +4116,81 @@ def finish_empty_materialcost_after_plate_is_fail(
     if mc is None:
         mc = bag.get("MaterialCost")
     return filelist_material_cost_empty(mc)
+
+
+def leftover_list0_data_null_errorcount_is_fail(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """97ae3e4f: Finish 200 List[0] Data=None ErrorCount=1 Contours=0.
+
+    Gold 14501-1 Data=DataPartPDF Contours 1/1 ErrorCount=0 Machine=Laser
+    Location=Bay1. Leftover FileList Machine=Laser - Bay1 Location=null.
+    """
+    if not isinstance(dump, dict):
+        return False
+    live = dump.get("live_97ae3e4f") if isinstance(dump.get("live_97ae3e4f"), dict) else {}
+    if not live:
+        return False
+    if live.get("data_present") is True:
+        return False
+    kind = str(live.get("data_kind") or "")
+    if kind.startswith("DataPartPDF"):
+        return False
+    if live.get("data") not in (None, "", "None", "null"):
+        return False
+    try:
+        if int(live.get("error_count") or 0) < 1:
+            return False
+        if int(live.get("number_of_contours") or 0) != 0:
+            return False
+        if int(live.get("getpdfdata_n") or 0) < 1:
+            return False
+        if int(live.get("finish_filelist_n") or 0) < 1:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if str(live.get("via") or "") == "skipped":
+        return False
+    if dump.get("invent_contours_on_filelist") is not False:
+        return False
+    if dump.get("operation_profile_graft") is not False:
+        return False
+    if dump.get("nest_best_sheet") is not False:
+        return False
+    return True
+
+
+def finish_list0_data_null_or_errorcount_is_fail(
+    result: dict[str, Any] | None,
+) -> bool:
+    """Finish List[0] Data null or ErrorCount>0 or Contours=0.
+
+    Live 97ae3e4f. Gold 14501-1 Data=DataPartPDF Contours 1/1 ErrorCount=0.
+    Older mocks without response_error_count / response_data_kind pass through.
+    """
+    if not isinstance(result, dict):
+        return False
+    if "response_error_count" not in result and "response_data_kind" not in result:
+        return False
+    try:
+        if int(result.get("response_list_n") or 0) < 1:
+            return False
+    except (TypeError, ValueError):
+        return False
+    kind = str(result.get("response_data_kind") or "")
+    present = result.get("response_data_present")
+    data_null = present is False or kind in {"", "null", "None", "none", "missing_row"}
+    if kind.startswith("DataPartPDF"):
+        data_null = present is False
+    try:
+        err = int(result.get("response_error_count") or 0)
+    except (TypeError, ValueError):
+        err = 0
+    try:
+        contours = int(result.get("response_number_of_contours") or 0)
+    except (TypeError, ValueError):
+        contours = 0
+    return data_null or err > 0 or contours < 1
 
 
 def list0_pack_contours_zero_after_productid_hole_is_fail(

@@ -1128,6 +1128,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("f4d94abd-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("b187c0c1-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("c49cebf0-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("97ae3e4f-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
     assert is_forbidden_quote_id("bd5c2e3e-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d2f7b031-1111-2222-3333-444444444444")
@@ -1748,7 +1749,8 @@ def test_filelist_built_for_every_cad_with_lom_flats(tmp_path, monkeypatch):
     for row in client.stamp_pdf_kendo_flats.call_args.kwargs["rows"]:
         posted_names.append(row.get("FileName"))
         assert row["ItemType"] == "cad"
-        assert row["Machine"] == "Laser - Bay1"
+        assert row["Machine"] == "Laser"
+        assert row["Location"] == "Bay1"
         assert float(row["Status"]) > 0
         assert float(row["Thickness"]) > 0
         assert float(row["Width"]) > 1.1
@@ -2435,7 +2437,8 @@ def test_21681_1_empty_bind_productid_still_stamps_and_finishes(
     assert stamp_rows
     assert all("ProductID" not in row for row in stamp_rows)
     assert stamp_rows[0]["Material"] != "316 Polished"
-    assert stamp_rows[0]["Machine"] == "Laser - Bay1"
+    assert stamp_rows[0]["Machine"] == "Laser"
+    assert stamp_rows[0]["Location"] == "Bay1"
     assert stamp_rows[0]["Status"] == 1
     blob = " ".join(notes)
     assert "21681-1" in blob
@@ -2667,7 +2670,8 @@ def test_1007092_1_get_productid_is_not_pack_still_finishes(
     assert stamp_rows
     assert all("ProductID" not in row for row in stamp_rows)
     assert stamp_rows[0]["Material"] != "316 Polished"
-    assert stamp_rows[0]["Machine"] == "Laser - Bay1"
+    assert stamp_rows[0]["Machine"] == "Laser"
+    assert stamp_rows[0]["Location"] == "Bay1"
     assert stamp_rows[0]["Status"] == 1
     blob = " ".join(notes)
     assert "1007092-1" in blob
@@ -2762,7 +2766,8 @@ def test_33204_1_list0_pack_empty_is_fail_still_finishes(
     assert stamp_rows
     assert all("ProductID" not in row for row in stamp_rows)
     assert stamp_rows[0]["Material"] != "316 Polished"
-    assert stamp_rows[0]["Machine"] == "Laser - Bay1"
+    assert stamp_rows[0]["Machine"] == "Laser"
+    assert stamp_rows[0]["Location"] == "Bay1"
     assert stamp_rows[0]["Status"] == 1
     blob = " ".join(notes)
     assert "33204-1" in blob

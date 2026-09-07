@@ -2599,6 +2599,47 @@ _PAGE_PDF_FINISH_JS = """(function() {
     else r.OutsideArea_Units = units;
     return true;
   }
+  function writeGoldCadMachineLocation(r) {
+    // Live 97ae3e4f: FileList Machine="Laser - Bay1" Location=null →
+    // List[0] Data=None ErrorCount=1. Gold 14501-1: Machine="Laser"
+    // Location="Bay1" + Data=DataPartPDF Contours 1/1.
+    if (!r) return false;
+    var itemType = typeTok(r.ItemType != null ? r.ItemType : r.itemType);
+    if (itemType && itemType !== "cad") return false;
+    var m = String(r.Machine || "").toLowerCase().replace(/\s+/g, " ").trim();
+    if (!m || m === "laser - bay1" || m === "laser-bay1" || m === "laser bay 1") {
+      if (typeof r.set === "function") r.set("Machine", "Laser");
+      else r.Machine = "Laser";
+    }
+    var loc = r.Location != null ? r.Location : r.location;
+    if (loc == null || String(loc).trim() === "" || String(loc).toLowerCase() === "null") {
+      if (typeof r.set === "function") r.set("Location", "Bay1");
+      else r.Location = "Bay1";
+    }
+    try {
+      if (window.jQuery) {
+        var $inv = jQuery("#InventoryLocation");
+        if ($inv && $inv.length && !String($inv.val() || "").trim()) {
+          $inv.val("Bay1").trigger("change");
+        }
+      }
+    } catch (eInv) {}
+    return true;
+  }
+  function writeGoldPdfUseLocal(r) {
+    // Gold 14501-1 DataPartPDF UseLocal false / InternalData "".
+    // Leftover 97ae3e4f posted UseLocal OP/TrueWeight + hole InternalData
+    // and Data stayed None. Do not invent Contours. Do not strip InternalData.
+    if (!r) return false;
+    if (typeof r.set === "function") {
+      r.set("OutsidePerimeter_UseLocal", false);
+      r.set("Weight_UseLocal", false);
+    } else {
+      r.OutsidePerimeter_UseLocal = false;
+      r.Weight_UseLocal = false;
+    }
+    return true;
+  }
   function writeGetPdfShapeFields(r, s) {
     // GetPDFData copies OutsideArea/TrueWeight/Description/MaterialCost
     // from dataItem. Live c751780e: JSON dropped undefined OutsideArea;
@@ -2630,6 +2671,8 @@ _PAGE_PDF_FINISH_JS = """(function() {
     }
     writeCatalogMaterialCost(r, s);
     writeOutsideAreaUnits(r);
+    writeGoldCadMachineLocation(r);
+    writeGoldPdfUseLocal(r);
     return true;
   }
   function ensureGetPdfDataReady() {
@@ -2758,7 +2801,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
     "WeightBorder", "Material", "Thickness", "Length", "Width",
     "InternalData", "ProductType", "ProductSubType", "ItemType",
     "OutsideArea", "OutsideArea_Units", "TrueWeight", "MaterialCost",
-    "MaterialCost_Units", "Description"
+    "MaterialCost_Units", "Description", "Machine", "Location"
   ];
   function bagSnap(row) {
     var o = {};
@@ -2786,11 +2829,45 @@ _PAGE_PDF_FINISH_JS = """(function() {
     }
     return out;
   }
+  function list0ErrorText(row) {
+    if (!row) return "";
+    var keys = ["Error", "ErrorMessage", "Errors", "ErrorList", "Message", "ErrorText"];
+    var i, k, v;
+    for (i = 0; i < keys.length; i++) {
+      k = keys[i];
+      v = row[k];
+      if (v == null || v === "") continue;
+      if (typeof v === "string") return v;
+      try { return JSON.stringify(v); } catch (e) { return String(v); }
+    }
+    return "";
+  }
+  function list0DataKind(row) {
+    if (!row) return "missing_row";
+    if (row.DataPartPDF && typeof row.DataPartPDF === "object") return "DataPartPDF";
+    var d = row.Data;
+    if (d == null || d === "") return "null";
+    if (typeof d === "string") {
+      return d.indexOf("DataPartPDF") === 0 ? "DataPartPDF_string" : "string";
+    }
+    if (typeof d === "object") {
+      var t = d.$type || d.Type || "";
+      return String(t).indexOf("DataPartPDF") >= 0 ? "DataPartPDF" : "object";
+    }
+    return typeof d;
+  }
+  function list0ContoursFromDataString(s, key) {
+    if (!s) return 0;
+    var re = new RegExp(key + "\\s*[:=]\\s*(\\d+)");
+    var m = String(s).match(re);
+    return m ? parseInt(m[1], 10) : 0;
+  }
   function list0Pack(data) {
     var o = {
       list_n: 0, tag: "", badge_string: "", production_ready: false,
       ocl_n: 0, ocl_names: [], unit_cost: 0, unit_weight_cost: 0,
-      number_of_contours: 0, number_of_pierces: 0
+      number_of_contours: 0, number_of_pierces: 0,
+      error_count: 0, data_kind: "null", data_present: false, error_text: ""
     };
     if (!data || typeof data !== "object") return o;
     var list = data.List || data.list;
@@ -2808,11 +2885,29 @@ _PAGE_PDF_FINISH_JS = """(function() {
     o.unit_cost = isFinite(uc) ? uc : 0;
     var uwc = parseFloat(row.UnitWeightCost != null ? row.UnitWeightCost : 0);
     o.unit_weight_cost = isFinite(uwc) ? uwc : 0;
-    var dpp = row.DataPartPDF || row.dataPartPDF || {};
+    var dpp = row.DataPartPDF || row.dataPartPDF;
+    if (!dpp || typeof dpp !== "object") dpp = {};
+    var dataObj = (row.Data && typeof row.Data === "object") ? row.Data : null;
+    var dataStr = (typeof row.Data === "string") ? row.Data : "";
     var nc = parseInt(dpp.NumberOfContours || dpp.numberOfContours || 0, 10);
+    if (!(nc > 0) && dataObj) {
+      nc = parseInt(dataObj.NumberOfContours || dataObj.numberOfContours || 0, 10);
+    }
+    if (!(nc > 0) && dataStr) nc = list0ContoursFromDataString(dataStr, "NumberOfContours");
+    if (!(nc > 0)) nc = parseInt(row.NumberOfContours || 0, 10);
     var np = parseInt(dpp.NumberOfPierces || dpp.numberOfPierces || 0, 10);
+    if (!(np > 0) && dataObj) {
+      np = parseInt(dataObj.NumberOfPierces || dataObj.numberOfPierces || 0, 10);
+    }
+    if (!(np > 0) && dataStr) np = list0ContoursFromDataString(dataStr, "NumberOfPierces");
+    if (!(np > 0)) np = parseInt(row.NumberOfPierces || 0, 10);
     o.number_of_contours = isFinite(nc) ? nc : 0;
     o.number_of_pierces = isFinite(np) ? np : 0;
+    var errN = parseInt(row.ErrorCount != null ? row.ErrorCount : data.ErrorCount, 10);
+    o.error_count = isFinite(errN) ? errN : 0;
+    o.data_kind = list0DataKind(row);
+    o.data_present = o.data_kind !== "null" && o.data_kind !== "missing_row";
+    o.error_text = list0ErrorText(row) || list0ErrorText(data);
     return o;
   }
   function hasAf(d) {
@@ -3055,6 +3150,8 @@ _PAGE_PDF_FINISH_JS = """(function() {
           filelist_itemtype: first.ItemType != null ? first.ItemType : "",
           filelist_materialcost: first.MaterialCost != null ? first.MaterialCost : "",
           filelist_materialcost_empty: emptyMc,
+          filelist_machine: first.Machine != null ? String(first.Machine) : "",
+          filelist_location: first.Location == null ? null : String(first.Location),
           posted_keys: Object.keys(d),
           getpdfdata_n: pageRows.length,
           getpdfdata_productid_n: snapGetPdfRow(pageRows).getpdfdata_productid_n,
@@ -3104,6 +3201,10 @@ _PAGE_PDF_FINISH_JS = """(function() {
           cap.response_unit_weight_cost = pack.unit_weight_cost;
           cap.response_number_of_contours = pack.number_of_contours;
           cap.response_number_of_pierces = pack.number_of_pierces;
+          cap.response_error_count = pack.error_count;
+          cap.response_data_kind = pack.data_kind;
+          cap.response_data_present = pack.data_present;
+          cap.response_error_text = pack.error_text;
           resolve(cap);
         }).catch(function(xhr) {
           cap.status = (xhr && xhr.status) || 0;
@@ -3119,6 +3220,10 @@ _PAGE_PDF_FINISH_JS = """(function() {
           cap.response_unit_weight_cost = packE.unit_weight_cost;
           cap.response_number_of_contours = packE.number_of_contours;
           cap.response_number_of_pierces = packE.number_of_pierces;
+          cap.response_error_count = packE.error_count;
+          cap.response_data_kind = packE.data_kind;
+          cap.response_data_present = packE.data_present;
+          cap.response_error_text = packE.error_text;
           resolve(cap);
         });
         return ret;
@@ -4252,6 +4357,47 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     else r.OutsideArea_Units = units;
     return true;
   }
+  function writeGoldCadMachineLocation(r) {
+    // Live 97ae3e4f: FileList Machine="Laser - Bay1" Location=null →
+    // List[0] Data=None ErrorCount=1. Gold 14501-1: Machine="Laser"
+    // Location="Bay1" + Data=DataPartPDF Contours 1/1.
+    if (!r) return false;
+    var itemType = typeTok(r.ItemType != null ? r.ItemType : r.itemType);
+    if (itemType && itemType !== "cad") return false;
+    var m = String(r.Machine || "").toLowerCase().replace(/\s+/g, " ").trim();
+    if (!m || m === "laser - bay1" || m === "laser-bay1" || m === "laser bay 1") {
+      if (typeof r.set === "function") r.set("Machine", "Laser");
+      else r.Machine = "Laser";
+    }
+    var loc = r.Location != null ? r.Location : r.location;
+    if (loc == null || String(loc).trim() === "" || String(loc).toLowerCase() === "null") {
+      if (typeof r.set === "function") r.set("Location", "Bay1");
+      else r.Location = "Bay1";
+    }
+    try {
+      if (window.jQuery) {
+        var $inv = jQuery("#InventoryLocation");
+        if ($inv && $inv.length && !String($inv.val() || "").trim()) {
+          $inv.val("Bay1").trigger("change");
+        }
+      }
+    } catch (eInv) {}
+    return true;
+  }
+  function writeGoldPdfUseLocal(r) {
+    // Gold 14501-1 DataPartPDF UseLocal false / InternalData "".
+    // Leftover 97ae3e4f posted UseLocal OP/TrueWeight + hole InternalData
+    // and Data stayed None. Do not invent Contours. Do not strip InternalData.
+    if (!r) return false;
+    if (typeof r.set === "function") {
+      r.set("OutsidePerimeter_UseLocal", false);
+      r.set("Weight_UseLocal", false);
+    } else {
+      r.OutsidePerimeter_UseLocal = false;
+      r.Weight_UseLocal = false;
+    }
+    return true;
+  }
   function writeGetPdfShapeFields(r, s) {
     // Live c751780e: GetPDFData-shaped row missing OutsideArea;
     // TrueWeight 0; Description null. Live 2a83a96b: those present,
@@ -4280,6 +4426,8 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     }
     writeCatalogMaterialCost(r, s);
     writeOutsideAreaUnits(r);
+    writeGoldCadMachineLocation(r);
+    writeGoldPdfUseLocal(r);
     return true;
   }
   function ensureGetPdfDataReady() {
@@ -4528,7 +4676,8 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           editSet(hit.grid, r, "Length", s.Length);
           editSet(hit.grid, r, "Width", s.Width);
           editSet(hit.grid, r, "Thickness", s.Thickness);
-          editSet(hit.grid, r, "Machine", s.Machine || "Laser - Bay1");
+          editSet(hit.grid, r, "Machine", s.Machine || "Laser");
+          if (s.Location) editSet(hit.grid, r, "Location", s.Location);
           editSet(hit.grid, r, "Status", s.Status != null ? s.Status : 1);
           editSet(hit.grid, r, "ItemType", s.ItemType || "cad");
           editSet(hit.grid, r, "Material", s.Material);
@@ -4845,7 +4994,8 @@ def stamp_pdf_kendo_flats(
                 "Length": row.get("Length"),
                 "Width": row.get("Width"),
                 "Thickness": row.get("Thickness"),
-                "Machine": str(row.get("Machine") or "Laser - Bay1"),
+                "Machine": str(row.get("Machine") or "Laser"),
+                "Location": str(row.get("Location") or "Bay1"),
                 "Status": row.get("Status") if row.get("Status") not in (None, "") else 1,
                 "ItemType": str(row.get("ItemType") or "cad"),
                 "Material": row.get("Material"),
