@@ -3141,118 +3141,174 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     } catch (e2) {}
     return "";
   }
+  function waitMs(ms) {
+    return new Promise(function(resolve) { setTimeout(resolve, ms); });
+  }
+  function waitModalRows(timeoutMs) {
+    // Live 34603-2: #gridSelectProductPlate opened with 0 rows.
+    return new Promise(function(resolve) {
+      var t0 = Date.now();
+      (function poll() {
+        var ready = plateModalGrid();
+        var n = 0;
+        try { n = ((ready && ready.grid.dataSource.data()) || []).length; } catch (e) {}
+        if (ready && n > 0) { resolve(ready); return; }
+        if (Date.now() - t0 > timeoutMs) { resolve(ready); return; }
+        setTimeout(poll, 80);
+      })();
+    });
+  }
+  function modalSearchInput(hit) {
+    // Type into the modal that owns #gridSelectProductPlate.
+    // Do not type #Product / ProductType (live 34603-2 wrong input).
+    if (!hit || !window.jQuery) return null;
+    try {
+      var $root = jQuery(hit.id).closest(".k-window, .k-dialog, .modal");
+      if (!$root || !$root.length) $root = jQuery(hit.id).parent();
+      var $inps = $root.find("input.k-textbox, input[type=text], input");
+      for (var i = 0; i < $inps.length; i++) {
+        var $el = jQuery($inps[i]);
+        var id = String($el.attr("id") || $el.attr("name") || "").toLowerCase();
+        if (isProductTypeBar(id, "") || isThicknessGauge(id, "")) continue;
+        if (id === "product" || id === "productid") continue;
+        var ph = String($el.attr("placeholder") || "").toLowerCase();
+        if (ph.indexOf("search") >= 0 || ph.indexOf("filter") >= 0
+            || ph.indexOf("product") >= 0) return $el;
+        if (id.indexOf("search") >= 0 || id.indexOf("filter") >= 0) return $el;
+      }
+      var $filter = $root.find(".k-grid-toolbar input, .k-filter-row input").first();
+      if ($filter && $filter.length) {
+        var fid = String($filter.attr("id") || "").toLowerCase();
+        if (!isProductTypeBar(fid, "") && !isThicknessGauge(fid, "")
+            && fid !== "product") return $filter;
+      }
+    } catch (e) {}
+    return null;
+  }
+  function typeModalSearch(hit, sku) {
+    var $inp = modalSearchInput(hit);
+    if ($inp && $inp.length) {
+      $inp.val(sku).trigger("input").trigger("keyup").trigger("change");
+      lastApply = "modal_search";
+      return true;
+    }
+    return false;
+  }
   function pickPlateModal(sku, pdfRow) {
     lastPickerSku = sku;
     lastApply = "search_only";
+    var opened = "";
     var hit = plateModalGrid();
     if (!hit) {
-      openPlateModal();
-      hit = plateModalGrid();
+      opened = openPlateModal();
     }
-    if (!hit) {
-      lastPicker = "none_plate_widget";
-      return Promise.resolve("");
-    }
-    lastPicker = hit.id;
-    clickSheetsAndPlates();
-    var g = hit.grid;
-    var want = String(sku).toLowerCase();
-    var wantN = normSku(sku);
-    function matchRow(it) {
-      var nm = itemSku(it).toLowerCase();
-      var nn = normSku(itemSku(it));
-      return !!(nm && (nm === want || nm.indexOf(want) >= 0 || want.indexOf(nm) >= 0
-        || (nn && nn === wantN)));
-    }
-    function modalApplyClick() {
-      try {
-        var $root = jQuery(hit.id).closest(".k-window, .k-widget, .modal, .k-dialog");
-        if (!$root || !$root.length) $root = jQuery(hit.id).parent();
-        var btns = $root.find("button, a, input[type=button], input[type=submit]");
-        for (var b = 0; b < btns.length; b++) {
-          var t = String(btns[b].textContent || btns[b].value || "").toLowerCase().trim();
-          var oid = String(btns[b].id || "").toLowerCase();
-          if (t === "select" || t === "ok" || t === "apply"
-              || oid.indexOf("selectproduct") >= 0
-              || oid.indexOf("apply") >= 0) {
-            btns[b].click();
-            return true;
-          }
-        }
-      } catch (e) {}
-      return false;
-    }
-    function pageApplyFn() {
-      var names = ["OnSelectProductPlate", "SelectProductPlateOK",
-                   "ApplySelectProductPlate", "gridSelectProductPlate_Change"];
-      for (var i = 0; i < names.length; i++) {
+    return waitModalRows(opened ? 4000 : 1500).then(function(ready) {
+      hit = ready || plateModalGrid();
+      if (!hit) {
+        lastPicker = "none_plate_widget";
+        return "";
+      }
+      lastPicker = hit.id;
+      clickSheetsAndPlates();
+      return waitModalRows(3000).then(function(afterTab) {
+        hit = afterTab || plateModalGrid() || hit;
+        var g = hit.grid;
+        var want = String(sku).toLowerCase();
+        var wantN = normSku(sku);
+        typeModalSearch(hit, sku);
         try {
-          if (typeof window[names[i]] === "function") {
-            window[names[i]]();
-            return names[i];
+          if (g.dataSource && typeof g.dataSource.filter === "function") {
+            g.dataSource.filter({field: "ProductName", operator: "contains", value: sku});
           }
-        } catch (e) {}
-      }
-      return "";
-    }
-    function applyRow(it) {
-      lastApply = "modal_apply";
-      try {
-        var tr = g.tbody.find("tr").filter(function() {
-          return g.dataItem(this) === it;
-        }).first();
-        if (tr.length && typeof g.select === "function") g.select(tr);
-        try { if (typeof g.trigger === "function") g.trigger("change"); } catch (e0) {}
-        if (tr.length) {
-          tr.trigger("dblclick");
-          tr.trigger("click");
+        } catch (e3) {}
+        function matchRow(it) {
+          var nm = itemSku(it).toLowerCase();
+          var nn = normSku(itemSku(it));
+          return !!(nm && (nm === want || nm.indexOf(want) >= 0 || want.indexOf(nm) >= 0
+            || (nn && nn === wantN)));
         }
-      } catch (e) {}
-      modalApplyClick();
-      pageApplyFn();
-      return new Promise(function(resolve) {
-        setTimeout(function() {
-          var landed = pidOf(pdfRow) || itemValue(it);
-          resolve(landed || "");
-        }, 250);
+        function modalApplyClick() {
+          try {
+            var $root = jQuery(hit.id).closest(".k-window, .k-widget, .modal, .k-dialog");
+            if (!$root || !$root.length) $root = jQuery(hit.id).parent();
+            var btns = $root.find("button, a, input[type=button], input[type=submit]");
+            for (var b = 0; b < btns.length; b++) {
+              var t = String(btns[b].textContent || btns[b].value || "").toLowerCase().trim();
+              var oid = String(btns[b].id || "").toLowerCase();
+              if (t === "select" || t === "ok" || t === "apply"
+                  || oid.indexOf("selectproduct") >= 0
+                  || oid.indexOf("apply") >= 0) {
+                btns[b].click();
+                return true;
+              }
+            }
+          } catch (e) {}
+          return false;
+        }
+        function pageApplyFn() {
+          var names = ["OnSelectProductPlate", "SelectProductPlateOK",
+                       "ApplySelectProductPlate", "gridSelectProductPlate_Change"];
+          for (var i = 0; i < names.length; i++) {
+            try {
+              if (typeof window[names[i]] === "function") {
+                window[names[i]]();
+                return names[i];
+              }
+            } catch (e) {}
+          }
+          return "";
+        }
+        function applyRow(it) {
+          lastApply = "modal_apply";
+          try {
+            var tr = g.tbody.find("tr").filter(function() {
+              return g.dataItem(this) === it;
+            }).first();
+            if (tr.length && typeof g.select === "function") g.select(tr);
+            try { if (typeof g.trigger === "function") g.trigger("change"); } catch (e0) {}
+            if (tr.length) {
+              tr.trigger("dblclick");
+              tr.trigger("click");
+            }
+          } catch (e) {}
+          modalApplyClick();
+          pageApplyFn();
+          return waitMs(400).then(function() {
+            return pidOf(pdfRow) || itemValue(it) || "";
+          });
+        }
+        function scan() {
+          var rows = [];
+          try { rows = (g.dataSource.data && g.dataSource.data()) || []; } catch (e4) {}
+          for (var i = 0; i < rows.length; i++) {
+            if (matchRow(rows[i])) return applyRow(rows[i]);
+          }
+          return Promise.resolve("");
+        }
+        return waitMs(200).then(function() {
+          return scan().then(function(now) {
+            if (now) return now;
+            if (g.dataSource && typeof g.dataSource.read === "function") {
+              return Promise.resolve(g.dataSource.read()).then(function() {
+                return waitMs(200).then(scan);
+              }).catch(function() { return ""; });
+            }
+            return "";
+          });
+        }).then(function(val) {
+          return waitMs(250).then(function() {
+            return pidOf(pdfRow) || val || "";
+          });
+        });
       });
-    }
-    try {
-      if (g.dataSource && typeof g.dataSource.filter === "function") {
-        g.dataSource.filter({field: "ProductName", operator: "contains", value: sku});
-      }
-    } catch (e3) {}
-    function scan() {
-      var rows = [];
-      try { rows = (g.dataSource.data && g.dataSource.data()) || []; } catch (e4) {}
-      for (var i = 0; i < rows.length; i++) {
-        if (matchRow(rows[i])) return applyRow(rows[i]);
-      }
-      return Promise.resolve("");
-    }
-    return scan().then(function(now) {
-      if (now) return now;
-      if (g.dataSource && typeof g.dataSource.read === "function") {
-        return Promise.resolve(g.dataSource.read()).then(function() {
-          return scan();
-        }).catch(function() { return ""; });
-      }
-      return "";
     });
   }
-  function pickProduct(sku, pdfRow) {
-    lastPicker = "";
-    lastPickerSku = "";
-    lastApply = "";
-    if (!sku || !window.jQuery) return Promise.resolve("");
+  function pickProductWidget(sku, pdfRow) {
     var hitW = findProductWidget();
-    if (!hitW) return pickPlateModal(sku, pdfRow);
+    if (!hitW) return Promise.resolve("");
     var w = hitW.widget;
     lastPicker = hitW.via;
     lastPickerSku = sku;
-    try {
-      if (typeof w.search === "function") w.search(sku);
-    } catch (e) {}
     function applyItem(it) {
       var val = itemValue(it);
       if (!val) return "";
@@ -3291,6 +3347,22 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       }).catch(function() { return ""; });
     }
     return Promise.resolve("");
+  }
+  function pickProduct(sku, pdfRow) {
+    lastPicker = "";
+    lastPickerSku = "";
+    lastApply = "";
+    if (!sku || !window.jQuery) return Promise.resolve("");
+    // Plate ProductID is modal apply onto #gridPDF, not #Product search
+    // (live 34603-2 modal 0-rows / search hit wrong input).
+    return pickPlateModal(sku, pdfRow).then(function(modalVal) {
+      var landed = pidOf(pdfRow) || modalVal;
+      if (landed) return landed;
+      return pickProductWidget(sku, pdfRow).then(function(wval) {
+        if (wval) setField(pdfRow, "ProductID", wval);
+        return pidOf(pdfRow) || wval || "";
+      });
+    });
   }
   function pagePdfGetData() {
     try {
@@ -3651,12 +3723,14 @@ def stamp_pdf_kendo_flats(
     UpdatePerimeterWeight(true,true) first, then the hole
     step. AddNewPDFFeature() with no args is not gold.
     Empty InternalData is still expected for no-hole
-    rectangles. Live 1007092-1: first ``#Product`` is
+    rectangles.     Live 1007092-1: first ``#Product`` is
     ProductType — skip it. Live 33204-1: ThicknessPDF is
     gauge (Read_DataThicknessGauge2). Drive
     ``#gridSelectProductPlate`` modal apply/select (dblclick +
-    modal Select), not search-only. Live 1009213-1: modal SKU
-    did not land FileList ProductID. ProductID is not the pack.
+    modal Select), not search-only. Wait for modal rows; type
+    the modal filter, not ``#Product`` (live 34603-2 0-rows /
+    wrong input). Live 1009213-1: modal SKU did not land
+    FileList ProductID. ProductID is not the pack.
     """
     spec_rows: list[dict[str, Any]] = []
     for row in rows or []:
@@ -3733,6 +3807,117 @@ def stamp_pdf_kendo_flats(
         "picker_sku": str(value.get("picker_sku") or ""),
         "picker_apply": str(value.get("picker_apply") or ""),
         "pdfinternal_xhr": bool(value.get("pdfinternal_xhr")),
+    }
+
+
+_BIND_QUOTE_ORG_JS = """(function(spec) {
+  var emptyGuid = "00000000-0000-0000-0000-000000000000";
+  var orgId = String((spec && spec.orgId) || "b7dbc294-3fd2-43aa-99be-268a6c4fce14");
+  var orgName = String((spec && spec.orgName) || "Time Manufacturing Waco");
+  function widgetOf($el) {
+    if (!$el || !$el.length) return null;
+    return $el.data("kendoComboBox") || $el.data("kendoDropDownList")
+      || $el.data("kendoAutoComplete") || $el.data("kendoMultiColumnComboBox")
+      || null;
+  }
+  function findOrgWidget() {
+    var ids = ["#PrimaryOrganizationID", "#OrganizationID", "#Organization",
+               "input[name='PrimaryOrganizationID']",
+               "input[name='OrganizationID']", "input[name='Organization']"];
+    for (var i = 0; i < ids.length; i++) {
+      try {
+        var $el = window.jQuery && jQuery(ids[i]);
+        if (!$el || !$el.length) continue;
+        return {el: $el, widget: widgetOf($el), via: ids[i]};
+      } catch (e) {}
+    }
+    try {
+      var boxes = jQuery("[data-role='combobox'], [data-role='dropdownlist'], [data-role='autocomplete']");
+      for (var j = 0; j < boxes.length; j++) {
+        var $w = jQuery(boxes[j]);
+        var wid = String($w.attr("id") || $w.attr("name") || "").toLowerCase();
+        if (wid.indexOf("organiz") < 0) continue;
+        return {el: $w, widget: widgetOf($w), via: wid || "org_widget"};
+      }
+    } catch (e2) {}
+    return null;
+  }
+  // Quotes UI bind: set the known List Value. Do not autocomplete search
+  // (live 34603-2 Time Waco 0 hits left empty GUID).
+  var hit = findOrgWidget();
+  if (hit) {
+    try {
+      if (hit.widget && typeof hit.widget.value === "function") {
+        hit.widget.value(orgId);
+        if (typeof hit.widget.trigger === "function") hit.widget.trigger("change");
+      }
+      if (hit.el && hit.el.val) {
+        hit.el.val(orgId).trigger("change");
+      }
+    } catch (e3) {}
+  }
+  try {
+    var $hid = jQuery("#PrimaryOrganizationID, input[name='PrimaryOrganizationID']");
+    if ($hid && $hid.length) $hid.val(orgId).trigger("change");
+  } catch (e4) {}
+  var landed = "";
+  try {
+    if (hit && hit.widget && typeof hit.widget.value === "function") {
+      landed = String(hit.widget.value() || "");
+    }
+    if (!landed || landed === emptyGuid) {
+      landed = String(jQuery("#PrimaryOrganizationID").val() || "");
+    }
+  } catch (e5) {}
+  var ok = !!(landed && landed !== emptyGuid
+    && landed.toLowerCase() === orgId.toLowerCase());
+  return {
+    ok: ok,
+    via: hit ? hit.via : "none_org_widget",
+    org_id: landed || "",
+    org_name: orgName,
+    search: false,
+    autocomplete_hits: 0
+  };
+})"""
+
+
+def bind_quote_organization(
+    *,
+    quote_id: str,
+    org_id: str = "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+    org_name: str = "Time Manufacturing Waco",
+    base: str | None = None,
+) -> dict[str, Any]:
+    """Quotes UI org bind: set known PrimaryOrganizationID. No autocomplete."""
+    empty = {
+        "ok": False,
+        "via": "",
+        "org_id": "",
+        "org_name": org_name,
+        "search": False,
+        "autocomplete_hits": 0,
+    }
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
+    if not gate.get("ok"):
+        return empty
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    expression = (
+        _BIND_QUOTE_ORG_JS
+        + "("
+        + json.dumps({"orgId": org_id, "orgName": org_name}, separators=(",", ":"))
+        + ")"
+    )
+    value = _cdp_evaluate_promise(expression, base=base, tab=tab, fallback=False)
+    if not isinstance(value, dict):
+        return empty
+    return {
+        "ok": bool(value.get("ok")),
+        "via": str(value.get("via") or ""),
+        "org_id": str(value.get("org_id") or ""),
+        "org_name": str(value.get("org_name") or org_name),
+        "search": bool(value.get("search")),
+        "autocomplete_hits": int(value.get("autocomplete_hits") or 0),
     }
 
 

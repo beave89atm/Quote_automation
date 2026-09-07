@@ -6,10 +6,39 @@ import re
 from typing import Any
 
 from .client import SecturaFabClient
+from .website import EMPTY_GUID
 
 # Kyle-confirmed Time Manufacturing Waco tenant org (do not search-guess).
 TIME_WACO_ORG_ID = "b7dbc294-3fd2-43aa-99be-268a6c4fce14"
 TIME_WACO_ORG_NAME = "Time Manufacturing Waco"
+
+
+def org_empty_guid_is_fail(org_id: str | None) -> bool:
+    """PrimaryOrganizationID blank / empty GUID is FAIL (live 34603-2)."""
+    raw = str(org_id or "").strip()
+    return raw in ("", EMPTY_GUID)
+
+
+def org_autocomplete_search_only_is_fail(result: dict[str, Any] | None) -> bool:
+    """Time Waco autocomplete 0 hits is not a Quotes UI bind (live 34603-2)."""
+    if not isinstance(result, dict):
+        return False
+    if result.get("search") is True:
+        return True
+    via = str(result.get("via") or "").lower()
+    if "search" in via or "autocomplete" in via:
+        return True
+    return org_empty_guid_is_fail(result.get("org_id") or result.get("PrimaryOrganizationID"))
+
+
+def time_waco_org_entry() -> dict[str, Any]:
+    """Quotes UI Time Waco — known ID, not an org-list search."""
+    return {
+        "ID": TIME_WACO_ORG_ID,
+        "OrganizationName": TIME_WACO_ORG_NAME,
+        "DisplayName": TIME_WACO_ORG_NAME,
+        "NameAndLocation": TIME_WACO_ORG_NAME,
+    }
 
 
 def _org_blob(org: dict[str, Any]) -> str:
@@ -130,17 +159,32 @@ def apply_quote_organization(
     if not name or not quote_id:
         return notes
 
-    org = find_organization_by_name(client, name)
     want_time_waco = "time" in name.casefold() and "waco" in name.casefold()
     if want_time_waco:
-        org = {
-            "ID": TIME_WACO_ORG_ID,
-            "OrganizationName": (org or {}).get("OrganizationName") or TIME_WACO_ORG_NAME,
-            "DisplayName": (org or {}).get("DisplayName") or TIME_WACO_ORG_NAME,
-            "NameAndLocation": (org or {}).get("NameAndLocation") or TIME_WACO_ORG_NAME,
-            "PrimaryContactID": (org or {}).get("PrimaryContactID"),
-        }
-    if not org or not org.get("ID"):
+        # Quotes UI binds Time Waco by known ID. Autocomplete search
+        # returned 0 hits on live 34603-2 and left an empty GUID.
+        org = time_waco_org_entry()
+        try:
+            from .chrome_cdp import bind_quote_organization, chrome_edit_signed_in
+
+            if chrome_edit_signed_in():
+                page = bind_quote_organization(
+                    quote_id=quote_id,
+                    org_id=TIME_WACO_ORG_ID,
+                    org_name=TIME_WACO_ORG_NAME,
+                )
+                if org_autocomplete_search_only_is_fail(page):
+                    notes.append(
+                        "WARNING: org autocomplete search-only is FAIL "
+                        "(live 34603-2 Time Waco 0 hits)"
+                    )
+                if isinstance(page, dict) and page.get("via"):
+                    notes.append(f"org_picker={page.get('via')}")
+        except Exception:  # noqa: BLE001 — API POST still binds the known ID
+            pass
+    else:
+        org = find_organization_by_name(client, name)
+    if not org or not org.get("ID") or org_empty_guid_is_fail(str(org.get("ID") or "")):
         listed = list_organizations(client)
         sample = ", ".join(
             (
@@ -202,6 +246,12 @@ def apply_quote_organization(
     check = client.get_json(f"v1/quote/{quote_id}")
     got = str(check.get("OrganizationName") or "").strip()
     got_id = str(check.get("PrimaryOrganizationID") or "").strip()
+    if org_empty_guid_is_fail(got_id):
+        notes.append(
+            f"WARNING: PrimaryOrganizationID empty GUID ({got_id!r}) "
+            "— org bind FAIL (live 34603-2)"
+        )
+        return notes
     if got_id == org_id or (
         got
         and (

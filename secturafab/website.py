@@ -3004,7 +3004,9 @@ def leftover_productid_is_not_the_pack(dump: dict[str, Any] | None) -> bool:
     """1007092-1 leftover GET: FileList ProductID null, GET ProductID set, no pack.
 
     Pack miss is not ProductID. GET ProductID + empty Tag / OCL is FAIL.
-    Do not skip Finish for null FileList ProductID (live 21681-1).
+    Upload bind ProductID 0 is not a stamp skip (live 21681-1). After a
+    plate SKU picker, FileList ProductID still null is 34603-2
+    (``filelist_productid_null_after_sku_bind_is_fail``).
     """
     if not isinstance(dump, dict):
         return False
@@ -3064,13 +3066,70 @@ def leftover_weight_without_productid_is_fail(dump: dict[str, Any] | None) -> bo
 def empty_productid_after_bind_is_fail(result: dict[str, Any] | None) -> bool:
     """Upload List ProductID is always null on Image Files PDFs (21681-1).
 
-    keepPid never has anything to restore. Fail-closing Finish on empty
+    keepPid never has anything to restore. Fail-closing *stamp* on empty
     bind ProductID blocked L×W and taught nothing (live 21681-1 GET 0).
-    Empty ProductID is the Image Files default, not a skip. Drive Kyle's
-    Product box — do not invent a GUID. ``result`` unused.
+    Empty upload ProductID is the Image Files default, not a skip.
+    After the plate picker, FileList ProductID still null is 34603-2
+    (``filelist_productid_null_after_sku_bind_is_fail``). ``result`` unused.
     """
     del result
     return False
+
+
+def plate_sku_required(
+    stamp_rows: list[dict[str, Any]] | None,
+    stamp_out: dict[str, Any] | None = None,
+) -> bool:
+    """True when the stamp named a plate SKU or the picker searched one."""
+    for row in stamp_rows or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("ProductSku") or row.get("SKU") or "").strip():
+            return True
+    if isinstance(stamp_out, dict) and str(stamp_out.get("picker_sku") or "").strip():
+        return True
+    return False
+
+
+def filelist_productid_null_after_sku_bind_is_fail(
+    stamp_out: dict[str, Any] | None,
+    stamp_rows: list[dict[str, Any]] | None = None,
+) -> bool:
+    """34603-2: plate SKU required + kendo/FileList ProductID still null.
+
+    Do not Finish. Do not invent a GUID. Upload bind ProductID 0 is
+    still not this gate (21681-1 — stamp L×W first).
+    """
+    if not plate_sku_required(stamp_rows, stamp_out):
+        return False
+    if not isinstance(stamp_out, dict):
+        return True
+    try:
+        n = int(stamp_out.get("productid_n") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return n <= 0
+
+
+def leftover_filelist_productid_null_after_bind_is_fail(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """34603-2 leftover: picker ran, GetPDFData FileList ProductID null."""
+    if not isinstance(dump, dict):
+        return False
+    bag = dump.get("filelist_bag") if isinstance(dump.get("filelist_bag"), dict) else {}
+    if bag.get("ProductID") not in (None, "", "null"):
+        return False
+    live = dump.get("live_34603_2") if isinstance(dump.get("live_34603_2"), dict) else {}
+    if not live:
+        return False
+    if live.get("productid") not in (None, "", "null"):
+        return False
+    if not str(live.get("picker_sku") or "").strip() and not str(
+        live.get("product_sku") or ""
+    ).strip():
+        return False
+    return True
 
 
 def empty_weight_after_perimeter_is_fail(

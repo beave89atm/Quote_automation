@@ -464,6 +464,31 @@ def _holes_from_noun(text: str) -> list[dict[str, Any]]:
     return holes
 
 
+def cad_laser_pack_proof_row(
+    row: dict[str, Any] | None,
+    thickness: Any = None,
+) -> bool:
+    """Gold Cad pack proof: plate ≤3/4 in WITH a labeled hole diameter.
+
+    No-hole rectangle is not the contours/pierces test (live 34603-2
+    34606-1 RAD is profile/bend, not a hole). Still may Finish; DoD
+    contours/pierces need PDFInternal from a drawing hole.
+    """
+    if not isinstance(row, dict):
+        return False
+    pn = str(row.get("part_no") or row.get("part_number") or "").strip()
+    noun = str(row.get("description") or "")
+    blob = f"{pn} {noun}"
+    thk = _row_thickness_in(row, thickness)
+    if classify_image_files_item(blob, thk) != "Cad":
+        return False
+    if thk is None:
+        thk = _plate_thickness_in(blob)
+    if thk is None or plate_over_three_quarter(thk):
+        return False
+    return bool(_holes_from_noun(blob))
+
+
 def _holes_from_takeoff_or_bom(
     takeoff: dict[str, Any] | None,
     bom_rows: list[dict[str, Any]] | None,
@@ -3247,16 +3272,19 @@ class SecturaFabPushService:
         Live 1002323-1 FileList keys were not logged. Perimeter
         XHR is not gold pack. Live 33819-1 posted bag Weight +
         OutsidePerimeter with ProductID None — Weight is not the
-        pack. Live 21681-1: upload List ProductID is always null
+        pack.         Live 21681-1: upload List ProductID is always null
         on Image Files PDFs. keepPid never has anything to restore.
-        Do not fail-close Finish solely because bind ProductID is
-        null — that blocked L×W and taught nothing. Empty ProductID
-        is the Image Files default. After #files bind, stamp drawing
-        Material / Thickness / Machine=Laser Bay 1 (overwrite
+        Do not skip *stamp* solely because bind ProductID is
+        null — that blocked L×W and taught nothing. Empty upload
+        ProductID is the Image Files default. After #files bind, stamp
+        drawing Material / Thickness / Machine=Laser Bay 1 (overwrite
         316 Polished / 0.0178), Status>0, L×W, bag Weight. Drive
         the plate Product kendo (not the ProductType bar) to the
         closest tenant plate SKU so GetPDFData ProductID is the
-        selected List Value. Do not invent a GUID or reconstruct
+        selected List Value. Live 34603-2: modal 0-rows / search
+        hit ``#Product`` — FileList ProductID stayed null. After
+        the picker, if a plate SKU was required and ProductID is
+        still null, do not Finish. Do not invent a GUID or reconstruct
         ProductID off-page. Log OnAddPDFClick response n.List[0]
         Tag / ProductionReady / OperationCostList / UnitCost —
         that is the server pack stamp. Live 33204-1 list0_pack
@@ -3471,6 +3499,7 @@ class SecturaFabPushService:
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
                 empty_weight_after_perimeter_is_fail,
+                filelist_productid_null_after_sku_bind_is_fail,
                 filelist_bag_snapshot,
                 list0_pack_without_tag_ocl_is_fail,
                 plate_modal_without_filelist_productid_is_fail,
@@ -3565,6 +3594,14 @@ class SecturaFabPushService:
                         "WARNING: AddNewPDFFeature without GET /Quote/PDFInternal "
                         "(gold 14501-1 NumberOfContours/Pierces 1/1) — "
                         "do not Finish; do not invent InternalData"
+                    )
+                elif filelist_productid_null_after_sku_bind_is_fail(
+                    stamp_out if isinstance(stamp_out, dict) else None,
+                    stamp_rows,
+                ):
+                    notes.append(
+                        "WARNING: FileList ProductID null after plate SKU bind "
+                        "(live 34603-2) — do not Finish; do not invent a GUID"
                     )
                 else:
                     if isinstance(stamp_out, dict):
@@ -3958,12 +3995,14 @@ class SecturaFabPushService:
 
         folder = (library or {}).get("folder")
         related = list((library or {}).get("related_pdfs") or [])
-        out: list[Path] = []
+        proof: list[Path] = []
+        other: list[Path] = []
         seen: set[str] = set()
         for row in bom_rows or []:
             pn = str(row.get("part_no") or row.get("part_number") or "").strip()
             noun = str(row.get("description") or "")
-            if classify_sectura_item(f"{pn} {noun}") != "Cad":
+            thk = _row_thickness_in(row if isinstance(row, dict) else None)
+            if classify_image_files_item(f"{pn} {noun}", thk) != "Cad":
                 continue
             pdf = resolve_component_pdf(
                 pn, library_folder=folder, related_pdf_names=related
@@ -3974,8 +4013,14 @@ class SecturaFabPushService:
             if key in seen:
                 continue
             seen.add(key)
-            out.append(pdf)
-        return out
+            # Gold Cad pack proof first (≤3/4 in + labeled hole).
+            # No-hole rectangle is not the contours/pierces test
+            # (live 34603-2 34606-1 RAD is not a hole).
+            if cad_laser_pack_proof_row(row if isinstance(row, dict) else None, thk):
+                proof.append(pdf)
+            else:
+                other.append(pdf)
+        return proof + other
 
     def _library_linear_rows(
         self, bom_rows: list[dict[str, Any]] | None
@@ -4841,6 +4886,14 @@ class SecturaFabPushService:
 
             extra_pdfs = [job_pdf] if has_job_pdf else None
             cad_pdfs = [] if cad else self._library_cad_pdfs(bom_rows, library)
+            if cad_pdfs and not any(
+                cad_laser_pack_proof_row(r) for r in (bom_rows or [])
+            ):
+                notes.append(
+                    "Cad laser pack proof: no plate ≤3/4 in with labeled hole "
+                    "(live 34603-2 34606-1 RAD is not a hole) — may Finish; "
+                    "DoD contours/pierces need PDFInternal from a drawing hole"
+                )
             linear_bom = self._library_linear_rows(bom_rows)
             expect_cad = bool(cad or cad_pdfs or ((drawings or has_job_pdf) and not loose_linear))
             expect_linear = bool(loose_linear or linear_bom)

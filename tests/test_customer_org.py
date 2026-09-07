@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from quote_core.customer_org import (
     detect_organization,
@@ -7,7 +7,16 @@ from quote_core.customer_org import (
     detect_organization_from_pdf,
     detect_organization_from_text,
 )
-from secturafab.org_ops import apply_quote_organization, find_organization_by_name
+from secturafab.org_ops import (
+    TIME_WACO_ORG_ID,
+    TIME_WACO_ORG_NAME,
+    apply_quote_organization,
+    find_organization_by_name,
+    org_autocomplete_search_only_is_fail,
+    org_empty_guid_is_fail,
+    time_waco_org_entry,
+)
+from secturafab.website import EMPTY_GUID
 
 
 def test_detect_tycrop_maps_to_propell():
@@ -152,3 +161,74 @@ def test_apply_quote_organization_sets_primary_and_list():
     assert payload["OrganizationName"] == "Propell"
     assert payload["OrganizationList"][0]["ID"] == "org-1"
     assert payload["OrganizationList"][0]["ParentID"] == "qid"
+
+
+def test_org_empty_guid_is_fail():
+    assert org_empty_guid_is_fail("") is True
+    assert org_empty_guid_is_fail(None) is True
+    assert org_empty_guid_is_fail(EMPTY_GUID) is True
+    assert org_empty_guid_is_fail(TIME_WACO_ORG_ID) is False
+    assert org_autocomplete_search_only_is_fail({"search": True, "hits": 0}) is True
+    assert org_autocomplete_search_only_is_fail(
+        {"via": "autocomplete", "org_id": ""}
+    ) is True
+    assert org_autocomplete_search_only_is_fail(
+        {"via": "#PrimaryOrganizationID", "org_id": TIME_WACO_ORG_ID, "search": False}
+    ) is False
+    assert time_waco_org_entry()["ID"] == TIME_WACO_ORG_ID
+
+
+def test_apply_time_waco_binds_known_id_without_org_search():
+    client = MagicMock()
+
+    def _get(path: str):
+        assert "organization" not in str(path).lower()
+        return {
+            "ID": "qid",
+            "OrganizationName": TIME_WACO_ORG_NAME,
+            "PrimaryOrganizationID": TIME_WACO_ORG_ID,
+            "ItemList": [],
+        }
+
+    client.get_json.side_effect = _get
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+
+    with patch("secturafab.chrome_cdp.chrome_edit_signed_in", return_value=False):
+        notes = apply_quote_organization(
+            client, "qid", organization_name="Time Manufacturing Waco"
+        )
+    assert any("Set Organization:" in n and TIME_WACO_ORG_ID in n for n in notes)
+    payload = client.request.call_args.kwargs["json"]
+    assert payload["PrimaryOrganizationID"] == TIME_WACO_ORG_ID
+    assert payload["OrganizationList"][0]["ID"] == TIME_WACO_ORG_ID
+
+
+def test_apply_time_waco_empty_guid_is_fail():
+    client = MagicMock()
+    n = {"i": 0}
+
+    def _get(path: str):
+        n["i"] += 1
+        if n["i"] == 1:
+            return {"ID": "qid", "ItemList": []}
+        return {
+            "ID": "qid",
+            "OrganizationName": TIME_WACO_ORG_NAME,
+            "PrimaryOrganizationID": EMPTY_GUID,
+        }
+
+    client.get_json.side_effect = _get
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+
+    with patch("secturafab.chrome_cdp.chrome_edit_signed_in", return_value=False):
+        notes = apply_quote_organization(
+            client, "qid", organization_name="Time Manufacturing Waco"
+        )
+    blob = " ".join(notes)
+    assert "empty GUID" in blob
+    assert "FAIL" in blob
+    assert "Set Organization:" not in blob

@@ -1388,6 +1388,28 @@ def test_leftover_weight_without_productid_is_fail():
     assert empty_productid_after_bind_is_fail({"stamped": 1}) is False
     assert empty_productid_after_bind_is_fail(MagicMock()) is False
     assert empty_productid_after_bind_is_fail(None) is False
+    from secturafab.website import (
+        filelist_productid_null_after_sku_bind_is_fail,
+        leftover_filelist_productid_null_after_bind_is_fail,
+    )
+
+    assert filelist_productid_null_after_sku_bind_is_fail(
+        {"productid_n": 0, "picker_sku": "PL7 Ga-A36"},
+        [{"ProductSku": "PL7 Ga-A36"}],
+    ) is True
+    assert filelist_productid_null_after_sku_bind_is_fail(
+        {"productid_n": 1, "picker_sku": "PL7 Ga-A36"},
+        [{"ProductSku": "PL7 Ga-A36"}],
+    ) is False
+    assert filelist_productid_null_after_sku_bind_is_fail({"productid_n": 0}, []) is False
+    dump_34603 = {
+        "filelist_bag": {"ProductID": None},
+        "live_34603_2": {"productid": None, "picker_sku": "PL025-A572"},
+    }
+    assert leftover_filelist_productid_null_after_bind_is_fail(dump_34603) is True
+    filled_34603 = dict(dump_34603)
+    filled_34603["filelist_bag"] = {"ProductID": "not-null"}
+    assert leftover_filelist_productid_null_after_bind_is_fail(filled_34603) is False
 
 
 def test_leftover_productid_is_not_the_pack():
@@ -8451,6 +8473,17 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "SelectProductPlateOK" in _STAMP_PDF_KENDO_JS
     assert "ApplySelectProductPlate" in _STAMP_PDF_KENDO_JS
     assert "s.ProductID" not in _STAMP_PDF_KENDO_JS
+    assert "waitModalRows" in _STAMP_PDF_KENDO_JS
+    assert "modalSearchInput" in _STAMP_PDF_KENDO_JS
+    assert "34603-2" in _STAMP_PDF_KENDO_JS
+    assert "pickPlateModal(sku, pdfRow)" in _STAMP_PDF_KENDO_JS
+    from secturafab.chrome_cdp import _BIND_QUOTE_ORG_JS
+
+    assert "b7dbc294-3fd2-43aa-99be-268a6c4fce14" in _BIND_QUOTE_ORG_JS
+    assert "PrimaryOrganizationID" in _BIND_QUOTE_ORG_JS
+    assert "w.search" not in _BIND_QUOTE_ORG_JS
+    assert "autocomplete_hits" in _BIND_QUOTE_ORG_JS
+    assert "search: false" in _BIND_QUOTE_ORG_JS
     assert "list0Pack" in _PAGE_PDF_FINISH_JS
     assert "response_tag" in _PAGE_PDF_FINISH_JS
     assert "response_ocl_n" in _PAGE_PDF_FINISH_JS

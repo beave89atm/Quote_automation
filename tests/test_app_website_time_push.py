@@ -1110,6 +1110,10 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "a7d6ca50-efec-409d-bd32-e68012e710c3" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "a7dc46bf-836a-4250-b038-9331cc0595a7" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "14219adc-f7f5-401a-b707-0bf200ef8c74" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "34603-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("14219adc-f7f5-401a-b707-0bf200ef8c74")
+    assert is_forbidden_quote_id("14219adc-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
     assert is_forbidden_quote_id("bd5c2e3e-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d2f7b031-1111-2222-3333-444444444444")
@@ -2331,7 +2335,7 @@ def test_1002323_1_empty_weight_after_perimeter_does_not_finish(
 def test_21681_1_empty_bind_productid_still_stamps_and_finishes(
     tmp_path, monkeypatch
 ):
-    """Bind ProductID null is Image Files default — still stamp + Finish."""
+    """Bind ProductID null is Image Files default — still stamp; Finish fail-closed after picker."""
     from tests.fixtures.live_21681_1 import live_21681_1_quote
 
     quote = live_21681_1_quote()
@@ -2412,7 +2416,7 @@ def test_21681_1_empty_bind_productid_still_stamps_and_finishes(
         ],
     )
     client.stamp_pdf_kendo_flats.assert_called_once()
-    client.add_item_pdf_files.assert_called_once()
+    client.add_item_pdf_files.assert_not_called()
     stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
     assert stamp_rows
     assert all("ProductID" not in row for row in stamp_rows)
@@ -2422,8 +2426,8 @@ def test_21681_1_empty_bind_productid_still_stamps_and_finishes(
     blob = " ".join(notes)
     assert "21681-1" in blob
     assert "Image Files default" in blob
-    assert "do not Finish" not in blob
-    assert "DoD FAIL" in blob
+    assert "do not Finish" in blob
+    assert "34603-2" in blob
     assert "persisted" not in blob.lower()
 
 
@@ -2568,7 +2572,7 @@ def test_33819_1_bind_without_productid_n_still_finishes_leftover_fail(
 def test_1007092_1_get_productid_is_not_pack_still_finishes(
     tmp_path, monkeypatch
 ):
-    """Null FileList ProductID still Finishes; leftover GET ProductID is FAIL."""
+    """Null FileList ProductID after SKU picker is fail-closed (34603-2)."""
     from tests.fixtures.live_1007092_1 import live_1007092_1_quote
 
     quote = live_1007092_1_quote()
@@ -2643,7 +2647,8 @@ def test_1007092_1_get_productid_is_not_pack_still_finishes(
         ],
     )
     client.stamp_pdf_kendo_flats.assert_called_once()
-    client.add_item_pdf_files.assert_called_once()
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    client.add_item_pdf_files.assert_not_called()
     stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
     assert stamp_rows
     assert all("ProductID" not in row for row in stamp_rows)
@@ -2652,23 +2657,16 @@ def test_1007092_1_get_productid_is_not_pack_still_finishes(
     assert stamp_rows[0]["Status"] == 1
     blob = " ".join(notes)
     assert "1007092-1" in blob
-    assert "do not Finish" not in blob
-    assert "GET ProductID set" in blob
-    assert "product_picker=none_plate_widget" in blob
-    assert "response_list_n=1" in blob
-    assert "response_tag=''" in blob
-    assert "list0_pack.badge_string=''" in blob
-    assert "response_production_ready=false" in blob
-    assert "response_ocl_n=0" in blob
-    assert "response_unit_cost=0.11" in blob
-    assert "DoD FAIL" in blob
+    assert "do not Finish" in blob
+    assert "34603-2" in blob
+    assert "product_picker=none_plate_widget" not in blob
     assert "persisted" not in blob.lower()
 
 
 def test_33204_1_list0_pack_empty_is_fail_still_finishes(
     tmp_path, monkeypatch
 ):
-    """Full bag still Finishes; list0_pack BadgeString empty / OCL 0 is FAIL."""
+    """SKU picker + ProductID still 0 is fail-closed (34603-2) before list0_pack."""
     from tests.fixtures.live_33204_1 import live_33204_1_quote
 
     quote = live_33204_1_quote()
@@ -2745,7 +2743,7 @@ def test_33204_1_list0_pack_empty_is_fail_still_finishes(
         ],
     )
     client.stamp_pdf_kendo_flats.assert_called_once()
-    client.add_item_pdf_files.assert_called_once()
+    client.add_item_pdf_files.assert_not_called()
     stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
     assert stamp_rows
     assert all("ProductID" not in row for row in stamp_rows)
@@ -2754,18 +2752,8 @@ def test_33204_1_list0_pack_empty_is_fail_still_finishes(
     assert stamp_rows[0]["Status"] == 1
     blob = " ".join(notes)
     assert "33204-1" in blob
-    assert "do not Finish" not in blob
-    assert "list0_pack" in blob
-    assert "BadgeString empty" in blob
-    assert "gold Tag is empty" in blob
-    assert "product_picker=none_plate_widget" in blob
-    assert "list0_pack.badge_string=''" in blob
-    assert "response_list_n=1" in blob
-    assert "response_tag=''" in blob
-    assert "response_production_ready=false" in blob
-    assert "response_ocl_n=0" in blob
-    assert "response_unit_cost=5.05" in blob
-    assert "DoD FAIL" in blob
+    assert "do not Finish" in blob
+    assert "34603-2" in blob
     assert "persisted" not in blob.lower()
 
 
@@ -3264,3 +3252,116 @@ def test_ensure_weld_ops_page_skip_is_fail_closed_not_graft():
     )
     assert any("fail-closed" in n and "not grafting" in n for n in notes)
     client.request.assert_not_called()
+
+
+def test_34603_2_filelist_productid_null_after_sku_bind_does_not_finish(
+    tmp_path, monkeypatch
+):
+    """Live 34603-2: plate SKU required + stamp ProductID still 0 — do not Finish."""
+    from secturafab.website import filelist_productid_null_after_sku_bind_is_fail
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "34606-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    bind = _page_pdf_bind_ok(1)
+    bind["productid_n"] = 0
+    client.upload_pdf_via_page_add_files.return_value = bind
+    stamp_out = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "weight_n": 1,
+        "productid_n": 0,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "picker_via": "#gridSelectProductPlate",
+        "picker_sku": "PL025-A572",
+        "picker_apply": "search_only",
+    }
+    client.stamp_pdf_kendo_flats.return_value = stamp_out
+    assert filelist_productid_null_after_sku_bind_is_fail(
+        stamp_out, [{"ProductSku": "PL025-A572"}]
+    ) is True
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003460",
+        pdf_files=[pdf],
+        material="A572 Grade 50",
+        thickness="0.25",
+        qty=1,
+        description="PLATE",
+        bom_rows=[
+            {
+                "part_no": "34606-1",
+                "qty": 1,
+                "description": "PLATE",
+                "width_in": 12.0,
+                "length_in": 18.0,
+            }
+        ],
+    )
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    client.add_item_pdf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "do not Finish" in blob
+    assert "34603-2" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_cad_laser_pack_proof_requires_labeled_hole_not_rad(tmp_path):
+    from secturafab.push import cad_laser_pack_proof_row
+
+    assert cad_laser_pack_proof_row(
+        {
+            "part_no": "14501-1",
+            "description": "PLATE 1/2 HOLE",
+            "thickness_in": 0.1875,
+        }
+    ) is True
+    assert cad_laser_pack_proof_row(
+        {
+            "part_no": "34606-1",
+            "description": "PLATE RAD 1.0",
+            "thickness_in": 0.25,
+        }
+    ) is False
+    assert cad_laser_pack_proof_row(
+        {
+            "part_no": "THICK",
+            "description": "PLATE 1/2 HOLE",
+            "thickness_in": 1.25,
+        }
+    ) is False
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "NOHOLE.pdf").write_bytes(b"%PDF")
+    (lib / "HOLE.pdf").write_bytes(b"%PDF")
+    (lib / "THICK.pdf").write_bytes(b"%PDF")
+    service = SecturaFabPushService(client=MagicMock())
+    paths = service._library_cad_pdfs(
+        [
+            {"part_no": "NOHOLE", "description": "PLATE", "thickness_in": 0.25},
+            {
+                "part_no": "HOLE",
+                "description": "PLATE 1/2 HOLE",
+                "thickness_in": 0.25,
+            },
+            {
+                "part_no": "THICK",
+                "description": "PLATE 1/2 HOLE",
+                "thickness_in": 1.25,
+            },
+        ],
+        {"folder": str(lib), "related_pdfs": ["NOHOLE.pdf", "HOLE.pdf", "THICK.pdf"]},
+    )
+    names = [p.name for p in paths]
+    assert names[0] == "HOLE.pdf"
+    assert "NOHOLE.pdf" in names
+    assert "THICK.pdf" not in names
