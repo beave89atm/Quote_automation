@@ -3613,6 +3613,7 @@ class SecturaFabPushService:
                 finish_empty_filelist_after_good_stamp_is_fail,
                 finish_bag_internaldata_empty_after_hole_is_fail,
                 cad_plate_filelist_bar_producttype_is_fail,
+                finish_prt_pdf_still_contours_zero_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
                 empty_weight_after_perimeter_is_fail,
@@ -4013,6 +4014,18 @@ class SecturaFabPushService:
                                 "InternalData Dim1 (live bab8f668) — Image "
                                 "Files grid default is linear; QuoteOrderEdit "
                                 "Cad plate is prt_pdf — do not invent Contours "
+                                "FileList keys — Image Files DoD FAIL"
+                            )
+                        if finish_prt_pdf_still_contours_zero_is_fail(
+                            result,
+                            stamp_out if isinstance(stamp_out, dict) else None,
+                        ):
+                            notes.append(
+                                "WARNING: OnAddPDFClick ProductType=prt_pdf + "
+                                "InternalData Dim1 + OP still Contours=0 / no "
+                                "PR (live c751780e) — GetPDFData copies "
+                                "OutsideArea/TrueWeight/Description; Nest is "
+                                "later (AddRow n.List) — do not invent Contours "
                                 "FileList keys — Image Files DoD FAIL"
                             )
                         if finish_empty_filelist_after_good_stamp_is_fail(

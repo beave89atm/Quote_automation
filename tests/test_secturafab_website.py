@@ -1963,6 +1963,7 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_id("111633b8-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("6150c5c7-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("bab8f668-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("c751780e-1111-2222-3333-444444444444")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -2096,6 +2097,29 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
         [{"HoleDiameter": HOLE_DIM1, "ProductID": FILELIST_PRODUCT_ID, "ItemType": "cad"}],
     ) is True
     assert cad_plate_filelist_bar_producttype_is_fail(fl0_result) is False
+
+    from tests.fixtures.live_1020250_1 import (
+        leftover_finish_prt_pdf_still_contours_zero_dump,
+        leftover_finish_prt_pdf_still_contours_zero_result,
+    )
+    from secturafab.website import (
+        leftover_finish_prt_pdf_still_contours_zero_is_fail,
+        finish_prt_pdf_still_contours_zero_is_fail,
+    )
+
+    prt = leftover_finish_prt_pdf_still_contours_zero_dump()
+    assert leftover_1020250_1_hypotheses_named(prt) is True
+    assert leftover_finish_prt_pdf_still_contours_zero_is_fail(prt) is True
+    assert leftover_finish_prt_pdf_still_contours_zero_is_fail(None) is False
+    prt_ok = dict(prt)
+    prt_ok["live_c751780e"] = dict(prt["live_c751780e"])
+    prt_ok["live_c751780e"]["number_of_contours"] = 1
+    prt_ok["live_c751780e"]["badge_string"] = "PR"
+    assert leftover_finish_prt_pdf_still_contours_zero_is_fail(prt_ok) is False
+    prt_result = leftover_finish_prt_pdf_still_contours_zero_result()
+    assert list0_pack_badge_ocl_is_gold(prt_result) is False
+    assert finish_prt_pdf_still_contours_zero_is_fail(prt_result, stamp_id) is True
+    assert finish_prt_pdf_still_contours_zero_is_fail(fl0_result) is False
 
     leftover = leftover_contours_zero_after_productid_hole_result()
     assert list0_pack_badge_ocl_is_gold(leftover) is False
@@ -8806,6 +8830,11 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "bab8f668" in _PAGE_PDF_FINISH_JS
     assert "bab8f668" in _STAMP_PDF_KENDO_JS
     assert "filelist_producttype" in _PAGE_PDF_FINISH_JS
+    assert "writeGetPdfShapeFields" in _PAGE_PDF_FINISH_JS
+    assert "writeGetPdfShapeFields" in _STAMP_PDF_KENDO_JS
+    assert "c751780e" in _PAGE_PDF_FINISH_JS
+    assert "c751780e" in _STAMP_PDF_KENDO_JS
+    assert "OutsideArea" in _PAGE_PDF_FINISH_JS
     assert "ensureGetPdfDataReady" in _PAGE_PDF_FINISH_JS
     assert "filelist_raw" in _PAGE_PDF_FINISH_JS
     assert "n < 1" in _PAGE_PDF_FINISH_JS

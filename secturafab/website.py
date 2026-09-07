@@ -1891,6 +1891,9 @@ QUOTE_ORDER_EDIT_UPW_INTERNAL: dict[str, Any] = {
     "finish_producttype_bar_miss": (
         "finish_producttype_bar_bar_flat_after_plate_productid_and_internaldata_dim1"
     ),
+    "finish_prt_pdf_still_contours_zero_miss": (
+        "finish_prt_pdf_still_contours_zero_after_internaldata_dim1_and_op"
+    ),
     "invent_contours_on_filelist": False,
 }
 
@@ -2443,6 +2446,10 @@ GETPDFDATA_BAG_COMPARE_KEYS = (
     "InternalData",
     "ProductType",
     "ProductSubType",
+    "OutsideArea",
+    "TrueWeight",
+    "MaterialCost",
+    "Description",
 )
 
 
@@ -3446,6 +3453,10 @@ def leftover_1020250_1_hypotheses_named(dump: dict[str, Any] | None) -> bool:
         "finish_producttype_bar_miss"
     ):
         return False
+    if hyps.get("12_finish_prt_pdf_still_contours_zero") != QUOTE_ORDER_EDIT_UPW_INTERNAL.get(
+        "finish_prt_pdf_still_contours_zero_miss"
+    ):
+        return False
     return True
 
 
@@ -3828,6 +3839,77 @@ def cad_plate_filelist_bar_producttype_is_fail(
     ):
         return True
     return False
+
+
+def leftover_finish_prt_pdf_still_contours_zero_is_fail(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """c751780e: prt_pdf + InternalData Dim1 + OP, Contours=0 / no PR."""
+    if not isinstance(dump, dict):
+        return False
+    live = dump.get("live_c751780e") if isinstance(dump.get("live_c751780e"), dict) else {}
+    if not live:
+        return False
+    try:
+        if int(live.get("getpdfdata_n") or 0) < 1:
+            return False
+        if int(live.get("getpdfdata_internal_dim1_n") or 0) < 1:
+            return False
+        if int(live.get("finish_filelist_n") or 0) < 1:
+            return False
+        if int(live.get("number_of_contours") or 0) != 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    pt = str(live.get("filelist_producttype") or "").strip().lower()
+    if pt != CAD_IMAGE_FILES_PLATE_PRODUCT_TYPE:
+        return False
+    if str(live.get("badge_string") or "") != "":
+        return False
+    if dump.get("invent_contours_on_filelist") is not False:
+        return False
+    if dump.get("operation_profile_graft") is not False:
+        return False
+    if dump.get("nest_best_sheet") is not False:
+        return False
+    return True
+
+
+def finish_prt_pdf_still_contours_zero_is_fail(
+    result: dict[str, Any] | None,
+    stamp_out: dict[str, Any] | None = None,
+) -> bool:
+    """OnAddPDFClick after prt_pdf + hole Dim1 + OP still Contours=0 / no PR.
+
+    Live c751780e. Older mocks without ProductType still pass through.
+    Nest is later (OnAddPDFClick AddRow n.List). Do not invent Contours.
+    """
+    if not isinstance(result, dict):
+        return False
+    bag = result.get("filelist_bag") if isinstance(result.get("filelist_bag"), dict) else {}
+    pt = result.get("filelist_producttype")
+    if pt is None:
+        pt = bag.get("ProductType")
+    if "filelist_producttype" not in result and "ProductType" not in bag:
+        return False
+    if str(pt or "").strip().lower() != CAD_IMAGE_FILES_PLATE_PRODUCT_TYPE:
+        return False
+    try:
+        if int(result.get("getpdfdata_internal_dim1_n") or 0) < 1:
+            if not isinstance(stamp_out, dict):
+                return False
+            if int(stamp_out.get("getpdfdata_internal_dim1_n") or 0) < 1:
+                return False
+    except (TypeError, ValueError):
+        return False
+    try:
+        contours = int(result.get("response_number_of_contours") or 0)
+    except (TypeError, ValueError):
+        contours = 0
+    badge = str(result.get("response_badge_string") or "")
+    if contours >= 1 and badge == "PR":
+        return False
+    return contours < 1 or badge == ""
 
 
 def list0_pack_contours_zero_after_productid_hole_is_fail(

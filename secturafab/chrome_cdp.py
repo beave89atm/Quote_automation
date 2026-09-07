@@ -2546,6 +2546,33 @@ _PAGE_PDF_FINISH_JS = """(function() {
     if (!isPlateOrSheetType(pt) && !isPlateOrSheetType(pst)) return true;
     return false;
   }
+  function writeGetPdfShapeFields(r) {
+    // GetPDFData copies OutsideArea/TrueWeight/Description from dataItem.
+    // Live c751780e: JSON dropped undefined OutsideArea; TrueWeight 0;
+    // Description null. UPW writes OP/Weight only. Nest is later.
+    // Do not invent Contours FileList keys. Do not invent MaterialCost.
+    if (!r) return false;
+    var L = parseFloat(r.Length), W = parseFloat(r.Width);
+    var area = parseFloat(r.OutsideArea);
+    if (!(area > 0) && L > 0 && W > 0) {
+      if (typeof r.set === "function") r.set("OutsideArea", L * W);
+      else r.OutsideArea = L * W;
+    }
+    var tw = parseFloat(r.TrueWeight);
+    var wt = parseFloat(r.Weight);
+    if (!(tw > 0) && wt > 0) {
+      if (typeof r.set === "function") r.set("TrueWeight", wt);
+      else r.TrueWeight = wt;
+    }
+    if (r.Description == null || r.Description === "") {
+      var desc = r.PartName || r.FileName || "";
+      if (desc) {
+        if (typeof r.set === "function") r.set("Description", desc);
+        else r.Description = desc;
+      }
+    }
+    return true;
+  }
   function ensureGetPdfDataReady() {
     // Live 1ca884cc: stamp dataSource n=1 Status=1 / form_lw_synced /
     // OP>0 but OnAddPDFClick posted FileList n=0. GetPDFData walks
@@ -2584,6 +2611,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
       } catch (e3) {}
       writeHoleInternalData(g, r);
       writePlateProductType(r, null);
+      writeGetPdfShapeFields(r);
       if (internalDim1Count(saveInternalRaw(r)) < 1 && internalDim1Count(kept) > 0) {
         writeInternalOnRow(r, kept);
       }
@@ -2596,6 +2624,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
         for (var ej = 0; ej < src.length; ej++) {
           writeHoleInternalData(g, src[ej]);
           writePlateProductType(src[ej], null);
+          writeGetPdfShapeFields(src[ej]);
         }
       }
     } catch (e5) {}
@@ -2607,6 +2636,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
           if (typeof g.select === "function") g.select(trs[t]);
           writeHoleInternalData(g, item);
           writePlateProductType(item, null);
+          writeGetPdfShapeFields(item);
           break;
         }
       }
@@ -2667,7 +2697,8 @@ _PAGE_PDF_FINISH_JS = """(function() {
     "Machine", "ProductID", "Qty", "Weight", "Weight_UseLocal",
     "OutsidePerimeter", "OutsidePerimeter_UseLocal", "NumberOfHeads",
     "WeightBorder", "Material", "Thickness", "Length", "Width",
-    "InternalData", "ProductType", "ProductSubType", "ItemType"
+    "InternalData", "ProductType", "ProductSubType", "ItemType",
+    "OutsideArea", "TrueWeight", "MaterialCost", "Description"
   ];
   function bagSnap(row) {
     var o = {};
@@ -2931,6 +2962,7 @@ _PAGE_PDF_FINISH_JS = """(function() {
             if (srcW[0]) {
               writeHoleInternalData(hitW.grid, srcW[0]);
               writePlateProductType(srcW[0], null);
+              writeGetPdfShapeFields(srcW[0]);
             }
           } catch (eW) {}
           pageRows = pageGetPdfDataSafe();
@@ -3254,6 +3286,11 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
                 window.__kannonGetPerim.cutting_length = parseFloat(cl);
                 window.__kannonGetPerim.cutting_length_n = 1;
               }
+              var oa = data && (data.OutsideArea != null
+                ? data.OutsideArea : data.outsideArea);
+              if (oa != null && parseFloat(oa) > 0) {
+                window.__kannonGetPerim.outside_area = parseFloat(oa);
+              }
             } catch (e0) {}
             if (typeof prev === "function") return prev.apply(this, arguments);
           };
@@ -3362,7 +3399,10 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     if (wt) {
       setField(r, "Weight", wt);
       setField(r, "Weight_UseLocal", true);
+      var tw = parseFloat(r.TrueWeight);
+      if (!(tw > 0)) setField(r, "TrueWeight", parseFloat(wt));
     }
+    writeGetPdfShapeFields(r);
     return {op: op, wt: wt};
   }
   function pidOf(r) {
@@ -4071,6 +4111,31 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     }
     return true;
   }
+  function writeGetPdfShapeFields(r) {
+    // Live c751780e: GetPDFData-shaped row missing OutsideArea;
+    // TrueWeight 0; Description null. Copy L×W area + Weight.
+    if (!r) return false;
+    var L = parseFloat(r.Length), W = parseFloat(r.Width);
+    var area = parseFloat(r.OutsideArea);
+    if (!(area > 0) && L > 0 && W > 0) {
+      if (typeof r.set === "function") r.set("OutsideArea", L * W);
+      else r.OutsideArea = L * W;
+    }
+    var tw = parseFloat(r.TrueWeight);
+    var wt = parseFloat(r.Weight);
+    if (!(tw > 0) && wt > 0) {
+      if (typeof r.set === "function") r.set("TrueWeight", wt);
+      else r.TrueWeight = wt;
+    }
+    if (r.Description == null || r.Description === "") {
+      var desc = r.PartName || r.FileName || "";
+      if (desc) {
+        if (typeof r.set === "function") r.set("Description", desc);
+        else r.Description = desc;
+      }
+    }
+    return true;
+  }
   function ensureGetPdfDataReady() {
     // Live 1ca884cc: Finish filelist_n=0 after form_lw_synced=true + OP>0.
     // GetPDFData keeps Status>0 tbody rows; SetStatus runs on selected only.
@@ -4104,6 +4169,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       } catch (e3) {}
       writeHoleInternalData(g, r);
       writePlateProductType(r, null);
+      writeGetPdfShapeFields(r);
       if (internalDim1Count(saveInternalRaw(r)) < 1 && internalDim1Count(kept) > 0) {
         writeInternalOnRow(r, kept);
       }
@@ -4116,6 +4182,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
         for (var ej = 0; ej < src.length; ej++) {
           writeHoleInternalData(g, src[ej]);
           writePlateProductType(src[ej], null);
+          writeGetPdfShapeFields(src[ej]);
         }
       }
     } catch (e5) {}
@@ -4127,6 +4194,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           if (typeof g.select === "function") g.select(trs[t]);
           writeHoleInternalData(g, item);
           writePlateProductType(item, null);
+          writeGetPdfShapeFields(item);
           break;
         }
       }
@@ -4331,6 +4399,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
                 if (s.ProductID) setField(r, "ProductID", s.ProductID);
                 else if (val) setField(r, "ProductID", val);
                 writePlateProductType(r, s);
+                writeGetPdfShapeFields(r);
                 // Last geometry XHR: form L×W THEN Internal Dim1
                 // (live 5a231aa form_lw_synced=false / OP=0).
                 var formVia = typeFormLengthWidth(s);
