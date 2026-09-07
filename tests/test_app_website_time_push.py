@@ -1114,12 +1114,16 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "34603-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "9be15b62-a824-442c-b911-50ca1016cc5e" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "21682-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "c23fba3d-ef02-412b-b06e-f91ffa9076a6" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "29341-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "33819-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert is_forbidden_quote_id("b1036d7d-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("14219adc-f7f5-401a-b707-0bf200ef8c74")
     assert is_forbidden_quote_id("14219adc-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("9be15b62-a824-442c-b911-50ca1016cc5e")
     assert is_forbidden_quote_id("9be15b62-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("c23fba3d-ef02-412b-b06e-f91ffa9076a6")
+    assert is_forbidden_quote_id("c23fba3d-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
     assert is_forbidden_quote_id("bd5c2e3e-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d2f7b031-1111-2222-3333-444444444444")
@@ -2942,6 +2946,79 @@ def test_hole_pdfinternal_list0_pack_contours_is_gold(tmp_path, monkeypatch):
     assert "filelist_from_kendo=true" in blob
     assert "DoD FAIL" not in blob
     assert "persisted" in blob.lower()
+
+
+def test_29341_1_productid_hole_empty_badge_is_fail(tmp_path, monkeypatch):
+    """ProductID+hole+InternalData still BadgeString empty — DoD FAIL (29341-1)."""
+    from tests.fixtures.live_29341_1 import (
+        FILELIST_PRODUCT_ID,
+        leftover_productid_hole_empty_badge_result,
+    )
+    from tests.fixtures.live_sheets_plates import sheets_plates_page_payload
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "HOLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.get_json.return_value = sheets_plates_page_payload()
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "weight_n": 1,
+        "productid_n": 1,
+        "internaldata_n": 1,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "feature_via": "AddNewPDFFeature",
+        "hole_dim1_via": "data-edit=dim1",
+        "pdfinternal_xhr": True,
+    }
+    result = leftover_productid_hole_empty_badge_result()
+    result["finish_filelist_n"] = 1
+    client.add_item_pdf_files.return_value = result
+    client.quote_item_read.return_value = {
+        "Data": [
+            {
+                "Description": "HOLE-PLATE 1/4 A572",
+                "ProductType": 100,
+                "BadgeString": "",
+                "UnitCost": 3.0,
+                "UnitWeightCost": 3.0,
+                "ProductID": FILELIST_PRODUCT_ID,
+                "OperationCostList": [],
+            }
+        ],
+        "Total": 1,
+    }
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000029341",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE 1/2 HOLE",
+        bom_rows=[
+            {
+                "part_no": "HOLE-PLATE",
+                "qty": 1,
+                "description": "PLATE 1/2 HOLE",
+                "width_in": 4.0,
+                "length_in": 6.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_called_once()
+    blob = " ".join(notes)
+    assert "29341-1" in blob
+    assert "DoD FAIL" in blob
+    assert "hole_dim1_via=data-edit=dim1" in blob
+    assert "list0_pack.badge_string=''" in blob
+    assert "persisted" not in blob.lower()
 
 
 def test_gold_weldment_shape_kids_under_assembly_weld_on_assembly_only():

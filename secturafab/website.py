@@ -164,6 +164,19 @@ onto InternalData. GetPDFData omits NumberOfContours/Pierces
 (same as CuttingLength) — do not invent those FileList keys.
 Do not cookie-POST /Quote/AddFeature. Do not invent
 InternalData JSON. Pack is on AddItem_PDFFiles List[0].
+Live 29341-1 (c23fba3d leftover): ProductID bound from v1/product/plate
+PL1/4-A572 + AddNewPDFFeature InternalData n=1 + Weight. OnAddPDFClick
+List[0] still BadgeString '' / OCL [] / UnitCost==UnitWeightCost 3.0.
+QuoteOrderEdit GetPDFData copies dataItem.ProductID onto FileList
+(not bag-only). HasSelectedProductID is 0 hits; ProductName is not a
+GetPDFData key. Machine is copied as-is (leftovers already Laser -
+Bay1). Gold GET OutsidePerimeter 0 is not the miss. Named miss:
+InternalData n=1 is not gold 14501-1 NumberOfContours/Pierces 1/1.
+AddNewPDFFeature writes JSON.stringify(PDFGetData()) immediately;
+PDFGetData Dim1 is [data-edit='dim1'] (bundle has 0 Diameter).
+GetPDFData omits NumberOfContours/Pierces. Fail-close if list0_pack
+BadgeString empty after ProductID+hole. Leave c23fba3d / 29341-1.
+Do not PATCH. Do not remint. Gold look remains 1001898-1 a7dc46bf.
 Live 10098-1 (315cb19 leftover PIVOTING FOOT, 6a568912): posted FileList
 had FileType=Cad (string) plus CadType/Stock_*/SID/FileID/ID/ErrorStatus/
 Qty/ItemType/Category/PartMode and Cad-path keys InternalData,
@@ -1721,6 +1734,10 @@ def build_dxf_finish_payload(
 
 # GetPDFData() row keys from QuoteOrderEdit OnAddPDFClick, plus Status
 # (grid filter Status>0) so New Line Item actually commits.
+# Live /bundles/QuoteOrderEdit: GetPDFData copies these from the
+# #gridPDF dataItem when Status>0. ProductID is on FileList (same as
+# the bag field). HasSelectedProductID / ProductName / NumberOfContours
+# / NumberOfPierces / CuttingLength / BadgeString are omitted.
 PDF_GETDATA_FIELDS = (
     "Status",
     "ItemType",
@@ -1794,6 +1811,50 @@ PDF_GETDATA_FIELDS = (
     "PriceListItemID",
     "MarginMarkup",
 )
+
+# QuoteOrderEdit PDFGetData() feature form — not GetPDFData FileList.
+# AddNewPDFFeature success: i.InternalData = JSON.stringify(PDFGetData()).
+PDFGETDATA_FEATURE_KEYS = (
+    "ID",
+    "Type",
+    "Quantity",
+    "Dim1",
+    "Dim1_Units",
+    "Dim2",
+    "Dim2_Units",
+)
+
+QUOTE_ORDER_EDIT_GETPDFDATA: dict[str, Any] = {
+    "is_xhr": False,
+    "walks": "tbody dataItem",
+    "keeps": "Status>0",
+    "copies_productid_from_dataitem": True,
+    "omits": (
+        "Status",
+        "HasSelectedProductID",
+        "ProductName",
+        "NumberOfContours",
+        "NumberOfPierces",
+        "CuttingLength",
+        "CuttingLengthDisp",
+        "ProductionReady",
+        "Tag",
+        "BadgeString",
+    ),
+    "contours_not_a_bag_key": True,
+    "hasselectedproductid_not_a_bag_key": True,
+    "productname_not_a_bag_key": True,
+    "cuttinglengthdisp_display_only": True,
+    "status_is_filter_only": True,
+}
+
+QUOTE_ORDER_EDIT_PDF_FINISH_HYPOTHESES: dict[str, str] = {
+    "1_productid_getpdfdata_vs_bag": "falsified_getpdfdata_copies_productid",
+    "2_hasselectedproductid_productname": "falsified_not_getpdfdata_fields",
+    "3_contours_pierces_after_hole": "named_miss_internaldata_n1_not_gold_1_1",
+    "4_machine_laser_vs_bay1": "falsified_leftover_already_laser_bay1",
+    "5_finish_success_list": "badge_ocl_unitcost_and_datapdf_contours",
+}
 
 # OnAddLinearClick body keys. Do not add others.
 LINEAR_ADD_FIELDS = (
@@ -3144,6 +3205,118 @@ def leftover_plate_sku_missing_is_fail(dump: dict[str, Any] | None) -> bool:
     if live.get("onaddpdfclick") is True:
         return False
     return True
+
+
+def leftover_productid_hole_empty_badge_is_fail(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """29341-1: ProductID+InternalData+hole still list0_pack BadgeString empty.
+
+    GetPDFData copies ProductID onto FileList. InternalData n=1 is not
+    gold NumberOfContours/Pierces 1/1. Do not invent InternalData.
+    Gold GET OutsidePerimeter 0 is not this miss.
+    """
+    if not isinstance(dump, dict):
+        return False
+    bag = dump.get("filelist_bag") if isinstance(dump.get("filelist_bag"), dict) else {}
+    if bag.get("ProductID") in (None, "", "null"):
+        return False
+    pack = dump.get("list0_pack") if isinstance(dump.get("list0_pack"), dict) else {}
+    if str(pack.get("badge_string") or "") != "":
+        return False
+    try:
+        if int(pack.get("ocl_n") or 0) != 0:
+            return False
+        uc = float(pack.get("unit_cost") or 0)
+        uwc = float(pack.get("unit_weight_cost") or 0)
+    except (TypeError, ValueError):
+        return False
+    if uc <= 0 or abs(uc - uwc) > 1e-6:
+        return False
+    live = dump.get("live_29341_1") if isinstance(dump.get("live_29341_1"), dict) else {}
+    if not live:
+        return False
+    if live.get("hole") is not True:
+        return False
+    try:
+        if int(live.get("internaldata_n") or 0) < 1:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if live.get("internaldata_n1_is_gold_contours") is not False:
+        return False
+    if live.get("list0_pack_is_gold") is not False:
+        return False
+    if live.get("pack_is_productid") is not False:
+        return False
+    hyps = dump.get("hypotheses") if isinstance(dump.get("hypotheses"), dict) else {}
+    if hyps.get("3_contours_pierces_after_hole") != (
+        QUOTE_ORDER_EDIT_PDF_FINISH_HYPOTHESES["3_contours_pierces_after_hole"]
+    ):
+        return False
+    getpdf = dump.get("GetPDFData") if isinstance(dump.get("GetPDFData"), dict) else {}
+    if getpdf.get("copies_productid_from_dataitem") is not True:
+        return False
+    if getpdf.get("hasselectedproductid_not_a_bag_key") is not True:
+        return False
+    if dump.get("invent_internaldata") is not False:
+        return False
+    if dump.get("invent_contours_on_filelist") is not False:
+        return False
+    return True
+
+
+def leftover_29341_1_hypotheses_named(dump: dict[str, Any] | None) -> bool:
+    """QuoteOrderEdit capture named the five Finish hypotheses in order."""
+    if not isinstance(dump, dict):
+        return False
+    hyps = dump.get("hypotheses") if isinstance(dump.get("hypotheses"), dict) else {}
+    return hyps == dict(QUOTE_ORDER_EDIT_PDF_FINISH_HYPOTHESES)
+
+
+def list0_pack_badge_empty_after_productid_hole_is_fail(
+    result: dict[str, Any] | None,
+    stamp_out: dict[str, Any] | None = None,
+    stamp_rows: list[dict[str, Any]] | None = None,
+) -> bool:
+    """After Finish: ProductID+hole landed, List[0] BadgeString still empty.
+
+    Live 29341-1. Fail-close. Do not treat as persisted. Pack is not
+    ProductID. InternalData n=1 is not gold 1/1 contours.
+    """
+    if not isinstance(result, dict):
+        return False
+    if "response_badge_string" not in result:
+        return False
+    if str(result.get("response_badge_string") or "") != "":
+        return False
+    bag = result.get("filelist_bag") if isinstance(result.get("filelist_bag"), dict) else {}
+    pid = bag.get("ProductID")
+    stamp_pid = 0
+    if isinstance(stamp_out, dict):
+        try:
+            stamp_pid = int(stamp_out.get("productid_n") or 0)
+        except (TypeError, ValueError):
+            stamp_pid = 0
+    if pid in (None, "", "null") and stamp_pid <= 0:
+        return False
+    hole = False
+    if isinstance(stamp_out, dict):
+        try:
+            if int(stamp_out.get("internaldata_n") or 0) >= 1:
+                hole = True
+        except (TypeError, ValueError):
+            hole = False
+    for row in stamp_rows or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            if float(row.get("HoleDiameter") or 0) > 0:
+                hole = True
+                break
+        except (TypeError, ValueError):
+            continue
+    return hole
 
 
 def leftover_filelist_productid_null_after_bind_is_fail(

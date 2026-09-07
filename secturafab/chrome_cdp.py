@@ -2801,6 +2801,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     picker_via: "",
     picker_sku: "",
     picker_apply: "",
+    hole_dim1_via: "",
     pdfinternal_xhr: false
   };
   var hit = pdfGrid();
@@ -2814,6 +2815,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
   var lastPicker = "";
   var lastPickerSku = "";
   var lastApply = "";
+  var lastHoleDim = "";
   function setField(r, k, v) {
     if (v == null || v === "") return;
     if (typeof r.set === "function") r.set(k, v);
@@ -3459,6 +3461,16 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
   }
   function fillHoleDiameter(dia) {
     if (dia == null || dia === "" || !window.jQuery) return "";
+    // QuoteOrderEdit PDFGetData reads [data-edit='dim1'] — bundle has
+    // 0 Diameter strings (live 29341-1 InternalData n=1 / empty Dim1).
+    try {
+      var $dim = jQuery("#pdfInternalData [data-edit='dim1']");
+      if (!$dim.length) $dim = jQuery("[data-edit='dim1']");
+      if ($dim.length) {
+        $dim.val(String(dia)).trigger("change").trigger("blur");
+        return "data-edit=dim1";
+      }
+    } catch (e0) {}
     var ids = ["#Diameter", "#PDFDiameter", "#HoleDiameter",
                "input[name='Diameter']", "input[name='diameter']"];
     for (var i = 0; i < ids.length; i++) {
@@ -3516,7 +3528,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       return Promise.resolve("");
     }
     return waitPdfInternal(8000).then(function() {
-      if (holeDia) fillHoleDiameter(holeDia);
+      if (holeDia) lastHoleDim = fillHoleDiameter(holeDia);
       confirmPdfFeature();
       return new Promise(function(resolve) {
         setTimeout(function() {
@@ -3630,6 +3642,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       picker_via: lastPicker,
       picker_sku: lastPickerSku,
       picker_apply: lastApply,
+      hole_dim1_via: lastHoleDim,
       pdfinternal_xhr: !!(window.__kannonPdfInt && window.__kannonPdfInt.any)
     };
   });
@@ -3785,13 +3798,15 @@ def stamp_pdf_kendo_flats(
     ProductID is the selected List Value. Do not invent a GUID.
     Named hole step is ``AddNewPDFFeature(feature, "cad")``
     then wait for GET ``/Quote/PDFInternal`` (not a 400ms
-    race) then page ``PDFGetData()`` onto the selected
-    #gridPDF InternalData. That creates NumberOfContours/
-    Pierces (gold 14501-1 is 1/1). Do not invent those
-    FileList keys. Do not invent InternalData JSON. Do not
-    cookie-POST /Quote/AddFeature. Type L×W /
-    UpdatePerimeterWeight(true,true) first, then the hole
-    step. AddNewPDFFeature() with no args is not gold.
+    race) then fill ``[data-edit='dim1']`` (QuoteOrderEdit
+    PDFGetData — bundle has 0 Diameter) then page
+    ``PDFGetData()`` onto the selected #gridPDF InternalData.
+    That creates NumberOfContours/Pierces (gold 14501-1 is
+    1/1). InternalData n=1 with empty Dim1 is leftover
+    29341-1. Do not invent those FileList keys. Do not invent
+    InternalData JSON. Do not cookie-POST /Quote/AddFeature.
+    Type L×W / UpdatePerimeterWeight(true,true) first, then
+    the hole step. AddNewPDFFeature() with no args is not gold.
     Empty InternalData is still expected for no-hole
     rectangles.     Live 1007092-1: first ``#Product`` is
     ProductType — skip it. Live 33204-1: ThicknessPDF is
@@ -3846,6 +3861,7 @@ def stamp_pdf_kendo_flats(
         "picker_via": "",
         "picker_sku": "",
         "picker_apply": "",
+        "hole_dim1_via": "",
         "pdfinternal_xhr": False,
     }
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
@@ -3882,6 +3898,7 @@ def stamp_pdf_kendo_flats(
         "picker_via": str(value.get("picker_via") or ""),
         "picker_sku": str(value.get("picker_sku") or ""),
         "picker_apply": str(value.get("picker_apply") or ""),
+        "hole_dim1_via": str(value.get("hole_dim1_via") or ""),
         "pdfinternal_xhr": bool(value.get("pdfinternal_xhr")),
     }
 

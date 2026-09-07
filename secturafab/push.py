@@ -3351,6 +3351,12 @@ class SecturaFabPushService:
         1341 names; gold PL7 Ga-A36). ``plate_sku_missing`` only
         after that full list has no ≤3/4 match (Domex / PL050
         has no row). Do not invent a GUID.
+        Live 29341-1: catalog ProductID + hole InternalData n=1
+        still list0_pack BadgeString empty / OCL [] /
+        UnitCost==UnitWeightCost. GetPDFData copies ProductID.
+        InternalData n=1 is not gold 1/1 contours — PDFGetData
+        Dim1 is ``[data-edit='dim1']``. Fail-close if BadgeString
+        empty after ProductID+hole. Leave c23fba3d.
         #files + GetPDFData + OnAddPDFClick is not
         gold PR/laser unless Cad GET has Tag + OperationCostList
         + UnitCost>0 + CuttingLength>0. Do not treat UnitPrice /
@@ -3569,6 +3575,7 @@ class SecturaFabPushService:
                 hole_feature_without_pdfinternal_is_fail,
                 list0_pack_badge_ocl_contours_is_gold,
                 list0_pack_badge_ocl_is_gold,
+                list0_pack_badge_empty_after_productid_hole_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
                 empty_weight_after_perimeter_is_fail,
@@ -3710,6 +3717,9 @@ class SecturaFabPushService:
                         via_feat = str(stamp_out.get("feature_via") or "")
                         if via_feat:
                             notes.append(f"feature_via={via_feat}")
+                        via_dim = str(stamp_out.get("hole_dim1_via") or "")
+                        if via_dim:
+                            notes.append(f"hole_dim1_via={via_dim}")
                         notes.append(
                             "pdfinternal_xhr="
                             + (
@@ -3830,6 +3840,20 @@ class SecturaFabPushService:
                                 "— pack is BadgeString PR + Laser/Drafting/"
                                 "Laser-Setup/Sheet Loading/Deburr + "
                                 "UnitCost>UnitWeightCost — Image Files DoD FAIL"
+                            )
+                        if list0_pack_badge_empty_after_productid_hole_is_fail(
+                            result,
+                            stamp_out if isinstance(stamp_out, dict) else None,
+                            stamp_rows,
+                        ):
+                            notes.append(
+                                "WARNING: AddItem_PDFFiles List[0] BadgeString "
+                                "empty after ProductID+hole (live 29341-1) — "
+                                "InternalData n=1 is not gold NumberOfContours/"
+                                "Pierces 1/1; PDFGetData Dim1 [data-edit='dim1'] "
+                                "then page PDFGetData onto InternalData — "
+                                "GetPDFData omits contours — pack is BadgeString "
+                                "PR + laser OCL — Image Files DoD FAIL"
                             )
                         if list0_pack_badge_ocl_contours_is_gold(result):
                             notes.append(

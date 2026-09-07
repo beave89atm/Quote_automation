@@ -1784,6 +1784,105 @@ def test_gold_cad_pack_is_contours_pierces_and_list0_pack():
     assert hole_feature_without_pdfinternal_is_fail({"pdfinternal_xhr": True}, None) is False
 
 
+def test_leftover_29341_1_productid_hole_empty_badge():
+    """Live 29341-1: ProductID+InternalData+hole; list0_pack BadgeString empty."""
+    from secturafab.forbidden_quotes import is_forbidden_quote_id, is_forbidden_quote_number
+    from secturafab.website import (
+        leftover_29341_1_hypotheses_named,
+        leftover_contours_pierces_zero_is_not_gold,
+        leftover_list0_pack_is_not_gold,
+        leftover_productid_hole_empty_badge_is_fail,
+        leftover_productid_is_not_the_pack,
+        list0_pack_badge_empty_after_productid_hole_is_fail,
+        list0_pack_badge_ocl_is_gold,
+        list0_pack_without_tag_ocl_is_fail,
+        PDF_GETDATA_FIELDS,
+        PDFGETDATA_FEATURE_KEYS,
+        QUOTE_ORDER_EDIT_GETPDFDATA,
+    )
+    from tests.fixtures.live_29341_1 import (
+        FILELIST_PRODUCT_ID,
+        SPENT_QUOTE_ID,
+        SPENT_QUOTE_NUMBER,
+        leftover_productid_hole_empty_badge_dump,
+        leftover_productid_hole_empty_badge_result,
+    )
+    from tests.fixtures.live_gold_cad_pack import (
+        gold_cad_pack_bind_dump,
+        gold_list0_pack_result,
+    )
+
+    js = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "quote_order_edit_getpdfdata.js"
+    ).read_text()
+    assert "function GetPDFData()" in js
+    assert "ProductID:r.ProductID" in js
+    assert "HasSelectedProductID" not in js
+    assert "ProductName:" not in js.split("function GetPDFData()")[1].split(
+        "function OnAddPDFClick"
+    )[0]
+    assert "NumberOfContours" not in js
+    assert "data-edit='dim1'" in js
+    assert "JSON.stringify(r)" in js
+    assert "function PDFGetData()" in js
+    assert QUOTE_ORDER_EDIT_GETPDFDATA["copies_productid_from_dataitem"] is True
+    assert "HasSelectedProductID" not in PDF_GETDATA_FIELDS
+    assert "ProductName" not in PDF_GETDATA_FIELDS
+    assert "NumberOfContours" not in PDF_GETDATA_FIELDS
+    assert "Dim1" in PDFGETDATA_FEATURE_KEYS
+
+    dump = leftover_productid_hole_empty_badge_dump()
+    assert dump["readonly"] is True
+    assert dump["quote_id"] == SPENT_QUOTE_ID
+    assert dump["filelist_bag"]["ProductID"] == FILELIST_PRODUCT_ID
+    assert dump["list0_pack"]["badge_string"] == ""
+    assert dump["list0_pack"]["ocl_n"] == 0
+    assert dump["list0_pack"]["unit_cost"] == dump["list0_pack"]["unit_weight_cost"]
+    assert dump["live_29341_1"]["internaldata_n"] == 1
+    assert dump["live_29341_1"]["internaldata_n1_is_gold_contours"] is False
+    assert leftover_productid_hole_empty_badge_is_fail(dump) is True
+    assert leftover_29341_1_hypotheses_named(dump) is True
+    assert leftover_list0_pack_is_not_gold(dump) is False
+    assert leftover_productid_is_not_the_pack(dump) is False
+    assert leftover_contours_pierces_zero_is_not_gold(dump) is False
+    tagged = dict(dump)
+    tagged["list0_pack"] = dict(dump["list0_pack"])
+    tagged["list0_pack"]["badge_string"] = "PR"
+    assert leftover_productid_hole_empty_badge_is_fail(tagged) is False
+    no_pid = dict(dump)
+    no_pid["filelist_bag"] = dict(dump["filelist_bag"])
+    no_pid["filelist_bag"]["ProductID"] = None
+    assert leftover_productid_hole_empty_badge_is_fail(no_pid) is False
+    invented = dict(dump)
+    invented["invent_internaldata"] = True
+    assert leftover_productid_hole_empty_badge_is_fail(invented) is False
+    assert leftover_productid_hole_empty_badge_is_fail(MagicMock()) is False
+    assert leftover_productid_hole_empty_badge_is_fail(None) is False
+    assert leftover_29341_1_hypotheses_named(gold_cad_pack_bind_dump()) is False
+
+    leftover = leftover_productid_hole_empty_badge_result()
+    assert list0_pack_without_tag_ocl_is_fail(leftover) is True
+    assert list0_pack_badge_ocl_is_gold(leftover) is False
+    assert list0_pack_badge_empty_after_productid_hole_is_fail(
+        leftover,
+        {"productid_n": 1, "internaldata_n": 1, "pdfinternal_xhr": True},
+        [{"HoleDiameter": 0.5, "ProductID": FILELIST_PRODUCT_ID}],
+    ) is True
+    assert list0_pack_badge_empty_after_productid_hole_is_fail(
+        leftover, {"productid_n": 1, "internaldata_n": 0}, []
+    ) is False
+    gold = gold_list0_pack_result()
+    assert list0_pack_badge_empty_after_productid_hole_is_fail(
+        gold, {"productid_n": 1, "internaldata_n": 1}, [{"HoleDiameter": 0.5}]
+    ) is False
+    assert list0_pack_badge_empty_after_productid_hole_is_fail(MagicMock()) is False
+    assert list0_pack_badge_empty_after_productid_hole_is_fail(None) is False
+    assert is_forbidden_quote_id(SPENT_QUOTE_ID)
+    assert is_forbidden_quote_number(SPENT_QUOTE_NUMBER)
+
+
 def test_gold_linear_pack_is_saw_and_list0_pack():
     """Gold Long: Saw + Saw-Setup + UnitCost filled + ProductID/SKU.
 
@@ -8446,6 +8545,9 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "/Quote/PDFInternal" in _STAMP_PDF_KENDO_JS
     assert "waitPdfInternal" in _STAMP_PDF_KENDO_JS
     assert "s.HoleDiameter" in _STAMP_PDF_KENDO_JS
+    assert "data-edit='dim1'" in _STAMP_PDF_KENDO_JS
+    assert "hole_dim1_via" in _STAMP_PDF_KENDO_JS
+    assert "29341-1" in _STAMP_PDF_KENDO_JS
     assert "pdfinternal_xhr" in _STAMP_PDF_KENDO_JS
     assert "400ms race is leftover 0/0" in _STAMP_PDF_KENDO_JS
     assert 'url.indexOf("/Quote/AddFeature")' not in _STAMP_PDF_KENDO_JS
