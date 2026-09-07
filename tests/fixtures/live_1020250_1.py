@@ -20,9 +20,12 @@ That is the geometry XHR before OnAddPDFClick. Nest /
 Renest_BestSheet is later. Do not invent Contours FileList keys.
 Do not Operation→Profile graft.
 
-Named miss: last GetPerimeterAndWeight Internal Dim1 empty / form
-L×W not synced, so server Contours stay 0. Leave gold a7dc46bf /
-8bcc226b / 21678-1. No mint. No PATCH of this proof quote.
+5a231aa live 3e222215 (ZZ-DEL): getperim_internal_dim1_n=1 but
+form_lw_synced=false / outside_perimeter_n=0 / Weight~0.05
+(hole-only). Prior pre-5a231aa run had OP 69.5 / Weight 17.98
+and Contours still 0 — form L×W is necessary, not sufficient.
+Do not invent Contours FileList keys. Leave gold a7dc46bf /
+8bcc226b / 21678-1. No mint. No PATCH.
 """
 
 from __future__ import annotations
@@ -100,6 +103,9 @@ def leftover_contours_zero_after_productid_hole_dump() -> dict[str, Any]:
                 QUOTE_ORDER_EDIT_UPW_INTERNAL["named_miss"]
             ),
             "7_nest_best_sheet": "falsified_nest_is_later",
+            "8_form_lw_synced_false": (
+                QUOTE_ORDER_EDIT_UPW_INTERNAL["form_lw_synced_false_miss"]
+            ),
         },
         "live_1020250_1": {
             "files_kendo": True,
@@ -146,4 +152,96 @@ def leftover_contours_zero_after_productid_hole_result() -> dict[str, Any]:
         "via": "page_fn",
         "finish_fn": "OnAddPDFClick",
         "filelist_bag": dict(FILELIST_BAG),
+    }
+
+
+def leftover_form_lw_unsynced_after_internal_dim1_dump() -> dict[str, Any]:
+    """5a231aa / 3e222215: Internal Dim1 UPW, form_lw_synced=false, OP=0."""
+    return {
+        "quote_id": "3e222215-0000-4000-8000-000000000001",
+        "quote_number": SPENT_QUOTE_NUMBER,
+        "readonly": True,
+        "invent_contours_on_filelist": False,
+        "operation_profile_graft": False,
+        "UpdatePerimeterWeight": dict(QUOTE_ORDER_EDIT_UPW_INTERNAL),
+        "live_5a231aa": {
+            "quote_id_prefix": "3e222215",
+            "getperim_internal_n": 1,
+            "getperim_internal_dim1_n": 1,
+            "form_lw_synced": False,
+            "outside_perimeter_n": 0,
+            "weight": 0.05,
+            "hole_dim1_via": "data-edit=dim1",
+            "pdfinternal_html": True,
+            "badge_string": "",
+            "ocl_n": 0,
+            "number_of_contours": 0,
+        },
+    }
+
+
+def leftover_form_lw_unsynced_stamp() -> dict[str, Any]:
+    """Stamp result that must skip Finish (form L×W miss)."""
+    return {
+        "ok": True,
+        "stamped": 1,
+        "outside_perimeter_n": 0,
+        "weight_n": 1,
+        "productid_n": 1,
+        "internaldata_n": 1,
+        "form_lw_synced": False,
+        "form_length": "",
+        "form_width": "",
+        "getperim_internal_n": 1,
+        "getperim_internal_dim1_n": 1,
+        "pdfinternal_html": True,
+        "pdfinternal_xhr": True,
+        "hole_dim1_via": "data-edit=dim1",
+        "getperimeter_xhr": True,
+    }
+
+
+def leftover_form_lw_unsynced_after_internal_dim1_dump() -> dict[str, Any]:
+    """5a231aa / 3e222215: Internal Dim1 UPW, form_lw_synced=false, OP=0."""
+    return {
+        "quote_id": "3e222215-0000-4000-8000-000000000001",
+        "quote_number": SPENT_QUOTE_NUMBER,
+        "readonly": True,
+        "invent_contours_on_filelist": False,
+        "operation_profile_graft": False,
+        "UpdatePerimeterWeight": dict(QUOTE_ORDER_EDIT_UPW_INTERNAL),
+        "live_5a231aa": {
+            "quote_id_prefix": "3e222215",
+            "getperim_internal_n": 1,
+            "getperim_internal_dim1_n": 1,
+            "form_lw_synced": False,
+            "outside_perimeter_n": 0,
+            "weight": 0.05,
+            "hole_dim1_via": "data-edit=dim1",
+            "pdfinternal_html": True,
+            "badge_string": "",
+            "ocl_n": 0,
+            "number_of_contours": 0,
+        },
+    }
+
+
+def leftover_form_lw_unsynced_stamp() -> dict[str, Any]:
+    """Stamp result that must skip Finish (form L×W miss)."""
+    return {
+        "ok": True,
+        "stamped": 1,
+        "outside_perimeter_n": 0,
+        "weight_n": 1,
+        "productid_n": 1,
+        "internaldata_n": 1,
+        "form_lw_synced": False,
+        "form_length": "",
+        "form_width": "",
+        "getperim_internal_n": 1,
+        "getperim_internal_dim1_n": 1,
+        "pdfinternal_html": True,
+        "pdfinternal_xhr": True,
+        "hole_dim1_via": "data-edit=dim1",
+        "getperimeter_xhr": True,
     }

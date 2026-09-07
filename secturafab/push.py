@@ -3584,6 +3584,7 @@ class SecturaFabPushService:
                 list0_pack_badge_ocl_is_gold,
                 list0_pack_badge_empty_after_productid_hole_is_fail,
                 list0_pack_contours_zero_after_productid_hole_is_fail,
+                form_lw_unsynced_or_empty_perimeter_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
                 empty_weight_after_perimeter_is_fail,
@@ -3668,7 +3669,30 @@ class SecturaFabPushService:
                                 notes.append(
                                     f"stamp_productid_n={stamp_out.get('productid_n')}"
                                 )
-                if empty_perimeter_weight_is_fail(
+                            if "form_lw_synced" in stamp_out:
+                                notes.append(
+                                    "form_lw_synced="
+                                    + (
+                                        "true"
+                                        if stamp_out.get("form_lw_synced")
+                                        else "false"
+                                    )
+                                )
+                            if "outside_perimeter_n" in stamp_out:
+                                notes.append(
+                                    "outside_perimeter_n="
+                                    f"{stamp_out.get('outside_perimeter_n')}"
+                                )
+                if form_lw_unsynced_or_empty_perimeter_is_fail(
+                    stamp_out if isinstance(stamp_out, dict) else None
+                ):
+                    notes.append(
+                        "WARNING: form_lw_synced=false or OutsidePerimeter 0 "
+                        "after Internal Dim1 UPW (live 5a231aa / 3e222215) — "
+                        "UpdatePerimeterWeight reads #length/#width; "
+                        "do not Finish; do not invent Contours FileList keys"
+                    )
+                elif empty_perimeter_weight_is_fail(
                     stamp_out if isinstance(stamp_out, dict) else None
                 ):
                     notes.append(
@@ -3739,6 +3763,12 @@ class SecturaFabPushService:
                                     if stamp_out.get("form_lw_synced")
                                     else "false"
                                 )
+                            )
+                        form_len = str(stamp_out.get("form_length") or "")
+                        form_wid = str(stamp_out.get("form_width") or "")
+                        if form_len or form_wid:
+                            notes.append(
+                                f"form_length={form_len!r} form_width={form_wid!r}"
                             )
                         if "pdfinternal_html" in stamp_out:
                             notes.append(

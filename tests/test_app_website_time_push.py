@@ -1124,6 +1124,10 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("9be15b62-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("c23fba3d-ef02-412b-b06e-f91ffa9076a6")
     assert is_forbidden_quote_id("c23fba3d-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("3e222215-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("f4d94abd-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("b187c0c1-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("c49cebf0-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
     assert is_forbidden_quote_id("bd5c2e3e-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d2f7b031-1111-2222-3333-444444444444")
@@ -3103,6 +3107,46 @@ def test_1020250_1_contours_zero_after_productid_hole_is_fail(tmp_path, monkeypa
     assert "getperim_internal_dim1_n=0" in blob
     assert "persisted" not in blob.lower()
     assert "NumberOfContours" not in str(client.add_item_pdf_files.call_args)
+
+
+def test_form_lw_unsynced_after_internal_dim1_skips_finish(tmp_path, monkeypatch):
+    """form_lw_synced=false / OP=0 after Internal Dim1 UPW — do not Finish."""
+    from tests.fixtures.live_1020250_1 import leftover_form_lw_unsynced_stamp
+    from tests.fixtures.live_sheets_plates import sheets_plates_page_payload
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "HOLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.get_json.return_value = sheets_plates_page_payload()
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = leftover_form_lw_unsynced_stamp()
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000102025",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE 1/2 HOLE",
+        bom_rows=[
+            {
+                "part_no": "HOLE-PLATE",
+                "qty": 1,
+                "description": "PLATE 1/2 HOLE",
+                "width_in": 4.0,
+                "length_in": 6.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "form_lw_synced=false" in blob
+    assert "3e222215" in blob
+    assert "do not Finish" in blob
+    assert "persisted" not in blob.lower()
 
 
 def test_gold_weldment_shape_kids_under_assembly_weld_on_assembly_only():

@@ -1880,6 +1880,7 @@ QUOTE_ORDER_EDIT_UPW_INTERNAL: dict[str, Any] = {
     "number_of_contours_bundle_hits": 0,
     "nest_is_later": True,
     "named_miss": "upw_internal_dim1_and_form_lw",
+    "form_lw_synced_false_miss": "form_lw_synced_false_after_internal_dim1_upw",
     "invent_contours_on_filelist": False,
 }
 
@@ -3401,7 +3402,7 @@ def leftover_contours_zero_after_productid_hole_is_fail(
 
 
 def leftover_1020250_1_hypotheses_named(dump: dict[str, Any] | None) -> bool:
-    """1020250-1 capture names UPW Internal Dim1 + Nest-later."""
+    """1020250-1 capture names UPW Internal Dim1 + Nest-later + form L×W."""
     if not isinstance(dump, dict):
         return False
     hyps = dump.get("hypotheses") if isinstance(dump.get("hypotheses"), dict) else {}
@@ -3409,7 +3410,59 @@ def leftover_1020250_1_hypotheses_named(dump: dict[str, Any] | None) -> bool:
         return False
     if hyps.get("7_nest_best_sheet") != "falsified_nest_is_later":
         return False
+    if hyps.get("8_form_lw_synced_false") != QUOTE_ORDER_EDIT_UPW_INTERNAL.get(
+        "form_lw_synced_false_miss"
+    ):
+        return False
     return True
+
+
+def leftover_form_lw_unsynced_after_internal_dim1_is_fail(
+    dump: dict[str, Any] | None,
+) -> bool:
+    """5a231aa / 3e222215: Internal Dim1 UPW with form_lw_synced=false / OP=0."""
+    if not isinstance(dump, dict):
+        return False
+    live = dump.get("live_5a231aa") if isinstance(dump.get("live_5a231aa"), dict) else {}
+    if not live:
+        return False
+    if live.get("getperim_internal_dim1_n") != 1:
+        return False
+    if live.get("form_lw_synced") is not False:
+        return False
+    try:
+        if int(live.get("outside_perimeter_n") or 0) != 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if dump.get("invent_contours_on_filelist") is not False:
+        return False
+    if dump.get("operation_profile_graft") is not False:
+        return False
+    return True
+
+
+def form_lw_unsynced_or_empty_perimeter_is_fail(
+    stamp_out: dict[str, Any] | None,
+) -> bool:
+    """Do not Finish when form #length/#width missed or OutsidePerimeter is 0.
+
+    Live 5a231aa 3e222215: getperim_internal_dim1_n=1 + form_lw_synced=false
+    + outside_perimeter_n=0. Older stamps without form_lw_synced still
+    use empty_perimeter_weight_is_fail. Do not invent Contours keys.
+    """
+    if not isinstance(stamp_out, dict):
+        return False
+    if "form_lw_synced" not in stamp_out:
+        return False
+    if stamp_out.get("form_lw_synced") is not True:
+        return True
+    try:
+        if int(stamp_out.get("outside_perimeter_n") or 0) <= 0:
+            return True
+    except (TypeError, ValueError):
+        return True
+    return False
 
 
 def list0_pack_contours_zero_after_productid_hole_is_fail(

@@ -1933,6 +1933,33 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert leftover_contours_zero_after_productid_hole_is_fail(nest) is False
     assert leftover_contours_zero_after_productid_hole_is_fail(None) is False
 
+    from tests.fixtures.live_1020250_1 import (
+        leftover_form_lw_unsynced_after_internal_dim1_dump,
+        leftover_form_lw_unsynced_stamp,
+    )
+    from secturafab.website import (
+        leftover_form_lw_unsynced_after_internal_dim1_is_fail,
+        form_lw_unsynced_or_empty_perimeter_is_fail,
+    )
+    from secturafab.forbidden_quotes import is_forbidden_quote_id
+
+    lw = leftover_form_lw_unsynced_after_internal_dim1_dump()
+    assert leftover_form_lw_unsynced_after_internal_dim1_is_fail(lw) is True
+    synced = dict(lw)
+    synced["live_5a231aa"] = dict(lw["live_5a231aa"])
+    synced["live_5a231aa"]["form_lw_synced"] = True
+    synced["live_5a231aa"]["outside_perimeter_n"] = 1
+    assert leftover_form_lw_unsynced_after_internal_dim1_is_fail(synced) is False
+    stamp_miss = leftover_form_lw_unsynced_stamp()
+    assert form_lw_unsynced_or_empty_perimeter_is_fail(stamp_miss) is True
+    stamp_ok = dict(stamp_miss)
+    stamp_ok["form_lw_synced"] = True
+    stamp_ok["outside_perimeter_n"] = 1
+    assert form_lw_unsynced_or_empty_perimeter_is_fail(stamp_ok) is False
+    assert form_lw_unsynced_or_empty_perimeter_is_fail({"outside_perimeter_n": 1}) is False
+    assert form_lw_unsynced_or_empty_perimeter_is_fail(None) is False
+    assert is_forbidden_quote_id("3e222215-1111-2222-3333-444444444444")
+
     leftover = leftover_contours_zero_after_productid_hole_result()
     assert list0_pack_badge_ocl_is_gold(leftover) is False
     assert list0_pack_contours_zero_after_productid_hole_is_fail(
@@ -8617,6 +8644,11 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "onWidthChangePDF" in _STAMP_PDF_KENDO_JS
     assert "onChange_GridPDF" in _STAMP_PDF_KENDO_JS
     assert "typeFormLengthWidth" in _STAMP_PDF_KENDO_JS
+    assert "setFormNumeric" in _STAMP_PDF_KENDO_JS
+    assert "formInput" in _STAMP_PDF_KENDO_JS
+    assert "onChange_GridPDF cannot win" in _STAMP_PDF_KENDO_JS
+    assert "form_lw_synced=false" in _STAMP_PDF_KENDO_JS
+    assert "3e222215" in _STAMP_PDF_KENDO_JS
     assert "fireOnInternalDataChange" in _STAMP_PDF_KENDO_JS
     assert "getperim_internal_dim1_n" in _STAMP_PDF_KENDO_JS
     assert "form_lw_synced" in _STAMP_PDF_KENDO_JS

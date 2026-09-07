@@ -2804,6 +2804,8 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     hole_dim1_via: "",
     confirm_via: "",
     form_lw_synced: false,
+    form_length: "",
+    form_width: "",
     pdfinternal_html: false,
     getperim_internal_n: 0,
     getperim_internal_dim1_n: 0,
@@ -2823,6 +2825,8 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
   var lastHoleDim = "";
   var lastConfirm = "";
   var formLwSynced = false;
+  var lastFormLength = "";
+  var lastFormWidth = "";
   var pdfInternalHtml = false;
   function setField(r, k, v) {
     if (v == null || v === "") return;
@@ -3506,51 +3510,96 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       })();
     });
   }
+  function formInput(ids) {
+    if (!window.jQuery) return null;
+    for (var fi = 0; fi < ids.length; fi++) {
+      try {
+        var $el = jQuery(ids[fi]);
+        if ($el && $el.length) return $el.first();
+      } catch (e) {}
+    }
+    return null;
+  }
+  function setFormNumeric($el, value) {
+    if (!$el || !$el.length || value == null || value === "") return false;
+    var n = parseFloat(value);
+    var raw = isFinite(n) && n > 0 ? String(n) : String(value);
+    try {
+      var names = ["kendoNumericTextBox", "kendoComboBox", "kendoDropDownList"];
+      for (var wi = 0; wi < names.length; wi++) {
+        var w = $el.data(names[wi]);
+        if (w && typeof w.value === "function") {
+          w.value(isFinite(n) && n > 0 ? n : raw);
+          if (typeof w.trigger === "function") w.trigger("change");
+          return true;
+        }
+      }
+    } catch (e0) {}
+    $el.val(raw).trigger("change").trigger("blur");
+    return true;
+  }
+  function readFormNumeric($el) {
+    if (!$el || !$el.length) return "";
+    try {
+      var w = $el.data("kendoNumericTextBox") || $el.data("kendoComboBox");
+      if (w && typeof w.value === "function") {
+        var v = w.value();
+        if (v != null && v !== "" && parseFloat(v) > 0) return String(v);
+      }
+    } catch (e1) {}
+    var s = String($el.val() || "").trim();
+    return parseFloat(s) > 0 ? s : "";
+  }
   function typeFormLengthWidth(s) {
     // QuoteOrderEdit UpdatePerimeterWeight reads #length/#width form
     // fields + Internal: PDFGetData() — not kendo Length/Width.
+    // Live 5a231aa / 3e222215: onChange_GridPDF before overwrite wiped
+    // form L×W → form_lw_synced=false / OP=0 / Weight~0.05 (hole-only).
     if (!window.jQuery) return "";
     var via = "";
-    try {
-      if (s.Length != null && s.Length !== "") {
-        jQuery("#length").val(String(s.Length));
-      }
-      if (s.Width != null && s.Width !== "") {
-        jQuery("#width").val(String(s.Width));
-      }
-      if (s.Thickness != null && s.Thickness !== "") {
-        jQuery("#LoadThickness").val(String(s.Thickness));
-      }
-      if (s.Material) {
-        var $mat = jQuery("#MaterialEdit");
-        var w = $mat.data && $mat.data("kendoComboBox");
-        if (w && typeof w.value === "function") w.value(s.Material);
-        else $mat.val(s.Material);
-      }
-    } catch (e0) {}
     try {
       if (typeof window.onChange_GridPDF === "function") {
         window.onChange_GridPDF();
         via = "onChange_GridPDF";
       }
     } catch (e1) {}
+    var $len = formInput(["#length", "#Length", "input[name='length']",
+                          "#subcontractLength"]);
+    var $wid = formInput(["#width", "#Width", "input[name='width']",
+                          "#subcontractWidth"]);
+    var $thk = formInput(["#LoadThickness", "#loadThickness",
+                          "input[name='LoadThickness']"]);
+    var $mat = formInput(["#MaterialEdit", "#materialEdit"]);
+    if (s.Length != null && s.Length !== "") setFormNumeric($len, s.Length);
+    if (s.Width != null && s.Width !== "") setFormNumeric($wid, s.Width);
+    if (s.Thickness != null && s.Thickness !== "") setFormNumeric($thk, s.Thickness);
+    if (s.Material && $mat && $mat.length) {
+      try {
+        var mw = $mat.data("kendoComboBox");
+        if (mw && typeof mw.value === "function") mw.value(s.Material);
+        else $mat.val(s.Material);
+      } catch (eMat) {}
+    }
     try {
-      if (typeof window.onLengthChangePDF === "function" && s.Length != null
-          && s.Length !== "") {
-        window.onLengthChangePDF(jQuery("#length")[0] || "#length");
+      if (typeof window.onLengthChangePDF === "function" && $len && $len.length
+          && s.Length != null && s.Length !== "") {
+        window.onLengthChangePDF($len[0] || "#length");
         via = via ? via + "+onLengthChangePDF" : "onLengthChangePDF";
       }
     } catch (e2) {}
     try {
-      if (typeof window.onWidthChangePDF === "function" && s.Width != null
-          && s.Width !== "") {
-        window.onWidthChangePDF(jQuery("#width")[0] || "#width");
+      if (typeof window.onWidthChangePDF === "function" && $wid && $wid.length
+          && s.Width != null && s.Width !== "") {
+        window.onWidthChangePDF($wid[0] || "#width");
         via = via ? via + "+onWidthChangePDF" : "onWidthChangePDF";
       }
     } catch (e3) {}
-    try {
-      formLwSynced = !!(jQuery("#length").val() && jQuery("#width").val());
-    } catch (e4) { formLwSynced = false; }
+    // Re-apply after handlers so onChange_GridPDF cannot win.
+    if (s.Length != null && s.Length !== "") setFormNumeric($len, s.Length);
+    if (s.Width != null && s.Width !== "") setFormNumeric($wid, s.Width);
+    lastFormLength = readFormNumeric($len);
+    lastFormWidth = readFormNumeric($wid);
+    formLwSynced = !!(parseFloat(lastFormLength) > 0 && parseFloat(lastFormWidth) > 0);
     return via;
   }
   function fireOnInternalDataChange() {
@@ -3615,7 +3664,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     } catch (e2) {}
     return "";
   }
-  function addPdfHoleFeature(r, holeDia) {
+  function addPdfHoleFeature(r, holeDia, s) {
     // Kyle Loom: Add Feature Hole then green New Line Item.
     // Wait for GET /Quote/PDFInternal — 400ms race is leftover 0/0.
     // Do not cookie-POST AddFeature (item-level). Do not invent JSON.
@@ -3644,6 +3693,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     }).then(function() {
       if (holeDia) lastHoleDim = fillHoleDiameter(holeDia);
       lastConfirm = confirmPdfFeature();
+      typeFormLengthWidth(s || {});
       if (window.__kannonGetPerim) window.__kannonGetPerim.xhr = false;
       fireOnInternalDataChange();
       return waitGetPerimeter(8000).then(function() {
@@ -3720,7 +3770,7 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           if (s.PartName) editSet(hit.grid, r, "PartName", s.PartName);
           stamped += 1;
           return stampPerimeter(hit.grid, r, s).then(function() {
-            return addPdfHoleFeature(r, s.HoleDiameter).then(function() {
+            return addPdfHoleFeature(r, s.HoleDiameter, s).then(function() {
               if (s.ProductID) setField(r, "ProductID", s.ProductID);
               else if (keepPid) setField(r, "ProductID", keepPid);
               return pickProduct(s.ProductSku, r).then(function(val) {
@@ -3728,12 +3778,13 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
                 // PlateConfig Total=3 modal Value.
                 if (s.ProductID) setField(r, "ProductID", s.ProductID);
                 else if (val) setField(r, "ProductID", val);
-                // Last geometry XHR: Internal Dim1 + form L×W (1020250-1).
-                if (s.HoleDiameter && window.__kannonGetPerim) {
-                  window.__kannonGetPerim.xhr = false;
-                }
+                // Last geometry XHR: form L×W THEN Internal Dim1
+                // (live 5a231aa form_lw_synced=false / OP=0).
+                var formVia = typeFormLengthWidth(s);
+                if (formVia) lastVia = formVia;
+                if (window.__kannonGetPerim) window.__kannonGetPerim.xhr = false;
                 if (s.HoleDiameter) fireOnInternalDataChange();
-                if (!s.HoleDiameter) return "";
+                else lastVia = fireUpdatePerimeterWeight() || lastVia;
                 return waitGetPerimeter(8000).then(function() {
                   copyPerimeterOntoRow(hit.grid, r);
                   return "";
@@ -3767,6 +3818,8 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
       hole_dim1_via: lastHoleDim,
       confirm_via: lastConfirm,
       form_lw_synced: !!formLwSynced,
+      form_length: lastFormLength,
+      form_width: lastFormWidth,
       pdfinternal_html: !!pdfInternalHtml,
       getperim_internal_n: Number(
         (window.__kannonGetPerim && window.__kannonGetPerim.internal_n) || 0
@@ -3932,10 +3985,13 @@ def stamp_pdf_kendo_flats(
     (``[data-featureid]`` + ``[data-edit='dim1']``, not XHR
     start) then fill Dim1 then page ``onInternalDataChange()``.
     That writes InternalData and ``UpdatePerimeterWeight(true,
-    false)`` with ``Internal: PDFGetData()``. UpdatePerimeterWeight
+    false)`` with ``Internal: PDFGetData()``.     UpdatePerimeterWeight
     reads ``#length`` / ``#width`` form fields (onLengthChangePDF
-    / onWidthChangePDF). Live 1020250-1 ProductID+Dim1+OP/Weight
-    still Contours=0 when that last Internal XHR missed Dim1.
+    / onWidthChangePDF). Live 5a231aa / 3e222215: Internal Dim1
+    UPW with ``form_lw_synced=false`` posted hole-only geometry
+    (OP=0, Weight~0.05). Re-apply form L×W AFTER onChange_GridPDF
+    and again immediately before the last Internal UPW. Fail-close
+    if form L×W is empty or OutsidePerimeter is 0.
     GetPDFData omits NumberOfContours/Pierces (0 bundle hits) —
     do not invent those FileList keys. Nest is later. Do not
     invent InternalData JSON. Do not cookie-POST /Quote/AddFeature.
@@ -3998,6 +4054,8 @@ def stamp_pdf_kendo_flats(
         "hole_dim1_via": "",
         "confirm_via": "",
         "form_lw_synced": False,
+        "form_length": "",
+        "form_width": "",
         "pdfinternal_html": False,
         "getperim_internal_n": 0,
         "getperim_internal_dim1_n": 0,
@@ -4040,6 +4098,8 @@ def stamp_pdf_kendo_flats(
         "hole_dim1_via": str(value.get("hole_dim1_via") or ""),
         "confirm_via": str(value.get("confirm_via") or ""),
         "form_lw_synced": bool(value.get("form_lw_synced")),
+        "form_length": str(value.get("form_length") or ""),
+        "form_width": str(value.get("form_width") or ""),
         "pdfinternal_html": bool(value.get("pdfinternal_html")),
         "getperim_internal_n": int(value.get("getperim_internal_n") or 0),
         "getperim_internal_dim1_n": int(value.get("getperim_internal_dim1_n") or 0),
