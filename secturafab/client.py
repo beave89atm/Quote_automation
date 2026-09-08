@@ -1417,8 +1417,15 @@ class SecturaFabClient:
             invoke_page_dxf_finish,
             minted_edit_tab_ready,
         )
-        from .website import filelist_missing_cadimport_identity_keys
+        from .website import (
+            cad_filelist_refuses_additem_dxf,
+            filelist_missing_cadimport_identity_keys,
+        )
 
+        for row in file_list or []:
+            reason = cad_filelist_refuses_additem_dxf(row)
+            if reason:
+                raise SecturaFabApiError(reason)
         del file_list
         if chrome_quotes_live():
             self.harvest_chrome_antiforgery()

@@ -2536,9 +2536,11 @@ def test_empty_perimeter_weight_is_fail():
 def test_leftover_dxf_pack_is_on_additem_list():
     """Gold 21678-1 analog: pack is on AddItem_DXFFiles List after Stock type."""
     from secturafab.cadimport_js import (
+        NEEDS_INTERNALDATA_FILL_XHR,
         STOCK_PERIMETER_FILL_ON,
         STOCK_PERIMETER_FILL_XHR,
         classify_finish_internaldata_fill,
+        needs_internaldata_fill_xhr,
         stock_perimeter_fill_xhr,
     )
     from secturafab.website import leftover_dxf_pack_is_on_additem_list
@@ -2550,6 +2552,8 @@ def test_leftover_dxf_pack_is_on_additem_list():
     broken["pack_xhr_named"] = True
     assert leftover_dxf_pack_is_on_additem_list(broken) is False
     assert classify_finish_internaldata_fill() is None
+    assert needs_internaldata_fill_xhr() == NEEDS_INTERNALDATA_FILL_XHR
+    assert needs_internaldata_fill_xhr() == "needs_internaldata_fill_xhr"
     assert stock_perimeter_fill_xhr() == "/Quote/GetPerimeterAndWeight"
     assert STOCK_PERIMETER_FILL_XHR == "/Quote/GetPerimeterAndWeight"
     assert "Stock_X" in STOCK_PERIMETER_FILL_ON
@@ -6235,7 +6239,9 @@ def test_setpartmode_filetype_survives_into_filelist():
 def test_cad_empty_internaldata_imagestring_skips_finish():
     """Live 10098-1: Cad-path keys present and empty → fail-closed skip. Do not invent."""
     from secturafab.website import (
+        cad_filelist_contours_would_be_zero,
         cad_filelist_payload_blocks_finish,
+        cad_filelist_refuses_additem_dxf,
         cad_payload_value_empty,
         copy_cadimport_identity_through,
         filelist_cad_payload_empty_bools,
@@ -6267,6 +6273,11 @@ def test_cad_empty_internaldata_imagestring_skips_finish():
     assert cad_payload_value_empty("[]") is True
     assert cad_payload_value_empty({"holes": 1}) is False
     assert cad_filelist_payload_blocks_finish(row) is True
+    assert cad_filelist_contours_would_be_zero(row) is True
+    refuse = cad_filelist_refuses_additem_dxf(row)
+    assert refuse is not None
+    assert "needs_internaldata_fill_xhr" in refuse
+    assert "refusing AddItem_DXFFiles" in refuse
     cap = kendo_filelist_for_finish([row], from_datasource=True)
     assert cap["should_finish"] is False
     assert cap["finish_why"] == "filelist_cad_payload_empty"
@@ -6300,6 +6311,65 @@ def test_cad_empty_internaldata_imagestring_skips_finish():
     invented = copy_cadimport_identity_through({"ID": "x", "FileType": "Cad"}, {})
     assert "InternalData" not in invented
     assert "ImageString" not in invented
+
+
+def test_cad_filelist_contours_zero_refuses_additem_dxf():
+    """Nonempty InternalData + NumberOfContours 0 still refuses Finish."""
+    from secturafab.website import (
+        cad_filelist_contours_would_be_zero,
+        cad_filelist_payload_blocks_finish,
+        cad_filelist_refuses_additem_dxf,
+        cad_finish_notes_refuse_additem_dxf,
+        kendo_filelist_for_finish,
+    )
+
+    row = {
+        "ID": "x",
+        "FileID": "f",
+        "SourceDataID": "x",
+        "FileType": "Cad",
+        "CadType": 0,
+        "Stock_X": 8.0,
+        "Stock_Y": 4.0,
+        "ErrorStatus": 0,
+        "Qty": 1,
+        "ItemType": "Cad",
+        "InternalData": '[{"Type":"page"}]',
+        "ImageString": "preview",
+        "NumberOfContours": 0,
+    }
+    assert cad_filelist_payload_blocks_finish(row) is False
+    assert cad_filelist_contours_would_be_zero(row) is True
+    refuse = cad_filelist_refuses_additem_dxf(row)
+    assert refuse is not None
+    assert "needs_internaldata_fill_xhr" in refuse
+    cap = kendo_filelist_for_finish([row], from_datasource=True)
+    assert cap["should_finish"] is False
+    assert cap["finish_why"] == "filelist_contours_zero"
+    assert cad_finish_notes_refuse_additem_dxf([refuse]) == refuse
+    assert cad_finish_notes_refuse_additem_dxf(["ok"]) is None
+    ok = dict(row)
+    del ok["NumberOfContours"]
+    assert cad_filelist_contours_would_be_zero(ok) is False
+    assert cad_filelist_refuses_additem_dxf(ok) is None
+
+
+def test_add_item_dxf_files_refuses_empty_internaldata():
+    from secturafab.client import SecturaFabApiError, SecturaFabClient
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    with pytest.raises(SecturaFabApiError, match="needs_internaldata_fill_xhr"):
+        client.add_item_dxf_files(
+            quote_id="qid",
+            file_list=[
+                {
+                    "FileType": "Cad",
+                    "ItemType": "Cad",
+                    "InternalData": "",
+                    "ImageString": "",
+                }
+            ],
+        )
 
 
 def test_part_create_list_name_tokens_root_and_jobpn():
@@ -8561,6 +8631,8 @@ def test_dxf_page_next_empty_internaldata_does_not_finish(tmp_path: Path):
     assert "next_via=createAllParts" in blob
     assert "InternalData present-and-empty" in blob
     assert "not Finishing" in blob
+    assert "needs_internaldata_fill_xhr" in blob
+    assert "refusing AddItem_DXFFiles" in blob
 
 
 def test_dxf_page_next_nonempty_internaldata_finishes(tmp_path: Path):
@@ -8725,9 +8797,11 @@ def test_updatedxf_loadnew_is_editor_only_not_gold():
     from secturafab.cadimport_js import (
         CLASSIFY_FINISH_FUNCTIONS,
         CLASSIFY_FINISH_INTERNALDATA_FILL,
+        NEEDS_INTERNALDATA_FILL_XHR,
         UPDATE_DXF_LOADNEW_ITEMLIST_KEYS,
         UPDATE_DXF_LOADNEW_NOT_CALLED_FROM,
         classify_finish_internaldata_fill,
+        needs_internaldata_fill_xhr,
     )
 
     hunt = json.loads(
@@ -8744,6 +8818,9 @@ def test_updatedxf_loadnew_is_editor_only_not_gold():
     assert hunt["itemlist_keys"] == list(UPDATE_DXF_LOADNEW_ITEMLIST_KEYS)
     assert hunt["not_called_from"] == list(UPDATE_DXF_LOADNEW_NOT_CALLED_FROM)
     assert hunt["classify_finish_internaldata_fill"] is None
+    assert hunt["needs_internaldata_fill_xhr"] == NEEDS_INTERNALDATA_FILL_XHR
+    assert classify_finish_internaldata_fill() is None
+    assert needs_internaldata_fill_xhr() == "needs_internaldata_fill_xhr"
     assert hunt["live_leftover_edit"]["WebGLCADDisp"] is False
     assert hunt["preview"] == "WebGLDisp"
     assert classify_finish_internaldata_fill() is None

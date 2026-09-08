@@ -1713,9 +1713,18 @@ _PAGE_FINISH_JS = """(function() {
       finish_why: "filelist_missing_keys=" + kendoIdentMiss.join("+")
     }));
   }
+  function contoursWouldBeZero(row) {
+    if (!row || !isCadRow(row)) return false;
+    if (row.InternalData !== undefined && payloadEmpty(row.InternalData)) return true;
+    var nc = (row.NumberOfContours != null) ? row.NumberOfContours : row.Contours;
+    if (nc === undefined || nc === null || nc === "") return false;
+    var n = Number(nc);
+    return !isFinite(n) || n < 1;
+  }
   if (isCadRow(rows[0]) && (
       (rows[0].InternalData !== undefined && payloadEmpty(rows[0].InternalData))
       || (rows[0].ImageString !== undefined && payloadEmpty(rows[0].ImageString))
+      || contoursWouldBeZero(rows[0])
   )) {
     return Promise.resolve(Object.assign(summarize(0, null), {
       via: "skipped",
@@ -1735,7 +1744,10 @@ _PAGE_FINISH_JS = """(function() {
       filelist_cad_path_keys: [],
       filelist_internaldata_empty: payloadEmpty((rows[0] || {}).InternalData),
       filelist_imagestring_empty: payloadEmpty((rows[0] || {}).ImageString),
-      finish_why: "filelist_cad_payload_empty"
+      finish_why: (
+        (rows[0].InternalData !== undefined && payloadEmpty(rows[0].InternalData))
+        || (rows[0].ImageString !== undefined && payloadEmpty(rows[0].ImageString))
+      ) ? "filelist_cad_payload_empty" : "filelist_contours_zero"
     }));
   }
   function fnSource(fn) {

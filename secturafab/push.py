@@ -67,6 +67,7 @@ from .website import (
     WEBSITE_AUTH_GAP,
     WEBSITE_SESSION_EXPIRED,
     SecturaFabWebsiteAuthError,
+    cad_finish_notes_refuse_additem_dxf,
     count_cad_product_type,
     is_tenant_guid,
     count_linear_product_type,
@@ -2676,8 +2677,9 @@ class SecturaFabPushService:
         If kendo lacks them after explode, that is a /part/create bind miss
         (not a Finish-hook miss): do not Finish.
         ``GetPerimeterAndWeight`` remains ``#gridPDF`` only — not CAD
-        InternalData. Skip Finish when ``#gridDXFParts`` InternalData is
-        present-and-empty (SC0600 143/143). Do not invent InternalData.
+        InternalData. Refuse AddItem_DXFFiles when ``#gridDXFParts``
+        InternalData is present-and-empty or Contours would be 0
+        (``needs_internaldata_fill_xhr``). Do not invent InternalData.
         Do not fire UpdateDataNext. 21678-1 is UI-only gold — do not open.
         """
         notes: list[str] = []
@@ -2985,6 +2987,7 @@ class SecturaFabPushService:
         from .chrome_cdp import apply_grid_dxf_part_modes
         from .website import (
             cad_filelist_payload_blocks_finish,
+            cad_filelist_refuses_additem_dxf,
             filelist_cad_payload_empty_bools,
             filelist_missing_cadimport_identity_keys,
         )
@@ -3085,8 +3088,16 @@ class SecturaFabPushService:
             (r for r in ready if cad_filelist_payload_blocks_finish(r)),
             None,
         )
-        if cad_block is not None:
-            bools = filelist_cad_payload_empty_bools(cad_block)
+        cad_refuse = next(
+            (cad_filelist_refuses_additem_dxf(r) for r in ready if cad_filelist_refuses_additem_dxf(r)),
+            None,
+        )
+        if cad_block is not None or cad_refuse:
+            row = cad_block or next(
+                (r for r in ready if cad_filelist_refuses_additem_dxf(r)),
+                None,
+            )
+            bools = filelist_cad_payload_empty_bools(row)
             notes.append(
                 "filelist_internaldata_empty="
                 + ("true" if bools["filelist_internaldata_empty"] else "false")
@@ -3095,15 +3106,18 @@ class SecturaFabPushService:
                 "filelist_imagestring_empty="
                 + ("true" if bools["filelist_imagestring_empty"] else "false")
             )
-            notes.append(
-                "WARNING: Cad FileList InternalData present-and-empty — "
-                "required for Cad Finish (OnAddDXFClick copies InternalData; "
-                "ImageString is preview). Server never fills InternalData on "
-                "explode (Skin Assembly 5b622a0d jquery_ajax+EDIT 8/8, FA "
-                "Assembly 0d4b8a46 28/28, SC0600 143/143). #img copy is not "
-                "success; ajax-on-EDIT is not success; not Finishing; do not "
-                "invent InternalData; not success"
-            )
+            if cad_refuse:
+                notes.append(cad_refuse)
+            if cad_block is not None:
+                notes.append(
+                    "Cad FileList InternalData present-and-empty — "
+                    "required for Cad Finish (OnAddDXFClick copies InternalData; "
+                    "ImageString is preview). Server never fills InternalData on "
+                    "explode (Skin Assembly 5b622a0d jquery_ajax+EDIT 8/8, FA "
+                    "Assembly 0d4b8a46 28/28, SC0600 143/143). #img copy is not "
+                    "success; ajax-on-EDIT is not success; not Finishing; do not "
+                    "invent InternalData; not success"
+                )
             return notes
         result = self.client.add_item_dxf_files(
             quote_id=quote_id,
@@ -5512,6 +5526,17 @@ class SecturaFabPushService:
                             quote_request_id=quote_request_id,
                         )
                     )
+                    refuse = cad_finish_notes_refuse_additem_dxf(notes)
+                    if refuse:
+                        return self._fail_push(
+                            msg=refuse,
+                            notes=notes,
+                            quote_id=quote_id,
+                            quote_number=quote_number,
+                            quote_request_id=quote_request_id,
+                            uploaded=uploaded,
+                            attempts=createfile_attempts,
+                        )
                     uploaded.extend(p.name for p in cad)
                     attempted_pack_stamp = True
                 elif not website_cookie:

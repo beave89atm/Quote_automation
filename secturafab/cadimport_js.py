@@ -142,10 +142,14 @@ UPDATE_DXF_LOADNEW_NOT_CALLED_FROM = (
 # Kyle gold Loom classify→Finish without #DXFEdit. None of these write
 # InternalData. Named analog (unpark STEP): type Stock_X/Stock_Y then
 # UpdatePerimeterWeight → POST /Quote/GetPerimeterAndWeight before
-# OnAddDXFClick (same XHR as Image Files L×W). Pack is on
-# AddItem_DXFFiles List. Explode InternalData empty after that stamp
-# is fail-closed, not a park. OnAddDXFClick copies InternalData and
-# filters ErrorStatus===0 && Qty>0. Do not fire UpdateDataNext.
+# OnAddDXFClick (same XHR as Image Files L×W). That XHR fills
+# CuttingLength / OutsidePerimeter — not FileList InternalData.
+# Pack is on AddItem_DXFFiles List. Explode InternalData empty after
+# that stamp is fail-closed, not a park. OnAddDXFClick copies
+# InternalData and filters ErrorStatus===0 && Qty>0.
+# needs_internaldata_fill_xhr: repo + leftover captures + QuoteOrderEdit
+# cite no classify→Finish route that writes InternalData. Do not guess
+# a body. Do not fire UpdateDataNext.
 CLASSIFY_FINISH_FUNCTIONS = (
     "createAllParts",
     "DoCreateDXFParts",
@@ -154,6 +158,9 @@ CLASSIFY_FINISH_FUNCTIONS = (
     "OnAddDXFClick",
 )
 CLASSIFY_FINISH_INTERNALDATA_FILL = None
+# Gap: no named classify→Finish XHR writes FileList InternalData.
+# GetPerimeterAndWeight is Stock_X/Y perimeter, not InternalData.
+NEEDS_INTERNALDATA_FILL_XHR = "needs_internaldata_fill_xhr"
 STOCK_PERIMETER_FILL_XHR = "/Quote/GetPerimeterAndWeight"
 STOCK_PERIMETER_FILL_ON = ("Stock_X", "Stock_Y", "Length", "Width")
 
@@ -337,10 +344,17 @@ def classify_finish_internaldata_fill() -> str | None:
     """Page function on classify→Finish without #DXFEdit that writes InternalData.
 
     None exists (editor UpdateDXF_LoadNew is not gold). The named analog
-    is Stock_X/Y → UpdatePerimeterWeight → GetPerimeterAndWeight.
+    is Stock_X/Y → UpdatePerimeterWeight → GetPerimeterAndWeight
+    (perimeter only). Hunt: QuoteOrderEdit + leftover explodes +
+    /workspace fixtures — no fill route. Do not guess a body.
     Do not fire POST /CadImport/UpdateDataNext.
     """
     return CLASSIFY_FINISH_INTERNALDATA_FILL
+
+
+def needs_internaldata_fill_xhr() -> str:
+    """Stable gap token until a live gold drop names the InternalData fill XHR."""
+    return NEEDS_INTERNALDATA_FILL_XHR
 
 
 def stock_perimeter_fill_xhr() -> str:

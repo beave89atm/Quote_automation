@@ -219,7 +219,8 @@ UpdateDXF_LoadNew is editor-only (not gold): #DXFEdit open +
 CADType==="DXF" + Previous/Next/combobox → UpdateDataNext.
 Live leftover EDIT: WebGLCADDisp undefined, #DXFEdit hidden.
 Do not fire UpdateDataNext. Classify→Finish without #DXFEdit
-has no InternalData-fill XHR. Leave 5b622a0d / Skin Assembly,
+has no InternalData-fill XHR (needs_internaldata_fill_xhr).
+Leave 5b622a0d / Skin Assembly,
 0d4b8a46 / FA Assembly, b8a62e76 / SC0600, and 6a568912 / 10098-1.
 Do not remint. Do not mint.
 
@@ -1477,6 +1478,68 @@ def cad_filelist_payload_blocks_finish(row: dict[str, Any] | None) -> bool:
     return False
 
 
+def cad_filelist_contours_would_be_zero(row: dict[str, Any] | None) -> bool:
+    """True when Cad FileList InternalData is empty or NumberOfContours is 0.
+
+    Do not invent Contours. Keys absent is not a contours-zero miss.
+    Empty InternalData means Finish would land Contours 0.
+    """
+    if not isinstance(row, dict) or not is_cad_filelist_row(row):
+        return False
+    bools = filelist_cad_payload_empty_bools(row)
+    if "InternalData" in row and bools["filelist_internaldata_empty"]:
+        return True
+    for key in ("NumberOfContours", "Contours"):
+        if key not in row:
+            continue
+        try:
+            if int(row.get(key) or 0) < 1:
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
+def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
+    """Refuse AddItem_DXFFiles when InternalData is empty or Contours would be 0.
+
+    needs_internaldata_fill_xhr: classify→Finish has no named fill XHR.
+    Do not invent InternalData. Do not Finish leftovers with empty InternalData.
+    """
+    from secturafab.cadimport_js import NEEDS_INTERNALDATA_FILL_XHR
+
+    if not isinstance(row, dict) or not is_cad_filelist_row(row):
+        return None
+    if not (
+        cad_filelist_payload_blocks_finish(row)
+        or cad_filelist_contours_would_be_zero(row)
+    ):
+        return None
+    return (
+        "Cad FileList InternalData empty / Contours would be 0 — "
+        "refusing AddItem_DXFFiles. "
+        f"{NEEDS_INTERNALDATA_FILL_XHR}: classify→Finish has no named "
+        "InternalData fill XHR (not UpdateDXF_LoadNew / UpdateDataNext). "
+        "Do not invent InternalData."
+    )
+
+
+def cad_finish_notes_refuse_additem_dxf(
+    notes: list[str] | None,
+) -> str | None:
+    """Push fail-close token after finish_cad_files refused AddItem_DXFFiles."""
+    from secturafab.cadimport_js import NEEDS_INTERNALDATA_FILL_XHR
+
+    for note in notes or []:
+        text = str(note)
+        if (
+            NEEDS_INTERNALDATA_FILL_XHR in text
+            or "refusing AddItem_DXFFiles" in text
+        ):
+            return text
+    return None
+
+
 def kendo_filelist_for_finish(
     rows: list[dict[str, Any]] | None,
     *,
@@ -1507,6 +1570,7 @@ def kendo_filelist_for_finish(
     payload_block = cad_filelist_payload_blocks_finish(
         filled[0] if filled else None
     )
+    refuse = cad_filelist_refuses_additem_dxf(filled[0] if filled else None)
     why = ""
     if n > 0 and sid_n == 0:
         why = "filelist_missing_ids"
@@ -1514,6 +1578,8 @@ def kendo_filelist_for_finish(
         why = "filelist_missing_keys=" + "+".join(ident_miss)
     elif payload_block:
         why = "filelist_cad_payload_empty"
+    elif refuse:
+        why = "filelist_contours_zero"
     elif not from_kendo:
         why = "filelist_not_kendo"
     return {
@@ -1526,7 +1592,9 @@ def kendo_filelist_for_finish(
         "finish_why": why,
         "filelist_missing_identity": ident_miss,
         "kendo_row_keys": kendo_identity_log_keys(filled[0]) if filled else [],
-        "should_finish": bool(from_kendo and not ident_miss and not payload_block),
+        "should_finish": bool(
+            from_kendo and not ident_miss and not payload_block and not refuse
+        ),
         **filelist_errorstatus_qty(filled[0] if filled else None),
         **filelist_filetype_value_type(filled[0] if filled else None),
         "filelist_cad_path_keys": filelist_cad_path_keys(

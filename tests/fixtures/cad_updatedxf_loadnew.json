@@ -24,5 +24,6 @@
     "dxfeditid_empty": true,
     "unfold_n": 0
   },
-  "classify_finish_internaldata_fill": null
+  "classify_finish_internaldata_fill": null,
+  "needs_internaldata_fill_xhr": "needs_internaldata_fill_xhr"
 }
