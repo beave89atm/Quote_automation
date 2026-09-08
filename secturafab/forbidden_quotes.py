@@ -60,6 +60,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "9be15b62-a824-442c-b911-50ca1016cc5e",  # 21682-1 plate_sku_missing / ProductID null (leave it)
         "c23fba3d-ef02-412b-b06e-f91ffa9076a6",  # 29341-1 ProductID+hole / empty BadgeString (leave it)
         "ad1777be-1951-42b6-9be4-d97c3a42dd94",  # 1007471-1 PR18 e4df7f2 multi-kid PASS — do not remint / PATCH
+        "7a631c5f-39ca-40fc-b733-88b2b2d04636",  # 34602-2 PR18 1259cda nested+Component PASS — do not remint / PATCH
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -115,6 +116,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "d2ec4357",  # 1007922-3 OUTRIGGER nest+packs PASS (Cad 10099-1 PR + Linear RT2 1/4X0.5-A519 + Copy/Move) — do not remint / PATCH
         "bf4221e8",  # 29743-2 PR18 a1dacc9 weld+nest PASS — do not remint / PATCH
         "ad1777be",  # 1007471-1 PR18 e4df7f2 multi-kid PASS — do not remint / PATCH
+        "7a631c5f",  # 34602-2 PR18 1259cda nested+Component PASS — do not remint / PATCH
         "b1036d7d",  # 33819-2 spent plate_sku_missing — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
         "95b8c186",  # 1007922-3 — do not open / PATCH / remint
@@ -177,7 +179,8 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "33204-1",  # spent e57633b6 list0_pack empty Tag/OCL — do not remint
         "1009213-1",  # spent 3102870a modal SKU / list0_pack empty — do not remint
         "29340-1",  # spent 8fb3da71 API mint / cookie AddView 302 — do not remint
-        "34603-2",  # spent 14219adc ProductID null / org empty GUID / no-hole Cad — do not remint
+        "34603-2",  # spent 14219adc child of 34602-2 — do not remint
+        "34602-2",  # spent 7a631c5f nested+Component PASS @ 1259cda — do not remint
         "21682-1",  # spent 9be15b62 plate_sku_missing / ProductID null — do not remint
         "29341-1",  # spent c23fba3d ProductID+hole / empty BadgeString — do not remint
         "33819-2",  # spent b1036d7d plate_sku_missing — do not remint

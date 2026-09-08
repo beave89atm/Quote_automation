@@ -1090,6 +1090,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "1007922-3" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "29743-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1007471-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "34602-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "34603-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1002323-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "33819-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21681-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -1136,6 +1138,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("bf4221e8-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("ad1777be-1951-42b6-9be4-d97c3a42dd94")
     assert is_forbidden_quote_id("ad1777be-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("7a631c5f-39ca-40fc-b733-88b2b2d04636")
+    assert is_forbidden_quote_id("7a631c5f-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
     assert is_forbidden_quote_id("bd5c2e3e-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d2f7b031-1111-2222-3333-444444444444")
@@ -1220,6 +1224,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "3102870a-1111-2222-3333-444444444444",
         "bf4221e8-1111-2222-3333-444444444444",
         "ad1777be-1951-42b6-9be4-d97c3a42dd94",
+        "7a631c5f-39ca-40fc-b733-88b2b2d04636",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(
