@@ -211,6 +211,11 @@ _WELD_OP_TEMPLATES: list[dict[str, Any]] = [
 
 _DEFAULT_SETUP_MINUTES = 15.0
 
+def quote_number_is_zz_del(quote_number: str | None) -> bool:
+    """Shop archive prefix. Weld stamps in place — do not ZZ-DEL→revive."""
+    return str(quote_number or "").strip().upper().startswith("ZZ-DEL")
+
+
 # Symbols on the print but quote_core weld+fit-up minutes are 0/missing.
 # Do not invent AddOperation hours. Nest Copy/Move still runs first.
 WELD_NEEDS_INFO_NOTE = (
@@ -493,6 +498,11 @@ def ensure_weld_ops(
         return ["No weld minutes on job — skipped SecturaFAB Weld ops"]
 
     detail = client.get_json(f"v1/quote/{quote_id}")
+    if quote_number_is_zz_del(detail.get("QuoteNumber") if isinstance(detail, dict) else None):
+        return [
+            "WARNING: AddOperation weld skipped — quote is ZZ-DEL; "
+            "not reviving / not archive-dancing (live 1007756-1)"
+        ]
     items = list(detail.get("ItemList") or [])
     kids = []
     for it in items:
@@ -580,7 +590,8 @@ def ensure_weld_ops(
                     f"{(target.get('Description') or '')[:40]!r} "
                     f"CalcParamType={WELD_CALC_PARAM_TYPE} ApplyTo=ITEM: "
                     f"{weld_h * 60:.1f} min weld, {fit_h * 60:.1f} min fit-up "
-                    f"({fit_label}), {setup_h * 60:.0f} min setup{extra}"
+                    f"({fit_label}), {setup_h * 60:.0f} min setup{extra} "
+                    "(no ZZ-DEL/revive)"
                 )
                 continue
             except SecturaFabWebsiteAuthError as exc:
@@ -603,7 +614,13 @@ def ensure_weld_ops(
             if it.get("ID") == target["ID"]:
                 it["OperationCostList"] = target["OperationCostList"]
                 break
-        save = client.request("POST", "v1/quote", json=detail)
+        # Stamp weld on the current quote. Do not send QuoteNumber
+        # (ZZ-DEL→revive archive dance wiped header/ops on 1007756-1).
+        weld_save = {
+            "ID": quote_id,
+            "ItemList": detail.get("ItemList") or [],
+        }
+        save = client.request("POST", "v1/quote", json=weld_save)
         if save.status_code >= 400:
             notes.append(f"Saving Weld ops failed ({save.status_code})")
             return notes

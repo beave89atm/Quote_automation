@@ -363,8 +363,14 @@ def persist_quote_header(
             )
         )
         return notes
+    from .item_desc import quote_description_is_blank
+
     desc = (description or "").strip()
-    if not desc or not quote_id:
+    if quote_description_is_blank(desc) or not quote_id:
+        if quote_description_is_blank(desc):
+            notes.append(
+                "Quote Description is blank after mint/header — not persisting"
+            )
         return notes
     detail = client.get_json(f"v1/quote/{quote_id}")
     if str(detail.get("Description") or "").strip() == desc:

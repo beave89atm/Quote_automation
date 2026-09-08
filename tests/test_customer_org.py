@@ -323,3 +323,13 @@ def test_create_quote_stamps_time_waco_on_mint_and_strip():
     assert mint_body["OrganizationID"] == TIME_WACO_ORG_ID
     assert strip_body["PrimaryOrganizationID"] == TIME_WACO_ORG_ID
     assert strip_body["ID"] == "new-qid"
+
+
+def test_persist_quote_header_blank_description_is_fail_close():
+    from secturafab.org_ops import persist_quote_header
+
+    client = MagicMock()
+    notes = persist_quote_header(client, "qid", description="  ")
+    assert any("Description is blank" in n for n in notes)
+    client.get_json.assert_not_called()
+    client.request.assert_not_called()

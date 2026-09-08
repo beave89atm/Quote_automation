@@ -61,6 +61,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "c23fba3d-ef02-412b-b06e-f91ffa9076a6",  # 29341-1 ProductID+hole / empty BadgeString (leave it)
         "ad1777be-1951-42b6-9be4-d97c3a42dd94",  # 1007471-1 PR18 e4df7f2 multi-kid PASS — do not remint / PATCH
         "7a631c5f-39ca-40fc-b733-88b2b2d04636",  # 34602-2 PR18 1259cda nested+Component PASS — do not remint / PATCH
+        "6bfde652-b65a-41b7-840c-af8f088097d4",  # 1007756-1 PR18 b0305c5 ≥8-kid PASS — do not remint / PATCH
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -117,6 +118,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "bf4221e8",  # 29743-2 PR18 a1dacc9 weld+nest PASS — do not remint / PATCH
         "ad1777be",  # 1007471-1 PR18 e4df7f2 multi-kid PASS — do not remint / PATCH
         "7a631c5f",  # 34602-2 PR18 1259cda nested+Component PASS — do not remint / PATCH
+        "6bfde652",  # 1007756-1 PR18 b0305c5 ≥8-kid PASS — do not remint / PATCH
         "4b8d6ae6",  # 103535-1 leftover @ 8e08f53 — kids stamped via CDP before nest refuse — do not remint / PATCH
         "b1036d7d",  # 33819-2 spent plate_sku_missing — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
@@ -132,7 +134,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "28106-2",
         "1007922-1",
         "21727-1",
-        "1007756-3",  # spent empty shell — next unused is 1007756-1
+        "1007756-3",  # spent empty shell — do not remint
         "1002381-1",  # spent empty shell (e7dd028)
         "34574-1",  # spent empty shell (40507e7)
         "34887-1",  # spent empty shell (227dff0)
@@ -186,6 +188,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "29341-1",  # spent c23fba3d ProductID+hole / empty BadgeString — do not remint
         "33819-2",  # spent b1036d7d plate_sku_missing — do not remint
         "1007471-1",  # spent ad1777be multi-kid weld+nest PASS @ e4df7f2 — do not remint
+        "1007756-1",  # spent 6bfde652 ≥8-kid PASS @ b0305c5 — do not remint
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

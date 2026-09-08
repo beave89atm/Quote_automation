@@ -1194,10 +1194,15 @@ class SecturaFabPushService:
         """
         display = _pn_quote_number(quote_number)
         from .forbidden_quotes import ForbiddenQuoteError, spent_quote_number_block_reason
+        from .item_desc import quote_description_is_blank
 
         blocked = spent_quote_number_block_reason(display)
         if blocked:
             raise ForbiddenQuoteError(blocked)
+        if quote_description_is_blank(description):
+            raise ValueError(
+                "Quote Description is blank — not minting (live 1007756-1)"
+            )
         temp_rev = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
         payload: dict[str, Any] = {
             "QuoteNumber": display,
@@ -5328,6 +5333,23 @@ class SecturaFabPushService:
                     "WARNING: Quote Description is still a bare PN — "
                     "need folder / PDF / BOM weldment title"
                 )
+            from .item_desc import quote_description_is_blank
+
+            if quote_description_is_blank(quote_description):
+                msg = (
+                    "Quote Description is blank — not minting, not stamping kids "
+                    "(live 1007756-1)"
+                )
+                notes.append(msg)
+                return PushResult(
+                    ok=False,
+                    error=msg,
+                    notes=notes,
+                    status="failed",
+                    quote_number=quote_number,
+                    created_new_quote=False,
+                    attempts=createfile_attempts,
+                )
             quote_id = self.create_quote(
                 quote_number=quote_number,
                 description=quote_description or "",
@@ -5766,6 +5788,24 @@ class SecturaFabPushService:
                     description=quote_description,
                 )
             )
+            if any(
+                "Quote Description is blank after mint/header" in str(n)
+                for n in notes
+            ):
+                msg = next(
+                    n
+                    for n in notes
+                    if "Quote Description is blank after mint/header" in str(n)
+                )
+                return self._fail_push(
+                    msg=str(msg),
+                    notes=notes,
+                    quote_id=quote_id,
+                    quote_number=quote_number,
+                    quote_request_id=quote_request_id,
+                    uploaded=uploaded,
+                    attempts=createfile_attempts,
+                )
             notes.extend(retype_linears_to_pt10_keep_persist(self.client, quote_id))
             peek = self.client.get_json(f"v1/quote/{quote_id}")
             cad_wiped = False

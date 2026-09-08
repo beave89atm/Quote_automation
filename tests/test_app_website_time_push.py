@@ -177,7 +177,7 @@ def test_refuse_forbidden_quote_writes():
     refuse_forbidden_quote_write(
         method="POST",
         path="v1/quote",
-        payload={"QuoteNumber": "1007756-1"},
+        payload={"QuoteNumber": "remint-ok"},
     )
 
 
@@ -234,11 +234,11 @@ def test_push_job_refuses_byname_spent_before_mint(tmp_path: Path):
     ), patch.object(
         service, "create_quote", return_value="must-not-mint"
     ) as create_q, patch.object(
-        service, "allocate_quote_number", return_value="1007756-1"
+        service, "allocate_quote_number", return_value="remint-ok"
     ), patch.object(
         service,
         "find_quote_by_number",
-        return_value={"ID": "already-spent-id", "QuoteNumber": "1007756-1"},
+        return_value={"ID": "already-spent-id", "QuoteNumber": "remint-ok"},
     ), patch.object(
         service, "finish_pdf_files"
     ) as pdf_finish, patch.object(
@@ -273,6 +273,161 @@ def test_create_quote_refuses_forbidden_number_before_post():
     with pytest.raises(ForbiddenQuoteError, match="103535-1"):
         service.create_quote(quote_number="103535-1")
     client.request.assert_not_called()
+
+
+def test_create_quote_refuses_blank_description_before_post():
+    client = MagicMock()
+    service = SecturaFabPushService(client=client)
+    with pytest.raises(ValueError, match="Description is blank"):
+        service.create_quote(quote_number="remint-ok", description="  ")
+    client.request.assert_not_called()
+
+
+def test_push_job_refuses_blank_description_before_mint(tmp_path: Path):
+    """Live 1007756-1: header Description was null after mint."""
+    pdf = tmp_path / "lonely.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    service = SecturaFabPushService(client=client)
+    with patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ), patch.object(
+        service, "create_quote", return_value="must-not-mint"
+    ) as create_q, patch.object(
+        service, "allocate_quote_number", return_value="remint-ok"
+    ), patch.object(
+        service, "find_quote_by_number", return_value=None
+    ), patch.object(
+        service, "finish_pdf_files"
+    ) as pdf_finish, patch(
+        "secturafab.push.refresh_bom_rows_for_push",
+        return_value=([{"part_no": "kid-1", "qty": 1, "description": "PLATE"}], []),
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value=None
+    ), patch(
+        "secturafab.push.title_from_stp_takeoff", return_value=None
+    ), patch(
+        "secturafab.push.title_from_library_folder", return_value=None
+    ), patch(
+        "secturafab.push.title_from_job_title", return_value=None
+    ), patch(
+        "secturafab.push.title_from_bom_family", return_value=None
+    ):
+        result = service.push_job(
+            title="lonely",
+            pdf_filename="lonely.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={"library": {"part_key": "lonely"}},
+            times={},
+            job_id=10,
+        )
+    assert result.ok is False
+    assert result.created_new_quote is False
+    create_q.assert_not_called()
+    pdf_finish.assert_not_called()
+    blob = (result.error or "") + " " + " ".join(result.notes or [])
+    assert "Description is blank" in blob
+    assert "not minting" in blob
+
+
+def test_ensure_weld_ops_skips_zz_del_revive():
+    from secturafab.weld_ops import ensure_weld_ops, quote_number_is_zz_del
+
+    assert quote_number_is_zz_del("ZZ-DEL-1007756-1") is True
+    assert quote_number_is_zz_del("1007756-1") is False
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {
+        "QuoteNumber": "ZZ-DEL-1007756-1",
+        "ItemList": [
+            {
+                "ID": "asm-1",
+                "Description": "1007756-1 - WELDMENT",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+            {
+                "ID": "cad-1",
+                "Description": "1007756-2",
+                "ProductType": 100,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+        ],
+    }
+    notes = ensure_weld_ops(
+        client,
+        "qid",
+        times={"weld_minutes": 20, "total_inches": 40, "fitup_with_fixture_minutes": 8},
+        part_key="1007756-1",
+    )
+    client.add_operation.assert_not_called()
+    client.request.assert_not_called()
+    blob = " ".join(notes)
+    assert "ZZ-DEL" in blob
+    assert "not reviving" in blob
+
+
+def test_ensure_weld_ops_graft_post_does_not_send_quote_number():
+    from secturafab.weld_ops import ensure_weld_ops
+
+    client = MagicMock()
+    client.config.website_cookie = ""
+    client.get_json.return_value = {
+        "ID": "qid",
+        "QuoteNumber": "remint-ok",
+        "ItemList": [
+            {
+                "ID": "asm-1",
+                "Description": "remint-ok - WELDMENT",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+            {
+                "ID": "cad-1",
+                "Description": "kid-1 PLATE",
+                "ProductType": 100,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+        ],
+    }
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    notes = ensure_weld_ops(
+        client,
+        "qid",
+        times={"weld_minutes": 20, "total_inches": 40, "fitup_with_fixture_minutes": 8},
+        part_key="remint-ok",
+    )
+    client.request.assert_called_once()
+    payload = client.request.call_args.kwargs["json"]
+    assert payload["ID"] == "qid"
+    assert "QuoteNumber" not in payload
+    assert payload.get("QuoteStatus") is None
+    assert any("Weld" in n for n in notes)
+
+
+def test_evaluate_quote_get_empty_description_fails():
+    payload = gold_1001898_get()
+    payload["Description"] = None
+    result = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert result.ok is False
+    assert any("Quote Description is empty" in f for f in result.failures)
 
 
 def test_flat_root_kids_fail_qa():
@@ -1190,7 +1345,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "1001898-5" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1001898-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "103535-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
-    assert "1007756-1" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1007756-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10095" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "34137-4" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1007922-3" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -1219,6 +1374,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "a7d6ca50-efec-409d-bd32-e68012e710c3" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "a7dc46bf-836a-4250-b038-9331cc0595a7" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "6bfde652-b65a-41b7-840c-af8f088097d4" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "14219adc-f7f5-401a-b707-0bf200ef8c74" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "34603-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "9be15b62-a824-442c-b911-50ca1016cc5e" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -1246,6 +1402,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("ad1777be-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("7a631c5f-39ca-40fc-b733-88b2b2d04636")
     assert is_forbidden_quote_id("7a631c5f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("6bfde652-b65a-41b7-840c-af8f088097d4")
+    assert is_forbidden_quote_id("6bfde652-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("4b8d6ae6-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
     assert is_forbidden_quote_id("bd5c2e3e-1111-2222-3333-444444444444")
@@ -1332,6 +1490,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "bf4221e8-1111-2222-3333-444444444444",
         "ad1777be-1951-42b6-9be4-d97c3a42dd94",
         "7a631c5f-39ca-40fc-b733-88b2b2d04636",
+        "6bfde652-b65a-41b7-840c-af8f088097d4",
         "4b8d6ae6-1111-2222-3333-444444444444",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):

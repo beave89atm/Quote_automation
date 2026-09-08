@@ -1974,9 +1974,11 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_id("ad1777be-1951-42b6-9be4-d97c3a42dd94")
     assert is_forbidden_quote_id("7a631c5f-39ca-40fc-b733-88b2b2d04636")
     assert is_forbidden_quote_id("4b8d6ae6-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("6bfde652-b65a-41b7-840c-af8f088097d4")
     assert is_forbidden_quote_number("1007471-1")
     assert is_forbidden_quote_number("34602-2")
     assert is_forbidden_quote_number("34603-2")
+    assert is_forbidden_quote_number("1007756-1")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,

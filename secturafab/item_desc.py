@@ -332,6 +332,11 @@ def format_component_line(part_no: str, name: str) -> str:
     return noun or (pn if is_catalog_part_no(pn) else "")
 
 
+def quote_description_is_blank(description: str | None) -> bool:
+    """True when quote header Description would land null (live 1007756-1)."""
+    return not str(description or "").strip()
+
+
 def format_quote_header_description(title: str | None, *, part_key: str | None = None) -> str:
     """Quote Description is the weldment title only — never the part number."""
     from quote_core.drawing_title import (
