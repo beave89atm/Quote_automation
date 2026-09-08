@@ -117,6 +117,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "bf4221e8",  # 29743-2 PR18 a1dacc9 weld+nest PASS — do not remint / PATCH
         "ad1777be",  # 1007471-1 PR18 e4df7f2 multi-kid PASS — do not remint / PATCH
         "7a631c5f",  # 34602-2 PR18 1259cda nested+Component PASS — do not remint / PATCH
+        "4b8d6ae6",  # 103535-1 leftover @ 8e08f53 — kids stamped via CDP before nest refuse — do not remint / PATCH
         "b1036d7d",  # 33819-2 spent plate_sku_missing — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
         "95b8c186",  # 1007922-3 — do not open / PATCH / remint
@@ -209,6 +210,31 @@ class ForbiddenQuoteError(RuntimeError):
     """Write targeted a Kyle-confirmed or human Time quote."""
 
 
+def spent_quote_number_block_reason(
+    quote_number: str | None,
+    *,
+    existing_id: str | None = None,
+) -> str | None:
+    """Fail-close reason before mint / kid stamps, or None if the number is free.
+
+    Live 103535-1 @ 8e08f53: create mint POSTs QuoteNumber without ID, so the
+    old ID+number gate let CDP stamp kids before nest POST refused.
+    """
+    qn = str(quote_number or "").strip()
+    if not qn:
+        return None
+    if is_forbidden_quote_number(qn):
+        return (
+            f"QuoteNumber {qn} is forbidden — not minting, not stamping kids"
+        )
+    eid = str(existing_id or "").strip()
+    if eid:
+        return (
+            f"QuoteNumber {qn} already spent ({eid}) — not minting, not stamping kids"
+        )
+    return None
+
+
 def refuse_forbidden_quote_write(
     *,
     method: str,
@@ -217,7 +243,8 @@ def refuse_forbidden_quote_write(
 ) -> None:
     """Raise if a write would PATCH/reuse a forbidden live quote.
 
-    GET is allowed. New quotes (empty / new UUID + a job PN) are allowed.
+    GET is allowed. New quotes with an unused job PN are allowed. A forbidden
+    QuoteNumber is refused even without ID so create mint cannot stamp kids first.
     """
     if str(method or "GET").upper() in {"GET", "HEAD", "OPTIONS"}:
         return
@@ -233,9 +260,9 @@ def refuse_forbidden_quote_write(
         raise ForbiddenQuoteError(
             f"Refusing to PATCH/reuse forbidden live quote {qid}"
         )
-    # Updating an existing Q10056 / 21678-1 / human Time quote by number + ID.
     qn = str(blob.get("QuoteNumber") or "").strip()
-    if qid and is_forbidden_quote_number(qn):
+    if is_forbidden_quote_number(qn):
+        suffix = f" ({qid})" if qid else ""
         raise ForbiddenQuoteError(
-            f"Refusing to PATCH/reuse forbidden live quote {qn} ({qid})"
+            f"Refusing to PATCH/reuse forbidden live quote {qn}{suffix}"
         )

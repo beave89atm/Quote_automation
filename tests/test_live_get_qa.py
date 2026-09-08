@@ -163,7 +163,7 @@ def test_push_job_fails_closed_when_live_get_has_empty_ops(tmp_path):
     service = SecturaFabPushService(client=client)
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value="qid"
-    ), patch.object(service, "allocate_quote_number", return_value="1001898-1"), patch(
+    ), patch.object(service, "allocate_quote_number", return_value="remint-ok"), patch(
         "secturafab.push.refresh_bom_rows_for_push",
         return_value=(_bom_rows(), []),
     ), patch(
@@ -214,7 +214,7 @@ def test_bare_folder_push_still_uses_bom_pedestal_title(tmp_path):
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value="qid"
     ) as create_q, patch.object(
-        service, "allocate_quote_number", return_value="1001898-1"
+        service, "allocate_quote_number", return_value="remint-ok"
     ), patch(
         "secturafab.push.refresh_bom_rows_for_push",
         return_value=(_bom_rows(), []),
@@ -273,7 +273,7 @@ def test_push_addplate_then_addlinear_without_graft(tmp_path):
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value="qid"
     ), patch.object(
-        service, "allocate_quote_number", return_value="1001898-1"
+        service, "allocate_quote_number", return_value="remint-ok"
     ), patch(
         "secturafab.push.refresh_bom_rows_for_push",
         return_value=(_bom_rows(), []),
@@ -349,7 +349,7 @@ def test_finish_success_still_persists_cad_then_linear(tmp_path):
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value="qid"
     ), patch.object(
-        service, "allocate_quote_number", return_value="1001898-1"
+        service, "allocate_quote_number", return_value="remint-ok"
     ), patch.object(
         service, "finish_pdf_files", return_value=["Image Files Finish"]
     ), patch.object(

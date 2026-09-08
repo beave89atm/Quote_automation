@@ -168,6 +168,111 @@ def test_refuse_forbidden_quote_writes():
         refuse_forbidden_quote_write(
             method="GET", path=f"v1/quote/{qid}", payload=None
         )
+    with pytest.raises(ForbiddenQuoteError, match="103535-1"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="v1/quote",
+            payload={"QuoteNumber": "103535-1"},
+        )
+    refuse_forbidden_quote_write(
+        method="POST",
+        path="v1/quote",
+        payload={"QuoteNumber": "1007756-1"},
+    )
+
+
+def test_push_job_refuses_forbidden_number_before_mint_or_kid_stamps(tmp_path: Path):
+    """Live 103535-1 @ 8e08f53: number forbidden but mint+CDP kids ran first."""
+    pdf = tmp_path / "103535-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    service = SecturaFabPushService(client=client)
+    with patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ), patch.object(
+        service, "create_quote", return_value="4b8d6ae6-must-not-mint"
+    ) as create_q, patch.object(
+        service, "allocate_quote_number", return_value="103535-1"
+    ), patch.object(
+        service, "finish_pdf_files"
+    ) as pdf_finish, patch.object(
+        service, "finish_linear_bom_rows"
+    ) as lin_finish, patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ):
+        result = service.push_job(
+            title="103535-1",
+            pdf_filename="103535-1.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={"library": {"part_key": "103535-1"}},
+            times={},
+            job_id=8,
+        )
+    assert result.ok is False
+    assert result.status == "failed"
+    assert result.created_new_quote is False
+    create_q.assert_not_called()
+    pdf_finish.assert_not_called()
+    lin_finish.assert_not_called()
+    blob = (result.error or "") + " " + " ".join(result.notes or [])
+    assert "103535-1" in blob
+    assert "not minting" in blob
+    assert "not stamping kids" in blob
+
+
+def test_push_job_refuses_byname_spent_before_mint(tmp_path: Path):
+    """Unused PN still fail-closes when byName already has a quote ID."""
+    pdf = tmp_path / "1007756-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    service = SecturaFabPushService(client=client)
+    with patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ), patch.object(
+        service, "create_quote", return_value="must-not-mint"
+    ) as create_q, patch.object(
+        service, "allocate_quote_number", return_value="1007756-1"
+    ), patch.object(
+        service,
+        "find_quote_by_number",
+        return_value={"ID": "already-spent-id", "QuoteNumber": "1007756-1"},
+    ), patch.object(
+        service, "finish_pdf_files"
+    ) as pdf_finish, patch.object(
+        service, "finish_linear_bom_rows"
+    ) as lin_finish, patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ):
+        result = service.push_job(
+            title="1007756-1",
+            pdf_filename="1007756-1.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={"library": {"part_key": "1007756-1"}},
+            times={},
+            job_id=9,
+        )
+    assert result.ok is False
+    assert result.status == "failed"
+    assert result.created_new_quote is False
+    create_q.assert_not_called()
+    pdf_finish.assert_not_called()
+    lin_finish.assert_not_called()
+    blob = (result.error or "") + " " + " ".join(result.notes or [])
+    assert "already spent" in blob
+    assert "already-spent-id" in blob
+    assert "not minting" in blob
+
+
+def test_create_quote_refuses_forbidden_number_before_post():
+    client = MagicMock()
+    service = SecturaFabPushService(client=client)
+    with pytest.raises(ForbiddenQuoteError, match="103535-1"):
+        service.create_quote(quote_number="103535-1")
+    client.request.assert_not_called()
 
 
 def test_flat_root_kids_fail_qa():
@@ -237,7 +342,7 @@ def test_push_job_pdf_time_weldment_calls_website_path(tmp_path: Path):
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value=new_id
     ) as create_q, patch.object(
-        service, "allocate_quote_number", return_value="1001898-1"
+        service, "allocate_quote_number", return_value="remint-ok"
     ), patch.object(
         service, "finish_pdf_files", return_value=["Image Files Finish"]
     ) as pdf_finish, patch.object(
@@ -1085,6 +1190,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "1001898-5" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1001898-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "103535-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1007756-1" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10095" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "34137-4" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1007922-3" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -1140,6 +1246,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("ad1777be-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("7a631c5f-39ca-40fc-b733-88b2b2d04636")
     assert is_forbidden_quote_id("7a631c5f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("4b8d6ae6-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
     assert is_forbidden_quote_id("bd5c2e3e-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d2f7b031-1111-2222-3333-444444444444")
@@ -1225,6 +1332,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "bf4221e8-1111-2222-3333-444444444444",
         "ad1777be-1951-42b6-9be4-d97c3a42dd94",
         "7a631c5f-39ca-40fc-b733-88b2b2d04636",
+        "4b8d6ae6-1111-2222-3333-444444444444",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(

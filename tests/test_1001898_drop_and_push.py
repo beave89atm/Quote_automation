@@ -239,7 +239,7 @@ def test_cookie_less_1001898_push_dry_run(tmp_path: Path):
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value="qid"
     ) as create_q, patch.object(
-        service, "allocate_quote_number", return_value="1001898-1"
+        service, "allocate_quote_number", return_value="remint-ok"
     ), patch.object(
         service, "finish_pdf_files"
     ) as pdf_finish, patch.object(
@@ -321,7 +321,7 @@ def test_step_21678_cookie_uses_finish_dry_run(tmp_path: Path):
     ), patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value="qid"
     ), patch.object(
-        service, "allocate_quote_number", return_value="21678-1"
+        service, "allocate_quote_number", return_value="remint-ok"
     ), patch.object(
         service, "quick_add_cad"
     ) as qadd, patch(
@@ -368,7 +368,7 @@ def test_step_cookie_missing_flags_and_does_not_graft(tmp_path: Path):
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value="qid"
     ), patch.object(
-        service, "allocate_quote_number", return_value="21678-1"
+        service, "allocate_quote_number", return_value="remint-ok"
     ), patch.object(
         service, "quick_add_cad", return_value={"ok": True}
     ) as qadd, patch.object(

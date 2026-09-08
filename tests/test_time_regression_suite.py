@@ -406,7 +406,7 @@ def test_step_weldment_finish_or_no_graft(
     ), patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value="qid"
     ), patch.object(
-        service, "allocate_quote_number", return_value=part_key
+        service, "allocate_quote_number", return_value="remint-ok"
     ), patch.object(
         service, "quick_add_cad", return_value={"ok": True}
     ) as qadd, patch.object(
@@ -469,7 +469,7 @@ def test_cookie_less_1001898_attach_profile_false(tmp_path: Path):
     with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "create_quote", return_value="qid"
     ) as create_q, patch.object(
-        service, "allocate_quote_number", return_value="1001898-1"
+        service, "allocate_quote_number", return_value="remint-ok"
     ), patch(
         "secturafab.push.refresh_bom_rows_for_push",
         return_value=(

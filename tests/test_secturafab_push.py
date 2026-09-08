@@ -237,6 +237,10 @@ def test_repush_always_creates_new_quote_and_imports_cad():
         return
 
     with patch.object(service, "upload_drawings_quote_request", return_value="qr-uuid"), patch.object(
+        service, "allocate_quote_number", return_value="remint-ok"
+    ), patch.object(
+        service, "find_quote_by_number", return_value=None
+    ), patch.object(
         service, "quick_add_cad", return_value={"ok": True}
     ) as up_c, patch.object(
         service, "apply_item_categories", return_value=["Categorized items — Cad: 1, Linear: 1, Component: 0"]
@@ -266,7 +270,7 @@ def test_repush_always_creates_new_quote_and_imports_cad():
         )
     assert result.ok
     assert result.created_new_quote
-    assert result.quote_number == "21678-1"
+    assert result.quote_number == "remint-ok"
     up_c.assert_called_once()
 
 

@@ -54,6 +54,7 @@ from .assembly_ops import (
     relink_assembly_children,
 )
 from .client import SecturaFabApiError, SecturaFabClient
+from .forbidden_quotes import ForbiddenQuoteError
 from .component_ops import ensure_purchased_components, find_purchased_part_keys
 from .finalize_ops import finalize_quote_ops
 from .imperial_ops import ensure_imperial_item_units
@@ -1192,6 +1193,11 @@ class SecturaFabPushService:
         reuse the old quote or show a revision suffix in the UI.
         """
         display = _pn_quote_number(quote_number)
+        from .forbidden_quotes import ForbiddenQuoteError, spent_quote_number_block_reason
+
+        blocked = spent_quote_number_block_reason(display)
+        if blocked:
+            raise ForbiddenQuoteError(blocked)
         temp_rev = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
         payload: dict[str, Any] = {
             "QuoteNumber": display,
@@ -5207,6 +5213,33 @@ class SecturaFabPushService:
                         created_new_quote=False,
                     )
             quote_number = self.allocate_quote_number(part_key)
+            from .forbidden_quotes import spent_quote_number_block_reason
+
+            blocked = spent_quote_number_block_reason(quote_number)
+            if not blocked:
+                try:
+                    existing = self.find_quote_by_number(quote_number)
+                except Exception:
+                    existing = None
+                existing_id = ""
+                if isinstance(existing, dict):
+                    existing_id = str(
+                        existing.get("ID") or existing.get("QuoteID") or ""
+                    ).strip()
+                blocked = spent_quote_number_block_reason(
+                    quote_number, existing_id=existing_id
+                )
+            if blocked:
+                notes.append(blocked)
+                return PushResult(
+                    ok=False,
+                    error=blocked,
+                    notes=notes,
+                    status="failed",
+                    quote_number=quote_number,
+                    created_new_quote=False,
+                    attempts=createfile_attempts,
+                )
             raw_title = (
                 extract_assembly_description(
                     part_key=part_key,
@@ -5931,7 +5964,13 @@ class SecturaFabPushService:
                 status="complete",
                 attempts=createfile_attempts,
             )
-        except (SecturaFabApiError, SecturaFabWebsiteAuthError, ValueError, OSError) as exc:
+        except (
+            SecturaFabApiError,
+            SecturaFabWebsiteAuthError,
+            ForbiddenQuoteError,
+            ValueError,
+            OSError,
+        ) as exc:
             err = str(exc)
             if on_progress:
                 on_progress(
