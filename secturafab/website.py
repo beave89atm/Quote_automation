@@ -1383,6 +1383,7 @@ def part_create_list_payload_empty_bools(
     img_empty_n = sum(
         1 for r in kids if cad_payload_value_empty(r.get("ImageString"))
     )
+    bind_rows = part_create_tlist_bind_source_rows(kids)
     return {
         "internaldata_empty": finish["filelist_internaldata_empty"],
         "imagestring_empty": finish["filelist_imagestring_empty"],
@@ -1393,7 +1394,90 @@ def part_create_list_payload_empty_bools(
         "imagestring_key_n": sum(1 for r in kids if "ImageString" in r),
         "internaldata_nonempty_n": n - idata_empty_n,
         "imagestring_nonempty_n": n - img_empty_n,
+        "tlist_bind_source": bool(bind_rows),
+        "tlist_bind_source_n": len(bind_rows),
+        "tlist_bind_shape_keys": part_create_tlist_bind_shape_keys(kids),
     }
+
+
+def part_create_tlist_bind_source_rows(
+    rows: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """``t.List`` Cad rows that already have InternalData **and** ImageString.
+
+    QuoteOrderEdit binds ``t.List[e]`` as-is onto ``#gridDXFParts``. Only a
+    row that already carries both shop-filled fields is a bind source for
+    Finish FileList. ImageString-only leftover explodes are **not** this.
+    Returns as-is copies — never invents keys or contour JSON.
+    """
+    if not isinstance(rows, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if "InternalData" not in row or "ImageString" not in row:
+            continue
+        if cad_payload_value_empty(row.get("InternalData")):
+            continue
+        if cad_payload_value_empty(row.get("ImageString")):
+            continue
+        out.append(dict(row))
+    return out
+
+
+def part_create_tlist_is_bind_source(rows: list[dict[str, Any]] | None) -> bool:
+    """True when ``t.List`` already has a nonempty InternalData+ImageString row."""
+    return bool(part_create_tlist_bind_source_rows(rows))
+
+
+def part_create_tlist_bind_shape_keys(
+    rows: list[dict[str, Any]] | None,
+) -> list[str]:
+    """Key names on the first bind-source ``t.List`` row (never the values)."""
+    bind = part_create_tlist_bind_source_rows(rows)
+    if not bind:
+        return []
+    return sorted(str(k) for k in bind[0] if k != "uid")
+
+
+def persist_part_create_tlist_bind_source(
+    rows: list[dict[str, Any]] | None,
+    *,
+    notes: list[str] | None = None,
+    client: Any = None,
+) -> dict[str, Any]:
+    """Persist a live nonempty ``t.List`` shape as the ``#gridDXFParts`` bind source.
+
+    Call before ``AddItem_DXFFiles``. Key names only — never contour JSON.
+    ImageString-only leftover explodes stay ``tlist_bind_source=false``.
+    Empty InternalData still refuses Finish.
+    """
+    bind_rows = part_create_tlist_bind_source_rows(rows)
+    is_bind = bool(bind_rows)
+    keys = part_create_tlist_bind_shape_keys(rows)
+    out = {
+        "tlist_bind_source": is_bind,
+        "tlist_bind_source_n": len(bind_rows),
+        "tlist_bind_shape_keys": keys,
+    }
+    if client is not None:
+        client._tlist_bind_source = is_bind
+        client._tlist_bind_shape_keys = list(keys)
+        payload = getattr(client, "_part_create_payload", None)
+        if isinstance(payload, dict):
+            merged = dict(payload)
+            merged.update(out)
+            client._part_create_payload = merged
+    if notes is not None:
+        line = "tlist_bind_source=" + ("true" if is_bind else "false")
+        if line not in notes:
+            notes.append(line)
+        if is_bind and keys:
+            shape = "tlist_bind_shape_keys=" + ",".join(keys)
+            if shape not in notes:
+                notes.append(shape)
+    return out
 
 
 def _tlist_name_token(value: Any) -> str:

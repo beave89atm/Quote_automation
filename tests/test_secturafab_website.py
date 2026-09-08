@@ -149,6 +149,93 @@ def test_part_create_t_list_emptiness_bools_at_bind():
     assert weldment["imagestring_empty_n"] == 1
     assert weldment["imagestring_nonempty_n"] == 2
     assert weldment["internaldata_nonempty_n"] == 0
+    assert weldment["tlist_bind_source"] is False
+    assert bools["tlist_bind_source"] is False
+    assert filled["tlist_bind_source"] is True
+    assert "InternalData" in filled["tlist_bind_shape_keys"]
+    assert "ImageString" in filled["tlist_bind_shape_keys"]
+
+
+def test_part_create_tlist_bind_source_persists_shape_not_values():
+    """Live nonempty t.List is the #gridDXFParts bind source. Do not invent gold."""
+    from secturafab.forbidden_quotes import is_forbidden_quote_id
+    from secturafab.website import (
+        cad_filelist_refuses_additem_dxf,
+        part_create_tlist_bind_shape_keys,
+        part_create_tlist_is_bind_source,
+        persist_part_create_tlist_bind_source,
+    )
+    from tests.fixtures.live_21678_1 import GOLD_QUOTE_ID
+    from tests.fixtures.live_part_create_tlist_bind import LIVE_PART_CREATE_TLIST_BIND
+
+    leftover = [
+        {"Name": "Root", "FileType": "Cad", "InternalData": "", "ImageString": ""},
+        {
+            "Name": "SC0600",
+            "FileType": "Cad",
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        },
+    ]
+    assert part_create_tlist_is_bind_source(leftover) is False
+    assert part_create_tlist_bind_shape_keys(leftover) == []
+    empty_notes: list[str] = []
+    empty = persist_part_create_tlist_bind_source(leftover, notes=empty_notes)
+    assert empty["tlist_bind_source"] is False
+    assert "tlist_bind_source=false" in empty_notes
+    assert all("tlist_bind_shape_keys=" not in n for n in empty_notes)
+
+    live = [
+        {
+            "uid": "kendo-1",
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "ID": "id-1",
+            "Name": "PLATE",
+            "FileType": "Cad",
+            "InternalData": '[{"Type":"page","secret":"do-not-persist"}]',
+            "ImageString": "iVBORw0KGgoAAAANSUhEUg",
+        }
+    ]
+    assert part_create_tlist_is_bind_source(live) is True
+    keys = part_create_tlist_bind_shape_keys(live)
+    assert keys == [
+        "FileID",
+        "FileType",
+        "ID",
+        "ImageString",
+        "InternalData",
+        "Name",
+        "SourceDataID",
+    ]
+    assert "uid" not in keys
+    notes: list[str] = []
+    client = type("C", (), {})()
+    persisted = persist_part_create_tlist_bind_source(
+        live, notes=notes, client=client
+    )
+    assert persisted["tlist_bind_source"] is True
+    assert "tlist_bind_source=true" in notes
+    shape = next(n for n in notes if n.startswith("tlist_bind_shape_keys="))
+    assert "InternalData" in shape
+    assert "ImageString" in shape
+    assert "do-not-persist" not in shape
+    assert "iVBORw0KGgo" not in shape
+    assert client._tlist_bind_source is True
+    assert client._tlist_bind_shape_keys == keys
+    assert LIVE_PART_CREATE_TLIST_BIND is None
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "InternalData": "",
+            "ImageString": "",
+        }
+    )
+    assert refuse is not None
+    assert "needs_internaldata_fill_xhr" in refuse
+    assert is_forbidden_quote_id(GOLD_QUOTE_ID)
+    assert is_forbidden_quote_id("a7d6ca50-efec-409d-bd32-e68012e710c3")
 
 
 def test_dxf_finish_payload_js_contract():
@@ -8206,6 +8293,7 @@ def test_weldment_explode_internaldata_empty_skips_finish(tmp_path: Path):
     assert "internaldata_empty_n=3/3" in blob
     assert "imagestring_empty_n=1/3" in blob
     assert "internaldata_nonempty_n=0" in blob
+    assert "tlist_bind_source=false" in blob
     assert "part_create_idlist_shape=IDList[]" in blob
     assert "part_create_height_zero=true" in blob
     assert "part_create_width_zero=true" in blob
@@ -8633,6 +8721,7 @@ def test_dxf_page_next_empty_internaldata_does_not_finish(tmp_path: Path):
     assert "not Finishing" in blob
     assert "needs_internaldata_fill_xhr" in blob
     assert "refusing AddItem_DXFFiles" in blob
+    assert "tlist_bind_source=false" in blob
 
 
 def test_dxf_page_next_nonempty_internaldata_finishes(tmp_path: Path):
@@ -8729,6 +8818,12 @@ def test_dxf_page_next_nonempty_internaldata_finishes(tmp_path: Path):
     blob = " ".join(notes)
     assert "next_via=createAllParts" in blob
     assert "part_create_via=createAllParts" in blob
+    assert "tlist_bind_source=true" in blob
+    shape = next(n for n in notes if n.startswith("tlist_bind_shape_keys="))
+    assert "InternalData" in shape
+    assert "ImageString" in shape
+    assert "server-stamped" not in shape
+    assert "preview" not in shape
 
 
 def test_cad_editor_update_data_next_is_not_explode_fill():

@@ -131,6 +131,24 @@ def _log_part_create_payload_empty(notes: list[str], client: Any) -> None:
             notes.append(
                 f"internaldata_nonempty_n={int(payload.get('internaldata_nonempty_n') or 0)}"
             )
+        bind = payload.get("tlist_bind_source")
+        if not isinstance(bind, bool):
+            bind = getattr(client, "_tlist_bind_source", None)
+        if not isinstance(bind, bool) and int(
+            payload.get("internaldata_nonempty_n") or 0
+        ) <= 0:
+            bind = False
+        if isinstance(bind, bool):
+            line = "tlist_bind_source=" + ("true" if bind else "false")
+            if line not in notes:
+                notes.append(line)
+        keys = payload.get("tlist_bind_shape_keys")
+        if not isinstance(keys, list):
+            keys = getattr(client, "_tlist_bind_shape_keys", None)
+        if bind is True and isinstance(keys, list) and keys:
+            line = "tlist_bind_shape_keys=" + ",".join(str(k) for k in keys)
+            if line not in notes:
+                notes.append(line)
     shape = getattr(client, "_part_create_form_shape", None)
     if isinstance(shape, dict) and shape:
         notes.append(f"part_create_idlist_shape={shape.get('idlist_shape') or '?'}")
@@ -2890,6 +2908,11 @@ class SecturaFabPushService:
             if f"part_create_list_len={int(n_list)}" not in " ".join(notes):
                 notes.append(f"part_create_list_len={int(n_list)}")
         _log_part_create_payload_empty(notes, self.client)
+        from .website import persist_part_create_tlist_bind_source
+
+        persist_part_create_tlist_bind_source(
+            data_rows, notes=notes, client=self.client
+        )
         n_grid = getattr(self.client, "_grid_dxf_row_count", None)
         if isinstance(n_grid, (int, float)):
             if f"grid_dxf_row_count={int(n_grid)}" not in " ".join(notes):

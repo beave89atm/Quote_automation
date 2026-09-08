@@ -150,6 +150,10 @@ UPDATE_DXF_LOADNEW_NOT_CALLED_FROM = (
 # needs_internaldata_fill_xhr: repo + leftover captures + QuoteOrderEdit
 # cite no classify→Finish route that writes InternalData. Do not guess
 # a body. Do not fire UpdateDataNext.
+# Bind source when found: DoCreateDXFParts ``t.List`` as-is onto
+# ``#gridDXFParts`` — persist that response shape (key names) when a
+# live row already has nonempty InternalData **and** ImageString.
+# No live capture yet (leftover explodes were empty InternalData).
 CLASSIFY_FINISH_FUNCTIONS = (
     "createAllParts",
     "DoCreateDXFParts",
@@ -160,6 +164,8 @@ CLASSIFY_FINISH_FUNCTIONS = (
 CLASSIFY_FINISH_INTERNALDATA_FILL = None
 # Gap: no named classify→Finish XHR writes FileList InternalData.
 # GetPerimeterAndWeight is Stock_X/Y perimeter, not InternalData.
+# Bind source is DoCreateDXFParts t.List as-is when InternalData and
+# ImageString are already nonempty. Persist key names only.
 NEEDS_INTERNALDATA_FILL_XHR = "needs_internaldata_fill_xhr"
 STOCK_PERIMETER_FILL_XHR = "/Quote/GetPerimeterAndWeight"
 STOCK_PERIMETER_FILL_ON = ("Stock_X", "Stock_Y", "Length", "Width")

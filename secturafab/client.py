@@ -88,6 +88,8 @@ class SecturaFabClient:
         self._part_create_internaldata_empty: bool | None = None
         self._part_create_imagestring_empty: bool | None = None
         self._part_create_payload: dict[str, Any] | None = None
+        self._tlist_bind_source: bool | None = None
+        self._tlist_bind_shape_keys: list[str] | None = None
         self._part_create_name_tokens: dict[str, int] | None = None
         self._part_create_form_shape: dict[str, Any] | None = None
         self._part_create_img_hw: bool | None = None
@@ -1296,6 +1298,7 @@ class SecturaFabClient:
         from .website import (
             part_create_list_name_tokens,
             part_create_list_payload_empty_bools,
+            persist_part_create_tlist_bind_source,
         )
 
         payload = part_create_list_payload_empty_bools(kids)
@@ -1304,6 +1307,7 @@ class SecturaFabClient:
             # Keep prior #gridDXFParts counts; do not bind an empty t.List.
             return {"List": kids}
         self._part_create_payload = payload
+        persist_part_create_tlist_bind_source(kids, client=self)
         self._part_create_name_tokens = part_create_list_name_tokens(
             kids, part_key=quote_number or ""
         )
