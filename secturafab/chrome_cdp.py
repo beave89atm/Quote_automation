@@ -550,6 +550,38 @@ def chrome_login_page(base: str | None = None) -> bool:
     return False
 
 
+def chrome_session_lost(base: str | None = None) -> bool:
+    """AspNet session gone — Quotes/EDIT tabs are Login. Do not navigate."""
+    return chrome_login_page(base)
+
+
+def quotes_list_tab(base: str | None = None) -> dict[str, Any] | None:
+    """Signed-in Quotes **list** only. Never a leftover Edit tab."""
+    found = [t for t in _chrome_page_targets(base) if _is_quotes_list_tab(t)]
+    if not found:
+        return None
+
+    def _rank(tab: dict[str, Any]) -> int:
+        title = str(tab.get("title") or "").strip()
+        if title == "Quotes":
+            return 0
+        if title.startswith("Quotes"):
+            return 1
+        return 2
+
+    found.sort(key=_rank)
+    return found[0]
+
+
+def edit_tab_navigate_would_stomp(
+    tab: dict[str, Any] | None,
+    minted_id: str | None,
+) -> bool:
+    """True when Page.navigate would replace a leftover Edit document."""
+    tid = edit_tab_quote_id(tab)
+    return bool(tid and not edit_ids_match(tid, minted_id))
+
+
 def _quotes_or_edit_tab(
     base: str | None = None,
     *,
@@ -2050,6 +2082,14 @@ def minted_edit_tab_ready(
             "reason": "",
         }
     if minted and navigate:
+        if chrome_session_lost(base):
+            return {
+                "ok": False,
+                "tab": None,
+                "edit_quote_id": edit_id,
+                "minted_id": minted,
+                "reason": "session_lost",
+            }
         ensured = _ensure_quote_edit_page(minted, base=base)
         edit_id = edit_tab_quote_id(ensured) or leftover_id
         if (
@@ -2070,6 +2110,8 @@ def minted_edit_tab_ready(
         reason = "missing_minted_id"
     elif is_forbidden_quote_id(edit_id) or is_forbidden_quote_id(leftover_id):
         reason = "spent_edit_id"
+    elif chrome_session_lost(base):
+        reason = "session_lost"
     elif edit_id and not edit_ids_match(edit_id, minted):
         reason = "edit_quote_id!=minted_id"
     else:
@@ -2101,13 +2143,26 @@ def _ensure_quote_edit_page(
         here_id = edit_tab_quote_id(existing)
         if edit_ids_match(here_id, qid):
             return existing
+    if chrome_session_lost(base):
+        return None
     leftover = quote_edit_tab(base)
-    tab = leftover if isinstance(leftover, dict) else quotes_tab(base)
+    if edit_tab_navigate_would_stomp(leftover, qid):
+        leftover = None
+    listing = quotes_list_tab(base)
+    if not isinstance(listing, dict):
+        fallback = quotes_tab(base)
+        if isinstance(fallback, dict) and _is_quotes_list_tab(fallback):
+            listing = fallback
+    tab = listing if isinstance(listing, dict) else leftover
     if not isinstance(tab, dict):
+        return None
+    if edit_tab_navigate_would_stomp(tab, qid):
         return None
     here_id = edit_tab_quote_id(tab)
     if edit_ids_match(here_id, qid) and tab.get("webSocketDebuggerUrl"):
         return tab
+    if not _is_quotes_list_tab(tab):
+        return None
     ws = str(tab.get("webSocketDebuggerUrl") or "")
     if not ws:
         return None

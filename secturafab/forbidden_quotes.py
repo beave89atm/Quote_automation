@@ -198,6 +198,10 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "33819-2",  # spent b1036d7d plate_sku_missing — do not remint
         "1007471-1",  # spent ad1777be multi-kid weld+nest PASS @ e4df7f2 — do not remint
         "1007756-1",  # spent 6bfde652 ≥8-kid PASS @ b0305c5 — do not remint
+        "21785-1",  # spent Outer Boom Insulated leftover — /part/create List=0, ZZ-DEL — do not remint
+        "21785-3",  # spent Outer Boom Insulated leftover — /part/create List=0, ZZ-DEL — do not remint
+        # 21785-2 is the next live Outer Boom STEP after Chrome session restore.
+        # Do not remint 21785-1 / 21785-3. Do not mint 21785-2 until session is back.
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

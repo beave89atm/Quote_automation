@@ -1546,8 +1546,24 @@ class SecturaFabPushService:
         return notes
 
     def preflight_step_antiforgery(self, quote_id: str = "") -> list[str]:
-        """Harvest AF before mint. Chrome Quotes DOM if cookie GET /Quote 302s."""
+        """Harvest AF before mint. Chrome Quotes DOM if cookie GET /Quote 302s.
+
+        Session lost (tabs → Login) fail-closes — do not mint and do not
+        Page.navigate leftover Edit tabs (wipes AspNet / stomps every EDIT).
+        """
         notes: list[str] = []
+        from .chrome_cdp import chrome_session_lost
+
+        try:
+            lost = bool(chrome_session_lost())
+        except (OSError, TypeError, ValueError):
+            lost = False
+        if lost:
+            notes.append(
+                "Chrome Login page — session lost, not minting STEP, "
+                "not navigating Edit tabs"
+            )
+            return notes
         ensure_fn = getattr(type(self.client), "ensure_quote_antiforgery", None)
         if callable(ensure_fn):
             try:
@@ -2701,6 +2717,18 @@ class SecturaFabPushService:
         Do not fire UpdateDataNext. 21678-1 is UI-only gold — do not open.
         """
         notes: list[str] = []
+        from .chrome_cdp import chrome_session_lost
+
+        try:
+            lost = bool(chrome_session_lost())
+        except (OSError, TypeError, ValueError):
+            lost = False
+        if lost:
+            notes.append(
+                "Chrome Login page — session lost, not uploading STEP, "
+                "not navigating Edit tabs"
+            )
+            return notes
         if cadimport_step_too_large(cad_files):
             n = cadimport_step_bytes(cad_files)
             notes.append(
@@ -5310,6 +5338,18 @@ class SecturaFabPushService:
                         attempts=createfile_attempts,
                     )
                 notes.extend(self.preflight_step_antiforgery())
+                if any("session lost" in str(n) for n in notes):
+                    msg = next(
+                        str(n) for n in notes if "session lost" in str(n)
+                    )
+                    return PushResult(
+                        ok=False,
+                        error=msg,
+                        notes=notes,
+                        status="failed",
+                        attempts=createfile_attempts,
+                        created_new_quote=False,
+                    )
                 if (
                     callable(
                         getattr(type(self.client), "ensure_quote_antiforgery", None)

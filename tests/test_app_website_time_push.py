@@ -1272,6 +1272,25 @@ def test_chrome_login_page_aborts_mint():
     assert "Kyle" not in blob
 
 
+def test_step_preflight_session_lost_does_not_mint():
+    """Mint navigate wiped AspNet (tabs → Login). Fail-close; do not stomp Edit."""
+    from secturafab.forbidden_quotes import spent_quote_number_block_reason
+
+    client = MagicMock()
+    client._af_source = "chrome_dom"
+    service = SecturaFabPushService(client=client)
+    with patch("secturafab.chrome_cdp.chrome_session_lost", return_value=True):
+        notes = service.preflight_step_antiforgery()
+    blob = " ".join(notes)
+    assert "session lost" in blob
+    assert "not minting STEP" in blob
+    assert "not navigating Edit tabs" in blob
+    assert spent_quote_number_block_reason("21785-1")
+    assert spent_quote_number_block_reason("21785-3")
+    assert spent_quote_number_block_reason("21785-2") is None
+    client.ensure_quote_antiforgery.assert_not_called()
+
+
 def test_forbidden_includes_empty_1004747_draft():
     assert "5e111cd2-73d1-44e1-9602-f2a4a3de2fb4" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "936b5c6c-2fc5-4b28-a8f6-015db289cb4f" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -1346,6 +1365,9 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "1001898-4" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1008763-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1020243-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21785-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21785-3" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21785-2" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1001898-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "103535-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1007756-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS

@@ -5838,6 +5838,8 @@ def test_ensure_quote_edit_navigates_edit_path_not_quote_query():
     assert _quote_edit_url(qid) == f"https://www.secturafab.com/Quote/EDIT/{qid}"
     with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=None), patch(
         "secturafab.chrome_cdp.quotes_tab", return_value=listing
+    ), patch(
+        "secturafab.chrome_cdp.chrome_session_lost", return_value=False
     ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
         tab = _ensure_quote_edit_page(qid)
     assert tab is not None
@@ -5846,6 +5848,94 @@ def test_ensure_quote_edit_navigates_edit_path_not_quote_query():
     assert navigated == [f"https://www.secturafab.com/Quote/EDIT/{qid}"]
     assert "Quote?ID=" not in navigated[0]
     assert "GetItem_AddView" not in navigated[0]
+
+
+def test_ensure_quote_edit_does_not_stomp_leftover_or_login():
+    """Session lost / leftover Edit: fail-close. Do not Page.navigate every EDIT."""
+    from secturafab.chrome_cdp import (
+        _ensure_quote_edit_page,
+        edit_tab_navigate_would_stomp,
+        minted_edit_tab_ready,
+    )
+
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2178"
+    leftover_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbb2178"
+    leftover = {
+        "type": "page",
+        "title": "*Quote-21785-1",
+        "url": f"https://www.secturafab.com/Quote/EDIT/{leftover_id}",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/leftover",
+    }
+    assert edit_tab_navigate_would_stomp(leftover, minted) is True
+    navigated: list[str] = []
+
+    def fake_edit(base=None, quote_id=None, quote_number=None):
+        qid = str(quote_id or "").strip().lower()
+        if qid and qid in leftover["url"].lower():
+            return leftover
+        if qid:
+            return None
+        return leftover
+
+    def _call(ws_url, method, params=None, **kwargs):
+        if method == "Page.navigate":
+            navigated.append(str((params or {}).get("url") or ""))
+            raise AssertionError("must not Page.navigate leftover Edit or Login")
+        return {}
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", side_effect=fake_edit), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=leftover
+    ), patch("secturafab.chrome_cdp.quotes_list_tab", return_value=None), patch(
+        "secturafab.chrome_cdp.chrome_session_lost", return_value=False
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        assert _ensure_quote_edit_page(minted) is None
+        gate = minted_edit_tab_ready(minted, navigate=True)
+    assert navigated == []
+    assert gate["ok"] is False
+    assert gate["reason"] in {"session_lost", "edit_quote_id!=minted_id", "edit_tab_missing"}
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=leftover), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=leftover
+    ), patch("secturafab.chrome_cdp.chrome_session_lost", return_value=True), patch(
+        "secturafab.chrome_cdp.cdp_call", side_effect=_call
+    ):
+        assert _ensure_quote_edit_page(minted) is None
+        lost = minted_edit_tab_ready(minted, navigate=True)
+    assert lost["ok"] is False
+    assert lost["reason"] == "session_lost"
+    assert navigated == []
+
+
+def test_finish_cad_files_session_lost_does_not_upload(tmp_path: Path):
+    """STEP upload after Login: leave leftover Edit tabs, do not remint."""
+    from secturafab.push import SecturaFabPushService
+
+    stp = tmp_path / "21785-2.STEP"
+    stp.write_bytes(b"ISO-10303-21;")
+    client = MagicMock()
+    with patch("secturafab.chrome_cdp.chrome_session_lost", return_value=True):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2178",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="21785-2",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert "session lost" in blob
+    assert "not uploading STEP" in blob
+    assert "not navigating Edit tabs" in blob
+    client.upload_item_dxf_files.assert_not_called()
+    client.upload_dxf_via_page_add_files.assert_not_called()
+    client.add_item_dxf_files.assert_not_called()
+    client.create_dxf_parts.assert_not_called()
 
 
 def test_quote_edit_tab_does_not_return_leftover_when_id_requested():
