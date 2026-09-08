@@ -1287,7 +1287,7 @@ def test_step_preflight_session_lost_does_not_mint():
     assert "not navigating Edit tabs" in blob
     assert spent_quote_number_block_reason("21785-1")
     assert spent_quote_number_block_reason("21785-3")
-    assert spent_quote_number_block_reason("21785-2") is None
+    assert spent_quote_number_block_reason("21785-2")
     client.ensure_quote_antiforgery.assert_not_called()
 
 
@@ -1367,7 +1367,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "1020243-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21785-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21785-3" in FORBIDDEN_LIVE_QUOTE_NUMBERS
-    assert "21785-2" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21785-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1001898-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "103535-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1007756-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -1438,6 +1438,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("5804a001-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("3f3802da-bc11-4a71-83a0-62454b33f69c")
     assert is_forbidden_quote_id("3f3802da-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("d5a6987d-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("4b8d6ae6-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
     assert is_forbidden_quote_id("bd5c2e3e-1111-2222-3333-444444444444")

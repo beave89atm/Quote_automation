@@ -125,6 +125,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "87e64b3a",  # 1001898-4 PR18 b80dff6 angle Linear Saw PASS — do not remint / PATCH
         "5804a001",  # 1008763-1 PR18 d1fb034 channel Linear Saw PASS (20ft/240, no 480 renest) — do not remint / PATCH
         "3f3802da",  # 1020243-1 PR18 d7c4ea9 RenestLinear 480→240 PASS — do not remint / PATCH
+        "d5a6987d",  # 21785-2 Outer Boom STEP @ ab58a96 — InternalData 14/14 empty, ZZ-DEL ARCHIVED — do not remint
         "4b8d6ae6",  # 103535-1 leftover @ 8e08f53 — kids stamped via CDP before nest refuse — do not remint / PATCH
         "b1036d7d",  # 33819-2 spent plate_sku_missing — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
@@ -199,9 +200,9 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "1007471-1",  # spent ad1777be multi-kid weld+nest PASS @ e4df7f2 — do not remint
         "1007756-1",  # spent 6bfde652 ≥8-kid PASS @ b0305c5 — do not remint
         "21785-1",  # spent Outer Boom Insulated leftover — /part/create List=0, ZZ-DEL — do not remint
+        "21785-2",  # spent d5a6987d Outer Boom STEP @ ab58a96 — ImageString preview, InternalData 14/14 empty, ZZ-DEL ARCHIVED — do not remint
         "21785-3",  # spent Outer Boom Insulated leftover — /part/create List=0, ZZ-DEL — do not remint
-        # 21785-2 is the next live Outer Boom STEP after Chrome session restore.
-        # Do not remint 21785-1 / 21785-3. Do not mint 21785-2 until session is back.
+        # Do not remint 21785-1 / 21785-2 / 21785-3.
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

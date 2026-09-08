@@ -153,6 +153,12 @@ UPDATE_DXF_LOADNEW_NOT_CALLED_FROM = (
 # Bind source when found: DoCreateDXFParts ``t.List`` as-is onto
 # ``#gridDXFParts`` — persist that response shape (key names) when a
 # live row already has nonempty InternalData **and** ImageString.
+# Live 21785-2 d5a6987d: ImageString 13/13 preview, InternalData 14/14
+# empty — not a bind source. createAllParts collects #gridDXF
+# SourceDataID+Units then calls DoCreateDXFParts with no intervening
+# classify / SetPartMode / unfold XHR. Those later functions do not
+# write FileList InternalData or CuttingLength (SetPartMode is ID+
+# PartMode; GetPerimeterAndWeight is #gridPDF / Stock_X/Y perimeter).
 # No live capture yet (leftover explodes were empty InternalData).
 CLASSIFY_FINISH_FUNCTIONS = (
     "createAllParts",
@@ -166,7 +172,11 @@ CLASSIFY_FINISH_INTERNALDATA_FILL = None
 # GetPerimeterAndWeight is Stock_X/Y perimeter, not InternalData.
 # Bind source is DoCreateDXFParts t.List as-is when InternalData and
 # ImageString are already nonempty. Persist key names only.
+# Hunt (QuoteOrderEdit createAllParts + leftover 21785-2): no XHR
+# between #gridDXF collect and DoCreateDXFParts writes InternalData
+# or CuttingLength. CLASSIFY_FINISH_INTERNALDATA_FILL stays None.
 NEEDS_INTERNALDATA_FILL_XHR = "needs_internaldata_fill_xhr"
+EXPLODE_DOCREATE_INTERNALDATA_FILL = None
 STOCK_PERIMETER_FILL_XHR = "/Quote/GetPerimeterAndWeight"
 STOCK_PERIMETER_FILL_ON = ("Stock_X", "Stock_Y", "Length", "Width")
 
@@ -356,6 +366,16 @@ def classify_finish_internaldata_fill() -> str | None:
     Do not fire POST /CadImport/UpdateDataNext.
     """
     return CLASSIFY_FINISH_INTERNALDATA_FILL
+
+
+def explode_docreate_internaldata_fill() -> str | None:
+    """XHR between #gridDXF collect and DoCreateDXFParts that writes InternalData.
+
+    None. createAllParts only reads SourceDataID+Units then POSTs
+    /part/create. SetPartMode / unfold / GetPerimeterAndWeight are not
+    this step. Live 21785-2 t.List InternalData stayed empty 14/14.
+    """
+    return EXPLODE_DOCREATE_INTERNALDATA_FILL
 
 
 def needs_internaldata_fill_xhr() -> str:

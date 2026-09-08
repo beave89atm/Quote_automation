@@ -1451,15 +1451,18 @@ def persist_part_create_tlist_bind_source(
 
     Call before ``AddItem_DXFFiles``. Key names only — never contour JSON.
     ImageString-only leftover explodes stay ``tlist_bind_source=false``.
-    Empty InternalData still refuses Finish.
+    Empty InternalData still refuses Finish. ImageString-without-InternalData
+    is preview only (live 21785-2).
     """
     bind_rows = part_create_tlist_bind_source_rows(rows)
     is_bind = bool(bind_rows)
     keys = part_create_tlist_bind_shape_keys(rows)
+    preview_only = tlist_imagestring_without_internaldata(rows)
     out = {
         "tlist_bind_source": is_bind,
         "tlist_bind_source_n": len(bind_rows),
         "tlist_bind_shape_keys": keys,
+        "imagestring_without_internaldata": preview_only,
     }
     if client is not None:
         client._tlist_bind_source = is_bind
@@ -1477,6 +1480,11 @@ def persist_part_create_tlist_bind_source(
             shape = "tlist_bind_shape_keys=" + ",".join(keys)
             if shape not in notes:
                 notes.append(shape)
+        preview = "imagestring_without_internaldata=" + (
+            "true" if preview_only else "false"
+        )
+        if preview not in notes:
+            notes.append(preview)
     return out
 
 
@@ -1584,11 +1592,41 @@ def cad_filelist_contours_would_be_zero(row: dict[str, Any] | None) -> bool:
     return False
 
 
+def imagestring_without_internaldata_refuses_finish(
+    row: dict[str, Any] | None,
+) -> bool:
+    """Preview ImageString is not InternalData. Live 21785-2: 13/13 vs 14/14 empty."""
+    if not isinstance(row, dict) or not is_cad_filelist_row(row):
+        return False
+    if "InternalData" not in row:
+        return False
+    if not cad_payload_value_empty(row.get("InternalData")):
+        return False
+    return not cad_payload_value_empty(row.get("ImageString"))
+
+
+def tlist_imagestring_without_internaldata(
+    rows: list[dict[str, Any]] | None,
+) -> bool:
+    """True when t.List has preview ImageString and no nonempty InternalData."""
+    kids = [r for r in (rows or []) if isinstance(r, dict)]
+    if not kids:
+        return False
+    any_img = any(
+        not cad_payload_value_empty(r.get("ImageString")) for r in kids
+    )
+    any_id = any(
+        not cad_payload_value_empty(r.get("InternalData")) for r in kids
+    )
+    return bool(any_img and not any_id)
+
+
 def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
     """Refuse AddItem_DXFFiles when InternalData is empty or Contours would be 0.
 
-    needs_internaldata_fill_xhr: classify→Finish has no named fill XHR.
-    Do not invent InternalData. Do not Finish leftovers with empty InternalData.
+    ImageString-without-InternalData is still refuse (preview only; live
+    21785-2). needs_internaldata_fill_xhr: classify→Finish has no named
+    fill XHR. Do not invent InternalData.
     """
     from secturafab.cadimport_js import NEEDS_INTERNALDATA_FILL_XHR
 
@@ -1597,13 +1635,16 @@ def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
     if not (
         cad_filelist_payload_blocks_finish(row)
         or cad_filelist_contours_would_be_zero(row)
+        or imagestring_without_internaldata_refuses_finish(row)
     ):
         return None
     return (
         "Cad FileList InternalData empty / Contours would be 0 — "
         "refusing AddItem_DXFFiles. "
+        "ImageString-without-InternalData is preview only (live 21785-2). "
         f"{NEEDS_INTERNALDATA_FILL_XHR}: classify→Finish has no named "
-        "InternalData fill XHR (not UpdateDXF_LoadNew / UpdateDataNext). "
+        "InternalData fill XHR (not UpdateDXF_LoadNew / UpdateDataNext / "
+        "SetPartMode / unfold). "
         "Do not invent InternalData."
     )
 
@@ -2444,6 +2485,24 @@ def image_files_cookie_http_empty_grid_is_fail(
 
 
 DXF_UPLOAD_VIA_PAGE_ADD_FILES = "page_add_files"
+
+
+def explode_to_docreate_fills_internaldata(dump: dict[str, Any] | None) -> bool:
+    """True only if a cited hunt names a fill XHR. Live 21785-2 dump is False."""
+    if not isinstance(dump, dict):
+        return False
+    if dump.get("classify_finish_internaldata_fill"):
+        return True
+    create = dump.get("createAllParts")
+    if isinstance(create, dict) and create.get("writes_internaldata"):
+        return True
+    if isinstance(create, dict) and create.get("xhr"):
+        return True
+    for key in ("SetPartMode", "SetDXFFilePartMode", "Unfold", "DoCreateDXFParts"):
+        step = dump.get(key)
+        if isinstance(step, dict) and step.get("writes_internaldata"):
+            return True
+    return False
 
 
 def leftover_griddxf_fills_only_via_onsuccess(dump: dict[str, Any] | None) -> bool:

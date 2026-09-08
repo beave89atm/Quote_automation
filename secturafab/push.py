@@ -3165,7 +3165,8 @@ class SecturaFabPushService:
                     "required for Cad Finish (OnAddDXFClick copies InternalData; "
                     "ImageString is preview). Server never fills InternalData on "
                     "explode (Skin Assembly 5b622a0d jquery_ajax+EDIT 8/8, FA "
-                    "Assembly 0d4b8a46 28/28, SC0600 143/143). #img copy is not "
+                    "Assembly 0d4b8a46 28/28, SC0600 143/143, 21785-2 d5a6987d "
+                    "ImageString 13/13 preview / InternalData 14/14). #img copy is not "
                     "success; ajax-on-EDIT is not success; not Finishing; do not "
                     "invent InternalData; not success"
                 )

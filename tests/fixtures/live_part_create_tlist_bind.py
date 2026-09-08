@@ -10,11 +10,11 @@ has **both** ``InternalData`` and ``ImageString`` nonempty — the shape
 Finish can POST without inventing contours.
 
 No live capture yet. Leftover explodes (SC0600, FA Assembly, Skin Assembly,
-10098-1) returned empty ``InternalData`` on every row. Gold leftover
-``a7d6ca50`` ItemList has no ``InternalData`` field (FileList-at-Finish
-only). Do **not** invent a gold ``t.List`` body. Ops persists the first
-live nonempty ``t.List`` response shape here (key names only, never
-contour JSON).
+10098-1, **21785-2** ImageString 13/13 preview) returned empty
+``InternalData`` on every row. Gold leftover ``a7d6ca50`` ItemList has no
+``InternalData`` field (FileList-at-Finish only). Do **not** invent a gold
+``t.List`` body. Ops persists the first live nonempty ``t.List`` response
+shape here (key names only, never contour JSON).
 """
 
 from __future__ import annotations

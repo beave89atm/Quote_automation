@@ -224,6 +224,16 @@ def test_part_create_tlist_bind_source_persists_shape_not_values():
     assert client._tlist_bind_source is True
     assert client._tlist_bind_shape_keys == keys
     assert LIVE_PART_CREATE_TLIST_BIND is None
+    from tests.fixtures.live_21785_2 import (
+        SPENT_QUOTE_ID_PREFIX as LIVE_21785_PREFIX,
+        live_21785_2_tlist_empty,
+    )
+
+    cap = live_21785_2_tlist_empty()
+    assert cap["tlist_bind_source"] is False
+    assert cap["imagestring_without_internaldata"] is True
+    assert cap["internaldata_nonempty_n"] == 0
+    assert is_forbidden_quote_id(LIVE_21785_PREFIX + "-0000-0000-0000-000000000000")
     refuse = cad_filelist_refuses_additem_dxf(
         {
             "FileType": "Cad",
@@ -9019,6 +9029,99 @@ def test_updatedxf_loadnew_is_editor_only_not_gold():
         assert name in CLASSIFY_FINISH_FUNCTIONS or name in UPDATE_DXF_LOADNEW_NOT_CALLED_FROM
     assert "UpdateDXF_LoadNew" not in CLASSIFY_FINISH_FUNCTIONS
     assert "editDXFFile" not in CLASSIFY_FINISH_FUNCTIONS
+
+
+def test_imagestring_without_internaldata_still_refuses_finish():
+    """Live 21785-2: ImageString 13/13 preview, InternalData 14/14 empty — refuse."""
+    from secturafab.cadimport_js import (
+        CLASSIFY_FINISH_INTERNALDATA_FILL,
+        EXPLODE_DOCREATE_INTERNALDATA_FILL,
+        explode_docreate_internaldata_fill,
+        extract_cadimport_xhrs,
+    )
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+    )
+    from secturafab.website import (
+        cad_filelist_refuses_additem_dxf,
+        explode_to_docreate_fills_internaldata,
+        imagestring_without_internaldata_refuses_finish,
+        part_create_tlist_is_bind_source,
+        persist_part_create_tlist_bind_source,
+        tlist_imagestring_without_internaldata,
+    )
+    from tests.fixtures.live_21678_1 import GOLD_QUOTE_ID
+    from tests.fixtures.live_21785_2 import (
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        explode_to_docreate_fill_dump,
+        live_21785_2_tlist_empty,
+    )
+    from tests.fixtures.live_part_create_tlist_bind import LIVE_PART_CREATE_TLIST_BIND
+
+    rows = [
+        {
+            "Name": "Root",
+            "FileType": "Cad",
+            "InternalData": "",
+            "ImageString": "",
+            "OutsidePerimeter": 0,
+        }
+    ]
+    for i in range(13):
+        rows.append(
+            {
+                "Name": f"KID-{i}",
+                "FileType": "Cad",
+                "InternalData": "",
+                "ImageString": "iVBORw0KGgo",
+                "OutsidePerimeter": 0,
+            }
+        )
+    assert len(rows) == 14
+    assert tlist_imagestring_without_internaldata(rows) is True
+    assert part_create_tlist_is_bind_source(rows) is False
+    assert imagestring_without_internaldata_refuses_finish(rows[1]) is True
+    refuse = cad_filelist_refuses_additem_dxf(rows[1])
+    assert refuse is not None
+    assert "needs_internaldata_fill_xhr" in refuse
+    assert "ImageString-without-InternalData" in refuse
+    assert "21785-2" in refuse
+    notes: list[str] = []
+    persist_part_create_tlist_bind_source(rows, notes=notes)
+    assert "tlist_bind_source=false" in notes
+    assert "imagestring_without_internaldata=true" in notes
+    cap = live_21785_2_tlist_empty()
+    assert cap["list_n"] == 14
+    assert cap["internaldata_empty_n"] == 14
+    assert cap["imagestring_nonempty_n"] == 13
+    assert cap["outsideperimeter"] == 0
+    assert cap["finish_refused"] is True
+    hunt = explode_to_docreate_fill_dump()
+    assert explode_to_docreate_fills_internaldata(hunt) is False
+    assert hunt["createAllParts"]["xhr"] is None
+    assert hunt["SetPartMode"]["writes_internaldata"] is False
+    assert hunt["Unfold"]["hits"] == 0
+    assert hunt["classify_finish_internaldata_fill"] is None
+    assert explode_docreate_internaldata_fill() is None
+    assert EXPLODE_DOCREATE_INTERNALDATA_FILL is None
+    assert CLASSIFY_FINISH_INTERNALDATA_FILL is None
+    js = (
+        Path(__file__).resolve().parent / "fixtures" / "quote_order_edit_create_parts.js"
+    ).read_text()
+    assert "InternalData" not in js
+    assert "CuttingLength" not in js
+    assert "Unfold" not in js
+    assert "SetPartMode" not in js
+    xhrs = extract_cadimport_xhrs(js)
+    assert all(x.function != "createAllParts" for x in xhrs)
+    assert LIVE_PART_CREATE_TLIST_BIND is None
+    assert is_forbidden_quote_number(SPENT_QUOTE_NUMBER)
+    assert is_forbidden_quote_id(SPENT_QUOTE_ID_PREFIX + "-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id(GOLD_QUOTE_ID)
+    assert is_forbidden_quote_number("21785-1")
+    assert is_forbidden_quote_number("21785-3")
 
 
 def test_gold_q10056_itemlist_has_no_internaldata_field():
