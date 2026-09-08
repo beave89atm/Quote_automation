@@ -62,6 +62,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "ad1777be-1951-42b6-9be4-d97c3a42dd94",  # 1007471-1 PR18 e4df7f2 multi-kid PASS — do not remint / PATCH
         "7a631c5f-39ca-40fc-b733-88b2b2d04636",  # 34602-2 PR18 1259cda nested+Component PASS — do not remint / PATCH
         "6bfde652-b65a-41b7-840c-af8f088097d4",  # 1007756-1 PR18 b0305c5 ≥8-kid PASS — do not remint / PATCH
+        "87e64b3a-210e-42d9-bfae-1921b1540f16",  # 1001898-4 PR18 b80dff6 angle Linear Saw PASS — do not remint / PATCH
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -119,6 +120,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "ad1777be",  # 1007471-1 PR18 e4df7f2 multi-kid PASS — do not remint / PATCH
         "7a631c5f",  # 34602-2 PR18 1259cda nested+Component PASS — do not remint / PATCH
         "6bfde652",  # 1007756-1 PR18 b0305c5 ≥8-kid PASS — do not remint / PATCH
+        "87e64b3a",  # 1001898-4 PR18 b80dff6 angle Linear Saw PASS — do not remint / PATCH
         "4b8d6ae6",  # 103535-1 leftover @ 8e08f53 — kids stamped via CDP before nest refuse — do not remint / PATCH
         "b1036d7d",  # 33819-2 spent plate_sku_missing — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
@@ -170,6 +172,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "Skin Assembly",  # spent 5b622a0d jquery_ajax+EDIT InternalData empty 8/8 — do not remint
         "1001898-1",  # Kyle-confirmed gold a7dc46bf — do not remint
         "1001898-5",  # spent 491f6387 reconstructed PDF FileList / Cad no PR — do not remint
+        "1001898-4",  # spent 87e64b3a angle Linear Saw PASS @ b80dff6 — do not remint
         "103535-1",  # spent bd5c2e3e cookie HTTP / empty #gridPDF — do not remint
         "Q10095",  # spent 103535-1 GATE WELDMENT — do not remint
         "34137-4",  # spent 425587a7 — do not remint
