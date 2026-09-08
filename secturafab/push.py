@@ -94,7 +94,7 @@ from .website import (
     quote_item_rows,
     row_name,
 )
-from .weld_ops import ensure_weld_ops
+from .weld_ops import ensure_weld_ops, weld_ops_needs_info
 
 # CreateFile outage retry (SecturaFAB DB "underlying provider failed on Open").
 CREATEFILE_RETRY_INTERVAL_S = 300.0
@@ -5650,6 +5650,7 @@ class SecturaFabPushService:
                     quote_id,
                     times=times,
                     part_key=part_key,
+                    takeoff=takeoff,
                 )
             )
             if not website_cookie and not cad and (expect_cad or expect_linear):
@@ -5886,6 +5887,27 @@ class SecturaFabPushService:
                     item_count=final_count,
                     ready=False,
                     status="failed",
+                    last_error=msg,
+                    attempts=createfile_attempts,
+                )
+
+            if weld_ops_needs_info(notes):
+                msg = next(
+                    (n for n in notes if str(n).startswith("needs_info:")),
+                    "needs_info: weld symbols on drawing but minutes missing/zero",
+                )
+                return PushResult(
+                    ok=False,
+                    error=msg,
+                    notes=notes,
+                    quote_id=quote_id,
+                    quote_number=stored_number,
+                    quote_request_id=quote_request_id,
+                    created_new_quote=True,
+                    uploaded_files=uploaded,
+                    item_count=final_count,
+                    ready=False,
+                    status="needs_info",
                     last_error=msg,
                     attempts=createfile_attempts,
                 )

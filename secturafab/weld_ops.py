@@ -211,9 +211,70 @@ _WELD_OP_TEMPLATES: list[dict[str, Any]] = [
 
 _DEFAULT_SETUP_MINUTES = 15.0
 
+# Symbols on the print but quote_core weld+fit-up minutes are 0/missing.
+# Do not invent AddOperation hours. Nest Copy/Move still runs first.
+WELD_NEEDS_INFO_NOTE = (
+    "needs_info: weld symbols on drawing but weld+fit-up minutes "
+    "missing/zero — not inventing AddOperation"
+)
+_NO_SYMBOL_MARKERS = ("No weld symbols", "No weld takeoff")
+
 
 def minutes_to_hours(minutes: float) -> float:
     return float(minutes or 0.0) / 60.0
+
+
+def _note_blob(times: dict[str, Any] | None, takeoff: dict[str, Any] | None) -> list[str]:
+    out: list[str] = []
+    for bag in (times, takeoff, (takeoff or {}).get("fitup_drivers")):
+        if not isinstance(bag, dict):
+            continue
+        for key in ("flags", "notes", "fitup_notes"):
+            for note in bag.get(key) or []:
+                out.append(str(note))
+    return out
+
+
+def weld_symbols_present(
+    times: dict[str, Any] | None = None,
+    takeoff: dict[str, Any] | None = None,
+) -> bool:
+    """True when takeoff saw fillet/weld-symbol callouts (not invented)."""
+    times = times or {}
+    takeoff = takeoff or {}
+    notes = _note_blob(times, takeoff)
+    if any(marker in note for note in notes for marker in _NO_SYMBOL_MARKERS):
+        return False
+    if times.get("has_weld_symbols") is True or takeoff.get("has_weld_symbols") is True:
+        return True
+    for item in takeoff.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or "")
+        if item.get("size") or source in {"symbols", "pdf_size_only", "pdf_note"}:
+            return True
+    return False
+
+
+def any_resolved_weld_minutes(times: dict[str, Any] | None) -> bool:
+    """True when job or nested bags have quote_core weld minutes > 0."""
+    if resolve_weld_times(times):
+        return True
+    for bag in (
+        (times or {}).get("nested"),
+        (times or {}).get("by_part"),
+        (times or {}).get("assemblies"),
+    ):
+        if not isinstance(bag, dict):
+            continue
+        for raw in bag.values():
+            if isinstance(raw, dict) and resolve_weld_times(raw):
+                return True
+    return False
+
+
+def weld_ops_needs_info(notes: list[str] | None) -> bool:
+    return any(str(n).startswith("needs_info:") for n in (notes or []))
 
 
 def resolve_weld_times(times: dict[str, Any] | None) -> tuple[float, float, float] | None:
@@ -415,21 +476,20 @@ def ensure_weld_ops(
     times: dict[str, Any] | None,
     part_key: str | None = None,
     force: bool = False,
+    takeoff: dict[str, Any] | None = None,
 ) -> list[str]:
     """
     Attach Weld secondary ops from Cursor times onto ProductType Assembly only.
 
     Nested weldments get their own minutes from times['nested'][pn].
-    Does nothing when weld_minutes is missing or zero (no invented times).
+    Does nothing when weld_minutes is missing or zero (no invented times)
+    unless fillet/weld symbols exist — then fail-closed as needs_info.
     Never stamps Cad plates or Linear tubes.
     When ``force`` is True, replace existing Weld ops (used after CAD wipe recovery).
     """
-    if not resolve_weld_times(times) and not any(
-        isinstance(bag, dict) and resolve_weld_times(raw if isinstance(raw, dict) else None)
-        for bag in ((times or {}).get("nested"), (times or {}).get("by_part"), (times or {}).get("assemblies"))
-        if isinstance(bag, dict)
-        for raw in bag.values()
-    ):
+    if not any_resolved_weld_minutes(times):
+        if weld_symbols_present(times, takeoff):
+            return [WELD_NEEDS_INFO_NOTE]
         return ["No weld minutes on job — skipped SecturaFAB Weld ops"]
 
     detail = client.get_json(f"v1/quote/{quote_id}")

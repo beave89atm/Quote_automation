@@ -1996,7 +1996,20 @@ class SecturaFabClient:
             calc_param_type=WELD_CALC_PARAM_TYPE,
         )
         via = str(page.get("via") or "")
-        if via != "page_fn" or not weld_add_from_page_fn({**page, "via": via}):
+        item_ok = str(page.get("request_itemid") or "") == str(item_id)
+        hours_ok = float(weld_hours or 0) <= 0 or float(
+            page.get("request_perunittime") or 0
+        ) > 0
+        if (
+            via != "page_fn"
+            or not weld_add_from_page_fn({**page, "via": via})
+            or not item_ok
+            or not hours_ok
+        ):
+            if not item_ok:
+                page = {**page, "finish_why": page.get("finish_why") or "weld_itemid_not_assembly"}
+            elif not hours_ok:
+                page = {**page, "finish_why": page.get("finish_why") or "weld_hours_not_stamped"}
             self._weld_finish_via = "skipped"
             cap = self._weld_finish_capture(page, via="skipped")
             if cookie_http_add_operation_is_not_success(cap):

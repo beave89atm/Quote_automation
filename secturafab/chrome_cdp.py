@@ -7627,6 +7627,43 @@ _PAGE_ADD_WELD_JS = """(function(spec) {
     attachChromeDomAf(data);
     return data;
   }
+  function selectAssemblyRow(itemId) {
+    var want = String(itemId || "");
+    if (!want || !window.jQuery) return "";
+    var grids = [];
+    try {
+      jQuery(".k-grid").each(function() {
+        var g = jQuery(this).data("kendoGrid");
+        if (g) grids.push(g);
+      });
+    } catch (e) {}
+    var ids = ["#gridQuoteItems", "#gridItems", "#gridQuote", "#QuoteItems"];
+    for (var i = 0; i < ids.length; i++) {
+      try {
+        var g0 = jQuery(ids[i]).data("kendoGrid");
+        if (g0) grids.push(g0);
+      } catch (e2) {}
+    }
+    for (var gi = 0; gi < grids.length; gi++) {
+      var grid = grids[gi];
+      var data = [];
+      try { data = grid.dataSource.data(); } catch (e3) { continue; }
+      for (var r = 0; r < data.length; r++) {
+        var row = data[r] || {};
+        var rid = String(row.ID || row.Id || row.ItemID || row.itemID || "");
+        if (!rid || rid !== want) continue;
+        try {
+          var tr = grid.tbody.find("tr").filter(function() {
+            return grid.dataItem(this) === row;
+          }).first();
+          if (tr.length && typeof grid.select === "function") grid.select(tr);
+        } catch (e4) {}
+        return rid;
+      }
+    }
+    return "";
+  }
+  var selectedItemId = selectAssemblyRow(spec.item_id);
   setInput(["#weld", "input[name=weld]"], spec.weld_inches);
   setInput(
     ["#perunittime", "input[name=perunittime]"],
@@ -7734,12 +7771,36 @@ _PAGE_ADD_WELD_JS = """(function(spec) {
     });
   }
   return hooked.then(function(hitCap) {
-    var extra = hitCap || {};
-    extra.via = via || "page_fn";
-    extra.finish_fn = fnName || "OnAddOperationClick";
-    extra.weld_from_page = true;
-    extra.finish_why = extra.finish_why || "";
-    return extra;
+    if (!hitCap) {
+      return {
+        via: "skipped",
+        finish_fn: fnName || "",
+        weld_from_page: false,
+        finish_why: "addoperation_ajax_missed",
+        selected_itemid: selectedItemId,
+        request_keys: [],
+        request_itemid: "",
+        status: 0
+      };
+    }
+    var itemOk = String(hitCap.request_itemid || "") === String(spec.item_id || "");
+    var codeOk = String(hitCap.request_operation_code || "") === String(
+      spec.operation_code || "op_weld"
+    );
+    if (!itemOk || !codeOk) {
+      hitCap.via = "skipped";
+      hitCap.weld_from_page = false;
+      hitCap.finish_why = itemOk ? "weld_opcode_mismatch" : "weld_itemid_not_assembly";
+      hitCap.finish_fn = fnName || "";
+      hitCap.selected_itemid = selectedItemId;
+      return hitCap;
+    }
+    hitCap.via = via || "page_fn";
+    hitCap.finish_fn = fnName || "OnAddOperationClick";
+    hitCap.weld_from_page = true;
+    hitCap.finish_why = hitCap.finish_why || "";
+    hitCap.selected_itemid = selectedItemId;
+    return hitCap;
   });
 })"""
 
@@ -7884,20 +7945,27 @@ def invoke_page_add_weld_operation(
     via = str(value.get("via") or "")
     if via and via not in {"page_fn", "skipped"}:
         via = "page_fn"
+    req_id = str(value.get("request_itemid") or "")
     from_page = bool(value.get("weld_from_page")) and via == "page_fn"
+    finish_why = str(value.get("finish_why") or "")
+    if from_page and req_id and req_id != str(item_id):
+        from_page = False
+        via = "skipped"
+        finish_why = finish_why or "weld_itemid_not_assembly"
     return {
         "via": via,
         "finish_fn": str(value.get("finish_fn") or ""),
         "weld_from_page": from_page,
         "request_keys": [str(k) for k in (value.get("request_keys") or [])],
-        "request_itemid": str(value.get("request_itemid") or ""),
+        "request_itemid": req_id,
         "request_operation_code": str(value.get("request_operation_code") or ""),
         "request_weld": float(value.get("request_weld") or 0),
         "request_perunittime": float(value.get("request_perunittime") or 0),
         "request_perunittime2": float(value.get("request_perunittime2") or 0),
         "request_fixedtime": float(value.get("request_fixedtime") or 0),
         "finish_af_present": bool(value.get("finish_af_present")),
-        "finish_why": str(value.get("finish_why") or ""),
+        "finish_why": finish_why,
+        "selected_itemid": str(value.get("selected_itemid") or ""),
         "status": int(value.get("status") or 0),
         "edit_quote_id": str(gate.get("edit_quote_id") or ""),
         "minted_id": str(gate.get("minted_id") or quote_id or ""),

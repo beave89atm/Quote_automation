@@ -1263,6 +1263,120 @@ def test_no_symbols_skips_weld():
     client.add_operation.assert_not_called()
 
 
+def test_symbols_without_minutes_is_needs_info_not_invent():
+    from secturafab.weld_ops import (
+        WELD_NEEDS_INFO_NOTE,
+        ensure_weld_ops,
+        weld_ops_needs_info,
+        weld_symbols_present,
+    )
+
+    takeoff = {
+        "items": [
+            {
+                "size": "1/4",
+                "inches": 0,
+                "source": "pdf_size_only",
+                "joint_notes": "Size found on drawing; enter inches after review",
+            }
+        ],
+        "flags": ["Could not estimate weld lengths from STP or PDF dimensions"],
+    }
+    assert weld_symbols_present({"weld_minutes": 0}, takeoff) is True
+    client = MagicMock()
+    notes = ensure_weld_ops(
+        client,
+        "qid",
+        times={"weld_minutes": 0, "total_inches": 0, "fitup_with_fixture_minutes": 0},
+        takeoff=takeoff,
+    )
+    assert notes == [WELD_NEEDS_INFO_NOTE]
+    assert weld_ops_needs_info(notes) is True
+    client.add_operation.assert_not_called()
+    client.get_json.assert_not_called()
+
+
+def test_no_symbol_flag_skips_even_when_sizes_found():
+    from secturafab.weld_ops import ensure_weld_ops, weld_symbols_present
+
+    takeoff = {
+        "items": [],
+        "sizes_found": ["12", "24"],
+        "flags": ["No weld symbols — weld and fit-up left at 0"],
+    }
+    assert weld_symbols_present({"weld_minutes": 0}, takeoff) is False
+    notes = ensure_weld_ops(
+        MagicMock(),
+        "qid",
+        times={"weld_minutes": 0},
+        takeoff=takeoff,
+    )
+    assert any("No weld minutes" in n for n in notes)
+
+
+def test_push_nests_and_relinks_before_weld_add_operation():
+    from pathlib import Path
+
+    src = Path("secturafab/push.py").read_text(encoding="utf-8")
+    nest_at = src.find("self.nest_after_finish(")
+    weld_at = src.find("ensure_weld_ops(")
+    relink_at = src.find("relink_assembly_children(")
+    assert 0 < relink_at < weld_at
+    assert 0 < nest_at < weld_at
+
+
+def test_process_job_symbols_without_inches_is_needs_info(tmp_path: Path, monkeypatch):
+    data_dir = tmp_path / "kannon-data"
+    data_dir.mkdir()
+    monkeypatch.setenv("KANNON_DATA_DIR", str(data_dir))
+    _reload_app()
+    from app.db import Job, SessionLocal, init_db
+    from app.services import process_job
+    from quote_core.weld.takeoff import WeldLineItem, WeldTakeoffResult
+
+    init_db()
+    pdf = tmp_path / "1007922-3.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    db = SessionLocal()
+    job = Job(
+        title="1007922-3",
+        status="uploaded",
+        pdf_filename="1007922-3.pdf",
+        pdf_path=str(pdf),
+        efficiency_pct=85.0,
+    )
+    db.add(job)
+    db.commit()
+    job_id = job.id
+    db.close()
+    takeoff = WeldTakeoffResult(
+        items=[
+            WeldLineItem(
+                size="1/4",
+                inches=0.0,
+                joint_notes="Size found on drawing; enter inches after review",
+                confidence="low",
+                source="pdf_size_only",
+                needs_review=True,
+            )
+        ],
+        flags=["Could not estimate weld lengths from STP or PDF dimensions"],
+        fitup_drivers={"part_count": 0, "needs_info": False},
+    )
+    with patch("app.services.run_weld_takeoff", return_value=takeoff), patch(
+        "app.services.attach_library_stp",
+        return_value={"folder": None, "part_key": "1007922-3", "related_pdfs": [], "notes": []},
+    ), patch("quote_core.lom_clip.ensure_lom_xlsx", return_value=(None, [])):
+        process_job(job_id)
+    db = SessionLocal()
+    job = db.get(Job, job_id)
+    assert job is not None
+    assert job.status == "needs_info"
+    assert float((job.times() or {}).get("weld_minutes") or 0) == 0
+    assert any("needs_info" in f and "weld symbols" in f for f in job.flags())
+    db.close()
+
+
 def test_website_cad_persist_skips_addplate_and_update_when_get_has_pack():
     """(a) website Cad must not addplate/update after GET already has PR+pack+UnitCost."""
     from secturafab.line_item_ops import persist_classified_item_fields

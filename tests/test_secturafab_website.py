@@ -2829,6 +2829,8 @@ def test_invoke_page_add_weld_evaluates_page_fn():
         assert "/Quote/AddOperation" in expr
         assert "OnAddOperationClick" in expr
         assert "op_weld" in expr
+        assert "selectAssemblyRow" in expr
+        assert "weld_itemid_not_assembly" in expr
         assert "fetch(" not in expr
         assert params.get("awaitPromise") is True
         return {
@@ -2863,6 +2865,51 @@ def test_invoke_page_add_weld_evaluates_page_fn():
     assert result["ok"] is True
     assert result["request_itemid"] == "asm-1"
     assert result["request_weld"] == pytest.approx(308.66)
+
+
+def test_invoke_page_add_weld_fail_closes_kid_itemid():
+    from secturafab.chrome_cdp import invoke_page_add_weld_operation
+
+    tab = {
+        "title": "*Quote-1001898-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        return {
+            "result": {
+                "value": {
+                    "via": "page_fn",
+                    "finish_fn": "OnAddOperationClick",
+                    "weld_from_page": True,
+                    "request_itemid": "cad-1",
+                    "request_operation_code": "op_weld",
+                    "request_weld": 308.66,
+                    "request_perunittime": 154.33 / 60.0,
+                    "request_perunittime2": 108.0 / 60.0,
+                    "request_fixedtime": 0.25,
+                    "status": 200,
+                }
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        result = invoke_page_add_weld_operation(
+            quote_id="qid",
+            item_id="asm-1",
+            weld_inches=308.66,
+            weld_hours=154.33 / 60.0,
+            fitup_hours=108.0 / 60.0,
+            setup_hours=0.25,
+        )
+    assert result["ok"] is False
+    assert result["via"] == "skipped"
+    assert result["weld_from_page"] is False
+    assert result["finish_why"] == "weld_itemid_not_assembly"
 
 
 def test_classify_hose_guard_is_linear():

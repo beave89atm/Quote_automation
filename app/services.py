@@ -115,6 +115,19 @@ def process_job(job_id: int) -> None:
             if related_flag not in flags:
                 flags.append(related_flag)
 
+        no_symbols = any("No weld symbols" in n for n in flags)
+        weld_needs_info = (
+            (not no_symbols)
+            and bool(items)
+            and float(times.weld_minutes or 0) <= 0
+        )
+        if weld_needs_info:
+            weld_flag = (
+                "needs_info: weld symbols on drawing but weld+fit-up minutes "
+                "missing/zero"
+            )
+            if weld_flag not in flags:
+                flags.append(weld_flag)
         job.set_takeoff(takeoff)
         job.set_times(times.to_dict())
         job.set_flags(flags)
@@ -122,7 +135,7 @@ def process_job(job_id: int) -> None:
         lom_needs_info = bool(drivers_info.get("needs_info")) or any(
             "needs_info" in n or "clip produced 0 rows" in n for n in flags
         )
-        job.status = "needs_info" if lom_needs_info else "review"
+        job.status = "needs_info" if (lom_needs_info or weld_needs_info) else "review"
         db.commit()
     except Exception as exc:  # noqa: BLE001
         job = db.get(Job, job_id)
@@ -295,8 +308,12 @@ def push_job_secturafab(job_id: int) -> None:
             job.set_flags(flags)
         else:
             err = result.error or result.last_error or "SecturaFAB push failed"
+            if result.status == "needs_info":
+                job.status = "needs_info"
+                if err not in flags:
+                    flags.append(err)
             fail_flag = f"SecturaFAB push failed: {err}"
-            if fail_flag not in flags:
+            if result.status != "needs_info" and fail_flag not in flags:
                 flags.append(fail_flag)
             if result.item_count == 0 and result.quote_number:
                 warn = (
