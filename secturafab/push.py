@@ -2723,6 +2723,8 @@ class SecturaFabPushService:
                 notes.append(f"upload_via={upload_via or 'missing'}")
                 notes.append(f"gridDXF_n={grid_dxf_n}")
                 notes.append("bound=" + ("true" if bound else "false"))
+                if page_bind.get("set_files_via"):
+                    notes.append(f"set_files_via={page_bind.get('set_files_via')}")
                 if cookie_http_dxf_upload_is_fail(upload_via) or not bound:
                     notes.append(
                         "WARNING: cookie HTTP UploadItem_DXFFiles does not bind "
@@ -3670,6 +3672,8 @@ class SecturaFabPushService:
             notes.append(f"upload_via={upload_via or 'missing'}")
             notes.append(f"grid_pdf_row_count={grid_n}")
             notes.append("bound=" + ("true" if bound else "false"))
+            if bind.get("set_files_via"):
+                notes.append(f"set_files_via={bind.get('set_files_via')}")
             if "productid_n" in bind:
                 notes.append(f"bind_productid_n={bind.get('productid_n')}")
             if plate_catalog:

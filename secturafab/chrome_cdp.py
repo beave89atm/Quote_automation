@@ -644,6 +644,33 @@ def _ws_recv_text(sock: socket.socket) -> str:
             continue
 
 
+def _cdp_call_on_sock(
+    sock: socket.socket,
+    method: str,
+    params: dict[str, Any] | None = None,
+    *,
+    call_id: int = 1,
+) -> Any:
+    """One CDP method on an open session. Never logs params that may hold secrets."""
+    msg: dict[str, Any] = {"id": call_id, "method": method}
+    if params:
+        msg["params"] = params
+    _ws_send_text(sock, json.dumps(msg, separators=(",", ":")))
+    while True:
+        raw = _ws_recv_text(sock)
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("id") != call_id:
+            continue
+        if payload.get("error"):
+            return None
+        return payload.get("result")
+
+
 def cdp_call(
     ws_url: str,
     method: str,
@@ -655,23 +682,7 @@ def cdp_call(
     """One-shot CDP method. Never logs params that may hold secrets."""
     sock = _ws_handshake(ws_url, timeout=timeout)
     try:
-        msg: dict[str, Any] = {"id": call_id, "method": method}
-        if params:
-            msg["params"] = params
-        _ws_send_text(sock, json.dumps(msg, separators=(",", ":")))
-        while True:
-            raw = _ws_recv_text(sock)
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            if payload.get("id") != call_id:
-                continue
-            if payload.get("error"):
-                return None
-            return payload.get("result")
+        return _cdp_call_on_sock(sock, method, params, call_id=call_id)
     finally:
         try:
             sock.close()
@@ -6435,33 +6446,82 @@ def _cdp_set_file_input_files(
     ws: str,
     selector: str,
     paths: list[str],
-) -> bool:
-    """DOM.setFileInputFiles on in-page #files kendoUpload. Never logs paths."""
+) -> str:
+    """Set in-page #files on one CDP session. Never logs paths.
+
+    Live 29743-2 / bf4221e8: nodeId ``set_files`` across separate
+    ``cdp_call`` websockets failed attempt 0/1/2; same-session
+    ``objectId`` bound. Prefer objectId first. One nodeId fallback
+    on that same socket — do not retry the flaky cross-session path.
+    """
     if not ws or not selector or not paths:
-        return False
-    cdp_call(ws, "DOM.enable", {}, call_id=80)
-    doc = cdp_call(ws, "DOM.getDocument", {"depth": 1}, call_id=81)
-    if not isinstance(doc, dict):
-        return False
-    root = (doc.get("root") or {}).get("nodeId") if isinstance(doc.get("root"), dict) else None
-    if not root:
-        return False
-    found = cdp_call(
-        ws,
-        "DOM.querySelector",
-        {"nodeId": root, "selector": selector},
-        call_id=82,
-    )
-    node_id = found.get("nodeId") if isinstance(found, dict) else None
-    if not node_id:
-        return False
-    result = cdp_call(
-        ws,
-        "DOM.setFileInputFiles",
-        {"files": list(paths), "nodeId": node_id},
-        call_id=83,
-    )
-    return result is not None
+        return ""
+    try:
+        sock = _ws_handshake(ws)
+    except OSError:
+        return ""
+    try:
+        ev = _cdp_call_on_sock(
+            sock,
+            "Runtime.evaluate",
+            {
+                "expression": "document.querySelector(" + json.dumps(selector) + ")",
+                "returnByValue": False,
+            },
+            call_id=84,
+        )
+        oid = ""
+        if isinstance(ev, dict):
+            remote = ev.get("result")
+            if isinstance(remote, dict) and remote.get("subtype") != "null":
+                oid = str(remote.get("objectId") or "")
+        if oid:
+            result = _cdp_call_on_sock(
+                sock,
+                "DOM.setFileInputFiles",
+                {"files": list(paths), "objectId": oid},
+                call_id=85,
+            )
+            if result is not None:
+                return "objectId"
+        _cdp_call_on_sock(sock, "DOM.enable", {}, call_id=80)
+        doc = _cdp_call_on_sock(
+            sock, "DOM.getDocument", {"depth": 1}, call_id=81
+        )
+        if not isinstance(doc, dict):
+            return ""
+        root = (
+            (doc.get("root") or {}).get("nodeId")
+            if isinstance(doc.get("root"), dict)
+            else None
+        )
+        if not root:
+            return ""
+        found = _cdp_call_on_sock(
+            sock,
+            "DOM.querySelector",
+            {"nodeId": root, "selector": selector},
+            call_id=82,
+        )
+        node_id = found.get("nodeId") if isinstance(found, dict) else None
+        if not node_id:
+            return ""
+        result = _cdp_call_on_sock(
+            sock,
+            "DOM.setFileInputFiles",
+            {"files": list(paths), "nodeId": node_id},
+            call_id=83,
+        )
+        if result is not None:
+            return "nodeId"
+        return ""
+    except OSError:
+        return ""
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
 
 
 def upload_pdf_via_page_add_files(
@@ -6518,13 +6578,15 @@ def upload_pdf_via_page_add_files(
             "grid_id": str((found or {}).get("grid_id") or "") if isinstance(found, dict) else "",
         }
     ws = str((tab or {}).get("webSocketDebuggerUrl") or "")
-    if not _cdp_set_file_input_files(ws, selector, paths):
+    set_files_via = _cdp_set_file_input_files(ws, selector, paths)
+    if not set_files_via:
         return {
             **empty,
             "upload_via": "page_add_files",
             "files_kendo": files_kendo,
             "opened_via": opened_via,
             "finish_why": "set_files_failed",
+            "set_files_via": "",
         }
     changed = _cdp_evaluate_promise(
         _DISPATCH_FILES_CHANGE_JS + "()", base=base, tab=tab, fallback=False
@@ -6569,6 +6631,7 @@ def upload_pdf_via_page_add_files(
                     "opened_via": opened_via,
                     "finish_why": "",
                     "edit_gate": "",
+                    "set_files_via": set_files_via,
                 }
         time.sleep(0.25)
     return {
@@ -6584,6 +6647,7 @@ def upload_pdf_via_page_add_files(
         "opened_via": opened_via,
         "finish_why": "empty_dataSource",
         "edit_gate": "",
+        "set_files_via": set_files_via,
     }
 
 
@@ -6890,7 +6954,8 @@ def upload_dxf_via_page_add_files(
             "zone": str((found or {}).get("zone") or ""),
         }
     ws = str((tab or {}).get("webSocketDebuggerUrl") or "")
-    if not _cdp_set_file_input_files(ws, selector, paths):
+    set_files_via = _cdp_set_file_input_files(ws, selector, paths)
+    if not set_files_via:
         return {
             **empty,
             "upload_via": "page_add_files",
@@ -6899,6 +6964,7 @@ def upload_dxf_via_page_add_files(
             "finish_why": "set_files_failed",
             "save_url": save_url,
             "zone": "#dxfupload_Zone",
+            "set_files_via": "",
         }
     changed = _cdp_evaluate_promise(
         _DISPATCH_DXF_FILES_CHANGE_JS + "()", base=base, tab=tab, fallback=False
@@ -6939,6 +7005,7 @@ def upload_dxf_via_page_add_files(
                     "List": rows,
                     "save_url": str(count.get("save_url") or save_url),
                     "zone": "#dxfupload_Zone",
+                    "set_files_via": set_files_via,
                 }
         time.sleep(0.25)
     return {
@@ -6954,6 +7021,7 @@ def upload_dxf_via_page_add_files(
         "List": [r for r in (last.get("List") or []) if isinstance(r, dict)],
         "save_url": str(last.get("save_url") or save_url),
         "zone": "#dxfupload_Zone",
+        "set_files_via": set_files_via,
     }
 
 

@@ -1970,6 +1970,7 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_id("3ac04f8a-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("6d4373bc-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d2ec4357-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("bf4221e8-1111-2222-3333-444444444444")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -9190,6 +9191,65 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "Hole" not in _STAMP_LINEAR_FORM_JS or "holes" in _STAMP_LINEAR_FORM_JS.lower()
     assert "AddNewPDFFeature" not in _STAMP_LINEAR_FORM_JS
     assert "AddFeature" not in _STAMP_LINEAR_FORM_JS
+
+
+def test_cdp_set_file_input_files_prefers_objectid_same_session():
+    from secturafab.chrome_cdp import _cdp_set_file_input_files
+
+    calls: list[tuple[str, dict | None]] = []
+
+    def _on_sock(sock, method, params=None, **kwargs):
+        calls.append((method, params))
+        if method == "Runtime.evaluate":
+            return {
+                "result": {
+                    "type": "object",
+                    "subtype": "node",
+                    "objectId": "oid-1",
+                }
+            }
+        if method == "DOM.setFileInputFiles":
+            return {}
+        return {}
+
+    with patch("secturafab.chrome_cdp._ws_handshake", return_value=MagicMock()), patch(
+        "secturafab.chrome_cdp._cdp_call_on_sock", side_effect=_on_sock
+    ):
+        via = _cdp_set_file_input_files("ws://127.0.0.1/devtools/page/x", "#files", ["/tmp/a.pdf"])
+    assert via == "objectId"
+    methods = [c[0] for c in calls]
+    assert methods == ["Runtime.evaluate", "DOM.setFileInputFiles"]
+    assert calls[1][1]["objectId"] == "oid-1"
+    assert "nodeId" not in (calls[1][1] or {})
+    assert methods.count("DOM.setFileInputFiles") == 1
+
+
+def test_cdp_set_file_input_files_one_nodeid_fallback_no_triple_retry():
+    from secturafab.chrome_cdp import _cdp_set_file_input_files
+
+    calls: list[str] = []
+
+    def _on_sock(sock, method, params=None, **kwargs):
+        calls.append(method)
+        if method == "Runtime.evaluate":
+            return {"result": {"type": "object", "subtype": "null"}}
+        if method == "DOM.getDocument":
+            return {"root": {"nodeId": 1}}
+        if method == "DOM.querySelector":
+            return {"nodeId": 9}
+        if method == "DOM.setFileInputFiles":
+            assert params and "nodeId" in params
+            assert "objectId" not in params
+            return {}
+        return {}
+
+    with patch("secturafab.chrome_cdp._ws_handshake", return_value=MagicMock()), patch(
+        "secturafab.chrome_cdp._cdp_call_on_sock", side_effect=_on_sock
+    ):
+        via = _cdp_set_file_input_files("ws://127.0.0.1/devtools/page/x", "#files", ["/tmp/a.pdf"])
+    assert via == "nodeId"
+    assert calls.count("DOM.setFileInputFiles") == 1
+    assert calls.count("Runtime.evaluate") == 1
 
 
 def test_upload_pdf_via_page_add_files_is_not_cookie_http():

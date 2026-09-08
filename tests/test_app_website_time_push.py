@@ -1132,6 +1132,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("3ac04f8a-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("6d4373bc-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d2ec4357-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("bf4221e8-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
     assert is_forbidden_quote_id("bd5c2e3e-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d2f7b031-1111-2222-3333-444444444444")
@@ -1214,6 +1215,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "8930f65a-c1e3-44b0-8024-9075b2a5ab80",
         "e57633b6-7bfc-4235-80de-a0e3be6cc5cc",
         "3102870a-1111-2222-3333-444444444444",
+        "bf4221e8-1111-2222-3333-444444444444",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
             refuse_forbidden_quote_write(
