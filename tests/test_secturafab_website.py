@@ -2895,6 +2895,7 @@ def test_renest_linear_404_fail_closes():
         {"Results": [{"SheetSizeLength": 480}]},
         {"ItemList": [], "StockList": []},
     ]
+    client.read_data_linear_lookup.return_value = {"List": []}
     client.renest_linear.side_effect = SecturaFabApiError(
         "API request failed (404)", status_code=404
     )

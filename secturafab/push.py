@@ -4957,7 +4957,7 @@ class SecturaFabPushService:
         )
 
         notes: list[str] = []
-        detail = quote if isinstance(quote, dict) and quote.get("ItemList") else None
+        detail = quote if isinstance(quote, dict) else None
         if detail is None:
             try:
                 raw = self.client.get_json(f"v1/quote/{quote_id}")
