@@ -59,6 +59,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "14219adc-f7f5-401a-b707-0bf200ef8c74",  # 34603-2 ProductID/org/no-hole Cad (leave it)
         "9be15b62-a824-442c-b911-50ca1016cc5e",  # 21682-1 plate_sku_missing / ProductID null (leave it)
         "c23fba3d-ef02-412b-b06e-f91ffa9076a6",  # 29341-1 ProductID+hole / empty BadgeString (leave it)
+        "ad1777be-1951-42b6-9be4-d97c3a42dd94",  # 1007471-1 PR18 e4df7f2 multi-kid PASS — do not remint / PATCH
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -113,6 +114,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "6d4373bc",  # 21684-1 PR18 3bacf2a Long/Saw PASS; PrimaryOrganizationID empty GUID after POST 201 — do not remint / PATCH
         "d2ec4357",  # 1007922-3 OUTRIGGER nest+packs PASS (Cad 10099-1 PR + Linear RT2 1/4X0.5-A519 + Copy/Move) — do not remint / PATCH
         "bf4221e8",  # 29743-2 PR18 a1dacc9 weld+nest PASS — do not remint / PATCH
+        "ad1777be",  # 1007471-1 PR18 e4df7f2 multi-kid PASS — do not remint / PATCH
         "b1036d7d",  # 33819-2 spent plate_sku_missing — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
         "95b8c186",  # 1007922-3 — do not open / PATCH / remint
@@ -179,6 +181,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "21682-1",  # spent 9be15b62 plate_sku_missing / ProductID null — do not remint
         "29341-1",  # spent c23fba3d ProductID+hole / empty BadgeString — do not remint
         "33819-2",  # spent b1036d7d plate_sku_missing — do not remint
+        "1007471-1",  # spent ad1777be multi-kid weld+nest PASS @ e4df7f2 — do not remint
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

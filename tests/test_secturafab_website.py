@@ -1941,7 +1941,7 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
         leftover_form_lw_unsynced_after_internal_dim1_is_fail,
         form_lw_unsynced_or_empty_perimeter_is_fail,
     )
-    from secturafab.forbidden_quotes import is_forbidden_quote_id
+    from secturafab.forbidden_quotes import is_forbidden_quote_id, is_forbidden_quote_number
 
     lw = leftover_form_lw_unsynced_after_internal_dim1_dump()
     assert leftover_form_lw_unsynced_after_internal_dim1_is_fail(lw) is True
@@ -1971,6 +1971,8 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_id("6d4373bc-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d2ec4357-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("bf4221e8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("ad1777be-1951-42b6-9be4-d97c3a42dd94")
+    assert is_forbidden_quote_number("1007471-1")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -9191,6 +9193,66 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "Hole" not in _STAMP_LINEAR_FORM_JS or "holes" in _STAMP_LINEAR_FORM_JS.lower()
     assert "AddNewPDFFeature" not in _STAMP_LINEAR_FORM_JS
     assert "AddFeature" not in _STAMP_LINEAR_FORM_JS
+
+
+def test_pdf_upload_settle_polls_scales_with_kids():
+    from secturafab.chrome_cdp import _pdf_upload_settle_polls
+
+    assert _pdf_upload_settle_polls(1) == 28
+    assert _pdf_upload_settle_polls(3) == 52
+    assert _pdf_upload_settle_polls(3) > 24
+
+
+def test_upload_pdf_quiet_retry_after_empty_datasource(tmp_path):
+    from secturafab.chrome_cdp import upload_pdf_via_page_add_files
+
+    pdf = tmp_path / "1007471-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    sets = {"n": 0}
+    tab = {
+        "title": "*Quote-1007471-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _set_files(ws, selector, paths):
+        sets["n"] += 1
+        return "objectId"
+
+    def _eval(expr, **kwargs):
+        if "GetPDFData" in expr:
+            n = 2 if sets["n"] >= 2 else 0
+            return {
+                "grid_id": "#gridPDF",
+                "grid_pdf_row_count": n,
+                "status_gt0_n": n,
+                "getpdfdata_n": n,
+                "files_kendo": True,
+                "productid_n": 0,
+            }
+        if "opened_via" in expr:
+            return {"opened_via": "AddNewItemHTML"}
+        if "dropZoneElement" in expr or "data-kannon-add-files" in expr:
+            return {"selector": "#files", "files_kendo": True, "grid_id": "#gridPDF"}
+        return {"changed": True, "files_kendo": True}
+
+    with patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": tab, "reason": ""},
+    ), patch(
+        "secturafab.chrome_cdp._cdp_set_file_input_files", side_effect=_set_files
+    ), patch(
+        "secturafab.chrome_cdp._cdp_evaluate_promise", side_effect=_eval
+    ), patch("secturafab.chrome_cdp.time.sleep"):
+        result = upload_pdf_via_page_add_files(
+            [pdf], quote_id="11111111-aaaa-bbbb-cccc-000000000012", settle_polls=2
+        )
+    assert result["bound"] is True
+    assert result["set_files_via"] == "objectId"
+    assert result.get("settle_retry") == 1
+    assert result.get("finish_why") != "empty_dataSource"
+    assert sets["n"] == 2
 
 
 def test_cdp_set_file_input_files_prefers_objectid_same_session():

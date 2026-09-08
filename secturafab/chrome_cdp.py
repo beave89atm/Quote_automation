@@ -6524,17 +6524,99 @@ def _cdp_set_file_input_files(
             pass
 
 
+def _pdf_upload_settle_polls(file_count: int) -> int:
+    """0.25s ticks: 6s base + 3s per file (live 1007471-1 multi-kid)."""
+    n = max(1, int(file_count or 1))
+    return max(24, 16 + 12 * n)
+
+
+def _grid_pdf_bind_n(count: dict[str, Any]) -> int:
+    try:
+        return int(
+            count.get("getpdfdata_n")
+            or count.get("status_gt0_n")
+            or count.get("grid_pdf_row_count")
+            or 0
+        )
+    except (TypeError, ValueError):
+        return 0
+
+
+def _poll_pdf_grid_bind(
+    *,
+    base: str | None,
+    tab: dict[str, Any] | None,
+    files_kendo: bool,
+    opened_via: str,
+    set_files_via: str,
+    polls: int,
+) -> dict[str, Any]:
+    last: dict[str, Any] = {
+        "grid_id": "",
+        "grid_pdf_row_count": 0,
+        "status_gt0_n": 0,
+        "getpdfdata_n": 0,
+        "files_kendo": files_kendo,
+        "productid_n": 0,
+    }
+    kendo_ok = files_kendo
+    for _ in range(max(1, int(polls or 1))):
+        count = _cdp_evaluate_promise(
+            _READ_GRID_PDF_COUNT_JS + "()", base=base, tab=tab, fallback=False
+        )
+        if isinstance(count, dict):
+            last = count
+            if count.get("files_kendo"):
+                kendo_ok = True
+            n = _grid_pdf_bind_n(count)
+            if n > 0 and kendo_ok:
+                return {
+                    "bound": True,
+                    "upload_via": "page_add_files",
+                    "files_kendo": True,
+                    "grid_pdf_row_count": int(count.get("grid_pdf_row_count") or n),
+                    "status_gt0_n": int(count.get("status_gt0_n") or n),
+                    "getpdfdata_n": int(count.get("getpdfdata_n") or n),
+                    "getpdfdata_is_xhr": False,
+                    "productid_n": int(count.get("productid_n") or 0),
+                    "grid_id": str(count.get("grid_id") or ""),
+                    "opened_via": opened_via,
+                    "finish_why": "",
+                    "edit_gate": "",
+                    "set_files_via": set_files_via,
+                }
+        time.sleep(0.25)
+    return {
+        "bound": False,
+        "upload_via": "page_add_files",
+        "files_kendo": kendo_ok,
+        "grid_pdf_row_count": int(last.get("grid_pdf_row_count") or 0),
+        "status_gt0_n": int(last.get("status_gt0_n") or 0),
+        "getpdfdata_n": int(last.get("getpdfdata_n") or 0),
+        "getpdfdata_is_xhr": False,
+        "productid_n": int(last.get("productid_n") or 0),
+        "grid_id": str(last.get("grid_id") or ""),
+        "opened_via": opened_via,
+        "finish_why": "empty_dataSource",
+        "edit_gate": "",
+        "set_files_via": set_files_via,
+    }
+
+
 def upload_pdf_via_page_add_files(
     files: list[Any],
     *,
     quote_id: str | None = None,
     base: str | None = None,
+    settle_polls: int | None = None,
 ) -> dict[str, Any]:
     """In-page #files kendoUpload so onSuccess_PDFUpload fills #gridPDF.
 
     Leftover dialog: cookie POST /Attachment/UploadItem_PDFFiles is only
     the widget saveUrl. Off-page cookie HTTP does not run
     onSuccess_PDFUpload. Drag onto +Add Files (dropZoneElement).
+    Live 1007471-1: first window can be empty_dataSource before
+    onSuccess adds rows — wait for dataSource, then one quiet retry.
     """
     paths = [str(Path(p).resolve()) for p in (files or []) if p]
     empty = {
@@ -6593,62 +6675,43 @@ def upload_pdf_via_page_add_files(
     )
     if isinstance(changed, dict) and changed.get("files_kendo"):
         files_kendo = True
-    last = {
-        "grid_id": "",
-        "grid_pdf_row_count": 0,
-        "status_gt0_n": 0,
-        "getpdfdata_n": 0,
-        "files_kendo": files_kendo,
-    }
-    for _ in range(24):
-        count = _cdp_evaluate_promise(
-            _READ_GRID_PDF_COUNT_JS + "()", base=base, tab=tab, fallback=False
-        )
-        if isinstance(count, dict):
-            last = count
-            if count.get("files_kendo"):
-                files_kendo = True
-            try:
-                n = int(
-                    count.get("getpdfdata_n")
-                    or count.get("status_gt0_n")
-                    or count.get("grid_pdf_row_count")
-                    or 0
-                )
-            except (TypeError, ValueError):
-                n = 0
-            if n > 0 and files_kendo:
-                return {
-                    "bound": True,
-                    "upload_via": "page_add_files",
-                    "files_kendo": True,
-                    "grid_pdf_row_count": int(count.get("grid_pdf_row_count") or n),
-                    "status_gt0_n": int(count.get("status_gt0_n") or n),
-                    "getpdfdata_n": int(count.get("getpdfdata_n") or n),
-                    "getpdfdata_is_xhr": False,
-                    "productid_n": int(count.get("productid_n") or 0),
-                    "grid_id": str(count.get("grid_id") or ""),
-                    "opened_via": opened_via,
-                    "finish_why": "",
-                    "edit_gate": "",
-                    "set_files_via": set_files_via,
-                }
-        time.sleep(0.25)
-    return {
-        "bound": False,
-        "upload_via": "page_add_files",
-        "files_kendo": files_kendo,
-        "grid_pdf_row_count": int(last.get("grid_pdf_row_count") or 0),
-        "status_gt0_n": int(last.get("status_gt0_n") or 0),
-        "getpdfdata_n": int(last.get("getpdfdata_n") or 0),
-        "getpdfdata_is_xhr": False,
-        "productid_n": int(last.get("productid_n") or 0),
-        "grid_id": str(last.get("grid_id") or ""),
-        "opened_via": opened_via,
-        "finish_why": "empty_dataSource",
-        "edit_gate": "",
-        "set_files_via": set_files_via,
-    }
+    polls = (
+        int(settle_polls)
+        if settle_polls is not None
+        else _pdf_upload_settle_polls(len(paths))
+    )
+    hit = _poll_pdf_grid_bind(
+        base=base,
+        tab=tab,
+        files_kendo=files_kendo,
+        opened_via=opened_via,
+        set_files_via=set_files_via,
+        polls=polls,
+    )
+    if hit.get("bound"):
+        return hit
+    # Live 1007471-1: first window empty_dataSource, next objectId bound.
+    # One quiet retry — do not log the first miss as flake.
+    time.sleep(0.4)
+    again = _cdp_set_file_input_files(ws, selector, paths)
+    if again:
+        set_files_via = again
+    changed = _cdp_evaluate_promise(
+        _DISPATCH_FILES_CHANGE_JS + "()", base=base, tab=tab, fallback=False
+    )
+    if isinstance(changed, dict) and changed.get("files_kendo"):
+        files_kendo = True
+    hit = _poll_pdf_grid_bind(
+        base=base,
+        tab=tab,
+        files_kendo=files_kendo,
+        opened_via=opened_via,
+        set_files_via=set_files_via,
+        polls=polls,
+    )
+    if hit.get("bound"):
+        hit["settle_retry"] = 1
+    return hit
 
 
 _OPEN_CAD_FILES_JS = """(function() {

@@ -3674,6 +3674,8 @@ class SecturaFabPushService:
             notes.append("bound=" + ("true" if bound else "false"))
             if bind.get("set_files_via"):
                 notes.append(f"set_files_via={bind.get('set_files_via')}")
+            if bind.get("settle_retry") and bound:
+                notes.append("pdf_bind_settled_after_wait")
             if "productid_n" in bind:
                 notes.append(f"bind_productid_n={bind.get('productid_n')}")
             if plate_catalog:
