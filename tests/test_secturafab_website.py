@@ -1977,12 +1977,14 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_id("6bfde652-b65a-41b7-840c-af8f088097d4")
     assert is_forbidden_quote_id("87e64b3a-210e-42d9-bfae-1921b1540f16")
     assert is_forbidden_quote_id("5804a001-68ef-4eab-a587-ba2d73718924")
+    assert is_forbidden_quote_id("3f3802da-bc11-4a71-83a0-62454b33f69c")
     assert is_forbidden_quote_number("1007471-1")
     assert is_forbidden_quote_number("34602-2")
     assert is_forbidden_quote_number("34603-2")
     assert is_forbidden_quote_number("1007756-1")
     assert is_forbidden_quote_number("1001898-4")
     assert is_forbidden_quote_number("1008763-1")
+    assert is_forbidden_quote_number("1020243-1")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -2750,7 +2752,171 @@ def test_website_paths_are_quote_mvc_not_quickadd():
     assert WEBSITE_FINISH_PATHS["upload_pdf_attachment"] == "/Attachment/UploadItem_PDFFiles"
     assert WEBSITE_FINISH_PATHS["linear_lookup"] == "/Product/Read_DataLinearlookup"
     assert WEBSITE_FINISH_PATHS["plate_config"] == "/Product/ReadData_PlateConfig"
+    assert WEBSITE_FINISH_PATHS["renest_linear"] == "/Nest/RenestLinear"
+    assert "nest_quote_renest" not in WEBSITE_FINISH_PATHS
+    assert "/Quote/NestQuoteMultiPart_Renest" not in WEBSITE_FINISH_PATHS.values()
     assert "quickAddCAD" not in str(WEBSITE_FINISH_PATHS)
+
+
+def test_renest_linear_payload_checks_20ft_not_40ft():
+    from secturafab.website import (
+        LINEAR_RENEST_20FT_IN,
+        build_renest_linear_payload,
+        collect_nest_stock_lengths,
+        item_linear_config_id,
+        linear_config_stock_feet,
+        nest_has_480_stock,
+        nest_task_ids,
+    )
+
+    payload = build_renest_linear_payload(
+        "qid-1", nest_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    )
+    assert payload["QuoteID"] == "qid-1"
+    assert payload["ID"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    assert payload["Length20"] is True
+    assert payload["Length40"] is False
+    assert payload["SheetSizeLength"] == int(LINEAR_RENEST_20FT_IN)
+    assert payload["StockLength"] == int(LINEAR_RENEST_20FT_IN)
+    nest = {
+        "Results": [
+            {
+                "ID": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                "SheetSizeLength": 480,
+                "StockList": [{"StockLength": 480}],
+            }
+        ]
+    }
+    assert nest_has_480_stock(nest) is True
+    assert 480.0 in collect_nest_stock_lengths(nest)
+    assert nest_task_ids(nest) == ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]
+    assert nest_has_480_stock({"Results": [{"SheetSizeLength": 240}]}) is False
+    cfg40 = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    cfg20 = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    assert item_linear_config_id({"productConfigID": cfg40}) == cfg40
+    assert linear_config_stock_feet(
+        [{"Text": "40 ft", "Value": cfg40}, {"Text": "20 ft", "Value": cfg20}],
+        cfg40,
+    ) == 40.0
+
+
+def test_renest_linear_client_posts_nest_path_not_multipart():
+    from secturafab.client import SecturaFabClient
+
+    assert hasattr(SecturaFabClient, "renest_linear")
+    assert not hasattr(SecturaFabClient, "nest_quote_multipart_renest")
+    src_client = Path("secturafab/client.py").read_text(encoding="utf-8")
+    src_push = Path("secturafab/push.py").read_text(encoding="utf-8")
+    assert 'WEBSITE_FINISH_PATHS["renest_linear"]' in src_client
+    assert "nest_quote_multipart_renest" not in src_push
+    assert "self.client.renest_linear(" in src_push
+
+
+def test_renest_linear_480_posts_and_persists_20ft():
+    qid = "qid-renest"
+    nest_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    pid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    cfg40 = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    cfg20 = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    item_id = "11111111-1111-4111-8111-111111111111"
+    nest_480 = {"Results": [{"ID": nest_id, "SheetSizeLength": 480}]}
+    nest_240 = {"Results": [{"ID": nest_id, "SheetSizeLength": 240}]}
+    quote = {
+        "ItemList": [
+            {
+                "ID": item_id,
+                "ProductType": 40,
+                "Category": "Linear",
+                "ProductID": pid,
+                "productConfigID": cfg40,
+            }
+        ],
+        "StockList": [],
+    }
+    lookup = {
+        "List": [
+            {"Text": "40 ft", "Value": cfg40},
+            {"Text": "20 ft", "Value": cfg20},
+        ]
+    }
+    client = MagicMock()
+    client.nest_quote_edit.return_value = {}
+    client.renest_linear.return_value = {}
+    client.read_data_linear_lookup.return_value = lookup
+
+    def _get(path: str):
+        if str(path).startswith("v1/Nest"):
+            if client.renest_linear.called:
+                return nest_240
+            return nest_480
+        if str(path).startswith("v1/quote/"):
+            return quote
+        raise AssertionError(path)
+
+    client.get_json.side_effect = _get
+    with patch(
+        "secturafab.quote_update.quote_online_update", return_value=True
+    ) as persist:
+        notes = SecturaFabPushService(client=client).nest_after_finish(
+            qid, item_count=1
+        )
+    client.renest_linear.assert_called_once()
+    payload = client.renest_linear.call_args.kwargs.get("extra") or {}
+    assert payload.get("Length20") is True
+    assert payload.get("Length40") is False
+    assert payload.get("SheetSizeLength") == 240
+    persist.assert_called_once()
+    params = persist.call_args.args[2]
+    assert any(p.get("Value") == cfg20 for p in params)
+    assert any("RenestLinear" in n for n in notes)
+    assert any("40ft→20ft" in n for n in notes)
+
+
+def test_renest_linear_skips_when_already_240():
+    client = MagicMock()
+    client.nest_quote_edit.return_value = {}
+    client.get_json.side_effect = [
+        {"Results": [{"SheetSizeLength": 240, "StockLength": 240}]},
+        {"ItemList": [], "StockList": [{"StockLength": 240}]},
+    ]
+    notes = SecturaFabPushService(client=client).nest_after_finish(
+        "qid-240", item_count=1
+    )
+    client.renest_linear.assert_not_called()
+    assert not any("RenestLinear" in n for n in notes)
+
+
+def test_renest_linear_404_fail_closes():
+    from secturafab.client import SecturaFabApiError
+
+    client = MagicMock()
+    client.nest_quote_edit.return_value = {}
+    client.get_json.side_effect = [
+        {"Results": [{"SheetSizeLength": 480}]},
+        {"ItemList": [], "StockList": []},
+    ]
+    client.renest_linear.side_effect = SecturaFabApiError(
+        "API request failed (404)", status_code=404
+    )
+    with pytest.raises(SecturaFabApiError, match="RenestLinear failed"):
+        SecturaFabPushService(client=client).nest_after_finish("qid-404", item_count=1)
+
+
+def test_renest_linear_still_480_fail_closes():
+    from secturafab.client import SecturaFabApiError
+
+    client = MagicMock()
+    client.nest_quote_edit.return_value = {}
+    client.renest_linear.return_value = {}
+    client.get_json.side_effect = [
+        {"Results": [{"SheetSizeLength": 480}]},
+        {"ItemList": [], "StockList": []},
+        {"Results": [{"SheetSizeLength": 480}]},
+    ]
+    with pytest.raises(SecturaFabApiError, match="still 480"):
+        SecturaFabPushService(client=client).nest_after_finish(
+            "qid-still-480", item_count=1
+        )
 
 
 def test_copy_move_and_weld_page_fn_helpers():

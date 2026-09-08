@@ -86,6 +86,7 @@ from .website import (
     filelist_from_cadimport_upload,
     finish_filelist_kids,
     is_raw_step_upload_row,
+    VALID_LINEAR_PRODUCT_TYPES,
     linear_add_product_type,
     linear_bind_fields,
     linear_lookup_rows,
@@ -4937,64 +4938,155 @@ class SecturaFabPushService:
         notes.extend(self._renest_linear_stock_240(quote_id))
         return notes
 
-    def _renest_linear_stock_240(self, quote_id: str) -> list[str]:
-        """240 vs 480 is StockList.StockLength / stock Length — not a nest POST field."""
+    def _persist_linear_sku_20ft(
+        self,
+        quote_id: str,
+        *,
+        quote: dict[str, Any] | None = None,
+    ) -> list[str]:
+        """Switch LinearConfigList / productConfigID from 40ft → 20ft.
+
+        Uses quoteOnline/update only — never a full-quote POST after packs.
+        """
+        from .quote_update import quote_online_update
+        from .website import (
+            item_linear_config_id,
+            linear_config_stock_feet,
+            linear_lookup_rows,
+            pick_linear_config_id,
+        )
+
         notes: list[str] = []
-        try:
-            nests = self.client.get_json(f"v1/Nest?quoteID={quote_id}&pageSize=50")
-        except SecturaFabApiError:
+        detail = quote if isinstance(quote, dict) and quote.get("ItemList") else None
+        if detail is None:
+            try:
+                raw = self.client.get_json(f"v1/quote/{quote_id}")
+            except SecturaFabApiError:
+                return notes
+            detail = raw if isinstance(raw, dict) else {}
+        params: list[dict[str, Any]] = []
+        switched = 0
+        for it in detail.get("ItemList") or []:
+            if not isinstance(it, dict):
+                continue
+            try:
+                pt = int(it.get("ProductType"))
+            except (TypeError, ValueError):
+                pt = None
+            cat = str(it.get("Category") or it.get("ItemType") or "")
+            if pt not in VALID_LINEAR_PRODUCT_TYPES and cat.casefold() != "linear":
+                continue
+            iid = str(it.get("ID") or "")
+            pid = str(it.get("ProductID") or it.get("productID") or "")
+            if not iid or not is_tenant_guid(pid):
+                continue
+            rows: list[dict[str, Any]] = []
+            if hasattr(self.client, "read_data_linear_lookup"):
+                try:
+                    rows = linear_lookup_rows(self.client.read_data_linear_lookup(pid))
+                except (
+                    SecturaFabApiError,
+                    SecturaFabWebsiteAuthError,
+                    TypeError,
+                    ValueError,
+                ):
+                    rows = []
+            cfg20 = pick_linear_config_id(rows, product_id=pid)
+            if not cfg20:
+                continue
+            current = item_linear_config_id(it)
+            feet = linear_config_stock_feet(rows, current, product_id=pid)
+            if current and current.casefold() == cfg20.casefold() and feet in (20.0, 21.0):
+                continue
+            for pname in (
+                "productConfigID",
+                "LinearConfigList",
+                "LinearProductConfigID",
+            ):
+                params.append({"ID": iid, "ParamName": pname, "Value": cfg20})
+            switched += 1
+        if not params:
             return notes
-        results = nests.get("Results") if isinstance(nests, dict) else nests
-        stock_ids: list[str] = []
-        if isinstance(results, list):
-            for task in results:
-                if not isinstance(task, dict):
-                    continue
-                for key in ("StockID", "StockList", "ProductID"):
-                    val = task.get(key)
-                    if isinstance(val, str) and val:
-                        stock_ids.append(val)
-        saw_480 = False
+        if quote_online_update(self.client, quote_id, params):
+            notes.append(
+                f"Persisted LinearConfigList 40ft→20ft on {switched} linear item(s)"
+            )
+        else:
+            notes.append(
+                "WARNING: could not persist LinearConfigList 40ft→20ft "
+                "(quoteOnline/update) — RenestLinear still required"
+            )
+        return notes
+
+    def _renest_linear_stock_240(self, quote_id: str) -> list[str]:
+        """480 nest SheetSizeLength → POST /Nest/RenestLinear (20ft → 240).
+
+        Never /Quote/NestQuoteMultiPart_Renest (404). Fail-close if 480 stays.
+        """
+        from .website import (
+            LINEAR_RENEST_20FT_IN,
+            build_renest_linear_payload,
+            nest_has_480_stock,
+            nest_task_ids,
+        )
+
+        notes: list[str] = []
+        nest_payload: Any = {}
         try:
-            quote = self.client.get_json(f"v1/quote/{quote_id}")
+            nest_payload = self.client.get_json(f"v1/Nest?quoteID={quote_id}&pageSize=50")
+        except SecturaFabApiError:
+            nest_payload = {}
+        quote: dict[str, Any] = {}
+        try:
+            raw = self.client.get_json(f"v1/quote/{quote_id}")
+            if isinstance(raw, dict):
+                quote = raw
         except SecturaFabApiError:
             quote = {}
-        stock_list = []
-        if isinstance(quote, dict):
-            stock_list = list(quote.get("StockList") or [])
-        for stock in stock_list:
-            if not isinstance(stock, dict):
-                continue
-            length = stock.get("StockLength", stock.get("Length"))
-            try:
-                length_f = float(length)
-            except (TypeError, ValueError):
-                continue
-            if abs(length_f - 480.0) < 0.5:
-                saw_480 = True
-                stock["StockLength"] = 240
-                stock["Length"] = 240
-                sid = stock.get("ID")
-                if sid:
-                    try:
-                        self.client.request(
-                            "POST",
-                            f"v1/stock/{sid}",
-                            json={**stock, "Length": 240, "StockLength": 240},
-                        )
-                    except SecturaFabApiError as exc:
-                        notes.append(f"WARNING: Could not write stock 240: {exc}")
-        if saw_480:
-            try:
-                self.client.nest_quote_multipart_renest(quote_id)
-                notes.append(
-                    "Linear stock was 480 — set 240 and POST /Quote/NestQuoteMultiPart_Renest"
-                )
-            except (SecturaFabWebsiteAuthError, SecturaFabApiError) as exc:
-                notes.append(
-                    f"WARNING: Stock was 480; renest to 240 failed ({exc}). "
-                    "240 vs 480 is StockList.StockLength, not a nest POST field"
-                )
+        saw_480 = nest_has_480_stock(nest_payload) or nest_has_480_stock(
+            {"StockList": quote.get("StockList") or []}
+        )
+        if not saw_480:
+            return notes
+        notes.extend(self._persist_linear_sku_20ft(quote_id, quote=quote))
+        nest_id = None
+        ids = nest_task_ids(nest_payload)
+        if ids:
+            nest_id = ids[0]
+        payload = build_renest_linear_payload(quote_id, nest_id=nest_id)
+        try:
+            self.client.renest_linear(quote_id, extra=payload)
+            notes.append(
+                "Nest SheetSizeLength 480 — POST /Nest/RenestLinear "
+                "(ModalLinearReNest 20ft → 240)"
+            )
+        except SecturaFabWebsiteAuthError as exc:
+            raise SecturaFabApiError(
+                f"Nest stock is 480; POST /Nest/RenestLinear needs session ({exc})",
+                status_code=getattr(exc, "status_code", None),
+            ) from exc
+        except SecturaFabApiError as exc:
+            raise SecturaFabApiError(
+                f"Nest stock is 480; POST /Nest/RenestLinear failed ({exc}). "
+                "Do not call /Quote/NestQuoteMultiPart_Renest.",
+                status_code=exc.status_code,
+                body=exc.body,
+            ) from exc
+        try:
+            after = self.client.get_json(f"v1/Nest?quoteID={quote_id}&pageSize=50")
+        except SecturaFabApiError as exc:
+            raise SecturaFabApiError(
+                f"Nest stock was 480; RenestLinear posted but nest GET failed ({exc})",
+                status_code=exc.status_code,
+                body=exc.body,
+            ) from exc
+        if nest_has_480_stock(after):
+            raise SecturaFabApiError(
+                "Nest stock still 480 after POST /Nest/RenestLinear — fail-closed"
+            )
+        notes.append(
+            f"Nest stock now {int(LINEAR_RENEST_20FT_IN)} after RenestLinear"
+        )
         return notes
 
     def push_job(

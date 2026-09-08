@@ -255,7 +255,7 @@ SetUnits sends one query key `units`. Do not Finish the raw STEP row.
       Total=3 is the wrong/filtered source — not the catalog.
       plate_sku_missing only after this full list has no ≤3/4 match.)
   POST /Quote/NestQuote_Edit
-  POST /Quote/NestQuoteMultiPart_Renest
+  POST /Nest/RenestLinear  (ModalLinearReNest: 20ft → 240; 40ft → 480)
 
 FileList = #gridDXFParts rows with ErrorStatus===0 and Qty>0.
 Finish writes Primary Costs (Laser/Drafting/… under PR; Saw + Saw Setup
@@ -335,8 +335,120 @@ WEBSITE_FINISH_PATHS = {
     "add_feature": "/Quote/AddFeature",
     "quote_item_read": "/Quote/QuoteItem_Read",
     "nest_quote_edit": "/Quote/NestQuote_Edit",
-    "nest_quote_renest": "/Quote/NestQuoteMultiPart_Renest",
+    "renest_linear": "/Nest/RenestLinear",
 }
+
+# ModalLinearReNest: check 40ft → Nest SheetSizeLength 480; check 20ft → 240.
+LINEAR_RENEST_20FT_IN = 240.0
+LINEAR_RENEST_40FT_IN = 480.0
+_NEST_STOCK_LEN_KEYS = ("SheetSizeLength", "StockLength", "SheetLength")
+_NEST_STOCK_HINT_KEYS = frozenset(
+    {
+        "SheetSizeLength",
+        "SheetSizeWidth",
+        "StockLength",
+        "StockID",
+        "SheetLength",
+        "SheetWidth",
+        "StockWidth",
+    }
+)
+
+
+def _nest_stock_length_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number
+
+
+def collect_nest_stock_lengths(payload: Any) -> list[float]:
+    """SheetSizeLength / StockLength from nest GET or quote StockList."""
+    found: list[float] = []
+    seen: set[int] = set()
+
+    def walk(obj: Any, *, stock_ctx: bool) -> None:
+        if isinstance(obj, dict):
+            marker = id(obj)
+            if marker in seen:
+                return
+            seen.add(marker)
+            keys = set(obj)
+            here_stock = stock_ctx or bool(keys & _NEST_STOCK_HINT_KEYS)
+            for key in _NEST_STOCK_LEN_KEYS:
+                number = _nest_stock_length_float(obj.get(key))
+                if number is not None:
+                    found.append(number)
+            if here_stock:
+                number = _nest_stock_length_float(obj.get("Length"))
+                if number is not None:
+                    found.append(number)
+            for key, val in obj.items():
+                child_stock = here_stock or str(key) in {
+                    "StockList",
+                    "Stocks",
+                    "NestStock",
+                }
+                walk(val, stock_ctx=child_stock)
+            return
+        if isinstance(obj, list):
+            for item in obj:
+                walk(item, stock_ctx=stock_ctx)
+
+    walk(payload, stock_ctx=False)
+    return found
+
+
+def nest_has_480_stock(payload: Any) -> bool:
+    """True when nest/quote stock is the 40ft (480) ModalLinearReNest size."""
+    return any(
+        abs(number - LINEAR_RENEST_40FT_IN) < 0.5
+        for number in collect_nest_stock_lengths(payload)
+    )
+
+
+def nest_task_ids(payload: Any) -> list[str]:
+    """Nest task GUIDs from v1/Nest Results/Data."""
+    rows: list[Any] = []
+    if isinstance(payload, dict):
+        raw = payload.get("Results") or payload.get("Data") or payload.get("List")
+        if isinstance(raw, list):
+            rows = raw
+        elif is_tenant_guid(payload.get("ID")):
+            rows = [payload]
+    elif isinstance(payload, list):
+        rows = payload
+    ids: list[str] = []
+    for task in rows:
+        if not isinstance(task, dict):
+            continue
+        for key in ("ID", "NestID", "TaskID", "NestTaskID"):
+            val = task.get(key)
+            if is_tenant_guid(val):
+                ids.append(str(val))
+                break
+    return ids
+
+
+def build_renest_linear_payload(
+    quote_id: str,
+    *,
+    nest_id: str | None = None,
+) -> dict[str, Any]:
+    """ModalLinearReNest submit: 20ft checked → Nest 240; 40ft unchecked."""
+    target = str(nest_id or quote_id or "").strip() or str(quote_id)
+    return {
+        "QuoteID": quote_id,
+        "ID": target,
+        "Length20": True,
+        "Length40": False,
+        "SheetSizeLength": int(LINEAR_RENEST_20FT_IN),
+        "StockLength": int(LINEAR_RENEST_20FT_IN),
+    }
+
 
 # Q10056 Weld calculator shape (website AddOperation, not grafted Laser).
 WELD_CALC_PARAM_TYPE = "weld|perunittime|perunittime|fixedtime|perunitcost"
@@ -4754,6 +4866,41 @@ def pick_linear_config_id(
     if not cid or (wanted and cid == wanted):
         return None
     return cid
+
+
+def item_linear_config_id(item: dict[str, Any] | None) -> str | None:
+    """Current LinearConfigList / productConfigID on a GET item."""
+    if not isinstance(item, dict):
+        return None
+    for key in (
+        "productConfigID",
+        "ProductConfigID",
+        "LinearProductConfigID",
+        "LinearConfigList",
+    ):
+        val = item.get(key)
+        if is_tenant_guid(val):
+            return str(val)
+    return None
+
+
+def linear_config_stock_feet(
+    rows: list[dict[str, Any]] | None,
+    config_id: str | None,
+    *,
+    product_id: str | None = None,
+) -> float | None:
+    """Stock feet for a config GUID from Read_DataLinearlookup rows."""
+    wanted = str(config_id or "").strip()
+    if not wanted:
+        return None
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        guid = _linear_config_guid(row, not_id=product_id)
+        if guid and guid.casefold() == wanted.casefold():
+            return _linear_stock_feet(row)
+    return None
 
 
 def _linear_bind_val(*rows: dict[str, Any] | None, keys: tuple[str, ...]) -> Any:

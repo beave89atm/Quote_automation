@@ -2189,20 +2189,25 @@ class SecturaFabClient:
         )
         return self._parse_website_or_raise(response)
 
-    def nest_quote_multipart_renest(
+    def renest_linear(
         self,
         quote_id: str,
         extra: dict[str, Any] | None = None,
     ) -> Any:
-        """POST /Quote/NestQuoteMultiPart_Renest (e.g. after 480 → 240 stock)."""
-        payload: dict[str, Any] = {"ID": quote_id}
+        """POST /Nest/RenestLinear — ModalLinearReNest 20ft → 240.
+
+        Do not call /Quote/NestQuoteMultiPart_Renest — it 404s on current Sectura.
+        """
+        from .website import build_renest_linear_payload
+
+        payload = build_renest_linear_payload(quote_id)
         if extra:
             payload.update(extra)
         response = self.website_request(
             "POST",
-            WEBSITE_FINISH_PATHS["nest_quote_renest"],
+            WEBSITE_FINISH_PATHS["renest_linear"],
             json=payload,
-            prefer_api_origin=True,
+            prefer_api_origin=False,
             timeout=max(self.config.timeout_seconds, 180.0),
         )
         return self._parse_website_or_raise(response)
