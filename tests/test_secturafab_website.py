@@ -2099,6 +2099,7 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_id("30550221-733a-4baf-866a-73396a0d799b")
     assert is_forbidden_quote_id("7f768328-1a9a-4498-af74-f2aa78b930ef")
     assert is_forbidden_quote_id("3ff05f3a-79a3-48f7-add1-0ea8bbf9d884")
+    assert is_forbidden_quote_id("b15a892e-aca3-47aa-8272-3e436e980468")
     assert is_forbidden_quote_number("1007471-1")
     assert is_forbidden_quote_number("34602-2")
     assert is_forbidden_quote_number("34603-2")
@@ -2118,6 +2119,7 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("21667-1")
     assert is_forbidden_quote_number("21666-1")
     assert is_forbidden_quote_number("21674-1")
+    assert is_forbidden_quote_number("21671-1")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
