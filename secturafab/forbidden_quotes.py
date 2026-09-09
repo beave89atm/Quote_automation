@@ -77,6 +77,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "7f768328-1a9a-4498-af74-f2aa78b930ef",  # 21666-1 PR18 769e05a Long/Saw PASS — do not remint / PATCH
         "3ff05f3a-79a3-48f7-add1-0ea8bbf9d884",  # 21674-1 PR18 998a100 Cad Image Files PASS — do not remint / PATCH
         "b15a892e-aca3-47aa-8272-3e436e980468",  # 21671-1 PR18 998a100 Long/Saw PASS — do not remint / PATCH
+        "fb3080d8-ad8d-4e8b-9902-c5e155ab6dc1",  # 21675-1 PR18 d766fd5 Cad Image Files PASS — do not remint / PATCH
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -149,6 +150,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "7f768328",  # 21666-1 PR18 769e05a Long/Saw PASS (RTD3X0.438-A513 UC 48.21 Time Waco) — do not remint / PATCH
         "3ff05f3a",  # 21674-1 PR18 998a100 Cad Image Files PASS (PL1/4-A572 UC 23.74 Time Laser Bay1) — do not remint / PATCH
         "b15a892e",  # 21671-1 PR18 998a100 Long/Saw PASS (RT2X0.5-A519 UC 9.44 Time Waco) — do not remint / PATCH
+        "fb3080d8",  # 21675-1 PR18 d766fd5 Cad Image Files PASS (PL3/16-A572 UC 22.92 Time Laser Bay1) — do not remint / PATCH
         "d5a6987d",  # 21785-2 Outer Boom STEP @ ab58a96 — InternalData 14/14 empty, ZZ-DEL ARCHIVED — do not remint
         "30f50f96",  # P904272-1 ZZ-DEL before classify @ 0163ffd Login fail — leftover EDIT amtech footer / dead AspNet — do not remint
         "0837ad33",  # P904271-1 @ 0163ffd classify/SetPartMode Cad×3 then InternalData-empty refuse — ZZ-DEL — do not remint
@@ -222,6 +224,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "21666-1",  # spent 7f768328 Long/Saw PASS @ 769e05a — do not remint
         "21674-1",  # spent 3ff05f3a Cad Image Files PASS @ 998a100 — do not remint
         "21671-1",  # spent b15a892e Long/Saw PASS @ 998a100 — do not remint
+        "21675-1",  # spent fb3080d8 Cad Image Files PASS @ d766fd5 — do not remint
         "103535-1",  # spent bd5c2e3e cookie HTTP / empty #gridPDF — do not remint
         "Q10095",  # spent 103535-1 GATE WELDMENT — do not remint
         "34137-4",  # spent 425587a7 — do not remint
