@@ -24,8 +24,9 @@
       "internaldata_empty": true,
       "contours_empty": true,
       "bindable": false,
-      "n": 0,
-      "keys": []
+      "n": 1,
+      "keys": ["SourceDataID", "ID", "FileID", "InternalData", "ImageString"],
+      "empty_keys": ["InternalData"]
     },
     "GET /CadImport/CADData": {
       "method": "GET",
@@ -34,8 +35,10 @@
       "contours_empty": true,
       "bindable": false,
       "editor_preview": true,
-      "n": 0,
-      "keys": []
+      "leftover_preview": true,
+      "n": 1,
+      "keys": ["Length", "Width", "WebGL", "InternalData"],
+      "empty_keys": ["InternalData", "WebGL"]
     }
   },
   "not_fill_xhr": [
@@ -46,6 +49,13 @@
     "GetDXFData",
     "PartImage",
     "Quote/DXFInternal",
-    "GetPerimeterAndWeight"
-  ]
+    "GetPerimeterAndWeight",
+    "CADData editor preview"
+  ],
+  "leftover_caddata_preview": {
+    "Length": 0,
+    "Width": 0,
+    "WebGL": "",
+    "InternalData": ""
+  }
 }

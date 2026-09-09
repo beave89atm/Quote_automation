@@ -1749,6 +1749,11 @@ class SecturaFabPushService:
                 val = payload.get(key)
                 if isinstance(val, list):
                     return [r for r in val if isinstance(r, dict)]
+            from .website import cadimport_leftover_caddata_row
+
+            leftover = cadimport_leftover_caddata_row(payload)
+            if leftover is not None:
+                return [leftover]
         return []
 
     def _dedupe_cadimport_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
