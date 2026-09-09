@@ -8326,14 +8326,15 @@ def test_filetype_cad_empty_body_is_not_success(tmp_path: Path):
     assert "imagestring_empty=true" in blob
     assert "filelist_internaldata_empty=true" in blob
     assert "filelist_imagestring_empty=true" in blob
-    assert "InternalData present-and-empty" in blob
-    assert "not Finishing" in blob
+    assert "partmode_set_allows_empty_internaldata=true" in blob
+    assert "GET 0 Cad after Finish" in blob
     assert "not success" in blob
-    client.add_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_called_once()
+    client.cadimport_update_data_next.assert_not_called()
 
 
 def test_weldment_explode_internaldata_empty_skips_finish(tmp_path: Path):
-    """Live SC0600: n>1 Cad kids, InternalData empty 100%, ImageString mostly on — skip."""
+    """Live SC0600: PartMode set + empty InternalData — Finish, then 0 Cad fail-close."""
     stp = tmp_path / "SC0600.STEP"
     stp.write_bytes(b"ISO")
 
@@ -8402,11 +8403,18 @@ def test_weldment_explode_internaldata_empty_skips_finish(tmp_path: Path):
     client._stale_grid = False
     client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0600"
     client._edit_gate = ""
-    client._finish_via = "skipped"
+    client._finish_via = "page_fn"
     client._setpartmode_via = "page_fn"
     client.create_dxf_parts.return_value = {"List": kids}
     client.cadimport_data.return_value = {"List": kids}
     client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 3,
+    }
     client.quote_item_read.return_value = {"Data": [], "Total": 0}
     client.get_json.return_value = {"ItemList": []}
     with patch(
@@ -8464,14 +8472,15 @@ def test_weldment_explode_internaldata_empty_skips_finish(tmp_path: Path):
     assert "tlist_name_root_n=1" in blob
     assert "tlist_name_jobpn_n=2" in blob
     assert "tlist_name_other_n=0" in blob
-    assert "InternalData present-and-empty" in blob
-    assert "not Finishing" in blob
+    assert "partmode_set_allows_empty_internaldata=true" in blob
+    assert "GET 0 Cad after Finish" in blob
     assert "not success" in blob
-    client.add_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_called_once()
+    client.cadimport_update_data_next.assert_not_called()
 
 
 def test_img_hw_copy_empty_internaldata_is_not_success(tmp_path: Path):
-    """Live FA Assembly 0d4b8a46: #img H/W nonzero + AF + IDList[] still skip."""
+    """Live FA Assembly 0d4b8a46: PartMode set + empty InternalData — Finish then fail-close."""
     stp = tmp_path / "FA-Assembly.STEP"
     stp.write_bytes(b"ISO")
 
@@ -8542,11 +8551,18 @@ def test_img_hw_copy_empty_internaldata_is_not_success(tmp_path: Path):
     client._stale_grid = False
     client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0d4b"
     client._edit_gate = ""
-    client._finish_via = "skipped"
+    client._finish_via = "page_fn"
     client._setpartmode_via = "page_fn"
     client.create_dxf_parts.return_value = {"List": kids}
     client.cadimport_data.return_value = {"List": kids}
     client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 3,
+    }
     client.quote_item_read.return_value = {"Data": [], "Total": 0}
     client.get_json.return_value = {"ItemList": []}
     with patch(
@@ -8606,15 +8622,15 @@ def test_img_hw_copy_empty_internaldata_is_not_success(tmp_path: Path):
     assert "tlist_name_root_n=1" in blob
     assert "tlist_name_jobpn_n=0" in blob
     assert "tlist_name_other_n=2" in blob
-    assert "#img copy is not success" in blob
-    assert "InternalData present-and-empty" in blob
-    assert "not Finishing" in blob
+    assert "partmode_set_allows_empty_internaldata=true" in blob
+    assert "GET 0 Cad after Finish" in blob
     assert "not success" in blob
-    client.add_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_called_once()
+    client.cadimport_update_data_next.assert_not_called()
 
 
 def test_jquery_ajax_edit_empty_internaldata_is_not_success(tmp_path: Path):
-    """Live Skin Assembly 5b622a0d: jquery_ajax + EDIT + #img still skip."""
+    """Live Skin Assembly 5b622a0d: PartMode set + empty InternalData — Finish then fail-close."""
     stp = tmp_path / "Skin-Assembly.STEP"
     stp.write_bytes(b"ISO")
 
@@ -8685,11 +8701,18 @@ def test_jquery_ajax_edit_empty_internaldata_is_not_success(tmp_path: Path):
     client._stale_grid = False
     client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa5b62"
     client._edit_gate = ""
-    client._finish_via = "skipped"
+    client._finish_via = "page_fn"
     client._setpartmode_via = "page_fn"
     client.create_dxf_parts.return_value = {"List": kids}
     client.cadimport_data.return_value = {"List": kids}
     client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 3,
+    }
     client.quote_item_read.return_value = {"Data": [], "Total": 0}
     client.get_json.return_value = {"ItemList": []}
     with patch(
@@ -8746,14 +8769,10 @@ def test_jquery_ajax_edit_empty_internaldata_is_not_success(tmp_path: Path):
     assert "part_create_af_present=true" in blob
     assert "internaldata_empty_n=3/3" in blob
     assert "internaldata_nonempty_n=0" in blob
-    assert "ajax-on-EDIT is not success" in blob
-    assert "server never fills InternalData on explode" in blob.lower() or (
-        "Server never fills InternalData on explode" in blob
-    )
-    assert "InternalData present-and-empty" in blob
-    assert "not Finishing" in blob
+    assert "partmode_set_allows_empty_internaldata=true" in blob
+    assert "GET 0 Cad after Finish" in blob
     assert "not success" in blob
-    client.add_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_called_once()
     client.cadimport_update_data_next.assert_not_called()
 
 
@@ -8796,7 +8815,7 @@ def test_dxf_cookie_http_upload_does_not_bind_griddxf(tmp_path: Path):
     assert "onSuccess_Upload" in blob
 
 
-def test_dxf_page_next_empty_internaldata_does_not_finish(tmp_path: Path):
+def test_dxf_page_next_empty_internaldata_finishes_when_partmode_set(tmp_path: Path):
     """PartMode set + empty InternalData — Finish is attempted (Kyle Loom c9d7)."""
     stp = tmp_path / "P904271-1.STEP"
     stp.write_bytes(b"ISO")
