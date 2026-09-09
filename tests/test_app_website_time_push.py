@@ -1233,17 +1233,85 @@ def test_cookie_addview_302_does_not_block_inpage_mint_when_chrome_signed_in():
         "secturafab.chrome_cdp.chrome_edit_signed_in", return_value=True
     ), patch(
         "secturafab.chrome_cdp.chrome_login_page", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.quotes_list_session_fetch",
+        return_value={"status": 200, "url": "https://www.secturafab.com/Quote", "login": False},
     ):
         ok, notes = service.preflight_website_addview_session()
     assert ok is True
     blob = " ".join(notes)
     assert "chrome_edit_signed_in=true" in blob
+    assert "quotes_fetch_200=true" in blob
     assert "cookie HTTP fail-closed" in blob
     assert "in-page mint proceeds" in blob
     assert "not minting" not in blob
     assert cookie_http_additem_pdffiles_is_not_success(
         {"via": "cookie_http", "ok": True}
     )
+
+
+def test_leftover_edit_amtech_footer_dead_cookie_does_not_mint():
+    """P904272-1: leftover EDIT amtech footer + dead AspNet — Quotes fetch not 200."""
+    from tests.fixtures.live_p904272_1 import (
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        live_p904272_1_session_dump,
+    )
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import live_quotes_fetch_ok
+
+    dump = live_p904272_1_session_dump()
+    assert dump["quote_number"] == SPENT_QUOTE_NUMBER == "P904272-1"
+    assert dump["quote_id_prefix"] == SPENT_QUOTE_ID_PREFIX == "30f50f96"
+    assert dump["edit_footer_amtech"] is True
+    assert dump["aspnet_cookie_live"] is False
+    assert dump["quotes_fetch_200"] is False
+    assert dump["classify_ran"] is False
+    assert live_quotes_fetch_ok(
+        {"status": 200, "url": "https://www.secturafab.com/Quote", "login": False}
+    )
+    assert live_quotes_fetch_ok({"status": 302, "url": "/Account/Login", "login": True}) is False
+    assert live_quotes_fetch_ok({"status": 200, "url": "/Account/Login", "login": True}) is False
+    assert live_quotes_fetch_ok({"status": 0, "via": "missing_tab"}) is False
+    assert is_forbidden_quote_number("P904272-1")
+    assert is_forbidden_quote_id("30f50f96-aaaa-bbbb-cccc-000000000001")
+    assert spent_quote_number_block_reason("P904272-1")
+
+    class _ProbeClient:
+        def probe_addview_session(self):
+            return {
+                "ok": False,
+                "still_302": True,
+                "refreshed": True,
+                "status_code": 302,
+            }
+
+    service = SecturaFabPushService(client=_ProbeClient())
+    with patch(
+        "secturafab.chrome_cdp.chrome_edit_signed_in", return_value=True
+    ), patch(
+        "secturafab.chrome_cdp.chrome_login_page", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.quotes_list_session_fetch",
+        return_value={
+            "status": 302,
+            "url": "https://www.secturafab.com/Account/Login",
+            "login": True,
+            "via": "chrome_dom_fetch",
+        },
+    ):
+        ok, notes = service.preflight_website_addview_session()
+    assert ok is False
+    blob = " ".join(notes)
+    assert "chrome_edit_signed_in=true" in blob
+    assert "quotes_fetch_200=false" in blob
+    assert "quotes_fetch_status=302" in blob
+    assert "P904272-1" in blob
+    assert "not minting" in blob or "not a live session" in blob
 
 
 def test_chrome_login_page_aborts_mint():
@@ -1288,6 +1356,41 @@ def test_step_preflight_session_lost_does_not_mint():
     assert spent_quote_number_block_reason("21785-1")
     assert spent_quote_number_block_reason("21785-3")
     assert spent_quote_number_block_reason("21785-2")
+    assert spent_quote_number_block_reason("P904272-1")
+    client.ensure_quote_antiforgery.assert_not_called()
+
+
+def test_step_preflight_leftover_edit_dead_quotes_fetch_does_not_mint():
+    """P904272-1: leftover EDIT tab + Quotes fetch not 200 — do not mint STEP."""
+    leftover = {
+        "type": "page",
+        "title": "*Quote-P904272-1",
+        "url": (
+            "https://www.secturafab.com/Quote/EDIT/"
+            "30f50f96-aaaa-bbbb-cccc-000000000001"
+        ),
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+    }
+    client = MagicMock()
+    client._af_source = "chrome_dom"
+    service = SecturaFabPushService(client=client)
+    with patch("secturafab.chrome_cdp.quotes_tab", return_value=leftover), patch(
+        "secturafab.chrome_cdp.chrome_login_page", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.quotes_list_session_fetch",
+        return_value={
+            "status": 302,
+            "url": "https://www.secturafab.com/Account/Login",
+            "login": True,
+            "via": "chrome_dom_fetch",
+        },
+    ):
+        notes = service.preflight_step_antiforgery()
+    blob = " ".join(notes)
+    assert "quotes_fetch_status=302" in blob
+    assert "quotes_fetch_200=false" in blob
+    assert "session lost" in blob
+    assert "not minting STEP" in blob
     client.ensure_quote_antiforgery.assert_not_called()
 
 
@@ -1370,6 +1473,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "21785-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "35145-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10243" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "P904272-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("30f50f96-1111-2222-3333-444444444444")
     assert "1001898-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "103535-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "1007756-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS

@@ -1550,14 +1550,36 @@ class SecturaFabPushService:
     def preflight_step_antiforgery(self, quote_id: str = "") -> list[str]:
         """Harvest AF before mint. Chrome Quotes DOM if cookie GET /Quote 302s.
 
-        Session lost (tabs → Login) fail-closes — do not mint and do not
-        Page.navigate leftover Edit tabs (wipes AspNet / stomps every EDIT).
+        Session lost (tabs → Login, or leftover EDIT amtech footer with
+        dead AspNet / Quotes fetch not 200) fail-closes — do not mint and
+        do not Page.navigate leftover Edit tabs (wipes AspNet / stomps
+        every EDIT). Live P904272-1.
         """
         notes: list[str] = []
-        from .chrome_cdp import chrome_session_lost
+        from .chrome_cdp import (
+            chrome_session_lost,
+            quotes_list_session_fetch,
+            quotes_tab,
+        )
+        from .website import live_quotes_fetch_ok
 
+        fetch: dict[str, Any] = {}
         try:
-            lost = bool(chrome_session_lost())
+            if quotes_tab():
+                fetch = quotes_list_session_fetch()
+        except (OSError, TypeError, ValueError):
+            fetch = {}
+        if fetch:
+            try:
+                notes.append(f"quotes_fetch_status={int(fetch.get('status') or 0)}")
+            except (TypeError, ValueError):
+                notes.append("quotes_fetch_status=0")
+            notes.append(
+                "quotes_fetch_200="
+                + ("true" if live_quotes_fetch_ok(fetch) else "false")
+            )
+        try:
+            lost = bool(chrome_session_lost(fetch=fetch or None))
         except (OSError, TypeError, ValueError):
             lost = False
         if lost:
@@ -1596,22 +1618,48 @@ class SecturaFabPushService:
         Cookie GET /Quote or GetItem_AddView 302 after Chrome refresh is
         not logout (CDP omits HttpOnly .AspNet.ApplicationCookie). Do not
         v1/quote then cookie Finish (live 29340-1). In-page mint proceeds
-        when Chrome Quotes/EDIT is signed in (footer amtech). Login page
-        still aborts. Do not ask Kyle to sign in.
+        when Chrome Quotes/EDIT is signed in **and** in-page GET /Quote is
+        200. Leftover EDIT amtech footer with a dead cookie is not a
+        session (live P904272-1). Login page still aborts. Do not ask
+        Kyle to sign in.
         """
-        from .chrome_cdp import chrome_edit_signed_in, chrome_login_page
-        from .website import addview_302_after_refresh_is_fail, inpage_mint_allowed
+        from .chrome_cdp import (
+            chrome_edit_signed_in,
+            chrome_login_page,
+            quotes_list_session_fetch,
+        )
+        from .website import (
+            addview_302_after_refresh_is_fail,
+            inpage_mint_allowed,
+            live_quotes_fetch_ok,
+        )
 
         notes: list[str] = []
         signed_in = False
         login = False
+        fetch: dict[str, Any] = {}
         try:
             signed_in = bool(chrome_edit_signed_in())
             login = bool(chrome_login_page())
         except (OSError, TypeError, ValueError):
             signed_in = False
             login = False
+        try:
+            fetch = quotes_list_session_fetch()
+        except (OSError, TypeError, ValueError):
+            fetch = {}
+        fetch_ok = live_quotes_fetch_ok(fetch)
         notes.append("chrome_edit_signed_in=" + ("true" if signed_in else "false"))
+        try:
+            notes.append(f"quotes_fetch_status={int(fetch.get('status') or 0)}")
+        except (TypeError, ValueError):
+            notes.append("quotes_fetch_status=0")
+        notes.append("quotes_fetch_200=" + ("true" if fetch_ok else "false"))
+        if signed_in and not fetch_ok:
+            notes.append(
+                "leftover EDIT amtech footer is not a live session "
+                "(Quotes fetch not 200; live P904272-1)"
+            )
         cookie_302 = False
         probe_fn = getattr(type(self.client), "probe_addview_session", None)
         if callable(probe_fn):
@@ -1632,6 +1680,7 @@ class SecturaFabPushService:
             chrome_edit_signed_in=signed_in,
             chrome_login=login,
             cookie_addview_302=cookie_302,
+            quotes_fetch_200=fetch_ok,
         ):
             if cookie_302 and signed_in:
                 notes.append(

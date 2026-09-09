@@ -519,10 +519,12 @@ def _chrome_footer_signed_in(
 
 
 def chrome_edit_signed_in(base: str | None = None) -> bool:
-    """Quotes/EDIT signed in (footer amtech). Not Login.
+    """Quotes/EDIT footer amtech. Not Login.
 
     Cookie GET 302 / missing .AspNet.ApplicationCookie from CDP is not
-    logout. Page fetch/XHR sends HttpOnly cookies.
+    logout. Page fetch/XHR sends HttpOnly cookies. Footer amtech on a
+    leftover EDIT is not a live session (live P904272-1) — mint requires
+    ``quotes_list_session_fetch`` 200.
     """
     tab = quotes_tab(base)
     if not isinstance(tab, dict):
@@ -550,9 +552,74 @@ def chrome_login_page(base: str | None = None) -> bool:
     return False
 
 
-def chrome_session_lost(base: str | None = None) -> bool:
-    """AspNet session gone — Quotes/EDIT tabs are Login. Do not navigate."""
-    return chrome_login_page(base)
+_QUOTES_LIST_SESSION_JS = """(function() {
+  return fetch("/Quote", {
+    method: "GET",
+    credentials: "same-origin",
+    redirect: "follow",
+    headers: {
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "X-Requested-With": "XMLHttpRequest"
+    }
+  }).then(function(r) {
+    var url = String(r.url || "");
+    var login = /\\/account\\/login/i.test(url) || /\\/login\\b/i.test(url);
+    return { status: r.status, url: url, login: login };
+  }).catch(function() {
+    return { status: 0, url: "", login: false };
+  });
+})()"""
+
+
+def quotes_list_session_fetch(base: str | None = None) -> dict[str, Any]:
+    """In-page GET /Quote from Quotes list or leftover EDIT. Status only.
+
+    Leftover EDIT can show amtech after AspNet dies (live P904272-1).
+    Do not treat footer amtech as a live session.
+    """
+    tab = quotes_list_tab(base) or quotes_tab(base)
+    if not isinstance(tab, dict) or not tab.get("webSocketDebuggerUrl"):
+        return {"status": 0, "url": "", "login": False, "via": "missing_tab"}
+    raw = _cdp_evaluate_promise(
+        _QUOTES_LIST_SESSION_JS,
+        base=base,
+        tab=tab,
+        fallback=False,
+    )
+    if not isinstance(raw, dict):
+        return {"status": 0, "url": "", "login": False, "via": "chrome_dom_fetch"}
+    try:
+        status = int(raw.get("status") or 0)
+    except (TypeError, ValueError):
+        status = 0
+    return {
+        "status": status,
+        "url": str(raw.get("url") or ""),
+        "login": bool(raw.get("login")),
+        "via": "chrome_dom_fetch",
+    }
+
+
+def chrome_session_lost(
+    base: str | None = None,
+    *,
+    fetch: dict[str, Any] | None = None,
+) -> bool:
+    """AspNet session gone. Leftover EDIT amtech footer is not a live session.
+
+    Login page is lost. No Chrome tab (unit tests) is not lost. A Quotes or
+    leftover EDIT tab requires in-page GET /Quote 200 (live P904272-1).
+    """
+    if chrome_login_page(base):
+        return True
+    if quotes_tab(base) is None:
+        return False
+    from .website import live_quotes_fetch_ok
+
+    probe = fetch if isinstance(fetch, dict) and fetch else quotes_list_session_fetch(
+        base
+    )
+    return not live_quotes_fetch_ok(probe)
 
 
 def quotes_list_tab(base: str | None = None) -> dict[str, Any] | None:

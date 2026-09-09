@@ -217,7 +217,7 @@ ItemList has no InternalData (FileList-at-Finish only). Kyle gold
 Loom is CAD Files → classify → Finish with no per-part editor.
 Kyle Loom c9d7c05a (Q10243 / 35145-1): blue Next → #gridDXFParts Part
 Mode → green Finish. Do not Finish with PartMode still null (live
-21785-2). Do not remint 35145-1 / Q10243 / 21785-1/2/3.
+21785-2). Do not remint 35145-1 / Q10243 / 21785-1/2/3 / P904272-1.
 UpdateDXF_LoadNew is editor-only (not gold): #DXFEdit open +
 CADType==="DXF" + Previous/Next/combobox → UpdateDataNext.
 Live leftover EDIT: WebGLCADDisp undefined, #DXFEdit hidden.
@@ -2364,18 +2364,45 @@ def addview_302_after_refresh_is_fail(probe: dict[str, Any] | None) -> bool:
     return probe.get("ok") is False
 
 
+def live_quotes_fetch_ok(result: dict[str, Any] | None) -> bool:
+    """True only for an in-page GET /Quote that stayed 200 (not Login).
+
+    Leftover EDIT can still paint the amtech footer after AspNet dies
+    (live P904272-1). Footer amtech is not a live session.
+    """
+    if not isinstance(result, dict):
+        return False
+    try:
+        status = int(result.get("status") or 0)
+    except (TypeError, ValueError):
+        return False
+    if status != 200:
+        return False
+    if result.get("login") is True:
+        return False
+    url = str(result.get("url") or result.get("location") or "")
+    if "Login" in url or "/Account/Login" in url or "AccessDenied" in url:
+        return False
+    return True
+
+
 def inpage_mint_allowed(
     *,
     chrome_edit_signed_in: bool,
     chrome_login: bool = False,
     cookie_addview_302: bool = False,
+    quotes_fetch_200: bool | None = None,
 ) -> bool:
     """In-page mint is not gated on the cookie file (live 34603-2).
 
-    Cookie GetItem_AddView 302 does not block when chrome_edit_signed_in.
-    Chrome Login page still aborts. Cookie-only path (302 + not signed in)
-    is the 29340-1 leftover — do not v1/quote then cookie Finish.
+    Cookie GetItem_AddView 302 does not block when chrome_edit_signed_in
+    **and** live Quotes fetch is 200. Leftover EDIT amtech footer with a
+    dead AspNet cookie is not a session (live P904272-1). Chrome Login
+    page still aborts. Cookie-only path (302 + not signed in) is the
+    29340-1 leftover — do not v1/quote then cookie Finish.
     """
+    if chrome_edit_signed_in and quotes_fetch_200 is False:
+        return False
     if chrome_edit_signed_in:
         return True
     if chrome_login:

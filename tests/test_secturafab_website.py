@@ -1115,6 +1115,18 @@ def test_leftover_29340_1_api_mint_cookie_finish_is_fail():
         cookie_addview_302=True,
     ) is True
     assert inpage_mint_allowed(
+        chrome_edit_signed_in=True,
+        chrome_login=False,
+        cookie_addview_302=True,
+        quotes_fetch_200=True,
+    ) is True
+    assert inpage_mint_allowed(
+        chrome_edit_signed_in=True,
+        chrome_login=False,
+        cookie_addview_302=True,
+        quotes_fetch_200=False,
+    ) is False
+    assert inpage_mint_allowed(
         chrome_edit_signed_in=False,
         chrome_login=True,
         cookie_addview_302=True,
@@ -5696,6 +5708,58 @@ def test_chrome_edit_signed_in_not_login_and_login_aborts():
         assert chrome_login_page("http://127.0.0.1:9224") is True
 
 
+def test_chrome_session_lost_when_leftover_edit_quotes_fetch_not_200():
+    """P904272-1: leftover EDIT amtech footer is not a live session."""
+    from secturafab.chrome_cdp import chrome_session_lost
+    from secturafab.website import live_quotes_fetch_ok
+
+    leftover = {
+        "type": "page",
+        "title": "*Quote-P904272-1",
+        "url": (
+            "https://www.secturafab.com/Quote/EDIT/"
+            "30f50f96-aaaa-bbbb-cccc-000000000001"
+        ),
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+    }
+    dead = {
+        "status": 302,
+        "url": "https://www.secturafab.com/Account/Login",
+        "login": True,
+        "via": "chrome_dom_fetch",
+    }
+    live = {
+        "status": 200,
+        "url": "https://www.secturafab.com/Quote",
+        "login": False,
+        "via": "chrome_dom_fetch",
+    }
+    assert live_quotes_fetch_ok(dead) is False
+    assert live_quotes_fetch_ok(live) is True
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[leftover]
+    ), patch(
+        "secturafab.chrome_cdp._chrome_footer_signed_in",
+        return_value={"amtech": True, "login": False},
+    ), patch(
+        "secturafab.chrome_cdp.quotes_list_session_fetch", return_value=dead
+    ):
+        assert chrome_session_lost("http://127.0.0.1:9224") is True
+        assert chrome_session_lost("http://127.0.0.1:9224", fetch=dead) is True
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[leftover]
+    ), patch(
+        "secturafab.chrome_cdp._chrome_footer_signed_in",
+        return_value={"amtech": True, "login": False},
+    ), patch(
+        "secturafab.chrome_cdp.quotes_list_session_fetch", return_value=live
+    ):
+        assert chrome_session_lost("http://127.0.0.1:9224") is False
+        assert chrome_session_lost("http://127.0.0.1:9224", fetch=live) is False
+    with patch("secturafab.chrome_cdp.list_chrome_targets", return_value=[]):
+        assert chrome_session_lost("http://127.0.0.1:9224") is False
+
+
 def test_quote_edit_tab_matches_star_quote_title_and_edit_url():
     """Live a64509d: QuoteOrderEdit is *Quote-{PN} on /Quote/EDIT/{id}."""
     from secturafab.chrome_cdp import (
@@ -9014,6 +9078,8 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert LIVE_PART_CREATE_TLIST_BIND is None
     assert is_forbidden_quote_number("35145-1")
     assert is_forbidden_quote_number("Q10243")
+    assert is_forbidden_quote_number("P904272-1")
+    assert is_forbidden_quote_id("30f50f96-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_number("21785-1")
     assert is_forbidden_quote_number("21785-2")
     assert is_forbidden_quote_number("21785-3")
