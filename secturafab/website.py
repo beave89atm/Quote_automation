@@ -1656,16 +1656,19 @@ def filelist_post_key_shape(row: dict[str, Any] | None) -> dict[str, list[str]]:
 def page_dxf_finish_skip_why(rows: list[dict[str, Any]] | None) -> str | None:
     """Why page OnAddDXFClick is skipped. None means invoke the green Finish.
 
-    Live 10289-4: PartMode Cad was set but page Finish skipped for empty
-    InternalData (``filelist_cad_payload_empty``) then a reconstructed
-    FileList 200 / GET 0. Kyle Loom c9d7 clicks green Finish after Part
-    Mode without filling Cad L×W / CadType / InternalData. When every
-    kid has PartMode, invoke page Finish. Still skip if PartMode is
-    null and payload / CadType+Stock look empty. Do not invent values.
+    Live 28768-1: PartMode Cad + page Finish with InternalData null /
+    OutsidePerimeter 0 / ProductSubType bar_flat → HTTP 200 / GET 0 Cad.
+    Cad explode InternalData empty is fail-close before Finish (do not
+    invent). PartMode set still allows page Finish when InternalData is
+    present even if CadType/Stock look empty (live 10289-4 reconstructed
+    skip). PartMode null + empty payload still skip.
     """
-    kids = [r for r in (rows or []) if isinstance(r, dict)]
+    kids = [sanitize_cad_partmode_filelist_row(r) for r in (rows or []) if isinstance(r, dict)]
     if not kids:
         return "empty_dataSource"
+    for row in kids:
+        if cad_filelist_refuses_additem_dxf(row):
+            return "cad_internaldata_empty_after_explode"
     if filelist_kids_partmode_set(kids):
         return None
     row0 = kids[0]
@@ -1684,28 +1687,37 @@ def page_dxf_finish_skip_why(rows: list[dict[str, Any]] | None) -> str | None:
 
 
 def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
-    """Refuse AddItem_DXFFiles when InternalData is empty and PartMode is unset.
+    """Refuse AddItem_DXFFiles when Cad InternalData is empty.
 
-    Kyle Loom c9d7 / live P904271-1: after Part Mode classify, Finish even
-    if InternalData is still empty — packs land after AddItem_DXFFiles.
-    ImageString-without-InternalData **and** PartMode null is still refuse
-    (preview only; live 21785-2). Do not invent InternalData.
+    Live 28768-1: PartMode Cad + page Finish with InternalData null
+    landed GET 0 Cad. Kyle Loom c9d7 Cad plates Finish with real
+    profile geometry from explode — do not invent InternalData.
+    ImageString-without-InternalData is preview only (live 21785-2).
     """
     from secturafab.cadimport_js import NEEDS_INTERNALDATA_FILL_XHR
 
     if not isinstance(row, dict) or not is_cad_filelist_row(row):
         return None
-    if filelist_row_partmode_set(row):
+    if not cad_payload_value_empty(row.get("InternalData")):
+        if cad_filelist_contours_would_be_zero(row):
+            return (
+                "Cad FileList Contours would be 0 — "
+                "refusing AddItem_DXFFiles. "
+                f"{NEEDS_INTERNALDATA_FILL_XHR}: classify→Finish has no named "
+                "InternalData fill XHR (not UpdateDXF_LoadNew / UpdateDataNext / "
+                "SetPartMode / unfold). "
+                "Do not invent InternalData."
+            )
         return None
     if not (
-        cad_filelist_payload_blocks_finish(row)
-        or cad_filelist_contours_would_be_zero(row)
+        filelist_row_partmode_set(row)
+        or cad_filelist_payload_blocks_finish(row)
         or imagestring_without_internaldata_refuses_finish(row)
     ):
         return None
     return (
-        "Cad FileList InternalData empty / Contours would be 0 — "
-        "refusing AddItem_DXFFiles. "
+        "Cad FileList InternalData empty after explode — "
+        "refusing AddItem_DXFFiles (live 28768-1; ZZ-DEL). "
         "ImageString-without-InternalData is preview only (live 21785-2). "
         f"{NEEDS_INTERNALDATA_FILL_XHR}: classify→Finish has no named "
         "InternalData fill XHR (not UpdateDXF_LoadNew / UpdateDataNext / "
@@ -1759,9 +1771,11 @@ def kendo_filelist_for_finish(
     src_rows = [r for r in (rows or []) if isinstance(r, dict)]
     filled = fill_kendo_filelist_sourcedataid(src_rows)
     filled = [
-        persist_setpartmode_filetype(
-            copy_cadimport_identity_through(
-                src_rows[i] if i < len(src_rows) else {}, dest
+        sanitize_cad_partmode_filelist_row(
+            persist_setpartmode_filetype(
+                copy_cadimport_identity_through(
+                    src_rows[i] if i < len(src_rows) else {}, dest
+                )
             )
         )
         for i, dest in enumerate(filled)
@@ -1775,22 +1789,27 @@ def kendo_filelist_for_finish(
     row0 = filled[0] if filled else None
     payload_block = cad_filelist_payload_blocks_finish(row0)
     refuse = cad_filelist_refuses_additem_dxf(row0)
-    # Kyle Loom c9d7 / live 10289-4: PartMode set → page Finish even if
-    # InternalData / CadType / Stock look empty. Do not skip to a
-    # reconstructed FileList.
+    # PartMode set still allows missing CadType/Stock (live 10289-4).
+    # Empty Cad InternalData after explode is fail-close (live 28768-1).
     partmode_ready = filelist_kids_partmode_set(filled)
-    if partmode_ready:
-        payload_block = False
-        refuse = None
     why = ""
     if n > 0 and sid_n == 0:
         why = "filelist_missing_ids"
+    elif refuse:
+        if (
+            row0 is not None
+            and not cad_payload_value_empty(row0.get("InternalData"))
+            and cad_filelist_contours_would_be_zero(row0)
+        ):
+            why = "filelist_contours_zero"
+        elif payload_block and not partmode_ready:
+            why = "filelist_cad_payload_empty"
+        else:
+            why = "cad_internaldata_empty_after_explode"
+    elif payload_block and not partmode_ready:
+        why = "filelist_cad_payload_empty"
     elif ident_miss and not partmode_ready:
         why = "filelist_missing_keys=" + "+".join(ident_miss)
-    elif payload_block:
-        why = "filelist_cad_payload_empty"
-    elif refuse:
-        why = "filelist_contours_zero"
     elif not from_kendo:
         why = "filelist_not_kendo"
     return {
@@ -1805,9 +1824,8 @@ def kendo_filelist_for_finish(
         "kendo_row_keys": kendo_identity_log_keys(filled[0]) if filled else [],
         "should_finish": bool(
             from_kendo
-            and not payload_block
             and not refuse
-            and (partmode_ready or not ident_miss)
+            and (partmode_ready or (not payload_block and not ident_miss))
         ),
         **filelist_errorstatus_qty(filled[0] if filled else None),
         **filelist_filetype_value_type(filled[0] if filled else None),
@@ -4218,6 +4236,89 @@ def filelist_producttype_is_linear_bar(value: Any) -> bool:
     return text == "bar" or text.startswith("bar_")
 
 
+_LINEAR_FILELIST_SUBTYPES = frozenset(
+    {
+        "bar",
+        "bar_flat",
+        "bar_round",
+        "bar_sq",
+        "tube",
+        "pipe",
+        "channel",
+        "angle",
+        "struct_ang",
+        "structural",
+        "hss",
+        "beam",
+    }
+)
+
+
+def filelist_productsubtype_is_linear(value: Any) -> bool:
+    """Linear catalog / grid-default ProductSubType — not Cad plate."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    if filelist_producttype_is_linear_bar(text):
+        return True
+    return text in _LINEAR_FILELIST_SUBTYPES or text.startswith("struct_")
+
+
+def cad_partmode_row(row: dict[str, Any] | None) -> bool:
+    """True when FileList row is Cad PartMode / Cad FileType (plate)."""
+    if not isinstance(row, dict):
+        return False
+    if is_cad_filelist_row(row):
+        return True
+    if filelist_row_partmode_set(row):
+        try:
+            return int(row.get("PartMode")) == 0
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+def sanitize_cad_partmode_filelist_row(
+    row: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Cad PartMode: drop Linear ProductSubType (live 28768-1 bar_flat).
+
+    Do not invent prt_dxf / Contours / InternalData. Preserve explode
+    InternalData when already nonempty.
+    """
+    if not isinstance(row, dict):
+        return {}
+    out = dict(row)
+    if not cad_partmode_row(out):
+        return out
+    if filelist_productsubtype_is_linear(out.get("ProductSubType")):
+        out.pop("ProductSubType", None)
+    return out
+
+
+def copy_explode_internaldata_through(
+    src_rows: list[dict[str, Any]] | None,
+    dest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Copy nonempty explode InternalData onto dest. Never invent values."""
+    out = dict(dest) if isinstance(dest, dict) else {}
+    if not cad_payload_value_empty(out.get("InternalData")):
+        return out
+    sid = str(out.get("SourceDataID") or out.get("ID") or out.get("FileID") or "")
+    for src in src_rows or []:
+        if not isinstance(src, dict):
+            continue
+        ssid = str(src.get("SourceDataID") or src.get("ID") or src.get("FileID") or "")
+        if not sid or not ssid or sid != ssid:
+            continue
+        if not cad_payload_value_empty(src.get("InternalData")):
+            out["InternalData"] = src["InternalData"]
+        if not cad_payload_value_empty(src.get("InternalHTML")):
+            out["InternalHTML"] = src["InternalHTML"]
+        break
+    return out
+
+
 def filelist_producttype_is_plate_or_sheet(value: Any) -> bool:
     """Cad Image Files plate/sheet family — QuoteOrderEdit prt_pdf / plate / sheet."""
     text = str(value or "").strip().lower()
@@ -5967,6 +6068,8 @@ def overlay_classified_row(
         out["Machine"] = machine or out.get("Machine") or "Laser - Bay1"
         if str(out["Machine"]).casefold() == "laser":
             out["Machine"] = "Laser - Bay1"
+        if filelist_productsubtype_is_linear(out.get("ProductSubType")):
+            out.pop("ProductSubType", None)
     out["ErrorStatus"] = _error_status(out)
     if out.get("Status") in (None, "", 0, "0"):
         out["Status"] = 1

@@ -8,9 +8,10 @@ Kyle Loom c9d7 clicks green Finish after Part Mode without filling
 Cad L×W / CadType / InternalData on the classify grid. Packs stamp
 after page Finish. Do not remint 10289-4 / 1004f017.
 
-The page never posted a FileList body on this quote. Posted FileList
-shape (keys + nonempty names only) lives in
-``LIVE_ADDITEM_DXF_FILELIST_POST`` — None until a live page hit.
+The page never posted a FileList body on this quote. Live FileList
+shape (keys + nonempty names only) is in
+``LIVE_ADDITEM_DXF_FILELIST_POST`` from 28768-1 @ f656655
+(bar_flat + empty InternalData — refuse that Cad Finish).
 Do not invent InternalData / CadType / Stock values.
 """
 

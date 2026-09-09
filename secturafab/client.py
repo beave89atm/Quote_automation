@@ -1413,8 +1413,10 @@ class SecturaFabClient:
         If EDIT kendo lacks CadType/Stock_X/Stock_Y after explode and
         PartMode is still null, that is a /part/create bind miss — do not
         Finish and do not invent geometry. Kyle Loom c9d7 / live 10289-4:
-        when PartMode is set on every kid, invoke page OnAddDXFClick even
-        if InternalData / CadType / Stock look empty.
+        when PartMode is set and explode InternalData is present, invoke
+        page OnAddDXFClick even if CadType / Stock look empty. Live
+        28768-1: empty InternalData after explode is refuse-before-Finish
+        (page OnAddDXFClick alone lands GET 0 Cad).
         """
         from .chrome_cdp import (
             chrome_quotes_live,

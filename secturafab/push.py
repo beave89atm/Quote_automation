@@ -2772,12 +2772,14 @@ class SecturaFabPushService:
         (not a Finish-hook miss): do not Finish.
         ``GetPerimeterAndWeight`` remains ``#gridPDF`` only — not CAD
         InternalData.         After PartMode is set on every kid, invoke page green Finish /
-        OnAddDXFClick even if InternalData / CadType / Stock look empty
-        (Kyle Loom c9d7; live 10289-4 / P904271-1). Do not skip to a
-        reconstructed FileList. ImageString-only without PartMode still
-        refuses. After Finish, require Cad Contours≥1 + PR + laser
-        (and Linear Saw if Linear). Do not invent InternalData. Do not
-        fire UpdateDataNext. 21678-1 is UI-only gold — do not open.
+        OnAddDXFClick when explode InternalData is present, even if
+        CadType / Stock look empty (live 10289-4). Cad InternalData
+        empty after explode is fail-close before Finish (live 28768-1
+        page Finish HTTP 200 / GET 0). Clear Linear ProductSubType
+        (bar_flat) on Cad PartMode rows. Do not invent InternalData.
+        After Finish, require Cad Contours≥1 + PR + laser (Linear Saw
+        if Linear). Do not fire UpdateDataNext. 21678-1 is UI-only
+        gold — do not open.
         """
         notes: list[str] = []
         from .chrome_cdp import chrome_session_lost
@@ -3097,11 +3099,22 @@ class SecturaFabPushService:
             qty=qty,
             part_key=part_key,
         )
+        from .website import (
+            copy_explode_internaldata_through,
+            sanitize_cad_partmode_filelist_row,
+        )
+
+        classified = [
+            sanitize_cad_partmode_filelist_row(
+                copy_explode_internaldata_through(kids, row)
+            )
+            for row in classified
+        ]
         notes.extend(class_notes)
         from .chrome_cdp import apply_grid_dxf_part_modes
         from .website import (
-            cad_filelist_payload_blocks_finish,
             cad_filelist_refuses_additem_dxf,
+            cad_payload_value_empty,
             filelist_cad_payload_empty_bools,
             filelist_missing_cadimport_identity_keys,
         )
@@ -3211,16 +3224,16 @@ class SecturaFabPushService:
                         "live 107292-1)"
                     )
                     return notes
-        cad_block = next(
-            (r for r in ready if cad_filelist_payload_blocks_finish(r)),
-            None,
-        )
         cad_refuse = next(
-            (cad_filelist_refuses_additem_dxf(r) for r in ready if cad_filelist_refuses_additem_dxf(r)),
+            (
+                cad_filelist_refuses_additem_dxf(r)
+                for r in ready
+                if cad_filelist_refuses_additem_dxf(r)
+            ),
             None,
         )
-        if cad_block is not None or cad_refuse:
-            row = cad_block or next(
+        if cad_refuse:
+            row = next(
                 (r for r in ready if cad_filelist_refuses_additem_dxf(r)),
                 None,
             )
@@ -3233,24 +3246,14 @@ class SecturaFabPushService:
                 "filelist_imagestring_empty="
                 + ("true" if bools["filelist_imagestring_empty"] else "false")
             )
-            partmode_ready = not classified_kids_missing_part_mode(ready)
-            if partmode_ready:
-                notes.append("partmode_set_allows_empty_internaldata=true")
+            notes.append(cad_refuse)
+            if cad_payload_value_empty((row or {}).get("InternalData")):
                 notes.append(
-                    "Kyle Loom c9d7 Finish after Part Mode — InternalData "
-                    "may land after AddItem_DXFFiles (live P904271-1)"
+                    "Cad FileList InternalData empty after explode — "
+                    "page Finish lands GET 0 Cad (live 28768-1). "
+                    "not Finishing; do not invent InternalData; not success"
                 )
-            else:
-                if cad_refuse:
-                    notes.append(cad_refuse)
-                if cad_block is not None:
-                    notes.append(
-                        "Cad FileList InternalData present-and-empty — "
-                        "ImageString-only without PartMode is preview "
-                        "(live 21785-2). not Finishing; do not invent "
-                        "InternalData; not success"
-                    )
-                return notes
+            return notes
         result = self.client.add_item_dxf_files(
             quote_id=quote_id,
             file_list=ready,

@@ -6465,6 +6465,7 @@ def test_setpartmode_filetype_survives_into_filelist():
         "ItemType": "Cad",
         "Category": "Cad",
         "PartMode": 0,
+        "InternalData": "server-stamped",
         "Name": "EAR",
     }
     cap = kendo_filelist_for_finish([src], from_datasource=True)
@@ -6698,7 +6699,7 @@ def test_filelist_errorstatus_qty_and_filetype_value_type():
 
 
 def test_kendo_without_cadimport_identity_skips_finish(tmp_path: Path):
-    """PartMode set + missing CadType/Stock → page Finish, then 0 Cad fail-close."""
+    """PartMode set + empty explode InternalData → refuse Finish (live 28768-1)."""
     stp = tmp_path / "107292-1.STEP"
     stp.write_bytes(b"ISO")
     kids = [
@@ -6768,7 +6769,7 @@ def test_kendo_without_cadimport_identity_skips_finish(tmp_path: Path):
             explode_polls=1,
             explode_sleep_s=0,
         )
-    client.add_item_dxf_files.assert_called_once()
+    client.add_item_dxf_files.assert_not_called()
     blob = " ".join(notes)
     assert "kendo_row_keys=" in blob
     assert "filelist_missing_keys=CadType,Stock_X,Stock_Y" in blob or (
@@ -6778,8 +6779,11 @@ def test_kendo_without_cadimport_identity_skips_finish(tmp_path: Path):
         and "Stock_Y" in blob
     )
     assert "partmode_set_allows_empty_cadtype_stock=true" in blob
-    assert "not Finishing" not in blob
-    assert "GET 0 Cad after Finish" in blob
+    assert "refusing AddItem_DXFFiles" in blob
+    assert "cad_internaldata_empty_after_explode" in blob or (
+        "InternalData empty after explode" in blob
+    )
+    assert "not Finishing" in blob
     assert "not success" in blob
 
 
@@ -8335,15 +8339,16 @@ def test_filetype_cad_empty_body_is_not_success(tmp_path: Path):
     assert "imagestring_empty=true" in blob
     assert "filelist_internaldata_empty=true" in blob
     assert "filelist_imagestring_empty=true" in blob
-    assert "partmode_set_allows_empty_internaldata=true" in blob
-    assert "GET 0 Cad after Finish" in blob
+    assert "refusing AddItem_DXFFiles" in blob
+    assert "InternalData empty after explode" in blob
+    assert "not Finishing" in blob
     assert "not success" in blob
-    client.add_item_dxf_files.assert_called_once()
+    client.add_item_dxf_files.assert_not_called()
     client.cadimport_update_data_next.assert_not_called()
 
 
 def test_weldment_explode_internaldata_empty_skips_finish(tmp_path: Path):
-    """Live SC0600: PartMode set + empty InternalData — Finish, then 0 Cad fail-close."""
+    """Live SC0600: PartMode set + empty InternalData — refuse Finish (28768-1)."""
     stp = tmp_path / "SC0600.STEP"
     stp.write_bytes(b"ISO")
 
@@ -8481,15 +8486,16 @@ def test_weldment_explode_internaldata_empty_skips_finish(tmp_path: Path):
     assert "tlist_name_root_n=1" in blob
     assert "tlist_name_jobpn_n=2" in blob
     assert "tlist_name_other_n=0" in blob
-    assert "partmode_set_allows_empty_internaldata=true" in blob
-    assert "GET 0 Cad after Finish" in blob
+    assert "refusing AddItem_DXFFiles" in blob
+    assert "InternalData empty after explode" in blob
+    assert "not Finishing" in blob
     assert "not success" in blob
-    client.add_item_dxf_files.assert_called_once()
+    client.add_item_dxf_files.assert_not_called()
     client.cadimport_update_data_next.assert_not_called()
 
 
 def test_img_hw_copy_empty_internaldata_is_not_success(tmp_path: Path):
-    """Live FA Assembly 0d4b8a46: PartMode set + empty InternalData — Finish then fail-close."""
+    """Live FA Assembly 0d4b8a46: empty InternalData refuses Finish (28768-1)."""
     stp = tmp_path / "FA-Assembly.STEP"
     stp.write_bytes(b"ISO")
 
@@ -8631,15 +8637,16 @@ def test_img_hw_copy_empty_internaldata_is_not_success(tmp_path: Path):
     assert "tlist_name_root_n=1" in blob
     assert "tlist_name_jobpn_n=0" in blob
     assert "tlist_name_other_n=2" in blob
-    assert "partmode_set_allows_empty_internaldata=true" in blob
-    assert "GET 0 Cad after Finish" in blob
+    assert "refusing AddItem_DXFFiles" in blob
+    assert "InternalData empty after explode" in blob
+    assert "not Finishing" in blob
     assert "not success" in blob
-    client.add_item_dxf_files.assert_called_once()
+    client.add_item_dxf_files.assert_not_called()
     client.cadimport_update_data_next.assert_not_called()
 
 
 def test_jquery_ajax_edit_empty_internaldata_is_not_success(tmp_path: Path):
-    """Live Skin Assembly 5b622a0d: PartMode set + empty InternalData — Finish then fail-close."""
+    """Live Skin Assembly 5b622a0d: empty InternalData refuses Finish (28768-1)."""
     stp = tmp_path / "Skin-Assembly.STEP"
     stp.write_bytes(b"ISO")
 
@@ -8778,10 +8785,11 @@ def test_jquery_ajax_edit_empty_internaldata_is_not_success(tmp_path: Path):
     assert "part_create_af_present=true" in blob
     assert "internaldata_empty_n=3/3" in blob
     assert "internaldata_nonempty_n=0" in blob
-    assert "partmode_set_allows_empty_internaldata=true" in blob
-    assert "GET 0 Cad after Finish" in blob
+    assert "refusing AddItem_DXFFiles" in blob
+    assert "InternalData empty after explode" in blob
+    assert "not Finishing" in blob
     assert "not success" in blob
-    client.add_item_dxf_files.assert_called_once()
+    client.add_item_dxf_files.assert_not_called()
     client.cadimport_update_data_next.assert_not_called()
 
 
@@ -8825,7 +8833,7 @@ def test_dxf_cookie_http_upload_does_not_bind_griddxf(tmp_path: Path):
 
 
 def test_dxf_page_next_empty_internaldata_finishes_when_partmode_set(tmp_path: Path):
-    """PartMode set + empty InternalData — Finish is attempted (Kyle Loom c9d7)."""
+    """PartMode set + empty InternalData — refuse Finish before AddItem_DXFFiles."""
     stp = tmp_path / "P904271-1.STEP"
     stp.write_bytes(b"ISO")
     kid = {
@@ -8912,14 +8920,15 @@ def test_dxf_page_next_empty_internaldata_finishes_when_partmode_set(tmp_path: P
             explode_sleep_s=0,
         )
     client.upload_item_dxf_files.assert_not_called()
-    client.add_item_dxf_files.assert_called_once()
+    client.add_item_dxf_files.assert_not_called()
     client.cadimport_update_data_next.assert_not_called()
     blob = " ".join(notes)
     assert "next_via=createAllParts" in blob
     assert "kyle_classify_before_finish=true" in blob
-    assert "partmode_set_allows_empty_internaldata=true" in blob
-    assert "refusing AddItem_DXFFiles" not in blob
-    assert "GET 0 Cad after Finish" in blob or "Cad Contours empty after Finish" in blob
+    assert "refusing AddItem_DXFFiles" in blob
+    assert "InternalData empty after explode" in blob
+    assert "not Finishing" in blob
+    assert "not success" in blob
 
 
 def test_dxf_page_next_nonempty_internaldata_finishes(tmp_path: Path):
@@ -9114,9 +9123,11 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("P904272-1")
     assert is_forbidden_quote_number("P904271-1")
     assert is_forbidden_quote_number("10289-4")
+    assert is_forbidden_quote_number("28768-1")
     assert is_forbidden_quote_id("30f50f96-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("0837ad33-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("1004f017-aaaa-bbbb-cccc-000000000001")
+    assert is_forbidden_quote_id("28708035-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_number("21785-1")
     assert is_forbidden_quote_number("21785-2")
     assert is_forbidden_quote_number("21785-3")
@@ -9485,7 +9496,7 @@ def test_finish_cad_files_after_finish_empty_internaldata_is_not_success(
 
 
 def test_partmode_set_empty_internaldata_allows_additem_dxf():
-    """P904271-1 / Kyle Loom c9d7: PartMode set → Finish even if InternalData empty."""
+    """Live 28768-1: PartMode set + empty InternalData refuses AddItem_DXFFiles."""
     from secturafab.website import (
         cad_filelist_refuses_additem_dxf,
         cad_finish_notes_pack_missing,
@@ -9520,7 +9531,7 @@ def test_partmode_set_empty_internaldata_allows_additem_dxf():
     assert kyle_classify_before_finish_blocked(classified) is None
     for row in classified:
         assert imagestring_without_internaldata_refuses_finish(row) is True
-        assert cad_filelist_refuses_additem_dxf(row) is None
+        assert cad_filelist_refuses_additem_dxf(row) is not None
     kendo_rows = [
         {
             "ID": "id-0",
@@ -9538,7 +9549,8 @@ def test_partmode_set_empty_internaldata_allows_additem_dxf():
         }
     ]
     cap = kendo_filelist_for_finish(kendo_rows, from_datasource=True)
-    assert cap["should_finish"] is True
+    assert cap["should_finish"] is False
+    assert cap["finish_why"] == "cad_internaldata_empty_after_explode"
     assert cap["filelist_internaldata_empty"] is True
     null_row = {
         "Name": "KID-0 PLATE",
@@ -9615,8 +9627,96 @@ def test_partmode_set_empty_internaldata_allows_additem_dxf():
     assert cad_finish_notes_pack_missing(["kyle_classify_before_finish=true"]) is None
 
 
+def test_cad_partmode_clears_bar_flat_and_copies_explode_internaldata():
+    """Cad PartMode FileList must not ship Linear bar_flat; copy explode ID only."""
+    from secturafab.website import (
+        copy_explode_internaldata_through,
+        filelist_productsubtype_is_linear,
+        overlay_classified_row,
+        sanitize_cad_partmode_filelist_row,
+    )
+
+    assert filelist_productsubtype_is_linear("bar_flat") is True
+    assert filelist_productsubtype_is_linear("prt_dxf") is False
+    posted = {
+        "FileType": "Cad",
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "PartMode": 0,
+        "ProductType": "100",
+        "ProductSubType": "bar_flat",
+        "IsPlate": True,
+        "IsLinear": False,
+        "InternalData": None,
+        "SourceDataID": "src-1",
+        "ID": "id-1",
+        "FileID": "file-1",
+    }
+    cleaned = sanitize_cad_partmode_filelist_row(posted)
+    assert "ProductSubType" not in cleaned
+    assert cleaned["PartMode"] == 0
+    assert cleaned["FileType"] == "Cad"
+    assert cleaned.get("InternalData") is None
+    linear = sanitize_cad_partmode_filelist_row(
+        {
+            "FileType": "Linear",
+            "Category": "Linear",
+            "PartMode": 1,
+            "ProductSubType": "bar_flat",
+        }
+    )
+    assert linear["ProductSubType"] == "bar_flat"
+    overlaid = overlay_classified_row(
+        {
+            "Name": "28768-1",
+            "ProductSubType": "bar_flat",
+            "InternalData": None,
+        },
+        category="Cad",
+        material="A36",
+        thickness="3",
+        machine="Laser - Bay1",
+    )
+    assert overlaid.get("ProductSubType") in (None, "")
+    assert "ProductSubType" not in overlaid
+    explode = [
+        {
+            "SourceDataID": "src-1",
+            "ID": "id-1",
+            "FileID": "file-1",
+            "InternalData": "server-stamped",
+            "InternalHTML": "<svg/>",
+        }
+    ]
+    dest = {
+        "SourceDataID": "src-1",
+        "ID": "id-1",
+        "FileID": "file-1",
+        "InternalData": None,
+        "FileType": "Cad",
+        "PartMode": 0,
+    }
+    copied = copy_explode_internaldata_through(explode, dest)
+    assert copied["InternalData"] == "server-stamped"
+    assert copied["InternalHTML"] == "<svg/>"
+    empty_src = copy_explode_internaldata_through(
+        [{"SourceDataID": "src-1", "InternalData": None}],
+        dest,
+    )
+    assert empty_src.get("InternalData") is None
+    other = copy_explode_internaldata_through(
+        [{"SourceDataID": "other", "InternalData": "nope"}],
+        dest,
+    )
+    assert other.get("InternalData") is None
+    keep = copy_explode_internaldata_through(
+        explode, {**dest, "InternalData": "already"}
+    )
+    assert keep["InternalData"] == "already"
+
+
 def test_partmode_set_invokes_page_finish_when_payload_and_cadtype_empty():
-    """Live 10289-4: PartMode set → page Finish even if InternalData/CadType empty."""
+    """Live 28768-1 empty InternalData fail-close; 10289-4 still Finishes with ID."""
     from secturafab.chrome_cdp import _PAGE_FINISH_JS
     from secturafab.website import (
         filelist_post_key_shape,
@@ -9632,6 +9732,11 @@ def test_partmode_set_invokes_page_finish_when_payload_and_cadtype_empty():
     from tests.fixtures.live_additem_dxf_filelist_post import (
         LIVE_ADDITEM_DXF_FILELIST_POST,
     )
+    from tests.fixtures.live_28768_1 import (
+        SPENT_QUOTE_ID_PREFIX as PREFIX_28768,
+        SPENT_QUOTE_NUMBER as NUMBER_28768,
+        live_28768_1_finish_dump,
+    )
 
     dump = live_10289_4_skip_dump()
     assert dump["quote_number"] == SPENT_QUOTE_NUMBER == "10289-4"
@@ -9639,8 +9744,16 @@ def test_partmode_set_invokes_page_finish_when_payload_and_cadtype_empty():
     assert dump["finish_why"] == "filelist_cad_payload_empty"
     assert dump["page_finish"] is False
     assert dump["get_cad"] == 0
-    assert LIVE_ADDITEM_DXF_FILELIST_POST is None
-    classified = [
+    miss = LIVE_ADDITEM_DXF_FILELIST_POST
+    assert miss["wrong_productsubtype"] == "bar_flat"
+    assert miss["internaldata_empty"] is True
+    assert miss["quote_number"] == NUMBER_28768
+    assert miss["quote_id_prefix"] == PREFIX_28768
+    spent = live_28768_1_finish_dump()
+    assert spent["zz_del"] is True
+    assert spent["productsubtype"] == "bar_flat"
+    assert spent["get_cad"] == 0
+    empty_id = [
         {
             "ID": "id-0",
             "FileID": "file-0",
@@ -9653,12 +9766,29 @@ def test_partmode_set_invokes_page_finish_when_payload_and_cadtype_empty():
             "ImageString": "",
         }
     ]
-    assert kyle_classify_before_finish_blocked(classified) is None
-    assert page_dxf_finish_skip_why(classified) is None
-    cap = kendo_filelist_for_finish(classified, from_datasource=True)
-    assert cap["should_finish"] is True
-    assert cap["finish_why"] != "filelist_cad_payload_empty"
+    assert kyle_classify_before_finish_blocked(empty_id) is None
+    assert page_dxf_finish_skip_why(empty_id) == "cad_internaldata_empty_after_explode"
+    cap = kendo_filelist_for_finish(empty_id, from_datasource=True)
+    assert cap["should_finish"] is False
+    assert cap["finish_why"] == "cad_internaldata_empty_after_explode"
     assert cap["filelist_internaldata_empty"] is True
+    with_id = [
+        {
+            "ID": "id-0",
+            "FileID": "file-0",
+            "SourceDataID": "src-0",
+            "Name": "PLATE",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "InternalData": "server-stamped",
+            "ImageString": "",
+        }
+    ]
+    assert page_dxf_finish_skip_why(with_id) is None
+    filled = kendo_filelist_for_finish(with_id, from_datasource=True)
+    assert filled["should_finish"] is True
+    assert filled["filelist_internaldata_empty"] is False
     null_row = {
         "ID": "id-0",
         "FileID": "file-0",
@@ -9672,7 +9802,7 @@ def test_partmode_set_invokes_page_finish_when_payload_and_cadtype_empty():
         "InternalData": "",
         "ImageString": "",
     }
-    assert page_dxf_finish_skip_why([null_row]) == "filelist_cad_payload_empty"
+    assert page_dxf_finish_skip_why([null_row]) == "cad_internaldata_empty_after_explode"
     assert kendo_filelist_for_finish([null_row], from_datasource=True)[
         "should_finish"
     ] is False
@@ -9689,6 +9819,8 @@ def test_partmode_set_invokes_page_finish_when_payload_and_cadtype_empty():
     assert "partModeReady" in js
     assert "filelist_nonempty_keys" in js
     assert "filelist_cad_payload_empty" in js
+    assert "cad_internaldata_empty_after_explode" in js
+    assert "bar_" in js
 
 
 def test_add_item_invokes_page_finish_when_partmode_set_without_cadtype():
@@ -9743,7 +9875,7 @@ def test_add_item_invokes_page_finish_when_partmode_set_without_cadtype():
                     "FileType": "Cad",
                     "Category": "Cad",
                     "PartMode": 0,
-                    "InternalData": "",
+                    "InternalData": "server-stamped",
                 }
             ],
         )

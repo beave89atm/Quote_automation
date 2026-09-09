@@ -1841,10 +1841,12 @@ _PAGE_FINISH_JS = """(function() {
     var n = Number(nc);
     return !isFinite(n) || n < 1;
   }
-  if (!partModeReady && isCadRow(rows[0]) && (
-      (rows[0].InternalData !== undefined && payloadEmpty(rows[0].InternalData))
-      || (rows[0].ImageString !== undefined && payloadEmpty(rows[0].ImageString))
+  if (isCadRow(rows[0]) && (
+      (payloadEmpty(rows[0].InternalData) && (
+        partModeReady || rows[0].InternalData !== undefined
+      ))
       || contoursWouldBeZero(rows[0])
+      || (!partModeReady && rows[0].ImageString !== undefined && payloadEmpty(rows[0].ImageString))
   )) {
     return Promise.resolve(Object.assign(summarize(0, null), {
       via: "skipped",
@@ -1865,9 +1867,13 @@ _PAGE_FINISH_JS = """(function() {
       filelist_internaldata_empty: payloadEmpty((rows[0] || {}).InternalData),
       filelist_imagestring_empty: payloadEmpty((rows[0] || {}).ImageString),
       finish_why: (
-        (rows[0].InternalData !== undefined && payloadEmpty(rows[0].InternalData))
-        || (rows[0].ImageString !== undefined && payloadEmpty(rows[0].ImageString))
-      ) ? "filelist_cad_payload_empty" : "filelist_contours_zero"
+        (payloadEmpty(rows[0].InternalData) && (
+          partModeReady || rows[0].InternalData !== undefined
+        ))
+      ) ? "cad_internaldata_empty_after_explode"
+        : (
+          (rows[0].ImageString !== undefined && payloadEmpty(rows[0].ImageString))
+        ) ? "filelist_cad_payload_empty" : "filelist_contours_zero"
     }));
   }
   function fnSource(fn) {
@@ -1919,6 +1925,18 @@ _PAGE_FINISH_JS = """(function() {
         }
         var krows = gridData();
         if (krows.length) {
+          for (var ki = 0; ki < krows.length; ki++) {
+            var kr = krows[ki];
+            if (!isCadRow(kr)) continue;
+            var pst = kr.ProductSubType != null
+              ? String(kr.ProductSubType).toLowerCase() : "";
+            if (pst === "bar" || pst.indexOf("bar_") === 0 || pst === "tube"
+                || pst === "pipe" || pst === "channel" || pst === "angle"
+                || pst === "hss" || pst === "beam" || pst === "structural"
+                || pst.indexOf("struct_") === 0) {
+              kr.ProductSubType = null;
+            }
+          }
           opts.data.FileList = krows;
         }
         attachChromeDomAf(opts.data);
@@ -7403,6 +7421,16 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         row.set("ProductType", 100);
         row.set("IsPlate", true);
         row.set("IsLinear", false);
+        var pst0 = row.ProductSubType != null ? String(row.ProductSubType).toLowerCase() : "";
+        if (pst0 === "bar" || pst0.indexOf("bar_") === 0 || pst0 === "tube"
+            || pst0 === "pipe" || pst0 === "channel" || pst0 === "angle"
+            || pst0 === "hss" || pst0 === "beam" || pst0 === "structural"
+            || pst0.indexOf("struct_") === 0) {
+          row.set("ProductSubType", null);
+        }
+        if (want.InternalData != null && String(want.InternalData) !== "") {
+          row.set("InternalData", want.InternalData);
+        }
       } else if (cat === "Linear") {
         row.set("Machine", want.Machine || "Saw");
         row.set("ProductType", Number(want.ProductType) || 10);
@@ -7423,6 +7451,16 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         row.ProductType = 100;
         row.IsPlate = true;
         row.IsLinear = false;
+        var pst1 = row.ProductSubType != null ? String(row.ProductSubType).toLowerCase() : "";
+        if (pst1 === "bar" || pst1.indexOf("bar_") === 0 || pst1 === "tube"
+            || pst1 === "pipe" || pst1 === "channel" || pst1 === "angle"
+            || pst1 === "hss" || pst1 === "beam" || pst1 === "structural"
+            || pst1.indexOf("struct_") === 0) {
+          row.ProductSubType = null;
+        }
+        if (want.InternalData != null && String(want.InternalData) !== "") {
+          row.InternalData = want.InternalData;
+        }
       } else if (cat === "Linear") {
         row.Machine = want.Machine || "Saw";
         row.ProductType = Number(want.ProductType) || 10;
@@ -7578,6 +7616,8 @@ def apply_grid_dxf_part_modes(
 
     Does not POST /Quote/AddItem_DXFFiles. Capture counts from the grid.
     """
+    from .website import cad_payload_value_empty
+
     kids = [r for r in rows if isinstance(r, dict)]
     spec_rows: list[dict[str, Any]] = []
     for row in kids:
@@ -7597,6 +7637,8 @@ def apply_grid_dxf_part_modes(
                 "Machine": str(row.get("Machine") or ""),
             }
         )
+        if not cad_payload_value_empty(row.get("InternalData")):
+            spec_rows[-1]["InternalData"] = row["InternalData"]
     empty = {
         "grid_present": False,
         "cad": 0,

@@ -129,6 +129,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "30f50f96",  # P904272-1 ZZ-DEL before classify @ 0163ffd Login fail — leftover EDIT amtech footer / dead AspNet — do not remint
         "0837ad33",  # P904271-1 @ 0163ffd classify/SetPartMode Cad×3 then InternalData-empty refuse — ZZ-DEL — do not remint
         "1004f017",  # 10289-4 @ 2320c6d PartMode Cad then page Finish skipped filelist_cad_payload_empty / reconstructed 200 GET 0 — ZZ-DEL — do not remint
+        "28708035",  # 28768-1 @ f656655 PartMode Cad + page Finish FileList n=1 InternalData null / bar_flat / GET 0 Cad — ZZ-DEL — do not remint
         "4b8d6ae6",  # 103535-1 leftover @ 8e08f53 — kids stamped via CDP before nest refuse — do not remint / PATCH
         "b1036d7d",  # 33819-2 spent plate_sku_missing — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
@@ -210,7 +211,8 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "P904272-1",  # spent 30f50f96 ZZ-DEL before classify @ 0163ffd Login fail — do not remint
         "P904271-1",  # spent 0837ad33 classify/SetPartMode Cad×3 @ 0163ffd then pre-Finish InternalData refuse — ZZ-DEL — do not remint
         "10289-4",  # spent 1004f017 PartMode Cad @ 2320c6d then page Finish skipped filelist_cad_payload_empty — ZZ-DEL — do not remint
-        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4.
+        "28768-1",  # spent 28708035 PartMode Cad + page OnAddDXFClick @ f656655 InternalData null / bar_flat / GET 0 Cad — ZZ-DEL — do not remint
+        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1.
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }
