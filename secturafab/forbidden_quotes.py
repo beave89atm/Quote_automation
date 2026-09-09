@@ -83,6 +83,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "cf656d2a-a432-46c4-9ad2-439807194442",  # 1010110-1 PR18 d96c096 Cad Image Files PASS — do not remint / PATCH
         "50c6d543-05e4-4b76-a507-4b6b7a19d6b4",  # 1004711-1 PR18 632c721 Cad Image Files PASS — do not remint / PATCH
         "aae055fe-46c7-4fc7-bc12-f10d4de30f54",  # 25009-1 PR18 fc7344d Cad Image Files PASS — do not remint / PATCH
+        "46eed794-257d-4987-ae48-98c7d6c7dd07",  # 25009-2 PR18 72d7665 Cad Image Files PASS — do not remint / PATCH
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -161,6 +162,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "cf656d2a",  # 1010110-1 PR18 d96c096 Cad Image Files PASS (PL3/16-A572 UC 22.44 Time Laser Bay1) — do not remint / PATCH
         "50c6d543",  # 1004711-1 PR18 632c721 Cad Image Files PASS (PL1/4-A572 UC 23.69 Time Laser Bay1) — do not remint / PATCH
         "aae055fe",  # 25009-1 PR18 fc7344d Cad Image Files PASS (PL1/2-A572 UC 25.99 Time Laser Bay1) — do not remint / PATCH
+        "46eed794",  # 25009-2 PR18 72d7665 Cad Image Files PASS (PL1/2-A572 UC 27.32 Time Laser Bay1) — do not remint / PATCH
         "d5a6987d",  # 21785-2 Outer Boom STEP @ ab58a96 — InternalData 14/14 empty, ZZ-DEL ARCHIVED — do not remint
         "30f50f96",  # P904272-1 ZZ-DEL before classify @ 0163ffd Login fail — leftover EDIT amtech footer / dead AspNet — do not remint
         "0837ad33",  # P904271-1 @ 0163ffd classify/SetPartMode Cad×3 then InternalData-empty refuse — ZZ-DEL — do not remint
@@ -240,6 +242,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "1010110-1",  # spent cf656d2a Cad Image Files PASS @ d96c096 — do not remint
         "1004711-1",  # spent 50c6d543 Cad Image Files PASS @ 632c721 — do not remint
         "25009-1",  # spent aae055fe Cad Image Files PASS @ fc7344d — do not remint
+        "25009-2",  # spent 46eed794 Cad Image Files PASS @ 72d7665 — do not remint
         "103535-1",  # spent bd5c2e3e cookie HTTP / empty #gridPDF — do not remint
         "Q10095",  # spent 103535-1 GATE WELDMENT — do not remint
         "34137-4",  # spent 425587a7 — do not remint
