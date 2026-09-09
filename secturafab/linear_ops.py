@@ -380,7 +380,10 @@ def add_linear_item_from_bom(
         except Exception as exc:  # noqa: BLE001
             notes.append(f"WARNING: addLinear failed for {part_no}: {exc}")
             return notes
+    from secturafab.website import LINEAR_SKU_MISSING
+
     notes.append(
-        f"WARNING: Linear {part_no} has no catalog ProductID — skipped Long"
+        f"{LINEAR_SKU_MISSING} Linear {part_no} has no catalog ProductID — "
+        "skipped Long, no silent SKU graft"
     )
     return notes

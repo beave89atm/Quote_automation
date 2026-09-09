@@ -4610,20 +4610,65 @@ def filelist_material_cost_empty(value: Any) -> bool:
         return not str(value).strip()
 
 
+# Tenant $/lb fields QuoteOrderEdit / v1/product/plate actually copy.
+# Generic Cost / Price / UnitCost / UnitPrice are sheet or line totals —
+# never treat those as MaterialCost.
+CATALOG_MATERIAL_COST_KEYS = (
+    "MaterialCost",
+    "materialCost",
+    "CostPerPound",
+    "CostPerLb",
+    "costPerPound",
+    "costPerLb",
+    "PricePerPound",
+    "PricePerLb",
+    "pricePerPound",
+    "pricePerLb",
+    "MaterialCostPerPound",
+    "MaterialCostPerLb",
+    "Cost_Per_Pound",
+    "Cost_Per_Lb",
+    "Price_Per_Pound",
+    "Price_Per_Lb",
+)
+CATALOG_MATERIAL_COST_UNIT_KEYS = (
+    "MaterialCost_Units",
+    "materialCost_Units",
+    "CostPerPound_Units",
+    "CostPerLb_Units",
+    "PricePerPound_Units",
+    "PricePerLb_Units",
+    "MaterialCostPerPound_Units",
+    "Cost_Per_Pound_Units",
+)
+
+
 def catalog_material_cost_value(row: dict[str, Any] | None) -> Any:
     """Copy-only catalog $/lb. Do not invent a rate (gold GET 0.55).
 
     QuoteOrderEdit product-select copies MaterialCost onto the grid row.
-    Prefer MaterialCost; accept CostPerPound / CostPerLb. Do not take
-    generic Cost (sheet price, not necessarily $/lb).
+    Prefer MaterialCost; accept tenant CostPerPound / PricePerPound
+    aliases. Do not take generic Cost / Price / UnitCost (sheet or line
+    totals, not necessarily $/lb).
     """
     if not isinstance(row, dict):
         return None
-    for key in ("MaterialCost", "materialCost", "CostPerPound", "CostPerLb"):
+    for key in CATALOG_MATERIAL_COST_KEYS:
         val = row.get(key)
         if not filelist_material_cost_empty(val):
             return val
     return None
+
+
+def catalog_material_cost_units(row: dict[str, Any] | None) -> str:
+    """Copy catalog $/lb units only. Empty when the tenant row has none."""
+    if not isinstance(row, dict):
+        return ""
+    for key in CATALOG_MATERIAL_COST_UNIT_KEYS:
+        val = str(row.get(key) or "").strip()
+        if val:
+            return val
+    return ""
 
 
 def leftover_finish_prt_pdf_still_contours_zero_is_fail(
@@ -4795,17 +4840,14 @@ def finish_empty_materialcost_must_not_skip(
     return str(result.get("finish_why") or "") == "empty_materialcost"
 
 
-def finish_empty_materialcost_after_plate_is_fail(
+def plate_filelist_material_cost_empty(
     result: dict[str, Any] | None,
     stamp_out: dict[str, Any] | None = None,
     stamp_rows: list[dict[str, Any]] | None = None,
 ) -> bool:
-    """Soft WARNING: Cad + plate ProductID with empty/0 MaterialCost.
+    """True when Cad + plate ProductID FileList MaterialCost is empty/0.
 
-    Live 2a83a96b posted MaterialCost "" and AddItem still returned
-    List[0] UC==UWC / Contours=0. Live 9ef2fedd abort blocked Finish.
-    Kyle allows default Material $/lb. Catalog PL7 Ga-A572 has no rate.
-    Do not invent a $/lb. Do not skip OnAddPDFClick.
+    Includes gold PASS packs (catalog has no copyable $/lb). Do not invent.
     Older mocks without MaterialCost still pass through.
     """
     if not isinstance(result, dict):
@@ -4845,6 +4887,29 @@ def finish_empty_materialcost_after_plate_is_fail(
     if mc is None:
         mc = bag.get("MaterialCost")
     return filelist_material_cost_empty(mc)
+
+
+def finish_empty_materialcost_after_plate_is_fail(
+    result: dict[str, Any] | None,
+    stamp_out: dict[str, Any] | None = None,
+    stamp_rows: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Soft WARNING: Cad + plate ProductID with empty/0 MaterialCost.
+
+    Live 2a83a96b posted MaterialCost "" and AddItem still returned
+    List[0] UC==UWC / Contours=0. Live 9ef2fedd abort blocked Finish.
+    Catalog PL7 Ga-A572 has no rate. Do not invent a $/lb. Do not
+    skip OnAddPDFClick. Gold PR + laser pack + UnitCost is PASS —
+    empty MaterialCost is then a catalog-no-rate note, not a warning.
+    Older mocks without MaterialCost still pass through.
+    """
+    if not plate_filelist_material_cost_empty(result, stamp_out, stamp_rows):
+        return False
+    if list0_pack_badge_ocl_is_gold(result) or list0_pack_badge_ocl_contours_is_gold(
+        result
+    ):
+        return False
+    return True
 
 
 def leftover_list0_data_null_errorcount_is_fail(
@@ -5524,12 +5589,54 @@ def _sku_num_token(raw: str) -> float | None:
         return None
 
 
+LINEAR_SKU_MISSING = "sku_missing"
+_LINEAR_SKU_PREFIXES = ("HSS", "DOM", "RCT", "RTD", "RT", "ST", "L", "C", "P")
+_TUBE_SKU_PREFIXES = ("HSS", "DOM", "RCT", "RTD", "RT", "ST")
+_TUBE_GRADE_RE = re.compile(
+    r"\bA\s*500\s*B?\b|\bA\s*513\b|\bA\s*519\b|\bA\s*106\b|\bA\s*53\b",
+    re.IGNORECASE,
+)
+_FITTING_RE = re.compile(
+    r"\b(ELBOW|COUPLING|NIPPLE|PLUG|PIPE\s+CAP|FITTING|REDUCER|UNION|"
+    r"FILLER\s*-?\s*NECK)\b",
+    re.IGNORECASE,
+)
+
+
+def linear_description_is_fitting(description: str | None) -> bool:
+    """Purchased fittings are Component — Long must not graft a pipe/tube SKU."""
+    return bool(_FITTING_RE.search(str(description or "")))
+
+
+def sku_material_grade(sku: str | None) -> str:
+    """Trailing -A500 / -A500B / -A36 token from a tenant SKU name."""
+    raw = str(sku or "").upper().replace(" ", "")
+    match = re.search(r"-([A-Z][A-Z0-9]*)$", raw)
+    return match.group(1) if match else ""
+
+
+def linear_grades_equivalent(left: str | None, right: str | None) -> bool:
+    """A500B ≡ A500; exact otherwise. Empty sides are not a match."""
+
+    def _norm(grade: str | None) -> str:
+        compact = re.sub(r"[^A-Z0-9]", "", str(grade or "").upper())
+        if compact.startswith("A500"):
+            return "A500"
+        return compact
+
+    a = _norm(left)
+    b = _norm(right)
+    if not a or not b:
+        return False
+    return a == b or a in b or b in a
+
+
 def parse_linear_sku_dims(sku: str | None) -> dict[str, float]:
-    """Dim1-4 from this SKU only (C3X4.1 / L1/2X1/2X1/8 / RT1/8X0.022)."""
+    """Dim1-4 from this SKU only (C3X4.1 / L1/2X1/2X1/8 / RTD4X0.375 / ST8)."""
     raw = str(sku or "").upper().replace(" ", "")
     raw = re.sub(r"-[A-Z][A-Z0-9]*$", "", raw)
     rest = raw
-    for prefix in ("HSS", "DOM", "RCT", "RT", "L", "C", "P"):
+    for prefix in _LINEAR_SKU_PREFIXES:
         if raw.startswith(prefix):
             rest = raw[len(prefix) :]
             break
@@ -5555,7 +5662,7 @@ def infer_linear_subtype(sku: str | None, description: str | None = None) -> str
         return "channel"
     if "ANGLE" in text or (compact.startswith("L") and "X" in compact):
         return "struct_ang"
-    if compact.startswith(("RT", "RCT", "HSS", "DOM")) or " TUBE" in text:
+    if compact.startswith(_TUBE_SKU_PREFIXES) or " TUBE" in text:
         return "tube"
     if re.match(r"^P[\d/]", compact) or " PIPE" in text:
         return "pipe"
@@ -6093,7 +6200,7 @@ def linear_website_product_type(
     compact_sku = sku_u.replace(" ", "")
     if sku_u.startswith("L") and "X" in sku_u:
         return LINEAR_PRODUCT_TYPE_ANGLE
-    if sku_u.startswith(("RT", "RCT", "HSS", "DOM")):
+    if sku_u.startswith(_TUBE_SKU_PREFIXES):
         return LINEAR_PRODUCT_TYPE_TUBE
     # Tenant pipe SKUs (P5-40-A36 / P1 1/4-40-A36) are Long tube, not bar.
     if re.match(r"^P[\d/]+-\d+", compact_sku):
@@ -6138,8 +6245,10 @@ def linear_add_product_type(
         "TUBE" in text
         or "RT" in compact
         or "RCT" in compact
+        or "RTD" in compact
         or "HSS" in compact
         or "DOM" in compact
+        or re.search(r"(^|[^A-Z])ST[\d.]", compact)
     ):
         return LINEAR_ADD_TYPE_TUBE
     if "HOSE GUARD" in text or "HOSEGUARD" in text or " BAR" in text:
@@ -6246,8 +6355,15 @@ def row_name(row: dict[str, Any]) -> str:
 
 
 _DIM_TOKEN_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(?:x|X|×)\s*(\d+(?:\.\d+)?)(?:\s*(?:x|X|×)\s*(\d+(?:\.\d+)?))?"
+    r"(\d+\s+\d+\s*/\s*\d+|\d+\s*/\s*\d+|\d+(?:\.\d+)?)"
+    r"\s*(?:x|X|×)\s*"
+    r"(\d+\s+\d+\s*/\s*\d+|\d+\s*/\s*\d+|\d+(?:\.\d+)?)"
+    r"(?:\s*(?:x|X|×)\s*"
+    r"(\d+\s+\d+\s*/\s*\d+|\d+\s*/\s*\d+|\d+(?:\.\d+)?))?"
 )
+_MIXED_FRAC_RE = re.compile(r"\b(\d+)\s+(\d+)\s*/\s*(\d+)\b")
+_BARE_FRAC_RE = re.compile(r"\b(\d+)\s*/\s*(\d+)\b")
+_CLEAR_LINEAR_HIT = 8.0
 
 
 def _as_float(val: Any) -> float | None:
@@ -6259,6 +6375,85 @@ def _as_float(val: Any) -> float | None:
         return None
 
 
+def product_linear_dims(product: dict[str, Any] | None) -> list[float]:
+    """Dim1-4 from the catalog row, else parse the SKU name. Do not invent."""
+    if not isinstance(product, dict):
+        return []
+    dims = [
+        x
+        for x in (
+            _as_float(product.get("Dim1")),
+            _as_float(product.get("Dim2")),
+            _as_float(product.get("Dim3")),
+            _as_float(product.get("Dim4")),
+        )
+        if x and x > 0
+    ]
+    if dims:
+        return dims
+    sku = str(
+        product.get("ProductName")
+        or product.get("SKU")
+        or product.get("ProductCode")
+        or ""
+    )
+    parsed = parse_linear_sku_dims(sku)
+    return [parsed[k] for k in ("dim1", "dim2", "dim3", "dim4") if parsed.get(k)]
+
+
+def drawing_is_hss_dim_callout(
+    description: str | None,
+    material: str | None = None,
+    row: dict[str, Any] | None = None,
+) -> bool:
+    """3-dim A500/A513/A519 callout is HSS/rect tube (1007038-1 2.5×5×0.25)."""
+    text = f"{description or ''} {material or ''}"
+    dims = extract_linear_dims(description or "", row)
+    return len(dims) >= 3 and bool(_TUBE_GRADE_RE.search(text))
+
+
+def drawing_is_rect_hss_tube(
+    description: str | None,
+    material: str | None = None,
+    row: dict[str, Any] | None = None,
+) -> bool:
+    """TUBE/HSS noun or a 3-dim tube-grade callout."""
+    blob = f" {str(description or '').upper()} {str(material or '').upper()} "
+    if any(h in blob for h in (" TUBE", " HSS", " RECT TUBE", " RECTANGULAR")):
+        return True
+    return drawing_is_hss_dim_callout(description, material, row)
+
+
+def _dim_match_score(want: list[float], got: list[float]) -> float:
+    """Score drawing dims against catalog/SKU dims. Rect first-two may swap."""
+    want = [d for d in want if d and d > 0]
+    got = [d for d in got if d and d > 0]
+    if not want or not got:
+        return 0.0
+    if len(want) >= 3 and len(got) >= 2:
+        xy_w = sorted(want[:2])
+        wall_w = want[-1]
+        if len(got) >= 3:
+            xy_g = sorted(got[:2])
+            wall_g = got[2]
+        else:
+            xy_g = sorted(got[:2]) if len(got) >= 2 else [got[0]]
+            wall_g = None
+        score = 0.0
+        if len(xy_g) >= 2:
+            score += max(0.0, 15.0 - abs(xy_w[0] - xy_g[0]) * 20.0)
+            score += max(0.0, 12.0 - abs(xy_w[1] - xy_g[1]) * 20.0)
+        if wall_g is not None:
+            score += max(0.0, 10.0 - abs(wall_w - wall_g) * 40.0)
+        return score
+    best = min(abs(want[0] - p) for p in got)
+    score = max(0.0, 15.0 - best * 20.0)
+    if len(want) > 1 and len(got) > 1:
+        best2 = min(abs(want[1] - p) for p in got)
+        score += max(0.0, 8.0 - best2 * 20.0)
+    return score
+
+
 def score_linear_product(
     product: dict[str, Any],
     *,
@@ -6268,30 +6463,43 @@ def score_linear_product(
 ) -> float:
     """Higher is closer. Hose guards prefer Round Bar; tubes prefer Mechanical Tube."""
     text = f" {str(description or '').upper()} "
-    pname = str(product.get("ProductName") or "").upper()
+    pname = str(product.get("ProductName") or product.get("SKU") or "").upper()
+    compact = pname.replace(" ", "")
     pdesc = str(product.get("ProductDescription") or "").upper()
     shape = str(product.get("ShapeName") or product.get("Category") or "").upper()
     sub = str(product.get("SubCategory") or "").upper()
-    grade = str(product.get("MaterialGrade") or product.get("Property") or "").upper()
+    grade = str(
+        product.get("MaterialGrade")
+        or product.get("Property")
+        or sku_material_grade(pname)
+        or ""
+    ).upper()
     blob = f"{pname} {pdesc} {shape} {sub}"
     score = 0.0
+    want_dims = [d for d in (dims or []) if d and d > 0]
+    drawing_tube = drawing_is_rect_hss_tube(description, material) or any(
+        h in text for h in (" TUBE", " HSS", " PIPE", " DOM")
+    )
 
     if "HOSE GUARD" in text or "HOSEGUARD" in text:
-        if "ROUND BAR" in blob or "RB" in pname:
+        if "ROUND BAR" in blob or "RB" in compact:
             score += 40
         elif "TUBE" in blob or "PIPE" in blob:
             score -= 10
-    elif any(h in text for h in (" TUBE", " HSS", " PIPE", " DOM")):
-        if "TUBE" in blob or "PIPE" in blob:
+    elif drawing_tube:
+        if "TUBE" in blob or "PIPE" in blob or compact.startswith(_TUBE_SKU_PREFIXES):
             score += 30
         if "MECHANICAL TUBE" in blob:
             score += 8
-        if pname.startswith("RT") or pname.startswith("RCT") or " RCT" in blob:
+        if compact.startswith(_TUBE_SKU_PREFIXES):
             score += 12
+        if "ANGLE" in blob or (compact.startswith("L") and "X" in compact):
+            score -= 20
+        if "CHANNEL" in blob:
+            score -= 20
         # Prior 1001898 binds of P1/8-5-A36 / P1/4-5-A36 on tubes are suspect.
         if " TUBE" in text and " PIPE" not in text:
-            compact_name = pname.replace(" ", "")
-            if re.match(r"^P[\d/]", compact_name):
+            if re.match(r"^P[\d/]", compact):
                 score -= 25
     elif "ANGLE" in text:
         if "ANGLE" in blob:
@@ -6304,32 +6512,21 @@ def score_linear_product(
             score += 25
 
     want_grade = (material or "").strip().upper().split()[0] if material else ""
+    if not want_grade:
+        named = _TUBE_GRADE_RE.search(f"{description or ''} {material or ''}")
+        if named:
+            want_grade = re.sub(r"\s+", "", named.group(0)).upper()
     if want_grade and grade:
-        if want_grade == grade or want_grade in grade or grade in want_grade:
+        if linear_grades_equivalent(want_grade, grade):
             score += 20
         else:
             score -= 8
     elif want_grade == "A36" and not grade:
         score += 4
 
-    want_dims = [d for d in (dims or []) if d and d > 0]
-    prod_dims = [
-        x
-        for x in (
-            _as_float(product.get("Dim1")),
-            _as_float(product.get("Dim2")),
-            _as_float(product.get("Dim3")),
-            _as_float(product.get("Dim4")),
-        )
-        if x and x > 0
-    ]
+    prod_dims = product_linear_dims(product)
     if want_dims and prod_dims:
-        # Closest primary dim (OD / leg / bar diameter).
-        best = min(abs(want_dims[0] - p) for p in prod_dims)
-        score += max(0.0, 15.0 - best * 20.0)
-        if len(want_dims) > 1 and len(prod_dims) > 1:
-            best2 = min(abs(want_dims[1] - p) for p in prod_dims)
-            score += max(0.0, 8.0 - best2 * 20.0)
+        score += _dim_match_score(want_dims, prod_dims)
 
     if product.get("Active") is False:
         score -= 50
@@ -6339,28 +6536,43 @@ def score_linear_product(
 def extract_linear_dims(description: str, row: dict[str, Any] | None = None) -> list[float]:
     dims: list[float] = []
     row = row or {}
-    for key in ("Dim1", "Dim2", "Thickness", "LinearWidth"):
+    for key in (
+        "Dim1",
+        "Dim2",
+        "Dim3",
+        "Thickness",
+        "LinearWidth",
+        "width_in",
+        "height_in",
+        "wall_in",
+        "thickness_in",
+    ):
         val = _as_float(row.get(key))
         if val and val > 0:
             dims.append(val)
-    text = str(description or "")
-    m = _DIM_TOKEN_RE.search(text.replace('"', "").replace("″", ""))
+    text = str(description or "").replace('"', "").replace("″", "")
+    m = _DIM_TOKEN_RE.search(text)
     if m:
         for g in m.groups():
             if not g:
                 continue
-            try:
-                dims.append(float(g))
-            except ValueError:
-                pass
-    # Fraction OD like 3/8 on hose guards.
-    frac = re.search(r"\b(\d+)\s*/\s*(\d+)\b", text)
-    if frac:
+            num = _sku_num_token(g)
+            if num is not None and num > 0:
+                dims.append(num)
+    mixed = _MIXED_FRAC_RE.search(text)
+    if mixed:
+        try:
+            dims.append(
+                int(mixed.group(1)) + int(mixed.group(2)) / int(mixed.group(3))
+            )
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+    elif _BARE_FRAC_RE.search(text) and not m:
+        frac = _BARE_FRAC_RE.search(text)
         try:
             dims.append(int(frac.group(1)) / int(frac.group(2)))
         except (TypeError, ValueError, ZeroDivisionError):
             pass
-    # unique preserve order
     seen: set[float] = set()
     out: list[float] = []
     for d in dims:
@@ -6379,7 +6591,12 @@ def pick_closest_linear_product(
     material: str | None = None,
     row: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """Return (product, mismatch_note)."""
+    """Return (product, mismatch_note). Weak hits are sku_missing — no graft."""
+    if linear_description_is_fitting(description):
+        return None, (
+            f"{LINEAR_SKU_MISSING} {description!r} is a fitting — "
+            "fail-closed, no silent SKU graft"
+        )
     if not products:
         return None, "No linear ProductID catalog available"
     dims = extract_linear_dims(description, row)
@@ -6394,17 +6611,33 @@ def pick_closest_linear_product(
     best_score = score_linear_product(
         best, description=description, material=material, dims=dims
     )
-    if best_score < 8:
-        return best, (
-            f"Closest linear SKU {best.get('ProductName') or best.get('ID')} "
-            f"is a weak match for {description!r} — confirm ProductID in SecturaFAB"
+    sku = str(best.get("ProductName") or best.get("SKU") or best.get("ID") or "")
+    if best_score < _CLEAR_LINEAR_HIT:
+        return None, (
+            f"{LINEAR_SKU_MISSING} no tenant SKU for {description!r} "
+            f"(closest {sku} score={best_score:.1f}; no silent SKU graft)"
+        )
+    if len(dims) >= 3 and _dim_match_score(dims, product_linear_dims(best)) < 20:
+        return None, (
+            f"{LINEAR_SKU_MISSING} no tenant SKU for {description!r} "
+            f"{dims} — closest {sku} dims do not match; no silent SKU graft"
         )
     want_grade = (material or "").strip().upper().split()[0] if material else ""
-    got_grade = str(best.get("MaterialGrade") or "").upper()
+    if not want_grade:
+        named = _TUBE_GRADE_RE.search(f"{description or ''} {material or ''}")
+        if named:
+            want_grade = re.sub(r"\s+", "", named.group(0)).upper()
+    got_grade = str(
+        best.get("MaterialGrade") or sku_material_grade(sku) or ""
+    ).upper()
     note = None
-    if want_grade and got_grade and want_grade not in got_grade and got_grade not in want_grade:
+    if (
+        want_grade
+        and got_grade
+        and not linear_grades_equivalent(want_grade, got_grade)
+    ):
         note = (
             f"Linear grade mismatch: drawing {want_grade} vs SKU "
-            f"{best.get('ProductName')} ({got_grade})"
+            f"{sku} ({got_grade})"
         )
     return best, note

@@ -107,6 +107,7 @@ from .website import (
     linear_lookup_rows,
     linear_website_product_type,
     overlay_classified_row,
+    LINEAR_SKU_MISSING,
     pick_closest_linear_product,
     quote_item_rows,
     row_name,
@@ -423,6 +424,10 @@ def classify_sectura_item(description: str) -> str:
     if _cad_plate_sheet_noun(description):
         return "Cad"
     if any(h in text for h in _LINEAR_HINTS):
+        return "Linear"
+    from .website import drawing_is_hss_dim_callout
+
+    if drawing_is_hss_dim_callout(description):
         return "Linear"
     return "Cad"
 
@@ -3895,7 +3900,9 @@ class SecturaFabPushService:
                     sku_mc = catalog_material_cost_value(plate_sku)
                     if sku_mc is not None:
                         stamp_row["MaterialCost"] = sku_mc
-                    sku_mcu = str(
+                    from .website import catalog_material_cost_units
+
+                    sku_mcu = catalog_material_cost_units(plate_sku) or str(
                         (plate_sku or {}).get("MaterialCost_Units")
                         or (plate_sku or {}).get("materialCost_Units")
                         or ""
@@ -3943,6 +3950,7 @@ class SecturaFabPushService:
                 cad_plate_filelist_bar_producttype_is_fail,
                 finish_prt_pdf_still_contours_zero_is_fail,
                 finish_empty_materialcost_after_plate_is_fail,
+                plate_filelist_material_cost_empty,
                 finish_list0_data_null_or_errorcount_is_fail,
                 empty_gridpdf_after_stamp_is_fail,
                 empty_perimeter_weight_is_fail,
@@ -4375,10 +4383,23 @@ class SecturaFabPushService:
                             notes.append(
                                 "WARNING: FileList MaterialCost empty after "
                                 "plate ProductID (live 2a83a96b / 9ef2fedd) "
-                                "— Kyle allows default Material $/lb; catalog "
-                                "PL7 Ga-A572 has no rate; do not invent $/lb; "
-                                "do not abort Finish; empty MaterialCost is "
-                                "not the Contours miss — Nest is later"
+                                "— catalog has no copyable $/lb "
+                                "(MaterialCost/CostPerPound/PricePerPound); "
+                                "do not invent $/lb; do not abort Finish; "
+                                "empty MaterialCost is not the Contours miss "
+                                "— Nest is later"
+                            )
+                        elif plate_filelist_material_cost_empty(
+                            result,
+                            stamp_out if isinstance(stamp_out, dict) else None,
+                            stamp_rows,
+                        ):
+                            notes.append(
+                                "FileList MaterialCost empty after plate "
+                                "ProductID — catalog has no copyable $/lb "
+                                "(MaterialCost/CostPerPound/PricePerPound); "
+                                "not inventing a rate; pack already PASS; "
+                                "empty MaterialCost is not the Contours miss"
                             )
                         if (
                             "response_data_kind" in result
@@ -4631,6 +4652,12 @@ class SecturaFabPushService:
             )
         except SecturaFabApiError as exc:
             notes.append(f"WARNING: GetItem_AddView(linear) returned {exc}")
+        if classify_sectura_item(description) == "Component":
+            notes.append(
+                f"{LINEAR_SKU_MISSING} loose linear {description!r} is a "
+                "fitting/Component — fail-closed, no silent SKU graft"
+            )
+            return notes
         product_id, sku, mismatch = self._match_linear_sku(
             description, material=material
         )
@@ -4643,9 +4670,11 @@ class SecturaFabPushService:
         sku = sku or str((product or {}).get("ProductName") or "")
         bind = self._linear_catalog_bind(product) or {}
         if not product_id and not sku:
-            raise SecturaFabApiError(
-                "Loose linear has no matching ProductID/SKU in the catalog"
+            notes.append(
+                f"{LINEAR_SKU_MISSING} loose linear has no tenant SKU for "
+                f"{description!r} — fail-closed, no silent SKU graft"
             )
+            return notes
         extra = {k: v for k, v in bind.items() if k != "sku"}
         extra["sku"] = sku
         extra["productType"] = linear_add_product_type(description, sku=sku)
@@ -4950,6 +4979,12 @@ class SecturaFabPushService:
                 )
                 or confirmed_cut_length_in(pn)
             )
+            if classify_sectura_item(f"{pn} {noun}") == "Component":
+                notes.append(
+                    f"{LINEAR_SKU_MISSING} {pn} is a fitting/Component — "
+                    "skipped Long (no silent linear SKU graft)"
+                )
+                continue
             product, sku, mismatch = self._match_linear_product(
                 f"{pn} {noun}", material=material, row=row
             )
@@ -4958,7 +4993,8 @@ class SecturaFabPushService:
             product_id = str((product or {}).get("ID") or "") or None
             if not product_id:
                 notes.append(
-                    f"WARNING: Linear {pn} has no catalog ProductID — skipped Finish"
+                    f"{LINEAR_SKU_MISSING} Linear {pn} has no catalog ProductID "
+                    f"for {noun!r} — skipped Long, no silent SKU graft"
                 )
                 continue
             bind = self._linear_catalog_bind(product) or {}

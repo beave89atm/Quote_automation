@@ -1062,6 +1062,85 @@ def test_finish_linear_without_page_long_click_is_fail(monkeypatch):
     assert "list0_pack Saw + Saw-Setup + UnitCost filled" not in blob
 
 
+def test_finish_linear_sku_missing_is_named_and_does_not_graft(monkeypatch):
+    """True catalog miss / fitting stays sku_missing — no silent SKU graft."""
+    from secturafab.website import LINEAR_SKU_MISSING
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    svc = SecturaFabPushService(client=client)
+    with patch.object(
+        svc,
+        "_match_linear_product",
+        return_value=(None, None, f"{LINEAR_SKU_MISSING} no tenant SKU"),
+    ):
+        notes = svc.finish_linear_bom_rows(
+            quote_id="qid",
+            linear_rows=[
+                {
+                    "part_no": "1007038-1",
+                    "description": "2.5×5×0.25 A500B",
+                    "qty": 1,
+                    "cut_length_in": 18.0,
+                }
+            ],
+            material="A500B",
+            library={},
+            extra_pdfs=[],
+        )
+    blob = " ".join(notes)
+    assert LINEAR_SKU_MISSING in blob
+    assert "no silent SKU graft" in blob
+    client.add_item_linear.assert_not_called()
+
+    fitting_notes = svc.finish_linear_bom_rows(
+        quote_id="qid",
+        linear_rows=[
+            {
+                "part_no": "50122-1",
+                "description": "2.5 NPT PIPE CAP",
+                "qty": 1,
+                "cut_length_in": 2.0,
+            }
+        ],
+        material="A36",
+        library={},
+        extra_pdfs=[],
+    )
+    fit_blob = " ".join(fitting_notes)
+    assert LINEAR_SKU_MISSING in fit_blob
+    assert "fitting" in fit_blob.lower()
+    client.add_item_linear.assert_not_called()
+
+
+def test_add_loose_linears_sku_missing_does_not_raise(monkeypatch):
+    from secturafab.website import LINEAR_SKU_MISSING
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    svc = SecturaFabPushService(client=client)
+    with patch.object(
+        svc, "_match_linear_sku", return_value=(None, None, f"{LINEAR_SKU_MISSING} miss")
+    ), patch.object(
+        svc, "_match_linear_product", return_value=(None, None, f"{LINEAR_SKU_MISSING} miss")
+    ):
+        notes = svc.add_loose_linears(
+            quote_id="qid",
+            description="1007038-1 2.5×5×0.25 A500B",
+            material="A500B",
+            qty=1,
+            length=18.0,
+        )
+    blob = " ".join(notes)
+    assert LINEAR_SKU_MISSING in blob
+    client.add_item_linear.assert_not_called()
+
+
 def test_linear_without_catalog_config_still_inpage_with_sku(monkeypatch):
     """In-page Long searches tenant SKU text; productConfigID is page-filled."""
     monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")

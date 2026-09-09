@@ -2772,11 +2772,25 @@ _PAGE_PDF_FINISH_JS = """(function() {
     if (itemType && itemType !== "cad") return false;
     return !!(hasPid && materialCostEmpty(row));
   }
+  function catalogCostFrom(it) {
+    // Copy-only tenant $/lb. Do not take generic Cost / Price / UnitCost.
+    if (!it) return null;
+    var keys = ["MaterialCost", "materialCost", "CostPerPound", "CostPerLb",
+      "costPerPound", "costPerLb", "PricePerPound", "PricePerLb",
+      "pricePerPound", "pricePerLb", "MaterialCostPerPound",
+      "MaterialCostPerLb", "Cost_Per_Pound", "Cost_Per_Lb",
+      "Price_Per_Pound", "Price_Per_Lb"];
+    for (var i = 0; i < keys.length; i++) {
+      var v = it[keys[i]];
+      var n = parseFloat(v);
+      if (isFinite(n) && n > 0) return v;
+    }
+    return null;
+  }
   function writeCatalogMaterialCost(r, s) {
     if (!r) return false;
     if (!materialCostEmpty(r)) return true;
-    var src = null;
-    if (s && !materialCostEmpty(s)) src = s.MaterialCost != null ? s.MaterialCost : s.materialCost;
+    var src = catalogCostFrom(s);
     if (src == null) {
       var mem = window.__kannonPlateMaterialCost;
       var mn = parseFloat(mem);
@@ -4468,7 +4482,11 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     // Page OnSelectProductPlate / modal apply copies catalog $/lb.
     // Live 2a83a96b: ProductID bound, MaterialCost "". Do not invent.
     if (!it) return;
-    var keys = ["MaterialCost", "materialCost", "CostPerPound", "CostPerLb"];
+    var keys = ["MaterialCost", "materialCost", "CostPerPound", "CostPerLb",
+      "costPerPound", "costPerLb", "PricePerPound", "PricePerLb",
+      "pricePerPound", "pricePerLb", "MaterialCostPerPound",
+      "MaterialCostPerLb", "Cost_Per_Pound", "Cost_Per_Lb",
+      "Price_Per_Pound", "Price_Per_Lb"];
     for (var i = 0; i < keys.length; i++) {
       var v = it[keys[i]];
       var n = parseFloat(v);
@@ -4526,11 +4544,25 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
     var n = parseFloat(v);
     return !(isFinite(n) && n > 0);
   }
+  function catalogCostFrom(it) {
+    // Copy-only tenant $/lb. Do not take generic Cost / Price / UnitCost.
+    if (!it) return null;
+    var keys = ["MaterialCost", "materialCost", "CostPerPound", "CostPerLb",
+      "costPerPound", "costPerLb", "PricePerPound", "PricePerLb",
+      "pricePerPound", "pricePerLb", "MaterialCostPerPound",
+      "MaterialCostPerLb", "Cost_Per_Pound", "Cost_Per_Lb",
+      "Price_Per_Pound", "Price_Per_Lb"];
+    for (var i = 0; i < keys.length; i++) {
+      var v = it[keys[i]];
+      var n = parseFloat(v);
+      if (isFinite(n) && n > 0) return v;
+    }
+    return null;
+  }
   function writeCatalogMaterialCost(r, s) {
     if (!r) return false;
     if (!materialCostEmpty(r)) return true;
-    var src = null;
-    if (s && !materialCostEmpty(s)) src = s.MaterialCost != null ? s.MaterialCost : s.materialCost;
+    var src = catalogCostFrom(s);
     if (src == null) {
       var mem = window.__kannonPlateMaterialCost;
       var mn = parseFloat(mem);

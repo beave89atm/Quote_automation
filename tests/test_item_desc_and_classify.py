@@ -34,6 +34,8 @@ def test_classify_fittings_are_component_not_cad():
     assert classify_sectura_item(
         "28248 COMPLINK END WELDMENT INSULATED"
     ) == "Assembly"
+    assert classify_sectura_item("1007038-1 2.5×5×0.25 A500B") == "Linear"
+    assert classify_sectura_item("1007038-1 2.5 X 5 X 0.25 A500") == "Linear"
 
 
 _LIVE_1001898 = [

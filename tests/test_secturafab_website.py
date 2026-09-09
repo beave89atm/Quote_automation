@@ -2316,8 +2316,16 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert filelist_material_cost_empty(0.55) is False
     assert catalog_material_cost_value({}) is None
     assert catalog_material_cost_value({"Cost": 12.5}) is None
+    assert catalog_material_cost_value({"Price": 9.9}) is None
+    assert catalog_material_cost_value({"UnitCost": 7.7}) is None
     assert catalog_material_cost_value({"MaterialCost": 0.55}) == 0.55
     assert catalog_material_cost_value({"CostPerPound": 0.41}) == 0.41
+    assert catalog_material_cost_value({"PricePerPound": 0.62}) == 0.62
+    assert catalog_material_cost_value({"Cost_Per_Pound": 0.44}) == 0.44
+    from secturafab.website import catalog_material_cost_units
+
+    assert catalog_material_cost_units({"CostPerPound_Units": "pound"}) == "pound"
+    assert catalog_material_cost_units({"Cost": 12.5}) == ""
     mc = leftover_finish_materialcost_empty_after_plate_dump()
     assert leftover_1020250_1_hypotheses_named(mc) is True
     assert leftover_finish_materialcost_empty_after_plate_is_fail(mc) is True
@@ -2343,6 +2351,29 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert finish_empty_materialcost_must_not_skip(mc_result) is False
     assert finish_empty_materialcost_after_plate_is_fail(fl0_result) is False
     assert finish_empty_materialcost_after_plate_is_fail(None) is False
+    from secturafab.website import (
+        GOLD_LASER_CALCULATOR_NAMES,
+        plate_filelist_material_cost_empty,
+    )
+
+    gold_mc = dict(mc_result)
+    gold_mc["response_badge_string"] = "PR"
+    gold_mc["response_ocl_n"] = len(GOLD_LASER_CALCULATOR_NAMES)
+    gold_mc["response_ocl_names"] = list(GOLD_LASER_CALCULATOR_NAMES)
+    gold_mc["response_unit_cost"] = 12.5
+    gold_mc["response_unit_weight_cost"] = 3.0
+    gold_mc["response_number_of_contours"] = 1
+    gold_mc["response_number_of_pierces"] = 1
+    assert plate_filelist_material_cost_empty(
+        gold_mc,
+        stamp_id,
+        [{"HoleDiameter": HOLE_DIM1, "ProductID": FILELIST_PRODUCT_ID, "ItemType": "cad"}],
+    ) is True
+    assert finish_empty_materialcost_after_plate_is_fail(
+        gold_mc,
+        stamp_id,
+        [{"HoleDiameter": HOLE_DIM1, "ProductID": FILELIST_PRODUCT_ID, "ItemType": "cad"}],
+    ) is False
     abort = leftover_empty_materialcost_abort_blocked_dump()
     assert leftover_1020250_1_hypotheses_named(abort) is True
     assert leftover_empty_materialcost_abort_blocked_finish_is_fail(abort) is True
@@ -3335,6 +3366,94 @@ def test_pick_closest_linear_prefers_round_bar_for_hose_guard():
     assert best is not None
     assert best["ID"] == "bar"
     assert note is None or "mismatch" not in note.lower() or "A36" in (note or "")
+
+
+def test_pick_closest_linear_matches_rect_hss_a500b_from_dims():
+    """1007038-1 2.5×5×0.25 A500B hits RT/HSS, not a silent L3 graft."""
+    from secturafab.website import (
+        LINEAR_SKU_MISSING,
+        extract_linear_dims,
+        parse_linear_sku_dims,
+        pick_closest_linear_product,
+    )
+
+    parsed = parse_linear_sku_dims("RT2.5X5X0.25-A500")
+    assert parsed["dim1"] == 2.5
+    assert parsed["dim2"] == 5.0
+    assert parsed["dim3"] == 0.25
+    rtd = parse_linear_sku_dims("RTD4X0.375-A513")
+    assert rtd["dim1"] == 4.0
+    assert rtd["dim2"] == 0.375
+    st = parse_linear_sku_dims("ST8X0.375-A500")
+    assert st["dim1"] == 8.0
+    assert extract_linear_dims("1007038-1 2.5×5×0.25 A500B") == [2.5, 5.0, 0.25]
+    assert extract_linear_dims("33637-1 1 1/4 RETURN TUBE") == [1.25]
+
+    products = [
+        {
+            "ID": "angle",
+            "ProductName": "L3X3X1/4-A36",
+            "ProductDescription": "Angle 3 X 3 X 1/4 A36",
+            "ShapeName": "Angle",
+            "MaterialGrade": "A36",
+            "Active": True,
+        },
+        {
+            "ID": "hss",
+            "ProductName": "RT2.5X5X0.25-A500",
+            "ProductDescription": "Mechanical Tube 2.5 X 5 X 0.25 A500",
+            "ShapeName": "Mechanical Tube",
+            "MaterialGrade": "A500",
+            "Active": True,
+        },
+        {
+            "ID": "wrong-tube",
+            "ProductName": "RT4X0.375-A500",
+            "ProductDescription": "Mechanical Tube 4 X 0.375 A500",
+            "ShapeName": "Mechanical Tube",
+            "MaterialGrade": "A500",
+            "Active": True,
+        },
+    ]
+    best, note = pick_closest_linear_product(
+        products,
+        description="1007038-1 2.5×5×0.25 A500B",
+        material="A500B",
+    )
+    assert best is not None
+    assert best["ID"] == "hss"
+    assert note is None or LINEAR_SKU_MISSING not in (note or "")
+
+    miss, miss_note = pick_closest_linear_product(
+        [products[0], products[2]],
+        description="1007038-1 2.5×5×0.25 A500B",
+        material="A500B",
+    )
+    assert miss is None
+    assert miss_note and LINEAR_SKU_MISSING in miss_note
+    assert "no silent SKU graft" in miss_note
+
+
+def test_pick_closest_linear_fitting_noun_is_not_grafted():
+    from secturafab.website import LINEAR_SKU_MISSING, pick_closest_linear_product
+
+    products = [
+        {
+            "ID": "pipe",
+            "ProductName": "P2.5-40-A36",
+            "ProductDescription": "Pipe 2.5 A36",
+            "ShapeName": "Pipe",
+            "MaterialGrade": "A36",
+            "Active": True,
+        }
+    ]
+    best, note = pick_closest_linear_product(
+        products,
+        description="50122-1 2.5 NPT PIPE CAP",
+        material="A36",
+    )
+    assert best is None
+    assert note and LINEAR_SKU_MISSING in note
 
 
 def test_finish_cad_files_refuses_oversize_step_no_chunk(tmp_path: Path):
@@ -10949,6 +11068,10 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "OutsideArea" in _PAGE_PDF_FINISH_JS
     assert "writeCatalogMaterialCost" in _PAGE_PDF_FINISH_JS
     assert "writeCatalogMaterialCost" in _STAMP_PDF_KENDO_JS
+    assert "catalogCostFrom" in _PAGE_PDF_FINISH_JS
+    assert "catalogCostFrom" in _STAMP_PDF_KENDO_JS
+    assert "PricePerPound" in _PAGE_PDF_FINISH_JS
+    assert "PricePerPound" in _STAMP_PDF_KENDO_JS
     assert "rememberPlateMaterialCost" in _STAMP_PDF_KENDO_JS
     assert "readFormMaterialCost" in _STAMP_PDF_KENDO_JS
     assert "empty_materialcost" in _PAGE_PDF_FINISH_JS
