@@ -3340,6 +3340,7 @@ def test_finish_cad_files_uses_upload_filelist_ids(tmp_path: Path):
                 "ErrorStatus": 0,
                 "Stock_X": 18.7,
                 "Stock_Y": 23.4,
+                "InternalData": "server-stamped",
             },
             {
                 "SourceDataID": "src-cad-2",
@@ -3348,6 +3349,7 @@ def test_finish_cad_files_uses_upload_filelist_ids(tmp_path: Path):
                 "Name": "21681-1 GUSSET",
                 "Qty": 1,
                 "ErrorStatus": 0,
+                "InternalData": "server-stamped",
             },
         ],
     }
@@ -3454,6 +3456,7 @@ def test_cadimport_next_exploded_kids_are_finished(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         },
         {
             "SourceDataID": "src-slug",
@@ -3463,6 +3466,7 @@ def test_cadimport_next_exploded_kids_are_finished(tmp_path: Path):
             "Qty": 2,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         },
         {
             "SourceDataID": "src-bar",
@@ -3472,6 +3476,7 @@ def test_cadimport_next_exploded_kids_are_finished(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         },
     ]
     client = MagicMock()
@@ -3563,6 +3568,7 @@ def test_cadimport_next_json_string_body_is_finished(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         },
         {
             "SourceDataID": "src-bar",
@@ -3572,6 +3578,7 @@ def test_cadimport_next_json_string_body_is_finished(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         },
     ]
     client = MagicMock()
@@ -3648,6 +3655,7 @@ def test_step_create_all_parts_posts_part_create_not_convert_to(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         }
         for i in range(3)
     ]
@@ -3996,6 +4004,7 @@ def test_explode_posts_part_create_from_quotes_tab(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         },
         {
             "SourceDataID": "src-b",
@@ -4004,6 +4013,7 @@ def test_explode_posts_part_create_from_quotes_tab(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         },
     ]
     token = "af-secret-token-value"
@@ -4549,6 +4559,7 @@ def test_finish_get_zero_cad_is_not_gold(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         },
         {
             "SourceDataID": "src-b",
@@ -4557,6 +4568,7 @@ def test_finish_get_zero_cad_is_not_gold(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         },
     ]
     client = MagicMock()
@@ -4629,6 +4641,7 @@ def test_finish_empty_body_200_is_not_success(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         },
         {
             "SourceDataID": "src-b",
@@ -4637,6 +4650,7 @@ def test_finish_empty_body_200_is_not_success(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         },
     ]
     client = MagicMock()
@@ -5166,6 +5180,7 @@ def test_nested_assy_reexplode_then_finish_leaf_filelist(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         }
         for i, name in enumerate(LIVE_28110_NESTED_NAMES)
     ]
@@ -5177,6 +5192,7 @@ def test_nested_assy_reexplode_then_finish_leaf_filelist(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         }
         for i, name in enumerate(LIVE_28110_LEAF_NAMES)
     ]
@@ -5312,6 +5328,7 @@ def test_finish_get_zero_items_is_not_success(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         },
         {
             "SourceDataID": "src-b",
@@ -5320,6 +5337,7 @@ def test_finish_get_zero_items_is_not_success(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         },
     ]
     client = MagicMock()
@@ -5382,6 +5400,7 @@ def test_107877_shared_parent_id_reexplodes_unnamed_and_weldment(tmp_path: Path)
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         }
         for i, name in enumerate(LIVE_107877_NESTED_NAMES)
     ]
@@ -5394,6 +5413,7 @@ def test_107877_shared_parent_id_reexplodes_unnamed_and_weldment(tmp_path: Path)
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         }
         for i, name in enumerate(LIVE_107877_LEAF_NAMES)
     ]
@@ -5482,6 +5502,7 @@ def test_1020249_pn_leaves_finish_without_pass2(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         }
         for i, name in enumerate(LIVE_1020249_PN_LEAF_NAMES)
     ]
@@ -6816,6 +6837,7 @@ def test_onadddxfclick_without_setpartmode_is_not_success(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         }
         for i, name in enumerate(
             ("EHB3111-1", "EHB3111-2", "EHB3111-2", "EHB3112-3")
@@ -6911,6 +6933,7 @@ def test_page_grid_finish_empty_body_is_not_success(tmp_path: Path):
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
+            "InternalData": "server-stamped",
         }
         for i in range(53)
     ]
@@ -7719,6 +7742,7 @@ def test_n1_cad_on_edit_allows_finish(tmp_path: Path):
             "Category": "Cad",
             "FileType": "Cad",
             "PartMode": 0,
+            "InternalData": "server-stamped",
         }
     ]
     client = MagicMock()
@@ -7828,6 +7852,7 @@ def test_filelist_not_kendo_or_af_missing_is_not_success(tmp_path: Path):
             "Category": "Cad",
             "FileType": "Cad",
             "PartMode": 0,
+            "InternalData": "server-stamped",
         }
     ]
 
@@ -7944,6 +7969,7 @@ def test_kendo_af_sid_cad_empty_body_is_not_success(tmp_path: Path):
             "Category": "Cad",
             "FileType": "Cad",
             "PartMode": 0,
+            "InternalData": "server-stamped",
         }
     ]
     client = MagicMock()
@@ -8075,6 +8101,7 @@ def test_cadtype_stock_without_filetype_empty_body_is_not_success(tmp_path: Path
             "ProductType": 100,
             "Category": "Cad",
             "PartMode": 0,
+            "InternalData": "server-stamped",
         }
     ]
     client = MagicMock()
