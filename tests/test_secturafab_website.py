@@ -9873,11 +9873,13 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
     )
     from secturafab.website import (
         CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+        CADIMPORT_LEFTOVER_PREVIEW_KEYS,
         STEP_EXPLODE_NO_INTERNALDATA,
         WEBSITE_FINISH_PATHS,
         cad_filelist_refuses_additem_dxf,
         cadimport_get_payload_empty_bools,
         cadimport_identity_match,
+        cadimport_leftover_caddata_row,
         copy_cadimport_get_payload_through,
         empty_explode_internaldata_reason,
         is_empty_explode_internaldata_reason,
@@ -10004,6 +10006,8 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
     assert dump["step_explode_no_internaldata"] is True
     assert dump["routes"]["GET /CadImport/Data"]["bindable"] is False
     assert dump["routes"]["GET /CadImport/CADData"]["bindable"] is False
+    assert dump["routes"]["GET /CadImport/CADData"]["leftover_preview"] is True
+    assert dump["leftover_caddata_preview"]["InternalData"] == ""
     assert dump["routes"]["POST /part/create"]["bindable"] is False
     leftover_json = json.loads(
         (
@@ -10014,8 +10018,34 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
     )
     assert leftover_json["quote_number"] == "28769-1"
     assert leftover_json["routes"]["GET /CadImport/CADData"]["bindable"] is False
+    assert leftover_json["routes"]["GET /CadImport/CADData"]["leftover_preview"] is True
+    assert leftover_json["routes"]["GET /CadImport/CADData"]["keys"] == [
+        "Length",
+        "Width",
+        "WebGL",
+        "InternalData",
+    ]
+    assert leftover_json["leftover_caddata_preview"]["InternalData"] == ""
+    assert leftover_json["leftover_caddata_preview"]["WebGL"] == ""
     assert leftover_json["routes"]["GET /CadImport/Data"]["bindable"] is False
     assert leftover_json["routes"]["POST /part/create"]["bindable"] is False
+    leftover = cadimport_leftover_caddata_row(dump["leftover_caddata_preview"])
+    assert leftover is not None
+    leftover_bools = cadimport_get_payload_empty_bools([leftover])
+    assert leftover_bools["bindable"] is False
+    assert leftover_bools["leftover_preview"] is True
+    assert leftover_bools["internaldata_empty"] is True
+    for key in CADIMPORT_LEFTOVER_PREVIEW_KEYS:
+        assert key in leftover_bools["keys"]
+    persist_leftover: list[str] = []
+    persist_cadimport_get_empty_shape(
+        {"cadimport_caddata": leftover_bools},
+        notes=persist_leftover,
+    )
+    assert "cadimport_caddata_bindable=false" in persist_leftover
+    assert persist_cadimport_get_empty_shape(
+        {"cadimport_caddata": leftover_bools}
+    )["cadimport_caddata"]["leftover_preview"] is True
     assert WEBSITE_FINISH_PATHS["cadimport_data"] == CADIMPORT_DATA_PATH
     assert WEBSITE_FINISH_PATHS["cadimport_caddata"] == CADIMPORT_CADDATA_PATH
     assert is_forbidden_quote_number("28769-1")
@@ -10199,6 +10229,43 @@ def test_cadimport_get_overlay_copies_nonempty_by_identity():
     assert empty_out[0].get("InternalData") in ("", None)
     assert "cadimport_caddata_bindable=false" in empty_notes
     assert "cadimport_get_copied_n=0" in empty_notes
+    leftover_dest = [
+        {
+            "SourceDataID": "src-1",
+            "ID": "id-1",
+            "FileID": "file-1",
+            "InternalData": "",
+        }
+    ]
+    service.client.cadimport_data.return_value = {"List": []}
+    service.client.cadimport_caddata.return_value = {
+        "Length": 8.0,
+        "Width": 4.0,
+        "WebGL": "",
+        "InternalData": "",
+    }
+    preview_out, preview_notes = service._overlay_cadimport_get_payloads(
+        quote_id="qid", rows=leftover_dest
+    )
+    assert preview_out[0].get("InternalData") in ("", None)
+    assert "cadimport_caddata_bindable=false" in preview_notes
+    assert "cadimport_get_copied_n=0" in preview_notes
+    assert any(
+        n.startswith("cadimport_caddata_keys=") and "Length" in n and "WebGL" in n
+        for n in preview_notes
+    )
+    service.client.cadimport_caddata.return_value = {
+        "FileID": "file-1",
+        "InternalData": "from-caddata",
+        "NumberOfContours": 3,
+    }
+    copied_out, copied_notes = service._overlay_cadimport_get_payloads(
+        quote_id="qid", rows=leftover_dest
+    )
+    assert copied_out[0]["InternalData"] == "from-caddata"
+    assert copied_out[0]["NumberOfContours"] == 3
+    assert "cadimport_caddata_bindable=true" in copied_notes
+    assert "cadimport_get_copied_n=1" in copied_notes
     service.client.cadimport_update_data_next.assert_not_called()
     service.client.cadimport_convert_to.assert_not_called()
 

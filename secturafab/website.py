@@ -1329,6 +1329,8 @@ CADIMPORT_GET_COPY_KEYS = (
     "Contours",
     "NumberOfContours",
 )
+# Leftover GET /CadImport/CADData editor preview — not InternalData fill.
+CADIMPORT_LEFTOVER_PREVIEW_KEYS = ("Length", "Width", "WebGL")
 
 
 def filelist_errorstatus_qty(row: dict[str, Any] | None) -> dict[str, Any]:
@@ -1426,6 +1428,36 @@ def cadimport_identity_match(
     return bool(cadimport_identity_tokens(src) & cadimport_identity_tokens(dest))
 
 
+def cadimport_leftover_caddata_row(payload: Any) -> dict[str, Any] | None:
+    """Leftover CADData editor preview or identity+InternalData object.
+
+    Live leftover GET /CadImport/CADData is a single object with Length /
+    Width / WebGL (editor preview) and empty InternalData — not a List.
+    Documentary only unless SID/ID/FileID plus nonempty Contours /
+    InternalData. Never invent geometry.
+    """
+    if not isinstance(payload, dict):
+        return None
+    for key in ("List", "FileList", "ItemList"):
+        if isinstance(payload.get(key), list):
+            return None
+    data = payload.get("Data")
+    if isinstance(data, list):
+        return None
+    if isinstance(data, dict):
+        inner = cadimport_leftover_caddata_row(data)
+        if inner is not None:
+            return inner
+    has_preview = any(k in payload for k in CADIMPORT_LEFTOVER_PREVIEW_KEYS)
+    has_cad = any(
+        k in payload for k in ("InternalData", "Contours", "NumberOfContours")
+    )
+    has_id = bool(cadimport_identity_tokens(payload))
+    if has_preview or (has_id and has_cad):
+        return payload
+    return None
+
+
 def cadimport_get_payload_empty_bools(
     rows: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
@@ -1455,12 +1487,16 @@ def cadimport_get_payload_empty_bools(
         )
         for r in kids
     )
+    leftover_preview = any(
+        any(k in r for k in CADIMPORT_LEFTOVER_PREVIEW_KEYS) for r in kids
+    )
     keys = sorted(str(k) for k in kids[0] if str(k) != "uid") if kids else []
     return {
         "n": len(kids),
         "internaldata_empty": idata_empty,
         "contours_empty": contours_empty,
         "bindable": bindable,
+        "leftover_preview": leftover_preview,
         "keys": keys,
     }
 
@@ -1476,13 +1512,16 @@ def persist_cadimport_get_empty_shape(
         if not isinstance(bools, dict):
             continue
         keys = [str(k) for k in (bools.get("keys") or [])]
-        out[route] = {
+        route_out = {
             "n": int(bools.get("n") or 0),
             "internaldata_empty": bool(bools.get("internaldata_empty")),
             "contours_empty": bool(bools.get("contours_empty")),
             "bindable": bool(bools.get("bindable")),
             "keys": keys,
         }
+        if bools.get("leftover_preview"):
+            route_out["leftover_preview"] = True
+        out[route] = route_out
         if notes is not None:
             line = f"{route}_bindable=" + (
                 "true" if bools.get("bindable") else "false"
