@@ -58,7 +58,15 @@ from .forbidden_quotes import ForbiddenQuoteError
 from .component_ops import ensure_purchased_components, find_purchased_part_keys
 from .finalize_ops import finalize_quote_ops
 from .imperial_ops import ensure_imperial_item_units
-from .org_ops import apply_quote_organization, persist_quote_header
+from .org_ops import (
+    apply_quote_organization,
+    org_empty_guid_is_fail,
+    org_guid_matches,
+    org_stamp_fail_reason,
+    persist_quote_header,
+    quote_primary_organization_id,
+    time_waco_org_id_for_name,
+)
 from .profile_ops import ensure_laser_profile_ops  # imported for tests; push no longer grafts
 from .qty_ops import apply_bom_quantities, refresh_bom_rows_for_push
 from .quotes import QuoteService
@@ -1246,8 +1254,6 @@ class SecturaFabPushService:
             payload["Memo"] = memo[:900]
         if quote_request_id:
             payload["QuoteRequestID"] = quote_request_id
-        from .org_ops import org_empty_guid_is_fail, time_waco_org_id_for_name
-
         org_id = str(organization_id or "").strip()
         if org_empty_guid_is_fail(org_id):
             org_id = str(time_waco_org_id_for_name(organization_name) or "").strip()
@@ -1288,6 +1294,24 @@ class SecturaFabPushService:
             # Non-fatal: quote exists; UI may briefly show a temp rev suffix.
             # Aborting here used to block pushes during SecturaFAB 5xx blips.
             pass
+        if org_id and not org_empty_guid_is_fail(org_id):
+            try:
+                minted = self.client.get_json(f"v1/quote/{quote_id}")
+            except Exception:  # noqa: BLE001 — apply_quote_organization GET-asserts
+                minted = {}
+            got = quote_primary_organization_id(
+                minted if isinstance(minted, dict) else None
+            )
+            if not org_guid_matches(got, org_id):
+                slim = {
+                    "ID": quote_id,
+                    "QuoteNumber": display,
+                    "PrimaryOrganizationID": org_id,
+                    "OrganizationID": org_id,
+                }
+                if description:
+                    slim["Description"] = description[:500]
+                self.client.request("POST", "v1/quote", json=slim)
         return quote_id
 
     def apply_item_categories(
@@ -5742,6 +5766,26 @@ class SecturaFabPushService:
                         description=quote_description or None,
                     )
                 )
+                stamped = None
+                try:
+                    stamped = self.client.get_json(f"v1/quote/{quote_id}")
+                except Exception:  # noqa: BLE001 — notes still fail-close
+                    stamped = None
+                org_fail = org_stamp_fail_reason(
+                    notes,
+                    stamped if isinstance(stamped, dict) else None,
+                    want_org_id=time_waco_org_id_for_name(organization_name),
+                )
+                if org_fail:
+                    return self._fail_push(
+                        msg=org_fail,
+                        notes=notes,
+                        quote_id=quote_id,
+                        quote_number=quote_number,
+                        quote_request_id=quote_request_id,
+                        uploaded=uploaded,
+                        attempts=createfile_attempts,
+                    )
 
             extra_pdfs = [job_pdf] if has_job_pdf else None
             plate_catalog: list[dict[str, Any]] = []
@@ -6177,6 +6221,20 @@ class SecturaFabPushService:
                     description=quote_description,
                 )
             )
+            persist_org_fail = org_stamp_fail_reason(
+                notes,
+                want_org_id=time_waco_org_id_for_name(organization_name),
+            )
+            if persist_org_fail:
+                return self._fail_push(
+                    msg=persist_org_fail,
+                    notes=notes,
+                    quote_id=quote_id,
+                    quote_number=quote_number,
+                    quote_request_id=quote_request_id,
+                    uploaded=uploaded,
+                    attempts=createfile_attempts,
+                )
             if any(
                 "Quote Description is blank after mint/header" in str(n)
                 for n in notes

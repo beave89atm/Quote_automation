@@ -54,6 +54,76 @@ def leftover_org_empty_guid_after_bind_post_201_is_fail(
     return True
 
 
+def quote_primary_organization_id(payload: dict[str, Any] | None) -> str:
+    """GET PrimaryOrganizationID (OrganizationID / Organization.ID fallback)."""
+    if not isinstance(payload, dict):
+        return ""
+    raw = payload.get("PrimaryOrganizationID") or payload.get("OrganizationID")
+    org = payload.get("Organization")
+    if isinstance(org, dict):
+        raw = raw or org.get("ID")
+    return str(raw or "").strip()
+
+
+def org_guid_matches(got_id: str | None, want_id: str | None) -> bool:
+    got = str(got_id or "").strip()
+    want = str(want_id or "").strip()
+    if org_empty_guid_is_fail(got) or org_empty_guid_is_fail(want):
+        return False
+    return got.casefold() == want.casefold()
+
+
+def org_guid_empty_after_stamp_is_fail(
+    payload: dict[str, Any] | None,
+    *,
+    want_org_id: str | None = None,
+) -> bool:
+    """GET after mint/org stamp: empty/null GUID is FAIL (live 6d4373bc).
+
+    Peek-shaped payloads without org fields are not a stamp result.
+    """
+    if not isinstance(payload, dict):
+        return False
+    has_org_field = any(
+        key in payload
+        for key in ("PrimaryOrganizationID", "OrganizationID", "Organization")
+    )
+    if not has_org_field:
+        return False
+    got = quote_primary_organization_id(payload)
+    if org_empty_guid_is_fail(got):
+        return True
+    if want_org_id and not org_empty_guid_is_fail(want_org_id):
+        return not org_guid_matches(got, want_org_id)
+    return False
+
+
+def org_stamp_fail_reason(
+    notes: list[str] | None,
+    payload: dict[str, Any] | None = None,
+    *,
+    want_org_id: str | None = None,
+) -> str | None:
+    """Clear fail-close reason if org GUID is empty after stamp attempts."""
+    for note in notes or []:
+        text = str(note)
+        if "PrimaryOrganizationID empty GUID" not in text:
+            continue
+        if "not calling Long/Image Finish" in text:
+            return text
+        return f"{text} — not calling Long/Image Finish"
+    if payload is not None and org_guid_empty_after_stamp_is_fail(
+        payload, want_org_id=want_org_id
+    ):
+        got = quote_primary_organization_id(payload)
+        return (
+            f"PrimaryOrganizationID empty GUID ({got!r}) after mint/org stamp "
+            f"(live 6d4373bc) — Time Waco {TIME_WACO_ORG_ID} did not stick — "
+            "not calling Long/Image Finish"
+        )
+    return None
+
+
 def org_empty_guid_after_bind_post_is_fail(
     got_id: str | None,
     *,
@@ -94,6 +164,116 @@ def time_waco_org_entry() -> dict[str, Any]:
         "DisplayName": TIME_WACO_ORG_NAME,
         "NameAndLocation": TIME_WACO_ORG_NAME,
     }
+
+
+def _quotes_ui_bind_time_waco(quote_id: str, notes: list[str]) -> dict[str, Any] | None:
+    """Quotes UI / in-page bind. Do not autocomplete search (live 34603-2)."""
+    try:
+        from .chrome_cdp import bind_quote_organization, chrome_edit_signed_in
+
+        if not chrome_edit_signed_in():
+            return None
+        page = bind_quote_organization(
+            quote_id=quote_id,
+            org_id=TIME_WACO_ORG_ID,
+            org_name=TIME_WACO_ORG_NAME,
+        )
+        if org_autocomplete_search_only_is_fail(page):
+            notes.append(
+                "WARNING: org autocomplete search-only is FAIL "
+                "(live 34603-2 Time Waco 0 hits)"
+            )
+        if isinstance(page, dict) and page.get("via"):
+            notes.append(f"org_picker={page.get('via')}")
+        return page if isinstance(page, dict) else None
+    except Exception:  # noqa: BLE001 — GET/slim POST still assert the known ID
+        return None
+
+
+def _time_waco_org_entry_payload(quote_id: str) -> dict[str, Any]:
+    org = time_waco_org_entry()
+    return {
+        "ID": TIME_WACO_ORG_ID,
+        "OrganizationName": org["OrganizationName"],
+        "DisplayName": org["DisplayName"],
+        "NameAndLocation": org["NameAndLocation"],
+        "ParentID": quote_id,
+        "Active": True,
+    }
+
+
+def _slim_time_waco_org_body(
+    quote_id: str, *, description: str | None = None
+) -> dict[str, Any]:
+    entry = _time_waco_org_entry_payload(quote_id)
+    body: dict[str, Any] = {
+        "ID": quote_id,
+        "PrimaryOrganizationID": TIME_WACO_ORG_ID,
+        "OrganizationID": TIME_WACO_ORG_ID,
+        "OrganizationName": TIME_WACO_ORG_NAME,
+        "Organization": entry,
+        "OrganizationList": [entry],
+    }
+    desc = str(description or "").strip()
+    if desc:
+        body["Description"] = desc[:500]
+    return body
+
+
+def _stamp_time_waco_org(
+    client: SecturaFabClient,
+    quote_id: str,
+    notes: list[str],
+    *,
+    description: str | None = None,
+) -> list[str]:
+    """Quotes UI / mint GET first. Full v1/quote POST can wipe to empty GUID.
+
+    Live 6d4373bc: mint stamped Time Waco, bind + POST 201, GET still empty.
+    If GET already has the real GUID, do not POST. Otherwise slim-stamp only.
+    """
+    page = _quotes_ui_bind_time_waco(quote_id, notes)
+    check = client.get_json(f"v1/quote/{quote_id}")
+    got_id = quote_primary_organization_id(check if isinstance(check, dict) else None)
+    if org_guid_matches(got_id, TIME_WACO_ORG_ID):
+        via = "Quotes UI" if isinstance(page, dict) and page.get("ok") else "mint"
+        notes.append(
+            f"Set Organization: {TIME_WACO_ORG_NAME} ({TIME_WACO_ORG_ID}) via {via}"
+        )
+        return notes
+
+    status = 0
+    slim = _slim_time_waco_org_body(quote_id, description=description)
+    for attempt in (1, 2):
+        if attempt == 2:
+            _quotes_ui_bind_time_waco(quote_id, notes)
+        save = client.request("POST", "v1/quote", json=slim)
+        try:
+            status = int(getattr(save, "status_code", 200) or 200)
+        except (TypeError, ValueError):
+            status = 200
+        check = client.get_json(f"v1/quote/{quote_id}")
+        got_id = quote_primary_organization_id(
+            check if isinstance(check, dict) else None
+        )
+        if org_guid_matches(got_id, TIME_WACO_ORG_ID):
+            notes.append(
+                f"Set Organization: {TIME_WACO_ORG_NAME} ({TIME_WACO_ORG_ID})"
+            )
+            return notes
+        if status >= 400:
+            notes.append(
+                f"WARNING: Setting Organization '{TIME_WACO_ORG_NAME}' failed ({status})"
+            )
+            return notes
+
+    notes.append(
+        f"PrimaryOrganizationID empty GUID ({got_id!r}) "
+        f"after mint/org stamp/POST {status} (live 6d4373bc) — Time Waco "
+        f"{TIME_WACO_ORG_ID} did not stick — not calling Long/Image Finish "
+        "— org header FAIL"
+    )
+    return notes
 
 
 def _org_blob(org: dict[str, Any]) -> str:
@@ -216,29 +396,10 @@ def apply_quote_organization(
 
     want_time_waco = "time" in name.casefold() and "waco" in name.casefold()
     if want_time_waco:
-        # Quotes UI binds Time Waco by known ID. Autocomplete search
-        # returned 0 hits on live 34603-2 and left an empty GUID.
-        org = time_waco_org_entry()
-        try:
-            from .chrome_cdp import bind_quote_organization, chrome_edit_signed_in
-
-            if chrome_edit_signed_in():
-                page = bind_quote_organization(
-                    quote_id=quote_id,
-                    org_id=TIME_WACO_ORG_ID,
-                    org_name=TIME_WACO_ORG_NAME,
-                )
-                if org_autocomplete_search_only_is_fail(page):
-                    notes.append(
-                        "WARNING: org autocomplete search-only is FAIL "
-                        "(live 34603-2 Time Waco 0 hits)"
-                    )
-                if isinstance(page, dict) and page.get("via"):
-                    notes.append(f"org_picker={page.get('via')}")
-        except Exception:  # noqa: BLE001 — API POST still binds the known ID
-            pass
-    else:
-        org = find_organization_by_name(client, name)
+        return _stamp_time_waco_org(
+            client, quote_id, notes, description=description
+        )
+    org = find_organization_by_name(client, name)
     if not org or not org.get("ID") or org_empty_guid_is_fail(str(org.get("ID") or "")):
         listed = list_organizations(client)
         sample = ", ".join(
