@@ -1873,7 +1873,12 @@ _PAGE_FINISH_JS = """(function() {
       ) ? "cad_internaldata_empty_after_explode"
         : (
           (rows[0].ImageString !== undefined && payloadEmpty(rows[0].ImageString))
-        ) ? "filelist_cad_payload_empty" : "filelist_contours_zero"
+        ) ? "filelist_cad_payload_empty" : "filelist_contours_zero",
+      step_explode_no_internaldata: (
+        payloadEmpty(rows[0].InternalData) && (
+          partModeReady || rows[0].InternalData !== undefined
+        )
+      ) ? "step_explode_no_internaldata" : ""
     }));
   }
   function fnSource(fn) {

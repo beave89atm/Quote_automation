@@ -1,0 +1,51 @@
+{
+  "quote_id_prefix": "c146ce6d",
+  "quote_number": "28769-1",
+  "readonly": true,
+  "zz_del": true,
+  "finish_refused": true,
+  "finish_why": "cad_internaldata_empty_after_explode",
+  "step_explode_no_internaldata": "step_explode_no_internaldata",
+  "tlist_bind_source": false,
+  "routes": {
+    "POST /part/create": {
+      "method": "POST",
+      "path": "/part/create",
+      "tlist_bind_source": false,
+      "internaldata_empty": true,
+      "bindable": false,
+      "keys": ["InternalData", "ImageString", "SourceDataID", "ID", "FileID"],
+      "empty_keys": ["InternalData"],
+      "nonempty_keys": ["ImageString"]
+    },
+    "GET /CadImport/Data": {
+      "method": "GET",
+      "path": "/CadImport/Data",
+      "internaldata_empty": true,
+      "contours_empty": true,
+      "bindable": false,
+      "n": 0,
+      "keys": []
+    },
+    "GET /CadImport/CADData": {
+      "method": "GET",
+      "path": "/CadImport/CADData",
+      "internaldata_empty": true,
+      "contours_empty": true,
+      "bindable": false,
+      "editor_preview": true,
+      "n": 0,
+      "keys": []
+    }
+  },
+  "not_fill_xhr": [
+    "ConvertTo",
+    "UpdateData",
+    "UpdateDataNext",
+    "Detect*",
+    "GetDXFData",
+    "PartImage",
+    "Quote/DXFInternal",
+    "GetPerimeterAndWeight"
+  ]
+}

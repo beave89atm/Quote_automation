@@ -1477,7 +1477,9 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "P904271-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "10289-4" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "28768-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "28769-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert is_forbidden_quote_id("28708035-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("c146ce6d-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("30f50f96-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("0837ad33-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("1004f017-1111-2222-3333-444444444444")

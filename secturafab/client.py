@@ -1051,6 +1051,24 @@ class SecturaFabClient:
         )
         return self._parse_website_or_raise(response, require_session=False)
 
+    def cadimport_caddata(self, params: dict[str, Any] | None = None) -> Any:
+        """GET /CadImport/CADData — read-only after explode (www MVC).
+
+        Copy Contours/InternalData by SID/ID/FileID only if nonempty.
+        Empty / editor-preview payloads are documentary — not a fill XHR.
+        Do not invent Contours. Do not POST this as a Finish substitute.
+        """
+        response = self.website_request(
+            "GET",
+            WEBSITE_FINISH_PATHS["cadimport_caddata"],
+            params=params,
+            headers=self._cadimport_ajax_headers(),
+            prefer_api_origin=False,
+            www_only=True,
+            require_session=False,
+        )
+        return self._parse_website_or_raise(response, require_session=False)
+
     def _cadimport_json_headers(self) -> dict[str, str]:
         headers = self._cadimport_ajax_headers()
         token = getattr(self, "_request_verification_token", None)

@@ -218,14 +218,21 @@ Loom is CAD Files → classify → Finish with no per-part editor.
 Kyle Loom c9d7c05a (Q10243 / 35145-1): blue Next → #gridDXFParts Part
 Mode → green Finish. Do not Finish with PartMode still null (live
 21785-2). Do not remint 35145-1 / Q10243 / 21785-1/2/3 / P904272-1 /
-P904271-1 / 10289-4.
+P904271-1 / 10289-4 / 28768-1 / 28769-1 (leftover c146ce6d).
+Server explode returning empty InternalData is the blocker
+(step_explode_no_internaldata aliases cad_internaldata_empty_after_explode).
+Optional GET /CadImport/Data + GET /CadImport/CADData after explode
+may copy Contours/InternalData by SID/ID/FileID only if nonempty.
+Empty GET is documentary — not a fill XHR. Do not invent Contours.
+Do not POST UpdateDataNext / ConvertTo / Detect* as a Finish substitute.
 UpdateDXF_LoadNew is editor-only (not gold): #DXFEdit open +
 CADType==="DXF" + Previous/Next/combobox → UpdateDataNext.
 Live leftover EDIT: WebGLCADDisp undefined, #DXFEdit hidden.
 Do not fire UpdateDataNext. Classify→Finish without #DXFEdit
 has no InternalData-fill XHR (needs_internaldata_fill_xhr).
 Leave 5b622a0d / Skin Assembly,
-0d4b8a46 / FA Assembly, b8a62e76 / SC0600, and 6a568912 / 10098-1.
+0d4b8a46 / FA Assembly, b8a62e76 / SC0600, 6a568912 / 10098-1,
+and c146ce6d / 28769-1.
 Do not remint. Do not mint.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
@@ -239,6 +246,9 @@ SetUnits sends one query key `units`. Do not Finish the raw STEP row.
   POST /CadImport/UploadItem_DXFFiles   (STEP / DXF CAD Files only)
   POST /part/create   DoCreateDXFParts form → #gridDXFParts kids
   GET  /CadImport/Data
+  GET  /CadImport/CADData   read-only after explode; copy Contours/
+      InternalData by SID/ID/FileID only if nonempty. Empty is
+      documentary (editor preview is not a fill).
   POST /CadImport/UpdateData, UpdateDataNext, SetPartMode, SetUnits, ConvertTo
   POST /Quote/AddItem_DXFFiles   data { ID, ItemID, customerMaterial, FileList }
   POST /Quote/AddItem_PDFFiles   urlencoded { ID, ItemID, FileList }
@@ -323,6 +333,7 @@ WEBSITE_FINISH_PATHS = {
     "plate_config": "/Product/ReadData_PlateConfig",
     "upload_dxf": "/CadImport/UploadItem_DXFFiles",
     "cadimport_data": "/CadImport/Data",
+    "cadimport_caddata": "/CadImport/CADData",
     "cadimport_update_data": "/CadImport/UpdateData",
     "cadimport_update_data_next": "/CadImport/UpdateDataNext",
     "cadimport_set_part_mode": "/CadImport/SetPartMode",
@@ -1304,6 +1315,20 @@ CAD_PATH_LOG_KEYS = (
     "HasDXF",
 )
 _EMPTY_CAD_PAYLOAD_STRINGS = frozenset({"", "[]", "{}", "null", "undefined", "none"})
+CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE = "cad_internaldata_empty_after_explode"
+STEP_EXPLODE_NO_INTERNALDATA = "step_explode_no_internaldata"
+EMPTY_EXPLODE_INTERNALDATA_REASONS = frozenset(
+    {
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+        STEP_EXPLODE_NO_INTERNALDATA,
+    }
+)
+CADIMPORT_GET_COPY_KEYS = (
+    "InternalData",
+    "InternalHTML",
+    "Contours",
+    "NumberOfContours",
+)
 
 
 def filelist_errorstatus_qty(row: dict[str, Any] | None) -> dict[str, Any]:
@@ -1352,6 +1377,146 @@ def cad_payload_value_empty(value: Any) -> bool:
     if isinstance(value, (list, tuple, dict, set)):
         return len(value) == 0
     return False
+
+
+def step_explode_no_internaldata() -> str:
+    """Status when DoCreateDXFParts t.List bind source has empty InternalData."""
+    return STEP_EXPLODE_NO_INTERNALDATA
+
+
+def empty_explode_internaldata_reason(*, bind_source: bool | None = None) -> str:
+    """Alias: empty explode bind source → step_explode_no_internaldata."""
+    if bind_source is False:
+        return STEP_EXPLODE_NO_INTERNALDATA
+    return CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+
+
+def is_empty_explode_internaldata_reason(why: str | None) -> bool:
+    """True for cad_internaldata_empty_after_explode or its explode alias."""
+    return str(why or "") in EMPTY_EXPLODE_INTERNALDATA_REASONS
+
+
+def cadimport_get_field_empty(key: str, value: Any) -> bool:
+    """True when a GET Contours/InternalData field has no copyable payload."""
+    if cad_payload_value_empty(value):
+        return True
+    if key in ("NumberOfContours", "Contours"):
+        try:
+            return int(value) < 1
+        except (TypeError, ValueError):
+            return cad_payload_value_empty(value)
+    return False
+
+
+def cadimport_identity_tokens(row: dict[str, Any] | None) -> set[str]:
+    """Nonempty SourceDataID / ID / FileID tokens — never invent."""
+    fields = filelist_row_id_fields(row)
+    return {
+        val
+        for val in fields.values()
+        if val and not sourcedataid_empty(val)
+    }
+
+
+def cadimport_identity_match(
+    src: dict[str, Any] | None,
+    dest: dict[str, Any] | None,
+) -> bool:
+    """True when src and dest share a SID / ID / FileID token."""
+    return bool(cadimport_identity_tokens(src) & cadimport_identity_tokens(dest))
+
+
+def cadimport_get_payload_empty_bools(
+    rows: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """GET /CadImport/Data or CADData emptiness — key names, never values."""
+    kids = [r for r in (rows or []) if isinstance(r, dict)]
+    idata_empty = (
+        all(cad_payload_value_empty(r.get("InternalData")) for r in kids)
+        if kids
+        else True
+    )
+    contours_empty = (
+        all(
+            cadimport_get_field_empty("Contours", r.get("Contours"))
+            and cadimport_get_field_empty(
+                "NumberOfContours", r.get("NumberOfContours")
+            )
+            for r in kids
+        )
+        if kids
+        else True
+    )
+    bindable = any(
+        not cad_payload_value_empty(r.get("InternalData"))
+        or not cadimport_get_field_empty("Contours", r.get("Contours"))
+        or not cadimport_get_field_empty(
+            "NumberOfContours", r.get("NumberOfContours")
+        )
+        for r in kids
+    )
+    keys = sorted(str(k) for k in kids[0] if str(k) != "uid") if kids else []
+    return {
+        "n": len(kids),
+        "internaldata_empty": idata_empty,
+        "contours_empty": contours_empty,
+        "bindable": bindable,
+        "keys": keys,
+    }
+
+
+def persist_cadimport_get_empty_shape(
+    route_bools: dict[str, dict[str, Any]] | None,
+    *,
+    notes: list[str] | None = None,
+) -> dict[str, Any]:
+    """Persist GET Data/CADData emptiness + key names. Never contour JSON."""
+    out: dict[str, Any] = {}
+    for route, bools in (route_bools or {}).items():
+        if not isinstance(bools, dict):
+            continue
+        keys = [str(k) for k in (bools.get("keys") or [])]
+        out[route] = {
+            "n": int(bools.get("n") or 0),
+            "internaldata_empty": bool(bools.get("internaldata_empty")),
+            "contours_empty": bool(bools.get("contours_empty")),
+            "bindable": bool(bools.get("bindable")),
+            "keys": keys,
+        }
+        if notes is not None:
+            line = f"{route}_bindable=" + (
+                "true" if bools.get("bindable") else "false"
+            )
+            if line not in notes:
+                notes.append(line)
+            if keys:
+                shape = f"{route}_keys=" + ",".join(keys[:24])
+                if shape not in notes:
+                    notes.append(shape)
+    return out
+
+
+def copy_cadimport_get_payload_through(
+    src_rows: list[dict[str, Any]] | None,
+    dest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Copy nonempty GET Contours/InternalData by SID/ID/FileID. Never invent."""
+    out = dict(dest) if isinstance(dest, dict) else {}
+    for src in src_rows or []:
+        if not isinstance(src, dict):
+            continue
+        if not cadimport_identity_match(src, out):
+            continue
+        for key in CADIMPORT_GET_COPY_KEYS:
+            if key not in src:
+                continue
+            if not cadimport_get_field_empty(key, out.get(key)):
+                continue
+            if cadimport_get_field_empty(key, src.get(key)):
+                continue
+            out[key] = src[key]
+        break
+    return out
 
 
 def filelist_cad_payload_empty_bools(row: dict[str, Any] | None) -> dict[str, bool]:
@@ -1489,6 +1654,10 @@ def persist_part_create_tlist_bind_source(
         )
         if preview not in notes:
             notes.append(preview)
+        if not is_bind:
+            alias = STEP_EXPLODE_NO_INTERNALDATA
+            if alias not in notes:
+                notes.append(alias)
     return out
 
 
@@ -1717,7 +1886,9 @@ def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
         return None
     return (
         "Cad FileList InternalData empty after explode — "
-        "refusing AddItem_DXFFiles (live 28768-1; ZZ-DEL). "
+        "refusing AddItem_DXFFiles (live 28768-1; 28769-1 leftover "
+        f"c146ce6d; ZZ-DEL). {STEP_EXPLODE_NO_INTERNALDATA} aliases "
+        f"{CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE}. "
         "ImageString-without-InternalData is preview only (live 21785-2). "
         f"{NEEDS_INTERNALDATA_FILL_XHR}: classify→Finish has no named "
         "InternalData fill XHR (not UpdateDXF_LoadNew / UpdateDataNext / "
@@ -1736,6 +1907,8 @@ def cad_finish_notes_refuse_additem_dxf(
         text = str(note)
         if (
             NEEDS_INTERNALDATA_FILL_XHR in text
+            or STEP_EXPLODE_NO_INTERNALDATA in text
+            or CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE in text
             or "refusing AddItem_DXFFiles" in text
         ):
             return text
@@ -1820,6 +1993,9 @@ def kendo_filelist_for_finish(
         "filelist_fileid_n": fileid_n,
         "finish_filelist_n": n,
         "finish_why": why,
+        "step_explode_no_internaldata": bool(
+            refuse and why == CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+        ),
         "filelist_missing_identity": ident_miss,
         "kendo_row_keys": kendo_identity_log_keys(filled[0]) if filled else [],
         "should_finish": bool(
@@ -4300,23 +4476,8 @@ def copy_explode_internaldata_through(
     src_rows: list[dict[str, Any]] | None,
     dest: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Copy nonempty explode InternalData onto dest. Never invent values."""
-    out = dict(dest) if isinstance(dest, dict) else {}
-    if not cad_payload_value_empty(out.get("InternalData")):
-        return out
-    sid = str(out.get("SourceDataID") or out.get("ID") or out.get("FileID") or "")
-    for src in src_rows or []:
-        if not isinstance(src, dict):
-            continue
-        ssid = str(src.get("SourceDataID") or src.get("ID") or src.get("FileID") or "")
-        if not sid or not ssid or sid != ssid:
-            continue
-        if not cad_payload_value_empty(src.get("InternalData")):
-            out["InternalData"] = src["InternalData"]
-        if not cad_payload_value_empty(src.get("InternalHTML")):
-            out["InternalHTML"] = src["InternalHTML"]
-        break
-    return out
+    """Copy nonempty explode InternalData/Contours onto dest. Never invent."""
+    return copy_cadimport_get_payload_through(src_rows, dest)
 
 
 def filelist_producttype_is_plate_or_sheet(value: Any) -> bool:

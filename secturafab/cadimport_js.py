@@ -176,6 +176,11 @@ CLASSIFY_FINISH_INTERNALDATA_FILL = None
 # between #gridDXF collect and DoCreateDXFParts writes InternalData
 # or CuttingLength. CLASSIFY_FINISH_INTERNALDATA_FILL stays None.
 NEEDS_INTERNALDATA_FILL_XHR = "needs_internaldata_fill_xhr"
+# Documentary alias when DoCreateDXFParts t.List bind source is empty.
+# Not a fill XHR. Server explode returning empty InternalData is the miss.
+STEP_EXPLODE_NO_INTERNALDATA = "step_explode_no_internaldata"
+CADIMPORT_DATA_PATH = "/CadImport/Data"
+CADIMPORT_CADDATA_PATH = "/CadImport/CADData"
 EXPLODE_DOCREATE_INTERNALDATA_FILL = None
 STOCK_PERIMETER_FILL_XHR = "/Quote/GetPerimeterAndWeight"
 STOCK_PERIMETER_FILL_ON = ("Stock_X", "Stock_Y", "Length", "Width")

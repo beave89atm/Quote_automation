@@ -155,6 +155,11 @@ def _log_part_create_payload_empty(notes: list[str], client: Any) -> None:
             line = "tlist_bind_shape_keys=" + ",".join(str(k) for k in keys)
             if line not in notes:
                 notes.append(line)
+        if bind is False:
+            from .website import STEP_EXPLODE_NO_INTERNALDATA
+
+            if STEP_EXPLODE_NO_INTERNALDATA not in notes:
+                notes.append(STEP_EXPLODE_NO_INTERNALDATA)
     shape = getattr(client, "_part_create_form_shape", None)
     if isinstance(shape, dict) and shape:
         notes.append(f"part_create_idlist_shape={shape.get('idlist_shape') or '?'}")
@@ -1768,6 +1773,8 @@ class SecturaFabPushService:
         """CadImport/Data + GetItem_AddView FileList after explode.
 
         GetDXFData 404s on www (live 34574-1). Do not poll a missing route.
+        GET /CadImport/CADData is overlay-only (copy Contours/InternalData
+        by SID/ID/FileID if nonempty) — not a FileList source.
         """
         bags: list[dict[str, Any]] = []
         query = self._cadimport_quote_query(quote_id, quote_request_id)
@@ -1783,6 +1790,71 @@ class SecturaFabPushService:
         if upload_rows:
             bags.extend(r for r in upload_rows if isinstance(r, dict))
         return self._dedupe_cadimport_rows(bags)
+
+    def _overlay_cadimport_get_payloads(
+        self,
+        *,
+        quote_id: str,
+        rows: list[dict[str, Any]],
+        quote_request_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Read-only GET Data + CADData; copy Contours/InternalData if nonempty.
+
+        Empty GET is documentary. Do not invent. Do not POST UpdateDataNext /
+        ConvertTo / Detect* as a Finish substitute.
+        """
+        from .website import (
+            cadimport_get_payload_empty_bools,
+            copy_cadimport_get_payload_through,
+            persist_cadimport_get_empty_shape,
+        )
+
+        notes: list[str] = []
+        query = self._cadimport_quote_query(quote_id, quote_request_id)
+        dests = [dict(r) for r in rows if isinstance(r, dict)]
+        route_bools: dict[str, dict[str, Any]] = {}
+        bags: list[list[dict[str, Any]]] = []
+        fetchers = (
+            ("cadimport_data", getattr(self.client, "cadimport_data", None)),
+            ("cadimport_caddata", getattr(self.client, "cadimport_caddata", None)),
+        )
+        for name, fetch in fetchers:
+            src: list[dict[str, Any]] = []
+            if callable(fetch):
+                try:
+                    src = self._cadimport_rows(fetch(params=query))
+                except (
+                    SecturaFabApiError,
+                    SecturaFabWebsiteAuthError,
+                    TypeError,
+                    ValueError,
+                ):
+                    src = []
+            bags.append(src)
+            bools = cadimport_get_payload_empty_bools(src)
+            route_bools[name] = bools
+            notes.append(
+                f"{name}_internaldata_empty="
+                + ("true" if bools["internaldata_empty"] else "false")
+            )
+            notes.append(
+                f"{name}_contours_empty="
+                + ("true" if bools["contours_empty"] else "false")
+            )
+        persist_cadimport_get_empty_shape(route_bools, notes=notes)
+        copied_n = 0
+        out: list[dict[str, Any]] = []
+        for dest in dests:
+            before = tuple(dest.get(k) for k in ("InternalData", "Contours", "NumberOfContours"))
+            row = dest
+            for bag in bags:
+                row = copy_cadimport_get_payload_through(bag, row)
+            after = tuple(row.get(k) for k in ("InternalData", "Contours", "NumberOfContours"))
+            if after != before:
+                copied_n += 1
+            out.append(row)
+        notes.append(f"cadimport_get_copied_n={copied_n}")
+        return out, notes
 
     def _explode_capture_notes(
         self,
@@ -3089,6 +3161,12 @@ class SecturaFabPushService:
             f"CadImport FileList using {len(kids)} exploded kid row(s) "
             f"(SourceDataID/FileID for Finish calculators)"
         )
+        kids, overlay_notes = self._overlay_cadimport_get_payloads(
+            quote_id=quote_id,
+            rows=kids,
+            quote_request_id=quote_request_id,
+        )
+        notes.extend(overlay_notes)
         classified, class_notes = self.classify_cadimport_rows(
             kids,
             default_material=material,
@@ -3248,9 +3326,17 @@ class SecturaFabPushService:
             )
             notes.append(cad_refuse)
             if cad_payload_value_empty((row or {}).get("InternalData")):
+                from .website import (
+                    CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+                    STEP_EXPLODE_NO_INTERNALDATA,
+                )
+
+                notes.append(STEP_EXPLODE_NO_INTERNALDATA)
+                notes.append(CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE)
                 notes.append(
                     "Cad FileList InternalData empty after explode — "
-                    "page Finish lands GET 0 Cad (live 28768-1). "
+                    "page Finish lands GET 0 Cad (live 28768-1; 28769-1 "
+                    "c146ce6d). "
                     "not Finishing; do not invent InternalData; not success"
                 )
             return notes

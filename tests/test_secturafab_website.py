@@ -183,6 +183,7 @@ def test_part_create_tlist_bind_source_persists_shape_not_values():
     empty = persist_part_create_tlist_bind_source(leftover, notes=empty_notes)
     assert empty["tlist_bind_source"] is False
     assert "tlist_bind_source=false" in empty_notes
+    assert "step_explode_no_internaldata" in empty_notes
     assert all("tlist_bind_shape_keys=" not in n for n in empty_notes)
 
     live = [
@@ -7315,6 +7316,7 @@ def test_cadimport_explode_routes_use_www():
     real._af_source = "chrome_dom"
     real.website_request = fake_website_request  # type: ignore[method-assign]
     real.cadimport_data(params={"ID": "qid"})
+    real.cadimport_caddata(params={"ID": "qid"})
     real.cadimport_update_data_next({"ID": "qid", "List": [], "ListOther": []})
     real.cadimport_convert_to({"ID": "qid", "List": [], "ListOther": []})
     with patch(
@@ -7362,7 +7364,11 @@ def test_cadimport_explode_routes_use_www():
     assert "/CadImport/ConvertTo" in paths
     assert "/part/create" not in paths
     assert "/CadImport/Data" in paths
+    assert "/CadImport/CADData" in paths
     assert "/CadImport/SetUnits" in paths
+    caddata = next(r for r in captured if r["path"] == "/CadImport/CADData")
+    assert caddata["method"] == "GET"
+    assert caddata["www_only"] is True
     assert "/CadImport/GetDXFData" not in paths
     assert "/Quote/GetDXFData" not in paths
     next_row = next(r for r in captured if r["path"] == "/CadImport/UpdateDataNext")
@@ -9151,6 +9157,8 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("P904271-1")
     assert is_forbidden_quote_number("10289-4")
     assert is_forbidden_quote_number("28768-1")
+    assert is_forbidden_quote_number("28769-1")
+    assert is_forbidden_quote_id("c146ce6d-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("30f50f96-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("0837ad33-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("1004f017-aaaa-bbbb-cccc-000000000001")
@@ -9847,7 +9855,352 @@ def test_partmode_set_invokes_page_finish_when_payload_and_cadtype_empty():
     assert "filelist_nonempty_keys" in js
     assert "filelist_cad_payload_empty" in js
     assert "cad_internaldata_empty_after_explode" in js
+    assert "step_explode_no_internaldata" in js
     assert "bar_" in js
+
+
+def test_step_explode_no_internaldata_aliases_empty_bind_source():
+    """Empty explode bind source aliases step_explode_no_internaldata. No Finish."""
+    from secturafab.cadimport_js import (
+        CADIMPORT_CADDATA_PATH,
+        CADIMPORT_DATA_PATH,
+        STEP_EXPLODE_NO_INTERNALDATA as JS_ALIAS,
+    )
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+        STEP_EXPLODE_NO_INTERNALDATA,
+        WEBSITE_FINISH_PATHS,
+        cad_filelist_refuses_additem_dxf,
+        cadimport_get_payload_empty_bools,
+        cadimport_identity_match,
+        copy_cadimport_get_payload_through,
+        empty_explode_internaldata_reason,
+        is_empty_explode_internaldata_reason,
+        kendo_filelist_for_finish,
+        persist_cadimport_get_empty_shape,
+        persist_part_create_tlist_bind_source,
+        step_explode_no_internaldata,
+    )
+    from tests.fixtures.live_28769_1 import (
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        live_28769_1_cadimport_empty,
+    )
+
+    assert step_explode_no_internaldata() == "step_explode_no_internaldata"
+    assert step_explode_no_internaldata() == STEP_EXPLODE_NO_INTERNALDATA == JS_ALIAS
+    assert empty_explode_internaldata_reason(bind_source=False) == (
+        STEP_EXPLODE_NO_INTERNALDATA
+    )
+    assert empty_explode_internaldata_reason(bind_source=True) == (
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    )
+    assert is_empty_explode_internaldata_reason(
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    )
+    assert is_empty_explode_internaldata_reason(STEP_EXPLODE_NO_INTERNALDATA)
+    assert not is_empty_explode_internaldata_reason("filelist_cad_payload_empty")
+    leftover = [
+        {
+            "Name": "PLATE",
+            "FileType": "Cad",
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+            "SourceDataID": "src-1",
+            "ID": "id-1",
+            "FileID": "file-1",
+        }
+    ]
+    notes: list[str] = []
+    persist_part_create_tlist_bind_source(leftover, notes=notes)
+    assert "tlist_bind_source=false" in notes
+    assert STEP_EXPLODE_NO_INTERNALDATA in notes
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert STEP_EXPLODE_NO_INTERNALDATA in refuse
+    assert CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE in refuse
+    assert "c146ce6d" in refuse
+    cap = kendo_filelist_for_finish(
+        [
+            {
+                "ID": "id-1",
+                "FileID": "file-1",
+                "SourceDataID": "src-1",
+                "Name": "PLATE",
+                "Category": "Cad",
+                "FileType": "Cad",
+                "PartMode": 0,
+                "InternalData": "",
+                "ImageString": "iVBORw0KGgo",
+            }
+        ],
+        from_datasource=True,
+    )
+    assert cap["should_finish"] is False
+    assert cap["finish_why"] == CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    assert cap["step_explode_no_internaldata"] is True
+    dest = {
+        "SourceDataID": "src-1",
+        "ID": "id-1",
+        "FileID": "file-1",
+        "InternalData": "",
+        "Contours": None,
+    }
+    empty_get = copy_cadimport_get_payload_through(
+        [{"SourceDataID": "src-1", "InternalData": "", "Contours": []}],
+        dest,
+    )
+    assert cadimport_get_payload_empty_bools(
+        [{"InternalData": "", "Contours": []}]
+    )["bindable"] is False
+    assert empty_get.get("InternalData") in ("", None)
+    assert empty_get.get("Contours") in (None, [])
+    filled = copy_cadimport_get_payload_through(
+        [
+            {
+                "SourceDataID": "src-1",
+                "InternalData": "server-stamped",
+                "NumberOfContours": 2,
+            }
+        ],
+        dest,
+    )
+    assert filled["InternalData"] == "server-stamped"
+    assert filled["NumberOfContours"] == 2
+    assert cadimport_identity_match(dest, {"FileID": "file-1"}) is True
+    other = copy_cadimport_get_payload_through(
+        [{"SourceDataID": "other", "InternalData": "nope", "NumberOfContours": 9}],
+        dest,
+    )
+    assert other.get("InternalData") in ("", None)
+    assert "NumberOfContours" not in other or other.get("NumberOfContours") != 9
+    persist_notes: list[str] = []
+    persist_cadimport_get_empty_shape(
+        {
+            "cadimport_data": cadimport_get_payload_empty_bools([]),
+            "cadimport_caddata": cadimport_get_payload_empty_bools([]),
+        },
+        notes=persist_notes,
+    )
+    assert "cadimport_data_bindable=false" in persist_notes
+    assert "cadimport_caddata_bindable=false" in persist_notes
+    dump = live_28769_1_cadimport_empty()
+    assert dump["quote_number"] == SPENT_QUOTE_NUMBER == "28769-1"
+    assert dump["quote_id_prefix"] == SPENT_QUOTE_ID_PREFIX == "c146ce6d"
+    assert dump["tlist_bind_source"] is False
+    assert dump["step_explode_no_internaldata"] is True
+    assert dump["routes"]["GET /CadImport/Data"]["bindable"] is False
+    assert dump["routes"]["GET /CadImport/CADData"]["bindable"] is False
+    assert dump["routes"]["POST /part/create"]["bindable"] is False
+    leftover_json = json.loads(
+        (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "live_28769_1_cadimport_empty.json"
+        ).read_text()
+    )
+    assert leftover_json["quote_number"] == "28769-1"
+    assert leftover_json["routes"]["GET /CadImport/CADData"]["bindable"] is False
+    assert leftover_json["routes"]["GET /CadImport/Data"]["bindable"] is False
+    assert leftover_json["routes"]["POST /part/create"]["bindable"] is False
+    assert WEBSITE_FINISH_PATHS["cadimport_data"] == CADIMPORT_DATA_PATH
+    assert WEBSITE_FINISH_PATHS["cadimport_caddata"] == CADIMPORT_CADDATA_PATH
+    assert is_forbidden_quote_number("28769-1")
+    assert is_forbidden_quote_id("c146ce6d-1111-2222-3333-444444444444")
+    assert spent_quote_number_block_reason("28769-1")
+    for spent in (
+        "28768-1",
+        "10289-4",
+        "P904271-1",
+        "P904272-1",
+        "21785-1",
+        "21785-2",
+        "21785-3",
+        "35145-1",
+        "11796-1",
+    ):
+        assert is_forbidden_quote_number(spent)
+
+
+def test_cadimport_get_overlay_empty_still_refuses_finish(tmp_path: Path):
+    """Empty GET Data/CADData after explode stays fail-close. No invented Contours."""
+    stp = tmp_path / "28769-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "ID": "id-1",
+            "Name": "PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+            "CadType": 0,
+            "Stock_X": 8.0,
+            "Stock_Y": 4.0,
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 1
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._kendo_row_keys = [
+        "FileID",
+        "FileType",
+        "ID",
+        "SourceDataID",
+        "InternalData",
+        "CadType",
+        "Stock_X",
+        "Stock_Y",
+    ]
+    client._edit_quote_id = "c146ce6d-aaaa-bbbb-cccc-000000000001"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client._part_create_payload = {
+        "n": 1,
+        "internaldata_empty": True,
+        "internaldata_empty_n": 1,
+        "internaldata_nonempty_n": 0,
+        "imagestring_empty": False,
+        "imagestring_empty_n": 0,
+        "tlist_bind_source": False,
+    }
+    client._tlist_bind_source = False
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.cadimport_caddata.return_value = {"List": []}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {"ok": True}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": [
+                "FileID",
+                "FileType",
+                "ID",
+                "SourceDataID",
+                "InternalData",
+                "CadType",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="c146ce6d-aaaa-bbbb-cccc-000000000001",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="28769-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    client.cadimport_update_data_next.assert_not_called()
+    client.cadimport_convert_to.assert_not_called()
+    blob = " ".join(notes)
+    assert "step_explode_no_internaldata" in blob
+    assert "cad_internaldata_empty_after_explode" in blob
+    assert "cadimport_data_bindable=false" in blob
+    assert "cadimport_caddata_bindable=false" in blob
+    assert "cadimport_get_copied_n=0" in blob
+    assert "refusing AddItem_DXFFiles" in blob
+    assert "not Finishing" in blob
+    assert "not success" in blob
+
+
+def test_cadimport_get_overlay_copies_nonempty_by_identity():
+    """GET Data/CADData copy Contours/InternalData by SID/ID/FileID only if nonempty."""
+    service = SecturaFabPushService(client=MagicMock())
+    dest = [
+        {
+            "SourceDataID": "src-1",
+            "ID": "id-1",
+            "FileID": "file-1",
+            "InternalData": "",
+            "Name": "PLATE",
+        }
+    ]
+    service.client.cadimport_data.return_value = {
+        "List": [
+            {
+                "SourceDataID": "src-1",
+                "InternalData": "from-data",
+                "NumberOfContours": 2,
+            }
+        ]
+    }
+    service.client.cadimport_caddata.return_value = {"List": []}
+    out, notes = service._overlay_cadimport_get_payloads(
+        quote_id="qid", rows=dest
+    )
+    assert out[0]["InternalData"] == "from-data"
+    assert out[0]["NumberOfContours"] == 2
+    assert "cadimport_data_bindable=true" in notes
+    assert "cadimport_get_copied_n=1" in notes
+    empty_dest = [
+        {
+            "SourceDataID": "src-1",
+            "ID": "id-1",
+            "FileID": "file-1",
+            "InternalData": "",
+        }
+    ]
+    service.client.cadimport_data.return_value = {"List": []}
+    service.client.cadimport_caddata.return_value = {
+        "List": [
+            {
+                "FileID": "file-1",
+                "InternalData": "",
+                "Contours": [],
+            }
+        ]
+    }
+    empty_out, empty_notes = service._overlay_cadimport_get_payloads(
+        quote_id="qid", rows=empty_dest
+    )
+    assert empty_out[0].get("InternalData") in ("", None)
+    assert "cadimport_caddata_bindable=false" in empty_notes
+    assert "cadimport_get_copied_n=0" in empty_notes
+    service.client.cadimport_update_data_next.assert_not_called()
+    service.client.cadimport_convert_to.assert_not_called()
 
 
 def test_add_item_invokes_page_finish_when_partmode_set_without_cadtype():
