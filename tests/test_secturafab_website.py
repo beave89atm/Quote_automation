@@ -6372,6 +6372,7 @@ def test_filelist_row_keys_name_cadimport_identity_miss():
     assert "keepIdentity" in js
     assert "persistFileType" in js
     assert "IDENTITY_KEYS" in js
+    assert "kidsPartModeSet" in js
 
 
 def test_kendo_row_id_copied_to_sourcedataid():
@@ -6697,7 +6698,7 @@ def test_filelist_errorstatus_qty_and_filetype_value_type():
 
 
 def test_kendo_without_cadimport_identity_skips_finish(tmp_path: Path):
-    """kendo without CadType/Stock_* after explode → bind miss, no Finish."""
+    """PartMode set + missing CadType/Stock → page Finish, then 0 Cad fail-close."""
     stp = tmp_path / "107292-1.STEP"
     stp.write_bytes(b"ISO")
     kids = [
@@ -6725,11 +6726,18 @@ def test_kendo_without_cadimport_identity_skips_finish(tmp_path: Path):
     client._kendo_row_keys = ["FileID", "FileType", "ID", "SourceDataID"]
     client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0002"
     client._edit_gate = ""
-    client._finish_via = ""
+    client._finish_via = "page_fn"
     client._setpartmode_via = "page_fn"
     client.create_dxf_parts.return_value = {"List": kids}
     client.cadimport_data.return_value = {"List": kids}
     client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+    }
     client.quote_item_read.return_value = {"Data": [], "Total": 0}
     client.get_json.return_value = {"ItemList": []}
     with patch(
@@ -6760,7 +6768,7 @@ def test_kendo_without_cadimport_identity_skips_finish(tmp_path: Path):
             explode_polls=1,
             explode_sleep_s=0,
         )
-    client.add_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_called_once()
     blob = " ".join(notes)
     assert "kendo_row_keys=" in blob
     assert "filelist_missing_keys=CadType,Stock_X,Stock_Y" in blob or (
@@ -6769,9 +6777,10 @@ def test_kendo_without_cadimport_identity_skips_finish(tmp_path: Path):
         and "Stock_X" in blob
         and "Stock_Y" in blob
     )
-    assert "bind miss" in blob
-    assert "not Finishing" in blob
-    assert "OPERATOR PLATFORM LOWER CONTROL MOUNT" in blob or "107292-1" in blob
+    assert "partmode_set_allows_empty_cadtype_stock=true" in blob
+    assert "not Finishing" not in blob
+    assert "GET 0 Cad after Finish" in blob
+    assert "not success" in blob
 
 
 def test_empty_griddxf_explode_miss_n1_cad_is_not_34632():
@@ -9104,8 +9113,10 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("Q10243")
     assert is_forbidden_quote_number("P904272-1")
     assert is_forbidden_quote_number("P904271-1")
+    assert is_forbidden_quote_number("10289-4")
     assert is_forbidden_quote_id("30f50f96-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("0837ad33-aaaa-bbbb-cccc-000000000001")
+    assert is_forbidden_quote_id("1004f017-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_number("21785-1")
     assert is_forbidden_quote_number("21785-2")
     assert is_forbidden_quote_number("21785-3")
@@ -9602,6 +9613,149 @@ def test_partmode_set_empty_internaldata_allows_additem_dxf():
     assert cad_finish_notes_pack_missing([miss_c]) == miss_c
     assert cad_finish_notes_pack_missing([miss_p]) == miss_p
     assert cad_finish_notes_pack_missing(["kyle_classify_before_finish=true"]) is None
+
+
+def test_partmode_set_invokes_page_finish_when_payload_and_cadtype_empty():
+    """Live 10289-4: PartMode set → page Finish even if InternalData/CadType empty."""
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+    from secturafab.website import (
+        filelist_post_key_shape,
+        kendo_filelist_for_finish,
+        kyle_classify_before_finish_blocked,
+        page_dxf_finish_skip_why,
+    )
+    from tests.fixtures.live_10289_4 import (
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        live_10289_4_skip_dump,
+    )
+    from tests.fixtures.live_additem_dxf_filelist_post import (
+        LIVE_ADDITEM_DXF_FILELIST_POST,
+    )
+
+    dump = live_10289_4_skip_dump()
+    assert dump["quote_number"] == SPENT_QUOTE_NUMBER == "10289-4"
+    assert dump["quote_id_prefix"] == SPENT_QUOTE_ID_PREFIX == "1004f017"
+    assert dump["finish_why"] == "filelist_cad_payload_empty"
+    assert dump["page_finish"] is False
+    assert dump["get_cad"] == 0
+    assert LIVE_ADDITEM_DXF_FILELIST_POST is None
+    classified = [
+        {
+            "ID": "id-0",
+            "FileID": "file-0",
+            "SourceDataID": "src-0",
+            "Name": "PLATE",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "",
+        }
+    ]
+    assert kyle_classify_before_finish_blocked(classified) is None
+    assert page_dxf_finish_skip_why(classified) is None
+    cap = kendo_filelist_for_finish(classified, from_datasource=True)
+    assert cap["should_finish"] is True
+    assert cap["finish_why"] != "filelist_cad_payload_empty"
+    assert cap["filelist_internaldata_empty"] is True
+    null_row = {
+        "ID": "id-0",
+        "FileID": "file-0",
+        "SourceDataID": "src-0",
+        "CadType": 0,
+        "Stock_X": 8.0,
+        "Stock_Y": 4.0,
+        "Name": "PLATE",
+        "Category": "Cad",
+        "FileType": "Cad",
+        "InternalData": "",
+        "ImageString": "",
+    }
+    assert page_dxf_finish_skip_why([null_row]) == "filelist_cad_payload_empty"
+    assert kendo_filelist_for_finish([null_row], from_datasource=True)[
+        "should_finish"
+    ] is False
+    assert kyle_classify_before_finish_blocked([null_row]) is not None
+    shape = filelist_post_key_shape(
+        {"PartMode": 0, "FileType": "Cad", "InternalData": "", "Name": "PLATE"}
+    )
+    assert shape["keys"] == ["FileType", "InternalData", "Name", "PartMode"]
+    assert "PartMode" in shape["nonempty_keys"]
+    assert "InternalData" in shape["empty_keys"]
+    assert "" not in shape["keys"]
+    js = _PAGE_FINISH_JS
+    assert "kidsPartModeSet" in js
+    assert "partModeReady" in js
+    assert "filelist_nonempty_keys" in js
+    assert "filelist_cad_payload_empty" in js
+
+
+def test_add_item_invokes_page_finish_when_partmode_set_without_cadtype():
+    """PartMode set + kendo missing CadType/Stock → still invoke page Finish."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=boxcookie",
+    )
+    client._af_source = "chrome_dom"
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._part_create_list_len = 1
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._kendo_row_keys = ["FileID", "FileType", "ID", "SourceDataID"]
+    client.session = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "edit_quote_id": "qid", "minted_id": "qid"},
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_dxf_finish",
+        return_value={
+            "via": "page_fn",
+            "finish_fn": "OnAddDXFClick",
+            "filelist_from_kendo": True,
+            "finish_af_present": True,
+            "finish_filelist_n": 1,
+            "grid_dxf_row_count": 1,
+            "status": 200,
+            "filelist_row_keys": ["FileType", "PartMode", "SourceDataID"],
+            "filelist_nonempty_keys": ["FileType", "PartMode", "SourceDataID"],
+            "filelist_empty_keys": ["InternalData"],
+        },
+    ) as finish_fn:
+        result = client.add_item_dxf_files(
+            quote_id="qid",
+            file_list=[
+                {
+                    "ID": "x",
+                    "FileType": "Cad",
+                    "Category": "Cad",
+                    "PartMode": 0,
+                    "InternalData": "",
+                }
+            ],
+        )
+    finish_fn.assert_called_once()
+    assert result["via"] == "page_fn"
+    assert result["finish_fn"] == "OnAddDXFClick"
+    assert result["filelist_nonempty_keys"] == [
+        "FileType",
+        "PartMode",
+        "SourceDataID",
+    ]
+    assert result["filelist_empty_keys"] == ["InternalData"]
 
 
 def test_cad_editor_update_data_next_is_not_explode_fill():

@@ -1761,6 +1761,26 @@ _PAGE_FINISH_JS = """(function() {
     }
     return miss;
   }
+  function partModeNull(v) {
+    return v === undefined || v === null || v === ""
+      || String(v).toLowerCase() === "null";
+  }
+  function partModeSet(row) {
+    if (!row || typeof row !== "object") return false;
+    if (!Object.prototype.hasOwnProperty.call(row, "PartMode")) return false;
+    return !partModeNull(row.PartMode);
+  }
+  function kidsPartModeSet(list) {
+    var n = 0;
+    for (var i = 0; i < (list || []).length; i++) {
+      var r = list[i] || {};
+      var cat = String(r.Category || r.ItemType || r.FileType || "");
+      if (cat === "Assembly") continue;
+      n += 1;
+      if (!partModeSet(r)) return false;
+    }
+    return n > 0;
+  }
   function finishWhy(fromKendo, afOnDoc, afInReq, krows, sid_n, n, identMiss) {
     var why = [];
     if (!kendoGridPresent()) why.push("wrong_document");
@@ -1790,7 +1810,8 @@ _PAGE_FINISH_JS = """(function() {
   }
   var kendoIdentKeys = rowKeys(rows[0]);
   var kendoIdentMiss = missingOf(kendoIdentKeys, IDENTITY_KEYS);
-  if (kendoIdentMiss.length) {
+  var partModeReady = kidsPartModeSet(rows);
+  if (kendoIdentMiss.length && !partModeReady) {
     return Promise.resolve(Object.assign(summarize(0, null), {
       via: "skipped",
       finish_fn: "",
@@ -1820,7 +1841,7 @@ _PAGE_FINISH_JS = """(function() {
     var n = Number(nc);
     return !isFinite(n) || n < 1;
   }
-  if (isCadRow(rows[0]) && (
+  if (!partModeReady && isCadRow(rows[0]) && (
       (rows[0].InternalData !== undefined && payloadEmpty(rows[0].InternalData))
       || (rows[0].ImageString !== undefined && payloadEmpty(rows[0].ImageString))
       || contoursWouldBeZero(rows[0])
@@ -1942,6 +1963,13 @@ _PAGE_FINISH_JS = """(function() {
         for (var ck = 0; ck < cadPath.length; ck++) {
           if (first[cadPath[ck]] !== undefined) cadPathHave.push(cadPath[ck]);
         }
+        var nonemptyKeys = [];
+        var emptyKeys = [];
+        for (var pk = 0; pk < postedKeys.length; pk++) {
+          var kn = postedKeys[pk];
+          if (payloadEmpty(first[kn])) emptyKeys.push(kn);
+          else nonemptyKeys.push(kn);
+        }
         var cap = {
           finish_filelist_n: n,
           request_keys: req_keys,
@@ -1959,6 +1987,8 @@ _PAGE_FINISH_JS = """(function() {
           filelist_fileid_n: fileid_n,
           filelist_filetype: ft,
           filelist_row_keys: postedKeys,
+          filelist_nonempty_keys: nonemptyKeys,
+          filelist_empty_keys: emptyKeys,
           filelist_missing_keys: missingOf(postedKeys, COMPARE_KEYS),
           filelist_missing_identity: identMiss,
           finish_af_present: afInReq,
@@ -2052,6 +2082,8 @@ _PAGE_FINISH_JS = """(function() {
     extra.filelist_fileid_n = Number(hit.filelist_fileid_n || 0);
     extra.kendo_row_keys = hit.kendo_row_keys || kendoIdentKeys || [];
     extra.filelist_row_keys = hit.filelist_row_keys || [];
+    extra.filelist_nonempty_keys = hit.filelist_nonempty_keys || [];
+    extra.filelist_empty_keys = hit.filelist_empty_keys || [];
     extra.filelist_missing_keys = hit.filelist_missing_keys || [];
     extra.filelist_missing_identity = hit.filelist_missing_identity || [];
     extra.filelist_filetype = hit.filelist_filetype || {};
@@ -2408,6 +2440,8 @@ def invoke_page_dxf_finish(
         "filelist_id_n": 0,
         "filelist_fileid_n": 0,
         "filelist_row_keys": [],
+        "filelist_nonempty_keys": [],
+        "filelist_empty_keys": [],
         "filelist_missing_keys": [],
         "filelist_missing_identity": [],
         "kendo_row_keys": [],
@@ -2447,6 +2481,12 @@ def invoke_page_dxf_finish(
         "filelist_fileid_n": int(value.get("filelist_fileid_n") or 0),
         "filelist_row_keys": [
             str(k) for k in (value.get("filelist_row_keys") or [])
+        ],
+        "filelist_nonempty_keys": [
+            str(k) for k in (value.get("filelist_nonempty_keys") or [])
+        ],
+        "filelist_empty_keys": [
+            str(k) for k in (value.get("filelist_empty_keys") or [])
         ],
         "filelist_missing_keys": [
             str(k) for k in (value.get("filelist_missing_keys") or [])

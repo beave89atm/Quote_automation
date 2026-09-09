@@ -70,6 +70,7 @@ from .website import (
     cad_finish_notes_pack_missing,
     cad_finish_notes_refuse_additem_dxf,
     classified_kids_missing_part_mode,
+    filelist_kids_partmode_set,
     finish_attempt_empty_partmode_or_internaldata,
     kyle_classify_before_finish_blocked,
     step_finish_pack_missing,
@@ -2770,9 +2771,10 @@ class SecturaFabPushService:
         If kendo lacks them after explode, that is a /part/create bind miss
         (not a Finish-hook miss): do not Finish.
         ``GetPerimeterAndWeight`` remains ``#gridPDF`` only — not CAD
-        InternalData. After PartMode is set on every kid, POST
-        AddItem_DXFFiles even if InternalData is still empty (Kyle Loom
-        c9d7; live P904271-1). ImageString-only without PartMode still
+        InternalData.         After PartMode is set on every kid, invoke page green Finish /
+        OnAddDXFClick even if InternalData / CadType / Stock look empty
+        (Kyle Loom c9d7; live 10289-4 / P904271-1). Do not skip to a
+        reconstructed FileList. ImageString-only without PartMode still
         refuses. After Finish, require Cad Contours≥1 + PR + laser
         (and Linear Saw if Linear). Do not invent InternalData. Do not
         fire UpdateDataNext. 21678-1 is UI-only gold — do not open.
@@ -3193,14 +3195,22 @@ class SecturaFabPushService:
             ident_miss = filelist_missing_cadimport_identity_keys(kendo_keys)
             if ident_miss:
                 notes.append("filelist_missing_keys=" + ",".join(ident_miss))
-                notes.append(
-                    "WARNING: CadImport identity keys missing on EDIT kendo "
-                    f"after explode ({'+'.join(ident_miss)}) — /part/create "
-                    "bind miss for n=1, not a Finish-hook miss "
-                    "(do not invent Stock_X/Y or CadType; not Finishing; "
-                    "live 107292-1)"
-                )
-                return notes
+                if filelist_kids_partmode_set(ready):
+                    notes.append("partmode_set_allows_empty_cadtype_stock=true")
+                    notes.append(
+                        "Kyle Loom c9d7 page Finish after Part Mode — "
+                        "CadType/Stock may be empty on classify "
+                        "(live 10289-4; do not invent)"
+                    )
+                else:
+                    notes.append(
+                        "WARNING: CadImport identity keys missing on EDIT kendo "
+                        f"after explode ({'+'.join(ident_miss)}) — /part/create "
+                        "bind miss for n=1, not a Finish-hook miss "
+                        "(do not invent Stock_X/Y or CadType; not Finishing; "
+                        "live 107292-1)"
+                    )
+                    return notes
         cad_block = next(
             (r for r in ready if cad_filelist_payload_blocks_finish(r)),
             None,
@@ -3289,6 +3299,16 @@ class SecturaFabPushService:
             row_keys = [str(k) for k in (result.get("filelist_row_keys") or [])]
             if row_keys:
                 notes.append("filelist_row_keys=" + ",".join(row_keys[:24]))
+            nonempty_keys = [
+                str(k) for k in (result.get("filelist_nonempty_keys") or [])
+            ]
+            if nonempty_keys:
+                notes.append(
+                    "filelist_nonempty_keys=" + ",".join(nonempty_keys[:24])
+                )
+            empty_keys = [str(k) for k in (result.get("filelist_empty_keys") or [])]
+            if empty_keys:
+                notes.append("filelist_empty_keys=" + ",".join(empty_keys[:24]))
             posted_kendo = [str(k) for k in (result.get("kendo_row_keys") or [])]
             if posted_kendo and f"kendo_row_keys={','.join(posted_kendo[:24])}" not in " ".join(notes):
                 notes.append("kendo_row_keys=" + ",".join(posted_kendo[:24]))

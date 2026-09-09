@@ -1410,10 +1410,11 @@ class SecturaFabClient:
         grid is present — invoke OnAddDXFClick even if its source lacks
         the literal ``#gridDXFParts``.
 
-        If EDIT kendo lacks CadType/Stock_X/Stock_Y after explode, that is
-        a /part/create bind miss — do not Finish and do not invent geometry.
-        Do not mint until a box capture shows those keys on kendo and the
-        posted FileList.
+        If EDIT kendo lacks CadType/Stock_X/Stock_Y after explode and
+        PartMode is still null, that is a /part/create bind miss — do not
+        Finish and do not invent geometry. Kyle Loom c9d7 / live 10289-4:
+        when PartMode is set on every kid, invoke page OnAddDXFClick even
+        if InternalData / CadType / Stock look empty.
         """
         from .chrome_cdp import (
             chrome_quotes_live,
@@ -1423,9 +1424,11 @@ class SecturaFabClient:
         )
         from .website import (
             cad_filelist_refuses_additem_dxf,
+            filelist_kids_partmode_set,
             filelist_missing_cadimport_identity_keys,
         )
 
+        partmode_ready = filelist_kids_partmode_set(file_list)
         for row in file_list or []:
             reason = cad_filelist_refuses_additem_dxf(row)
             if reason:
@@ -1461,7 +1464,7 @@ class SecturaFabClient:
             self._edit_gate = "stale_grid"
             return self._dxf_finish_capture({}, via="skipped")
         kendo_keys = getattr(self, "_kendo_row_keys", None)
-        if isinstance(kendo_keys, list):
+        if isinstance(kendo_keys, list) and not partmode_ready:
             ident_miss = filelist_missing_cadimport_identity_keys(kendo_keys)
             if ident_miss:
                 why = "filelist_missing_keys=" + "+".join(ident_miss)
@@ -1538,6 +1541,12 @@ class SecturaFabClient:
             "filelist_fileid_n": int(result.get("filelist_fileid_n") or 0),
             "filelist_row_keys": [
                 str(k) for k in (result.get("filelist_row_keys") or [])
+            ],
+            "filelist_nonempty_keys": [
+                str(k) for k in (result.get("filelist_nonempty_keys") or [])
+            ],
+            "filelist_empty_keys": [
+                str(k) for k in (result.get("filelist_empty_keys") or [])
             ],
             "filelist_missing_keys": [
                 str(k) for k in (result.get("filelist_missing_keys") or [])

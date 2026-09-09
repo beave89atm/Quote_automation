@@ -218,7 +218,7 @@ Loom is CAD Files → classify → Finish with no per-part editor.
 Kyle Loom c9d7c05a (Q10243 / 35145-1): blue Next → #gridDXFParts Part
 Mode → green Finish. Do not Finish with PartMode still null (live
 21785-2). Do not remint 35145-1 / Q10243 / 21785-1/2/3 / P904272-1 /
-P904271-1.
+P904271-1 / 10289-4.
 UpdateDXF_LoadNew is editor-only (not gold): #DXFEdit open +
 CADType==="DXF" + Previous/Next/combobox → UpdateDataNext.
 Live leftover EDIT: WebGLCADDisp undefined, #DXFEdit hidden.
@@ -1634,6 +1634,55 @@ def filelist_row_partmode_set(row: dict[str, Any] | None) -> bool:
     return not part_mode_is_null(row.get("PartMode"))
 
 
+def filelist_kids_partmode_set(rows: list[dict[str, Any]] | None) -> bool:
+    """True when every non-Assembly kid has PartMode set (0 Cad is set)."""
+    return not classified_kids_missing_part_mode(rows) and any(
+        isinstance(r, dict)
+        and str(r.get("Category") or r.get("ItemType") or "") != "Assembly"
+        for r in (rows or [])
+    )
+
+
+def filelist_post_key_shape(row: dict[str, Any] | None) -> dict[str, list[str]]:
+    """Posted FileList key names + which are nonempty. Never values."""
+    if not isinstance(row, dict):
+        return {"keys": [], "nonempty_keys": [], "empty_keys": []}
+    keys = sorted(str(k) for k in row if str(k) != "uid")
+    nonempty = [k for k in keys if not cad_payload_value_empty(row.get(k))]
+    empty = [k for k in keys if cad_payload_value_empty(row.get(k))]
+    return {"keys": keys, "nonempty_keys": nonempty, "empty_keys": empty}
+
+
+def page_dxf_finish_skip_why(rows: list[dict[str, Any]] | None) -> str | None:
+    """Why page OnAddDXFClick is skipped. None means invoke the green Finish.
+
+    Live 10289-4: PartMode Cad was set but page Finish skipped for empty
+    InternalData (``filelist_cad_payload_empty``) then a reconstructed
+    FileList 200 / GET 0. Kyle Loom c9d7 clicks green Finish after Part
+    Mode without filling Cad L×W / CadType / InternalData. When every
+    kid has PartMode, invoke page Finish. Still skip if PartMode is
+    null and payload / CadType+Stock look empty. Do not invent values.
+    """
+    kids = [r for r in (rows or []) if isinstance(r, dict)]
+    if not kids:
+        return "empty_dataSource"
+    if filelist_kids_partmode_set(kids):
+        return None
+    row0 = kids[0]
+    ident = filelist_missing_cadimport_identity_keys(kendo_identity_log_keys(row0))
+    if ident:
+        return "filelist_missing_keys=" + "+".join(ident)
+    if not is_cad_filelist_row(row0):
+        return None
+    if cad_filelist_payload_blocks_finish(row0) or (
+        "ImageString" in row0 and cad_payload_value_empty(row0.get("ImageString"))
+    ):
+        return "filelist_cad_payload_empty"
+    if cad_filelist_contours_would_be_zero(row0):
+        return "filelist_contours_zero"
+    return None
+
+
 def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
     """Refuse AddItem_DXFFiles when InternalData is empty and PartMode is unset.
 
@@ -1726,14 +1775,17 @@ def kendo_filelist_for_finish(
     row0 = filled[0] if filled else None
     payload_block = cad_filelist_payload_blocks_finish(row0)
     refuse = cad_filelist_refuses_additem_dxf(row0)
-    # Kyle Loom c9d7 / P904271-1: PartMode set → Finish even if InternalData empty.
-    if filelist_row_partmode_set(row0):
+    # Kyle Loom c9d7 / live 10289-4: PartMode set → page Finish even if
+    # InternalData / CadType / Stock look empty. Do not skip to a
+    # reconstructed FileList.
+    partmode_ready = filelist_kids_partmode_set(filled)
+    if partmode_ready:
         payload_block = False
         refuse = None
     why = ""
     if n > 0 and sid_n == 0:
         why = "filelist_missing_ids"
-    elif ident_miss:
+    elif ident_miss and not partmode_ready:
         why = "filelist_missing_keys=" + "+".join(ident_miss)
     elif payload_block:
         why = "filelist_cad_payload_empty"
@@ -1752,7 +1804,10 @@ def kendo_filelist_for_finish(
         "filelist_missing_identity": ident_miss,
         "kendo_row_keys": kendo_identity_log_keys(filled[0]) if filled else [],
         "should_finish": bool(
-            from_kendo and not ident_miss and not payload_block and not refuse
+            from_kendo
+            and not payload_block
+            and not refuse
+            and (partmode_ready or not ident_miss)
         ),
         **filelist_errorstatus_qty(filled[0] if filled else None),
         **filelist_filetype_value_type(filled[0] if filled else None),
