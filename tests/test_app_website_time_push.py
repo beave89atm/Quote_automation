@@ -1478,6 +1478,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "15046-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "10081-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21667-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21666-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21785-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21785-3" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21785-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -1537,6 +1538,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "8a66e074-1c50-4671-82ff-d2d2d8e82082" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "c71d2096-1cbd-40c8-877e-97f4c86df410" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "30550221-733a-4baf-866a-73396a0d799b" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "7f768328-1a9a-4498-af74-f2aa78b930ef" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "14219adc-f7f5-401a-b707-0bf200ef8c74" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "34603-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "9be15b62-a824-442c-b911-50ca1016cc5e" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -1590,6 +1592,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("c71d2096-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("30550221-733a-4baf-866a-73396a0d799b")
     assert is_forbidden_quote_id("30550221-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("7f768328-1a9a-4498-af74-f2aa78b930ef")
+    assert is_forbidden_quote_id("7f768328-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d5a6987d-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("4b8d6ae6-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
@@ -1690,6 +1694,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "8a66e074-1c50-4671-82ff-d2d2d8e82082",
         "c71d2096-1cbd-40c8-877e-97f4c86df410",
         "30550221-733a-4baf-866a-73396a0d799b",
+        "7f768328-1a9a-4498-af74-f2aa78b930ef",
         "4b8d6ae6-1111-2222-3333-444444444444",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
