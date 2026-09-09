@@ -72,6 +72,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "84234fb5-42cb-49a4-b701-931e834c4ca8",  # 25587 PR18 6cea2cc Cad Image Files PASS — do not remint / PATCH
         "4216109a-4603-45ed-a83d-6c2f071a8c6c",  # 21625-1 PR18 593db19 Cad Image Files PASS — do not remint / PATCH
         "8a66e074-1c50-4671-82ff-d2d2d8e82082",  # 15046-1 PR18 01da281 Long/Saw PASS — do not remint / PATCH
+        "c71d2096-1cbd-40c8-877e-97f4c86df410",  # 10081-1 PR18 4f4a6fb Long/Saw PASS — do not remint / PATCH
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -139,6 +140,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "84234fb5",  # 25587 PR18 6cea2cc Cad Image Files PASS (PL3/8-A572 UC 24.41 Time) — do not remint / PATCH
         "4216109a",  # 21625-1 PR18 593db19 Cad Image Files PASS (PL1/4-A572 UC 25.64 Time Laser Bay1) — do not remint / PATCH
         "8a66e074",  # 15046-1 PR18 01da281 Long/Saw PASS (RTD2 3/4X0.375-A513 UC 16.32 Time Waco) — do not remint / PATCH
+        "c71d2096",  # 10081-1 PR18 4f4a6fb Long/Saw PASS (P5-40-A36 UC 22.46 Time Waco) — do not remint / PATCH
         "d5a6987d",  # 21785-2 Outer Boom STEP @ ab58a96 — InternalData 14/14 empty, ZZ-DEL ARCHIVED — do not remint
         "30f50f96",  # P904272-1 ZZ-DEL before classify @ 0163ffd Login fail — leftover EDIT amtech footer / dead AspNet — do not remint
         "0837ad33",  # P904271-1 @ 0163ffd classify/SetPartMode Cad×3 then InternalData-empty refuse — ZZ-DEL — do not remint
@@ -207,6 +209,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "25587-1",  # occupied sibling — do not remint
         "21625-1",  # spent 4216109a Cad Image Files PASS @ 593db19 — do not remint
         "15046-1",  # spent 8a66e074 Long/Saw PASS @ 01da281 — do not remint
+        "10081-1",  # spent c71d2096 Long/Saw PASS @ 4f4a6fb — do not remint
         "103535-1",  # spent bd5c2e3e cookie HTTP / empty #gridPDF — do not remint
         "Q10095",  # spent 103535-1 GATE WELDMENT — do not remint
         "34137-4",  # spent 425587a7 — do not remint
