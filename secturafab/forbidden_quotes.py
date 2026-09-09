@@ -202,7 +202,9 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "21785-1",  # spent Outer Boom Insulated leftover — /part/create List=0, ZZ-DEL — do not remint
         "21785-2",  # spent d5a6987d Outer Boom STEP @ ab58a96 — ImageString preview, InternalData 14/14 empty, ZZ-DEL ARCHIVED — do not remint
         "21785-3",  # spent Outer Boom Insulated leftover — /part/create List=0, ZZ-DEL — do not remint
-        # Do not remint 21785-1 / 21785-2 / 21785-3.
+        "35145-1",  # Kyle Loom c9d7c05a Q10243 STEP gold look — do not remint / PATCH
+        "Q10243",  # Kyle Loom c9d7c05a / 35145-1 — do not remint
+        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243.
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

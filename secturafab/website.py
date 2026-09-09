@@ -215,6 +215,9 @@ Assembly 5b622a0d: page $.ajax on EDIT + #img H/W still empty
 InternalData on explode. Keep skip. Gold 21678-1 / Q10056 GET
 ItemList has no InternalData (FileList-at-Finish only). Kyle gold
 Loom is CAD Files → classify → Finish with no per-part editor.
+Kyle Loom c9d7c05a (Q10243 / 35145-1): blue Next → #gridDXFParts Part
+Mode → green Finish. Do not Finish with PartMode still null (live
+21785-2). Do not remint 35145-1 / Q10243 / 21785-1/2/3.
 UpdateDXF_LoadNew is editor-only (not gold): #DXFEdit open +
 CADType==="DXF" + Previous/Next/combobox → UpdateDataNext.
 Live leftover EDIT: WebGLCADDisp undefined, #DXFEdit hidden.
@@ -5528,6 +5531,81 @@ def is_cloudflare_challenge(status_code: int, text: str | None) -> bool:
 
 def part_mode_int(category: str) -> int:
     return PART_MODE_BY_CATEGORY.get(str(category or "Cad"), PART_MODE_CAD)
+
+
+def part_mode_is_null(value: Any) -> bool:
+    """True when explode left PartMode unset. 0 is Cad, not null."""
+    if value is None:
+        return True
+    if isinstance(value, str) and value.strip().casefold() in {
+        "",
+        "null",
+        "undefined",
+        "none",
+    }:
+        return True
+    return False
+
+
+def classified_kids_missing_part_mode(
+    rows: list[dict[str, Any]] | None,
+) -> list[str]:
+    """Kid names still missing PartMode after classify (not Assembly)."""
+    names: list[str] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        cat = str(row.get("Category") or row.get("ItemType") or "")
+        if cat == "Assembly":
+            continue
+        if "PartMode" not in row or part_mode_is_null(row.get("PartMode")):
+            names.append(row_name(row) or "?")
+    return names
+
+
+def kyle_classify_before_finish_blocked(
+    rows: list[dict[str, Any]] | None,
+) -> str | None:
+    """Fail-close if classify did not stamp PartMode (Kyle Loom c9d7c05a)."""
+    missing = classified_kids_missing_part_mode(rows)
+    if not missing:
+        return None
+    return (
+        "PartMode still null after classify — not Finishing "
+        "(Kyle Loom c9d7c05a classify-before-Finish; live 21785-2)"
+    )
+
+
+def finish_attempt_empty_partmode_or_internaldata(
+    rows: list[dict[str, Any]] | None,
+    result: dict[str, Any] | None = None,
+) -> str | None:
+    """After AddItem_DXFFiles: PartMode null or Cad InternalData empty is fail."""
+    check: list[dict[str, Any]] = []
+    if isinstance(result, dict):
+        for key in ("FileList", "List"):
+            raw = result.get(key)
+            if isinstance(raw, list):
+                check.extend(r for r in raw if isinstance(r, dict))
+                break
+    if not check:
+        check = [r for r in (rows or []) if isinstance(r, dict)]
+    for row in check:
+        cat = str(row.get("Category") or row.get("ItemType") or row.get("FileType") or "")
+        if cat == "Assembly":
+            continue
+        if "PartMode" not in row or part_mode_is_null(row.get("PartMode")):
+            return (
+                "PartMode still null after Finish attempt — not success "
+                "(Kyle Loom c9d7c05a classify-before-Finish)"
+            )
+        if cat == "Cad" or is_cad_filelist_row(row):
+            if "InternalData" in row and cad_payload_value_empty(row.get("InternalData")):
+                return (
+                    "InternalData empty after Finish attempt — not success "
+                    "(do not invent InternalData; live 21785-2)"
+                )
+    return None
 
 
 def coerce_product_type(value: Any) -> int | None:

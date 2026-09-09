@@ -68,6 +68,8 @@ from .website import (
     WEBSITE_SESSION_EXPIRED,
     SecturaFabWebsiteAuthError,
     cad_finish_notes_refuse_additem_dxf,
+    finish_attempt_empty_partmode_or_internaldata,
+    kyle_classify_before_finish_blocked,
     count_cad_product_type,
     is_tenant_guid,
     count_linear_product_type,
@@ -2705,8 +2707,12 @@ class SecturaFabPushService:
         ``UploadItem_DXFFiles`` leaves ``#gridDXF`` empty (live EHB3112-1).
         Page Next is ``createAllParts`` / ``DoCreateDXFParts`` on minted EDIT.
         Cookie HTTP ``/part/create`` is not the gold bind.
-        After bind + SetPartMode, log kendo row key names (CadType,
-        Stock_*, FileType, SID/FileID/ID) and the same names on posted FileList.
+        After bind, classify Part Mode (Cad plate, Linear tube/bar/angle,
+        Component purchased) and SetPartMode on ``#gridDXFParts`` (Kyle Loom
+        c9d7c05a). Fail-close if PartMode is still null after classify, or if
+        PartMode is null / Cad InternalData empty after Finish. Then log
+        kendo row key names (CadType, Stock_*, FileType, SID/FileID/ID) and
+        the same names on posted FileList.
         If kendo has CadType/Stock_*, copy them through — do not invent values.
         If kendo lacks them after explode, that is a /part/create bind miss
         (not a Finish-hook miss): do not Finish.
@@ -3054,6 +3060,11 @@ class SecturaFabPushService:
             f"Component:{int(applied.get('component') or 0)}"
         )
         notes.append(f"setpartmode_via={set_via or '?'}")
+        notes.append("kyle_classify_before_finish=true")
+        blocked = kyle_classify_before_finish_blocked(classified)
+        if blocked:
+            notes.append(blocked)
+            return notes
         if not set_via:
             notes.append(
                 "WARNING: SetPartMode did not run on this EDIT #gridDXFParts "
@@ -3180,6 +3191,11 @@ class SecturaFabPushService:
         via = getattr(self.client, "_finish_via", "") or ""
         if isinstance(via, str) and via:
             notes.append(f"finish_via={via}")
+        after = finish_attempt_empty_partmode_or_internaldata(
+            ready, result if isinstance(result, dict) else None
+        )
+        if after:
+            notes.append(after)
         finish_fn = ""
         finish_n = 0
         grid_n = getattr(self.client, "_grid_dxf_row_count", None)

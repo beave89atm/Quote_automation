@@ -8926,6 +8926,460 @@ def test_dxf_page_next_nonempty_internaldata_finishes(tmp_path: Path):
     assert "preview" not in shape
 
 
+def test_kyle_classify_before_finish_helpers_and_35145_protect():
+    """Kyle Loom c9d7c05a: PartMode 0 is Cad; null after classify is fail-close."""
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+    )
+    from secturafab.website import (
+        WEBSITE_FINISH_PATHS,
+        finish_attempt_empty_partmode_or_internaldata,
+        kyle_classify_before_finish_blocked,
+        part_mode_is_null,
+        part_mode_int,
+    )
+    from tests.fixtures.live_21678_1 import GOLD_QUOTE_ID
+    from tests.fixtures.live_35145_1 import (
+        GOLD_PART_KEY,
+        GOLD_QUOTE_NUMBER,
+        kyle_step_classify_dump,
+    )
+    from tests.fixtures.live_part_create_tlist_bind import LIVE_PART_CREATE_TLIST_BIND
+
+    assert part_mode_is_null(None) is True
+    assert part_mode_is_null("null") is True
+    assert part_mode_is_null("") is True
+    assert part_mode_is_null(0) is False
+    assert part_mode_int("Cad") == 0
+    assert part_mode_int("Linear") == 1
+    assert part_mode_int("Component") == 2
+    explode_null = [
+        {
+            "Name": "KID-0 PLATE",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": None,
+            "InternalData": "server-stamped",
+        }
+    ]
+    blocked = kyle_classify_before_finish_blocked(explode_null)
+    assert blocked is not None
+    assert "PartMode still null after classify" in blocked
+    assert kyle_classify_before_finish_blocked(
+        [{"Name": "KID-0 PLATE", "Category": "Cad", "PartMode": 0}]
+    ) is None
+    assert kyle_classify_before_finish_blocked(
+        [{"Name": "Root", "Category": "Assembly"}]
+    ) is None
+    after = finish_attempt_empty_partmode_or_internaldata(
+        [{"Name": "KID-0 PLATE", "Category": "Cad", "PartMode": 0, "InternalData": "x"}],
+        {
+            "FileList": [
+                {
+                    "Name": "KID-0 PLATE",
+                    "Category": "Cad",
+                    "FileType": "Cad",
+                    "PartMode": 0,
+                    "InternalData": "",
+                }
+            ]
+        },
+    )
+    assert after is not None
+    assert "InternalData empty after Finish attempt" in after
+    after_pm = finish_attempt_empty_partmode_or_internaldata(
+        [],
+        {
+            "FileList": [
+                {
+                    "Name": "KID-0 PLATE",
+                    "Category": "Cad",
+                    "FileType": "Cad",
+                    "PartMode": None,
+                    "InternalData": "x",
+                }
+            ]
+        },
+    )
+    assert after_pm is not None
+    assert "PartMode still null after Finish attempt" in after_pm
+    dump = kyle_step_classify_dump()
+    assert dump["finish"]["path"] == "/Quote/AddItem_DXFFiles"
+    assert dump["finish"]["fn"] == "OnAddDXFClick"
+    assert dump["finish"]["not"] == "UpdateDXF_LoadNew"
+    assert dump["part_key"] == GOLD_PART_KEY == "35145-1"
+    assert dump["quote_number"] == GOLD_QUOTE_NUMBER == "Q10243"
+    assert WEBSITE_FINISH_PATHS["add_item_dxf_files"] == "/Quote/AddItem_DXFFiles"
+    assert LIVE_PART_CREATE_TLIST_BIND is None
+    assert is_forbidden_quote_number("35145-1")
+    assert is_forbidden_quote_number("Q10243")
+    assert is_forbidden_quote_number("21785-1")
+    assert is_forbidden_quote_number("21785-2")
+    assert is_forbidden_quote_number("21785-3")
+    assert is_forbidden_quote_id(GOLD_QUOTE_ID)
+    assert is_forbidden_quote_id("a7d6ca50-efec-409d-bd32-e68012e710c3")
+
+
+def test_finish_cad_files_classify_before_finish_then_additem_dxf(tmp_path: Path):
+    """Kyle Loom c9d7c05a: Next → Part Mode classify → Finish, not UpdateDXF_LoadNew."""
+    from tests.fixtures.live_35145_1 import KYLE_STEP_CLASSIFY_BEFORE_FINISH
+
+    assert KYLE_STEP_CLASSIFY_BEFORE_FINISH["finish"]["path"] == "/Quote/AddItem_DXFFiles"
+    stp = tmp_path / "35145-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-plate",
+            "FileID": "file-plate",
+            "ID": "id-plate",
+            "Name": "GUSSET PLATE",
+            "FileName": "GUSSET PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "CadType": 0,
+            "Stock_X": 8.0,
+            "Stock_Y": 4.0,
+            "PartMode": None,
+            "InternalData": "server-stamped",
+            "ImageString": "iVBORw0KGgo",
+        },
+        {
+            "SourceDataID": "src-tube",
+            "FileID": "file-tube",
+            "ID": "id-tube",
+            "Name": "RETURN TUBE",
+            "FileName": "RETURN TUBE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "CadType": 0,
+            "Stock_X": 12.0,
+            "Stock_Y": 1.0,
+            "PartMode": None,
+            "ImageString": "iVBORw0KGgo",
+        },
+    ]
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": kids,
+        "grid_present": True,
+        "grid_dxf_row_count": 2,
+        "list_len": 2,
+        "internaldata_key_n": 1,
+        "internaldata_empty_n": 0,
+        "internaldata_nonempty_n": 1,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 2
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa3514"
+    client._edit_gate = ""
+    client._setpartmode_via = "page_fn"
+    client._finish_via = "page_fn"
+    client._part_create_list_len = 2
+    client.get_item_add_view.return_value = {}
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "via": "page_fn",
+            "finish_fn": "OnAddDXFClick",
+            "filelist_from_kendo": True,
+            "finish_filelist_n": 2,
+        }
+
+    client.add_item_dxf_files.side_effect = _add
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    service = SecturaFabPushService(client=client)
+    service._linear_product_cache = [
+        {
+            "ID": "pid-rct",
+            "ProductName": "RCT1.25X.120-A513",
+            "ProductDescription": "Mechanical Tube 1.25 X .120 A513",
+            "ShapeName": "Mechanical Tube",
+            "MaterialGrade": "A513",
+            "Dim1": 1.25,
+            "Active": True,
+        }
+    ]
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 1,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 2,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 2,
+            "kendo_row_keys": [
+                "CadType",
+                "Stock_X",
+                "Stock_Y",
+                "FileType",
+                "SourceDataID",
+            ],
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa3514",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="35145-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_called_once()
+    client.cadimport_update_data_next.assert_not_called()
+    blob = " ".join(notes)
+    assert "next_via=createAllParts" in blob
+    assert "kyle_classify_before_finish=true" in blob
+    assert "PartMode still null after classify" not in blob
+    posted = captured["file_list"]
+    by_name = {str(r.get("Name") or ""): r for r in posted}
+    plate = by_name["GUSSET PLATE"]
+    tube = by_name["RETURN TUBE"]
+    assert plate["PartMode"] == 0
+    assert plate["Category"] == "Cad"
+    assert tube["PartMode"] == 1
+    assert tube["Category"] == "Linear"
+    assert tube["Machine"] == "Saw"
+    assert tube.get("ProductID") == "pid-rct"
+    assert tube.get("SKU") == "RCT1.25X.120-A513"
+
+
+def test_finish_cad_files_refuses_when_partmode_still_null_after_classify(
+    tmp_path: Path,
+):
+    """Kyle Loom c9d7c05a: do not Finish if classify left PartMode null."""
+    stp = tmp_path / "21785-2.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-kid",
+            "FileID": "file-kid",
+            "ID": "id-kid",
+            "Name": "KID-0 PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "CadType": 0,
+            "Stock_X": 8.0,
+            "Stock_Y": 4.0,
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "FileType": "Cad",
+            "InternalData": "server-stamped",
+            "ImageString": "iVBORw0KGgo",
+        }
+    ]
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": kids,
+        "grid_present": True,
+        "grid_dxf_row_count": 1,
+        "list_len": 1,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2178"
+    client._edit_gate = ""
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    service = SecturaFabPushService(client=client)
+
+    def _classify(rows, **_kwargs):
+        out = []
+        for row in rows:
+            copy = dict(row)
+            copy.pop("PartMode", None)
+            out.append(copy)
+        return out, ["Classified CAD Files kids — Cad: 1, Linear: 0, Component: 0, Assembly: 0"]
+
+    with (
+        patch.object(service, "classify_cadimport_rows", side_effect=_classify),
+        patch(
+            "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+            return_value={
+                "grid_present": True,
+                "cad": 1,
+                "linear": 0,
+                "assembly": 0,
+                "component": 0,
+                "set_count": 0,
+                "setpartmode_via": "page_fn",
+                "grid_dxf_row_count": 1,
+                "kendo_row_keys": ["CadType", "Stock_X", "Stock_Y"],
+            },
+        ),
+    ):
+        notes = service.finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2178",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="21785-2",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    client.cadimport_update_data_next.assert_not_called()
+    blob = " ".join(notes)
+    assert "kyle_classify_before_finish=true" in blob
+    assert "PartMode still null after classify" in blob
+    assert "next_via=createAllParts" in blob
+
+
+def test_finish_cad_files_after_finish_empty_internaldata_is_not_success(
+    tmp_path: Path,
+):
+    """After AddItem_DXFFiles, Cad InternalData empty is fail-close — do not invent."""
+    stp = tmp_path / "21680-1.STEP"
+    stp.write_bytes(b"ISO")
+    kid = {
+        "SourceDataID": "src-21680",
+        "FileID": "file-21680",
+        "ID": "id-21680",
+        "Name": "21680-1 PLATE",
+        "FileName": "21680-1 PLATE",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "Status": 1,
+        "CadType": 0,
+        "Stock_X": 8.0,
+        "Stock_Y": 4.0,
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "PartMode": 0,
+        "FileType": "Cad",
+        "InternalData": "server-stamped",
+        "ImageString": "preview",
+    }
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": [kid],
+        "grid_present": True,
+        "grid_dxf_row_count": 1,
+        "list_len": 1,
+        "internaldata_key_n": 1,
+        "internaldata_empty_n": 0,
+        "internaldata_nonempty_n": 1,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2168"
+    client._edit_gate = ""
+    client._setpartmode_via = "page_fn"
+    client._finish_via = "page_fn"
+    client._part_create_list_len = 1
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+        "FileList": [
+            {
+                "Name": "21680-1 PLATE",
+                "Category": "Cad",
+                "FileType": "Cad",
+                "PartMode": 0,
+                "InternalData": "",
+            }
+        ],
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": [
+                "CadType",
+                "Stock_X",
+                "Stock_Y",
+                "FileType",
+                "SourceDataID",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2168",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="21680-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_called_once()
+    client.cadimport_update_data_next.assert_not_called()
+    blob = " ".join(notes)
+    assert "kyle_classify_before_finish=true" in blob
+    assert "InternalData empty after Finish attempt" in blob
+    assert "not success" in blob
+
+
 def test_cad_editor_update_data_next_is_not_explode_fill():
     """UpdateDXF_LoadNew is CAD editor next-file, not /part/create InternalData."""
     from secturafab.cadimport_js import (
