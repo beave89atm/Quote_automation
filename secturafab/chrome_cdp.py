@@ -7113,6 +7113,90 @@ _DISPATCH_DXF_FILES_CHANGE_JS = """(function() {
 
 
 _INVOKE_CREATE_ALL_PARTS_JS = """(function() {
+  function emptyVal(v) {
+    if (v == null) return true;
+    if (typeof v === "string") {
+      var s = String(v).trim().toLowerCase();
+      return !s || s === "[]" || s === "{}" || s === "null" || s === "undefined";
+    }
+    if (Array.isArray(v)) return v.length === 0;
+    return false;
+  }
+  function pathOf(url) {
+    var u = String(url || "");
+    var q = u.indexOf("?");
+    if (q >= 0) u = u.slice(0, q);
+    try {
+      if (u.indexOf("http") === 0) {
+        var a = document.createElement("a");
+        a.href = u;
+        u = a.pathname || u;
+      }
+    } catch (e0) {}
+    return u;
+  }
+  function summarizeList(list) {
+    var rows = Array.isArray(list) ? list : [];
+    var keys = [];
+    if (rows[0] && typeof rows[0] === "object") {
+      keys = Object.keys(rows[0]).filter(function(k) { return k !== "uid"; });
+    }
+    var idEmpty = 0, idNon = 0, imgEmpty = 0, imgNon = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i] || {};
+      if (emptyVal(r.InternalData)) idEmpty++; else idNon++;
+      if (emptyVal(r.ImageString)) imgEmpty++; else imgNon++;
+    }
+    return {
+      n: rows.length,
+      keys: keys.slice(0, 24),
+      internaldata_empty_n: idEmpty,
+      internaldata_nonempty_n: idNon,
+      imagestring_empty_n: imgEmpty,
+      imagestring_nonempty_n: imgNon,
+      tlist_bind_source: idNon > 0 && imgNon > 0
+    };
+  }
+  if (!window.__kannonCadImportCapture) window.__kannonCadImportCapture = [];
+  if (!window.__kannonCadImportHooked && window.jQuery && jQuery.ajax) {
+    var orig = jQuery.ajax;
+    window.__kannonCadImportHooked = true;
+    jQuery.ajax = function(opts) {
+      var url = String((opts && opts.url) || "");
+      var p = pathOf(url);
+      var req = orig.apply(this, arguments);
+      var watch = p.indexOf("/part/create") >= 0 || p.indexOf("/CadImport/") >= 0
+        || p.indexOf("/Quote/AddItem_DXFFiles") >= 0;
+      if (watch && req && typeof req.always === "function") {
+        req.always(function(body) {
+          var rows = [];
+          if (body && typeof body === "object") {
+            if (Array.isArray(body.List)) rows = body.List;
+            else if (Array.isArray(body)) rows = body;
+            else if (body.InternalData !== undefined || body.FileID
+                || body.SourceDataID || body.WebGL !== undefined) {
+              rows = [body];
+            }
+          }
+          var reqKeys = [];
+          try {
+            var d = opts && opts.data;
+            if (d && typeof d === "object" && !Array.isArray(d)) {
+              reqKeys = Object.keys(d);
+            }
+          } catch (e1) {}
+          var cap = summarizeList(rows);
+          cap.method = String((opts && opts.type) || "POST").toUpperCase();
+          cap.path = p;
+          cap.request_keys = reqKeys.filter(function(k) {
+            return String(k).indexOf("__Request") !== 0 && k !== "afToken";
+          }).slice(0, 16);
+          window.__kannonCadImportCapture.push(cap);
+        });
+      }
+      return req;
+    };
+  }
   var gridN = 0;
   try {
     var g = window.jQuery && jQuery("#gridDXF").data("kendoGrid");
@@ -7176,6 +7260,27 @@ _READ_GRID_DXF_PARTS_AFTER_NEXT_JS = """(function() {
       if (emptyVal(rows[j].InternalData)) emptyN += 1;
     }
   }
+  var xhrs = [];
+  try {
+    var rawCap = window.__kannonCadImportCapture;
+    if (Array.isArray(rawCap)) {
+      for (var c = 0; c < rawCap.length; c++) {
+        var item = rawCap[c] || {};
+        xhrs.push({
+          method: String(item.method || ""),
+          path: String(item.path || ""),
+          request_keys: Array.isArray(item.request_keys) ? item.request_keys.slice(0, 16) : [],
+          keys: Array.isArray(item.keys) ? item.keys.slice(0, 24) : [],
+          n: Number(item.n || 0),
+          internaldata_empty_n: Number(item.internaldata_empty_n || 0),
+          internaldata_nonempty_n: Number(item.internaldata_nonempty_n || 0),
+          imagestring_empty_n: Number(item.imagestring_empty_n || 0),
+          imagestring_nonempty_n: Number(item.imagestring_nonempty_n || 0),
+          tlist_bind_source: !!item.tlist_bind_source
+        });
+      }
+    }
+  } catch (eCap) {}
   return Promise.resolve({
     grid_present: present,
     has_gridDXFParts: present,
@@ -7184,7 +7289,8 @@ _READ_GRID_DXF_PARTS_AFTER_NEXT_JS = """(function() {
     List: rows,
     internaldata_key_n: keyN,
     internaldata_empty_n: emptyN,
-    internaldata_nonempty_n: keyN - emptyN
+    internaldata_nonempty_n: keyN - emptyN,
+    cadimport_xhr_capture: xhrs
   });
 })"""
 
@@ -7317,6 +7423,37 @@ def upload_dxf_via_page_add_files(
     }
 
 
+def _sanitize_cadimport_xhr_capture(raw: Any) -> list[dict[str, Any]]:
+    """Keep Next-hook XHR emptiness / key names. Never contour JSON."""
+    out: list[dict[str, Any]] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        keys = [str(k) for k in (item.get("keys") or item.get("response_keys") or [])]
+        req = [str(k) for k in (item.get("request_keys") or [])]
+        out.append(
+            {
+                "method": str(item.get("method") or ""),
+                "path": str(item.get("path") or ""),
+                "request_keys": req[:16],
+                "keys": keys[:24],
+                "n": int(item.get("n") or 0),
+                "internaldata_empty_n": int(item.get("internaldata_empty_n") or 0),
+                "internaldata_nonempty_n": int(
+                    item.get("internaldata_nonempty_n") or 0
+                ),
+                "imagestring_empty_n": int(item.get("imagestring_empty_n") or 0),
+                "imagestring_nonempty_n": int(
+                    item.get("imagestring_nonempty_n") or 0
+                ),
+                "tlist_bind_source": bool(item.get("tlist_bind_source")),
+            }
+        )
+    return out
+
+
 def create_all_parts_from_grid_dxf(
     *,
     quote_id: str | None = None,
@@ -7342,6 +7479,7 @@ def create_all_parts_from_grid_dxf(
         "internaldata_key_n": 0,
         "internaldata_empty_n": 0,
         "internaldata_nonempty_n": 0,
+        "cadimport_xhr_capture": [],
     }
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     if not gate.get("ok"):
@@ -7382,6 +7520,9 @@ def create_all_parts_from_grid_dxf(
                     "internaldata_key_n": int(count.get("internaldata_key_n") or 0),
                     "internaldata_empty_n": int(count.get("internaldata_empty_n") or 0),
                     "internaldata_nonempty_n": int(count.get("internaldata_nonempty_n") or 0),
+                    "cadimport_xhr_capture": _sanitize_cadimport_xhr_capture(
+                        count.get("cadimport_xhr_capture")
+                    ),
                 }
         time.sleep(0.25)
     rows = [r for r in (last.get("List") or []) if isinstance(r, dict)]
@@ -7398,6 +7539,9 @@ def create_all_parts_from_grid_dxf(
         "internaldata_key_n": int(last.get("internaldata_key_n") or 0),
         "internaldata_empty_n": int(last.get("internaldata_empty_n") or 0),
         "internaldata_nonempty_n": int(last.get("internaldata_nonempty_n") or 0),
+        "cadimport_xhr_capture": _sanitize_cadimport_xhr_capture(
+            last.get("cadimport_xhr_capture")
+        ),
     }
 
 

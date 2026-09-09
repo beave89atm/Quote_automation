@@ -1833,9 +1833,12 @@ class SecturaFabPushService:
         ConvertTo / Detect* as a Finish substitute.
         """
         from .website import (
+            cadimport_get_is_editor_preview,
             cadimport_get_payload_empty_bools,
+            cadimport_get_rows,
             copy_cadimport_get_payload_through,
             persist_cadimport_get_empty_shape,
+            persist_kyle_step_contours_capture_gap,
         )
 
         notes: list[str] = []
@@ -1851,7 +1854,7 @@ class SecturaFabPushService:
             src: list[dict[str, Any]] = []
             if callable(fetch):
                 try:
-                    src = self._cadimport_rows(fetch(params=query))
+                    src = cadimport_get_rows(fetch(params=query))
                 except (
                     SecturaFabApiError,
                     SecturaFabWebsiteAuthError,
@@ -1870,6 +1873,10 @@ class SecturaFabPushService:
                 f"{name}_contours_empty="
                 + ("true" if bools["contours_empty"] else "false")
             )
+            if name == "cadimport_caddata" and any(
+                cadimport_get_is_editor_preview(r) for r in src
+            ):
+                notes.append("cadimport_caddata_editor_preview=true")
         persist_cadimport_get_empty_shape(route_bools, notes=notes)
         copied_n = 0
         out: list[dict[str, Any]] = []
@@ -1883,6 +1890,8 @@ class SecturaFabPushService:
                 copied_n += 1
             out.append(row)
         notes.append(f"cadimport_get_copied_n={copied_n}")
+        if copied_n == 0:
+            persist_kyle_step_contours_capture_gap(notes)
         return out, notes
 
     def _explode_capture_notes(
@@ -2970,6 +2979,11 @@ class SecturaFabPushService:
                     and str(next_out.get("via") or "") == "createAllParts"
                 ):
                     notes.append("next_via=createAllParts")
+                    from .website import persist_cadimport_xhr_capture
+
+                    persist_cadimport_xhr_capture(
+                        next_out.get("cadimport_xhr_capture"), notes=notes
+                    )
                     self.client._part_create_via = "createAllParts"
                     self.client._part_create_from_edit = True
                     kids = [

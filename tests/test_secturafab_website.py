@@ -10363,6 +10363,261 @@ def test_cadimport_get_overlay_copies_nonempty_by_identity():
     service.client.cadimport_convert_to.assert_not_called()
 
 
+def test_cadimport_get_rows_unwraps_single_editor_preview_without_inventing():
+    """Single CADData leftover object is visible; empty still not bindable."""
+    from secturafab.website import (
+        cadimport_get_is_editor_preview,
+        cadimport_get_payload_empty_bools,
+        cadimport_get_rows,
+        copy_cadimport_get_payload_through,
+    )
+
+    preview = {
+        "ID": "id-1",
+        "FileID": "file-1",
+        "Length": 8.0,
+        "Width": 4.0,
+        "WebGL": True,
+        "InternalData": "",
+        "Contours": [],
+    }
+    rows = cadimport_get_rows(preview)
+    assert len(rows) == 1
+    assert cadimport_get_is_editor_preview(rows[0]) is True
+    bools = cadimport_get_payload_empty_bools(rows)
+    assert bools["bindable"] is False
+    assert bools["internaldata_empty"] is True
+    dest = {
+        "ID": "id-1",
+        "FileID": "file-1",
+        "InternalData": "",
+    }
+    copied = copy_cadimport_get_payload_through(rows, dest)
+    assert copied.get("InternalData") in ("", None)
+    assert "Length" not in copied or copied.get("InternalData") in ("", None)
+    wrapper = cadimport_get_rows({"ID": "quote-only"})
+    assert wrapper == []
+    filled = cadimport_get_rows(
+        {
+            "FileID": "file-1",
+            "InternalData": "server-stamped",
+            "NumberOfContours": 2,
+        }
+    )
+    dest2 = {"FileID": "file-1", "InternalData": ""}
+    through = copy_cadimport_get_payload_through(filled, dest2)
+    assert through["InternalData"] == "server-stamped"
+    assert through["NumberOfContours"] == 2
+
+
+def test_cadimport_get_overlay_unwraps_single_caddata_object(tmp_path: Path):
+    """Overlay sees a leftover CADData object; copies only if nonempty."""
+    service = SecturaFabPushService(client=MagicMock())
+    dest = [
+        {
+            "SourceDataID": "src-1",
+            "ID": "id-1",
+            "FileID": "file-1",
+            "InternalData": "",
+        }
+    ]
+    service.client.cadimport_data.return_value = {"List": []}
+    service.client.cadimport_caddata.return_value = {
+        "ID": "id-1",
+        "FileID": "file-1",
+        "Length": 12.0,
+        "Width": 6.0,
+        "WebGL": True,
+        "InternalData": "",
+        "Contours": [],
+    }
+    empty_out, empty_notes = service._overlay_cadimport_get_payloads(
+        quote_id="qid", rows=dest
+    )
+    assert empty_out[0].get("InternalData") in ("", None)
+    assert "cadimport_caddata_editor_preview=true" in empty_notes
+    assert "cadimport_caddata_bindable=false" in empty_notes
+    assert "cadimport_get_copied_n=0" in empty_notes
+    assert any("kyle_step_contours_capture=" in n for n in empty_notes)
+    service.client.cadimport_caddata.return_value = {
+        "FileID": "file-1",
+        "InternalData": "from-caddata-object",
+        "NumberOfContours": 1,
+    }
+    filled_out, filled_notes = service._overlay_cadimport_get_payloads(
+        quote_id="qid", rows=dest
+    )
+    assert filled_out[0]["InternalData"] == "from-caddata-object"
+    assert filled_out[0]["NumberOfContours"] == 1
+    assert "cadimport_get_copied_n=1" in filled_notes
+    service.client.cadimport_update_data_next.assert_not_called()
+
+
+def test_kyle_step_contours_devtools_capture_recipe_is_exact():
+    """Kyle must save these XHRs on a manual STEP Finish that shows Contours."""
+    from secturafab.forbidden_quotes import is_forbidden_quote_number
+    from secturafab.website import (
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+        STEP_CONTOURS_CAPTURE_NEVER_SAVE,
+        STEP_CONTOURS_CAPTURE_WINDOWS,
+        classify_step_contours_capture,
+        kyle_step_contours_devtools_capture,
+        persist_part_create_tlist_bind_source,
+    )
+    from tests.fixtures.live_part_create_tlist_bind import LIVE_PART_CREATE_TLIST_BIND
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+        step_contours_kyle_capture,
+    )
+
+    recipe = kyle_step_contours_devtools_capture()
+    dump = step_contours_kyle_capture()
+    assert recipe["invent"] is False
+    assert recipe["fail_close_if_empty"] is True
+    assert recipe["fresh_pn_only"] is True
+    assert recipe["windows"] == list(STEP_CONTOURS_CAPTURE_WINDOWS)
+    assert dump["windows"] == list(STEP_CONTOURS_CAPTURE_WINDOWS)
+    paths = {row["path"] for row in recipe["must_save"] if row["path"] != "*"}
+    assert "/part/create" in paths
+    assert "/CadImport/UploadItem_DXFFiles" in paths
+    assert "/CadImport/Data" in paths
+    assert "/CadImport/CADData" in paths
+    assert "/Quote/AddItem_DXFFiles" in paths
+    assert "upload_to_next" in recipe["windows"]
+    assert "explode_to_finish" in recipe["windows"]
+    bind = next(row for row in recipe["must_save"] if row["path"] == "/part/create")
+    assert bind["role"] == "expected_bind_source"
+    assert "InternalData nonempty AND ImageString nonempty" in bind["bindable_when"]
+    assert "InternalData JSON" in recipe["never_save"]
+    assert recipe["never_save"] == STEP_CONTOURS_CAPTURE_NEVER_SAVE
+    assert LIVE_PART_CREATE_TLIST_BIND is None
+    for spent in STEP_CONTOURS_CAPTURE_NEVER_REMINT:
+        assert is_forbidden_quote_number(spent)
+    leftover = classify_step_contours_capture(
+        [
+            {
+                "method": "POST",
+                "path": "https://www.secturafab.com/part/create?x=1",
+                "request_keys": ["Location", "IDList", "__RequestVerificationToken"],
+                "List": [
+                    {
+                        "Name": "PLATE",
+                        "InternalData": "",
+                        "ImageString": "iVBORw0KGgo",
+                        "SourceDataID": "src-1",
+                    }
+                ],
+            },
+            {
+                "method": "GET",
+                "path": "/CadImport/CADData",
+                "response": {
+                    "ID": "id-1",
+                    "FileID": "file-1",
+                    "Length": 8,
+                    "Width": 4,
+                    "WebGL": True,
+                    "InternalData": "",
+                },
+            },
+        ]
+    )
+    assert leftover["bindable"] is False
+    assert leftover["finish_ok"] is False
+    assert leftover["invent"] is False
+    assert leftover["finish_why"] == CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    assert leftover["step_explode_no_internaldata"] is True
+    part = next(x for x in leftover["xhrs"] if x["path"] == "/part/create")
+    assert part["tlist_bind_source"] is False
+    assert "__RequestVerificationToken" not in part["request_keys"]
+    assert "iVBORw0KGgo" not in json.dumps(leftover)
+    cad = next(x for x in leftover["xhrs"] if x["path"] == "/CadImport/CADData")
+    assert cad["editor_preview"] is True
+    assert cad["bindable"] is False
+    filled = classify_step_contours_capture(
+        [
+            {
+                "method": "POST",
+                "path": "/part/create",
+                "List": [
+                    {
+                        "InternalData": "server-stamped",
+                        "ImageString": "iVBORw0KGgo",
+                        "Name": "PLATE",
+                    }
+                ],
+            }
+        ]
+    )
+    assert filled["bindable"] is True
+    assert filled["finish_ok"] is True
+    assert filled["bind_source_path"] == "/part/create"
+    assert "server-stamped" not in json.dumps(filled)
+    mystery = classify_step_contours_capture(
+        [
+            {
+                "method": "POST",
+                "path": "/CadImport/UnknownFill",
+                "List": [
+                    {
+                        "SourceDataID": "src-1",
+                        "InternalData": "from-unknown",
+                        "Contours": [1, 2],
+                    }
+                ],
+            }
+        ]
+    )
+    assert "/CadImport/UnknownFill" in mystery["candidate_fill_paths"]
+    assert mystery["invent"] is False
+    notes: list[str] = []
+    persist_part_create_tlist_bind_source(
+        [{"InternalData": "", "ImageString": "x", "FileType": "Cad"}],
+        notes=notes,
+    )
+    assert "tlist_bind_source=false" in notes
+    assert any("kyle_step_contours_capture=" in n for n in notes)
+    assert "kyle_capture_windows=upload_to_next,part_create,explode_to_finish,additem_dxffiles" in notes
+
+
+def test_create_all_parts_js_records_cadimport_xhr_emptiness_only():
+    """Page Next hook records CadImport/part paths + emptiness, never values."""
+    from secturafab.chrome_cdp import (
+        _INVOKE_CREATE_ALL_PARTS_JS,
+        _READ_GRID_DXF_PARTS_AFTER_NEXT_JS,
+        _sanitize_cadimport_xhr_capture,
+    )
+
+    assert "createAllParts" in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "empty_gridDXF" in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "__kannonCadImportCapture" in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "tlist_bind_source" in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "InternalData" in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "UpdateDataNext" not in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "GetPerimeterAndWeight" not in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "cadimport_xhr_capture" in _READ_GRID_DXF_PARTS_AFTER_NEXT_JS
+    raw = [
+        {
+            "method": "POST",
+            "path": "/part/create",
+            "request_keys": ["Location", "IDList"],
+            "keys": ["InternalData", "ImageString"],
+            "n": 1,
+            "internaldata_empty_n": 1,
+            "internaldata_nonempty_n": 0,
+            "imagestring_empty_n": 0,
+            "imagestring_nonempty_n": 1,
+            "tlist_bind_source": False,
+            "InternalData": "do-not-keep",
+        }
+    ]
+    cleaned = _sanitize_cadimport_xhr_capture(raw)
+    assert cleaned[0]["path"] == "/part/create"
+    assert cleaned[0]["tlist_bind_source"] is False
+    assert "InternalData" not in cleaned[0] or cleaned[0].get("InternalData") != "do-not-keep"
+    assert "do-not-keep" not in json.dumps(cleaned)
+
+
 def test_add_item_invokes_page_finish_when_partmode_set_without_cadtype():
     """PartMode set + kendo missing CadType/Stock → still invoke page Finish."""
     from secturafab.client import SecturaFabClient

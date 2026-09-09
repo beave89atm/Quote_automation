@@ -172,6 +172,8 @@ CLASSIFY_FINISH_INTERNALDATA_FILL = None
 # GetPerimeterAndWeight is Stock_X/Y perimeter, not InternalData.
 # Bind source is DoCreateDXFParts t.List as-is when InternalData and
 # ImageString are already nonempty. Persist key names only.
+# Until a live Finish-with-Contours capture exists, Kyle must save the
+# DevTools windows in kyle_step_contours_devtools_capture (emptiness only).
 # Hunt (QuoteOrderEdit createAllParts + leftover 21785-2): no XHR
 # between #gridDXF collect and DoCreateDXFParts writes InternalData
 # or CuttingLength. CLASSIFY_FINISH_INTERNALDATA_FILL stays None.

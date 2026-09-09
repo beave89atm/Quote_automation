@@ -225,6 +225,10 @@ Optional GET /CadImport/Data + GET /CadImport/CADData after explode
 may copy Contours/InternalData by SID/ID/FileID only if nonempty.
 Empty GET is documentary — not a fill XHR. Do not invent Contours.
 Do not POST UpdateDataNext / ConvertTo / Detect* as a Finish substitute.
+No live STEP t.List has yet arrived with nonempty InternalData+ImageString
+(LIVE_PART_CREATE_TLIST_BIND is None). Until Kyle grabs a manual Finish
+that shows Contours, persist the exact DevTools windows
+(kyle_step_contours_devtools_capture) — key names / emptiness only.
 UpdateDXF_LoadNew is editor-only (not gold): #DXFEdit open +
 CADType==="DXF" + Previous/Next/combobox → UpdateDataNext.
 Live leftover EDIT: WebGLCADDisp undefined, #DXFEdit hidden.
@@ -1496,6 +1500,55 @@ def persist_cadimport_get_empty_shape(
     return out
 
 
+def cadimport_get_is_editor_preview(row: dict[str, Any] | None) -> bool:
+    """True when CADData is Length/Width/WebGL preview, not Contours fill."""
+    if not isinstance(row, dict):
+        return False
+    has_preview = any(key in row for key in ("Length", "Width", "WebGL"))
+    if not has_preview:
+        return False
+    return all(
+        key not in row or cadimport_get_field_empty(key, row.get(key))
+        for key in CADIMPORT_GET_COPY_KEYS
+    )
+
+
+_CADIMPORT_GET_UNWRAP_KEYS = (
+    "SourceDataID",
+    "FileID",
+    "FileName",
+    "Name",
+    "InternalData",
+    "InternalHTML",
+    "Contours",
+    "NumberOfContours",
+    "WebGL",
+    "Length",
+    "Width",
+)
+
+
+def cadimport_get_rows(payload: Any) -> list[dict[str, Any]]:
+    """Rows from GET /CadImport/Data or CADData — including a leftover object.
+
+    A single editor-preview object (Length/Width/WebGL, InternalData empty)
+    is returned so emptiness can be logged. Copy-through still requires
+    SID/ID/FileID match and nonempty Contours/InternalData. ID-only wrappers
+    are not rows. Never invent Contours.
+    """
+    rows = filelist_from_cadimport_upload(payload)
+    if rows:
+        return rows
+    rows = normalize_cadimport_list(payload)
+    if rows:
+        return rows
+    if not isinstance(payload, dict):
+        return []
+    if not any(key in payload for key in _CADIMPORT_GET_UNWRAP_KEYS):
+        return []
+    return [dict(payload)]
+
+
 def copy_cadimport_get_payload_through(
     src_rows: list[dict[str, Any]] | None,
     dest: dict[str, Any] | None,
@@ -1658,7 +1711,367 @@ def persist_part_create_tlist_bind_source(
             alias = STEP_EXPLODE_NO_INTERNALDATA
             if alias not in notes:
                 notes.append(alias)
+            persist_kyle_step_contours_capture_gap(notes)
     return out
+
+
+KYLE_STEP_CONTOURS_CAPTURE = "kyle_step_contours_capture"
+STEP_CONTOURS_CAPTURE_WINDOWS = (
+    "upload_to_next",
+    "part_create",
+    "explode_to_finish",
+    "additem_dxffiles",
+)
+STEP_CONTOURS_NOT_FILL_PATHS = frozenset(
+    {
+        "/CadImport/ConvertTo",
+        "/CadImport/UpdateData",
+        "/CadImport/UpdateDataNext",
+        "/CadImport/SetPartMode",
+        "/CadImport/SetUnits",
+        "/CadImport/GetDXFData",
+        "/part/PartImage",
+        "/Quote/DXFInternal",
+        "/Quote/GetPerimeterAndWeight",
+        "/Quote/GetDXFData",
+    }
+)
+STEP_CONTOURS_KNOWN_PATHS = frozenset(
+    {
+        "/CadImport/UploadItem_DXFFiles",
+        "/part/create",
+        "/CadImport/Data",
+        "/CadImport/CADData",
+        "/Quote/AddItem_DXFFiles",
+        "/CadImport/SetPartMode",
+        "/CadImport/SetUnits",
+    }
+)
+STEP_CONTOURS_CAPTURE_NEVER_SAVE = (
+    "InternalData JSON",
+    "ImageString base64",
+    "Contours geometry",
+    "cookies",
+    "anti-forgery tokens",
+    "file bytes",
+)
+
+
+def cadimport_capture_path(url: Any) -> str:
+    """Path only — drop host and query. Never log values."""
+    from urllib.parse import urlparse
+
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    if "://" not in text and not text.startswith("/"):
+        text = "/" + text
+    parsed = urlparse(text if "://" in text else "https://dummy.invalid" + text)
+    path = parsed.path or text.split("?", 1)[0]
+    if not path.startswith("/"):
+        path = "/" + path
+    return path
+
+
+def kyle_step_contours_devtools_capture() -> dict[str, Any]:
+    """Exact DevTools XHRs Kyle must save on a manual STEP Finish with Contours.
+
+    Bind source is still POST /part/create t.List with nonempty InternalData
+    and ImageString. No live capture of that bind exists. Do not invent
+    Contours. Do not remint spent STEP leftovers.
+    """
+    return {
+        "purpose": (
+            "Manual Time STEP Finish that shows Contours "
+            "(GET DataPartPDF.NumberOfContours >= 1) — save these XHRs"
+        ),
+        "fresh_pn_only": True,
+        "windows": list(STEP_CONTOURS_CAPTURE_WINDOWS),
+        "must_save": (
+            {
+                "method": "POST",
+                "path": "/CadImport/UploadItem_DXFFiles",
+                "window": "upload",
+                "save": (
+                    "response List key names",
+                    "InternalData/ImageString/Contours emptiness bools",
+                ),
+            },
+            {
+                "method": "POST",
+                "path": "/part/create",
+                "window": "part_create",
+                "role": "expected_bind_source",
+                "save": (
+                    "request keys Location/IDList[]/unitList[]/"
+                    "OtherFileIDList[]/Height/Width (types+zero, not values)",
+                    "t.List n + key names",
+                    "InternalData empty_n/nonempty_n",
+                    "ImageString empty_n/nonempty_n",
+                    "Contours/NumberOfContours emptiness",
+                ),
+                "bindable_when": "InternalData nonempty AND ImageString nonempty",
+            },
+            {
+                "method": "*",
+                "path": "*",
+                "window": "upload_to_next",
+                "save": (
+                    "every XHR between upload success and blue Next: "
+                    "method, path, request key names, response key names, "
+                    "InternalData/ImageString/Contours emptiness"
+                ),
+            },
+            {
+                "method": "*",
+                "path": "*",
+                "window": "explode_to_finish",
+                "save": (
+                    "every XHR between /part/create success and green Finish: "
+                    "same emptiness summary"
+                ),
+            },
+            {
+                "method": "GET",
+                "path": "/CadImport/Data",
+                "window": "explode_to_finish",
+                "role": "copy_if_nonempty",
+            },
+            {
+                "method": "GET",
+                "path": "/CadImport/CADData",
+                "window": "explode_to_finish",
+                "role": "copy_if_nonempty_or_editor_preview",
+            },
+            {
+                "method": "POST",
+                "path": "/Quote/AddItem_DXFFiles",
+                "window": "additem_dxffiles",
+                "role": "copy_only",
+                "save": (
+                    "FileList key names + InternalData/Contours emptiness "
+                    "(not JSON)"
+                ),
+            },
+        ),
+        "never_save": STEP_CONTOURS_CAPTURE_NEVER_SAVE,
+        "ui_notes": (
+            "Did #DXFEdit open?",
+            "Did a thumbnail/part preview click happen?",
+            "Units inch vs mm?",
+            "Spinner after Next? How long until Contours appeared?",
+        ),
+        "not_fill_xhr": (
+            "ConvertTo",
+            "UpdateData",
+            "UpdateDataNext",
+            "Detect*",
+            "Remove*",
+            "GetDXFData",
+            "PartImage",
+            "Quote/DXFInternal",
+            "GetPerimeterAndWeight",
+            "SetPartMode",
+            "CADData editor preview",
+        ),
+        "image_files_analog": (
+            "Image Files Contours come from PDFGetData/PDFInternal onto "
+            "FileList InternalData",
+            "STEP analog is DoCreateDXFParts t.List InternalData+ImageString "
+            "as-is",
+            "Do not copy PDFGetData onto STEP FileList",
+        ),
+        "must_save_bind": (
+            "POST /part/create t.List InternalData+ImageString emptiness "
+            "(key names only) on a Finish that shows Contours"
+        ),
+        "invent": False,
+        "fail_close_if_empty": True,
+    }
+
+
+def persist_kyle_step_contours_capture_gap(
+    notes: list[str] | None,
+) -> dict[str, Any]:
+    """Documentary capture gap after empty explode. Never invent Contours."""
+    recipe = kyle_step_contours_devtools_capture()
+    if notes is not None:
+        token = KYLE_STEP_CONTOURS_CAPTURE + "=" + str(recipe["must_save_bind"])
+        if token not in notes:
+            notes.append(token)
+        windows = "kyle_capture_windows=" + ",".join(recipe["windows"])
+        if windows not in notes:
+            notes.append(windows)
+    return recipe
+
+
+def _capture_response_rows(xhr: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(xhr, dict):
+        return []
+    for key in ("response_rows", "List", "rows"):
+        raw = xhr.get(key)
+        if isinstance(raw, list):
+            return [r for r in raw if isinstance(r, dict)]
+    resp = xhr.get("response")
+    if resp is None:
+        return []
+    return cadimport_get_rows(resp)
+
+
+def summarize_cadimport_capture_xhr(xhr: dict[str, Any] | None) -> dict[str, Any]:
+    """Sanitize one DevTools XHR: key names + emptiness. Never values."""
+    if not isinstance(xhr, dict):
+        return {
+            "method": "",
+            "path": "",
+            "request_keys": [],
+            "response_keys": [],
+            "n": 0,
+            "internaldata_empty": True,
+            "imagestring_empty": True,
+            "contours_empty": True,
+            "tlist_bind_source": False,
+            "bindable": False,
+            "editor_preview": False,
+            "not_fill": False,
+        }
+    path = cadimport_capture_path(xhr.get("path") or xhr.get("url") or "")
+    method = str(xhr.get("method") or "").upper()
+    req_keys = [
+        str(k)
+        for k in (xhr.get("request_keys") or xhr.get("requestKeys") or [])
+        if str(k)
+        and not str(k).startswith("__Request")
+        and str(k) != "afToken"
+    ]
+    rows = _capture_response_rows(xhr)
+    get_bools = cadimport_get_payload_empty_bools(rows)
+    tlist = part_create_list_payload_empty_bools(rows)
+    pre_bind = xhr.get("tlist_bind_source")
+    pre_id_non = xhr.get("internaldata_nonempty_n")
+    pre_img_non = xhr.get("imagestring_nonempty_n")
+    if rows:
+        bindable = bool(
+            tlist.get("tlist_bind_source") or get_bools.get("bindable")
+        )
+        tlist_bind = bool(tlist.get("tlist_bind_source"))
+        id_empty = bool(tlist.get("internaldata_empty"))
+        img_empty = bool(tlist.get("imagestring_empty"))
+        contours_empty = bool(get_bools.get("contours_empty"))
+        n = int(tlist.get("n") or get_bools.get("n") or 0)
+        keys = list(get_bools.get("keys") or [])
+        editor = any(cadimport_get_is_editor_preview(r) for r in rows)
+    else:
+        try:
+            id_non = int(pre_id_non or 0)
+        except (TypeError, ValueError):
+            id_non = 0
+        try:
+            img_non = int(pre_img_non or 0)
+        except (TypeError, ValueError):
+            img_non = 0
+        tlist_bind = bool(pre_bind) or (id_non > 0 and img_non > 0)
+        bindable = tlist_bind
+        id_empty = id_non <= 0
+        img_empty = img_non <= 0
+        contours_empty = True
+        try:
+            n = int(xhr.get("n") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        keys = [str(k) for k in (xhr.get("keys") or xhr.get("response_keys") or [])]
+        editor = False
+    return {
+        "method": method,
+        "path": path,
+        "request_keys": req_keys,
+        "response_keys": keys,
+        "n": n,
+        "internaldata_empty": id_empty,
+        "imagestring_empty": img_empty,
+        "contours_empty": contours_empty,
+        "tlist_bind_source": tlist_bind,
+        "bindable": bindable,
+        "editor_preview": editor,
+        "not_fill": path in STEP_CONTOURS_NOT_FILL_PATHS,
+    }
+
+
+def classify_step_contours_capture(
+    xhrs: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Classify a sanitized DevTools capture. Empty stays fail-close.
+
+    A bindable unexpected path is a *candidate* only — do not POST it.
+    Never invent Contours/InternalData.
+    """
+    summaries = [summarize_cadimport_capture_xhr(x) for x in (xhrs or [])]
+    bind = next(
+        (s for s in summaries if s.get("tlist_bind_source")),
+        None,
+    )
+    if bind is None:
+        bind = next((s for s in summaries if s.get("bindable")), None)
+    candidates = [
+        s["path"]
+        for s in summaries
+        if s.get("bindable")
+        and s.get("path")
+        and s["path"] not in STEP_CONTOURS_KNOWN_PATHS
+        and not s.get("not_fill")
+        and not s.get("editor_preview")
+    ]
+    present = {s.get("path") for s in summaries if s.get("path")}
+    missing: list[str] = []
+    if "/part/create" not in present:
+        missing.append("part_create")
+    if not any(
+        s.get("path") == "/CadImport/UploadItem_DXFFiles" for s in summaries
+    ):
+        missing.append("upload")
+    if "/Quote/AddItem_DXFFiles" not in present:
+        missing.append("additem_dxffiles")
+    finish_ok = bool(bind)
+    return {
+        "bind_source_path": str((bind or {}).get("path") or ""),
+        "bindable": finish_ok,
+        "candidate_fill_paths": candidates,
+        "finish_ok": finish_ok,
+        "finish_why": (
+            ""
+            if finish_ok
+            else CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+        ),
+        "step_explode_no_internaldata": not finish_ok,
+        "kyle_capture_missing": missing,
+        "invent": False,
+        "xhrs": summaries,
+    }
+
+
+def persist_cadimport_xhr_capture(
+    xhrs: list[dict[str, Any]] | None,
+    *,
+    notes: list[str] | None = None,
+) -> dict[str, Any]:
+    """Persist Next-hook XHR emptiness. Candidate paths are documentary only."""
+    classified = classify_step_contours_capture(xhrs)
+    if notes is not None:
+        paths = []
+        for row in classified.get("xhrs") or []:
+            path = str(row.get("path") or "")
+            if path and path not in paths:
+                paths.append(path)
+        notes.append(f"cadimport_xhr_n={len(classified.get('xhrs') or [])}")
+        if paths:
+            notes.append("cadimport_xhr_paths=" + ",".join(paths[:16]))
+        for cand in classified.get("candidate_fill_paths") or []:
+            line = f"cadimport_xhr_candidate={cand}"
+            if line not in notes:
+                notes.append(line)
+        if not classified.get("bindable"):
+            persist_kyle_step_contours_capture_gap(notes)
+    return classified
 
 
 def _tlist_name_token(value: Any) -> str:
