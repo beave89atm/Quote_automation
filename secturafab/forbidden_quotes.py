@@ -75,6 +75,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "c71d2096-1cbd-40c8-877e-97f4c86df410",  # 10081-1 PR18 4f4a6fb Long/Saw PASS — do not remint / PATCH
         "30550221-733a-4baf-866a-73396a0d799b",  # 21667-1 PR18 11562dd Cad Image Files PASS — do not remint / PATCH
         "7f768328-1a9a-4498-af74-f2aa78b930ef",  # 21666-1 PR18 769e05a Long/Saw PASS — do not remint / PATCH
+        "3ff05f3a-79a3-48f7-add1-0ea8bbf9d884",  # 21674-1 PR18 998a100 Cad Image Files PASS — do not remint / PATCH
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -145,6 +146,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "c71d2096",  # 10081-1 PR18 4f4a6fb Long/Saw PASS (P5-40-A36 UC 22.46 Time Waco) — do not remint / PATCH
         "30550221",  # 21667-1 PR18 11562dd Cad Image Files PASS (PL3/8-A572 UC 26.37 Time Laser Bay1) — do not remint / PATCH
         "7f768328",  # 21666-1 PR18 769e05a Long/Saw PASS (RTD3X0.438-A513 UC 48.21 Time Waco) — do not remint / PATCH
+        "3ff05f3a",  # 21674-1 PR18 998a100 Cad Image Files PASS (PL1/4-A572 UC 23.74 Time Laser Bay1) — do not remint / PATCH
         "d5a6987d",  # 21785-2 Outer Boom STEP @ ab58a96 — InternalData 14/14 empty, ZZ-DEL ARCHIVED — do not remint
         "30f50f96",  # P904272-1 ZZ-DEL before classify @ 0163ffd Login fail — leftover EDIT amtech footer / dead AspNet — do not remint
         "0837ad33",  # P904271-1 @ 0163ffd classify/SetPartMode Cad×3 then InternalData-empty refuse — ZZ-DEL — do not remint
@@ -216,6 +218,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "10081-1",  # spent c71d2096 Long/Saw PASS @ 4f4a6fb — do not remint
         "21667-1",  # spent 30550221 Cad Image Files PASS @ 11562dd — do not remint
         "21666-1",  # spent 7f768328 Long/Saw PASS @ 769e05a — do not remint
+        "21674-1",  # spent 3ff05f3a Cad Image Files PASS @ 998a100 — do not remint
         "103535-1",  # spent bd5c2e3e cookie HTTP / empty #gridPDF — do not remint
         "Q10095",  # spent 103535-1 GATE WELDMENT — do not remint
         "34137-4",  # spent 425587a7 — do not remint
