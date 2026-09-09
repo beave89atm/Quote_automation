@@ -127,6 +127,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "3f3802da",  # 1020243-1 PR18 d7c4ea9 RenestLinear 480→240 PASS — do not remint / PATCH
         "d5a6987d",  # 21785-2 Outer Boom STEP @ ab58a96 — InternalData 14/14 empty, ZZ-DEL ARCHIVED — do not remint
         "30f50f96",  # P904272-1 ZZ-DEL before classify @ 0163ffd Login fail — leftover EDIT amtech footer / dead AspNet — do not remint
+        "0837ad33",  # P904271-1 @ 0163ffd classify/SetPartMode Cad×3 then InternalData-empty refuse — ZZ-DEL — do not remint
         "4b8d6ae6",  # 103535-1 leftover @ 8e08f53 — kids stamped via CDP before nest refuse — do not remint / PATCH
         "b1036d7d",  # 33819-2 spent plate_sku_missing — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
@@ -206,7 +207,8 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "35145-1",  # Kyle Loom c9d7c05a Q10243 STEP gold look — do not remint / PATCH
         "Q10243",  # Kyle Loom c9d7c05a / 35145-1 — do not remint
         "P904272-1",  # spent 30f50f96 ZZ-DEL before classify @ 0163ffd Login fail — do not remint
-        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1.
+        "P904271-1",  # spent 0837ad33 classify/SetPartMode Cad×3 @ 0163ffd then pre-Finish InternalData refuse — ZZ-DEL — do not remint
+        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1.
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

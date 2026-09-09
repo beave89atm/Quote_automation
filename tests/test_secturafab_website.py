@@ -8797,15 +8797,15 @@ def test_dxf_cookie_http_upload_does_not_bind_griddxf(tmp_path: Path):
 
 
 def test_dxf_page_next_empty_internaldata_does_not_finish(tmp_path: Path):
-    """Page #gridDXF bind + Next with present-and-empty InternalData — skip Finish."""
-    stp = tmp_path / "21680-1.STEP"
+    """PartMode set + empty InternalData — Finish is attempted (Kyle Loom c9d7)."""
+    stp = tmp_path / "P904271-1.STEP"
     stp.write_bytes(b"ISO")
     kid = {
         "SourceDataID": "src-21680",
         "FileID": "file-21680",
         "ID": "id-21680",
-        "Name": "21680-1 PLATE",
-        "FileName": "21680-1 PLATE",
+        "Name": "GUSSET PLATE",
+        "FileName": "GUSSET PLATE",
         "Qty": 1,
         "ErrorStatus": 0,
         "CadType": 0,
@@ -8843,8 +8843,16 @@ def test_dxf_page_next_empty_internaldata_does_not_finish(tmp_path: Path):
     client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2168"
     client._edit_gate = ""
     client._setpartmode_via = "page_fn"
+    client._finish_via = "page_fn"
     client._part_create_list_len = 1
     client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+    }
     client.quote_item_read.return_value = {"Data": [], "Total": 0}
     client.get_json.return_value = {"ItemList": []}
     with patch(
@@ -8871,21 +8879,19 @@ def test_dxf_page_next_empty_internaldata_does_not_finish(tmp_path: Path):
             bom_rows=[],
             library={},
             extra_pdfs=None,
-            part_key="21680-1",
+            part_key="P904271-1",
             explode_polls=1,
             explode_sleep_s=0,
         )
     client.upload_item_dxf_files.assert_not_called()
-    client.add_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_called_once()
     client.cadimport_update_data_next.assert_not_called()
-    client.stamp_dxf_kendo_stock.assert_not_called()
     blob = " ".join(notes)
     assert "next_via=createAllParts" in blob
-    assert "InternalData present-and-empty" in blob
-    assert "not Finishing" in blob
-    assert "needs_internaldata_fill_xhr" in blob
-    assert "refusing AddItem_DXFFiles" in blob
-    assert "tlist_bind_source=false" in blob
+    assert "kyle_classify_before_finish=true" in blob
+    assert "partmode_set_allows_empty_internaldata=true" in blob
+    assert "refusing AddItem_DXFFiles" not in blob
+    assert "GET 0 Cad after Finish" in blob or "Cad Contours empty after Finish" in blob
 
 
 def test_dxf_page_next_nonempty_internaldata_finishes(tmp_path: Path):
@@ -9050,8 +9056,7 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
             ]
         },
     )
-    assert after is not None
-    assert "InternalData empty after Finish attempt" in after
+    assert after is None
     after_pm = finish_attempt_empty_partmode_or_internaldata(
         [],
         {
@@ -9079,7 +9084,9 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("35145-1")
     assert is_forbidden_quote_number("Q10243")
     assert is_forbidden_quote_number("P904272-1")
+    assert is_forbidden_quote_number("P904271-1")
     assert is_forbidden_quote_id("30f50f96-aaaa-bbbb-cccc-000000000001")
+    assert is_forbidden_quote_id("0837ad33-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_number("21785-1")
     assert is_forbidden_quote_number("21785-2")
     assert is_forbidden_quote_number("21785-3")
@@ -9336,15 +9343,15 @@ def test_finish_cad_files_refuses_when_partmode_still_null_after_classify(
 def test_finish_cad_files_after_finish_empty_internaldata_is_not_success(
     tmp_path: Path,
 ):
-    """After AddItem_DXFFiles, Cad InternalData empty is fail-close — do not invent."""
-    stp = tmp_path / "21680-1.STEP"
+    """After AddItem_DXFFiles, 0 Cad / empty pack is fail-close — do not invent."""
+    stp = tmp_path / "P904271-1.STEP"
     stp.write_bytes(b"ISO")
     kid = {
         "SourceDataID": "src-21680",
         "FileID": "file-21680",
         "ID": "id-21680",
-        "Name": "21680-1 PLATE",
-        "FileName": "21680-1 PLATE",
+        "Name": "GUSSET PLATE",
+        "FileName": "GUSSET PLATE",
         "Qty": 1,
         "ErrorStatus": 0,
         "Status": 1,
@@ -9434,7 +9441,7 @@ def test_finish_cad_files_after_finish_empty_internaldata_is_not_success(
             bom_rows=[],
             library={},
             extra_pdfs=None,
-            part_key="21680-1",
+            part_key="P904271-1",
             explode_polls=1,
             explode_sleep_s=0,
         )
@@ -9442,8 +9449,140 @@ def test_finish_cad_files_after_finish_empty_internaldata_is_not_success(
     client.cadimport_update_data_next.assert_not_called()
     blob = " ".join(notes)
     assert "kyle_classify_before_finish=true" in blob
-    assert "InternalData empty after Finish attempt" in blob
+    assert "InternalData empty after Finish attempt" not in blob
+    assert "GET 0 Cad after Finish" in blob or "Cad Contours empty after Finish" in blob
     assert "not success" in blob
+
+
+def test_partmode_set_empty_internaldata_allows_additem_dxf():
+    """P904271-1 / Kyle Loom c9d7: PartMode set → Finish even if InternalData empty."""
+    from secturafab.website import (
+        cad_filelist_refuses_additem_dxf,
+        cad_finish_notes_pack_missing,
+        imagestring_without_internaldata_refuses_finish,
+        item_cad_contour_count,
+        kendo_filelist_for_finish,
+        kyle_classify_before_finish_blocked,
+        step_finish_pack_missing,
+    )
+    from tests.fixtures.live_p904271_1 import (
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        live_p904271_1_classify_dump,
+    )
+
+    dump = live_p904271_1_classify_dump()
+    assert dump["quote_number"] == SPENT_QUOTE_NUMBER == "P904271-1"
+    assert dump["quote_id_prefix"] == SPENT_QUOTE_ID_PREFIX == "0837ad33"
+    assert dump["classify_ran"] is True
+    assert dump["finish_refused_too_early"] is True
+    classified = [
+        {
+            "Name": f"KID-{i} PLATE",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+        for i in range(3)
+    ]
+    assert kyle_classify_before_finish_blocked(classified) is None
+    for row in classified:
+        assert imagestring_without_internaldata_refuses_finish(row) is True
+        assert cad_filelist_refuses_additem_dxf(row) is None
+    kendo_rows = [
+        {
+            "ID": "id-0",
+            "FileID": "file-0",
+            "SourceDataID": "src-0",
+            "CadType": 0,
+            "Stock_X": 8.0,
+            "Stock_Y": 4.0,
+            "Name": "KID-0 PLATE",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    ]
+    cap = kendo_filelist_for_finish(kendo_rows, from_datasource=True)
+    assert cap["should_finish"] is True
+    assert cap["filelist_internaldata_empty"] is True
+    null_row = {
+        "Name": "KID-0 PLATE",
+        "Category": "Cad",
+        "FileType": "Cad",
+        "InternalData": "",
+        "ImageString": "iVBORw0KGgo",
+    }
+    assert cad_filelist_refuses_additem_dxf(null_row) is not None
+    assert kyle_classify_before_finish_blocked([null_row]) is not None
+    assert item_cad_contour_count({"ProductType": 100}) == 0
+    assert item_cad_contour_count(
+        {"ProductType": 100, "Data": {"NumberOfContours": 2}}
+    ) == 2
+    empty_get = {"ItemList": []}
+    miss = step_finish_pack_missing(empty_get, expect_cad=True, expect_linear=False)
+    assert miss is not None
+    assert "GET 0 Cad after Finish" in miss
+    contours_zero = {
+        "ItemList": [
+            {
+                "ProductType": 100,
+                "Category": "Cad",
+                "BadgeString": "PR",
+                "NumberOfContours": 0,
+                "OperationCostList": [
+                    {"CalculatorName": "Laser"},
+                    {"CalculatorName": "Deburr"},
+                    {"CalculatorName": "Laser-Setup"},
+                    {"CalculatorName": "Sheet Loading"},
+                ],
+            }
+        ]
+    }
+    miss_c = step_finish_pack_missing(
+        contours_zero, expect_cad=True, expect_linear=False
+    )
+    assert miss_c is not None
+    assert "Cad Contours empty after Finish" in miss_c
+    no_pack = {
+        "ItemList": [
+            {
+                "ProductType": 100,
+                "Category": "Cad",
+                "NumberOfContours": 1,
+                "BadgeString": "",
+                "OperationCostList": [],
+            }
+        ]
+    }
+    miss_p = step_finish_pack_missing(no_pack, expect_cad=True, expect_linear=False)
+    assert miss_p is not None
+    assert "PR+laser pack missing" in miss_p
+    gold = {
+        "ItemList": [
+            {
+                "ProductType": 100,
+                "Category": "Cad",
+                "NumberOfContours": 1,
+                "BadgeString": "PR",
+                "OperationCostList": [
+                    {"CalculatorName": "Laser"},
+                    {"CalculatorName": "Deburr"},
+                    {"CalculatorName": "Laser-Setup"},
+                    {"CalculatorName": "Sheet Loading"},
+                ],
+            }
+        ]
+    }
+    assert step_finish_pack_missing(gold, expect_cad=True, expect_linear=False) is None
+    assert cad_finish_notes_pack_missing([miss]) == miss
+    assert cad_finish_notes_pack_missing([miss_c]) == miss_c
+    assert cad_finish_notes_pack_missing([miss_p]) == miss_p
+    assert cad_finish_notes_pack_missing(["kyle_classify_before_finish=true"]) is None
 
 
 def test_cad_editor_update_data_next_is_not_explode_fill():

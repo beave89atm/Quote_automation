@@ -67,9 +67,12 @@ from .website import (
     WEBSITE_AUTH_GAP,
     WEBSITE_SESSION_EXPIRED,
     SecturaFabWebsiteAuthError,
+    cad_finish_notes_pack_missing,
     cad_finish_notes_refuse_additem_dxf,
+    classified_kids_missing_part_mode,
     finish_attempt_empty_partmode_or_internaldata,
     kyle_classify_before_finish_blocked,
+    step_finish_pack_missing,
     count_cad_product_type,
     is_tenant_guid,
     count_linear_product_type,
@@ -2758,18 +2761,21 @@ class SecturaFabPushService:
         Cookie HTTP ``/part/create`` is not the gold bind.
         After bind, classify Part Mode (Cad plate, Linear tube/bar/angle,
         Component purchased) and SetPartMode on ``#gridDXFParts`` (Kyle Loom
-        c9d7c05a). Fail-close if PartMode is still null after classify, or if
-        PartMode is null / Cad InternalData empty after Finish. Then log
+        c9d7c05a). Fail-close if PartMode is still null after classify.
+        After Finish, fail-close if PartMode is still null, or if Cad
+        Contours are empty / PR+laser pack is missing. Then log
         kendo row key names (CadType, Stock_*, FileType, SID/FileID/ID) and
         the same names on posted FileList.
         If kendo has CadType/Stock_*, copy them through — do not invent values.
         If kendo lacks them after explode, that is a /part/create bind miss
         (not a Finish-hook miss): do not Finish.
         ``GetPerimeterAndWeight`` remains ``#gridPDF`` only — not CAD
-        InternalData. Refuse AddItem_DXFFiles when ``#gridDXFParts``
-        InternalData is present-and-empty or Contours would be 0
-        (``needs_internaldata_fill_xhr``). Do not invent InternalData.
-        Do not fire UpdateDataNext. 21678-1 is UI-only gold — do not open.
+        InternalData. After PartMode is set on every kid, POST
+        AddItem_DXFFiles even if InternalData is still empty (Kyle Loom
+        c9d7; live P904271-1). ImageString-only without PartMode still
+        refuses. After Finish, require Cad Contours≥1 + PR + laser
+        (and Linear Saw if Linear). Do not invent InternalData. Do not
+        fire UpdateDataNext. 21678-1 is UI-only gold — do not open.
         """
         notes: list[str] = []
         from .chrome_cdp import chrome_session_lost
@@ -3217,20 +3223,24 @@ class SecturaFabPushService:
                 "filelist_imagestring_empty="
                 + ("true" if bools["filelist_imagestring_empty"] else "false")
             )
-            if cad_refuse:
-                notes.append(cad_refuse)
-            if cad_block is not None:
+            partmode_ready = not classified_kids_missing_part_mode(ready)
+            if partmode_ready:
+                notes.append("partmode_set_allows_empty_internaldata=true")
                 notes.append(
-                    "Cad FileList InternalData present-and-empty — "
-                    "required for Cad Finish (OnAddDXFClick copies InternalData; "
-                    "ImageString is preview). Server never fills InternalData on "
-                    "explode (Skin Assembly 5b622a0d jquery_ajax+EDIT 8/8, FA "
-                    "Assembly 0d4b8a46 28/28, SC0600 143/143, 21785-2 d5a6987d "
-                    "ImageString 13/13 preview / InternalData 14/14). #img copy is not "
-                    "success; ajax-on-EDIT is not success; not Finishing; do not "
-                    "invent InternalData; not success"
+                    "Kyle Loom c9d7 Finish after Part Mode — InternalData "
+                    "may land after AddItem_DXFFiles (live P904271-1)"
                 )
-            return notes
+            else:
+                if cad_refuse:
+                    notes.append(cad_refuse)
+                if cad_block is not None:
+                    notes.append(
+                        "Cad FileList InternalData present-and-empty — "
+                        "ImageString-only without PartMode is preview "
+                        "(live 21785-2). not Finishing; do not invent "
+                        "InternalData; not success"
+                    )
+                return notes
         result = self.client.add_item_dxf_files(
             quote_id=quote_id,
             file_list=ready,
@@ -3432,6 +3442,19 @@ class SecturaFabPushService:
             notes.append(
                 "WARNING: Finish body empty even though GET later showed items"
             )
+        want_cad = any(
+            str(r.get("Category") or r.get("ItemType") or "") == "Cad"
+            for r in ready
+        )
+        want_lin = any(
+            str(r.get("Category") or r.get("ItemType") or "") == "Linear"
+            for r in ready
+        )
+        pack_miss = step_finish_pack_missing(
+            posted, expect_cad=want_cad, expect_linear=want_lin
+        )
+        if pack_miss:
+            notes.append(pack_miss)
         return notes
 
     def finish_pdf_files(
@@ -5659,6 +5682,17 @@ class SecturaFabPushService:
                     if refuse:
                         return self._fail_push(
                             msg=refuse,
+                            notes=notes,
+                            quote_id=quote_id,
+                            quote_number=quote_number,
+                            quote_request_id=quote_request_id,
+                            uploaded=uploaded,
+                            attempts=createfile_attempts,
+                        )
+                    pack_miss_note = cad_finish_notes_pack_missing(notes)
+                    if pack_miss_note:
+                        return self._fail_push(
+                            msg=pack_miss_note,
                             notes=notes,
                             quote_id=quote_id,
                             quote_number=quote_number,

@@ -217,7 +217,8 @@ ItemList has no InternalData (FileList-at-Finish only). Kyle gold
 Loom is CAD Files → classify → Finish with no per-part editor.
 Kyle Loom c9d7c05a (Q10243 / 35145-1): blue Next → #gridDXFParts Part
 Mode → green Finish. Do not Finish with PartMode still null (live
-21785-2). Do not remint 35145-1 / Q10243 / 21785-1/2/3 / P904272-1.
+21785-2). Do not remint 35145-1 / Q10243 / 21785-1/2/3 / P904272-1 /
+P904271-1.
 UpdateDXF_LoadNew is editor-only (not gold): #DXFEdit open +
 CADType==="DXF" + Previous/Next/combobox → UpdateDataNext.
 Live leftover EDIT: WebGLCADDisp undefined, #DXFEdit hidden.
@@ -1624,16 +1625,28 @@ def tlist_imagestring_without_internaldata(
     return bool(any_img and not any_id)
 
 
-def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
-    """Refuse AddItem_DXFFiles when InternalData is empty or Contours would be 0.
+def filelist_row_partmode_set(row: dict[str, Any] | None) -> bool:
+    """True when classify stamped PartMode (0 Cad is set, not null)."""
+    if not isinstance(row, dict):
+        return False
+    if "PartMode" not in row:
+        return False
+    return not part_mode_is_null(row.get("PartMode"))
 
-    ImageString-without-InternalData is still refuse (preview only; live
-    21785-2). needs_internaldata_fill_xhr: classify→Finish has no named
-    fill XHR. Do not invent InternalData.
+
+def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
+    """Refuse AddItem_DXFFiles when InternalData is empty and PartMode is unset.
+
+    Kyle Loom c9d7 / live P904271-1: after Part Mode classify, Finish even
+    if InternalData is still empty — packs land after AddItem_DXFFiles.
+    ImageString-without-InternalData **and** PartMode null is still refuse
+    (preview only; live 21785-2). Do not invent InternalData.
     """
     from secturafab.cadimport_js import NEEDS_INTERNALDATA_FILL_XHR
 
     if not isinstance(row, dict) or not is_cad_filelist_row(row):
+        return None
+    if filelist_row_partmode_set(row):
         return None
     if not (
         cad_filelist_payload_blocks_finish(row)
@@ -1668,6 +1681,21 @@ def cad_finish_notes_refuse_additem_dxf(
     return None
 
 
+def cad_finish_notes_pack_missing(notes: list[str] | None) -> str | None:
+    """Push fail-close after Finish landed 0 Cad / empty Contours / no pack."""
+    markers = (
+        "GET 0 Cad after Finish",
+        "Cad Contours empty after Finish",
+        "Cad PR+laser pack missing after Finish",
+        "Linear Saw pack missing after Finish",
+    )
+    for note in notes or []:
+        text = str(note)
+        if any(marker in text for marker in markers):
+            return text
+    return None
+
+
 def kendo_filelist_for_finish(
     rows: list[dict[str, Any]] | None,
     *,
@@ -1695,10 +1723,13 @@ def kendo_filelist_for_finish(
     fileid_n = sum(1 for r in filled if not sourcedataid_empty(r.get("FileID")))
     from_kendo = bool(from_datasource and n > 0 and sid_n == n)
     ident_miss = kendo_lacks_cadimport_identity(filled)
-    payload_block = cad_filelist_payload_blocks_finish(
-        filled[0] if filled else None
-    )
-    refuse = cad_filelist_refuses_additem_dxf(filled[0] if filled else None)
+    row0 = filled[0] if filled else None
+    payload_block = cad_filelist_payload_blocks_finish(row0)
+    refuse = cad_filelist_refuses_additem_dxf(row0)
+    # Kyle Loom c9d7 / P904271-1: PartMode set → Finish even if InternalData empty.
+    if filelist_row_partmode_set(row0):
+        payload_block = False
+        refuse = None
     why = ""
     if n > 0 and sid_n == 0:
         why = "filelist_missing_ids"
@@ -5607,7 +5638,9 @@ def finish_attempt_empty_partmode_or_internaldata(
     rows: list[dict[str, Any]] | None,
     result: dict[str, Any] | None = None,
 ) -> str | None:
-    """After AddItem_DXFFiles: PartMode null or Cad InternalData empty is fail."""
+    """After AddItem_DXFFiles: PartMode null is fail. FileList InternalData
+    empty is not — packs land after Finish (Kyle Loom c9d7 / P904271-1).
+    """
     check: list[dict[str, Any]] = []
     if isinstance(result, dict):
         for key in ("FileList", "List"):
@@ -5626,12 +5659,92 @@ def finish_attempt_empty_partmode_or_internaldata(
                 "PartMode still null after Finish attempt — not success "
                 "(Kyle Loom c9d7c05a classify-before-Finish)"
             )
-        if cat == "Cad" or is_cad_filelist_row(row):
-            if "InternalData" in row and cad_payload_value_empty(row.get("InternalData")):
-                return (
-                    "InternalData empty after Finish attempt — not success "
-                    "(do not invent InternalData; live 21785-2)"
-                )
+    return None
+
+
+def item_cad_contour_count(item: dict[str, Any] | None) -> int:
+    """GET Cad Contours from DataPartPDF / Data / row. Absent is 0 — do not invent."""
+    if not isinstance(item, dict):
+        return 0
+    sources: list[dict[str, Any]] = []
+    data = item.get("Data")
+    if isinstance(data, dict):
+        sources.append(data)
+        nested = data.get("DataPartPDF")
+        if isinstance(nested, dict):
+            sources.append(nested)
+    dpp = item.get("DataPartPDF")
+    if isinstance(dpp, dict):
+        sources.append(dpp)
+    sources.append(item)
+    for src in sources:
+        for key in ("NumberOfContours", "Contours"):
+            if key not in src:
+                continue
+            try:
+                return max(0, int(src.get(key) or 0))
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def step_finish_pack_missing(
+    posted: Any,
+    *,
+    expect_cad: bool,
+    expect_linear: bool,
+) -> str | None:
+    """After STEP Finish: Cad Contours≥1 + PR + laser; Linear Saw if Linear.
+
+    Live P904271-1: classify worked, Finish was refused too early. Packs
+    appear after AddItem_DXFFiles. 0 Cad / empty Contours is fail-close.
+    Do not invent InternalData.
+    """
+    from .line_item_ops import item_has_laser_pack, item_has_pr_tag, item_has_saw_pack
+
+    items = [it for it in quote_item_rows(posted) if isinstance(it, dict)]
+    if expect_cad:
+        cad_items = []
+        for it in items:
+            cat = str(it.get("Category") or it.get("ItemType") or "")
+            try:
+                pt = int(it.get("ProductType"))
+            except (TypeError, ValueError):
+                pt = None
+            if cat == "Cad" or pt == 100:
+                cad_items.append(it)
+        if not cad_items:
+            return (
+                "GET 0 Cad after Finish — not success "
+                "(live P904271-1; ZZ-DEL; do not invent InternalData)"
+            )
+        if not any(item_cad_contour_count(it) >= 1 for it in cad_items):
+            return (
+                "Cad Contours empty after Finish — not success "
+                "(live P904271-1; ZZ-DEL; do not invent InternalData)"
+            )
+        if not any(
+            item_has_pr_tag(it) and item_has_laser_pack(it) for it in cad_items
+        ):
+            return (
+                "Cad PR+laser pack missing after Finish — not success "
+                "(live P904271-1)"
+            )
+    if expect_linear:
+        lin_items = []
+        for it in items:
+            cat = str(it.get("Category") or it.get("ItemType") or "")
+            try:
+                pt = int(it.get("ProductType"))
+            except (TypeError, ValueError):
+                pt = None
+            if cat == "Linear" or pt in VALID_LINEAR_PRODUCT_TYPES:
+                lin_items.append(it)
+        if not lin_items or not any(item_has_saw_pack(it) for it in lin_items):
+            return (
+                "Linear Saw pack missing after Finish — not success "
+                "(live P904271-1)"
+            )
     return None
 
 
