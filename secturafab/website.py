@@ -236,8 +236,8 @@ OpenContourCount empty/null → Finish refused, invented=false,
 ZZ-DEL-14327-5. Plate matches bar — no extra CadImport/UI XHR
 between upload and /part/create, nor after explode. Exact missing
 call: POST /part/create t.List InternalData+ImageString. Do not
-silent-graft Contours. Leave 8973f890 / 35136-1 and c5cd8689 /
-14327-5.
+silent-graft Contours. Leave 8973f890 / 35136-1, c5cd8689 /
+14327-5, and 1cd941c6 / 14327-8.
 Do not POST UpdateDataNext / ConvertTo / Detect* as a Finish substitute.
 No live STEP t.List has yet arrived with nonempty InternalData+ImageString
 (LIVE_PART_CREATE_TLIST_BIND is None). Until Kyle grabs a manual Finish
@@ -250,7 +250,8 @@ Do not fire UpdateDataNext. Classify→Finish without #DXFEdit
 has no InternalData-fill XHR (needs_internaldata_fill_xhr).
 Leave 5b622a0d / Skin Assembly,
 0d4b8a46 / FA Assembly, b8a62e76 / SC0600, 6a568912 / 10098-1,
-c146ce6d / 28769-1, 8973f890 / 35136-1, and c5cd8689 / 14327-5.
+c146ce6d / 28769-1, 8973f890 / 35136-1, c5cd8689 / 14327-5, and
+1cd941c6 / 14327-8.
 Do not remint. Do not mint.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
@@ -2393,7 +2394,7 @@ def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
         "Cad FileList InternalData empty after explode — "
         "refusing AddItem_DXFFiles (live 28768-1; 28769-1 leftover "
         "c146ce6d; 35136-1 leftover 8973f890; 14327-5 leftover "
-        "c5cd8689; ZZ-DEL). "
+        "c5cd8689; 14327-8 leftover 1cd941c6; ZZ-DEL). "
         f"{STEP_EXPLODE_NO_INTERNALDATA} aliases "
         f"{CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE}. "
         "ImageString-without-InternalData is preview only (live 21785-2). "

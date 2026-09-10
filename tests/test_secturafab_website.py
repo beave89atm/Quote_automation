@@ -2142,6 +2142,9 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("14327-5")
     assert is_forbidden_quote_id("c5cd8689-fed4-44d6-b2f5-f96bda8af424")
     assert is_forbidden_quote_id("c5cd8689-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("14327-8")
+    assert is_forbidden_quote_id("1cd941c6-9167-41e9-ac93-b7268f18f282")
+    assert is_forbidden_quote_id("1cd941c6-1111-2222-3333-444444444444")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -9326,9 +9329,11 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("28769-1")
     assert is_forbidden_quote_number("35136-1")
     assert is_forbidden_quote_number("14327-5")
+    assert is_forbidden_quote_number("14327-8")
     assert is_forbidden_quote_id("c146ce6d-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
     assert is_forbidden_quote_id("c5cd8689-fed4-44d6-b2f5-f96bda8af424")
+    assert is_forbidden_quote_id("1cd941c6-9167-41e9-ac93-b7268f18f282")
     assert is_forbidden_quote_id("30f50f96-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("0837ad33-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("1004f017-aaaa-bbbb-cccc-000000000001")
@@ -10107,6 +10112,8 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
     assert "35136-1" in refuse
     assert "c5cd8689" in refuse
     assert "14327-5" in refuse
+    assert "1cd941c6" in refuse
+    assert "14327-8" in refuse
     assert "missing_call=POST /part/create t.List InternalData+ImageString" in refuse
     cap = kendo_filelist_for_finish(
         [
@@ -10199,6 +10206,7 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
     for spent in (
         "35136-1",
         "14327-5",
+        "14327-8",
         "28768-1",
         "10289-4",
         "P904271-1",
@@ -10832,6 +10840,8 @@ def test_leftover_14327_5_flat_plate_confirms_no_extra_xhr():
     assert refuse is not None
     assert "c5cd8689" in refuse
     assert "14327-5" in refuse
+    assert "1cd941c6" in refuse
+    assert "14327-8" in refuse
     assert STEP_CONTOURS_MISSING_CALL in refuse
     assert STEP_CONTOURS_NO_EXTRA_XHR in refuse
     notes: list[str] = []
@@ -10854,6 +10864,61 @@ def test_leftover_14327_5_flat_plate_confirms_no_extra_xhr():
     assert leftover_14327_5_capture_xhrs()[2]["response"]["List"][0][
         "OpenContourCount"
     ] is None
+
+
+def test_leftover_14327_8_same_empty_internaldata_forever_forbid():
+    """Live 14327-8 / 1cd941c6: same empty-InternalData FAIL as 14327-5.
+
+    ZZ-DEL-14327-8 @ 7b59ff0. invented=false. Do not remint. Do not invent Contours.
+    """
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        STEP_CONTOURS_MISSING_CALL,
+        cad_filelist_refuses_additem_dxf,
+    )
+    from tests.fixtures.live_14327_8 import (
+        SPENT_QUOTE_ID,
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        leftover_14327_8_dump,
+    )
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = leftover_14327_8_dump()
+    assert dump["quote_id"] == SPENT_QUOTE_ID == "1cd941c6-9167-41e9-ac93-b7268f18f282"
+    assert dump["quote_id_prefix"] == SPENT_QUOTE_ID_PREFIX == "1cd941c6"
+    assert dump["quote_number"] == SPENT_QUOTE_NUMBER == "14327-8"
+    assert dump["zz_del_number"] == "ZZ-DEL-14327-8"
+    assert dump["same_pattern_as"] == "14327-5"
+    assert dump["invent"] is False
+    assert dump["unlocks_contours_fill"] is False
+    assert dump["fail_close"] is True
+    assert dump["tlist_bind_source"] is False
+    assert dump["missing_call"] == STEP_CONTOURS_MISSING_CALL
+    assert is_forbidden_quote_id(SPENT_QUOTE_ID)
+    assert is_forbidden_quote_id("1cd941c6-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("14327-8")
+    assert spent_quote_number_block_reason("14327-8")
+    assert "14327-8" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "1cd941c6" in refuse
+    assert "14327-8" in refuse
+    assert dump["invent"] is False
 
 
 def test_create_all_parts_js_records_cadimport_xhr_emptiness_only():

@@ -2,7 +2,7 @@
 
 No live ``/part/create`` ``t.List`` has yet arrived with nonempty
 InternalData **and** ImageString. Leftover STEPs (35136-1 / 28769-1 /
-21785-2 / 14327-5 / …) were keys-present / values-empty. Kyle HAR leftover
+21785-2 / 14327-5 / 14327-8 / …) were keys-present / values-empty. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
 /part/create 3× bar InternalData empty → AddItem_DXFFiles InternalData
 empty bar_flat. Live 14327-5 / c5cd8689 flat plate: /part/create n=1
@@ -28,6 +28,7 @@ from secturafab.website import kyle_step_contours_devtools_capture
 STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "35136-1",
     "14327-5",
+    "14327-8",
     "28769-1",
     "28768-1",
     "10289-4",
