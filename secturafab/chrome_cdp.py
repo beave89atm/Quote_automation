@@ -129,9 +129,9 @@ InternalData → OnAddPDFClick. That page step creates
 NumberOfContours/Pierces (gold 14501-1 is 1/1). Do not
 invent those FileList keys. Cookie HTTP GetItem_AddView /
 AddItem_PDFFiles that skips #files is fail-closed. In-page
-mint is not gated on the cookie file — gate is Chrome
-Quotes/EDIT signed in (footer amtech, not Login). CDP
-Network.getCookies may omit HttpOnly
+mint is not gated on the cookie file — gate is live Chrome
+Quotes list footer amtech. Leftover EDIT amtech is not a
+mint session. CDP Network.getCookies may omit HttpOnly
 .AspNet.ApplicationCookie; page fetch/XHR still sends it.
 Leave 8fb3da71. Do not mint.
 
@@ -523,8 +523,9 @@ def chrome_edit_signed_in(base: str | None = None) -> bool:
 
     Cookie GET 302 / missing .AspNet.ApplicationCookie from CDP is not
     logout. Page fetch/XHR sends HttpOnly cookies. Footer amtech on a
-    leftover EDIT is not a live session (live P904272-1) — mint requires
-    ``quotes_list_session_fetch`` 200.
+    leftover EDIT is not a live session (live P904272-1) — Image Files
+    / Long mint requires ``chrome_quotes_list_signed_in`` (Quotes list
+    footer) or ``quotes_list_session_fetch`` 200.
     """
     tab = quotes_tab(base)
     if not isinstance(tab, dict):
@@ -538,6 +539,24 @@ def chrome_edit_signed_in(base: str | None = None) -> bool:
         if footer.get("login") is True:
             return False
     return True
+
+
+def chrome_quotes_list_signed_in(base: str | None = None) -> bool:
+    """Live Quotes **list** footer amtech. Never leftover EDIT.
+
+    Stale cookie file / curl 302 is not logout. Leftover EDIT amtech
+    footer on a spent quote is not a mint session (live P904272-1).
+    Footer must actually evaluate amtech; missing CDP is not signed-in.
+    """
+    tab = quotes_list_tab(base)
+    if not isinstance(tab, dict) or _is_rejected_tab(tab):
+        return False
+    footer = _chrome_footer_signed_in(tab, base=base)
+    if not isinstance(footer, dict):
+        return False
+    if footer.get("login") is True:
+        return False
+    return footer.get("amtech") is True
 
 
 def chrome_login_page(base: str | None = None) -> bool:
@@ -659,6 +678,18 @@ def _quotes_or_edit_tab(
         if isinstance(edit, dict) and edit.get("webSocketDebuggerUrl"):
             return edit
     return quotes_tab(base)
+
+
+def _live_quotes_cookie_tab(base: str | None = None) -> dict[str, Any] | None:
+    """Prefer the signed-in Quotes list for cookie/AF harvest.
+
+    Leftover EDIT is last — its footer can still paint amtech after
+    AspNet dies (live P904272-1).
+    """
+    listing = quotes_list_tab(base)
+    if isinstance(listing, dict) and listing.get("webSocketDebuggerUrl"):
+        return listing
+    return _quotes_or_edit_tab(base, prefer_edit=True)
 
 
 def _ws_handshake(ws_url: str, timeout: float = _CDP_TIMEOUT_S) -> socket.socket:
@@ -795,14 +826,16 @@ def _host_is_sectura(host: str) -> bool:
 
 
 def sectura_cookies_from_cdp(base: str | None = None) -> list[tuple[str, str]]:
-    """(name, value) for secturafab.com from EDIT or Quotes. Values stay in RAM.
+    """(name, value) for secturafab.com from live Quotes, else EDIT.
 
-    Network.getCookies often omits HttpOnly .AspNet.ApplicationCookie
-    (live 34603-2: SessionId + cf_clearance + ARRAffinity +
-    SecturaFAB_AuthenticationType only). Cookie HTTP 302 is not logout.
-    In-page fetch/XHR still sends that cookie. Do not ask Kyle to sign in.
+    Prefer the Quotes list tab so a leftover EDIT cannot overwrite a
+    live session with a spent cookie. Network.getCookies often omits
+    HttpOnly .AspNet.ApplicationCookie (live 34603-2: SessionId +
+    cf_clearance + ARRAffinity + SecturaFAB_AuthenticationType only).
+    Cookie HTTP 302 is not logout. In-page fetch/XHR still sends that
+    cookie. Do not ask Kyle to sign in.
     """
-    tab = _quotes_or_edit_tab(base, prefer_edit=True)
+    tab = _live_quotes_cookie_tab(base)
     if not tab:
         return []
     ws = str(tab.get("webSocketDebuggerUrl") or "")
@@ -841,8 +874,8 @@ def cookie_header_from_pairs(pairs: list[tuple[str, str]]) -> str:
 
 
 def scrape_quotes_af_fields(base: str | None = None) -> list[tuple[str, str]]:
-    """kendo inputs from Quote/EDIT or the Quotes list. Never log values."""
-    tab = _quotes_or_edit_tab(base, prefer_edit=True)
+    """kendo inputs from the Quotes list, else Quote/EDIT. Never log values."""
+    tab = _live_quotes_cookie_tab(base)
     if not tab:
         return []
     ws = str(tab.get("webSocketDebuggerUrl") or "")

@@ -1309,6 +1309,8 @@ def test_cookie_addview_302_does_not_block_inpage_mint_when_chrome_signed_in():
 
     service = SecturaFabPushService(client=_ProbeClient())
     with patch(
+        "secturafab.chrome_cdp.chrome_quotes_list_signed_in", return_value=False
+    ), patch(
         "secturafab.chrome_cdp.chrome_edit_signed_in", return_value=True
     ), patch(
         "secturafab.chrome_cdp.chrome_login_page", return_value=False
@@ -1327,6 +1329,80 @@ def test_cookie_addview_302_does_not_block_inpage_mint_when_chrome_signed_in():
     assert cookie_http_additem_pdffiles_is_not_success(
         {"via": "cookie_http", "ok": True}
     )
+
+
+def test_stale_cookie_file_does_not_block_mint_when_quotes_list_signed_in():
+    """Live Quotes list footer amtech: cookie-file 302 is not logout."""
+
+    class _ProbeClient:
+        def harvest_chrome_antiforgery(self):
+            return "chrome_dom"
+
+        def probe_addview_session(self):
+            return {
+                "ok": False,
+                "still_302": True,
+                "refreshed": True,
+                "status_code": 302,
+                "path": "/Quote/GetItem_AddView",
+            }
+
+    service = SecturaFabPushService(client=_ProbeClient())
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_list_signed_in", return_value=True
+    ), patch(
+        "secturafab.chrome_cdp.chrome_edit_signed_in", return_value=True
+    ), patch(
+        "secturafab.chrome_cdp.chrome_login_page", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.quotes_list_session_fetch",
+        return_value={
+            "status": 302,
+            "url": "https://www.secturafab.com/Account/Login",
+            "login": True,
+            "via": "chrome_dom_fetch",
+        },
+    ):
+        ok, notes = service.preflight_website_addview_session()
+    assert ok is True
+    blob = " ".join(notes)
+    assert "chrome_quotes_list_signed_in=true" in blob
+    assert "chrome_cookie_refresh_from_quotes_list=true" in blob
+    assert "quotes_fetch_200=false" in blob
+    assert "cookie HTTP fail-closed" in blob
+    assert "in-page mint proceeds" in blob
+    assert "leftover EDIT" not in blob
+    assert "not minting" not in blob
+
+
+def test_cookie_file_only_302_without_quotes_list_does_not_mint():
+    """Stale cookie file alone is not a mint session."""
+
+    class _ProbeClient:
+        def probe_addview_session(self):
+            return {
+                "ok": False,
+                "still_302": True,
+                "refreshed": True,
+                "status_code": 302,
+            }
+
+    service = SecturaFabPushService(client=_ProbeClient())
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_list_signed_in", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.chrome_edit_signed_in", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.chrome_login_page", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.quotes_list_session_fetch",
+        return_value={"status": 0, "url": "", "login": False, "via": "missing_tab"},
+    ):
+        ok, notes = service.preflight_website_addview_session()
+    assert ok is False
+    blob = " ".join(notes)
+    assert "chrome_quotes_list_signed_in=false" in blob
+    assert "not minting" in blob
 
 
 def test_leftover_edit_amtech_footer_dead_cookie_does_not_mint():
@@ -1371,6 +1447,8 @@ def test_leftover_edit_amtech_footer_dead_cookie_does_not_mint():
 
     service = SecturaFabPushService(client=_ProbeClient())
     with patch(
+        "secturafab.chrome_cdp.chrome_quotes_list_signed_in", return_value=False
+    ), patch(
         "secturafab.chrome_cdp.chrome_edit_signed_in", return_value=True
     ), patch(
         "secturafab.chrome_cdp.chrome_login_page", return_value=False
@@ -1386,6 +1464,7 @@ def test_leftover_edit_amtech_footer_dead_cookie_does_not_mint():
         ok, notes = service.preflight_website_addview_session()
     assert ok is False
     blob = " ".join(notes)
+    assert "chrome_quotes_list_signed_in=false" in blob
     assert "chrome_edit_signed_in=true" in blob
     assert "quotes_fetch_200=false" in blob
     assert "quotes_fetch_status=302" in blob
@@ -1407,6 +1486,8 @@ def test_chrome_login_page_aborts_mint():
 
     service = SecturaFabPushService(client=_ProbeClient())
     with patch(
+        "secturafab.chrome_cdp.chrome_quotes_list_signed_in", return_value=False
+    ), patch(
         "secturafab.chrome_cdp.chrome_edit_signed_in", return_value=False
     ), patch(
         "secturafab.chrome_cdp.chrome_login_page", return_value=True

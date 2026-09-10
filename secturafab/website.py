@@ -145,10 +145,10 @@ Cookie GET /Quote/GetItem_AddView(pdf) 302 while Chrome 9224
 *Quote-Q10xxx EDIT was signed in (not Login). API-mint then
 cookie Finish aborted. Cookie HTTP that 302s is fail-closed —
 do not mint via v1/quote then cookie Finish. In-page Chrome
-mint is not gated on the cookie file. Gate is Chrome
-Quotes/EDIT signed in (footer amtech, not Login). Session is
-the page's own fetch/XHR (HttpOnly cookies CDP
-Network.getCookies may omit, including
+mint is not gated on the cookie file. Gate is live Chrome
+Quotes list footer amtech — leftover EDIT amtech is not
+a mint session. Session is the page's own fetch/XHR
+(HttpOnly cookies CDP Network.getCookies may omit, including
 .AspNet.ApplicationCookie). Live 34603-2 was not minted
 (cookie 302 after refresh) — that leftover class is 29340-1.
 Login page still aborts. Do not ask Kyle to sign in. Leave
@@ -3206,15 +3206,21 @@ def inpage_mint_allowed(
     chrome_login: bool = False,
     cookie_addview_302: bool = False,
     quotes_fetch_200: bool | None = None,
+    chrome_quotes_list_signed_in: bool = False,
 ) -> bool:
     """In-page mint is not gated on the cookie file (live 34603-2).
 
-    Cookie GetItem_AddView 302 does not block when chrome_edit_signed_in
-    **and** live Quotes fetch is 200. Leftover EDIT amtech footer with a
-    dead AspNet cookie is not a session (live P904272-1). Chrome Login
-    page still aborts. Cookie-only path (302 + not signed in) is the
-    29340-1 leftover — do not v1/quote then cookie Finish.
+    Live Quotes list footer amtech is a mint session even when the
+    cookie file or leftover EDIT fetch 302s. Cookie GetItem_AddView 302
+    does not block when that list footer is signed in, or when
+    chrome_edit_signed_in **and** live Quotes fetch is 200. Leftover
+    EDIT amtech footer with a dead AspNet cookie is not a session
+    (live P904272-1). Chrome Login page still aborts. Cookie-only path
+    (302 + not signed in) is the 29340-1 leftover — do not v1/quote
+    then cookie Finish.
     """
+    if chrome_quotes_list_signed_in:
+        return True
     if chrome_edit_signed_in and quotes_fetch_200 is False:
         return False
     if chrome_edit_signed_in:

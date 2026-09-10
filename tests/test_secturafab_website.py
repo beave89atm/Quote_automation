@@ -1128,6 +1128,19 @@ def test_leftover_29340_1_api_mint_cookie_finish_is_fail():
         quotes_fetch_200=False,
     ) is False
     assert inpage_mint_allowed(
+        chrome_edit_signed_in=True,
+        chrome_login=False,
+        cookie_addview_302=True,
+        quotes_fetch_200=False,
+        chrome_quotes_list_signed_in=True,
+    ) is True
+    assert inpage_mint_allowed(
+        chrome_edit_signed_in=False,
+        chrome_login=True,
+        cookie_addview_302=True,
+        chrome_quotes_list_signed_in=False,
+    ) is False
+    assert inpage_mint_allowed(
         chrome_edit_signed_in=False,
         chrome_login=True,
         cookie_addview_302=True,
@@ -5861,6 +5874,80 @@ def test_quotes_tab_skips_login_and_claims_mismatch():
     assert tab is not None
     assert tab["title"] == "Quotes"
     assert tab["webSocketDebuggerUrl"].endswith("/quotes")
+
+
+def test_chrome_quotes_list_signed_in_not_leftover_edit():
+    """Live Quotes list footer amtech is a mint session; leftover EDIT is not."""
+    from secturafab.chrome_cdp import (
+        chrome_quotes_list_signed_in,
+        sectura_cookies_from_cdp,
+    )
+
+    listing = {
+        "type": "page",
+        "title": "Quotes",
+        "url": "https://www.secturafab.com/Quote",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+    }
+    leftover = {
+        "type": "page",
+        "title": "*Quote-P904272-1",
+        "url": (
+            "https://www.secturafab.com/Quote/EDIT/"
+            "30f50f96-aaaa-bbbb-cccc-000000000001"
+        ),
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+    }
+    login = {
+        "type": "page",
+        "title": "Login",
+        "url": "https://www.secturafab.com/Account/Login",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/login",
+    }
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[listing, leftover]
+    ), patch(
+        "secturafab.chrome_cdp._chrome_footer_signed_in",
+        return_value={"amtech": True, "login": False},
+    ):
+        assert chrome_quotes_list_signed_in("http://127.0.0.1:9224") is True
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[leftover]
+    ), patch(
+        "secturafab.chrome_cdp._chrome_footer_signed_in",
+        return_value={"amtech": True, "login": False},
+    ):
+        assert chrome_quotes_list_signed_in("http://127.0.0.1:9224") is False
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[login]
+    ), patch(
+        "secturafab.chrome_cdp._chrome_footer_signed_in",
+        return_value={"amtech": False, "login": True},
+    ):
+        assert chrome_quotes_list_signed_in("http://127.0.0.1:9224") is False
+
+    used: list[str] = []
+
+    def _call(ws_url, method, params=None, **_k):
+        used.append(str(ws_url))
+        return {
+            "cookies": [
+                {
+                    "name": "ASP.NET_SessionId",
+                    "value": "from-quotes-list",
+                    "domain": "www.secturafab.com",
+                }
+            ]
+        }
+
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[listing, leftover]
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        pairs = sectura_cookies_from_cdp("http://127.0.0.1:9224")
+    assert pairs == [("ASP.NET_SessionId", "from-quotes-list")]
+    assert used
+    assert used[0].endswith("/quotes")
+    assert not any(u.endswith("/edit") for u in used)
 
 
 def test_chrome_edit_signed_in_not_login_and_login_aborts():

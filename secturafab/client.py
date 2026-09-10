@@ -549,9 +549,10 @@ class SecturaFabClient:
     def probe_addview_session(self) -> dict[str, Any]:
         """Cookie-file session probe. 302 is not logout (live 34603-2).
 
-        Refresh from signed-in Chrome 9224 first. Still 302 means
-        cookie HTTP is fail-closed — not that Chrome is logged out.
-        In-page mint uses chrome_edit_signed_in, not this probe.
+        Refresh from signed-in Chrome Quotes list first. Still 302
+        means cookie HTTP is fail-closed — not that Chrome is logged
+        out. In-page mint uses chrome_quotes_list_signed_in, not this
+        probe.
         """
         first = self._probe_addview_or_quote_get()
         if first.get("ok") is True:

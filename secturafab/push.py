@@ -1651,19 +1651,21 @@ class SecturaFabPushService:
         )
 
     def preflight_website_addview_session(self) -> tuple[bool, list[str]]:
-        """Before mint: cookie HTTP 302 is fail-closed; in-page mint is not.
+        """Before mint: prove live Quotes list; cookie 302 is not logout.
 
         Cookie GET /Quote or GetItem_AddView 302 after Chrome refresh is
-        not logout (CDP omits HttpOnly .AspNet.ApplicationCookie). Do not
-        v1/quote then cookie Finish (live 29340-1). In-page mint proceeds
-        when Chrome Quotes/EDIT is signed in **and** in-page GET /Quote is
-        200. Leftover EDIT amtech footer with a dead cookie is not a
-        session (live P904272-1). Login page still aborts. Do not ask
-        Kyle to sign in.
+        not logout (CDP omits HttpOnly .AspNet.ApplicationCookie). Refresh
+        the website cookie from the live Quotes list tab when present.
+        In-page mint proceeds when that list footer is amtech, even if
+        the cookie file or leftover EDIT fetch 302s. Leftover EDIT amtech
+        footer with a dead cookie is not a session (live P904272-1). Do
+        not v1/quote then cookie Finish (live 29340-1). Fail-close only
+        when Chrome itself is on Login. Do not ask Kyle to sign in.
         """
         from .chrome_cdp import (
             chrome_edit_signed_in,
             chrome_login_page,
+            chrome_quotes_list_signed_in,
             quotes_list_session_fetch,
         )
         from .website import (
@@ -1675,25 +1677,39 @@ class SecturaFabPushService:
         notes: list[str] = []
         signed_in = False
         login = False
+        list_signed_in = False
         fetch: dict[str, Any] = {}
         try:
+            list_signed_in = bool(chrome_quotes_list_signed_in())
             signed_in = bool(chrome_edit_signed_in())
             login = bool(chrome_login_page())
         except (OSError, TypeError, ValueError):
             signed_in = False
             login = False
+            list_signed_in = False
+        if list_signed_in:
+            harvest_fn = getattr(type(self.client), "harvest_chrome_antiforgery", None)
+            if callable(harvest_fn):
+                try:
+                    harvest_fn(self.client)
+                    notes.append("chrome_cookie_refresh_from_quotes_list=true")
+                except (OSError, TypeError, ValueError):
+                    pass
         try:
             fetch = quotes_list_session_fetch()
         except (OSError, TypeError, ValueError):
             fetch = {}
         fetch_ok = live_quotes_fetch_ok(fetch)
+        notes.append(
+            "chrome_quotes_list_signed_in=" + ("true" if list_signed_in else "false")
+        )
         notes.append("chrome_edit_signed_in=" + ("true" if signed_in else "false"))
         try:
             notes.append(f"quotes_fetch_status={int(fetch.get('status') or 0)}")
         except (TypeError, ValueError):
             notes.append("quotes_fetch_status=0")
         notes.append("quotes_fetch_200=" + ("true" if fetch_ok else "false"))
-        if signed_in and not fetch_ok:
+        if signed_in and not list_signed_in and not fetch_ok:
             notes.append(
                 "leftover EDIT amtech footer is not a live session "
                 "(Quotes fetch not 200; live P904272-1)"
@@ -1719,13 +1735,14 @@ class SecturaFabPushService:
             chrome_login=login,
             cookie_addview_302=cookie_302,
             quotes_fetch_200=fetch_ok,
+            chrome_quotes_list_signed_in=list_signed_in,
         ):
-            if cookie_302 and signed_in:
+            if cookie_302 and (signed_in or list_signed_in):
                 notes.append(
                     "in-page mint proceeds (cookie 302 is not logout)"
                 )
             return True, notes
-        if login and not signed_in:
+        if login and not signed_in and not list_signed_in:
             notes.append("Chrome Login page — not minting")
         else:
             notes.append(
