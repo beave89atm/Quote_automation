@@ -177,16 +177,28 @@ CLASSIFY_FINISH_INTERNALDATA_FILL = None
 # Kyle HAR leftover 35136-1 / 8973f890 (kids 35137 / 35138): Upload →
 # CadImport/Data OpenContourCount=0 → /part/create 3× bar InternalData
 # empty → AddItem_DXFFiles InternalData empty bar_flat. Contours never
-# filled. Confirms fail-close. Does NOT unlock Contours fill. Follow-up
-# only: bar_flat STEP explode vs plate Contours — no silent graft.
-# Do not remint 35136-1.
-# Hunt (QuoteOrderEdit createAllParts + leftover 21785-2): no XHR
-# between #gridDXF collect and DoCreateDXFParts writes InternalData
-# or CuttingLength. CLASSIFY_FINISH_INTERNALDATA_FILL stays None.
+# filled. Confirms fail-close. Does NOT unlock Contours fill.
+# Live 14327-5 / c5cd8689 (flat-plate STEP @ 7b59ff0): Upload →
+# /part/create n=1 InternalData empty 1/1, ImageString preview-only,
+# ProductType null → CadImport Data/CADData bindable=false,
+# OpenContourCount empty/null → Finish refused, invented=false,
+# ZZ-DEL-14327-5. Same miss as bar — no extra CadImport/UI XHR exists
+# between upload and /part/create, nor after explode. Exact missing
+# call is server POST /part/create t.List InternalData+ImageString.
+# Do not remint 35136-1 / 14327-5. Do not silent-graft Contours.
+# Hunt (QuoteOrderEdit createAllParts + leftover 21785-2 + 14327-5):
+# no XHR between #gridDXF collect and DoCreateDXFParts writes
+# InternalData or CuttingLength. CLASSIFY_FINISH_INTERNALDATA_FILL
+# stays None.
 NEEDS_INTERNALDATA_FILL_XHR = "needs_internaldata_fill_xhr"
 # Documentary alias when DoCreateDXFParts t.List bind source is empty.
 # Not a fill XHR. Server explode returning empty InternalData is the miss.
 STEP_EXPLODE_NO_INTERNALDATA = "step_explode_no_internaldata"
+# Exact missing call after QuoteOrderEdit hunt + live 14327-5 plate and
+# 35136-1 bar. createAllParts has no intervening CadImport/UI XHR.
+# GET /CadImport/Data + CADData are copy-if-nonempty only.
+STEP_CONTOURS_MISSING_CALL = "POST /part/create t.List InternalData+ImageString"
+STEP_CONTOURS_NO_EXTRA_XHR = "createAllParts_no_intervening_xhr"
 CADIMPORT_DATA_PATH = "/CadImport/Data"
 CADIMPORT_CADDATA_PATH = "/CadImport/CADData"
 EXPLODE_DOCREATE_INTERNALDATA_FILL = None
@@ -387,8 +399,20 @@ def explode_docreate_internaldata_fill() -> str | None:
     None. createAllParts only reads SourceDataID+Units then POSTs
     /part/create. SetPartMode / unfold / GetPerimeterAndWeight are not
     this step. Live 21785-2 t.List InternalData stayed empty 14/14.
+    Live 14327-5 flat plate: same empty InternalData after /part/create;
+    CadImport GET bindable=false. No extra plate-only XHR.
     """
     return EXPLODE_DOCREATE_INTERNALDATA_FILL
+
+
+def step_contours_missing_call() -> str:
+    """Server /part/create t.List InternalData+ImageString — no extra JS step."""
+    return STEP_CONTOURS_MISSING_CALL
+
+
+def step_contours_no_extra_xhr() -> str:
+    """createAllParts has no intervening CadImport/UI fill XHR."""
+    return STEP_CONTOURS_NO_EXTRA_XHR
 
 
 def needs_internaldata_fill_xhr() -> str:

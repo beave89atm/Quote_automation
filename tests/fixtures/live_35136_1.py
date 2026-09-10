@@ -15,9 +15,10 @@ Do not invent Contours / InternalData. Do not remint / PATCH 35136-1 /
 
 Child names on leftover explode (comment only): 35137 / 35138.
 
-Follow-up only: if bar_flat STEP explode should route differently than
-plate Contours, name that work — do not silent-graft plate Contours onto
-bar_flat leftovers.
+Live 14327-5 / c5cd8689 (flat-plate STEP) later showed the same empty
+InternalData after ``/part/create`` — no extra plate CadImport/UI XHR.
+Exact missing call is server ``POST /part/create t.List`` with nonempty
+InternalData AND ImageString. Do not silent-graft Contours onto leftovers.
 """
 
 from __future__ import annotations
@@ -54,9 +55,11 @@ LIVE_35136_1_HAR: dict[str, Any] = {
     "unlocks_contours_fill": False,
     "fail_close": True,
     "follow_up": (
-        "If bar_flat STEP explode should route differently than plate "
-        "Contours, that is a named follow-up — do not silent-graft plate "
-        "Contours onto bar_flat leftovers."
+        "Live 14327-5 flat plate confirmed the same miss as this bar "
+        "leftover — exact missing call is POST /part/create t.List "
+        "InternalData+ImageString. QuoteOrderEdit createAllParts has no "
+        "extra CadImport/UI XHR. Do not silent-graft Contours onto "
+        "bar_flat leftovers."
     ),
     "routes": {
         "POST /CadImport/UploadItem_DXFFiles": {

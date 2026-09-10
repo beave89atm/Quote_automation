@@ -2139,6 +2139,9 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("35136-1")
     assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
     assert is_forbidden_quote_id("8973f890-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("14327-5")
+    assert is_forbidden_quote_id("c5cd8689-fed4-44d6-b2f5-f96bda8af424")
+    assert is_forbidden_quote_id("c5cd8689-1111-2222-3333-444444444444")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -9322,8 +9325,10 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("28768-1")
     assert is_forbidden_quote_number("28769-1")
     assert is_forbidden_quote_number("35136-1")
+    assert is_forbidden_quote_number("14327-5")
     assert is_forbidden_quote_id("c146ce6d-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
+    assert is_forbidden_quote_id("c5cd8689-fed4-44d6-b2f5-f96bda8af424")
     assert is_forbidden_quote_id("30f50f96-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("0837ad33-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("1004f017-aaaa-bbbb-cccc-000000000001")
@@ -10100,6 +10105,9 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
     assert "c146ce6d" in refuse
     assert "8973f890" in refuse
     assert "35136-1" in refuse
+    assert "c5cd8689" in refuse
+    assert "14327-5" in refuse
+    assert "missing_call=POST /part/create t.List InternalData+ImageString" in refuse
     cap = kendo_filelist_for_finish(
         [
             {
@@ -10190,6 +10198,7 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
     assert spent_quote_number_block_reason("28769-1")
     for spent in (
         "35136-1",
+        "14327-5",
         "28768-1",
         "10289-4",
         "P904271-1",
@@ -10483,6 +10492,8 @@ def test_kyle_step_contours_devtools_capture_recipe_is_exact():
     assert recipe["invent"] is False
     assert recipe["fail_close_if_empty"] is True
     assert recipe["fresh_pn_only"] is True
+    assert recipe["missing_call"] == "POST /part/create t.List InternalData+ImageString"
+    assert recipe["no_extra_cadimport_xhr"] == "createAllParts_no_intervening_xhr"
     assert recipe["windows"] == list(STEP_CONTOURS_CAPTURE_WINDOWS)
     assert dump["windows"] == list(STEP_CONTOURS_CAPTURE_WINDOWS)
     paths = {row["path"] for row in recipe["must_save"] if row["path"] != "*"}
@@ -10535,6 +10546,8 @@ def test_kyle_step_contours_devtools_capture_recipe_is_exact():
     assert leftover["invent"] is False
     assert leftover["finish_why"] == CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
     assert leftover["step_explode_no_internaldata"] is True
+    assert leftover["missing_call"] == "POST /part/create t.List InternalData+ImageString"
+    assert leftover["no_extra_cadimport_xhr"] == "createAllParts_no_intervening_xhr"
     part = next(x for x in leftover["xhrs"] if x["path"] == "/part/create")
     assert part["tlist_bind_source"] is False
     assert "__RequestVerificationToken" not in part["request_keys"]
@@ -10698,6 +10711,149 @@ def test_leftover_35136_1_kyle_har_confirms_fail_close():
     assert classified["invent"] is False
     assert leftover_35136_1_har_xhrs()[1]["response"]["List"][0]["Contours"] == []
     assert "iVBORw0KGgo" not in blob
+
+
+def test_leftover_14327_5_flat_plate_confirms_no_extra_xhr():
+    """Live 14327-5 flat-plate STEP: empty InternalData after /part/create.
+
+    QuoteOrderEdit createAllParts has no intervening CadImport/UI fill.
+    CadImport Data/CADData bindable=false; OpenContourCount empty/null;
+    ProductType null; ImageString preview-only; Finish refused; invented=false.
+    Exact missing call is POST /part/create t.List InternalData+ImageString.
+    Do not invent Contours. Do not remint c5cd8689 / 14327-5.
+    """
+    from secturafab.cadimport_js import (
+        STEP_CONTOURS_MISSING_CALL as JS_MISSING,
+        STEP_CONTOURS_NO_EXTRA_XHR as JS_NO_EXTRA,
+        explode_docreate_internaldata_fill,
+        step_contours_missing_call as js_missing_call,
+        step_contours_no_extra_xhr as js_no_extra,
+    )
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+        STEP_CONTOURS_MISSING_CALL,
+        STEP_CONTOURS_NO_EXTRA_XHR,
+        cad_filelist_refuses_additem_dxf,
+        cadimport_get_field_empty,
+        cadimport_get_payload_empty_bools,
+        classify_step_contours_capture,
+        persist_part_create_tlist_bind_source,
+        step_contours_missing_call,
+        step_contours_no_extra_xhr,
+    )
+    from tests.fixtures.live_14327_5 import (
+        SPENT_QUOTE_ID,
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        leftover_14327_5_capture_xhrs,
+        leftover_14327_5_plate_dump,
+    )
+    from tests.fixtures.live_part_create_tlist_bind import LIVE_PART_CREATE_TLIST_BIND
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = leftover_14327_5_plate_dump()
+    assert dump["quote_id"] == SPENT_QUOTE_ID == "c5cd8689-fed4-44d6-b2f5-f96bda8af424"
+    assert dump["quote_id_prefix"] == SPENT_QUOTE_ID_PREFIX == "c5cd8689"
+    assert dump["quote_number"] == SPENT_QUOTE_NUMBER == "14327-5"
+    assert dump["zz_del_number"] == "ZZ-DEL-14327-5"
+    assert dump["step_kind"] == "flat_plate"
+    assert dump["part_create_n"] == 1
+    assert dump["part_create_producttype"] is None
+    assert dump["producttype_empty"] is True
+    assert dump["opencontourcount"] is None
+    assert dump["opencontourcount_empty"] is True
+    assert dump["tlist_bind_source"] is False
+    assert dump["imagestring_without_internaldata"] is True
+    assert dump["cadimport_data_bindable"] is False
+    assert dump["cadimport_caddata_bindable"] is False
+    assert dump["contours_never_filled"] is True
+    assert dump["invent"] is False
+    assert dump["unlocks_contours_fill"] is False
+    assert dump["fail_close"] is True
+    assert dump["no_extra_cadimport_xhr"] is True
+    assert dump["missing_call"] == STEP_CONTOURS_MISSING_CALL
+    assert dump["routes"]["POST /part/create"]["n"] == 1
+    assert dump["routes"]["POST /part/create"]["bindable"] is False
+    assert dump["routes"]["GET /CadImport/Data"]["bindable"] is False
+    assert dump["routes"]["GET /CadImport/Data"]["opencontourcount_empty"] is True
+    assert dump["routes"]["GET /CadImport/CADData"]["bindable"] is False
+    assert is_forbidden_quote_id(SPENT_QUOTE_ID)
+    assert is_forbidden_quote_id("c5cd8689-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("14327-5")
+    assert spent_quote_number_block_reason("14327-5")
+    assert "14327-5" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert LIVE_PART_CREATE_TLIST_BIND is None
+    assert step_contours_missing_call() == JS_MISSING == STEP_CONTOURS_MISSING_CALL
+    assert step_contours_no_extra_xhr() == JS_NO_EXTRA == STEP_CONTOURS_NO_EXTRA_XHR
+    assert js_missing_call() == STEP_CONTOURS_MISSING_CALL
+    assert js_no_extra() == "createAllParts_no_intervening_xhr"
+    assert explode_docreate_internaldata_fill() is None
+    classified = classify_step_contours_capture(leftover_14327_5_capture_xhrs())
+    assert classified["invent"] is False
+    assert classified["bindable"] is False
+    assert classified["finish_ok"] is False
+    assert classified["step_explode_no_internaldata"] is True
+    assert classified["finish_why"] == CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    assert classified["missing_call"] == STEP_CONTOURS_MISSING_CALL
+    assert classified["no_extra_cadimport_xhr"] == STEP_CONTOURS_NO_EXTRA_XHR
+    part = next(x for x in classified["xhrs"] if x["path"] == "/part/create")
+    assert part["n"] == 1
+    assert part["tlist_bind_source"] is False
+    assert part["internaldata_empty"] is True
+    assert part["producttype_empty"] is True
+    data = next(x for x in classified["xhrs"] if x["path"] == "/CadImport/Data")
+    assert data["contours_empty"] is True
+    assert data["opencontourcount_empty"] is True
+    assert data["bindable"] is False
+    cad = next(x for x in classified["xhrs"] if x["path"] == "/CadImport/CADData")
+    assert cad["bindable"] is False
+    assert cadimport_get_field_empty("OpenContourCount", None) is True
+    assert cadimport_get_field_empty("OpenContourCount", 0) is True
+    assert cadimport_get_payload_empty_bools(
+        [{"OpenContourCount": None, "InternalData": "", "Contours": None}]
+    )["opencontourcount_empty"] is True
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": None,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "c5cd8689" in refuse
+    assert "14327-5" in refuse
+    assert STEP_CONTOURS_MISSING_CALL in refuse
+    assert STEP_CONTOURS_NO_EXTRA_XHR in refuse
+    notes: list[str] = []
+    persist_part_create_tlist_bind_source(
+        [
+            {
+                "Name": "14327-5",
+                "ProductType": None,
+                "InternalData": "",
+                "ImageString": "iVBORw0KGgo",
+            }
+        ],
+        notes=notes,
+    )
+    assert "tlist_bind_source=false" in notes
+    assert "missing_call=" + STEP_CONTOURS_MISSING_CALL in notes
+    assert "no_extra_cadimport_xhr=" + STEP_CONTOURS_NO_EXTRA_XHR in notes
+    blob = json.dumps(classified)
+    assert "iVBORw0KGgo" not in blob
+    assert leftover_14327_5_capture_xhrs()[2]["response"]["List"][0][
+        "OpenContourCount"
+    ] is None
 
 
 def test_create_all_parts_js_records_cadimport_xhr_emptiness_only():

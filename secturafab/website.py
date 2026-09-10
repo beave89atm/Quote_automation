@@ -219,7 +219,7 @@ Kyle Loom c9d7c05a (Q10243 / 35145-1): blue Next → #gridDXFParts Part
 Mode → green Finish. Do not Finish with PartMode still null (live
 21785-2). Do not remint 35145-1 / Q10243 / 21785-1/2/3 / P904272-1 /
 P904271-1 / 10289-4 / 28768-1 / 28769-1 (leftover c146ce6d) /
-35136-1 (leftover 8973f890).
+35136-1 (leftover 8973f890) / 14327-5 (leftover c5cd8689).
 Server explode returning empty InternalData is the blocker
 (step_explode_no_internaldata aliases cad_internaldata_empty_after_explode).
 Optional GET /CadImport/Data + GET /CadImport/CADData after explode
@@ -228,9 +228,16 @@ Empty GET is documentary — not a fill XHR. Do not invent Contours.
 Kyle HAR leftover 35136-1 / 8973f890 (kids 35137 / 35138): Upload →
 CadImport/Data OpenContourCount=0 → /part/create 3× bar InternalData
 empty → AddItem_DXFFiles InternalData empty bar_flat. Contours never
-filled. Confirms fail-close; does NOT unlock Contours fill. Follow-up
-only: bar_flat STEP explode may need a different route than plate
-Contours — no silent graft. Leave 8973f890 / 35136-1.
+filled. Confirms fail-close; does NOT unlock Contours fill.
+Live 14327-5 / c5cd8689 (flat-plate STEP @ 7b59ff0): Upload →
+/part/create n=1 InternalData empty 1/1, ImageString preview-only,
+ProductType null → CadImport Data/CADData bindable=false,
+OpenContourCount empty/null → Finish refused, invented=false,
+ZZ-DEL-14327-5. Plate matches bar — no extra CadImport/UI XHR
+between upload and /part/create, nor after explode. Exact missing
+call: POST /part/create t.List InternalData+ImageString. Do not
+silent-graft Contours. Leave 8973f890 / 35136-1 and c5cd8689 /
+14327-5.
 Do not POST UpdateDataNext / ConvertTo / Detect* as a Finish substitute.
 No live STEP t.List has yet arrived with nonempty InternalData+ImageString
 (LIVE_PART_CREATE_TLIST_BIND is None). Until Kyle grabs a manual Finish
@@ -243,7 +250,7 @@ Do not fire UpdateDataNext. Classify→Finish without #DXFEdit
 has no InternalData-fill XHR (needs_internaldata_fill_xhr).
 Leave 5b622a0d / Skin Assembly,
 0d4b8a46 / FA Assembly, b8a62e76 / SC0600, 6a568912 / 10098-1,
-c146ce6d / 28769-1, and 8973f890 / 35136-1.
+c146ce6d / 28769-1, 8973f890 / 35136-1, and c5cd8689 / 14327-5.
 Do not remint. Do not mint.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
@@ -1328,6 +1335,11 @@ CAD_PATH_LOG_KEYS = (
 _EMPTY_CAD_PAYLOAD_STRINGS = frozenset({"", "[]", "{}", "null", "undefined", "none"})
 CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE = "cad_internaldata_empty_after_explode"
 STEP_EXPLODE_NO_INTERNALDATA = "step_explode_no_internaldata"
+# Exact missing call (QuoteOrderEdit + live 14327-5 plate + 35136-1 bar).
+# createAllParts has no intervening CadImport/UI XHR. GET Data/CADData
+# are copy-if-nonempty only. Do not invent Contours.
+STEP_CONTOURS_MISSING_CALL = "POST /part/create t.List InternalData+ImageString"
+STEP_CONTOURS_NO_EXTRA_XHR = "createAllParts_no_intervening_xhr"
 EMPTY_EXPLODE_INTERNALDATA_REASONS = frozenset(
     {
         CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
@@ -1408,15 +1420,29 @@ def is_empty_explode_internaldata_reason(why: str | None) -> bool:
 
 
 def cadimport_get_field_empty(key: str, value: Any) -> bool:
-    """True when a GET Contours/InternalData field has no copyable payload."""
+    """True when a GET Contours/InternalData field has no copyable payload.
+
+    OpenContourCount empty/null (live 14327-5) and 0 (live 35136-1) are
+    emptiness, not a Contours fill. Do not treat 0 as bindable.
+    """
     if cad_payload_value_empty(value):
         return True
-    if key in ("NumberOfContours", "Contours"):
+    if key in ("NumberOfContours", "Contours", "OpenContourCount"):
         try:
             return int(value) < 1
         except (TypeError, ValueError):
             return cad_payload_value_empty(value)
     return False
+
+
+def step_contours_missing_call() -> str:
+    """Server /part/create t.List InternalData+ImageString — no extra JS step."""
+    return STEP_CONTOURS_MISSING_CALL
+
+
+def step_contours_no_extra_xhr() -> str:
+    """createAllParts has no intervening CadImport/UI fill XHR."""
+    return STEP_CONTOURS_NO_EXTRA_XHR
 
 
 def cadimport_identity_tokens(row: dict[str, Any] | None) -> set[str]:
@@ -1443,7 +1469,8 @@ def cadimport_get_payload_empty_bools(
     """GET /CadImport/Data or CADData emptiness — key names, never values.
 
     Kyle HAR leftover 35136-1: OpenContourCount=0 is emptiness, not a
-    Contours fill. Do not treat 0 as bindable.
+    Contours fill. Live 14327-5: OpenContourCount empty/null is the same.
+    Do not treat 0 / null as bindable.
     """
     kids = [r for r in (rows or []) if isinstance(r, dict)]
     idata_empty = (
@@ -1456,6 +1483,16 @@ def cadimport_get_payload_empty_bools(
             cadimport_get_field_empty("Contours", r.get("Contours"))
             and cadimport_get_field_empty(
                 "NumberOfContours", r.get("NumberOfContours")
+            )
+            for r in kids
+        )
+        if kids
+        else True
+    )
+    occ_empty = (
+        all(
+            cadimport_get_field_empty(
+                "OpenContourCount", r.get("OpenContourCount")
             )
             for r in kids
         )
@@ -1475,6 +1512,7 @@ def cadimport_get_payload_empty_bools(
         "n": len(kids),
         "internaldata_empty": idata_empty,
         "contours_empty": contours_empty,
+        "opencontourcount_empty": occ_empty,
         "bindable": bindable,
         "keys": keys,
     }
@@ -1495,6 +1533,7 @@ def persist_cadimport_get_empty_shape(
             "n": int(bools.get("n") or 0),
             "internaldata_empty": bool(bools.get("internaldata_empty")),
             "contours_empty": bool(bools.get("contours_empty")),
+            "opencontourcount_empty": bool(bools.get("opencontourcount_empty")),
             "bindable": bool(bools.get("bindable")),
             "keys": keys,
         }
@@ -1508,6 +1547,11 @@ def persist_cadimport_get_empty_shape(
                 shape = f"{route}_keys=" + ",".join(keys[:24])
                 if shape not in notes:
                     notes.append(shape)
+            occ = f"{route}_opencontourcount_empty=" + (
+                "true" if bools.get("opencontourcount_empty") else "false"
+            )
+            if occ not in notes:
+                notes.append(occ)
     return out
 
 
@@ -1617,6 +1661,11 @@ def part_create_list_payload_empty_bools(
         1 for r in kids if cad_payload_value_empty(r.get("ImageString"))
     )
     bind_rows = part_create_tlist_bind_source_rows(kids)
+    producttype_empty = (
+        all(cad_payload_value_empty(r.get("ProductType")) for r in kids)
+        if kids
+        else True
+    )
     return {
         "internaldata_empty": finish["filelist_internaldata_empty"],
         "imagestring_empty": finish["filelist_imagestring_empty"],
@@ -1630,6 +1679,7 @@ def part_create_list_payload_empty_bools(
         "tlist_bind_source": bool(bind_rows),
         "tlist_bind_source_n": len(bind_rows),
         "tlist_bind_shape_keys": part_create_tlist_bind_shape_keys(kids),
+        "producttype_empty": producttype_empty,
     }
 
 
@@ -1791,9 +1841,13 @@ def kyle_step_contours_devtools_capture() -> dict[str, Any]:
     and ImageString. No live capture of that bind exists. Kyle HAR leftover
     35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
     /part/create 3× bar InternalData empty → AddItem_DXFFiles InternalData
-    empty bar_flat. Contours never filled — confirms fail-close; does not
-    unlock Contours fill. Do not invent Contours. Do not remint spent
-    STEP leftovers.
+    empty bar_flat. Live 14327-5 / c5cd8689 flat plate: /part/create n=1
+    InternalData empty, ImageString preview-only, ProductType null,
+    CadImport Data/CADData bindable=false, OpenContourCount empty/null.
+    QuoteOrderEdit createAllParts has no intervening CadImport/UI XHR.
+    Exact missing call: POST /part/create t.List InternalData+ImageString.
+    Contours never filled — confirms fail-close; does not unlock Contours
+    fill. Do not invent Contours. Do not remint spent STEP leftovers.
     """
     return {
         "purpose": (
@@ -1900,6 +1954,8 @@ def kyle_step_contours_devtools_capture() -> dict[str, Any]:
             "POST /part/create t.List InternalData+ImageString emptiness "
             "(key names only) on a Finish that shows Contours"
         ),
+        "missing_call": STEP_CONTOURS_MISSING_CALL,
+        "no_extra_cadimport_xhr": STEP_CONTOURS_NO_EXTRA_XHR,
         "invent": False,
         "fail_close_if_empty": True,
     }
@@ -1917,6 +1973,12 @@ def persist_kyle_step_contours_capture_gap(
         windows = "kyle_capture_windows=" + ",".join(recipe["windows"])
         if windows not in notes:
             notes.append(windows)
+        missing = "missing_call=" + STEP_CONTOURS_MISSING_CALL
+        if missing not in notes:
+            notes.append(missing)
+        no_extra = "no_extra_cadimport_xhr=" + STEP_CONTOURS_NO_EXTRA_XHR
+        if no_extra not in notes:
+            notes.append(no_extra)
     return recipe
 
 
@@ -1945,6 +2007,8 @@ def summarize_cadimport_capture_xhr(xhr: dict[str, Any] | None) -> dict[str, Any
             "internaldata_empty": True,
             "imagestring_empty": True,
             "contours_empty": True,
+            "opencontourcount_empty": True,
+            "producttype_empty": True,
             "tlist_bind_source": False,
             "bindable": False,
             "editor_preview": False,
@@ -1973,6 +2037,8 @@ def summarize_cadimport_capture_xhr(xhr: dict[str, Any] | None) -> dict[str, Any
         id_empty = bool(tlist.get("internaldata_empty"))
         img_empty = bool(tlist.get("imagestring_empty"))
         contours_empty = bool(get_bools.get("contours_empty"))
+        occ_empty = bool(get_bools.get("opencontourcount_empty"))
+        producttype_empty = bool(tlist.get("producttype_empty"))
         n = int(tlist.get("n") or get_bools.get("n") or 0)
         keys = list(get_bools.get("keys") or [])
         editor = any(cadimport_get_is_editor_preview(r) for r in rows)
@@ -1990,6 +2056,8 @@ def summarize_cadimport_capture_xhr(xhr: dict[str, Any] | None) -> dict[str, Any
         id_empty = id_non <= 0
         img_empty = img_non <= 0
         contours_empty = True
+        occ_empty = True
+        producttype_empty = True
         try:
             n = int(xhr.get("n") or 0)
         except (TypeError, ValueError):
@@ -2005,6 +2073,8 @@ def summarize_cadimport_capture_xhr(xhr: dict[str, Any] | None) -> dict[str, Any
         "internaldata_empty": id_empty,
         "imagestring_empty": img_empty,
         "contours_empty": contours_empty,
+        "opencontourcount_empty": occ_empty,
+        "producttype_empty": producttype_empty,
         "tlist_bind_source": tlist_bind,
         "bindable": bindable,
         "editor_preview": editor,
@@ -2020,7 +2090,10 @@ def classify_step_contours_capture(
     A bindable unexpected path is a *candidate* only — do not POST it.
     Never invent Contours/InternalData. Leftover 35136-1 HAR
     (OpenContourCount=0 / 3× bar empty / AddItem_DXFFiles bar_flat empty)
-    stays fail-close.
+    and leftover 14327-5 (flat plate / OpenContourCount empty/null /
+    ProductType null / Data+CADData bindable=false) stay fail-close.
+    Exact missing call is POST /part/create t.List InternalData+ImageString
+    — QuoteOrderEdit createAllParts has no extra CadImport/UI step.
     """
     summaries = [summarize_cadimport_capture_xhr(x) for x in (xhrs or [])]
     bind = next(
@@ -2061,6 +2134,8 @@ def classify_step_contours_capture(
         ),
         "step_explode_no_internaldata": not finish_ok,
         "kyle_capture_missing": missing,
+        "missing_call": STEP_CONTOURS_MISSING_CALL,
+        "no_extra_cadimport_xhr": STEP_CONTOURS_NO_EXTRA_XHR,
         "invent": False,
         "xhrs": summaries,
     }
@@ -2317,13 +2392,16 @@ def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
     return (
         "Cad FileList InternalData empty after explode — "
         "refusing AddItem_DXFFiles (live 28768-1; 28769-1 leftover "
-        "c146ce6d; 35136-1 leftover 8973f890; ZZ-DEL). "
+        "c146ce6d; 35136-1 leftover 8973f890; 14327-5 leftover "
+        "c5cd8689; ZZ-DEL). "
         f"{STEP_EXPLODE_NO_INTERNALDATA} aliases "
         f"{CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE}. "
         "ImageString-without-InternalData is preview only (live 21785-2). "
         f"{NEEDS_INTERNALDATA_FILL_XHR}: classify→Finish has no named "
         "InternalData fill XHR (not UpdateDXF_LoadNew / UpdateDataNext / "
         "SetPartMode / unfold). "
+        f"missing_call={STEP_CONTOURS_MISSING_CALL}. "
+        f"no_extra_cadimport_xhr={STEP_CONTOURS_NO_EXTRA_XHR}. "
         "Do not invent InternalData."
     )
 
