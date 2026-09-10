@@ -10502,6 +10502,8 @@ def test_kyle_step_contours_devtools_capture_recipe_is_exact():
     assert recipe["fresh_pn_only"] is True
     assert recipe["missing_call"] == "POST /part/create t.List InternalData+ImageString"
     assert recipe["no_extra_cadimport_xhr"] == "createAllParts_no_intervening_xhr"
+    assert recipe["fill_unlocked"] is False
+    assert recipe["unlock_requires"] == "kyle_contours_ge1_or_sectura_support"
     assert recipe["windows"] == list(STEP_CONTOURS_CAPTURE_WINDOWS)
     assert dump["windows"] == list(STEP_CONTOURS_CAPTURE_WINDOWS)
     paths = {row["path"] for row in recipe["must_save"] if row["path"] != "*"}
@@ -10919,6 +10921,107 @@ def test_leftover_14327_8_same_empty_internaldata_forever_forbid():
     assert "1cd941c6" in refuse
     assert "14327-8" in refuse
     assert dump["invent"] is False
+
+
+def test_step_contours_fill_hunt_exhausted_stays_locked():
+    """Alternate fill paths ruled out. Contours fill stays locked. No invent."""
+    from pathlib import Path
+
+    from secturafab.cadimport_js import (
+        CLASSIFY_FINISH_INTERNALDATA_FILL,
+        EXPLODE_DOCREATE_INTERNALDATA_FILL,
+        PROVEN_EMPTY_PATHS,
+        extract_cadimport_xhrs,
+    )
+    from secturafab.forbidden_quotes import is_forbidden_quote_number
+    from secturafab.website import (
+        STEP_CONTOURS_FILL_UNLOCKED,
+        STEP_CONTOURS_MISSING_CALL,
+        STEP_CONTOURS_NOT_FILL_PATHS,
+        cad_filelist_refuses_additem_dxf,
+        persist_part_create_tlist_bind_source,
+        step_contours_fill_unlocked,
+        step_contours_unlock_requires,
+    )
+    from tests.fixtures.live_part_create_tlist_bind import LIVE_PART_CREATE_TLIST_BIND
+    from tests.fixtures.step_contours_fill_hunt import (
+        step_contours_fill_hunt,
+        step_contours_fill_hunt_exhausted,
+    )
+
+    hunt = step_contours_fill_hunt()
+    assert hunt["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
+    assert step_contours_fill_unlocked() is False
+    assert hunt["invent"] is False
+    assert hunt["fail_close"] is True
+    assert hunt["missing_call"] == STEP_CONTOURS_MISSING_CALL
+    assert hunt["classify_finish_internaldata_fill"] is CLASSIFY_FINISH_INTERNALDATA_FILL
+    assert hunt["explode_docreate_internaldata_fill"] is EXPLODE_DOCREATE_INTERNALDATA_FILL
+    assert CLASSIFY_FINISH_INTERNALDATA_FILL is None
+    assert EXPLODE_DOCREATE_INTERNALDATA_FILL is None
+    assert hunt["unlock_requires"] == step_contours_unlock_requires()
+    assert "kyle_contours_ge1" in hunt["unlock_requires"]
+    assert "sectura_support" in hunt["unlock_requires"]
+    assert step_contours_fill_hunt_exhausted() is True
+    ids = [a["id"] for a in hunt["angles"]]
+    assert ids == [
+        "cadimport_update_data",
+        "cadimport_update_data_next",
+        "cadimport_data",
+        "cadimport_caddata",
+        "convert_to",
+        "flatten_unfold",
+        "part_star",
+        "quote_helpers",
+        "pdf_image_files_parallel",
+    ]
+    assert all(a["ruled_out"] is True for a in hunt["angles"])
+    assert "/CadImport/ConvertTo" in PROVEN_EMPTY_PATHS
+    assert "/CadImport/UpdateDataNext" in PROVEN_EMPTY_PATHS
+    assert "/CadImport/UpdateData" in STEP_CONTOURS_NOT_FILL_PATHS
+    assert "/part/PartImage" in STEP_CONTOURS_NOT_FILL_PATHS
+    assert "/Quote/GetPerimeterAndWeight" in STEP_CONTOURS_NOT_FILL_PATHS
+    js = (
+        Path(__file__).resolve().parent / "fixtures" / "quote_order_edit_create_parts.js"
+    ).read_text()
+    assert "InternalData" not in js
+    assert "PDFGetData" not in js
+    assert "Unfold" not in js
+    xhrs = extract_cadimport_xhrs(js)
+    assert {x.path for x in xhrs} <= {
+        "/CadImport/ConvertTo",
+        "/CadImport/UpdateDataNext",
+        "/part/create",
+    }
+    pdf_js = (
+        Path(__file__).resolve().parent / "fixtures" / "quote_order_edit_getpdfdata.js"
+    ).read_text()
+    assert "PDFGetData" in pdf_js
+    assert "/part/create" not in pdf_js
+    assert "AddItem_DXFFiles" not in pdf_js
+    assert LIVE_PART_CREATE_TLIST_BIND is None
+    for spent in hunt["never_remint"]:
+        assert is_forbidden_quote_number(spent)
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    notes: list[str] = []
+    persist_part_create_tlist_bind_source(
+        [{"InternalData": "", "ImageString": "x", "FileType": "Cad"}],
+        notes=notes,
+    )
+    assert "fill_unlocked=false" in notes
+    assert "unlock_requires=kyle_contours_ge1_or_sectura_support" in notes
+    blob = str(hunt)
+    assert "server-stamped" not in blob
+    assert "iVBORw0KGgo" not in blob
 
 
 def test_create_all_parts_js_records_cadimport_xhr_emptiness_only():

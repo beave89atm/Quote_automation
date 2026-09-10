@@ -1341,6 +1341,10 @@ STEP_EXPLODE_NO_INTERNALDATA = "step_explode_no_internaldata"
 # are copy-if-nonempty only. Do not invent Contours.
 STEP_CONTOURS_MISSING_CALL = "POST /part/create t.List InternalData+ImageString"
 STEP_CONTOURS_NO_EXTRA_XHR = "createAllParts_no_intervening_xhr"
+# Alternate-path hunt (UpdateData / Data / CADData / ConvertTo / Unfold /
+# /part/PartImage / PDFGetData) exhausted in-repo. Fill stays locked.
+STEP_CONTOURS_FILL_UNLOCKED = False
+STEP_CONTOURS_UNLOCK_REQUIRES = "kyle_contours_ge1_or_sectura_support"
 EMPTY_EXPLODE_INTERNALDATA_REASONS = frozenset(
     {
         CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
@@ -1444,6 +1448,16 @@ def step_contours_missing_call() -> str:
 def step_contours_no_extra_xhr() -> str:
     """createAllParts has no intervening CadImport/UI fill XHR."""
     return STEP_CONTOURS_NO_EXTRA_XHR
+
+
+def step_contours_fill_unlocked() -> bool:
+    """True only after a live nonempty t.List bind or a named fill XHR."""
+    return STEP_CONTOURS_FILL_UNLOCKED
+
+
+def step_contours_unlock_requires() -> str:
+    """Kyle Contours≥1 capture or Sectura support naming the fill."""
+    return STEP_CONTOURS_UNLOCK_REQUIRES
 
 
 def cadimport_identity_tokens(row: dict[str, Any] | None) -> set[str]:
@@ -1957,6 +1971,8 @@ def kyle_step_contours_devtools_capture() -> dict[str, Any]:
         ),
         "missing_call": STEP_CONTOURS_MISSING_CALL,
         "no_extra_cadimport_xhr": STEP_CONTOURS_NO_EXTRA_XHR,
+        "fill_unlocked": STEP_CONTOURS_FILL_UNLOCKED,
+        "unlock_requires": STEP_CONTOURS_UNLOCK_REQUIRES,
         "invent": False,
         "fail_close_if_empty": True,
     }
@@ -1980,6 +1996,14 @@ def persist_kyle_step_contours_capture_gap(
         no_extra = "no_extra_cadimport_xhr=" + STEP_CONTOURS_NO_EXTRA_XHR
         if no_extra not in notes:
             notes.append(no_extra)
+        unlocked = "fill_unlocked=" + (
+            "true" if STEP_CONTOURS_FILL_UNLOCKED else "false"
+        )
+        if unlocked not in notes:
+            notes.append(unlocked)
+        requires = "unlock_requires=" + STEP_CONTOURS_UNLOCK_REQUIRES
+        if requires not in notes:
+            notes.append(requires)
     return recipe
 
 

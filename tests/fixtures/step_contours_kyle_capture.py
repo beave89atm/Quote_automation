@@ -10,8 +10,11 @@ InternalData empty, ImageString preview-only, ProductType null,
 CadImport Data/CADData bindable=false, OpenContourCount empty/null.
 QuoteOrderEdit ``createAllParts`` has no intervening CadImport/UI XHR.
 Exact missing call: ``POST /part/create t.List InternalData+ImageString``.
-Contours never filled. That confirms fail-close; it does **not** unlock
-Contours fill. Do not invent Contours. Plate matches bar — no silent graft.
+Contours never filled. Alternate-path hunt (UpdateData / Data / CADData /
+ConvertTo / Unfold / ``/part/PartImage`` / PDFGetData) is exhausted —
+see ``step_contours_fill_hunt``. Unlock remains Kyle Contours≥1 capture
+or Sectura support naming the fill. Do not invent Contours. Plate
+matches bar — no silent graft.
 
 On a **fresh unused** Time STEP whose green Finish shows Contours
 (GET ``DataPartPDF.NumberOfContours`` ≥ 1), save the windows below —
