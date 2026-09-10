@@ -1578,8 +1578,11 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "10289-4" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "28768-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "28769-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "35136-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert is_forbidden_quote_id("28708035-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("c146ce6d-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
+    assert is_forbidden_quote_id("8973f890-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("30f50f96-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("0837ad33-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("1004f017-1111-2222-3333-444444444444")
@@ -1638,6 +1641,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "46eed794-257d-4987-ae48-98c7d6c7dd07" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "f300ecea-ccf3-4c5e-adaf-db73bdfb80fb" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "5dc50b55-f546-449f-9f23-7f7ddf67772b" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "8973f890-b2a1-48fb-b6be-3530caeb1819" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "14219adc-f7f5-401a-b707-0bf200ef8c74" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "34603-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "9be15b62-a824-442c-b911-50ca1016cc5e" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -1713,6 +1717,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("f300ecea-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("5dc50b55-f546-449f-9f23-7f7ddf67772b")
     assert is_forbidden_quote_id("5dc50b55-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
+    assert is_forbidden_quote_id("8973f890-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d5a6987d-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("4b8d6ae6-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
@@ -1824,6 +1830,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "46eed794-257d-4987-ae48-98c7d6c7dd07",
         "f300ecea-ccf3-4c5e-adaf-db73bdfb80fb",
         "5dc50b55-f546-449f-9f23-7f7ddf67772b",
+        "8973f890-b2a1-48fb-b6be-3530caeb1819",
         "4b8d6ae6-1111-2222-3333-444444444444",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):

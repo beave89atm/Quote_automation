@@ -8,7 +8,8 @@ empty — not bindable. Finish correctly refused
 step_explode_no_internaldata). Do not invent Contours/InternalData.
 
 Do not remint 28769-1 / c146ce6d. Sibling spent STEPs stay forbidden
-(28768-1, 10289-4, P904271-1, P904272-1, 21785-1/2/3, 35145-1, 11796-1).
+(35136-1 / 8973f890, 28768-1, 10289-4, P904271-1, P904272-1,
+21785-1/2/3, 35145-1, 11796-1).
 """
 
 from __future__ import annotations

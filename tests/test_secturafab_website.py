@@ -2136,6 +2136,9 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("25009-2")
     assert is_forbidden_quote_number("1010106-1")
     assert is_forbidden_quote_number("1010111-1")
+    assert is_forbidden_quote_number("35136-1")
+    assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
+    assert is_forbidden_quote_id("8973f890-1111-2222-3333-444444444444")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -9318,7 +9321,9 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("10289-4")
     assert is_forbidden_quote_number("28768-1")
     assert is_forbidden_quote_number("28769-1")
+    assert is_forbidden_quote_number("35136-1")
     assert is_forbidden_quote_id("c146ce6d-aaaa-bbbb-cccc-000000000001")
+    assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
     assert is_forbidden_quote_id("30f50f96-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("0837ad33-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("1004f017-aaaa-bbbb-cccc-000000000001")
@@ -10093,6 +10098,8 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
     assert STEP_EXPLODE_NO_INTERNALDATA in refuse
     assert CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE in refuse
     assert "c146ce6d" in refuse
+    assert "8973f890" in refuse
+    assert "35136-1" in refuse
     cap = kendo_filelist_for_finish(
         [
             {
@@ -10182,6 +10189,7 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
     assert is_forbidden_quote_id("c146ce6d-1111-2222-3333-444444444444")
     assert spent_quote_number_block_reason("28769-1")
     for spent in (
+        "35136-1",
         "28768-1",
         "10289-4",
         "P904271-1",
@@ -10578,6 +10586,118 @@ def test_kyle_step_contours_devtools_capture_recipe_is_exact():
     assert "tlist_bind_source=false" in notes
     assert any("kyle_step_contours_capture=" in n for n in notes)
     assert "kyle_capture_windows=upload_to_next,part_create,explode_to_finish,additem_dxffiles" in notes
+
+
+def test_leftover_35136_1_kyle_har_confirms_fail_close():
+    """Kyle HAR leftover 35136-1: OpenContourCount=0 / 3× bar empty / bar_flat.
+
+    Contours never filled. Confirms fail-close. Does not unlock Contours fill.
+    Do not invent Contours/InternalData. Do not remint 8973f890 / 35136-1.
+    """
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+        cad_filelist_refuses_additem_dxf,
+        cadimport_get_payload_empty_bools,
+        classify_step_contours_capture,
+        persist_part_create_tlist_bind_source,
+    )
+    from tests.fixtures.live_35136_1 import (
+        LEFTOVER_CHILD_NAMES,
+        SPENT_QUOTE_ID,
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        leftover_35136_1_har_dump,
+        leftover_35136_1_har_xhrs,
+    )
+    from tests.fixtures.live_part_create_tlist_bind import LIVE_PART_CREATE_TLIST_BIND
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = leftover_35136_1_har_dump()
+    assert dump["quote_id"] == SPENT_QUOTE_ID == "8973f890-b2a1-48fb-b6be-3530caeb1819"
+    assert dump["quote_id_prefix"] == SPENT_QUOTE_ID_PREFIX == "8973f890"
+    assert dump["quote_number"] == SPENT_QUOTE_NUMBER == "35136-1"
+    assert dump["child_names"] == list(LEFTOVER_CHILD_NAMES) == ["35137", "35138"]
+    assert dump["opencontourcount"] == 0
+    assert dump["part_create_n"] == 3
+    assert dump["part_create_producttype"] == "bar"
+    assert dump["additem_productsubtype"] == "bar_flat"
+    assert dump["tlist_bind_source"] is False
+    assert dump["contours_never_filled"] is True
+    assert dump["invent"] is False
+    assert dump["unlocks_contours_fill"] is False
+    assert dump["fail_close"] is True
+    assert dump["routes"]["GET /CadImport/Data"]["opencontourcount"] == 0
+    assert dump["routes"]["GET /CadImport/Data"]["bindable"] is False
+    assert dump["routes"]["POST /part/create"]["n"] == 3
+    assert dump["routes"]["POST /part/create"]["bindable"] is False
+    assert dump["routes"]["POST /Quote/AddItem_DXFFiles"]["productsubtype"] == (
+        "bar_flat"
+    )
+    assert dump["routes"]["POST /Quote/AddItem_DXFFiles"]["bindable"] is False
+    assert "silent-graft" in dump["follow_up"]
+    assert is_forbidden_quote_id(SPENT_QUOTE_ID)
+    assert is_forbidden_quote_id("8973f890-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("35136-1")
+    assert spent_quote_number_block_reason("35136-1")
+    assert "35136-1" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert LIVE_PART_CREATE_TLIST_BIND is None
+    classified = classify_step_contours_capture(leftover_35136_1_har_xhrs())
+    assert classified["invent"] is False
+    assert classified["bindable"] is False
+    assert classified["finish_ok"] is False
+    assert classified["step_explode_no_internaldata"] is True
+    assert classified["finish_why"] == CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    data = next(x for x in classified["xhrs"] if x["path"] == "/CadImport/Data")
+    assert data["contours_empty"] is True
+    assert data["bindable"] is False
+    part = next(x for x in classified["xhrs"] if x["path"] == "/part/create")
+    assert part["n"] == 3
+    assert part["tlist_bind_source"] is False
+    assert part["internaldata_empty"] is True
+    add = next(x for x in classified["xhrs"] if x["path"] == "/Quote/AddItem_DXFFiles")
+    assert add["internaldata_empty"] is True
+    assert add["bindable"] is False
+    assert cadimport_get_payload_empty_bools(
+        [{"OpenContourCount": 0, "InternalData": "", "Contours": []}]
+    )["bindable"] is False
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": "bar",
+            "ProductSubType": "bar_flat",
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "8973f890" in refuse
+    assert "35136-1" in refuse
+    notes: list[str] = []
+    persist_part_create_tlist_bind_source(
+        [
+            {
+                "Name": "35137",
+                "ProductType": "bar",
+                "InternalData": "",
+                "ImageString": "",
+            }
+        ],
+        notes=notes,
+    )
+    assert "tlist_bind_source=false" in notes
+    blob = json.dumps(classified)
+    assert classified["invent"] is False
+    assert leftover_35136_1_har_xhrs()[1]["response"]["List"][0]["Contours"] == []
+    assert "iVBORw0KGgo" not in blob
 
 
 def test_create_all_parts_js_records_cadimport_xhr_emptiness_only():

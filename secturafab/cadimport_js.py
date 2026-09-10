@@ -174,6 +174,12 @@ CLASSIFY_FINISH_INTERNALDATA_FILL = None
 # ImageString are already nonempty. Persist key names only.
 # Until a live Finish-with-Contours capture exists, Kyle must save the
 # DevTools windows in kyle_step_contours_devtools_capture (emptiness only).
+# Kyle HAR leftover 35136-1 / 8973f890 (kids 35137 / 35138): Upload →
+# CadImport/Data OpenContourCount=0 → /part/create 3× bar InternalData
+# empty → AddItem_DXFFiles InternalData empty bar_flat. Contours never
+# filled. Confirms fail-close. Does NOT unlock Contours fill. Follow-up
+# only: bar_flat STEP explode vs plate Contours — no silent graft.
+# Do not remint 35136-1.
 # Hunt (QuoteOrderEdit createAllParts + leftover 21785-2): no XHR
 # between #gridDXF collect and DoCreateDXFParts writes InternalData
 # or CuttingLength. CLASSIFY_FINISH_INTERNALDATA_FILL stays None.

@@ -3379,7 +3379,7 @@ class SecturaFabPushService:
                 notes.append(
                     "Cad FileList InternalData empty after explode — "
                     "page Finish lands GET 0 Cad (live 28768-1; 28769-1 "
-                    "c146ce6d). "
+                    "c146ce6d; 35136-1 leftover 8973f890). "
                     "not Finishing; do not invent InternalData; not success"
                 )
             return notes

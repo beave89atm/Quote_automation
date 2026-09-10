@@ -86,6 +86,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "46eed794-257d-4987-ae48-98c7d6c7dd07",  # 25009-2 PR18 72d7665 Cad Image Files PASS — do not remint / PATCH
         "f300ecea-ccf3-4c5e-adaf-db73bdfb80fb",  # 1010106-1 PR18 6289d3c Cad Image Files PASS — do not remint / PATCH
         "5dc50b55-f546-449f-9f23-7f7ddf67772b",  # 1010111-1 PR18 26bedc4 Cad Image Files PASS — do not remint / PATCH
+        "8973f890-b2a1-48fb-b6be-3530caeb1819",  # 35136-1 Kyle STEP leftover — OpenContourCount=0 / 3× bar InternalData empty / AddItem_DXFFiles bar_flat empty — fail-close; do not remint / PATCH
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -177,6 +178,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "b1036d7d",  # 33819-2 spent plate_sku_missing — do not remint
         "425587a7",  # 34137-4 — do not open / PATCH / remint
         "95b8c186",  # 1007922-3 — do not open / PATCH / remint
+        "8973f890",  # 35136-1 leftover (kids 35137/35138) — Upload→CadImport/Data OpenContourCount=0→/part/create 3× bar empty→AddItem_DXFFiles empty bar_flat — Contours never filled; do not remint
     }
 )
 
@@ -278,7 +280,8 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "10289-4",  # spent 1004f017 PartMode Cad @ 2320c6d then page Finish skipped filelist_cad_payload_empty — ZZ-DEL — do not remint
         "28768-1",  # spent 28708035 PartMode Cad + page OnAddDXFClick @ f656655 InternalData null / bar_flat / GET 0 Cad — ZZ-DEL — do not remint
         "28769-1",  # spent c146ce6d leftover empty explode InternalData / CadImport Data+CADData empty — ZZ-DEL — do not remint
-        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1 / 28769-1.
+        "35136-1",  # spent 8973f890 Kyle STEP leftover — OpenContourCount=0 / 3× bar InternalData empty / AddItem_DXFFiles bar_flat empty — fail-close; do not remint
+        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1 / 28769-1 / 35136-1.
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

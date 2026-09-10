@@ -218,12 +218,19 @@ Loom is CAD Files → classify → Finish with no per-part editor.
 Kyle Loom c9d7c05a (Q10243 / 35145-1): blue Next → #gridDXFParts Part
 Mode → green Finish. Do not Finish with PartMode still null (live
 21785-2). Do not remint 35145-1 / Q10243 / 21785-1/2/3 / P904272-1 /
-P904271-1 / 10289-4 / 28768-1 / 28769-1 (leftover c146ce6d).
+P904271-1 / 10289-4 / 28768-1 / 28769-1 (leftover c146ce6d) /
+35136-1 (leftover 8973f890).
 Server explode returning empty InternalData is the blocker
 (step_explode_no_internaldata aliases cad_internaldata_empty_after_explode).
 Optional GET /CadImport/Data + GET /CadImport/CADData after explode
 may copy Contours/InternalData by SID/ID/FileID only if nonempty.
 Empty GET is documentary — not a fill XHR. Do not invent Contours.
+Kyle HAR leftover 35136-1 / 8973f890 (kids 35137 / 35138): Upload →
+CadImport/Data OpenContourCount=0 → /part/create 3× bar InternalData
+empty → AddItem_DXFFiles InternalData empty bar_flat. Contours never
+filled. Confirms fail-close; does NOT unlock Contours fill. Follow-up
+only: bar_flat STEP explode may need a different route than plate
+Contours — no silent graft. Leave 8973f890 / 35136-1.
 Do not POST UpdateDataNext / ConvertTo / Detect* as a Finish substitute.
 No live STEP t.List has yet arrived with nonempty InternalData+ImageString
 (LIVE_PART_CREATE_TLIST_BIND is None). Until Kyle grabs a manual Finish
@@ -236,7 +243,7 @@ Do not fire UpdateDataNext. Classify→Finish without #DXFEdit
 has no InternalData-fill XHR (needs_internaldata_fill_xhr).
 Leave 5b622a0d / Skin Assembly,
 0d4b8a46 / FA Assembly, b8a62e76 / SC0600, 6a568912 / 10098-1,
-and c146ce6d / 28769-1.
+c146ce6d / 28769-1, and 8973f890 / 35136-1.
 Do not remint. Do not mint.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
@@ -1433,7 +1440,11 @@ def cadimport_identity_match(
 def cadimport_get_payload_empty_bools(
     rows: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
-    """GET /CadImport/Data or CADData emptiness — key names, never values."""
+    """GET /CadImport/Data or CADData emptiness — key names, never values.
+
+    Kyle HAR leftover 35136-1: OpenContourCount=0 is emptiness, not a
+    Contours fill. Do not treat 0 as bindable.
+    """
     kids = [r for r in (rows or []) if isinstance(r, dict)]
     idata_empty = (
         all(cad_payload_value_empty(r.get("InternalData")) for r in kids)
@@ -1777,8 +1788,12 @@ def kyle_step_contours_devtools_capture() -> dict[str, Any]:
     """Exact DevTools XHRs Kyle must save on a manual STEP Finish with Contours.
 
     Bind source is still POST /part/create t.List with nonempty InternalData
-    and ImageString. No live capture of that bind exists. Do not invent
-    Contours. Do not remint spent STEP leftovers.
+    and ImageString. No live capture of that bind exists. Kyle HAR leftover
+    35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
+    /part/create 3× bar InternalData empty → AddItem_DXFFiles InternalData
+    empty bar_flat. Contours never filled — confirms fail-close; does not
+    unlock Contours fill. Do not invent Contours. Do not remint spent
+    STEP leftovers.
     """
     return {
         "purpose": (
@@ -2003,7 +2018,9 @@ def classify_step_contours_capture(
     """Classify a sanitized DevTools capture. Empty stays fail-close.
 
     A bindable unexpected path is a *candidate* only — do not POST it.
-    Never invent Contours/InternalData.
+    Never invent Contours/InternalData. Leftover 35136-1 HAR
+    (OpenContourCount=0 / 3× bar empty / AddItem_DXFFiles bar_flat empty)
+    stays fail-close.
     """
     summaries = [summarize_cadimport_capture_xhr(x) for x in (xhrs or [])]
     bind = next(
@@ -2300,7 +2317,8 @@ def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
     return (
         "Cad FileList InternalData empty after explode — "
         "refusing AddItem_DXFFiles (live 28768-1; 28769-1 leftover "
-        f"c146ce6d; ZZ-DEL). {STEP_EXPLODE_NO_INTERNALDATA} aliases "
+        "c146ce6d; 35136-1 leftover 8973f890; ZZ-DEL). "
+        f"{STEP_EXPLODE_NO_INTERNALDATA} aliases "
         f"{CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE}. "
         "ImageString-without-InternalData is preview only (live 21785-2). "
         f"{NEEDS_INTERNALDATA_FILL_XHR}: classify→Finish has no named "
