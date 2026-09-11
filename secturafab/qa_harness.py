@@ -101,12 +101,11 @@ def _item_category(item: dict[str, Any], bom_hint: str = "") -> str | None:
     if item.get("IsAssembly") or item.get("ProductType") in _ASSEMBLY_TYPES:
         return "Assembly"
     hint = f"{item.get('Description') or ''} {bom_hint}".strip()
-    if bom_hint:
-        from secturafab.push import classify_sectura_item
+    from secturafab.push import classify_sectura_item
 
-        hinted = classify_sectura_item(hint)
-        if hinted in {"Component", "Linear"}:
-            return hinted
+    classified = classify_sectura_item(hint) if hint else None
+    if classified in {"Cad", "Linear", "Component", "Assembly"}:
+        return classified
     cat = str(item.get("Category") or item.get("ItemType") or "").strip()
     if cat in {"Cad", "Linear", "Component"}:
         return cat
@@ -130,9 +129,7 @@ def _item_category(item: dict[str, Any], bom_hint: str = "") -> str | None:
     token = normalize_part_token(hint.split()[0] if hint.split() else "")
     if not hint or (not bom_hint and not _PN_TOKEN.fullmatch(token)):
         return None
-    from secturafab.push import classify_sectura_item
-
-    return classify_sectura_item(hint)
+    return classified
 
 
 def _bom_hint_map(bom_rows: list[dict[str, Any]] | None) -> dict[str, str]:
@@ -233,6 +230,17 @@ def evaluate_quote_get(
         matched_pn = match_bom_part_no(desc, bom_rows)
         hint = bom_hints.get(_npk(matched_pn or ""), "") or bom_hints.get(_desc_key(desc), "")
         cat = _item_category(it, hint)
+        persisted = str(it.get("Category") or it.get("ItemType") or "").strip()
+        if (
+            check_lines
+            and persisted in {"Cad", "Linear", "Component"}
+            and cat in {"Cad", "Linear", "Component"}
+            and persisted != cat
+        ):
+            failures.append(
+                f"{desc!r} Category is {persisted}, want {cat} "
+                "(leftover classify is not the rule)"
+            )
         if cat == "Assembly":
             assembly_desc = desc
             assembly_id = str(it.get("ID") or "") or assembly_id

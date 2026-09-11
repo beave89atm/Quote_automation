@@ -173,6 +173,12 @@ def ensure_purchased_components(
             reason = _bom_row_is_purchased(str(it.get("Description") or ""))
             if not reason:
                 continue
+        from secturafab.push import classify_sectura_item
+
+        # Locked classify wins: hose guard / ≤3/4 plate stay Linear/Cad
+        # even when an old quote or purchased map marked them Component.
+        if classify_sectura_item(str(it.get("Description") or "")) != "Component":
+            continue
 
         it["ProductType"] = _COMPONENT_TYPE
         it["ItemType"] = "Component"

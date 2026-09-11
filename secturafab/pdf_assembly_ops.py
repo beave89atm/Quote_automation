@@ -191,6 +191,8 @@ def _apply_kyle_line_descriptions(
     """Write Kyle Cad / Linear / Component / Assembly descriptions (never bare PN)."""
     from quote_core.part_materials import lookup_part_material
 
+    from .push import classify_bom_row
+
     detail = client.get_json(f"v1/quote/{quote_id}")
     items = list(detail.get("ItemList") or [])
     unused = [p for p in part_nos if p]
@@ -218,13 +220,12 @@ def _apply_kyle_line_descriptions(
             unused.remove(match)
         first = normalize_part_token(_desc_token(desc_text))
         pn = match or (first if is_catalog_part_no(first) else "")
-        cat = str(it.get("Category") or it.get("ItemType") or "").strip()
-        if not cat:
-            from .push import classify_sectura_item
-
-            cat = classify_sectura_item(
-                f"{it.get('Description') or ''} {bom_desc.get(normalize_part_key(pn), '')}"
-            )
+        pm = lookup_part_material(part_materials or {}, pn) if pn else None
+        cat = classify_bom_row(
+            {"part_no": pn, "description": bom_desc.get(normalize_part_key(pn), "")},
+            extra=str(it.get("Description") or ""),
+            thickness=pm.thickness_in if pm and pm.thickness_in is not None else None,
+        )
         if cat == "Linear":
             continue
         if cat == "Component":
@@ -303,7 +304,7 @@ def categorize_pdf_imported_items(
     classification works even when CAD left a plate-style Description. When BOM
     text is empty, OCR the component PDF title block for TUBE/BAR / fitting hints.
     """
-    from .push import classify_sectura_item
+    from .push import classify_bom_row
 
     detail = client.get_json(f"v1/quote/{quote_id}")
     items = list(detail.get("ItemList") or [])
@@ -346,13 +347,24 @@ def categorize_pdf_imported_items(
         desc_text = str(it.get("Description") or "")
         pn = match_bom_part_no(desc_text, bom_rows)
         token = normalize_part_key(pn or _desc_token(desc_text))
-        hint = f"{desc_text} {pn or ''} {bom_desc.get(token, '')}"
-        cat = classify_sectura_item(hint)
+        cat = classify_bom_row(
+            {"part_no": pn or token, "description": bom_desc.get(token, "")},
+            extra=desc_text,
+        )
         counts[cat] = counts.get(cat, 0) + 1
         it["ItemType"] = cat
         it["Category"] = cat
-        if cat == "Linear":
-            it["ProductType"] = linear_website_product_type(hint)
+        if cat == "Assembly":
+            it["ProductType"] = 300
+            it["IsAssembly"] = True
+            it["IsLinear"] = False
+            it["IsPlate"] = False
+            it["IsPart"] = False
+            it["Machine"] = None
+        elif cat == "Linear":
+            it["ProductType"] = linear_website_product_type(
+                f"{desc_text} {pn or ''} {bom_desc.get(token, '')}"
+            )
             it["IsLinear"] = True
             it["IsPlate"] = False
             it["IsPart"] = True
@@ -427,7 +439,7 @@ def build_pdf_only_assembly(
         extra_pdfs=extra_pdfs,
     )
 
-    from .push import classify_sectura_item
+    from .push import classify_bom_row
 
     imported: list[str] = []
     linear_rows: list[dict[str, Any]] = []
@@ -435,8 +447,7 @@ def build_pdf_only_assembly(
     cad_rows: list[dict[str, Any]] = []
     for row in rows:
         part_no = str(row.get("part_no") or row.get("part_number") or "").strip()
-        hint = f"{part_no} {row.get('description') or ''}"
-        cat = classify_sectura_item(hint)
+        cat = classify_bom_row(row)
         if cat == "Linear":
             linear_rows.append(row)
             continue
@@ -634,7 +645,7 @@ def plan_weldment_lines(
     """Cookie-less dry-run: Cad / Linear / Component lines (no PDF outline flats)."""
     from quote_core.part_materials import lookup_part_material
 
-    from .push import classify_sectura_item
+    from .push import classify_bom_row
 
     planned: list[dict[str, Any]] = []
     for row in bom_rows or []:
@@ -646,8 +657,11 @@ def plan_weldment_lines(
         except (TypeError, ValueError):
             qty = 1
         noun = str(row.get("description") or "").strip()
-        cat = classify_sectura_item(f"{pn} {noun}")
         pm = lookup_part_material(part_materials or {}, pn) if part_materials else None
+        cat = classify_bom_row(
+            row,
+            thickness=pm.thickness_in if pm and pm.thickness_in is not None else None,
+        )
         thk = (pm.thickness_param() if pm else None) or default_thickness
         grade = (pm.material if pm else None) or default_material
         from .locked_1001898 import (
@@ -713,6 +727,8 @@ def _add_cad_plate_items(
     """
     from quote_core.part_materials import lookup_part_material
 
+    from .push import classify_bom_row
+
     notes: list[str] = []
     imported = 0
     shells: list[dict[str, Any]] = []
@@ -724,6 +740,15 @@ def _add_cad_plate_items(
         except (TypeError, ValueError):
             qty = 1
         pm = lookup_part_material(part_materials or {}, part_no) if part_no else None
+        if classify_bom_row(
+            row,
+            thickness=pm.thickness_in if pm and pm.thickness_in is not None else None,
+        ) != "Cad":
+            notes.append(
+                f"Skipped Cad Image Files {part_no or noun} — not Cad "
+                "(>3/4 plate is Component; Linear/hose stay Long)"
+            )
+            continue
         thk = (pm.thickness_param() if pm else None) or default_thickness
         grade = (pm.material if pm else None) or default_material
         from .locked_1001898 import locked_cad_spec

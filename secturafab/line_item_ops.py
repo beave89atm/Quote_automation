@@ -1167,9 +1167,9 @@ def count_linear_get_misses(
         pn = match_bom_part_no(desc, bom_rows)
         noun = bom_desc.get(normalize_part_key(pn or ""), "")
         want = classify_sectura_item(f"{pn or ''} {noun} {desc}")
-        if _is_component(it) or want == "Component":
+        if want == "Component":
             continue
-        if _is_linear(it) or want == "Linear":
+        if want == "Linear":
             if not _linear_fields_on_get(it, require_linear_pt=True):
                 n += 1
     return n
@@ -1239,7 +1239,7 @@ def persist_classified_item_fields(
         update_linear_via_api,
     )
     from secturafab.plate_ops import addplate_item, fetch_plate_catalog, match_plate_product
-    from secturafab.push import classify_sectura_item
+    from secturafab.push import _row_thickness_in, classify_bom_row, classify_sectura_item
     from secturafab.qty_ops import normalize_part_key
     from secturafab.quote_update import quote_online_update
 
@@ -1375,9 +1375,15 @@ def persist_classified_item_fields(
         if not pn and is_catalog_part_no(raw_desc.split()[0] if raw_desc.split() else ""):
             pn = raw_desc.split()[0].rstrip(".,;:")
         noun = bom_desc.get(normalize_part_key(pn or ""), "")
-        want_cat = classify_sectura_item(f"{pn or ''} {noun} {raw_desc}")
+        want_cat = classify_bom_row(
+            {"part_no": pn or "", "description": noun},
+            extra=raw_desc,
+            thickness=_row_thickness_in(it),
+        )
         qty = bom_qty.get(normalize_part_key(pn or ""), 1)
-        if persist_cad and (_is_component(it) or want_cat == "Component"):
+        if want_cat == "Assembly":
+            continue
+        if persist_cad and want_cat == "Component":
             line = format_component_line(pn or "", noun or raw_desc)
             if iid and it.get("ProductType") not in (200, "200"):
                 update_params.append({"ID": iid, "ParamName": "ProductType", "Value": "200"})
@@ -1388,7 +1394,7 @@ def persist_classified_item_fields(
                 update_params.append({"ID": iid, "ParamName": "Description", "Value": line[:500]})
                 desc_n += 1
             continue
-        if persist_linear and (_is_linear(it) or want_cat == "Linear"):
+        if persist_linear and want_cat == "Linear":
             if item_has_saw_pack(it):
                 line = raw_desc
                 if pn:
@@ -1412,7 +1418,7 @@ def persist_classified_item_fields(
             continue
         if not persist_cad:
             continue
-        if _is_linear(it) or want_cat == "Linear" or _is_component(it) or want_cat == "Component":
+        if want_cat != "Cad":
             continue
         if _persist_website_session(client) and (
             want_cat == "Cad" or _is_cad(it) or it.get("ProductType") in (100, "100")
@@ -1486,9 +1492,9 @@ def persist_classified_item_fields(
             pn = match_bom_part_no(desc, bom_rows)
             noun = bom_desc.get(normalize_part_key(pn or ""), "")
             want = classify_sectura_item(f"{pn or ''} {noun} {desc}")
-            if _is_component(it) or want == "Component":
+            if want == "Component" or want == "Assembly":
                 continue
-            if persist_linear and (_is_linear(it) or want == "Linear"):
+            if persist_linear and want == "Linear":
                 if _linear_fields_on_get(it):
                     lin_ok += 1
                 else:

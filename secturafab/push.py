@@ -354,6 +354,15 @@ def _looks_like_formed_plate(description: str) -> bool:
     return any(h in text for h in (" FORMED ", " ROLLED ", " BENT PLATE "))
 
 
+def _has_linear_noun(description: str) -> bool:
+    text = f" {str(description or '').upper()} "
+    if any(h in text for h in _LINEAR_HINTS):
+        return True
+    from .website import drawing_is_hss_dim_callout
+
+    return bool(drawing_is_hss_dim_callout(description))
+
+
 def _cad_plate_sheet_noun(description: str) -> bool:
     """Laser plate/sheet/gusset/mount/flat. CHANNEL PLATE is Cad, KICK CHANNEL is not.
 
@@ -373,18 +382,20 @@ def _cad_plate_sheet_noun(description: str) -> bool:
     return False
 
 
-def classify_sectura_item(description: str) -> str:
+def classify_sectura_item(description: str, thickness: Any = None) -> str:
     """
     Map a STEP/BOM description to SecturaFAB item category dropdown values:
-    Cad | Linear | Component
+    Cad | Linear | Component | Assembly
 
-    Plate/sheet/gusset/mount/flat = Cad. Tube/bar/angle/channel = Linear.
-    Purchased fittings (elbow, coupling, plug, nipple, cap, filler neck) and
+    Plate/sheet/gusset/mount/flat ≤ 3/4 in = Cad (Image Files). Tube/bar/
+    angle/channel/hose guard/hose tube = Linear (Long). Purchased NPT
+    fittings (elbow, coupling, plug, nipple, pipe cap, filler neck) and
     hardware = Component. Component is checked before Linear so ``PIPE CAP``
     is not treated as a Linear pipe.
 
     Plate over 3/4 in is Component (no invented $). A formed plate that looks
-    like an angle is still Cad. Hose guards / structural tube are Linear.
+    like an angle is still Cad. Hose guards / structural tube are Linear —
+    never leftover purchased Component.
 
     Job 92 / 1001898-1 child-PDF locks win over LOM nouns (rolled 1001880-2
     is Cad; 14500-1 / 1005966-1 are outsource Component).
@@ -416,20 +427,41 @@ def classify_sectura_item(description: str) -> str:
         return "Component"
     if any(h in text for h in _COMPONENT_HINTS) or _COMPONENT_WORD_RE.search(text):
         return "Component"
-    thk = _plate_thickness_in(description)
-    if thk is not None and thk > 0.75:
+    thk = _row_thickness_in(None, thickness)
+    if thk is None:
+        thk = _plate_thickness_in(description)
+    if plate_over_three_quarter(thk) and (
+        _cad_plate_sheet_noun(description)
+        or _looks_like_formed_plate(description)
+        or not _has_linear_noun(description)
+    ):
         return "Component"
     if _looks_like_formed_plate(description):
         return "Cad"
     if _cad_plate_sheet_noun(description):
         return "Cad"
-    if any(h in text for h in _LINEAR_HINTS):
-        return "Linear"
-    from .website import drawing_is_hss_dim_callout
-
-    if drawing_is_hss_dim_callout(description):
+    if _has_linear_noun(description):
         return "Linear"
     return "Cad"
+
+
+def classify_bom_row(
+    row: dict[str, Any] | None = None,
+    extra: str = "",
+    *,
+    thickness: Any = None,
+) -> str:
+    """Classify one BOM/quote child with locked rules + row thickness."""
+    data = row if isinstance(row, dict) else {}
+    pn = str(data.get("part_no") or data.get("part_number") or "").strip()
+    noun = str(
+        data.get("description") or data.get("Description") or data.get("noun") or ""
+    ).strip()
+    thk = thickness
+    if thk is None:
+        thk = _row_thickness_in(data)
+    blob = " ".join(part for part in (pn, noun, extra) if part).strip()
+    return classify_sectura_item(blob, thk)
 
 
 def plate_over_three_quarter(thickness: Any) -> bool:
@@ -464,20 +496,11 @@ def classify_image_files_item(description: str, thickness: Any = None) -> str:
     """Image Files classify: plate >3/4 in is Component (no invented $).
 
     Live 1009213-1 PEDESTAL BASE PLATE was Cad-lasered at 1.25 in.
-    ``classify_sectura_item`` already gates ``thk > 0.75`` when thickness
-    is in the description; the runner must also pass the resolved
-    drawing/BOM thickness so a plate noun without a gauge still skips
-    Image Files. 0.75 in and 3/16 in stay Cad.
+    Locked ``classify_sectura_item`` gates ``thk > 0.75`` from the noun
+    or the resolved drawing/BOM thickness so a plate without a gauge
+    still skips Image Files. 0.75 in and 3/16 in stay Cad.
     """
-    cat = classify_sectura_item(description)
-    thk = _row_thickness_in(None, thickness)
-    if thk is None:
-        thk = _plate_thickness_in(description)
-    if plate_over_three_quarter(thk) and (
-        cat == "Cad" or _cad_plate_sheet_noun(description)
-    ):
-        return "Component"
-    return cat
+    return classify_sectura_item(description, thickness)
 
 
 _HOLE_NOUN_RE = re.compile(
@@ -1344,7 +1367,7 @@ class SecturaFabPushService:
                 from .qty_ops import normalize_part_key as _npk
 
                 bom_hint[_npk(key)] = str(row.get("description") or "")
-        counts = {"Cad": 0, "Linear": 0, "Component": 0}
+        counts = {"Cad": 0, "Linear": 0, "Component": 0, "Assembly": 0}
         for it in items:
             from .qty_ops import normalize_part_key as _npk
             from .weld_ops import _desc_token
@@ -1356,13 +1379,23 @@ class SecturaFabPushService:
 
             pn = match_bom_part_no(desc, bom_rows)
             token = _npk(pn or _desc_token(desc))
-            hint = f"{desc} {pn or ''} {bom_hint.get(token, '')}"
-            cat = classify_sectura_item(hint)
+            noun = bom_hint.get(token, "")
+            cat = classify_bom_row(
+                {"part_no": pn or "", "description": noun},
+                extra=desc,
+            )
             counts[cat] = counts.get(cat, 0) + 1
             it["ItemType"] = cat
             it["Category"] = cat
-            if cat == "Linear":
-                it["ProductType"] = linear_website_product_type(hint)
+            if cat == "Assembly":
+                it["ProductType"] = 300
+                it["IsAssembly"] = True
+                it["IsLinear"] = False
+                it["IsPlate"] = False
+                it["IsPart"] = False
+                it["Machine"] = None
+            elif cat == "Linear":
+                it["ProductType"] = linear_website_product_type(f"{desc} {noun}")
                 it["IsLinear"] = True
                 it["IsPlate"] = False
                 it["IsPart"] = True
@@ -2663,10 +2696,13 @@ class SecturaFabPushService:
             if dashed:
                 name = f"{dashed} {bom_noun or name}".strip()
                 row["Name"] = dashed
-            cat = classify_sectura_item(name)
             token = dashed or (name.split()[0] if name else "")
             stem = str(row.get("Name") or "").strip()
             stem_u = stem.upper()
+            pm = lookup_part_material(part_materials, name)
+            cat = classify_sectura_item(
+                name, pm.thickness_in if pm and pm.thickness_in is not None else None
+            )
             # Live P001545: W001531_2 / _3 are Cad plates; W001544 x34 is the
             # weldment occurrence (Assembly). P001545 Rev B is the STEP root.
             if re.fullmatch(r"W\d{4,}_\d+", stem, re.I):
@@ -2694,15 +2730,19 @@ class SecturaFabPushService:
                     if idx < len(lom_child_nouns):
                         extra = lom_child_nouns[idx]
                     if extra:
-                        cat = classify_sectura_item(f"{stem} {extra}")
+                        cat = classify_sectura_item(
+                            f"{stem} {extra}",
+                            pm.thickness_in if pm and pm.thickness_in is not None else None,
+                        )
                     if cat == "Assembly" and not is_nested_assembly_name(
                         extra or name
                     ):
                         cat = "Cad"
             compact = {k.replace("-", ""): v for k, v in purchased.items()}
-            if token in purchased or token.replace("-", "") in compact:
+            if cat not in {"Linear", "Assembly"} and (
+                token in purchased or token.replace("-", "") in compact
+            ):
                 cat = "Component"
-            pm = lookup_part_material(part_materials, name)
             aluminum_named = bool(re.search(r"\bALUMINI?UM\b", name, re.I))
             material = default_material
             thickness: str | float = default_thickness
@@ -4814,9 +4854,7 @@ class SecturaFabPushService:
     ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for row in bom_rows or []:
-            pn = str(row.get("part_no") or row.get("part_number") or "").strip()
-            noun = str(row.get("description") or "")
-            if classify_sectura_item(f"{pn} {noun}") == "Linear":
+            if classify_bom_row(row if isinstance(row, dict) else None) == "Linear":
                 rows.append(row)
         return rows
 
@@ -4825,9 +4863,7 @@ class SecturaFabPushService:
     ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for row in bom_rows or []:
-            pn = str(row.get("part_no") or row.get("part_number") or "").strip()
-            noun = str(row.get("description") or "")
-            if classify_sectura_item(f"{pn} {noun}") == "Component":
+            if classify_bom_row(row if isinstance(row, dict) else None) == "Component":
                 rows.append(row)
         return rows
 

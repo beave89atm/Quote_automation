@@ -621,17 +621,17 @@ def test_linear_cut_length_from_component_pdf_not_bom_noun(tmp_path):
 
     from secturafab.line_item_ops import persist_classified_item_fields
 
-    pdf = tmp_path / "1001880-2.pdf"
+    pdf = tmp_path / "10081-2.pdf"
     doc = fitz.open()
     page = doc.new_page()
-    page.insert_text((72, 72), "1001880-2 PEDESTAL TUBE 18 1/2 LG.")
+    page.insert_text((72, 72), "10081-2 PEDESTAL HOSE TUBE 18 1/2 LG.")
     doc.save(str(pdf))
     doc.close()
     empty = {
         "ItemList": [
             {
                 "ID": "l1",
-                "Description": "1001880-2 - P1/8-5-A36",
+                "Description": "10081-2 - P1/8-5-A36",
                 "ProductType": 10,
                 "Category": "Linear",
                 "SKU": "P1/8-5-A36",
@@ -649,7 +649,7 @@ def test_linear_cut_length_from_component_pdf_not_bom_noun(tmp_path):
                 **empty["ItemList"][0],
                 "Machine": "Saw",
                 "Length": 18.5,
-                "Description": "1001880-2 - P1/8-5-A36 - 18.5",
+                "Description": "10081-2 - P1/8-5-A36 - 18.5",
             }
         ]
     }
@@ -661,7 +661,7 @@ def test_linear_cut_length_from_component_pdf_not_bom_noun(tmp_path):
     notes = persist_classified_item_fields(
         client,
         "qid",
-        bom_rows=[{"part_no": "1001880-2", "description": "PEDESTAL TUBE", "qty": 1}],
+        bom_rows=[{"part_no": "10081-2", "description": "PEDESTAL HOSE TUBE", "qty": 1}],
         plate_catalog=[],
         linear_catalog=[
             {
@@ -681,7 +681,7 @@ def test_linear_cut_length_from_component_pdf_not_bom_noun(tmp_path):
     assert lin.kwargs["params"]["productID"] == "pid"
     assert lin.kwargs["params"]["machine"] == "Saw"
     assert float(lin.kwargs["params"]["length"]) == 18.5
-    assert lin.kwargs["params"]["name"] == "1001880-2 - P1/8-5-A36 - 18.5"
+    assert lin.kwargs["params"]["name"] == "10081-2 - P1/8-5-A36 - 18.5"
     assert "GET-verified" in " ".join(notes)
 
 
@@ -809,14 +809,14 @@ def test_linear_length_from_sibling_pdf_in_library_folder(tmp_path):
     asm = tmp_path / "1001898-1.pdf"
     doc = fitz.open()
     page = doc.new_page()
-    page.insert_text((72, 72), "B 1 1001880-2 PEDESTAL TUBE 11 3/8 LG.")
+    page.insert_text((72, 72), "B 1 10081-2 PEDESTAL HOSE TUBE 11 3/8 LG.")
     doc.save(str(asm))
     doc.close()
     empty = {
         "ItemList": [
             {
                 "ID": "l1",
-                "Description": "1001880-2 - P1/8-5-A36",
+                "Description": "10081-2 - P1/8-5-A36",
                 "ProductType": 10,
                 "Category": "Linear",
                 "SKU": "P1/8-5-A36",
@@ -838,7 +838,7 @@ def test_linear_length_from_sibling_pdf_in_library_folder(tmp_path):
     persist_classified_item_fields(
         client,
         "qid",
-        bom_rows=[{"part_no": "1001880-2", "description": "PEDESTAL TUBE", "qty": 1}],
+        bom_rows=[{"part_no": "10081-2", "description": "PEDESTAL HOSE TUBE", "qty": 1}],
         plate_catalog=[],
         linear_catalog=[
             {
@@ -1190,7 +1190,7 @@ def test_dim1_is_not_used_as_cut_length():
         "ItemList": [
             {
                 "ID": "l1",
-                "Description": "1001880-2 - P1/8-5-A36",
+                "Description": "10081-2 - P1/8-5-A36",
                 "ProductType": 10,
                 "Category": "Linear",
                 "SKU": "P1/8-5-A36",
@@ -1211,7 +1211,7 @@ def test_dim1_is_not_used_as_cut_length():
     notes = persist_classified_item_fields(
         client,
         "qid",
-        bom_rows=[{"part_no": "1001880-2", "description": "PEDESTAL TUBE", "qty": 1}],
+        bom_rows=[{"part_no": "10081-2", "description": "PEDESTAL HOSE TUBE", "qty": 1}],
         plate_catalog=[],
         linear_catalog=[{"ID": "pid", "ProductName": "P1/8-5-A36", "Active": True}],
         persist_cad=False,

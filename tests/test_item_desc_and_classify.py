@@ -518,3 +518,264 @@ def test_finalize_qty_mismatch_does_not_graft_profile():
             attach_profile=False,
         )
     profile.assert_not_called()
+
+
+# Kyle 1001898-1 cheat sheet + leftover misclassify must fail closed.
+# hose guard → Component, ≤3/4 plate → Component, >3/4 plate → Cad.
+_CLASSIFY_LOCK_CASES = [
+    ("14501-1", "RESERVOIR TOP PLATE", None, "Cad"),
+    ("1001880-2", "PEDESTAL TUBE", None, "Cad"),
+    ("9905-1", "MOUNTING PLATE, EMER POWER", None, "Cad"),
+    ("1005940-1", "PEDESTAL GUSSET", None, "Cad"),
+    ("29860-3", "PEDESTAL BRACE ANGLE", None, "Linear"),
+    ("29860-4", "PEDESTAL BRACE ANGLE", None, "Linear"),
+    ("10081-2", "PEDESTAL HOSE TUBE", None, "Linear"),
+    ("33637-1", "1 1/4 RETURN TUBE", None, "Linear"),
+    ("21689-1", "HOSE GUARD", None, "Linear"),
+    ("14500-1", "PEDESTAL TOP PLATE", None, "Component"),
+    ("1005966-1", "PEDESTAL BOTTOM PLATE", None, "Component"),
+    ("50137-5", "3/4 NPT HALF COUPLING", None, "Component"),
+    ("50115-7", "1 1/4 NPT NIPPLE X 4 LG.", None, "Component"),
+    ("50030-5", "3/4 NPT COUPLING", None, "Component"),
+    ("8166-1", "FILLER NECK", None, "Component"),
+    ("50006-5", "3/4 NPT MAGNETIC PLUG", None, "Component"),
+    ("50122-1", "1 1/4 NPT PIPE CAP", None, "Component"),
+    ("50029-7", "1 1/4 90 STREET ELBOW", None, "Component"),
+    ("base-075", '3/4" A36 PLATE', 0.75, "Cad"),
+    ("base-125", '1.25" A572 PLATE', 1.25, "Component"),
+    ("formed", "FORMED ANGLE 1/4 A36 PLATE", 0.25, "Cad"),
+    ("weld", "1001898-1 PEDESTAL WELDMENT", None, "Assembly"),
+]
+
+
+def test_classify_lock_1001898_cheat_sheet_and_thickness():
+    from secturafab.push import classify_bom_row, classify_image_files_item
+
+    got = {}
+    for pn, noun, thk, want in _CLASSIFY_LOCK_CASES:
+        cat = classify_bom_row(
+            {"part_no": pn, "description": noun, "thickness_in": thk},
+            thickness=thk,
+        )
+        got[pn] = cat
+        assert cat == want, f"{pn} {noun} → {cat}, want {want}"
+        assert classify_sectura_item(f"{pn} {noun}", thk) == want
+        assert classify_image_files_item(f"{pn} {noun}", thk) == want
+    assert got["21689-1"] == "Linear"
+    assert got["21689-1"] != "Component"
+    assert got["base-075"] == "Cad"
+    assert got["base-075"] != "Component"
+    assert got["base-125"] == "Component"
+    assert got["base-125"] != "Cad"
+    assert got["10081-2"] == "Linear"
+    assert got["50122-1"] == "Component"
+    assert classify_bom_row(
+        {"part_no": "99901-1", "description": "PEDESTAL BASE PLATE", "thickness_in": 1.25}
+    ) == "Component"
+    assert classify_bom_row(
+        {"part_no": "99902-1", "description": "PEDESTAL BASE PLATE", "thickness_in": 0.75}
+    ) == "Cad"
+    assert classify_sectura_item("HOSEGUARD FORMED VIEW") == "Linear"
+    assert classify_sectura_item("HOSEGUARD FORMED VIEW") != "Component"
+
+
+def test_leftover_hose_guard_and_plate_reclassify_on_push_path():
+    from secturafab.component_ops import ensure_purchased_components
+    from secturafab.pdf_assembly_ops import categorize_pdf_imported_items
+
+    items = [
+        {
+            "ID": "hose",
+            "Description": "21689-1 HOSE GUARD",
+            "ProductType": 200,
+            "Category": "Component",
+            "IsPart": True,
+        },
+        {
+            "ID": "thin",
+            "Description": '3/4" A36 PLATE',
+            "ProductType": 200,
+            "Category": "Component",
+            "IsPart": True,
+        },
+        {
+            "ID": "thick",
+            "Description": '1.25" A572 PLATE',
+            "ProductType": 100,
+            "Category": "Cad",
+            "IsPlate": True,
+        },
+        {
+            "ID": "root",
+            "Description": "1001898-1 - PEDESTAL WELDMENT",
+            "ProductType": 300,
+            "IsAssembly": True,
+        },
+    ]
+    client = MagicMock()
+    client.get_json.return_value = {"ItemList": [dict(it) for it in items]}
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    categorize_pdf_imported_items(
+        client,
+        "qid",
+        bom_rows=[
+            {"part_no": "21689-1", "description": "HOSE GUARD", "qty": 1},
+            {"part_no": "thin-1", "description": '3/4" A36 PLATE', "qty": 1},
+            {"part_no": "thick-1", "description": '1.25" A572 PLATE', "qty": 1},
+        ],
+    )
+    saved = {it["ID"]: it for it in client.request.call_args.kwargs["json"]["ItemList"]}
+    assert saved["hose"]["Category"] == "Linear"
+    assert saved["hose"]["ProductType"] == 10
+    assert saved["hose"]["Machine"] == "Saw"
+    assert saved["thin"]["Category"] == "Cad"
+    assert saved["thin"]["ProductType"] == 100
+    assert saved["thick"]["Category"] == "Component"
+    assert saved["thick"]["ProductType"] == 200
+    assert saved["root"]["ProductType"] == 300
+
+    service = SecturaFabPushService(client=MagicMock())
+    leftover = [dict(it) for it in items]
+    leftover[0]["Description"] = "21689-1"
+    service.client.get_json.return_value = {"ItemList": leftover}
+    service.client.request.return_value = save
+    service.apply_item_categories(
+        "qid",
+        bom_rows=[
+            {"part_no": "21689-1", "description": "HOSE GUARD"},
+            {"part_no": "thin-1", "description": '3/4" A36 PLATE'},
+            {"part_no": "thick-1", "description": '1.25" A572 PLATE'},
+        ],
+    )
+    applied = {it["ID"]: it for it in service.client.request.call_args.kwargs["json"]["ItemList"]}
+    assert applied["hose"]["Category"] == "Linear"
+    assert applied["thin"]["Category"] == "Cad"
+    assert applied["thick"]["Category"] == "Component"
+
+    purchased_client = MagicMock()
+    purchased_client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "hose",
+                "Description": "21689-1 HOSE GUARD",
+                "ProductType": 100,
+                "Category": "Cad",
+            }
+        ]
+    }
+    purchased_client.request.return_value = save
+    notes = ensure_purchased_components(
+        purchased_client, "qid", purchased_keys={"21689-1": "CAP"}
+    )
+    assert purchased_client.request.call_count == 0
+    assert any("No purchased" in n or "Component" in n for n in notes) or notes == [
+        "No purchased/hardware lines matched for Component"
+    ]
+
+
+def test_qa_fail_closes_leftover_misclassify():
+    from secturafab.qa_harness import evaluate_quote_get
+
+    payload = {
+        "Description": "PEDESTAL WELDMENT",
+        "OrganizationName": "Time Manufacturing Waco",
+        "PrimaryOrganizationID": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+        "OrganizationList": [{"OrganizationName": "Time Manufacturing Waco"}],
+        "ItemList": [
+            {
+                "ID": "asm",
+                "Description": "1001898-1 - PEDESTAL WELDMENT",
+                "ProductType": 300,
+                "IsAssembly": True,
+            },
+            {
+                "ID": "hose",
+                "Description": "21689-1 HOSE GUARD",
+                "ProductType": 200,
+                "Category": "Component",
+            },
+            {
+                "ID": "thin",
+                "Description": '3/4" A36 PLATE',
+                "ProductType": 200,
+                "Category": "Component",
+            },
+            {
+                "ID": "thick",
+                "Description": '1.25" A572 PLATE',
+                "ProductType": 100,
+                "Category": "Cad",
+            },
+        ],
+    }
+    result = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        require_org=False,
+        bom_rows=[
+            {"part_no": "21689-1", "description": "HOSE GUARD", "qty": 1},
+            {"part_no": "thin-1", "description": '3/4" A36 PLATE', "qty": 1},
+            {"part_no": "thick-1", "description": '1.25" A572 PLATE', "qty": 1},
+        ],
+    )
+    assert result.ok is False
+    blob = " ".join(result.failures)
+    assert "HOSE GUARD" in blob and "Linear" in blob
+    assert "3/4" in blob and "Cad" in blob
+    assert "1.25" in blob and "Component" in blob
+
+
+def test_purchased_map_cannot_force_hose_guard_component():
+    service = SecturaFabPushService(client=MagicMock())
+    with patch(
+        "secturafab.push.find_purchased_part_keys",
+        return_value={"21689-1": "CAP", "216891": "CAP"},
+    ):
+        classified, _notes = service.classify_cadimport_rows(
+            [
+                {
+                    "SourceDataID": "h",
+                    "Name": "21689-1 HOSE GUARD",
+                    "Qty": 1,
+                    "ErrorStatus": 0,
+                }
+            ],
+            default_material="A36",
+            default_thickness="0.25",
+            bom_rows=[{"part_no": "21689-1", "description": "HOSE GUARD", "qty": 1}],
+            library={},
+            extra_pdfs=None,
+            qty=1,
+        )
+    assert classified[0]["Category"] == "Linear"
+    assert classified[0]["Category"] != "Component"
+
+
+def test_plan_weldment_uses_row_thickness_for_thick_plate():
+    from secturafab.pdf_assembly_ops import plan_weldment_lines
+
+    planned = plan_weldment_lines(
+        [
+            {
+                "part_no": "99903-1",
+                "qty": 1,
+                "description": "PEDESTAL BASE PLATE",
+                "thickness_in": 1.25,
+            },
+            {
+                "part_no": "99904-1",
+                "qty": 1,
+                "description": "PEDESTAL BASE PLATE",
+                "thickness_in": 0.75,
+            },
+            {"part_no": "21689-1", "qty": 1, "description": "HOSE GUARD"},
+        ]
+    )
+    by_pn = {p["part_no"]: p for p in planned}
+    assert by_pn["99903-1"]["category"] == "Component"
+    assert by_pn["99903-1"]["ProductType"] == 200
+    assert by_pn["99904-1"]["category"] == "Cad"
+    assert by_pn["99904-1"]["ProductType"] == 100
+    assert by_pn["21689-1"]["category"] == "Linear"
