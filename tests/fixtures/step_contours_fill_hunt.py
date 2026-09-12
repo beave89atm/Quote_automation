@@ -1,7 +1,9 @@
 """STEP Contours fill hunt — repo + fixtures only. Fill stays locked.
 
 Live STEP Contours mints are PAUSED. Do not remint / PATCH leftovers
-(14327-5 / c5cd8689, 14327-8 / 1cd941c6, 35136-1 / 8973f890, …).
+(14327-5 / c5cd8689, 14327-8 / 1cd941c6, Q10329 / 14327-3 / 75f07c2b,
+Q10330 / 21841-1 / aed89628, Q10331 / 14327-1 / 5e72fe39,
+35136-1 / 8973f890, …).
 Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -39,7 +41,17 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
     "classify_finish_internaldata_fill": CLASSIFY_FINISH_INTERNALDATA_FILL,
     "explode_docreate_internaldata_fill": EXPLODE_DOCREATE_INTERNALDATA_FILL,
     "unlock_requires": STEP_CONTOURS_UNLOCK_REQUIRES,
-    "never_remint": ("14327-5", "14327-8", "35136-1"),
+    "never_remint": (
+        "14327-5",
+        "14327-8",
+        "35136-1",
+        "Q10329",
+        "14327-3",
+        "Q10330",
+        "21841-1",
+        "Q10331",
+        "14327-1",
+    ),
     "angles": (
         {
             "id": "cadimport_update_data",

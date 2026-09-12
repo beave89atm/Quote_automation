@@ -3437,7 +3437,9 @@ class SecturaFabPushService:
                     "Cad FileList InternalData empty after explode — "
                     "page Finish lands GET 0 Cad (live 28768-1; 28769-1 "
                     "c146ce6d; 35136-1 leftover 8973f890; 14327-5 leftover "
-                    "c5cd8689; 14327-8 leftover 1cd941c6). "
+                    "c5cd8689; 14327-8 leftover 1cd941c6; 14327-3 leftover "
+                    "75f07c2b; 21841-1 leftover aed89628; 14327-1 leftover "
+                    "5e72fe39). "
                     "missing_call=POST /part/create t.List InternalData+ImageString; "
                     "not Finishing; do not invent InternalData; not success"
                 )

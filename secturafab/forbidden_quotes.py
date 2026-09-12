@@ -89,6 +89,9 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "8973f890-b2a1-48fb-b6be-3530caeb1819",  # 35136-1 Kyle STEP leftover — OpenContourCount=0 / 3× bar InternalData empty / AddItem_DXFFiles bar_flat empty — fail-close; do not remint / PATCH
         "c5cd8689-fed4-44d6-b2f5-f96bda8af424",  # 14327-5 flat-plate STEP leftover @ 7b59ff0 — /part/create list_len=1 InternalData empty 1/1, ImageString preview-only, CadImport Data/CADData bindable=false, OpenContourCount empty/null, ProductType null, Finish refused, invented=false; ZZ-DEL-14327-5 — do not remint / PATCH
         "1cd941c6-9167-41e9-ac93-b7268f18f282",  # 14327-8 leftover @ 7b59ff0 — same empty-InternalData Contours FAIL as 14327-5/c5cd8689; invented=false; ZZ-DEL-14327-8 — do not remint / PATCH
+        "75f07c2b-b000-47f4-9caa-c14520e2b068",  # Q10329 / 14327-3 L-angle Contours UI leftover — Adjust Properties Contours column absent; Finish never clicked; invented=false; ZZ-DEL-Q10329-14327-3-contours-ui — do not remint / PATCH
+        "aed89628-b018-4b11-852f-bfed5bf8b964",  # Q10330 / 21841-1 angle/channel Contours UI leftover — Contours column absent; Finish never clicked; invented=false; ZZ-DEL-Q10330-21841-1-contours-ui — do not remint / PATCH
+        "5e72fe39-edc1-467c-925d-f1c8d74cc5d3",  # Q10331 / 14327-1 flat-looking Contours UI leftover — Contours column absent; Finish never clicked; invented=false; ZZ-DEL-Q10331-14327-1-contours-ui — do not remint / PATCH
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -183,6 +186,9 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "8973f890",  # 35136-1 leftover (kids 35137/35138) — Upload→CadImport/Data OpenContourCount=0→/part/create 3× bar empty→AddItem_DXFFiles empty bar_flat — Contours never filled; do not remint
         "c5cd8689",  # 14327-5 leftover — mint→ZZ-DEL-14327-5 @ 7b59ff0; /part/create n=1 InternalData empty; Data/CADData bindable=false; OpenContourCount empty/null; ProductType null; no extra CadImport/UI fill XHR; do not remint
         "1cd941c6",  # 14327-8 leftover — mint→ZZ-DEL-14327-8 @ 7b59ff0; same empty InternalData Contours FAIL as 14327-5; invented=false; do not remint
+        "75f07c2b",  # Q10329 / 14327-3 Contours UI leftover — Contours column absent; Finish never; ZZ-DEL-Q10329-14327-3-contours-ui — do not remint
+        "aed89628",  # Q10330 / 21841-1 Contours UI leftover — Contours column absent; Finish never; ZZ-DEL-Q10330-21841-1-contours-ui — do not remint
+        "5e72fe39",  # Q10331 / 14327-1 Contours UI leftover — Contours column absent; Finish never; ZZ-DEL-Q10331-14327-1-contours-ui — do not remint
     }
 )
 
@@ -287,7 +293,13 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "35136-1",  # spent 8973f890 Kyle STEP leftover — OpenContourCount=0 / 3× bar InternalData empty / AddItem_DXFFiles bar_flat empty — fail-close; do not remint
         "14327-5",  # spent c5cd8689 flat-plate STEP leftover @ 7b59ff0 — empty InternalData after /part/create; CadImport GET bindable=false; Finish refused; do not remint
         "14327-8",  # spent 1cd941c6 leftover @ 7b59ff0 — same empty-InternalData Contours FAIL as 14327-5; invented=false; ZZ-DEL-14327-8 — do not remint
-        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1 / 28769-1 / 35136-1 / 14327-5 / 14327-8.
+        "Q10329",  # spent 75f07c2b / 14327-3 Contours UI leftover — Contours column absent; Finish never clicked; invented=false; ZZ-DEL-Q10329-14327-3-contours-ui — do not remint
+        "14327-3",  # spent 75f07c2b Q10329 L-angle Contours UI leftover — Contours column absent; Finish never; do not remint
+        "Q10330",  # spent aed89628 / 21841-1 Contours UI leftover — Contours column absent; Finish never clicked; invented=false; ZZ-DEL-Q10330-21841-1-contours-ui — do not remint
+        "21841-1",  # spent aed89628 Q10330 angle/channel Contours UI leftover — Contours column absent; Finish never; do not remint
+        "Q10331",  # spent 5e72fe39 / 14327-1 Contours UI leftover — Contours column absent; Finish never clicked; invented=false; ZZ-DEL-Q10331-14327-1-contours-ui — do not remint
+        "14327-1",  # spent 5e72fe39 Q10331 flat-looking Contours UI leftover — Contours column absent; Finish never; do not remint
+        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1 / 28769-1 / 35136-1 / 14327-5 / 14327-8 / Q10329 / 14327-3 / Q10330 / 21841-1 / Q10331 / 14327-1.
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

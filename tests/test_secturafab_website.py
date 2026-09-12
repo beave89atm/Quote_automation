@@ -2158,6 +2158,18 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("14327-8")
     assert is_forbidden_quote_id("1cd941c6-9167-41e9-ac93-b7268f18f282")
     assert is_forbidden_quote_id("1cd941c6-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10329")
+    assert is_forbidden_quote_number("14327-3")
+    assert is_forbidden_quote_id("75f07c2b-b000-47f4-9caa-c14520e2b068")
+    assert is_forbidden_quote_id("75f07c2b-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10330")
+    assert is_forbidden_quote_number("21841-1")
+    assert is_forbidden_quote_id("aed89628-b018-4b11-852f-bfed5bf8b964")
+    assert is_forbidden_quote_id("aed89628-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10331")
+    assert is_forbidden_quote_number("14327-1")
+    assert is_forbidden_quote_id("5e72fe39-edc1-467c-925d-f1c8d74cc5d3")
+    assert is_forbidden_quote_id("5e72fe39-1111-2222-3333-444444444444")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -9417,10 +9429,19 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("35136-1")
     assert is_forbidden_quote_number("14327-5")
     assert is_forbidden_quote_number("14327-8")
+    assert is_forbidden_quote_number("Q10329")
+    assert is_forbidden_quote_number("14327-3")
+    assert is_forbidden_quote_number("Q10330")
+    assert is_forbidden_quote_number("21841-1")
+    assert is_forbidden_quote_number("Q10331")
+    assert is_forbidden_quote_number("14327-1")
     assert is_forbidden_quote_id("c146ce6d-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
     assert is_forbidden_quote_id("c5cd8689-fed4-44d6-b2f5-f96bda8af424")
     assert is_forbidden_quote_id("1cd941c6-9167-41e9-ac93-b7268f18f282")
+    assert is_forbidden_quote_id("75f07c2b-b000-47f4-9caa-c14520e2b068")
+    assert is_forbidden_quote_id("aed89628-b018-4b11-852f-bfed5bf8b964")
+    assert is_forbidden_quote_id("5e72fe39-edc1-467c-925d-f1c8d74cc5d3")
     assert is_forbidden_quote_id("30f50f96-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("0837ad33-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("1004f017-aaaa-bbbb-cccc-000000000001")
@@ -10201,6 +10222,12 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
     assert "14327-5" in refuse
     assert "1cd941c6" in refuse
     assert "14327-8" in refuse
+    assert "75f07c2b" in refuse
+    assert "14327-3" in refuse
+    assert "aed89628" in refuse
+    assert "21841-1" in refuse
+    assert "5e72fe39" in refuse
+    assert "14327-1" in refuse
     assert "missing_call=POST /part/create t.List InternalData+ImageString" in refuse
     cap = kendo_filelist_for_finish(
         [
@@ -10294,6 +10321,12 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "35136-1",
         "14327-5",
         "14327-8",
+        "Q10329",
+        "14327-3",
+        "Q10330",
+        "21841-1",
+        "Q10331",
+        "14327-1",
         "28768-1",
         "10289-4",
         "P904271-1",
@@ -10931,6 +10964,12 @@ def test_leftover_14327_5_flat_plate_confirms_no_extra_xhr():
     assert "14327-5" in refuse
     assert "1cd941c6" in refuse
     assert "14327-8" in refuse
+    assert "75f07c2b" in refuse
+    assert "14327-3" in refuse
+    assert "aed89628" in refuse
+    assert "21841-1" in refuse
+    assert "5e72fe39" in refuse
+    assert "14327-1" in refuse
     assert STEP_CONTOURS_MISSING_CALL in refuse
     assert STEP_CONTOURS_NO_EXTRA_XHR in refuse
     notes: list[str] = []
@@ -11008,6 +11047,94 @@ def test_leftover_14327_8_same_empty_internaldata_forever_forbid():
     assert "1cd941c6" in refuse
     assert "14327-8" in refuse
     assert dump["invent"] is False
+
+
+def test_leftover_contours_ui_q10329_q10330_q10331_forever_forbid():
+    """Unfinished Contours UI leftovers: never remint / PATCH.
+
+    Q10329 / 75f07c2b / 14327-3, Q10330 / aed89628 / 21841-1,
+    Q10331 / 5e72fe39 / 14327-1. Contours column absent; Finish never
+    clicked. invented=false. Keep 14327-5 / c5cd8689 and 14327-8 / 1cd941c6.
+    """
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    expected = (
+        (
+            "75f07c2b-b000-47f4-9caa-c14520e2b068",
+            "75f07c2b",
+            "Q10329",
+            "14327-3",
+            "ZZ-DEL-Q10329-14327-3-contours-ui",
+        ),
+        (
+            "aed89628-b018-4b11-852f-bfed5bf8b964",
+            "aed89628",
+            "Q10330",
+            "21841-1",
+            "ZZ-DEL-Q10330-21841-1-contours-ui",
+        ),
+        (
+            "5e72fe39-edc1-467c-925d-f1c8d74cc5d3",
+            "5e72fe39",
+            "Q10331",
+            "14327-1",
+            "ZZ-DEL-Q10331-14327-1-contours-ui",
+        ),
+    )
+    dumps = leftover_contours_ui_dumps()
+    assert len(dumps) == 3
+    for dump, (qid, prefix, qn, pn, zz) in zip(dumps, expected, strict=True):
+        assert dump["quote_id"] == qid
+        assert dump["quote_id_prefix"] == prefix
+        assert dump["quote_number"] == qn
+        assert dump["part_number"] == pn
+        assert dump["zz_del_number"] == zz
+        assert dump["contours_column_absent"] is True
+        assert dump["finish_clicked"] is False
+        assert dump["finish_posted"] is False
+        assert dump["invent"] is False
+        assert dump["unlocks_contours_fill"] is False
+        assert dump["fail_close"] is True
+        assert is_forbidden_quote_id(qid)
+        assert is_forbidden_quote_id(f"{prefix}-1111-2222-3333-444444444444")
+        assert is_forbidden_quote_number(qn)
+        assert is_forbidden_quote_number(pn)
+        assert spent_quote_number_block_reason(qn)
+        assert spent_quote_number_block_reason(pn)
+        assert qn in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+        assert pn in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+
+    assert is_forbidden_quote_id("c5cd8689-fed4-44d6-b2f5-f96bda8af424")
+    assert is_forbidden_quote_number("14327-5")
+    assert is_forbidden_quote_id("1cd941c6-9167-41e9-ac93-b7268f18f282")
+    assert is_forbidden_quote_number("14327-8")
+    assert "14327-5" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "14327-8" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    for _qid, prefix, _qn, pn, _zz in expected:
+        assert prefix in refuse
+        assert pn in refuse
+    assert "c5cd8689" in refuse
+    assert "1cd941c6" in refuse
 
 
 def test_step_contours_fill_hunt_exhausted_stays_locked():

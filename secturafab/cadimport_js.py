@@ -185,7 +185,8 @@ CLASSIFY_FINISH_INTERNALDATA_FILL = None
 # ZZ-DEL-14327-5. Same miss as bar — no extra CadImport/UI XHR exists
 # between upload and /part/create, nor after explode. Exact missing
 # call is server POST /part/create t.List InternalData+ImageString.
-# Do not remint 35136-1 / 14327-5 / 14327-8. Do not silent-graft Contours.
+# Do not remint 35136-1 / 14327-5 / 14327-8 / 14327-3 / 21841-1 /
+# 14327-1. Do not silent-graft Contours.
 # Hunt (QuoteOrderEdit createAllParts + leftover 21785-2 + 14327-5):
 # no XHR between #gridDXF collect and DoCreateDXFParts writes
 # InternalData or CuttingLength. CLASSIFY_FINISH_INTERNALDATA_FILL
