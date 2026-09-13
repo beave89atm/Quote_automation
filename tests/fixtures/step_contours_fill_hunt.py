@@ -6,7 +6,10 @@ Q10330 / 21841-1 / aed89628, Q10331 / 14327-1 / 5e72fe39,
 Q10332 / ZZ-DEL-wrong-org-Time, 35136-1 / 8973f890, …).
 Q10333 / H.6.38 / b5f56ac3 is a Contours PASS protect — never remint /
 PATCH / ZZ-DEL. Q10336 / f73dd116 is a Cad+Laser Finish leftover
-(OpenContourCount=0 / bends=1) — protect, not Contours=1. Never invent
+(OpenContourCount=0 / bends=1) — protect, not Contours=1. Q10339 /
+76cecc73 is an EOD STP Cad→Finish leftover (Contours=0 /
+OpenContourCount=0 / Laser Bay1 / UC 64.25 / unit price 176.96) —
+same Contours≥1 gap vs Q10333; protect, not Contours=1. Never invent
 Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -72,6 +75,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10332",
         "Q10333",
         "Q10336",
+        "Q10339",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",

@@ -28,6 +28,9 @@ Live leftovers after Cad-for-plate:
     QuoteItem_Read Data:[] lost CAD row; ZZ-DEL.
   f73dd116 Q10336 — mouse UpdateItemType then Finish; Cad+Laser
     leftover (OpenContourCount=0 / bends=1). Contours≥1 still gap.
+  76cecc73 Q10339 — EOD STP Cad→Finish soft PASS; Contours=0 /
+    OpenContourCount=0 / Laser Bay1 / UC 64.25 / unit price 176.96.
+    Contours≥1 still gap vs Q10333.
 
 Human Kyle on Q10333 / b5f56ac3: real Component→Cad dropdown +
 thickness + Finish → Contours=1 PASS. Q10336 mouse Finish after
@@ -78,6 +81,7 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
         "Q10333",
         "Q10335",
         "Q10336",
+        "Q10339",
     ),
     "hypotheses": (
         {

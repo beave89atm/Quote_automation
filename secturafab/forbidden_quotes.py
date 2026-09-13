@@ -94,6 +94,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "5e72fe39-edc1-467c-925d-f1c8d74cc5d3",  # Q10331 / 14327-1 flat-looking Contours UI leftover — Contours column absent; Finish never clicked; invented=false; ZZ-DEL-Q10331-14327-1-contours-ui — do not remint / PATCH
         "b5f56ac3-326d-48e9-b82d-1e09a7897107",  # Q10333 / Safe Cave / H.6.38 Contours PASS — ProductType Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96; unlock Component→Cad then inches; never remint / PATCH / ZZ-DEL
         "f73dd116-f33e-485f-947c-f5662633d23a",  # Q10336 / Safe Cave / H.6.38 Cad+Laser Finish leftover — mouse UpdateItemType Cad then AddItem_DXFFiles; OpenContourCount=0 / bends=1 / Laser Bay1 / UC 64.25; Contours≥1 still gap vs Q10333; never remint / PATCH / ZZ-DEL
+        "76cecc73-257e-4fa7-91b7-ed15a4c90caa",  # Q10339 / Safe Cave / H.6.38 Cad+Laser Finish leftover — EOD STP Cad→Finish soft PASS; Contours=0 / OpenContourCount=0 / Laser Bay1 / UC 64.25 / unit price 176.96; Contours≥1 still gap vs Q10333; invented=false; never remint / PATCH / ZZ-DEL
         "4902c597-2ad6-4ebf-b577-dd6cf20a7d87",  # Q10338 / CROSSDRAIN-12X7X60 PR18 Cad Image Files PASS — AIM Cross Drain / Time Waco / PL14 Ga-SS316 / 69.875×25.875 / Laser Bay1 / Contours=1 / Finish UC 100.45 + PR laser pack / bends_count=8 shop PDF / UpdateItemType Cad 200; post-pass bend-API dabble may show live UC 3.25 — Finish snapshot UC 100.45 is PASS basis; invented=false; never remint / PATCH
         "5e7bfc0b-ecf9-46cf-8851-d61062141ce7",  # H638-CADPLATE Cad-for-plate leftover — SetPartMode 0 + ProductType 100 Cad:1 classify OK, InternalData empty, Finish refuse; invented=false; ZZ-DEL-H638-CADPLATE — do not remint / PATCH
         "e2683a3f-daf5-49ff-83c1-79aed35207a1",  # Q10334 Cad-for-plate leftover — Chrome kendo Cad/100 + 0.1875 in + Laser-Bay1, Contours still empty; invented=false; ZZ-DEL-Q10334 — do not remint / PATCH
@@ -196,6 +197,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "5e72fe39",  # Q10331 / 14327-1 Contours UI leftover — Contours column absent; Finish never; ZZ-DEL-Q10331-14327-1-contours-ui — do not remint
         "b5f56ac3",  # Q10333 / Safe Cave / H.6.38 Contours PASS — Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96; never remint / PATCH / ZZ-DEL
         "f73dd116",  # Q10336 / Safe Cave / H.6.38 Cad+Laser Finish leftover — mouse UpdateItemType then Finish; OpenContourCount=0 / bends=1 / Laser Bay1 / UC 64.25; Contours≥1 still gap vs Q10333; never remint / PATCH / ZZ-DEL
+        "76cecc73",  # Q10339 / Safe Cave / H.6.38 Cad+Laser Finish leftover — EOD STP Cad→Finish soft PASS; Contours=0 / OpenContourCount=0 / Laser Bay1 / UC 64.25 / unit price 176.96; Contours≥1 still gap vs Q10333; invented=false; never remint / PATCH / ZZ-DEL
         "4902c597",  # Q10338 / CROSSDRAIN-12X7X60 PR18 Cad Image Files PASS (PL14 Ga-SS316 UC 100.45 Time Waco Laser Bay1) — post-pass bend-API dabble may show live UC 3.25; Finish snapshot UC 100.45 is PASS basis; never remint / PATCH
         "5e7bfc0b",  # H638-CADPLATE leftover — SetPartMode 0 + ProductType 100 Cad:1, InternalData empty, Finish refuse; ZZ-DEL-H638-CADPLATE — do not remint
         "e2683a3f",  # Q10334 leftover — kendo Cad/100 + 0.1875 in + Laser-Bay1, Contours empty; ZZ-DEL-Q10334 — do not remint
@@ -314,6 +316,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "ZZ-DEL-wrong-org-Time",  # Q10332 rename; quote ID unknown; do not remint
         "Q10333",  # spent b5f56ac3 / Safe Cave / H.6.38 Contours PASS — Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96; never remint / PATCH / ZZ-DEL
         "Q10336",  # spent f73dd116 / Safe Cave / H.6.38 Cad+Laser Finish leftover — mouse UpdateItemType Cad then AddItem_DXFFiles; OpenContourCount=0 / bends=1 / Laser Bay1 / UC 64.25; Contours≥1 still gap vs Q10333; never remint / PATCH / ZZ-DEL
+        "Q10339",  # spent 76cecc73 / Safe Cave / H.6.38 Cad+Laser Finish leftover — EOD STP Cad→Finish soft PASS; Contours=0 / OpenContourCount=0 / Laser Bay1 / UC 64.25 / unit price 176.96; Contours≥1 still gap vs Q10333; invented=false; never remint / PATCH / ZZ-DEL
         "Q10338",  # spent 4902c597 Cad Image Files PASS — AIM Cross Drain CROSSDRAIN-12X7X60 / Time Waco / PL14 Ga-SS316 / Finish UC 100.45 + PR laser pack; post-pass bend-API dabble may show live UC 3.25 — Finish snapshot is PASS basis; never remint / PATCH
         "CROSSDRAIN-12X7X60",  # spent 4902c597 Q10338 Cad Image Files PASS — do not remint
         "H638-CADPLATE",  # spent 5e7bfc0b Cad-for-plate leftover — SetPartMode 0 + ProductType 100 Cad:1, InternalData empty, Finish refuse; invented=false; ZZ-DEL-H638-CADPLATE — do not remint
@@ -322,7 +325,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "ZZ-DEL-Q10334",  # e2683a3f Q10334 rename — do not remint
         "Q10335",  # spent bcff1a24 mouse UpdateItemType leftover — POST /Part/UpdateItemType 200 Component→Cad; /part/PartImage + /Quote/GetBorderSize on thickness; Contours 0 before Finish; QuoteItem_Read Data:[] lost CAD row before Finish; invented=false; ZZ-DEL-Q10335 — do not remint
         "ZZ-DEL-Q10335",  # bcff1a24 Q10335 rename — do not remint
-        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1 / 28769-1 / 35136-1 / 14327-5 / 14327-8 / Q10329 / 14327-3 / Q10330 / 21841-1 / Q10331 / 14327-1 / Q10332 / Q10333 / Q10336 / Q10338 / CROSSDRAIN-12X7X60 / H638-CADPLATE / Q10334 / Q10335.
+        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1 / 28769-1 / 35136-1 / 14327-5 / 14327-8 / Q10329 / 14327-3 / Q10330 / 21841-1 / Q10331 / 14327-1 / Q10332 / Q10333 / Q10336 / Q10339 / Q10338 / CROSSDRAIN-12X7X60 / H638-CADPLATE / Q10334 / Q10335.
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }
