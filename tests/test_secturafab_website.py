@@ -2178,6 +2178,10 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("Q10336")
     assert is_forbidden_quote_id("f73dd116-f33e-485f-947c-f5662633d23a")
     assert is_forbidden_quote_id("f73dd116-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10338")
+    assert is_forbidden_quote_number("CROSSDRAIN-12X7X60")
+    assert is_forbidden_quote_id("4902c597-2ad6-4ebf-b577-dd6cf20a7d87")
+    assert is_forbidden_quote_id("4902c597-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("H638-CADPLATE")
     assert is_forbidden_quote_number("ZZ-DEL-H638-CADPLATE")
     assert is_forbidden_quote_number("Q10334")
@@ -9462,6 +9466,8 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("Q10332")
     assert is_forbidden_quote_number("Q10333")
     assert is_forbidden_quote_number("Q10336")
+    assert is_forbidden_quote_number("Q10338")
+    assert is_forbidden_quote_number("CROSSDRAIN-12X7X60")
     assert is_forbidden_quote_number("H638-CADPLATE")
     assert is_forbidden_quote_number("Q10334")
     assert is_forbidden_quote_number("Q10335")
@@ -9474,6 +9480,7 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_id("5e72fe39-edc1-467c-925d-f1c8d74cc5d3")
     assert is_forbidden_quote_id("b5f56ac3-326d-48e9-b82d-1e09a7897107")
     assert is_forbidden_quote_id("f73dd116-f33e-485f-947c-f5662633d23a")
+    assert is_forbidden_quote_id("4902c597-2ad6-4ebf-b577-dd6cf20a7d87")
     assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
     assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
     assert is_forbidden_quote_id("30f50f96-aaaa-bbbb-cccc-000000000001")
@@ -10372,6 +10379,8 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "Q10332",
         "Q10333",
         "Q10336",
+        "Q10338",
+        "CROSSDRAIN-12X7X60",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
@@ -11933,6 +11942,114 @@ def test_q10336_h638_cad_finish_soft_protect():
     assert "Q10333" not in refuse
     assert "bcff1a24" in refuse
     assert "Q10335" in refuse
+    assert dump["invent"] is False
+
+
+def test_q10338_crossdrain_image_files_pass_protect():
+    """Q10338 / 4902c597 AIM Cross Drain: Cad Image Files PASS leftover.
+
+    CROSSDRAIN-12X7X60 / Time Waco / PL14 Ga-SS316 / 69.875×25.875 /
+    Laser Bay1 / Contours=1 / Finish UC 100.45 + PR laser pack /
+    bends_count=8 shop PDF / UpdateItemType Cad 200. invent=false.
+    Post-pass bend-API dabble may show live UC 3.25 — Finish snapshot
+    UC 100.45 is PASS basis. Forever-protect; never remint / PATCH.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10338_crossdrain import q10338_crossdrain_pass_dump
+
+    dump = q10338_crossdrain_pass_dump()
+    assert dump["quote_id"] == "4902c597-2ad6-4ebf-b577-dd6cf20a7d87"
+    assert dump["quote_id_prefix"] == "4902c597"
+    assert dump["quote_number"] == "Q10338"
+    assert dump["part_number"] == "CROSSDRAIN-12X7X60"
+    assert dump["customer"] == "AIM Cross Drain"
+    assert dump["org"] == "Time Waco"
+    assert dump["source"] == "Kyle inbox Cross Drain zip"
+    assert dump["path"] == "image_files"
+    assert dump["pass"] is True
+    assert dump["image_files_pass"] is True
+    assert dump["contours_pass"] is True
+    assert dump["product_type"] == "Cad"
+    assert dump["product_type_enum"] == 100
+    assert dump["update_item_type_status"] == 200
+    assert dump["update_item_type_itemtype"] == "Cad"
+    assert dump["number_of_contours"] == 1
+    assert dump["bends_count"] == 8
+    assert dump["bends_from"] == "shop_pdf"
+    assert dump["material"] == "PL14 Ga-SS316"
+    assert dump["size"] == "69.875×25.875"
+    assert dump["machine"] == "Laser Bay1"
+    assert dump["unit_cost"] == 100.45
+    assert dump["finish_unit_cost"] == 100.45
+    assert dump["live_unit_cost_after_bend_dabble"] == 3.25
+    assert dump["pass_basis_unit_cost"] == 100.45
+    assert dump["pr_laser_pack"] is True
+    assert dump["invent"] is False
+    assert dump["zz_del"] is False
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["do_not_repair_via_patch"] is True
+    assert all(row["quote_number"] != "Q10338" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10338" for row in leftover_cad_for_plate_dumps())
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("4902c597-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10338")
+    assert is_forbidden_quote_number("CROSSDRAIN-12X7X60")
+    assert spent_quote_number_block_reason("Q10338")
+    assert spent_quote_number_block_reason("CROSSDRAIN-12X7X60")
+    with pytest.raises(ForbiddenQuoteError, match="Q10338"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10338"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="CROSSDRAIN-12X7X60"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "CROSSDRAIN-12X7X60"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="4902c597"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="4902c597"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
+        )
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "4902c597" not in refuse
+    assert "Q10338" not in refuse
+    assert "CROSSDRAIN-12X7X60" not in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert "f73dd116" not in refuse
+    assert "Q10336" not in refuse
     assert dump["invent"] is False
 
 
