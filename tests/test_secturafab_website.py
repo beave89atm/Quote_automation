@@ -4686,6 +4686,8 @@ def test_apply_grid_dxf_part_modes_evaluates_setpartmode_on_edit():
         assert "gridDXFParts" in expr
         assert "PartMode" in expr
         assert "ItemType" in expr
+        assert "PrimaryOrganizationID" in expr
+        assert "org_widget" in expr
         assert "kendo_row_keys" in expr
         assert "CadType" in expr
         assert "Stock_X" in expr
@@ -4731,6 +4733,23 @@ def test_apply_grid_dxf_part_modes_evaluates_setpartmode_on_edit():
     assert "CadType" in result["kendo_row_keys"]
     assert "Stock_X" in result["kendo_row_keys"]
     assert "Stock_Y" in result["kendo_row_keys"]
+
+
+def test_apply_grid_part_modes_js_does_not_reopen_cad_when_kids_exist():
+    """Multi-kid Adjust Properties: do not click #but_dxf if spec.rows exist.
+
+    That reopen dumps the empty quote grid (Q10353 / 12519-2).
+    """
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    js = _APPLY_GRID_PART_MODES_JS
+    assert "wants.length > 0" in js
+    assert "but_dxf" in js
+    reopen = js.split("wants.length > 0")[1]
+    before_fallback = reopen.split("querySelector(\"#but_dxf\")")[0]
+    assert "grid_dxf_row_count: 0" in before_fallback
+    assert "but_dxf" not in before_fallback
+    assert "readOrg" in js
 
 
 def test_finish_skips_when_grid_classify_cad_is_zero(tmp_path: Path):
@@ -13525,6 +13544,261 @@ def test_step_cad_finish_hard_gate_cad_then_inch_before_finish():
         }
     ]
     assert step_cad_finish_hard_gate(purchased) is None
+
+
+def test_step_cad_wizard_state_hard_gate_kids_or_org_lost_is_exec_fail():
+    """Multi-kid STEP: lost #gridDXFParts or org mid-wizard is EXEC_FAIL.
+
+    Q10352 / 8679-1: org cleared on modal refresh. Q10353 / 12519-2:
+    Adjust Properties returned to an empty quote grid. Do not invent
+    Contours. Cad+inches on in-memory rows is not enough.
+    """
+    from secturafab.website import (
+        EMPTY_GUID,
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+        step_cad_finish_hard_gate,
+        step_cad_wizard_state_hard_gate,
+    )
+
+    memory_ready = [
+        {
+            "Name": "8679-1 PLATE A",
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "server-stamped",
+        }
+    ] * 4
+    assert step_cad_finish_hard_gate(memory_ready) is None
+
+    lost_kids = step_cad_wizard_state_hard_gate(
+        exploded_n=4,
+        live_grid_n=0,
+        org_id="b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+        org_widget=True,
+    )
+    assert lost_kids is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in lost_kids
+    assert "wizard lost FileList" in lost_kids
+    assert "Q10353" in lost_kids
+    assert "not Contours empty" in lost_kids
+    assert "invent" in lost_kids.lower()
+    assert cad_finish_notes_refuse_additem_dxf([lost_kids]) == lost_kids
+
+    lost_org = step_cad_wizard_state_hard_gate(
+        exploded_n=4,
+        live_grid_n=4,
+        org_id="",
+        org_widget=True,
+    )
+    assert lost_org is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in lost_org
+    assert "organization lost mid CAD wizard" in lost_org
+    assert "Q10352" in lost_org
+    assert "not Contours empty" in lost_org
+    assert cad_finish_notes_refuse_additem_dxf([lost_org]) == lost_org
+
+    empty_guid = step_cad_wizard_state_hard_gate(
+        exploded_n=3,
+        live_grid_n=3,
+        org_id=EMPTY_GUID,
+        org_checked=True,
+    )
+    assert empty_guid is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in empty_guid
+
+    hidden_org = step_cad_wizard_state_hard_gate(
+        exploded_n=4,
+        live_grid_n=4,
+        org_id="",
+        org_widget=False,
+    )
+    assert hidden_org is None
+
+    ok = step_cad_wizard_state_hard_gate(
+        exploded_n=4,
+        live_grid_n=4,
+        org_id="b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+        org_widget=True,
+    )
+    assert ok is None
+
+    single = step_cad_wizard_state_hard_gate(
+        exploded_n=1,
+        live_grid_n=1,
+    )
+    assert single is None
+
+    chrome_miss = step_cad_wizard_state_hard_gate(
+        exploded_n=4,
+        live_grid_n=None,
+    )
+    assert chrome_miss is None
+
+
+def _multi_kid_cad_finish_client(tmp_path: Path, *, names: list[str], part_key: str):
+    from secturafab.push import SecturaFabPushService
+
+    stp = tmp_path / f"{part_key}.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": f"src-{i}",
+            "FileID": f"file-{i}",
+            "ID": f"id-{i}",
+            "Name": name,
+            "FileName": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "server-stamped",
+        }
+        for i, name in enumerate(names)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = len(kids)
+    client._grid_present = True
+    client._grid_dxf_row_count = len(kids)
+    client._stale_grid = False
+    client._edit_quote_id = f"aaaaaaaa-aaaa-bbbb-cccc-{part_key[:8].ljust(12, '0')}"
+    client._edit_gate = ""
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    return SecturaFabPushService(client=client), client, stp, kids
+
+
+def test_finish_cad_files_multi_kid_grid_empty_after_adjust_is_exec_fail(
+    tmp_path: Path,
+):
+    """Q10353 / 12519-2: Adjust Properties left an empty quote grid.
+
+    In-memory Cad+inches rows must not Finish. invent=false.
+    """
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+    )
+
+    service, client, stp, _kids = _multi_kid_cad_finish_client(
+        tmp_path,
+        names=["12519-2 PLATE A", "12519-2 PLATE B", "12519-2 PLATE C"],
+        part_key="12519-2",
+    )
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": False,
+            "cad": 0,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 0,
+            "setpartmode_via": "",
+            "grid_dxf_row_count": 0,
+            "edit_gate": "",
+            "org_id": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+            "org_widget": True,
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id=client._edit_quote_id,
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="12519-2",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
+    assert "wizard lost FileList" in blob
+    assert "Q10353" in blob
+    assert "not Contours empty" in blob
+    assert cad_finish_notes_refuse_additem_dxf(notes) is not None
+
+
+def test_finish_cad_files_multi_kid_org_cleared_mid_wizard_is_exec_fail(
+    tmp_path: Path,
+):
+    """Q10352 / 8679-1: org widget cleared on CAD modal refresh.
+
+    Cad+inches not proven. Do not invent Contours. Not Finish.
+    """
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+    )
+
+    service, client, stp, _kids = _multi_kid_cad_finish_client(
+        tmp_path,
+        names=[
+            "8679-1 PLATE A",
+            "8679-1 PLATE B",
+            "8679-1 PLATE C",
+            "8679-1 PLATE D",
+        ],
+        part_key="8679-1",
+    )
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 4,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 4,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 4,
+            "edit_gate": "",
+            "org_id": "",
+            "org_widget": True,
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id=client._edit_quote_id,
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="8679-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
+    assert "organization lost mid CAD wizard" in blob
+    assert "Q10352" in blob
+    assert "Cad+inches not proven" in blob or "not proven" in blob
+    assert cad_finish_notes_refuse_additem_dxf(notes) is not None
 
 
 def test_wrong_org_time_q10332_forever_forbid_description_only():

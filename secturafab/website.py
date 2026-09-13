@@ -2778,6 +2778,62 @@ def step_cad_finish_hard_gate(
     return None
 
 
+def _wizard_org_id_empty(org_id: str | None) -> bool:
+    raw = str(org_id or "").strip()
+    return raw in ("", EMPTY_GUID)
+
+
+def step_cad_wizard_state_hard_gate(
+    *,
+    exploded_n: int,
+    live_grid_n: int | None = None,
+    org_id: str | None = None,
+    org_widget: bool | None = None,
+    org_checked: bool = False,
+) -> str | None:
+    """Mid-wizard before Finish: kids and org must still be on the page.
+
+    Multi-kid STEP CAD Files (Q10352 8679-1 / Q10353 12519-2): Adjust
+    Properties / UpdateItemType / modal refresh can drop #gridDXFParts
+    to 0 or clear the org widget, then land the empty quote grid.
+    Cad+inches on in-memory classify rows is not enough — those rows
+    stay Cad/inch after the live wizard is gone.
+
+    1. Exploded kids > 0 and live #gridDXFParts == 0 → EXEC_FAIL.
+    2. Org widget present and empty, or GET org fields empty → EXEC_FAIL.
+    3. Else None. invent=false; never invent InternalData/Contours.
+    """
+    try:
+        exploded = int(exploded_n or 0)
+    except (TypeError, ValueError):
+        exploded = 0
+    if exploded > 0 and live_grid_n is not None:
+        try:
+            live_n = int(live_grid_n)
+        except (TypeError, ValueError):
+            live_n = 0
+        if live_n <= 0:
+            return (
+                f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: multi-item CAD "
+                f"wizard lost FileList (exploded {exploded} kid(s), live "
+                "#gridDXFParts=0) after Adjust Properties / UpdateItemType "
+                "— not Finishing (quote grid empty / kids dropped before "
+                "Cad+inches can stick; not Contours empty; Q10353 / "
+                "12519-2). Do not invent InternalData/Contours."
+            )
+    widget_cleared = org_widget is True and _wizard_org_id_empty(org_id)
+    get_cleared = org_checked and _wizard_org_id_empty(org_id)
+    if widget_cleared or get_cleared:
+        return (
+            f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: organization lost "
+            "mid CAD wizard (PrimaryOrganizationID empty after modal "
+            "refresh / Adjust Properties) — not Finishing (Cad+inches "
+            "not proven; not Contours empty; Q10352 / 8679-1). Do not "
+            "invent InternalData/Contours."
+        )
+    return None
+
+
 def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
     """Refuse AddItem_DXFFiles when Cad InternalData is empty.
 
@@ -2851,6 +2907,8 @@ def cad_finish_notes_refuse_additem_dxf(
             or "ProductType not Cad" in text
             or STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in text
             or "thickness not set in inch" in text
+            or "wizard lost FileList" in text
+            or "organization lost mid CAD wizard" in text
         ):
             return text
     return None

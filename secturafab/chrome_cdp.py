@@ -7613,6 +7613,19 @@ def create_all_parts_from_grid_dxf(
 # UpdateItemType is classify, not Contours fill.
 # Live 105918-1: Finish without this left plates as Component (0 Cad).
 _APPLY_GRID_PART_MODES_JS = """(function(spec) {
+  function readOrg() {
+    try {
+      if (!window.jQuery) return {org_id: "", org_widget: false};
+      var ids = ["#PrimaryOrganizationID", "#OrganizationID"];
+      for (var i = 0; i < ids.length; i++) {
+        var $el = jQuery(ids[i]);
+        if ($el && $el.length) {
+          return {org_id: String($el.val() || ""), org_widget: true};
+        }
+      }
+    } catch (e) {}
+    return {org_id: "", org_widget: false};
+  }
   function grid() {
     try {
       return window.jQuery && jQuery("#gridDXFParts").data("kendoGrid");
@@ -7813,11 +7826,13 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
   function applyAll() {
     var g = grid();
     if (!g || !g.dataSource) {
+      var missing = readOrg();
       return Promise.resolve({
         grid_present: false,
         cad: 0, linear: 0, assembly: 0, component: 0,
         set_count: 0, setpartmode_via: "", updateitemtype_count: 0,
-        updateitemtype_via: "", grid_dxf_row_count: 0
+        updateitemtype_via: "", grid_dxf_row_count: 0,
+        org_id: missing.org_id, org_widget: missing.org_widget
       });
     }
     var wants = (spec && spec.rows) || [];
@@ -7872,6 +7887,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       for (var lk = 0; lk < logKeys.length; lk++) {
         if (first && first[logKeys[lk]] !== undefined) kendoKeys.push(logKeys[lk]);
       }
+      var org = readOrg();
       return {
         grid_present: true,
         cad: counts.Cad,
@@ -7883,11 +7899,27 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         updateitemtype_count: typeSetCount,
         updateitemtype_via: typeVia || (typeSetCount ? (itemTypeFnName ? "page_fn" : "jquery_ajax") : ""),
         grid_dxf_row_count: fresh.length,
-        kendo_row_keys: kendoKeys
+        kendo_row_keys: kendoKeys,
+        org_id: org.org_id,
+        org_widget: org.org_widget
       };
     });
   }
   if (grid() && grid().dataSource) return applyAll();
+  var wants = (spec && spec.rows) || [];
+  // Kids already exploded: do not click #but_dxf. That reopen closes
+  // Adjust Properties / dumps the empty quote grid on multi-kid STEPs
+  // (Q10353 / 12519-2). Report grid_present=false and fail-close.
+  if (wants.length > 0) {
+    var lost = readOrg();
+    return Promise.resolve({
+      grid_present: false,
+      cad: 0, linear: 0, assembly: 0, component: 0,
+      set_count: 0, setpartmode_via: "", updateitemtype_count: 0,
+      updateitemtype_via: "", grid_dxf_row_count: 0,
+      org_id: lost.org_id, org_widget: lost.org_widget
+    });
+  }
   var btn = document.querySelector("#but_dxf");
   if (btn) { try { btn.click(); } catch (e0) {} }
   return new Promise(function(resolve) {
@@ -7895,11 +7927,13 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     (function tick() {
       if (grid() && grid().dataSource) { applyAll().then(resolve); return; }
       if (Date.now() - t0 >= 8000) {
+        var late = readOrg();
         resolve({
           grid_present: false,
           cad: 0, linear: 0, assembly: 0, component: 0,
           set_count: 0, setpartmode_via: "", updateitemtype_count: 0,
-          updateitemtype_via: "", grid_dxf_row_count: 0
+          updateitemtype_via: "", grid_dxf_row_count: 0,
+          org_id: late.org_id, org_widget: late.org_widget
         });
         return;
       }
@@ -8004,6 +8038,9 @@ def apply_grid_dxf_part_modes(
     }
     if present:
         out["kendo_row_keys"] = kendo_keys
+    if "org_id" in value or "org_widget" in value:
+        out["org_id"] = str(value.get("org_id") or "")
+        out["org_widget"] = bool(value.get("org_widget"))
     return out
 
 

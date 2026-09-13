@@ -82,6 +82,7 @@ from .website import (
     finish_attempt_empty_partmode_or_internaldata,
     kyle_classify_before_finish_blocked,
     step_cad_finish_hard_gate,
+    step_cad_wizard_state_hard_gate,
     step_finish_pack_missing,
     count_cad_product_type,
     is_tenant_guid,
@@ -3026,9 +3027,12 @@ class SecturaFabPushService:
         Fail-close if PartMode is still null after classify, if ProductType
         is still Component on a Cad plate, if thickness is missing or not
         inch (EXEC_FAIL, not Contours empty; Q10344 / H.6.38 Kyle UI
-        control Cad + 0.1875 inch), or if Contours/InternalData stay empty
-        after UpdateItemType (do not invent). Hard-gate before Finish:
-        ProductType Cad, then inch thickness. invent=false.
+        control Cad + 0.1875 inch), if Adjust Properties / modal refresh
+        dropped #gridDXFParts to 0 or cleared Organization (EXEC_FAIL;
+        Q10352 / 8679-1 org wipe, Q10353 / 12519-2 empty quote grid),
+        or if Contours/InternalData stay empty after UpdateItemType
+        (do not invent). Hard-gate before Finish: live wizard kids +
+        org, then ProductType Cad, then inch thickness. invent=false.
         After Finish, fail-close if PartMode is still null, or if Cad
         Contours are empty / PR+laser pack is missing. Then log
         kendo row key names (CadType, Stock_*, FileType, SID/FileID/ID) and
@@ -3419,6 +3423,44 @@ class SecturaFabPushService:
         blocked = kyle_classify_before_finish_blocked(classified)
         if blocked:
             notes.append(blocked)
+            return notes
+        wizard_org_id = None
+        wizard_org_widget = None
+        wizard_org_checked = False
+        edit_gate = str(applied.get("edit_gate") or "")
+        live_grid_n = None
+        if not edit_gate and "grid_dxf_row_count" in applied:
+            live_grid_n = applied.get("grid_dxf_row_count")
+        if not edit_gate and ("org_id" in applied or "org_widget" in applied):
+            wizard_org_id = str(applied.get("org_id") or "")
+            wizard_org_widget = (
+                bool(applied.get("org_widget"))
+                if "org_widget" in applied
+                else None
+            )
+            wizard_org_checked = "org_id" in applied and "org_widget" not in applied
+        elif not edit_gate:
+            try:
+                stamped = self.client.get_json(f"v1/quote/{quote_id}")
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError, ValueError):
+                stamped = None
+            if isinstance(stamped, dict) and any(
+                key in stamped
+                for key in ("PrimaryOrganizationID", "OrganizationID", "Organization")
+            ):
+                from .org_ops import quote_primary_organization_id
+
+                wizard_org_id = quote_primary_organization_id(stamped)
+                wizard_org_checked = True
+        wizard = step_cad_wizard_state_hard_gate(
+            exploded_n=len(classified),
+            live_grid_n=live_grid_n,
+            org_id=wizard_org_id,
+            org_widget=wizard_org_widget,
+            org_checked=wizard_org_checked,
+        )
+        if wizard:
+            notes.append(wizard)
             return notes
         hard = step_cad_finish_hard_gate(classified)
         if hard:
