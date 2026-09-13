@@ -2196,6 +2196,10 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("D.H.30.96")
     assert is_forbidden_quote_id("c4394006-667f-4bf6-a9b0-aa4b1722160a")
     assert is_forbidden_quote_id("c4394006-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10350")
+    assert is_forbidden_quote_number("21843-1")
+    assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
+    assert is_forbidden_quote_id("eb6c48b8-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10338")
     assert is_forbidden_quote_number("Q10339")
     assert is_forbidden_quote_number("CROSSDRAIN-12X7X60")
@@ -9494,6 +9498,8 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("H.16.70")
     assert is_forbidden_quote_number("Q10349")
     assert is_forbidden_quote_number("D.H.30.96")
+    assert is_forbidden_quote_number("Q10350")
+    assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_number("Q10338")
     assert is_forbidden_quote_number("Q10339")
     assert is_forbidden_quote_number("CROSSDRAIN-12X7X60")
@@ -10417,6 +10423,8 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "H.16.70",
         "Q10349",
         "D.H.30.96",
+        "Q10350",
+        "21843-1",
         "Q10338",
         "Q10339",
         "CROSSDRAIN-12X7X60",
@@ -11545,6 +11553,8 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_number("H.16.70")
     assert is_forbidden_quote_number("Q10349")
     assert is_forbidden_quote_number("D.H.30.96")
+    assert is_forbidden_quote_number("Q10350")
+    assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
     assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
     assert is_forbidden_quote_id("bcff1a24-1111-2222-3333-444444444444")
@@ -11554,6 +11564,7 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_id("d859a239-a811-4b23-a812-29921956e880")
     assert is_forbidden_quote_id("1defeed8-d95d-4939-b2fd-0a1774e56c6e")
     assert is_forbidden_quote_id("c4394006-667f-4bf6-a9b0-aa4b1722160a")
+    assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
 
     refuse = cad_filelist_refuses_additem_dxf(
         {
@@ -13225,6 +13236,97 @@ def test_q10349_dh3096_contours_pass_forever_forbid():
     assert "Q10344" not in refuse
     assert dump["invent"] is False
     assert dump["unlocks_automation_contours_fill"] is False
+
+
+def test_q10350_21843_1_long_linear_pass_forever_forbid():
+    """Q10350 / eb6c48b8 Time Waco 21843-1 Long/Linear PASS leftover.
+
+    Hot Rolled Round Bar Ø0.625 × 28.0843 Finish. Bar / Linear path.
+    Not a Contours leftover. Forever protect; never remint / PATCH.
+    invent=false. Do not invent Contours/InternalData.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10350_21843_1 import q10350_21843_1_pass_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10350_21843_1_pass_dump()
+    assert dump["quote_id"] == "eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4"
+    assert dump["quote_id_prefix"] == "eb6c48b8"
+    assert dump["quote_number"] == "Q10350"
+    assert dump["part_number"] == "21843-1"
+    assert dump["customer"] == "Time Manufacturing Waco"
+    assert dump["piece"] == "21843-1"
+    assert dump["description"] == "Hot Rolled Round Bar Ø0.625 × 28.0843 Finish"
+    assert dump["shape"] == "Hot Rolled Round Bar"
+    assert dump["diameter_in"] == 0.625
+    assert dump["length_in"] == 28.0843
+    assert dump["path"] == "long_linear"
+    assert dump["is_linear"] is True
+    assert dump["is_bar"] is True
+    assert dump["contours_leftover"] is False
+    assert dump["id_unknown"] is False
+    assert dump["pass"] is True
+    assert dump["linear_pass"] is True
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+    assert "contours_fill" not in dump
+    assert dump["zz_del"] is False
+    assert dump["zz_del_number"] is None
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert all(row["quote_number"] != "Q10350" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10350" for row in leftover_cad_for_plate_dumps())
+    assert "Q10350" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "21843-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10350" not in step_contours_fill_hunt()["never_remint"]
+    assert "21843-1" not in step_contours_fill_hunt()["never_remint"]
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("eb6c48b8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10350")
+    assert is_forbidden_quote_number("21843-1")
+    assert spent_quote_number_block_reason("Q10350")
+    assert spent_quote_number_block_reason("21843-1")
+    with pytest.raises(ForbiddenQuoteError, match="Q10350"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10350"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="21843-1"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "21843-1"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="eb6c48b8"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="eb6c48b8"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
+        )
+    assert dump["invent"] is False
+    assert dump["contours_leftover"] is False
 
 
 def test_step_cad_finish_hard_gate_cad_then_inch_before_finish():
