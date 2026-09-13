@@ -263,12 +263,12 @@ ADD_ITEM_DXF_FILES_SNIPPET = (
 # empty; Q10334 / e2683a3f kendo Cad/100 + 0.1875 in Contours empty;
 # Q10335 / bcff1a24 UpdateItemType 200, Contours still 0; Finish
 # diagnostic lost CAD row — QuoteItem_Read Data:[] before Finish —
-# ZZ-DEL empty-Contours leftover; Q10336 / f73dd116 mouse
-# UpdateItemType then Finish is Cad+Laser leftover, OpenContourCount=0
-# — Contours≥1 still gap vs Q10333; Q10339 same soft PASS class,
-# Contours=0 / OpenContourCount=0, ID not restated). Do not invent
-# Contours/InternalData; refuse Finish if they are still empty after
-# UpdateItemType.
+# ZZ-DEL empty-Contours leftover; Q10336 / f73dd116 and Q10339 /
+# 76cecc73 Cad→Finish leftovers match Q10333 finished Contours
+# (NumberOfContours=1 / OCC=0 expected / bends=8). Soft-pass
+# Contours=0 labels were stage notes. Do not gate Contours≥1 unlock
+# on OCC≥1. Do not invent Contours/InternalData; refuse Finish if
+# explode InternalData is still empty after UpdateItemType.
 # UpdateItemType is dropdown classify; Contours fill may still need
 # Finish or further calls.
 # Live 105918-1: page Finish without grid SetPartMode → 66 Component/Assembly, 0 Cad.
@@ -297,11 +297,13 @@ GET_BORDER_SIZE_PROVEN_KEYS = ("Thickness_Units",)
 GET_BORDER_SIZE_THICKNESS_UNITS_INCH = "inch"
 GET_BORDER_SIZE_FILLS_CONTOURS = False
 # Q10336 xhr_sequence after AddItem_DXFFiles. Post-Finish navigation.
-# OpenContourCount stayed 0 — not a Contours fill. No body keys restated.
+# Not a Contours fill. No body keys restated. Mid-wizard probe still
+# useful to see NumberOfContours flip 0→1.
 QUOTE_ITEM_EDIT_PATH = "/quote/ItemEdit"
 QUOTE_ITEM_EDIT_FILLS_CONTOURS = False
 # Named Cad→Finish sequence from live Q10336 mouse capture (paths only).
-# Soft PASS: OpenContourCount=0. Does not unlock Contours≥1.
+# Finished NumberOfContours=1 matches Q10333. OCC=0 expected (including
+# human PASS). Does not unlock invent fill. Probe mid-wizard 0→1.
 CAD_FINISH_NAMED_XHR_SEQUENCE = (
     "/CadImport/UploadItem_DXFFiles",
     "/CadImport/Data",
@@ -541,12 +543,12 @@ def get_border_size_fills_contours() -> bool:
 
 
 def quote_item_edit_fills_contours() -> bool:
-    """Q10336 /quote/ItemEdit is post-Finish. OpenContourCount stayed 0."""
+    """Q10336 /quote/ItemEdit is post-Finish navigation. Not fill."""
     return QUOTE_ITEM_EDIT_FILLS_CONTOURS
 
 
 def cad_finish_named_xhr_sequence() -> tuple[str, ...]:
-    """Live Q10336 named paths. Soft PASS ≠ Contours≥1 unlock."""
+    """Live Q10336 named paths. Probe mid-wizard; invent fill stays locked."""
     return CAD_FINISH_NAMED_XHR_SEQUENCE
 
 
@@ -556,8 +558,9 @@ def cad_finish_named_xhr_probe(
     """Fail-closed probe: named Cad→Finish paths vs observed.
 
     Missing named calls are reported. Observing every named path still
-    does not unlock Contours fill (Q10336 OpenContourCount=0).
-    invent=false — no payloads.
+    does not unlock invent Contours fill. Mid-wizard probe is still
+    useful to see NumberOfContours flip 0→1. OCC is not the PASS
+    signal (0 on Q10333). invent=false — no payloads.
     """
     named = list(CAD_FINISH_NAMED_XHR_SEQUENCE)
     observed = [str(p) for p in (observed_paths or []) if str(p or "").strip()]

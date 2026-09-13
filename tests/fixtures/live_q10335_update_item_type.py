@@ -11,11 +11,12 @@ Full GUID was not restated. Prefix bcff1a24 + Q10335 / ZZ-DEL-Q10335
 only. invent=false. Do not remint / PATCH. Do not invent Contours /
 InternalData. UpdateItemType is the dropdown classify XHR; Contours
 fill may still need Finish or further calls. Continuous mouse→Finish
-recapture landed as Q10336 / f73dd116 (Cad+Laser Finish; OpenContourCount=0).
+recapture landed as Q10336 / f73dd116 (Cad+Laser Finish leftover;
+finished NumberOfContours=1 matches Q10333).
 
 Q10333 / b5f56ac3 remains the Contours PASS protect. Q10336 is a
-Cad+Finish leftover, not Contours=1. H638-CADPLATE / Q10334 stay
-Cad-for-plate leftovers.
+Cad+Finish leftover that already matches finished Contours
+semantics. H638-CADPLATE / Q10334 stay Cad-for-plate leftovers.
 """
 
 from __future__ import annotations

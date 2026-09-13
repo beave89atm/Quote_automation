@@ -27,12 +27,17 @@ Live leftovers after Cad-for-plate:
   bcff1a24 Q10335 — mouse UpdateItemType 200, Contours 0 before Finish;
     QuoteItem_Read Data:[] lost CAD row; ZZ-DEL.
   f73dd116 Q10336 — mouse UpdateItemType then Finish; Cad+Laser
-    leftover (OpenContourCount=0 / bends=1). Contours≥1 still gap.
+    leftover. Finished NumberOfContours=1 matches Q10333; OCC=0
+    expected; bends=8. Soft-pass labels were stage notes.
+  76cecc73 Q10339 — EOD STP Cad→Finish leftover. Finished
+    NumberOfContours=1 matches Q10333; OCC=0 expected; Laser Bay1 /
+    UC 64.25 / unit price 176.96.
 
 Human Kyle on Q10333 / b5f56ac3: real Component→Cad dropdown +
-thickness + Finish → Contours=1 PASS. Q10336 mouse Finish after
-UpdateItemType did not reproduce Contours=1. Classify XHR is named
-(UpdateItemType). Contours fill is still not reproduced.
+thickness + Finish → NumberOfContours=1 PASS. Finished Q10336 /
+Q10339 match that Contours signal. Classify XHR is named
+(UpdateItemType). Invent Contours fill stays locked. Do not gate
+unlock on OCC≥1.
 """
 
 from __future__ import annotations
@@ -161,8 +166,8 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
             "why": (
                 "Live Q10336 named /quote/ItemEdit after "
                 "AddItem_DXFFiles. Post-Finish navigation. "
-                "OpenContourCount stayed 0. No request keys restated. "
-                "Not Contours fill. Do not invent an ItemEdit body."
+                "Not Contours fill. No request keys restated. "
+                "Do not invent an ItemEdit body."
             ),
         },
     ),

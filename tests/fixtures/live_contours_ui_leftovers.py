@@ -13,9 +13,10 @@ Do not remint / PATCH. Do not invent Contours / InternalData.
 Q10333 / b5f56ac3 / H.6.38 Safe Cave is NOT this class. It is a
 Contours PASS protect (Cad / Contours=1 / 8 bends + Profile /
 Laser Bay1 / UC 176.96). See ``live_q10333_h638``. Q10336 /
-f73dd116 is a Cad+Laser Finish leftover (OpenContourCount=0) —
-Finish was posted; not this unfinished-UI class. Never remint /
-PATCH / ZZ-DEL. Tip 0759273 ZZ-DEL-fail narrative is reversed.
+f73dd116 is a Cad+Laser Finish leftover (finished
+NumberOfContours=1 matches Q10333; OCC=0 expected) — Finish was
+posted; not this unfinished-UI class. Never remint / PATCH /
+ZZ-DEL. Tip 0759273 ZZ-DEL-fail narrative is reversed.
 
 Wrong-org Time mint (not a Contours leftover; ID unknown):
     Q10332 / ZZ-DEL-wrong-org-Time — quote ID not restated in

@@ -1,16 +1,23 @@
-"""Q10339 — Cad→Finish soft PASS leftover (Contours≥1 still gap).
+"""Q10339 / 76cecc73 — Cad+Laser Finish leftover (finished Contours match Q10333).
 
-Automation Cad→Finish after UpdateItemType. Same soft PASS class as
-Q10336 / f73dd116: Contours=0 / OpenContourCount=0 after
-UpdateItemType+Finish. invent=false.
+EOD STP Cad→Finish on Safe Cave H.6.38 (same STEP family as Q10333).
+Live GET after Finish is semantically identical to Q10333 / Q10336:
 
-Quote ID was not restated in repo / PR 18 / prior leftover transcript /
-Dropbox. Forbid the Q number only — do not invent an ID. Forever-protect
-as a Cad+Laser Finish leftover. Not a Contours=1 PASS. Never remint /
-PATCH.
+  Q10339 / 76cecc73-257e-4fa7-91b7-ed15a4c90caa / H.6.38 / Safe Cave
+  NumberOfContours=1 (v1 ItemList) — Contours PASS signal
+  CadImport OpenContourCount=0 (expected; same on human PASS Q10333)
+  bends=8 / OCL Profile×5 + Bend×2
+  InternalData absent post-Finish
+  Laser Bay1 / UC 64.25 / unit price 176.96
 
-Q10333 / b5f56ac3 stays Contours PASS protect. Unused Time STEPs that
-explode with empty InternalData still refuse Finish. Fill stays locked.
+Soft-pass Contours=0 / OpenContourCount labels were stage notes, not a
+finished-field gap. Do not gate Contours≥1 unlock on OCC≥1 (false-fails
+H.6.38 including Q10333). invent=false. Forever-protect; never remint /
+PATCH / ZZ-DEL. Does not unlock invent Contours fill.
+
+Unused Time STEPs that explode empty InternalData stay a separate
+fail-close. Mid-wizard XHR probe still useful to see NumberOfContours
+flip 0→1.
 """
 
 from __future__ import annotations
@@ -18,21 +25,34 @@ from __future__ import annotations
 from typing import Any
 
 Q10339_CAD_FINISH: dict[str, Any] = {
-    "quote_id": None,
-    "quote_id_prefix": None,
+    "quote_id": "76cecc73-257e-4fa7-91b7-ed15a4c90caa",
+    "quote_id_prefix": "76cecc73",
     "quote_number": "Q10339",
-    "part_number": None,
-    "customer": None,
-    "id_unknown": True,
-    "id_source": "not restated in repo / PR 18 / Dropbox / leftover notes",
-    "same_class_as": "Q10336",
-    "via": "automation_updateitemtype_cad_then_finish",
+    "part_number": "H.6.38",
+    "customer": "Safe Cave",
+    "source": "STP",
+    "same_step_family_as": "Q10333",
+    "via": "eod_stp_cad_then_finish",
+    "id_unknown": False,
     "pass": True,
-    "contours_pass": False,
+    "contours_pass": True,
     "cad_laser_finish_soft_pass": True,
+    "soft_pass_labels_were_stage_notes": True,
+    "finished_semantics_match_q10333": True,
+    "product_type": "Cad",
+    "product_type_enum": 100,
+    "machine": "Laser Bay1",
+    "unit_cost": 64.25,
+    "unit_price": 176.96,
+    "number_of_contours": 1,
     "open_contour_count": 0,
-    "number_of_contours": 0,
-    "contours_ge_1": False,
+    "contours_ge_1": True,
+    "contours_pass_signal": "v1_itemlist_number_of_contours_ge_1",
+    "bends": 8,
+    "profile": True,
+    "ocl_profile_count": 5,
+    "ocl_bend_count": 2,
+    "internaldata_absent_post_finish": True,
     "finish_clicked": True,
     "finish_posted": True,
     "invent": False,
@@ -42,12 +62,12 @@ Q10339_CAD_FINISH: dict[str, Any] = {
     "readonly": True,
     "do_not_remint": True,
     "do_not_patch": True,
-    "cad_set_via": "automation_updateitemtype_cad",
+    "cad_set_via": "eod_stp_cad_then_finish",
     "unlocks_automation_contours_fill": False,
     "update_item_type_fills_contours": False,
 }
 
 
 def q10339_h638_cad_finish_dump() -> dict[str, Any]:
-    """Read-only Cad+Finish leftover. ID unknown. Never remint / PATCH."""
+    """Read-only Cad+Finish leftover. Never remint / PATCH / ZZ-DEL."""
     return dict(Q10339_CAD_FINISH)

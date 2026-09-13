@@ -5,9 +5,10 @@ Live STEP Contours mints are PAUSED. Do not remint / PATCH leftovers
 Q10330 / 21841-1 / aed89628, Q10331 / 14327-1 / 5e72fe39,
 Q10332 / ZZ-DEL-wrong-org-Time, 35136-1 / 8973f890, …).
 Q10333 / H.6.38 / b5f56ac3 is a Contours PASS protect — never remint /
-PATCH / ZZ-DEL. Q10336 / f73dd116 is a Cad+Laser Finish leftover
-(OpenContourCount=0 / bends=1) — protect, not Contours=1. Never invent
-Contours / InternalData.
+PATCH / ZZ-DEL. Q10336 / f73dd116 and Q10339 / 76cecc73 Cad→Finish
+leftovers match Q10333 finished Contours (NumberOfContours=1 / OCC=0
+expected / bends=8) — protect; soft-pass labels were stage notes.
+Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
 exhausted the alternate-path hypotheses below. Kyle Loom (original):
@@ -72,10 +73,10 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10332",
         "Q10333",
         "Q10336",
+        "Q10339",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
-        "Q10339",
     ),
     "angles": (
         {
@@ -186,9 +187,9 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
             "ruled_out": True,
             "why": (
                 "Named on live Q10336 after AddItem_DXFFiles. Post-Finish "
-                "navigation. OpenContourCount stayed 0. No body keys "
-                "restated — probe path only, no invented payload. Not "
-                "Contours fill."
+                "navigation. No body keys restated — probe path only, "
+                "no invented payload. Not Contours fill. Mid-wizard "
+                "probe still useful for NumberOfContours 0→1."
             ),
         },
         {
@@ -200,7 +201,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "Q10335/Q10336 thickness companion. Q10336 named "
                 "Thickness_Units=inch only. Method / other keys not "
                 "restated. Proven-keys probe; do not invent Thickness/ID. "
-                "Contours stayed 0. Not fill."
+                "Not invent fill."
             ),
         },
     ),

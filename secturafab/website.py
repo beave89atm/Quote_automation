@@ -1388,6 +1388,11 @@ STEP_CONTOURS_NO_EXTRA_XHR = "createAllParts_no_intervening_xhr"
 # /part/PartImage / PDFGetData) exhausted in-repo. Fill stays locked.
 STEP_CONTOURS_FILL_UNLOCKED = False
 STEP_CONTOURS_UNLOCK_REQUIRES = "kyle_contours_ge1_or_sectura_support"
+# Finished H.6.38 leftovers (Q10333 / Q10336 / Q10339): Contours PASS
+# signal is v1 ItemList NumberOfContours≥1. CadImport OpenContourCount
+# is 0 on the human PASS too — never unlock on OCC≥1.
+CONTOURS_PASS_SIGNAL = "v1_itemlist_number_of_contours_ge_1"
+CADIMPORT_OPEN_CONTOUR_COUNT_UNLOCKS_CONTOURS = False
 # Kyle Loom lesson (Adjust Properties): Component→Cad is required for
 # plate STEP Contours. Q10333 / b5f56ac3 / H.6.38 is a Contours PASS
 # (Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96).
@@ -1403,12 +1408,12 @@ KYLE_LOOM_COMPONENT_TO_CAD = (
     "classify XHR, status 200). Automation Cad classify ≠ Contours fill "
     "(H638-CADPLATE / 5e7bfc0b, Q10334 / e2683a3f, Q10335 / bcff1a24 "
     "Contours 0; QuoteItem_Read Data:[] lost CAD row before Finish — "
-    "ZZ-DEL). Q10336 / f73dd116 mouse UpdateItemType then Finish is a "
-    "Cad+Laser leftover (OpenContourCount=0 / bends=1) — Contours≥1 "
-    "still gap vs Q10333. Q10339 is the same Cad→Finish soft PASS class "
-    "(Contours=0 / OpenContourCount=0 after UpdateItemType+Finish; ID "
-    "not restated). UpdateItemType is dropdown classify; Contours "
-    "fill may still need Finish or further calls. Do not invent Contours."
+    "ZZ-DEL). Q10336 / f73dd116 and Q10339 / 76cecc73 Cad→Finish "
+    "leftovers match Q10333 finished Contours semantics "
+    "(NumberOfContours=1 / OCC=0 expected / bends=8). Soft-pass "
+    "Contours=0 labels were stage notes. Do not gate Contours≥1 "
+    "unlock on OCC≥1. UpdateItemType is dropdown classify; invent "
+    "fill stays locked. Do not invent Contours."
 )
 _THICKNESS_VALUE_UNIT_RE = re.compile(
     r"^\s*([0-9]*\.?[0-9]+)\s*[:\s]\s*"
@@ -1535,13 +1540,14 @@ def contours_ge_1_from_named_fields(
     number_of_contours: Any = None,
     open_contour_count: Any = None,
 ) -> bool:
-    """True only when restated NumberOfContours ≥ 1.
+    """True only when restated v1 ItemList NumberOfContours ≥ 1.
 
-    OpenContourCount is not NumberOfContours (Q10336 OCC=0; Q10333
-    UI Contours=1). Do not treat OCC as a fill. invent=false.
-    Cad→Finish soft PASS (Q10336 / Q10339) stays locked.
+    Finished H.6.38 leftovers Q10333 / Q10336 / Q10339 all have
+    NumberOfContours=1. CadImport OpenContourCount is a different field
+    (OCC=0 on the human PASS too) — never a substitute, never an unlock.
+    invent=false.
     """
-    del open_contour_count  # never a NumberOfContours substitute
+    del open_contour_count  # never a NumberOfContours substitute or unlock
     if number_of_contours is None:
         return False
     try:
@@ -1550,21 +1556,35 @@ def contours_ge_1_from_named_fields(
         return False
 
 
+def itemlist_contours_pass(*, number_of_contours: Any = None) -> bool:
+    """Contours PASS signal for this STEP family: NumberOfContours ≥ 1."""
+    return contours_ge_1_from_named_fields(number_of_contours=number_of_contours)
+
+
+def cadimport_open_contour_count_unlocks_contours(
+    open_contour_count: Any = None,
+) -> bool:
+    """Never. OCC≥1 would false-fail H.6.38 including human PASS Q10333."""
+    del open_contour_count
+    return CADIMPORT_OPEN_CONTOUR_COUNT_UNLOCKS_CONTOURS
+
+
 def cad_finish_named_sequence_unlocks_contours(
     observed_paths: list[str] | tuple[str, ...] | None = None,
     *,
     number_of_contours: Any = None,
     open_contour_count: Any = None,
 ) -> bool:
-    """Q10336 fired the named Cad→Finish sequence; OCC=0. Unlock stays false.
+    """Named Cad→Finish probe does not unlock invent fill.
 
-    Observing UpdateItemType + GetBorderSize + AddItem_DXFFiles +
-    ItemEdit does not unlock Contours≥1. Unused Time STEPs with empty
+    Mid-wizard probe is still useful to see NumberOfContours flip 0→1.
+    OCC never unlocks (0 on Q10333 PASS). Unused Time STEPs with empty
     explode InternalData stay refuse. invent=false.
     """
     from secturafab.cadimport_js import cad_finish_named_xhr_probe
 
     cad_finish_named_xhr_probe(observed_paths)
+    cadimport_open_contour_count_unlocks_contours(open_contour_count)
     if STEP_CONTOURS_FILL_UNLOCKED is not True:
         return False
     return contours_ge_1_from_named_fields(
@@ -2412,8 +2432,11 @@ def cad_filelist_payload_blocks_finish(row: dict[str, Any] | None) -> bool:
 def cad_filelist_contours_would_be_zero(row: dict[str, Any] | None) -> bool:
     """True when Cad FileList InternalData is empty or NumberOfContours is 0.
 
-    Do not invent Contours. Keys absent is not a contours-zero miss.
+    Pre-Finish explode gate (unused Time STEPs). Do not invent Contours.
+    Keys absent is not a contours-zero miss.
     Empty InternalData means Finish would land Contours 0.
+    Post-Finish v1 ItemList on H.6.38 PASSes omits InternalData — that
+    absence is not this gate.
     """
     if not isinstance(row, dict) or not is_cad_filelist_row(row):
         return False

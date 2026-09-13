@@ -1,27 +1,33 @@
-"""Contours gap: Q10333 human PASS vs Cad→Finish soft PASSes.
+"""Finished H.6.38 Contours semantics — live GET closed the field gap.
 
-Same Safe Cave H.6.38 STEP family for Q10333 / Q10336. invent=false —
-hypotheses only. Does not unlock Contours fill. Forever-protect leftovers.
+Same Safe Cave H.6.38 STEP family. invent=false. Forever-protect leftovers.
+Does not unlock invent Contours fill.
 
-Q10333 / b5f56ac3 — human Component→Cad + thickness + Finish:
-  Contours=1 / 8 bends PASS (Cad / Profile / Laser Bay1 / UC 176.96)
-  Human XHR sequence was never captured.
+Live GET after Finish (Q10333 / Q10336 / Q10339) is semantically identical:
+  NumberOfContours=1 (v1 ItemList) — Contours PASS signal
+  CadImport OpenContourCount=0 (including human PASS Q10333)
+  bends=8 / OCL Profile×5 + Bend×2
+  InternalData absent post-Finish
 
-Q10336 / f73dd116 — mouse UpdateItemType Cad then AddItem_DXFFiles:
-  OpenContourCount=0 / bends=1 Cad+Laser Finish soft PASS
-  (Cad ProductType 100 / Laser Bay1 / UC 64.25)
+Soft-pass Contours=0 / OpenContourCount labels were stage notes, not a
+finished-field gap. Do not gate Contours≥1 unlock on OCC≥1 (false-fails
+H.6.38 including Q10333).
+
+Q10333 / b5f56ac3 — human Component→Cad + thickness + Finish
+  Cad / Profile / Laser Bay1 / UC 176.96. Human XHR sequence unrecorded.
+
+Q10336 / f73dd116 — mouse UpdateItemType Cad then AddItem_DXFFiles
+  Cad ProductType 100 / Laser Bay1 / UC 64.25
   Named XHRs: Upload → Data → /part/create → UpdateItemType →
   PartImage → GetBorderSize Thickness_Units=inch → AddItem_DXFFiles →
   /quote/ItemEdit.
 
-Q10339 — automation Cad→Finish soft PASS class (Contours=0 /
-  OpenContourCount=0 after UpdateItemType+Finish). ID not restated.
+Q10339 / 76cecc73 — EOD STP Cad→Finish
+  Laser Bay1 / UC 64.25 / unit price 176.96.
 
-Unused Time STEPs explode with empty InternalData; Finish refused.
-
-NumberOfContours on Q10336 was not restated. InternalData on Finish
-was not restated. Do not invent either. ItemEdit is post-Finish
-navigation, not a fill. GetBorderSize other keys were not restated.
+Unused Time STEPs explode with empty InternalData; Finish refused
+(separate gate). Mid-wizard XHR probe still useful to see when
+NumberOfContours flips 0→1.
 """
 
 from __future__ import annotations
@@ -36,42 +42,56 @@ from tests.fixtures.live_q10339_h638 import q10339_h638_cad_finish_dump
 Q10333_Q10336_CONTOURS_GAP: dict[str, Any] = {
     "invent": False,
     "unlocks_automation_contours_fill": False,
+    "finished_field_gap_closed": True,
+    "contours_pass_signal": "v1_itemlist_number_of_contours_ge_1",
+    "open_contour_count_unlocks_contours": False,
+    "soft_pass_labels_were_stage_notes": True,
     "same_step_family": "H.6.38",
     "customer": "Safe Cave",
     "q10333_contours": 1,
     "q10333_bends": 8,
+    "q10333_open_contour_count": 0,
     "q10333_via": "human_dropdown_thickness_finish",
     "q10333_pass": True,
+    "q10333_contours_pass": True,
     "q10336_open_contour_count": 0,
-    "q10336_bends": 1,
+    "q10336_number_of_contours": 1,
+    "q10336_bends": 8,
     "q10336_via": "mouse_updateitemtype_cad_then_finish",
-    "q10336_contours_pass": False,
+    "q10336_contours_pass": True,
     "q10336_cad_laser_finish_soft_pass": True,
+    "q10336_finished_semantics_match_q10333": True,
     "q10339_open_contour_count": 0,
-    "q10339_contours": 0,
-    "q10339_via": "automation_updateitemtype_cad_then_finish",
-    "q10339_contours_pass": False,
+    "q10339_contours": 1,
+    "q10339_number_of_contours": 1,
+    "q10339_via": "eod_stp_cad_then_finish",
+    "q10339_contours_pass": True,
     "q10339_cad_laser_finish_soft_pass": True,
-    "q10339_id_unknown": True,
+    "q10339_finished_semantics_match_q10333": True,
+    "q10339_id_unknown": False,
     "named_cad_finish_xhr_sequence": CAD_FINISH_NAMED_XHR_SEQUENCE,
     "forever_protect": ("Q10333", "Q10336", "Q10339"),
+    "mid_wizard_xhr_probe_useful": True,
+    "explode_empty_internaldata_fail_close": True,
     "hypotheses": (
         {
             "id": "number_of_contours_vs_open_contour_count",
-            "ruled_out": False,
+            "ruled_out": True,
             "why": (
-                "Q10333 live UI named Contours=1. Q10336 verify named "
-                "OpenContourCount=0. Same field vs different field is "
-                "unknown. Do not treat OpenContourCount as NumberOfContours."
+                "Live GET: Q10333 / Q10336 / Q10339 all have "
+                "NumberOfContours=1 and CadImport OpenContourCount=0, "
+                "including human PASS Q10333. Different fields. OCC≥1 "
+                "is not the Contours PASS signal and would false-fail "
+                "H.6.38."
             ),
         },
         {
             "id": "bend_vs_outer_contour",
-            "ruled_out": False,
+            "ruled_out": True,
             "why": (
-                "Q10333 has 8 bends + Contours=1. Q10336 has bends=1 and "
-                "OpenContourCount=0. A bend count is not an outer-contour "
-                "count. Do not invent which geometry filled Contours."
+                "Live GET: Q10333 / Q10336 / Q10339 all have bends=8 "
+                "and NumberOfContours=1. Soft-pass bends=1 was a stage "
+                "note, not a finished-field gap."
             ),
         },
         {
@@ -85,13 +105,13 @@ Q10333_Q10336_CONTOURS_GAP: dict[str, Any] = {
             ),
         },
         {
-            "id": "filelist_internaldata_on_finish",
-            "ruled_out": False,
+            "id": "post_finish_internaldata_absent",
+            "ruled_out": True,
             "why": (
-                "OnAddDXFClick copies #gridDXFParts as-is. Q10336 posted "
-                "AddItem_DXFFiles after UpdateItemType. FileList "
-                "InternalData emptiness on that Finish was not restated. "
-                "Do not invent InternalData or a fill XHR."
+                "InternalData is absent on finished v1 ItemList for "
+                "Q10333 / Q10336 / Q10339 including the human PASS. "
+                "That absence is not a Contours fail. Empty explode "
+                "InternalData before Finish is a separate refuse."
             ),
         },
         {
@@ -105,13 +125,11 @@ Q10333_Q10336_CONTOURS_GAP: dict[str, Any] = {
         },
         {
             "id": "cad_finish_soft_pass_class",
-            "ruled_out": False,
+            "ruled_out": True,
             "why": (
-                "Q10336 named Upload→Data→/part/create→UpdateItemType→"
-                "PartImage→GetBorderSize→AddItem_DXFFiles→ItemEdit and "
-                "still OpenContourCount=0. Q10339 is the same "
-                "automation Cad→Finish soft PASS class (Contours=0 / "
-                "OCC=0). Named sequence is not Contours≥1."
+                "Soft-pass Contours=0 / OpenContourCount labels were "
+                "stage notes. Finished Q10336 / Q10339 match Q10333 "
+                "Contours semantics (NumberOfContours=1)."
             ),
         },
         {
@@ -128,8 +146,17 @@ Q10333_Q10336_CONTOURS_GAP: dict[str, Any] = {
             "ruled_out": False,
             "why": (
                 "Unused Time STEPs still explode with empty InternalData. "
-                "Finish is refused invent=false. That class is not the "
-                "Q10336/Q10339 soft PASS; it never reaches AddItem_DXFFiles."
+                "Finish is refused invent=false. Separate gate from "
+                "finished ItemList NumberOfContours PASS."
+            ),
+        },
+        {
+            "id": "mid_wizard_number_of_contours_flip",
+            "ruled_out": False,
+            "why": (
+                "Named Cad→Finish XHR probe is still useful to see when "
+                "NumberOfContours flips 0→1 mid-wizard. Does not unlock "
+                "invent fill. invent=false."
             ),
         },
     ),
@@ -137,7 +164,7 @@ Q10333_Q10336_CONTOURS_GAP: dict[str, Any] = {
 
 
 def q10333_q10336_contours_gap() -> dict[str, Any]:
-    """Read-only gap. Does not unlock Contours fill."""
+    """Read-only finished-field notes. Does not unlock invent Contours fill."""
     out = dict(Q10333_Q10336_CONTOURS_GAP)
     out["hypotheses"] = [dict(h) for h in Q10333_Q10336_CONTOURS_GAP["hypotheses"]]
     out["q10333"] = q10333_h638_pass_dump()

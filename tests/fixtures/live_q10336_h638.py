@@ -1,4 +1,4 @@
-"""Q10336 / f73dd116 — Cad+Laser Finish leftover (Contours≥1 still gap).
+"""Q10336 / f73dd116 — Cad+Laser Finish leftover (finished Contours match Q10333).
 
 Live continuous mouse Cad→Finish on Safe Cave H.6.38 (same STEP family
 as Q10333). Sequence (named XHRs only; capture JSON was not on box):
@@ -11,17 +11,23 @@ as Q10333). Sequence (named XHRs only; capture JSON was not on box):
   7. POST /Quote/AddItem_DXFFiles (Finish)
   8. quote/ItemEdit
 
-After Finish: Cad ProductType 100, Laser Bay1, bends=1, UC 64.25,
-Laser primary cost present. OpenContourCount=0 (not ≥1). NumberOfContours
-was not restated — invent=false. InternalData emptiness was not restated.
+Live GET after Finish is semantically identical to Q10333 / Q10339:
+  NumberOfContours=1 (v1 ItemList) — Contours PASS signal
+  CadImport OpenContourCount=0 (expected; same on human PASS Q10333)
+  bends=8 / OCL Profile×5 + Bend×2
+  InternalData absent post-Finish
+  Cad ProductType 100 / Laser Bay1 / UC 64.25
 
-Forever-protect like Q10333 (never remint / PATCH / ZZ-DEL) as a
-Cad+Laser Finish leftover. Not a Contours=1 PASS. Contours≥1 still
-gap vs Q10333 / b5f56ac3 (human Cad / Contours=1 / 8 bends).
-Q10335 / bcff1a24 stays the empty-Contours / lost-CAD-row forbid.
-Q10339 is the same Cad→Finish soft PASS class (Contours=0 /
-OpenContourCount=0; ID not restated). Does not unlock automation
+Soft-pass Contours=0 / OpenContourCount / bends=1 labels were stage
+notes, not a finished-field gap. Do not gate Contours≥1 unlock on
+OCC≥1 (false-fails H.6.38 including Q10333). invent=false.
+Forever-protect; never remint / PATCH / ZZ-DEL. Does not unlock invent
 Contours fill.
+
+Q10335 / bcff1a24 stays the empty-Contours / lost-CAD-row forbid.
+Unused Time STEPs that explode empty InternalData stay a separate
+fail-close. Mid-wizard XHR probe still useful to see NumberOfContours
+flip 0→1.
 """
 
 from __future__ import annotations
@@ -60,15 +66,21 @@ Q10336_CAD_FINISH: dict[str, Any] = {
     "get_border_size_thickness_units": "inch",
     "finish_path": "/Quote/AddItem_DXFFiles",
     "pass": True,
-    "contours_pass": False,
+    "contours_pass": True,
     "cad_laser_finish_soft_pass": True,
+    "soft_pass_labels_were_stage_notes": True,
+    "finished_semantics_match_q10333": True,
     "product_type": "Cad",
     "product_type_enum": 100,
     "open_contour_count": 0,
-    "number_of_contours": None,
-    "contours_ge_1": False,
-    "bends": 1,
-    "profile": None,
+    "number_of_contours": 1,
+    "contours_ge_1": True,
+    "contours_pass_signal": "v1_itemlist_number_of_contours_ge_1",
+    "bends": 8,
+    "profile": True,
+    "ocl_profile_count": 5,
+    "ocl_bend_count": 2,
+    "internaldata_absent_post_finish": True,
     "machine": "Laser Bay1",
     "unit_cost": 64.25,
     "laser_costs_filled": True,
