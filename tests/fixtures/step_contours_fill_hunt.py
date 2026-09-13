@@ -15,6 +15,9 @@ Q10344 / 55f12530 Kyle UI control PASS leftover (Cad + 0.1875 inch
 Q10346 / d859a239 / B80510901 Sprout main plate Contours PASS
 (outside H.6.38; Cad + 0.0598 inch → Contours fill → Finish) —
 never remint / PATCH. invent=false.
+Q10348 / 1defeed8 / H.16.70 Safe Cave Contours PASS
+(outside H.6.38; Cad + 0.1875 inch → Contours fill → Finish) —
+never remint / PATCH. invent=false.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -84,6 +87,8 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10344",
         "Q10346",
         "B80510901",
+        "Q10348",
+        "H.16.70",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",

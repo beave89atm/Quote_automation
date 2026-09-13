@@ -34,6 +34,9 @@ Live leftovers after Cad-for-plate:
     UC 64.25 / unit price 176.96.
   55f12530 Q10344 — Kyle UI control leftover. ProductType Cad +
     thickness 0.1875 inch → Contours fill → Finish. invent=false.
+  1defeed8 Q10348 — Safe Cave H.16.70 Contours PASS leftover.
+    ProductType Cad + thickness 0.1875 inch → Contours fill →
+    Finish. invent=false.
 
 Human Kyle on Q10333 / b5f56ac3: real Component→Cad dropdown +
 thickness + Finish → NumberOfContours=1 PASS. Finished Q10336 /
@@ -89,6 +92,8 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
         "Q10344",
         "Q10346",
         "B80510901",
+        "Q10348",
+        "H.16.70",
     ),
     "hypotheses": (
         {

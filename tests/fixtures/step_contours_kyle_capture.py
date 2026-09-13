@@ -13,7 +13,10 @@ is the Kyle UI control leftover (Cad + 0.1875 inch → Contours
 fill → Finish) — never remint / PATCH / ZZ-DEL. invent=false.
 Q10346 / d859a239 / B80510901 Sprout main plate is a Contours PASS
 outside H.6.38 (Cad + 0.0598 inch → Contours fill → Finish) —
-never remint / PATCH. invent=false. Do not gate unlock
+never remint / PATCH. invent=false. Q10348 / 1defeed8 / H.16.70
+Safe Cave is a Contours PASS outside H.6.38 (Cad + 0.1875 inch →
+Contours fill → Finish) — never remint / PATCH. invent=false.
+Do not gate unlock
 on OCC≥1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
 /part/create 3× bar InternalData empty → AddItem_DXFFiles InternalData
@@ -69,6 +72,8 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "Q10344",
     "Q10346",
     "B80510901",
+    "Q10348",
+    "H.16.70",
     "H638-CADPLATE",
     "Q10334",
     "Q10335",

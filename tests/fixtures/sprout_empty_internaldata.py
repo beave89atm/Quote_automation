@@ -10,9 +10,10 @@ Same Sectura-side empty-InternalData refuse class as Time STEPs
 28898-1 / 28772-1 / 14327-18 / 15911-9 / 21839-1, but this is
 not a Time pick and not H.6.38 Contours-good (Q10333 / Q10336 /
 Q10339 / Q10344). Q10346 / d859a239 / B80510901 is a separate Sprout
-Contours PASS (outside H.6.38). Do not invent Contours /
-InternalData. Never remint / PATCH Q10333 / Q10336 / Q10338 / Q10339 /
-Q10344 / Q10346 / golds.
+Contours PASS (outside H.6.38). Q10348 / 1defeed8 / H.16.70 is a
+separate Safe Cave Contours PASS (outside H.6.38). Do not invent
+Contours / InternalData. Never remint / PATCH Q10333 / Q10336 /
+Q10338 / Q10339 / Q10344 / Q10346 / Q10348 / golds.
 """
 
 from __future__ import annotations
