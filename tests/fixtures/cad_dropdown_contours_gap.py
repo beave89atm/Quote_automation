@@ -37,6 +37,9 @@ Live leftovers after Cad-for-plate:
   1defeed8 Q10348 — Safe Cave H.16.70 Contours PASS leftover.
     ProductType Cad + thickness 0.1875 inch → Contours fill →
     Finish. invent=false.
+  c4394006 Q10349 — Safe Cave D.H.30.96 Contours PASS leftover.
+    ProductType Cad + thickness 0.1875 inch → Contours fill →
+    Finish. invent=false.
 
 Human Kyle on Q10333 / b5f56ac3: real Component→Cad dropdown +
 thickness + Finish → NumberOfContours=1 PASS. Finished Q10336 /
@@ -94,6 +97,8 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
         "B80510901",
         "Q10348",
         "H.16.70",
+        "Q10349",
+        "D.H.30.96",
     ),
     "hypotheses": (
         {

@@ -21,6 +21,8 @@ Finish) — not this class. Q10346 / B80510901 Sprout main plate is
 a Contours PASS outside H.6.38 — not this unfinished-UI class.
 Q10348 / 1defeed8 / H.16.70 Safe Cave Contours PASS (Cad + 0.1875
 inch → Contours fill → Finish) — not this unfinished-UI class.
+Q10349 / c4394006 / D.H.30.96 Safe Cave Contours PASS (Cad + 0.1875
+inch → Contours fill → Finish) — not this unfinished-UI class.
 Never remint / PATCH / ZZ-DEL. Tip 0759273 ZZ-DEL-fail narrative
 is reversed.
 

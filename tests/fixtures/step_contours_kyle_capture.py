@@ -16,6 +16,9 @@ outside H.6.38 (Cad + 0.0598 inch → Contours fill → Finish) —
 never remint / PATCH. invent=false. Q10348 / 1defeed8 / H.16.70
 Safe Cave is a Contours PASS outside H.6.38 (Cad + 0.1875 inch →
 Contours fill → Finish) — never remint / PATCH. invent=false.
+Q10349 / c4394006 / D.H.30.96 Safe Cave is a Contours PASS
+outside H.6.38 (Cad + 0.1875 inch → Contours fill → Finish) —
+never remint / PATCH. invent=false.
 Do not gate unlock
 on OCC≥1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
@@ -74,6 +77,8 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "B80510901",
     "Q10348",
     "H.16.70",
+    "Q10349",
+    "D.H.30.96",
     "H638-CADPLATE",
     "Q10334",
     "Q10335",
