@@ -146,10 +146,14 @@ Q10333_Q10336_CONTOURS_GAP: dict[str, Any] = {
             "ruled_out": False,
             "why": (
                 "Unused Time STEPs still explode with empty InternalData. "
-                "Live 28898-1 / 28772-1 / 14327-18: UpdateItemType Cad OK, "
-                "InternalData empty, Finish refused. IDs unknown. Separate "
-                "gate from finished ItemList NumberOfContours PASS. "
-                "invent=false. Never remint."
+                "Live 28898-1 / 28772-1 / 14327-18 / 15911-9: "
+                "UpdateItemType Cad OK, InternalData empty, Finish "
+                "refused. 15911-9 / ef865b0f restated @ 62f7a92 "
+                "(ZZ-DEL-15911-9); CadImport/Data + PartImage + "
+                "GetBorderSize not observed vs H.6.38. Other IDs "
+                "unknown. Separate gate from finished ItemList "
+                "NumberOfContours PASS. invent=false. Never remint / "
+                "PATCH Q10333 / Q10336 / Q10338 / Q10339."
             ),
         },
         {

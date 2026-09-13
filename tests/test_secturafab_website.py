@@ -12271,9 +12271,10 @@ def test_live_mid_wizard_contours_xhr_carrier_notes():
 
 
 def test_time_step_empty_internaldata_dig_fail_closed():
-    """28898-1 / 28772-1 / 14327-18: empty explode InternalData stay refuse."""
+    """28898-1 / 28772-1 / 14327-18 / 15911-9: empty explode InternalData stay refuse."""
     from secturafab.forbidden_quotes import (
         ForbiddenQuoteError,
+        is_forbidden_quote_id,
         is_forbidden_quote_number,
         refuse_forbidden_quote_write,
         spent_quote_number_block_reason,
@@ -12288,6 +12289,9 @@ def test_time_step_empty_internaldata_dig_fail_closed():
         STEP_CONTOURS_CAPTURE_NEVER_REMINT,
     )
     from tests.fixtures.time_step_empty_internaldata import (
+        TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID,
+        TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID_PREFIX,
+        TIME_STEP_EMPTY_INTERNALDATA_ZZ_DEL,
         time_step_empty_internaldata_dig,
         time_step_empty_internaldata_pns,
     )
@@ -12297,14 +12301,30 @@ def test_time_step_empty_internaldata_dig_fail_closed():
         "28898-1",
         "28772-1",
         "14327-18",
+        "15911-9",
     )
     assert dig["invent"] is False
     assert dig["unlocks_automation_contours_fill"] is False
     assert dig["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
     assert dig["separate_from_h638_family"] is True
     assert dig["h638_contours_good"] == ("Q10333", "Q10336", "Q10339")
-    assert dig["ids_restated"] is False
+    assert dig["ids_restated"] == ("15911-9",)
     assert dig["id_unknown"] is True
+    assert dig["id_unknown_pns"] == ("28898-1", "28772-1", "14327-18")
+    assert dig["known_quote_id"] == TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID
+    assert (
+        dig["known_quote_id_prefix"]
+        == TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID_PREFIX
+        == "ef865b0f"
+    )
+    assert dig["zz_del_number"] == TIME_STEP_EMPTY_INTERNALDATA_ZZ_DEL
+    assert dig["live_probe_tip"] == "62f7a92"
+    assert dig["missing_mid_wizard_xhrs_vs_h638"] == (
+        "/CadImport/Data",
+        "/part/PartImage",
+        "/Quote/GetBorderSize",
+    )
+    assert dig["missing_mid_wizard_xhrs_observed"] is False
     assert dig["update_item_type_ok"] is True
     assert dig["internaldata_empty_after_explode"] is True
     assert dig["finish_refused"] is True
@@ -12317,9 +12337,28 @@ def test_time_step_empty_internaldata_dig_fail_closed():
     ids = [h["id"] for h in dig["hypotheses"]]
     assert "server_explode_empty_tlist" in ids
     assert "update_item_type_does_not_fill_internaldata" in ids
+    assert "15911_9_missing_mid_wizard_xhrs" in ids
     ruled = {h["id"]: h["ruled_out"] for h in dig["hypotheses"]}
     assert ruled["update_item_type_does_not_fill_internaldata"] is True
     assert ruled["not_h638_finished_get_contours_good"] is True
+    assert ruled["15911_9_missing_mid_wizard_xhrs"] is True
+    assert is_forbidden_quote_id(TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID)
+    assert is_forbidden_quote_id("ef865b0f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number(TIME_STEP_EMPTY_INTERNALDATA_ZZ_DEL)
+    with pytest.raises(
+        ForbiddenQuoteError, match=TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID
+    ):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID},
+        )
+    with pytest.raises(ForbiddenQuoteError, match=TIME_STEP_EMPTY_INTERNALDATA_ZZ_DEL):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": TIME_STEP_EMPTY_INTERNALDATA_ZZ_DEL},
+        )
     for pn in time_step_empty_internaldata_pns():
         assert is_forbidden_quote_number(pn)
         assert spent_quote_number_block_reason(pn)
@@ -12346,6 +12385,8 @@ def test_time_step_empty_internaldata_dig_fail_closed():
     assert "28898-1" not in refuse
     assert "28772-1" not in refuse
     assert "14327-18" not in refuse
+    assert "15911-9" not in refuse
+    assert "ef865b0f" not in refuse
 
 
 def test_q10338_crossdrain_image_files_pass_protect():

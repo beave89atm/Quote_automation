@@ -4,7 +4,7 @@ Live STEP Contours mints are PAUSED. Do not remint / PATCH leftovers
 (14327-5 / c5cd8689, 14327-8 / 1cd941c6, Q10329 / 14327-3 / 75f07c2b,
 Q10330 / 21841-1 / aed89628, Q10331 / 14327-1 / 5e72fe39,
 Q10332 / ZZ-DEL-wrong-org-Time, 35136-1 / 8973f890,
-28898-1 / 28772-1 / 14327-18 empty-InternalData Time STEPs, …).
+28898-1 / 28772-1 / 14327-18 / 15911-9 empty-InternalData Time STEPs, …).
 Q10333 / H.6.38 / b5f56ac3 is a Contours PASS protect — never remint /
 PATCH / ZZ-DEL. Q10336 / f73dd116 and Q10339 / 76cecc73 Cad→Finish
 leftovers match Q10333 finished Contours (NumberOfContours=1 / OCC=0
@@ -81,6 +81,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "28898-1",
         "28772-1",
         "14327-18",
+        "15911-9",
     ),
     "angles": (
         {
