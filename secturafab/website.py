@@ -860,6 +860,44 @@ def cadimport_keep_grid_rows(
     return out
 
 
+def cadimport_keep_grid_classify_spec(
+    rows: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """SetPartMode / UpdateItemType + inch thickness for #gridDXFParts.
+
+    Copies classify fields already on the explode/overlay row. Does not
+    invent Contours / NumberOfContours / InternalData. Inch thickness
+    is copied only when ``plate_step_thickness_units_are_inch`` — the
+    live-grid half of Cad+inches that apply_grid previously omitted.
+    invent=false.
+    """
+    spec_rows: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        cat = str(row.get("Category") or row.get("ItemType") or "")
+        if cat not in {"Cad", "Linear", "Component", "Assembly"}:
+            continue
+        spec: dict[str, Any] = {
+            "ID": str(row.get("ID") or row.get("ItemID") or ""),
+            "SourceDataID": str(row.get("SourceDataID") or ""),
+            "Name": str(row.get("Name") or row.get("Description") or ""),
+            "Category": cat,
+            "PartMode": int(row["PartMode"]) if "PartMode" in row else (
+                0 if cat == "Cad" else 1 if cat == "Linear" else 2
+            ),
+            "ProductType": row.get("ProductType"),
+            "Machine": str(row.get("Machine") or ""),
+        }
+        if plate_step_thickness_units_are_inch(row):
+            spec["Thickness"] = row.get("Thickness")
+            spec["Thickness_Units"] = "inch"
+        if not cad_payload_value_empty(row.get("InternalData")):
+            spec["InternalData"] = row["InternalData"]
+        spec_rows.append(spec)
+    return spec_rows
+
+
 def keep_grid_dxf_parts_via(
     *,
     widget_present: bool,
@@ -3178,6 +3216,55 @@ def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
     )
 
 
+def multi_kid_keep_grid_empty_internaldata_refuses(
+    rows: list[dict[str, Any]] | None,
+    *,
+    keep_via: str = "",
+) -> str | None:
+    """EXEC_FAIL when keep-grid + Cad+inches stuck but InternalData empty.
+
+    Q10358 / 34328-1 keep-grid prove: ``keep_grid_via=live``, live_grid_n=3,
+    Cad×3 after SetPartMode/UpdateItemType, inches on kids. FileList
+    InternalData stayed empty after explode — AddItem_DXFFiles refused.
+    Not grid-loss (Q10355). Not invent. GET /CadImport/Data is
+    copy-if-nonempty; /Quote/GetBorderSize is a thickness companion
+    (Q10335 Contours 0; 21839-1 full trail still empty) — neither fills
+    Contours. Single-plate PASSes Q10344/46/48/49/51 fill after Kyle UI
+    Cad+inches in Adjust Properties; keep-grid skips that page_fn to
+    avoid the Q10355 wipe. invent=false.
+    """
+    via = str(keep_via or "").strip()
+    if via not in {"live", "rehydrate"}:
+        return None
+    kids = [r for r in (rows or []) if isinstance(r, dict)]
+    cad_plates = [
+        r
+        for r in kids
+        if _cad_plate_row_for_finish_gate(r)
+        and live_row_product_type_is_cad(r)
+        and plate_step_thickness_units_are_inch(r)
+    ]
+    if len(cad_plates) < 2:
+        return None
+    empty_n = sum(
+        1 for r in cad_plates if cad_payload_value_empty(r.get("InternalData"))
+    )
+    if empty_n < 1:
+        return None
+    return (
+        f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: multi-kid keep-grid "
+        f"Cad+inches stuck (keep_grid_via={via}, cad_inch_n={len(cad_plates)}) "
+        f"but FileList InternalData empty after explode "
+        f"({empty_n}/{len(cad_plates)}) — refusing AddItem_DXFFiles "
+        "(Q10358 / 34328-1 keep-grid prove; not grid-loss; not Contours "
+        "invent). GET /CadImport/Data is copy-if-nonempty; "
+        "/Quote/GetBorderSize is thickness companion — neither fills "
+        "Contours. "
+        f"missing_call={STEP_CONTOURS_MISSING_CALL}. "
+        "Do not invent InternalData/Contours."
+    )
+
+
 def cad_finish_notes_refuse_additem_dxf(
     notes: list[str] | None,
 ) -> str | None:
@@ -3202,6 +3289,7 @@ def cad_finish_notes_refuse_additem_dxf(
             or "wizard lost #gridDXFParts kids" in text
             or "organization lost mid CAD wizard" in text
             or "item_count dropped" in text
+            or "keep-grid Cad+inches stuck" in text
         ):
             return text
     return None

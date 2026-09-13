@@ -4791,6 +4791,8 @@ def test_apply_grid_part_modes_js_keeps_kids_without_select_or_invent():
     assert "Contours:" not in js
     assert "dataSource.data(rows)" in js
     assert "multi ? \"\" : findSetFn()" in js
+    assert "want.Thickness" in js
+    assert "Thickness_Units" in js
     apply_body = js.split("function applyAll()")[1].split(
         "if (grid() && grid().dataSource) return applyAll();"
     )[0]
@@ -4865,6 +4867,66 @@ def test_cadimport_keep_grid_rows_does_not_invent_contours():
     assert keep_grid_dxf_parts_via(
         widget_present=True, live_grid_n=0, cadimport_n=1
     ) == ""
+
+
+def test_cadimport_keep_grid_classify_spec_copies_inches_not_contours():
+    """Cad+inches spec for live #gridDXFParts. invent=false."""
+    from secturafab.website import cadimport_keep_grid_classify_spec
+
+    kids = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "FileType": "Cad",
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "Machine": "Laser - Bay1",
+            "InternalData": "server-stamped",
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "FileType": "Cad",
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "",
+        },
+        {
+            "ID": "id-c",
+            "SourceDataID": "src-c",
+            "Name": "34328-1 GUSSET",
+            "FileType": "Cad",
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.0048:meter",
+            "Thickness_Units": "meter",
+        },
+    ]
+    spec = cadimport_keep_grid_classify_spec(kids)
+    assert len(spec) == 3
+    assert spec[0]["Thickness"] == "0.25"
+    assert spec[0]["Thickness_Units"] == "inch"
+    assert spec[0]["InternalData"] == "server-stamped"
+    assert spec[1]["Thickness"] == "0.25"
+    assert spec[1]["Thickness_Units"] == "inch"
+    assert "InternalData" not in spec[1]
+    assert "Thickness" not in spec[2]
+    assert "Thickness_Units" not in spec[2]
+    for row in spec:
+        assert "Contours" not in row
+        assert "NumberOfContours" not in row
 
 
 def test_apply_grid_part_modes_js_rehydrates_emptied_kendo_from_keep_rows(
@@ -4977,6 +5039,8 @@ const done = (value) => {
     throw new Error("lost InternalData");
   }
   if (store.rows[1].InternalData) throw new Error("invented InternalData");
+  if (store.rows[0].Thickness !== "0.25") throw new Error("lost inches");
+  if (store.rows[1].Thickness !== "0.25") throw new Error("lost inches b");
   if (ajaxCalls.some((c) => String(c.url || "").indexOf("QuoteItem_Read") >= 0)) {
     throw new Error("QuoteItem_Read fired");
   }
@@ -5007,6 +5071,166 @@ Promise.resolve(done(result)).catch((err) => {
     assert out["keep_via"] == "rehydrate"
     assert out["grid_dxf_row_count"] == 3
     assert out["cad"] == 3
+
+
+def test_apply_grid_part_modes_js_live_keep_writes_inches_not_internaldata(
+    tmp_path: Path,
+):
+    """Q10358: keep_via=live writes Cad+inches; does not invent InternalData."""
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    live_rows = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Thickness": "0.0048:meter",
+            "Thickness_Units": "meter",
+            "InternalData": "",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 2,
+            "ProductType": 200,
+            "InternalData": "",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-c",
+            "SourceDataID": "src-c",
+            "Name": "34328-1 GUSSET",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+    ]
+    wants = [
+        {
+            "ID": row["ID"],
+            "SourceDataID": row["SourceDataID"],
+            "Name": row["Name"],
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser - Bay1",
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+        }
+        for row in live_rows
+    ]
+    spec = {"rows": wants, "keep_rows": live_rows}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + "const live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+const store = { rows: live.map((r) => ({ ...r })) };
+const dataSource = {
+  data(rows) {
+    if (arguments.length) {
+      store.rows = (rows || []).map((r) => ({ ...r }));
+      return store.rows;
+    }
+    const arr = store.rows.slice();
+    arr.toJSON = function toJSON() {
+      return store.rows.map((r) => ({ ...r }));
+    };
+    return arr;
+  },
+};
+const gridObj = { dataSource };
+const ajaxCalls = [];
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "b7dbc294-3fd2-43aa-99be-268a6c4fce14" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax(opts) {
+    ajaxCalls.push(opts);
+    return { always(fn) { fn(); return this; } };
+  },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") {
+    return value.then(done);
+  }
+  if (value.keep_via !== "live") throw new Error("keep_via=" + value.keep_via);
+  if (value.cad !== 3) throw new Error("cad=" + value.cad);
+  if (store.rows.some((r) => r.Contours != null || r.NumberOfContours != null)) {
+    throw new Error("invented Contours");
+  }
+  if (store.rows.some((r) => r.InternalData)) throw new Error("invented InternalData");
+  if (store.rows.some((r) => String(r.Thickness) !== "0.25")) {
+    throw new Error("inches missing");
+  }
+  if (store.rows.some((r) => String(r.Thickness_Units) !== "inch")) {
+    throw new Error("units missing");
+  }
+  if (ajaxCalls.some((c) => /GetBorderSize|UpdateData|CadImport\/Data/.test(String(c.url || "")))) {
+    throw new Error("fill xhr " + JSON.stringify(ajaxCalls.map((c) => c.url)));
+  }
+  process.stdout.write(JSON.stringify({
+    keep_via: value.keep_via,
+    cad: value.cad,
+    ajax_n: ajaxCalls.length,
+    ajax_paths: ajaxCalls.map((c) => c.url),
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "keep_grid_live_inches.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["keep_via"] == "live"
+    assert out["cad"] == 3
+    assert out["ajax_n"] >= 3
+    assert all(
+        "/CadImport/SetPartMode" in p or "/Part/UpdateItemType" in p
+        for p in out["ajax_paths"]
+    )
 
 
 def test_finish_skips_when_grid_classify_cad_is_zero(tmp_path: Path):
@@ -14813,6 +15037,222 @@ def test_finish_cad_files_multi_kid_keep_grid_rehydrate_allows_finish(
     client.add_item_dxf_files.assert_called()
 
 
+def test_multi_kid_keep_grid_empty_internaldata_is_exec_fail():
+    """Q10358: keep-grid + Cad+inches + empty InternalData → EXEC_FAIL.
+
+    Hypothesis Data/GetBorderSize-is-fill is discarded. invent=false.
+    """
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        STEP_CONTOURS_MISSING_CALL,
+        cad_finish_notes_refuse_additem_dxf,
+        multi_kid_keep_grid_empty_internaldata_refuses,
+    )
+
+    kids = [
+        {
+            "Name": "34328-1 PLATE A",
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "",
+        },
+        {
+            "Name": "34328-1 PLATE B",
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "",
+        },
+        {
+            "Name": "34328-1 GUSSET",
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "",
+        },
+    ]
+    why = multi_kid_keep_grid_empty_internaldata_refuses(
+        kids, keep_via="live"
+    )
+    assert why is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why
+    assert "keep-grid Cad+inches stuck" in why
+    assert "keep_grid_via=live" in why
+    assert "Q10358" in why
+    assert "34328-1" in why
+    assert "not grid-loss" in why
+    assert "GetBorderSize" in why
+    assert "copy-if-nonempty" in why
+    assert STEP_CONTOURS_MISSING_CALL in why
+    assert "invent" in why.lower()
+    assert cad_finish_notes_refuse_additem_dxf([why]) == why
+
+    filled = [{**r, "InternalData": "server-stamped"} for r in kids]
+    assert multi_kid_keep_grid_empty_internaldata_refuses(
+        filled, keep_via="live"
+    ) is None
+    assert multi_kid_keep_grid_empty_internaldata_refuses(
+        kids, keep_via=""
+    ) is None
+    assert multi_kid_keep_grid_empty_internaldata_refuses(
+        kids[:1], keep_via="live"
+    ) is None
+
+
+def test_q10358_34328_1_keep_grid_prove_does_not_invent():
+    """Q10358 leftover: keep-grid worked; InternalData empty; invent=false."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10358_34328_1 import q10358_34328_1_keep_grid_prove
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10358_34328_1_keep_grid_prove()
+    assert dump["quote_number"] == "Q10358"
+    assert dump["part_number"] == "34328-1"
+    assert dump["keep_grid_via"] == "live"
+    assert dump["live_grid_n"] == 3
+    assert dump["keep_grid_works"] is True
+    assert dump["internaldata_empty_after_explode"] is True
+    assert dump["finish_refused"] is True
+    assert dump["invent"] is False
+    assert dump["hypothesis_data_getbordersize_is_fill"] is False
+    assert dump["hypothesis_discarded"] is True
+    assert dump["do_not_forbid_part_number"] is True
+    assert is_forbidden_quote_number("Q10358")
+    assert not is_forbidden_quote_number("34328-1")
+    assert spent_quote_number_block_reason("Q10358")
+    assert spent_quote_number_block_reason("34328-1") is None
+    assert "Q10358" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "34328-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert "Q10358" in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "multi_kid_keep_grid_data_getbordersize_not_fill"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10358" in angle["why"]
+    assert "discarded" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10358"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10358"},
+        )
+
+
+def test_finish_cad_files_multi_kid_keep_grid_empty_internaldata_is_exec_fail(
+    tmp_path: Path,
+):
+    """Q10358 path: keep-grid live + Cad+inches + empty InternalData.
+
+    Re-GET Data is copy-if-nonempty. Still empty → EXEC_FAIL. invent=false.
+    """
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+    )
+
+    service, client, stp, kids = _multi_kid_cad_finish_client(
+        tmp_path,
+        names=["34328-1 PLATE A", "34328-1 PLATE B", "34328-1 GUSSET"],
+        part_key="34328-1",
+    )
+    empty_kids = [{**r, "InternalData": ""} for r in kids]
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": empty_kids}
+    client.create_dxf_parts.return_value = {"List": empty_kids}
+    client.cadimport_data.return_value = {"List": empty_kids}
+    client.cadimport_caddata = MagicMock(return_value={"List": empty_kids})
+    live_items = [
+        {
+            "ID": f"id-{i}",
+            "Name": name,
+            "ProductType": 100,
+            "ProductTypeName": "Cad",
+        }
+        for i, name in enumerate(
+            ["34328-1 PLATE A", "34328-1 PLATE B", "34328-1 GUSSET"]
+        )
+    ]
+    client.quote_item_read.return_value = {"Data": live_items, "Total": 3}
+    client.get_json.return_value = {
+        "ItemList": live_items,
+        "PrimaryOrganizationID": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+    }
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 3,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 3,
+            "setpartmode_via": "jquery_ajax",
+            "updateitemtype_via": "jquery_ajax",
+            "updateitemtype_count": 3,
+            "grid_dxf_row_count": 3,
+            "keep_via": "live",
+            "keep_n": 3,
+            "edit_gate": "",
+            "org_id": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+            "org_widget": True,
+            "kendo_row_keys": [
+                "FileType",
+                "SourceDataID",
+                "ID",
+                "Thickness",
+                "Thickness_Units",
+            ],
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id=client._edit_quote_id,
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="34328-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "keep_grid_via=live" in blob
+    assert "cadimport_get_after_cad_inches=true" in blob
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
+    assert "keep-grid Cad+inches stuck" in blob
+    assert "InternalData empty" in blob
+    assert "Q10358" in blob
+    assert "wizard lost FileList" not in blob
+    assert cad_finish_notes_refuse_additem_dxf(notes) is not None
+
+
 def test_finish_cad_files_multi_kid_org_cleared_mid_wizard_is_exec_fail(
     tmp_path: Path,
 ):
@@ -15096,6 +15536,7 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
         "pdf_image_files_parallel",
         "quote_item_edit",
         "get_border_size",
+        "multi_kid_keep_grid_data_getbordersize_not_fill",
     ]
     assert all(a["ruled_out"] is True for a in hunt["angles"])
     assert "/CadImport/ConvertTo" in PROVEN_EMPTY_PATHS

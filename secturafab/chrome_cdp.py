@@ -7613,13 +7613,14 @@ def create_all_parts_from_grid_dxf(
 # UpdateItemType is classify, not Contours fill.
 # Live 105918-1: Finish without this left plates as Component (0 Cad).
 #
-# Multi-kid keep (Q10353 / 12519-2, Q10355 / 34328-1):
+# Multi-kid keep (Q10353 / 12519-2, Q10355 / 34328-1, Q10358 prove):
 # DoCreateDXFParts pushes t.List onto the *local* #gridDXFParts dataSource.
 # Kids are not quote ItemList yet. QuoteItem_Read after child-row
 # select / kendo .set() / page SetPartMode returns Data:[] and the
 # page rebinds the kendo grid to empty — main Items follow. #but_dxf
 # reopen is the same wipe. Keep-path: snapshot toJSON before classify;
 # silent field writes + jquery.ajax (no page_fn, no select/editCell);
+# Cad+inches (Thickness / Thickness_Units) write onto live kids;
 # if live n drops, dataSource.data(snapshot|keep_rows) last. Fail-close
 # if the widget is gone. Do not invent Contours/InternalData.
 _APPLY_GRID_PART_MODES_JS = """(function(spec) {
@@ -7745,6 +7746,12 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         if (want.InternalData != null && String(want.InternalData) !== "") {
           row.set("InternalData", want.InternalData);
         }
+        if (want.Thickness != null && String(want.Thickness) !== "") {
+          row.set("Thickness", want.Thickness);
+          if (want.Thickness_Units != null && String(want.Thickness_Units) !== "") {
+            row.set("Thickness_Units", want.Thickness_Units);
+          }
+        }
       } else if (cat === "Linear") {
         row.set("Machine", want.Machine || "Saw");
         row.set("ProductType", Number(want.ProductType) || 10);
@@ -7774,6 +7781,12 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         }
         if (want.InternalData != null && String(want.InternalData) !== "") {
           row.InternalData = want.InternalData;
+        }
+        if (want.Thickness != null && String(want.Thickness) !== "") {
+          row.Thickness = want.Thickness;
+          if (want.Thickness_Units != null && String(want.Thickness_Units) !== "") {
+            row.Thickness_Units = want.Thickness_Units;
+          }
         }
       } else if (cat === "Linear") {
         row.Machine = want.Machine || "Saw";
@@ -7985,7 +7998,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         "CadType", "Stock_X", "Stock_Y", "Stock_Z", "Stock_Units",
         "Stock_Length", "Stock_Diameter", "FileType", "SourceDataID", "FileID", "ID",
         "InternalData", "InternalHTML", "ImageString", "HadOpenContours",
-        "OutsidePerimeter"
+        "OutsidePerimeter", "Thickness", "Thickness_Units"
       ];
       var first = {};
       try {
@@ -8074,33 +8087,15 @@ def apply_grid_dxf_part_modes(
 
     Multi-kid: snapshot / CadImport keep_rows rehydrate if Adjust
     Properties or child-row select emptied the local kendo grid
-    (Q10353 / Q10355 / 34328-1 first-child edit). Does not invent
-    Contours. Fail-close if the widget is gone (no #but_dxf reopen).
-    invent=false.
+    (Q10353 / Q10355 / 34328-1 first-child edit). Writes already-
+    classified inch thickness onto live kids (Cad+inches). Does not
+    invent Contours/InternalData. Fail-close if the widget is gone
+    (no #but_dxf reopen). invent=false.
     """
-    from .website import cad_payload_value_empty, cadimport_keep_grid_rows
+    from .website import cadimport_keep_grid_classify_spec, cadimport_keep_grid_rows
 
     kids = [r for r in rows if isinstance(r, dict)]
-    spec_rows: list[dict[str, Any]] = []
-    for row in kids:
-        cat = str(row.get("Category") or row.get("ItemType") or "")
-        if cat not in {"Cad", "Linear", "Component", "Assembly"}:
-            continue
-        spec_rows.append(
-            {
-                "ID": str(row.get("ID") or row.get("ItemID") or ""),
-                "SourceDataID": str(row.get("SourceDataID") or ""),
-                "Name": str(row.get("Name") or row.get("Description") or ""),
-                "Category": cat,
-                "PartMode": int(row["PartMode"]) if "PartMode" in row else (
-                    0 if cat == "Cad" else 1 if cat == "Linear" else 2
-                ),
-                "ProductType": row.get("ProductType"),
-                "Machine": str(row.get("Machine") or ""),
-            }
-        )
-        if not cad_payload_value_empty(row.get("InternalData")):
-            spec_rows[-1]["InternalData"] = row["InternalData"]
+    spec_rows = cadimport_keep_grid_classify_spec(kids)
     keep_rows = cadimport_keep_grid_rows(kids) if len(spec_rows) >= 2 else []
     empty = {
         "grid_present": False,

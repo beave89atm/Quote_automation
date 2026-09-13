@@ -3447,6 +3447,7 @@ class SecturaFabPushService:
             cad_payload_value_empty,
             filelist_cad_payload_empty_bools,
             filelist_missing_cadimport_identity_keys,
+            multi_kid_keep_grid_empty_internaldata_refuses,
         )
 
         prior_state = self._peek_wizard_quote_state(quote_id)
@@ -3471,6 +3472,13 @@ class SecturaFabPushService:
         keep_via = str(applied.get("keep_via") or "")
         if keep_via:
             notes.append(f"keep_grid_via={keep_via}")
+        classified, post_overlay = self._overlay_cadimport_get_payloads(
+            quote_id=quote_id,
+            rows=classified,
+            quote_request_id=quote_request_id,
+        )
+        notes.extend(post_overlay)
+        notes.append("cadimport_get_after_cad_inches=true")
         blocked = kyle_classify_before_finish_blocked(classified)
         if blocked:
             notes.append(blocked)
@@ -3631,6 +3639,37 @@ class SecturaFabPushService:
         hard_ready = step_cad_finish_hard_gate(ready)
         if hard_ready:
             notes.append(hard_ready)
+            return notes
+        keep_empty = multi_kid_keep_grid_empty_internaldata_refuses(
+            ready, keep_via=keep_via
+        )
+        if keep_empty:
+            row = next(
+                (
+                    r
+                    for r in ready
+                    if isinstance(r, dict)
+                    and cad_payload_value_empty(r.get("InternalData"))
+                ),
+                None,
+            )
+            bools = filelist_cad_payload_empty_bools(row)
+            notes.append(
+                "filelist_internaldata_empty="
+                + ("true" if bools["filelist_internaldata_empty"] else "false")
+            )
+            notes.append(
+                "filelist_imagestring_empty="
+                + ("true" if bools["filelist_imagestring_empty"] else "false")
+            )
+            notes.append(keep_empty)
+            from .website import (
+                CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+                STEP_EXPLODE_NO_INTERNALDATA,
+            )
+
+            notes.append(STEP_EXPLODE_NO_INTERNALDATA)
+            notes.append(CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE)
             return notes
         cad_refuse = next(
             (

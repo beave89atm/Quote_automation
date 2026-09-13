@@ -34,6 +34,11 @@ Q10356 / 05bee105 / V.20.78 Safe Cave Contours FAIL leftover
 NumberOfContours missing / Contours PASS not proven) —
 same Contours-FAIL class as Q10354 / D.H.38.96.
 Never remint / PATCH. invent=false.
+Q10358 / 34328-1 Time keep-grid prove leftover (tip 4cc4481):
+keep_grid_via=live, Cad×3, inches on kids, FileList InternalData
+empty after explode — Finish refused. Not grid-loss. Hypothesis
+that Data/GetBorderSize fill Contours is discarded. Never remint
+Q10358. Do not forbid 34328-1 (PO may remint the PN). invent=false.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -113,6 +118,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "D.H.38.96",
         "Q10356",
         "V.20.78",
+        "Q10358",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
@@ -247,6 +253,27 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "Thickness_Units=inch only. Method / other keys not "
                 "restated. Proven-keys probe; do not invent Thickness/ID. "
                 "Not invent fill."
+            ),
+        },
+        {
+            "id": "multi_kid_keep_grid_data_getbordersize_not_fill",
+            "call": "GET /CadImport/Data + /Quote/GetBorderSize after keep-grid Cad+inches",
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10358 / 34328-1 keep-grid prove (tip 4cc4481): "
+                "keep_grid_via=live, live_grid_n=3, Cad×3 after "
+                "SetPartMode/UpdateItemType, inches on kids. FileList "
+                "InternalData empty after explode — Finish refused. "
+                "Hypothesis that single-plate fires Data/GetBorderSize "
+                "as Contours fill is discarded: automation apply_grid "
+                "never POSTs those (single or multi); overlay GET Data "
+                "is copy-if-nonempty before and after Cad+inches; "
+                "GetBorderSize is thickness companion (Q10335 Contours 0; "
+                "21839-1 full trail still empty). Single-plate PASSes "
+                "Q10344/46/48/49/51 fill after Kyle UI Cad+inches in "
+                "Adjust Properties — keep-grid skips that page_fn to "
+                "avoid the Q10355 wipe. invent=false."
             ),
         },
     ),
