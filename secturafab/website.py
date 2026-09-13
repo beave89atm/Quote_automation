@@ -2955,12 +2955,20 @@ def step_cad_live_product_type_hard_gate(
     live_plates: list[dict[str, Any]] = []
     for row in live:
         cat = str(row.get("Category") or row.get("ItemType") or "").strip()
-        if cat in {"Assembly", "Linear"}:
+        if cat in {"Assembly", "Linear", "Component"}:
             continue
-        if product_type_is_component(row.get("ProductType")) and cat == "Component":
+        pt = row.get("ProductType")
+        # QuoteItem_Read mid-wizard often has enum only (no Category).
+        # 10/30/40 Linear, 200 Component, 300 Assembly are not Cad plates.
+        # Do not EXEC_FAIL those as "not Cad" (Q10354 is the ``part`` noun).
+        if product_type_is_component(pt):
+            continue
+        if pt in (10, 30, 40, "10", "30", "40"):
+            continue
+        if pt in (300, "300"):
             continue
         if (
-            row.get("ProductType") in (None, "")
+            pt in (None, "")
             and not product_type_display_token(row)
         ):
             continue
