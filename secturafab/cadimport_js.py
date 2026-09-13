@@ -265,8 +265,10 @@ ADD_ITEM_DXF_FILES_SNIPPET = (
 # diagnostic lost CAD row — QuoteItem_Read Data:[] before Finish —
 # ZZ-DEL empty-Contours leftover; Q10336 / f73dd116 mouse
 # UpdateItemType then Finish is Cad+Laser leftover, OpenContourCount=0
-# — Contours≥1 still gap vs Q10333). Do not invent Contours/InternalData;
-# refuse Finish if they are still empty after UpdateItemType.
+# — Contours≥1 still gap vs Q10333; Q10339 same soft PASS class,
+# Contours=0 / OpenContourCount=0, ID not restated). Do not invent
+# Contours/InternalData; refuse Finish if they are still empty after
+# UpdateItemType.
 # UpdateItemType is dropdown classify; Contours fill may still need
 # Finish or further calls.
 # Live 105918-1: page Finish without grid SetPartMode → 66 Component/Assembly, 0 Cad.
@@ -289,6 +291,27 @@ UPDATE_ITEM_TYPE_SNIPPET = (
     "data:{ID:id,ItemType:type}})"
 )
 GET_BORDER_SIZE_PATH = "/Quote/GetBorderSize"
+# Q10336 named Thickness_Units=inch on GetBorderSize. Method / other keys
+# were not restated — invent=false. Thickness companion, not Contours fill.
+GET_BORDER_SIZE_PROVEN_KEYS = ("Thickness_Units",)
+GET_BORDER_SIZE_THICKNESS_UNITS_INCH = "inch"
+GET_BORDER_SIZE_FILLS_CONTOURS = False
+# Q10336 xhr_sequence after AddItem_DXFFiles. Post-Finish navigation.
+# OpenContourCount stayed 0 — not a Contours fill. No body keys restated.
+QUOTE_ITEM_EDIT_PATH = "/quote/ItemEdit"
+QUOTE_ITEM_EDIT_FILLS_CONTOURS = False
+# Named Cad→Finish sequence from live Q10336 mouse capture (paths only).
+# Soft PASS: OpenContourCount=0. Does not unlock Contours≥1.
+CAD_FINISH_NAMED_XHR_SEQUENCE = (
+    "/CadImport/UploadItem_DXFFiles",
+    "/CadImport/Data",
+    "/part/create",
+    UPDATE_ITEM_TYPE_PATH,
+    "/part/PartImage",
+    GET_BORDER_SIZE_PATH,
+    "/Quote/AddItem_DXFFiles",
+    QUOTE_ITEM_EDIT_PATH,
+)
 UPDATE_DATA_PATH = "/CadImport/UpdateData"
 UPDATE_DATA_SNIPPET = (
     '$.ajax({type:"POST",url:"/CadImport/UpdateData",'
@@ -496,6 +519,58 @@ def update_item_type_fields(
     return {
         "ID": str(row_id or ""),
         "ItemType": str(item_type or UPDATE_ITEM_TYPE_CAD),
+    }
+
+
+def get_border_size_fields(*, thickness_units: str | None = None) -> dict[str, str]:
+    """GetBorderSize proven key only. Q10336 named Thickness_Units.
+
+    Do not invent Thickness / ID / method / extra keys. Empty when the
+    caller does not supply Thickness_Units — fail-closed, no default.
+    Does not fill Contours.
+    """
+    units = str(thickness_units or "").strip()
+    if not units:
+        return {}
+    return {"Thickness_Units": units}
+
+
+def get_border_size_fills_contours() -> bool:
+    """GetBorderSize is a thickness companion (Q10335/Q10336). Not fill."""
+    return GET_BORDER_SIZE_FILLS_CONTOURS
+
+
+def quote_item_edit_fills_contours() -> bool:
+    """Q10336 /quote/ItemEdit is post-Finish. OpenContourCount stayed 0."""
+    return QUOTE_ITEM_EDIT_FILLS_CONTOURS
+
+
+def cad_finish_named_xhr_sequence() -> tuple[str, ...]:
+    """Live Q10336 named paths. Soft PASS ≠ Contours≥1 unlock."""
+    return CAD_FINISH_NAMED_XHR_SEQUENCE
+
+
+def cad_finish_named_xhr_probe(
+    observed_paths: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """Fail-closed probe: named Cad→Finish paths vs observed.
+
+    Missing named calls are reported. Observing every named path still
+    does not unlock Contours fill (Q10336 OpenContourCount=0).
+    invent=false — no payloads.
+    """
+    named = list(CAD_FINISH_NAMED_XHR_SEQUENCE)
+    observed = [str(p) for p in (observed_paths or []) if str(p or "").strip()]
+    missing = [p for p in named if p not in observed]
+    return {
+        "named": named,
+        "observed": observed,
+        "missing_named": missing,
+        "fills_contours": False,
+        "invent": False,
+        "unlocks_automation_contours_fill": False,
+        "get_border_size_proven_keys": list(GET_BORDER_SIZE_PROVEN_KEYS),
+        "quote_item_edit_path": QUOTE_ITEM_EDIT_PATH,
     }
 
 

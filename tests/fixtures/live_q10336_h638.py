@@ -19,7 +19,9 @@ Forever-protect like Q10333 (never remint / PATCH / ZZ-DEL) as a
 Cad+Laser Finish leftover. Not a Contours=1 PASS. Contours≥1 still
 gap vs Q10333 / b5f56ac3 (human Cad / Contours=1 / 8 bends).
 Q10335 / bcff1a24 stays the empty-Contours / lost-CAD-row forbid.
-Does not unlock automation Contours fill.
+Q10339 is the same Cad→Finish soft PASS class (Contours=0 /
+OpenContourCount=0; ID not restated). Does not unlock automation
+Contours fill.
 """
 
 from __future__ import annotations

@@ -2179,6 +2179,7 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_id("f73dd116-f33e-485f-947c-f5662633d23a")
     assert is_forbidden_quote_id("f73dd116-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10338")
+    assert is_forbidden_quote_number("Q10339")
     assert is_forbidden_quote_number("CROSSDRAIN-12X7X60")
     assert is_forbidden_quote_id("4902c597-2ad6-4ebf-b577-dd6cf20a7d87")
     assert is_forbidden_quote_id("4902c597-1111-2222-3333-444444444444")
@@ -2987,6 +2988,7 @@ def test_website_paths_are_quote_mvc_not_quickadd():
     assert WEBSITE_FINISH_PATHS["add_item_dxf_files"] == "/Quote/AddItem_DXFFiles"
     assert WEBSITE_FINISH_PATHS["part_update_item_type"] == "/Part/UpdateItemType"
     assert WEBSITE_FINISH_PATHS["quote_get_border_size"] == "/Quote/GetBorderSize"
+    assert WEBSITE_FINISH_PATHS["quote_item_edit"] == "/quote/ItemEdit"
     assert WEBSITE_FINISH_PATHS["add_item_pdf_files"] == "/Quote/AddItem_PDFFiles"
     assert WEBSITE_FINISH_PATHS["get_perimeter_and_weight"] == "/Quote/GetPerimeterAndWeight"
     assert WEBSITE_FINISH_PATHS["add_item_linear"] == "/Quote/AddItem_Linear"
@@ -9467,6 +9469,7 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("Q10333")
     assert is_forbidden_quote_number("Q10336")
     assert is_forbidden_quote_number("Q10338")
+    assert is_forbidden_quote_number("Q10339")
     assert is_forbidden_quote_number("CROSSDRAIN-12X7X60")
     assert is_forbidden_quote_number("H638-CADPLATE")
     assert is_forbidden_quote_number("Q10334")
@@ -10380,6 +10383,7 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "Q10333",
         "Q10336",
         "Q10338",
+        "Q10339",
         "CROSSDRAIN-12X7X60",
         "H638-CADPLATE",
         "Q10334",
@@ -11637,6 +11641,7 @@ def test_leftover_cad_for_plate_h638_q10334_forever_forbid():
         "details_form_save",
         "finish_fills_contours",
         "thickness_unit_conversion",
+        "quote_item_edit_post_finish",
     ]
     assert all(h["ruled_out"] is True for h in gap["hypotheses"])
 
@@ -11913,17 +11918,28 @@ def test_q10336_h638_cad_finish_soft_protect():
     assert gap["q10333_pass"] is True
     assert gap["q10336_contours_pass"] is False
     assert gap["q10336_cad_laser_finish_soft_pass"] is True
-    assert gap["forever_protect"] == ("Q10333", "Q10336")
+    assert gap["forever_protect"] == ("Q10333", "Q10336", "Q10339")
     assert [h["id"] for h in gap["hypotheses"]] == [
         "number_of_contours_vs_open_contour_count",
         "bend_vs_outer_contour",
         "thickness_material",
         "filelist_internaldata_on_finish",
+        "human_q10333_xhr_unrecorded",
+        "cad_finish_soft_pass_class",
+        "get_border_size_other_keys_unrecorded",
+        "unused_time_step_explode_empty",
     ]
     assert all(h["ruled_out"] is False for h in gap["hypotheses"])
     assert gap["q10333"]["number_of_contours"] == 1
     assert gap["q10336"]["open_contour_count"] == 0
     assert gap["q10336"]["number_of_contours"] is None
+    assert gap["q10339"]["quote_number"] == "Q10339"
+    assert gap["q10339"]["id_unknown"] is True
+    assert gap["q10339"]["open_contour_count"] == 0
+    assert gap["q10339"]["number_of_contours"] == 0
+    assert gap["q10339_cad_laser_finish_soft_pass"] is True
+    assert gap["named_cad_finish_xhr_sequence"][-1] == "/quote/ItemEdit"
+    assert "/Quote/GetBorderSize" in gap["named_cad_finish_xhr_sequence"]
 
     refuse = cad_filelist_refuses_additem_dxf(
         {
@@ -11943,6 +11959,183 @@ def test_q10336_h638_cad_finish_soft_protect():
     assert "bcff1a24" in refuse
     assert "Q10335" in refuse
     assert dump["invent"] is False
+
+
+def test_q10339_cad_finish_soft_protect_id_unknown():
+    """Q10339 Cad→Finish soft PASS leftover. ID unknown. Never remint.
+
+    Contours=0 / OpenContourCount=0 after UpdateItemType+Finish. Same
+    class as Q10336. Description-only forbid. invent=false. Fill stays
+    locked.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        STEP_CONTOURS_FILL_UNLOCKED,
+        cad_filelist_refuses_additem_dxf,
+        cad_finish_named_sequence_unlocks_contours,
+        contours_ge_1_from_named_fields,
+        step_contours_fill_unlocked,
+    )
+    from tests.fixtures.live_q10339_h638 import q10339_h638_cad_finish_dump
+    from tests.fixtures.q10333_q10336_contours_gap import q10333_q10336_contours_gap
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10339_h638_cad_finish_dump()
+    assert dump["quote_id"] is None
+    assert dump["quote_id_prefix"] is None
+    assert dump["quote_number"] == "Q10339"
+    assert dump["id_unknown"] is True
+    assert dump["same_class_as"] == "Q10336"
+    assert dump["pass"] is True
+    assert dump["contours_pass"] is False
+    assert dump["cad_laser_finish_soft_pass"] is True
+    assert dump["open_contour_count"] == 0
+    assert dump["number_of_contours"] == 0
+    assert dump["contours_ge_1"] is False
+    assert dump["invent"] is False
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert is_forbidden_quote_number("Q10339")
+    assert spent_quote_number_block_reason("Q10339")
+    assert not is_forbidden_quote_id(dump["quote_id"])
+    with pytest.raises(ForbiddenQuoteError, match="Q10339"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10339"},
+        )
+    assert "Q10339" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10339" in step_contours_fill_hunt()["never_remint"]
+    assert "Q10339" in q10333_q10336_contours_gap()["forever_protect"]
+    assert contours_ge_1_from_named_fields(
+        number_of_contours=dump["number_of_contours"],
+        open_contour_count=dump["open_contour_count"],
+    ) is False
+    assert cad_finish_named_sequence_unlocks_contours(
+        number_of_contours=dump["number_of_contours"],
+        open_contour_count=dump["open_contour_count"],
+    ) is False
+    assert step_contours_fill_unlocked() is False is STEP_CONTOURS_FILL_UNLOCKED
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "InternalData empty" in refuse
+    assert dump["invent"] is False
+
+
+def test_cad_finish_named_xhr_probe_itemedit_getbordersize_fail_closed():
+    """Named Q10336 XHRs are probed; Contours≥1 stays locked. No invent."""
+    from secturafab.cadimport_js import (
+        CAD_FINISH_NAMED_XHR_SEQUENCE,
+        GET_BORDER_SIZE_FILLS_CONTOURS,
+        GET_BORDER_SIZE_PATH,
+        GET_BORDER_SIZE_PROVEN_KEYS,
+        GET_BORDER_SIZE_THICKNESS_UNITS_INCH,
+        QUOTE_ITEM_EDIT_FILLS_CONTOURS,
+        QUOTE_ITEM_EDIT_PATH,
+        cad_finish_named_xhr_probe,
+        cad_finish_named_xhr_sequence,
+        get_border_size_fields,
+        get_border_size_fills_contours,
+        quote_item_edit_fills_contours,
+    )
+    from secturafab.website import (
+        STEP_CONTOURS_FILL_UNLOCKED,
+        STEP_CONTOURS_KNOWN_PATHS,
+        STEP_CONTOURS_NOT_FILL_PATHS,
+        WEBSITE_FINISH_PATHS,
+        cad_filelist_refuses_additem_dxf,
+        cad_finish_named_sequence_unlocks_contours,
+        contours_ge_1_from_named_fields,
+        step_contours_fill_unlocked,
+    )
+    from tests.fixtures.live_q10336_h638 import q10336_h638_cad_finish_dump
+
+    assert cad_finish_named_xhr_sequence() == CAD_FINISH_NAMED_XHR_SEQUENCE
+    assert CAD_FINISH_NAMED_XHR_SEQUENCE[-1] == QUOTE_ITEM_EDIT_PATH
+    assert CAD_FINISH_NAMED_XHR_SEQUENCE[5] == GET_BORDER_SIZE_PATH
+    dump = q10336_h638_cad_finish_dump()
+    assert tuple(dump["xhr_sequence"]) == CAD_FINISH_NAMED_XHR_SEQUENCE
+
+    full = cad_finish_named_xhr_probe(CAD_FINISH_NAMED_XHR_SEQUENCE)
+    assert full["missing_named"] == []
+    assert full["fills_contours"] is False
+    assert full["invent"] is False
+    assert full["unlocks_automation_contours_fill"] is False
+    assert full["quote_item_edit_path"] == QUOTE_ITEM_EDIT_PATH
+    assert full["get_border_size_proven_keys"] == list(GET_BORDER_SIZE_PROVEN_KEYS)
+
+    miss = cad_finish_named_xhr_probe(
+        [
+            "/CadImport/UploadItem_DXFFiles",
+            "/part/create",
+            "/Part/UpdateItemType",
+            "/Quote/AddItem_DXFFiles",
+        ]
+    )
+    assert QUOTE_ITEM_EDIT_PATH in miss["missing_named"]
+    assert GET_BORDER_SIZE_PATH in miss["missing_named"]
+    assert "/part/PartImage" in miss["missing_named"]
+    assert miss["fills_contours"] is False
+
+    assert get_border_size_fields() == {}
+    assert get_border_size_fields(thickness_units="") == {}
+    assert get_border_size_fields(
+        thickness_units=GET_BORDER_SIZE_THICKNESS_UNITS_INCH
+    ) == {"Thickness_Units": "inch"}
+    assert get_border_size_fills_contours() is False is GET_BORDER_SIZE_FILLS_CONTOURS
+    assert quote_item_edit_fills_contours() is False is QUOTE_ITEM_EDIT_FILLS_CONTOURS
+    assert GET_BORDER_SIZE_PROVEN_KEYS == ("Thickness_Units",)
+    assert QUOTE_ITEM_EDIT_PATH in STEP_CONTOURS_NOT_FILL_PATHS
+    assert QUOTE_ITEM_EDIT_PATH in STEP_CONTOURS_KNOWN_PATHS
+    assert GET_BORDER_SIZE_PATH in STEP_CONTOURS_KNOWN_PATHS
+    assert WEBSITE_FINISH_PATHS["quote_item_edit"] == QUOTE_ITEM_EDIT_PATH
+
+    assert contours_ge_1_from_named_fields(number_of_contours=1) is True
+    assert contours_ge_1_from_named_fields(
+        number_of_contours=None, open_contour_count=0
+    ) is False
+    assert contours_ge_1_from_named_fields(
+        number_of_contours=0, open_contour_count=0
+    ) is False
+    assert cad_finish_named_sequence_unlocks_contours(
+        CAD_FINISH_NAMED_XHR_SEQUENCE,
+        number_of_contours=1,
+    ) is False
+    assert step_contours_fill_unlocked() is False is STEP_CONTOURS_FILL_UNLOCKED
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "InternalData empty" in refuse
 
 
 def test_q10338_crossdrain_image_files_pass_protect():
@@ -12150,6 +12343,8 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
         "part_star",
         "quote_helpers",
         "pdf_image_files_parallel",
+        "quote_item_edit",
+        "get_border_size",
     ]
     assert all(a["ruled_out"] is True for a in hunt["angles"])
     assert "/CadImport/ConvertTo" in PROVEN_EMPTY_PATHS
@@ -12159,6 +12354,7 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
     assert "/Part/UpdateItemType" in STEP_CONTOURS_NOT_FILL_PATHS
     assert "/Quote/GetPerimeterAndWeight" in STEP_CONTOURS_NOT_FILL_PATHS
     assert "/Quote/GetBorderSize" in STEP_CONTOURS_NOT_FILL_PATHS
+    assert "/quote/ItemEdit" in STEP_CONTOURS_NOT_FILL_PATHS
     js = (
         Path(__file__).resolve().parent / "fixtures" / "quote_order_edit_create_parts.js"
     ).read_text()

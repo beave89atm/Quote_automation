@@ -78,6 +78,7 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
         "Q10333",
         "Q10335",
         "Q10336",
+        "Q10339",
     ),
     "hypotheses": (
         {
@@ -150,6 +151,18 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
                 "SetUnits is query-only. Local inch sanitize is not a "
                 "Sectura XHR. Q10335 thickness also fired /part/PartImage "
                 "+ /Quote/GetBorderSize; Contours stayed 0 before Finish."
+            ),
+        },
+        {
+            "id": "quote_item_edit_post_finish",
+            "call": "/quote/ItemEdit",
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Live Q10336 named /quote/ItemEdit after "
+                "AddItem_DXFFiles. Post-Finish navigation. "
+                "OpenContourCount stayed 0. No request keys restated. "
+                "Not Contours fill. Do not invent an ItemEdit body."
             ),
         },
     ),

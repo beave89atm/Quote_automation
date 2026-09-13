@@ -398,6 +398,7 @@ WEBSITE_FINISH_PATHS = {
     "cadimport_set_part_mode": "/CadImport/SetPartMode",
     "part_update_item_type": "/Part/UpdateItemType",
     "quote_get_border_size": "/Quote/GetBorderSize",
+    "quote_item_edit": "/quote/ItemEdit",
     "cadimport_set_units": "/CadImport/SetUnits",
     "cadimport_convert_to": "/CadImport/ConvertTo",
     "part_create": "/part/create",
@@ -1404,7 +1405,9 @@ KYLE_LOOM_COMPONENT_TO_CAD = (
     "Contours 0; QuoteItem_Read Data:[] lost CAD row before Finish — "
     "ZZ-DEL). Q10336 / f73dd116 mouse UpdateItemType then Finish is a "
     "Cad+Laser leftover (OpenContourCount=0 / bends=1) — Contours≥1 "
-    "still gap vs Q10333. UpdateItemType is dropdown classify; Contours "
+    "still gap vs Q10333. Q10339 is the same Cad→Finish soft PASS class "
+    "(Contours=0 / OpenContourCount=0 after UpdateItemType+Finish; ID "
+    "not restated). UpdateItemType is dropdown classify; Contours "
     "fill may still need Finish or further calls. Do not invent Contours."
 )
 _THICKNESS_VALUE_UNIT_RE = re.compile(
@@ -1525,6 +1528,49 @@ def step_contours_fill_unlocked() -> bool:
 def step_contours_unlock_requires() -> str:
     """Kyle Contours≥1 capture or Sectura support naming the fill."""
     return STEP_CONTOURS_UNLOCK_REQUIRES
+
+
+def contours_ge_1_from_named_fields(
+    *,
+    number_of_contours: Any = None,
+    open_contour_count: Any = None,
+) -> bool:
+    """True only when restated NumberOfContours ≥ 1.
+
+    OpenContourCount is not NumberOfContours (Q10336 OCC=0; Q10333
+    UI Contours=1). Do not treat OCC as a fill. invent=false.
+    Cad→Finish soft PASS (Q10336 / Q10339) stays locked.
+    """
+    del open_contour_count  # never a NumberOfContours substitute
+    if number_of_contours is None:
+        return False
+    try:
+        return int(number_of_contours) >= 1
+    except (TypeError, ValueError):
+        return False
+
+
+def cad_finish_named_sequence_unlocks_contours(
+    observed_paths: list[str] | tuple[str, ...] | None = None,
+    *,
+    number_of_contours: Any = None,
+    open_contour_count: Any = None,
+) -> bool:
+    """Q10336 fired the named Cad→Finish sequence; OCC=0. Unlock stays false.
+
+    Observing UpdateItemType + GetBorderSize + AddItem_DXFFiles +
+    ItemEdit does not unlock Contours≥1. Unused Time STEPs with empty
+    explode InternalData stay refuse. invent=false.
+    """
+    from secturafab.cadimport_js import cad_finish_named_xhr_probe
+
+    cad_finish_named_xhr_probe(observed_paths)
+    if STEP_CONTOURS_FILL_UNLOCKED is not True:
+        return False
+    return contours_ge_1_from_named_fields(
+        number_of_contours=number_of_contours,
+        open_contour_count=open_contour_count,
+    )
 
 
 def cadimport_identity_tokens(row: dict[str, Any] | None) -> set[str]:
@@ -1879,6 +1925,7 @@ STEP_CONTOURS_NOT_FILL_PATHS = frozenset(
         "/Quote/GetPerimeterAndWeight",
         "/Quote/GetBorderSize",
         "/Quote/GetDXFData",
+        "/quote/ItemEdit",
     }
 )
 STEP_CONTOURS_KNOWN_PATHS = frozenset(
@@ -1891,6 +1938,9 @@ STEP_CONTOURS_KNOWN_PATHS = frozenset(
         "/CadImport/SetPartMode",
         "/CadImport/SetUnits",
         "/Part/UpdateItemType",
+        "/part/PartImage",
+        "/Quote/GetBorderSize",
+        "/quote/ItemEdit",
     }
 )
 STEP_CONTOURS_CAPTURE_NEVER_SAVE = (
@@ -2041,6 +2091,7 @@ def kyle_step_contours_devtools_capture() -> dict[str, Any]:
             "SetPartMode",
             "UpdateItemType",
             "GetBorderSize",
+            "quote/ItemEdit",
             "CADData editor preview",
         ),
         "image_files_analog": (

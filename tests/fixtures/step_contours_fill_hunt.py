@@ -75,6 +75,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
+        "Q10339",
     ),
     "angles": (
         {
@@ -176,6 +177,30 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "(PDFInternal HTML → PDFGetData JSON). GetPerimeterAndWeight "
                 "is #gridPDF / Stock_X/Y perimeter — not CAD FileList "
                 "InternalData. Do not copy PDFGetData onto STEP FileList."
+            ),
+        },
+        {
+            "id": "quote_item_edit",
+            "call": "/quote/ItemEdit",
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Named on live Q10336 after AddItem_DXFFiles. Post-Finish "
+                "navigation. OpenContourCount stayed 0. No body keys "
+                "restated — probe path only, no invented payload. Not "
+                "Contours fill."
+            ),
+        },
+        {
+            "id": "get_border_size",
+            "call": "/Quote/GetBorderSize",
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10335/Q10336 thickness companion. Q10336 named "
+                "Thickness_Units=inch only. Method / other keys not "
+                "restated. Proven-keys probe; do not invent Thickness/ID. "
+                "Contours stayed 0. Not fill."
             ),
         },
     ),

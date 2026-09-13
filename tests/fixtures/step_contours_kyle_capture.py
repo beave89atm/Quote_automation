@@ -61,6 +61,7 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "H638-CADPLATE",
     "Q10334",
     "Q10335",
+    "Q10339",
     "28769-1",
     "28768-1",
     "10289-4",

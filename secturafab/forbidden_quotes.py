@@ -315,6 +315,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "Q10333",  # spent b5f56ac3 / Safe Cave / H.6.38 Contours PASS — Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96; never remint / PATCH / ZZ-DEL
         "Q10336",  # spent f73dd116 / Safe Cave / H.6.38 Cad+Laser Finish leftover — mouse UpdateItemType Cad then AddItem_DXFFiles; OpenContourCount=0 / bends=1 / Laser Bay1 / UC 64.25; Contours≥1 still gap vs Q10333; never remint / PATCH / ZZ-DEL
         "Q10338",  # spent 4902c597 Cad Image Files PASS — AIM Cross Drain CROSSDRAIN-12X7X60 / Time Waco / PL14 Ga-SS316 / Finish UC 100.45 + PR laser pack; post-pass bend-API dabble may show live UC 3.25 — Finish snapshot is PASS basis; never remint / PATCH
+        "Q10339",  # spent Cad→Finish soft PASS leftover — Contours=0 / OpenContourCount=0 after UpdateItemType+Finish; same class as Q10336; quote ID not restated in repo / PR 18 / Dropbox / prior leftover transcript; description-only forbid; never remint / PATCH
         "CROSSDRAIN-12X7X60",  # spent 4902c597 Q10338 Cad Image Files PASS — do not remint
         "H638-CADPLATE",  # spent 5e7bfc0b Cad-for-plate leftover — SetPartMode 0 + ProductType 100 Cad:1, InternalData empty, Finish refuse; invented=false; ZZ-DEL-H638-CADPLATE — do not remint
         "ZZ-DEL-H638-CADPLATE",  # 5e7bfc0b H638-CADPLATE rename — do not remint
@@ -322,7 +323,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "ZZ-DEL-Q10334",  # e2683a3f Q10334 rename — do not remint
         "Q10335",  # spent bcff1a24 mouse UpdateItemType leftover — POST /Part/UpdateItemType 200 Component→Cad; /part/PartImage + /Quote/GetBorderSize on thickness; Contours 0 before Finish; QuoteItem_Read Data:[] lost CAD row before Finish; invented=false; ZZ-DEL-Q10335 — do not remint
         "ZZ-DEL-Q10335",  # bcff1a24 Q10335 rename — do not remint
-        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1 / 28769-1 / 35136-1 / 14327-5 / 14327-8 / Q10329 / 14327-3 / Q10330 / 21841-1 / Q10331 / 14327-1 / Q10332 / Q10333 / Q10336 / Q10338 / CROSSDRAIN-12X7X60 / H638-CADPLATE / Q10334 / Q10335.
+        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1 / 28769-1 / 35136-1 / 14327-5 / 14327-8 / Q10329 / 14327-3 / Q10330 / 21841-1 / Q10331 / 14327-1 / Q10332 / Q10333 / Q10336 / Q10338 / Q10339 / CROSSDRAIN-12X7X60 / H638-CADPLATE / Q10334 / Q10335.
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }
