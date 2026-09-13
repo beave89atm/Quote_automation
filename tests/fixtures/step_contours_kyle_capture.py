@@ -11,9 +11,9 @@ finished Contours (NumberOfContours=1 / OCC=0 expected / bends=8)
 — protect; soft-pass labels were stage notes. Q10344 / 55f12530
 is the Kyle UI control leftover (Cad + 0.1875 inch → Contours
 fill → Finish) — never remint / PATCH / ZZ-DEL. invent=false.
-Q10346 / B80510901 Sprout main plate is a Contours PASS outside
-H.6.38 (Cad + 0.0598 inch → Contours fill → Finish) — number-only
-forbid until UUID is restated; never remint / PATCH. invent=false. Do not gate unlock
+Q10346 / d859a239 / B80510901 Sprout main plate is a Contours PASS
+outside H.6.38 (Cad + 0.0598 inch → Contours fill → Finish) —
+never remint / PATCH. invent=false. Do not gate unlock
 on OCC≥1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
 /part/create 3× bar InternalData empty → AddItem_DXFFiles InternalData

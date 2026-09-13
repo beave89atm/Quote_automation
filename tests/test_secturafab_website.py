@@ -2186,6 +2186,8 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_id("55f12530-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10346")
     assert is_forbidden_quote_number("B80510901")
+    assert is_forbidden_quote_id("d859a239-a811-4b23-a812-29921956e880")
+    assert is_forbidden_quote_id("d859a239-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10338")
     assert is_forbidden_quote_number("Q10339")
     assert is_forbidden_quote_number("CROSSDRAIN-12X7X60")
@@ -11529,6 +11531,7 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_id("f73dd116-f33e-485f-947c-f5662633d23a")
     assert is_forbidden_quote_id("76cecc73-257e-4fa7-91b7-ed15a4c90caa")
     assert is_forbidden_quote_id("55f12530-e97b-40cc-8e7f-e799d9d6b234")
+    assert is_forbidden_quote_id("d859a239-a811-4b23-a812-29921956e880")
 
     refuse = cad_filelist_refuses_additem_dxf(
         {
@@ -12872,15 +12875,13 @@ def test_q10344_h638_kyle_ui_control_forever_forbid():
     assert dump["unlocks_automation_contours_fill"] is False
 
 
-def test_q10346_sprout_b80510901_contours_pass_number_only_forbid():
-    """Q10346 / B80510901 Sprout Contours PASS outside H.6.38.
+def test_q10346_sprout_b80510901_contours_pass_forever_forbid():
+    """Q10346 / d859a239 Sprout Contours PASS outside H.6.38.
 
     ProductType Cad + thickness 0.0598 inch → Contours fill → Finish.
-    UUID not restated — number + description forbid only. TODO quote_id.
-    Never remint / PATCH. invent=false. Do not invent an ID.
+    Forever protect; never remint / PATCH. invent=false.
     """
     from secturafab.forbidden_quotes import (
-        FORBIDDEN_LIVE_QUOTE_IDS,
         ForbiddenQuoteError,
         is_forbidden_quote_id,
         is_forbidden_quote_number,
@@ -12898,16 +12899,15 @@ def test_q10346_sprout_b80510901_contours_pass_number_only_forbid():
     from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
 
     dump = q10346_sprout_pass_dump()
-    assert dump["quote_id"] is None
-    assert dump["quote_id_prefix"] is None
-    assert dump["quote_id_todo"] == "quote_id once known"
+    assert dump["quote_id"] == "d859a239-a811-4b23-a812-29921956e880"
+    assert dump["quote_id_prefix"] == "d859a239"
     assert dump["quote_number"] == "Q10346"
     assert dump["part_number"] == "B80510901"
     assert dump["customer"] == "Safe Cave"
     assert dump["piece"] == "Sprout B80510901 main plate"
     assert dump["outside_h638_family"] is True
     assert dump["h638_contours_good"] is False
-    assert dump["id_unknown"] is True
+    assert dump["id_unknown"] is False
     assert dump["pass"] is True
     assert dump["contours_pass"] is True
     assert dump["product_type"] == "Cad"
@@ -12925,8 +12925,8 @@ def test_q10346_sprout_b80510901_contours_pass_number_only_forbid():
     assert all(row["quote_number"] != "Q10346" for row in leftover_contours_ui_dumps())
     assert all(row["quote_number"] != "Q10346" for row in leftover_cad_for_plate_dumps())
     assert sprout_empty_internaldata_dig()["part_number"] != "B80510901"
-    assert dump["quote_id"] not in FORBIDDEN_LIVE_QUOTE_IDS
-    assert not is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("d859a239-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10346")
     assert is_forbidden_quote_number("B80510901")
     assert spent_quote_number_block_reason("Q10346")
@@ -12942,6 +12942,18 @@ def test_q10346_sprout_b80510901_contours_pass_number_only_forbid():
             method="POST",
             path="/Quote/AddItem_DXFFiles",
             payload={"QuoteNumber": "B80510901"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="d859a239"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="d859a239"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
         )
     assert "Q10346" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
     assert "B80510901" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
@@ -12959,6 +12971,7 @@ def test_q10346_sprout_b80510901_contours_pass_number_only_forbid():
         }
     )
     assert refuse is not None
+    assert "d859a239" not in refuse
     assert "Q10346" not in refuse
     assert "B80510901" not in refuse
     assert "55f12530" not in refuse

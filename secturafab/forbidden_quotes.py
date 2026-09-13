@@ -96,6 +96,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "f73dd116-f33e-485f-947c-f5662633d23a",  # Q10336 / Safe Cave / H.6.38 Cad+Laser Finish leftover — finished NumberOfContours=1 matches Q10333; OCC=0 expected; bends=8; Laser Bay1 / UC 64.25; never remint / PATCH / ZZ-DEL
         "76cecc73-257e-4fa7-91b7-ed15a4c90caa",  # Q10339 / Safe Cave / H.6.38 Cad+Laser Finish leftover — finished NumberOfContours=1 matches Q10333; OCC=0 expected; Laser Bay1 / UC 64.25 / unit price 176.96; invented=false; never remint / PATCH / ZZ-DEL
         "55f12530-e97b-40cc-8e7f-e799d9d6b234",  # Q10344 / Safe Cave / H.6.38 Kyle UI control PASS leftover — ProductType Cad + thickness 0.1875 inch → Contours fill → Finish; invent=false; never remint / PATCH / ZZ-DEL
+        "d859a239-a811-4b23-a812-29921956e880",  # Q10346 / Safe Cave Sprout B80510901 Contours PASS (outside H.6.38) — ProductType Cad + thickness 0.0598 inch → Contours fill → Finish; invent=false; never remint / PATCH
         "4902c597-2ad6-4ebf-b577-dd6cf20a7d87",  # Q10338 / CROSSDRAIN-12X7X60 PR18 Cad Image Files PASS — AIM Cross Drain / Time Waco / PL14 Ga-SS316 / 69.875×25.875 / Laser Bay1 / Contours=1 / Finish UC 100.45 + PR laser pack / bends_count=8 shop PDF / UpdateItemType Cad 200; post-pass bend-API dabble may show live UC 3.25 — Finish snapshot UC 100.45 is PASS basis; invented=false; never remint / PATCH
         "5e7bfc0b-ecf9-46cf-8851-d61062141ce7",  # H638-CADPLATE Cad-for-plate leftover — SetPartMode 0 + ProductType 100 Cad:1 classify OK, InternalData empty, Finish refuse; invented=false; ZZ-DEL-H638-CADPLATE — do not remint / PATCH
         "e2683a3f-daf5-49ff-83c1-79aed35207a1",  # Q10334 Cad-for-plate leftover — Chrome kendo Cad/100 + 0.1875 in + Laser-Bay1, Contours still empty; invented=false; ZZ-DEL-Q10334 — do not remint / PATCH
@@ -203,6 +204,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "f73dd116",  # Q10336 / Safe Cave / H.6.38 Cad+Laser Finish leftover — finished NumberOfContours=1 matches Q10333; OCC=0 expected; bends=8; Laser Bay1 / UC 64.25; never remint / PATCH / ZZ-DEL
         "76cecc73",  # Q10339 / Safe Cave / H.6.38 Cad+Laser Finish leftover — finished NumberOfContours=1 matches Q10333; OCC=0 expected; Laser Bay1 / UC 64.25 / unit price 176.96; invented=false; never remint / PATCH / ZZ-DEL
         "55f12530",  # Q10344 / Safe Cave / H.6.38 Kyle UI control PASS leftover — ProductType Cad + thickness 0.1875 inch → Contours fill → Finish; invent=false; never remint / PATCH / ZZ-DEL
+        "d859a239",  # Q10346 / Safe Cave Sprout B80510901 Contours PASS (outside H.6.38) — Cad + 0.0598 inch → Contours fill → Finish; invent=false; never remint / PATCH
         "4902c597",  # Q10338 / CROSSDRAIN-12X7X60 PR18 Cad Image Files PASS (PL14 Ga-SS316 UC 100.45 Time Waco Laser Bay1) — post-pass bend-API dabble may show live UC 3.25; Finish snapshot UC 100.45 is PASS basis; never remint / PATCH
         "5e7bfc0b",  # H638-CADPLATE leftover — SetPartMode 0 + ProductType 100 Cad:1, InternalData empty, Finish refuse; ZZ-DEL-H638-CADPLATE — do not remint
         "e2683a3f",  # Q10334 leftover — kendo Cad/100 + 0.1875 in + Laser-Bay1, Contours empty; ZZ-DEL-Q10334 — do not remint
@@ -326,8 +328,8 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "Q10336",  # spent f73dd116 / Safe Cave / H.6.38 Cad+Laser Finish leftover — finished NumberOfContours=1 matches Q10333; OCC=0 expected; bends=8; Laser Bay1 / UC 64.25; never remint / PATCH / ZZ-DEL
         "Q10339",  # spent 76cecc73 / Safe Cave / H.6.38 Cad+Laser Finish leftover — finished NumberOfContours=1 matches Q10333; OCC=0 expected; Laser Bay1 / UC 64.25 / unit price 176.96; invented=false; never remint / PATCH / ZZ-DEL
         "Q10344",  # spent 55f12530 / Safe Cave / H.6.38 Kyle UI control PASS leftover — ProductType Cad + thickness 0.1875 inch → Contours fill → Finish; invent=false; never remint / PATCH / ZZ-DEL
-        "Q10346",  # spent Safe Cave Sprout B80510901 main plate Contours PASS (outside H.6.38) — ProductType Cad + thickness 0.0598 inch → Contours fill → Finish; invent=false; quote_id TODO once UUID restated — do not invent; never remint / PATCH
-        "B80510901",  # spent Q10346 Sprout main plate Contours PASS (outside H.6.38) — Cad + 0.0598 inch → Contours fill → Finish; invent=false; quote_id TODO; never remint / PATCH
+        "Q10346",  # spent d859a239 / Safe Cave Sprout B80510901 Contours PASS (outside H.6.38) — ProductType Cad + thickness 0.0598 inch → Contours fill → Finish; invent=false; never remint / PATCH
+        "B80510901",  # spent d859a239 Q10346 Sprout main plate Contours PASS (outside H.6.38) — Cad + 0.0598 inch → Contours fill → Finish; invent=false; never remint / PATCH
         "Q10338",  # spent 4902c597 Cad Image Files PASS — AIM Cross Drain CROSSDRAIN-12X7X60 / Time Waco / PL14 Ga-SS316 / Finish UC 100.45 + PR laser pack; post-pass bend-API dabble may show live UC 3.25 — Finish snapshot is PASS basis; never remint / PATCH
         "CROSSDRAIN-12X7X60",  # spent 4902c597 Q10338 Cad Image Files PASS — do not remint
         "H638-CADPLATE",  # spent 5e7bfc0b Cad-for-plate leftover — SetPartMode 0 + ProductType 100 Cad:1, InternalData empty, Finish refuse; invented=false; ZZ-DEL-H638-CADPLATE — do not remint
