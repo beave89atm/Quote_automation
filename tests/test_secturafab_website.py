@@ -11156,12 +11156,164 @@ def test_leftover_contours_ui_q10329_q10330_q10331_forever_forbid():
     assert "Q10333" in refuse
 
 
+def test_plate_step_classify_bind_sets_cad_not_component():
+    """STEP CAD Files Adjust Properties / bind: plate laser → ProductType Cad.
+
+    Sectura defaults Component after Geometry Cleanup. Overlay/classify
+    writes API/kendo ProductType=100 (not a UI click). Thickness
+    0.0048:meter becomes inches. Empty Contours still refuse Finish.
+    """
+    from secturafab.website import (
+        KYLE_LOOM_COMPONENT_TO_CAD,
+        bind_plate_step_product_type_cad,
+        cad_filelist_refuses_additem_dxf,
+        overlay_classified_row,
+        plate_step_left_component_refuses_contours,
+        product_type_is_cad,
+        product_type_is_component,
+        sanitize_bind_thickness_inches,
+    )
+
+    assert "Component" in KYLE_LOOM_COMPONENT_TO_CAD
+    assert "Cad" in KYLE_LOOM_COMPONENT_TO_CAD
+    assert "API/kendo" in KYLE_LOOM_COMPONENT_TO_CAD
+    assert "Q10333" in KYLE_LOOM_COMPONENT_TO_CAD
+
+    inch = sanitize_bind_thickness_inches("0.0048:meter")
+    assert inch is not None
+    assert "meter" not in inch.lower()
+    assert ":" not in inch
+    assert abs(float(inch) - (0.0048 / 0.0254)) < 0.002
+
+    leftover = {
+        "Name": "H.6.38 PLATE",
+        "Description": "H.6.38 PLATE",
+        "ProductType": "Component",
+        "FileType": "Component",
+        "ItemType": "Component",
+        "Category": "Component",
+        "PartMode": 2,
+        "Thickness": "0.0048:meter",
+        "Thickness_Units": "meter",
+        "Machine": "",
+        "InternalData": "",
+        "ImageString": "iVBORw0KGgo",
+        "ErrorStatus": 0,
+        "Qty": 1,
+    }
+    assert product_type_is_component(leftover["ProductType"]) is True
+    bound = bind_plate_step_product_type_cad(leftover)
+    assert product_type_is_cad(bound["ProductType"]) is True
+    assert bound["ProductType"] == 100
+    assert bound["FileType"] == "Cad"
+    assert bound["ItemType"] == "Cad"
+    assert bound["Category"] == "Cad"
+    assert bound["PartMode"] == 0
+    assert "Laser" in str(bound["Machine"])
+    assert "meter" not in str(bound["Thickness"]).lower()
+    assert ":" not in str(bound["Thickness"])
+    assert bound["Thickness_Units"] == "inch"
+    assert bound.get("InternalData") == ""
+    assert plate_step_left_component_refuses_contours(bound) is None
+
+    overlaid = overlay_classified_row(
+        leftover,
+        category="Cad",
+        material="A36",
+        thickness="0.0048:meter",
+        machine="Laser",
+    )
+    assert overlaid["ProductType"] == 100
+    assert overlaid["FileType"] == "Cad"
+    assert overlaid["PartMode"] == 0
+    assert "meter" not in str(overlaid["Thickness"]).lower()
+    assert overlaid["Thickness_Units"] == "inch"
+    refuse = cad_filelist_refuses_additem_dxf(overlaid)
+    assert refuse is not None
+    assert "InternalData empty" in refuse or "Contours" in refuse
+    assert "invent" in refuse.lower()
+
+    rows = [
+        {
+            "SourceDataID": "h638",
+            "ID": "id-h638",
+            "Name": "H.6.38 PLATE",
+            "ProductType": "Component",
+            "Thickness": "0.0048:meter",
+            "Thickness_Units": "meter",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "InternalData": "",
+        }
+    ]
+    classified, notes = SecturaFabPushService(client=MagicMock()).classify_cadimport_rows(
+        rows,
+        default_material="A36",
+        default_thickness="0.0048:meter",
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+        part_key="H.6.38",
+    )
+    assert len(classified) == 1
+    kid = classified[0]
+    assert kid["Category"] == "Cad"
+    assert kid["ProductType"] == 100
+    assert kid["PartMode"] == 0
+    assert kid["FileType"] == "Cad"
+    assert "meter" not in str(kid["Thickness"]).lower()
+    assert kid["Thickness_Units"] == "inch"
+    assert "Cad: 1" in " ".join(notes)
+    after = cad_filelist_refuses_additem_dxf(kid)
+    assert after is not None
+    assert "InternalData empty" in after
+
+
+def test_plate_step_component_left_is_contours_fail_path():
+    """Cad classify with ProductType still Component → Contours fail-close."""
+    from secturafab.website import (
+        cad_filelist_refuses_additem_dxf,
+        cad_finish_notes_refuse_additem_dxf,
+        plate_step_left_component_refuses_contours,
+    )
+
+    left = {
+        "Name": "H.6.38 PLATE",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": "Component",
+        "InternalData": "",
+        "ImageString": "preview",
+    }
+    why = plate_step_left_component_refuses_contours(left)
+    assert why is not None
+    assert "Component" in why
+    assert "Contours fail path" in why
+    assert "Q10333" in why
+    assert "invent" in why.lower()
+    refuse = cad_filelist_refuses_additem_dxf(left)
+    assert refuse == why
+    assert cad_finish_notes_refuse_additem_dxf([why]) == why
+
+    purchased = {
+        "Name": "1/2-13 HEX BOLT",
+        "FileType": "Component",
+        "Category": "Component",
+        "ProductType": 200,
+    }
+    assert plate_step_left_component_refuses_contours(purchased) is None
+
+
 def test_leftover_contours_ui_q10333_h638_safecave_forever_forbid():
     """Q10333 / b5f56ac3 Safe Cave H.6.38: never remint / PATCH.
 
-    Adjust Properties Contours column absent. HadOpenContours=false.
-    Finish never clicked. invented=false. Keep 8973f890/35136-1,
-    14327-5/8, Q10329-31.
+    Leftover captured Contours column absent / HadOpenContours=false.
+    Kyle later proved Component→Cad unlocks Contours (human Finish OK).
+    Documentary proof only — do not remint / PATCH. Keep 8973f890/35136-1,
+    14327-5/8, Q10329-31. invented=false.
     """
     from secturafab.forbidden_quotes import (
         ForbiddenQuoteError,
@@ -11192,6 +11344,10 @@ def test_leftover_contours_ui_q10333_h638_safecave_forever_forbid():
     assert dump["finish_posted"] is False
     assert dump["invent"] is False
     assert dump["unlocks_contours_fill"] is False
+    assert dump["component_to_cad_contours_proof"] is True
+    assert dump["kyle_loom_component_to_cad"] is True
+    assert dump["human_finish_ok_for_capture"] is True
+    assert dump["cad_set_via"] == "adjust_properties_dropdown_human"
     assert dump["fail_close"] is True
     assert is_forbidden_quote_id(dump["quote_id"])
     assert is_forbidden_quote_id("b5f56ac3-1111-2222-3333-444444444444")
@@ -11317,6 +11473,9 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
     assert hunt["unlock_requires"] == step_contours_unlock_requires()
     assert "kyle_contours_ge1" in hunt["unlock_requires"]
     assert "sectura_support" in hunt["unlock_requires"]
+    assert hunt["kyle_loom_component_to_cad"] is True
+    assert hunt["kyle_loom_cad_set_via"] == "api_kendo_producttype_100_setpartmode_0"
+    assert hunt["q10333_component_to_cad_proof"] is True
     assert step_contours_fill_hunt_exhausted() is True
     ids = [a["id"] for a in hunt["angles"]]
     assert ids == [

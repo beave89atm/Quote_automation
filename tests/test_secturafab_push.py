@@ -26,6 +26,15 @@ def test_sanitize_thickness_strips_inch_suffix():
     assert "inch" not in _sanitize_thickness_param("0.1046 inch").lower()
 
 
+def test_sanitize_thickness_converts_meter_string_to_inches():
+    """Adjust Properties must not keep broken 0.0048:meter (Kyle plate STEP)."""
+    got = _sanitize_thickness_param("0.0048:meter")
+    assert "meter" not in got.lower()
+    assert ":" not in got
+    val = float(got)
+    assert abs(val - (0.0048 / 0.0254)) < 0.002
+
+
 def test_default_material_ignores_weak_aluminum_guess():
     mat = _default_material(
         {

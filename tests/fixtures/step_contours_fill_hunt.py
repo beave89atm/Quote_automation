@@ -8,9 +8,13 @@ Q10333 / H.6.38 / b5f56ac3, Q10332 / ZZ-DEL-wrong-org-Time,
 Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
-exhausted the alternate-path hypotheses below. Unlock remains a Kyle
-manual Finish that shows Contours≥1 (DevTools emptiness capture) or
-Sectura support naming the fill. ``LIVE_PART_CREATE_TLIST_BIND`` is None.
+exhausted the alternate-path hypotheses below. Kyle Loom (original):
+Adjust Properties defaults ProductType to Component; plate STEP Contours
+fill after Component→Cad (live proof Q10333 / b5f56ac3 / H.6.38, human
+Finish OK). Automation writes API/kendo ProductType=100 + SetPartMode 0
+— not a UI click. Still refuse Finish if Contours/InternalData stay
+empty after Cad. Do not remint Q10333. ``LIVE_PART_CREATE_TLIST_BIND``
+is None.
 """
 
 from __future__ import annotations
@@ -42,6 +46,9 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
     "classify_finish_internaldata_fill": CLASSIFY_FINISH_INTERNALDATA_FILL,
     "explode_docreate_internaldata_fill": EXPLODE_DOCREATE_INTERNALDATA_FILL,
     "unlock_requires": STEP_CONTOURS_UNLOCK_REQUIRES,
+    "kyle_loom_component_to_cad": True,
+    "kyle_loom_cad_set_via": "api_kendo_producttype_100_setpartmode_0",
+    "q10333_component_to_cad_proof": True,
     "never_remint": (
         "14327-5",
         "14327-8",

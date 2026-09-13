@@ -10,8 +10,10 @@ Do not remint / PATCH. Do not invent Contours / InternalData.
     5e72fe39 / Q10331 / ZZ-DEL-Q10331-14327-1-contours-ui
       14327-1 flat-looking — Contours column absent; Finish never
     b5f56ac3 / Q10333 / ZZ-DEL-Q10333-H638-SafeCave-contours
-      Safe Cave / H.6.38 Onshape STEP — Contours column absent;
-      HadOpenContours=false; Finish never
+      Safe Cave / H.6.38 Onshape STEP — leftover captured Contours
+      column absent / HadOpenContours=false. Kyle later proved
+      Component→Cad on Adjust Properties unlocks Contours (human
+      Finish OK). Do not remint / PATCH. Documentary unlock proof.
 
 Wrong-org Time mint (not a Contours leftover; ID unknown):
     Q10332 / ZZ-DEL-wrong-org-Time — quote ID not restated in
@@ -90,6 +92,10 @@ LEFTOVER_CONTOURS_UI: tuple[dict[str, Any], ...] = (
         "finish_posted": False,
         "invent": False,
         "unlocks_contours_fill": False,
+        "component_to_cad_contours_proof": True,
+        "kyle_loom_component_to_cad": True,
+        "human_finish_ok_for_capture": True,
+        "cad_set_via": "adjust_properties_dropdown_human",
         "fail_close": True,
         "readonly": True,
         "zz_del": True,

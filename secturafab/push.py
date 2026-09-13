@@ -475,14 +475,24 @@ def plate_over_three_quarter(thickness: Any) -> bool:
 def _row_thickness_in(row: dict[str, Any] | None, fallback: Any = None) -> float | None:
     from quote_core.part_materials import _parse_thickness_token
 
+    from .website import sanitize_bind_thickness_inches
+
     sources: list[Any] = []
+    units = None
     if isinstance(row, dict):
+        units = row.get("Thickness_Units") or row.get("thickness_units")
         for key in ("thickness_in", "thickness", "Thickness"):
             if row.get(key) not in (None, ""):
                 sources.append(row.get(key))
     if fallback not in (None, ""):
         sources.append(fallback)
     for raw in sources:
+        inch = sanitize_bind_thickness_inches(raw, units)
+        if inch:
+            try:
+                return float(inch)
+            except (TypeError, ValueError):
+                pass
         try:
             return float(raw)
         except (TypeError, ValueError):
@@ -745,9 +755,18 @@ def _format_thickness(val: float) -> str:
 
 
 def _sanitize_thickness_param(raw: str | float | None) -> str:
-    """Strip unit suffixes so thickness matches SecturaFAB dropdown values."""
+    """Strip unit suffixes so thickness matches SecturaFAB dropdown values.
+
+    Prefer inches. Convert ``0.0048:meter`` / mm — do not leave that
+    broken meter string on Adjust Properties (Kyle plate STEP).
+    """
+    from .website import sanitize_bind_thickness_inches
+
     if raw is None:
         return "0.25"
+    converted = sanitize_bind_thickness_inches(raw)
+    if converted:
+        return converted
     if isinstance(raw, (int, float)):
         return _format_thickness(float(raw))
     text = str(raw).strip()
@@ -2745,7 +2764,7 @@ class SecturaFabPushService:
                 cat = "Component"
             aluminum_named = bool(re.search(r"\bALUMINI?UM\b", name, re.I))
             material = default_material
-            thickness: str | float = default_thickness
+            thickness: str | float = _sanitize_thickness_param(default_thickness)
             if pm and pm.material:
                 material = pm.material
             elif aluminum_named:
@@ -2929,7 +2948,13 @@ class SecturaFabPushService:
         Cookie HTTP ``/part/create`` is not the gold bind.
         After bind, classify Part Mode (Cad plate, Linear tube/bar/angle,
         Component purchased) and SetPartMode on ``#gridDXFParts`` (Kyle Loom
-        c9d7c05a). Fail-close if PartMode is still null after classify.
+        c9d7c05a). Sheet/plate laser candidates get ProductType Cad (100)
+        — Sectura Adjust Properties defaults Component, which blocks
+        Contours (Kyle Loom; Q10333 / H.6.38). Cad is the API/kendo field
+        (SetPartMode 0 + ProductType=100), not a UI dropdown click.
+        Fail-close if PartMode is still null after classify, if ProductType
+        is still Component on a Cad plate, or if Contours/InternalData
+        stay empty after Cad (do not invent).
         After Finish, fail-close if PartMode is still null, or if Cad
         Contours are empty / PR+laser pack is missing. Then log
         kendo row key names (CadType, Stock_*, FileType, SID/FileID/ID) and
@@ -3289,6 +3314,7 @@ class SecturaFabPushService:
             for row in classified
         ]
         notes.extend(class_notes)
+        notes.append("kyle_loom_component_to_cad=true")
         from .chrome_cdp import apply_grid_dxf_part_modes
         from .website import (
             cad_filelist_refuses_additem_dxf,

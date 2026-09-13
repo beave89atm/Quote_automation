@@ -334,6 +334,14 @@ def is_tenant_guid(value: Any) -> bool:
 # Mapping follows Kyle UI categories + Q10056 ProductType (100 Cad, 10/30/40 Linear, 200 Component).
 # Long ProductType: 10 bar, 30 tube, 40 angle/channel. 20 (pipe) fails live GET.
 # Do not force angles to 10 — QA that says "ProductType is 40, want 10" is wrong.
+# Kyle Loom (original STP): after CAD Files → Geometry Cleanup → Adjust
+# Properties, Sectura defaults ProductType to Component. Sheet/plate laser
+# must be Cad (thickness inches, Machine Laser) or Contours/bends/profile
+# stay empty. Live proof Q10333 / b5f56ac3 / H.6.38 Safe Cave — Contours
+# PASS after Component→Cad (human Finish OK). Automation writes the
+# API/kendo ProductType field (100) + FileType/ItemType/Category=Cad +
+# SetPartMode 0 — not a UI dropdown click. Do not invent Contours;
+# refuse Finish if InternalData still empty after Cad classify.
 PART_MODE_CAD = 0
 PART_MODE_LINEAR = 1
 PART_MODE_COMPONENT = 2
@@ -1354,6 +1362,21 @@ STEP_CONTOURS_NO_EXTRA_XHR = "createAllParts_no_intervening_xhr"
 # /part/PartImage / PDFGetData) exhausted in-repo. Fill stays locked.
 STEP_CONTOURS_FILL_UNLOCKED = False
 STEP_CONTOURS_UNLOCK_REQUIRES = "kyle_contours_ge1_or_sectura_support"
+# Kyle Loom lesson (Adjust Properties): Component→Cad is required for
+# plate STEP Contours. Q10333 / b5f56ac3 / H.6.38 is leftover proof —
+# do not remint / PATCH. Fill stays fail-close if Contours empty after Cad.
+KYLE_LOOM_COMPONENT_TO_CAD = (
+    "Kyle Loom: STEP CAD Files Adjust Properties defaults ProductType to "
+    "Component; sheet/plate laser must be Cad (inches, Machine Laser) for "
+    "Contours to fill. Live proof Q10333 / b5f56ac3 / H.6.38. "
+    "Cad is set via API/kendo ProductType=100 + SetPartMode 0, not a UI click. "
+    "Do not invent Contours."
+)
+_THICKNESS_VALUE_UNIT_RE = re.compile(
+    r"^\s*([0-9]*\.?[0-9]+)\s*[:\s]\s*"
+    r"(meters?|metres?|millimeters?|millimetres?|inches?|inch|mm|in|m)\s*$",
+    re.I,
+)
 EMPTY_EXPLODE_INTERNALDATA_REASONS = frozenset(
     {
         CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
@@ -1872,8 +1895,10 @@ def kyle_step_contours_devtools_capture() -> dict[str, Any]:
     Exact missing call: POST /part/create t.List InternalData+ImageString.
     Contours never filled — confirms fail-close; does not unlock Contours
     fill. Contours UI leftovers Q10329 / 14327-3, Q10330 / 21841-1,
-    Q10331 / 14327-1, and Q10333 / H.6.38 / Safe Cave never showed a
-    Contours column and never clicked Finish (Q10333 HadOpenContours=false).
+    Q10331 / 14327-1 never showed a Contours column and never clicked
+    Finish. Q10333 / H.6.38 / Safe Cave leftover captured Contours-absent;
+    Kyle later proved Component→Cad unlocks Contours (human Finish OK) —
+    do not remint / PATCH. Automation sets Cad via API/kendo field.
     Q10332 is a wrong-org Time mint (ZZ-DEL-wrong-org-Time; ID unknown).
     Do not invent Contours. Do not remint spent STEP leftovers.
     """
@@ -2398,6 +2423,125 @@ def page_dxf_finish_skip_why(rows: list[dict[str, Any]] | None) -> str | None:
     return None
 
 
+def product_type_is_component(value: Any) -> bool:
+    """Sectura Adjust Properties default — 200 / Component."""
+    if value in (200, "200"):
+        return True
+    return str(value or "").strip().casefold() == "component"
+
+
+def product_type_is_cad(value: Any) -> bool:
+    """Cad classify / bind — 100 or the Adjust Properties 'Cad' token."""
+    if value in (100, "100"):
+        return True
+    return str(value or "").strip().casefold() == "cad"
+
+
+def _format_bind_thickness_inches(val: float) -> str:
+    """Bare inch number for the Adjust Properties thickness dropdown."""
+    rounded = round(float(val), 4)
+    if abs(rounded - val) < 1e-9 or abs(val - rounded) <= 0.00015:
+        text = f"{rounded:.4f}".rstrip("0").rstrip(".")
+        if "." not in text:
+            text = f"{rounded:.4f}"
+        return text
+    return f"{val:.4g}"
+
+
+def sanitize_bind_thickness_inches(
+    raw: Any,
+    units: Any = None,
+) -> str | None:
+    """Prefer inches. Do not leave broken ``0.0048:meter`` UI strings.
+
+    Kyle Adjust Properties expects in. Meter/mm tokens convert; inch
+    tokens stay numeric. Unparseable values return None (caller keeps
+    the original). Never invent Contours.
+    """
+    if raw in (None, ""):
+        return None
+    text = str(raw).strip().replace('"', "").replace("″", "").replace("'", "")
+    unit = str(units or "").strip().lower()
+    matched = _THICKNESS_VALUE_UNIT_RE.match(text)
+    if matched:
+        try:
+            val = float(matched.group(1))
+        except (TypeError, ValueError):
+            return None
+        unit = str(matched.group(2) or unit).strip().lower()
+    else:
+        try:
+            val = float(text)
+        except (TypeError, ValueError):
+            from quote_core.part_materials import _parse_thickness_token
+
+            parsed = _parse_thickness_token(text)
+            if parsed is None:
+                return None
+            val = float(parsed)
+    if unit in {"meter", "metre", "meters", "metres", "m"}:
+        val = val / 0.0254
+    elif unit.startswith("mill") or unit == "mm":
+        val = val / 25.4
+    if val <= 0:
+        return None
+    return _format_bind_thickness_inches(val)
+
+
+def bind_plate_step_product_type_cad(row: dict[str, Any] | None) -> dict[str, Any]:
+    """STEP CAD Files Adjust Properties / part bind: Component default → Cad.
+
+    Writes the API/kendo fields Kyle's dropdown persists (ProductType=100,
+    PartMode 0, FileType/ItemType/Category Cad, Machine Laser, thickness
+    inches). Does not invent InternalData / Contours / NumberOfContours.
+    """
+    out = dict(row) if isinstance(row, dict) else {}
+    out["ProductType"] = 100
+    out["PartMode"] = 0
+    out["ItemType"] = "Cad"
+    out["Category"] = "Cad"
+    out["FileType"] = "Cad"
+    out["IsPlate"] = True
+    out["IsLinear"] = False
+    out["IsPart"] = True
+    machine = out.get("Machine") or "Laser - Bay1"
+    if str(machine).casefold() == "laser":
+        machine = "Laser - Bay1"
+    out["Machine"] = machine
+    inch = sanitize_bind_thickness_inches(
+        out.get("Thickness"), out.get("Thickness_Units")
+    )
+    if inch is not None:
+        out["Thickness"] = inch
+        out["Thickness_Units"] = "inch"
+    return out
+
+
+def plate_step_left_component_refuses_contours(
+    row: dict[str, Any] | None,
+) -> str | None:
+    """Component left on a Cad-classified plate is the Contours fail path.
+
+    Kyle Loom: Component→Cad is required for plate STEP Contours. If
+    FileType/PartMode is Cad but ProductType is still Component, Sectura
+    does not fill Contours. Do not invent InternalData.
+    """
+    if not isinstance(row, dict):
+        return None
+    cad_classified = is_cad_filelist_row(row) or str(
+        row.get("Category") or row.get("ItemType") or ""
+    ).strip() == "Cad"
+    if not cad_classified:
+        return None
+    if not product_type_is_component(row.get("ProductType")):
+        return None
+    return (
+        "Plate STEP ProductType still Component after Cad classify — "
+        "Contours fail path (Kyle Loom Component→Cad required; "
+        "Q10333 / b5f56ac3 / H.6.38). Do not invent Contours/InternalData."
+    )
+
+
 def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
     """Refuse AddItem_DXFFiles when Cad InternalData is empty.
 
@@ -2405,9 +2549,14 @@ def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
     landed GET 0 Cad. Kyle Loom c9d7 Cad plates Finish with real
     profile geometry from explode — do not invent InternalData.
     ImageString-without-InternalData is preview only (live 21785-2).
+    Component left after Cad classify is the Contours fail path
+    (Kyle Loom Component→Cad; Q10333).
     """
     from secturafab.cadimport_js import NEEDS_INTERNALDATA_FILL_XHR
 
+    left = plate_step_left_component_refuses_contours(row)
+    if left:
+        return left
     if not isinstance(row, dict) or not is_cad_filelist_row(row):
         return None
     if not cad_payload_value_empty(row.get("InternalData")):
@@ -2459,6 +2608,8 @@ def cad_finish_notes_refuse_additem_dxf(
             or STEP_EXPLODE_NO_INTERNALDATA in text
             or CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE in text
             or "refusing AddItem_DXFFiles" in text
+            or "Contours fail path" in text
+            or "ProductType still Component" in text
         ):
             return text
     return None
@@ -6886,13 +7037,11 @@ def overlay_classified_row(
         out["Machine"] = None
         out["IsAssembly"] = True
     else:
-        out["IsLinear"] = False
-        out["IsPlate"] = True
-        out["IsPart"] = True
-        out["ProductType"] = 100
-        out["Machine"] = machine or out.get("Machine") or "Laser - Bay1"
-        if str(out["Machine"]).casefold() == "laser":
-            out["Machine"] = "Laser - Bay1"
+        # Cad — overwrite Sectura Adjust Properties Component default.
+        # API/kendo ProductType=100 (not a UI dropdown click).
+        if machine:
+            out["Machine"] = machine
+        out = bind_plate_step_product_type_cad(out)
         if filelist_productsubtype_is_linear(out.get("ProductSubType")):
             out.pop("ProductSubType", None)
     out["ErrorStatus"] = _error_status(out)

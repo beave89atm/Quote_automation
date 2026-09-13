@@ -245,6 +245,14 @@ ADD_ITEM_DXF_FILES_SNIPPET = (
 # CadImport classify (Kyle Cad / Linear / Component dropdown → PartMode).
 # SetPartMode: ID + integer PartMode (strings 500). 0 Cad, 1 Linear, 2 Component.
 # Kyle STP Loom: Component→CAD sets Machine=Laser; Structural→Linear + Product Type.
+# Kyle Loom (original, missed until Q10333): Adjust Properties after Geometry
+# Cleanup defaults ProductType to Component. Plate/sheet laser must change
+# that dropdown to Cad (thickness inches, Machine Laser) or Contours never
+# fill. Live proof Q10333 / b5f56ac3 / H.6.38 Safe Cave — Contours PASS
+# after Component→Cad (human Finish OK). Automation writes the same
+# persisted fields (ProductType=100, FileType Cad, SetPartMode 0) — not a
+# UI dropdown click. Do not invent Contours/InternalData; refuse Finish
+# if they are still empty after Cad classify.
 # Live 105918-1: page Finish without grid SetPartMode → 66 Component/Assembly, 0 Cad.
 # Apply PartMode on #gridDXFParts (EDIT) before Finish. UpdateData JSON List.
 SET_PART_MODE_PATH = "/CadImport/SetPartMode"

@@ -7580,6 +7580,10 @@ def create_all_parts_from_grid_dxf(
 
 # QuoteOrderEdit: $.ajax({type:"POST",url:"/CadImport/SetPartMode",data:{ID,PartMode}})
 # Kyle STP Loom: Component→CAD sets Machine=Laser; Structural→Linear + Product Type.
+# Kyle Loom (Q10333 / H.6.38): Adjust Properties defaults ProductType to
+# Component after Geometry Cleanup. Plate STEP Contours fill only after
+# Cad. Automation writes kendo ProductType=100 + SetPartMode 0 (API field),
+# not a UI dropdown click. Still refuse Finish if Contours stay empty.
 # Live 105918-1: Finish without this left plates as Component (0 Cad).
 _APPLY_GRID_PART_MODES_JS = """(function(spec) {
   function grid() {

@@ -17,6 +17,11 @@ see ``step_contours_fill_hunt``. Unlock remains Kyle Contours≥1 capture
 or Sectura support naming the fill. Do not invent Contours. Plate
 matches bar — no silent graft.
 
+Kyle Loom: Component→Cad on Adjust Properties is required for plate
+STEP Contours (Q10333 / H.6.38 Safe Cave leftover is the proof — do
+not remint / PATCH). Automation sets Cad via API/kendo ProductType=100
++ SetPartMode 0, not a UI click. Still fail-close if Contours empty.
+
 On a **fresh unused** Time STEP whose green Finish shows Contours
 (GET ``DataPartPDF.NumberOfContours`` ≥ 1), save the windows below —
 key names and emptiness bools only. Never remint spent leftovers.
