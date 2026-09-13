@@ -11,8 +11,8 @@ Do not remint / PATCH. Do not invent Contours / InternalData.
       14327-1 flat-looking — Contours column absent; Finish never
 
 Q10333 / b5f56ac3 / H.6.38 Safe Cave is NOT this class. It is a
-Contours PASS protect (Kyle Component→Cad + thickness + Finish;
-Laser costs filled). See ``live_q10333_h638``. Never remint /
+Contours PASS protect (Cad / Contours=1 / 8 bends + Profile /
+Laser Bay1 / UC 176.96). See ``live_q10333_h638``. Never remint /
 PATCH / ZZ-DEL. Tip 0759273 ZZ-DEL-fail narrative is reversed.
 
 Wrong-org Time mint (not a Contours leftover; ID unknown):

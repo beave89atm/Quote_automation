@@ -2950,7 +2950,8 @@ class SecturaFabPushService:
         Component purchased) and SetPartMode on ``#gridDXFParts`` (Kyle Loom
         c9d7c05a). Sheet/plate laser candidates get ProductType Cad (100)
         — Sectura Adjust Properties defaults Component, which blocks
-        Contours (Kyle Loom; Q10333 / H.6.38). Cad is the API/kendo field
+        Contours (Kyle Loom; Q10333 / H.6.38 PASS Cad / Contours=1 /
+        8 bends + Profile / Laser Bay1 / UC 176.96). Cad is the API/kendo field
         (SetPartMode 0 + ProductType=100), not a UI dropdown click.
         Fail-close if PartMode is still null after classify, if ProductType
         is still Component on a Cad plate, or if Contours/InternalData

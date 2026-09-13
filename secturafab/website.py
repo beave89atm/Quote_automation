@@ -223,7 +223,9 @@ P904271-1 / 10289-4 / 28768-1 / 28769-1 (leftover c146ce6d) /
 14327-8 (leftover 1cd941c6) / Q10329 / 14327-3 / 75f07c2b /
 Q10330 / 21841-1 / aed89628 / Q10331 / 14327-1 / 5e72fe39 /
 Q10332 (ZZ-DEL-wrong-org-Time; ID unknown). Q10333 / H.6.38 /
-b5f56ac3 Safe Cave is a Contours PASS protect — never remint /
+b5f56ac3 Safe Cave is a Contours PASS protect (Cad / Contours=1 /
+8 bends + Profile / Laser Bay1 / UC 176.96; unlock Component→Cad
+then thickness inches then Contours fill) — never remint /
 PATCH / ZZ-DEL.
 Server explode returning empty InternalData is the blocker
 (step_explode_no_internaldata aliases cad_internaldata_empty_after_explode).
@@ -246,7 +248,8 @@ silent-graft Contours. Leave 8973f890 / 35136-1, c5cd8689 /
 aed89628 / Q10330 / 21841-1, 5e72fe39 / Q10331 / 14327-1,
 Q10332 is description-only
 (ZZ-DEL-wrong-org-Time; quote ID not restated). Q10333 / H.6.38 /
-b5f56ac3 is a Contours PASS protect — never remint / PATCH / ZZ-DEL.
+b5f56ac3 is a Contours PASS protect (Cad / Contours=1 / 8 bends +
+Profile / Laser Bay1 / UC 176.96) — never remint / PATCH / ZZ-DEL.
 Do not POST UpdateDataNext / ConvertTo / Detect* as a Finish substitute.
 No live STEP t.List has yet arrived with nonempty InternalData+ImageString
 (LIVE_PART_CREATE_TLIST_BIND is None). Until Kyle grabs a manual Finish
@@ -264,7 +267,8 @@ c146ce6d / 28769-1, 8973f890 / 35136-1, c5cd8689 / 14327-5,
 aed89628 / Q10330 / 21841-1, 5e72fe39 / Q10331 / 14327-1,
 Q10332 description-only
 (ZZ-DEL-wrong-org-Time; ID unknown). Q10333 / H.6.38 / b5f56ac3
-is a Contours PASS protect — never remint / PATCH / ZZ-DEL.
+is a Contours PASS protect (Cad / Contours=1 / 8 bends + Profile /
+Laser Bay1 / UC 176.96) — never remint / PATCH / ZZ-DEL.
 Do not remint. Do not mint.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
@@ -341,9 +345,10 @@ def is_tenant_guid(value: Any) -> bool:
 # Kyle Loom (original STP): after CAD Files → Geometry Cleanup → Adjust
 # Properties, Sectura defaults ProductType to Component. Sheet/plate laser
 # must be Cad (thickness inches, Machine Laser) or Contours/bends/profile
-# stay empty. Live PASS Q10333 / b5f56ac3 / H.6.38 Safe Cave — Contours
-# PASS after Component→Cad + thickness + Finish (Laser costs filled).
-# Protect forever like other live PASSes; never remint / PATCH / ZZ-DEL.
+# stay empty. Live PASS Q10333 / b5f56ac3 / H.6.38 Safe Cave —
+# ProductType Cad / Contours=1 / 8 bends + Profile / Laser Bay1 /
+# UC 176.96 after Component→Cad then thickness inches then Contours
+# fill. Protect forever; never remint / PATCH / ZZ-DEL.
 # Automation writes the
 # API/kendo ProductType field (100) + FileType/ItemType/Category=Cad +
 # SetPartMode 0 — not a UI dropdown click. Do not invent Contours;
@@ -1370,12 +1375,14 @@ STEP_CONTOURS_FILL_UNLOCKED = False
 STEP_CONTOURS_UNLOCK_REQUIRES = "kyle_contours_ge1_or_sectura_support"
 # Kyle Loom lesson (Adjust Properties): Component→Cad is required for
 # plate STEP Contours. Q10333 / b5f56ac3 / H.6.38 is a Contours PASS
-# protect (not a ZZ-DEL fail leftover). Never remint / PATCH / ZZ-DEL.
+# (Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96).
+# Never remint / PATCH / ZZ-DEL.
 # Fill stays fail-close if Contours empty after Cad.
 KYLE_LOOM_COMPONENT_TO_CAD = (
     "Kyle Loom: STEP CAD Files Adjust Properties defaults ProductType to "
     "Component; sheet/plate laser must be Cad (inches, Machine Laser) for "
-    "Contours to fill. Live PASS Q10333 / b5f56ac3 / H.6.38 Safe Cave. "
+    "Contours to fill. Live PASS Q10333 / b5f56ac3 / H.6.38 Safe Cave "
+    "(Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96). "
     "Cad is set via API/kendo ProductType=100 + SetPartMode 0, not a UI click. "
     "Do not invent Contours."
 )
@@ -1904,7 +1911,8 @@ def kyle_step_contours_devtools_capture() -> dict[str, Any]:
     fill. Contours UI leftovers Q10329 / 14327-3, Q10330 / 21841-1,
     Q10331 / 14327-1 never showed a Contours column and never clicked
     Finish. Q10333 / H.6.38 / Safe Cave is a Contours PASS protect
-    (Kyle Component→Cad + thickness + Finish; Laser costs filled) —
+    (Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96;
+    unlock Component→Cad then thickness inches then Contours fill) —
     never remint / PATCH / ZZ-DEL. Automation sets Cad via API/kendo field.
     Q10332 is a wrong-org Time mint (ZZ-DEL-wrong-org-Time; ID unknown).
     Do not invent Contours. Do not remint spent STEP leftovers.
@@ -2545,7 +2553,8 @@ def plate_step_left_component_refuses_contours(
     return (
         "Plate STEP ProductType still Component after Cad classify — "
         "Contours fail path (Kyle Loom Component→Cad required; "
-        "Q10333 / H.6.38 PASS). Do not invent Contours/InternalData."
+        "Q10333 / H.6.38 PASS Cad / Contours=1 / 8 bends + Profile / "
+        "Laser Bay1 / UC 176.96). Do not invent Contours/InternalData."
     )
 
 
@@ -2557,7 +2566,8 @@ def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
     profile geometry from explode — do not invent InternalData.
     ImageString-without-InternalData is preview only (live 21785-2).
     Component left after Cad classify is the Contours fail path
-    (Kyle Loom Component→Cad; Q10333).
+    (Kyle Loom Component→Cad; Q10333 / H.6.38 PASS Cad / Contours=1 /
+    8 bends + Profile / Laser Bay1 / UC 176.96).
     """
     from secturafab.cadimport_js import NEEDS_INTERNALDATA_FILL_XHR
 

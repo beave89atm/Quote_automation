@@ -11066,7 +11066,9 @@ def test_leftover_contours_ui_q10329_q10330_q10331_forever_forbid():
 
     Q10329 / 75f07c2b / 14327-3, Q10330 / aed89628 / 21841-1,
     Q10331 / 5e72fe39 / 14327-1. Contours column absent; Finish never
-    clicked. invented=false. Keep 14327-5 / c5cd8689 and 14327-8 / 1cd941c6.
+    clicked. invented=false. Q10333 is NOT this class (live PASS:
+    Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96).
+    Keep 14327-5 / c5cd8689 and 14327-8 / 1cd941c6.
     """
     from secturafab.forbidden_quotes import (
         is_forbidden_quote_id,
@@ -11310,9 +11312,9 @@ def test_plate_step_component_left_is_contours_fail_path():
 def test_q10333_h638_safecave_contours_pass_protect():
     """Q10333 / b5f56ac3 Safe Cave H.6.38: Contours PASS protect.
 
-    Kyle Component→Cad + thickness + Finish; Laser costs filled.
-    Forever-protect like other live PASSes. Never remint / PATCH / ZZ-DEL.
-    Tip 0759273 ZZ-DEL empty-Contours fail narrative is reversed.
+    Live UI: ProductType Cad / Contours=1 / 8 bends + Profile /
+    Laser Bay1 / UC 176.96. Unlock: Component→Cad then inches then
+    Contours fill. Never remint / PATCH / ZZ-DEL. invent=false.
     """
     from secturafab.forbidden_quotes import (
         ForbiddenQuoteError,
@@ -11338,6 +11340,14 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert dump["source"] == "Onshape STEP"
     assert dump["pass"] is True
     assert dump["contours_pass"] is True
+    assert dump["product_type"] == "Cad"
+    assert dump["product_type_enum"] == 100
+    assert dump["number_of_contours"] == 1
+    assert dump["bends"] == 8
+    assert dump["profile"] is True
+    assert dump["machine"] == "Laser Bay1"
+    assert dump["unit_cost"] == 176.96
+    assert dump["unlock"] == "component_to_cad_then_thickness_inches_then_contours_fill"
     assert dump["laser_costs_filled"] is True
     assert dump["kyle_component_to_cad"] is True
     assert dump["thickness_inches"] is True

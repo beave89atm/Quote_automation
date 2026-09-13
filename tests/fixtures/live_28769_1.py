@@ -12,7 +12,8 @@ Do not remint 28769-1 / c146ce6d. Sibling spent STEPs stay forbidden
 14327-3 / Q10329 / 75f07c2b, 21841-1 / Q10330 / aed89628,
 14327-1 / Q10331 / 5e72fe39, Q10332 / ZZ-DEL-wrong-org-Time
 (ID unknown). Q10333 / H.6.38 / b5f56ac3 is a Contours PASS
-protect — never remint / PATCH / ZZ-DEL. Also 28768-1, 10289-4,
+protect (Cad / Contours=1 / 8 bends + Profile / Laser Bay1 /
+UC 176.96) — never remint / PATCH / ZZ-DEL. Also 28768-1, 10289-4,
 P904271-1, P904272-1, 21785-1/2/3, 35145-1, 11796-1).
 """
 

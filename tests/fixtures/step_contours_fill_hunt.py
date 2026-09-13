@@ -11,7 +11,8 @@ createAllParts still has no intervening CadImport/UI XHR. This follow-up
 exhausted the alternate-path hypotheses below. Kyle Loom (original):
 Adjust Properties defaults ProductType to Component; plate STEP Contours
 fill after Component→Cad (live PASS Q10333 / b5f56ac3 / H.6.38 Safe
-Cave — Laser costs filled). Protect that quote forever; never remint /
+Cave — Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96).
+Protect that quote forever; never remint /
 PATCH / ZZ-DEL (0759273 ZZ-DEL-fail narrative is reversed). Automation
 writes API/kendo ProductType=100 + SetPartMode 0 — not a UI click.
 Still refuse Finish if Contours/InternalData stay empty after Cad.
