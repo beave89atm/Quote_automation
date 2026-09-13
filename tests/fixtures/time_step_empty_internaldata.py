@@ -11,6 +11,11 @@ Failed invent=false Finishes:
            UpdateItemType Cad OK, InternalData empty, Finish refused
            invent=false; ZZ-DEL-15911-9. Mid-wizard XHRs vs H.6.38
            not observed: CadImport/Data, PartImage, GetBorderSize.
+  21839-1 / 1994392f-54a5-4245-80ee-a947fb07e3a7 @ bb4998a+
+           UpdateItemType Cad OK, InternalData empty after explode,
+           Finish refused invent=false; ZZ-DEL-21839-1. Full
+           CadImport/Data + GetBorderSize + PartImage trail still
+           empty (stronger than 15911-9: trail ran, still empty).
 
 Not the H.6.38 Contours-good family (Q10333 / Q10336 / Q10339
 finished GET NumberOfContours=1). This class never reaches a
@@ -55,6 +60,7 @@ TIME_STEP_EMPTY_INTERNALDATA_PNS = (
     "28772-1",
     "14327-18",
     "15911-9",
+    "21839-1",
 )
 TIME_STEP_EMPTY_INTERNALDATA_ID_UNKNOWN_PNS = (
     "28898-1",
@@ -66,10 +72,20 @@ TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID = (
 )
 TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID_PREFIX = "ef865b0f"
 TIME_STEP_EMPTY_INTERNALDATA_ZZ_DEL = "ZZ-DEL-15911-9"
+TIME_STEP_EMPTY_INTERNALDATA_21839_QUOTE_ID = (
+    "1994392f-54a5-4245-80ee-a947fb07e3a7"
+)
+TIME_STEP_EMPTY_INTERNALDATA_21839_QUOTE_ID_PREFIX = "1994392f"
+TIME_STEP_EMPTY_INTERNALDATA_21839_ZZ_DEL = "ZZ-DEL-21839-1"
 TIME_STEP_EMPTY_INTERNALDATA_MISSING_MID_WIZARD_XHRS = (
     "/CadImport/Data",
     "/part/PartImage",
     GET_BORDER_SIZE_PATH,
+)
+TIME_STEP_EMPTY_INTERNALDATA_FULL_TRAIL_XHRS = (
+    "/CadImport/Data",
+    GET_BORDER_SIZE_PATH,
+    "/part/PartImage",
 )
 
 TIME_STEP_EMPTY_INTERNALDATA_PRIOR_CAPTURES = (
@@ -87,15 +103,21 @@ TIME_STEP_EMPTY_INTERNALDATA: dict[str, Any] = {
     "separate_from_h638_family": True,
     "h638_contours_good": ("Q10333", "Q10336", "Q10339"),
     "part_numbers": TIME_STEP_EMPTY_INTERNALDATA_PNS,
-    "ids_restated": ("15911-9",),
+    "ids_restated": ("15911-9", "21839-1"),
     "id_unknown": True,
     "id_unknown_pns": TIME_STEP_EMPTY_INTERNALDATA_ID_UNKNOWN_PNS,
     "known_quote_id": TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID,
     "known_quote_id_prefix": TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID_PREFIX,
     "zz_del_number": TIME_STEP_EMPTY_INTERNALDATA_ZZ_DEL,
+    "known_quote_id_21839": TIME_STEP_EMPTY_INTERNALDATA_21839_QUOTE_ID,
+    "known_quote_id_prefix_21839": TIME_STEP_EMPTY_INTERNALDATA_21839_QUOTE_ID_PREFIX,
+    "zz_del_number_21839": TIME_STEP_EMPTY_INTERNALDATA_21839_ZZ_DEL,
     "live_probe_tip": "62f7a92",
+    "live_probe_tip_21839": "bb4998a",
     "missing_mid_wizard_xhrs_vs_h638": TIME_STEP_EMPTY_INTERNALDATA_MISSING_MID_WIZARD_XHRS,
     "missing_mid_wizard_xhrs_observed": False,
+    "full_trail_xhrs": TIME_STEP_EMPTY_INTERNALDATA_FULL_TRAIL_XHRS,
+    "full_trail_observed_still_empty": True,
     "update_item_type_path": UPDATE_ITEM_TYPE_PATH,
     "update_item_type_itemtype": UPDATE_ITEM_TYPE_CAD,
     "update_item_type_ok": True,
@@ -124,12 +146,19 @@ TIME_STEP_EMPTY_INTERNALDATA: dict[str, Any] = {
         {
             "id": "update_item_type_does_not_fill_internaldata",
             "ruled_out": True,
-            "from_captures": ("H638-CADPLATE", "Q10335", "28898-1", "15911-9"),
+            "from_captures": (
+                "H638-CADPLATE",
+                "Q10335",
+                "28898-1",
+                "15911-9",
+                "21839-1",
+            ),
             "why": (
                 "UpdateItemType Cad is dropdown classify (Q10335 status "
                 "200; H638-CADPLATE SetPartMode Cad:1). Live Time STEPs "
-                "28898-1 / 28772-1 / 14327-18 / 15911-9: classify OK, "
-                "InternalData still empty, Finish refused. Classify ≠ fill."
+                "28898-1 / 28772-1 / 14327-18 / 15911-9 / 21839-1: "
+                "classify OK, InternalData still empty, Finish refused. "
+                "Classify ≠ fill."
             ),
         },
         {
@@ -156,7 +185,7 @@ TIME_STEP_EMPTY_INTERNALDATA: dict[str, Any] = {
         {
             "id": "named_cad_finish_sequence_not_a_fill",
             "ruled_out": True,
-            "from_captures": ("Q10336",),
+            "from_captures": ("Q10336", "21839-1"),
             "why": (
                 "Named Upload→Data→/part/create→UpdateItemType→"
                 "PartImage→GetBorderSize→AddItem_DXFFiles→ItemEdit is "
@@ -172,8 +201,9 @@ TIME_STEP_EMPTY_INTERNALDATA: dict[str, Any] = {
             "why": (
                 "H.6.38 leftovers Finished with NumberOfContours=1 on "
                 "v1 ItemList. Time STEPs 28898-1 / 28772-1 / 14327-18 "
-                "/ 15911-9 refused before Finish. Separate gate. Never "
-                "remint / PATCH Q10333 / Q10336 / Q10338 / Q10339."
+                "/ 15911-9 / 21839-1 refused before Finish. Separate "
+                "gate. Never remint / PATCH Q10333 / Q10336 / Q10338 "
+                "/ Q10339."
             ),
         },
         {
@@ -186,6 +216,21 @@ TIME_STEP_EMPTY_INTERNALDATA: dict[str, Any] = {
                 "Mid-wizard XHRs vs H.6.38 not observed: "
                 "/CadImport/Data, /part/PartImage, /Quote/GetBorderSize. "
                 "Do not invent those calls. Never remint / PATCH "
+                "Q10333 / Q10336 / Q10338 / Q10339 / golds."
+            ),
+        },
+        {
+            "id": "21839_1_full_trail_still_empty",
+            "ruled_out": True,
+            "from_captures": ("21839-1",),
+            "why": (
+                "Live 21839-1 / 1994392f @ bb4998a+: UpdateItemType "
+                "Cad OK, InternalData empty after explode, Finish "
+                "refused invent=false; ZZ-DEL-21839-1. Full "
+                "CadImport/Data + GetBorderSize + PartImage trail "
+                "still empty — stronger than 15911-9 (trail ran, "
+                "still empty). Named mid-wizard XHRs do not fill "
+                "explode-empty InternalData. Never remint / PATCH "
                 "Q10333 / Q10336 / Q10338 / Q10339 / golds."
             ),
         },
@@ -202,6 +247,7 @@ def time_step_empty_internaldata_dig() -> dict[str, Any]:
     out["missing_mid_wizard_xhrs_vs_h638"] = tuple(
         TIME_STEP_EMPTY_INTERNALDATA_MISSING_MID_WIZARD_XHRS
     )
+    out["full_trail_xhrs"] = tuple(TIME_STEP_EMPTY_INTERNALDATA_FULL_TRAIL_XHRS)
     out["prior_captures"] = tuple(TIME_STEP_EMPTY_INTERNALDATA_PRIOR_CAPTURES)
     out["hypotheses"] = [dict(h) for h in TIME_STEP_EMPTY_INTERNALDATA["hypotheses"]]
     out["named_cad_finish_xhr_sequence"] = tuple(CAD_FINISH_NAMED_XHR_SEQUENCE)
