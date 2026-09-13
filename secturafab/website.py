@@ -1389,9 +1389,11 @@ STEP_CONTOURS_NO_EXTRA_XHR = "createAllParts_no_intervening_xhr"
 # /part/PartImage / PDFGetData) exhausted in-repo. Fill stays locked.
 STEP_CONTOURS_FILL_UNLOCKED = False
 STEP_CONTOURS_UNLOCK_REQUIRES = "kyle_contours_ge1_or_sectura_support"
-# Finished H.6.38 leftovers (Q10333 / Q10336 / Q10339): Contours PASS
-# signal is v1 ItemList NumberOfContours≥1. CadImport OpenContourCount
-# is 0 on the human PASS too — never unlock on OCC≥1.
+# Finished H.6.38 leftovers (Q10333 / Q10336 / Q10339 / Q10344):
+# Contours PASS signal is v1 ItemList NumberOfContours≥1. CadImport
+# OpenContourCount is 0 on the human PASS too — never unlock on OCC≥1.
+# Q10344 / 55f12530 is the Kyle UI control leftover (Cad + 0.1875 inch
+# → Contours fill → Finish). invent=false.
 CONTOURS_PASS_SIGNAL = "v1_itemlist_number_of_contours_ge_1"
 CADIMPORT_OPEN_CONTOUR_COUNT_UNLOCKS_CONTOURS = False
 # Kyle Loom lesson (Adjust Properties): Component→Cad is required for
@@ -1411,7 +1413,9 @@ KYLE_LOOM_COMPONENT_TO_CAD = (
     "Contours 0; QuoteItem_Read Data:[] lost CAD row before Finish — "
     "ZZ-DEL). Q10336 / f73dd116 and Q10339 / 76cecc73 Cad→Finish "
     "leftovers match Q10333 finished Contours semantics "
-    "(NumberOfContours=1 / OCC=0 expected / bends=8). Soft-pass "
+    "(NumberOfContours=1 / OCC=0 expected / bends=8). Q10344 / "
+    "55f12530 Kyle UI control PASS leftover: ProductType Cad + "
+    "thickness 0.1875 inch → Contours fill → Finish. Soft-pass "
     "Contours=0 labels were stage notes. Do not gate Contours≥1 "
     "unlock on OCC≥1. UpdateItemType is dropdown classify; invent "
     "fill stays locked. Do not invent Contours."
@@ -2667,8 +2671,111 @@ def plate_step_left_component_refuses_contours(
         "Plate STEP ProductType still Component after Cad classify — "
         "Contours fail path (Kyle Loom Component→Cad required; "
         "Q10333 / H.6.38 PASS Cad / Contours=1 / 8 bends + Profile / "
-        "Laser Bay1 / UC 176.96). Do not invent Contours/InternalData."
+        "Laser Bay1 / UC 176.96; Q10344 / 55f12530 Kyle UI control "
+        "Cad + 0.1875 inch). Do not invent Contours/InternalData."
     )
+
+
+STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL = "EXEC_FAIL"
+
+
+def _cad_plate_row_for_finish_gate(row: dict[str, Any] | None) -> bool:
+    """Cad-classified plate/sheet — not Assembly, Linear, or purchased Component."""
+    if not isinstance(row, dict):
+        return False
+    cat = str(row.get("Category") or row.get("ItemType") or "").strip()
+    if cat in {"Assembly", "Linear"}:
+        return False
+    if str(row.get("FileType") or "").strip() == "Component" and not is_cad_filelist_row(
+        row
+    ):
+        return False
+    return is_cad_filelist_row(row) or cat == "Cad"
+
+
+def plate_step_thickness_units_are_inch(row: dict[str, Any] | None) -> bool:
+    """True when thickness is set with inch units (not blank, not meter).
+
+    Q10344 Kyle UI control: Cad + 0.1875 inch. Meter/mm/blank units fail.
+    Does not invent a thickness. invent=false.
+    """
+    if not isinstance(row, dict):
+        return False
+    raw = row.get("Thickness")
+    if raw in (None, ""):
+        return False
+    units = (
+        row.get("Thickness_Units")
+        or row.get("thickness_units")
+        or row.get("Thickness_Unit")
+        or ""
+    )
+    unit_s = str(units).strip().casefold()
+    meterish = {
+        "meter",
+        "metre",
+        "meters",
+        "metres",
+        "m",
+        "mm",
+        "millimeter",
+        "millimeters",
+        "millimetre",
+        "millimetres",
+    }
+    if unit_s in meterish:
+        return False
+    text = str(raw).strip()
+    matched = _THICKNESS_VALUE_UNIT_RE.match(text)
+    if matched:
+        embedded = str(matched.group(2) or "").strip().casefold()
+        if embedded in meterish:
+            return False
+        if embedded in {"inch", "inches", "in"}:
+            return sanitize_bind_thickness_inches(raw, "inch") is not None
+    if unit_s in {"inch", "inches", "in"}:
+        return sanitize_bind_thickness_inches(raw, unit_s) is not None
+    return False
+
+
+def step_cad_finish_hard_gate(
+    rows: list[dict[str, Any]] | None,
+) -> str | None:
+    """Mid-wizard before Finish: ProductType Cad, then inch thickness.
+
+    1. Still Component → do not Finish (need UpdateItemType Cad / UI Cad).
+    2. Thickness missing / not inch (blank or meter) → EXEC_FAIL, not
+       Contours empty.
+    3. Else None — proceed toward Finish. invent=false; never invent
+       InternalData/Contours.
+
+    Q10344 / 55f12530 H.6.38 Kyle UI control PASS: Cad + 0.1875 inch
+    → Contours fill → Finish.
+    """
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if not _cad_plate_row_for_finish_gate(row):
+            continue
+        left = plate_step_left_component_refuses_contours(row)
+        if left:
+            return left
+        if not product_type_is_cad(row.get("ProductType")):
+            return (
+                "Plate STEP ProductType not Cad after classify — "
+                "not Finishing (need UpdateItemType Cad / UI Cad; "
+                "Q10344 / H.6.38 Kyle UI control PASS Cad + 0.1875 inch). "
+                "Do not invent InternalData/Contours."
+            )
+        if not plate_step_thickness_units_are_inch(row):
+            return (
+                f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: plate STEP "
+                "thickness not set in inch (blank or meter) — not "
+                "Finishing (not Contours empty; Q10344 / H.6.38 Kyle UI "
+                "control PASS Cad + 0.1875 inch). Do not invent "
+                "InternalData/Contours."
+            )
+    return None
 
 
 def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
@@ -2741,6 +2848,9 @@ def cad_finish_notes_refuse_additem_dxf(
             or "refusing AddItem_DXFFiles" in text
             or "Contours fail path" in text
             or "ProductType still Component" in text
+            or "ProductType not Cad" in text
+            or STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in text
+            or "thickness not set in inch" in text
         ):
             return text
     return None

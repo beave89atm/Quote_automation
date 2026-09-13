@@ -32,6 +32,8 @@ Live leftovers after Cad-for-plate:
   76cecc73 Q10339 — EOD STP Cad→Finish leftover. Finished
     NumberOfContours=1 matches Q10333; OCC=0 expected; Laser Bay1 /
     UC 64.25 / unit price 176.96.
+  55f12530 Q10344 — Kyle UI control leftover. ProductType Cad +
+    thickness 0.1875 inch → Contours fill → Finish. invent=false.
 
 Human Kyle on Q10333 / b5f56ac3: real Component→Cad dropdown +
 thickness + Finish → NumberOfContours=1 PASS. Finished Q10336 /
@@ -84,6 +86,7 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
         "Q10335",
         "Q10336",
         "Q10339",
+        "Q10344",
     ),
     "hypotheses": (
         {

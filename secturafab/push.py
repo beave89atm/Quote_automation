@@ -81,6 +81,7 @@ from .website import (
     filelist_kids_partmode_set,
     finish_attempt_empty_partmode_or_internaldata,
     kyle_classify_before_finish_blocked,
+    step_cad_finish_hard_gate,
     step_finish_pack_missing,
     count_cad_product_type,
     is_tenant_guid,
@@ -2960,8 +2961,11 @@ class SecturaFabPushService:
         ItemType=Cad (live Q10335 mouse Component→Cad dropdown classify
         XHR, status 200). UpdateItemType is classify, not Contours fill.
         Fail-close if PartMode is still null after classify, if ProductType
-        is still Component on a Cad plate, or if Contours/InternalData
-        stay empty after UpdateItemType (do not invent).
+        is still Component on a Cad plate, if thickness is missing or not
+        inch (EXEC_FAIL, not Contours empty; Q10344 / H.6.38 Kyle UI
+        control Cad + 0.1875 inch), or if Contours/InternalData stay empty
+        after UpdateItemType (do not invent). Hard-gate before Finish:
+        ProductType Cad, then inch thickness. invent=false.
         After Finish, fail-close if PartMode is still null, or if Cad
         Contours are empty / PR+laser pack is missing. Then log
         kendo row key names (CadType, Stock_*, FileType, SID/FileID/ID) and
@@ -3352,6 +3356,10 @@ class SecturaFabPushService:
         if blocked:
             notes.append(blocked)
             return notes
+        hard = step_cad_finish_hard_gate(classified)
+        if hard:
+            notes.append(hard)
+            return notes
         if not set_via:
             notes.append(
                 "WARNING: SetPartMode did not run on this EDIT #gridDXFParts "
@@ -3441,6 +3449,10 @@ class SecturaFabPushService:
                         "live 107292-1)"
                     )
                     return notes
+        hard_ready = step_cad_finish_hard_gate(ready)
+        if hard_ready:
+            notes.append(hard_ready)
+            return notes
         cad_refuse = next(
             (
                 cad_filelist_refuses_additem_dxf(r)

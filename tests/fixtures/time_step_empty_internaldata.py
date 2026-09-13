@@ -23,10 +23,10 @@ Same Sectura-side empty-InternalData class, outside Time pick:
            mid-wizard (11 parts), invent=false; ZZ-DEL-GSB20570006.
            Not a Time STEP. Do not invent Contours / InternalData.
 
-Not the H.6.38 Contours-good family (Q10333 / Q10336 / Q10339
+Not the H.6.38 Contours-good family (Q10333 / Q10336 / Q10339 / Q10344
 finished GET NumberOfContours=1). This class never reaches a
 NumberOfContours≥1 GET because Finish is refused. Never remint /
-PATCH Q10333 / Q10336 / Q10338 / Q10339 / golds.
+PATCH Q10333 / Q10336 / Q10338 / Q10339 / Q10344 / golds.
 
 Existing captures only — no invented InternalData payloads:
   28768-1 / 28708035  PartMode Cad + page Finish, InternalData null,
@@ -107,7 +107,7 @@ TIME_STEP_EMPTY_INTERNALDATA: dict[str, Any] = {
     "unlocks_automation_contours_fill": False,
     "fill_unlocked": STEP_CONTOURS_FILL_UNLOCKED,
     "separate_from_h638_family": True,
-    "h638_contours_good": ("Q10333", "Q10336", "Q10339"),
+    "h638_contours_good": ("Q10333", "Q10336", "Q10339", "Q10344"),
     "part_numbers": TIME_STEP_EMPTY_INTERNALDATA_PNS,
     "ids_restated": ("15911-9", "21839-1"),
     "id_unknown": True,
@@ -203,13 +203,13 @@ TIME_STEP_EMPTY_INTERNALDATA: dict[str, Any] = {
         {
             "id": "not_h638_finished_get_contours_good",
             "ruled_out": True,
-            "from_captures": ("Q10333", "Q10336", "Q10339"),
+            "from_captures": ("Q10333", "Q10336", "Q10339", "Q10344"),
             "why": (
                 "H.6.38 leftovers Finished with NumberOfContours=1 on "
                 "v1 ItemList. Time STEPs 28898-1 / 28772-1 / 14327-18 "
                 "/ 15911-9 / 21839-1 refused before Finish. Separate "
                 "gate. Never remint / PATCH Q10333 / Q10336 / Q10338 "
-                "/ Q10339."
+                "/ Q10339 / Q10344."
             ),
         },
         {
@@ -222,7 +222,7 @@ TIME_STEP_EMPTY_INTERNALDATA: dict[str, Any] = {
                 "Mid-wizard XHRs vs H.6.38 not observed: "
                 "/CadImport/Data, /part/PartImage, /Quote/GetBorderSize. "
                 "Do not invent those calls. Never remint / PATCH "
-                "Q10333 / Q10336 / Q10338 / Q10339 / golds."
+                "Q10333 / Q10336 / Q10338 / Q10339 / Q10344 / golds."
             ),
         },
         {
@@ -237,7 +237,7 @@ TIME_STEP_EMPTY_INTERNALDATA: dict[str, Any] = {
                 "still empty — stronger than 15911-9 (trail ran, "
                 "still empty). Named mid-wizard XHRs do not fill "
                 "explode-empty InternalData. Never remint / PATCH "
-                "Q10333 / Q10336 / Q10338 / Q10339 / golds."
+                "Q10333 / Q10336 / Q10338 / Q10339 / Q10344 / golds."
             ),
         },
         {
@@ -251,7 +251,7 @@ TIME_STEP_EMPTY_INTERNALDATA: dict[str, Any] = {
                 "ZZ-DEL-GSB20570006. Same Sectura-side "
                 "empty-InternalData class outside H.6.38 / Time pick. "
                 "Do not invent Contours / InternalData. Never remint "
-                "/ PATCH Q10333 / Q10336 / Q10338 / Q10339 / golds."
+                "/ PATCH Q10333 / Q10336 / Q10338 / Q10339 / Q10344 / golds."
             ),
         },
     ),

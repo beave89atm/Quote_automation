@@ -2181,6 +2181,9 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("Q10339")
     assert is_forbidden_quote_id("76cecc73-257e-4fa7-91b7-ed15a4c90caa")
     assert is_forbidden_quote_id("76cecc73-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10344")
+    assert is_forbidden_quote_id("55f12530-e97b-40cc-8e7f-e799d9d6b234")
+    assert is_forbidden_quote_id("55f12530-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10338")
     assert is_forbidden_quote_number("Q10339")
     assert is_forbidden_quote_number("CROSSDRAIN-12X7X60")
@@ -9472,6 +9475,7 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("Q10333")
     assert is_forbidden_quote_number("Q10336")
     assert is_forbidden_quote_number("Q10339")
+    assert is_forbidden_quote_number("Q10344")
     assert is_forbidden_quote_number("Q10338")
     assert is_forbidden_quote_number("Q10339")
     assert is_forbidden_quote_number("CROSSDRAIN-12X7X60")
@@ -10388,6 +10392,7 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "Q10333",
         "Q10336",
         "Q10339",
+        "Q10344",
         "Q10338",
         "Q10339",
         "CROSSDRAIN-12X7X60",
@@ -11244,6 +11249,7 @@ def test_plate_step_classify_bind_sets_cad_not_component():
     assert "Q10333" in KYLE_LOOM_COMPONENT_TO_CAD
     assert "Q10335" in KYLE_LOOM_COMPONENT_TO_CAD
     assert "Q10336" in KYLE_LOOM_COMPONENT_TO_CAD
+    assert "Q10344" in KYLE_LOOM_COMPONENT_TO_CAD
 
     inch = sanitize_bind_thickness_inches("0.0048:meter")
     assert inch is not None
@@ -11508,11 +11514,13 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_number("Q10335")
     assert is_forbidden_quote_number("Q10336")
     assert is_forbidden_quote_number("Q10339")
+    assert is_forbidden_quote_number("Q10344")
     assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
     assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
     assert is_forbidden_quote_id("bcff1a24-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("f73dd116-f33e-485f-947c-f5662633d23a")
     assert is_forbidden_quote_id("76cecc73-257e-4fa7-91b7-ed15a4c90caa")
+    assert is_forbidden_quote_id("55f12530-e97b-40cc-8e7f-e799d9d6b234")
 
     refuse = cad_filelist_refuses_additem_dxf(
         {
@@ -11947,7 +11955,7 @@ def test_q10336_h638_cad_finish_soft_protect():
     assert gap["q10336_cad_laser_finish_soft_pass"] is True
     assert gap["q10336_finished_semantics_match_q10333"] is True
     assert gap["q10339_finished_semantics_match_q10333"] is True
-    assert gap["forever_protect"] == ("Q10333", "Q10336", "Q10339")
+    assert gap["forever_protect"] == ("Q10333", "Q10336", "Q10339", "Q10344")
     assert [h["id"] for h in gap["hypotheses"]] == [
         "number_of_contours_vs_open_contour_count",
         "bend_vs_outer_contour",
@@ -12267,7 +12275,7 @@ def test_live_mid_wizard_contours_xhr_carrier_notes():
     assert (
         WEBSITE_FINISH_PATHS["quote_item_read_treelist"] in notes["open_url_only"]
     )
-    assert notes["forever_protect"] == ("Q10333", "Q10336", "Q10339")
+    assert notes["forever_protect"] == ("Q10333", "Q10336", "Q10339", "Q10344")
 
 
 def test_time_step_empty_internaldata_dig_fail_closed():
@@ -12311,7 +12319,7 @@ def test_time_step_empty_internaldata_dig_fail_closed():
     assert dig["unlocks_automation_contours_fill"] is False
     assert dig["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
     assert dig["separate_from_h638_family"] is True
-    assert dig["h638_contours_good"] == ("Q10333", "Q10336", "Q10339")
+    assert dig["h638_contours_good"] == ("Q10333", "Q10336", "Q10339", "Q10344")
     assert dig["ids_restated"] == ("15911-9", "21839-1")
     assert dig["id_unknown"] is True
     assert dig["id_unknown_pns"] == ("28898-1", "28772-1", "14327-18")
@@ -12469,7 +12477,7 @@ def test_sprout_empty_internaldata_dig_fail_closed():
     assert dig["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
     assert dig["outside_h638_family"] is True
     assert dig["outside_time_pick"] is True
-    assert dig["h638_contours_good"] == ("Q10333", "Q10336", "Q10339")
+    assert dig["h638_contours_good"] == ("Q10333", "Q10336", "Q10339", "Q10344")
     assert dig["part_number"] == SPROUT_EMPTY_INTERNALDATA_PN == "GSB20570006"
     assert dig["customer"] == "Sprout"
     assert dig["piece_part"] == "1.1"
@@ -12753,6 +12761,176 @@ def test_q10339_h638_cad_finish_soft_protect():
     assert "Q10335" in refuse
     assert dump["invent"] is False
     assert dump["unlocks_automation_contours_fill"] is False
+
+
+def test_q10344_h638_kyle_ui_control_forever_forbid():
+    """Q10344 / 55f12530 Safe Cave H.6.38: Kyle UI control PASS leftover.
+
+    ProductType Cad + thickness 0.1875 inch → Contours fill → Finish.
+    Forever protect; never remint / PATCH / ZZ-DEL. invent=false.
+    Invent fill stays locked. Do not invent Contours/InternalData.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10344_h638 import q10344_h638_kyle_ui_control_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10344_h638_kyle_ui_control_dump()
+    assert dump["quote_id"] == "55f12530-e97b-40cc-8e7f-e799d9d6b234"
+    assert dump["quote_id_prefix"] == "55f12530"
+    assert dump["quote_number"] == "Q10344"
+    assert dump["part_number"] == "H.6.38"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["source"] == "Kyle UI control"
+    assert dump["same_step_family_as"] == "Q10333"
+    assert dump["via"] == (
+        "kyle_ui_producttype_cad_thickness_0_1875_inch_then_contours_fill_then_finish"
+    )
+    assert dump["id_unknown"] is False
+    assert dump["pass"] is True
+    assert dump["contours_pass"] is True
+    assert dump["kyle_ui_control_pass"] is True
+    assert dump["product_type"] == "Cad"
+    assert dump["product_type_enum"] == 100
+    assert dump["thickness"] == "0.1875"
+    assert dump["thickness_units"] == "inch"
+    assert dump["thickness_inches"] is True
+    assert dump["contours_fill"] is True
+    assert dump["finish_clicked"] is True
+    assert dump["finish_posted"] is True
+    assert dump["invent"] is False
+    assert dump["zz_del"] is False
+    assert dump["zz_del_number"] is None
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert all(row["quote_number"] != "Q10344" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10344" for row in leftover_cad_for_plate_dumps())
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("55f12530-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10344")
+    assert spent_quote_number_block_reason("Q10344")
+    with pytest.raises(ForbiddenQuoteError, match="Q10344"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10344"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="55f12530"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="55f12530"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
+        )
+    assert "Q10344" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10344" in step_contours_fill_hunt()["never_remint"]
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "55f12530" not in refuse
+    assert "Q10344" not in refuse
+    assert "76cecc73" not in refuse
+    assert "Q10339" not in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert dump["invent"] is False
+    assert dump["unlocks_automation_contours_fill"] is False
+
+
+def test_step_cad_finish_hard_gate_cad_then_inch_before_finish():
+    """Mid-wizard before Finish: Cad ProductType, then inch thickness.
+
+    Still Component → do not Finish. Missing / meter thickness →
+    EXEC_FAIL, not Contours empty. Cad + 0.1875 inch proceeds.
+    invent=false; never invent InternalData/Contours.
+    """
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+        plate_step_thickness_units_are_inch,
+        step_cad_finish_hard_gate,
+    )
+
+    ready = [
+        {
+            "Name": "H.6.38 PLATE",
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+            "InternalData": "server-stamped",
+        }
+    ]
+    assert plate_step_thickness_units_are_inch(ready[0]) is True
+    assert step_cad_finish_hard_gate(ready) is None
+
+    still_component = [{**ready[0], "ProductType": "Component"}]
+    why_comp = step_cad_finish_hard_gate(still_component)
+    assert why_comp is not None
+    assert "Component" in why_comp
+    assert "not invent" in why_comp.lower()
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL not in why_comp
+    assert "Contours empty" not in why_comp
+
+    blank_thick = [{**ready[0], "Thickness": "", "Thickness_Units": "inch"}]
+    why_blank = step_cad_finish_hard_gate(blank_thick)
+    assert why_blank is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_blank
+    assert "not Contours empty" in why_blank
+    assert "inch" in why_blank
+    assert cad_finish_notes_refuse_additem_dxf([why_blank]) == why_blank
+
+    meter = [{**ready[0], "Thickness": "0.0047625", "Thickness_Units": "meter"}]
+    why_meter = step_cad_finish_hard_gate(meter)
+    assert why_meter is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_meter
+    assert "not Contours empty" in why_meter
+    assert plate_step_thickness_units_are_inch(meter[0]) is False
+
+    no_units = [{**ready[0], "Thickness": "0.1875", "Thickness_Units": ""}]
+    why_units = step_cad_finish_hard_gate(no_units)
+    assert why_units is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_units
+
+    purchased = [
+        {
+            "Name": "1/2-13 HEX BOLT",
+            "FileType": "Component",
+            "Category": "Component",
+            "ProductType": 200,
+        }
+    ]
+    assert step_cad_finish_hard_gate(purchased) is None
 
 
 def test_wrong_org_time_q10332_forever_forbid_description_only():

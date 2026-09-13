@@ -20,7 +20,9 @@ Laser Bay1 / UC 176.96) after a human Component→Cad dropdown +
 thickness + Finish. See ``live_q10333_h638``. Q10336 / f73dd116
 is a Cad+Laser Finish leftover on the same STEP (finished
 NumberOfContours=1 matches Q10333; OCC=0 expected) — protect, not
-this Finish-refuse class. Never remint / PATCH / ZZ-DEL.
+this Finish-refuse class. Q10344 / 55f12530 is the Kyle UI
+control leftover (Cad + 0.1875 inch → Contours fill → Finish) —
+protect, not this class. Never remint / PATCH / ZZ-DEL.
 
 Human dropdown Contours fill is NOT reproduced by kendo row.set /
 SetPartMode / UpdateItemType / UpdateData*. UpdateItemType is

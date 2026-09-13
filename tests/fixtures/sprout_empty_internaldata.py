@@ -9,8 +9,8 @@ Live leftover (CoS hold):
 Same Sectura-side empty-InternalData refuse class as Time STEPs
 28898-1 / 28772-1 / 14327-18 / 15911-9 / 21839-1, but this is
 not a Time pick and not H.6.38 Contours-good (Q10333 / Q10336 /
-Q10339). Do not invent Contours / InternalData. Never remint /
-PATCH Q10333 / Q10336 / Q10338 / Q10339 / golds.
+Q10339 / Q10344). Do not invent Contours / InternalData. Never remint /
+PATCH Q10333 / Q10336 / Q10338 / Q10339 / Q10344 / golds.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ SPROUT_EMPTY_INTERNALDATA: dict[str, Any] = {
     "fill_unlocked": STEP_CONTOURS_FILL_UNLOCKED,
     "outside_h638_family": True,
     "outside_time_pick": True,
-    "h638_contours_good": ("Q10333", "Q10336", "Q10339"),
+    "h638_contours_good": ("Q10333", "Q10336", "Q10339", "Q10344"),
     "part_number": SPROUT_EMPTY_INTERNALDATA_PN,
     "customer": "Sprout",
     "piece_part": "1.1",

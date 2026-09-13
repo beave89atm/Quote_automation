@@ -10,6 +10,8 @@ Q10333 / H.6.38 / b5f56ac3 is a Contours PASS protect — never remint /
 PATCH / ZZ-DEL. Q10336 / f73dd116 and Q10339 / 76cecc73 Cad→Finish
 leftovers match Q10333 finished Contours (NumberOfContours=1 / OCC=0
 expected / bends=8) — protect; soft-pass labels were stage notes.
+Q10344 / 55f12530 Kyle UI control PASS leftover (Cad + 0.1875 inch
+→ Contours fill → Finish) — never remint / PATCH / ZZ-DEL. invent=false.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -76,6 +78,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10333",
         "Q10336",
         "Q10339",
+        "Q10344",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",

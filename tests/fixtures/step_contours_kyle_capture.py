@@ -8,7 +8,9 @@ Contours PASS protect (Cad / Contours=1 / 8 bends + Profile /
 Laser Bay1 / UC 176.96) — never remint / PATCH / ZZ-DEL. Q10336 /
 f73dd116 and Q10339 / 76cecc73 Cad→Finish leftovers match Q10333
 finished Contours (NumberOfContours=1 / OCC=0 expected / bends=8)
-— protect; soft-pass labels were stage notes. Do not gate unlock
+— protect; soft-pass labels were stage notes. Q10344 / 55f12530
+is the Kyle UI control leftover (Cad + 0.1875 inch → Contours
+fill → Finish) — never remint / PATCH / ZZ-DEL. invent=false. Do not gate unlock
 on OCC≥1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
 /part/create 3× bar InternalData empty → AddItem_DXFFiles InternalData
@@ -61,6 +63,7 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "Q10333",
     "Q10336",
     "Q10339",
+    "Q10344",
     "H638-CADPLATE",
     "Q10334",
     "Q10335",

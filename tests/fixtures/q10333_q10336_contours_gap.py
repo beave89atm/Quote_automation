@@ -38,6 +38,7 @@ from secturafab.cadimport_js import CAD_FINISH_NAMED_XHR_SEQUENCE
 from tests.fixtures.live_q10333_h638 import q10333_h638_pass_dump
 from tests.fixtures.live_q10336_h638 import q10336_h638_cad_finish_dump
 from tests.fixtures.live_q10339_h638 import q10339_h638_cad_finish_dump
+from tests.fixtures.live_q10344_h638 import q10344_h638_kyle_ui_control_dump
 
 Q10333_Q10336_CONTOURS_GAP: dict[str, Any] = {
     "invent": False,
@@ -70,7 +71,7 @@ Q10333_Q10336_CONTOURS_GAP: dict[str, Any] = {
     "q10339_finished_semantics_match_q10333": True,
     "q10339_id_unknown": False,
     "named_cad_finish_xhr_sequence": CAD_FINISH_NAMED_XHR_SEQUENCE,
-    "forever_protect": ("Q10333", "Q10336", "Q10339"),
+    "forever_protect": ("Q10333", "Q10336", "Q10339", "Q10344"),
     "mid_wizard_xhr_probe_useful": True,
     "explode_empty_internaldata_fail_close": True,
     "hypotheses": (
@@ -159,7 +160,7 @@ Q10333_Q10336_CONTOURS_GAP: dict[str, Any] = {
                 "Cad+wizard, invent=false; ZZ-DEL-GSB20570006). "
                 "Separate gate from finished ItemList "
                 "NumberOfContours PASS. invent=false. Never remint / "
-                "PATCH Q10333 / Q10336 / Q10338 / Q10339."
+                "PATCH Q10333 / Q10336 / Q10338 / Q10339 / Q10344."
             ),
         },
         {
@@ -210,5 +211,6 @@ def q10333_q10336_contours_gap() -> dict[str, Any]:
     out["q10333"] = q10333_h638_pass_dump()
     out["q10336"] = q10336_h638_cad_finish_dump()
     out["q10339"] = q10339_h638_cad_finish_dump()
+    out["q10344"] = q10344_h638_kyle_ui_control_dump()
     out["named_cad_finish_xhr_sequence"] = tuple(CAD_FINISH_NAMED_XHR_SEQUENCE)
     return out

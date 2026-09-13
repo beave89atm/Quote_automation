@@ -23,7 +23,7 @@ Still open URL-only (no invented body):
   GET /Quote/QuoteItem_ReadTreeListData
 
 Persist PASS is NumberOfContours≥1 on v1 ItemList / TreeListData.
-Never OpenContourCount. Forever-protect Q10333 / Q10336 / Q10339.
+Never OpenContourCount. Forever-protect Q10333 / Q10336 / Q10339 / Q10344.
 Empty-InternalData Time STEPs stay refuse. Do not remint.
 """
 
@@ -65,7 +65,7 @@ LIVE_MID_WIZARD_CONTOURS_XHR: dict[str, Any] = {
         "GET v1/quote ItemList",
         WEBSITE_FINISH_PATHS["quote_item_read_treelist"],
     ),
-    "forever_protect": ("Q10333", "Q10336", "Q10339"),
+    "forever_protect": ("Q10333", "Q10336", "Q10339", "Q10344"),
 }
 
 
