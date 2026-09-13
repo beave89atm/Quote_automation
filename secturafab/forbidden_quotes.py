@@ -92,6 +92,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "75f07c2b-b000-47f4-9caa-c14520e2b068",  # Q10329 / 14327-3 L-angle Contours UI leftover — Adjust Properties Contours column absent; Finish never clicked; invented=false; ZZ-DEL-Q10329-14327-3-contours-ui — do not remint / PATCH
         "aed89628-b018-4b11-852f-bfed5bf8b964",  # Q10330 / 21841-1 angle/channel Contours UI leftover — Contours column absent; Finish never clicked; invented=false; ZZ-DEL-Q10330-21841-1-contours-ui — do not remint / PATCH
         "5e72fe39-edc1-467c-925d-f1c8d74cc5d3",  # Q10331 / 14327-1 flat-looking Contours UI leftover — Contours column absent; Finish never clicked; invented=false; ZZ-DEL-Q10331-14327-1-contours-ui — do not remint / PATCH
+        "b5f56ac3-326d-48e9-b82d-1e09a7897107",  # Q10333 / Safe Cave / H.6.38 Onshape STEP Contours UI leftover — Adjust Properties Contours column absent; HadOpenContours=false; Finish never clicked; invented=false; ZZ-DEL-Q10333-H638-SafeCave-contours — do not remint / PATCH
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -189,6 +190,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "75f07c2b",  # Q10329 / 14327-3 Contours UI leftover — Contours column absent; Finish never; ZZ-DEL-Q10329-14327-3-contours-ui — do not remint
         "aed89628",  # Q10330 / 21841-1 Contours UI leftover — Contours column absent; Finish never; ZZ-DEL-Q10330-21841-1-contours-ui — do not remint
         "5e72fe39",  # Q10331 / 14327-1 Contours UI leftover — Contours column absent; Finish never; ZZ-DEL-Q10331-14327-1-contours-ui — do not remint
+        "b5f56ac3",  # Q10333 / Safe Cave / H.6.38 Contours UI leftover — Contours column absent; HadOpenContours=false; Finish never; ZZ-DEL-Q10333-H638-SafeCave-contours — do not remint
     }
 )
 
@@ -299,7 +301,10 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "21841-1",  # spent aed89628 Q10330 angle/channel Contours UI leftover — Contours column absent; Finish never; do not remint
         "Q10331",  # spent 5e72fe39 / 14327-1 Contours UI leftover — Contours column absent; Finish never clicked; invented=false; ZZ-DEL-Q10331-14327-1-contours-ui — do not remint
         "14327-1",  # spent 5e72fe39 Q10331 flat-looking Contours UI leftover — Contours column absent; Finish never; do not remint
-        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1 / 28769-1 / 35136-1 / 14327-5 / 14327-8 / Q10329 / 14327-3 / Q10330 / 21841-1 / Q10331 / 14327-1.
+        "Q10332",  # spent wrong-org Time mint — renamed ZZ-DEL-wrong-org-Time; quote ID not restated in recent notes (repo / PR 18 / prior leftover transcript / Dropbox); description-only forbid; do not remint
+        "ZZ-DEL-wrong-org-Time",  # Q10332 rename; quote ID unknown; do not remint
+        "Q10333",  # spent b5f56ac3 / Safe Cave / H.6.38 Onshape STEP Contours UI leftover — Contours column absent; HadOpenContours=false; Finish never clicked; invented=false; ZZ-DEL-Q10333-H638-SafeCave-contours — do not remint
+        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1 / 28769-1 / 35136-1 / 14327-5 / 14327-8 / Q10329 / 14327-3 / Q10330 / 21841-1 / Q10331 / 14327-1 / Q10332 / Q10333.
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

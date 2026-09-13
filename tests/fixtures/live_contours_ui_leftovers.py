@@ -9,9 +9,17 @@ Do not remint / PATCH. Do not invent Contours / InternalData.
       21841-1 angle/channel — Contours column absent; Finish never
     5e72fe39 / Q10331 / ZZ-DEL-Q10331-14327-1-contours-ui
       14327-1 flat-looking — Contours column absent; Finish never
+    b5f56ac3 / Q10333 / ZZ-DEL-Q10333-H638-SafeCave-contours
+      Safe Cave / H.6.38 Onshape STEP — Contours column absent;
+      HadOpenContours=false; Finish never
 
-Keep existing forever-forbids for 14327-5 / c5cd8689 and
-14327-8 / 1cd941c6. Fail-close stays locked. Capture must be a new PN.
+Wrong-org Time mint (not a Contours leftover; ID unknown):
+    Q10332 / ZZ-DEL-wrong-org-Time — quote ID not restated in
+    recent notes; description-only forbid.
+
+Keep existing forever-forbids for 8973f890 / 35136-1,
+14327-5 / c5cd8689, 14327-8 / 1cd941c6, and Q10329-31.
+Fail-close stays locked. Capture must be a new PN.
 """
 
 from __future__ import annotations
@@ -67,9 +75,48 @@ LEFTOVER_CONTOURS_UI: tuple[dict[str, Any], ...] = (
         "readonly": True,
         "zz_del": True,
     },
+    {
+        "quote_id": "b5f56ac3-326d-48e9-b82d-1e09a7897107",
+        "quote_id_prefix": "b5f56ac3",
+        "quote_number": "Q10333",
+        "part_number": "H.6.38",
+        "customer": "Safe Cave",
+        "source": "Onshape STEP",
+        "zz_del_number": "ZZ-DEL-Q10333-H638-SafeCave-contours",
+        "shape": "Onshape STEP",
+        "contours_column_absent": True,
+        "had_open_contours": False,
+        "finish_clicked": False,
+        "finish_posted": False,
+        "invent": False,
+        "unlocks_contours_fill": False,
+        "fail_close": True,
+        "readonly": True,
+        "zz_del": True,
+    },
 )
+
+# Quote ID was not restated in repo / PR 18 / prior leftover transcript /
+# Dropbox. Forbid the Q number only — do not invent an ID.
+WRONG_ORG_TIME_Q10332: dict[str, Any] = {
+    "quote_id": None,
+    "quote_id_prefix": None,
+    "quote_number": "Q10332",
+    "zz_del_number": "ZZ-DEL-wrong-org-Time",
+    "why": "wrong-org Time mint",
+    "id_unknown": True,
+    "id_source": "not restated in recent notes",
+    "invent": False,
+    "readonly": True,
+    "zz_del": True,
+}
 
 
 def leftover_contours_ui_dumps() -> list[dict[str, Any]]:
     """Read-only Contours UI leftovers. Does not unlock Contours fill."""
     return [dict(row) for row in LEFTOVER_CONTOURS_UI]
+
+
+def wrong_org_time_q10332_dump() -> dict[str, Any]:
+    """Read-only Q10332 note. Description-only; ID unknown."""
+    return dict(WRONG_ORG_TIME_Q10332)
