@@ -2184,6 +2184,8 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("Q10344")
     assert is_forbidden_quote_id("55f12530-e97b-40cc-8e7f-e799d9d6b234")
     assert is_forbidden_quote_id("55f12530-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10346")
+    assert is_forbidden_quote_number("B80510901")
     assert is_forbidden_quote_number("Q10338")
     assert is_forbidden_quote_number("Q10339")
     assert is_forbidden_quote_number("CROSSDRAIN-12X7X60")
@@ -9476,6 +9478,8 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("Q10336")
     assert is_forbidden_quote_number("Q10339")
     assert is_forbidden_quote_number("Q10344")
+    assert is_forbidden_quote_number("Q10346")
+    assert is_forbidden_quote_number("B80510901")
     assert is_forbidden_quote_number("Q10338")
     assert is_forbidden_quote_number("Q10339")
     assert is_forbidden_quote_number("CROSSDRAIN-12X7X60")
@@ -10393,6 +10397,8 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "Q10336",
         "Q10339",
         "Q10344",
+        "Q10346",
+        "B80510901",
         "Q10338",
         "Q10339",
         "CROSSDRAIN-12X7X60",
@@ -11515,6 +11521,8 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_number("Q10336")
     assert is_forbidden_quote_number("Q10339")
     assert is_forbidden_quote_number("Q10344")
+    assert is_forbidden_quote_number("Q10346")
+    assert is_forbidden_quote_number("B80510901")
     assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
     assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
     assert is_forbidden_quote_id("bcff1a24-1111-2222-3333-444444444444")
@@ -12862,6 +12870,100 @@ def test_q10344_h638_kyle_ui_control_forever_forbid():
     assert "Q10333" not in refuse
     assert dump["invent"] is False
     assert dump["unlocks_automation_contours_fill"] is False
+
+
+def test_q10346_sprout_b80510901_contours_pass_number_only_forbid():
+    """Q10346 / B80510901 Sprout Contours PASS outside H.6.38.
+
+    ProductType Cad + thickness 0.0598 inch → Contours fill → Finish.
+    UUID not restated — number + description forbid only. TODO quote_id.
+    Never remint / PATCH. invent=false. Do not invent an ID.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_IDS,
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10346_sprout import q10346_sprout_pass_dump
+    from tests.fixtures.sprout_empty_internaldata import sprout_empty_internaldata_dig
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10346_sprout_pass_dump()
+    assert dump["quote_id"] is None
+    assert dump["quote_id_prefix"] is None
+    assert dump["quote_id_todo"] == "quote_id once known"
+    assert dump["quote_number"] == "Q10346"
+    assert dump["part_number"] == "B80510901"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["piece"] == "Sprout B80510901 main plate"
+    assert dump["outside_h638_family"] is True
+    assert dump["h638_contours_good"] is False
+    assert dump["id_unknown"] is True
+    assert dump["pass"] is True
+    assert dump["contours_pass"] is True
+    assert dump["product_type"] == "Cad"
+    assert dump["thickness"] == "0.0598"
+    assert dump["thickness_units"] == "inch"
+    assert dump["contours_fill"] is True
+    assert dump["finish_clicked"] is True
+    assert dump["finish_posted"] is True
+    assert dump["invent"] is False
+    assert dump["zz_del"] is False
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert all(row["quote_number"] != "Q10346" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10346" for row in leftover_cad_for_plate_dumps())
+    assert sprout_empty_internaldata_dig()["part_number"] != "B80510901"
+    assert dump["quote_id"] not in FORBIDDEN_LIVE_QUOTE_IDS
+    assert not is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_number("Q10346")
+    assert is_forbidden_quote_number("B80510901")
+    assert spent_quote_number_block_reason("Q10346")
+    assert spent_quote_number_block_reason("B80510901")
+    with pytest.raises(ForbiddenQuoteError, match="Q10346"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10346"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="B80510901"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "B80510901"},
+        )
+    assert "Q10346" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "B80510901" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10346" in step_contours_fill_hunt()["never_remint"]
+    assert "B80510901" in step_contours_fill_hunt()["never_remint"]
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "Q10346" not in refuse
+    assert "B80510901" not in refuse
+    assert "55f12530" not in refuse
+    assert "Q10344" not in refuse
+    assert dump["invent"] is False
 
 
 def test_step_cad_finish_hard_gate_cad_then_inch_before_finish():

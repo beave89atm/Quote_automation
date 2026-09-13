@@ -17,8 +17,10 @@ f73dd116 is a Cad+Laser Finish leftover (finished
 NumberOfContours=1 matches Q10333; OCC=0 expected) — Finish was
 posted; not this unfinished-UI class. Q10344 / 55f12530 is the
 Kyle UI control leftover (Cad + 0.1875 inch → Contours fill →
-Finish) — not this class. Never remint / PATCH / ZZ-DEL.
-Tip 0759273 ZZ-DEL-fail narrative is reversed.
+Finish) — not this class. Q10346 / B80510901 Sprout main plate is
+a Contours PASS outside H.6.38 — not this unfinished-UI class.
+Never remint / PATCH / ZZ-DEL. Tip 0759273 ZZ-DEL-fail narrative
+is reversed.
 
 Wrong-org Time mint (not a Contours leftover; ID unknown):
     Q10332 / ZZ-DEL-wrong-org-Time — quote ID not restated in

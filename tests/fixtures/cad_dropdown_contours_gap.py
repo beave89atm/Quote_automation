@@ -87,6 +87,8 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
         "Q10336",
         "Q10339",
         "Q10344",
+        "Q10346",
+        "B80510901",
     ),
     "hypotheses": (
         {

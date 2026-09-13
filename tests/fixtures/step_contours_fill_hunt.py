@@ -12,6 +12,9 @@ leftovers match Q10333 finished Contours (NumberOfContours=1 / OCC=0
 expected / bends=8) — protect; soft-pass labels were stage notes.
 Q10344 / 55f12530 Kyle UI control PASS leftover (Cad + 0.1875 inch
 → Contours fill → Finish) — never remint / PATCH / ZZ-DEL. invent=false.
+Q10346 / B80510901 Sprout main plate Contours PASS (outside H.6.38;
+Cad + 0.0598 inch → Contours fill → Finish) — number-only until
+UUID is restated; never remint / PATCH. invent=false.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -79,6 +82,8 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10336",
         "Q10339",
         "Q10344",
+        "Q10346",
+        "B80510901",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",

@@ -9,8 +9,10 @@ Live leftover (CoS hold):
 Same Sectura-side empty-InternalData refuse class as Time STEPs
 28898-1 / 28772-1 / 14327-18 / 15911-9 / 21839-1, but this is
 not a Time pick and not H.6.38 Contours-good (Q10333 / Q10336 /
-Q10339 / Q10344). Do not invent Contours / InternalData. Never remint /
-PATCH Q10333 / Q10336 / Q10338 / Q10339 / Q10344 / golds.
+Q10339 / Q10344). Q10346 / B80510901 is a separate Sprout Contours
+PASS (outside H.6.38; number-only until UUID). Do not invent Contours /
+InternalData. Never remint / PATCH Q10333 / Q10336 / Q10338 / Q10339 /
+Q10344 / Q10346 / golds.
 """
 
 from __future__ import annotations

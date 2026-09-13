@@ -22,7 +22,9 @@ is a Cad+Laser Finish leftover on the same STEP (finished
 NumberOfContours=1 matches Q10333; OCC=0 expected) — protect, not
 this Finish-refuse class. Q10344 / 55f12530 is the Kyle UI
 control leftover (Cad + 0.1875 inch → Contours fill → Finish) —
-protect, not this class. Never remint / PATCH / ZZ-DEL.
+protect, not this class. Q10346 / B80510901 Sprout main plate is a
+Contours PASS outside H.6.38 — protect, not this class. Never remint /
+PATCH / ZZ-DEL.
 
 Human dropdown Contours fill is NOT reproduced by kendo row.set /
 SetPartMode / UpdateItemType / UpdateData*. UpdateItemType is
