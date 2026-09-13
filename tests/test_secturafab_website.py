@@ -12357,11 +12357,13 @@ def test_time_step_empty_internaldata_dig_fail_closed():
     assert "update_item_type_does_not_fill_internaldata" in ids
     assert "15911_9_missing_mid_wizard_xhrs" in ids
     assert "21839_1_full_trail_still_empty" in ids
+    assert "sprout_gsb20570006_outside_time_pick" in ids
     ruled = {h["id"]: h["ruled_out"] for h in dig["hypotheses"]}
     assert ruled["update_item_type_does_not_fill_internaldata"] is True
     assert ruled["not_h638_finished_get_contours_good"] is True
     assert ruled["15911_9_missing_mid_wizard_xhrs"] is True
     assert ruled["21839_1_full_trail_still_empty"] is True
+    assert ruled["sprout_gsb20570006_outside_time_pick"] is True
     assert is_forbidden_quote_id(TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID)
     assert is_forbidden_quote_id("ef865b0f-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number(TIME_STEP_EMPTY_INTERNALDATA_ZZ_DEL)
@@ -12428,6 +12430,111 @@ def test_time_step_empty_internaldata_dig_fail_closed():
     assert "ef865b0f" not in refuse
     assert "21839-1" not in refuse
     assert "1994392f" not in refuse
+    assert "GSB20570006" not in refuse
+    assert "afee7458" not in refuse
+
+
+def test_sprout_empty_internaldata_dig_fail_closed():
+    """GSB20570006 / afee7458: empty InternalData outside H.6.38 / Time pick."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+        STEP_CONTOURS_FILL_UNLOCKED,
+        cad_filelist_refuses_additem_dxf,
+    )
+    from tests.fixtures.sprout_empty_internaldata import (
+        SPROUT_EMPTY_INTERNALDATA_PN,
+        SPROUT_EMPTY_INTERNALDATA_QUOTE_ID,
+        SPROUT_EMPTY_INTERNALDATA_QUOTE_ID_PREFIX,
+        SPROUT_EMPTY_INTERNALDATA_ZZ_DEL,
+        sprout_empty_internaldata_dig,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.time_step_empty_internaldata import (
+        time_step_empty_internaldata_pns,
+    )
+
+    dig = sprout_empty_internaldata_dig()
+    assert dig["invent"] is False
+    assert dig["unlocks_automation_contours_fill"] is False
+    assert dig["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
+    assert dig["outside_h638_family"] is True
+    assert dig["outside_time_pick"] is True
+    assert dig["h638_contours_good"] == ("Q10333", "Q10336", "Q10339")
+    assert dig["part_number"] == SPROUT_EMPTY_INTERNALDATA_PN == "GSB20570006"
+    assert dig["customer"] == "Sprout"
+    assert dig["piece_part"] == "1.1"
+    assert dig["part_count"] == 11
+    assert dig["known_quote_id"] == SPROUT_EMPTY_INTERNALDATA_QUOTE_ID
+    assert (
+        dig["known_quote_id_prefix"]
+        == SPROUT_EMPTY_INTERNALDATA_QUOTE_ID_PREFIX
+        == "afee7458"
+    )
+    assert dig["zz_del_number"] == SPROUT_EMPTY_INTERNALDATA_ZZ_DEL
+    assert dig["live_probe_tip"] == "2f6d74f"
+    assert dig["cos_hold"] is True
+    assert dig["full_cad_wizard_mid_wizard"] is True
+    assert dig["internaldata_empty_after_full_trail"] is True
+    assert dig["finish_refused"] is True
+    assert dig["finish_why"] == CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    assert dig["named_sequence_unlocks_fill"] is False
+    assert dig["do_not_remint"] is True
+    assert dig["do_not_patch"] is True
+    assert SPROUT_EMPTY_INTERNALDATA_PN not in time_step_empty_internaldata_pns()
+    assert dig["same_class_as_time_steps"] == time_step_empty_internaldata_pns()
+    assert is_forbidden_quote_id(SPROUT_EMPTY_INTERNALDATA_QUOTE_ID)
+    assert is_forbidden_quote_id("afee7458-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number(SPROUT_EMPTY_INTERNALDATA_PN)
+    assert is_forbidden_quote_number(SPROUT_EMPTY_INTERNALDATA_ZZ_DEL)
+    assert spent_quote_number_block_reason(SPROUT_EMPTY_INTERNALDATA_PN)
+    assert SPROUT_EMPTY_INTERNALDATA_PN in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert SPROUT_EMPTY_INTERNALDATA_PN in step_contours_fill_hunt()["never_remint"]
+    with pytest.raises(
+        ForbiddenQuoteError, match=SPROUT_EMPTY_INTERNALDATA_QUOTE_ID
+    ):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": SPROUT_EMPTY_INTERNALDATA_QUOTE_ID},
+        )
+    with pytest.raises(ForbiddenQuoteError, match=SPROUT_EMPTY_INTERNALDATA_PN):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": SPROUT_EMPTY_INTERNALDATA_PN},
+        )
+    with pytest.raises(
+        ForbiddenQuoteError, match=SPROUT_EMPTY_INTERNALDATA_ZZ_DEL
+    ):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": SPROUT_EMPTY_INTERNALDATA_ZZ_DEL},
+        )
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "InternalData empty" in refuse
+    assert "GSB20570006" not in refuse
+    assert "afee7458" not in refuse
 
 
 def test_q10338_crossdrain_image_files_pass_protect():

@@ -153,9 +153,13 @@ Q10333_Q10336_CONTOURS_GAP: dict[str, Any] = {
                 "GetBorderSize not observed vs H.6.38. 21839-1 / "
                 "1994392f restated @ bb4998a+ (ZZ-DEL-21839-1); full "
                 "CadImport/Data+GetBorderSize+PartImage trail still "
-                "empty. Other IDs unknown. Separate gate from finished "
-                "ItemList NumberOfContours PASS. invent=false. Never "
-                "remint / PATCH Q10333 / Q10336 / Q10338 / Q10339."
+                "empty. Other IDs unknown. Sprout GSB20570006 / "
+                "afee7458 (CoS hold) is the same empty-InternalData "
+                "class outside H.6.38 / Time pick (11 parts, full "
+                "Cad+wizard, invent=false; ZZ-DEL-GSB20570006). "
+                "Separate gate from finished ItemList "
+                "NumberOfContours PASS. invent=false. Never remint / "
+                "PATCH Q10333 / Q10336 / Q10338 / Q10339."
             ),
         },
         {

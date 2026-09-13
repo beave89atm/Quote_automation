@@ -100,6 +100,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "e2683a3f-daf5-49ff-83c1-79aed35207a1",  # Q10334 Cad-for-plate leftover — Chrome kendo Cad/100 + 0.1875 in + Laser-Bay1, Contours still empty; invented=false; ZZ-DEL-Q10334 — do not remint / PATCH
         "ef865b0f-66d2-404e-bff2-9ed1e7bf00ea",  # 15911-9 Time STEP leftover @ 62f7a92 — UpdateItemType Cad OK, InternalData empty after explode, Finish refused invent=false; CadImport/Data + PartImage + GetBorderSize not observed vs H.6.38; ZZ-DEL-15911-9 — do not remint / PATCH
         "1994392f-54a5-4245-80ee-a947fb07e3a7",  # 21839-1 Time STEP leftover @ bb4998a+ — UpdateItemType Cad OK, InternalData empty after explode, full CadImport/Data+GetBorderSize+PartImage trail still empty, Finish refused invent=false; ZZ-DEL-21839-1 — do not remint / PATCH
+        "afee7458-6651-447e-ba1b-62c1c9c90ce8",  # GSB20570006 Sprout 1.1 leftover (CoS hold) — empty InternalData after full Cad+wizard mid-wizard (11 parts), Finish refused invent=false; Sectura-side empty-InternalData outside H.6.38 / Time pick; ZZ-DEL-GSB20570006 — do not remint / PATCH
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -206,6 +207,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "bcff1a24",  # Q10335 leftover — mouse UpdateItemType 200 Component→Cad, Contours 0 before Finish; QuoteItem_Read Data:[] lost CAD row before Finish; invented=false; ZZ-DEL-Q10335 — do not remint
         "ef865b0f",  # 15911-9 Time STEP leftover @ 62f7a92 — UpdateItemType Cad OK, InternalData empty, Finish refused invent=false; ZZ-DEL-15911-9 — do not remint
         "1994392f",  # 21839-1 Time STEP leftover @ bb4998a+ — UpdateItemType Cad OK, InternalData empty, full CadImport/Data+GetBorderSize+PartImage trail still empty, Finish refused invent=false; ZZ-DEL-21839-1 — do not remint
+        "afee7458",  # GSB20570006 Sprout 1.1 leftover (CoS hold) — empty InternalData after full Cad+wizard mid-wizard (11 parts), Finish refused invent=false; outside H.6.38 / Time pick; ZZ-DEL-GSB20570006 — do not remint
     }
 )
 
@@ -336,7 +338,9 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "ZZ-DEL-15911-9",  # ef865b0f 15911-9 rename — do not remint
         "21839-1",  # Time STEP explode leftover @ bb4998a+ — UpdateItemType Cad OK, InternalData empty after explode, Finish refused invent=false; 1994392f-54a5-4245-80ee-a947fb07e3a7; full CadImport/Data+GetBorderSize+PartImage trail still empty; ZZ-DEL-21839-1 — do not remint
         "ZZ-DEL-21839-1",  # 1994392f 21839-1 rename — do not remint
-        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1 / 28769-1 / 35136-1 / 14327-5 / 14327-8 / Q10329 / 14327-3 / Q10330 / 21841-1 / Q10331 / 14327-1 / Q10332 / Q10333 / Q10336 / Q10339 / Q10338 / CROSSDRAIN-12X7X60 / H638-CADPLATE / Q10334 / Q10335 / 28898-1 / 28772-1 / 14327-18 / 15911-9 / 21839-1.
+        "GSB20570006",  # Sprout 1.1 leftover (CoS hold) @ 2f6d74f+ — empty InternalData after full Cad+wizard mid-wizard (11 parts), Finish refused invent=false; afee7458-6651-447e-ba1b-62c1c9c90ce8; Sectura-side empty-InternalData outside H.6.38 / Time pick; ZZ-DEL-GSB20570006 — do not remint
+        "ZZ-DEL-GSB20570006",  # afee7458 GSB20570006 rename — do not remint
+        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1 / 28769-1 / 35136-1 / 14327-5 / 14327-8 / Q10329 / 14327-3 / Q10330 / 21841-1 / Q10331 / 14327-1 / Q10332 / Q10333 / Q10336 / Q10339 / Q10338 / CROSSDRAIN-12X7X60 / H638-CADPLATE / Q10334 / Q10335 / 28898-1 / 28772-1 / 14327-18 / 15911-9 / 21839-1 / GSB20570006.
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

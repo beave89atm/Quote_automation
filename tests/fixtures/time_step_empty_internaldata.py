@@ -17,6 +17,12 @@ Failed invent=false Finishes:
            CadImport/Data + GetBorderSize + PartImage trail still
            empty (stronger than 15911-9: trail ran, still empty).
 
+Same Sectura-side empty-InternalData class, outside Time pick:
+  GSB20570006 / afee7458-6651-447e-ba1b-62c1c9c90ce8 Sprout 1.1
+           (CoS hold) — empty InternalData after full Cad+wizard
+           mid-wizard (11 parts), invent=false; ZZ-DEL-GSB20570006.
+           Not a Time STEP. Do not invent Contours / InternalData.
+
 Not the H.6.38 Contours-good family (Q10333 / Q10336 / Q10339
 finished GET NumberOfContours=1). This class never reaches a
 NumberOfContours≥1 GET because Finish is refused. Never remint /
@@ -232,6 +238,20 @@ TIME_STEP_EMPTY_INTERNALDATA: dict[str, Any] = {
                 "still empty). Named mid-wizard XHRs do not fill "
                 "explode-empty InternalData. Never remint / PATCH "
                 "Q10333 / Q10336 / Q10338 / Q10339 / golds."
+            ),
+        },
+        {
+            "id": "sprout_gsb20570006_outside_time_pick",
+            "ruled_out": True,
+            "from_captures": ("GSB20570006",),
+            "why": (
+                "Live Sprout GSB20570006 / afee7458 CoS hold: empty "
+                "InternalData after full Cad+wizard mid-wizard (11 "
+                "parts), Finish refused invent=false; "
+                "ZZ-DEL-GSB20570006. Same Sectura-side "
+                "empty-InternalData class outside H.6.38 / Time pick. "
+                "Do not invent Contours / InternalData. Never remint "
+                "/ PATCH Q10333 / Q10336 / Q10338 / Q10339 / golds."
             ),
         },
     ),
