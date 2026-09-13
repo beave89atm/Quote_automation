@@ -9,11 +9,11 @@ Do not remint / PATCH. Do not invent Contours / InternalData.
       21841-1 angle/channel — Contours column absent; Finish never
     5e72fe39 / Q10331 / ZZ-DEL-Q10331-14327-1-contours-ui
       14327-1 flat-looking — Contours column absent; Finish never
-    b5f56ac3 / Q10333 / ZZ-DEL-Q10333-H638-SafeCave-contours
-      Safe Cave / H.6.38 Onshape STEP — leftover captured Contours
-      column absent / HadOpenContours=false. Kyle later proved
-      Component→Cad on Adjust Properties unlocks Contours (human
-      Finish OK). Do not remint / PATCH. Documentary unlock proof.
+
+Q10333 / b5f56ac3 / H.6.38 Safe Cave is NOT this class. It is a
+Contours PASS protect (Kyle Component→Cad + thickness + Finish;
+Laser costs filled). See ``live_q10333_h638``. Never remint /
+PATCH / ZZ-DEL. Tip 0759273 ZZ-DEL-fail narrative is reversed.
 
 Wrong-org Time mint (not a Contours leftover; ID unknown):
     Q10332 / ZZ-DEL-wrong-org-Time — quote ID not restated in
@@ -73,29 +73,6 @@ LEFTOVER_CONTOURS_UI: tuple[dict[str, Any], ...] = (
         "finish_posted": False,
         "invent": False,
         "unlocks_contours_fill": False,
-        "fail_close": True,
-        "readonly": True,
-        "zz_del": True,
-    },
-    {
-        "quote_id": "b5f56ac3-326d-48e9-b82d-1e09a7897107",
-        "quote_id_prefix": "b5f56ac3",
-        "quote_number": "Q10333",
-        "part_number": "H.6.38",
-        "customer": "Safe Cave",
-        "source": "Onshape STEP",
-        "zz_del_number": "ZZ-DEL-Q10333-H638-SafeCave-contours",
-        "shape": "Onshape STEP",
-        "contours_column_absent": True,
-        "had_open_contours": False,
-        "finish_clicked": False,
-        "finish_posted": False,
-        "invent": False,
-        "unlocks_contours_fill": False,
-        "component_to_cad_contours_proof": True,
-        "kyle_loom_component_to_cad": True,
-        "human_finish_ok_for_capture": True,
-        "cad_set_via": "adjust_properties_dropdown_human",
         "fail_close": True,
         "readonly": True,
         "zz_del": True,

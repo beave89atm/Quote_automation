@@ -3,18 +3,19 @@
 Live STEP Contours mints are PAUSED. Do not remint / PATCH leftovers
 (14327-5 / c5cd8689, 14327-8 / 1cd941c6, Q10329 / 14327-3 / 75f07c2b,
 Q10330 / 21841-1 / aed89628, Q10331 / 14327-1 / 5e72fe39,
-Q10333 / H.6.38 / b5f56ac3, Q10332 / ZZ-DEL-wrong-org-Time,
-35136-1 / 8973f890, …).
-Never invent Contours / InternalData.
+Q10332 / ZZ-DEL-wrong-org-Time, 35136-1 / 8973f890, …).
+Q10333 / H.6.38 / b5f56ac3 is a Contours PASS protect — never remint /
+PATCH / ZZ-DEL. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
 exhausted the alternate-path hypotheses below. Kyle Loom (original):
 Adjust Properties defaults ProductType to Component; plate STEP Contours
-fill after Component→Cad (live proof Q10333 / b5f56ac3 / H.6.38, human
-Finish OK). Automation writes API/kendo ProductType=100 + SetPartMode 0
-— not a UI click. Still refuse Finish if Contours/InternalData stay
-empty after Cad. Do not remint Q10333. ``LIVE_PART_CREATE_TLIST_BIND``
-is None.
+fill after Component→Cad (live PASS Q10333 / b5f56ac3 / H.6.38 Safe
+Cave — Laser costs filled). Protect that quote forever; never remint /
+PATCH / ZZ-DEL (0759273 ZZ-DEL-fail narrative is reversed). Automation
+writes API/kendo ProductType=100 + SetPartMode 0 — not a UI click.
+Still refuse Finish if Contours/InternalData stay empty after Cad.
+``LIVE_PART_CREATE_TLIST_BIND`` is None.
 """
 
 from __future__ import annotations

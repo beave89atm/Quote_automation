@@ -10236,8 +10236,8 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
     assert "21841-1" in refuse
     assert "5e72fe39" in refuse
     assert "14327-1" in refuse
-    assert "b5f56ac3" in refuse
-    assert "Q10333" in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
     assert "missing_call=POST /part/create t.List InternalData+ImageString" in refuse
     cap = kendo_filelist_for_finish(
         [
@@ -11103,9 +11103,9 @@ def test_leftover_contours_ui_q10329_q10330_q10331_forever_forbid():
         ),
     )
     dumps = leftover_contours_ui_dumps()
-    assert len(dumps) == 4
-    assert dumps[3]["quote_number"] == "Q10333"
-    for dump, (qid, prefix, qn, pn, zz) in zip(dumps[:3], expected, strict=True):
+    assert len(dumps) == 3
+    assert all(row["quote_number"] != "Q10333" for row in dumps)
+    for dump, (qid, prefix, qn, pn, zz) in zip(dumps, expected, strict=True):
         assert dump["quote_id"] == qid
         assert dump["quote_id_prefix"] == prefix
         assert dump["quote_number"] == qn
@@ -11152,8 +11152,8 @@ def test_leftover_contours_ui_q10329_q10330_q10331_forever_forbid():
     assert "c5cd8689" in refuse
     assert "1cd941c6" in refuse
     assert "8973f890" in refuse
-    assert "b5f56ac3" in refuse
-    assert "Q10333" in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
 
 
 def test_plate_step_classify_bind_sets_cad_not_component():
@@ -11307,13 +11307,12 @@ def test_plate_step_component_left_is_contours_fail_path():
     assert plate_step_left_component_refuses_contours(purchased) is None
 
 
-def test_leftover_contours_ui_q10333_h638_safecave_forever_forbid():
-    """Q10333 / b5f56ac3 Safe Cave H.6.38: never remint / PATCH.
+def test_q10333_h638_safecave_contours_pass_protect():
+    """Q10333 / b5f56ac3 Safe Cave H.6.38: Contours PASS protect.
 
-    Leftover captured Contours column absent / HadOpenContours=false.
-    Kyle later proved Component→Cad unlocks Contours (human Finish OK).
-    Documentary proof only — do not remint / PATCH. Keep 8973f890/35136-1,
-    14327-5/8, Q10329-31. invented=false.
+    Kyle Component→Cad + thickness + Finish; Laser costs filled.
+    Forever-protect like other live PASSes. Never remint / PATCH / ZZ-DEL.
+    Tip 0759273 ZZ-DEL empty-Contours fail narrative is reversed.
     """
     from secturafab.forbidden_quotes import (
         ForbiddenQuoteError,
@@ -11324,31 +11323,36 @@ def test_leftover_contours_ui_q10333_h638_safecave_forever_forbid():
     )
     from secturafab.website import cad_filelist_refuses_additem_dxf
     from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10333_h638 import q10333_h638_pass_dump
     from tests.fixtures.step_contours_kyle_capture import (
         STEP_CONTOURS_CAPTURE_NEVER_REMINT,
     )
     from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
 
-    dump = next(
-        row for row in leftover_contours_ui_dumps() if row["quote_number"] == "Q10333"
-    )
+    dump = q10333_h638_pass_dump()
     assert dump["quote_id"] == "b5f56ac3-326d-48e9-b82d-1e09a7897107"
     assert dump["quote_id_prefix"] == "b5f56ac3"
+    assert dump["quote_number"] == "Q10333"
     assert dump["part_number"] == "H.6.38"
     assert dump["customer"] == "Safe Cave"
     assert dump["source"] == "Onshape STEP"
-    assert dump["zz_del_number"] == "ZZ-DEL-Q10333-H638-SafeCave-contours"
-    assert dump["contours_column_absent"] is True
-    assert dump["had_open_contours"] is False
-    assert dump["finish_clicked"] is False
-    assert dump["finish_posted"] is False
+    assert dump["pass"] is True
+    assert dump["contours_pass"] is True
+    assert dump["laser_costs_filled"] is True
+    assert dump["kyle_component_to_cad"] is True
+    assert dump["thickness_inches"] is True
+    assert dump["finish_clicked"] is True
+    assert dump["finish_posted"] is True
     assert dump["invent"] is False
-    assert dump["unlocks_contours_fill"] is False
-    assert dump["component_to_cad_contours_proof"] is True
+    assert dump["zz_del"] is False
+    assert dump["zz_del_number"] is None
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
     assert dump["kyle_loom_component_to_cad"] is True
-    assert dump["human_finish_ok_for_capture"] is True
     assert dump["cad_set_via"] == "adjust_properties_dropdown_human"
-    assert dump["fail_close"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert all(row["quote_number"] != "Q10333" for row in leftover_contours_ui_dumps())
     assert is_forbidden_quote_id(dump["quote_id"])
     assert is_forbidden_quote_id("b5f56ac3-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10333")
@@ -11388,8 +11392,8 @@ def test_leftover_contours_ui_q10333_h638_safecave_forever_forbid():
         }
     )
     assert refuse is not None
-    assert "b5f56ac3" in refuse
-    assert "Q10333" in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
     assert dump["invent"] is False
 
 

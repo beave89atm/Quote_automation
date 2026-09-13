@@ -2,8 +2,10 @@
 
 No live ``/part/create`` ``t.List`` has yet arrived with nonempty
 InternalData **and** ImageString. Leftover STEPs (35136-1 / 28769-1 /
-21785-2 / 14327-5 / 14327-8 / 14327-3 / 21841-1 / 14327-1 /
-Q10333 / H.6.38 / …) were keys-present / values-empty. Kyle HAR leftover
+21785-2 / 14327-5 / 14327-8 / 14327-3 / 21841-1 / 14327-1)
+were keys-present / values-empty. Q10333 / H.6.38 / b5f56ac3 is a
+Contours PASS protect (Kyle Component→Cad + Finish; Laser costs filled)
+— never remint / PATCH / ZZ-DEL. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
 /part/create 3× bar InternalData empty → AddItem_DXFFiles InternalData
 empty bar_flat. Live 14327-5 / c5cd8689 flat plate: /part/create n=1
@@ -18,9 +20,10 @@ or Sectura support naming the fill. Do not invent Contours. Plate
 matches bar — no silent graft.
 
 Kyle Loom: Component→Cad on Adjust Properties is required for plate
-STEP Contours (Q10333 / H.6.38 Safe Cave leftover is the proof — do
-not remint / PATCH). Automation sets Cad via API/kendo ProductType=100
-+ SetPartMode 0, not a UI click. Still fail-close if Contours empty.
+STEP Contours (Q10333 / H.6.38 Safe Cave is the Contours PASS protect
+— never remint / PATCH / ZZ-DEL). Automation sets Cad via API/kendo
+ProductType=100 + SetPartMode 0, not a UI click. Still fail-close if
+Contours empty.
 
 On a **fresh unused** Time STEP whose green Finish shows Contours
 (GET ``DataPartPDF.NumberOfContours`` ≥ 1), save the windows below —

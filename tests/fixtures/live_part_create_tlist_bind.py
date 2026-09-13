@@ -15,8 +15,10 @@ InternalData empty / OpenContourCount=0, **14327-5** flat plate
 InternalData empty 1/1 / OpenContourCount empty/null / ProductType null,
 **14327-3 / Q10329 / 75f07c2b** L-angle Contours column absent / Finish never,
 **21841-1 / Q10330 / aed89628** angle/channel Contours absent / Finish never,
-**14327-1 / Q10331 / 5e72fe39** flat-looking Contours column absent / Finish never,
-**Q10333 / H.6.38 / b5f56ac3** Safe Cave Onshape STEP Contours column absent / HadOpenContours=false / Finish never)
+**14327-1 / Q10331 / 5e72fe39** flat-looking Contours column absent / Finish never.
+**Q10333 / H.6.38 / b5f56ac3** Safe Cave is a Contours PASS protect
+(Kyle Component→Cad + Finish; Laser costs filled) — never remint /
+PATCH / ZZ-DEL; t.List bind shape still not captured in-repo.)
 returned empty ``InternalData`` on every row. Gold leftover ``a7d6ca50`` ItemList has no
 ``InternalData`` field (FileList-at-Finish only). Do **not** invent a gold
 ``t.List`` body. Ops persists the first live nonempty ``t.List`` response
