@@ -4747,6 +4747,9 @@ def test_apply_grid_part_modes_js_does_not_reopen_cad_when_kids_exist():
     """Multi-kid Adjust Properties: do not click #but_dxf if spec.rows exist.
 
     That reopen dumps the empty quote grid (Q10353 / 12519-2).
+    Q10355 / 34328-1: first-child edit can empty the grid without
+    #but_dxf — keep-grid is a separate dig; this JS still must not
+    reopen. invent=false; no remint.
     """
     from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
 
@@ -4758,6 +4761,8 @@ def test_apply_grid_part_modes_js_does_not_reopen_cad_when_kids_exist():
     assert "grid_dxf_row_count: 0" in before_fallback
     assert "but_dxf" not in before_fallback
     assert "readOrg" in js
+    assert "Q10355" in js
+    assert "34328-1" in js
 
 
 def test_apply_grid_part_modes_js_keeps_kids_without_select_or_invent():
@@ -13939,12 +13944,332 @@ def test_step_cad_finish_hard_gate_cad_then_inch_before_finish():
     assert step_cad_finish_hard_gate(purchased) is None
 
 
+def test_live_product_type_part_noun_is_not_cad():
+    """Enum 100 with GET noun ``part`` is not Cad (Q10354 / D.H.38.96).
+
+    UI Cad selector / ItemType Cad is a different field. invent=false.
+    """
+    from secturafab.website import (
+        count_cad_product_type,
+        live_row_product_type_is_cad,
+        product_type_display_token,
+        product_type_is_cad,
+        product_type_is_part_noun,
+        step_cad_finish_hard_gate,
+        step_cad_live_product_type_hard_gate,
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+    )
+
+    assert product_type_is_part_noun("part") is True
+    assert product_type_is_part_noun("Part") is True
+    assert product_type_is_part_noun("Cad") is False
+    assert product_type_is_cad("part") is False
+    assert product_type_is_cad(100) is True
+    assert product_type_is_cad("Cad") is True
+
+    cad_row = {
+        "Name": "H.6.38 PLATE",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "ProductTypeName": "Cad",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+    }
+    part_row = {
+        **cad_row,
+        "Name": "D.H.38.96",
+        "ProductType": "part",
+        "ProductTypeName": "part",
+    }
+    part_enum = {
+        **cad_row,
+        "Name": "D.H.38.96",
+        "ProductType": 100,
+        "ProductTypeName": "part",
+    }
+    assert live_row_product_type_is_cad(cad_row) is True
+    assert live_row_product_type_is_cad(part_row) is False
+    assert live_row_product_type_is_cad(part_enum) is False
+    assert product_type_display_token(part_enum) == "part"
+    assert count_cad_product_type({"ItemList": [cad_row]}) == 1
+    assert count_cad_product_type({"ItemList": [part_row]}) == 0
+    assert count_cad_product_type({"ItemList": [part_enum]}) == 0
+
+    why_part = step_cad_finish_hard_gate([part_row])
+    assert why_part is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_part
+    assert "not Contours empty" in why_part
+    assert "Q10354" in why_part
+    assert "part" in why_part
+    assert cad_finish_notes_refuse_additem_dxf([why_part]) == why_part
+
+    why_enum = step_cad_finish_hard_gate([part_enum])
+    assert why_enum is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_enum
+    assert step_cad_finish_hard_gate([cad_row]) is None
+
+    classified = [cad_row]
+    assert step_cad_live_product_type_hard_gate([], classified) is None
+    assert step_cad_live_product_type_hard_gate(None, classified) is None
+    live_why = step_cad_live_product_type_hard_gate([part_enum], classified)
+    assert live_why is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in live_why
+    assert "Q10354" in live_why
+    assert cad_finish_notes_refuse_additem_dxf([live_why]) == live_why
+    assert step_cad_live_product_type_hard_gate([cad_row], classified) is None
+
+
+def test_finish_cad_files_refuses_when_live_producttype_is_part(tmp_path: Path):
+    """Pre-Finish live GET ``part`` / 100 is EXEC_FAIL — do not AddItem_DXFFiles."""
+    stp = tmp_path / "DH3896.STEP"
+    stp.write_bytes(b"ISO")
+    kid = {
+        "SourceDataID": "src-dh3896",
+        "FileID": "file-dh3896",
+        "ID": "id-dh3896",
+        "Name": "D.H.38.96 PLATE",
+        "FileName": "D.H.38.96 PLATE",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "Status": 1,
+        "CadType": 0,
+        "Stock_X": 8.0,
+        "Stock_Y": 4.0,
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "PartMode": 0,
+        "FileType": "Cad",
+        "ProductType": 100,
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "InternalData": "server-stamped",
+        "ImageString": "preview",
+    }
+    live_part = {
+        "Name": "D.H.38.96 PLATE",
+        "ProductType": "part",
+        "ProductTypeName": "part",
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+    }
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": [kid],
+        "grid_present": True,
+        "grid_dxf_row_count": 1,
+        "list_len": 1,
+        "internaldata_key_n": 1,
+        "internaldata_empty_n": 0,
+        "internaldata_nonempty_n": 1,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "7881d4b3-aaaa-bbbb-cccc-000000000001"
+    client._edit_gate = ""
+    client._setpartmode_via = "page_fn"
+    client._finish_via = "page_fn"
+    client._part_create_list_len = 1
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": [live_part]}
+    service = SecturaFabPushService(client=client)
+    service._linear_product_cache = []
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "updateitemtype_via": "jquery_ajax",
+            "updateitemtype_count": 1,
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": [
+                "CadType",
+                "Stock_X",
+                "Stock_Y",
+                "FileType",
+                "SourceDataID",
+            ],
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id="7881d4b3-aaaa-bbbb-cccc-000000000001",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.1875",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="D.H.38.96",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "EXEC_FAIL" in blob
+    assert "live ProductType is part" in blob
+    assert "not Contours empty" in blob
+    assert "Q10354" in blob
+    assert "not invent" in blob.lower()
+
+
+def test_finish_cad_files_exec_fail_when_finished_producttype_is_part(
+    tmp_path: Path,
+):
+    """After Finish, GET ``part`` / enum 100 is EXEC_FAIL — not Contours empty."""
+    stp = tmp_path / "DH3896.STEP"
+    stp.write_bytes(b"ISO")
+    kid = {
+        "SourceDataID": "src-dh3896",
+        "FileID": "file-dh3896",
+        "ID": "id-dh3896",
+        "Name": "D.H.38.96 PLATE",
+        "FileName": "D.H.38.96 PLATE",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "Status": 1,
+        "CadType": 0,
+        "Stock_X": 8.0,
+        "Stock_Y": 4.0,
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "PartMode": 0,
+        "FileType": "Cad",
+        "ProductType": 100,
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "InternalData": "server-stamped",
+        "ImageString": "preview",
+    }
+    finished_part = {
+        "Name": "D.H.38.96 PLATE",
+        "ProductType": 100,
+        "ProductTypeName": "part",
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+    }
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": [kid],
+        "grid_present": True,
+        "grid_dxf_row_count": 1,
+        "list_len": 1,
+        "internaldata_key_n": 1,
+        "internaldata_empty_n": 0,
+        "internaldata_nonempty_n": 1,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "7881d4b3-aaaa-bbbb-cccc-000000000001"
+    client._edit_gate = ""
+    client._setpartmode_via = "page_fn"
+    client._finish_via = "page_fn"
+    client._part_create_list_len = 1
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+        "finish_af_present": True,
+        "filelist_sourcedataid_n": 1,
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.side_effect = [
+        {"ItemList": []},
+        {"ItemList": []},
+        {"ItemList": [finished_part]},
+    ]
+    service = SecturaFabPushService(client=client)
+    service._linear_product_cache = []
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "updateitemtype_via": "jquery_ajax",
+            "updateitemtype_count": 1,
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": [
+                "CadType",
+                "Stock_X",
+                "Stock_Y",
+                "FileType",
+                "SourceDataID",
+            ],
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id="7881d4b3-aaaa-bbbb-cccc-000000000001",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.1875",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="D.H.38.96",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_called_once()
+    blob = " ".join(notes)
+    assert "EXEC_FAIL" in blob
+    assert "live ProductType is part" in blob
+    assert "not Contours empty" in blob
+    assert "Q10354" in blob
+
+
 def test_step_cad_wizard_state_hard_gate_kids_or_org_lost_is_exec_fail():
     """Multi-kid STEP: lost #gridDXFParts or org mid-wizard is EXEC_FAIL.
 
     Q10352 / 8679-1: org cleared on modal refresh. Q10353 / 12519-2:
-    Adjust Properties returned to an empty quote grid. Do not invent
-    Contours. Cad+inches on in-memory rows is not enough.
+    Adjust Properties returned to an empty quote grid. Q10355 /
+    34328-1: 3 live #gridDXFParts + org Time Waco, first-child edit
+    emptied the CAD grid / Items=0 without #but_dxf. Do not invent
+    Contours. Cad+inches on in-memory rows is not enough. Orthogonal
+    to Q10354 Cad→part. invent=false; no remint.
     """
     from secturafab.website import (
         EMPTY_GUID,
@@ -13979,9 +14304,22 @@ def test_step_cad_wizard_state_hard_gate_kids_or_org_lost_is_exec_fail():
     assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in lost_kids
     assert "wizard lost FileList" in lost_kids
     assert "Q10353" in lost_kids
+    assert "Q10355" in lost_kids
     assert "not Contours empty" in lost_kids
     assert "invent" in lost_kids.lower()
     assert cad_finish_notes_refuse_additem_dxf([lost_kids]) == lost_kids
+
+    q10355 = step_cad_wizard_state_hard_gate(
+        exploded_n=3,
+        live_grid_n=0,
+        org_id="time-waco",
+        org_widget=True,
+    )
+    assert q10355 is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in q10355
+    assert "Q10355" in q10355
+    assert "#but_dxf" in q10355
+    assert cad_finish_notes_refuse_additem_dxf([q10355]) == q10355
 
     lost_org = step_cad_wizard_state_hard_gate(
         exploded_n=4,
@@ -14120,7 +14458,9 @@ def test_finish_cad_files_multi_kid_grid_empty_after_adjust_is_exec_fail(
 ):
     """Q10353 / 12519-2: Adjust Properties left an empty quote grid.
 
-    In-memory Cad+inches rows must not Finish. invent=false.
+    Q10355 / 34328-1: same live #gridDXFParts=0 after first-child
+    edit, without #but_dxf. In-memory Cad+inches rows must not Finish.
+    invent=false; no remint.
     """
     from secturafab.website import (
         STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
@@ -14167,6 +14507,7 @@ def test_finish_cad_files_multi_kid_grid_empty_after_adjust_is_exec_fail(
     assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
     assert "wizard lost FileList" in blob
     assert "Q10353" in blob
+    assert "Q10355" in blob
     assert "not Contours empty" in blob
     assert cad_finish_notes_refuse_additem_dxf(notes) is not None
 

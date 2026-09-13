@@ -8022,7 +8022,9 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
   // Kids already exploded: do not click #but_dxf. That reopen closes
   // Adjust Properties / dumps the empty quote grid on multi-kid STEPs
   // (Q10353 / 12519-2). Child-row select without reopen does the same
-  // (Q10355 / 34328-1). Report grid_present=false and fail-close.
+  // (Q10355 / 34328-1 first-child Adjust Properties edit; org intact).
+  // Keep-path rehydrates when the widget still exists; fail-close if
+  // the widget is gone. Do not invent Contours.
   if (wants.length > 0 || keepRowsLate.length > 0) {
     var lost = readOrg();
     return Promise.resolve({
@@ -8072,8 +8074,9 @@ def apply_grid_dxf_part_modes(
 
     Multi-kid: snapshot / CadImport keep_rows rehydrate if Adjust
     Properties or child-row select emptied the local kendo grid
-    (Q10353 / Q10355). Does not invent Contours. Fail-close if the
-    widget is gone (no #but_dxf reopen).
+    (Q10353 / Q10355 / 34328-1 first-child edit). Does not invent
+    Contours. Fail-close if the widget is gone (no #but_dxf reopen).
+    invent=false.
     """
     from .website import cad_payload_value_empty, cadimport_keep_grid_rows
 

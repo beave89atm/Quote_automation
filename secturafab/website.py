@@ -344,6 +344,8 @@ def is_tenant_guid(value: Any) -> bool:
 
 # SetPartMode requires an integer (strings 500). Verified 0..4 HTTP 200 on empty guid.
 # Mapping follows Kyle UI categories + Q10056 ProductType (100 Cad, 10/30/40 Linear, 200 Component).
+# Live GET can still render enum 100 as ProductType ``part`` (Q10354 /
+# 7881d4b3 D.H.38.96). That noun is not Cad — Finish EXEC_FAIL.
 # Long ProductType: 10 bar, 30 tube, 40 angle/channel. 20 (pipe) fails live GET.
 # Do not force angles to 10 — QA that says "ProductType is 40, want 10" is wrong.
 # Kyle Loom (original STP): after CAD Files → Geometry Cleanup → Adjust
@@ -2617,11 +2619,74 @@ def product_type_is_component(value: Any) -> bool:
     return str(value or "").strip().casefold() == "component"
 
 
+def product_type_is_part_noun(value: Any) -> bool:
+    """GET / UI ProductType noun ``part`` — not Cad.
+
+    Q10056 maps enum 100 to Cad in classify, but live GET can render
+    the same enum as ProductType ``part`` (Part / plate). Q10354 /
+    7881d4b3 Safe Cave D.H.38.96: Cad selector + 0.1875 in finished
+    ``part`` / 100, NumberOfContours unavailable. invent=false.
+    """
+    return str(value or "").strip().casefold() == "part"
+
+
+def product_type_display_token(row: dict[str, Any] | None) -> str:
+    """Live ProductType noun from GET/kendo. Skip bare enums.
+
+    Prefer ProductTypeName, then a non-numeric ProductType string.
+    Do not treat ItemType/FileType Cad (SetPartMode / UpdateItemType)
+    as the ProductType noun — that is the Q10354 miss. invent=false.
+    """
+    if not isinstance(row, dict):
+        return ""
+    for key in ("ProductTypeName", "ProductType", "productType"):
+        val = row.get(key)
+        if val in (None, ""):
+            continue
+        if isinstance(val, bool):
+            continue
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            continue
+        text = str(val).strip()
+        if not text:
+            continue
+        try:
+            int(text)
+        except (TypeError, ValueError):
+            return text
+        continue
+    return ""
+
+
 def product_type_is_cad(value: Any) -> bool:
-    """Cad classify / bind — 100 or the Adjust Properties 'Cad' token."""
+    """Cad classify / bind — 100 or the Adjust Properties 'Cad' token.
+
+    The ``part`` noun is never Cad, even though GET may pair it with
+    enum 100 (Q10354). Callers with a full row should use
+    ``live_row_product_type_is_cad``.
+    """
+    if product_type_is_part_noun(value):
+        return False
     if value in (100, "100"):
         return True
     return str(value or "").strip().casefold() == "cad"
+
+
+def live_row_product_type_is_cad(row: dict[str, Any] | None) -> bool:
+    """True when the live row is Cad, not the Part noun.
+
+    Enum 100 alone is Cad only when the GET noun is not ``part``.
+    UI Cad selector / ItemType Cad does not prove ProductType Cad.
+    invent=false.
+    """
+    if not isinstance(row, dict):
+        return False
+    token = product_type_display_token(row)
+    if product_type_is_part_noun(token):
+        return False
+    if token and token.casefold() == "cad":
+        return True
+    return product_type_is_cad(row.get("ProductType"))
 
 
 def _format_bind_thickness_inches(val: float) -> str:
@@ -2801,13 +2866,16 @@ def step_cad_finish_hard_gate(
     """Mid-wizard before Finish: ProductType Cad, then inch thickness.
 
     1. Still Component → do not Finish (need UpdateItemType Cad / UI Cad).
-    2. Thickness missing / not inch (blank or meter) → EXEC_FAIL, not
+    2. Live ProductType noun ``part`` (including enum 100 + name part)
+       → EXEC_FAIL, not Contours empty (Q10354 / D.H.38.96).
+    3. Thickness missing / not inch (blank or meter) → EXEC_FAIL, not
        Contours empty.
-    3. Else None — proceed toward Finish. invent=false; never invent
+    4. Else None — proceed toward Finish. invent=false; never invent
        InternalData/Contours.
 
     Q10344 / 55f12530 H.6.38 Kyle UI control PASS: Cad + 0.1875 inch
-    → Contours fill → Finish.
+    → Contours fill → Finish. In-memory ProductType=100 after classify
+    is not enough when the live GET noun is ``part``.
     """
     for row in rows or []:
         if not isinstance(row, dict):
@@ -2817,7 +2885,10 @@ def step_cad_finish_hard_gate(
         left = plate_step_left_component_refuses_contours(row)
         if left:
             return left
-        if not product_type_is_cad(row.get("ProductType")):
+        part_why = plate_step_live_product_type_not_cad_refuses(row)
+        if part_why:
+            return part_why
+        if not live_row_product_type_is_cad(row):
             return (
                 "Plate STEP ProductType not Cad after classify — "
                 "not Finishing (need UpdateItemType Cad / UI Cad; "
@@ -2831,6 +2902,82 @@ def step_cad_finish_hard_gate(
                 "Finishing (not Contours empty; Q10344 / H.6.38 Kyle UI "
                 "control PASS Cad + 0.1875 inch). Do not invent "
                 "InternalData/Contours."
+            )
+    return None
+
+
+def plate_step_live_product_type_not_cad_refuses(
+    row: dict[str, Any] | None,
+) -> str | None:
+    """EXEC_FAIL when live ProductType is the Part noun, not Cad.
+
+    Q10354 / 7881d4b3 Safe Cave D.H.38.96: Cad workflow selector +
+    0.1875 in finished ProductType ``part`` / enum 100. NumberOfContours
+    unavailable; OCC=0 is not a substitute. Align with Cad+inches
+    hard-gate. invent=false — do not invent Contours/InternalData.
+    """
+    if not isinstance(row, dict):
+        return None
+    token = product_type_display_token(row)
+    if not product_type_is_part_noun(token):
+        return None
+    return (
+        f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: live ProductType is "
+        "part (enum 100 is the Part noun, not Cad) after Cad selector "
+        "+ inches — not Finishing (not Contours empty; Q10354 / "
+        "7881d4b3 D.H.38.96; Q10344/46/48/49/51 PASSes finished Cad). "
+        "Do not invent InternalData/Contours."
+    )
+
+
+def step_cad_live_product_type_hard_gate(
+    live_rows: list[dict[str, Any]] | None,
+    classified: list[dict[str, Any]] | None = None,
+) -> str | None:
+    """Refuse Finish when live GET ProductType is not Cad.
+
+    Classify stamps ProductType=100 on FileList rows; that enum can
+    persist as GET ``part``. Cad+inches on in-memory rows is not
+    enough (same class as wizard-state: live page/GET can disagree).
+    Empty live ItemList is Q10335 / mid-wizard — no-op (after-Finish
+    GET still gates). invent=false.
+    """
+    cad_intended = [
+        r
+        for r in (classified or [])
+        if isinstance(r, dict) and _cad_plate_row_for_finish_gate(r)
+    ]
+    if not cad_intended:
+        return None
+    live = [r for r in (live_rows or []) if isinstance(r, dict)]
+    if not live:
+        return None
+    live_plates: list[dict[str, Any]] = []
+    for row in live:
+        cat = str(row.get("Category") or row.get("ItemType") or "").strip()
+        if cat in {"Assembly", "Linear"}:
+            continue
+        if product_type_is_component(row.get("ProductType")) and cat == "Component":
+            continue
+        if (
+            row.get("ProductType") in (None, "")
+            and not product_type_display_token(row)
+        ):
+            continue
+        live_plates.append(row)
+    if not live_plates:
+        return None
+    for row in live_plates:
+        part_why = plate_step_live_product_type_not_cad_refuses(row)
+        if part_why:
+            return part_why
+        if not live_row_product_type_is_cad(row):
+            return (
+                f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: live ProductType "
+                "is not Cad for Contours-intended plate kid — not "
+                "Finishing (Cad selector / ItemType Cad ≠ ProductType Cad; "
+                "Q10354 / 7881d4b3 D.H.38.96 finished part / enum 100). "
+                "Do not invent InternalData/Contours."
             )
     return None
 
@@ -2897,11 +3044,15 @@ def step_cad_wizard_state_hard_gate(
 
     Multi-kid STEP CAD Files (Q10352 8679-1 / Q10353 12519-2 / Q10355
     34328-1): Adjust Properties / UpdateItemType / child-row select
-    can drop #gridDXFParts to 0 or clear the org widget. Keep-path
-    (snapshot / CadImport rehydrate) runs first in apply_grid_dxf_part_modes.
-    This gate is the fail-close if keep failed. Cad+inches on in-memory
-    classify rows is not enough — those rows stay Cad/inch after the
-    live wizard is gone.
+    can drop #gridDXFParts to 0 or clear the org widget. Grid loss is
+    not only ``#but_dxf`` reopen — Q10355 mouse: 3 live #gridDXFParts
+    + org Time Waco, then first child/edit control emptied the CAD
+    grid and Items=0 with Finish not attempted. Keep-path (snapshot /
+    CadImport rehydrate) runs first in apply_grid_dxf_part_modes.
+    This gate is the fail-close if keep failed. Cad+inches on
+    in-memory classify rows is not enough — those rows stay Cad/inch
+    after the live wizard is gone. Orthogonal to Q10354 Cad selector
+    → GET ``part``. invent=false.
 
     1. Exploded kids ≥ 2 and live #gridDXFParts == 0 → EXEC_FAIL
        (safer than single-plate; Chrome-miss passes live_grid_n=None).
@@ -2925,7 +3076,8 @@ def step_cad_wizard_state_hard_gate(
                 "#gridDXFParts=0) after Adjust Properties / UpdateItemType "
                 "— not Finishing (quote grid empty / kids dropped before "
                 "Cad+inches can stick; not Contours empty; Q10353 / "
-                "12519-2). Do not invent InternalData/Contours."
+                "12519-2; Q10355 / 34328-1 first-child edit, not only "
+                "#but_dxf reopen). Do not invent InternalData/Contours."
             )
     if prior_item_count is not None and live_item_count is not None:
         try:
@@ -3027,6 +3179,8 @@ def cad_finish_notes_refuse_additem_dxf(
             or "Contours fail path" in text
             or "ProductType still Component" in text
             or "ProductType not Cad" in text
+            or "live ProductType is part" in text
+            or "live ProductType is not Cad" in text
             or STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in text
             or "thickness not set in inch" in text
             or "wizard lost FileList" in text
@@ -6461,13 +6615,11 @@ def quote_contours_rows(payload: Any) -> list[dict[str, Any]]:
 
 
 def count_cad_product_type(payload: Any) -> int:
+    """Count live Cad rows. Enum 100 with noun ``part`` is not Cad."""
     n = 0
     for it in quote_item_rows(payload):
-        try:
-            if int(it.get("ProductType")) == 100:
-                n += 1
-        except (TypeError, ValueError):
-            continue
+        if live_row_product_type_is_cad(it):
+            n += 1
     return n
 
 
@@ -7292,11 +7444,9 @@ def step_finish_pack_missing(
         cad_items = []
         for it in items:
             cat = str(it.get("Category") or it.get("ItemType") or "")
-            try:
-                pt = int(it.get("ProductType"))
-            except (TypeError, ValueError):
-                pt = None
-            if cat == "Cad" or pt == 100:
+            if product_type_is_part_noun(product_type_display_token(it)):
+                continue
+            if live_row_product_type_is_cad(it) or cat == "Cad":
                 cad_items.append(it)
         if not cad_items:
             return (
@@ -7306,11 +7456,9 @@ def step_finish_pack_missing(
         contour_cad = []
         for it in contour_items:
             cat = str(it.get("Category") or it.get("ItemType") or "")
-            try:
-                pt = int(it.get("ProductType"))
-            except (TypeError, ValueError):
-                pt = None
-            if cat == "Cad" or pt == 100:
+            if product_type_is_part_noun(product_type_display_token(it)):
+                continue
+            if live_row_product_type_is_cad(it) or cat == "Cad":
                 contour_cad.append(it)
         if not any(item_cad_contour_count(it) >= 1 for it in contour_cad):
             return (
