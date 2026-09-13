@@ -2778,6 +2778,112 @@ def step_cad_finish_hard_gate(
     return None
 
 
+def wizard_quote_live_item_count(payload: Any) -> int | None:
+    """v1 ItemList / QuoteItem_Read Data count. None when item keys absent.
+
+    Mid-wizard empty ItemList/Data is a real 0 (Q10353 / Q10335
+    QuoteItem_Read Data:[]). Peek-shaped payloads without those keys
+    are not a count. invent=false.
+    """
+    if isinstance(payload, list):
+        return len([r for r in payload if isinstance(r, dict)])
+    if not isinstance(payload, dict):
+        return None
+    rows = quote_item_rows(payload)
+    if rows:
+        return len(rows)
+    for key in CONTOURS_GET_ROW_KEYS + QUOTE_ITEM_READ_LIST_KEYS:
+        if key in payload and isinstance(payload.get(key), list):
+            return 0
+    return None
+
+
+def wizard_quote_primary_organization_id(
+    payload: dict[str, Any] | None,
+) -> str | None:
+    """PrimaryOrganizationID when the payload restates org fields.
+
+    None if org keys are absent (peek-shaped / catalog GET). Empty
+    string or EMPTY_GUID means org was restated and is lost (Q10352).
+    """
+    if not isinstance(payload, dict):
+        return None
+    has_org_field = any(
+        key in payload
+        for key in ("PrimaryOrganizationID", "OrganizationID", "Organization")
+    )
+    if not has_org_field:
+        return None
+    raw = payload.get("PrimaryOrganizationID") or payload.get("OrganizationID")
+    org = payload.get("Organization")
+    if isinstance(org, dict):
+        raw = raw or org.get("ID")
+    return str(raw or "").strip()
+
+
+def step_cad_wizard_state_hard_gate(
+    *,
+    expected_kid_count: int = 0,
+    live_grid_count: int | None = None,
+    live_item_count: int | None = None,
+    prior_item_count: int | None = None,
+    primary_organization_id: str | None = None,
+    want_organization: bool = False,
+) -> str | None:
+    """Mid-wizard before Finish: multi-item kids / org must still be present.
+
+    Cad+inches (``step_cad_finish_hard_gate``) only sees in-memory
+    FileList rows. Adjust Properties / UpdateItemType / modal refresh
+    can drop #gridDXFParts kids and clear Organization before those
+    rows are committed (Q10352 org cleared; Q10353 returned to the
+    main quote grid with 0 items; Q10335 QuoteItem_Read Data:[] lost
+    CAD row). Fail-close EXEC_FAIL — do not Finish, do not invent
+    Contours/InternalData.
+    """
+    try:
+        kids_n = int(expected_kid_count or 0)
+    except (TypeError, ValueError):
+        kids_n = 0
+    if kids_n >= 2 and live_grid_count is not None:
+        try:
+            grid_n = int(live_grid_count)
+        except (TypeError, ValueError):
+            grid_n = 0
+        if grid_n <= 0:
+            return (
+                f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: multi-item STEP "
+                f"wizard lost #gridDXFParts kids (exploded {kids_n}, "
+                f"live grid {grid_n}) after Adjust Properties / "
+                "UpdateItemType — not Finishing (Q10353 / 12519-2 empty "
+                "quote grid; QuoteItem_Read Data:[] lost CAD kids). "
+                "Do not invent InternalData/Contours."
+            )
+    if prior_item_count is not None and live_item_count is not None:
+        try:
+            prior_n = int(prior_item_count)
+            live_n = int(live_item_count)
+        except (TypeError, ValueError):
+            prior_n, live_n = 0, 0
+        if prior_n > 0 and live_n <= 0:
+            return (
+                f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: quote item_count "
+                f"dropped {prior_n}→0 mid-wizard — not Finishing "
+                "(Q10353 empty quote grid after Adjust Properties; "
+                "Q10335 QuoteItem_Read Data:[] lost CAD row). "
+                "Do not invent InternalData/Contours."
+            )
+    if want_organization and primary_organization_id is not None:
+        raw = str(primary_organization_id or "").strip()
+        if raw in ("", EMPTY_GUID):
+            return (
+                f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: organization lost "
+                "mid-wizard (PrimaryOrganizationID empty GUID) — not "
+                "Finishing (Q10352 / 8679-1 org cleared on CAD Files "
+                "modal refresh). Do not invent InternalData/Contours."
+            )
+    return None
+
+
 def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
     """Refuse AddItem_DXFFiles when Cad InternalData is empty.
 
@@ -2851,6 +2957,9 @@ def cad_finish_notes_refuse_additem_dxf(
             or "ProductType not Cad" in text
             or STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in text
             or "thickness not set in inch" in text
+            or "wizard lost #gridDXFParts kids" in text
+            or "item_count dropped" in text
+            or "organization lost mid-wizard" in text
         ):
             return text
     return None

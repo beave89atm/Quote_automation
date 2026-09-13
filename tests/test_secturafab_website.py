@@ -13527,6 +13527,400 @@ def test_step_cad_finish_hard_gate_cad_then_inch_before_finish():
     assert step_cad_finish_hard_gate(purchased) is None
 
 
+def test_step_cad_wizard_state_hard_gate_exec_fail_on_lost_multi_item():
+    """Multi-item STEP: empty grid / item drop / org lost → EXEC_FAIL.
+
+    Cad+inch in-memory rows still look ready (Q10344 control). Do not
+    Finish. invent=false — do not invent Contours/InternalData.
+    """
+    from secturafab.org_ops import TIME_WACO_ORG_ID
+    from secturafab.website import (
+        EMPTY_GUID,
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+        step_cad_finish_hard_gate,
+        step_cad_wizard_state_hard_gate,
+        wizard_quote_live_item_count,
+        wizard_quote_primary_organization_id,
+    )
+
+    ready = [
+        {
+            "Name": "8679-1 PLATE A",
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+            "InternalData": "server-stamped",
+        },
+        {
+            "Name": "8679-1 PLATE B",
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "server-stamped",
+        },
+        {
+            "Name": "8679-1 TUBE",
+            "FileType": "Linear",
+            "ItemType": "Linear",
+            "Category": "Linear",
+            "PartMode": 1,
+            "ProductType": 30,
+        },
+        {
+            "Name": "8679-1 BAR",
+            "FileType": "Linear",
+            "ItemType": "Linear",
+            "Category": "Linear",
+            "PartMode": 1,
+            "ProductType": 10,
+        },
+    ]
+    assert step_cad_finish_hard_gate(ready) is None
+    assert step_cad_wizard_state_hard_gate(
+        expected_kid_count=4,
+        live_grid_count=4,
+        live_item_count=0,
+        prior_item_count=0,
+        primary_organization_id=TIME_WACO_ORG_ID,
+        want_organization=True,
+    ) is None
+
+    why_grid = step_cad_wizard_state_hard_gate(
+        expected_kid_count=4,
+        live_grid_count=0,
+    )
+    assert why_grid is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_grid
+    assert "gridDXFParts" in why_grid
+    assert "Q10353" in why_grid
+    assert "not invent" in why_grid.lower()
+    assert "Contours empty" not in why_grid
+    assert cad_finish_notes_refuse_additem_dxf([why_grid]) == why_grid
+
+    why_items = step_cad_wizard_state_hard_gate(
+        expected_kid_count=3,
+        live_grid_count=3,
+        prior_item_count=3,
+        live_item_count=0,
+    )
+    assert why_items is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_items
+    assert "item_count dropped" in why_items
+    assert "Q10353" in why_items
+    assert cad_finish_notes_refuse_additem_dxf([why_items]) == why_items
+
+    why_org = step_cad_wizard_state_hard_gate(
+        expected_kid_count=4,
+        live_grid_count=4,
+        primary_organization_id=EMPTY_GUID,
+        want_organization=True,
+    )
+    assert why_org is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_org
+    assert "organization lost" in why_org
+    assert "Q10352" in why_org
+    assert cad_finish_notes_refuse_additem_dxf([why_org]) == why_org
+
+    assert step_cad_wizard_state_hard_gate(
+        expected_kid_count=1,
+        live_grid_count=0,
+    ) is None
+    assert wizard_quote_live_item_count({"ItemList": []}) == 0
+    assert wizard_quote_live_item_count({"Data": [], "Total": 0}) == 0
+    assert wizard_quote_live_item_count({"PrimaryOrganizationID": TIME_WACO_ORG_ID}) is None
+    assert wizard_quote_primary_organization_id({"ItemList": []}) is None
+    assert wizard_quote_primary_organization_id(
+        {"PrimaryOrganizationID": EMPTY_GUID}
+    ) == EMPTY_GUID
+    assert (
+        wizard_quote_primary_organization_id(
+            {"PrimaryOrganizationID": TIME_WACO_ORG_ID}
+        )
+        == TIME_WACO_ORG_ID
+    )
+
+
+def _multi_kid_cad_ready_rows() -> list[dict[str, Any]]:
+    return [
+        {
+            "SourceDataID": "src-a",
+            "FileID": "file-a",
+            "ID": "id-a",
+            "Name": "8679-1 PLATE A",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+            "InternalData": "server-stamped",
+            "ImageString": "iVBORw0KGgo",
+        },
+        {
+            "SourceDataID": "src-b",
+            "FileID": "file-b",
+            "ID": "id-b",
+            "Name": "8679-1 PLATE B",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "server-stamped",
+            "ImageString": "iVBORw0KGgo",
+        },
+        {
+            "SourceDataID": "src-c",
+            "FileID": "file-c",
+            "ID": "id-c",
+            "Name": "12519-2 TUBE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "FileType": "Linear",
+            "ItemType": "Linear",
+            "Category": "Linear",
+            "PartMode": 1,
+            "ProductType": 30,
+            "InternalData": "server-stamped",
+        },
+    ]
+
+
+def _finish_cad_files_multi_kid_client(tmp_path: Path, kids: list[dict[str, Any]]):
+    from secturafab.push import SecturaFabPushService
+
+    stp = tmp_path / "8679-1.STEP"
+    stp.write_bytes(b"ISO")
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": kids,
+        "grid_present": True,
+        "grid_dxf_row_count": len(kids),
+        "list_len": len(kids),
+        "internaldata_key_n": len(kids),
+        "internaldata_empty_n": 0,
+        "internaldata_nonempty_n": len(kids),
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = len(kids)
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa8679"
+    client._edit_gate = ""
+    client._setpartmode_via = "page_fn"
+    client._finish_via = "page_fn"
+    client._part_create_list_len = len(kids)
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": len(kids),
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    service = SecturaFabPushService(client=client)
+    service._linear_product_cache = []
+    return service, client, stp
+
+
+def test_finish_cad_files_exec_fail_when_multi_kid_grid_empties(tmp_path: Path):
+    """Q10353: Adjust Properties left 0 #gridDXFParts kids — not Finish."""
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+    )
+
+    kids = _multi_kid_cad_ready_rows()
+    service, client, stp = _finish_cad_files_multi_kid_client(tmp_path, kids)
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": False,
+            "cad": 0,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 0,
+            "setpartmode_via": "page_fn",
+            "updateitemtype_via": "page_fn",
+            "updateitemtype_count": 2,
+            "grid_dxf_row_count": 0,
+            "kendo_row_keys": [],
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa8679",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.1875",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="8679-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
+    assert "gridDXFParts" in blob
+    assert "not invent" in blob.lower()
+    assert "Contours empty" not in blob
+    assert cad_finish_notes_refuse_additem_dxf(notes) is not None
+    client.add_item_dxf_files.assert_not_called()
+
+
+def test_finish_cad_files_exec_fail_when_org_lost_mid_wizard(tmp_path: Path):
+    """Q10352: Organization empty GUID after modal refresh — not Finish."""
+    from secturafab.org_ops import TIME_WACO_ORG_ID
+    from secturafab.website import (
+        EMPTY_GUID,
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+    )
+
+    kids = _multi_kid_cad_ready_rows()
+    service, client, stp = _finish_cad_files_multi_kid_client(tmp_path, kids)
+    client.get_json.return_value = {
+        "ItemList": [],
+        "PrimaryOrganizationID": EMPTY_GUID,
+    }
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 2,
+            "linear": 1,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 3,
+            "setpartmode_via": "page_fn",
+            "updateitemtype_via": "page_fn",
+            "updateitemtype_count": 2,
+            "grid_dxf_row_count": 3,
+            "kendo_row_keys": ["FileType", "SourceDataID", "ID"],
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa8679",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.1875",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="8679-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+            organization_name="Time Manufacturing Waco",
+        )
+    blob = " ".join(notes)
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
+    assert "organization lost" in blob
+    assert "Q10352" in blob
+    assert TIME_WACO_ORG_ID
+    assert cad_finish_notes_refuse_additem_dxf(notes) is not None
+    client.add_item_dxf_files.assert_not_called()
+
+
+def test_finish_cad_files_exec_fail_when_item_count_drops_to_zero(tmp_path: Path):
+    """Q10353 / Q10335: QuoteItem_Read / ItemList dropped 3→0 — not Finish."""
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+    )
+
+    kids = _multi_kid_cad_ready_rows()
+    service, client, stp = _finish_cad_files_multi_kid_client(tmp_path, kids)
+    phase = {"after_apply": False}
+
+    def _apply(*_a, **_k):
+        phase["after_apply"] = True
+        return {
+            "grid_present": True,
+            "cad": 2,
+            "linear": 1,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 3,
+            "setpartmode_via": "page_fn",
+            "updateitemtype_via": "page_fn",
+            "updateitemtype_count": 2,
+            "grid_dxf_row_count": 3,
+            "kendo_row_keys": ["FileType", "SourceDataID", "ID"],
+        }
+
+    def _get_json(path):
+        if "v1/quote/" in str(path) and not phase["after_apply"]:
+            return {
+                "ItemList": [
+                    {"ID": "id-a", "Name": "8679-1 PLATE A"},
+                    {"ID": "id-b", "Name": "8679-1 PLATE B"},
+                    {"ID": "id-c", "Name": "12519-2 TUBE"},
+                ]
+            }
+        if "v1/quote/" in str(path):
+            return {"ItemList": []}
+        return []
+
+    client.get_json.side_effect = _get_json
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        side_effect=_apply,
+    ):
+        notes = service.finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1251",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.1875",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="12519-2",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
+    assert "item_count dropped" in blob
+    assert cad_finish_notes_refuse_additem_dxf(notes) is not None
+    client.add_item_dxf_files.assert_not_called()
+
+
 def test_wrong_org_time_q10332_forever_forbid_description_only():
     """Q10332 wrong-org Time mint: number-only forbid. ID unknown.
 
