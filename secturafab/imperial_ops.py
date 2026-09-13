@@ -132,7 +132,9 @@ def ensure_imperial_item_units(
     if not changed:
         return ["Quote items already look imperial"]
 
-    save = client.request("POST", "v1/quote", json=detail)
+    from .website import v1_quote_body_without_itemlist
+
+    save = client.request("POST", "v1/quote", json=v1_quote_body_without_itemlist(detail))
     if save.status_code >= 400:
         return [f"Imperial unit cleanup save failed ({save.status_code})"]
     return [f"Normalized {changed} item(s) to inch (imperial) labels/dims"]

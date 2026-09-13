@@ -1,0 +1,4760 @@
+"""App drop/push path: process_job + push_job_secturafab → website Image Files / Long.
+
+Unit tests only. Do not claim live Sectura success from these.
+Never PATCH a7dc46bf (Kyle-confirmed 1001898-1) or other forbidden quotes.
+"""
+
+from __future__ import annotations
+
+import importlib
+import os
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from secturafab.forbidden_quotes import (
+    FORBIDDEN_LIVE_QUOTE_IDS,
+    ForbiddenQuoteError,
+    refuse_forbidden_quote_write,
+)
+from secturafab.org_ops import TIME_WACO_ORG_ID, TIME_WACO_ORG_NAME
+from secturafab.client import SecturaFabApiError
+from secturafab.website import SecturaFabWebsiteAuthError, WEBSITE_SESSION_EXPIRED
+from secturafab.push import (
+    SecturaFabPushService,
+    classify_sectura_item,
+    _shop_material,
+)
+from secturafab.qa_harness import evaluate_quote_get
+from secturafab.item_desc import resolve_cad_plate_flats
+from secturafab.locked_1001898 import locked_cad_spec
+from secturafab.website import (
+    EMPTY_GUID,
+    WELD_CALC_PARAM_TYPE,
+    WELD_OPERATION_CODE,
+    build_add_feature_payload,
+    build_copy_move_assembly_payload,
+    build_weld_add_operation_payload,
+    internal_data_from_holes,
+)
+from tests.fixtures.live_get_1001898 import (
+    ASSEMBLY_DESC,
+    HEADER_DESC,
+    TIME_ORG,
+    gold_1001898_get,
+)
+from tests.fixtures.time_gold import DASH_1001898
+from tests.test_lom_xlsx import _1001898_lom_rows, write_excel_absolute_target_xlsx
+
+
+def _page_pdf_bind_ok(n: int = 1) -> dict:
+    return {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "grid_pdf_row_count": n,
+        "status_gt0_n": n,
+        "getpdfdata_n": n,
+        "grid_id": "#gridPDF",
+    }
+
+
+def _bom_rows() -> list[dict]:
+    return [
+        {"part_no": pn, "qty": qty, "description": desc}
+        for _i, qty, pn, desc in DASH_1001898
+    ]
+
+
+def test_classify_1004747_angles_channel_tube_are_linear():
+    assert classify_sectura_item("32259-1 RETAINER BAR, HOSE") == "Linear"
+    assert classify_sectura_item("1004740-1 MASTER CYLINDER MOUNT CHANNEL") == "Linear"
+    assert classify_sectura_item("25060-6 TUBE, PIVOT") == "Linear"
+
+
+def test_classify_plate_over_three_quarter_is_component():
+    from secturafab.push import classify_image_files_item
+
+    assert classify_sectura_item("1.25 A572 RING Ø23.5/Ø12 OUTSOURCE") == "Component"
+    assert classify_sectura_item("1 A572 26.375 SQ OUTSOURCE") == "Component"
+    assert classify_sectura_item('1.25" A572 PLATE') == "Component"
+    assert classify_sectura_item('1 1/4" A572 PLATE') == "Component"
+    assert classify_sectura_item("PEDESTAL BASE PLATE") == "Cad"
+    assert classify_image_files_item("PEDESTAL BASE PLATE", 1.25) == "Component"
+    assert classify_image_files_item("PEDESTAL BASE PLATE", 0.75) == "Cad"
+    assert classify_sectura_item('3/4" A36 PLATE') == "Cad"
+    assert classify_sectura_item("0.75 A36 PLATE") == "Cad"
+    assert classify_sectura_item('3/16" A36 PLATE') == "Cad"
+    assert classify_image_files_item('3/16" A36 PLATE', 0.1875) == "Cad"
+    assert classify_sectura_item('1/4" A36 PLATE') == "Cad"
+    assert classify_sectura_item("FORMED ANGLE 1/4 A36 PLATE") == "Cad"
+    assert classify_sectura_item("1010108-1 SLUG") == "Linear"
+    assert classify_sectura_item("1010109-1 BAR") == "Linear"
+    assert classify_sectura_item("1010104-1 GUSSET") == "Cad"
+    assert classify_sectura_item("1010105-1 MOUNT") == "Cad"
+    assert classify_sectura_item("15890-1 END CAP, BOOM") == "Cad"
+    assert classify_sectura_item("50122-1 1 1/4 NPT PIPE CAP") == "Component"
+    assert classify_sectura_item("21689-1 HOSE GUARD") == "Linear"
+    assert classify_sectura_item("34136-1 Aluminum Platform Weldment") == "Assembly"
+    assert classify_sectura_item("88010 ALUMINUM HINGE Flexible") == "Component"
+    assert classify_sectura_item("102196-5 PLATE (HINGE PLATE)") == "Cad"
+    assert classify_sectura_item("PLATE-1297_30345-19") == "Cad"
+    assert classify_sectura_item("RAIL MOUNT") == "Cad"
+    assert classify_sectura_item("TRIANGLE GUSSET") == "Cad"
+    assert classify_sectura_item("FLOOR GUSSET") == "Cad"
+    assert classify_sectura_item("gate gusset") == "Cad"
+    assert classify_sectura_item("CHANNEL PLATE") == "Cad"
+    assert classify_sectura_item("ANCHOR PLATE") == "Cad"
+    assert classify_sectura_item("SUPPORT PLATE") == "Cad"
+    assert classify_sectura_item("KICK CHANNEL") == "Linear"
+    assert classify_sectura_item("vertical tube") == "Linear"
+    assert classify_sectura_item("main channel") == "Linear"
+    assert classify_sectura_item(
+        "PLATFORM BASE WELDMENT-2623_103603-1"
+    ) == "Assembly"
+
+
+def test_never_a569_material():
+    assert _shop_material("A569") == "A36"
+    assert _shop_material("A572") == "A572"
+    assert _shop_material("A572 Grade 50") == "A572 Grade 50"
+    assert _shop_material("PL025-50K") == "A572 Grade 50"
+    assert _shop_material("100K") == "100K"
+    assert _shop_material("A1011") == "A1011"
+    assert _shop_material("A519") == "A519"
+    assert _shop_material("") == "A36"
+    assert _shop_material("5052-H32") == "5052-H32"
+    assert _shop_material("ALPL009-28K") == "5052-H32"
+
+
+def test_weld_add_operation_is_q10056_shape():
+    payload = build_weld_add_operation_payload(
+        "new-qid",
+        "asm-1",
+        weld_inches=308.66,
+        weld_hours=154.33 / 60.0,
+        fitup_hours=108.0 / 60.0,
+        setup_hours=0.25,
+    )
+    assert payload["operation_code"] == WELD_OPERATION_CODE
+    assert payload["Equipment"] == "Welding"
+    assert payload["ApplyTo"] == "ITEM"
+    assert payload["CalcParamType"] == WELD_CALC_PARAM_TYPE
+    assert payload["weld"] == pytest.approx(308.66)
+    assert payload["perunittime"] == pytest.approx(154.33 / 60.0)
+    assert payload["perunittime2"] == pytest.approx(108.0 / 60.0)
+    assert payload["fixedtime"] == pytest.approx(0.25)
+
+
+def test_copy_move_and_internal_payloads():
+    move = build_copy_move_assembly_payload("qid", "kid", "asm", mode="Move")
+    assert move["AssemblyID"] == "asm"
+    assert move["Mode"] == "Move"
+    feat = build_add_feature_payload("qid", "cad-1", diameter=0.375, qty=4)
+    assert feat["FeatureType"] == "Internal"
+    assert feat["Diameter"] == 0.375
+    blob = internal_data_from_holes([{"diameter": 0.375, "qty": 4}])
+    assert "0.375" in blob
+
+
+def test_refuse_forbidden_quote_writes():
+    for qid in FORBIDDEN_LIVE_QUOTE_IDS:
+        with pytest.raises(ForbiddenQuoteError, match="forbidden"):
+            refuse_forbidden_quote_write(
+                method="POST", path="v1/quote", payload={"ID": qid}
+            )
+        refuse_forbidden_quote_write(
+            method="GET", path=f"v1/quote/{qid}", payload=None
+        )
+    with pytest.raises(ForbiddenQuoteError, match="103535-1"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="v1/quote",
+            payload={"QuoteNumber": "103535-1"},
+        )
+    refuse_forbidden_quote_write(
+        method="POST",
+        path="v1/quote",
+        payload={"QuoteNumber": "remint-ok"},
+    )
+
+
+def test_push_job_refuses_forbidden_number_before_mint_or_kid_stamps(tmp_path: Path):
+    """Live 103535-1 @ 8e08f53: number forbidden but mint+CDP kids ran first."""
+    pdf = tmp_path / "103535-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    service = SecturaFabPushService(client=client)
+    with patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ), patch.object(
+        service, "create_quote", return_value="4b8d6ae6-must-not-mint"
+    ) as create_q, patch.object(
+        service, "allocate_quote_number", return_value="103535-1"
+    ), patch.object(
+        service, "finish_pdf_files"
+    ) as pdf_finish, patch.object(
+        service, "finish_linear_bom_rows"
+    ) as lin_finish, patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ):
+        result = service.push_job(
+            title="103535-1",
+            pdf_filename="103535-1.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={"library": {"part_key": "103535-1"}},
+            times={},
+            job_id=8,
+        )
+    assert result.ok is False
+    assert result.status == "failed"
+    assert result.created_new_quote is False
+    create_q.assert_not_called()
+    pdf_finish.assert_not_called()
+    lin_finish.assert_not_called()
+    blob = (result.error or "") + " " + " ".join(result.notes or [])
+    assert "103535-1" in blob
+    assert "not minting" in blob
+    assert "not stamping kids" in blob
+
+
+def test_push_job_refuses_byname_spent_before_mint(tmp_path: Path):
+    """Unused PN still fail-closes when byName already has a quote ID."""
+    pdf = tmp_path / "1007756-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    service = SecturaFabPushService(client=client)
+    with patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ), patch.object(
+        service, "create_quote", return_value="must-not-mint"
+    ) as create_q, patch.object(
+        service, "allocate_quote_number", return_value="remint-ok"
+    ), patch.object(
+        service,
+        "find_quote_by_number",
+        return_value={"ID": "already-spent-id", "QuoteNumber": "remint-ok"},
+    ), patch.object(
+        service, "finish_pdf_files"
+    ) as pdf_finish, patch.object(
+        service, "finish_linear_bom_rows"
+    ) as lin_finish, patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ):
+        result = service.push_job(
+            title="1007756-1",
+            pdf_filename="1007756-1.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={"library": {"part_key": "1007756-1"}},
+            times={},
+            job_id=9,
+        )
+    assert result.ok is False
+    assert result.status == "failed"
+    assert result.created_new_quote is False
+    create_q.assert_not_called()
+    pdf_finish.assert_not_called()
+    lin_finish.assert_not_called()
+    blob = (result.error or "") + " " + " ".join(result.notes or [])
+    assert "already spent" in blob
+    assert "already-spent-id" in blob
+    assert "not minting" in blob
+
+
+def test_create_quote_refuses_forbidden_number_before_post():
+    client = MagicMock()
+    service = SecturaFabPushService(client=client)
+    with pytest.raises(ForbiddenQuoteError, match="103535-1"):
+        service.create_quote(quote_number="103535-1")
+    client.request.assert_not_called()
+
+
+def test_create_quote_refuses_blank_description_before_post():
+    client = MagicMock()
+    service = SecturaFabPushService(client=client)
+    with pytest.raises(ValueError, match="Description is blank"):
+        service.create_quote(quote_number="remint-ok", description="  ")
+    client.request.assert_not_called()
+
+
+def test_push_job_refuses_blank_description_before_mint(tmp_path: Path):
+    """Live 1007756-1: header Description was null after mint."""
+    pdf = tmp_path / "lonely.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    service = SecturaFabPushService(client=client)
+    with patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ), patch.object(
+        service, "create_quote", return_value="must-not-mint"
+    ) as create_q, patch.object(
+        service, "allocate_quote_number", return_value="remint-ok"
+    ), patch.object(
+        service, "find_quote_by_number", return_value=None
+    ), patch.object(
+        service, "finish_pdf_files"
+    ) as pdf_finish, patch(
+        "secturafab.push.refresh_bom_rows_for_push",
+        return_value=([{"part_no": "kid-1", "qty": 1, "description": "PLATE"}], []),
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value=None
+    ), patch(
+        "secturafab.push.title_from_stp_takeoff", return_value=None
+    ), patch(
+        "secturafab.push.title_from_library_folder", return_value=None
+    ), patch(
+        "secturafab.push.title_from_job_title", return_value=None
+    ), patch(
+        "secturafab.push.title_from_bom_family", return_value=None
+    ):
+        result = service.push_job(
+            title="lonely",
+            pdf_filename="lonely.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={"library": {"part_key": "lonely"}},
+            times={},
+            job_id=10,
+        )
+    assert result.ok is False
+    assert result.created_new_quote is False
+    create_q.assert_not_called()
+    pdf_finish.assert_not_called()
+    blob = (result.error or "") + " " + " ".join(result.notes or [])
+    assert "Description is blank" in blob
+    assert "not minting" in blob
+
+
+def test_ensure_weld_ops_skips_zz_del_revive():
+    from secturafab.weld_ops import ensure_weld_ops, quote_number_is_zz_del
+
+    assert quote_number_is_zz_del("ZZ-DEL-1007756-1") is True
+    assert quote_number_is_zz_del("1007756-1") is False
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {
+        "QuoteNumber": "ZZ-DEL-1007756-1",
+        "ItemList": [
+            {
+                "ID": "asm-1",
+                "Description": "1007756-1 - WELDMENT",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+            {
+                "ID": "cad-1",
+                "Description": "1007756-2",
+                "ProductType": 100,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+        ],
+    }
+    notes = ensure_weld_ops(
+        client,
+        "qid",
+        times={"weld_minutes": 20, "total_inches": 40, "fitup_with_fixture_minutes": 8},
+        part_key="1007756-1",
+    )
+    client.add_operation.assert_not_called()
+    client.request.assert_not_called()
+    blob = " ".join(notes)
+    assert "ZZ-DEL" in blob
+    assert "not reviving" in blob
+
+
+def test_ensure_weld_ops_graft_post_does_not_send_quote_number():
+    from secturafab.weld_ops import ensure_weld_ops
+
+    client = MagicMock()
+    client.config.website_cookie = ""
+    client.get_json.return_value = {
+        "ID": "qid",
+        "QuoteNumber": "remint-ok",
+        "ItemList": [
+            {
+                "ID": "asm-1",
+                "Description": "remint-ok - WELDMENT",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+            {
+                "ID": "cad-1",
+                "Description": "kid-1 PLATE",
+                "ProductType": 100,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+        ],
+    }
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    notes = ensure_weld_ops(
+        client,
+        "qid",
+        times={"weld_minutes": 20, "total_inches": 40, "fitup_with_fixture_minutes": 8},
+        part_key="remint-ok",
+    )
+    client.request.assert_called_once()
+    payload = client.request.call_args.kwargs["json"]
+    assert payload["ID"] == "qid"
+    assert "QuoteNumber" not in payload
+    assert payload.get("QuoteStatus") is None
+    assert any("Weld" in n for n in notes)
+
+
+def test_evaluate_quote_get_empty_description_fails():
+    payload = gold_1001898_get()
+    payload["Description"] = None
+    result = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert result.ok is False
+    assert any("Quote Description is empty" in f for f in result.failures)
+
+
+def test_flat_root_kids_fail_qa():
+    payload = gold_1001898_get()
+    for it in payload["ItemList"][1:]:
+        it["AssemblyID"] = None
+    result = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert result.ok is False
+    assert any("Flat root kids" in f for f in result.failures)
+
+
+def test_gold_get_with_kids_under_assembly_passes():
+    payload = gold_1001898_get()
+    result = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert result.ok is True
+    assert payload["PrimaryOrganizationID"] == TIME_WACO_ORG_ID
+
+
+def test_push_job_pdf_time_weldment_calls_website_path(tmp_path: Path):
+    pdf = tmp_path / "1001898-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    lib = tmp_path / "Customer Drawings" / "Time" / "Pedestal Weldment - 1001898-1"
+    lib.mkdir(parents=True)
+    write_excel_absolute_target_xlsx(lib / "1001898-1-LOM.xlsx", _1001898_lom_rows())
+    for pn in ("14501-1", "1001880-2", "9905-1", "1005940-1"):
+        (lib / f"{pn}.pdf").write_bytes(b"%PDF")
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    populated = gold_1001898_get()
+    _n = {"i": 0}
+
+    def _get_json(_path):
+        _n["i"] += 1
+        if _n["i"] == 1:
+            return {"QuoteNumber": "1001898-1", "ItemCount": 0, "ItemList": []}
+        return populated
+
+    client.get_json.side_effect = _get_json
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    service = SecturaFabPushService(client=client)
+    new_id = "11111111-aaaa-bbbb-cccc-000000000001"
+    assert new_id not in FORBIDDEN_LIVE_QUOTE_IDS
+
+    times = {
+        "weld_minutes": 154.33,
+        "total_inches": 308.66,
+        "fitup_with_fixture_minutes": 108.0,
+        "fitup_no_fixture_minutes": 162.0,
+    }
+    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "create_quote", return_value=new_id
+    ) as create_q, patch.object(
+        service, "allocate_quote_number", return_value="remint-ok"
+    ), patch.object(
+        service, "finish_pdf_files", return_value=["Image Files Finish"]
+    ) as pdf_finish, patch.object(
+        service, "finish_linear_bom_rows", return_value=["Long Finish"]
+    ) as lin_finish, patch.object(
+        service, "finish_website_weldment", return_value=["Copy/Move kids", "Components"]
+    ) as weldment, patch.object(
+        service, "nest_after_finish", return_value=["Nest"]
+    ), patch.object(
+        service, "quick_add_cad"
+    ) as qadd, patch(
+        "secturafab.push.ensure_weld_ops",
+        return_value=["AddOperation op_weld CalcParamType=" + WELD_CALC_PARAM_TYPE],
+    ) as weld, patch(
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
+    ), patch(
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.push.refresh_bom_rows_for_push",
+        return_value=(_bom_rows(), []),
+    ), patch(
+        "secturafab.push.apply_quote_organization",
+        return_value=[f"Set Organization: {TIME_WACO_ORG_NAME} ({TIME_WACO_ORG_ID})"],
+    ), patch(
+        "secturafab.push.persist_classified_item_fields", return_value=[]
+    ), patch(
+        "secturafab.push.persist_quote_header", return_value=[]
+    ), patch(
+        "secturafab.push.retype_linears_to_pt10_keep_persist", return_value=[]
+    ), patch(
+        "secturafab.push.extract_assembly_description",
+        return_value="PEDESTAL WELDMENT",
+    ), patch(
+        "secturafab.push.ensure_laser_profile_ops"
+    ) as graft:
+        result = service.push_job(
+            title="1001898-1",
+            pdf_filename="1001898-1.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={
+                "library": {
+                    "part_key": "1001898-1",
+                    "folder": str(lib),
+                    "searched_roots": [str(lib.parent.parent)],
+                    "related_pdfs": [f"{pn}.pdf" for pn in ("14501-1",)],
+                },
+                "bom_config": "1",
+            },
+            times=times,
+            job_id=92,
+        )
+    assert result.ok is True
+    assert result.quote_id == new_id
+    assert result.quote_id not in FORBIDDEN_LIVE_QUOTE_IDS
+    create_q.assert_called_once()
+    pdf_finish.assert_called()
+    lin_finish.assert_called()
+    weldment.assert_called()
+    weld.assert_called()
+    qadd.assert_not_called()
+    graft.assert_not_called()
+    qa = evaluate_quote_get(
+        populated,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert qa.ok is True
+
+
+_RELOAD = ("app.paths", "app.db", "app.auth", "app.services")
+
+
+def _reload_app() -> None:
+    for name in _RELOAD:
+        if name in sys.modules:
+            importlib.reload(sys.modules[name])
+        else:
+            importlib.import_module(name)
+
+
+def test_app_process_job_then_push_uses_website_weldment(tmp_path: Path, monkeypatch):
+    """process_job / push_job_secturafab is the app drop/push link."""
+    data_dir = tmp_path / "kannon-data"
+    data_dir.mkdir()
+    previous = os.environ.get("KANNON_DATA_DIR")
+    monkeypatch.setenv("KANNON_DATA_DIR", str(data_dir))
+    _reload_app()
+    try:
+        from app.db import Job, SessionLocal, init_db
+        from app.services import process_job, push_job_secturafab
+        from quote_core.weld.takeoff import WeldLineItem, WeldTakeoffResult
+
+        init_db()
+        pdf = tmp_path / "1001898-1.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        lib = tmp_path / "Time" / "Pedestal Weldment - 1001898-1"
+        lib.mkdir(parents=True)
+        write_excel_absolute_target_xlsx(lib / "1001898-1-LOM.xlsx", _1001898_lom_rows())
+
+        db = SessionLocal()
+        job = Job(
+            title="1001898-1",
+            status="uploaded",
+            pdf_filename="1001898-1.pdf",
+            pdf_path=str(pdf),
+            bom_config="1",
+            efficiency_pct=85.0,
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+        db.close()
+
+        items = [
+            WeldLineItem(
+                size="1/4",
+                inches=308.66,
+                joint_notes="fillet symbols",
+                confidence="high",
+                source="symbols",
+            )
+        ]
+        takeoff = WeldTakeoffResult(
+            items=items,
+            flags=[],
+            fitup_drivers={
+                "part_count": 27,
+                "joint_count": 26,
+                "assembly_weight_lb": 400.0,
+                "component_weights_lb": [10.0] * 17,
+                "needs_info": False,
+            },
+        )
+        captured: dict = {}
+
+        def _fake_push(**kwargs):
+            captured.update(kwargs)
+            from secturafab.push import PushResult
+
+            return PushResult(
+                ok=True,
+                quote_id="11111111-aaaa-bbbb-cccc-000000000002",
+                quote_number="1001898-1",
+                created_new_quote=True,
+                item_count=18,
+                notes=[
+                    "Image Files Finish POST /Quote/AddItem_PDFFiles",
+                    "Long POST /Quote/AddItem_Linear",
+                    "Copy/Move kids into Assembly",
+                    f"AddOperation {WELD_OPERATION_CODE} CalcParamType={WELD_CALC_PARAM_TYPE}",
+                    f"Set Organization: {TIME_WACO_ORG_NAME} ({TIME_WACO_ORG_ID})",
+                ],
+                status="complete",
+            )
+
+        with patch(
+            "app.services.run_weld_takeoff", return_value=takeoff
+        ), patch(
+            "app.services.attach_library_stp",
+            return_value={
+                "folder": str(lib),
+                "part_key": "1001898-1",
+                "related_pdfs": [],
+                "notes": [],
+            },
+        ), patch(
+            "quote_core.lom_clip.ensure_lom_xlsx",
+            return_value=(lib / "1001898-1-LOM.xlsx", []),
+        ):
+            process_job(job_id)
+
+        db = SessionLocal()
+        job = db.get(Job, job_id)
+        assert job is not None
+        assert job.status in {"review", "needs_info"}
+        stored_times = job.times()
+        stored_takeoff = job.takeoff()
+        db.close()
+        assert stored_times.get("weld_minutes", 0) > 0
+        assert stored_takeoff.get("total_inches", 0) > 0
+
+        with patch("secturafab.push.SecturaFabPushService") as svc_cls:
+            inst = MagicMock()
+            inst.push_job.side_effect = lambda **kw: _fake_push(**kw)
+            svc_cls.return_value = inst
+            push_job_secturafab(job_id)
+            inst.push_job.assert_called_once()
+            kwargs = inst.push_job.call_args.kwargs
+            assert kwargs["title"] == "1001898-1"
+            assert kwargs["times"]["weld_minutes"] > 0
+            assert Path(kwargs["pdf_path"]).name == "1001898-1.pdf"
+            assert kwargs.get("stp_path") in (None, Path(""))
+
+        db = SessionLocal()
+        job = db.get(Job, job_id)
+        sf = (job.takeoff() or {}).get("secturafab") or {}
+        db.close()
+        assert sf.get("ok") is True
+        assert sf.get("quote_id") not in FORBIDDEN_LIVE_QUOTE_IDS
+        assert sf.get("quote_number") == "1001898-1"
+        blob = " ".join(sf.get("notes") or [])
+        assert "AddItem_PDFFiles" in blob or "Image Files" in blob
+        assert "AddItem_Linear" in blob or "Long" in blob
+        assert "AddOperation" in blob
+        assert "Time Manufacturing Waco" in blob
+    finally:
+        if previous is None:
+            os.environ.pop("KANNON_DATA_DIR", None)
+        else:
+            os.environ["KANNON_DATA_DIR"] = previous
+        _reload_app()
+
+
+def test_ensure_weld_ops_uses_add_operation_when_cookie():
+    from secturafab.weld_ops import ensure_weld_ops
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "asm-1",
+                "Description": "1001898-1 - PEDESTAL WELDMENT",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+            {
+                "ID": "cad-1",
+                "Description": "14501-1 PEDESTAL TOP PLATE",
+                "ProductType": 100,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+        ]
+    }
+    client.add_operation.return_value = {"ok": True}
+    notes = ensure_weld_ops(
+        client,
+        "new-qid",
+        times={
+            "weld_minutes": 154.33,
+            "total_inches": 308.66,
+            "fitup_with_fixture_minutes": 108.0,
+        },
+        part_key="1001898-1",
+    )
+    client.add_operation.assert_called_once()
+    kwargs = client.add_operation.call_args.kwargs
+    assert kwargs["item_id"] == "asm-1"
+    assert kwargs["weld_inches"] == pytest.approx(308.66)
+    assert any("AddOperation" in n and "op_weld" in n for n in notes)
+    client.request.assert_not_called()
+
+
+def test_cadimport_rows_are_not_success_without_product_type_100_read(tmp_path, monkeypatch):
+    """Cookie HTTP upload + empty #gridPDF is not success (live 103535-1)."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "14501-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = {
+        "bound": False,
+        "upload_via": "skipped",
+        "grid_pdf_row_count": 0,
+        "status_gt0_n": 0,
+        "finish_why": "empty_dataSource",
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000000010",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.1875",
+        qty=1,
+        description="14501-1 PEDESTAL TOP PLATE",
+    )
+    client.upload_item_dxf_files.assert_not_called()
+    client.upload_item_pdf_attachment.assert_not_called()
+    client.add_item_pdf_files.assert_not_called()
+    assert client.quote_item_read.called or client.get_json.called
+    blob = " ".join(notes)
+    assert "GET 0 Cad" in blob or "not bound" in blob
+    assert "persisted" not in blob.lower()
+    assert "cookie HTTP" in blob
+    assert "#gridPDF" in blob
+
+
+def test_linear_http_500_does_not_abort_weld_or_nest(tmp_path, monkeypatch):
+    """A Long AddItem_Linear HTTP 500 must not skip weld or nest."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "1001898-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    lib = tmp_path / "Customer Drawings" / "Time" / "Pedestal Weldment - 1001898-1"
+    lib.mkdir(parents=True)
+    write_excel_absolute_target_xlsx(lib / "1001898-1-LOM.xlsx", _1001898_lom_rows())
+    (lib / "14501-1.pdf").write_bytes(b"%PDF")
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    cad_item = {
+        "ID": "cad-1",
+        "Description": "14501-1 PEDESTAL TOP PLATE",
+        "ProductType": 100,
+        "Quantity": 1,
+        "BadgeString": "PR",
+        "UnitCost": 12.5,
+        "OperationCostList": [
+            {"OperationName": "Profile", "CalculatorName": "Laser"},
+            {"OperationName": "Profile", "CalculatorName": "Drafting"},
+            {"OperationName": "Profile", "CalculatorName": "Deburr"},
+            {"OperationName": "Profile", "CalculatorName": "Laser-Setup"},
+            {"OperationName": "Profile", "CalculatorName": "Sheet Loading"},
+        ],
+    }
+    client.get_json.return_value = {
+        "QuoteNumber": "1004747-1",
+        "ItemCount": 1,
+        "ItemList": [cad_item],
+    }
+    client.quote_item_read.return_value = {"Data": [cad_item], "Total": 1}
+    save = MagicMock()
+    save.status_code = 200
+    client.request.return_value = save
+    service = SecturaFabPushService(client=client)
+    new_id = "11111111-aaaa-bbbb-cccc-000000000011"
+    assert new_id not in FORBIDDEN_LIVE_QUOTE_IDS
+    linear_err = SecturaFabApiError(
+        "API request failed (500) for /Quote/AddItem_Linear",
+        status_code=500,
+        body="error",
+    )
+    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "create_quote", return_value=new_id
+    ), patch.object(
+        service, "allocate_quote_number", return_value="1004747-1"
+    ), patch.object(
+        service, "finish_pdf_files", return_value=["Image Files Finish"]
+    ), patch.object(
+        service, "finish_linear_bom_rows", side_effect=linear_err
+    ) as lin, patch.object(
+        service, "finish_website_weldment", return_value=["Copy/Move kids"]
+    ) as weldment, patch.object(
+        service, "nest_after_finish", return_value=["Nest"]
+    ) as nest, patch.object(
+        service, "quick_add_cad"
+    ) as qadd, patch(
+        "secturafab.push.ensure_weld_ops",
+        return_value=["AddOperation op_weld"],
+    ) as weld, patch(
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
+    ), patch(
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.push.refresh_bom_rows_for_push",
+        return_value=(_bom_rows(), []),
+    ), patch(
+        "secturafab.push.apply_quote_organization",
+        return_value=[f"Set Organization: {TIME_WACO_ORG_NAME}"],
+    ), patch(
+        "secturafab.push.persist_classified_item_fields", return_value=[]
+    ), patch(
+        "secturafab.push.persist_quote_header", return_value=[]
+    ), patch(
+        "secturafab.push.retype_linears_to_pt10_keep_persist", return_value=[]
+    ), patch(
+        "secturafab.push.extract_assembly_description",
+        return_value="OUTER BOOM WELDMENT",
+    ), patch(
+        "secturafab.push.ensure_laser_profile_ops"
+    ) as graft:
+        result = service.push_job(
+            title="1004747-1",
+            pdf_filename="1004747-1.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={
+                "library": {
+                    "part_key": "1004747-1",
+                    "folder": str(lib),
+                    "searched_roots": [str(lib.parent.parent)],
+                    "related_pdfs": ["14501-1.pdf"],
+                },
+                "bom_config": "1",
+            },
+            times={
+                "weld_minutes": 154.33,
+                "total_inches": 308.66,
+                "fitup_with_fixture_minutes": 108.0,
+            },
+            job_id=93,
+        )
+    lin.assert_called()
+    nest.assert_called()
+    weld.assert_called()
+    weldment.assert_called()
+    qadd.assert_not_called()
+    graft.assert_not_called()
+    blob = " ".join(result.notes or []) + " " + (result.error or "")
+    assert "not aborting weld/nest" in blob
+    assert result.quote_id == new_id
+    assert result.quote_id not in FORBIDDEN_LIVE_QUOTE_IDS
+
+
+def test_finish_linear_bom_rows_500_is_warning_not_raise(monkeypatch):
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.add_item_linear.side_effect = SecturaFabApiError(
+        "API request failed (500) for /Quote/AddItem_Linear",
+        status_code=500,
+        body="error",
+    )
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    svc = SecturaFabPushService(client=client)
+    product = {
+        "ID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "ProductName": "L1/2X1/2X1/8-A36",
+        "ProductSubType": "bar",
+        "Dim1": 0.5,
+        "Dim2": 0.5,
+        "Dim3": 0.125,
+        "WeightLength": 0.38,
+    }
+    bind = {
+        "productID": product["ID"],
+        "productConfigID": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "productSubType": "bar",
+        "dim1": 0.5,
+        "dim2": 0.5,
+        "dim3": 0.125,
+        "dim4": 0,
+        "weightLength": 0.38,
+        "sku": "L1/2X1/2X1/8-A36",
+    }
+    with patch.object(
+        svc, "_match_linear_product", return_value=(product, "L1/2X1/2X1/8-A36", None)
+    ), patch.object(svc, "_linear_catalog_bind", return_value=bind):
+        notes = svc.finish_linear_bom_rows(
+            quote_id="11111111-aaaa-bbbb-cccc-000000000012",
+            linear_rows=[
+                {
+                    "part_no": "21689-1",
+                    "description": "HOSE GUARD",
+                    "qty": 1,
+                    "cut_length_in": 12.5,
+                }
+            ],
+            material="A36",
+            library={},
+            extra_pdfs=[],
+        )
+    blob = " ".join(notes)
+    assert "500" in blob or "continuing" in blob
+    assert "not aborting weld/nest" in blob
+    extra = client.add_item_linear.call_args.kwargs.get("extra") or {}
+    assert extra.get("productConfigID") != EMPTY_GUID
+    assert extra.get("productSubType")
+    assert extra.get("weightLength") not in (None, "")
+
+
+def test_finish_linear_cookie_302_is_not_logout(monkeypatch):
+    """Cookie GetItem_AddView 302 is not logout — continue in-page Long."""
+    from tests.fixtures.live_gold_linear_pack import gold_linear_list0_pack_result
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=stale")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=stale"
+    client.get_item_add_view.side_effect = SecturaFabWebsiteAuthError(
+        f"{WEBSITE_SESSION_EXPIRED} — GetItem_AddView 302"
+    )
+    gold = gold_linear_list0_pack_result()
+    client.add_item_linear.return_value = gold
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    svc = SecturaFabPushService(client=client)
+    product = {
+        "ID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "ProductName": "RT4X0.375-A519",
+    }
+    with patch.object(
+        svc, "_match_linear_product", return_value=(product, "RT4X0.375-A519", None)
+    ), patch.object(svc, "_linear_catalog_bind", return_value={"sku": "RT4X0.375-A519"}):
+        notes = svc.finish_linear_bom_rows(
+            quote_id="qid",
+            linear_rows=[
+                {
+                    "part_no": "1001880-2",
+                    "description": "TUBE",
+                    "qty": 1,
+                    "cut_length_in": 16.0,
+                }
+            ],
+            material="A519",
+            library={},
+            extra_pdfs=[],
+        )
+    blob = " ".join(notes)
+    assert "cookie 302 is not logout" in blob
+    assert "29340-1" in blob
+    client.add_item_linear.assert_called_once()
+    assert "list0_pack.ocl_names=Saw,Saw-Setup" in blob
+    assert "list0_pack Saw + Saw-Setup" in blob
+
+
+def test_finish_linear_without_page_long_click_is_fail(monkeypatch):
+    """No orange Long click → do not treat cookie HTTP as success."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.add_item_linear.return_value = {
+        "ok": False,
+        "via": "skipped",
+        "finish_fn": "",
+        "long_from_page": False,
+        "long_clicked": False,
+        "finish_why": "no_long_click",
+        "response_ocl_names": [],
+        "response_ocl_n": 0,
+        "response_unit_cost": 0,
+        "response_product_id": "",
+        "response_sku": "",
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    svc = SecturaFabPushService(client=client)
+    product = {
+        "ID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "ProductName": "RT4X0.375-A519",
+    }
+    with patch.object(
+        svc, "_match_linear_product", return_value=(product, "RT4X0.375-A519", None)
+    ), patch.object(svc, "_linear_catalog_bind", return_value={"sku": "RT4X0.375-A519"}):
+        notes = svc.finish_linear_bom_rows(
+            quote_id="qid",
+            linear_rows=[
+                {
+                    "part_no": "1001880-2",
+                    "description": "TUBE",
+                    "qty": 1,
+                    "cut_length_in": 16.0,
+                }
+            ],
+            material="A519",
+            library={},
+            extra_pdfs=[],
+        )
+    blob = " ".join(notes)
+    assert "no_long_click" in blob or "without page Long click" in blob
+    assert "fail-closed" in blob
+    assert "list0_pack Saw + Saw-Setup + UnitCost filled" not in blob
+
+
+def test_finish_linear_sku_missing_is_named_and_does_not_graft(monkeypatch):
+    """True catalog miss / fitting stays sku_missing — no silent SKU graft."""
+    from secturafab.website import LINEAR_SKU_MISSING
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    svc = SecturaFabPushService(client=client)
+    with patch.object(
+        svc,
+        "_match_linear_product",
+        return_value=(None, None, f"{LINEAR_SKU_MISSING} no tenant SKU"),
+    ):
+        notes = svc.finish_linear_bom_rows(
+            quote_id="qid",
+            linear_rows=[
+                {
+                    "part_no": "1007038-1",
+                    "description": "2.5×5×0.25 A500B",
+                    "qty": 1,
+                    "cut_length_in": 18.0,
+                }
+            ],
+            material="A500B",
+            library={},
+            extra_pdfs=[],
+        )
+    blob = " ".join(notes)
+    assert LINEAR_SKU_MISSING in blob
+    assert "no silent SKU graft" in blob
+    client.add_item_linear.assert_not_called()
+
+    fitting_notes = svc.finish_linear_bom_rows(
+        quote_id="qid",
+        linear_rows=[
+            {
+                "part_no": "50122-1",
+                "description": "2.5 NPT PIPE CAP",
+                "qty": 1,
+                "cut_length_in": 2.0,
+            }
+        ],
+        material="A36",
+        library={},
+        extra_pdfs=[],
+    )
+    fit_blob = " ".join(fitting_notes)
+    assert LINEAR_SKU_MISSING in fit_blob
+    assert "fitting" in fit_blob.lower()
+    client.add_item_linear.assert_not_called()
+
+
+def test_add_loose_linears_sku_missing_does_not_raise(monkeypatch):
+    from secturafab.website import LINEAR_SKU_MISSING
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    svc = SecturaFabPushService(client=client)
+    with patch.object(
+        svc, "_match_linear_sku", return_value=(None, None, f"{LINEAR_SKU_MISSING} miss")
+    ), patch.object(
+        svc, "_match_linear_product", return_value=(None, None, f"{LINEAR_SKU_MISSING} miss")
+    ):
+        notes = svc.add_loose_linears(
+            quote_id="qid",
+            description="1007038-1 2.5×5×0.25 A500B",
+            material="A500B",
+            qty=1,
+            length=18.0,
+        )
+    blob = " ".join(notes)
+    assert LINEAR_SKU_MISSING in blob
+    client.add_item_linear.assert_not_called()
+
+
+def test_linear_without_catalog_config_still_inpage_with_sku(monkeypatch):
+    """In-page Long searches tenant SKU text; productConfigID is page-filled."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    client.add_item_linear.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddLinearClick",
+        "long_from_page": True,
+        "long_clicked": True,
+        "response_ocl_names": ["Saw", "Saw-Setup"],
+        "response_ocl_n": 2,
+        "response_unit_cost": 7.63,
+        "response_product_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "response_sku": "C3X4.1-A36",
+    }
+    svc = SecturaFabPushService(client=client)
+    product = {"ID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "ProductName": "C3X4.1-A36"}
+    with patch.object(
+        svc, "_match_linear_product", return_value=(product, "C3X4.1-A36", None)
+    ), patch.object(svc, "_linear_catalog_bind", return_value=None):
+        notes = svc.finish_linear_bom_rows(
+            quote_id="11111111-aaaa-bbbb-cccc-000000000013",
+            linear_rows=[
+                {
+                    "part_no": "1004740-1",
+                    "description": "MASTER CYLINDER MOUNT CHANNEL",
+                    "qty": 1,
+                    "cut_length_in": 12.5,
+                }
+            ],
+            material="A36",
+            library={},
+            extra_pdfs=[],
+        )
+    client.add_item_linear.assert_called_once()
+    extra = client.add_item_linear.call_args.kwargs.get("extra") or {}
+    assert extra.get("sku") == "C3X4.1-A36"
+    blob = " ".join(notes)
+    assert "OnAddLinearClick" in blob
+    assert "list0_pack.ocl_names=Saw,Saw-Setup" in blob
+
+
+def test_additem_pdf_uses_takeoff_flats_when_lock_missing(tmp_path, monkeypatch):
+    """AddItem_PDFFiles must not skip solely because locked_cad_spec has no PN."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pn = "1004738-1"
+    assert locked_cad_spec(pn) is None
+    w, length = resolve_cad_plate_flats(
+        pn,
+        bom_row={
+            "part_no": pn,
+            "description": "TOP STIFFENER, OUTER BOOM",
+            "width_in": 18.5,
+            "length_in": 6.25,
+        },
+        takeoff={"items": [{"part_no": pn, "blank": [18.5, 6.25]}]},
+        locked=locked_cad_spec(pn),
+    )
+    assert w == 18.5
+    assert length == 6.25
+    pdf = tmp_path / f"{pn}.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+    }
+    gold_cad = {
+        "ID": "cad-1",
+        "Description": pn,
+        "ProductType": 100,
+        "BadgeString": "PR",
+        "UnitCost": 12.5,
+        "OperationCostList": [
+            {"OperationName": "Profile", "CalculatorName": "Laser"},
+            {"OperationName": "Profile", "CalculatorName": "Deburr"},
+            {"OperationName": "Profile", "CalculatorName": "Laser-Setup"},
+            {"OperationName": "Profile", "CalculatorName": "Sheet Loading"},
+        ],
+    }
+    client.quote_item_read.return_value = {"Data": [gold_cad], "Total": 1}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000000020",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="TOP STIFFENER, OUTER BOOM",
+        bom_rows=[
+            {
+                "part_no": pn,
+                "qty": 1,
+                "description": "TOP STIFFENER, OUTER BOOM",
+                "width_in": 18.5,
+                "length_in": 6.25,
+            }
+        ],
+        takeoff={"items": [{"part_no": pn, "blank": [18.5, 6.25]}]},
+    )
+    client.upload_item_pdf_attachment.assert_not_called()
+    client.upload_pdf_via_page_add_files.assert_called_once()
+    client.add_item_pdf_files.assert_called()
+    assert client.add_item_pdf_files.call_args.kwargs.get("file_list") == []
+    stamp = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
+    assert float(stamp["Width"]) == 18.5
+    assert float(stamp["Length"]) == 6.25
+    assert float(stamp["Thickness"]) > 0
+    assert stamp["ItemType"] == "cad"
+    assert "persisted" in " ".join(notes).lower()
+
+
+def test_finish_pdf_files_cookie_302_is_not_logout(tmp_path, monkeypatch):
+    """Cookie GetItem_AddView 302 is not logout — continue in-page #files."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=stale")
+    pdf = tmp_path / "1001913.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=stale"
+    client.get_item_add_view.side_effect = SecturaFabWebsiteAuthError(
+        f"{WEBSITE_SESSION_EXPIRED} — GetItem_AddView 302"
+    )
+    client.upload_pdf_via_page_add_files.return_value = {
+        "upload_via": "cookie_http",
+        "bound": False,
+        "files_kendo": False,
+        "grid_pdf_row_count": 0,
+        "finish_why": "empty_dataSource",
+    }
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="qid",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE",
+    )
+    blob = " ".join(notes)
+    assert "cookie 302 is not logout" in blob
+    assert "29340-1" in blob
+    client.add_item_pdf_files.assert_not_called()
+
+
+def test_cookie_addview_302_does_not_block_inpage_mint_when_chrome_signed_in():
+    """Live 34603-2: cookie 302 after refresh is not a mint gate."""
+    from secturafab.website import cookie_http_additem_pdffiles_is_not_success
+
+    class _ProbeClient:
+        def probe_addview_session(self):
+            return {
+                "ok": False,
+                "still_302": True,
+                "refreshed": True,
+                "status_code": 302,
+                "path": "/Quote/GetItem_AddView",
+            }
+
+    service = SecturaFabPushService(client=_ProbeClient())
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_list_signed_in", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.chrome_edit_signed_in", return_value=True
+    ), patch(
+        "secturafab.chrome_cdp.chrome_login_page", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.quotes_list_session_fetch",
+        return_value={"status": 200, "url": "https://www.secturafab.com/Quote", "login": False},
+    ):
+        ok, notes = service.preflight_website_addview_session()
+    assert ok is True
+    blob = " ".join(notes)
+    assert "chrome_edit_signed_in=true" in blob
+    assert "quotes_fetch_200=true" in blob
+    assert "cookie HTTP fail-closed" in blob
+    assert "in-page mint proceeds" in blob
+    assert "not minting" not in blob
+    assert cookie_http_additem_pdffiles_is_not_success(
+        {"via": "cookie_http", "ok": True}
+    )
+
+
+def test_stale_cookie_file_does_not_block_mint_when_quotes_list_signed_in():
+    """Live Quotes list footer amtech: cookie-file 302 is not logout."""
+
+    class _ProbeClient:
+        def harvest_chrome_antiforgery(self):
+            return "chrome_dom"
+
+        def probe_addview_session(self):
+            return {
+                "ok": False,
+                "still_302": True,
+                "refreshed": True,
+                "status_code": 302,
+                "path": "/Quote/GetItem_AddView",
+            }
+
+    service = SecturaFabPushService(client=_ProbeClient())
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_list_signed_in", return_value=True
+    ), patch(
+        "secturafab.chrome_cdp.chrome_edit_signed_in", return_value=True
+    ), patch(
+        "secturafab.chrome_cdp.chrome_login_page", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.quotes_list_session_fetch",
+        return_value={
+            "status": 302,
+            "url": "https://www.secturafab.com/Account/Login",
+            "login": True,
+            "via": "chrome_dom_fetch",
+        },
+    ):
+        ok, notes = service.preflight_website_addview_session()
+    assert ok is True
+    blob = " ".join(notes)
+    assert "chrome_quotes_list_signed_in=true" in blob
+    assert "chrome_cookie_refresh_from_quotes_list=true" in blob
+    assert "quotes_fetch_200=false" in blob
+    assert "cookie HTTP fail-closed" in blob
+    assert "in-page mint proceeds" in blob
+    assert "leftover EDIT" not in blob
+    assert "not minting" not in blob
+
+
+def test_cookie_file_only_302_without_quotes_list_does_not_mint():
+    """Stale cookie file alone is not a mint session."""
+
+    class _ProbeClient:
+        def probe_addview_session(self):
+            return {
+                "ok": False,
+                "still_302": True,
+                "refreshed": True,
+                "status_code": 302,
+            }
+
+    service = SecturaFabPushService(client=_ProbeClient())
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_list_signed_in", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.chrome_edit_signed_in", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.chrome_login_page", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.quotes_list_session_fetch",
+        return_value={"status": 0, "url": "", "login": False, "via": "missing_tab"},
+    ):
+        ok, notes = service.preflight_website_addview_session()
+    assert ok is False
+    blob = " ".join(notes)
+    assert "chrome_quotes_list_signed_in=false" in blob
+    assert "not minting" in blob
+
+
+def test_leftover_edit_amtech_footer_dead_cookie_does_not_mint():
+    """P904272-1: leftover EDIT amtech footer + dead AspNet — Quotes fetch not 200."""
+    from tests.fixtures.live_p904272_1 import (
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        live_p904272_1_session_dump,
+    )
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import live_quotes_fetch_ok
+
+    dump = live_p904272_1_session_dump()
+    assert dump["quote_number"] == SPENT_QUOTE_NUMBER == "P904272-1"
+    assert dump["quote_id_prefix"] == SPENT_QUOTE_ID_PREFIX == "30f50f96"
+    assert dump["edit_footer_amtech"] is True
+    assert dump["aspnet_cookie_live"] is False
+    assert dump["quotes_fetch_200"] is False
+    assert dump["classify_ran"] is False
+    assert live_quotes_fetch_ok(
+        {"status": 200, "url": "https://www.secturafab.com/Quote", "login": False}
+    )
+    assert live_quotes_fetch_ok({"status": 302, "url": "/Account/Login", "login": True}) is False
+    assert live_quotes_fetch_ok({"status": 200, "url": "/Account/Login", "login": True}) is False
+    assert live_quotes_fetch_ok({"status": 0, "via": "missing_tab"}) is False
+    assert is_forbidden_quote_number("P904272-1")
+    assert is_forbidden_quote_id("30f50f96-aaaa-bbbb-cccc-000000000001")
+    assert spent_quote_number_block_reason("P904272-1")
+
+    class _ProbeClient:
+        def probe_addview_session(self):
+            return {
+                "ok": False,
+                "still_302": True,
+                "refreshed": True,
+                "status_code": 302,
+            }
+
+    service = SecturaFabPushService(client=_ProbeClient())
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_list_signed_in", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.chrome_edit_signed_in", return_value=True
+    ), patch(
+        "secturafab.chrome_cdp.chrome_login_page", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.quotes_list_session_fetch",
+        return_value={
+            "status": 302,
+            "url": "https://www.secturafab.com/Account/Login",
+            "login": True,
+            "via": "chrome_dom_fetch",
+        },
+    ):
+        ok, notes = service.preflight_website_addview_session()
+    assert ok is False
+    blob = " ".join(notes)
+    assert "chrome_quotes_list_signed_in=false" in blob
+    assert "chrome_edit_signed_in=true" in blob
+    assert "quotes_fetch_200=false" in blob
+    assert "quotes_fetch_status=302" in blob
+    assert "P904272-1" in blob
+    assert "not minting" in blob or "not a live session" in blob
+
+
+def test_chrome_login_page_aborts_mint():
+    """Chrome Login (no signed-in EDIT) still aborts — do not ask Kyle to sign in."""
+
+    class _ProbeClient:
+        def probe_addview_session(self):
+            return {
+                "ok": False,
+                "still_302": True,
+                "refreshed": True,
+                "status_code": 302,
+            }
+
+    service = SecturaFabPushService(client=_ProbeClient())
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_list_signed_in", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.chrome_edit_signed_in", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.chrome_login_page", return_value=True
+    ):
+        ok, notes = service.preflight_website_addview_session()
+    assert ok is False
+    blob = " ".join(notes)
+    assert "Chrome Login page — not minting" in blob
+    assert "sign in" not in blob.lower()
+    assert "Kyle" not in blob
+
+
+def test_step_preflight_session_lost_does_not_mint():
+    """Mint navigate wiped AspNet (tabs → Login). Fail-close; do not stomp Edit."""
+    from secturafab.forbidden_quotes import spent_quote_number_block_reason
+
+    client = MagicMock()
+    client._af_source = "chrome_dom"
+    service = SecturaFabPushService(client=client)
+    with patch("secturafab.chrome_cdp.chrome_session_lost", return_value=True):
+        notes = service.preflight_step_antiforgery()
+    blob = " ".join(notes)
+    assert "session lost" in blob
+    assert "not minting STEP" in blob
+    assert "not navigating Edit tabs" in blob
+    assert spent_quote_number_block_reason("21785-1")
+    assert spent_quote_number_block_reason("21785-3")
+    assert spent_quote_number_block_reason("21785-2")
+    assert spent_quote_number_block_reason("P904272-1")
+    client.ensure_quote_antiforgery.assert_not_called()
+
+
+def test_step_preflight_leftover_edit_dead_quotes_fetch_does_not_mint():
+    """P904272-1: leftover EDIT tab + Quotes fetch not 200 — do not mint STEP."""
+    leftover = {
+        "type": "page",
+        "title": "*Quote-P904272-1",
+        "url": (
+            "https://www.secturafab.com/Quote/EDIT/"
+            "30f50f96-aaaa-bbbb-cccc-000000000001"
+        ),
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+    }
+    client = MagicMock()
+    client._af_source = "chrome_dom"
+    service = SecturaFabPushService(client=client)
+    with patch("secturafab.chrome_cdp.quotes_tab", return_value=leftover), patch(
+        "secturafab.chrome_cdp.chrome_login_page", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.quotes_list_session_fetch",
+        return_value={
+            "status": 302,
+            "url": "https://www.secturafab.com/Account/Login",
+            "login": True,
+            "via": "chrome_dom_fetch",
+        },
+    ):
+        notes = service.preflight_step_antiforgery()
+    blob = " ".join(notes)
+    assert "quotes_fetch_status=302" in blob
+    assert "quotes_fetch_200=false" in blob
+    assert "session lost" in blob
+    assert "not minting STEP" in blob
+    client.ensure_quote_antiforgery.assert_not_called()
+
+
+def test_forbidden_includes_empty_1004747_draft():
+    assert "5e111cd2-73d1-44e1-9602-f2a4a3de2fb4" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "936b5c6c-2fc5-4b28-a8f6-015db289cb4f" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "9354f680-ef91-47d9-af42-8dd65b75473f" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "f61c033a-48f2-4b11-9a10-96bc5c70716c" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "a522d863-1805-4206-85d1-36841dd107d2" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "7a555ac2-2a77-4bd9-a936-bf8a64eb60e7" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "8f87fbae-d2ef-40ee-abd4-47a8755ce19f" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "804172ea-f507-42fe-87ae-1b91d2cc0d29" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "f703b928-3475-45c2-ade5-fcce97e1709e" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "12239b72-c82c-4493-b226-c51a98eb4fb5" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "593d9450-530f-4ade-a137-9d195714ac73" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "b8be3545-1628-4176-b93a-804ad5575bc3" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "0e892c8f-93ee-49fa-90c9-3bb4bbf91c22" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "ed8cfcda-68e4-4655-a240-79cce4280d7e" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "ba7730a0-0848-42d2-8579-dc18f86ec27f" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "30940f1d-d262-4562-bfd3-1b17575dc83c" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "9a2bc798-f192-4e4c-9b12-78098305f7cc" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "aab44741-1213-470c-b941-d44ccf1068ea" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "069da4fe-5818-4125-983a-197bd4188ed1" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "a6ef6891-e080-45de-b57c-1a55fee00c19" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "997f1eb7-3eb0-4a76-83f9-4c3439e929b7" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "66a0271f-f2f7-42c1-ac01-cd879f1bfa22" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "75b3a938-ff89-4525-80d9-c6000d055a48" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "e2cc0a7d-90fa-4629-b48f-db1e8163557b" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "e2305b3c-7316-4a96-8c94-7685fca2be54" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "80eb38af-3721-4049-a0d5-e4026d293a0c" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "31204345-6c91-4122-a859-09f7d7a3ea9f" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "a9497a26-cba8-4ec9-a849-cb8bef81cbcc" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "a8e1b40e-54c2-4515-9f36-67843a1e5286" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "8de920f0-ea17-442d-898e-9a04367d91de" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "d59318c8-9c39-43a2-aef6-cbd28203ee82" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "aab5b3e2-8771-47a2-b625-a3f379c5b0c2" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "6a568912-5b19-4bfd-9e11-d06d7c149746" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "b8a62e76-6439-46d3-b32e-d48de29f389d" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "0d4b8a46-cc66-4586-baed-4cad20a07ddb" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "5b622a0d-4dab-4099-97e4-d0184df4b770" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "491f6387-520f-4eee-aab3-6d20585ee740" in FORBIDDEN_LIVE_QUOTE_IDS
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+    )
+
+    assert "34887-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "34639-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "11791-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "10072-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "34137-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "34137-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "34632-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "106386-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "106687-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "106384-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "105918-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "28110-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "107877-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1020249-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "5003313-001" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "P001545" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "BB2000-ASM" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "EHB3112" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "EHB3112-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "11796-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "11796-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "107292-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "16629-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "10098-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "SC0600" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "FA Assembly" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Skin Assembly" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1001898-5" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1001898-4" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1008763-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1020243-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "33209-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21846-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "20860-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1002013-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "25587" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "25587-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21625-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "15046-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "10081-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21667-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21666-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21674-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21671-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21675-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1007510-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1010110-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1004711-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "25009-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "25009-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1010106-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1010111-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21785-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21785-3" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21785-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "35145-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10243" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "P904272-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "P904271-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "10289-4" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "28768-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "28769-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "35136-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "14327-5" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "14327-8" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10329" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "14327-3" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10330" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21841-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10331" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "14327-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10332" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "ZZ-DEL-wrong-org-Time" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10333" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "H638-CADPLATE" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "ZZ-DEL-H638-CADPLATE" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10334" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "ZZ-DEL-Q10334" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("28708035-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("c146ce6d-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
+    assert is_forbidden_quote_id("8973f890-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("c5cd8689-fed4-44d6-b2f5-f96bda8af424")
+    assert is_forbidden_quote_id("c5cd8689-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("1cd941c6-9167-41e9-ac93-b7268f18f282")
+    assert is_forbidden_quote_id("1cd941c6-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("75f07c2b-b000-47f4-9caa-c14520e2b068")
+    assert is_forbidden_quote_id("75f07c2b-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("aed89628-b018-4b11-852f-bfed5bf8b964")
+    assert is_forbidden_quote_id("aed89628-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("5e72fe39-edc1-467c-925d-f1c8d74cc5d3")
+    assert is_forbidden_quote_id("5e72fe39-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("b5f56ac3-326d-48e9-b82d-1e09a7897107")
+    assert is_forbidden_quote_id("b5f56ac3-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
+    assert is_forbidden_quote_id("5e7bfc0b-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
+    assert is_forbidden_quote_id("e2683a3f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("30f50f96-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("0837ad33-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("1004f017-1111-2222-3333-444444444444")
+    assert "1001898-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "103535-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1007756-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10095" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "34137-4" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1007922-3" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "29743-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1007471-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "34602-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "34603-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1002323-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "33819-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21681-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1007092-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "33204-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1009213-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "29340-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21678-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10056" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "491f6387-520f-4eee-aab3-6d20585ee740" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "bd5c2e3e-948d-463d-8844-4366910bb5ec" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "d2f7b031-a5a8-4020-a6a3-dba8de964ebf" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "b2e12461-442b-436e-9445-772e992644f6" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "47c393f8-db59-4b9a-a243-48d572011f77" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "646a3d98-cd73-4f94-be67-6e40eeb2c309" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "8930f65a-c1e3-44b0-8024-9075b2a5ab80" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "e57633b6-7bfc-4235-80de-a0e3be6cc5cc" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "8fb3da71-1948-4da2-a70f-8ef06b78cf32" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "a7d6ca50-efec-409d-bd32-e68012e710c3" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "a7dc46bf-836a-4250-b038-9331cc0595a7" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "6bfde652-b65a-41b7-840c-af8f088097d4" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "87e64b3a-210e-42d9-bfae-1921b1540f16" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "5804a001-68ef-4eab-a587-ba2d73718924" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "3f3802da-bc11-4a71-83a0-62454b33f69c" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "8e5f04fa-661c-4624-8047-8d3c8c6b359d" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "3aae24a8-d619-4906-ab00-6db4d7950d0e" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "2a07e6d0-cb9d-42f6-959f-5f33ea9fb381" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "aa55937d-45af-4559-9542-843a144e9865" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "84234fb5-42cb-49a4-b701-931e834c4ca8" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "4216109a-4603-45ed-a83d-6c2f071a8c6c" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "8a66e074-1c50-4671-82ff-d2d2d8e82082" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "c71d2096-1cbd-40c8-877e-97f4c86df410" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "30550221-733a-4baf-866a-73396a0d799b" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "7f768328-1a9a-4498-af74-f2aa78b930ef" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "3ff05f3a-79a3-48f7-add1-0ea8bbf9d884" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "b15a892e-aca3-47aa-8272-3e436e980468" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "fb3080d8-ad8d-4e8b-9902-c5e155ab6dc1" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "5c245fbb-04aa-4746-9845-4dc59aa2d9fe" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "cf656d2a-a432-46c4-9ad2-439807194442" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "50c6d543-05e4-4b76-a507-4b6b7a19d6b4" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "aae055fe-46c7-4fc7-bc12-f10d4de30f54" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "46eed794-257d-4987-ae48-98c7d6c7dd07" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "f300ecea-ccf3-4c5e-adaf-db73bdfb80fb" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "5dc50b55-f546-449f-9f23-7f7ddf67772b" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "8973f890-b2a1-48fb-b6be-3530caeb1819" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "c5cd8689-fed4-44d6-b2f5-f96bda8af424" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "1cd941c6-9167-41e9-ac93-b7268f18f282" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "75f07c2b-b000-47f4-9caa-c14520e2b068" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "aed89628-b018-4b11-852f-bfed5bf8b964" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "5e72fe39-edc1-467c-925d-f1c8d74cc5d3" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "b5f56ac3-326d-48e9-b82d-1e09a7897107" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "5e7bfc0b-ecf9-46cf-8851-d61062141ce7" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "e2683a3f-daf5-49ff-83c1-79aed35207a1" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "14219adc-f7f5-401a-b707-0bf200ef8c74" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "34603-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "9be15b62-a824-442c-b911-50ca1016cc5e" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "21682-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "c23fba3d-ef02-412b-b06e-f91ffa9076a6" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "29341-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "33819-2" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("b1036d7d-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("14219adc-f7f5-401a-b707-0bf200ef8c74")
+    assert is_forbidden_quote_id("14219adc-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("9be15b62-a824-442c-b911-50ca1016cc5e")
+    assert is_forbidden_quote_id("9be15b62-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("c23fba3d-ef02-412b-b06e-f91ffa9076a6")
+    assert is_forbidden_quote_id("c23fba3d-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("3e222215-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("f4d94abd-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("b187c0c1-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("c49cebf0-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("97ae3e4f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("3ac04f8a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("6d4373bc-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("d2ec4357-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("bf4221e8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("ad1777be-1951-42b6-9be4-d97c3a42dd94")
+    assert is_forbidden_quote_id("ad1777be-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("7a631c5f-39ca-40fc-b733-88b2b2d04636")
+    assert is_forbidden_quote_id("7a631c5f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("6bfde652-b65a-41b7-840c-af8f088097d4")
+    assert is_forbidden_quote_id("6bfde652-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("87e64b3a-210e-42d9-bfae-1921b1540f16")
+    assert is_forbidden_quote_id("87e64b3a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("5804a001-68ef-4eab-a587-ba2d73718924")
+    assert is_forbidden_quote_id("5804a001-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("3f3802da-bc11-4a71-83a0-62454b33f69c")
+    assert is_forbidden_quote_id("3f3802da-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("8e5f04fa-661c-4624-8047-8d3c8c6b359d")
+    assert is_forbidden_quote_id("8e5f04fa-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("3aae24a8-d619-4906-ab00-6db4d7950d0e")
+    assert is_forbidden_quote_id("3aae24a8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("2a07e6d0-cb9d-42f6-959f-5f33ea9fb381")
+    assert is_forbidden_quote_id("2a07e6d0-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("aa55937d-45af-4559-9542-843a144e9865")
+    assert is_forbidden_quote_id("aa55937d-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("84234fb5-42cb-49a4-b701-931e834c4ca8")
+    assert is_forbidden_quote_id("84234fb5-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("4216109a-4603-45ed-a83d-6c2f071a8c6c")
+    assert is_forbidden_quote_id("4216109a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("8a66e074-1c50-4671-82ff-d2d2d8e82082")
+    assert is_forbidden_quote_id("8a66e074-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("c71d2096-1cbd-40c8-877e-97f4c86df410")
+    assert is_forbidden_quote_id("c71d2096-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("30550221-733a-4baf-866a-73396a0d799b")
+    assert is_forbidden_quote_id("30550221-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("7f768328-1a9a-4498-af74-f2aa78b930ef")
+    assert is_forbidden_quote_id("7f768328-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("3ff05f3a-79a3-48f7-add1-0ea8bbf9d884")
+    assert is_forbidden_quote_id("3ff05f3a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("b15a892e-aca3-47aa-8272-3e436e980468")
+    assert is_forbidden_quote_id("b15a892e-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("fb3080d8-ad8d-4e8b-9902-c5e155ab6dc1")
+    assert is_forbidden_quote_id("fb3080d8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("5c245fbb-04aa-4746-9845-4dc59aa2d9fe")
+    assert is_forbidden_quote_id("5c245fbb-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("cf656d2a-a432-46c4-9ad2-439807194442")
+    assert is_forbidden_quote_id("cf656d2a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("50c6d543-05e4-4b76-a507-4b6b7a19d6b4")
+    assert is_forbidden_quote_id("50c6d543-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("aae055fe-46c7-4fc7-bc12-f10d4de30f54")
+    assert is_forbidden_quote_id("aae055fe-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("46eed794-257d-4987-ae48-98c7d6c7dd07")
+    assert is_forbidden_quote_id("46eed794-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("f300ecea-ccf3-4c5e-adaf-db73bdfb80fb")
+    assert is_forbidden_quote_id("f300ecea-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("5dc50b55-f546-449f-9f23-7f7ddf67772b")
+    assert is_forbidden_quote_id("5dc50b55-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
+    assert is_forbidden_quote_id("8973f890-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("c5cd8689-fed4-44d6-b2f5-f96bda8af424")
+    assert is_forbidden_quote_id("c5cd8689-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("1cd941c6-9167-41e9-ac93-b7268f18f282")
+    assert is_forbidden_quote_id("1cd941c6-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("75f07c2b-b000-47f4-9caa-c14520e2b068")
+    assert is_forbidden_quote_id("75f07c2b-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("aed89628-b018-4b11-852f-bfed5bf8b964")
+    assert is_forbidden_quote_id("aed89628-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("5e72fe39-edc1-467c-925d-f1c8d74cc5d3")
+    assert is_forbidden_quote_id("5e72fe39-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("b5f56ac3-326d-48e9-b82d-1e09a7897107")
+    assert is_forbidden_quote_id("b5f56ac3-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
+    assert is_forbidden_quote_id("5e7bfc0b-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
+    assert is_forbidden_quote_id("e2683a3f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("d5a6987d-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("4b8d6ae6-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
+    assert is_forbidden_quote_id("bd5c2e3e-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("d2f7b031-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("b2e12461-442b-436e-9445-772e992644f6")
+    assert is_forbidden_quote_id("b2e12461-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("47c393f8-db59-4b9a-a243-48d572011f77")
+    assert is_forbidden_quote_id("47c393f8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("646a3d98-cd73-4f94-be67-6e40eeb2c309")
+    assert is_forbidden_quote_id("646a3d98-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("8930f65a-c1e3-44b0-8024-9075b2a5ab80")
+    assert is_forbidden_quote_id("8930f65a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("e57633b6-7bfc-4235-80de-a0e3be6cc5cc")
+    assert is_forbidden_quote_id("e57633b6-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("8fb3da71-1948-4da2-a70f-8ef06b78cf32")
+    assert is_forbidden_quote_id("8fb3da71-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("3102870a-0000-4000-8000-000000000001")
+    assert is_forbidden_quote_id("3102870a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("425587a7-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("95b8c186-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("491f6387-520f-4eee-aab3-6d20585ee740")
+    assert is_forbidden_quote_id("491f6387-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("280f4dcb-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("75b3a938-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("e2cc0a7d-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("e2305b3c-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("80eb38af-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("31204345-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("a9497a26-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("cf8ec36e-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("a8e1b40e-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("8de920f0-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("d59318c8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("aab5b3e2-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("6a568912-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("b8a62e76-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("0d4b8a46-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("5b622a0d-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("a484ba3b-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("66a0271f-1111-2222-3333-444444444444")
+    for qid in (
+        "5e111cd2-73d1-44e1-9602-f2a4a3de2fb4",
+        "936b5c6c-2fc5-4b28-a8f6-015db289cb4f",
+        "9354f680-ef91-47d9-af42-8dd65b75473f",
+        "f61c033a-48f2-4b11-9a10-96bc5c70716c",
+        "a522d863-1805-4206-85d1-36841dd107d2",
+        "7a555ac2-2a77-4bd9-a936-bf8a64eb60e7",
+        "8f87fbae-d2ef-40ee-abd4-47a8755ce19f",
+        "804172ea-f507-42fe-87ae-1b91d2cc0d29",
+        "f703b928-3475-45c2-ade5-fcce97e1709e",
+        "12239b72-c82c-4493-b226-c51a98eb4fb5",
+        "593d9450-530f-4ade-a137-9d195714ac73",
+        "b8be3545-1628-4176-b93a-804ad5575bc3",
+        "0e892c8f-93ee-49fa-90c9-3bb4bbf91c22",
+        "ed8cfcda-68e4-4655-a240-79cce4280d7e",
+        "ba7730a0-0848-42d2-8579-dc18f86ec27f",
+        "30940f1d-d262-4562-bfd3-1b17575dc83c",
+        "9a2bc798-f192-4e4c-9b12-78098305f7cc",
+        "aab44741-1213-470c-b941-d44ccf1068ea",
+        "069da4fe-5818-4125-983a-197bd4188ed1",
+        "a6ef6891-e080-45de-b57c-1a55fee00c19",
+        "997f1eb7-3eb0-4a76-83f9-4c3439e929b7",
+        "66a0271f-f2f7-42c1-ac01-cd879f1bfa22",
+        "75b3a938-ff89-4525-80d9-c6000d055a48",
+        "e2cc0a7d-90fa-4629-b48f-db1e8163557b",
+        "e2305b3c-7316-4a96-8c94-7685fca2be54",
+        "80eb38af-3721-4049-a0d5-e4026d293a0c",
+        "31204345-6c91-4122-a859-09f7d7a3ea9f",
+        "a9497a26-cba8-4ec9-a849-cb8bef81cbcc",
+        "0d4b8a46-cc66-4586-baed-4cad20a07ddb",
+        "5b622a0d-4dab-4099-97e4-d0184df4b770",
+        "491f6387-520f-4eee-aab3-6d20585ee740",
+        "bd5c2e3e-948d-463d-8844-4366910bb5ec",
+        "a7dc46bf-836a-4250-b038-9331cc0595a7",
+        "a7d6ca50-efec-409d-bd32-e68012e710c3",
+        "8bcc226b-6bd9-4149-a7bb-aa830ce63a5d",
+        "d2f7b031-a5a8-4020-a6a3-dba8de964ebf",
+        "b2e12461-442b-436e-9445-772e992644f6",
+        "47c393f8-db59-4b9a-a243-48d572011f77",
+        "646a3d98-cd73-4f94-be67-6e40eeb2c309",
+        "8930f65a-c1e3-44b0-8024-9075b2a5ab80",
+        "e57633b6-7bfc-4235-80de-a0e3be6cc5cc",
+        "3102870a-1111-2222-3333-444444444444",
+        "bf4221e8-1111-2222-3333-444444444444",
+        "ad1777be-1951-42b6-9be4-d97c3a42dd94",
+        "7a631c5f-39ca-40fc-b733-88b2b2d04636",
+        "6bfde652-b65a-41b7-840c-af8f088097d4",
+        "87e64b3a-210e-42d9-bfae-1921b1540f16",
+        "5804a001-68ef-4eab-a587-ba2d73718924",
+        "3f3802da-bc11-4a71-83a0-62454b33f69c",
+        "8e5f04fa-661c-4624-8047-8d3c8c6b359d",
+        "3aae24a8-d619-4906-ab00-6db4d7950d0e",
+        "2a07e6d0-cb9d-42f6-959f-5f33ea9fb381",
+        "aa55937d-45af-4559-9542-843a144e9865",
+        "84234fb5-42cb-49a4-b701-931e834c4ca8",
+        "4216109a-4603-45ed-a83d-6c2f071a8c6c",
+        "8a66e074-1c50-4671-82ff-d2d2d8e82082",
+        "c71d2096-1cbd-40c8-877e-97f4c86df410",
+        "30550221-733a-4baf-866a-73396a0d799b",
+        "7f768328-1a9a-4498-af74-f2aa78b930ef",
+        "3ff05f3a-79a3-48f7-add1-0ea8bbf9d884",
+        "b15a892e-aca3-47aa-8272-3e436e980468",
+        "fb3080d8-ad8d-4e8b-9902-c5e155ab6dc1",
+        "5c245fbb-04aa-4746-9845-4dc59aa2d9fe",
+        "cf656d2a-a432-46c4-9ad2-439807194442",
+        "50c6d543-05e4-4b76-a507-4b6b7a19d6b4",
+        "aae055fe-46c7-4fc7-bc12-f10d4de30f54",
+        "46eed794-257d-4987-ae48-98c7d6c7dd07",
+        "f300ecea-ccf3-4c5e-adaf-db73bdfb80fb",
+        "5dc50b55-f546-449f-9f23-7f7ddf67772b",
+        "8973f890-b2a1-48fb-b6be-3530caeb1819",
+        "c5cd8689-fed4-44d6-b2f5-f96bda8af424",
+        "1cd941c6-9167-41e9-ac93-b7268f18f282",
+        "75f07c2b-b000-47f4-9caa-c14520e2b068",
+        "aed89628-b018-4b11-852f-bfed5bf8b964",
+        "5e72fe39-edc1-467c-925d-f1c8d74cc5d3",
+        "b5f56ac3-326d-48e9-b82d-1e09a7897107",
+        "5e7bfc0b-ecf9-46cf-8851-d61062141ce7",
+        "e2683a3f-daf5-49ff-83c1-79aed35207a1",
+        "4b8d6ae6-1111-2222-3333-444444444444",
+    ):
+        with pytest.raises(ForbiddenQuoteError, match="forbidden"):
+            refuse_forbidden_quote_write(
+                method="POST",
+                path="/Quote/AddItem_PDFFiles",
+                payload={"ID": qid},
+            )
+
+
+def test_weld_does_not_post_before_cad_or_linear_kids():
+    from secturafab.weld_ops import ensure_weld_ops
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "asm-1",
+                "Description": "1004747-1 - OUTER BOOM WELDMENT",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "Quantity": 1,
+                "OperationCostList": [],
+            }
+        ]
+    }
+    notes = ensure_weld_ops(
+        client,
+        "new-qid",
+        times={
+            "weld_minutes": 154.33,
+            "total_inches": 308.66,
+            "fitup_with_fixture_minutes": 108.0,
+        },
+        part_key="1004747-1",
+    )
+    client.add_operation.assert_not_called()
+    assert any("no Cad/Linear kids" in n for n in notes)
+
+
+def test_no_symbols_skips_weld():
+    from secturafab.weld_ops import ensure_weld_ops
+
+    client = MagicMock()
+    notes = ensure_weld_ops(client, "qid", times={"weld_minutes": 0, "total_inches": 0})
+    assert any("No weld minutes" in n for n in notes)
+    client.add_operation.assert_not_called()
+
+
+def test_symbols_without_minutes_is_needs_info_not_invent():
+    from secturafab.weld_ops import (
+        WELD_NEEDS_INFO_NOTE,
+        ensure_weld_ops,
+        weld_ops_needs_info,
+        weld_symbols_present,
+    )
+
+    takeoff = {
+        "items": [
+            {
+                "size": "1/4",
+                "inches": 0,
+                "source": "pdf_size_only",
+                "joint_notes": "Size found on drawing; enter inches after review",
+            }
+        ],
+        "flags": ["Could not estimate weld lengths from STP or PDF dimensions"],
+    }
+    assert weld_symbols_present({"weld_minutes": 0}, takeoff) is True
+    client = MagicMock()
+    notes = ensure_weld_ops(
+        client,
+        "qid",
+        times={"weld_minutes": 0, "total_inches": 0, "fitup_with_fixture_minutes": 0},
+        takeoff=takeoff,
+    )
+    assert notes == [WELD_NEEDS_INFO_NOTE]
+    assert weld_ops_needs_info(notes) is True
+    client.add_operation.assert_not_called()
+    client.get_json.assert_not_called()
+
+
+def test_no_symbol_flag_skips_even_when_sizes_found():
+    from secturafab.weld_ops import ensure_weld_ops, weld_symbols_present
+
+    takeoff = {
+        "items": [],
+        "sizes_found": ["12", "24"],
+        "flags": ["No weld symbols — weld and fit-up left at 0"],
+    }
+    assert weld_symbols_present({"weld_minutes": 0}, takeoff) is False
+    notes = ensure_weld_ops(
+        MagicMock(),
+        "qid",
+        times={"weld_minutes": 0},
+        takeoff=takeoff,
+    )
+    assert any("No weld minutes" in n for n in notes)
+
+
+def test_push_nests_and_relinks_before_weld_add_operation():
+    from pathlib import Path
+
+    src = Path("secturafab/push.py").read_text(encoding="utf-8")
+    nest_at = src.find("self.nest_after_finish(")
+    weld_at = src.find("ensure_weld_ops(")
+    relink_at = src.find("relink_assembly_children(")
+    assert 0 < relink_at < weld_at
+    assert 0 < nest_at < weld_at
+
+
+def test_process_job_symbols_without_inches_is_needs_info(tmp_path: Path, monkeypatch):
+    data_dir = tmp_path / "kannon-data"
+    data_dir.mkdir()
+    monkeypatch.setenv("KANNON_DATA_DIR", str(data_dir))
+    _reload_app()
+    from app.db import Job, SessionLocal, init_db
+    from app.services import process_job
+    from quote_core.weld.takeoff import WeldLineItem, WeldTakeoffResult
+
+    init_db()
+    pdf = tmp_path / "1007922-3.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    db = SessionLocal()
+    job = Job(
+        title="1007922-3",
+        status="uploaded",
+        pdf_filename="1007922-3.pdf",
+        pdf_path=str(pdf),
+        efficiency_pct=85.0,
+    )
+    db.add(job)
+    db.commit()
+    job_id = job.id
+    db.close()
+    takeoff = WeldTakeoffResult(
+        items=[
+            WeldLineItem(
+                size="1/4",
+                inches=0.0,
+                joint_notes="Size found on drawing; enter inches after review",
+                confidence="low",
+                source="pdf_size_only",
+                needs_review=True,
+            )
+        ],
+        flags=["Could not estimate weld lengths from STP or PDF dimensions"],
+        fitup_drivers={"part_count": 0, "needs_info": False},
+    )
+    with patch("app.services.run_weld_takeoff", return_value=takeoff), patch(
+        "app.services.attach_library_stp",
+        return_value={"folder": None, "part_key": "1007922-3", "related_pdfs": [], "notes": []},
+    ), patch("quote_core.lom_clip.ensure_lom_xlsx", return_value=(None, [])):
+        process_job(job_id)
+    db = SessionLocal()
+    job = db.get(Job, job_id)
+    assert job is not None
+    assert job.status == "needs_info"
+    assert float((job.times() or {}).get("weld_minutes") or 0) == 0
+    assert any("needs_info" in f and "weld symbols" in f for f in job.flags())
+    db.close()
+
+
+def test_website_cad_persist_skips_addplate_and_update_when_get_has_pack():
+    """(a) website Cad must not addplate/update after GET already has PR+pack+UnitCost."""
+    from secturafab.line_item_ops import persist_classified_item_fields
+
+    stamped = {
+        "ItemList": [
+            {
+                "ID": "c1",
+                "Description": "1004738-1 - 1/4 A36 2 in x 9 in",
+                "ProductType": 100,
+                "Category": "Cad",
+                "BadgeString": "PR",
+                "UnitCost": 12.5,
+                "Material": "A36",
+                "Thickness": 0.25,
+                "OperationCostList": [
+                    {"OperationName": "Profile", "CalculatorName": "Laser"},
+                    {"OperationName": "Profile", "CalculatorName": "Drafting"},
+                    {"OperationName": "Profile", "CalculatorName": "Deburr"},
+                    {"OperationName": "Profile", "CalculatorName": "Laser-Setup"},
+                    {"OperationName": "Profile", "CalculatorName": "Sheet Loading"},
+                ],
+            }
+        ]
+    }
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = stamped
+    persist_classified_item_fields(
+        client,
+        "qid",
+        bom_rows=[{"part_no": "1004738-1", "description": "TOP STIFFENER", "qty": 1}],
+        persist_cad=True,
+        persist_linear=False,
+        plate_catalog=[{"ID": "pl", "ProductName": "PL1/4-A36", "Thickness": 0.25, "MaterialGrade": "A36", "Active": True}],
+    )
+    paths = [c.args[1] for c in client.request.call_args_list if len(c.args) > 1]
+    assert not any("addplate" in str(p) for p in paths), paths
+    assert not any("quoteOnline/update" in str(p) for p in paths), paths
+
+
+def test_website_cad_persist_skips_addplate_even_without_pack():
+    """addplate/update after Image Files wipes calculators — never call on website Cad."""
+    from secturafab.line_item_ops import persist_classified_item_fields
+
+    empty_pack = {
+        "ItemList": [
+            {
+                "ID": "c1",
+                "Description": "1004738-1 - 1/4 A36 2 in x 9 in",
+                "ProductType": 100,
+                "Category": "Cad",
+                "BadgeString": "",
+                "UnitCost": 0,
+                "Material": "A36",
+                "Thickness": 0.25,
+                "OperationCostList": [],
+            }
+        ]
+    }
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = empty_pack
+    persist_classified_item_fields(
+        client,
+        "qid",
+        bom_rows=[{"part_no": "1004738-1", "description": "TOP STIFFENER", "qty": 1}],
+        persist_cad=True,
+        persist_linear=False,
+        plate_catalog=[{"ID": "pl", "ProductName": "PL1/4-A36", "Thickness": 0.25, "MaterialGrade": "A36", "Active": True}],
+    )
+    paths = [c.args[1] for c in client.request.call_args_list if len(c.args) > 1]
+    assert not any("addplate" in str(p) for p in paths), paths
+    assert not any("quoteOnline/update" in str(p) for p in paths), paths
+
+
+def test_takeoff_supplies_remaining_1004747_cad_flats():
+    """Takeoff plates must resolve L×W for LOM Cad PNs that lock does not list."""
+    remaining = [
+        ("6993-1", "6993", [6.0, 2.0]),
+        ("1004806-1", "1004806-1", [12.0, 8.0]),
+        ("1004711-1", "1004711-1", [10.0, 4.0]),
+        ("1004741-1", "1004741-1", [14.0, 8.0]),
+        ("1004744-1", "1004744", [18.0, 3.0]),
+    ]
+    takeoff = {
+        "plates": [
+            {"part_no": src, "blank": blank, "width_in": blank[1], "length_in": blank[0]}
+            for _pn, src, blank in remaining
+        ]
+    }
+    for pn, _src, blank in remaining:
+        assert locked_cad_spec(pn) is None
+        w, length = resolve_cad_plate_flats(pn, takeoff=takeoff, locked=None)
+        assert w and length, pn
+        assert {w, length} == {blank[0], blank[1]}
+
+
+def test_parse_plate_flats_reads_inch_and_overall():
+    from secturafab.item_desc import parse_plate_flats
+
+    assert parse_plate_flats('2" X 9"') == (2.0, 9.0)
+    assert parse_plate_flats("OVERALL 18.5 X 6.25") == (18.5, 6.25)
+    assert parse_plate_flats("1/4 X 2 X 9") == (2.0, 9.0)
+    assert parse_plate_flats("2-1/2 X 9") == (2.5, 9.0)
+
+
+def test_additem_pdf_302_fails_push_ok_false(tmp_path, monkeypatch):
+    """302 Finish must not report push.ok or leave an empty shell as complete."""
+    from secturafab.website import SecturaFabWebsiteAuthError, WEBSITE_SESSION_EXPIRED
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=stale")
+    pdf = tmp_path / "1001775-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    child = lib / "1001913.pdf"
+    child.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=stale"
+    client.get_json.return_value = {
+        "QuoteNumber": "1001775-1",
+        "ItemCount": 1,
+        "ItemList": [
+            {
+                "ID": "asm-1",
+                "Description": "1001775-1",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "UnitCost": 0,
+            }
+        ],
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    service = SecturaFabPushService(client=client)
+    new_id = "11111111-aaaa-bbbb-cccc-000000000177"
+    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "create_quote", return_value=new_id
+    ), patch.object(
+        service, "allocate_quote_number", return_value="1001775-1"
+    ), patch.object(
+        service,
+        "finish_pdf_files",
+        side_effect=SecturaFabWebsiteAuthError(
+            f"{WEBSITE_SESSION_EXPIRED} — AddItem_PDFFiles 302"
+        ),
+    ), patch.object(
+        service, "finish_website_weldment"
+    ) as weldment, patch.object(
+        service, "quick_add_cad"
+    ) as qadd, patch(
+        "secturafab.push.refresh_bom_rows_for_push",
+        return_value=(
+            [
+                {
+                    "part_no": "1001913-1",
+                    "qty": 1,
+                    "description": "PLATE",
+                    "width_in": 6.0,
+                    "length_in": 4.0,
+                }
+            ],
+            [],
+        ),
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value="WELDMENT"
+    ), patch(
+        "secturafab.push.apply_quote_organization", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
+    ), patch(
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_weld_ops"
+    ) as weld:
+        result = service.push_job(
+            title="1001775-1",
+            pdf_filename="1001775-1.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={
+                "library": {
+                    "part_key": "1001775-1",
+                    "folder": str(lib),
+                    "related_pdfs": ["1001913.pdf"],
+                },
+                "plates": [
+                    {
+                        "part_no": "1001913-1",
+                        "width_in": 6.0,
+                        "length_in": 4.0,
+                    }
+                ],
+            },
+            times={"weld_minutes": 0, "total_inches": 0},
+            job_id=1775,
+        )
+    assert result.ok is False
+    assert result.ready is False
+    assert result.status == "failed"
+    assert WEBSITE_SESSION_EXPIRED in (result.error or "") or WEBSITE_SESSION_EXPIRED in " ".join(
+        result.notes or []
+    )
+    weldment.assert_not_called()
+    weld.assert_not_called()
+    qadd.assert_not_called()
+
+
+def test_filelist_missing_dims_is_not_counted_as_posted(tmp_path, monkeypatch):
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "1001947.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.add_item_pdf_files.return_value = {
+        "ok": False,
+        "via": "skipped",
+        "filelist_from_kendo": False,
+        "finish_why": "empty_dataSource",
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000000194",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE",
+            bom_rows=[{"part_no": "1001947-1", "qty": 1, "description": "1/8 5052-H32 SHEET"}],
+        takeoff={},
+    )
+    client.upload_item_pdf_attachment.assert_not_called()
+    blob = " ".join(notes)
+    assert "not inventing reconstructed FileList" in blob
+    assert "0 ProductType 100" in blob or "GET 0 Cad" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_filelist_uses_lom_flats_and_5052_not_a36(tmp_path, monkeypatch):
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "1001913.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+    }
+    gold_cad = {
+        "ID": "cad-1",
+        "Description": "1001913-1",
+        "ProductType": 100,
+        "BadgeString": "PR",
+        "UnitCost": 12.5,
+        "OperationCostList": [
+            {"OperationName": "Profile", "CalculatorName": "Laser"},
+            {"OperationName": "Profile", "CalculatorName": "Deburr"},
+            {"OperationName": "Profile", "CalculatorName": "Laser-Setup"},
+            {"OperationName": "Profile", "CalculatorName": "Sheet Loading"},
+        ],
+    }
+    client.quote_item_read.return_value = {"Data": [gold_cad], "Total": 1}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000000191",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE",
+        bom_rows=[
+            {
+                "part_no": "1001913-1",
+                "qty": 2,
+                    "description": "1/8 5052-H32 SHEET",
+            }
+        ],
+        takeoff={
+            "plates": [
+                {
+                    "part_no": "1001913-1",
+                    "width_in": 8.0,
+                    "length_in": 12.0,
+                    "blank": [12.0, 8.0],
+                }
+            ]
+        },
+        library={},
+        extra_pdfs=[],
+    )
+    client.upload_item_pdf_attachment.assert_not_called()
+    client.add_item_pdf_files.assert_called()
+    assert client.add_item_pdf_files.call_args.kwargs.get("file_list") == []
+    posted = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
+    assert posted["ItemType"] == "cad"
+    assert posted["Machine"] == "Laser"
+    assert posted["Location"] == "Bay1"
+    assert float(posted["Width"]) == 8.0
+    assert float(posted["Length"]) == 12.0
+    assert float(posted["Status"]) > 0
+    assert posted["Material"] != "A36"
+    assert "5052" in str(posted["Material"])
+    assert "persisted" in " ".join(notes).lower()
+
+
+def test_empty_shell_item_count_1_is_not_success(tmp_path, monkeypatch):
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "1001775-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "1001913.pdf").write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    shell = {
+        "QuoteNumber": "1001775-1",
+        "ItemCount": 1,
+        "ItemList": [
+            {
+                "ID": "asm-1",
+                "Description": "WELDMENT",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "UnitCost": 0,
+            }
+        ],
+    }
+    client.get_json.return_value = shell
+    client.quote_item_read.return_value = {"Data": shell["ItemList"], "Total": 1}
+    service = SecturaFabPushService(client=client)
+    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "create_quote", return_value="11111111-aaaa-bbbb-cccc-000000000178"
+    ), patch.object(
+        service, "allocate_quote_number", return_value="1001775-1"
+    ), patch.object(
+        service, "finish_pdf_files", return_value=["WARNING: AddItem_PDFFiles skipped"]
+    ), patch.object(
+        service, "finish_website_weldment"
+    ) as weldment, patch(
+        "secturafab.push.refresh_bom_rows_for_push",
+        return_value=(
+            [{"part_no": "1001913-1", "qty": 1, "description": "PLATE"}],
+            [],
+        ),
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value="WELDMENT"
+    ), patch(
+        "secturafab.push.apply_quote_organization", return_value=[]
+    ):
+        result = service.push_job(
+            title="1001775-1",
+            pdf_filename="1001775-1.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={
+                "library": {
+                    "part_key": "1001775-1",
+                    "folder": str(lib),
+                    "related_pdfs": ["1001913.pdf"],
+                }
+            },
+            times={},
+            job_id=1776,
+        )
+    assert result.ok is False
+    assert result.ready is False
+    assert result.status == "failed"
+    assert "0 Cad" in (result.error or "") or "empty assembly" in (result.error or "").lower()
+    weldment.assert_not_called()
+
+
+def test_page_outline_1xn_is_not_a_cad_flat():
+    from secturafab.item_desc import (
+        looks_like_page_outline,
+        parse_plate_flats,
+        resolve_cad_plate_flats,
+    )
+
+    assert looks_like_page_outline(1.0, 2.0) is True
+    assert looks_like_page_outline(1.0, 16.0) is True
+    assert looks_like_page_outline(5.25, 5.75) is False
+    assert looks_like_page_outline(14.625, 7.375) is False
+    assert looks_like_page_outline(2.0, 9.0) is False
+    drawing = "SCALE 1 X 2  TITLE 1 x 16  OVERALL 5.25 X 5.75"
+    assert parse_plate_flats(drawing) == (5.25, 5.75)
+    assert parse_plate_flats("1 x 2") == (None, None)
+    assert parse_plate_flats("1 x 16") == (None, None)
+    w, length = resolve_cad_plate_flats(
+        "1007013-1",
+        takeoff={
+            "plates": [
+                {
+                    "part_no": "1007013-1",
+                    "width_in": 1.0,
+                    "length_in": 2.0,
+                    "description": "OVERALL 5.25 X 5.75 A572",
+                }
+            ]
+        },
+        noun="1 x 2 OVERALL 5.25 x 5.75",
+        locked=None,
+    )
+    assert {w, length} == {5.25, 5.75}
+
+
+def test_filelist_built_for_every_cad_with_lom_flats(tmp_path, monkeypatch):
+    """Every LOM Cad kid with takeoff flats gets a full Image Files FileList."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    kids = [
+        ("1007012.pdf", "1007012-1", 7.375, 14.625),
+        ("1007013.pdf", "1007013-1", 5.25, 5.75),
+        ("1007014.pdf", "1007014-1", 6.0, 8.0),
+        ("1007015.pdf", "1007015-1", 4.0, 10.0),
+    ]
+    pdfs = []
+    for name, _pn, _w, _l in kids:
+        p = tmp_path / name
+        p.write_bytes(b"%PDF")
+        pdfs.append(p)
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(4)
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 4,
+    }
+    gold_rows = [
+        {
+            "ID": f"cad-{pn}",
+            "Description": pn,
+            "ProductType": 100,
+            "BadgeString": "PR",
+            "UnitCost": 12.5,
+            "OperationCostList": [
+                {"OperationName": "Profile", "CalculatorName": "Laser"},
+                {"OperationName": "Profile", "CalculatorName": "Deburr"},
+                {"OperationName": "Profile", "CalculatorName": "Laser-Setup"},
+                {"OperationName": "Profile", "CalculatorName": "Sheet Loading"},
+            ],
+        }
+        for _n, pn, _w, _l in kids
+    ]
+    client.quote_item_read.return_value = {"Data": gold_rows, "Total": 4}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000000704",
+        pdf_files=pdfs,
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE",
+        bom_rows=[
+            {
+                "part_no": pn,
+                "qty": 1,
+                "description": "PL025-50K A572 Grade 50 PLATE",
+            }
+            for _n, pn, _w, _l in kids
+        ],
+        takeoff={
+            "plates": [
+                {
+                    "part_no": pn,
+                    "width_in": w,
+                    "length_in": length,
+                    "blank": [length, w],
+                    "description": "A572 Grade 50",
+                }
+                for _n, pn, w, length in kids
+            ]
+        },
+    )
+    client.upload_item_pdf_attachment.assert_not_called()
+    client.upload_pdf_via_page_add_files.assert_called_once()
+    assert client.add_item_pdf_files.call_count == 1
+    assert client.add_item_pdf_files.call_args.kwargs.get("file_list") == []
+    posted_names = []
+    for row in client.stamp_pdf_kendo_flats.call_args.kwargs["rows"]:
+        posted_names.append(row.get("FileName"))
+        assert row["ItemType"] == "cad"
+        assert row["Machine"] == "Laser"
+        assert row["Location"] == "Bay1"
+        assert float(row["Status"]) > 0
+        assert float(row["Thickness"]) > 0
+        assert float(row["Width"]) > 1.1
+        assert float(row["Length"]) > 1.1
+        assert {float(row["Width"]), float(row["Length"])} != {1.0, 2.0}
+        assert {float(row["Width"]), float(row["Length"])} != {1.0, 16.0}
+        assert "A572" in str(row["Material"])
+        assert row["Material"] != "A36"
+    assert "1007014.pdf" in posted_names
+    assert "1007015.pdf" in posted_names
+    blob = " ".join(notes)
+    assert "FileList missing" not in blob
+    assert "AddItem_PDFFiles skipped" not in blob
+
+
+def test_filelist_rejects_page_outline_dims_for_1007013(tmp_path, monkeypatch):
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "1007013.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+    }
+    client.quote_item_read.return_value = {
+        "Data": [
+            {
+                "ProductType": 100,
+                "Description": "1007013-1",
+                "BadgeString": "PR",
+                "UnitCost": 12.5,
+                "OperationCostList": [
+                    {"OperationName": "Profile", "CalculatorName": "Laser"},
+                    {"OperationName": "Profile", "CalculatorName": "Deburr"},
+                    {"OperationName": "Profile", "CalculatorName": "Laser-Setup"},
+                    {"OperationName": "Profile", "CalculatorName": "Sheet Loading"},
+                ],
+            }
+        ],
+        "Total": 1,
+    }
+    SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000000713",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE",
+        bom_rows=[
+            {
+                "part_no": "1007013-1",
+                "qty": 1,
+                "description": "1 x 2 OVERALL 5.25 x 5.75 A572 PLATE",
+            }
+        ],
+        takeoff={
+            "plates": [
+                {
+                    "part_no": "1007013-1",
+                    "width_in": 1.0,
+                    "length_in": 2.0,
+                    "description": "OVERALL 5.25 X 5.75",
+                }
+            ]
+        },
+    )
+    client.upload_item_pdf_attachment.assert_not_called()
+    client.add_item_pdf_files.assert_called()
+    assert client.add_item_pdf_files.call_args.kwargs.get("file_list") == []
+    row = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
+    assert {float(row["Width"]), float(row["Length"])} == {5.25, 5.75}
+
+
+def test_gold_miss_after_200_finish_is_not_session_expired(tmp_path, monkeypatch):
+    """HTTP 200 AddItem_PDFFiles without PR/pack/UnitCost is fail, not session expired."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "1007049-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "1007013.pdf").write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    no_gold = {
+        "QuoteNumber": "1007049-1",
+        "ItemCount": 3,
+        "ItemList": [
+            {
+                "ID": "asm-1",
+                "Description": "WELDMENT",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "UnitCost": 0,
+            },
+            {
+                "ID": "cad-1",
+                "Description": "1007013-1",
+                "ProductType": 100,
+                "Category": "Cad",
+                "BadgeString": "",
+                "UnitCost": 0,
+                "Machine": "Laser - Bay1",
+                "OperationCostList": [],
+            },
+            {
+                "ID": "cad-2",
+                "Description": "1007012-1",
+                "ProductType": 100,
+                "Category": "Cad",
+                "BadgeString": "",
+                "UnitCost": 0,
+                "Machine": "Laser - Bay1",
+                "OperationCostList": [],
+            },
+        ],
+    }
+    client.get_json.return_value = no_gold
+    client.quote_item_read.return_value = {"Data": no_gold["ItemList"], "Total": 3}
+    service = SecturaFabPushService(client=client)
+    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "create_quote", return_value="11111111-aaaa-bbbb-cccc-000000000704"
+    ), patch.object(
+        service, "allocate_quote_number", return_value="1007049-1"
+    ), patch.object(
+        service,
+        "finish_pdf_files",
+        return_value=["Uploaded Image Files 200", "AddItem_PDFFiles HTTP 200"],
+    ), patch.object(
+        service, "finish_website_weldment"
+    ) as weldment, patch(
+        "secturafab.push.refresh_bom_rows_for_push",
+        return_value=(
+            [
+                {
+                    "part_no": "1007013-1",
+                    "qty": 1,
+                    "description": "PLATE",
+                    "width_in": 5.25,
+                    "length_in": 5.75,
+                }
+            ],
+            [],
+        ),
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value="WELDMENT"
+    ), patch(
+        "secturafab.push.apply_quote_organization", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
+    ), patch(
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_weld_ops", return_value=[]
+    ):
+        result = service.push_job(
+            title="1007049-1",
+            pdf_filename="1007049-1.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={
+                "library": {
+                    "part_key": "1007049-1",
+                    "folder": str(lib),
+                    "related_pdfs": ["1007013.pdf"],
+                },
+                "plates": [
+                    {
+                        "part_no": "1007013-1",
+                        "width_in": 5.25,
+                        "length_in": 5.75,
+                        "description": "A572 Grade 50",
+                    }
+                ],
+            },
+            times={"weld_minutes": 10, "total_inches": 40.0},
+            job_id=7049,
+        )
+    assert result.ok is False
+    assert result.ready is False
+    blob = f"{result.error or ''} {' '.join(result.notes or [])}"
+    assert "gold" in blob.lower() or "UnitCost" in blob or "pack" in blob.lower()
+    assert WEBSITE_SESSION_EXPIRED not in blob
+    weldment.assert_not_called()
+
+
+def test_ensure_weld_ops_empty_200_counts_as_posted():
+    from secturafab.weld_ops import ensure_weld_ops
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "asm-1",
+                "Description": "1007049-1 - WELDMENT",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+            {
+                "ID": "cad-1",
+                "Description": "1007013-1",
+                "ProductType": 100,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+        ]
+    }
+    client.add_operation.return_value = None
+    notes = ensure_weld_ops(
+        client,
+        "new-qid",
+        times={"weld_minutes": 20.0, "total_inches": 40.0},
+        part_key="1007049-1",
+    )
+    client.add_operation.assert_called_once()
+    assert client.add_operation.call_args.kwargs["weld_inches"] == pytest.approx(40.0)
+    blob = " ".join(notes)
+    assert "AddOperation" in blob
+    assert "returned empty" not in blob
+    assert "graft" not in blob.lower() or "not grafting" in blob
+    client.request.assert_not_called()
+
+
+def test_1001898_5_cad_unitcost_empty_ocl_no_pr_is_dod_fail(tmp_path, monkeypatch):
+    """3 Cad + unitcost + empty OCL + no PR is FAIL. Linear saw PASS is not DoD."""
+    from secturafab.line_item_ops import (
+        cad_image_files_stamped,
+        cad_kids_unitcost_without_pr,
+        finish_produced_gold,
+        image_files_dod_pass,
+        item_has_pr_tag,
+        item_has_saw_pack,
+    )
+    from tests.fixtures.live_1001898_5 import (
+        SPENT_QUOTE_ID,
+        live_1001898_5_quote,
+    )
+
+    quote = live_1001898_5_quote()
+    assert cad_kids_unitcost_without_pr(quote) is True
+    assert finish_produced_gold(quote, expect_cad=True, expect_linear=True) is False
+    assert image_files_dod_pass(quote, expect_cad=True, expect_linear=True) is False
+    cad = [it for it in quote["ItemList"] if it.get("ProductType") == 100]
+    assert len(cad) == 3
+    assert all(float(it["UnitCost"]) > 0 for it in cad)
+    assert all(not it.get("OperationCostList") for it in cad)
+    assert all(not item_has_pr_tag(it) for it in cad)
+    assert all(not cad_image_files_stamped(it) for it in cad)
+    linear = [it for it in quote["ItemList"] if it.get("IsLinear")]
+    assert len(linear) == 2
+    assert all(item_has_saw_pack(it) for it in linear)
+    assert image_files_dod_pass(quote, expect_cad=False, expect_linear=True) is True
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "14501-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = {
+        "ok": False,
+        "bound": False,
+        "upload_via": "cookie_http",
+        "grid_pdf_row_count": 0,
+        "status_gt0_n": 0,
+        "finish_why": "empty_dataSource",
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 8}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id=SPENT_QUOTE_ID,
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.1875",
+        qty=1,
+        description="WELDMENT, PEDESTAL",
+        bom_rows=[
+            {"part_no": "14501-1", "qty": 1, "description": "PEDESTAL TOP PLATE"},
+        ],
+    )
+    client.upload_item_pdf_attachment.assert_not_called()
+    client.add_item_pdf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "cookie HTTP" in blob or "did not bind" in blob or "not bound" in blob
+    assert "GET>0" in blob
+    assert "DoD FAIL" in blob
+    assert "Linear saw PASS is not DoD PASS" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_live_103535_1_cookie_http_empty_grid_is_fail(tmp_path, monkeypatch):
+    """5 cookie HTTP uploads + 4 L×W stamps + empty_dataSource + GET 0 = FAIL."""
+    from secturafab.website import (
+        cookie_http_pdf_upload_is_fail,
+        empty_gridpdf_after_stamp_is_fail,
+        image_files_cookie_http_empty_grid_is_fail,
+        leftover_gridpdf_fills_only_via_onsuccess,
+        pdf_grid_upload_bound,
+    )
+    from tests.fixtures.live_103535_1 import (
+        COOKIE_HTTP_PLATE_STEMS,
+        MISSING_FLATS_STEM,
+        SPENT_QUOTE_ID,
+        STAMP_N,
+        live_103535_1_cookie_http_empty_grid,
+        leftover_gridpdf_bind_dump,
+    )
+
+    dump = leftover_gridpdf_bind_dump()
+    assert leftover_gridpdf_fills_only_via_onsuccess(dump) is True
+    assert dump["kendoUpload"]["selector"] == "#files"
+    assert dump["GetPDFData"]["is_xhr"] is False
+    snap = live_103535_1_cookie_http_empty_grid()
+    assert snap["ID"] == SPENT_QUOTE_ID
+    assert snap["cookie_http_uploads"] == 5
+    assert snap["stamp_n"] == STAMP_N == 4
+    assert MISSING_FLATS_STEM == "103544"
+    assert image_files_cookie_http_empty_grid_is_fail(
+        cookie_http_uploads=snap["cookie_http_uploads"],
+        stamp_n=snap["stamp_n"],
+        finish_why=snap["finish_why"],
+        filelist_from_kendo=snap["filelist_from_kendo"],
+        cad_n=snap["cad_n"],
+    )
+    assert cookie_http_pdf_upload_is_fail("cookie_http")
+    assert cookie_http_pdf_upload_is_fail("http")
+    assert not cookie_http_pdf_upload_is_fail("page_add_files")
+    assert empty_gridpdf_after_stamp_is_fail(
+        {"finish_why": "empty_dataSource", "filelist_from_kendo": False},
+        grid_pdf_row_count=0,
+    )
+    assert not pdf_grid_upload_bound(
+        {
+            "upload_via": "cookie_http",
+            "bound": False,
+            "status_gt0_n": 0,
+            "grid_pdf_row_count": 0,
+        }
+    )
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdfs = []
+    for stem in COOKIE_HTTP_PLATE_STEMS:
+        p = tmp_path / f"{stem}.pdf"
+        p.write_bytes(b"%PDF")
+        pdfs.append(p)
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = {
+        "bound": False,
+        "upload_via": "cookie_http",
+        "grid_pdf_row_count": 0,
+        "status_gt0_n": 0,
+        "finish_why": "empty_dataSource",
+    }
+    client.quote_item_read.return_value = {"Data": snap["ItemList"], "Total": 1}
+    client.get_json.return_value = snap
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001035",
+        pdf_files=pdfs,
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="GATE WELDMENT",
+        bom_rows=[
+            {
+                "part_no": stem,
+                "qty": 1,
+                "description": "PLATE",
+                "width_in": 8.0 if stem != MISSING_FLATS_STEM else None,
+                "length_in": 12.0 if stem != MISSING_FLATS_STEM else None,
+            }
+            for stem in COOKIE_HTTP_PLATE_STEMS
+        ],
+    )
+    client.upload_item_pdf_attachment.assert_not_called()
+    client.stamp_pdf_kendo_flats.assert_not_called()
+    client.add_item_pdf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "cookie HTTP" in blob
+    assert "#gridPDF" in blob
+    assert "GET 0 Cad" in blob
+    assert "persisted" not in blob.lower()
+    assert "AddItem_PDFFiles posted 1 FileList" not in blob
+
+
+def test_29743_1_files_kendo_bind_is_not_gold_pack(tmp_path, monkeypatch):
+    """#files + GetPDFData + OnAddPDFClick with Cad UnitCost 0 / empty OCL is FAIL."""
+    from tests.fixtures.live_29743_1 import live_29743_1_quote
+
+    quote = live_29743_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdfs = []
+    for name in ("29743-a.pdf", "29743-b.pdf"):
+        p = tmp_path / name
+        p.write_bytes(b"%PDF")
+        pdfs.append(p)
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(2)
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 2,
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 4}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000002974",
+        pdf_files=pdfs,
+        material="A572",
+        thickness="0.1875",
+        qty=2,
+        description="SUBFRAME WELDMENT",
+        bom_rows=[
+            {"part_no": "29743-a", "qty": 2, "description": "PLATE", "width_in": 8.0, "length_in": 12.0},
+            {"part_no": "29743-b", "qty": 2, "description": "PLATE", "width_in": 10.0, "length_in": 14.0},
+        ],
+    )
+    client.upload_item_pdf_attachment.assert_not_called()
+    blob = " ".join(notes)
+    assert "29743-1" in blob or "not gold" in blob or "UnitPrice is not UnitCost" in blob
+    assert "DoD FAIL" in blob
+    assert "Linear saw PASS is not DoD PASS" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_29743_1_empty_perimeter_does_not_finish(tmp_path, monkeypatch):
+    """UpdatePerimeterWeight empty OutsidePerimeter — do not Finish."""
+    from tests.fixtures.live_29743_1 import live_29743_1_quote
+
+    quote = live_29743_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdfs = []
+    for name in ("29743-a.pdf", "29743-b.pdf"):
+        p = tmp_path / name
+        p.write_bytes(b"%PDF")
+        pdfs.append(p)
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(2)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 2,
+        "cell_edit": 4,
+        "outside_perimeter_n": 0,
+        "cutting_length_n": 0,
+        "getperimeter_xhr": False,
+        "perimeter_via": "",
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 4}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000002974",
+        pdf_files=pdfs,
+        material="A572",
+        thickness="0.1875",
+        qty=2,
+        description="SUBFRAME WELDMENT",
+        bom_rows=[
+            {"part_no": "29743-a", "qty": 2, "description": "PLATE", "width_in": 8.0, "length_in": 12.0},
+            {"part_no": "29743-b", "qty": 2, "description": "PLATE", "width_in": 10.0, "length_in": 14.0},
+        ],
+    )
+    client.add_item_pdf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "UpdatePerimeterWeight" in blob
+    assert "empty OutsidePerimeter" in blob
+    assert "29743-1" in blob
+    assert "do not Finish" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_1002323_1_no_hole_rectangle_still_finishes(tmp_path, monkeypatch):
+    """Empty InternalData after perimeter is expected — still Finish."""
+    from tests.fixtures.live_1002323_1 import live_1002323_1_quote
+
+    quote = live_1002323_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "WRB-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "cutting_length_n": 0,
+        "weight_n": 1,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+    }
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001002",
+        pdf_files=[pdf],
+        material="A572",
+        thickness="0.375",
+        qty=2,
+        description="WINCH ROLLER BRACKETS",
+        bom_rows=[
+            {
+                "part_no": "WRB-PLATE",
+                "qty": 2,
+                "description": "PLATE",
+                "width_in": 2.5,
+                "length_in": 19.82,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_called_once()
+    blob = " ".join(notes)
+    assert "1002323-1" in blob
+    assert "do not Finish" not in blob
+    assert "AddNewPDFFeature" not in blob
+    assert "DoD FAIL" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_1002323_1_empty_weight_after_perimeter_does_not_finish(
+    tmp_path, monkeypatch
+):
+    """GetPDFData bag Weight empty after landed perimeter — do not Finish."""
+    from tests.fixtures.live_1002323_1 import live_1002323_1_quote
+
+    quote = live_1002323_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "WRB-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "cutting_length_n": 0,
+        "weight_n": 0,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001002",
+        pdf_files=[pdf],
+        material="A572",
+        thickness="0.375",
+        qty=2,
+        description="WINCH ROLLER BRACKETS",
+        bom_rows=[
+            {
+                "part_no": "WRB-PLATE",
+                "qty": 2,
+                "description": "PLATE",
+                "width_in": 2.5,
+                "length_in": 19.82,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "1002323-1" in blob
+    assert "bag Weight empty" in blob
+    assert "GetPDFData omits CuttingLength" in blob
+    assert "do not Finish" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_21681_1_empty_bind_productid_still_stamps_and_finishes(
+    tmp_path, monkeypatch
+):
+    """Bind ProductID null is Image Files default — still stamp; Finish fail-closed after picker."""
+    from tests.fixtures.live_21681_1 import live_21681_1_quote
+
+    quote = live_21681_1_quote()
+    leftover = {
+        "ID": quote["ID"],
+        "QuoteNumber": quote["QuoteNumber"],
+        "Description": quote["Description"],
+        "ItemList": [
+            {
+                "ID": "cad-21681-1",
+                "Description": "21681-1 KNUCKLE PLATE",
+                "ProductType": 100,
+                "Category": "Cad",
+                "Quantity": 1,
+                "Tag": "",
+                "ProductionReady": False,
+                "UnitCost": 0,
+                "UnitPrice": 0,
+                "OperationCostList": [],
+                "DataPartPDF": {
+                    "OutsidePerimeter": 0,
+                    "CuttingLength": 0,
+                    "Weight": 0,
+                    "ProductID": None,
+                },
+                "ProductID": None,
+                "Machine": "Laser - Bay1",
+            }
+        ],
+    }
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "KNUCKLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    bind = _page_pdf_bind_ok(1)
+    bind["productid_n"] = 0
+    client.upload_pdf_via_page_add_files.return_value = bind
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "cutting_length_n": 0,
+        "weight_n": 1,
+        "productid_n": 0,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "picker_via": "#Product",
+        "picker_sku": "PL1/2-100k",
+    }
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+    }
+    client.quote_item_read.return_value = {"Data": leftover["ItemList"], "Total": 1}
+    client.get_json.return_value = leftover
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000002168",
+        pdf_files=[pdf],
+        material="DOMEX/WELDOX",
+        thickness="0.5",
+        qty=1,
+        description="KNUCKLE PLATE",
+        bom_rows=[
+            {
+                "part_no": "KNUCKLE-PLATE",
+                "qty": 1,
+                "description": "1/2 DOMEX/WELDOX",
+                "width_in": 6.0,
+                "length_in": 8.0,
+            }
+        ],
+    )
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    client.add_item_pdf_files.assert_not_called()
+    stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
+    assert stamp_rows
+    assert all("ProductID" not in row for row in stamp_rows)
+    assert stamp_rows[0]["Material"] != "316 Polished"
+    assert stamp_rows[0]["Machine"] == "Laser"
+    assert stamp_rows[0]["Location"] == "Bay1"
+    assert stamp_rows[0]["Status"] == 1
+    blob = " ".join(notes)
+    assert "21681-1" in blob
+    assert "Image Files default" in blob
+    assert "do not Finish" in blob
+    assert "34603-2" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_33819_1_empty_productid_after_stamp_still_finishes(
+    tmp_path, monkeypatch
+):
+    """Stamp ProductID still null after L×W — Finish; leftover GET is FAIL."""
+    from tests.fixtures.live_33819_1 import live_33819_1_quote
+
+    quote = live_33819_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "COMP-LINK-LUG.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "cutting_length_n": 0,
+        "weight_n": 1,
+        "productid_n": 0,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+    }
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003381",
+        pdf_files=[pdf],
+        material="A572",
+        thickness="0.625",
+        qty=1,
+        description="COMP LINK LUG",
+        bom_rows=[
+            {
+                "part_no": "COMP-LINK-LUG",
+                "qty": 1,
+                "description": "PLATE",
+                "width_in": 4.0,
+                "length_in": 16.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_called_once()
+    blob = " ".join(notes)
+    assert "33819-1" in blob
+    assert "do not Finish" not in blob
+    assert "ProductID None" in blob
+    assert "DoD FAIL" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_33819_1_bind_without_productid_n_still_finishes_leftover_fail(
+    tmp_path, monkeypatch
+):
+    """Older bind omitting productid_n still Finishes; leftover GET is FAIL."""
+    from tests.fixtures.live_33819_1 import live_33819_1_quote
+
+    quote = live_33819_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "COMP-LINK-LUG.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "cutting_length_n": 0,
+        "weight_n": 1,
+        "productid_n": 1,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+    }
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+        "filelist_bag": {
+            "Machine": "Laser - Bay1",
+            "ProductID": None,
+            "Qty": 1,
+            "Weight": 15.0875,
+            "Weight_UseLocal": True,
+            "OutsidePerimeter": 40,
+            "OutsidePerimeter_UseLocal": True,
+            "Material": "A572",
+            "Thickness": "0.625",
+            "Length": 16,
+            "Width": 4,
+        },
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003381",
+        pdf_files=[pdf],
+        material="A572",
+        thickness="0.625",
+        qty=1,
+        description="COMP LINK LUG",
+        bom_rows=[
+            {
+                "part_no": "COMP-LINK-LUG",
+                "qty": 1,
+                "description": "PLATE",
+                "width_in": 4.0,
+                "length_in": 16.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_called_once()
+    stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
+    assert stamp_rows
+    assert all("ProductID" not in row for row in stamp_rows)
+    blob = " ".join(notes)
+    assert "33819-1" in blob
+    assert "do not Finish" not in blob
+    assert "ProductID None" in blob
+    assert "DoD FAIL" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_1007092_1_get_productid_is_not_pack_still_finishes(
+    tmp_path, monkeypatch
+):
+    """Null FileList ProductID after SKU picker is fail-closed (34603-2)."""
+    from tests.fixtures.live_1007092_1 import live_1007092_1_quote
+
+    quote = live_1007092_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "FRAME-SPACER.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    bind = _page_pdf_bind_ok(1)
+    bind["productid_n"] = 0
+    client.upload_pdf_via_page_add_files.return_value = bind
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "cutting_length_n": 0,
+        "weight_n": 1,
+        "productid_n": 0,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "picker_via": "none_plate_widget",
+        "picker_sku": "PL5/16-A572",
+    }
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+        "filelist_bag": {
+            "Machine": "Laser - Bay1",
+            "ProductID": None,
+            "Qty": 1,
+            "Weight": 0.2718,
+            "Weight_UseLocal": True,
+            "OutsidePerimeter": 5,
+            "OutsidePerimeter_UseLocal": True,
+            "Material": "A572",
+            "Thickness": "0.3125",
+        },
+        "response_list_n": 1,
+        "response_tag": "",
+        "response_badge_string": "",
+        "response_production_ready": False,
+        "response_ocl_n": 0,
+        "response_ocl_names": [],
+        "response_unit_cost": 0.11,
+        "response_unit_weight_cost": 0.11,
+        "response_number_of_contours": 0,
+        "response_number_of_pierces": 0,
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001007",
+        pdf_files=[pdf],
+        material="A572",
+        thickness="0.3125",
+        qty=1,
+        description="FRAME SPACER",
+        bom_rows=[
+            {
+                "part_no": "FRAME-SPACER",
+                "qty": 1,
+                "description": "PLATE",
+                "width_in": 0.5,
+                "length_in": 2.0,
+            }
+        ],
+    )
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    client.add_item_pdf_files.assert_not_called()
+    stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
+    assert stamp_rows
+    assert all("ProductID" not in row for row in stamp_rows)
+    assert stamp_rows[0]["Material"] != "316 Polished"
+    assert stamp_rows[0]["Machine"] == "Laser"
+    assert stamp_rows[0]["Location"] == "Bay1"
+    assert stamp_rows[0]["Status"] == 1
+    blob = " ".join(notes)
+    assert "1007092-1" in blob
+    assert "do not Finish" in blob
+    assert "34603-2" in blob
+    assert "product_picker=none_plate_widget" not in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_33204_1_list0_pack_empty_is_fail_still_finishes(
+    tmp_path, monkeypatch
+):
+    """SKU picker + ProductID still 0 is fail-closed (34603-2) before list0_pack."""
+    from tests.fixtures.live_33204_1 import live_33204_1_quote
+
+    quote = live_33204_1_quote()
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "TOP-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    bind = _page_pdf_bind_ok(1)
+    bind["productid_n"] = 0
+    client.upload_pdf_via_page_add_files.return_value = bind
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "cutting_length_n": 0,
+        "weight_n": 1,
+        "productid_n": 0,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "picker_via": "none_plate_widget",
+        "picker_sku": "PL1/2-A572",
+    }
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+        "filelist_bag": {
+            "Machine": "Laser - Bay1",
+            "ProductID": None,
+            "Qty": 1,
+            "Weight": 1.4378,
+            "Weight_UseLocal": True,
+            "OutsidePerimeter": 18.25,
+            "OutsidePerimeter_UseLocal": True,
+            "Material": "A572",
+            "Thickness": "0.5",
+            "Length": 9.125,
+            "Width": 7.5625,
+        },
+        "response_list_n": 1,
+        "response_tag": "",
+        "response_badge_string": "",
+        "response_production_ready": False,
+        "response_ocl_n": 0,
+        "response_ocl_names": [],
+        "response_unit_cost": 5.05,
+        "response_unit_weight_cost": 5.05,
+        "response_number_of_contours": 0,
+        "response_number_of_pierces": 0,
+    }
+    client.quote_item_read.return_value = {"Data": quote["ItemList"], "Total": 1}
+    client.get_json.return_value = quote
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003320",
+        pdf_files=[pdf],
+        material="A572",
+        thickness="0.5",
+        qty=1,
+        description="TOP PLATE",
+        bom_rows=[
+            {
+                "part_no": "TOP-PLATE",
+                "qty": 1,
+                "description": "PLATE",
+                "width_in": 7.5625,
+                "length_in": 9.125,
+            }
+        ],
+    )
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    client.add_item_pdf_files.assert_not_called()
+    stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
+    assert stamp_rows
+    assert all("ProductID" not in row for row in stamp_rows)
+    assert stamp_rows[0]["Material"] != "316 Polished"
+    assert stamp_rows[0]["Machine"] == "Laser"
+    assert stamp_rows[0]["Location"] == "Bay1"
+    assert stamp_rows[0]["Status"] == 1
+    blob = " ".join(notes)
+    assert "33204-1" in blob
+    assert "do not Finish" in blob
+    assert "34603-2" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_1009213_1_thick_plate_is_component_not_cad_laser(
+    tmp_path, monkeypatch
+):
+    """1.25 in plate is Component — do not Cad-laser Image Files."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "PEDESTAL-BASE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000100921",
+        pdf_files=[pdf],
+        material="A572",
+        thickness="1.25",
+        qty=1,
+        description="PEDESTAL BASE PLATE",
+        bom_rows=[
+            {
+                "part_no": "PEDESTAL-BASE-PLATE",
+                "qty": 1,
+                "description": "PLATE",
+                "width_in": 28.5,
+                "length_in": 28.5,
+            }
+        ],
+    )
+    client.upload_pdf_via_page_add_files.assert_not_called()
+    client.stamp_pdf_kendo_flats.assert_not_called()
+    client.add_item_pdf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "1009213-1" in blob
+    assert "Component" in blob
+    assert "Skipped Image Files" in blob
+    assert "do not Finish" not in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_075_and_3_16_plate_stay_cad_for_image_files():
+    from secturafab.push import classify_image_files_item
+
+    assert classify_image_files_item("0.75 A36 PLATE", 0.75) == "Cad"
+    assert classify_image_files_item('3/4" A36 PLATE', 0.75) == "Cad"
+    assert classify_image_files_item('3/16" A36 PLATE', 0.1875) == "Cad"
+    assert classify_image_files_item('14501-1 3/16" A36', 0.1875) == "Cad"
+
+
+def test_hole_noun_stamps_diameter_and_skips_finish_without_pdfinternal(
+    tmp_path, monkeypatch
+):
+    """Drawing 1/2 HOLE + no GET /Quote/PDFInternal → do not Finish."""
+    from secturafab.push import _holes_from_noun
+
+    assert _holes_from_noun("PLATE 1/2 HOLE") == [{"diameter": 0.5, "qty": 1}]
+    assert _holes_from_noun("HOLE Ø0.75") == [{"diameter": 0.75, "qty": 1}]
+    assert _holes_from_noun("Ø21.875") == []
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "HOLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "weight_n": 1,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "feature_via": "AddNewPDFFeature",
+        "pdfinternal_xhr": False,
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-00000000hole",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE 1/2 HOLE",
+        bom_rows=[
+            {
+                "part_no": "HOLE-PLATE",
+                "qty": 1,
+                "description": "PLATE 1/2 HOLE",
+                "width_in": 4.0,
+                "length_in": 6.0,
+            }
+        ],
+    )
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    client.add_item_pdf_files.assert_not_called()
+    stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
+    assert stamp_rows
+    assert stamp_rows[0]["HoleDiameter"] == 0.5
+    blob = " ".join(notes)
+    assert "PDFInternal" in blob
+    assert "do not Finish" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_hole_pdfinternal_list0_pack_contours_is_gold(tmp_path, monkeypatch):
+    """Hole + PDFInternal + list0_pack PR/laser/UnitCost + 1/1 contours."""
+    from tests.fixtures.live_gold_cad_pack import gold_list0_pack_result
+    from tests.test_secturafab_website import _gold_cad
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "HOLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "weight_n": 1,
+        "internaldata_n": 1,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "feature_via": "AddNewPDFFeature",
+        "pdfinternal_xhr": True,
+    }
+    gold_cad = _gold_cad("HOLE-PLATE 1/4 A36")
+    gold_cad["UnitWeightCost"] = 1.1
+    gold_cad["DataPartPDF"] = {
+        "NumberOfContours": 1,
+        "NumberOfPierces": 1,
+        "InternalData": "page",
+    }
+    result = gold_list0_pack_result()
+    result["filelist_bag"] = {
+        "Machine": "Laser - Bay1",
+        "ProductID": None,
+        "Qty": 1,
+        "Weight": 1.2,
+        "Weight_UseLocal": True,
+        "OutsidePerimeter": 20.0,
+        "OutsidePerimeter_UseLocal": True,
+        "Material": "A36",
+        "Thickness": "0.25",
+        "Length": 6.0,
+        "Width": 4.0,
+    }
+    client.add_item_pdf_files.return_value = result
+    client.quote_item_read.return_value = {"Data": [gold_cad], "Total": 1}
+    client.get_json.return_value = {"ItemList": [gold_cad]}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-00000000gold",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE 1/2 HOLE",
+        bom_rows=[
+            {
+                "part_no": "HOLE-PLATE",
+                "qty": 1,
+                "description": "PLATE 1/2 HOLE",
+                "width_in": 4.0,
+                "length_in": 6.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_called_once()
+    blob = " ".join(notes)
+    assert "pdfinternal_xhr=true" in blob
+    assert "list0_pack.badge_string='PR'" in blob
+    assert "NumberOfContours/Pierces 1/1" in blob
+    assert "filelist_from_kendo=true" in blob
+    assert "DoD FAIL" not in blob
+    assert "persisted" in blob.lower()
+
+
+def test_29341_1_productid_hole_empty_badge_is_fail(tmp_path, monkeypatch):
+    """ProductID+hole+InternalData still BadgeString empty — DoD FAIL (29341-1)."""
+    from tests.fixtures.live_29341_1 import (
+        FILELIST_PRODUCT_ID,
+        leftover_productid_hole_empty_badge_result,
+    )
+    from tests.fixtures.live_sheets_plates import sheets_plates_page_payload
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "HOLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.get_json.return_value = sheets_plates_page_payload()
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "weight_n": 1,
+        "productid_n": 1,
+        "internaldata_n": 1,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "feature_via": "AddNewPDFFeature",
+        "hole_dim1_via": "data-edit=dim1",
+        "pdfinternal_xhr": True,
+    }
+    result = leftover_productid_hole_empty_badge_result()
+    result["finish_filelist_n"] = 1
+    client.add_item_pdf_files.return_value = result
+    client.quote_item_read.return_value = {
+        "Data": [
+            {
+                "Description": "HOLE-PLATE 1/4 A572",
+                "ProductType": 100,
+                "BadgeString": "",
+                "UnitCost": 3.0,
+                "UnitWeightCost": 3.0,
+                "ProductID": FILELIST_PRODUCT_ID,
+                "OperationCostList": [],
+            }
+        ],
+        "Total": 1,
+    }
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000029341",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE 1/2 HOLE",
+        bom_rows=[
+            {
+                "part_no": "HOLE-PLATE",
+                "qty": 1,
+                "description": "PLATE 1/2 HOLE",
+                "width_in": 4.0,
+                "length_in": 6.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_called_once()
+    blob = " ".join(notes)
+    assert "29341-1" in blob
+    assert "DoD FAIL" in blob
+    assert "hole_dim1_via=data-edit=dim1" in blob
+    assert "list0_pack.badge_string=''" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_1020250_1_contours_zero_after_productid_hole_is_fail(tmp_path, monkeypatch):
+    """ProductID+Dim1+InternalData still Contours=0 — DoD FAIL (1020250-1)."""
+    from tests.fixtures.live_1020250_1 import (
+        FILELIST_PRODUCT_ID,
+        leftover_contours_zero_after_productid_hole_result,
+    )
+    from tests.fixtures.live_sheets_plates import sheets_plates_page_payload
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "HOLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.get_json.return_value = sheets_plates_page_payload()
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "weight_n": 1,
+        "productid_n": 1,
+        "internaldata_n": 1,
+        "getperimeter_xhr": True,
+        "perimeter_via": "onLengthChangePDF+onWidthChangePDF",
+        "feature_via": "AddNewPDFFeature",
+        "hole_dim1_via": "data-edit=dim1",
+        "confirm_via": "",
+        "form_lw_synced": True,
+        "pdfinternal_html": True,
+        "getperim_internal_n": 1,
+        "getperim_internal_dim1_n": 0,
+        "pdfinternal_xhr": True,
+    }
+    result = leftover_contours_zero_after_productid_hole_result()
+    result["finish_filelist_n"] = 1
+    client.add_item_pdf_files.return_value = result
+    client.quote_item_read.return_value = {
+        "Data": [
+            {
+                "Description": "HOLE-PLATE 7GA A572",
+                "ProductType": 100,
+                "BadgeString": "",
+                "UnitCost": 7.37,
+                "UnitWeightCost": 7.37,
+                "ProductID": FILELIST_PRODUCT_ID,
+                "OperationCostList": [],
+                "DataPartPDF": {
+                    "NumberOfContours": 0,
+                    "NumberOfPierces": None,
+                },
+            }
+        ],
+        "Total": 1,
+    }
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000102025",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE 1/2 HOLE",
+        bom_rows=[
+            {
+                "part_no": "HOLE-PLATE",
+                "qty": 1,
+                "description": "PLATE 1/2 HOLE",
+                "width_in": 4.0,
+                "length_in": 6.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_called_once()
+    blob = " ".join(notes)
+    assert "1020250-1" in blob
+    assert "Contours=0" in blob
+    assert "DoD FAIL" in blob
+    assert "form_lw_synced=true" in blob
+    assert "getperim_internal_dim1_n=0" in blob
+    assert "persisted" not in blob.lower()
+    assert "NumberOfContours" not in str(client.add_item_pdf_files.call_args)
+
+
+def test_form_lw_unsynced_after_internal_dim1_skips_finish(tmp_path, monkeypatch):
+    """form_lw_synced=false / OP=0 after Internal Dim1 UPW — do not Finish."""
+    from tests.fixtures.live_1020250_1 import leftover_form_lw_unsynced_stamp
+    from tests.fixtures.live_sheets_plates import sheets_plates_page_payload
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "HOLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.get_json.return_value = sheets_plates_page_payload()
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = leftover_form_lw_unsynced_stamp()
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000102025",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE 1/2 HOLE",
+        bom_rows=[
+            {
+                "part_no": "HOLE-PLATE",
+                "qty": 1,
+                "description": "PLATE 1/2 HOLE",
+                "width_in": 4.0,
+                "length_in": 6.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "form_lw_synced=false" in blob
+    assert "3e222215" in blob
+    assert "do not Finish" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_finish_filelist_n0_after_form_lw_skips_finish(tmp_path, monkeypatch):
+    """GetPDFData n=0 after form_lw_synced + OP>0 — do not Finish (1ca884cc)."""
+    from tests.fixtures.live_1020250_1 import leftover_finish_filelist_n0_stamp
+    from tests.fixtures.live_sheets_plates import sheets_plates_page_payload
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "HOLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.get_json.return_value = sheets_plates_page_payload()
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = leftover_finish_filelist_n0_stamp()
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000102025",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE 1/2 HOLE",
+        bom_rows=[
+            {
+                "part_no": "HOLE-PLATE",
+                "qty": 1,
+                "description": "PLATE 1/2 HOLE",
+                "width_in": 4.0,
+                "length_in": 6.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "1ca884cc" in blob
+    assert "GetPDFData FileList n=0" in blob
+    assert "do not Finish" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_gold_weldment_shape_kids_under_assembly_weld_on_assembly_only():
+    """Gold 1001898-1: kids under assembly, Weld on assembly, never Cad/Linear."""
+    payload = gold_1001898_get()
+    items = list(payload["ItemList"])
+    assemblies = [it for it in items if it.get("ProductType") == 300]
+    kids = [it for it in items if it.get("ProductType") != 300]
+    assert len(assemblies) == 1
+    root = assemblies[0]
+    weld_names = [
+        o.get("CalculatorName")
+        for o in (root.get("OperationCostList") or [])
+        if o.get("OperationName") == "Weld"
+    ]
+    assert "Weld-Time" in weld_names
+    assert "Weld-Fitting" in weld_names
+    assert "Weld-Setup" in weld_names
+    assert kids
+    for kid in kids:
+        assert kid.get("AssemblyID") == root["ID"], kid.get("Description")
+        assert not any(
+            o.get("OperationName") == "Weld"
+            for o in (kid.get("OperationCostList") or [])
+        )
+        pt = kid.get("ProductType")
+        if pt == 100:
+            assert kid.get("BadgeString") == "PR"
+            assert float(kid.get("UnitCost") or 0) > 0
+        if pt in (10, 30, 40):
+            names = [
+                o.get("CalculatorName")
+                for o in (kid.get("OperationCostList") or [])
+            ]
+            assert "Saw" in names
+            assert any("Setup" in str(n) for n in names)
+            assert float(kid.get("UnitCost") or 0) > 0
+    qa = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert qa.ok is True
+
+
+def test_weld_on_cad_or_linear_fails_gold_shape():
+    payload = gold_1001898_get()
+    for it in payload["ItemList"]:
+        if it.get("ProductType") == 100:
+            it["OperationCostList"] = list(it.get("OperationCostList") or []) + [
+                {"OperationName": "Weld", "CalculatorName": "Weld-Time"}
+            ]
+            break
+    qa = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert qa.ok is False
+    assert any("Weld is assemblies only" in f for f in qa.failures)
+
+
+def test_pick_assembly_weld_target_skips_cad_and_linear():
+    from secturafab.weld_ops import (
+        iter_assembly_weld_targets,
+        pick_assembly_weld_target,
+    )
+
+    items = [
+        {
+            "ID": "cad-1",
+            "Description": "14501-1 PLATE",
+            "ProductType": 100,
+        },
+        {
+            "ID": "lin-1",
+            "Description": "1001880-2 TUBE",
+            "ProductType": 30,
+        },
+        {
+            "ID": "asm-1",
+            "Description": "1001898-1 - PEDESTAL WELDMENT",
+            "ProductType": 300,
+            "IsAssembly": True,
+        },
+    ]
+    assert pick_assembly_weld_target(items, part_key="1001898-1")["ID"] == "asm-1"
+    assert pick_assembly_weld_target(items[:2], part_key="1001898-1") is None
+    times = {"weld_minutes": 10, "fitup_with_fixture_minutes": 5}
+    targets = iter_assembly_weld_targets(items, times=times, part_key="1001898-1")
+    assert [t[0]["ID"] for t in targets] == ["asm-1"]
+
+
+def test_nested_weldment_gets_own_weld_minutes():
+    from secturafab.weld_ops import ensure_weld_ops, iter_assembly_weld_targets
+
+    items = [
+        {
+            "ID": "root",
+            "Description": "1001898-1 - PEDESTAL WELDMENT",
+            "ProductType": 300,
+            "IsAssembly": True,
+            "OperationCostList": [],
+        },
+        {
+            "ID": "nest",
+            "Description": "102711-1 - CABLE TUBE WELDMENT",
+            "ProductType": 300,
+            "IsAssembly": True,
+            "AssemblyID": "root",
+            "OperationCostList": [],
+        },
+        {
+            "ID": "cad-1",
+            "Description": "14501-1 PLATE",
+            "ProductType": 100,
+            "AssemblyID": "root",
+            "OperationCostList": [],
+        },
+    ]
+    job_times = {
+        "weld_minutes": 154.33,
+        "total_inches": 308.66,
+        "fitup_with_fixture_minutes": 108.0,
+        "nested": {
+            "102711-1": {
+                "weld_minutes": 12.0,
+                "total_inches": 8.0,
+                "fitup_with_fixture_minutes": 6.0,
+            }
+        },
+    }
+    pairs = iter_assembly_weld_targets(
+        items, times=job_times, part_key="1001898-1"
+    )
+    assert {p[0]["ID"] for p in pairs} == {"root", "nest"}
+    no_nested = dict(job_times)
+    no_nested.pop("nested")
+    only_root = iter_assembly_weld_targets(
+        items, times=no_nested, part_key="1001898-1"
+    )
+    assert [p[0]["ID"] for p in only_root] == ["root"]
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {"ItemList": items}
+    client.add_operation.return_value = {"ok": True, "via": "page_fn", "weld_from_page": True}
+    notes = ensure_weld_ops(
+        client, "new-qid", times=job_times, part_key="1001898-1"
+    )
+    assert client.add_operation.call_count == 2
+    ids = [c.kwargs["item_id"] for c in client.add_operation.call_args_list]
+    assert ids == ["root", "nest"]
+    assert all("AddOperation" in n for n in notes)
+    client.request.assert_not_called()
+
+
+def test_ensure_weld_ops_never_stamps_cad_or_linear():
+    from secturafab.weld_ops import ensure_weld_ops
+
+    client = MagicMock()
+    client.config.website_cookie = None
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "cad-1",
+                "Description": "14501-1 PLATE",
+                "ProductType": 100,
+                "OperationCostList": [],
+            },
+            {
+                "ID": "lin-1",
+                "Description": "1001880-2 TUBE",
+                "ProductType": 30,
+                "OperationCostList": [],
+            },
+        ]
+    }
+    notes = ensure_weld_ops(
+        client,
+        "qid",
+        times={"weld_minutes": 20, "total_inches": 40, "fitup_with_fixture_minutes": 8},
+        part_key="1001898-1",
+    )
+    client.add_operation.assert_not_called()
+    client.request.assert_not_called()
+    assert any("assemblies only" in n for n in notes)
+
+
+def test_relink_copy_move_uses_page_path_and_skips_nested_kids():
+    from secturafab.assembly_ops import relink_assembly_children
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    items = [
+        {
+            "ID": "asm",
+            "Description": "1001898-1 - PEDESTAL WELDMENT",
+            "ProductType": 300,
+            "IsAssembly": True,
+            "Quantity": 1,
+        },
+        {
+            "ID": "nest",
+            "Description": "102711-1 - CABLE TUBE WELDMENT",
+            "ProductType": 300,
+            "IsAssembly": True,
+            "AssemblyID": "asm",
+            "Quantity": 1,
+        },
+        {
+            "ID": "cad-root",
+            "Description": "14501-1 PLATE",
+            "ProductType": 100,
+            "AssemblyID": None,
+            "Quantity": 1,
+        },
+        {
+            "ID": "cad-nest",
+            "Description": "102712-1 PLATE",
+            "ProductType": 100,
+            "AssemblyID": "nest",
+            "Quantity": 1,
+        },
+    ]
+    client.get_json.return_value = {"ItemList": items}
+    client.copy_move_item_to_assembly.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "copy_move_from_page": True,
+    }
+    notes = relink_assembly_children(client, "qid", part_key="1001898-1")
+    moved_ids = [
+        c.kwargs["item_id"] for c in client.copy_move_item_to_assembly.call_args_list
+    ]
+    assert "cad-root" in moved_ids
+    assert "nest" in moved_ids
+    assert "cad-nest" not in moved_ids
+    assert any("Copy/Move" in n for n in notes)
+
+
+def test_relink_copy_move_cookie_skip_is_fail_closed():
+    from secturafab.assembly_ops import relink_assembly_children
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "asm",
+                "Description": "1001898-1",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "Quantity": 1,
+            },
+            {
+                "ID": "cad",
+                "Description": "14501-1",
+                "ProductType": 100,
+                "Quantity": 1,
+            },
+        ]
+    }
+    client.copy_move_item_to_assembly.return_value = {
+        "ok": False,
+        "via": "skipped",
+        "copy_move_from_page": False,
+    }
+    notes = relink_assembly_children(client, "qid", part_key="1001898-1")
+    assert any("fail-closed" in n for n in notes)
+    client.request.assert_not_called()
+
+
+def test_ensure_weld_ops_page_skip_is_fail_closed_not_graft():
+    from secturafab.weld_ops import ensure_weld_ops
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "asm-1",
+                "Description": "1001898-1 - PEDESTAL WELDMENT",
+                "ProductType": 300,
+                "IsAssembly": True,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+            {
+                "ID": "cad-1",
+                "Description": "14501-1",
+                "ProductType": 100,
+                "Quantity": 1,
+                "OperationCostList": [],
+            },
+        ]
+    }
+    client.add_operation.return_value = {
+        "ok": False,
+        "via": "skipped",
+        "weld_from_page": False,
+    }
+    notes = ensure_weld_ops(
+        client,
+        "qid",
+        times={"weld_minutes": 20, "total_inches": 40, "fitup_with_fixture_minutes": 8},
+        part_key="1001898-1",
+    )
+    assert any("fail-closed" in n and "not grafting" in n for n in notes)
+    client.request.assert_not_called()
+
+
+def test_34603_2_filelist_productid_null_after_sku_bind_does_not_finish(
+    tmp_path, monkeypatch
+):
+    """Live 34603-2: plate SKU required + stamp ProductID still 0 — do not Finish."""
+    from secturafab.website import filelist_productid_null_after_sku_bind_is_fail
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "PROOF-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    bind = _page_pdf_bind_ok(1)
+    bind["productid_n"] = 0
+    client.upload_pdf_via_page_add_files.return_value = bind
+    stamp_out = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "weight_n": 1,
+        "productid_n": 0,
+        "internaldata_n": 0,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "picker_via": "#gridSelectProductPlate",
+        "picker_sku": "PL025-A572",
+        "picker_apply": "search_only",
+    }
+    client.stamp_pdf_kendo_flats.return_value = stamp_out
+    assert filelist_productid_null_after_sku_bind_is_fail(
+        stamp_out, [{"ProductSku": "PL025-A572"}]
+    ) is True
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003460",
+        pdf_files=[pdf],
+        material="A572 Grade 50",
+        thickness="0.25",
+        qty=1,
+        description="PLATE",
+        bom_rows=[
+            {
+                "part_no": "PROOF-PLATE",
+                "qty": 1,
+                "description": "PLATE",
+                "width_in": 12.0,
+                "length_in": 18.0,
+            }
+        ],
+    )
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    client.add_item_pdf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "do not Finish" in blob
+    assert "34603-2" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_cad_laser_pack_proof_requires_labeled_hole_not_rad(tmp_path):
+    from secturafab.push import cad_laser_pack_proof_row
+
+    assert cad_laser_pack_proof_row(
+        {
+            "part_no": "14501-1",
+            "description": "PLATE 1/2 HOLE",
+            "thickness_in": 0.1875,
+        }
+    ) is True
+    assert cad_laser_pack_proof_row(
+        {
+            "part_no": "34606-1",
+            "description": "PLATE RAD 1.0",
+            "thickness_in": 0.25,
+        }
+    ) is False
+    assert cad_laser_pack_proof_row(
+        {
+            "part_no": "THICK",
+            "description": "PLATE 1/2 HOLE",
+            "thickness_in": 1.25,
+        }
+    ) is False
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "NOHOLE.pdf").write_bytes(b"%PDF")
+    (lib / "HOLE.pdf").write_bytes(b"%PDF")
+    (lib / "THICK.pdf").write_bytes(b"%PDF")
+    service = SecturaFabPushService(client=MagicMock())
+    paths = service._library_cad_pdfs(
+        [
+            {"part_no": "NOHOLE", "description": "PLATE", "thickness_in": 0.25},
+            {
+                "part_no": "HOLE",
+                "description": "PLATE 1/2 HOLE",
+                "thickness_in": 0.25,
+            },
+            {
+                "part_no": "THICK",
+                "description": "PLATE 1/2 HOLE",
+                "thickness_in": 1.25,
+            },
+        ],
+        {"folder": str(lib), "related_pdfs": ["NOHOLE.pdf", "HOLE.pdf", "THICK.pdf"]},
+    )
+    names = [p.name for p in paths]
+    assert names[0] == "HOLE.pdf"
+    assert "NOHOLE.pdf" in names
+    assert "THICK.pdf" not in names
+
+
+def test_21682_1_plate_config_total_3_is_not_a_catalog_success(
+    tmp_path, monkeypatch
+):
+    """Quote-time Total=3 is not Products → Sheets & Plates. Not plate_sku_missing."""
+    from secturafab.plate_ops import PLATE_SKU_MISSING
+    from tests.fixtures.live_21682_1 import plate_config_miss_payload
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "KNUCKLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.read_data_plate_config.return_value = plate_config_miss_payload()
+    client.get_json.return_value = {"Results": [], "HasNext": False}
+    bind = _page_pdf_bind_ok(1)
+    bind["productid_n"] = 0
+    client.upload_pdf_via_page_add_files.return_value = bind
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "weight_n": 1,
+        "productid_n": 0,
+        "internaldata_n": 1,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "pdfinternal_xhr": True,
+        "feature_via": "AddNewPDFFeature",
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-0000000021682",
+        pdf_files=[pdf],
+        material="DOMEX/WELDOX",
+        thickness="0.5",
+        qty=1,
+        description="KNUCKLE PLATE",
+        bom_rows=[
+            {
+                "part_no": "KNUCKLE-PLATE",
+                "qty": 1,
+                "description": "1/2 DOMEX 1.0 HOLE",
+                "width_in": 14.5,
+                "length_in": 15.0,
+                "thickness_in": 0.5,
+            }
+        ],
+    )
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
+    assert stamp_rows
+    assert all("ProductID" not in row for row in stamp_rows)
+    assert all(not str(row.get("ProductSku") or "").strip() for row in stamp_rows)
+    blob = " ".join(notes)
+    assert PLATE_SKU_MISSING not in blob
+    plate_gets = [
+        str(c.args[0])
+        for c in client.get_json.call_args_list
+        if c.args
+    ]
+    assert any(u.startswith("v1/product/plate") for u in plate_gets)
+    assert "plate_catalog=v1/product/plate" not in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_a36_gold_plate_sku_binds_pl7_ga_a36(tmp_path, monkeypatch):
+    """Gold 14501-1 style: 3/16 A36 binds tenant ProductName PL7 Ga-A36."""
+    from tests.fixtures.live_sheets_plates import (
+        PL7_GA_A36_ID,
+        sheets_plates_page_payload,
+    )
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "14501-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.read_data_plate_config.return_value = {
+        "Data": [
+            {
+                "ID": "pl3-a572",
+                "ProductName": "PL3-A572",
+                "MaterialGrade": "A572",
+                "Thickness": 3,
+                "Active": True,
+            }
+        ],
+        "Total": 3,
+    }
+    client.get_json.return_value = sheets_plates_page_payload()
+    client.upload_pdf_via_page_add_files.return_value = _page_pdf_bind_ok(1)
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "weight_n": 1,
+        "productid_n": 1,
+        "internaldata_n": 1,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "picker_via": "#gridSelectProductPlate",
+        "picker_sku": "PL7 Ga-A36",
+        "picker_apply": "modal_apply",
+        "pdfinternal_xhr": True,
+    }
+    client.add_item_pdf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddPDFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+        "response_list_n": 1,
+        "response_tag": "",
+        "response_badge_string": "PR",
+        "response_production_ready": False,
+        "response_ocl_n": 5,
+        "response_ocl_names": [
+            "Laser",
+            "Drafting",
+            "Deburr",
+            "Laser-Setup",
+            "Sheet Loading",
+        ],
+        "response_unit_cost": 36.22,
+        "response_unit_weight_cost": 14.65,
+        "response_number_of_contours": 1,
+        "response_number_of_pierces": 1,
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001450",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.1875",
+        qty=1,
+        description="PEDESTAL TOP PLATE",
+        bom_rows=[
+            {
+                "part_no": "14501-1",
+                "qty": 1,
+                "description": '3/16 A36 1/2 HOLE',
+                "width_in": 21.875,
+                "length_in": 21.875,
+                "thickness_in": 0.1875,
+            }
+        ],
+    )
+    stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
+    assert stamp_rows
+    assert stamp_rows[0]["ProductSku"] == "PL7 Ga-A36"
+    assert stamp_rows[0]["ProductID"] == PL7_GA_A36_ID
+    blob = " ".join(notes)
+    assert "plate_sku_missing" not in blob
+    assert "plate_catalog=v1/product/plate" in blob
+    client.add_item_pdf_files.assert_called_once()
+
+
+def test_domex_full_catalog_miss_is_plate_sku_missing(tmp_path, monkeypatch):
+    """Full Sheets & Plates list with no Domex/PL050 → plate_sku_missing."""
+    from secturafab.plate_ops import PLATE_SKU_MISSING
+    from tests.fixtures.live_sheets_plates import sheets_plates_page_payload
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "KNUCKLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_item_add_view.return_value = {}
+    client.read_data_plate_config.return_value = {"Data": [], "Total": 3}
+    client.get_json.return_value = sheets_plates_page_payload()
+    bind = _page_pdf_bind_ok(1)
+    bind["productid_n"] = 0
+    client.upload_pdf_via_page_add_files.return_value = bind
+    client.stamp_pdf_kendo_flats.return_value = {
+        "ok": True,
+        "stamped": 1,
+        "cell_edit": 2,
+        "outside_perimeter_n": 1,
+        "weight_n": 1,
+        "productid_n": 0,
+        "internaldata_n": 1,
+        "getperimeter_xhr": True,
+        "perimeter_via": "UpdatePerimeterWeight",
+        "pdfinternal_xhr": True,
+        "feature_via": "AddNewPDFFeature",
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-0000000021682",
+        pdf_files=[pdf],
+        material="DOMEX/WELDOX",
+        thickness="0.5",
+        qty=1,
+        description="KNUCKLE PLATE",
+        bom_rows=[
+            {
+                "part_no": "KNUCKLE-PLATE",
+                "qty": 1,
+                "description": "1/2 DOMEX 1.0 HOLE",
+                "width_in": 14.5,
+                "length_in": 15.0,
+                "thickness_in": 0.5,
+            }
+        ],
+    )
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    client.add_item_pdf_files.assert_not_called()
+    stamp_rows = client.stamp_pdf_kendo_flats.call_args.kwargs.get("rows") or []
+    assert stamp_rows
+    assert all("ProductID" not in row for row in stamp_rows)
+    blob = " ".join(notes)
+    assert PLATE_SKU_MISSING in blob
+    assert "do not Finish" in blob
+    assert "do not invent a GUID" in blob
+    assert "persisted" not in blob.lower()
+
+
+def test_cad_pick_prefers_hole_with_tenant_productid(tmp_path):
+    """Runner pick: Cad ≤3/4 + hole + tenant ProductID over catalog-miss Domex."""
+    from tests.fixtures.live_sheets_plates import sheets_plates_catalog_rows
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "NOHOLE.pdf").write_bytes(b"%PDF")
+    (lib / "A36HOLE.pdf").write_bytes(b"%PDF")
+    (lib / "DOMEX.pdf").write_bytes(b"%PDF")
+    catalog = sheets_plates_catalog_rows()
+    service = SecturaFabPushService(client=MagicMock())
+    paths = service._library_cad_pdfs(
+        [
+            {"part_no": "NOHOLE", "description": "PLATE", "thickness_in": 0.25},
+            {
+                "part_no": "DOMEX",
+                "description": "1/2 DOMEX 1.0 HOLE",
+                "thickness_in": 0.5,
+            },
+            {
+                "part_no": "A36HOLE",
+                "description": "PLATE 1/2 HOLE",
+                "thickness_in": 0.1875,
+            },
+        ],
+        {
+            "folder": str(lib),
+            "related_pdfs": ["NOHOLE.pdf", "DOMEX.pdf", "A36HOLE.pdf"],
+        },
+        plate_catalog=catalog,
+    )
+    names = [p.name for p in paths]
+    assert names[0] == "A36HOLE.pdf"
+    assert "DOMEX.pdf" not in names

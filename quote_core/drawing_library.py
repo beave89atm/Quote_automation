@@ -44,6 +44,8 @@ class DrawingMatch:
 
 # Cummins / NGFS style: ME04-3453, MD04-2482
 _ALPHA_DASH_PN_RE = re.compile(r"\b([A-Z]{1,3}\d{2}-\d{3,5})\b", re.IGNORECASE)
+# Profrac / Aledo: P001545, W001544, BB2000-ASM (letter + digits, optional -tail)
+_LETTER_PN_RE = re.compile(r"\b([A-Z]{1,3}\d{4,}(?:-[A-Z0-9]+)?)\b", re.IGNORECASE)
 
 
 def extract_part_key(*names: str | None) -> str | None:
@@ -66,6 +68,8 @@ def extract_part_key(*names: str | None) -> str | None:
             candidates.append(m.group(0))
         for m in _ALPHA_DASH_PN_RE.finditer(stem.upper()):
             candidates.append(m.group(1).upper())
+        for m in _LETTER_PN_RE.finditer(stem.upper()):
+            candidates.append(m.group(1).upper())
         # Also accept bare alphanumeric stems like A078X022 (never preferred over dashed).
         compact = re.sub(r"[^A-Za-z0-9]", "", stem)
         compact = _REV_SUFFIX_RE.sub("", compact)
@@ -73,10 +77,18 @@ def extract_part_key(*names: str | None) -> str | None:
             candidates.append(compact)
     if not candidates:
         return None
-    # Prefer dashed keys (1511-5024 / 35145-1 / ME04-3453) over bare (35145), then longer numeric.
+    # Prefer dashed keys (1511-5024 / 35145-1 / ME04-3453) over bare (35145),
+    # then letter PNs (P001545) over stripped digits (001545).
     dashed = [c for c in candidates if "-" in c]
     if dashed:
         return max(dashed, key=len)
+    letter = [
+        c
+        for c in candidates
+        if re.fullmatch(r"[A-Z]{1,3}\d{4,}(?:-[A-Z0-9]+)?", c, re.I)
+    ]
+    if letter:
+        return max(letter, key=len)
     numeric = [c for c in candidates if c.isdigit()]
     if numeric:
         return max(numeric, key=len)
@@ -150,6 +162,14 @@ def _folder_score(folder: Path, part_key: str) -> int:
         return 85
     if name.startswith(part_key):
         return 80
+    if name.rstrip().endswith(part_key) or name.rstrip().endswith(" " + part_key):
+        return 90
+    # Bare 1001898 matches ``Pedestal Weldment - 1001898-1``.
+    if re.search(
+        rf"(?i)(?:^|[\s_\-]){re.escape(part_key)}(?:-\d+[A-Za-z]?)?$",
+        name.strip(),
+    ):
+        return 88
     if part_key in name:
         return 60
     # Bare key matches dashed folder: 35145 vs 35145-1

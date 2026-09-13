@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from quote_core.ocr import ocr_available, ocr_pdf_pages, tesseract_cmd
 
 
@@ -12,6 +14,8 @@ def test_tesseract_available_on_dev_machine():
 
 
 def test_ocr_skips_when_native_text_rich(tmp_path: Path):
+    if not ocr_available():
+        pytest.skip("Tesseract OCR not installed")
     import fitz
 
     pdf = tmp_path / "rich.pdf"
