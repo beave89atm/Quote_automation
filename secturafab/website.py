@@ -226,7 +226,8 @@ Q10332 (ZZ-DEL-wrong-org-Time; ID unknown). Q10333 / H.6.38 /
 b5f56ac3 Safe Cave is a Contours PASS protect (Cad / Contours=1 /
 8 bends + Profile / Laser Bay1 / UC 176.96; unlock Component→Cad
 then thickness inches then Contours fill) — never remint /
-PATCH / ZZ-DEL.
+PATCH / ZZ-DEL. Cad-for-plate leftovers H638-CADPLATE / 5e7bfc0b
+and Q10334 / e2683a3f stay forbidden (Cad classify ≠ Contours fill).
 Server explode returning empty InternalData is the blocker
 (step_explode_no_internaldata aliases cad_internaldata_empty_after_explode).
 Optional GET /CadImport/Data + GET /CadImport/CADData after explode
@@ -250,7 +251,9 @@ Q10332 is description-only
 (ZZ-DEL-wrong-org-Time; quote ID not restated). Q10333 / H.6.38 /
 b5f56ac3 is a Contours PASS protect (Cad / Contours=1 / 8 bends +
 Profile / Laser Bay1 / UC 176.96) — never remint / PATCH / ZZ-DEL.
-Do not POST UpdateDataNext / ConvertTo / Detect* as a Finish substitute.
+Cad-for-plate leftovers H638-CADPLATE / 5e7bfc0b and Q10334 /
+e2683a3f stay forbidden. Do not POST UpdateDataNext / ConvertTo /
+Detect* as a Finish substitute.
 No live STEP t.List has yet arrived with nonempty InternalData+ImageString
 (LIVE_PART_CREATE_TLIST_BIND is None). Until Kyle grabs a manual Finish
 that shows Contours, persist the exact DevTools windows
@@ -269,7 +272,8 @@ Q10332 description-only
 (ZZ-DEL-wrong-org-Time; ID unknown). Q10333 / H.6.38 / b5f56ac3
 is a Contours PASS protect (Cad / Contours=1 / 8 bends + Profile /
 Laser Bay1 / UC 176.96) — never remint / PATCH / ZZ-DEL.
-Do not remint. Do not mint.
+Cad-for-plate leftovers H638-CADPLATE / 5e7bfc0b and Q10334 /
+e2683a3f stay forbidden. Do not remint. Do not mint.
 
 SetUnits sends one query key `units`. Do not Finish the raw STEP row.
 
@@ -351,8 +355,11 @@ def is_tenant_guid(value: Any) -> bool:
 # fill. Protect forever; never remint / PATCH / ZZ-DEL.
 # Automation writes the
 # API/kendo ProductType field (100) + FileType/ItemType/Category=Cad +
-# SetPartMode 0 — not a UI dropdown click. Do not invent Contours;
-# refuse Finish if InternalData still empty after Cad classify.
+# SetPartMode 0 — not a UI dropdown click. Cad classify ≠ Contours fill
+# (live H638-CADPLATE / 5e7bfc0b SetPartMode Cad:1 InternalData empty;
+# Q10334 / e2683a3f kendo Cad/100 + 0.1875 in + Laser-Bay1 Contours
+# empty). Do not invent Contours; refuse Finish if InternalData still
+# empty after Cad classify. Next: DevTools of Kyle's real dropdown click.
 PART_MODE_CAD = 0
 PART_MODE_LINEAR = 1
 PART_MODE_COMPONENT = 2
@@ -1384,7 +1391,9 @@ KYLE_LOOM_COMPONENT_TO_CAD = (
     "Contours to fill. Live PASS Q10333 / b5f56ac3 / H.6.38 Safe Cave "
     "(Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96). "
     "Cad is set via API/kendo ProductType=100 + SetPartMode 0, not a UI click. "
-    "Do not invent Contours."
+    "Automation Cad classify ≠ Contours fill (H638-CADPLATE / 5e7bfc0b, "
+    "Q10334 / e2683a3f). Next: DevTools of Kyle's real Component→Cad "
+    "dropdown click XHRs. Do not invent Contours."
 )
 _THICKNESS_VALUE_UNIT_RE = re.compile(
     r"^\s*([0-9]*\.?[0-9]+)\s*[:\s]\s*"
@@ -1914,6 +1923,8 @@ def kyle_step_contours_devtools_capture() -> dict[str, Any]:
     (Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96;
     unlock Component→Cad then thickness inches then Contours fill) —
     never remint / PATCH / ZZ-DEL. Automation sets Cad via API/kendo field.
+    Cad classify ≠ Contours fill (H638-CADPLATE / 5e7bfc0b, Q10334 /
+    e2683a3f). Next: DevTools of Kyle's real dropdown click XHRs.
     Q10332 is a wrong-org Time mint (ZZ-DEL-wrong-org-Time; ID unknown).
     Do not invent Contours. Do not remint spent STEP leftovers.
     """
@@ -2599,7 +2610,8 @@ def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
         "c146ce6d; 35136-1 leftover 8973f890; 14327-5 leftover "
         "c5cd8689; 14327-8 leftover 1cd941c6; 14327-3 leftover "
         "75f07c2b; 21841-1 leftover aed89628; 14327-1 leftover "
-        "5e72fe39; ZZ-DEL). "
+        "5e72fe39; H638-CADPLATE leftover 5e7bfc0b; Q10334 leftover "
+        "e2683a3f; ZZ-DEL). "
         f"{STEP_EXPLODE_NO_INTERNALDATA} aliases "
         f"{CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE}. "
         "ImageString-without-InternalData is preview only (live 21785-2). "

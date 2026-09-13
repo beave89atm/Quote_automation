@@ -7,8 +7,9 @@ Live proof (do not remint / PATCH / ZZ-DEL):
 Unlock: Component→Cad then thickness inches then Contours fill.
 Kyle Loom Adjust Properties defaults ProductType to Component after
 Geometry Cleanup. Automation writes API/kendo ProductType=100 +
-SetPartMode 0 (not a UI click). invent=false — still fail-close if
-Contours/InternalData stay empty after Cad.
+SetPartMode 0 (not a UI click). Cad classify ≠ Contours fill
+(H638-CADPLATE / 5e7bfc0b, Q10334 / e2683a3f). invent=false —
+still fail-close if Contours/InternalData stay empty after Cad.
 
 Tip 0759273 wrongly forbade this as an empty-Contours ZZ-DEL fail.
 That narrative is reversed: forever-protect like other live PASSes.

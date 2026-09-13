@@ -2175,6 +2175,14 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("Q10333")
     assert is_forbidden_quote_id("b5f56ac3-326d-48e9-b82d-1e09a7897107")
     assert is_forbidden_quote_id("b5f56ac3-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("H638-CADPLATE")
+    assert is_forbidden_quote_number("ZZ-DEL-H638-CADPLATE")
+    assert is_forbidden_quote_number("Q10334")
+    assert is_forbidden_quote_number("ZZ-DEL-Q10334")
+    assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
+    assert is_forbidden_quote_id("5e7bfc0b-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
+    assert is_forbidden_quote_id("e2683a3f-1111-2222-3333-444444444444")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -9442,6 +9450,8 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("14327-1")
     assert is_forbidden_quote_number("Q10332")
     assert is_forbidden_quote_number("Q10333")
+    assert is_forbidden_quote_number("H638-CADPLATE")
+    assert is_forbidden_quote_number("Q10334")
     assert is_forbidden_quote_id("c146ce6d-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
     assert is_forbidden_quote_id("c5cd8689-fed4-44d6-b2f5-f96bda8af424")
@@ -9450,6 +9460,8 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_id("aed89628-b018-4b11-852f-bfed5bf8b964")
     assert is_forbidden_quote_id("5e72fe39-edc1-467c-925d-f1c8d74cc5d3")
     assert is_forbidden_quote_id("b5f56ac3-326d-48e9-b82d-1e09a7897107")
+    assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
+    assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
     assert is_forbidden_quote_id("30f50f96-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("0837ad33-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("1004f017-aaaa-bbbb-cccc-000000000001")
@@ -10236,6 +10248,8 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
     assert "21841-1" in refuse
     assert "5e72fe39" in refuse
     assert "14327-1" in refuse
+    assert "5e7bfc0b" in refuse
+    assert "e2683a3f" in refuse
     assert "b5f56ac3" not in refuse
     assert "Q10333" not in refuse
     assert "missing_call=POST /part/create t.List InternalData+ImageString" in refuse
@@ -10339,6 +10353,8 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "14327-1",
         "Q10332",
         "Q10333",
+        "H638-CADPLATE",
+        "Q10334",
         "28768-1",
         "10289-4",
         "P904271-1",
@@ -11156,6 +11172,8 @@ def test_leftover_contours_ui_q10329_q10330_q10331_forever_forbid():
     assert "8973f890" in refuse
     assert "b5f56ac3" not in refuse
     assert "Q10333" not in refuse
+    assert "5e7bfc0b" in refuse
+    assert "e2683a3f" in refuse
 
 
 def test_plate_step_classify_bind_sets_cad_not_component():
@@ -11391,6 +11409,10 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_number("Q10329")
     assert is_forbidden_quote_number("Q10330")
     assert is_forbidden_quote_number("Q10331")
+    assert is_forbidden_quote_number("H638-CADPLATE")
+    assert is_forbidden_quote_number("Q10334")
+    assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
+    assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
 
     refuse = cad_filelist_refuses_additem_dxf(
         {
@@ -11404,7 +11426,164 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert refuse is not None
     assert "b5f56ac3" not in refuse
     assert "Q10333" not in refuse
+    assert "5e7bfc0b" in refuse
+    assert "e2683a3f" in refuse
     assert dump["invent"] is False
+
+
+def test_leftover_cad_for_plate_h638_q10334_forever_forbid():
+    """Cad-for-plate leftovers: automation Cad classify ≠ Contours fill.
+
+    5e7bfc0b / H638-CADPLATE SetPartMode 0 + ProductType 100 Cad:1,
+    InternalData empty, Finish refuse. e2683a3f / Q10334 kendo
+    Cad/100 + 0.1875 in + Laser-Bay1, Contours empty. invented=false.
+    Q10333 / b5f56ac3 stays Contours PASS protect. Fill stays locked.
+    """
+    from pathlib import Path
+
+    from secturafab.cadimport_js import (
+        CLASSIFY_FINISH_INTERNALDATA_FILL,
+        SET_PART_MODE_PATH,
+        extract_cadimport_xhrs,
+    )
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        STEP_CONTOURS_FILL_UNLOCKED,
+        cad_filelist_refuses_additem_dxf,
+        step_contours_fill_unlocked,
+    )
+    from tests.fixtures.cad_dropdown_contours_gap import (
+        cad_dropdown_contours_gap,
+        cad_dropdown_contours_gap_exhausted,
+    )
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_q10333_h638 import q10333_h638_pass_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    expected = (
+        (
+            "5e7bfc0b-ecf9-46cf-8851-d61062141ce7",
+            "5e7bfc0b",
+            "H638-CADPLATE",
+            "ZZ-DEL-H638-CADPLATE",
+        ),
+        (
+            "e2683a3f-daf5-49ff-83c1-79aed35207a1",
+            "e2683a3f",
+            "Q10334",
+            "ZZ-DEL-Q10334",
+        ),
+    )
+    dumps = leftover_cad_for_plate_dumps()
+    assert len(dumps) == 2
+    assert all(row["quote_number"] != "Q10333" for row in dumps)
+    for dump, (qid, prefix, qn, zz) in zip(dumps, expected, strict=True):
+        assert dump["quote_id"] == qid
+        assert dump["quote_id_prefix"] == prefix
+        assert dump["quote_number"] == qn
+        assert dump["zz_del_number"] == zz
+        assert dump["internaldata_empty"] is True
+        assert dump["contours_empty"] is True
+        assert dump["invent"] is False
+        assert dump["unlocks_automation_contours_fill"] is False
+        assert dump["unlocks_contours_fill"] is False
+        assert dump["fail_close"] is True
+        assert is_forbidden_quote_id(qid)
+        assert is_forbidden_quote_id(f"{prefix}-1111-2222-3333-444444444444")
+        assert is_forbidden_quote_number(qn)
+        assert is_forbidden_quote_number(zz)
+        assert spent_quote_number_block_reason(qn)
+        assert qn in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+        with pytest.raises(ForbiddenQuoteError, match=qn):
+            refuse_forbidden_quote_write(
+                method="POST",
+                path="/Quote/AddItem_DXFFiles",
+                payload={"QuoteNumber": qn},
+            )
+        with pytest.raises(ForbiddenQuoteError, match=prefix):
+            refuse_forbidden_quote_write(
+                method="POST",
+                path="/Quote/AddItem_DXFFiles",
+                payload={"ID": qid},
+            )
+
+    protect = q10333_h638_pass_dump()
+    assert protect["quote_number"] == "Q10333"
+    assert protect["quote_id"] == "b5f56ac3-326d-48e9-b82d-1e09a7897107"
+    assert protect["pass"] is True
+    assert protect["unlocks_automation_contours_fill"] is False
+    assert is_forbidden_quote_number("Q10333")
+    assert is_forbidden_quote_id(protect["quote_id"])
+
+    gap = cad_dropdown_contours_gap()
+    assert gap["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
+    assert step_contours_fill_unlocked() is False
+    assert gap["cad_dropdown_contours_fill"] is None
+    assert gap["classify_finish_internaldata_fill"] is CLASSIFY_FINISH_INTERNALDATA_FILL
+    assert CLASSIFY_FINISH_INTERNALDATA_FILL is None
+    assert gap["cad_classify_neq_contours_fill"] is True
+    assert gap["unlocks_automation_contours_fill"] is False
+    assert gap["invent"] is False
+    assert gap["kendo_row_set_fills_contours"] is False
+    assert gap["human_dropdown_fills_contours"] is True
+    assert gap["human_dropdown_reproduced"] is False
+    assert gap["next"] == "devtools_kyle_component_to_cad_dropdown_xhrs"
+    assert gap["set_part_mode_path"] == SET_PART_MODE_PATH
+    assert gap["set_part_mode_keys"] == ("ID", "PartMode")
+    assert cad_dropdown_contours_gap_exhausted() is True
+    ids = [h["id"] for h in gap["hypotheses"]]
+    assert ids == [
+        "native_select_vs_kendo_set",
+        "price_list_manual_entry_cad",
+        "details_form_save",
+        "finish_fills_contours",
+        "thickness_unit_conversion",
+    ]
+    assert all(h["ruled_out"] is True for h in gap["hypotheses"])
+
+    js = (
+        Path(__file__).resolve().parent / "fixtures" / "quote_order_edit_create_parts.js"
+    ).read_text()
+    assert "InternalData" not in js
+    assert "SetPartMode" not in js
+    assert "ProductType" not in js
+    xhrs = extract_cadimport_xhrs(js)
+    assert {x.path for x in xhrs} <= {
+        "/CadImport/ConvertTo",
+        "/CadImport/UpdateDataNext",
+        "/part/create",
+    }
+    pdf_js = (
+        Path(__file__).resolve().parent / "fixtures" / "quote_order_edit_getpdfdata.js"
+    ).read_text()
+    assert "PriceListID" in pdf_js
+    assert "/CadImport/SetPartMode" not in pdf_js
+    assert "AddItem_DXFFiles" not in pdf_js
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "5e7bfc0b" in refuse
+    assert "e2683a3f" in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert "InternalData empty" in refuse
 
 
 def test_wrong_org_time_q10332_forever_forbid_description_only():

@@ -13,7 +13,9 @@ Do not remint 28769-1 / c146ce6d. Sibling spent STEPs stay forbidden
 14327-1 / Q10331 / 5e72fe39, Q10332 / ZZ-DEL-wrong-org-Time
 (ID unknown). Q10333 / H.6.38 / b5f56ac3 is a Contours PASS
 protect (Cad / Contours=1 / 8 bends + Profile / Laser Bay1 /
-UC 176.96) — never remint / PATCH / ZZ-DEL. Also 28768-1, 10289-4,
+UC 176.96) — never remint / PATCH / ZZ-DEL. Cad-for-plate leftovers
+H638-CADPLATE / 5e7bfc0b and Q10334 / e2683a3f stay forbidden.
+Also 28768-1, 10289-4,
 P904271-1, P904272-1, 21785-1/2/3, 35145-1, 11796-1).
 """
 

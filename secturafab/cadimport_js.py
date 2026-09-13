@@ -186,9 +186,10 @@ CLASSIFY_FINISH_INTERNALDATA_FILL = None
 # between upload and /part/create, nor after explode. Exact missing
 # call is server POST /part/create t.List InternalData+ImageString.
 # Do not remint 35136-1 / 14327-5 / 14327-8 / 14327-3 / 21841-1 /
-# 14327-1 / Q10332. Q10333 / H.6.38 is a Contours PASS protect
-# (Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96) —
-# never remint / PATCH / ZZ-DEL. Do not silent-graft Contours.
+# 14327-1 / Q10332 / H638-CADPLATE / Q10334. Q10333 / H.6.38 is a
+# Contours PASS protect (Cad / Contours=1 / 8 bends + Profile /
+# Laser Bay1 / UC 176.96) — never remint / PATCH / ZZ-DEL. Do not
+# silent-graft Contours.
 # Hunt (QuoteOrderEdit createAllParts + leftover 21785-2 + 14327-5):
 # no XHR between #gridDXF collect and DoCreateDXFParts writes
 # InternalData or CuttingLength. CLASSIFY_FINISH_INTERNALDATA_FILL
@@ -255,8 +256,11 @@ ADD_ITEM_DXF_FILES_SNIPPET = (
 # Component→Cad then thickness inches then Contours fill.
 # Protect forever; never remint / PATCH / ZZ-DEL. Automation writes the same
 # persisted fields (ProductType=100, FileType Cad, SetPartMode 0) — not a
-# UI dropdown click. Do not invent Contours/InternalData; refuse Finish
-# if they are still empty after Cad classify.
+# UI dropdown click. Cad classify ≠ Contours fill (H638-CADPLATE /
+# 5e7bfc0b SetPartMode Cad:1 InternalData empty; Q10334 / e2683a3f
+# kendo Cad/100 + 0.1875 in Contours empty). Do not invent
+# Contours/InternalData; refuse Finish if they are still empty after Cad
+# classify. Next: DevTools of Kyle's real dropdown click XHRs.
 # Live 105918-1: page Finish without grid SetPartMode → 66 Component/Assembly, 0 Cad.
 # Apply PartMode on #gridDXFParts (EDIT) before Finish. UpdateData JSON List.
 SET_PART_MODE_PATH = "/CadImport/SetPartMode"

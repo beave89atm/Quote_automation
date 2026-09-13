@@ -20,7 +20,8 @@ Wrong-org Time mint (not a Contours leftover; ID unknown):
     recent notes; description-only forbid.
 
 Keep existing forever-forbids for 8973f890 / 35136-1,
-14327-5 / c5cd8689, 14327-8 / 1cd941c6, and Q10329-31.
+14327-5 / c5cd8689, 14327-8 / 1cd941c6, Q10329-31,
+H638-CADPLATE / 5e7bfc0b, and Q10334 / e2683a3f.
 Fail-close stays locked. Capture must be a new PN.
 """
 

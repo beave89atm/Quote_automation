@@ -15,7 +15,9 @@ Cave — Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96).
 Protect that quote forever; never remint /
 PATCH / ZZ-DEL (0759273 ZZ-DEL-fail narrative is reversed). Automation
 writes API/kendo ProductType=100 + SetPartMode 0 — not a UI click.
-Still refuse Finish if Contours/InternalData stay empty after Cad.
+Cad classify ≠ Contours fill (H638-CADPLATE / 5e7bfc0b, Q10334 /
+e2683a3f). Still refuse Finish if Contours/InternalData stay empty
+after Cad. Next: DevTools of Kyle's real dropdown click XHRs.
 ``LIVE_PART_CREATE_TLIST_BIND`` is None.
 """
 
@@ -63,6 +65,8 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "14327-1",
         "Q10332",
         "Q10333",
+        "H638-CADPLATE",
+        "Q10334",
     ),
     "angles": (
         {
