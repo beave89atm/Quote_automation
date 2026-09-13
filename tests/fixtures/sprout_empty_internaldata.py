@@ -13,9 +13,10 @@ Q10339 / Q10344). Q10346 / d859a239 / B80510901 is a separate Sprout
 Contours PASS (outside H.6.38). Q10348 / 1defeed8 / H.16.70 is a
 separate Safe Cave Contours PASS (outside H.6.38). Q10349 /
 c4394006 / D.H.30.96 is a separate Safe Cave Contours PASS
-(outside H.6.38). Do not invent Contours / InternalData. Never
-remint / PATCH Q10333 / Q10336 / Q10338 / Q10339 / Q10344 /
-Q10346 / Q10348 / Q10349 / golds.
+(outside H.6.38). Q10351 / 0c62fce9 / H.8.38 is a separate Safe
+Cave Contours PASS (outside H.6.38). Do not invent Contours /
+InternalData. Never remint / PATCH Q10333 / Q10336 / Q10338 /
+Q10339 / Q10344 / Q10346 / Q10348 / Q10349 / Q10351 / golds.
 """
 
 from __future__ import annotations
