@@ -4696,6 +4696,7 @@ def test_apply_grid_dxf_part_modes_evaluates_setpartmode_on_edit():
         assert "CadType" in expr
         assert "Stock_X" in expr
         assert 'set("FileType"' in expr or "row.FileType = cat" in expr
+        assert "keep_rows" in expr
         assert "AddItem_DXFFiles" not in expr
         assert params.get("awaitPromise") is True
         return {
@@ -4709,6 +4710,8 @@ def test_apply_grid_dxf_part_modes_evaluates_setpartmode_on_edit():
                     "set_count": 6,
                     "setpartmode_via": "jquery_ajax",
                     "grid_dxf_row_count": 7,
+                    "keep_via": "live",
+                    "keep_n": 7,
                     "kendo_row_keys": [
                         "CadType",
                         "FileID",
@@ -4734,6 +4737,7 @@ def test_apply_grid_dxf_part_modes_evaluates_setpartmode_on_edit():
     assert result["cad"] == 3
     assert result["linear"] == 2
     assert result["setpartmode_via"] == "jquery_ajax"
+    assert result["keep_via"] == "live"
     assert "CadType" in result["kendo_row_keys"]
     assert "Stock_X" in result["kendo_row_keys"]
     assert "Stock_Y" in result["kendo_row_keys"]
@@ -4754,6 +4758,246 @@ def test_apply_grid_part_modes_js_does_not_reopen_cad_when_kids_exist():
     assert "grid_dxf_row_count: 0" in before_fallback
     assert "but_dxf" not in before_fallback
     assert "readOrg" in js
+
+
+def test_apply_grid_part_modes_js_keeps_kids_without_select_or_invent():
+    """Q10355 / 34328-1: child-row select empties #gridDXFParts.
+
+    Keep-path snapshots / rehydrates CadImport kids. No select, no
+    editCell, no Contours invent, no #but_dxf before fail-close.
+    """
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    js = _APPLY_GRID_PART_MODES_JS
+    assert "snapshotRows" in js
+    assert "bindKeep" in js
+    assert "keep_rows" in js
+    assert "keep_via" in js
+    assert 'keepVia = "rehydrate"' in js
+    assert "Q10355" in js
+    assert "34328-1" in js
+    assert ".select(" not in js
+    assert "editCell" not in js
+    assert "NumberOfContours" not in js
+    assert "Contours:" not in js
+    assert "dataSource.data(rows)" in js
+    assert "multi ? \"\" : findSetFn()" in js
+    apply_body = js.split("function applyAll()")[1].split(
+        "if (grid() && grid().dataSource) return applyAll();"
+    )[0]
+    assert "but_dxf" not in apply_body
+
+
+def test_cadimport_keep_grid_rows_does_not_invent_contours():
+    """Rehydrate copies explode keys only. invent=false."""
+    from secturafab.website import (
+        cadimport_keep_grid_rows,
+        keep_grid_dxf_parts_via,
+    )
+
+    kids = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "FileType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "server-stamped",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "FileType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-c",
+            "SourceDataID": "src-c",
+            "Name": "34328-1 GUSSET",
+            "FileType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+    ]
+    kept = cadimport_keep_grid_rows(kids)
+    assert len(kept) == 3
+    assert kept[0]["InternalData"] == "server-stamped"
+    assert "InternalData" not in kept[1]
+    assert "Contours" not in kept[0]
+    assert "NumberOfContours" not in kept[0]
+    assert "Contours" not in kept[1]
+    assert keep_grid_dxf_parts_via(
+        widget_present=True, live_grid_n=3, cadimport_n=3
+    ) == "live"
+    assert keep_grid_dxf_parts_via(
+        widget_present=True, live_grid_n=0, cadimport_n=3
+    ) == "rehydrate"
+    assert keep_grid_dxf_parts_via(
+        widget_present=True, live_grid_n=1, cadimport_n=3
+    ) == "rehydrate"
+    assert keep_grid_dxf_parts_via(
+        widget_present=False, live_grid_n=0, cadimport_n=3
+    ) == ""
+    assert keep_grid_dxf_parts_via(
+        widget_present=True, live_grid_n=0, cadimport_n=1
+    ) == ""
+
+
+def test_apply_grid_part_modes_js_rehydrates_emptied_kendo_from_keep_rows(
+    tmp_path: Path,
+):
+    """Keep-path: widget exists, live data [], CadImport keep_rows restore 3 kids.
+
+    Models Q10355 child-select wipe without #but_dxf. No Contours invent.
+    """
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    keep_rows = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "server-stamped",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-c",
+            "SourceDataID": "src-c",
+            "Name": "34328-1 GUSSET",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+    ]
+    spec = {"rows": keep_rows, "keep_rows": keep_rows}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + r"""
+const store = { rows: [] };
+const dataSource = {
+  data(rows) {
+    if (arguments.length) {
+      store.rows = (rows || []).map((r) => ({ ...r }));
+      return store.rows;
+    }
+    const arr = store.rows.slice();
+    arr.toJSON = function toJSON() {
+      return store.rows.map((r) => ({ ...r }));
+    };
+    return arr;
+  },
+};
+const gridObj = { dataSource };
+const ajaxCalls = [];
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "b7dbc294-3fd2-43aa-99be-268a6c4fce14" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax(opts) {
+    ajaxCalls.push(opts);
+    return { always(fn) { fn(); return this; } };
+  },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") {
+    return value.then(done);
+  }
+  if (!value.grid_present) throw new Error("grid_present false");
+  if (value.keep_via !== "rehydrate") throw new Error("keep_via=" + value.keep_via);
+  if (value.grid_dxf_row_count !== 3) throw new Error("n=" + value.grid_dxf_row_count);
+  if (value.cad !== 3) throw new Error("cad=" + value.cad);
+  if (store.rows.some((r) => r.Contours != null || r.NumberOfContours != null)) {
+    throw new Error("invented Contours");
+  }
+  if (store.rows[0].InternalData !== "server-stamped") {
+    throw new Error("lost InternalData");
+  }
+  if (store.rows[1].InternalData) throw new Error("invented InternalData");
+  if (ajaxCalls.some((c) => String(c.url || "").indexOf("QuoteItem_Read") >= 0)) {
+    throw new Error("QuoteItem_Read fired");
+  }
+  process.stdout.write(JSON.stringify({
+    keep_via: value.keep_via,
+    grid_dxf_row_count: value.grid_dxf_row_count,
+    cad: value.cad,
+    ajax_n: ajaxCalls.length,
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "keep_grid_rehydrate.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["keep_via"] == "rehydrate"
+    assert out["grid_dxf_row_count"] == 3
+    assert out["cad"] == 3
 
 
 def test_finish_skips_when_grid_classify_cad_is_zero(tmp_path: Path):
@@ -13925,6 +14169,130 @@ def test_finish_cad_files_multi_kid_grid_empty_after_adjust_is_exec_fail(
     assert "Q10353" in blob
     assert "not Contours empty" in blob
     assert cad_finish_notes_refuse_additem_dxf(notes) is not None
+
+
+def test_finish_cad_files_multi_kid_keep_grid_rehydrate_allows_finish(
+    tmp_path: Path,
+):
+    """Q10355 / 34328-1: child select emptied live grid; keep rehydrates.
+
+    Cad+inches hard-gate runs on live kids after keep. invent=false.
+    Fail-close stays if keep cannot restore the widget.
+    """
+    from secturafab.website import STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL
+
+    service, client, stp, _kids = _multi_kid_cad_finish_client(
+        tmp_path,
+        names=["34328-1 PLATE A", "34328-1 PLATE B", "34328-1 GUSSET"],
+        part_key="34328-1",
+    )
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "jquery_ajax"
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": ["NewItem"],
+        "body_type": "object",
+        "has_NewItem": True,
+        "has_QuoteItem": False,
+        "text_len": 8,
+        "empty_body": False,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_filelist_n": 3,
+        "grid_dxf_row_count": 3,
+        "filelist_from_kendo": True,
+        "filelist_sourcedataid_n": 3,
+        "filelist_filetype": {
+            "Cad": 3,
+            "Linear": 0,
+            "Assembly": 0,
+            "Component": 0,
+            "blank": 0,
+        },
+        "finish_af_present": True,
+        "finish_why": "",
+        "kendo_row_keys": ["FileType", "SourceDataID", "ID", "CadType"],
+        "request_keys": [
+            "ID",
+            "ItemID",
+            "customerMaterial",
+            "FileList",
+            "__RequestVerificationToken",
+        ],
+    }
+    live_items = [
+        {
+            "ID": "id-a",
+            "Name": "34328-1 PLATE A",
+            "ProductType": 100,
+            "NumberOfContours": 1,
+        },
+        {
+            "ID": "id-b",
+            "Name": "34328-1 PLATE B",
+            "ProductType": 100,
+            "NumberOfContours": 1,
+        },
+        {
+            "ID": "id-c",
+            "Name": "34328-1 GUSSET",
+            "ProductType": 100,
+            "NumberOfContours": 1,
+        },
+    ]
+    client.quote_item_read.return_value = {"Data": live_items, "Total": 3}
+    client.get_json.return_value = {
+        "ItemList": live_items,
+        "PrimaryOrganizationID": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+    }
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 3,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 3,
+            "setpartmode_via": "jquery_ajax",
+            "updateitemtype_via": "jquery_ajax",
+            "updateitemtype_count": 3,
+            "grid_dxf_row_count": 3,
+            "keep_via": "rehydrate",
+            "keep_n": 3,
+            "edit_gate": "",
+            "org_id": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+            "org_widget": True,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "FileType",
+                "ID",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id=client._edit_quote_id,
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="34328-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert "keep_grid_via=rehydrate" in blob
+    assert "wizard lost FileList" not in blob
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL not in blob
+    client.add_item_dxf_files.assert_called()
 
 
 def test_finish_cad_files_multi_kid_org_cleared_mid_wizard_is_exec_fail(
