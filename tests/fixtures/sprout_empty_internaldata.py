@@ -17,10 +17,13 @@ c4394006 / D.H.30.96 is a separate Safe Cave Contours PASS
 Cave Contours PASS (outside H.6.38). Q10354 / 7881d4b3 /
 D.H.38.96 is a Safe Cave Contours FAIL leftover (Cad + 0.1875 in,
 finished ProductType part; NumberOfContours unavailable) — same
-empty-InternalData FAIL class, not PASS. Do not invent Contours /
+empty-InternalData FAIL class, not PASS. Q10356 / 05bee105 /
+V.20.78 is a Safe Cave Contours FAIL leftover (Cad + 0.1875 in,
+finished ProductType part; NumberOfContours missing) — same
+Contours-FAIL class as Q10354, not PASS. Do not invent Contours /
 InternalData. Never remint / PATCH Q10333 / Q10336 / Q10338 /
 Q10339 / Q10344 / Q10346 / Q10348 / Q10349 / Q10351 / Q10354 /
-golds.
+Q10356 / golds.
 """
 
 from __future__ import annotations

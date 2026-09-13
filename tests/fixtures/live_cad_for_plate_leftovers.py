@@ -33,7 +33,11 @@ Contours fill → Finish) — protect, not this class. Q10354 /
 7881d4b3 / D.H.38.96 Safe Cave Contours FAIL leftover (Cad +
 0.1875 in set, finished ProductType part; NumberOfContours
 unavailable) — same empty-InternalData Contours-FAIL class, not
-PASS; standalone fixture, not this dump tuple. Never remint /
+PASS; standalone fixture, not this dump tuple. Q10356 /
+05bee105 / V.20.78 Safe Cave Contours FAIL leftover (Cad +
+0.1875 in set, finished ProductType part; NumberOfContours
+missing) — same Contours-FAIL class as Q10354, not PASS;
+standalone fixture, not this dump tuple. Never remint /
 PATCH / ZZ-DEL.
 
 Human dropdown Contours fill is NOT reproduced by kendo row.set /

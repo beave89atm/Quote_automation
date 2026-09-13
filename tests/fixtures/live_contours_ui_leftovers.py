@@ -28,7 +28,10 @@ Q10351 / 0c62fce9 / H.8.38 Safe Cave Contours PASS (Cad + inches
 Q10354 / 7881d4b3 / D.H.38.96 Safe Cave Contours FAIL leftover
 (Cad + 0.1875 in, finished ProductType part; NumberOfContours
 unavailable) — empty-InternalData Contours-FAIL class, not PASS
-and not this unfinished-UI class.
+and not this unfinished-UI class. Q10356 / 05bee105 / V.20.78
+Safe Cave Contours FAIL leftover (Cad + 0.1875 in, finished
+ProductType part; NumberOfContours missing) — same Contours-FAIL
+class as Q10354, not PASS and not this unfinished-UI class.
 Never remint / PATCH / ZZ-DEL. Tip 0759273 ZZ-DEL-fail narrative
 is reversed.
 

@@ -29,6 +29,11 @@ Q10354 / 7881d4b3 / D.H.38.96 Safe Cave Contours FAIL leftover
 NumberOfContours unavailable / Contours PASS not proven) —
 same empty-InternalData Contours-FAIL class as Q10334 / Q10335.
 Never remint / PATCH. invent=false. Not Q10349 / D.H.30.96 PASS.
+Q10356 / 05bee105 / V.20.78 Safe Cave Contours FAIL leftover
+(Cad selector + 0.1875 in set, finished ProductType part;
+NumberOfContours missing / Contours PASS not proven) —
+same Contours-FAIL class as Q10354 / D.H.38.96.
+Never remint / PATCH. invent=false.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -106,6 +111,8 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "H.8.38",
         "Q10354",
         "D.H.38.96",
+        "Q10356",
+        "V.20.78",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",

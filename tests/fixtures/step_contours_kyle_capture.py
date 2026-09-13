@@ -27,6 +27,11 @@ leftover (Cad + 0.1875 in set, finished ProductType part;
 NumberOfContours unavailable / Contours PASS not proven) —
 same empty-InternalData Contours-FAIL class as Q10334 / Q10335.
 Never remint / PATCH. invent=false. Not Q10349 / D.H.30.96 PASS.
+Q10356 / 05bee105 / V.20.78 Safe Cave is a Contours FAIL
+leftover (Cad + 0.1875 in set, finished ProductType part;
+NumberOfContours missing / Contours PASS not proven) —
+same Contours-FAIL class as Q10354 / D.H.38.96.
+Never remint / PATCH. invent=false.
 Do not gate unlock
 on OCC≥1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
@@ -91,6 +96,8 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "H.8.38",
     "Q10354",
     "D.H.38.96",
+    "Q10356",
+    "V.20.78",
     "H638-CADPLATE",
     "Q10334",
     "Q10335",
