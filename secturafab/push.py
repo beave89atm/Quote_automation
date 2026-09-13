@@ -81,9 +81,13 @@ from .website import (
     filelist_kids_partmode_set,
     finish_attempt_empty_partmode_or_internaldata,
     kyle_classify_before_finish_blocked,
+    STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+    _wizard_org_id_empty,
     step_cad_finish_hard_gate,
     step_cad_wizard_state_hard_gate,
     step_finish_pack_missing,
+    wizard_quote_live_item_count,
+    wizard_quote_primary_organization_id,
     count_cad_product_type,
     is_tenant_guid,
     count_linear_product_type,
@@ -1849,6 +1853,33 @@ class SecturaFabPushService:
             return 0
         return len(list(peek.get("ItemList") or []))
 
+    def _peek_wizard_quote_state(self, quote_id: str) -> dict[str, Any]:
+        """Read-only mid-wizard item count + org. Does not POST / invent."""
+        item_n: int | None = None
+        org_id: str | None = None
+        try:
+            peek = self.client.get_json(f"v1/quote/{quote_id}")
+        except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError, ValueError):
+            peek = None
+        if isinstance(peek, dict):
+            item_n = wizard_quote_live_item_count(peek)
+            org_id = wizard_quote_primary_organization_id(peek)
+        if hasattr(self.client, "quote_item_read"):
+            try:
+                read = self.client.quote_item_read(quote_id)
+            except (
+                SecturaFabApiError,
+                SecturaFabWebsiteAuthError,
+                TypeError,
+                ValueError,
+            ):
+                read = None
+            read_n = wizard_quote_live_item_count(read)
+            known = [n for n in (item_n, read_n) if n is not None]
+            if known:
+                item_n = max(known)
+        return {"item_count": item_n, "org_id": org_id}
+
     def _cadimport_rows(self, payload: Any) -> list[dict[str, Any]]:
         uploaded = filelist_from_cadimport_upload(payload)
         if uploaded:
@@ -3007,6 +3038,7 @@ class SecturaFabPushService:
         quote_request_id: str | None = None,
         explode_polls: int | None = None,
         explode_sleep_s: float | None = None,
+        organization_name: str | None = None,
     ) -> list[str]:
         """CAD Files: page #files → #gridDXF → page Next → SetPartMode → Finish.
 
@@ -3030,9 +3062,11 @@ class SecturaFabPushService:
         control Cad + 0.1875 inch), if Adjust Properties / modal refresh
         dropped #gridDXFParts to 0 or cleared Organization (EXEC_FAIL;
         Q10352 / 8679-1 org wipe, Q10353 / 12519-2 empty quote grid),
-        or if Contours/InternalData stay empty after UpdateItemType
+        or quote item_count dropped N→0 mid-wizard, or if
+        Contours/InternalData stay empty after UpdateItemType
         (do not invent). Hard-gate before Finish: live wizard kids +
-        org, then ProductType Cad, then inch thickness. invent=false.
+        org (multi-kid ≥2 for the grid gate), then ProductType Cad,
+        then inch thickness. invent=false.
         After Finish, fail-close if PartMode is still null, or if Cad
         Contours are empty / PR+laser pack is missing. Then log
         kendo row key names (CadType, Stock_*, FileType, SID/FileID/ID) and
@@ -3402,6 +3436,7 @@ class SecturaFabPushService:
             filelist_missing_cadimport_identity_keys,
         )
 
+        prior_state = self._peek_wizard_quote_state(quote_id)
         applied = apply_grid_dxf_part_modes(classified, quote_id=quote_id)
         applied = applied if isinstance(applied, dict) else {}
         set_via = str(applied.get("setpartmode_via") or "")
@@ -3424,6 +3459,11 @@ class SecturaFabPushService:
         if blocked:
             notes.append(blocked)
             return notes
+        after_state = self._peek_wizard_quote_state(quote_id)
+        if not isinstance(prior_state, dict):
+            prior_state = {}
+        if not isinstance(after_state, dict):
+            after_state = {}
         wizard_org_id = None
         wizard_org_widget = None
         wizard_org_checked = False
@@ -3431,26 +3471,28 @@ class SecturaFabPushService:
         live_grid_n = None
         if not edit_gate and "grid_dxf_row_count" in applied:
             live_grid_n = applied.get("grid_dxf_row_count")
-        if not edit_gate and ("org_id" in applied or "org_widget" in applied):
+        if not edit_gate and "org_widget" in applied:
+            wizard_org_widget = bool(applied.get("org_widget"))
             wizard_org_id = str(applied.get("org_id") or "")
-            wizard_org_widget = (
-                bool(applied.get("org_widget"))
-                if "org_widget" in applied
-                else None
-            )
-            wizard_org_checked = "org_id" in applied and "org_widget" not in applied
-        elif not edit_gate:
-            try:
-                stamped = self.client.get_json(f"v1/quote/{quote_id}")
-            except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError, ValueError):
-                stamped = None
-            if isinstance(stamped, dict) and any(
-                key in stamped
-                for key in ("PrimaryOrganizationID", "OrganizationID", "Organization")
+        if not edit_gate and after_state.get("org_id") is not None:
+            get_org = str(after_state.get("org_id") or "")
+            if wizard_org_widget is True and _wizard_org_id_empty(wizard_org_id):
+                pass
+            else:
+                wizard_org_id = get_org
+                wizard_org_checked = True
+        elif (
+            not edit_gate
+            and "org_id" in applied
+            and wizard_org_widget is None
+        ):
+            wizard_org_id = str(applied.get("org_id") or "")
+            wizard_org_checked = True
+        if organization_name and not edit_gate and after_state.get("org_id") is not None:
+            if wizard_org_widget is not True or not _wizard_org_id_empty(
+                str(applied.get("org_id") or "")
             ):
-                from .org_ops import quote_primary_organization_id
-
-                wizard_org_id = quote_primary_organization_id(stamped)
+                wizard_org_id = str(after_state.get("org_id") or "")
                 wizard_org_checked = True
         wizard = step_cad_wizard_state_hard_gate(
             exploded_n=len(classified),
@@ -3458,6 +3500,8 @@ class SecturaFabPushService:
             org_id=wizard_org_id,
             org_widget=wizard_org_widget,
             org_checked=wizard_org_checked,
+            prior_item_count=prior_state.get("item_count"),
+            live_item_count=after_state.get("item_count"),
         )
         if wizard:
             notes.append(wizard)
@@ -3800,8 +3844,10 @@ class SecturaFabPushService:
         posted_n = len(quote_item_rows(posted))
         if posted_n <= 0:
             notes.append(
-                f"WARNING: AddItem_DXFFiles HTTP 200 GET item_count=0 — "
-                f"not success (leave shell, no remint; live 28110-2)"
+                f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: AddItem_DXFFiles "
+                f"HTTP 200 GET item_count=0 — not success (leave shell, "
+                f"no remint; live 28110-2; Q10353 empty grid after Adjust "
+                f"Properties). Do not invent InternalData/Contours."
             )
         elif cad_n <= 0 and lin_n <= 0:
             notes.append(
@@ -6112,6 +6158,7 @@ class SecturaFabPushService:
                             extra_pdfs=extra_pdfs,
                             part_key=part_key,
                             quote_request_id=quote_request_id,
+                            organization_name=organization_name,
                         )
                     )
                     refuse = cad_finish_notes_refuse_additem_dxf(notes)

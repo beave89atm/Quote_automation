@@ -2783,13 +2783,58 @@ def _wizard_org_id_empty(org_id: str | None) -> bool:
     return raw in ("", EMPTY_GUID)
 
 
+def wizard_quote_live_item_count(payload: Any) -> int | None:
+    """v1 ItemList / QuoteItem_Read Data count. None when item keys absent.
+
+    Mid-wizard empty ItemList/Data is a real 0 (Q10353 / Q10335
+    QuoteItem_Read Data:[]). Peek-shaped payloads without those keys
+    are not a count. invent=false.
+    """
+    if isinstance(payload, list):
+        return len([r for r in payload if isinstance(r, dict)])
+    if not isinstance(payload, dict):
+        return None
+    rows = quote_item_rows(payload)
+    if rows:
+        return len(rows)
+    for key in CONTOURS_GET_ROW_KEYS + QUOTE_ITEM_READ_LIST_KEYS:
+        if key in payload and isinstance(payload.get(key), list):
+            return 0
+    return None
+
+
+def wizard_quote_primary_organization_id(
+    payload: dict[str, Any] | None,
+) -> str | None:
+    """PrimaryOrganizationID when the payload restates org fields.
+
+    None if org keys are absent (peek-shaped / catalog GET). Empty
+    string or EMPTY_GUID means org was restated and is lost (Q10352).
+    """
+    if not isinstance(payload, dict):
+        return None
+    has_org_field = any(
+        key in payload
+        for key in ("PrimaryOrganizationID", "OrganizationID", "Organization")
+    )
+    if not has_org_field:
+        return None
+    raw = payload.get("PrimaryOrganizationID") or payload.get("OrganizationID")
+    org = payload.get("Organization")
+    if isinstance(org, dict):
+        raw = raw or org.get("ID")
+    return str(raw or "").strip()
+
+
 def step_cad_wizard_state_hard_gate(
     *,
-    exploded_n: int,
+    exploded_n: int = 0,
     live_grid_n: int | None = None,
     org_id: str | None = None,
     org_widget: bool | None = None,
     org_checked: bool = False,
+    prior_item_count: int | None = None,
+    live_item_count: int | None = None,
 ) -> str | None:
     """Mid-wizard before Finish: kids and org must still be on the page.
 
@@ -2799,15 +2844,17 @@ def step_cad_wizard_state_hard_gate(
     Cad+inches on in-memory classify rows is not enough — those rows
     stay Cad/inch after the live wizard is gone.
 
-    1. Exploded kids > 0 and live #gridDXFParts == 0 → EXEC_FAIL.
-    2. Org widget present and empty, or GET org fields empty → EXEC_FAIL.
-    3. Else None. invent=false; never invent InternalData/Contours.
+    1. Exploded kids ≥ 2 and live #gridDXFParts == 0 → EXEC_FAIL
+       (safer than single-plate; Chrome-miss passes live_grid_n=None).
+    2. Quote item_count dropped N>0 → 0 mid-wizard → EXEC_FAIL.
+    3. Org widget present and empty, or GET org fields empty → EXEC_FAIL.
+    4. Else None. invent=false; never invent InternalData/Contours.
     """
     try:
         exploded = int(exploded_n or 0)
     except (TypeError, ValueError):
         exploded = 0
-    if exploded > 0 and live_grid_n is not None:
+    if exploded >= 2 and live_grid_n is not None:
         try:
             live_n = int(live_grid_n)
         except (TypeError, ValueError):
@@ -2820,6 +2867,20 @@ def step_cad_wizard_state_hard_gate(
                 "— not Finishing (quote grid empty / kids dropped before "
                 "Cad+inches can stick; not Contours empty; Q10353 / "
                 "12519-2). Do not invent InternalData/Contours."
+            )
+    if prior_item_count is not None and live_item_count is not None:
+        try:
+            prior_n = int(prior_item_count)
+            live_n = int(live_item_count)
+        except (TypeError, ValueError):
+            prior_n, live_n = 0, 0
+        if prior_n > 0 and live_n <= 0:
+            return (
+                f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: quote item_count "
+                f"dropped {prior_n}→0 mid-wizard — not Finishing "
+                "(Q10353 empty quote grid after Adjust Properties; "
+                "Q10335 QuoteItem_Read Data:[] lost CAD row). "
+                "Do not invent InternalData/Contours."
             )
     widget_cleared = org_widget is True and _wizard_org_id_empty(org_id)
     get_cleared = org_checked and _wizard_org_id_empty(org_id)
@@ -2908,7 +2969,9 @@ def cad_finish_notes_refuse_additem_dxf(
             or STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in text
             or "thickness not set in inch" in text
             or "wizard lost FileList" in text
+            or "wizard lost #gridDXFParts kids" in text
             or "organization lost mid CAD wizard" in text
+            or "item_count dropped" in text
         ):
             return text
     return None
