@@ -833,6 +833,63 @@ def slim_filelist_row(row: dict[str, Any]) -> dict[str, Any]:
     return slim
 
 
+# Keys Finish / classify already persist. Do not add Contours / NumberOfContours
+# here — rehydrate copies only keys already on the CadImport / kendo row.
+_KEEP_GRID_INVENT_KEYS = ("Contours", "NumberOfContours")
+
+
+def cadimport_keep_grid_rows(
+    rows: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """CadImport / classified kids for #gridDXFParts rehydrate.
+
+    Copies the explode/classify row as-is. Does not invent Contours,
+    NumberOfContours, or InternalData. invent=false.
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        slim = slim_filelist_row(row)
+        for key in _KEEP_GRID_INVENT_KEYS:
+            if key not in row:
+                slim.pop(key, None)
+        out.append(slim)
+    return out
+
+
+def keep_grid_dxf_parts_via(
+    *,
+    widget_present: bool,
+    live_grid_n: int | None,
+    cadimport_n: int = 0,
+) -> str:
+    """How to keep multi-kid #gridDXFParts through Adjust Properties.
+
+    live: widget still has ≥2 kids (or live ≥ cadimport).
+    rehydrate: widget exists but live kids dropped below CadImport n≥2
+    (Q10355 / 34328-1 child-row select emptied the kendo grid; Q10353
+    / 12519-2 Adjust Properties left it empty). Caller binds CadImport
+    / snapshot rows — does not invent Contours.
+    empty: widget gone or no kids → fail-close (do not #but_dxf).
+    """
+    try:
+        live_n = 0 if live_grid_n is None else int(live_grid_n)
+    except (TypeError, ValueError):
+        live_n = 0
+    try:
+        cad_n = int(cadimport_n or 0)
+    except (TypeError, ValueError):
+        cad_n = 0
+    if not widget_present:
+        return ""
+    if live_n >= 2 and (cad_n <= 0 or live_n >= cad_n):
+        return "live"
+    if cad_n >= 2 and live_n < cad_n:
+        return "rehydrate"
+    return ""
+
+
 _CADIMPORT_ROW_KEYS = (
     "List",
     "FileList",
@@ -2838,11 +2895,13 @@ def step_cad_wizard_state_hard_gate(
 ) -> str | None:
     """Mid-wizard before Finish: kids and org must still be on the page.
 
-    Multi-kid STEP CAD Files (Q10352 8679-1 / Q10353 12519-2): Adjust
-    Properties / UpdateItemType / modal refresh can drop #gridDXFParts
-    to 0 or clear the org widget, then land the empty quote grid.
-    Cad+inches on in-memory classify rows is not enough — those rows
-    stay Cad/inch after the live wizard is gone.
+    Multi-kid STEP CAD Files (Q10352 8679-1 / Q10353 12519-2 / Q10355
+    34328-1): Adjust Properties / UpdateItemType / child-row select
+    can drop #gridDXFParts to 0 or clear the org widget. Keep-path
+    (snapshot / CadImport rehydrate) runs first in apply_grid_dxf_part_modes.
+    This gate is the fail-close if keep failed. Cad+inches on in-memory
+    classify rows is not enough — those rows stay Cad/inch after the
+    live wizard is gone.
 
     1. Exploded kids ≥ 2 and live #gridDXFParts == 0 → EXEC_FAIL
        (safer than single-plate; Chrome-miss passes live_grid_n=None).

@@ -3059,11 +3059,14 @@ class SecturaFabPushService:
         Fail-close if PartMode is still null after classify, if ProductType
         is still Component on a Cad plate, if thickness is missing or not
         inch (EXEC_FAIL, not Contours empty; Q10344 / H.6.38 Kyle UI
-        control Cad + 0.1875 inch), if Adjust Properties / modal refresh
+        control Cad + 0.1875 inch),         if Adjust Properties / modal refresh
         dropped #gridDXFParts to 0 or cleared Organization (EXEC_FAIL;
-        Q10352 / 8679-1 org wipe, Q10353 / 12519-2 empty quote grid),
-        or quote item_count dropped N→0 mid-wizard, or if
-        Contours/InternalData stay empty after UpdateItemType
+        Q10352 / 8679-1 org wipe, Q10353 / 12519-2 empty quote grid)
+        *after* keep-path snapshot/CadImport rehydrate failed (Q10355
+        / 34328-1 child-row select emptied the live grid; keep binds
+        CadImport kids back onto the kendo widget — no Contours invent,
+        no #but_dxf reopen), or quote item_count dropped N→0 mid-wizard,
+        or if Contours/InternalData stay empty after UpdateItemType
         (do not invent). Hard-gate before Finish: live wizard kids +
         org (multi-kid ≥2 for the grid gate), then ProductType Cad,
         then inch thickness. invent=false.
@@ -3455,6 +3458,9 @@ class SecturaFabPushService:
             f"count={int(applied.get('updateitemtype_count') or 0)}"
         )
         notes.append("kyle_classify_before_finish=true")
+        keep_via = str(applied.get("keep_via") or "")
+        if keep_via:
+            notes.append(f"keep_grid_via={keep_via}")
         blocked = kyle_classify_before_finish_blocked(classified)
         if blocked:
             notes.append(blocked)
