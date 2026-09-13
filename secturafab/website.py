@@ -2985,11 +2985,16 @@ def step_cad_wizard_state_hard_gate(
 ) -> str | None:
     """Mid-wizard before Finish: kids and org must still be on the page.
 
-    Multi-kid STEP CAD Files (Q10352 8679-1 / Q10353 12519-2): Adjust
-    Properties / UpdateItemType / modal refresh can drop #gridDXFParts
-    to 0 or clear the org widget, then land the empty quote grid.
-    Cad+inches on in-memory classify rows is not enough — those rows
-    stay Cad/inch after the live wizard is gone.
+    Multi-kid STEP CAD Files (Q10352 8679-1 / Q10353 12519-2 / Q10355
+    34328-1): Adjust Properties / UpdateItemType / modal refresh can
+    drop #gridDXFParts to 0 or clear the org widget, then land the
+    empty quote grid. Grid loss is not only ``#but_dxf`` reopen —
+    Q10355 mouse: 3 live #gridDXFParts + org Time Waco, then first
+    child/edit control emptied the CAD grid and Items=0 with Finish
+    not attempted. Cad+inches on in-memory classify rows is not
+    enough — those rows stay Cad/inch after the live wizard is gone.
+    Orthogonal to Q10354 Cad selector → GET ``part``; keep-grid
+    retention is a separate dig. invent=false.
 
     1. Exploded kids ≥ 2 and live #gridDXFParts == 0 → EXEC_FAIL
        (safer than single-plate; Chrome-miss passes live_grid_n=None).
@@ -3013,7 +3018,8 @@ def step_cad_wizard_state_hard_gate(
                 "#gridDXFParts=0) after Adjust Properties / UpdateItemType "
                 "— not Finishing (quote grid empty / kids dropped before "
                 "Cad+inches can stick; not Contours empty; Q10353 / "
-                "12519-2). Do not invent InternalData/Contours."
+                "12519-2; Q10355 / 34328-1 first-child edit, not only "
+                "#but_dxf reopen). Do not invent InternalData/Contours."
             )
     if prior_item_count is not None and live_item_count is not None:
         try:

@@ -4739,6 +4739,9 @@ def test_apply_grid_part_modes_js_does_not_reopen_cad_when_kids_exist():
     """Multi-kid Adjust Properties: do not click #but_dxf if spec.rows exist.
 
     That reopen dumps the empty quote grid (Q10353 / 12519-2).
+    Q10355 / 34328-1: first-child edit can empty the grid without
+    #but_dxf — keep-grid is a separate dig; this JS still must not
+    reopen. invent=false; no remint.
     """
     from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
 
@@ -4750,6 +4753,8 @@ def test_apply_grid_part_modes_js_does_not_reopen_cad_when_kids_exist():
     assert "grid_dxf_row_count: 0" in before_fallback
     assert "but_dxf" not in before_fallback
     assert "readOrg" in js
+    assert "Q10355" in js
+    assert "34328-1" in js
 
 
 def test_finish_skips_when_grid_classify_cad_is_zero(tmp_path: Path):
@@ -13867,8 +13872,11 @@ def test_step_cad_wizard_state_hard_gate_kids_or_org_lost_is_exec_fail():
     """Multi-kid STEP: lost #gridDXFParts or org mid-wizard is EXEC_FAIL.
 
     Q10352 / 8679-1: org cleared on modal refresh. Q10353 / 12519-2:
-    Adjust Properties returned to an empty quote grid. Do not invent
-    Contours. Cad+inches on in-memory rows is not enough.
+    Adjust Properties returned to an empty quote grid. Q10355 /
+    34328-1: 3 live #gridDXFParts + org Time Waco, first-child edit
+    emptied the CAD grid / Items=0 without #but_dxf. Do not invent
+    Contours. Cad+inches on in-memory rows is not enough. Orthogonal
+    to Q10354 Cad→part. invent=false; no remint.
     """
     from secturafab.website import (
         EMPTY_GUID,
@@ -13903,9 +13911,22 @@ def test_step_cad_wizard_state_hard_gate_kids_or_org_lost_is_exec_fail():
     assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in lost_kids
     assert "wizard lost FileList" in lost_kids
     assert "Q10353" in lost_kids
+    assert "Q10355" in lost_kids
     assert "not Contours empty" in lost_kids
     assert "invent" in lost_kids.lower()
     assert cad_finish_notes_refuse_additem_dxf([lost_kids]) == lost_kids
+
+    q10355 = step_cad_wizard_state_hard_gate(
+        exploded_n=3,
+        live_grid_n=0,
+        org_id="time-waco",
+        org_widget=True,
+    )
+    assert q10355 is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in q10355
+    assert "Q10355" in q10355
+    assert "#but_dxf" in q10355
+    assert cad_finish_notes_refuse_additem_dxf([q10355]) == q10355
 
     lost_org = step_cad_wizard_state_hard_gate(
         exploded_n=4,
@@ -14044,7 +14065,9 @@ def test_finish_cad_files_multi_kid_grid_empty_after_adjust_is_exec_fail(
 ):
     """Q10353 / 12519-2: Adjust Properties left an empty quote grid.
 
-    In-memory Cad+inches rows must not Finish. invent=false.
+    Q10355 / 34328-1: same live #gridDXFParts=0 after first-child
+    edit, without #but_dxf. In-memory Cad+inches rows must not Finish.
+    invent=false; no remint.
     """
     from secturafab.website import (
         STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
@@ -14091,6 +14114,7 @@ def test_finish_cad_files_multi_kid_grid_empty_after_adjust_is_exec_fail(
     assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
     assert "wizard lost FileList" in blob
     assert "Q10353" in blob
+    assert "Q10355" in blob
     assert "not Contours empty" in blob
     assert cad_finish_notes_refuse_additem_dxf(notes) is not None
 

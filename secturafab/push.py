@@ -3069,7 +3069,9 @@ class SecturaFabPushService:
         inch (EXEC_FAIL, not Contours empty; Q10344 / H.6.38 Kyle UI
         control Cad + 0.1875 inch), if Adjust Properties / modal refresh
         dropped #gridDXFParts to 0 or cleared Organization (EXEC_FAIL;
-        Q10352 / 8679-1 org wipe, Q10353 / 12519-2 empty quote grid),
+        Q10352 / 8679-1 org wipe, Q10353 / 12519-2 empty quote grid,
+        Q10355 / 34328-1 first-child Adjust Properties edit — not only
+        ``#but_dxf`` reopen),
         or quote item_count dropped N→0 mid-wizard, or if
         Contours/InternalData stay empty after UpdateItemType
         (do not invent). Hard-gate before Finish: live wizard kids +

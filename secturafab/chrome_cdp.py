@@ -7909,7 +7909,10 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
   var wants = (spec && spec.rows) || [];
   // Kids already exploded: do not click #but_dxf. That reopen closes
   // Adjust Properties / dumps the empty quote grid on multi-kid STEPs
-  // (Q10353 / 12519-2). Report grid_present=false and fail-close.
+  // (Q10353 / 12519-2). Grid loss is not only this reopen — Q10355 /
+  // 34328-1 emptied #gridDXFParts after first-child Adjust Properties
+  // edit (org intact, Finish not attempted). Report grid_present=false
+  // and fail-close. Keep-grid retention is a separate dig.
   if (wants.length > 0) {
     var lost = readOrg();
     return Promise.resolve({
@@ -7953,7 +7956,11 @@ def apply_grid_dxf_part_modes(
 
     Cad plate/sheet also POST /Part/UpdateItemType ItemType=Cad (Q10335
     mouse dropdown classify XHR). Does not POST /Quote/AddItem_DXFFiles.
-    Capture counts from the grid. Still refuse Finish if Contours empty.
+    Capture counts from the grid. Live ``grid_dxf_row_count==0`` after
+    apply still fail-closes (Q10353 #but_dxf reopen; Q10355 / 34328-1
+    first-child Adjust Properties edit emptied 3 live rows — not only
+    reopen). Keep-grid retention is a separate dig. Still refuse Finish
+    if Contours empty. invent=false.
     """
     from .website import cad_payload_value_empty
 
