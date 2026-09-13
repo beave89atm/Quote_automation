@@ -325,7 +325,10 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "ZZ-DEL-Q10334",  # e2683a3f Q10334 rename — do not remint
         "Q10335",  # spent bcff1a24 mouse UpdateItemType leftover — POST /Part/UpdateItemType 200 Component→Cad; /part/PartImage + /Quote/GetBorderSize on thickness; Contours 0 before Finish; QuoteItem_Read Data:[] lost CAD row before Finish; invented=false; ZZ-DEL-Q10335 — do not remint
         "ZZ-DEL-Q10335",  # bcff1a24 Q10335 rename — do not remint
-        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1 / 28769-1 / 35136-1 / 14327-5 / 14327-8 / Q10329 / 14327-3 / Q10330 / 21841-1 / Q10331 / 14327-1 / Q10332 / Q10333 / Q10336 / Q10339 / Q10338 / CROSSDRAIN-12X7X60 / H638-CADPLATE / Q10334 / Q10335.
+        "28898-1",  # Time STEP explode leftover — UpdateItemType Cad OK, InternalData empty, Finish refused; ID unknown; description-only forbid; invented=false; do not remint
+        "28772-1",  # Time STEP explode leftover — UpdateItemType Cad OK, InternalData empty, Finish refused; ID unknown; description-only forbid; invented=false; do not remint
+        "14327-18",  # Time STEP explode leftover — UpdateItemType Cad OK, InternalData empty, Finish refused; ID unknown; description-only forbid; invented=false; do not remint
+        # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1 / 28769-1 / 35136-1 / 14327-5 / 14327-8 / Q10329 / 14327-3 / Q10330 / 21841-1 / Q10331 / 14327-1 / Q10332 / Q10333 / Q10336 / Q10339 / Q10338 / CROSSDRAIN-12X7X60 / H638-CADPLATE / Q10334 / Q10335 / 28898-1 / 28772-1 / 14327-18.
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
     }

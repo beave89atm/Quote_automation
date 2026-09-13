@@ -412,6 +412,7 @@ WEBSITE_FINISH_PATHS = {
     "copy_move_to_assembly": "/Quote/CopyMoveItemToAssembly",
     "add_feature": "/Quote/AddFeature",
     "quote_item_read": "/Quote/QuoteItem_Read",
+    "quote_item_read_treelist": "/Quote/QuoteItem_ReadTreeListData",
     "nest_quote_edit": "/Quote/NestQuote_Edit",
     "renest_linear": "/Nest/RenestLinear",
 }
@@ -1946,6 +1947,8 @@ STEP_CONTOURS_NOT_FILL_PATHS = frozenset(
         "/Quote/GetBorderSize",
         "/Quote/GetDXFData",
         "/quote/ItemEdit",
+        "/Quote/QuoteItem_Read",
+        "/Quote/QuoteItem_ReadTreeListData",
     }
 )
 STEP_CONTOURS_KNOWN_PATHS = frozenset(
@@ -1961,6 +1964,8 @@ STEP_CONTOURS_KNOWN_PATHS = frozenset(
         "/part/PartImage",
         "/Quote/GetBorderSize",
         "/quote/ItemEdit",
+        "/Quote/QuoteItem_Read",
+        "/Quote/QuoteItem_ReadTreeListData",
     }
 )
 STEP_CONTOURS_CAPTURE_NEVER_SAVE = (
@@ -6125,15 +6130,40 @@ def is_cadimport_only_filelist_row(row: dict[str, Any] | None) -> bool:
     )
 
 
+CONTOURS_GET_ROW_KEYS = ("ItemList", "TreeListData", "TreeList")
+QUOTE_ITEM_READ_LIST_KEYS = ("Data", "Results")
+
+
 def quote_item_rows(payload: Any) -> list[dict[str, Any]]:
-    """Rows from v1/quote ItemList or QuoteItem_Read Data."""
+    """Rows from v1 ItemList / TreeListData, else QuoteItem_Read Data.
+
+    Mid-wizard notes: NumberOfContours is on finished GET v1 ItemList
+    and QuoteItem_ReadTreeListData; absent on QuoteItem_Read list items.
+    """
     if isinstance(payload, list):
         return [r for r in payload if isinstance(r, dict)]
     if not isinstance(payload, dict):
         return []
-    for key in ("ItemList", "Data", "Results"):
+    for key in CONTOURS_GET_ROW_KEYS + QUOTE_ITEM_READ_LIST_KEYS:
         rows = payload.get(key)
-        if isinstance(rows, list):
+        if isinstance(rows, list) and any(isinstance(r, dict) for r in rows):
+            return [r for r in rows if isinstance(r, dict)]
+    return []
+
+
+def quote_contours_rows(payload: Any) -> list[dict[str, Any]]:
+    """Rows that may carry NumberOfContours (v1 ItemList / TreeListData).
+
+    CadImport/Data has no NumberOfContours. QuoteItem_Read list items
+    omit it. invent=false.
+    """
+    if isinstance(payload, list):
+        return [r for r in payload if isinstance(r, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in CONTOURS_GET_ROW_KEYS:
+        rows = payload.get(key)
+        if isinstance(rows, list) and any(isinstance(r, dict) for r in rows):
             return [r for r in rows if isinstance(r, dict)]
     return []
 
@@ -6919,10 +6949,16 @@ def finish_attempt_empty_partmode_or_internaldata(
 
 
 def item_cad_contour_count(item: dict[str, Any] | None) -> int:
-    """GET Cad Contours from DataPartPDF / Data / row. Absent is 0 — do not invent."""
+    """GET v1 ItemList / TreeListData NumberOfContours. Not OpenContourCount.
+
+    Mid-wizard notes: NumberOfContours=1 on finished GET v1 ItemList and
+    QuoteItem_ReadTreeListData; absent on QuoteItem_Read list items.
+    CadImport/Data has no NumberOfContours; OCC=0 even on PASS.
+    invent=false — do not read OCC or a Contours list as the PASS signal.
+    """
     if not isinstance(item, dict):
         return 0
-    sources: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = [item]
     data = item.get("Data")
     if isinstance(data, dict):
         sources.append(data)
@@ -6932,15 +6968,13 @@ def item_cad_contour_count(item: dict[str, Any] | None) -> int:
     dpp = item.get("DataPartPDF")
     if isinstance(dpp, dict):
         sources.append(dpp)
-    sources.append(item)
     for src in sources:
-        for key in ("NumberOfContours", "Contours"):
-            if key not in src:
-                continue
-            try:
-                return max(0, int(src.get(key) or 0))
-            except (TypeError, ValueError):
-                return 0
+        if "NumberOfContours" not in src:
+            continue
+        try:
+            return max(0, int(src.get("NumberOfContours") or 0))
+        except (TypeError, ValueError):
+            return 0
     return 0
 
 
@@ -6959,6 +6993,9 @@ def step_finish_pack_missing(
     from .line_item_ops import item_has_laser_pack, item_has_pr_tag, item_has_saw_pack
 
     items = [it for it in quote_item_rows(posted) if isinstance(it, dict)]
+    contour_items = [
+        it for it in quote_contours_rows(posted) if isinstance(it, dict)
+    ]
     if expect_cad:
         cad_items = []
         for it in items:
@@ -6974,7 +7011,16 @@ def step_finish_pack_missing(
                 "GET 0 Cad after Finish — not success "
                 "(live P904271-1; ZZ-DEL; do not invent InternalData)"
             )
-        if not any(item_cad_contour_count(it) >= 1 for it in cad_items):
+        contour_cad = []
+        for it in contour_items:
+            cat = str(it.get("Category") or it.get("ItemType") or "")
+            try:
+                pt = int(it.get("ProductType"))
+            except (TypeError, ValueError):
+                pt = None
+            if cat == "Cad" or pt == 100:
+                contour_cad.append(it)
+        if not any(item_cad_contour_count(it) >= 1 for it in contour_cad):
             return (
                 "Cad Contours empty after Finish — not success "
                 "(live P904271-1; ZZ-DEL; do not invent InternalData)"

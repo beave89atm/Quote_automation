@@ -1681,6 +1681,9 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "ZZ-DEL-Q10334" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10335" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "ZZ-DEL-Q10335" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "28898-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "28772-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "14327-18" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert is_forbidden_quote_id("28708035-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("c146ce6d-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")

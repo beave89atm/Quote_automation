@@ -4714,7 +4714,14 @@ class SecturaFabPushService:
         return notes
 
     def _read_quote_items(self, quote_id: str) -> dict[str, Any]:
-        """Prefer QuoteItem_Read; fall back to v1/quote ItemList."""
+        """QuoteItem_Read for rows; attach v1 ItemList for NumberOfContours.
+
+        Mid-wizard notes: NumberOfContours is on finished GET v1 ItemList
+        and QuoteItem_ReadTreeListData; absent on QuoteItem_Read list
+        items. Persist Contours-good on NumberOfContours≥1, never OCC.
+        invent=false.
+        """
+        out: dict[str, Any] = {}
         if hasattr(self.client, "quote_item_read"):
             try:
                 payload = self.client.quote_item_read(quote_id)
@@ -4723,14 +4730,26 @@ class SecturaFabPushService:
             if isinstance(payload, dict):
                 rows = quote_item_rows(payload)
                 if rows:
-                    return payload
+                    out = payload
             elif isinstance(payload, list) and payload:
-                return {"Data": payload, "ItemList": payload}
+                out = {"Data": payload}
         try:
             peek = self.client.get_json(f"v1/quote/{quote_id}")
         except SecturaFabApiError:
-            return {"ItemList": [], "Data": []}
-        return peek if isinstance(peek, dict) else {"ItemList": []}
+            peek = None
+        if isinstance(peek, dict):
+            itemlist = peek.get("ItemList")
+            if isinstance(itemlist, list) and any(
+                isinstance(r, dict) for r in itemlist
+            ):
+                if out:
+                    merged = dict(out)
+                    merged["ItemList"] = itemlist
+                    return merged
+                return peek
+        if out:
+            return out
+        return {"ItemList": [], "Data": []}
 
     def add_loose_linears(
         self,

@@ -146,8 +146,10 @@ Q10333_Q10336_CONTOURS_GAP: dict[str, Any] = {
             "ruled_out": False,
             "why": (
                 "Unused Time STEPs still explode with empty InternalData. "
-                "Finish is refused invent=false. Separate gate from "
-                "finished ItemList NumberOfContours PASS."
+                "Live 28898-1 / 28772-1 / 14327-18: UpdateItemType Cad OK, "
+                "InternalData empty, Finish refused. IDs unknown. Separate "
+                "gate from finished ItemList NumberOfContours PASS. "
+                "invent=false. Never remint."
             ),
         },
         {
@@ -157,6 +159,34 @@ Q10333_Q10336_CONTOURS_GAP: dict[str, Any] = {
                 "Named Cad→Finish XHR probe is still useful to see when "
                 "NumberOfContours flips 0→1 mid-wizard. Does not unlock "
                 "invent fill. invent=false."
+            ),
+        },
+        {
+            "id": "cadimport_data_and_updateitemtype_not_contours_flip",
+            "ruled_out": True,
+            "why": (
+                "Mid-wizard notes: GET /CadImport/Data, POST "
+                "/Part/UpdateItemType, and /Quote/GetBorderSize are not "
+                "the finished Contours flip carrier. CadImport/Data has "
+                "no NumberOfContours; OpenContourCount=0 even on PASS."
+            ),
+        },
+        {
+            "id": "quote_item_read_omits_number_of_contours",
+            "ruled_out": False,
+            "why": (
+                "QuoteItem_Read list items omit NumberOfContours. Persist "
+                "must use finished GET v1 ItemList or "
+                "QuoteItem_ReadTreeListData. invent=false."
+            ),
+        },
+        {
+            "id": "open_url_only_additem_dxf_itemedit_v1_tree",
+            "ruled_out": False,
+            "why": (
+                "Still open URL-only (no invented body): AddItem_DXFFiles, "
+                "/quote/ItemEdit, post-Finish v1 GET, GET "
+                "/Quote/QuoteItem_ReadTreeListData."
             ),
         },
     ),

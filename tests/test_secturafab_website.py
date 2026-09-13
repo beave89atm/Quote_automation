@@ -11958,6 +11958,9 @@ def test_q10336_h638_cad_finish_soft_protect():
         "get_border_size_other_keys_unrecorded",
         "unused_time_step_explode_empty",
         "mid_wizard_number_of_contours_flip",
+        "cadimport_data_and_updateitemtype_not_contours_flip",
+        "quote_item_read_omits_number_of_contours",
+        "open_url_only_additem_dxf_itemedit_v1_tree",
     ]
     ruled = {h["id"]: h["ruled_out"] for h in gap["hypotheses"]}
     assert ruled["number_of_contours_vs_open_contour_count"] is True
@@ -11969,6 +11972,9 @@ def test_q10336_h638_cad_finish_soft_protect():
     assert ruled["get_border_size_other_keys_unrecorded"] is False
     assert ruled["unused_time_step_explode_empty"] is False
     assert ruled["mid_wizard_number_of_contours_flip"] is False
+    assert ruled["cadimport_data_and_updateitemtype_not_contours_flip"] is True
+    assert ruled["quote_item_read_omits_number_of_contours"] is False
+    assert ruled["open_url_only_additem_dxf_itemedit_v1_tree"] is False
     assert gap["q10333"]["number_of_contours"] == 1
     assert gap["q10333"]["open_contour_count"] == 0
     assert gap["q10336"]["open_contour_count"] == 0
@@ -12119,6 +12125,227 @@ def test_cad_finish_named_xhr_probe_itemedit_getbordersize_fail_closed():
     )
     assert refuse is not None
     assert "InternalData empty" in refuse
+
+
+def test_persist_number_of_contours_gate_ignores_occ_and_contours_key():
+    """Persist PASS is NumberOfContours≥1 on v1 ItemList / TreeListData.
+
+    OpenContourCount and a Contours list key are not the PASS signal
+    (OCC=0 even on H.6.38 PASS). QuoteItem_Read Data-only Cad fails
+    contours even if a Contours key is present. invent=false.
+    """
+    from secturafab.website import (
+        WEBSITE_FINISH_PATHS,
+        item_cad_contour_count,
+        quote_contours_rows,
+        quote_item_rows,
+        step_finish_pack_missing,
+    )
+
+    laser_pr = {
+        "ProductType": 100,
+        "Category": "Cad",
+        "BadgeString": "PR",
+        "OperationCostList": [
+            {"CalculatorName": "Laser"},
+            {"CalculatorName": "Deburr"},
+            {"CalculatorName": "Laser-Setup"},
+            {"CalculatorName": "Sheet Loading"},
+        ],
+    }
+    assert item_cad_contour_count({**laser_pr, "OpenContourCount": 3}) == 0
+    assert item_cad_contour_count({**laser_pr, "Contours": [1]}) == 0
+    assert item_cad_contour_count({**laser_pr, "NumberOfContours": 1}) == 1
+    assert item_cad_contour_count(
+        {**laser_pr, "NumberOfContours": 1, "OpenContourCount": 0}
+    ) == 1
+
+    occ_only = {"ItemList": [{**laser_pr, "OpenContourCount": 3}]}
+    miss_occ = step_finish_pack_missing(
+        occ_only, expect_cad=True, expect_linear=False
+    )
+    assert miss_occ is not None
+    assert "Cad Contours empty after Finish" in miss_occ
+
+    contours_key = {"ItemList": [{**laser_pr, "Contours": 1}]}
+    miss_key = step_finish_pack_missing(
+        contours_key, expect_cad=True, expect_linear=False
+    )
+    assert miss_key is not None
+    assert "Cad Contours empty after Finish" in miss_key
+
+    noc_pass = {
+        "ItemList": [{**laser_pr, "NumberOfContours": 1, "OpenContourCount": 0}]
+    }
+    assert step_finish_pack_missing(
+        noc_pass, expect_cad=True, expect_linear=False
+    ) is None
+
+    read_only = {
+        "Data": [{**laser_pr, "NumberOfContours": 1, "Contours": 1}],
+    }
+    assert quote_item_rows(read_only)
+    assert quote_contours_rows(read_only) == []
+    miss_read = step_finish_pack_missing(
+        read_only, expect_cad=True, expect_linear=False
+    )
+    assert miss_read is not None
+    assert "Cad Contours empty after Finish" in miss_read
+
+    tree = {
+        "TreeListData": [
+            {**laser_pr, "NumberOfContours": 1, "OpenContourCount": 0}
+        ]
+    }
+    assert step_finish_pack_missing(
+        tree, expect_cad=True, expect_linear=False
+    ) is None
+    assert WEBSITE_FINISH_PATHS["quote_item_read_treelist"] == (
+        "/Quote/QuoteItem_ReadTreeListData"
+    )
+
+
+def test_read_quote_items_attaches_v1_itemlist_for_number_of_contours():
+    """QuoteItem_Read Data stays; nonempty v1 ItemList is attached."""
+    from secturafab.push import SecturaFabPushService
+
+    client = MagicMock()
+    client.quote_item_read.return_value = {
+        "Data": [{"ProductType": 100, "Category": "Cad"}],
+        "Total": 1,
+    }
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ProductType": 100,
+                "Category": "Cad",
+                "NumberOfContours": 1,
+            }
+        ]
+    }
+    posted = SecturaFabPushService(client=client)._read_quote_items("qid")
+    assert posted["Data"][0]["ProductType"] == 100
+    assert posted["ItemList"][0]["NumberOfContours"] == 1
+
+    empty_v1 = MagicMock()
+    empty_v1.quote_item_read.return_value = {
+        "Data": [{"ProductType": 100, "Category": "Cad"}],
+        "Total": 1,
+    }
+    empty_v1.get_json.return_value = {"ItemList": []}
+    posted_empty = SecturaFabPushService(client=empty_v1)._read_quote_items("qid")
+    assert "ItemList" not in posted_empty
+    assert posted_empty["Data"][0]["Category"] == "Cad"
+
+
+def test_live_mid_wizard_contours_xhr_carrier_notes():
+    """Mid-wizard mint skipped. Persist NumberOfContours≥1, never OCC."""
+    from secturafab.cadimport_js import GET_BORDER_SIZE_PATH, UPDATE_ITEM_TYPE_PATH
+    from secturafab.website import STEP_CONTOURS_FILL_UNLOCKED, WEBSITE_FINISH_PATHS
+    from tests.fixtures.live_mid_wizard_contours_xhr import (
+        live_mid_wizard_contours_xhr,
+    )
+
+    notes = live_mid_wizard_contours_xhr()
+    assert notes["invent"] is False
+    assert notes["mid_wizard_live_mint"] == "skipped_session_busy_protected_tabs"
+    assert notes["unlocks_automation_contours_fill"] is False
+    assert notes["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
+    assert notes["pass_signal"] == "NumberOfContours>=1"
+    assert notes["not_pass_signal"] == "OpenContourCount"
+    assert "v1/quote ItemList" in notes["number_of_contours_on"]
+    assert "/Quote/QuoteItem_ReadTreeListData" in notes["number_of_contours_on"]
+    assert "/Quote/QuoteItem_Read list items" in notes["number_of_contours_absent_on"]
+    assert notes["cadimport_data_has_number_of_contours"] is False
+    assert notes["cadimport_open_contour_count_even_on_pass"] == 0
+    assert "/CadImport/Data" in notes["ruled_out_flip_carriers"]
+    assert UPDATE_ITEM_TYPE_PATH in notes["ruled_out_flip_carriers"]
+    assert GET_BORDER_SIZE_PATH in notes["ruled_out_flip_carriers"]
+    assert "/Quote/AddItem_DXFFiles" in notes["open_url_only"]
+    assert "/quote/ItemEdit" in notes["open_url_only"]
+    assert "GET v1/quote ItemList" in notes["open_url_only"]
+    assert (
+        WEBSITE_FINISH_PATHS["quote_item_read_treelist"] in notes["open_url_only"]
+    )
+    assert notes["forever_protect"] == ("Q10333", "Q10336", "Q10339")
+
+
+def test_time_step_empty_internaldata_dig_fail_closed():
+    """28898-1 / 28772-1 / 14327-18: empty explode InternalData stay refuse."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+        STEP_CONTOURS_FILL_UNLOCKED,
+        cad_filelist_refuses_additem_dxf,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.time_step_empty_internaldata import (
+        time_step_empty_internaldata_dig,
+        time_step_empty_internaldata_pns,
+    )
+
+    dig = time_step_empty_internaldata_dig()
+    assert time_step_empty_internaldata_pns() == (
+        "28898-1",
+        "28772-1",
+        "14327-18",
+    )
+    assert dig["invent"] is False
+    assert dig["unlocks_automation_contours_fill"] is False
+    assert dig["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
+    assert dig["separate_from_h638_family"] is True
+    assert dig["h638_contours_good"] == ("Q10333", "Q10336", "Q10339")
+    assert dig["ids_restated"] is False
+    assert dig["id_unknown"] is True
+    assert dig["update_item_type_ok"] is True
+    assert dig["internaldata_empty_after_explode"] is True
+    assert dig["finish_refused"] is True
+    assert dig["finish_why"] == CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    assert dig["named_sequence_unlocks_fill"] is False
+    assert dig["do_not_remint"] is True
+    assert dig["do_not_patch"] is True
+    assert "28769-1" in dig["prior_captures"]
+    assert "14327-5" in dig["prior_captures"]
+    ids = [h["id"] for h in dig["hypotheses"]]
+    assert "server_explode_empty_tlist" in ids
+    assert "update_item_type_does_not_fill_internaldata" in ids
+    ruled = {h["id"]: h["ruled_out"] for h in dig["hypotheses"]}
+    assert ruled["update_item_type_does_not_fill_internaldata"] is True
+    assert ruled["not_h638_finished_get_contours_good"] is True
+    for pn in time_step_empty_internaldata_pns():
+        assert is_forbidden_quote_number(pn)
+        assert spent_quote_number_block_reason(pn)
+        assert pn in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+        assert pn in step_contours_fill_hunt()["never_remint"]
+        with pytest.raises(ForbiddenQuoteError, match=pn):
+            refuse_forbidden_quote_write(
+                method="POST",
+                path="/Quote/AddItem_DXFFiles",
+                payload={"QuoteNumber": pn},
+            )
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "InternalData empty" in refuse
+    assert "28898-1" not in refuse
+    assert "28772-1" not in refuse
+    assert "14327-18" not in refuse
 
 
 def test_q10338_crossdrain_image_files_pass_protect():
@@ -12448,6 +12675,8 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
     assert "/Quote/GetPerimeterAndWeight" in STEP_CONTOURS_NOT_FILL_PATHS
     assert "/Quote/GetBorderSize" in STEP_CONTOURS_NOT_FILL_PATHS
     assert "/quote/ItemEdit" in STEP_CONTOURS_NOT_FILL_PATHS
+    assert "/Quote/QuoteItem_Read" in STEP_CONTOURS_NOT_FILL_PATHS
+    assert "/Quote/QuoteItem_ReadTreeListData" in STEP_CONTOURS_NOT_FILL_PATHS
     js = (
         Path(__file__).resolve().parent / "fixtures" / "quote_order_edit_create_parts.js"
     ).read_text()
