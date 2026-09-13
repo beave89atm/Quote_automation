@@ -4778,7 +4778,9 @@ def test_apply_grid_part_modes_js_keeps_kids_without_select_or_invent():
     assert "Contours:" not in js
     assert "dataSource.data(rows)" in js
     assert "multi ? \"\" : findSetFn()" in js
-    apply_body = js.split("function applyAll()")[1]
+    apply_body = js.split("function applyAll()")[1].split(
+        "if (grid() && grid().dataSource) return applyAll();"
+    )[0]
     assert "but_dxf" not in apply_body
 
 
@@ -14069,9 +14071,29 @@ def test_finish_cad_files_multi_kid_keep_grid_rehydrate_allows_finish(
             "__RequestVerificationToken",
         ],
     }
-    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    live_items = [
+        {
+            "ID": "id-a",
+            "Name": "34328-1 PLATE A",
+            "ProductType": 100,
+            "NumberOfContours": 1,
+        },
+        {
+            "ID": "id-b",
+            "Name": "34328-1 PLATE B",
+            "ProductType": 100,
+            "NumberOfContours": 1,
+        },
+        {
+            "ID": "id-c",
+            "Name": "34328-1 GUSSET",
+            "ProductType": 100,
+            "NumberOfContours": 1,
+        },
+    ]
+    client.quote_item_read.return_value = {"Data": live_items, "Total": 3}
     client.get_json.return_value = {
-        "ItemList": [],
+        "ItemList": live_items,
         "PrimaryOrganizationID": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
     }
     with patch(
