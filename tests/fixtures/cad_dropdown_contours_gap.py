@@ -1,27 +1,34 @@
 """Cad dropdown vs automation classify — Contours fill stays locked.
 
-In-repo QuoteOrderEdit / CadImport JS has no named XHR that fills
-FileList Contours / InternalData when ProductType changes to Cad.
+Live Q10335 mouse capture named the dropdown classify XHR:
+  POST /Part/UpdateItemType — Component→Cad click, status 200
+  Also /part/PartImage, /Quote/GetBorderSize on thickness
+  Contours still 0 before Finish
+
+UpdateItemType is dropdown classify. Contours fill may still need
+Finish or further calls. invent=false.
 
 Cited handlers beyond SetPartMode / ProductType=100:
   SetPartMode          POST /CadImport/SetPartMode {ID, PartMode}
+  UpdateItemType       POST /Part/UpdateItemType {ID, ItemType}
   kendo row.set        local grid fields (ProductType 100, FileType Cad)
   UpdateData           editor close ItemList ID/Index/visible/attr/color
   UpdateDataNext       editor-only UpdateDXF_LoadNew
   ConvertTo / SetUnits units on #gridDXF — not Contours
   GetPerimeterAndWeight #gridPDF / Stock_X/Y perimeter
+  GetBorderSize        thickness companion (Q10335) — not Contours
   OnAddDXFClick        copies #gridDXFParts as-is
 
-Live leftovers after Cad-for-plate (ce2514f):
+Live leftovers after Cad-for-plate:
   5e7bfc0b H638-CADPLATE — SetPartMode 0 + ProductType 100 Cad:1,
     InternalData empty, Finish refuse
   e2683a3f Q10334 — kendo Cad/100 + 0.1875 in + Laser-Bay1,
     Contours still empty
+  bcff1a24 Q10335 — mouse UpdateItemType 200, Contours 0 before Finish
 
 Human Kyle on Q10333 / b5f56ac3: real Component→Cad dropdown +
-thickness + Finish → Contours=1 PASS. That click's extra XHRs are
-not in fixtures. invent=false. Next: DevTools of Kyle's real
-dropdown click (method/path/request keys + Contours emptiness).
+thickness + Finish → Contours=1 PASS. That click's classify XHR is
+now named (UpdateItemType). Contours fill is still not reproduced.
 """
 
 from __future__ import annotations
@@ -30,7 +37,10 @@ from typing import Any
 
 from secturafab.cadimport_js import (
     CLASSIFY_FINISH_INTERNALDATA_FILL,
+    GET_BORDER_SIZE_PATH,
     SET_PART_MODE_PATH,
+    UPDATE_ITEM_TYPE_BODY_KEYS,
+    UPDATE_ITEM_TYPE_PATH,
 )
 from secturafab.website import STEP_CONTOURS_FILL_UNLOCKED
 
@@ -48,14 +58,21 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
     "fail_close": True,
     "set_part_mode_path": SET_PART_MODE_PATH,
     "set_part_mode_keys": ("ID", "PartMode"),
+    "update_item_type_path": UPDATE_ITEM_TYPE_PATH,
+    "update_item_type_keys": UPDATE_ITEM_TYPE_BODY_KEYS,
+    "update_item_type_is_classify_xhr": True,
+    "update_item_type_fills_contours": False,
+    "get_border_size_path": GET_BORDER_SIZE_PATH,
     "kendo_row_set_fills_contours": False,
     "human_dropdown_fills_contours": True,
     "human_dropdown_reproduced": False,
-    "next": "devtools_kyle_component_to_cad_dropdown_xhrs",
+    "human_dropdown_classify_xhr": UPDATE_ITEM_TYPE_PATH,
+    "next": "finish_or_further_calls_after_updateitemtype",
     "never_remint": (
         "H638-CADPLATE",
         "Q10334",
         "Q10333",
+        "Q10335",
     ),
     "hypotheses": (
         {
@@ -67,8 +84,21 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
                 "ProductType change handler. Chrome kendo row.set + "
                 "SetPartMode 0 live-failed on Q10334 / e2683a3f "
                 "(Cad/100 + 0.1875 in + Laser-Bay1, Contours empty). "
-                "Human dropdown on Q10333 filled Contours. Gap is the "
-                "uncaptured click XHRs — not a named fill we can fire."
+                "Human dropdown classify XHR is POST /Part/UpdateItemType "
+                "(Q10335 status 200). Contours still 0 before Finish."
+            ),
+        },
+        {
+            "id": "update_item_type_classify",
+            "call": "POST /Part/UpdateItemType",
+            "fn": "UpdateItemType",
+            "ruled_out": True,
+            "why": (
+                "Live Q10335 mouse Component→Cad fires POST "
+                "/Part/UpdateItemType 200. QuoteOrderEdit ItemType field "
+                "(GetPDFData / onInternalDataChange). Wired keys ID + "
+                "ItemType=Cad only — capture did not restate keys. "
+                "Contours still 0 before Finish. Classify XHR, not fill."
             ),
         },
         {
@@ -101,7 +131,8 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
                 "OnAddDXFClick copies #gridDXFParts as-is. Leftovers "
                 "that Finished with empty InternalData stayed empty. "
                 "Q10333 Contours=1 was after human dropdown+thickness; "
-                "Finish copies, does not fill."
+                "Finish copies, does not fill. Q10335 Contours 0 before "
+                "Finish — fill may still need Finish or further calls."
             ),
         },
         {
@@ -112,8 +143,8 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
             "why": (
                 "ConvertTo is units on #gridDXF (PROVEN_EMPTY_PATHS). "
                 "SetUnits is query-only. Local inch sanitize is not a "
-                "Sectura XHR. Chrome leftover already set 0.1875 in + "
-                "Laser-Bay1; Contours stayed empty."
+                "Sectura XHR. Q10335 thickness also fired /part/PartImage "
+                "+ /Quote/GetBorderSize; Contours stayed 0 before Finish."
             ),
         },
     ),
@@ -136,5 +167,6 @@ def cad_dropdown_contours_gap_exhausted() -> bool:
         and gap["cad_classify_neq_contours_fill"] is True
         and gap["unlocks_automation_contours_fill"] is False
         and gap["invent"] is False
+        and gap["update_item_type_fills_contours"] is False
         and all(h.get("ruled_out") for h in gap["hypotheses"])
     )

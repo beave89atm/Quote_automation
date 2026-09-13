@@ -21,7 +21,7 @@ Wrong-org Time mint (not a Contours leftover; ID unknown):
 
 Keep existing forever-forbids for 8973f890 / 35136-1,
 14327-5 / c5cd8689, 14327-8 / 1cd941c6, Q10329-31,
-H638-CADPLATE / 5e7bfc0b, and Q10334 / e2683a3f.
+H638-CADPLATE / 5e7bfc0b, Q10334 / e2683a3f, and Q10335 / bcff1a24.
 Fail-close stays locked. Capture must be a new PN.
 """
 

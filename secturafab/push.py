@@ -2843,6 +2843,10 @@ class SecturaFabPushService:
                     self.client.cadimport_set_part_mode(
                         row_id=row_id, part_mode=int(overlaid["PartMode"])
                     )
+                    if cat == "Cad":
+                        self.client.part_update_item_type(
+                            row_id=row_id, item_type="Cad"
+                        )
                 if not live_edit:
                     self.client.cadimport_update_data(overlaid)
             except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
@@ -2952,10 +2956,12 @@ class SecturaFabPushService:
         — Sectura Adjust Properties defaults Component, which blocks
         Contours (Kyle Loom; Q10333 / H.6.38 PASS Cad / Contours=1 /
         8 bends + Profile / Laser Bay1 / UC 176.96). Cad is the API/kendo field
-        (SetPartMode 0 + ProductType=100), not a UI dropdown click.
+        (SetPartMode 0 + ProductType=100) plus POST /Part/UpdateItemType
+        ItemType=Cad (live Q10335 mouse Component→Cad dropdown classify
+        XHR, status 200). UpdateItemType is classify, not Contours fill.
         Fail-close if PartMode is still null after classify, if ProductType
         is still Component on a Cad plate, or if Contours/InternalData
-        stay empty after Cad (do not invent).
+        stay empty after UpdateItemType (do not invent).
         After Finish, fail-close if PartMode is still null, or if Cad
         Contours are empty / PR+laser pack is missing. Then log
         kendo row key names (CadType, Stock_*, FileType, SID/FileID/ID) and
@@ -3335,6 +3341,12 @@ class SecturaFabPushService:
             f"Component:{int(applied.get('component') or 0)}"
         )
         notes.append(f"setpartmode_via={set_via or '?'}")
+        type_via = str(applied.get("updateitemtype_via") or "")
+        self.client._updateitemtype_via = type_via
+        notes.append(
+            f"updateitemtype_via={type_via or '?'} "
+            f"count={int(applied.get('updateitemtype_count') or 0)}"
+        )
         notes.append("kyle_classify_before_finish=true")
         blocked = kyle_classify_before_finish_blocked(classified)
         if blocked:

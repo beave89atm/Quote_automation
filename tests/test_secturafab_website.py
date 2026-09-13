@@ -2179,10 +2179,13 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("ZZ-DEL-H638-CADPLATE")
     assert is_forbidden_quote_number("Q10334")
     assert is_forbidden_quote_number("ZZ-DEL-Q10334")
+    assert is_forbidden_quote_number("Q10335")
+    assert is_forbidden_quote_number("ZZ-DEL-Q10335")
     assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
     assert is_forbidden_quote_id("5e7bfc0b-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
     assert is_forbidden_quote_id("e2683a3f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("bcff1a24-1111-2222-3333-444444444444")
 
     from tests.fixtures.live_1020250_1 import (
         leftover_finish_filelist_n0_after_form_lw_dump,
@@ -2975,6 +2978,8 @@ def test_getpdfdata_keeps_status_gt_zero_only():
 
 def test_website_paths_are_quote_mvc_not_quickadd():
     assert WEBSITE_FINISH_PATHS["add_item_dxf_files"] == "/Quote/AddItem_DXFFiles"
+    assert WEBSITE_FINISH_PATHS["part_update_item_type"] == "/Part/UpdateItemType"
+    assert WEBSITE_FINISH_PATHS["quote_get_border_size"] == "/Quote/GetBorderSize"
     assert WEBSITE_FINISH_PATHS["add_item_pdf_files"] == "/Quote/AddItem_PDFFiles"
     assert WEBSITE_FINISH_PATHS["get_perimeter_and_weight"] == "/Quote/GetPerimeterAndWeight"
     assert WEBSITE_FINISH_PATHS["add_item_linear"] == "/Quote/AddItem_Linear"
@@ -4642,8 +4647,10 @@ def test_apply_grid_dxf_part_modes_evaluates_setpartmode_on_edit():
         assert method == "Runtime.evaluate"
         assert ws_url.endswith("/edit")
         assert "/CadImport/SetPartMode" in expr
+        assert "/Part/UpdateItemType" in expr
         assert "gridDXFParts" in expr
         assert "PartMode" in expr
+        assert "ItemType" in expr
         assert "kendo_row_keys" in expr
         assert "CadType" in expr
         assert "Stock_X" in expr
@@ -9431,6 +9438,7 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert dump["part_key"] == GOLD_PART_KEY == "35145-1"
     assert dump["quote_number"] == GOLD_QUOTE_NUMBER == "Q10243"
     assert WEBSITE_FINISH_PATHS["add_item_dxf_files"] == "/Quote/AddItem_DXFFiles"
+    assert WEBSITE_FINISH_PATHS["part_update_item_type"] == "/Part/UpdateItemType"
     assert LIVE_PART_CREATE_TLIST_BIND is None
     assert is_forbidden_quote_number("35145-1")
     assert is_forbidden_quote_number("Q10243")
@@ -9452,6 +9460,7 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("Q10333")
     assert is_forbidden_quote_number("H638-CADPLATE")
     assert is_forbidden_quote_number("Q10334")
+    assert is_forbidden_quote_number("Q10335")
     assert is_forbidden_quote_id("c146ce6d-aaaa-bbbb-cccc-000000000001")
     assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
     assert is_forbidden_quote_id("c5cd8689-fed4-44d6-b2f5-f96bda8af424")
@@ -10250,6 +10259,8 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
     assert "14327-1" in refuse
     assert "5e7bfc0b" in refuse
     assert "e2683a3f" in refuse
+    assert "bcff1a24" in refuse
+    assert "Q10335" in refuse
     assert "b5f56ac3" not in refuse
     assert "Q10333" not in refuse
     assert "missing_call=POST /part/create t.List InternalData+ImageString" in refuse
@@ -10355,6 +10366,7 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "Q10333",
         "H638-CADPLATE",
         "Q10334",
+        "Q10335",
         "28768-1",
         "10289-4",
         "P904271-1",
@@ -11174,6 +11186,8 @@ def test_leftover_contours_ui_q10329_q10330_q10331_forever_forbid():
     assert "Q10333" not in refuse
     assert "5e7bfc0b" in refuse
     assert "e2683a3f" in refuse
+    assert "bcff1a24" in refuse
+    assert "Q10335" in refuse
 
 
 def test_plate_step_classify_bind_sets_cad_not_component():
@@ -11197,7 +11211,9 @@ def test_plate_step_classify_bind_sets_cad_not_component():
     assert "Component" in KYLE_LOOM_COMPONENT_TO_CAD
     assert "Cad" in KYLE_LOOM_COMPONENT_TO_CAD
     assert "API/kendo" in KYLE_LOOM_COMPONENT_TO_CAD
+    assert "UpdateItemType" in KYLE_LOOM_COMPONENT_TO_CAD
     assert "Q10333" in KYLE_LOOM_COMPONENT_TO_CAD
+    assert "Q10335" in KYLE_LOOM_COMPONENT_TO_CAD
 
     inch = sanitize_bind_thickness_inches("0.0048:meter")
     assert inch is not None
@@ -11288,6 +11304,48 @@ def test_plate_step_classify_bind_sets_cad_not_component():
     after = cad_filelist_refuses_additem_dxf(kid)
     assert after is not None
     assert "InternalData empty" in after
+
+
+def test_plate_step_classify_posts_update_item_type_cad():
+    """Cookie-HTTP classify: Cad plate POSTs UpdateItemType after SetPartMode."""
+    from secturafab.cadimport_js import UPDATE_ITEM_TYPE_PATH
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+
+    rows = [
+        {
+            "SourceDataID": "h638",
+            "ID": "id-h638",
+            "Name": "H.6.38 PLATE",
+            "ProductType": "Component",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "InternalData": "",
+        }
+    ]
+    client = MagicMock()
+    with patch("secturafab.chrome_cdp.chrome_quotes_live", return_value=False):
+        classified, notes = SecturaFabPushService(client=client).classify_cadimport_rows(
+            rows,
+            default_material="A36",
+            default_thickness="0.1875",
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            qty=1,
+            part_key="H.6.38",
+        )
+    assert classified[0]["ProductType"] == 100
+    client.cadimport_set_part_mode.assert_called()
+    client.part_update_item_type.assert_called_once()
+    kwargs = client.part_update_item_type.call_args.kwargs
+    assert kwargs["row_id"] == "id-h638"
+    assert kwargs["item_type"] == "Cad"
+    refuse = cad_filelist_refuses_additem_dxf(classified[0])
+    assert refuse is not None
+    assert "InternalData empty" in refuse
+    assert UPDATE_ITEM_TYPE_PATH == "/Part/UpdateItemType"
 
 
 def test_plate_step_component_left_is_contours_fail_path():
@@ -11411,8 +11469,10 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_number("Q10331")
     assert is_forbidden_quote_number("H638-CADPLATE")
     assert is_forbidden_quote_number("Q10334")
+    assert is_forbidden_quote_number("Q10335")
     assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
     assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
+    assert is_forbidden_quote_id("bcff1a24-1111-2222-3333-444444444444")
 
     refuse = cad_filelist_refuses_additem_dxf(
         {
@@ -11428,6 +11488,7 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert "Q10333" not in refuse
     assert "5e7bfc0b" in refuse
     assert "e2683a3f" in refuse
+    assert "bcff1a24" in refuse
     assert dump["invent"] is False
 
 
@@ -11535,13 +11596,19 @@ def test_leftover_cad_for_plate_h638_q10334_forever_forbid():
     assert gap["kendo_row_set_fills_contours"] is False
     assert gap["human_dropdown_fills_contours"] is True
     assert gap["human_dropdown_reproduced"] is False
-    assert gap["next"] == "devtools_kyle_component_to_cad_dropdown_xhrs"
+    assert gap["human_dropdown_classify_xhr"] == "/Part/UpdateItemType"
+    assert gap["next"] == "finish_or_further_calls_after_updateitemtype"
     assert gap["set_part_mode_path"] == SET_PART_MODE_PATH
     assert gap["set_part_mode_keys"] == ("ID", "PartMode")
+    assert gap["update_item_type_path"] == "/Part/UpdateItemType"
+    assert gap["update_item_type_keys"] == ("ID", "ItemType")
+    assert gap["update_item_type_is_classify_xhr"] is True
+    assert gap["update_item_type_fills_contours"] is False
     assert cad_dropdown_contours_gap_exhausted() is True
     ids = [h["id"] for h in gap["hypotheses"]]
     assert ids == [
         "native_select_vs_kendo_set",
+        "update_item_type_classify",
         "price_list_manual_entry_cad",
         "details_form_save",
         "finish_fills_contours",
@@ -11581,9 +11648,129 @@ def test_leftover_cad_for_plate_h638_q10334_forever_forbid():
     assert refuse is not None
     assert "5e7bfc0b" in refuse
     assert "e2683a3f" in refuse
+    assert "bcff1a24" in refuse
+    assert "Q10335" in refuse
     assert "b5f56ac3" not in refuse
     assert "Q10333" not in refuse
     assert "InternalData empty" in refuse
+
+
+def test_leftover_q10335_update_item_type_forever_forbid():
+    """Q10335 / bcff1a24 mouse UpdateItemType leftover. Contours 0 before Finish.
+
+    POST /Part/UpdateItemType 200 on Component→Cad. Companions:
+    /part/PartImage, /Quote/GetBorderSize on thickness. Finish
+    diagnostic in flight — leftover forbid, not PASS protect.
+    Full GUID not restated. invent=false. Fill stays locked.
+    """
+    from pathlib import Path
+
+    from secturafab.cadimport_js import (
+        GET_BORDER_SIZE_PATH,
+        UPDATE_ITEM_TYPE_BODY_KEYS,
+        UPDATE_ITEM_TYPE_CAD,
+        UPDATE_ITEM_TYPE_PATH,
+        extract_cadimport_xhrs,
+        update_item_type_fields,
+    )
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        STEP_CONTOURS_FILL_UNLOCKED,
+        cad_filelist_refuses_additem_dxf,
+        step_contours_fill_unlocked,
+    )
+    from tests.fixtures.cad_dropdown_contours_gap import cad_dropdown_contours_gap
+    from tests.fixtures.live_q10335_update_item_type import (
+        leftover_q10335_update_item_type_dump,
+    )
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = leftover_q10335_update_item_type_dump()
+    assert dump["quote_id"] is None
+    assert dump["quote_id_prefix"] == "bcff1a24"
+    assert dump["quote_number"] == "Q10335"
+    assert dump["zz_del_number"] == "ZZ-DEL-Q10335"
+    assert dump["id_unknown"] is True
+    assert dump["update_item_type_path"] == UPDATE_ITEM_TYPE_PATH
+    assert dump["update_item_type_status"] == 200
+    assert dump["update_item_type_itemtype"] == UPDATE_ITEM_TYPE_CAD
+    assert dump["update_item_type_keys"] == UPDATE_ITEM_TYPE_BODY_KEYS
+    assert dump["companions"] == ("/part/PartImage", GET_BORDER_SIZE_PATH)
+    assert dump["contours_empty_before_finish"] is True
+    assert dump["finish_diagnostic_in_flight"] is True
+    assert dump["pass"] is False
+    assert dump["protect"] is False
+    assert dump["invent"] is False
+    assert dump["update_item_type_is_classify_xhr"] is True
+    assert dump["update_item_type_fills_contours"] is False
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert dump["fail_close"] is True
+    assert is_forbidden_quote_id("bcff1a24-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10335")
+    assert is_forbidden_quote_number("ZZ-DEL-Q10335")
+    assert spent_quote_number_block_reason("Q10335")
+    assert "Q10335" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10335" in step_contours_fill_hunt()["never_remint"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10335"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10335"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="bcff1a24"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": "bcff1a24-1111-2222-3333-444444444444"},
+        )
+
+    fields = update_item_type_fields("row-1", "Cad")
+    assert fields == {"ID": "row-1", "ItemType": "Cad"}
+    js = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "quote_order_edit_update_item_type.js"
+    ).read_text()
+    assert UPDATE_ITEM_TYPE_PATH in js
+    xhrs = extract_cadimport_xhrs(js)
+    assert any(x.path == UPDATE_ITEM_TYPE_PATH for x in xhrs)
+    item = next(x for x in xhrs if x.path == UPDATE_ITEM_TYPE_PATH)
+    assert item.method == "POST"
+    assert "ID" in item.body_keys
+    assert "ItemType" in item.body_keys
+
+    gap = cad_dropdown_contours_gap()
+    assert gap["update_item_type_path"] == UPDATE_ITEM_TYPE_PATH
+    assert gap["update_item_type_fills_contours"] is False
+    assert step_contours_fill_unlocked() is False is STEP_CONTOURS_FILL_UNLOCKED
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "bcff1a24" in refuse
+    assert "Q10335" in refuse
+    assert "UpdateItemType" in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert "InternalData empty" in refuse
+    assert dump["invent"] is False
 
 
 def test_wrong_org_time_q10332_forever_forbid_description_only():
@@ -11667,7 +11854,9 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
     assert "kyle_contours_ge1" in hunt["unlock_requires"]
     assert "sectura_support" in hunt["unlock_requires"]
     assert hunt["kyle_loom_component_to_cad"] is True
-    assert hunt["kyle_loom_cad_set_via"] == "api_kendo_producttype_100_setpartmode_0"
+    assert hunt["kyle_loom_cad_set_via"] == (
+        "api_kendo_producttype_100_setpartmode_0_updateitemtype_cad"
+    )
     assert hunt["q10333_component_to_cad_proof"] is True
     assert step_contours_fill_hunt_exhausted() is True
     ids = [a["id"] for a in hunt["angles"]]
@@ -11687,7 +11876,9 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
     assert "/CadImport/UpdateDataNext" in PROVEN_EMPTY_PATHS
     assert "/CadImport/UpdateData" in STEP_CONTOURS_NOT_FILL_PATHS
     assert "/part/PartImage" in STEP_CONTOURS_NOT_FILL_PATHS
+    assert "/Part/UpdateItemType" in STEP_CONTOURS_NOT_FILL_PATHS
     assert "/Quote/GetPerimeterAndWeight" in STEP_CONTOURS_NOT_FILL_PATHS
+    assert "/Quote/GetBorderSize" in STEP_CONTOURS_NOT_FILL_PATHS
     js = (
         Path(__file__).resolve().parent / "fixtures" / "quote_order_edit_create_parts.js"
     ).read_text()

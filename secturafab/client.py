@@ -1204,6 +1204,63 @@ class SecturaFabClient:
         )
         return self._parse_website_or_raise(response, require_session=False)
 
+    def part_update_item_type(
+        self,
+        *,
+        row_id: str,
+        item_type: str = "Cad",
+    ) -> Any:
+        """POST /Part/UpdateItemType — live Q10335 Component→Cad dropdown XHR.
+
+        QuoteOrderEdit grid field is ItemType (GetPDFData /
+        onInternalDataChange). Capture named the path (status 200) and
+        did not restate request keys. Wired keys are ID + ItemType only.
+        Does not fill Contours / InternalData. Refuse Finish if those
+        stay empty.
+        """
+        from .cadimport_js import (
+            UPDATE_ITEM_TYPE_CAD,
+            update_item_type_fields,
+        )
+        from .chrome_cdp import (
+            chrome_quotes_live,
+            post_update_item_type_from_quotes_tab,
+        )
+
+        want = str(item_type or UPDATE_ITEM_TYPE_CAD)
+        params = update_item_type_fields(row_id, want)
+        if chrome_quotes_live() and getattr(self, "_af_source", "") == "chrome_dom":
+            result = post_update_item_type_from_quotes_tab(
+                row_id=str(row_id), item_type=want
+            )
+            if not result.get("has_antiforgery"):
+                raise SecturaFabApiError(
+                    "af_extracted=false — chrome_dom required, "
+                    "not POSTing /Part/UpdateItemType via cookie HTTP"
+                )
+            status = int(result.get("status") or 0)
+            if status >= 400:
+                raise SecturaFabApiError(
+                    f"API request failed ({status}) for chrome_dom /Part/UpdateItemType",
+                    status_code=status,
+                    body={k: True for k in (result.get("body_keys") or [])} or {"Error": True},
+                )
+            return {
+                "body_keys": result.get("body_keys") or [],
+                "body_type": result.get("body_type"),
+                "via": "chrome_dom_fetch",
+            }
+        response = self.website_request(
+            "POST",
+            WEBSITE_FINISH_PATHS["part_update_item_type"],
+            params=params,
+            headers=self._cadimport_ajax_headers(),
+            prefer_api_origin=False,
+            www_only=True,
+            require_session=False,
+        )
+        return self._parse_website_or_raise(response, require_session=False)
+
     def cadimport_set_units(self, units: str = "inch") -> Any:
         """POST /CadImport/SetUnits?units= — one key, www only.
 

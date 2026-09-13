@@ -1675,6 +1675,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "ZZ-DEL-H638-CADPLATE" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10334" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "ZZ-DEL-Q10334" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10335" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "ZZ-DEL-Q10335" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert is_forbidden_quote_id("28708035-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("c146ce6d-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
@@ -1695,6 +1697,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("5e7bfc0b-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
     assert is_forbidden_quote_id("e2683a3f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("bcff1a24-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("30f50f96-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("0837ad33-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("1004f017-1111-2222-3333-444444444444")
@@ -1855,6 +1858,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("5e7bfc0b-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
     assert is_forbidden_quote_id("e2683a3f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("bcff1a24-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("d5a6987d-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("4b8d6ae6-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("bd5c2e3e-948d-463d-8844-4366910bb5ec")
@@ -1975,6 +1979,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "b5f56ac3-326d-48e9-b82d-1e09a7897107",
         "5e7bfc0b-ecf9-46cf-8851-d61062141ce7",
         "e2683a3f-daf5-49ff-83c1-79aed35207a1",
+        "bcff1a24-1111-2222-3333-444444444444",
         "4b8d6ae6-1111-2222-3333-444444444444",
     ):
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):

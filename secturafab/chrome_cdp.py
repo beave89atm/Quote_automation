@@ -914,6 +914,7 @@ _QUOTES_TAB_FETCH_PATHS = frozenset(
         "/Quote/AddItem_DXFFiles",
         "/CadImport/SetPartMode",
         "/CadImport/UpdateData",
+        "/Part/UpdateItemType",
     }
 )
 
@@ -1348,6 +1349,26 @@ def post_set_part_mode_from_quotes_tab(
     return quotes_tab_fetch(
         path="/CadImport/SetPartMode",
         query={"ID": row_id, "PartMode": int(part_mode)},
+        include_list=False,
+        timeout=30.0,
+        base=base,
+        prefer_edit=True,
+    )
+
+
+def post_update_item_type_from_quotes_tab(
+    *,
+    row_id: str,
+    item_type: str = "Cad",
+    base: str | None = None,
+) -> dict[str, Any]:
+    """POST /Part/UpdateItemType from the Quotes document (Q10335 dropdown)."""
+    from .cadimport_js import UPDATE_ITEM_TYPE_CAD, update_item_type_fields
+
+    fields = update_item_type_fields(row_id, item_type or UPDATE_ITEM_TYPE_CAD)
+    return quotes_tab_fetch(
+        path="/Part/UpdateItemType",
+        query=fields,
         include_list=False,
         timeout=30.0,
         base=base,
@@ -7584,9 +7605,11 @@ def create_all_parts_from_grid_dxf(
 # Component after Geometry Cleanup. Plate STEP Contours fill only after
 # Cad (live PASS: Cad / Contours=1 / 8 bends + Profile / Laser Bay1 /
 # UC 176.96). Automation writes kendo ProductType=100 + SetPartMode 0
-# (API field), not a UI dropdown click. Cad classify ≠ Contours fill
-# (H638-CADPLATE / 5e7bfc0b, Q10334 / e2683a3f). Still refuse Finish
-# if Contours stay empty.
+# plus POST /Part/UpdateItemType ItemType=Cad (live Q10335 mouse
+# Component→Cad dropdown classify XHR, status 200). Cad classify ≠
+# Contours fill (H638-CADPLATE / 5e7bfc0b, Q10334 / e2683a3f,
+# Q10335 / bcff1a24 Contours 0 before Finish). Still refuse Finish
+# if Contours stay empty. UpdateItemType is classify, not Contours fill.
 # Live 105918-1: Finish without this left plates as Component (0 Cad).
 _APPLY_GRID_PART_MODES_JS = """(function(spec) {
   function grid() {
@@ -7620,6 +7643,22 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         var fn = window[k];
         if (typeof fn === "function"
             && String(fn).indexOf("/CadImport/SetPartMode") >= 0) {
+          return k;
+        }
+      }
+    } catch (e) {}
+    return "";
+  }
+  function findUpdateItemTypeFn() {
+    var names = ["UpdateItemType", "OnItemTypeChange", "ChangeItemType"];
+    for (var i = 0; i < names.length; i++) {
+      if (typeof window[names[i]] === "function") return names[i];
+    }
+    try {
+      for (var k in window) {
+        var fn = window[k];
+        if (typeof fn === "function"
+            && String(fn).indexOf("/Part/UpdateItemType") >= 0) {
           return k;
         }
       }
@@ -7744,21 +7783,51 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       resolve("");
     });
   }
+  function postItemType(id, itemType, fnName) {
+    return new Promise(function(resolve) {
+      if (!id || id === "00000000-0000-0000-0000-000000000000") {
+        resolve("");
+        return;
+      }
+      if (fnName && typeof window[fnName] === "function") {
+        try {
+          var fn = window[fnName];
+          if (fn.length >= 2) fn(id, itemType);
+          else fn(id);
+          resolve("page_fn");
+          return;
+        } catch (e) {}
+      }
+      if (window.jQuery && jQuery.ajax) {
+        jQuery.ajax({
+          type: "POST",
+          url: "/Part/UpdateItemType",
+          data: {ID: id, ItemType: itemType}
+        }).always(function() { resolve("jquery_ajax"); });
+        return;
+      }
+      resolve("");
+    });
+  }
   function applyAll() {
     var g = grid();
     if (!g || !g.dataSource) {
       return Promise.resolve({
         grid_present: false,
         cad: 0, linear: 0, assembly: 0, component: 0,
-        set_count: 0, setpartmode_via: "", grid_dxf_row_count: 0
+        set_count: 0, setpartmode_via: "", updateitemtype_count: 0,
+        updateitemtype_via: "", grid_dxf_row_count: 0
       });
     }
     var wants = (spec && spec.rows) || [];
     var data = g.dataSource.data();
     var chain = Promise.resolve("");
     var setCount = 0;
+    var typeSetCount = 0;
     var via = "";
+    var typeVia = "";
     var fnName = findSetFn();
+    var itemTypeFnName = findUpdateItemTypeFn();
     for (var i = 0; i < data.length; i++) {
       (function(row) {
         var want = matchWant(row, wants) || wantFromName(row);
@@ -7766,9 +7835,18 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         if (!applyFields(row, want)) return;
         setCount += 1;
         var id = String(row.ID || row.ItemID || want.ID || "");
+        var cat = String(want.Category || "");
         chain = chain.then(function(prev) {
           if (prev && !via) via = prev;
           return postMode(id, Number(want.PartMode), fnName);
+        }).then(function(modeVia) {
+          if (modeVia && !via) via = modeVia;
+          if (cat !== "Cad") return modeVia;
+          return postItemType(id, "Cad", itemTypeFnName).then(function(itemVia) {
+            typeSetCount += 1;
+            if (itemVia && !typeVia) typeVia = itemVia;
+            return modeVia;
+          });
         });
       })(data[i]);
     }
@@ -7801,6 +7879,8 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         component: counts.Component,
         set_count: setCount,
         setpartmode_via: via || (fnName ? "page_fn" : (setCount ? "grid_set" : "")),
+        updateitemtype_count: typeSetCount,
+        updateitemtype_via: typeVia || (typeSetCount ? (itemTypeFnName ? "page_fn" : "jquery_ajax") : ""),
         grid_dxf_row_count: fresh.length,
         kendo_row_keys: kendoKeys
       };
@@ -7817,7 +7897,8 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         resolve({
           grid_present: false,
           cad: 0, linear: 0, assembly: 0, component: 0,
-          set_count: 0, setpartmode_via: "", grid_dxf_row_count: 0
+          set_count: 0, setpartmode_via: "", updateitemtype_count: 0,
+          updateitemtype_via: "", grid_dxf_row_count: 0
         });
         return;
       }
@@ -7833,9 +7914,11 @@ def apply_grid_dxf_part_modes(
     quote_id: str | None = None,
     base: str | None = None,
 ) -> dict[str, Any]:
-    """Set File type on EDIT #gridDXFParts via SetPartMode (QuoteOrderEdit).
+    """Set File type on EDIT #gridDXFParts via SetPartMode + UpdateItemType.
 
-    Does not POST /Quote/AddItem_DXFFiles. Capture counts from the grid.
+    Cad plate/sheet also POST /Part/UpdateItemType ItemType=Cad (Q10335
+    mouse dropdown classify XHR). Does not POST /Quote/AddItem_DXFFiles.
+    Capture counts from the grid. Still refuse Finish if Contours empty.
     """
     from .website import cad_payload_value_empty
 
@@ -7868,6 +7951,8 @@ def apply_grid_dxf_part_modes(
         "component": 0,
         "set_count": 0,
         "setpartmode_via": "",
+        "updateitemtype_count": 0,
+        "updateitemtype_via": "",
         "grid_dxf_row_count": 0,
         "edit_quote_id": "",
         "minted_id": str(quote_id or ""),
@@ -7909,6 +7994,8 @@ def apply_grid_dxf_part_modes(
         "component": int(value.get("component") or 0) if present else 0,
         "set_count": int(value.get("set_count") or 0) if present else 0,
         "setpartmode_via": str(value.get("setpartmode_via") or "") if present else "",
+        "updateitemtype_count": int(value.get("updateitemtype_count") or 0) if present else 0,
+        "updateitemtype_via": str(value.get("updateitemtype_via") or "") if present else "",
         "grid_dxf_row_count": int(value.get("grid_dxf_row_count") or 0) if present else 0,
         "edit_quote_id": str(gate.get("edit_quote_id") or ""),
         "minted_id": str(gate.get("minted_id") or quote_id or ""),

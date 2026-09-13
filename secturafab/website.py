@@ -355,11 +355,14 @@ def is_tenant_guid(value: Any) -> bool:
 # fill. Protect forever; never remint / PATCH / ZZ-DEL.
 # Automation writes the
 # API/kendo ProductType field (100) + FileType/ItemType/Category=Cad +
-# SetPartMode 0 — not a UI dropdown click. Cad classify ≠ Contours fill
-# (live H638-CADPLATE / 5e7bfc0b SetPartMode Cad:1 InternalData empty;
-# Q10334 / e2683a3f kendo Cad/100 + 0.1875 in + Laser-Bay1 Contours
-# empty). Do not invent Contours; refuse Finish if InternalData still
-# empty after Cad classify. Next: DevTools of Kyle's real dropdown click.
+# SetPartMode 0 plus POST /Part/UpdateItemType ItemType=Cad (live Q10335
+# mouse Component→Cad dropdown classify XHR, status 200). Cad classify ≠
+# Contours fill (live H638-CADPLATE / 5e7bfc0b SetPartMode Cad:1
+# InternalData empty; Q10334 / e2683a3f kendo Cad/100 + 0.1875 in +
+# Laser-Bay1 Contours empty; Q10335 / bcff1a24 UpdateItemType 200,
+# Contours still 0 before Finish). Do not invent Contours; refuse Finish
+# if InternalData still empty after UpdateItemType. UpdateItemType is
+# dropdown classify; Contours fill may still need Finish or further calls.
 PART_MODE_CAD = 0
 PART_MODE_LINEAR = 1
 PART_MODE_COMPONENT = 2
@@ -391,6 +394,8 @@ WEBSITE_FINISH_PATHS = {
     "cadimport_update_data": "/CadImport/UpdateData",
     "cadimport_update_data_next": "/CadImport/UpdateDataNext",
     "cadimport_set_part_mode": "/CadImport/SetPartMode",
+    "part_update_item_type": "/Part/UpdateItemType",
+    "quote_get_border_size": "/Quote/GetBorderSize",
     "cadimport_set_units": "/CadImport/SetUnits",
     "cadimport_convert_to": "/CadImport/ConvertTo",
     "part_create": "/part/create",
@@ -1390,10 +1395,13 @@ KYLE_LOOM_COMPONENT_TO_CAD = (
     "Component; sheet/plate laser must be Cad (inches, Machine Laser) for "
     "Contours to fill. Live PASS Q10333 / b5f56ac3 / H.6.38 Safe Cave "
     "(Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96). "
-    "Cad is set via API/kendo ProductType=100 + SetPartMode 0, not a UI click. "
-    "Automation Cad classify ≠ Contours fill (H638-CADPLATE / 5e7bfc0b, "
-    "Q10334 / e2683a3f). Next: DevTools of Kyle's real Component→Cad "
-    "dropdown click XHRs. Do not invent Contours."
+    "Cad is set via API/kendo ProductType=100 + SetPartMode 0 plus "
+    "POST /Part/UpdateItemType ItemType=Cad (live Q10335 mouse dropdown "
+    "classify XHR, status 200). Automation Cad classify ≠ Contours fill "
+    "(H638-CADPLATE / 5e7bfc0b, Q10334 / e2683a3f, Q10335 / bcff1a24 "
+    "Contours 0 before Finish). UpdateItemType is dropdown classify; "
+    "Contours fill may still need Finish or further calls. Do not invent "
+    "Contours."
 )
 _THICKNESS_VALUE_UNIT_RE = re.compile(
     r"^\s*([0-9]*\.?[0-9]+)\s*[:\s]\s*"
@@ -1862,8 +1870,10 @@ STEP_CONTOURS_NOT_FILL_PATHS = frozenset(
         "/CadImport/SetUnits",
         "/CadImport/GetDXFData",
         "/part/PartImage",
+        "/Part/UpdateItemType",
         "/Quote/DXFInternal",
         "/Quote/GetPerimeterAndWeight",
+        "/Quote/GetBorderSize",
         "/Quote/GetDXFData",
     }
 )
@@ -1876,6 +1886,7 @@ STEP_CONTOURS_KNOWN_PATHS = frozenset(
         "/Quote/AddItem_DXFFiles",
         "/CadImport/SetPartMode",
         "/CadImport/SetUnits",
+        "/Part/UpdateItemType",
     }
 )
 STEP_CONTOURS_CAPTURE_NEVER_SAVE = (
@@ -1922,9 +1933,12 @@ def kyle_step_contours_devtools_capture() -> dict[str, Any]:
     Finish. Q10333 / H.6.38 / Safe Cave is a Contours PASS protect
     (Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96;
     unlock Component→Cad then thickness inches then Contours fill) —
-    never remint / PATCH / ZZ-DEL. Automation sets Cad via API/kendo field.
-    Cad classify ≠ Contours fill (H638-CADPLATE / 5e7bfc0b, Q10334 /
-    e2683a3f). Next: DevTools of Kyle's real dropdown click XHRs.
+    never remint / PATCH / ZZ-DEL. Automation sets Cad via API/kendo
+    field plus POST /Part/UpdateItemType ItemType=Cad (Q10335 mouse
+    dropdown classify XHR). Cad classify ≠ Contours fill (H638-CADPLATE /
+    5e7bfc0b, Q10334 / e2683a3f, Q10335 / bcff1a24 Contours 0 before
+    Finish). UpdateItemType is classify; Contours fill may still need
+    Finish or further calls.
     Q10332 is a wrong-org Time mint (ZZ-DEL-wrong-org-Time; ID unknown).
     Do not invent Contours. Do not remint spent STEP leftovers.
     """
@@ -2020,6 +2034,8 @@ def kyle_step_contours_devtools_capture() -> dict[str, Any]:
             "Quote/DXFInternal",
             "GetPerimeterAndWeight",
             "SetPartMode",
+            "UpdateItemType",
+            "GetBorderSize",
             "CADData editor preview",
         ),
         "image_files_analog": (
@@ -2519,7 +2535,9 @@ def bind_plate_step_product_type_cad(row: dict[str, Any] | None) -> dict[str, An
 
     Writes the API/kendo fields Kyle's dropdown persists (ProductType=100,
     PartMode 0, FileType/ItemType/Category Cad, Machine Laser, thickness
-    inches). Does not invent InternalData / Contours / NumberOfContours.
+    inches) and callers POST /Part/UpdateItemType ItemType=Cad (Q10335
+    mouse classify XHR). Does not invent InternalData / Contours /
+    NumberOfContours. Still refuse Finish if those stay empty.
     """
     out = dict(row) if isinstance(row, dict) else {}
     out["ProductType"] = 100
@@ -2594,7 +2612,7 @@ def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
                 "refusing AddItem_DXFFiles. "
                 f"{NEEDS_INTERNALDATA_FILL_XHR}: classify→Finish has no named "
                 "InternalData fill XHR (not UpdateDXF_LoadNew / UpdateDataNext / "
-                "SetPartMode / unfold). "
+                "SetPartMode / UpdateItemType / unfold). "
                 "Do not invent InternalData."
             )
         return None
@@ -2611,13 +2629,13 @@ def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
         "c5cd8689; 14327-8 leftover 1cd941c6; 14327-3 leftover "
         "75f07c2b; 21841-1 leftover aed89628; 14327-1 leftover "
         "5e72fe39; H638-CADPLATE leftover 5e7bfc0b; Q10334 leftover "
-        "e2683a3f; ZZ-DEL). "
+        "e2683a3f; Q10335 leftover bcff1a24; ZZ-DEL). "
         f"{STEP_EXPLODE_NO_INTERNALDATA} aliases "
         f"{CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE}. "
         "ImageString-without-InternalData is preview only (live 21785-2). "
         f"{NEEDS_INTERNALDATA_FILL_XHR}: classify→Finish has no named "
         "InternalData fill XHR (not UpdateDXF_LoadNew / UpdateDataNext / "
-        "SetPartMode / unfold). "
+        "SetPartMode / UpdateItemType / unfold). "
         f"missing_call={STEP_CONTOURS_MISSING_CALL}. "
         f"no_extra_cadimport_xhr={STEP_CONTOURS_NO_EXTRA_XHR}. "
         "Do not invent InternalData."
@@ -7067,7 +7085,7 @@ def overlay_classified_row(
         out["IsAssembly"] = True
     else:
         # Cad — overwrite Sectura Adjust Properties Component default.
-        # API/kendo ProductType=100 (not a UI dropdown click).
+        # API/kendo ProductType=100 + callers POST UpdateItemType Cad.
         if machine:
             out["Machine"] = machine
         out = bind_plate_step_product_type_cad(out)

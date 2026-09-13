@@ -9,6 +9,9 @@ Do not remint / PATCH. Do not invent Contours / InternalData.
     e2683a3f / Q10334 / ZZ-DEL-Q10334
       Chrome UI kendo row.set Cad/100 + 0.1875 in + Laser-Bay1:
       Contours still empty
+    bcff1a24 / Q10335 / ZZ-DEL-Q10335
+      Mouse POST /Part/UpdateItemType 200 Component→Cad; Contours
+      still 0 before Finish. Full GUID not restated.
 
 Q10333 / b5f56ac3 / H.6.38 Safe Cave is NOT this class. It is a
 Contours PASS protect (Cad / Contours=1 / 8 bends + Profile /
@@ -17,7 +20,8 @@ thickness + Finish. See ``live_q10333_h638``. Never remint /
 PATCH / ZZ-DEL.
 
 Human dropdown Contours fill is NOT reproduced by kendo row.set /
-SetPartMode / UpdateData*. unlocks_automation_contours_fill=false.
+SetPartMode / UpdateItemType / UpdateData*. UpdateItemType is
+dropdown classify. unlocks_automation_contours_fill=false.
 """
 
 from __future__ import annotations

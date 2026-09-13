@@ -23,10 +23,12 @@ Kyle Loom: Component→Cad on Adjust Properties is required for plate
 STEP Contours (Q10333 / H.6.38 Safe Cave PASS: Cad / Contours=1 /
 8 bends + Profile / Laser Bay1 / UC 176.96 — never remint / PATCH /
 ZZ-DEL). Automation sets Cad via API/kendo
-ProductType=100 + SetPartMode 0, not a UI click. Cad classify ≠
-Contours fill (H638-CADPLATE / 5e7bfc0b, Q10334 / e2683a3f). Still
-fail-close if Contours empty. Next: DevTools of Kyle's real dropdown
-click XHRs.
+ProductType=100 + SetPartMode 0 plus POST /Part/UpdateItemType
+ItemType=Cad (Q10335 mouse dropdown classify XHR), not a UI click.
+Cad classify ≠ Contours fill (H638-CADPLATE / 5e7bfc0b, Q10334 /
+e2683a3f, Q10335 / bcff1a24 Contours 0 before Finish). Still
+fail-close if Contours empty. UpdateItemType is classify; Contours
+fill may still need Finish or further calls.
 
 On a **fresh unused** Time STEP whose green Finish shows Contours
 (GET ``DataPartPDF.NumberOfContours`` ≥ 1), save the windows below —
@@ -54,6 +56,7 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "Q10333",
     "H638-CADPLATE",
     "Q10334",
+    "Q10335",
     "28769-1",
     "28768-1",
     "10289-4",

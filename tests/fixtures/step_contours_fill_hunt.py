@@ -14,10 +14,13 @@ fill after Component→Cad (live PASS Q10333 / b5f56ac3 / H.6.38 Safe
 Cave — Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96).
 Protect that quote forever; never remint /
 PATCH / ZZ-DEL (0759273 ZZ-DEL-fail narrative is reversed). Automation
-writes API/kendo ProductType=100 + SetPartMode 0 — not a UI click.
-Cad classify ≠ Contours fill (H638-CADPLATE / 5e7bfc0b, Q10334 /
-e2683a3f). Still refuse Finish if Contours/InternalData stay empty
-after Cad. Next: DevTools of Kyle's real dropdown click XHRs.
+writes API/kendo ProductType=100 + SetPartMode 0 plus POST
+/Part/UpdateItemType ItemType=Cad (live Q10335 mouse dropdown
+classify XHR, status 200). Cad classify ≠ Contours fill
+(H638-CADPLATE / 5e7bfc0b, Q10334 / e2683a3f, Q10335 / bcff1a24
+Contours 0 before Finish). Still refuse Finish if Contours/InternalData
+stay empty after UpdateItemType. UpdateItemType is classify; Contours
+fill may still need Finish or further calls.
 ``LIVE_PART_CREATE_TLIST_BIND`` is None.
 """
 
@@ -51,7 +54,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
     "explode_docreate_internaldata_fill": EXPLODE_DOCREATE_INTERNALDATA_FILL,
     "unlock_requires": STEP_CONTOURS_UNLOCK_REQUIRES,
     "kyle_loom_component_to_cad": True,
-    "kyle_loom_cad_set_via": "api_kendo_producttype_100_setpartmode_0",
+    "kyle_loom_cad_set_via": "api_kendo_producttype_100_setpartmode_0_updateitemtype_cad",
     "q10333_component_to_cad_proof": True,
     "never_remint": (
         "14327-5",
@@ -67,6 +70,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10333",
         "H638-CADPLATE",
         "Q10334",
+        "Q10335",
     ),
     "angles": (
         {
@@ -142,7 +146,9 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
             "why": (
                 "QuoteOrderEdit explode is only POST /part/create "
                 "(DoCreateDXFParts). /part/PartImage is preview. "
-                "GetDXFData is not in the bundle (404). No other /part/* "
+                "GetDXFData is not in the bundle (404). POST "
+                "/Part/UpdateItemType is dropdown classify (Q10335), "
+                "not FileList InternalData fill. No other /part/* "
                 "helper writes FileList InternalData."
             ),
         },

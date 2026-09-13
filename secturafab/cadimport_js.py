@@ -28,7 +28,7 @@ _SCRIPT_SRC_RE = re.compile(
     re.I,
 )
 _CAD_URL_RE = re.compile(
-    r"""['"](/CadImport/[A-Za-z0-9_]+|/part/create|/Part/Create)['"]"""
+    r"""['"](/CadImport/[A-Za-z0-9_]+|/part/create|/Part/Create|/Part/UpdateItemType)['"]"""
 )
 _QUOTE_DXF_URL_RE = re.compile(
     r"""['"](/Quote/(?:GetDXFData|GetDXF\w+|AddItem_DXFFiles))['"]"""
@@ -40,7 +40,7 @@ _TYPE_RE = re.compile(r"""(?:type|method)\s*:\s*['"](GET|POST|PUT)['"]""", re.I)
 _CT_RE = re.compile(r"""contentType\s*:\s*['"]([^'"]+)['"]""", re.I)
 _KEY_RE = re.compile(
     r"""['"]?(ID|QuoteID|quoteID|quoteRequestID|QuoteRequestID|SourceDataID|"""
-    r"""FileID|List|ListOther|status|PartMode|units|Units|IDList|unitList|"""
+    r"""FileID|List|ListOther|status|PartMode|ItemType|units|Units|IDList|unitList|"""
     r"""OtherFileIDList|Location|Height|Width|ItemList|SourceID|ReturnItemID|"""
     r"""convertTo|ConvertTo|target|Target|format|Format)['"]?\s*:"""
 )
@@ -165,6 +165,7 @@ CLASSIFY_FINISH_FUNCTIONS = (
     "DoCreateDXFParts",
     "SetPartMode",
     "SetDXFFilePartMode",
+    "UpdateItemType",
     "OnAddDXFClick",
 )
 CLASSIFY_FINISH_INTERNALDATA_FILL = None
@@ -186,7 +187,7 @@ CLASSIFY_FINISH_INTERNALDATA_FILL = None
 # between upload and /part/create, nor after explode. Exact missing
 # call is server POST /part/create t.List InternalData+ImageString.
 # Do not remint 35136-1 / 14327-5 / 14327-8 / 14327-3 / 21841-1 /
-# 14327-1 / Q10332 / H638-CADPLATE / Q10334. Q10333 / H.6.38 is a
+# 14327-1 / Q10332 / H638-CADPLATE / Q10334 / Q10335. Q10333 / H.6.38 is a
 # Contours PASS protect (Cad / Contours=1 / 8 bends + Profile /
 # Laser Bay1 / UC 176.96) — never remint / PATCH / ZZ-DEL. Do not
 # silent-graft Contours.
@@ -255,12 +256,15 @@ ADD_ITEM_DXF_FILES_SNIPPET = (
 # Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96 after
 # Component→Cad then thickness inches then Contours fill.
 # Protect forever; never remint / PATCH / ZZ-DEL. Automation writes the same
-# persisted fields (ProductType=100, FileType Cad, SetPartMode 0) — not a
-# UI dropdown click. Cad classify ≠ Contours fill (H638-CADPLATE /
-# 5e7bfc0b SetPartMode Cad:1 InternalData empty; Q10334 / e2683a3f
-# kendo Cad/100 + 0.1875 in Contours empty). Do not invent
-# Contours/InternalData; refuse Finish if they are still empty after Cad
-# classify. Next: DevTools of Kyle's real dropdown click XHRs.
+# persisted fields (ProductType=100, FileType Cad, SetPartMode 0) plus
+# POST /Part/UpdateItemType ItemType=Cad — the live Q10335 mouse
+# Component→Cad dropdown classify XHR (status 200). Cad classify ≠
+# Contours fill (H638-CADPLATE / 5e7bfc0b SetPartMode Cad:1 InternalData
+# empty; Q10334 / e2683a3f kendo Cad/100 + 0.1875 in Contours empty;
+# Q10335 / bcff1a24 UpdateItemType 200, Contours still 0 before Finish).
+# Do not invent Contours/InternalData; refuse Finish if they are still
+# empty after UpdateItemType. UpdateItemType is dropdown classify; Contours
+# fill may still need Finish or further calls.
 # Live 105918-1: page Finish without grid SetPartMode → 66 Component/Assembly, 0 Cad.
 # Apply PartMode on #gridDXFParts (EDIT) before Finish. UpdateData JSON List.
 SET_PART_MODE_PATH = "/CadImport/SetPartMode"
@@ -268,6 +272,19 @@ SET_PART_MODE_SNIPPET = (
     '$.ajax({type:"POST",url:"/CadImport/SetPartMode",'
     "data:{ID:id,PartMode:mode}})"
 )
+# Live Q10335 mouse Cad capture: POST /Part/UpdateItemType 200 on
+# Component→Cad. QuoteOrderEdit grid field is ItemType (GetPDFData /
+# onInternalDataChange ItemType==="cad"). SetPartMode analog is {ID,
+# PartMode}. Capture did not restate request keys — wired keys are those
+# two field names only. Do not invent extra keys. Does not fill Contours.
+UPDATE_ITEM_TYPE_PATH = "/Part/UpdateItemType"
+UPDATE_ITEM_TYPE_BODY_KEYS = ("ID", "ItemType")
+UPDATE_ITEM_TYPE_CAD = "Cad"
+UPDATE_ITEM_TYPE_SNIPPET = (
+    '$.ajax({type:"POST",url:"/Part/UpdateItemType",'
+    "data:{ID:id,ItemType:type}})"
+)
+GET_BORDER_SIZE_PATH = "/Quote/GetBorderSize"
 UPDATE_DATA_PATH = "/CadImport/UpdateData"
 UPDATE_DATA_SNIPPET = (
     '$.ajax({type:"POST",url:"/CadImport/UpdateData",'
@@ -465,6 +482,17 @@ def jquery_ajax_form(fields: dict[str, Any]) -> list[tuple[str, str]]:
 
 def jquery_ajax_form_body(fields: dict[str, Any]) -> str:
     return urlencode(jquery_ajax_form(fields))
+
+
+def update_item_type_fields(
+    row_id: str,
+    item_type: str = UPDATE_ITEM_TYPE_CAD,
+) -> dict[str, str]:
+    """POST /Part/UpdateItemType body — ID + ItemType only. Do not invent keys."""
+    return {
+        "ID": str(row_id or ""),
+        "ItemType": str(item_type or UPDATE_ITEM_TYPE_CAD),
+    }
 
 
 def build_create_dxf_parts_fields(
