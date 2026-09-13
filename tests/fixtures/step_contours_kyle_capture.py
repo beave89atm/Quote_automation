@@ -5,7 +5,9 @@ InternalData **and** ImageString. Leftover STEPs (35136-1 / 28769-1 /
 21785-2 / 14327-5 / 14327-8 / 14327-3 / 21841-1 / 14327-1)
 were keys-present / values-empty. Q10333 / H.6.38 / b5f56ac3 is a
 Contours PASS protect (Cad / Contours=1 / 8 bends + Profile /
-Laser Bay1 / UC 176.96) — never remint / PATCH / ZZ-DEL. Kyle HAR leftover
+Laser Bay1 / UC 176.96) — never remint / PATCH / ZZ-DEL. Q10336 /
+f73dd116 is a Cad+Laser Finish leftover (OpenContourCount=0 /
+bends=1) — protect, not Contours=1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
 /part/create 3× bar InternalData empty → AddItem_DXFFiles InternalData
 empty bar_flat. Live 14327-5 / c5cd8689 flat plate: /part/create n=1
@@ -55,6 +57,7 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "14327-1",
     "Q10332",
     "Q10333",
+    "Q10336",
     "H638-CADPLATE",
     "Q10334",
     "Q10335",

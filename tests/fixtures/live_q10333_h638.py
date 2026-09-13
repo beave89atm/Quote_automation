@@ -9,7 +9,9 @@ Kyle Loom Adjust Properties defaults ProductType to Component after
 Geometry Cleanup. Automation writes API/kendo ProductType=100 +
 SetPartMode 0 plus POST /Part/UpdateItemType ItemType=Cad (not a
 UI click). Cad classify ≠ Contours fill (H638-CADPLATE / 5e7bfc0b,
-Q10334 / e2683a3f, Q10335 / bcff1a24). invent=false — still
+Q10334 / e2683a3f, Q10335 / bcff1a24). Q10336 / f73dd116 is a
+Cad+Laser Finish leftover on the same H.6.38 STEP (OpenContourCount=0
+/ bends=1) — protect, not Contours=1 PASS. invent=false — still
 fail-close if Contours/InternalData stay empty after UpdateItemType.
 
 Tip 0759273 wrongly forbade this as an empty-Contours ZZ-DEL fail.

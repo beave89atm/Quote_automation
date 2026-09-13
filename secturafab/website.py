@@ -1402,8 +1402,10 @@ KYLE_LOOM_COMPONENT_TO_CAD = (
     "classify XHR, status 200). Automation Cad classify ≠ Contours fill "
     "(H638-CADPLATE / 5e7bfc0b, Q10334 / e2683a3f, Q10335 / bcff1a24 "
     "Contours 0; QuoteItem_Read Data:[] lost CAD row before Finish — "
-    "ZZ-DEL). UpdateItemType is dropdown classify; Contours fill may "
-    "still need Finish or further calls. Do not invent Contours."
+    "ZZ-DEL). Q10336 / f73dd116 mouse UpdateItemType then Finish is a "
+    "Cad+Laser leftover (OpenContourCount=0 / bends=1) — Contours≥1 "
+    "still gap vs Q10333. UpdateItemType is dropdown classify; Contours "
+    "fill may still need Finish or further calls. Do not invent Contours."
 )
 _THICKNESS_VALUE_UNIT_RE = re.compile(
     r"^\s*([0-9]*\.?[0-9]+)\s*[:\s]\s*"

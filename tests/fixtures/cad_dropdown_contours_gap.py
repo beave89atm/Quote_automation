@@ -25,11 +25,14 @@ Live leftovers after Cad-for-plate:
   e2683a3f Q10334 — kendo Cad/100 + 0.1875 in + Laser-Bay1,
     Contours still empty
   bcff1a24 Q10335 — mouse UpdateItemType 200, Contours 0 before Finish;
-    QuoteItem_Read Data:[] lost CAD row; ZZ-DEL. Recapture in flight.
+    QuoteItem_Read Data:[] lost CAD row; ZZ-DEL.
+  f73dd116 Q10336 — mouse UpdateItemType then Finish; Cad+Laser
+    leftover (OpenContourCount=0 / bends=1). Contours≥1 still gap.
 
 Human Kyle on Q10333 / b5f56ac3: real Component→Cad dropdown +
-thickness + Finish → Contours=1 PASS. That click's classify XHR is
-now named (UpdateItemType). Contours fill is still not reproduced.
+thickness + Finish → Contours=1 PASS. Q10336 mouse Finish after
+UpdateItemType did not reproduce Contours=1. Classify XHR is named
+(UpdateItemType). Contours fill is still not reproduced.
 """
 
 from __future__ import annotations
@@ -74,6 +77,7 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
         "Q10334",
         "Q10333",
         "Q10335",
+        "Q10336",
     ),
     "hypotheses": (
         {

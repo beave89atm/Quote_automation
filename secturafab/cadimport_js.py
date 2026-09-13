@@ -263,7 +263,9 @@ ADD_ITEM_DXF_FILES_SNIPPET = (
 # empty; Q10334 / e2683a3f kendo Cad/100 + 0.1875 in Contours empty;
 # Q10335 / bcff1a24 UpdateItemType 200, Contours still 0; Finish
 # diagnostic lost CAD row — QuoteItem_Read Data:[] before Finish —
-# ZZ-DEL empty-Contours leftover). Do not invent Contours/InternalData;
+# ZZ-DEL empty-Contours leftover; Q10336 / f73dd116 mouse
+# UpdateItemType then Finish is Cad+Laser leftover, OpenContourCount=0
+# — Contours≥1 still gap vs Q10333). Do not invent Contours/InternalData;
 # refuse Finish if they are still empty after UpdateItemType.
 # UpdateItemType is dropdown classify; Contours fill may still need
 # Finish or further calls.

@@ -5,7 +5,9 @@ Live STEP Contours mints are PAUSED. Do not remint / PATCH leftovers
 Q10330 / 21841-1 / aed89628, Q10331 / 14327-1 / 5e72fe39,
 Q10332 / ZZ-DEL-wrong-org-Time, 35136-1 / 8973f890, …).
 Q10333 / H.6.38 / b5f56ac3 is a Contours PASS protect — never remint /
-PATCH / ZZ-DEL. Never invent Contours / InternalData.
+PATCH / ZZ-DEL. Q10336 / f73dd116 is a Cad+Laser Finish leftover
+(OpenContourCount=0 / bends=1) — protect, not Contours=1. Never invent
+Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
 exhausted the alternate-path hypotheses below. Kyle Loom (original):
@@ -69,6 +71,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "14327-1",
         "Q10332",
         "Q10333",
+        "Q10336",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
