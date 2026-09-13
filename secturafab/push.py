@@ -383,7 +383,29 @@ def _cad_plate_sheet_noun(description: str) -> bool:
     return False
 
 
-def classify_sectura_item(description: str, thickness: Any = None) -> str:
+def apply_step_stock_category(
+    category: str,
+    kind: str | None,
+    description: str = "",
+) -> str:
+    """Default Cad + unnamed flat-bar STEP → Linear. Named plate stays Cad."""
+    cat = category if category in {"Cad", "Linear", "Component", "Assembly"} else "Cad"
+    if cat != "Cad":
+        return cat
+    if _cad_plate_sheet_noun(description):
+        return cat
+    if kind == "flat_bar":
+        return "Linear"
+    return cat
+
+
+def classify_sectura_item(
+    description: str,
+    thickness: Any = None,
+    *,
+    stock_dims: Any = None,
+    stock_kind: str | None = None,
+) -> str:
     """
     Map a STEP/BOM description to SecturaFAB item category dropdown values:
     Cad | Linear | Component | Assembly
@@ -400,6 +422,10 @@ def classify_sectura_item(description: str, thickness: Any = None) -> str:
 
     Job 92 / 1001898-1 child-PDF locks win over LOM nouns (rolled 1001880-2
     is Cad; 14500-1 / 1005966-1 are outsource Component).
+
+    Unnamed STEP solids use vertex/opposing-PLANE bbox (not all
+    CARTESIAN_POINT span). Elongated flat-bar (~1–2 in thick, high L/w)
+    is Linear — not ``strong_plate`` Cad Contours. Named plate stays Cad.
     """
     from .locked_1001898 import locked_category
 
@@ -443,7 +469,12 @@ def classify_sectura_item(description: str, thickness: Any = None) -> str:
         return "Cad"
     if _has_linear_noun(description):
         return "Linear"
-    return "Cad"
+    kind = stock_kind
+    if kind is None and stock_dims is not None:
+        from .step_classify import score_step_stock
+
+        kind = score_step_stock(stock_dims)
+    return apply_step_stock_category("Cad", kind, description)
 
 
 def classify_bom_row(
@@ -1016,9 +1047,13 @@ def _default_thickness_in(takeoff: dict[str, Any] | None, stp_path: Path | None)
             0 if str(s.get("kind") or "").lower() not in {"cover", "channel", "angle"} else 1,
         ),
     )
+    from .step_classify import STOCK_FLAT_BAR, score_step_stock
+
     for solid in ranked:
         box = solid.get("box") or []
         if len(box) < 3:
+            continue
+        if score_step_stock(box[:3]) == STOCK_FLAT_BAR:
             continue
         # Plate thickness is the minimum bbox axis for flat parts.
         axes = sorted(float(x) for x in box[:3])
@@ -2653,6 +2688,9 @@ class SecturaFabPushService:
         extra_pdfs: list[Path] | None,
         qty: int = 1,
         part_key: str = "",
+        cad_files: list[Path] | None = None,
+        stock_dims: Any = None,
+        stock_kind: str | None = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """Cad / Linear / Component / Assembly + closest ProductID/SKU.
 
@@ -2701,6 +2739,24 @@ class SecturaFabPushService:
             )
             != normalize_part_token(part_key)
         ]
+        from .step_classify import first_step_stock, score_step_stock
+
+        step_stock = first_step_stock(cad_files) if cad_files else None
+        if stock_kind is None and step_stock:
+            stock_kind = str(step_stock.get("kind") or "") or None
+            if stock_dims is None:
+                stock_dims = step_stock.get("box")
+        if stock_kind is None and stock_dims is not None:
+            stock_kind = score_step_stock(stock_dims)
+        if step_stock and step_stock.get("box"):
+            box = step_stock["box"]
+            notes.append(
+                f"step_stock={step_stock.get('kind')} "
+                f"bbox={box[0]:g}x{box[1]:g}x{box[2]:g} "
+                f"via={step_stock.get('source')}"
+            )
+        elif stock_kind:
+            notes.append(f"step_stock={stock_kind}")
         for row in rows:
             name = row_name(row)
             stem = Path(str(row.get("FileName") or "")).stem
@@ -2721,7 +2777,10 @@ class SecturaFabPushService:
             stem_u = stem.upper()
             pm = lookup_part_material(part_materials, name)
             cat = classify_sectura_item(
-                name, pm.thickness_in if pm and pm.thickness_in is not None else None
+                name,
+                pm.thickness_in if pm and pm.thickness_in is not None else None,
+                stock_dims=stock_dims,
+                stock_kind=stock_kind,
             )
             # Live P001545: W001531_2 / _3 are Cad plates; W001544 x34 is the
             # weldment occurrence (Assembly). P001545 Rev B is the STEP root.
@@ -2753,11 +2812,15 @@ class SecturaFabPushService:
                         cat = classify_sectura_item(
                             f"{stem} {extra}",
                             pm.thickness_in if pm and pm.thickness_in is not None else None,
+                            stock_dims=stock_dims,
+                            stock_kind=stock_kind,
                         )
                     if cat == "Assembly" and not is_nested_assembly_name(
                         extra or name
                     ):
-                        cat = "Cad"
+                        cat = apply_step_stock_category(
+                            "Cad", stock_kind, extra or name
+                        )
             compact = {k.replace("-", ""): v for k, v in purchased.items()}
             if cat not in {"Linear", "Assembly"} and (
                 token in purchased or token.replace("-", "") in compact
@@ -3312,6 +3375,7 @@ class SecturaFabPushService:
             extra_pdfs=extra_pdfs,
             qty=qty,
             part_key=part_key,
+            cad_files=cad_files,
         )
         from .website import (
             copy_explode_internaldata_through,
