@@ -15091,6 +15091,7 @@ def test_multi_kid_keep_grid_empty_internaldata_is_exec_fail():
     assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why
     assert "keep-grid Cad+inches stuck" in why
     assert "keep_grid_via=live" in why
+    assert "kid_n=3" in why
     assert "Q10358" in why
     assert "34328-1" in why
     assert "not grid-loss" in why
@@ -15219,9 +15220,13 @@ def test_finish_cad_files_multi_kid_keep_grid_empty_internaldata_is_exec_fail(
             "org_id": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
             "org_widget": True,
             "kendo_row_keys": [
+                "CadType",
+                "FileID",
                 "FileType",
-                "SourceDataID",
                 "ID",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
                 "Thickness",
                 "Thickness_Units",
             ],

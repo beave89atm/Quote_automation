@@ -3237,25 +3237,16 @@ def multi_kid_keep_grid_empty_internaldata_refuses(
     if via not in {"live", "rehydrate"}:
         return None
     kids = [r for r in (rows or []) if isinstance(r, dict)]
-    cad_plates = [
-        r
-        for r in kids
-        if _cad_plate_row_for_finish_gate(r)
-        and live_row_product_type_is_cad(r)
-        and plate_step_thickness_units_are_inch(r)
-    ]
-    if len(cad_plates) < 2:
+    if len(kids) < 2:
         return None
-    empty_n = sum(
-        1 for r in cad_plates if cad_payload_value_empty(r.get("InternalData"))
-    )
-    if empty_n < 1:
+    empty = [r for r in kids if cad_filelist_refuses_additem_dxf(r)]
+    if not empty:
         return None
     return (
         f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: multi-kid keep-grid "
-        f"Cad+inches stuck (keep_grid_via={via}, cad_inch_n={len(cad_plates)}) "
+        f"Cad+inches stuck (keep_grid_via={via}, kid_n={len(kids)}) "
         f"but FileList InternalData empty after explode "
-        f"({empty_n}/{len(cad_plates)}) — refusing AddItem_DXFFiles "
+        f"({len(empty)}/{len(kids)}) — refusing AddItem_DXFFiles "
         "(Q10358 / 34328-1 keep-grid prove; not grid-loss; not Contours "
         "invent). GET /CadImport/Data is copy-if-nonempty; "
         "/Quote/GetBorderSize is thickness companion — neither fills "
