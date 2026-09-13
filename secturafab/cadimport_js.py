@@ -261,10 +261,12 @@ ADD_ITEM_DXF_FILES_SNIPPET = (
 # Component→Cad dropdown classify XHR (status 200). Cad classify ≠
 # Contours fill (H638-CADPLATE / 5e7bfc0b SetPartMode Cad:1 InternalData
 # empty; Q10334 / e2683a3f kendo Cad/100 + 0.1875 in Contours empty;
-# Q10335 / bcff1a24 UpdateItemType 200, Contours still 0 before Finish).
-# Do not invent Contours/InternalData; refuse Finish if they are still
-# empty after UpdateItemType. UpdateItemType is dropdown classify; Contours
-# fill may still need Finish or further calls.
+# Q10335 / bcff1a24 UpdateItemType 200, Contours still 0; Finish
+# diagnostic lost CAD row — QuoteItem_Read Data:[] before Finish —
+# ZZ-DEL empty-Contours leftover). Do not invent Contours/InternalData;
+# refuse Finish if they are still empty after UpdateItemType.
+# UpdateItemType is dropdown classify; Contours fill may still need
+# Finish or further calls.
 # Live 105918-1: page Finish without grid SetPartMode → 66 Component/Assembly, 0 Cad.
 # Apply PartMode on #gridDXFParts (EDIT) before Finish. UpdateData JSON List.
 SET_PART_MODE_PATH = "/CadImport/SetPartMode"

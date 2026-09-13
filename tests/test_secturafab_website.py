@@ -11656,12 +11656,13 @@ def test_leftover_cad_for_plate_h638_q10334_forever_forbid():
 
 
 def test_leftover_q10335_update_item_type_forever_forbid():
-    """Q10335 / bcff1a24 mouse UpdateItemType leftover. Contours 0 before Finish.
+    """Q10335 / bcff1a24 mouse UpdateItemType leftover. Empty Contours.
 
     POST /Part/UpdateItemType 200 on Component→Cad. Companions:
     /part/PartImage, /Quote/GetBorderSize on thickness. Finish
-    diagnostic in flight — leftover forbid, not PASS protect.
-    Full GUID not restated. invent=false. Fill stays locked.
+    diagnostic: QuoteItem_Read Data:[] lost CAD row before Finish —
+    ZZ-DEL leftover, not PASS protect. Full GUID not restated.
+    invent=false. Recapture in flight. Fill stays locked.
     """
     from pathlib import Path
 
@@ -11706,7 +11707,16 @@ def test_leftover_q10335_update_item_type_forever_forbid():
     assert dump["update_item_type_keys"] == UPDATE_ITEM_TYPE_BODY_KEYS
     assert dump["companions"] == ("/part/PartImage", GET_BORDER_SIZE_PATH)
     assert dump["contours_empty_before_finish"] is True
-    assert dump["finish_diagnostic_in_flight"] is True
+    assert dump["lost_cad_row_before_finish"] is True
+    assert dump["quoteitem_read_data"] == []
+    assert dump["quoteitem_read_data_empty"] is True
+    assert dump["finish_diagnostic_in_flight"] is False
+    assert dump["finish_diagnostic"] == "quoteitem_read_data_empty_lost_cad_row"
+    assert dump["finish_clicked"] is False
+    assert dump["finish_posted"] is False
+    assert dump["finish_refused"] is True
+    assert dump["zz_del"] is True
+    assert dump["recapture_in_flight"] is True
     assert dump["pass"] is False
     assert dump["protect"] is False
     assert dump["invent"] is False

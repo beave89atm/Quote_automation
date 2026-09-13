@@ -195,7 +195,7 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "b5f56ac3",  # Q10333 / Safe Cave / H.6.38 Contours PASS — Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96; never remint / PATCH / ZZ-DEL
         "5e7bfc0b",  # H638-CADPLATE leftover — SetPartMode 0 + ProductType 100 Cad:1, InternalData empty, Finish refuse; ZZ-DEL-H638-CADPLATE — do not remint
         "e2683a3f",  # Q10334 leftover — kendo Cad/100 + 0.1875 in + Laser-Bay1, Contours empty; ZZ-DEL-Q10334 — do not remint
-        "bcff1a24",  # Q10335 leftover — mouse UpdateItemType 200 Component→Cad, Contours 0 before Finish; Finish diagnostic in flight; invented=false; ZZ-DEL-Q10335 — do not remint
+        "bcff1a24",  # Q10335 leftover — mouse UpdateItemType 200 Component→Cad, Contours 0 before Finish; QuoteItem_Read Data:[] lost CAD row before Finish; invented=false; ZZ-DEL-Q10335 — do not remint
     }
 )
 
@@ -313,7 +313,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "ZZ-DEL-H638-CADPLATE",  # 5e7bfc0b H638-CADPLATE rename — do not remint
         "Q10334",  # spent e2683a3f Cad-for-plate leftover — Chrome kendo Cad/100 + 0.1875 in + Laser-Bay1, Contours empty; invented=false; ZZ-DEL-Q10334 — do not remint
         "ZZ-DEL-Q10334",  # e2683a3f Q10334 rename — do not remint
-        "Q10335",  # spent bcff1a24 mouse UpdateItemType leftover — POST /Part/UpdateItemType 200 Component→Cad; /part/PartImage + /Quote/GetBorderSize on thickness; Contours 0 before Finish; Finish diagnostic in flight; invented=false; ZZ-DEL-Q10335 — do not remint
+        "Q10335",  # spent bcff1a24 mouse UpdateItemType leftover — POST /Part/UpdateItemType 200 Component→Cad; /part/PartImage + /Quote/GetBorderSize on thickness; Contours 0 before Finish; QuoteItem_Read Data:[] lost CAD row before Finish; invented=false; ZZ-DEL-Q10335 — do not remint
         "ZZ-DEL-Q10335",  # bcff1a24 Q10335 rename — do not remint
         # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 28768-1 / 28769-1 / 35136-1 / 14327-5 / 14327-8 / Q10329 / 14327-3 / Q10330 / 21841-1 / Q10331 / 14327-1 / Q10332 / Q10333 / H638-CADPLATE / Q10334 / Q10335.
         # Do not mint. Server never fills InternalData on explode.

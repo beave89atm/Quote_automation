@@ -7608,8 +7608,9 @@ def create_all_parts_from_grid_dxf(
 # plus POST /Part/UpdateItemType ItemType=Cad (live Q10335 mouse
 # Component→Cad dropdown classify XHR, status 200). Cad classify ≠
 # Contours fill (H638-CADPLATE / 5e7bfc0b, Q10334 / e2683a3f,
-# Q10335 / bcff1a24 Contours 0 before Finish). Still refuse Finish
-# if Contours stay empty. UpdateItemType is classify, not Contours fill.
+# Q10335 / bcff1a24 Contours 0; QuoteItem_Read Data:[] lost CAD row
+# before Finish — ZZ-DEL). Still refuse Finish if Contours stay empty.
+# UpdateItemType is classify, not Contours fill.
 # Live 105918-1: Finish without this left plates as Component (0 Cad).
 _APPLY_GRID_PART_MODES_JS = """(function(spec) {
   function grid() {

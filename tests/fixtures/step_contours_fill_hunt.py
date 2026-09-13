@@ -18,9 +18,10 @@ writes API/kendo ProductType=100 + SetPartMode 0 plus POST
 /Part/UpdateItemType ItemType=Cad (live Q10335 mouse dropdown
 classify XHR, status 200). Cad classify ≠ Contours fill
 (H638-CADPLATE / 5e7bfc0b, Q10334 / e2683a3f, Q10335 / bcff1a24
-Contours 0 before Finish). Still refuse Finish if Contours/InternalData
-stay empty after UpdateItemType. UpdateItemType is classify; Contours
-fill may still need Finish or further calls.
+Contours 0; QuoteItem_Read Data:[] lost CAD row before Finish —
+ZZ-DEL). Still refuse Finish if Contours/InternalData stay empty
+after UpdateItemType. UpdateItemType is classify; Contours fill
+may still need Finish or further calls.
 ``LIVE_PART_CREATE_TLIST_BIND`` is None.
 """
 

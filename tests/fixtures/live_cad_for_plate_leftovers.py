@@ -11,7 +11,8 @@ Do not remint / PATCH. Do not invent Contours / InternalData.
       Contours still empty
     bcff1a24 / Q10335 / ZZ-DEL-Q10335
       Mouse POST /Part/UpdateItemType 200 Component→Cad; Contours
-      still 0 before Finish. Full GUID not restated.
+      still 0 before Finish. QuoteItem_Read Data:[] lost CAD row
+      before Finish. Full GUID not restated.
 
 Q10333 / b5f56ac3 / H.6.38 Safe Cave is NOT this class. It is a
 Contours PASS protect (Cad / Contours=1 / 8 bends + Profile /

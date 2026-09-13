@@ -360,9 +360,11 @@ def is_tenant_guid(value: Any) -> bool:
 # Contours fill (live H638-CADPLATE / 5e7bfc0b SetPartMode Cad:1
 # InternalData empty; Q10334 / e2683a3f kendo Cad/100 + 0.1875 in +
 # Laser-Bay1 Contours empty; Q10335 / bcff1a24 UpdateItemType 200,
-# Contours still 0 before Finish). Do not invent Contours; refuse Finish
-# if InternalData still empty after UpdateItemType. UpdateItemType is
-# dropdown classify; Contours fill may still need Finish or further calls.
+# Contours still 0; Finish diagnostic lost CAD row — QuoteItem_Read
+# Data:[] before Finish — ZZ-DEL empty-Contours leftover). Do not
+# invent Contours; refuse Finish if InternalData still empty after
+# UpdateItemType. UpdateItemType is dropdown classify; Contours fill
+# may still need Finish or further calls.
 PART_MODE_CAD = 0
 PART_MODE_LINEAR = 1
 PART_MODE_COMPONENT = 2
@@ -1399,9 +1401,9 @@ KYLE_LOOM_COMPONENT_TO_CAD = (
     "POST /Part/UpdateItemType ItemType=Cad (live Q10335 mouse dropdown "
     "classify XHR, status 200). Automation Cad classify ≠ Contours fill "
     "(H638-CADPLATE / 5e7bfc0b, Q10334 / e2683a3f, Q10335 / bcff1a24 "
-    "Contours 0 before Finish). UpdateItemType is dropdown classify; "
-    "Contours fill may still need Finish or further calls. Do not invent "
-    "Contours."
+    "Contours 0; QuoteItem_Read Data:[] lost CAD row before Finish — "
+    "ZZ-DEL). UpdateItemType is dropdown classify; Contours fill may "
+    "still need Finish or further calls. Do not invent Contours."
 )
 _THICKNESS_VALUE_UNIT_RE = re.compile(
     r"^\s*([0-9]*\.?[0-9]+)\s*[:\s]\s*"
@@ -1936,9 +1938,10 @@ def kyle_step_contours_devtools_capture() -> dict[str, Any]:
     never remint / PATCH / ZZ-DEL. Automation sets Cad via API/kendo
     field plus POST /Part/UpdateItemType ItemType=Cad (Q10335 mouse
     dropdown classify XHR). Cad classify ≠ Contours fill (H638-CADPLATE /
-    5e7bfc0b, Q10334 / e2683a3f, Q10335 / bcff1a24 Contours 0 before
-    Finish). UpdateItemType is classify; Contours fill may still need
-    Finish or further calls.
+    5e7bfc0b, Q10334 / e2683a3f, Q10335 / bcff1a24 Contours 0;
+    QuoteItem_Read Data:[] lost CAD row before Finish — ZZ-DEL).
+    UpdateItemType is classify; Contours fill may still need Finish or
+    further calls.
     Q10332 is a wrong-org Time mint (ZZ-DEL-wrong-org-Time; ID unknown).
     Do not invent Contours. Do not remint spent STEP leftovers.
     """

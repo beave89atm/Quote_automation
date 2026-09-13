@@ -24,7 +24,8 @@ Live leftovers after Cad-for-plate:
     InternalData empty, Finish refuse
   e2683a3f Q10334 — kendo Cad/100 + 0.1875 in + Laser-Bay1,
     Contours still empty
-  bcff1a24 Q10335 — mouse UpdateItemType 200, Contours 0 before Finish
+  bcff1a24 Q10335 — mouse UpdateItemType 200, Contours 0 before Finish;
+    QuoteItem_Read Data:[] lost CAD row; ZZ-DEL. Recapture in flight.
 
 Human Kyle on Q10333 / b5f56ac3: real Component→Cad dropdown +
 thickness + Finish → Contours=1 PASS. That click's classify XHR is

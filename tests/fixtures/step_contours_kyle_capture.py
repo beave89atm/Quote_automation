@@ -26,9 +26,10 @@ ZZ-DEL). Automation sets Cad via API/kendo
 ProductType=100 + SetPartMode 0 plus POST /Part/UpdateItemType
 ItemType=Cad (Q10335 mouse dropdown classify XHR), not a UI click.
 Cad classify ≠ Contours fill (H638-CADPLATE / 5e7bfc0b, Q10334 /
-e2683a3f, Q10335 / bcff1a24 Contours 0 before Finish). Still
-fail-close if Contours empty. UpdateItemType is classify; Contours
-fill may still need Finish or further calls.
+e2683a3f, Q10335 / bcff1a24 Contours 0; QuoteItem_Read Data:[]
+lost CAD row before Finish — ZZ-DEL). Still fail-close if Contours
+empty. UpdateItemType is classify; Contours fill may still need
+Finish or further calls.
 
 On a **fresh unused** Time STEP whose green Finish shows Contours
 (GET ``DataPartPDF.NumberOfContours`` ≥ 1), save the windows below —
