@@ -84,6 +84,7 @@ from .website import (
     STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
     _wizard_org_id_empty,
     step_cad_finish_hard_gate,
+    step_cad_live_product_type_hard_gate,
     step_cad_wizard_state_hard_gate,
     step_finish_pack_missing,
     wizard_quote_live_item_count,
@@ -1854,9 +1855,10 @@ class SecturaFabPushService:
         return len(list(peek.get("ItemList") or []))
 
     def _peek_wizard_quote_state(self, quote_id: str) -> dict[str, Any]:
-        """Read-only mid-wizard item count + org. Does not POST / invent."""
+        """Read-only mid-wizard item count + org + ProductType. Does not POST / invent."""
         item_n: int | None = None
         org_id: str | None = None
+        items: list[dict[str, Any]] = []
         try:
             peek = self.client.get_json(f"v1/quote/{quote_id}")
         except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError, ValueError):
@@ -1864,6 +1866,7 @@ class SecturaFabPushService:
         if isinstance(peek, dict):
             item_n = wizard_quote_live_item_count(peek)
             org_id = wizard_quote_primary_organization_id(peek)
+            items = [r for r in quote_item_rows(peek) if isinstance(r, dict)]
         if hasattr(self.client, "quote_item_read"):
             try:
                 read = self.client.quote_item_read(quote_id)
@@ -1878,7 +1881,9 @@ class SecturaFabPushService:
             known = [n for n in (item_n, read_n) if n is not None]
             if known:
                 item_n = max(known)
-        return {"item_count": item_n, "org_id": org_id}
+            if not items:
+                items = [r for r in quote_item_rows(read) if isinstance(r, dict)]
+        return {"item_count": item_n, "org_id": org_id, "items": items}
 
     def _cadimport_rows(self, payload: Any) -> list[dict[str, Any]]:
         uploaded = filelist_from_cadimport_upload(payload)
@@ -3057,7 +3062,10 @@ class SecturaFabPushService:
         ItemType=Cad (live Q10335 mouse Component→Cad dropdown classify
         XHR, status 200). UpdateItemType is classify, not Contours fill.
         Fail-close if PartMode is still null after classify, if ProductType
-        is still Component on a Cad plate, if thickness is missing or not
+        is still Component on a Cad plate, if live GET ProductType is
+        ``part`` / not Cad (EXEC_FAIL, not Contours empty; Q10354 /
+        7881d4b3 D.H.38.96 Cad selector + 0.1875 in finished part /
+        enum 100 — in-memory 100 is not Cad), if thickness is missing or not
         inch (EXEC_FAIL, not Contours empty; Q10344 / H.6.38 Kyle UI
         control Cad + 0.1875 inch), if Adjust Properties / modal refresh
         dropped #gridDXFParts to 0 or cleared Organization (EXEC_FAIL;
@@ -3065,8 +3073,8 @@ class SecturaFabPushService:
         or quote item_count dropped N→0 mid-wizard, or if
         Contours/InternalData stay empty after UpdateItemType
         (do not invent). Hard-gate before Finish: live wizard kids +
-        org (multi-kid ≥2 for the grid gate), then ProductType Cad,
-        then inch thickness. invent=false.
+        org (multi-kid ≥2 for the grid gate), then live ProductType Cad
+        (not part / enum 100), then inch thickness. invent=false.
         After Finish, fail-close if PartMode is still null, or if Cad
         Contours are empty / PR+laser pack is missing. Then log
         kendo row key names (CadType, Stock_*, FileType, SID/FileID/ID) and
@@ -3506,6 +3514,15 @@ class SecturaFabPushService:
         if wizard:
             notes.append(wizard)
             return notes
+        live_items = [
+            r
+            for r in (after_state.get("items") or [])
+            if isinstance(r, dict)
+        ]
+        live_pt = step_cad_live_product_type_hard_gate(live_items, classified)
+        if live_pt:
+            notes.append(live_pt)
+            return notes
         hard = step_cad_finish_hard_gate(classified)
         if hard:
             notes.append(hard)
@@ -3599,6 +3616,10 @@ class SecturaFabPushService:
                         "live 107292-1)"
                     )
                     return notes
+        live_ready = step_cad_live_product_type_hard_gate(live_items, ready)
+        if live_ready:
+            notes.append(live_ready)
+            return notes
         hard_ready = step_cad_finish_hard_gate(ready)
         if hard_ready:
             notes.append(hard_ready)
@@ -3834,6 +3855,10 @@ class SecturaFabPushService:
                 "(live EHB3112 empty body vs 105918-1 GET 66)"
             )
         posted = self._read_quote_items(quote_id)
+        posted_rows = [r for r in quote_item_rows(posted) if isinstance(r, dict)]
+        live_after = step_cad_live_product_type_hard_gate(posted_rows, ready)
+        if live_after:
+            notes.append(live_after)
         cad_n = count_cad_product_type(posted)
         lin_n = count_linear_product_type(posted)
         if cad_n <= 0:
