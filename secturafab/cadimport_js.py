@@ -286,9 +286,15 @@ SET_PART_MODE_SNIPPET = (
 # onInternalDataChange ItemType==="cad"). SetPartMode analog is {ID,
 # PartMode}. Capture did not restate request keys — wired keys are those
 # two field names only. Do not invent extra keys. Does not fill Contours.
+# Q10365 / H.10.38 mouse Product Type dropdown Cad also fires this XHR
+# (then PartImage / UpdateData / CADData; fill_xhr=null). ItemType Cad
+# sticks; live GET ProductType noun stays ``part`` (enum 100). Same
+# FAIL class as Q10354 / Q10356. UpdateItemType does not persist
+# ProductType Cad. invent=false.
 UPDATE_ITEM_TYPE_PATH = "/Part/UpdateItemType"
 UPDATE_ITEM_TYPE_BODY_KEYS = ("ID", "ItemType")
 UPDATE_ITEM_TYPE_CAD = "Cad"
+UPDATE_ITEM_TYPE_SETS_PRODUCT_TYPE_CAD = False
 UPDATE_ITEM_TYPE_SNIPPET = (
     '$.ajax({type:"POST",url:"/Part/UpdateItemType",'
     "data:{ID:id,ItemType:type}})"
@@ -520,11 +526,20 @@ def update_item_type_fields(
     row_id: str,
     item_type: str = UPDATE_ITEM_TYPE_CAD,
 ) -> dict[str, str]:
-    """POST /Part/UpdateItemType body — ID + ItemType only. Do not invent keys."""
+    """POST /Part/UpdateItemType body — ID + ItemType only. Do not invent keys.
+
+    Does not write ProductType. Q10365 mouse Product Type Cad still
+    finishes GET noun ``part``. invent=false.
+    """
     return {
         "ID": str(row_id or ""),
         "ItemType": str(item_type or UPDATE_ITEM_TYPE_CAD),
     }
+
+
+def update_item_type_sets_product_type_cad() -> bool:
+    """Never. Classify XHR is ItemType only (Q10335 / Q10365)."""
+    return UPDATE_ITEM_TYPE_SETS_PRODUCT_TYPE_CAD
 
 
 def get_border_size_fields(*, thickness_units: str | None = None) -> dict[str, str]:
