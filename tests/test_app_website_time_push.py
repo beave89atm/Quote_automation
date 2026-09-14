@@ -1698,6 +1698,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "Q10377" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10379" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10380" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10381" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10350" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21843-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10338" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -2683,6 +2684,54 @@ def test_q10380_16630_1_mixed_classify_pass_forever_forbid():
             method="PATCH",
             path="/Quote/UpdateItem_Part",
             payload={"ID": "754089f2-fd55-4e3d-865c-8dffa63181fa"},
+        )
+
+
+def test_q10381_1001093_1_mixed_classify_pass_forever_forbid():
+    """Q10381 / bb31a132 1001093-1 mixed classify PASS leftover — never remint / PATCH.
+
+    NEW remint PASS. Complete Quote NOT DONE. OPEN-NEW draft
+    (CAD Finish ≠ Complete Quote).
+    Plates 1000480/1001090/1001091 Cad A572 G50 /.1875-3/16
+    NumberOfContours=1 each. Bar 1001092-1 Long/Linear RD BAR
+    IsLinear CRS/CR1018 .188 × 5.5625. Do not forbid PN 1001093-1
+    (PN remint). invent=false. Do not invent Contours.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "bb31a132-c93a-4c21-84f3-7a83c62cead6" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "bb31a132" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10381" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1001093-1" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("bb31a132-c93a-4c21-84f3-7a83c62cead6")
+    assert is_forbidden_quote_id("bb31a132-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10381")
+    assert not is_forbidden_quote_number("1001093-1")
+    assert spent_quote_number_block_reason("Q10381")
+    assert spent_quote_number_block_reason("1001093-1") is None
+    with pytest.raises(ForbiddenQuoteError, match="Q10381"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10381"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="bb31a132"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "bb31a132-c93a-4c21-84f3-7a83c62cead6"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="bb31a132"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "bb31a132-c93a-4c21-84f3-7a83c62cead6"},
         )
 
 

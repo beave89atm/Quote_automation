@@ -91,6 +91,14 @@ EAR Cad A36 /.5-1/2" NumberOfContours=1 qty 2. Ring
 16628-1 Long/Linear tube IsLinear A513 7.25 OD × 6.0 ID
 × 1.69 L wall 0.625 qty 1. invent=false.
 Never remint Q10380. Do not forbid 16630-1.
+Q10381 / bb31a132 / 1001093-1 remint (tip 6fefaac): mixed
+classify PASS leftover. Complete Quote NOT DONE.
+OPEN-NEW draft (CAD Finish ≠ Complete Quote).
+3 plate Cad Contours + RD BAR Long/Linear. Plates
+1000480/1001090/1001091 Cad A572 G50 /.1875-3/16
+NumberOfContours=1 each. Bar 1001092-1 Long/Linear
+IsLinear CRS/CR1018 .188 × 5.5625. invent=false.
+Never remint Q10381. Do not forbid 1001093-1.
 Do not gate unlock
 on OCC≥1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
@@ -169,6 +177,7 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "Q10377",
     "Q10379",
     "Q10380",
+    "Q10381",
     "H638-CADPLATE",
     "Q10334",
     "Q10335",
