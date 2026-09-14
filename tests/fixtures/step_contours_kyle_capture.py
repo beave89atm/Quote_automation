@@ -44,6 +44,12 @@ invent=false. Do not forbid 34328-1.
 Q10368 / 5e0ce1df / 34328-1 remint (tip 8d4626a): keep-grid
 Material worked; Contours 0/1/0 after Cad+A36+inches. Never remint
 Q10368. Do not forbid 34328-1. invent=false.
+Q10372 / d62e2ad1 / 34328-1 remint (tip d2616fc): EXEC_FAIL;
+Complete Quote NOT DONE. HOOK 31454-1 Contours=0 (RD BAR CR 1018
+1/2 DIA, not A36/.50 plate); 34329 Contours=1 at A36/.25.
+Contours≥1 Laser gate is plate/sheet Cad; RD BAR Contours=0 with
+Material+thickness set is expected until Profile/Saw/bar path
+exists. invent=false. Never remint Q10372. Do not forbid 34328-1.
 Do not gate unlock
 on OCC≥1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
@@ -115,6 +121,7 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "Q10358",
     "Q10359",
     "Q10368",
+    "Q10372",
     "H638-CADPLATE",
     "Q10334",
     "Q10335",
