@@ -77,6 +77,11 @@ FAIL-CLOSE leftover. STEP uploaded; plate 1008400 gauge
 unverified (no local drawing / SharePoint unreachable).
 invent=false stop before Contours. Complete Quote NOT DONE.
 Never remint Q10374. Do not forbid 1008399-1.
+Q10375 / 60de939f / 1008399-1 remint (tip 6a4f536):
+EXEC_FAIL leftover. Cad/A572 G50/.375-3/8 plate + Linear
+Saw bar + Component hardware set. Contours≥1 not verified
+(blank CAD editor). invent=false. Complete Quote NOT DONE.
+Never remint Q10375. Do not forbid 1008399-1.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -170,6 +175,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10372",
         "Q10373",
         "Q10374",
+        "Q10375",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
@@ -417,6 +423,21 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "invent=false stop before Contours. Complete Quote NOT "
                 "DONE. Do not invent Contours/InternalData/gauge. "
                 "Never remint Q10374. Do not forbid 1008399-1."
+            ),
+        },
+        {
+            "id": "q10375_1008399_1_contours_unverified_blank_cad_editor",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10375 / 60de939f / 1008399-1 remint @ 6a4f536: "
+                "EXEC_FAIL leftover. Cad/A572 G50/.375-3/8 plate + "
+                "Linear Saw bar + Component hardware set. Contours≥1 "
+                "not verified (blank CAD editor). invent=false. "
+                "Complete Quote NOT DONE. Do not invent Contours/"
+                "InternalData. Never remint Q10375. Do not forbid "
+                "1008399-1."
             ),
         },
     ),
