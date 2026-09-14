@@ -2345,6 +2345,53 @@ def test_q10371_34328_1_contours_fail_forever_forbid():
         )
 
 
+def test_q10372_34328_1_contours_fail_forever_forbid():
+    """Q10372 / d62e2ad1 34328-1 Contours FAIL leftover — never remint / PATCH.
+
+    Remint EXEC_FAIL leftover. Complete Quote NOT DONE. HOOK 31454-1
+    Contours=0 (mistreated as A36/.50 plate; drawing=RD BAR CR 1018
+    1/2 DIA, not plate). 34329 Contours=1 at A36/.25 gauge-list.
+    Do not forbid PN 34328-1 (PO remint). invent=false. Do not
+    invent Contours.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "d62e2ad1-7324-4034-a44e-cbd7a3acee9d" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "d62e2ad1" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10372" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "34328-1" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("d62e2ad1-7324-4034-a44e-cbd7a3acee9d")
+    assert is_forbidden_quote_id("d62e2ad1-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10372")
+    assert not is_forbidden_quote_number("34328-1")
+    assert spent_quote_number_block_reason("Q10372")
+    assert spent_quote_number_block_reason("34328-1") is None
+    with pytest.raises(ForbiddenQuoteError, match="Q10372"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10372"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="d62e2ad1"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "d62e2ad1-7324-4034-a44e-cbd7a3acee9d"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="d62e2ad1"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "d62e2ad1-7324-4034-a44e-cbd7a3acee9d"},
+        )
+
+
 def test_weld_does_not_post_before_cad_or_linear_kids():
     from secturafab.weld_ops import ensure_weld_ops
 

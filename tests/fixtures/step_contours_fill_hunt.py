@@ -58,6 +58,14 @@ per-row, not one drawing gauge. Duplicate explode name stays
 two Cad rows. HOOK is Cad (0.5in < flat_bar 0.76in) — not Long.
 Cad+Material+inches ≠ Contours fill. Never remint Q10368.
 Do not forbid 34328-1. invent=false.
+Q10372 / d62e2ad1 / 34328-1 remint (tip d2616fc): EXEC_FAIL;
+Complete Quote NOT DONE. HOOK 31454-1 Contours=0 was mistreated
+as A36/.50 plate; drawing is RD BAR CR 1018 1/2 DIA — not plate.
+34329 Contours=1 at A36/.25 gauge-list. Contours≥1 Laser gate
+applies to plate/sheet Cad kids. Round-bar kids (RD BAR) are a
+different ops path; Contours=0 with Material+thickness set is
+expected until Profile/Saw/bar path exists. invent=false still.
+Never remint Q10372. Do not forbid 34328-1.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -148,6 +156,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10358",
         "Q10359",
         "Q10368",
+        "Q10372",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
@@ -348,6 +357,23 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "Cad+Material+inches ≠ Contours fill on every kid. "
                 "Do not invent Contours. Never remint Q10368. "
                 "Do not forbid 34328-1."
+            ),
+        },
+        {
+            "id": "q10372_rd_bar_hook_contours_zero_expected",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10372 / d62e2ad1 / 34328-1 remint @ d2616fc: EXEC_FAIL; "
+                "Complete Quote NOT DONE. HOOK 31454-1 Contours=0 was "
+                "mistreated as A36/.50 plate; drawing is RD BAR CR 1018 "
+                "1/2 DIA — not plate. 34329 Contours=1 at A36/.25 "
+                "gauge-list (plate/sheet Cad — Contours≥1 Laser gate). "
+                "Round-bar kids are a different ops path; Contours=0 with "
+                "Material+thickness set is expected until Profile/Saw/bar "
+                "path exists. Do not invent Contours/InternalData. "
+                "Never remint Q10372. Do not forbid 34328-1."
             ),
         },
     ),

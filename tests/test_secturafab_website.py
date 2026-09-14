@@ -2229,6 +2229,9 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("Q10371")
     assert is_forbidden_quote_id("67472e72-d01b-48e2-8040-1db505659d26")
     assert is_forbidden_quote_id("67472e72-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10372")
+    assert is_forbidden_quote_id("d62e2ad1-7324-4034-a44e-cbd7a3acee9d")
+    assert is_forbidden_quote_id("d62e2ad1-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
@@ -10886,6 +10889,7 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("Q10369")
     assert is_forbidden_quote_number("Q10368")
     assert is_forbidden_quote_number("Q10371")
+    assert is_forbidden_quote_number("Q10372")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_number("Q10338")
@@ -11826,6 +11830,7 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "Q10369",
         "Q10368",
         "Q10371",
+        "Q10372",
         "Q10350",
         "21843-1",
         "Q10338",
@@ -13055,6 +13060,7 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_number("Q10369")
     assert is_forbidden_quote_number("Q10368")
     assert is_forbidden_quote_number("Q10371")
+    assert is_forbidden_quote_number("Q10372")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
@@ -13075,6 +13081,7 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_id("82c28793-96e8-457b-9559-979c2b761d4e")
     assert is_forbidden_quote_id("5e0ce1df-e18b-4118-945a-8be85378069e")
     assert is_forbidden_quote_id("67472e72-d01b-48e2-8040-1db505659d26")
+    assert is_forbidden_quote_id("d62e2ad1-7324-4034-a44e-cbd7a3acee9d")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
 
     refuse = cad_filelist_refuses_additem_dxf(
@@ -16852,6 +16859,78 @@ def test_q10368_34328_1_keep_grid_material_contours_zero_findings():
             method="PATCH",
             path="/Quote/UpdateItem_Part",
             payload={"ID": Q10368_QUOTE_ID},
+        )
+
+
+def test_q10372_34328_1_rd_bar_hook_contours_fail_forever_forbid():
+    """Q10372 remint: RD BAR HOOK Contours=0 expected; plate 34329=1."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10372_34328_1 import (
+        Q10372_QUOTE_ID,
+        q10372_34328_1_contours_fail,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10372_34328_1_contours_fail()
+    assert dump["quote_number"] == "Q10372"
+    assert dump["quote_id"] == Q10372_QUOTE_ID
+    assert dump["part_number"] == "34328-1"
+    assert dump["complete_quote_done"] is False
+    assert dump["kids"][0]["name"] == "HOOK 31454-1"
+    assert dump["kids"][0]["drawing_stock"] == "RD BAR CR 1018"
+    assert dump["kids"][0]["drawing_size"] == "1/2 DIA"
+    assert dump["kids"][0]["is_plate"] is False
+    assert dump["kids"][0]["number_of_contours"] == 0
+    assert dump["kids"][0]["contours_zero_expected_until_bar_path"] is True
+    assert dump["kids"][1]["name"] == "34329"
+    assert dump["kids"][1]["is_plate"] is True
+    assert dump["kids"][1]["number_of_contours"] == 1
+    assert dump["contours_ge1_laser_gate_applies_to"] == "plate_sheet_cad_kids"
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+
+    assert is_forbidden_quote_number("Q10372")
+    assert is_forbidden_quote_id(Q10372_QUOTE_ID)
+    assert not is_forbidden_quote_number("34328-1")
+    assert spent_quote_number_block_reason("Q10372")
+    assert spent_quote_number_block_reason("34328-1") is None
+    assert "Q10372" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "34328-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10372" in hunt["never_remint"]
+    assert "34328-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10372_rd_bar_hook_contours_zero_expected"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10372" in angle["why"]
+    assert "RD BAR CR 1018" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10372"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10372"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="d62e2ad1"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10372_QUOTE_ID},
         )
 
 
