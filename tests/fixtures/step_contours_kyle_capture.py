@@ -66,6 +66,13 @@ EXEC_FAIL leftover. Cad/A572 G50/.375-3/8 plate + Linear
 Saw bar + Component hardware set. Contours≥1 not verified
 (blank CAD editor). invent=false. Complete Quote NOT DONE.
 Never remint Q10375. Do not forbid 1008399-1.
+Q10377 / 12bd2530 / 1008399-1 remint (tip 8f5d17c): mixed
+classify PASS leftover. Complete Quote NOT DONE.
+Cad Contours + Long/Linear + Component. Plate 1008400-1
+Cad A572 G50 .375-3/8" NumberOfContours=1 (Finish→tree
+verify). Bar 31454-1 Long/Linear Saw IsLinear=true.
+Hardware 40003/40006 IsComponent=true. invent=false.
+Never remint Q10377. Do not forbid 1008399-1.
 Do not gate unlock
 on OCC≥1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
@@ -141,6 +148,7 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "Q10373",
     "Q10374",
     "Q10375",
+    "Q10377",
     "H638-CADPLATE",
     "Q10334",
     "Q10335",
