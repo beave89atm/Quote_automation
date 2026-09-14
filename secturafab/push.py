@@ -3062,12 +3062,11 @@ class SecturaFabPushService:
         ItemType=Cad (live Q10335 mouse Component→Cad dropdown classify
         XHR, status 200). UpdateItemType is classify, not Contours fill.
         Fail-close if PartMode is still null after classify, if ProductType
-        is still Component on a Cad plate, if live GET ProductType is
-        ``part`` / not Cad (EXEC_FAIL, not Contours empty; Q10354 /
-        7881d4b3 D.H.38.96; Q10356 / 05bee105 V.20.78; Q10365 /
-        7801ab99 H.10.38 mouse UpdateItemType Cad 200 then GET part /
-        fill_xhr=null — UpdateItemType is ItemType classify, not
-        ProductType Cad; in-memory 100 / ItemType Cad is not Cad),
+        is still Component on a Cad plate. Contours PASS is
+        NumberOfContours≥1 only — enum 100 / noun ``part`` is normal
+        (Q10333 / Q10348); do not require a Cad noun; do not refuse 100.
+        UpdateItemType Cad does not write ProductType. Empty InternalData
+        / Contours=0 stay EXEC_FAIL,
         if thickness is missing or not
         inch (EXEC_FAIL, not Contours empty; Q10344 / H.6.38 Kyle UI
         control Cad + 0.1875 inch), if Adjust Properties / modal refresh
@@ -3080,8 +3079,8 @@ class SecturaFabPushService:
         item_count dropped N→0 mid-wizard, or if
         Contours/InternalData stay empty after UpdateItemType
         (do not invent). Hard-gate before Finish: live wizard kids +
-        org (multi-kid ≥2 for the grid gate), then live ProductType Cad
-        (not part / enum 100), then inch thickness. invent=false.
+        org (multi-kid ≥2 for the grid gate), then inch thickness.
+        invent=false.
         After Finish, fail-close if PartMode is still null, or if Cad
         Contours are empty / PR+laser pack is missing. Then log
         kendo row key names (CadType, Stock_*, FileType, SID/FileID/ID) and

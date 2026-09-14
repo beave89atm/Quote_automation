@@ -13226,6 +13226,19 @@ def test_persist_number_of_contours_gate_ignores_occ_and_contours_key():
     assert step_finish_pack_missing(
         noc_pass, expect_cad=True, expect_linear=False
     ) is None
+    part_noun_pass = {
+        "ItemList": [
+            {
+                **laser_pr,
+                "ProductType": 100,
+                "ProductTypeName": "part",
+                "NumberOfContours": 1,
+            }
+        ]
+    }
+    assert step_finish_pack_missing(
+        part_noun_pass, expect_cad=True, expect_linear=False
+    ) is None
 
     read_only = {
         "Data": [{**laser_pr, "NumberOfContours": 1, "Contours": 1}],
@@ -14628,20 +14641,14 @@ def test_q10356_v2078_contours_fail_forever_forbid():
     assert "D.H.30.96" not in refuse
     assert "0c62fce9" not in refuse
     assert "Q10351" not in refuse
-    part_why = plate_step_live_product_type_not_cad_refuses(
+    assert plate_step_live_product_type_not_cad_refuses(
         {
             "ProductType": "part",
             "ProductTypeName": "part",
             "FileType": "Cad",
             "ItemType": "Cad",
         }
-    )
-    assert part_why is not None
-    assert "Q10356" in part_why
-    assert "V.20.78" in part_why
-    assert "05bee105" in part_why
-    assert "Q10354" in part_why
-    assert "not Contours empty" in part_why
+    ) is None
     assert dump["invent"] is False
     assert dump["unlocks_automation_contours_fill"] is False
 
@@ -14801,21 +14808,14 @@ def test_q10365_h1038_contours_fail_forever_forbid():
     assert "D.H.30.96" not in refuse
     assert "0c62fce9" not in refuse
     assert "Q10351" not in refuse
-    part_why = plate_step_live_product_type_not_cad_refuses(
+    assert plate_step_live_product_type_not_cad_refuses(
         {
             "ProductType": "part",
             "ProductTypeName": "part",
             "FileType": "Cad",
             "ItemType": "Cad",
         }
-    )
-    assert part_why is not None
-    assert "Q10365" in part_why
-    assert "H.10.38" in part_why
-    assert "7801ab99" in part_why
-    assert "Q10356" in part_why
-    assert "Q10354" in part_why
-    assert "not Contours empty" in part_why
+    ) is None
     assert dump["invent"] is False
     assert dump["unlocks_automation_contours_fill"] is False
 
@@ -14981,20 +14981,22 @@ def test_step_cad_finish_hard_gate_cad_then_inch_before_finish():
 
 
 def test_live_product_type_part_noun_is_not_cad():
-    """Enum 100 with GET noun ``part`` is not Cad (Q10354 / D.H.38.96).
+    """Contours PASS is NumberOfContours≥1 — not Cad noun / refuse 100.
 
-    UI Cad selector / ItemType Cad is a different field. invent=false.
+    Kyle CoS: finished enum 100 / noun ``part`` is normal on PASSes.
+    invent=false.
     """
     from secturafab.website import (
+        cad_filelist_refuses_additem_dxf,
         count_cad_product_type,
+        itemlist_contours_pass,
         live_row_product_type_is_cad,
+        plate_step_live_product_type_not_cad_refuses,
         product_type_display_token,
         product_type_is_cad,
         product_type_is_part_noun,
         step_cad_finish_hard_gate,
         step_cad_live_product_type_hard_gate,
-        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
-        cad_finish_notes_refuse_additem_dxf,
     )
 
     assert product_type_is_part_noun("part") is True
@@ -15028,12 +15030,10 @@ def test_live_product_type_part_noun_is_not_cad():
         "ProductTypeName": "part",
     }
     assert live_row_product_type_is_cad(cad_row) is True
-    assert live_row_product_type_is_cad(part_row) is False
-    assert live_row_product_type_is_cad(part_enum) is False
+    assert live_row_product_type_is_cad(part_enum) is True
     assert product_type_display_token(part_enum) == "part"
     assert count_cad_product_type({"ItemList": [cad_row]}) == 1
-    assert count_cad_product_type({"ItemList": [part_row]}) == 0
-    assert count_cad_product_type({"ItemList": [part_enum]}) == 0
+    assert count_cad_product_type({"ItemList": [part_enum]}) == 1
     enum_only = {
         **cad_row,
         "Name": "H.10.38",
@@ -15041,288 +15041,41 @@ def test_live_product_type_part_noun_is_not_cad():
     }
     enum_only.pop("ProductTypeName", None)
     assert live_row_product_type_is_cad(enum_only) is True
-    from secturafab.website import live_get_product_type_is_cad
-
-    assert live_get_product_type_is_cad(cad_row) is True
-    assert live_get_product_type_is_cad(part_row) is False
-    assert live_get_product_type_is_cad(part_enum) is False
-    assert live_get_product_type_is_cad(enum_only) is False
     assert count_cad_product_type({"ItemList": [enum_only]}) == 1
-
-    why_part = step_cad_finish_hard_gate([part_row])
-    assert why_part is not None
-    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_part
-    assert "not Contours empty" in why_part
-    assert "Q10354" in why_part
-    assert "part" in why_part
-    assert cad_finish_notes_refuse_additem_dxf([why_part]) == why_part
-
-    why_enum = step_cad_finish_hard_gate([part_enum])
-    assert why_enum is not None
-    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_enum
+    assert itemlist_contours_pass(number_of_contours=1) is True
+    assert itemlist_contours_pass(number_of_contours=0) is False
+    assert plate_step_live_product_type_not_cad_refuses(part_row) is None
+    assert plate_step_live_product_type_not_cad_refuses(part_enum) is None
+    assert step_cad_finish_hard_gate([part_row]) is None
+    assert step_cad_finish_hard_gate([part_enum]) is None
     assert step_cad_finish_hard_gate([cad_row]) is None
-
+    assert step_cad_finish_hard_gate([enum_only]) is None
     classified = [cad_row]
-    assert step_cad_live_product_type_hard_gate([], classified) is None
-    assert step_cad_live_product_type_hard_gate(None, classified) is None
-    enum_why = step_cad_live_product_type_hard_gate([enum_only], classified)
-    assert enum_why is not None
-    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in enum_why
-    assert "UpdateItemType" in enum_why
-    assert cad_finish_notes_refuse_additem_dxf([enum_why]) == enum_why
-    live_why = step_cad_live_product_type_hard_gate([part_enum], classified)
-    assert live_why is not None
-    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in live_why
-    assert "Q10354" in live_why
-    assert cad_finish_notes_refuse_additem_dxf([live_why]) == live_why
-    assert step_cad_live_product_type_hard_gate([cad_row], classified) is None
-
-
-def test_finish_cad_files_refuses_when_live_producttype_is_part(tmp_path: Path):
-    """Pre-Finish live GET ``part`` / 100 is EXEC_FAIL — do not AddItem_DXFFiles."""
-    stp = tmp_path / "DH3896.STEP"
-    stp.write_bytes(b"ISO")
-    kid = {
-        "SourceDataID": "src-dh3896",
-        "FileID": "file-dh3896",
-        "ID": "id-dh3896",
-        "Name": "D.H.38.96 PLATE",
-        "FileName": "D.H.38.96 PLATE",
-        "Qty": 1,
-        "ErrorStatus": 0,
-        "Status": 1,
-        "CadType": 0,
-        "Stock_X": 8.0,
-        "Stock_Y": 4.0,
-        "Category": "Cad",
-        "ItemType": "Cad",
-        "PartMode": 0,
-        "FileType": "Cad",
-        "ProductType": 100,
-        "Thickness": "0.1875",
-        "Thickness_Units": "inch",
-        "InternalData": "server-stamped",
-        "ImageString": "preview",
-    }
-    live_part = {
-        "Name": "D.H.38.96 PLATE",
-        "ProductType": "part",
-        "ProductTypeName": "part",
-        "Category": "Cad",
-        "ItemType": "Cad",
-        "Thickness": "0.1875",
-        "Thickness_Units": "inch",
-    }
-    client = MagicMock()
-    client.upload_dxf_via_page_add_files.return_value = {
-        "bound": True,
-        "upload_via": "page_add_files",
-        "files_kendo": True,
-        "gridDXF_n": 1,
-        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
-    }
-    client.create_all_parts_from_grid_dxf.return_value = {
-        "via": "createAllParts",
-        "invoked": True,
-        "List": [kid],
-        "grid_present": True,
-        "grid_dxf_row_count": 1,
-        "list_len": 1,
-        "internaldata_key_n": 1,
-        "internaldata_empty_n": 0,
-        "internaldata_nonempty_n": 1,
-    }
-    client._grid_present = True
-    client._grid_dxf_row_count = 1
-    client._stale_grid = False
-    client._edit_quote_id = "7881d4b3-aaaa-bbbb-cccc-000000000001"
-    client._edit_gate = ""
-    client._setpartmode_via = "page_fn"
-    client._finish_via = "page_fn"
-    client._part_create_list_len = 1
-    client.get_item_add_view.return_value = {}
-    client.quote_item_read.return_value = {"Data": [], "Total": 0}
-    client.get_json.return_value = {"ItemList": [live_part]}
-    service = SecturaFabPushService(client=client)
-    service._linear_product_cache = []
-    with patch(
-        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
-        return_value={
-            "grid_present": True,
-            "cad": 1,
-            "linear": 0,
-            "assembly": 0,
-            "component": 0,
-            "set_count": 1,
-            "setpartmode_via": "page_fn",
-            "updateitemtype_via": "jquery_ajax",
-            "updateitemtype_count": 1,
-            "grid_dxf_row_count": 1,
-            "kendo_row_keys": [
-                "CadType",
-                "Stock_X",
-                "Stock_Y",
-                "FileType",
-                "SourceDataID",
-            ],
-        },
-    ):
-        notes = service.finish_cad_files(
-            quote_id="7881d4b3-aaaa-bbbb-cccc-000000000001",
-            cad_files=[stp],
-            material="A36",
-            thickness="0.1875",
-            qty=1,
-            takeoff={},
-            bom_rows=[],
-            library={},
-            extra_pdfs=None,
-            part_key="D.H.38.96",
-            explode_polls=1,
-            explode_sleep_s=0,
-        )
-    client.add_item_dxf_files.assert_not_called()
-    blob = " ".join(notes)
-    assert "EXEC_FAIL" in blob
-    assert "live ProductType is part" in blob
-    assert "not Contours empty" in blob
-    assert "Q10354" in blob
-    assert "not invent" in blob.lower()
-
-
-def test_finish_cad_files_exec_fail_when_finished_producttype_is_part(
-    tmp_path: Path,
-):
-    """After Finish, GET ``part`` / enum 100 is EXEC_FAIL — not Contours empty."""
-    stp = tmp_path / "DH3896.STEP"
-    stp.write_bytes(b"ISO")
-    kid = {
-        "SourceDataID": "src-dh3896",
-        "FileID": "file-dh3896",
-        "ID": "id-dh3896",
-        "Name": "D.H.38.96 PLATE",
-        "FileName": "D.H.38.96 PLATE",
-        "Qty": 1,
-        "ErrorStatus": 0,
-        "Status": 1,
-        "CadType": 0,
-        "Stock_X": 8.0,
-        "Stock_Y": 4.0,
-        "Category": "Cad",
-        "ItemType": "Cad",
-        "PartMode": 0,
-        "FileType": "Cad",
-        "ProductType": 100,
-        "Thickness": "0.1875",
-        "Thickness_Units": "inch",
-        "InternalData": "server-stamped",
-        "ImageString": "preview",
-    }
-    finished_part = {
-        "Name": "D.H.38.96 PLATE",
-        "ProductType": 100,
-        "ProductTypeName": "part",
-        "Category": "Cad",
-        "ItemType": "Cad",
-        "Thickness": "0.1875",
-        "Thickness_Units": "inch",
-    }
-    client = MagicMock()
-    client.upload_dxf_via_page_add_files.return_value = {
-        "bound": True,
-        "upload_via": "page_add_files",
-        "files_kendo": True,
-        "gridDXF_n": 1,
-        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
-    }
-    client.create_all_parts_from_grid_dxf.return_value = {
-        "via": "createAllParts",
-        "invoked": True,
-        "List": [kid],
-        "grid_present": True,
-        "grid_dxf_row_count": 1,
-        "list_len": 1,
-        "internaldata_key_n": 1,
-        "internaldata_empty_n": 0,
-        "internaldata_nonempty_n": 1,
-    }
-    client._grid_present = True
-    client._grid_dxf_row_count = 1
-    client._stale_grid = False
-    client._edit_quote_id = "7881d4b3-aaaa-bbbb-cccc-000000000001"
-    client._edit_gate = ""
-    client._setpartmode_via = "page_fn"
-    client._finish_via = "page_fn"
-    client._part_create_list_len = 1
-    client.get_item_add_view.return_value = {}
-    client.add_item_dxf_files.return_value = {
-        "ok": True,
-        "via": "page_fn",
-        "finish_fn": "OnAddDXFClick",
-        "filelist_from_kendo": True,
-        "finish_filelist_n": 1,
-        "finish_af_present": True,
-        "filelist_sourcedataid_n": 1,
-    }
-    client.quote_item_read.return_value = {"Data": [], "Total": 0}
-    client.get_json.side_effect = [
-        {"ItemList": []},
-        {"ItemList": []},
-        {"ItemList": [finished_part]},
-    ]
-    service = SecturaFabPushService(client=client)
-    service._linear_product_cache = []
-    with patch(
-        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
-        return_value={
-            "grid_present": True,
-            "cad": 1,
-            "linear": 0,
-            "assembly": 0,
-            "component": 0,
-            "set_count": 1,
-            "setpartmode_via": "page_fn",
-            "updateitemtype_via": "jquery_ajax",
-            "updateitemtype_count": 1,
-            "grid_dxf_row_count": 1,
-            "kendo_row_keys": [
-                "CadType",
-                "Stock_X",
-                "Stock_Y",
-                "FileType",
-                "SourceDataID",
-            ],
-        },
-    ):
-        notes = service.finish_cad_files(
-            quote_id="7881d4b3-aaaa-bbbb-cccc-000000000001",
-            cad_files=[stp],
-            material="A36",
-            thickness="0.1875",
-            qty=1,
-            takeoff={},
-            bom_rows=[],
-            library={},
-            extra_pdfs=None,
-            part_key="D.H.38.96",
-            explode_polls=1,
-            explode_sleep_s=0,
-        )
-    client.add_item_dxf_files.assert_called_once()
-    blob = " ".join(notes)
-    assert "EXEC_FAIL" in blob
-    assert "live ProductType is part" in blob
-    assert "not Contours empty" in blob
-    assert "Q10354" in blob
+    assert step_cad_live_product_type_hard_gate([part_enum], classified) is None
+    assert step_cad_live_product_type_hard_gate([part_row], classified) is None
+    assert step_cad_live_product_type_hard_gate([enum_only], classified) is None
+    empty_id = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert empty_id is not None
+    assert "InternalData empty" in empty_id
 
 
 def test_q10365_h1038_mouse_updateitemtype_does_not_stick_cad():
-    """Q10365 / H.10.38: UpdateItemType Cad 200 finishes ProductType part.
+    """Q10365 / H.10.38: UpdateItemType Cad does not write ProductType.
 
     Mouse Product Type dropdown Cad + 0.1875 in. Network UpdateItemType
-    200 then PartImage / UpdateData / CADData; fill_xhr=null. Live GET
-    noun ``part`` / enum 100 is EXEC_FAIL — not Contours PASS.
-    Same FAIL class as Q10354 / Q10356. invent=false; no remint.
+    200 then PartImage / UpdateData / CADData; fill_xhr=null.
+    Contours PASS is NumberOfContours≥1 — not a Cad noun. Enum 100
+    alone is not refuse (Q10333 / Q10348 PASSes finish 100).
+    Same leftover class as Q10354 / Q10356. invent=false; no remint.
     """
     from secturafab.cadimport_js import (
         UPDATE_ITEM_TYPE_BODY_KEYS,
@@ -15331,11 +15084,9 @@ def test_q10365_h1038_mouse_updateitemtype_does_not_stick_cad():
         update_item_type_sets_product_type_cad,
     )
     from secturafab.website import (
-        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
-        cad_finish_notes_refuse_additem_dxf,
         count_cad_product_type,
         itemlist_contours_pass,
-        live_get_product_type_is_cad,
+        live_row_product_type_is_cad,
         plate_step_live_product_type_not_cad_refuses,
         step_cad_finish_hard_gate,
         step_cad_live_product_type_hard_gate,
@@ -15356,6 +15107,7 @@ def test_q10365_h1038_mouse_updateitemtype_does_not_stick_cad():
     assert dump["id_unknown"] is False
     assert dump["pass"] is False
     assert dump["contours_pass"] is False
+    assert dump["number_of_contours_unavailable"] is True
     assert dump["product_type"] == "part"
     assert dump["product_type_enum"] == 100
     assert dump["cad_selector_set"] is True
@@ -15377,6 +15129,8 @@ def test_q10365_h1038_mouse_updateitemtype_does_not_stick_cad():
         "ID": "id-h1038",
         "ItemType": "Cad",
     }
+    assert itemlist_contours_pass(number_of_contours=None) is False
+    assert itemlist_contours_pass(number_of_contours=1) is True
 
     keep_fail = q10354_dh3896_fail_dump()
     assert keep_fail["quote_number"] == "Q10354"
@@ -15398,11 +15152,13 @@ def test_q10365_h1038_mouse_updateitemtype_does_not_stick_cad():
         "PartMode": 0,
         "Thickness": "0.1875",
         "Thickness_Units": "inch",
-        "NumberOfContours": 1,
     }
     live_enum = {
         **live_part,
         "ProductType": 100,
+        "NumberOfContours": 1,
+        "Machine": "Laser",
+        "ProductSubType": "prt_dxf",
     }
     live_enum.pop("ProductTypeName", None)
     classified = [
@@ -15414,148 +15170,71 @@ def test_q10365_h1038_mouse_updateitemtype_does_not_stick_cad():
             "Category": "Cad",
         }
     ]
-    assert live_get_product_type_is_cad(live_part) is False
-    assert live_get_product_type_is_cad(live_enum) is False
-    assert count_cad_product_type({"ItemList": [live_part]}) == 0
+    assert live_row_product_type_is_cad(live_enum) is True
     assert count_cad_product_type({"ItemList": [live_enum]}) == 1
-    assert itemlist_contours_pass(row=live_part) is True
     assert itemlist_contours_pass(
         number_of_contours=1, product_type="part"
     ) is True
-    part_why = plate_step_live_product_type_not_cad_refuses(live_part)
-    assert part_why is not None
-    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in part_why
-    assert "Q10365" in part_why
-    assert "UpdateItemType" in part_why
-    assert "not Contours empty" in part_why
-    assert cad_finish_notes_refuse_additem_dxf([part_why]) == part_why
-    live_why = step_cad_live_product_type_hard_gate([live_part], classified)
-    assert live_why is not None
-    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in live_why
-    assert "Q10365" in live_why
-    enum_why = step_cad_live_product_type_hard_gate([live_enum], classified)
-    assert enum_why is not None
-    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in enum_why
-    assert cad_finish_notes_refuse_additem_dxf([enum_why]) == enum_why
+    assert plate_step_live_product_type_not_cad_refuses(live_part) is None
+    assert plate_step_live_product_type_not_cad_refuses(live_enum) is None
+    assert step_cad_live_product_type_hard_gate([live_part], classified) is None
+    assert step_cad_live_product_type_hard_gate([live_enum], classified) is None
     assert step_cad_finish_hard_gate(classified) is None
+    assert itemlist_contours_pass(number_of_contours=0) is False
 
 
-def test_finish_cad_files_refuses_when_live_producttype_is_enum_100(
-    tmp_path: Path,
-):
-    """After UpdateItemType Cad, live GET enum 100 without Cad noun is EXEC_FAIL.
+def test_live_get_contours_pass_enum_100_is_not_refused():
+    """Live GET ProductType=100 + NumberOfContours=1 is Contours PASS.
 
-    Q10365 / H.10.38 mouse path: UpdateItemType 200, ItemType Cad,
-    ProductType 100 / no Cad name — do not AddItem_DXFFiles.
-    invent=false.
+    Q10333 / b5f56ac3 and Q10348 / 1defeed8 finish enum 100, Laser,
+    prt_dxf, 0.1875 inch. Do not refuse ProductType=100. invent=false.
     """
-    stp = tmp_path / "H1038.STEP"
-    stp.write_bytes(b"ISO")
-    kid = {
-        "SourceDataID": "src-h1038",
-        "FileID": "file-h1038",
-        "ID": "id-h1038",
-        "Name": "H.10.38 PLATE",
-        "FileName": "H.10.38 PLATE",
-        "Qty": 1,
-        "ErrorStatus": 0,
-        "Status": 1,
-        "CadType": 0,
-        "Stock_X": 8.0,
-        "Stock_Y": 4.0,
-        "Category": "Cad",
-        "ItemType": "Cad",
-        "PartMode": 0,
-        "FileType": "Cad",
-        "ProductType": 100,
-        "Thickness": "0.1875",
-        "Thickness_Units": "inch",
-        "InternalData": "server-stamped",
-        "ImageString": "preview",
-    }
-    live_enum = {
-        "Name": "H.10.38 PLATE",
-        "ProductType": 100,
-        "Category": "Cad",
-        "ItemType": "Cad",
-        "Thickness": "0.1875",
-        "Thickness_Units": "inch",
-    }
-    client = MagicMock()
-    client.upload_dxf_via_page_add_files.return_value = {
-        "bound": True,
-        "upload_via": "page_add_files",
-        "files_kendo": True,
-        "gridDXF_n": 1,
-        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
-    }
-    client.create_all_parts_from_grid_dxf.return_value = {
-        "via": "createAllParts",
-        "invoked": True,
-        "List": [kid],
-        "grid_present": True,
-        "grid_dxf_row_count": 1,
-        "list_len": 1,
-        "internaldata_key_n": 1,
-        "internaldata_empty_n": 0,
-        "internaldata_nonempty_n": 1,
-    }
-    client._grid_present = True
-    client._grid_dxf_row_count = 1
-    client._stale_grid = False
-    client._edit_quote_id = "q10365-aaaa-bbbb-cccc-000000000001"
-    client._edit_gate = ""
-    client._setpartmode_via = "page_fn"
-    client._finish_via = "page_fn"
-    client._part_create_list_len = 1
-    client.get_item_add_view.return_value = {}
-    client.quote_item_read.return_value = {"Data": [], "Total": 0}
-    client.get_json.return_value = {"ItemList": [live_enum]}
-    service = SecturaFabPushService(client=client)
-    service._linear_product_cache = []
-    with patch(
-        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
-        return_value={
-            "grid_present": True,
-            "cad": 1,
-            "linear": 0,
-            "assembly": 0,
-            "component": 0,
-            "set_count": 1,
-            "setpartmode_via": "page_fn",
-            "updateitemtype_via": "jquery_ajax",
-            "updateitemtype_count": 1,
-            "grid_dxf_row_count": 1,
-            "kendo_row_keys": [
-                "CadType",
-                "Stock_X",
-                "Stock_Y",
-                "FileType",
-                "SourceDataID",
-            ],
-        },
+    from secturafab.cadimport_js import update_item_type_sets_product_type_cad
+    from secturafab.website import (
+        itemlist_contours_pass,
+        live_row_product_type_is_cad,
+        plate_step_live_product_type_not_cad_refuses,
+        step_cad_finish_hard_gate,
+        step_cad_live_product_type_hard_gate,
+    )
+    from tests.fixtures.live_q10333_h638 import q10333_h638_pass_dump
+    from tests.fixtures.live_q10348_h1670 import q10348_h1670_pass_dump
+
+    assert update_item_type_sets_product_type_cad() is False
+    q10333 = q10333_h638_pass_dump()
+    q10348 = q10348_h1670_pass_dump()
+    assert q10333["quote_id"] == "b5f56ac3-326d-48e9-b82d-1e09a7897107"
+    assert q10333["product_type_enum"] == 100
+    assert q10333["number_of_contours"] == 1
+    assert q10333["contours_pass"] is True
+    assert q10348["quote_id"] == "1defeed8-d95d-4939-b2fd-0a1774e56c6e"
+    assert q10348["product_type_enum"] == 100
+    assert q10348["contours_pass"] is True
+    assert itemlist_contours_pass(number_of_contours=1) is True
+
+    for name, quote_id in (
+        ("H.6.38", "b5f56ac3-326d-48e9-b82d-1e09a7897107"),
+        ("H.16.70", "1defeed8-d95d-4939-b2fd-0a1774e56c6e"),
     ):
-        notes = service.finish_cad_files(
-            quote_id="q10365-aaaa-bbbb-cccc-000000000001",
-            cad_files=[stp],
-            material="A36",
-            thickness="0.1875",
-            qty=1,
-            takeoff={},
-            bom_rows=[],
-            library={},
-            extra_pdfs=None,
-            part_key="H.10.38",
-            explode_polls=1,
-            explode_sleep_s=0,
-        )
-    client.add_item_dxf_files.assert_not_called()
-    blob = " ".join(notes)
-    assert "EXEC_FAIL" in blob
-    assert "live ProductType is not Cad" in blob
-    assert "UpdateItemType" in blob
-    assert "Q10365" in blob
-    assert "not invent" in blob.lower()
+        row = {
+            "Name": name,
+            "ProductType": 100,
+            "NumberOfContours": 1,
+            "Machine": "Laser",
+            "ProductSubType": "prt_dxf",
+            "Thickness": 0.1875,
+            "Thickness_Units": "inch",
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+        }
+        classified = [{**row}]
+        assert live_row_product_type_is_cad(row) is True
+        assert plate_step_live_product_type_not_cad_refuses(row) is None
+        assert step_cad_live_product_type_hard_gate([row], classified) is None
+        assert step_cad_finish_hard_gate([row]) is None
+        assert quote_id  # leftover IDs stay protected; read-only restatement
 
 
 def test_step_cad_wizard_state_hard_gate_kids_or_org_lost_is_exec_fail():

@@ -54,10 +54,12 @@ Live leftovers after Cad-for-plate:
     Same Contours-FAIL class as Q10354 / D.H.38.96. invent=false.
   7801ab99 Q10365 — Safe Cave H.10.38 Contours FAIL leftover.
     Mouse Product Type Cad + 0.1875 in; UpdateItemType 200 then
-    PartImage / UpdateData / CADData; fill_xhr=null; finished
-    ProductType ``part``. Same FAIL class as Q10354 / Q10356.
-    UpdateItemType is ItemType only — does not persist ProductType
-    Cad. invent=false. Forever-forbid; never remint.
+    PartImage / UpdateData / CADData; fill_xhr=null;
+    NumberOfContours unavailable. Same FAIL class as Q10354 /
+    Q10356. UpdateItemType is ItemType only — does not write
+    ProductType. PASSes Q10333 / Q10348 finish ProductType=100 +
+    NumberOfContours=1 — do not refuse enum 100. invent=false.
+    Forever-forbid; never remint.
 
 Human Kyle on Q10333 / b5f56ac3: real Component→Cad dropdown +
 thickness + Finish → NumberOfContours=1 PASS. Finished Q10336 /
@@ -167,11 +169,11 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
             "why": (
                 "Q10365 / H.10.38 mouse Product Type dropdown Cad "
                 "fired UpdateItemType 200 then PartImage / UpdateData / "
-                "CADData; fill_xhr=null; finished GET ProductType "
-                "``part`` / enum 100. Body is ID + ItemType only. "
-                "Finish / AddItem_DXFFiles copies FileList ProductType "
-                "100. Same FAIL class as Q10354 / Q10356. Do not invent "
-                "a ProductType persist key or Contours fill."
+                "CADData; fill_xhr=null. Body is ID + ItemType only — "
+                "does not write ProductType. Live Contours PASSes "
+                "(Q10333 / Q10348) also finish ProductType=100 + "
+                "NumberOfContours=1. Do not refuse enum 100. Do not "
+                "invent a ProductType persist key or Contours fill."
             ),
         },
         {

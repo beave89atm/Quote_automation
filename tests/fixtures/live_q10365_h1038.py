@@ -7,19 +7,20 @@
     Then /part/PartImage, /CadImport/UpdateData, /CadImport/CADData
     fill_xhr=null
     Finished ProductType rendered ``part`` (enum 100)
+    NumberOfContours unavailable / Contours PASS not proven
 
 Same empty-InternalData / Contours-FAIL leftover class as
 Q10354 / 7881d4b3 / D.H.38.96 and Q10356 / 05bee105 / V.20.78
 (and Q10334 / Q10335) — not the Contours PASS pattern.
-Q10354 and Q10356 stay FAIL. Q10349 / D.H.30.96 and Q10351 /
-H.8.38 stay PASS.
+Contrast PASSes Q10333 / Q10348: live GET ProductType=100 +
+NumberOfContours=1. Do not refuse enum 100. Q10354 and Q10356
+stay FAIL. Q10349 / D.H.30.96 and Q10351 / H.8.38 stay PASS.
 
 Root cause (in-repo, invent=false):
   UpdateItemType body is ID + ItemType only. The Product Type
   dropdown Cad click is that classify XHR — it does not persist
-  ProductType Cad. Classify/kendo stamps ProductType=100 (GET
-  noun ``part``). Finish / AddItem_DXFFiles copies FileList as-is
-  (OnAddDXFClick), so the finished item stays ``part`` / 100.
+  ProductType. Classify/kendo stamps ProductType=100. Contours
+  PASS gate is NumberOfContours≥1 (plus inches / Laser / prt_dxf).
   Do not invent a ProductType persist XHR or Contours fill.
 
 Forever-forbid; never remint / PATCH. Does not unlock invent
