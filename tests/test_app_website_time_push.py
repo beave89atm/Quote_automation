@@ -1699,6 +1699,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "Q10379" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10380" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10381" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10382" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10350" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21843-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10338" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -2732,6 +2733,54 @@ def test_q10381_1001093_1_mixed_classify_pass_forever_forbid():
             method="PATCH",
             path="/Quote/UpdateItem_Part",
             payload={"ID": "bb31a132-c93a-4c21-84f3-7a83c62cead6"},
+        )
+
+
+def test_q10382_35146_1_mixed_classify_pass_forever_forbid():
+    """Q10382 / 2d42dcc3 35146-1 mixed classify PASS leftover — never remint / PATCH.
+
+    NEW remint PASS. Complete Quote NOT DONE. OPEN-NEW draft
+    (CAD Finish ≠ Complete Quote).
+    Plates 35123/.1875 DOMEX + 35125/10GA DOMEX NumberOfContours=1
+    each. Tube 35124 Long/Linear CT IsLinear A513 4.25×3.75×6.25.
+    Do not forbid PN 35146-1 (PN remint). invent=false. Do not
+    invent Contours.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "2d42dcc3-76e3-439b-be02-32c2f1b3c9a2" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "2d42dcc3" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10382" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "35146-1" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("2d42dcc3-76e3-439b-be02-32c2f1b3c9a2")
+    assert is_forbidden_quote_id("2d42dcc3-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10382")
+    assert not is_forbidden_quote_number("35146-1")
+    assert spent_quote_number_block_reason("Q10382")
+    assert spent_quote_number_block_reason("35146-1") is None
+    with pytest.raises(ForbiddenQuoteError, match="Q10382"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10382"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="2d42dcc3"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "2d42dcc3-76e3-439b-be02-32c2f1b3c9a2"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="2d42dcc3"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "2d42dcc3-76e3-439b-be02-32c2f1b3c9a2"},
         )
 
 
