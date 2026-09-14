@@ -1,9 +1,13 @@
-"""STEP stock classify: thin-sheet plate vs elongated flat-bar.
+"""STEP stock classify: thin-sheet plate vs bar (flat or round).
 
 Uses VERTEX_POINT coords or opposing-PLANE separations — never the span of
 every CARTESIAN_POINT (hole-axis placements inflate that bbox and used to
 false-positive ``strong_plate`` / Cad Contours). invent=false; this module
 does not invent Contours or InternalData.
+
+Kyle / CoS 2026-09-14: RD BAR / round bar / diameter stock is Long/Linear,
+never Cad Contours. Plate/sheet stays Cad Contours. Ambiguous stock
+fail-closes away from the Laser Contours plate path.
 """
 
 from __future__ import annotations
@@ -15,7 +19,22 @@ from typing import Any, Iterable
 
 STOCK_STRONG_PLATE = "strong_plate"
 STOCK_FLAT_BAR = "flat_bar"
+STOCK_ROUND_BAR = "round_bar"
 STOCK_OTHER = "other"
+STOCK_BAR_KINDS = frozenset({STOCK_FLAT_BAR, STOCK_ROUND_BAR})
+
+# Shop / LOM / PDF: RD BAR CR 1018 / 1/2 DIA → Linear, not Cad Contours.
+_RD_BAR_RE = re.compile(
+    r"(?i)(?:\bRD\.?\s*BAR\b|\bRDBAR\b|\bROUND\s+BAR\b|\bBAR\s+ROUND\b|"
+    r"\bROUND\s+STOCK\b|\bBAR\s+STOCK\b)"
+)
+# Diameter stock (not a plate hole callout by itself).
+_DIA_STOCK_RE = re.compile(
+    r"(?i)(?:\b\d+(?:\s+\d+/\d+|\.\d+|/\d+)?\s*(?:IN(?:CH(?:ES)?)?)?\s*"
+    r"DIA(?:METER)?\b|\bDIA(?:METER)?\s*\d)"
+)
+_PLATE_SHEET_RE = re.compile(r"(?i)\b(?:PLATE|SHEET|GUSSET)\b")
+_HOLE_DIA_RE = re.compile(r"(?i)\b(?:HOLE|HOLES|DRILL|C'?BORE|THRU)\b")
 
 # Laser plate: one dim << the other two, thickness in sheet/plate class.
 _LASER_THICKNESS_MAX_IN = 0.75
@@ -27,6 +46,11 @@ _BAR_WIDTH_MAX_IN = 8.0
 _BAR_ELONGATION = 3.0
 _BAR_MIN_LENGTH_IN = 10.0
 _BAR_THICK_TO_WIDTH = 0.20
+# Round bar: two similar small axes (diameter) + elongation. 1/2 DIA is 0.5 in.
+_ROUND_DIA_MIN_IN = 0.1875
+_ROUND_DIA_MAX_IN = 2.5
+_ROUND_SECTION_RATIO = 0.25
+_ROUND_ELONGATION = 2.5
 
 _ENTITY_RE = re.compile(r"^#(\d+)\s*=\s*(.+?);\s*$", re.M)
 _CARTESIAN_RE = re.compile(
@@ -227,8 +251,54 @@ def robust_step_bbox(text: str) -> dict[str, Any]:
     }
 
 
+def looks_like_round_bar_stock(text: str | None) -> bool:
+    """True for RD BAR / ROUND BAR / diameter stock — Long/Linear, not Cad.
+
+    Plate/sheet nouns with hole-DIA callouts stay plate (not this). A bare
+    ``1/2 DIA`` / ``RD BAR CR 1018`` material string is bar. invent=false.
+    """
+    blob = str(text or "").strip()
+    if not blob:
+        return False
+    if _RD_BAR_RE.search(blob):
+        return True
+    if not _DIA_STOCK_RE.search(blob):
+        return False
+    # Plate/sheet + DIA is usually a hole callout — stay plate.
+    # Bare DIA / CR 1018 / 1/2 DIA with no plate noun is diameter stock.
+    if _PLATE_SHEET_RE.search(blob) and not _RD_BAR_RE.search(blob):
+        return False
+    if _HOLE_DIA_RE.search(blob) and not _RD_BAR_RE.search(blob):
+        return False
+    return True
+
+
+def row_looks_like_round_bar_stock(row: dict[str, Any] | None) -> bool:
+    """True when a CadImport / GET row's LOM/PDF/name blob is round bar."""
+    if not isinstance(row, dict):
+        return False
+    blob = " ".join(
+        str(row.get(key) or "")
+        for key in (
+            "Name",
+            "Description",
+            "FileName",
+            "Material",
+            "MaterialGrade",
+            "SKU",
+            "stock_text",
+            "stock_kind",
+            "noun",
+        )
+    )
+    kind = str(row.get("stock_kind") or "").strip().casefold()
+    if kind in STOCK_BAR_KINDS:
+        return True
+    return looks_like_round_bar_stock(blob)
+
+
 def score_step_stock(dims: Iterable[float] | None) -> str:
-    """Rank robust dims: thin-sheet ``strong_plate`` vs elongated ``flat_bar``."""
+    """Rank robust dims: thin-sheet plate vs flat-bar vs round-bar."""
     box = _sorted_box(dims or [])
     if not box:
         return STOCK_OTHER
@@ -252,6 +322,16 @@ def score_step_stock(dims: Iterable[float] | None) -> str:
             )
         )
     )
+    # Circular section: two similar small axes + elongation (1/2 DIA hook).
+    section_span = max(width, thick)
+    round_section = (
+        section_span > 0
+        and abs(width - thick) / section_span <= _ROUND_SECTION_RATIO
+        and _ROUND_DIA_MIN_IN <= section_span <= _ROUND_DIA_MAX_IN
+        and length / section_span >= _ROUND_ELONGATION
+    )
+    if round_section:
+        return STOCK_ROUND_BAR
     if bar_class:
         return STOCK_FLAT_BAR
     if thin_sheet:
@@ -260,8 +340,8 @@ def score_step_stock(dims: Iterable[float] | None) -> str:
 
 
 def step_stock_category(kind: str | None) -> str | None:
-    """Cad Contours only for ``strong_plate``. Flat-bar is Long/Linear."""
-    if kind == STOCK_FLAT_BAR:
+    """Cad Contours only for ``strong_plate``. Bar stock is Long/Linear."""
+    if kind in STOCK_BAR_KINDS:
         return "Linear"
     if kind == STOCK_STRONG_PLATE:
         return "Cad"
@@ -269,8 +349,8 @@ def step_stock_category(kind: str | None) -> str | None:
 
 
 def contours_path_allowed(kind: str | None) -> bool:
-    """False for flat-bar Linear stock — do not route to Cad Contours."""
-    return kind != STOCK_FLAT_BAR
+    """False for bar Linear stock — do not route to Cad Contours."""
+    return kind not in STOCK_BAR_KINDS
 
 
 def classify_step_text(text: str) -> dict[str, Any]:

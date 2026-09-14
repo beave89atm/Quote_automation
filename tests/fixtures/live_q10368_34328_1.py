@@ -13,13 +13,19 @@ Findings (no Contours invent):
    not two drawing PNs. Do not collapse them (would weaken the
    every-Cad-kid Contours≥1 gate).
 3. HOOK BOOM REST is not a plate/sheet noun and not a Linear hint.
-   0.5in is below flat_bar min 0.76in, so stock classify stays Cad.
-   Do not reclass Long on the name alone.
+   0.5in is below flat_bar min 0.76in, so name-only stock classify
+   stayed Cad on this leftover. Do not reclass Long on the name
+   alone. CoS 2026-09-14: the 31454-1 drawing is RD BAR CR 1018 /
+   1/2 DIA — remints must classify that kid Linear/Long when the
+   LOM/PDF stock string (or round-bar bbox) is present. This leftover
+   dump stays historical; never remint / PATCH Q10368.
 
 Cad+Material+inches ≠ Contours fill on every kid. Finish filled the
 flattenable 0.25in plate and left the HOOK solids at 0. Fill XHR
-still unnamed. Post-Finish gate stays every Cad kid ≥1; Q10368
-adds per-kid names in the EXEC_FAIL. Never remint / PATCH Q10368.
+still unnamed. Leftover dump used every-Cad-kid Contours≥1; remints
+now gate plate/sheet Cad Laser kids only — RD BAR Linear kids are
+not required to have NumberOfContours≥1. Q10368 adds per-kid names
+in the EXEC_FAIL. Never remint / PATCH Q10368.
 Do not forbid 34328-1 (PO may remint the PN).
 """
 

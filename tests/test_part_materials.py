@@ -10,6 +10,18 @@ from quote_core.part_materials import (
 )
 
 
+def test_parse_material_block_rd_bar_cr_1018_half_dia():
+    """HOOK 31454-1 drawing stock — Linear, not Cad plate gauge."""
+    from quote_core.part_materials import rd_bar_stock_phrase
+
+    text = "MATERIAL\nRD BAR CR 1018 / 1/2 DIA\nHOOK BOOM REST\n"
+    thk, key, src = parse_material_block(text)
+    assert rd_bar_stock_phrase(text)
+    assert "RD BAR" in src
+    assert thk == 0.5
+    assert key == "a36"
+
+
 def test_parse_material_block_gauge_pando_12ga():
     text = '''
 ITEM

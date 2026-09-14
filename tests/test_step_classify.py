@@ -8,14 +8,18 @@ from secturafab.push import (
     SecturaFabPushService,
     apply_step_stock_category,
     classify_sectura_item,
+    explode_kid_part_tokens,
 )
 from secturafab.step_classify import (
     STOCK_FLAT_BAR,
+    STOCK_ROUND_BAR,
     STOCK_STRONG_PLATE,
     all_cartesian_bbox,
     classify_step_text,
     contours_path_allowed,
+    looks_like_round_bar_stock,
     robust_step_bbox,
+    row_looks_like_round_bar_stock,
     score_step_stock,
 )
 from secturafab.website import (
@@ -120,6 +124,166 @@ def test_classify_cadimport_flat_bar_rejects_cad_contours(tmp_path):
     blob = " ".join(notes)
     assert "flat_bar" in blob
     assert "Cad: 0" in blob or "Linear: 1" in blob
+
+
+def test_explode_kid_part_tokens_reads_31454_from_hook_name():
+    toks = explode_kid_part_tokens("HOOK BOOM REST-7742_31454-1")
+    assert "31454-1" in toks
+    assert toks[0] == "31454-1"
+
+
+def test_rd_bar_lom_string_is_linear_not_cad_contours():
+    """Kyle/CoS 2026-09-14: RD BAR CR 1018 / 1/2 DIA → Long/Linear.
+
+    Name-only HOOK stays Cad (Q10368 leftover). Drawing stock string
+    and 1/2 DIA geometry must not take Cad Contours. invent=false.
+    """
+    assert looks_like_round_bar_stock("RD BAR CR 1018 / 1/2 DIA") is True
+    assert looks_like_round_bar_stock("ROUND BAR 1/2 DIA") is True
+    assert looks_like_round_bar_stock("BAR ROUND 1/2 DIA.(STRIKER)") is True
+    assert looks_like_round_bar_stock("1/2 DIA") is True
+    assert looks_like_round_bar_stock("HOOK BOOM REST-7742_31454-1") is False
+    assert looks_like_round_bar_stock("1/4 PLATE A36 1/2 DIA HOLES") is False
+    assert classify_sectura_item("RD BAR CR 1018 / 1/2 DIA") == "Linear"
+    assert classify_sectura_item(
+        "HOOK BOOM REST-7742_31454-1 RD BAR CR 1018 / 1/2 DIA"
+    ) == "Linear"
+    assert classify_sectura_item("HOOK BOOM REST-7742_31454-1", 0.5) == "Cad"
+    assert classify_sectura_item("34329 BOOM SUPPORT", 0.25) == "Cad"
+    assert score_step_stock((12.0, 0.5, 0.5)) == STOCK_ROUND_BAR
+    assert contours_path_allowed(STOCK_ROUND_BAR) is False
+    assert apply_step_stock_category("Cad", STOCK_ROUND_BAR, "31454-1") == "Linear"
+    assert apply_step_stock_category("Cad", STOCK_ROUND_BAR, "34329 PLATE") == "Cad"
+
+
+def test_classify_cadimport_rd_bar_kid_is_linear_not_contours(tmp_path):
+    from quote_core.part_materials import PartMaterial
+
+    rows = [
+        {
+            "SourceDataID": "hook-1",
+            "ID": "id-31454-1",
+            "Name": "HOOK BOOM REST-7742_31454-1",
+            "ProductType": "Component",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "InternalData": "",
+        },
+        {
+            "SourceDataID": "plate-1",
+            "ID": "id-34329",
+            "Name": "34329 BOOM SUPPORT",
+            "ProductType": "Component",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "InternalData": "",
+        },
+    ]
+    hook_pm = PartMaterial(
+        part_key="31454-1",
+        material_key="a36",
+        material="A36",
+        thickness_in=0.5,
+        source="RD BAR stock 'RD BAR CR 1018 / 1/2 DIA'",
+        raw_grade="CR 1018",
+        raw_thickness="1/2 DIA",
+    )
+    plate_pm = PartMaterial(
+        part_key="34329",
+        material_key="a36",
+        material="A36",
+        thickness_in=0.25,
+        source="MATERIAL block (1/4 / A36)",
+    )
+    from unittest.mock import patch
+
+    with patch(
+        "quote_core.part_materials.build_part_material_map",
+        return_value={"31454-1": hook_pm, "34329": plate_pm},
+    ):
+        classified, notes = SecturaFabPushService(
+            client=MagicMock()
+        ).classify_cadimport_rows(
+            rows,
+            default_material="A36",
+            default_thickness="0.25",
+            bom_rows=[
+                {
+                    "part_no": "31454-1",
+                    "description": "RD BAR CR 1018 / 1/2 DIA",
+                },
+                {"part_no": "34329", "description": "BOOM SUPPORT"},
+            ],
+            library={},
+            extra_pdfs=None,
+            qty=1,
+            part_key="34328-1",
+        )
+    hook = next(k for k in classified if "31454" in str(k.get("Name") or ""))
+    plate = next(k for k in classified if "34329" in str(k.get("Name") or ""))
+    assert hook["Category"] == "Linear"
+    assert hook["FileType"] == "Linear"
+    assert product_type_is_cad(hook.get("ProductType")) is False
+    assert _cad_plate_row_for_finish_gate(hook) is False
+    assert plate["Category"] == "Cad"
+    assert _cad_plate_row_for_finish_gate(plate) is True
+    blob = " ".join(notes)
+    assert "Linear: 1" in blob
+    assert "Cad: 1" in blob
+
+
+def test_contours_gate_skips_linear_rd_bar_kids():
+    """Plate Cad Contours≥1; RD BAR Linear kids must not EXEC_FAIL at 0."""
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        step_cad_post_finish_contours_gate,
+    )
+
+    plate = {
+        "ProductType": 100,
+        "Category": "Cad",
+        "Name": "34329 BOOM SUPPORT",
+        "Material": "A36",
+        "Thickness": 0.25,
+        "Thickness_Units": "inch",
+        "NumberOfContours": 1,
+    }
+    hook = {
+        "ProductType": 10,
+        "Category": "Linear",
+        "FileType": "Linear",
+        "Name": "31454-1",
+        "Description": "RD BAR CR 1018 / 1/2 DIA",
+        "Material": "A36",
+        "Thickness": 0.5,
+        "Thickness_Units": "inch",
+        "NumberOfContours": 0,
+    }
+    why = step_cad_post_finish_contours_gate(
+        {"TreeListData": [hook, plate, {**hook, "Name": "31454-1 B"}]}
+    )
+    assert why is None
+    leftover_cad_hooks = {
+        "TreeListData": [
+            {
+                **plate,
+                "Name": "HOOK BOOM REST-7742_31454-1",
+                "Thickness": 0.5,
+                "NumberOfContours": 0,
+            },
+            plate,
+            {
+                **plate,
+                "Name": "HOOK BOOM REST-7742_31454-1",
+                "Thickness": 0.5,
+                "NumberOfContours": 0,
+            },
+        ]
+    }
+    leftover = step_cad_post_finish_contours_gate(leftover_cad_hooks)
+    assert leftover is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in leftover
+    assert row_looks_like_round_bar_stock(hook) is True
 
 
 def test_classify_cadimport_h638_plate_stays_cad():

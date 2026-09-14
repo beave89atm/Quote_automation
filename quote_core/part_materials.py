@@ -139,6 +139,20 @@ _SKIP_NAME_HINTS = (
     "ASSEMBLY",
 )
 
+_RD_BAR_STOCK_RE = re.compile(
+    r"(?i)\b(?:RD\.?\s*BAR|ROUND\s+BAR|BAR\s+ROUND)\b[^\n]{0,80}"
+)
+
+
+def rd_bar_stock_phrase(text: str | None) -> str:
+    """Matched RD BAR / ROUND BAR stock line, or empty. invent=false."""
+    if not text:
+        return ""
+    m = _RD_BAR_STOCK_RE.search(text)
+    if not m:
+        return ""
+    return re.sub(r"\s+", " ", m.group(0)).strip()
+
 
 @dataclass(frozen=True)
 class PartMaterial:
@@ -348,6 +362,16 @@ def parse_material_block(text: str) -> tuple[float | None, str | None, str]:
         if thk is not None:
             return thk, "a36", f"gauge callout on {ln!r}"
 
+    # RD BAR / ROUND BAR / 1/2 DIA stock — Linear, not Cad plate gauge.
+    snippet = rd_bar_stock_phrase(text)
+    if snippet:
+        dia = re.search(
+            r"(?i)(\d+\s*/\s*\d+|\d+(?:\.\d+)?)\s*[\"″']?\s*DIA",
+            snippet + "\n" + text,
+        )
+        thk = _parse_thickness_token(dia.group(1)) if dia else None
+        return thk, "a36", f"RD BAR stock {snippet!r}"
+
     named_al = re.search(
         r"(?i)\b(?:5052(?:\s*-?\s*H32)?|ALPL[A-Z0-9\-]*)\b",
         text,
@@ -413,7 +437,10 @@ def extract_part_material_from_pdf(pdf_path: Path | str) -> PartMaterial | None:
         except Exception:  # noqa: BLE001
             text = text or ""
     thk, mat_key, source = parse_material_block(text)
-    if mat_key is None and thk is None:
+    stock = rd_bar_stock_phrase(text)
+    if stock and "RD BAR stock" not in str(source or ""):
+        source = f"{source}; RD BAR stock {stock!r}".strip("; ")
+    if mat_key is None and thk is None and not stock:
         return None
     if mat_key is None:
         mat_key = "a36"
