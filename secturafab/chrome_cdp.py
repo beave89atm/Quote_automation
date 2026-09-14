@@ -7720,9 +7720,12 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     } catch (eB) { return 0; }
   }
   var thicknessBlockedBlankMaterial = 0;
+  var sharedDrawingMaterial = "";
   function drawingMaterialType(want, row) {
     // Q10366 / fd0b6e45: Material A36 before thickness. Blank
     // material blocks thickness in Sectura UI. invent=false.
+    // Q10369: share drawing Material across Cad kids after keep-grid
+    // rehydrate so a first-kid wipe does not leave later kids blank.
     var src = want || {};
     var live = row || {};
     var raw = (src.Material != null && String(src.Material) !== "")
@@ -7731,7 +7734,9 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         ? src.MaterialGrade
         : ((live.Material != null && String(live.Material) !== "")
           ? live.Material
-          : (live.MaterialGrade || "")));
+          : ((live.MaterialGrade != null && String(live.MaterialGrade) !== "")
+            ? live.MaterialGrade
+            : sharedDrawingMaterial)));
     return String(raw || "").trim();
   }
   function applyCadThickness(row, want, setter) {
@@ -7956,8 +7961,25 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     var typeVia = "";
     var keepVia = "";
     thicknessBlockedBlankMaterial = 0;
+    sharedDrawingMaterial = "";
+    for (var sm = 0; sm < wants.length; sm++) {
+      var shared = drawingMaterialType(wants[sm], null);
+      if (shared) { sharedDrawingMaterial = shared; break; }
+    }
     var fnName = findSetFn();
     var itemTypeFnName = findUpdateItemTypeFn();
+    function applyAllKidsCadMaterialInches() {
+      // After wipe/rehydrate: Cad → drawing Material → inches on
+      // every kid. Silent so restore does not select/editCell
+      // (Q10355 / Q10369 wipe class). invent=false — no Contours.
+      var freshKids = g.dataSource.data() || [];
+      for (var ak = 0; ak < freshKids.length; ak++) {
+        var kidRow = freshKids[ak];
+        var kidWant = matchWant(kidRow, wants) || wantFromName(kidRow);
+        if (!kidWant) continue;
+        applyFields(kidRow, kidWant, true);
+      }
+    }
     function restoreIfWiped() {
       if (!multi) return false;
       var freshNow = g.dataSource.data() || [];
@@ -7971,6 +7993,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       if (bound < 2) return false;
       keepVia = "rehydrate";
       setCount = setCount || restored.length;
+      applyAllKidsCadMaterialInches();
       return true;
     }
     function applyOneKid(want) {
@@ -7979,6 +8002,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
           resolve("");
           return;
         }
+        restoreIfWiped();
         var live = findLiveRow(g.dataSource.data() || [], want, null);
         if (!live) {
           restoreIfWiped();
@@ -8054,6 +8078,11 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
           keepVia = "live";
         }
       }
+      if (multi) {
+        restoreIfWiped();
+        applyAllKidsCadMaterialInches();
+        fresh = g.dataSource.data() || [];
+      }
       var counts = {Cad: 0, Linear: 0, Assembly: 0, Component: 0};
       for (var j = 0; j < fresh.length; j++) {
         counts[catOf(fresh[j])] += 1;
@@ -8074,6 +8103,13 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       }
       var org = readOrg();
       var present = fresh.length > 0;
+      var cadBlankMaterial = 0;
+      for (var bm = 0; bm < fresh.length; bm++) {
+        if (catOf(fresh[bm]) !== "Cad") continue;
+        if (!drawingMaterialType(matchWant(fresh[bm], wants), fresh[bm])) {
+          cadBlankMaterial += 1;
+        }
+      }
       return {
         grid_present: present,
         cad: counts.Cad,
@@ -8092,7 +8128,8 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         kendo_row_keys: kendoKeys,
         per_kid: true,
         per_kid_cad_inches: "single_plate_adjust_properties_page_fn",
-        thickness_blocked_blank_material: thicknessBlockedBlankMaterial
+        thickness_blocked_blank_material: thicknessBlockedBlankMaterial,
+        cad_blank_material: cadBlankMaterial
       };
     });
   }
@@ -8241,6 +8278,18 @@ def apply_grid_dxf_part_modes(
             value.get("per_kid_cad_inches")
             or "single_plate_adjust_properties_page_fn"
         )
+    if present and "cad_blank_material" in value:
+        try:
+            out["cad_blank_material"] = int(value.get("cad_blank_material") or 0)
+        except (TypeError, ValueError):
+            out["cad_blank_material"] = 0
+    if present and "thickness_blocked_blank_material" in value:
+        try:
+            out["thickness_blocked_blank_material"] = int(
+                value.get("thickness_blocked_blank_material") or 0
+            )
+        except (TypeError, ValueError):
+            out["thickness_blocked_blank_material"] = 0
     return out
 
 

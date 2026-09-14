@@ -860,6 +860,24 @@ def cadimport_keep_grid_rows(
     return out
 
 
+def drawing_material_type_from_rows(
+    rows: list[dict[str, Any]] | None,
+) -> str:
+    """First drawing Material / MaterialGrade on any row. Blank if none.
+
+    Q10369 / 34328-1: one kid can carry the drawing grade; keep-grid
+    must apply that same Material to every Cad kid. Does not invent
+    a grade. invent=false.
+    """
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        mat = drawing_material_type(row)
+        if mat:
+            return mat
+    return ""
+
+
 def cadimport_keep_grid_classify_spec(
     rows: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
@@ -870,8 +888,11 @@ def cadimport_keep_grid_classify_spec(
     is copied only when ``plate_step_thickness_units_are_inch`` **and**
     Material type from the drawing is set — Q10366 / fd0b6e45 Contours
     PASS required Material A36 before thickness; blank material blocks
-    thickness in Sectura UI. invent=false.
+    thickness in Sectura UI. Drawing Material is shared across Cad kids
+    so keep-grid rehydrate can Cad → Material → inches on every kid
+    (Q10369: first-kid wipe left later kids blank). invent=false.
     """
+    drawing_mat = drawing_material_type_from_rows(rows)
     spec_rows: list[dict[str, Any]] = []
     for row in rows or []:
         if not isinstance(row, dict):
@@ -890,7 +911,9 @@ def cadimport_keep_grid_classify_spec(
             "ProductType": row.get("ProductType"),
             "Machine": str(row.get("Machine") or ""),
         }
-        mat = drawing_material_type(row)
+        mat = drawing_material_type(row) or (
+            drawing_mat if cat == "Cad" else ""
+        )
         if mat:
             spec["Material"] = mat
         if plate_step_thickness_units_are_inch(row) and mat:
@@ -3376,6 +3399,43 @@ def multi_kid_keep_grid_empty_internaldata_refuses(
         "Contours. UpdateData/editor Done is not a safe multi-kid fill. "
         f"missing_call={STEP_CONTOURS_MISSING_CALL}. "
         "Do not invent InternalData/Contours."
+    )
+
+
+def keep_grid_cad_kids_blank_material_refuses(
+    rows: list[dict[str, Any]] | None,
+    *,
+    keep_via: str = "",
+) -> str | None:
+    """EXEC_FAIL when any multi-kid Cad plate still has blank Material.
+
+    Q10369 / 82c28793 / 34328-1: Cad+Material+inches on one kid wiped
+    #gridDXFParts; later kids finished with blank Material/thickness
+    and Contours=0. Keep-grid must Cad → drawing Material → inches on
+    every kid before Finish. Does not invent Material or Contours.
+    invent=false.
+    """
+    via = str(keep_via or "").strip()
+    kids = [
+        r
+        for r in (rows or [])
+        if isinstance(r, dict) and _cad_plate_row_for_finish_gate(r)
+    ]
+    if len(kids) < 2 and via not in {"live", "rehydrate"}:
+        return None
+    if not kids:
+        return None
+    blank = [r for r in kids if not drawing_material_type(r)]
+    if not blank:
+        return None
+    return (
+        f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: keep-grid Cad kid "
+        f"Material blank ({len(blank)}/{len(kids)}; "
+        f"keep_grid_via={via or '?'}) — not Finishing (Q10369 / "
+        "34328-1 first-kid Cad+Material+inches wiped #gridDXFParts; "
+        "later kid Contours=0). Cad → Material from drawing → "
+        "thickness inches on every kid. Do not invent Material or "
+        "Contours."
     )
 
 
@@ -7641,17 +7701,30 @@ def step_cad_post_finish_contours_gate(
     *,
     expect_cad: bool = True,
 ) -> str | None:
-    """After Finish: NumberOfContours≥1 on TreeListData / v1 ItemList.
+    """After Finish: NumberOfContours≥1 on every Cad kid.
 
     Q10366: Cad+Material A36+.1875 Finish then GET
     /Quote/QuoteItem_ReadTreeListData?ParentID= NumberOfContours=1.
     ProductType 100 / noun ``part`` is OK — do not require a Cad noun.
     QuoteItem_Read list items omit NumberOfContours — not the PASS
-    signal. invent=false — do not invent Contours.
+    signal. Q10369: one kid Contours=1 does not pass the other kids;
+    any Cad plate still <1 is EXEC_FAIL. invent=false — do not invent
+    Contours.
     """
     if not expect_cad:
         return None
     rows = quote_contours_rows(posted)
+    cad_kids = [r for r in rows if _cad_plate_row_for_finish_gate(r)]
+    if cad_kids:
+        if any(item_cad_contour_count(it) < 1 for it in cad_kids):
+            return (
+                f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: NumberOfContours<1 "
+                "after Finish (GET /Quote/QuoteItem_ReadTreeListData"
+                "?ParentID=; Q10366 Cad+Material A36+.1875 "
+                "NumberOfContours=1; Q10369 every Cad kid). ProductType "
+                "100/part OK. Do not invent Contours/InternalData."
+            )
+        return None
     if any(item_cad_contour_count(it) >= 1 for it in rows):
         return None
     return (

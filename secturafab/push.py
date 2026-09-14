@@ -87,6 +87,7 @@ from .website import (
     step_cad_live_product_type_hard_gate,
     step_cad_post_finish_contours_gate,
     step_cad_wizard_state_hard_gate,
+    keep_grid_cad_kids_blank_material_refuses,
     step_finish_pack_missing,
     wizard_quote_live_item_count,
     wizard_quote_primary_organization_id,
@@ -3454,6 +3455,7 @@ class SecturaFabPushService:
             cad_payload_value_empty,
             filelist_cad_payload_empty_bools,
             filelist_missing_cadimport_identity_keys,
+            keep_grid_cad_kids_blank_material_refuses,
             multi_kid_keep_grid_empty_internaldata_refuses,
         )
 
@@ -3480,6 +3482,27 @@ class SecturaFabPushService:
         keep_via = str(applied.get("keep_via") or "")
         if keep_via:
             notes.append(f"keep_grid_via={keep_via}")
+        try:
+            live_blank_mat = int(applied.get("cad_blank_material") or 0)
+        except (TypeError, ValueError):
+            live_blank_mat = 0
+        if live_blank_mat > 0:
+            notes.append(
+                f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: keep-grid Cad kid "
+                f"Material blank ({live_blank_mat} live #gridDXFParts; "
+                f"keep_grid_via={keep_via or '?'}) — not Finishing "
+                "(Q10369 / 34328-1 first-kid Cad+Material+inches wiped "
+                "the grid; later kid Contours=0). Cad → Material from "
+                "drawing → thickness inches on every kid. Do not invent "
+                "Material or Contours."
+            )
+            return notes
+        blank_mat = keep_grid_cad_kids_blank_material_refuses(
+            classified, keep_via=keep_via
+        )
+        if blank_mat:
+            notes.append(blank_mat)
+            return notes
         classified, post_overlay = self._overlay_cadimport_get_payloads(
             quote_id=quote_id,
             rows=classified,
@@ -3647,6 +3670,12 @@ class SecturaFabPushService:
         hard_ready = step_cad_finish_hard_gate(ready)
         if hard_ready:
             notes.append(hard_ready)
+            return notes
+        ready_blank_mat = keep_grid_cad_kids_blank_material_refuses(
+            ready, keep_via=keep_via
+        )
+        if ready_blank_mat:
+            notes.append(ready_blank_mat)
             return notes
         keep_empty = multi_kid_keep_grid_empty_internaldata_refuses(
             ready, keep_via=keep_via

@@ -2220,6 +2220,9 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("10289-5")
     assert is_forbidden_quote_id("4c9c25d4-439f-42be-8f6f-7444e5f05497")
     assert is_forbidden_quote_id("4c9c25d4-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10369")
+    assert is_forbidden_quote_id("82c28793-96e8-457b-9559-979c2b761d4e")
+    assert is_forbidden_quote_id("82c28793-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
@@ -4946,6 +4949,104 @@ def test_cadimport_keep_grid_classify_spec_copies_inches_not_contours():
         assert "NumberOfContours" not in row
 
 
+def test_cadimport_keep_grid_classify_spec_shares_drawing_material():
+    """Q10369: drawing Material on one kid is copied onto every Cad spec.
+
+    Thickness inches follow Material. invent=false — no Contours.
+    """
+    from secturafab.website import (
+        cadimport_keep_grid_classify_spec,
+        drawing_material_type_from_rows,
+    )
+
+    kids = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Material": "A36",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        },
+    ]
+    assert drawing_material_type_from_rows(kids) == "A36"
+    spec = cadimport_keep_grid_classify_spec(kids)
+    assert len(spec) == 2
+    assert spec[0]["Material"] == "A36"
+    assert spec[1]["Material"] == "A36"
+    assert spec[0]["Thickness"] == "0.1875"
+    assert spec[1]["Thickness"] == "0.1875"
+    assert spec[0]["Thickness_Units"] == "inch"
+    assert spec[1]["Thickness_Units"] == "inch"
+    keys = list(spec[1])
+    assert keys.index("Material") < keys.index("Thickness")
+    for row in spec:
+        assert "Contours" not in row
+        assert "NumberOfContours" not in row
+
+
+def test_keep_grid_cad_kids_blank_material_refuses():
+    """Q10369: any Cad kid still blank Material after keep-grid is EXEC_FAIL."""
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+        keep_grid_cad_kids_blank_material_refuses,
+    )
+
+    configured = {
+        "Name": "34328-1 PLATE A",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+    }
+    blank = {
+        **configured,
+        "Name": "34328-1 PLATE B",
+        "Material": "",
+        "Thickness": "",
+        "Thickness_Units": "",
+    }
+    why = keep_grid_cad_kids_blank_material_refuses(
+        [configured, blank], keep_via="rehydrate"
+    )
+    assert why is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why
+    assert "Material blank" in why
+    assert "Q10369" in why
+    assert "invent" in why.lower()
+    assert "Contours" in why
+    assert cad_finish_notes_refuse_additem_dxf([why]) == why
+    assert (
+        keep_grid_cad_kids_blank_material_refuses(
+            [configured, {**blank, "Material": "A36", "Thickness": "0.1875",
+                          "Thickness_Units": "inch"}],
+            keep_via="rehydrate",
+        )
+        is None
+    )
+    assert keep_grid_cad_kids_blank_material_refuses([configured]) is None
+
+
 def test_apply_grid_part_modes_js_rehydrates_emptied_kendo_from_keep_rows(
     tmp_path: Path,
 ):
@@ -5651,6 +5752,176 @@ Promise.resolve(done(result)).catch((err) => {
     assert out["blocked"] >= 1
     assert out["thickness"] == "0.0048:meter"
     assert out["cad"] == 1
+
+
+def test_apply_grid_part_modes_js_rehydrates_material_on_every_kid(
+    tmp_path: Path,
+):
+    """Q10369: after first-kid wipe, keep-grid stamps Material+inches on all.
+
+    Only the first want carries drawing Material. invent=false.
+    """
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    live_rows = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "Category": "Component",
+            "FileType": "Component",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "Category": "Component",
+            "FileType": "Component",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+    ]
+    wants = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser - Bay1",
+            "Material": "A36",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser - Bay1",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        },
+    ]
+    spec = {"rows": wants, "keep_rows": live_rows}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + "const live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+const store = { rows: live.map((r) => {
+  const row = { ...r };
+  row.set = function set(k, v) { this[k] = v; };
+  return row;
+}) };
+const dataSource = {
+  data(rows) {
+    if (arguments.length) {
+      store.rows = (rows || []).map((r) => {
+        const row = { ...r };
+        if (typeof row.set !== "function") {
+          row.set = function set(k, v) { this[k] = v; };
+        }
+        return row;
+      });
+      return store.rows;
+    }
+    const arr = store.rows.slice();
+    arr.toJSON = function toJSON() {
+      return store.rows.map((r) => {
+        const copy = {};
+        Object.keys(r).forEach((k) => {
+          if (k !== "set" && k !== "uid") copy[k] = r[k];
+        });
+        return copy;
+      });
+    };
+    return arr;
+  },
+};
+const gridObj = { dataSource };
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "org" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax() { return { always(fn) { fn(); return this; } }; },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+global.window.SetPartMode = function SetPartMode() {
+  store.rows = [];
+};
+global.window.UpdateItemType = function UpdateItemType() {};
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") {
+    return value.then(done);
+  }
+  if (value.keep_via !== "rehydrate") throw new Error("keep_via=" + value.keep_via);
+  if (value.grid_dxf_row_count !== 2) throw new Error("n=" + value.grid_dxf_row_count);
+  if (value.cad !== 2) throw new Error("cad=" + value.cad);
+  if (value.cad_blank_material) throw new Error("blank=" + value.cad_blank_material);
+  if (store.rows.some((r) => String(r.Material || "") !== "A36")) {
+    throw new Error("material missing " + JSON.stringify(store.rows.map((r) => r.Material)));
+  }
+  if (store.rows.some((r) => String(r.Thickness) !== "0.1875")) {
+    throw new Error("inches missing");
+  }
+  if (store.rows.some((r) => r.Contours != null || r.NumberOfContours != null)) {
+    throw new Error("invented Contours");
+  }
+  process.stdout.write(JSON.stringify({
+    keep_via: value.keep_via,
+    cad: value.cad,
+    cad_blank_material: value.cad_blank_material,
+    materials: store.rows.map((r) => r.Material),
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "keep_grid_material_every_kid.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["keep_via"] == "rehydrate"
+    assert out["cad"] == 2
+    assert out["cad_blank_material"] == 0
+    assert out["materials"] == ["A36", "A36"]
 
 
 def test_finish_skips_when_grid_classify_cad_is_zero(tmp_path: Path):
@@ -10448,6 +10719,7 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("H.6.38")
     assert is_forbidden_quote_number("Q10367")
     assert is_forbidden_quote_number("10289-5")
+    assert is_forbidden_quote_number("Q10369")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_number("Q10338")
@@ -11385,6 +11657,7 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "H.6.38",
         "Q10367",
         "10289-5",
+        "Q10369",
         "Q10350",
         "21843-1",
         "Q10338",
@@ -12611,6 +12884,7 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_number("H.6.38")
     assert is_forbidden_quote_number("Q10367")
     assert is_forbidden_quote_number("10289-5")
+    assert is_forbidden_quote_number("Q10369")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
@@ -12628,6 +12902,7 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_id("7801ab99-13af-4efc-b996-897daf8e677a")
     assert is_forbidden_quote_id("fd0b6e45-d508-4b01-bbc0-45b338cd966d")
     assert is_forbidden_quote_id("4c9c25d4-439f-42be-8f6f-7444e5f05497")
+    assert is_forbidden_quote_id("82c28793-96e8-457b-9559-979c2b761d4e")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
 
     refuse = cad_filelist_refuses_additem_dxf(
@@ -13653,6 +13928,19 @@ def test_post_finish_contours_gate_treelist_number_of_contours():
     assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_read
 
     assert step_cad_post_finish_contours_gate(tree_pass, expect_cad=False) is None
+
+    mixed = {
+        "TreeListData": [
+            {**pass_row, "Name": "34328-1 PLATE A", "NumberOfContours": 1},
+            {**pass_row, "Name": "34328-1 PLATE B", "NumberOfContours": 0},
+        ]
+    }
+    why_mixed = step_cad_post_finish_contours_gate(mixed)
+    assert why_mixed is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_mixed
+    assert "NumberOfContours<1 after Finish" in why_mixed
+    assert "Q10369" in why_mixed
+    assert cad_finish_notes_refuse_additem_dxf([why_mixed]) == why_mixed
 
 
 def test_read_quote_items_attaches_treelist_for_number_of_contours():
