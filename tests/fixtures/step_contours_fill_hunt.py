@@ -39,6 +39,12 @@ keep_grid_via=live, Cad×3, inches on kids, FileList InternalData
 empty after explode — Finish refused. Not grid-loss. Hypothesis
 that Data/GetBorderSize fill Contours is discarded. Never remint
 Q10358. Do not forbid 34328-1 (PO may remint the PN). invent=false.
+Q10359 / 34328-FFE CoS leftover (tip ffe210e): keep_grid_via=live,
+Cad×3, inches-on-kids, re-GET CadImport/Data copied_n=0,
+InternalData empty 2/2 → EXEC_FAIL. UpdateData / contour editor
+Done is not a safe multi-kid fill (#DXFEdit + Q10355 wipe).
+Blocked on Sectura /part/create t.List. Never remint Q10359.
+Do not forbid 34328-1. invent=false.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -71,6 +77,9 @@ from secturafab.cadimport_js import (
     STEP_CONTOURS_NO_EXTRA_XHR,
 )
 from secturafab.website import (
+    MULTI_KID_CONTOURS_BLOCKED_ON_SECTURA,
+    MULTI_KID_CONTOURS_SUPPORT_ASK,
+    MULTI_KID_SAFE_CONTOURS_FILL,
     STEP_CONTOURS_FILL_UNLOCKED,
     STEP_CONTOURS_NOT_FILL_PATHS,
     STEP_CONTOURS_UNLOCK_REQUIRES,
@@ -91,6 +100,9 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
     "kyle_loom_component_to_cad": True,
     "kyle_loom_cad_set_via": "api_kendo_producttype_100_setpartmode_0_updateitemtype_cad",
     "q10333_component_to_cad_proof": True,
+    "multi_kid_safe_fill": MULTI_KID_SAFE_CONTOURS_FILL,
+    "multi_kid_blocked_on_sectura": MULTI_KID_CONTOURS_BLOCKED_ON_SECTURA,
+    "multi_kid_support_ask": MULTI_KID_CONTOURS_SUPPORT_ASK,
     "never_remint": (
         "14327-5",
         "14327-8",
@@ -119,6 +131,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10356",
         "V.20.78",
         "Q10358",
+        "Q10359",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
@@ -274,6 +287,28 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "Q10344/46/48/49/51 fill after Kyle UI Cad+inches in "
                 "Adjust Properties — keep-grid skips that page_fn to "
                 "avoid the Q10355 wipe. invent=false."
+            ),
+        },
+        {
+            "id": "multi_kid_updatedata_editor_done_not_safe_fill",
+            "call": "POST /CadImport/UpdateData (editor Done / UpdateDXF)",
+            "fn": "UpdateDXF",
+            "ruled_out": True,
+            "why": (
+                "Q10359 / 34328-FFE CoS (tip ffe210e): keep_grid_via=live, "
+                "Cad×3, inches-on-kids, re-GET CadImport/Data copied_n=0, "
+                "InternalData empty 2/2 → EXEC_FAIL. invent=false. ZZ-DEL. "
+                "Hypothesis that Kyle Contours fill is a non-destructive "
+                "CadImport/UpdateData or contour editor Done is discarded: "
+                "UpdateDXF requires #DXFEdit + WebGLCADDisp.dataGroup; "
+                "ItemList is ID/Index/visible/attr/color — not InternalData; "
+                "Kyle gold Loom classify→Finish never opens #DXFEdit; "
+                "opening editDXFFile / select / editCell / #but_dxf is the "
+                "Q10355 wipe. Single-plate PASSes Q10344/46/48/49/51 fill "
+                "after Kyle UI Adjust Properties page_fn (HAR unrecorded); "
+                "keep-grid skips that page_fn. CLASSIFY_FINISH_INTERNALDATA_FILL "
+                "stays None. No safe multi-kid fill. Blocked on Sectura "
+                "POST /part/create t.List InternalData+ImageString."
             ),
         },
     ),

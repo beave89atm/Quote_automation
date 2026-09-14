@@ -32,6 +32,10 @@ leftover (Cad + 0.1875 in set, finished ProductType part;
 NumberOfContours missing / Contours PASS not proven) —
 same Contours-FAIL class as Q10354 / D.H.38.96.
 Never remint / PATCH. invent=false.
+Q10359 / 34328-FFE CoS leftover (tip ffe210e): keep-grid live +
+Cad+inches + copied_n=0 InternalData empty → EXEC_FAIL. UpdateData /
+editor Done is not a safe multi-kid fill. Never remint / PATCH.
+invent=false. Do not forbid 34328-1.
 Do not gate unlock
 on OCC≥1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
@@ -99,6 +103,7 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "Q10356",
     "V.20.78",
     "Q10358",
+    "Q10359",
     "H638-CADPLATE",
     "Q10334",
     "Q10335",

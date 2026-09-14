@@ -15093,10 +15093,12 @@ def test_multi_kid_keep_grid_empty_internaldata_is_exec_fail():
     assert "keep_grid_via=live" in why
     assert "kid_n=3" in why
     assert "Q10358" in why
+    assert "Q10359" in why
     assert "34328-1" in why
     assert "not grid-loss" in why
     assert "GetBorderSize" in why
     assert "copy-if-nonempty" in why
+    assert "blocked-on-Sectura" in why
     assert STEP_CONTOURS_MISSING_CALL in why
     assert "invent" in why.lower()
     assert cad_finish_notes_refuse_additem_dxf([why]) == why
@@ -15160,6 +15162,135 @@ def test_q10358_34328_1_keep_grid_prove_does_not_invent():
             method="POST",
             path="/Quote/AddItem_DXFFiles",
             payload={"QuoteNumber": "Q10358"},
+        )
+
+
+def test_q10359_34328_ffe_blocked_on_sectura_no_safe_fill():
+    """Q10359 CoS: keep-grid + copied_n=0; UpdateData not a safe fill."""
+    from secturafab.cadimport_js import CLASSIFY_FINISH_INTERNALDATA_FILL
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        MULTI_KID_CONTOURS_BLOCKED_ON_SECTURA,
+        MULTI_KID_SAFE_CONTOURS_FILL,
+        STEP_CONTOURS_FILL_UNLOCKED,
+        STEP_CONTOURS_MISSING_CALL,
+        STEP_CONTOURS_NOT_FILL_PATHS,
+        multi_kid_contours_blocked_on_sectura,
+        multi_kid_contours_support_ask,
+        multi_kid_keep_grid_empty_internaldata_refuses,
+        multi_kid_safe_contours_fill,
+    )
+    from tests.fixtures.live_q10359_34328_ffe import (
+        q10359_34328_ffe_cos,
+        q10359_single_vs_multi_xhr_diff,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10359_34328_ffe_cos()
+    assert dump["quote_number"] == "Q10359"
+    assert dump["part_number"] == "34328-1"
+    assert dump["probe_label"] == "34328-FFE"
+    assert dump["live_probe_tip"] == "ffe210e3edc7d8820c1afb7e09aabddd3c8e1a58"
+    assert dump["keep_grid_via"] == "live"
+    assert dump["cadimport_get_copied_n"] == 0
+    assert dump["internaldata_empty"] == "2/2"
+    assert dump["finish_refused"] is True
+    assert dump["invent"] is False
+    assert dump["safe_fill"] is MULTI_KID_SAFE_CONTOURS_FILL is None
+    assert dump["blocked_on_sectura"] is MULTI_KID_CONTOURS_BLOCKED_ON_SECTURA is True
+    assert dump["hypothesis_updatedata_editor_done_is_safe_fill"] is False
+    assert dump["classify_finish_internaldata_fill"] is CLASSIFY_FINISH_INTERNALDATA_FILL
+    assert CLASSIFY_FINISH_INTERNALDATA_FILL is None
+    assert dump["keep_grid_skips_page_fn"] is True
+    assert dump["destructive_row_set_select_editcell_but_dxf"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert dump["fill_unlocked"] is STEP_CONTOURS_FILL_UNLOCKED is False
+    assert multi_kid_safe_contours_fill() is None
+    assert multi_kid_contours_blocked_on_sectura() is True
+    ask = multi_kid_contours_support_ask()
+    assert "POST /part/create" in ask
+    assert "InternalData" in ask
+    assert "#but_dxf" in ask
+    assert dump["support_ask"] == ask
+    assert dump["missing_call"] == STEP_CONTOURS_MISSING_CALL
+
+    diff = q10359_single_vs_multi_xhr_diff()
+    assert diff["invent"] is False
+    assert diff["single_plate_kyle_ui_pass"]["har"] is None
+    assert diff["single_plate_kyle_ui_pass"]["updateitemtype_fills_contours"] is False
+    assert diff["multi_kid_keep_grid"]["apply_grid_page_fn"] is False
+    assert diff["multi_kid_keep_grid"]["safe_fill"] is None
+    assert "POST /CadImport/UpdateData" in diff["multi_kid_keep_grid"]["skips"]
+    assert diff["updatedata_editor_done"]["writes_internaldata"] is False
+    assert diff["updatedata_editor_done"]["safe_on_multi_kid"] is False
+    assert diff["updatedata_editor_done"]["wipe_class"] == "Q10355"
+    assert "/CadImport/UpdateData" in STEP_CONTOURS_NOT_FILL_PATHS
+
+    why = multi_kid_keep_grid_empty_internaldata_refuses(
+        [
+            {
+                "Name": "34328-FFE PLATE A",
+                "FileType": "Cad",
+                "ItemType": "Cad",
+                "Category": "Cad",
+                "PartMode": 0,
+                "ProductType": 100,
+                "Thickness": "0.25",
+                "Thickness_Units": "inch",
+                "InternalData": "",
+            },
+            {
+                "Name": "34328-FFE PLATE B",
+                "FileType": "Cad",
+                "ItemType": "Cad",
+                "Category": "Cad",
+                "PartMode": 0,
+                "ProductType": 100,
+                "Thickness": "0.25",
+                "Thickness_Units": "inch",
+                "InternalData": "",
+            },
+        ],
+        keep_via="live",
+    )
+    assert why is not None
+    assert "Q10359" in why
+    assert "copied_n=0" in why
+    assert "blocked-on-Sectura" in why
+    assert "UpdateData" in why
+
+    assert is_forbidden_quote_number("Q10359")
+    assert not is_forbidden_quote_number("34328-1")
+    assert not is_forbidden_quote_number("34328-FFE")
+    assert spent_quote_number_block_reason("Q10359")
+    assert spent_quote_number_block_reason("34328-1") is None
+    assert "Q10359" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "34328-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert "Q10359" in hunt["never_remint"]
+    assert hunt["multi_kid_safe_fill"] is None
+    assert hunt["multi_kid_blocked_on_sectura"] is True
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "multi_kid_updatedata_editor_done_not_safe_fill"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10359" in angle["why"]
+    assert "ffe210e" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10359"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10359"},
         )
 
 
@@ -15254,6 +15385,8 @@ def test_finish_cad_files_multi_kid_keep_grid_empty_internaldata_is_exec_fail(
     assert "keep-grid Cad+inches stuck" in blob
     assert "InternalData empty" in blob
     assert "Q10358" in blob
+    assert "Q10359" in blob
+    assert "blocked-on-Sectura" in blob
     assert "wizard lost FileList" not in blob
     assert cad_finish_notes_refuse_additem_dxf(notes) is not None
 
@@ -15527,6 +15660,9 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
         "api_kendo_producttype_100_setpartmode_0_updateitemtype_cad"
     )
     assert hunt["q10333_component_to_cad_proof"] is True
+    assert hunt["multi_kid_safe_fill"] is None
+    assert hunt["multi_kid_blocked_on_sectura"] is True
+    assert "POST /part/create" in hunt["multi_kid_support_ask"]
     assert step_contours_fill_hunt_exhausted() is True
     ids = [a["id"] for a in hunt["angles"]]
     assert ids == [
@@ -15542,6 +15678,7 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
         "quote_item_edit",
         "get_border_size",
         "multi_kid_keep_grid_data_getbordersize_not_fill",
+        "multi_kid_updatedata_editor_done_not_safe_fill",
     ]
     assert all(a["ruled_out"] is True for a in hunt["angles"])
     assert "/CadImport/ConvertTo" in PROVEN_EMPTY_PATHS

@@ -7613,7 +7613,7 @@ def create_all_parts_from_grid_dxf(
 # UpdateItemType is classify, not Contours fill.
 # Live 105918-1: Finish without this left plates as Component (0 Cad).
 #
-# Multi-kid keep (Q10353 / 12519-2, Q10355 / 34328-1, Q10358 prove):
+# Multi-kid keep (Q10353 / 12519-2, Q10355 / 34328-1, Q10358/Q10359 prove):
 # DoCreateDXFParts pushes t.List onto the *local* #gridDXFParts dataSource.
 # Kids are not quote ItemList yet. QuoteItem_Read after child-row
 # select / kendo .set() / page SetPartMode returns Data:[] and the

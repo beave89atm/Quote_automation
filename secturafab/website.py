@@ -1486,6 +1486,18 @@ STEP_CONTOURS_NO_EXTRA_XHR = "createAllParts_no_intervening_xhr"
 # /part/PartImage / PDFGetData) exhausted in-repo. Fill stays locked.
 STEP_CONTOURS_FILL_UNLOCKED = False
 STEP_CONTOURS_UNLOCK_REQUIRES = "kyle_contours_ge1_or_sectura_support"
+# Q10359 / 34328-FFE CoS on tip ffe210e: keep-grid live + Cad×3 +
+# inches + re-GET Data copied_n=0 + InternalData empty 2/2 → EXEC_FAIL.
+# UpdateData / contour editor Done needs #DXFEdit (Q10355 wipe) and
+# ItemList is not InternalData. No safe multi-kid fill. invent=false.
+MULTI_KID_SAFE_CONTOURS_FILL = None
+MULTI_KID_CONTOURS_BLOCKED_ON_SECTURA = True
+MULTI_KID_CONTOURS_SUPPORT_ASK = (
+    "Sectura: return nonempty InternalData+ImageString on POST /part/create "
+    "t.List for weldment explode kids, or name a non-select / non-editCell / "
+    "non-#but_dxf XHR that writes FileList InternalData after Cad+inches. "
+    "Do not ask automation to invent Contours or reopen #but_dxf."
+)
 # Finished H.6.38 leftovers (Q10333 / Q10336 / Q10339 / Q10344):
 # Contours PASS signal is v1 ItemList NumberOfContours≥1. CadImport
 # OpenContourCount is 0 on the human PASS too — never unlock on OCC≥1.
@@ -1635,6 +1647,21 @@ def step_contours_fill_unlocked() -> bool:
 def step_contours_unlock_requires() -> str:
     """Kyle Contours≥1 capture or Sectura support naming the fill."""
     return STEP_CONTOURS_UNLOCK_REQUIRES
+
+
+def multi_kid_safe_contours_fill() -> str | None:
+    """Named non-destructive multi-kid Contours fill XHR — none exists."""
+    return MULTI_KID_SAFE_CONTOURS_FILL
+
+
+def multi_kid_contours_blocked_on_sectura() -> bool:
+    """True until Sectura returns explode InternalData or names a safe XHR."""
+    return MULTI_KID_CONTOURS_BLOCKED_ON_SECTURA
+
+
+def multi_kid_contours_support_ask() -> str:
+    """Required Sectura support ask. invent=false — no invented payload."""
+    return MULTI_KID_CONTOURS_SUPPORT_ASK
 
 
 def contours_ge_1_from_named_fields(
@@ -3223,15 +3250,18 @@ def multi_kid_keep_grid_empty_internaldata_refuses(
 ) -> str | None:
     """EXEC_FAIL when keep-grid + Cad+inches stuck but InternalData empty.
 
-    Q10358 / 34328-1 keep-grid prove: ``keep_grid_via=live``, live_grid_n=3,
-    Cad×3 after SetPartMode/UpdateItemType, inches on kids. FileList
-    InternalData stayed empty after explode — AddItem_DXFFiles refused.
-    Not grid-loss (Q10355). Not invent. GET /CadImport/Data is
-    copy-if-nonempty; /Quote/GetBorderSize is a thickness companion
-    (Q10335 Contours 0; 21839-1 full trail still empty) — neither fills
-    Contours. Single-plate PASSes Q10344/46/48/49/51 fill after Kyle UI
-    Cad+inches in Adjust Properties; keep-grid skips that page_fn to
-    avoid the Q10355 wipe. invent=false.
+    Q10358 / 34328-1 keep-grid prove and Q10359 / 34328-FFE CoS
+    (tip ffe210e): ``keep_grid_via=live``, Cad×3, inches on kids,
+    re-GET CadImport/Data ``copied_n=0``. FileList InternalData stayed
+    empty after explode — AddItem_DXFFiles refused. Not grid-loss
+    (Q10355). Not invent. GET /CadImport/Data is copy-if-nonempty;
+    /Quote/GetBorderSize is a thickness companion (Q10335 Contours 0;
+    21839-1 full trail still empty) — neither fills Contours.
+    ``POST /CadImport/UpdateData`` / editor Done is not a safe
+    multi-kid fill (#DXFEdit + Q10355 wipe; ItemList is not
+    InternalData). Single-plate PASSes Q10344/46/48/49/51 fill after
+    Kyle UI Cad+inches in Adjust Properties; keep-grid skips that
+    page_fn to avoid the Q10355 wipe. Blocked on Sectura. invent=false.
     """
     via = str(keep_via or "").strip()
     if via not in {"live", "rehydrate"}:
@@ -3247,10 +3277,11 @@ def multi_kid_keep_grid_empty_internaldata_refuses(
         f"Cad+inches stuck (keep_grid_via={via}, kid_n={len(kids)}) "
         f"but FileList InternalData empty after explode "
         f"({len(empty)}/{len(kids)}) — refusing AddItem_DXFFiles "
-        "(Q10358 / 34328-1 keep-grid prove; not grid-loss; not Contours "
-        "invent). GET /CadImport/Data is copy-if-nonempty; "
+        "(Q10358 / 34328-1 keep-grid prove; Q10359 / 34328-FFE CoS "
+        "copied_n=0; not grid-loss; not Contours invent; blocked-on-Sectura). "
+        "GET /CadImport/Data is copy-if-nonempty; "
         "/Quote/GetBorderSize is thickness companion — neither fills "
-        "Contours. "
+        "Contours. UpdateData/editor Done is not a safe multi-kid fill. "
         f"missing_call={STEP_CONTOURS_MISSING_CALL}. "
         "Do not invent InternalData/Contours."
     )

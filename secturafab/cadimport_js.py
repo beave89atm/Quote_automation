@@ -121,9 +121,12 @@ CONVERT_TO_SNIPPET = (
 # attr, color (names only). Not called from DoCreateDXFParts / createAllParts,
 # SetDXFFilePartMode, OnAddDXFClick, or editor Open (editDXFFile → modal
 # shown → WebGLCADDisp + Load2DData/Load3DData). Close is UpdateDXF →
-# /CadImport/UpdateData then WebGLCADDisp=null. Live leftover EDIT
-# (Skin Assembly 5b622a0d): WebGLCADDisp undefined, #DXFEdit hidden,
-# #DXFEditID empty. Preview is WebGLDisp. Unfold* 0. Live 34887-1 FileList 0.
+# /CadImport/UpdateData then WebGLCADDisp=null. ItemList is
+# ID/Index/visible/attr/color — not InternalData. Q10359 CoS: not a
+# safe multi-kid Contours fill (needs #DXFEdit; select/editCell/#but_dxf
+# is the Q10355 wipe). Live leftover EDIT (Skin Assembly 5b622a0d):
+# WebGLCADDisp undefined, #DXFEdit hidden, #DXFEditID empty. Preview is
+# WebGLDisp. Unfold* 0. Live 34887-1 FileList 0.
 # Do not fire UpdateDataNext. Do not invent WebGLCADDisp.dataGroup.
 UPDATE_DATA_NEXT_SNIPPET = (
     'function UpdateDXF_LoadNew(n){$.ajax({type:"POST",'
