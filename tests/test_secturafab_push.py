@@ -75,7 +75,7 @@ def test_resolve_material_keeps_a572_from_child_takeoff(tmp_path):
         "quote_core.part_materials.extract_part_material_from_pdf",
         return_value=None,
     ):
-        mat, _thk, notes = _resolve_push_material_thickness(
+        mat, _thk, notes, _src = _resolve_push_material_thickness(
             takeoff=takeoff,
             stp_path=None,
             pdf_path=pdf,

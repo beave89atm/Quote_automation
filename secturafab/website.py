@@ -892,7 +892,10 @@ def cadimport_keep_grid_classify_spec(
     so keep-grid rehydrate can Cad → Material → inches on every kid
     (Q10369: first-kid wipe left later kids blank). Thickness stays
     per-row — Q10368 remint had 0.25in vs 0.5in, not one drawing
-    gauge on all kids. Cad+Material+inches is not Contours fill.
+    gauge on all kids. Prefer drawing/PDF LOM thickness after
+    Material; do not copy STEP-derived thickness (Kyle 2026-09-14:
+    STEP often wrong; red/invalid thickness → Contours will not
+    process). Cad+Material+inches is not Contours fill.
     invent=false.
     """
     drawing_mat = drawing_material_type_from_rows(rows)
@@ -919,9 +922,22 @@ def cadimport_keep_grid_classify_spec(
         )
         if mat:
             spec["Material"] = mat
-        if plate_step_thickness_units_are_inch(row) and mat:
+        drawing_thk = drawing_thickness_in(row)
+        if drawing_thk and mat:
+            spec["Thickness"] = drawing_thk
+            spec["Thickness_Units"] = "inch"
+            spec["thickness_source"] = "drawing"
+            spec["drawing_thickness_in"] = drawing_thk
+        elif (
+            plate_step_thickness_units_are_inch(row)
+            and mat
+            and not thickness_source_is_step(row)
+        ):
             spec["Thickness"] = row.get("Thickness")
             spec["Thickness_Units"] = "inch"
+            src = thickness_source_token(row)
+            if src:
+                spec["thickness_source"] = src
         if not cad_payload_value_empty(row.get("InternalData")):
             spec["InternalData"] = row["InternalData"]
         spec_rows.append(spec)
@@ -2924,6 +2940,128 @@ def drawing_material_type(row: dict[str, Any] | None) -> str:
     return ""
 
 
+# Cad thickness must match the PDF drawing / LOM (Kyle 2026-09-14).
+# STEP bbox is often wrong; Sectura highlights that cell red and
+# Contours will not process. Do not invent Contours.
+DRAWING_THICKNESS_SOURCES = frozenset(
+    {"drawing", "pdf", "lom", "pdf_lom", "drawing_pdf", "part_material"}
+)
+STEP_THICKNESS_SOURCES = frozenset(
+    {"step", "stp", "bbox", "step_bbox", "stp_bbox", "step_derived"}
+)
+
+
+def thickness_source_token(row: dict[str, Any] | None) -> str:
+    """Normalized thickness_source on a classify / keep-grid row."""
+    if not isinstance(row, dict):
+        return ""
+    return str(
+        row.get("thickness_source")
+        or row.get("ThicknessSource")
+        or ""
+    ).strip().casefold()
+
+
+def thickness_source_is_step(row: dict[str, Any] | None) -> bool:
+    """True when thickness is STEP/bbox-derived — not drawing/PDF LOM."""
+    return thickness_source_token(row) in STEP_THICKNESS_SOURCES
+
+
+def thickness_source_is_drawing(row: dict[str, Any] | None) -> bool:
+    """True when thickness is stamped from drawing/PDF/LOM."""
+    return thickness_source_token(row) in DRAWING_THICKNESS_SOURCES
+
+
+def thickness_looks_like_step_raw(raw: Any, units: Any = None) -> bool:
+    """True for exploded STEP meter strings (``0.0048:meter``)."""
+    text = str(raw or "").strip().casefold()
+    unit_s = str(units or "").strip().casefold()
+    if ":meter" in text or ":metre" in text or ":mm" in text:
+        return True
+    meterish = {
+        "meter",
+        "metre",
+        "meters",
+        "metres",
+        "m",
+        "mm",
+        "millimeter",
+        "millimeters",
+        "millimetre",
+        "millimetres",
+    }
+    return unit_s in meterish
+
+
+def _thickness_inch_value(raw: Any, units: Any = None) -> float | None:
+    inch = sanitize_bind_thickness_inches(raw, units)
+    if inch is None:
+        return None
+    try:
+        val = float(inch)
+    except (TypeError, ValueError):
+        return None
+    if val <= 0:
+        return None
+    return val
+
+
+def drawing_thicknesses_match(left: Any, right: Any) -> bool:
+    """True when two inch values are the same drawing gauge."""
+    a = _thickness_inch_value(left)
+    b = _thickness_inch_value(right)
+    if a is None or b is None:
+        return False
+    return abs(a - b) <= 0.0002
+
+
+def thickness_marked_invalid(row: dict[str, Any] | None) -> bool:
+    """True when Sectura/UI marked thickness red / invalid.
+
+    Red thickness means Contours will not process. invent=false.
+    """
+    if not isinstance(row, dict):
+        return False
+    if row.get("ThicknessInvalid") in {True, 1, "1", "true", "True"}:
+        return True
+    if row.get("thickness_invalid") in {True, 1, "1", "true", "True"}:
+        return True
+    if row.get("thickness_red") in {True, 1, "1", "true", "True"}:
+        return True
+    valid = row.get("IsThicknessValid", row.get("ThicknessValid"))
+    if valid in {False, 0, "0", "false", "False"}:
+        return True
+    status = str(row.get("ThicknessStatus") or row.get("thickness_status") or "")
+    return "red" in status.casefold() or "invalid" in status.casefold()
+
+
+def drawing_thickness_in(row: dict[str, Any] | None) -> str | None:
+    """Inch thickness from drawing/PDF LOM. None if unset or STEP-only.
+
+    Prefers stamped drawing fields, then inch Thickness when
+    ``thickness_source`` is drawing/pdf/lom. Does not invent a
+    gauge and does not trust STEP-derived thickness. invent=false.
+    """
+    if not isinstance(row, dict):
+        return None
+    if thickness_source_is_step(row):
+        return None
+    for key in (
+        "drawing_thickness_in",
+        "DrawingThickness",
+        "ThicknessFromDrawing",
+        "thickness_from_drawing",
+    ):
+        inch = sanitize_bind_thickness_inches(row.get(key), "inch")
+        if inch is not None:
+            return inch
+    if thickness_source_is_drawing(row) and plate_step_thickness_units_are_inch(row):
+        return sanitize_bind_thickness_inches(
+            row.get("Thickness"), row.get("Thickness_Units")
+        )
+    return None
+
+
 def plate_step_thickness_blocked_by_blank_material(
     row: dict[str, Any] | None,
     *,
@@ -3442,6 +3580,90 @@ def keep_grid_cad_kids_blank_material_refuses(
     )
 
 
+def plate_step_thickness_invalid_vs_drawing(
+    row: dict[str, Any] | None,
+) -> str | None:
+    """Fail-close when Cad thickness is STEP-only or red vs drawing/PDF LOM.
+
+    Kyle 2026-09-14: thickness MUST match the PDF drawing. STEP often
+    puts the wrong gauge; Sectura highlights red and Contours will
+    not process. After Material-before-thickness (Q10366). Does not
+    invent Contours. invent=false.
+    """
+    if not isinstance(row, dict):
+        return None
+    if not _cad_plate_row_for_finish_gate(row):
+        return None
+    if thickness_source_is_step(row) or thickness_looks_like_step_raw(
+        row.get("Thickness"), row.get("Thickness_Units")
+    ):
+        return (
+            f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: Cad kid thickness "
+            "is STEP-derived — not drawing/PDF LOM (Kyle 2026-09-14: "
+            "STEP often wrong; red thickness → Contours will not "
+            "process). Do not invent Contours."
+        )
+    if thickness_marked_invalid(row):
+        return (
+            f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: Cad kid thickness "
+            "red/invalid — Contours will not process (Kyle 2026-09-14: "
+            "thickness MUST match the PDF drawing). Do not invent "
+            "Contours."
+        )
+    drawing_thk = drawing_thickness_in(row)
+    if drawing_thk is None:
+        return None
+    if not plate_step_thickness_units_are_inch(row):
+        return None
+    bound = sanitize_bind_thickness_inches(
+        row.get("Thickness"), row.get("Thickness_Units")
+    )
+    if bound is None or drawing_thicknesses_match(drawing_thk, bound):
+        return None
+    return (
+        f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: Cad kid thickness "
+        f"red/invalid (drawing {drawing_thk} in vs bound {bound}) — "
+        "not Finishing (Kyle 2026-09-14: thickness MUST match the "
+        "PDF drawing; STEP often wrong; Contours will not process). "
+        "Do not invent Contours."
+    )
+
+
+def keep_grid_cad_kids_drawing_thickness_refuses(
+    rows: list[dict[str, Any]] | None,
+    *,
+    keep_via: str = "",
+) -> str | None:
+    """EXEC_FAIL when any Cad kid has STEP-only or red/invalid thickness.
+
+    Runs after Material-before-thickness on the keep-grid /
+    per-kid Cad+Material+inches path. Thickness must come from
+    drawing/PDF LOM — do not trust STEP-derived thickness alone.
+    invent=false.
+    """
+    via = str(keep_via or "").strip()
+    kids = [
+        r
+        for r in (rows or [])
+        if isinstance(r, dict) and _cad_plate_row_for_finish_gate(r)
+    ]
+    if not kids:
+        return None
+    if len(kids) < 2 and via not in {"live", "rehydrate", ""}:
+        return None
+    for row in kids:
+        why = plate_step_thickness_invalid_vs_drawing(row)
+        if why:
+            if via:
+                return why.replace(
+                    "Cad kid thickness",
+                    f"keep-grid Cad kid thickness (keep_grid_via={via})",
+                    1,
+                )
+            return why
+    return None
+
+
 def cad_finish_notes_refuse_additem_dxf(
     notes: list[str] | None,
 ) -> str | None:
@@ -3468,6 +3690,9 @@ def cad_finish_notes_refuse_additem_dxf(
             or "item_count dropped" in text
             or "keep-grid Cad+inches stuck" in text
             or "NumberOfContours<1 after Finish" in text
+            or "STEP-derived" in text
+            or "red/invalid" in text
+            or "not drawing/PDF LOM" in text
         ):
             return text
     return None
@@ -7964,6 +8189,7 @@ def overlay_classified_row(
     sku: str | None = None,
     qty: int | float | None = None,
     machine: str | None = None,
+    thickness_source: str | None = None,
 ) -> dict[str, Any]:
     """Apply Cad / Linear / Component + SKU/grade onto a CadImport grid row."""
     out = dict(row)
@@ -7983,9 +8209,18 @@ def overlay_classified_row(
     if material:
         out["Material"] = material
         out["MaterialGrade"] = material
+    src = str(thickness_source or "").strip().casefold()
+    if src:
+        out["thickness_source"] = src
+    if src in DRAWING_THICKNESS_SOURCES and thickness not in (None, ""):
+        drawing_inch = sanitize_bind_thickness_inches(thickness, "inch")
+        if drawing_inch is not None:
+            out["drawing_thickness_in"] = drawing_inch
     if thickness is not None and str(thickness) != "":
         # Cad Adjust Properties: Material from drawing before thickness
         # (Q10366). Linear/Component overlay is unchanged.
+        # STEP-derived Cad thickness is stamped with thickness_source
+        # so keep-grid / Finish can fail-close (Kyle 2026-09-14).
         if cat != "Cad" or drawing_material_type(out):
             out["Thickness"] = thickness
             out["Thickness_Units"] = out.get("Thickness_Units") or "inch"

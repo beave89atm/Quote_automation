@@ -23,7 +23,7 @@ Build a SecturaFAB **Assembly** (top-level weldment) by adding every BOM compone
      - Purchased hardware → **Component**
      - Plate / flat laser → **Cad** (Image/plate path)
      - Tube / round bar / long stock → **Linear**
-   - Set **thickness** and **material** from the drawing (example: **1/4"** + **A572 Grade 50**, or **A36**).
+   - Set **thickness** and **material** from the drawing / LOM (example: **1/4"** + **A572 Grade 50**, or **A36**). Thickness MUST match the PDF (Kyle 2026-09-14). STEP-only or red/invalid thickness is fail-close — Contours will not process; do not invent Contours.
    - Set **quantity** from the BOM (example: **2** of 15864-2).
    - Set the **part name / dash** correctly (example: **15864-2** — dashes are different configs).
    - Enter **length × width** (and **holes** if shown) from the drawing when the image import does not fill them.
