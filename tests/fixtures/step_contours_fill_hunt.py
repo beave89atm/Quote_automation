@@ -115,6 +115,14 @@ OPEN-NEW draft (CAD Finish ≠ Complete Quote).
 NumberOfContours=1 each. Bar 1001092-1 Long/Linear
 IsLinear CRS/CR1018 .188 × 5.5625. invent=false.
 Never remint Q10381. Do not forbid 1001093-1.
+Q10382 / 2d42dcc3 / 35146-1 remint (tip 86906b7): mixed
+classify PASS leftover. Complete Quote NOT DONE.
+OPEN-NEW draft (CAD Finish ≠ Complete Quote).
+2 plate Cad Contours + CT Long/Linear. Plates
+35123/.1875 DOMEX + 35125/10GA DOMEX NumberOfContours=1
+each. Tube 35124 Long/Linear IsLinear A513 4.25×3.75×6.25.
+invent=false.
+Never remint Q10382. Do not forbid 35146-1.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -213,6 +221,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10379",
         "Q10380",
         "Q10381",
+        "Q10382",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
@@ -546,6 +555,23 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "5.5625. Do not invent "
                 "Contours/InternalData. Never remint Q10381. "
                 "Do not forbid 1001093-1."
+            ),
+        },
+        {
+            "id": "q10382_35146_1_mixed_classify_pass_leftover",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10382 / 2d42dcc3 / 35146-1 remint @ 86906b7: mixed "
+                "classify PASS leftover. Complete Quote NOT DONE. "
+                "OPEN-NEW draft (CAD Finish ≠ Complete Quote). "
+                "2 plate Cad Contours + CT "
+                "Long/Linear. Plates 35123/.1875 DOMEX + 35125/10GA "
+                "DOMEX NumberOfContours=1 each. Tube 35124 Long/Linear "
+                "IsLinear A513 4.25×3.75×6.25. Do not invent "
+                "Contours/InternalData. Never remint Q10382. "
+                "Do not forbid 35146-1."
             ),
         },
     ),
