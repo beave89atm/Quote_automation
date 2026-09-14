@@ -61,6 +61,11 @@ FAIL-CLOSE leftover. STEP uploaded; plate 1008400 gauge
 unverified (no local drawing / SharePoint unreachable).
 invent=false stop before Contours. Complete Quote NOT DONE.
 Never remint Q10374. Do not forbid 1008399-1.
+Q10375 / 60de939f / 1008399-1 remint (tip 6a4f536):
+EXEC_FAIL leftover. Cad/A572 G50/.375-3/8 plate + Linear
+Saw bar + Component hardware set. Contours≥1 not verified
+(blank CAD editor). invent=false. Complete Quote NOT DONE.
+Never remint Q10375. Do not forbid 1008399-1.
 Do not gate unlock
 on OCC≥1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
@@ -135,6 +140,7 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "Q10372",
     "Q10373",
     "Q10374",
+    "Q10375",
     "H638-CADPLATE",
     "Q10334",
     "Q10335",
