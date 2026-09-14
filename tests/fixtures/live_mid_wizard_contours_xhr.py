@@ -23,8 +23,10 @@ Still open URL-only (no invented body):
   GET /Quote/QuoteItem_ReadTreeListData
 
 Persist PASS is NumberOfContours≥1 on v1 ItemList / TreeListData.
-Never OpenContourCount. Forever-protect Q10333 / Q10336 / Q10339 / Q10344.
+Never OpenContourCount. CoS: Cad-noun write closed; chase is fill.
+Forever-protect Q10333 / Q10336 / Q10339 / Q10344.
 Empty-InternalData Time STEPs stay refuse. Do not remint.
+Safe Cave burns paused. invent=false.
 """
 
 from __future__ import annotations

@@ -3749,7 +3749,7 @@ def test_cadimport_next_exploded_kids_are_finished(tmp_path: Path):
     client.get_item_add_view.return_value = {"FileList": kids}
     client.quote_item_read.return_value = {
         "Data": [
-            {"ProductType": 100, "Description": "1010104-1"},
+            {"ProductType": 100, "ProductTypeName": "Cad", "Description": "1010104-1"},
             {"ProductType": 10, "Description": "1010108-1"},
         ],
         "Total": 2,
@@ -3853,7 +3853,7 @@ def test_cadimport_next_json_string_body_is_finished(tmp_path: Path):
     client.get_item_add_view.return_value = {"FileList": kids}
     client.quote_item_read.return_value = {
         "Data": [
-            {"ProductType": 100, "Description": "1007756-2"},
+            {"ProductType": 100, "ProductTypeName": "Cad", "Description": "1007756-2"},
             {"ProductType": 10, "Description": "1007756-4"},
         ],
         "Total": 2,
@@ -3932,7 +3932,7 @@ def test_step_create_all_parts_posts_part_create_not_convert_to(tmp_path: Path):
     client.cadimport_data.return_value = {"List": kids}
     client.get_item_add_view.return_value = {"FileList": kids}
     client.quote_item_read.return_value = {
-        "Data": [{"ProductType": 100, "Description": "34574-2"}],
+        "Data": [{"ProductType": 100, "ProductTypeName": "Cad", "Description": "34574-2"}],
         "Total": 1,
     }
     captured: dict[str, Any] = {}
@@ -4343,7 +4343,7 @@ def test_explode_posts_part_create_from_quotes_tab(tmp_path: Path):
     client.get_item_add_view = lambda *a, **k: {}  # type: ignore[method-assign]
     client.cadimport_data = lambda *a, **k: {"List": kids}  # type: ignore[method-assign]
     client.quote_item_read = lambda *a, **k: {  # type: ignore[method-assign]
-        "Data": [{"ProductType": 100, "Description": "34998-2"}],
+        "Data": [{"ProductType": 100, "ProductTypeName": "Cad", "Description": "34998-2"}],
         "Total": 1,
     }
     finish_args: dict[str, Any] = {}
@@ -6235,14 +6235,14 @@ def test_nested_assy_reexplode_then_finish_leaf_filelist(tmp_path: Path):
     client.get_item_add_view.return_value = {}
     client.quote_item_read.return_value = {
         "Data": [
-            {"ProductType": 100, "Description": "LINK PLATE"},
+            {"ProductType": 100, "ProductTypeName": "Cad", "Description": "LINK PLATE"},
             {"ProductType": 10, "Description": "END TUBE"},
         ],
         "Total": 2,
     }
     client.get_json.return_value = {
         "ItemList": [
-            {"ProductType": 100, "Description": "LINK PLATE"},
+            {"ProductType": 100, "ProductTypeName": "Cad", "Description": "LINK PLATE"},
             {"ProductType": 10, "Description": "END TUBE"},
         ]
     }
@@ -6456,14 +6456,14 @@ def test_107877_shared_parent_id_reexplodes_unnamed_and_weldment(tmp_path: Path)
     client.get_item_add_view.return_value = {}
     client.quote_item_read.return_value = {
         "Data": [
-            {"ProductType": 100, "Description": "FLOOR PLATE"},
+            {"ProductType": 100, "ProductTypeName": "Cad", "Description": "FLOOR PLATE"},
             {"ProductType": 10, "Description": "GATE TUBE"},
         ],
         "Total": 2,
     }
     client.get_json.return_value = {
         "ItemList": [
-            {"ProductType": 100, "Description": "FLOOR PLATE"},
+            {"ProductType": 100, "ProductTypeName": "Cad", "Description": "FLOOR PLATE"},
             {"ProductType": 10, "Description": "GATE TUBE"},
         ]
     }
@@ -6541,11 +6541,11 @@ def test_1020249_pn_leaves_finish_without_pass2(tmp_path: Path):
     client.cadimport_data.return_value = {"List": kids}
     client.get_item_add_view.return_value = {}
     client.quote_item_read.return_value = {
-        "Data": [{"ProductType": 100, "Description": "1020249-1"}],
+        "Data": [{"ProductType": 100, "ProductTypeName": "Cad", "Description": "1020249-1"}],
         "Total": 1,
     }
     client.get_json.return_value = {
-        "ItemList": [{"ProductType": 100, "Description": "1020249-1"}]
+        "ItemList": [{"ProductType": 100, "ProductTypeName": "Cad", "Description": "1020249-1"}]
     }
     captured: dict[str, Any] = {}
 
@@ -8892,11 +8892,11 @@ def test_n1_cad_on_edit_allows_finish(tmp_path: Path):
         ],
     }
     client.quote_item_read.return_value = {
-        "Data": [{"ProductType": 100, "Name": "TURRET SIDE PLATE"}],
+        "Data": [{"ProductType": 100, "ProductTypeName": "Cad", "Name": "TURRET SIDE PLATE"}],
         "Total": 1,
     }
     client.get_json.return_value = {
-        "ItemList": [{"ProductType": 100, "Name": "TURRET SIDE PLATE"}]
+        "ItemList": [{"ProductType": 100, "ProductTypeName": "Cad", "Name": "TURRET SIDE PLATE"}]
     }
     with patch(
         "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
@@ -12513,16 +12513,22 @@ def test_leftover_cad_for_plate_h638_q10334_forever_forbid():
     assert gap["update_item_type_keys"] == ("ID", "ItemType")
     assert gap["update_item_type_is_classify_xhr"] is True
     assert gap["update_item_type_fills_contours"] is False
+    assert gap["update_item_type_sets_product_type_cad"] is False
+    assert gap["set_part_mode_sets_product_type_cad"] is False
+    assert gap["product_type_cad_write_xhr"] is None
     assert cad_dropdown_contours_gap_exhausted() is True
     ids = [h["id"] for h in gap["hypotheses"]]
     assert ids == [
         "native_select_vs_kendo_set",
         "update_item_type_classify",
+        "update_item_type_persists_product_type_cad",
         "price_list_manual_entry_cad",
         "details_form_save",
         "finish_fills_contours",
         "thickness_unit_conversion",
         "quote_item_edit_post_finish",
+        "update_property_value_producttype_cad",
+        "additem_dxf_writes_producttype_cad_noun",
     ]
     assert all(h["ruled_out"] is True for h in gap["hypotheses"])
 
@@ -12571,6 +12577,164 @@ def test_leftover_cad_for_plate_h638_q10334_forever_forbid():
     assert "f73dd116" not in refuse
     assert "Q10336" not in refuse
     assert "InternalData empty" in refuse
+
+
+def test_producttype_cad_write_xhr_not_found():
+    """PO box hunt: no ProductType=Cad write. PASSes ARE enum 100.
+
+    Q10333 / Q10348: ProductType=100, Contours=1, Laser, prt_dxf,
+    0.1875 in, ItemType/PartMode null. FAIL vs PASS is Contours≥1,
+    not Cad noun. UpdateItemType ItemType-only; SetPartMode
+    PartMode-only. invent=false; do not remint forever-protects.
+    """
+    from secturafab.cadimport_js import (
+        CONTOURS_PASS_VS_FAIL,
+        PRODUCT_TYPE_CAD_SHOWN_VIA,
+        PRODUCT_TYPE_CAD_WRITE_CAPTURE_NEEDED,
+        PRODUCT_TYPE_CAD_WRITE_HUNT_CLOSED,
+        product_type_cad_write_xhr,
+        set_part_mode_sets_product_type_cad,
+        update_item_type_sets_product_type_cad,
+    )
+    from secturafab.website import itemlist_contours_pass
+    from tests.fixtures.live_producttype_cad_write import (
+        live_producttype_cad_write,
+    )
+    from tests.fixtures.live_q10333_h638 import q10333_h638_pass_dump
+    from tests.fixtures.live_q10348_h1670 import q10348_h1670_pass_dump
+
+    dump = live_producttype_cad_write()
+    assert dump["invent"] is False
+    assert dump["found"] is False
+    assert dump["po_box_hunt_complete"] is True
+    assert dump["product_type_cad_write_xhr"] is None
+    assert dump["method"] is None
+    assert dump["path"] is None
+    assert dump["body"] is None
+    assert dump["hunt_closed"] is PRODUCT_TYPE_CAD_WRITE_HUNT_CLOSED is True
+    assert dump["update_item_type_sets_product_type_cad"] is False
+    assert dump["set_part_mode_sets_product_type_cad"] is False
+    assert dump["shown_via"] == PRODUCT_TYPE_CAD_SHOWN_VIA
+    assert dump["pass_vs_fail"] == CONTOURS_PASS_VS_FAIL
+    assert dump["pass_vs_fail"] == "number_of_contours_ge_1"
+    assert "Closed" in dump["capture_needed"]
+    assert "NumberOfContours" in dump["capture_needed"]
+    assert dump["capture_needed"] == PRODUCT_TYPE_CAD_WRITE_CAPTURE_NEEDED
+    assert dump["box_artifacts_present"] is False
+    assert dump["dropbox_artifacts_present"] is False
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert product_type_cad_write_xhr() is None
+    assert update_item_type_sets_product_type_cad() is False
+    assert set_part_mode_sets_product_type_cad() is False
+    assert "POST /CadImport/SetPartMode {ID, PartMode}" in dump["ruled_out"]
+    assert "UpdatePropertyValue" in dump["ruled_out"]
+    assert "AddItem_DXFFiles ProductType Cad noun" in dump["ruled_out"]
+
+    q33 = dump["q10333"]
+    assert q33["quote_id"] == q10333_h638_pass_dump()["quote_id"]
+    assert q33["product_type"] == 100
+    assert q33["product_type_name"] is None
+    assert q33["item_type"] is None
+    assert q33["part_mode"] is None
+    assert q33["product_subtype"] == "prt_dxf"
+    assert q33["machine"] == "Laser"
+    assert q33["thickness"] == 0.1875
+    assert q33["number_of_contours"] == 1
+    assert q33["contours_pass"] is True
+
+    q48 = dump["q10348"]
+    assert q48["quote_id"] == q10348_h1670_pass_dump()["quote_id"]
+    assert q48["product_type"] == 100
+    assert q48["product_type_name"] is None
+    assert q48["item_type"] is None
+    assert q48["part_mode"] is None
+    assert q48["product_subtype"] == "prt_dxf"
+    assert q48["machine"] == "Laser"
+    assert q48["thickness"] == 0.1875
+    assert q48["number_of_contours"] == 1
+
+    live_pass = {
+        "ProductType": 100,
+        "ItemType": None,
+        "PartMode": None,
+        "ProductSubType": "prt_dxf",
+        "NumberOfContours": 1,
+    }
+    live_fail = {**live_pass, "NumberOfContours": 0}
+    assert itemlist_contours_pass(row=live_pass) is True
+    assert itemlist_contours_pass(row=live_fail) is False
+    assert itemlist_contours_pass(number_of_contours=1, product_type=100) is True
+    assert itemlist_contours_pass(number_of_contours=1, product_type="part") is True
+
+
+def test_contours_fill_xhr_not_found():
+    """CoS: chase NumberOfContours≥1 fill — no named XHR. invent=false.
+
+    Cad-noun write is closed. QuoteOrderEdit has 0 NumberOfContours
+    hits. Live GET Q10333/Q10348 Contours=1; Q10354 Contours=0.
+    Safe Cave burns paused. Do not invent Contours.
+    """
+    from pathlib import Path
+
+    from secturafab.website import (
+        CONTOURS_FILL_CAPTURE_NEEDED,
+        CONTOURS_FILL_HUNT_CLOSED,
+        CONTOURS_FILL_XHR,
+        SINGLE_PLATE_CONTOURS_FLIP_XHR,
+        STEP_CONTOURS_FILL_UNLOCKED,
+        contours_fill_xhr,
+        itemlist_contours_pass,
+        single_plate_contours_flip_xhr,
+        step_contours_fill_unlocked,
+    )
+    from tests.fixtures.live_contours_fill_xhr import live_contours_fill_xhr
+
+    dump = live_contours_fill_xhr()
+    assert dump["invent"] is False
+    assert dump["found"] is False
+    assert dump["cad_noun_write_closed"] is True
+    assert dump["product_type_cad_write_xhr"] is None
+    assert dump["contours_fill_xhr"] is CONTOURS_FILL_XHR is None
+    assert dump["single_plate_contours_flip_xhr"] is (
+        SINGLE_PLATE_CONTOURS_FLIP_XHR
+    ) is None
+    assert dump["classify_finish_internaldata_fill"] is None
+    assert dump["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
+    assert dump["hunt_closed"] is CONTOURS_FILL_HUNT_CLOSED is False
+    assert dump["pass_vs_fail"] == "number_of_contours_ge_1"
+    assert dump["pass_signal"] == "NumberOfContours>=1"
+    assert dump["quote_order_edit_number_of_contours_hits"] == 0
+    assert dump["safe_cave_burns_paused"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert dump["capture_needed"] == CONTOURS_FILL_CAPTURE_NEEDED
+    assert "NumberOfContours" in dump["capture_needed"]
+    assert contours_fill_xhr() is None
+    assert single_plate_contours_flip_xhr() is None
+    assert step_contours_fill_unlocked() is False
+    assert dump["q10333"]["number_of_contours"] == 1
+    assert dump["q10348"]["number_of_contours"] == 1
+    assert dump["q10354"]["number_of_contours"] == 0
+    assert itemlist_contours_pass(
+        number_of_contours=dump["q10333"]["number_of_contours"]
+    ) is True
+    assert itemlist_contours_pass(
+        number_of_contours=dump["q10354"]["number_of_contours"]
+    ) is False
+    assert "/Part/UpdateItemType" in dump["ruled_out"]
+
+    js_dir = Path(__file__).resolve().parent / "fixtures"
+    hits = 0
+    for name in (
+        "quote_order_edit_create_parts.js",
+        "quote_order_edit_getpdfdata.js",
+        "quote_order_edit_update_item_type.js",
+        "quote_order_edit_update_pdf_internal.js",
+    ):
+        hits += (js_dir / name).read_text().count("NumberOfContours")
+    assert hits == 0
 
 
 def test_leftover_q10335_update_item_type_forever_forbid():
@@ -12959,6 +13123,15 @@ def test_cad_finish_named_xhr_probe_itemedit_getbordersize_fail_closed():
     assert CONTOURS_PASS_SIGNAL == "v1_itemlist_number_of_contours_ge_1"
     assert itemlist_contours_pass(number_of_contours=1) is True
     assert itemlist_contours_pass(number_of_contours=0) is False
+    assert itemlist_contours_pass(
+        number_of_contours=1, product_type="Cad"
+    ) is True
+    assert itemlist_contours_pass(
+        number_of_contours=1, product_type="part"
+    ) is True
+    assert itemlist_contours_pass(
+        number_of_contours=1, product_type=100
+    ) is True
     assert contours_ge_1_from_named_fields(number_of_contours=1) is True
     assert contours_ge_1_from_named_fields(
         number_of_contours=None, open_contour_count=0
@@ -14861,6 +15034,20 @@ def test_live_product_type_part_noun_is_not_cad():
     assert count_cad_product_type({"ItemList": [cad_row]}) == 1
     assert count_cad_product_type({"ItemList": [part_row]}) == 0
     assert count_cad_product_type({"ItemList": [part_enum]}) == 0
+    enum_only = {
+        **cad_row,
+        "Name": "H.10.38",
+        "ProductType": 100,
+    }
+    enum_only.pop("ProductTypeName", None)
+    assert live_row_product_type_is_cad(enum_only) is True
+    from secturafab.website import live_get_product_type_is_cad
+
+    assert live_get_product_type_is_cad(cad_row) is True
+    assert live_get_product_type_is_cad(part_row) is False
+    assert live_get_product_type_is_cad(part_enum) is False
+    assert live_get_product_type_is_cad(enum_only) is False
+    assert count_cad_product_type({"ItemList": [enum_only]}) == 1
 
     why_part = step_cad_finish_hard_gate([part_row])
     assert why_part is not None
@@ -14878,6 +15065,11 @@ def test_live_product_type_part_noun_is_not_cad():
     classified = [cad_row]
     assert step_cad_live_product_type_hard_gate([], classified) is None
     assert step_cad_live_product_type_hard_gate(None, classified) is None
+    enum_why = step_cad_live_product_type_hard_gate([enum_only], classified)
+    assert enum_why is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in enum_why
+    assert "UpdateItemType" in enum_why
+    assert cad_finish_notes_refuse_additem_dxf([enum_why]) == enum_why
     live_why = step_cad_live_product_type_hard_gate([part_enum], classified)
     assert live_why is not None
     assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in live_why
@@ -15122,6 +15314,248 @@ def test_finish_cad_files_exec_fail_when_finished_producttype_is_part(
     assert "live ProductType is part" in blob
     assert "not Contours empty" in blob
     assert "Q10354" in blob
+
+
+def test_q10365_h1038_mouse_updateitemtype_does_not_stick_cad():
+    """Q10365 / H.10.38: UpdateItemType Cad 200 finishes ProductType part.
+
+    Mouse Product Type dropdown Cad + 0.1875 in. Network UpdateItemType
+    200 then PartImage / UpdateData / CADData; fill_xhr=null. Live GET
+    noun ``part`` / enum 100 is EXEC_FAIL — not Contours PASS.
+    Same FAIL class as Q10354 / Q10356. invent=false; no remint.
+    """
+    from secturafab.cadimport_js import (
+        UPDATE_ITEM_TYPE_BODY_KEYS,
+        UPDATE_ITEM_TYPE_PATH,
+        update_item_type_fields,
+        update_item_type_sets_product_type_cad,
+    )
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+        count_cad_product_type,
+        itemlist_contours_pass,
+        live_get_product_type_is_cad,
+        plate_step_live_product_type_not_cad_refuses,
+        step_cad_finish_hard_gate,
+        step_cad_live_product_type_hard_gate,
+    )
+    from tests.fixtures.live_q10344_h638 import q10344_h638_kyle_ui_control_dump
+    from tests.fixtures.live_q10354_dh3896 import q10354_dh3896_fail_dump
+    from tests.fixtures.live_q10365_h1038 import q10365_h1038_fail_dump
+
+    dump = q10365_h1038_fail_dump()
+    assert dump["quote_id"] == "7801ab99-13af-4efc-b996-897daf8e677a"
+    assert dump["quote_id_prefix"] == "7801ab99"
+    assert dump["quote_number"] == "Q10365"
+    assert dump["part_number"] == "H.10.38"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["via"] == "cad_selector_0_1875_in_finished_producttype_part"
+    assert dump["same_pattern_as"] == "empty-InternalData Contours FAIL"
+    assert dump["same_class_as"] == "Q10354 / Q10356"
+    assert dump["id_unknown"] is False
+    assert dump["pass"] is False
+    assert dump["contours_pass"] is False
+    assert dump["product_type"] == "part"
+    assert dump["product_type_enum"] == 100
+    assert dump["cad_selector_set"] is True
+    assert dump["update_item_type_path"] == UPDATE_ITEM_TYPE_PATH
+    assert dump["update_item_type_status"] == 200
+    assert dump["update_item_type_itemtype"] == "Cad"
+    assert dump["update_item_type_keys"] == UPDATE_ITEM_TYPE_BODY_KEYS
+    assert dump["update_item_type_sets_product_type_cad"] is False
+    assert dump["fill_xhr"] is None
+    assert dump["invent"] is False
+    assert dump["protect"] is False
+    assert dump["do_not_remint"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert dump["unlocks_contours_fill"] is False
+    assert dump["fail_close"] is True
+    assert "ProductType" not in dump["update_item_type_keys"]
+    assert update_item_type_sets_product_type_cad() is False
+    assert update_item_type_fields("id-h1038", "Cad") == {
+        "ID": "id-h1038",
+        "ItemType": "Cad",
+    }
+
+    keep_fail = q10354_dh3896_fail_dump()
+    assert keep_fail["quote_number"] == "Q10354"
+    assert keep_fail["product_type"] == "part"
+    assert keep_fail["do_not_remint"] is True
+    keep_pass = q10344_h638_kyle_ui_control_dump()
+    assert keep_pass["quote_number"] == "Q10344"
+    assert keep_pass["product_type"] == "Cad"
+    assert keep_pass["contours_pass"] is True
+    assert keep_pass["do_not_remint"] is True
+
+    live_part = {
+        "Name": "H.10.38",
+        "ProductType": "part",
+        "ProductTypeName": "part",
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "FileType": "Cad",
+        "PartMode": 0,
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "NumberOfContours": 1,
+    }
+    live_enum = {
+        **live_part,
+        "ProductType": 100,
+    }
+    live_enum.pop("ProductTypeName", None)
+    classified = [
+        {
+            **live_enum,
+            "ProductType": 100,
+            "ItemType": "Cad",
+            "FileType": "Cad",
+            "Category": "Cad",
+        }
+    ]
+    assert live_get_product_type_is_cad(live_part) is False
+    assert live_get_product_type_is_cad(live_enum) is False
+    assert count_cad_product_type({"ItemList": [live_part]}) == 0
+    assert count_cad_product_type({"ItemList": [live_enum]}) == 1
+    assert itemlist_contours_pass(row=live_part) is True
+    assert itemlist_contours_pass(
+        number_of_contours=1, product_type="part"
+    ) is True
+    part_why = plate_step_live_product_type_not_cad_refuses(live_part)
+    assert part_why is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in part_why
+    assert "Q10365" in part_why
+    assert "UpdateItemType" in part_why
+    assert "not Contours empty" in part_why
+    assert cad_finish_notes_refuse_additem_dxf([part_why]) == part_why
+    live_why = step_cad_live_product_type_hard_gate([live_part], classified)
+    assert live_why is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in live_why
+    assert "Q10365" in live_why
+    enum_why = step_cad_live_product_type_hard_gate([live_enum], classified)
+    assert enum_why is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in enum_why
+    assert cad_finish_notes_refuse_additem_dxf([enum_why]) == enum_why
+    assert step_cad_finish_hard_gate(classified) is None
+
+
+def test_finish_cad_files_refuses_when_live_producttype_is_enum_100(
+    tmp_path: Path,
+):
+    """After UpdateItemType Cad, live GET enum 100 without Cad noun is EXEC_FAIL.
+
+    Q10365 / H.10.38 mouse path: UpdateItemType 200, ItemType Cad,
+    ProductType 100 / no Cad name — do not AddItem_DXFFiles.
+    invent=false.
+    """
+    stp = tmp_path / "H1038.STEP"
+    stp.write_bytes(b"ISO")
+    kid = {
+        "SourceDataID": "src-h1038",
+        "FileID": "file-h1038",
+        "ID": "id-h1038",
+        "Name": "H.10.38 PLATE",
+        "FileName": "H.10.38 PLATE",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "Status": 1,
+        "CadType": 0,
+        "Stock_X": 8.0,
+        "Stock_Y": 4.0,
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "PartMode": 0,
+        "FileType": "Cad",
+        "ProductType": 100,
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "InternalData": "server-stamped",
+        "ImageString": "preview",
+    }
+    live_enum = {
+        "Name": "H.10.38 PLATE",
+        "ProductType": 100,
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+    }
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": [kid],
+        "grid_present": True,
+        "grid_dxf_row_count": 1,
+        "list_len": 1,
+        "internaldata_key_n": 1,
+        "internaldata_empty_n": 0,
+        "internaldata_nonempty_n": 1,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "q10365-aaaa-bbbb-cccc-000000000001"
+    client._edit_gate = ""
+    client._setpartmode_via = "page_fn"
+    client._finish_via = "page_fn"
+    client._part_create_list_len = 1
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": [live_enum]}
+    service = SecturaFabPushService(client=client)
+    service._linear_product_cache = []
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "updateitemtype_via": "jquery_ajax",
+            "updateitemtype_count": 1,
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": [
+                "CadType",
+                "Stock_X",
+                "Stock_Y",
+                "FileType",
+                "SourceDataID",
+            ],
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id="q10365-aaaa-bbbb-cccc-000000000001",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.1875",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="H.10.38",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "EXEC_FAIL" in blob
+    assert "live ProductType is not Cad" in blob
+    assert "UpdateItemType" in blob
+    assert "Q10365" in blob
+    assert "not invent" in blob.lower()
 
 
 def test_step_cad_wizard_state_hard_gate_kids_or_org_lost_is_exec_fail():
@@ -15429,18 +15863,21 @@ def test_finish_cad_files_multi_kid_keep_grid_rehydrate_allows_finish(
             "ID": "id-a",
             "Name": "34328-1 PLATE A",
             "ProductType": 100,
+            "ProductTypeName": "Cad",
             "NumberOfContours": 1,
         },
         {
             "ID": "id-b",
             "Name": "34328-1 PLATE B",
             "ProductType": 100,
+            "ProductTypeName": "Cad",
             "NumberOfContours": 1,
         },
         {
             "ID": "id-c",
             "Name": "34328-1 GUSSET",
             "ProductType": 100,
+            "ProductTypeName": "Cad",
             "NumberOfContours": 1,
         },
     ]
@@ -17441,6 +17878,7 @@ def _gold_cad(desc: str = "21680-1 PLATE") -> dict[str, Any]:
     return {
         "Description": desc,
         "ProductType": 100,
+        "ProductTypeName": "Cad",
         "Category": "Cad",
         "BadgeString": "PR",
         "UnitCost": 12.5,

@@ -1503,7 +1503,20 @@ PER_KID_CAD_INCHES_VIA = "single_plate_adjust_properties_page_fn"
 # Named single-plate PASS trail (Q10336) has no mid-wizard InternalData
 # writer. NumberOfContours≥1 appears on finished v1 ItemList only.
 # Q10335: UpdateItemType Contours still 0 before Finish.
+# CoS 2026-09-14: Cad-noun write hunt closed. Chase is Contours fill
+# (NumberOfContours≥1), not ProductType Cad. Fill XHR still unnamed.
+# Safe Cave burns paused. invent=false — do not invent Contours.
 SINGLE_PLATE_CONTOURS_FLIP_XHR = None
+CONTOURS_FILL_XHR = SINGLE_PLATE_CONTOURS_FLIP_XHR
+CONTOURS_FILL_HUNT_CLOSED = False
+CONTOURS_FILL_CAPTURE_NEEDED = (
+    "Fresh unused STEP — Safe Cave burns paused; never remint "
+    "Q10333/36/39/44/46/48/49/51/54. Mid-wizard HAR when "
+    "NumberOfContours flips 0→1. Persist method+path+body of the "
+    "first XHR that returns NumberOfContours≥1. Open URL-only "
+    "(no invented body): AddItem_DXFFiles, /quote/ItemEdit, "
+    "GET v1/quote ItemList, QuoteItem_ReadTreeListData."
+)
 MULTI_KID_CONTOURS_BLOCKED_ON_SECTURA = True
 MULTI_KID_CONTOURS_SUPPORT_ASK = (
     "Sectura: return nonempty InternalData+ImageString on POST /part/create "
@@ -1672,6 +1685,11 @@ def single_plate_contours_flip_xhr() -> str | None:
     return SINGLE_PLATE_CONTOURS_FLIP_XHR
 
 
+def contours_fill_xhr() -> str | None:
+    """Named NumberOfContours≥1 fill XHR — none. invent=false."""
+    return CONTOURS_FILL_XHR
+
+
 def per_kid_cad_inches_same_as_single_plate() -> bool:
     """True: each weldment kid uses the one Safe Cave STP Cad+inches path."""
     return PER_KID_CAD_INCHES_SAME_AS_SINGLE_PLATE
@@ -1727,8 +1745,22 @@ def contours_ge_1_from_named_fields(
         return False
 
 
-def itemlist_contours_pass(*, number_of_contours: Any = None) -> bool:
-    """Contours PASS signal for this STEP family: NumberOfContours ≥ 1."""
+def itemlist_contours_pass(
+    *,
+    number_of_contours: Any = None,
+    product_type: Any = None,
+    row: dict[str, Any] | None = None,
+) -> bool:
+    """Contours PASS: v1 NumberOfContours ≥ 1.
+
+    PO box hunt: Contours PASSes ARE ProductType enum 100. Finished
+    GET ItemType/PartMode are null. Cad noun / UpdateItemType Cad /
+    enum-vs-part is not the PASS signal. Distinguish FAIL vs PASS by
+    Contours≥1 / fill. ``product_type`` is ignored. invent=false.
+    """
+    del product_type  # Cad noun is not the leftover PASS signal
+    if row is not None and number_of_contours is None:
+        number_of_contours = row.get("NumberOfContours")
     return contours_ge_1_from_named_fields(number_of_contours=number_of_contours)
 
 
@@ -2732,8 +2764,9 @@ def product_type_is_part_noun(value: Any) -> bool:
     Q10056 maps enum 100 to Cad in classify, but live GET can render
     the same enum as ProductType ``part`` (Part / plate). Q10354 /
     7881d4b3 Safe Cave D.H.38.96, Q10356 / 05bee105 V.20.78, and
-    Q10365 / 7801ab99 H.10.38: Cad selector + 0.1875 in finished
-    ``part`` / 100, NumberOfContours missing. invent=false.
+    Q10365 / 7801ab99 H.10.38 mouse UpdateItemType Cad 200: Cad
+    selector + inches finished ``part`` / 100, fill_xhr=null.
+    invent=false.
     """
     return str(value or "").strip().casefold() == "part"
 
@@ -2785,6 +2818,8 @@ def live_row_product_type_is_cad(row: dict[str, Any] | None) -> bool:
 
     Enum 100 alone is Cad only when the GET noun is not ``part``.
     UI Cad selector / ItemType Cad does not prove ProductType Cad.
+    In-memory classify stamps 100 without a noun — callers that need
+    the live GET Cad noun should use ``live_get_product_type_is_cad``.
     invent=false.
     """
     if not isinstance(row, dict):
@@ -2795,6 +2830,21 @@ def live_row_product_type_is_cad(row: dict[str, Any] | None) -> bool:
     if token and token.casefold() == "cad":
         return True
     return product_type_is_cad(row.get("ProductType"))
+
+
+def live_get_product_type_is_cad(row: dict[str, Any] | None) -> bool:
+    """Live GET/kendo ProductType noun must be Cad.
+
+    UpdateItemType 200 / ItemType / FileType Cad / enum 100 do not
+    count. Q10365 / H.10.38 mouse Product Type Cad fired
+    UpdateItemType then finished ``part``. invent=false.
+    """
+    if not isinstance(row, dict):
+        return False
+    token = product_type_display_token(row)
+    if product_type_is_part_noun(token):
+        return False
+    return bool(token) and token.casefold() == "cad"
 
 
 def _format_bind_thickness_inches(val: float) -> str:
@@ -2854,8 +2904,11 @@ def bind_plate_step_product_type_cad(row: dict[str, Any] | None) -> dict[str, An
     Writes the API/kendo fields Kyle's dropdown persists (ProductType=100,
     PartMode 0, FileType/ItemType/Category Cad, Machine Laser, thickness
     inches) and callers POST /Part/UpdateItemType ItemType=Cad (Q10335
-    mouse classify XHR). Does not invent InternalData / Contours /
-    NumberOfContours. Still refuse Finish if those stay empty.
+    mouse classify XHR). Finished v1 GET of Contours PASSes Q10333 /
+    Q10348 keep ProductType=100 with no ProductTypeName Cad noun —
+    do not invent a ProductType Cad persist XHR. Does not invent
+    InternalData / Contours / NumberOfContours. Still refuse Finish
+    if those stay empty.
     """
     out = dict(row) if isinstance(row, dict) else {}
     out["ProductType"] = 100
@@ -3037,8 +3090,10 @@ def plate_step_live_product_type_not_cad_refuses(
         "part (enum 100 is the Part noun, not Cad) after Cad selector "
         "+ inches — not Finishing (not Contours empty; Q10354 / "
         "7881d4b3 D.H.38.96; Q10356 / 05bee105 V.20.78; "
-        "Q10365 / 7801ab99 H.10.38; "
-        "Q10344/46/48/49/51 PASSes finished Cad). "
+        "Q10365 / 7801ab99 H.10.38 mouse UpdateItemType Cad 200 "
+        "then GET part / fill_xhr=null; Q10344/46/48/49/51 PASSes "
+        "finished Cad). "
+        "UpdateItemType is ItemType classify, not ProductType Cad. "
         "Do not invent InternalData/Contours."
     )
 
@@ -3052,6 +3107,9 @@ def step_cad_live_product_type_hard_gate(
     Classify stamps ProductType=100 on FileList rows; that enum can
     persist as GET ``part``. Cad+inches on in-memory rows is not
     enough (same class as wizard-state: live page/GET can disagree).
+    After UpdateItemType Cad, live GET must show the Cad noun —
+    enum 100 / ItemType Cad / UpdateItemType 200 do not count
+    (Q10365 / H.10.38 mouse Product Type Cad then finished part).
     Empty live ItemList is Q10335 / mid-wizard — no-op (after-Finish
     GET still gates). invent=false.
     """
@@ -3092,14 +3150,14 @@ def step_cad_live_product_type_hard_gate(
         part_why = plate_step_live_product_type_not_cad_refuses(row)
         if part_why:
             return part_why
-        if not live_row_product_type_is_cad(row):
+        if not live_get_product_type_is_cad(row):
             return (
                 f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: live ProductType "
                 "is not Cad for Contours-intended plate kid — not "
-                "Finishing (Cad selector / ItemType Cad ≠ ProductType Cad; "
-                "Q10354 / 7881d4b3 D.H.38.96; Q10356 / 05bee105 "
-                "V.20.78; Q10365 / 7801ab99 H.10.38 finished part / "
-                "enum 100). "
+                "Finishing (Cad selector / ItemType Cad / UpdateItemType "
+                "200 ≠ ProductType Cad; Q10354 / 7881d4b3 D.H.38.96; "
+                "Q10356 / 05bee105 V.20.78; Q10365 / 7801ab99 H.10.38 "
+                "mouse UpdateItemType Cad 200 finished part / enum 100). "
                 "Do not invent InternalData/Contours."
             )
     return None
@@ -6789,7 +6847,11 @@ def quote_contours_rows(payload: Any) -> list[dict[str, Any]]:
 
 
 def count_cad_product_type(payload: Any) -> int:
-    """Count live Cad rows. Enum 100 with noun ``part`` is not Cad."""
+    """Count Cad rows for pack/laser. Noun ``part`` is not Cad.
+
+    Enum 100 without a display token still counts here (Image Files
+    gold). Contours Cad-stick uses ``live_get_product_type_is_cad``.
+    """
     n = 0
     for it in quote_item_rows(payload):
         if live_row_product_type_is_cad(it):
