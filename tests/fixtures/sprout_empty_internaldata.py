@@ -20,10 +20,14 @@ finished ProductType part; NumberOfContours unavailable) — same
 empty-InternalData FAIL class, not PASS. Q10356 / 05bee105 /
 V.20.78 is a Safe Cave Contours FAIL leftover (Cad + 0.1875 in,
 finished ProductType part; NumberOfContours missing) — same
-Contours-FAIL class as Q10354, not PASS. Do not invent Contours /
-InternalData. Never remint / PATCH Q10333 / Q10336 / Q10338 /
-Q10339 / Q10344 / Q10346 / Q10348 / Q10349 / Q10351 / Q10354 /
-Q10356 / golds.
+Contours-FAIL class as Q10354, not PASS. Q10365 / 7801ab99 /
+H.10.38 is a Safe Cave Contours FAIL leftover (mouse Cad +
+0.1875 in, finished ProductType part; no Contours/InternalData
+fill; fill_xhr=null) — same Contours-FAIL class as Q10354 /
+Q10356, not PASS. Do not invent Contours / InternalData. Never
+remint / PATCH Q10333 / Q10336 / Q10338 / Q10339 / Q10344 /
+Q10346 / Q10348 / Q10349 / Q10351 / Q10354 / Q10356 / Q10365 /
+golds.
 """
 
 from __future__ import annotations

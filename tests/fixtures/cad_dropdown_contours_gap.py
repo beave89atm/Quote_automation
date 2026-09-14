@@ -52,6 +52,10 @@ Live leftovers after Cad-for-plate:
     Cad selector + 0.1875 in set, finished ProductType part;
     NumberOfContours missing / Contours PASS not proven.
     Same Contours-FAIL class as Q10354 / D.H.38.96. invent=false.
+  7801ab99 Q10365 — Safe Cave H.10.38 Contours FAIL leftover.
+    Mouse Cad + 0.1875 in set, finished ProductType part;
+    no Contours/InternalData fill; fill_xhr=null.
+    Same Contours-FAIL class as Q10354 / Q10356. invent=false.
 
 Human Kyle on Q10333 / b5f56ac3: real Component→Cad dropdown +
 thickness + Finish → NumberOfContours=1 PASS. Finished Q10336 /
@@ -117,6 +121,8 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
         "D.H.38.96",
         "Q10356",
         "V.20.78",
+        "Q10365",
+        "H.10.38",
     ),
     "hypotheses": (
         {

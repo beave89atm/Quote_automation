@@ -2208,6 +2208,10 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("V.20.78")
     assert is_forbidden_quote_id("05bee105-824c-4100-9bc8-f66727fa5681")
     assert is_forbidden_quote_id("05bee105-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10365")
+    assert is_forbidden_quote_number("H.10.38")
+    assert is_forbidden_quote_id("7801ab99-13af-4efc-b996-897daf8e677a")
+    assert is_forbidden_quote_id("7801ab99-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
@@ -10281,6 +10285,8 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("D.H.38.96")
     assert is_forbidden_quote_number("Q10356")
     assert is_forbidden_quote_number("V.20.78")
+    assert is_forbidden_quote_number("Q10365")
+    assert is_forbidden_quote_number("H.10.38")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_number("Q10338")
@@ -11212,6 +11218,8 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "D.H.38.96",
         "Q10356",
         "V.20.78",
+        "Q10365",
+        "H.10.38",
         "Q10350",
         "21843-1",
         "Q10338",
@@ -12348,6 +12356,8 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_number("D.H.38.96")
     assert is_forbidden_quote_number("Q10356")
     assert is_forbidden_quote_number("V.20.78")
+    assert is_forbidden_quote_number("Q10365")
+    assert is_forbidden_quote_number("H.10.38")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
@@ -12362,6 +12372,7 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_id("0c62fce9-d56a-434e-a33a-372ddb12a2b4")
     assert is_forbidden_quote_id("7881d4b3-5408-4ff4-ab18-6490170e6331")
     assert is_forbidden_quote_id("05bee105-824c-4100-9bc8-f66727fa5681")
+    assert is_forbidden_quote_id("7801ab99-13af-4efc-b996-897daf8e677a")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
 
     refuse = cad_filelist_refuses_additem_dxf(
@@ -12385,6 +12396,8 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert "Q10354" in refuse
     assert "05bee105" in refuse
     assert "Q10356" in refuse
+    assert "7801ab99" in refuse
+    assert "Q10365" in refuse
     assert dump["invent"] is False
 
 
@@ -12551,6 +12564,8 @@ def test_leftover_cad_for_plate_h638_q10334_forever_forbid():
     assert "Q10354" in refuse
     assert "05bee105" in refuse
     assert "Q10356" in refuse
+    assert "7801ab99" in refuse
+    assert "Q10365" in refuse
     assert "b5f56ac3" not in refuse
     assert "Q10333" not in refuse
     assert "f73dd116" not in refuse
@@ -14452,6 +14467,180 @@ def test_q10356_v2078_contours_fail_forever_forbid():
     assert "Q10356" in part_why
     assert "V.20.78" in part_why
     assert "05bee105" in part_why
+    assert "Q10354" in part_why
+    assert "not Contours empty" in part_why
+    assert dump["invent"] is False
+    assert dump["unlocks_automation_contours_fill"] is False
+
+
+def test_q10365_h1038_contours_fail_forever_forbid():
+    """Q10365 / 7801ab99 Safe Cave H.10.38 Contours FAIL leftover.
+
+    Mouse Cad + 0.1875 in were set but finished ProductType
+    rendered part. No Contours / InternalData fill; fill_xhr=null.
+    Contours PASS not proven. Same Contours-FAIL class as
+    Q10354 / Q10356 — not Contours PASS. Forever-forbid; never
+    remint / PATCH. invent=false. Do not invent Contours/InternalData.
+    Q10354 and Q10356 stay FAIL. Q10349 / D.H.30.96 stays PASS.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        cad_filelist_refuses_additem_dxf,
+        plate_step_live_product_type_not_cad_refuses,
+    )
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10349_dh3096 import q10349_dh3096_pass_dump
+    from tests.fixtures.live_q10354_dh3896 import q10354_dh3896_fail_dump
+    from tests.fixtures.live_q10356_v2078 import q10356_v2078_fail_dump
+    from tests.fixtures.live_q10365_h1038 import q10365_h1038_fail_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10365_h1038_fail_dump()
+    assert dump["quote_id"] == "7801ab99-13af-4efc-b996-897daf8e677a"
+    assert dump["quote_id_prefix"] == "7801ab99"
+    assert dump["quote_number"] == "Q10365"
+    assert dump["part_number"] == "H.10.38"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["piece"] == "H.10.38"
+    assert dump["outside_h638_family"] is True
+    assert dump["h638_contours_good"] is False
+    assert dump["via"] == "cad_selector_0_1875_in_finished_producttype_part"
+    assert dump["same_pattern_as"] == "empty-InternalData Contours FAIL"
+    assert dump["same_class_as"] == "Q10354 / Q10356"
+    assert dump["id_unknown"] is False
+    assert dump["pass"] is False
+    assert dump["contours_pass"] is False
+    assert dump["contours_pass_proven"] is False
+    assert dump["product_type"] == "part"
+    assert dump["cad_selector_set"] is True
+    assert dump["thickness"] == "0.1875"
+    assert dump["thickness_units"] == "inch"
+    assert dump["thickness_inches"] is True
+    assert dump["number_of_contours_unavailable"] is True
+    assert dump["internaldata_empty"] is True
+    assert dump["contours_empty"] is True
+    assert dump["contours_fill"] is False
+    assert dump["fill_xhr"] is None
+    assert dump["invent"] is False
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+    assert dump["zz_del"] is False
+    assert dump["zz_del_number"] is None
+    assert dump["protect"] is False
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert dump["unlocks_contours_fill"] is False
+    assert dump["fail_close"] is True
+    assert all(row["quote_number"] != "Q10365" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10365" for row in leftover_cad_for_plate_dumps())
+
+    keep_fail_54 = q10354_dh3896_fail_dump()
+    assert keep_fail_54["quote_number"] == "Q10354"
+    assert keep_fail_54["part_number"] == "D.H.38.96"
+    assert keep_fail_54["pass"] is False
+    assert keep_fail_54["contours_pass"] is False
+    assert keep_fail_54["product_type"] == "part"
+
+    keep_fail_56 = q10356_v2078_fail_dump()
+    assert keep_fail_56["quote_number"] == "Q10356"
+    assert keep_fail_56["part_number"] == "V.20.78"
+    assert keep_fail_56["pass"] is False
+    assert keep_fail_56["contours_pass"] is False
+    assert keep_fail_56["product_type"] == "part"
+
+    keep = q10349_dh3096_pass_dump()
+    assert keep["quote_number"] == "Q10349"
+    assert keep["part_number"] == "D.H.30.96"
+    assert keep["pass"] is True
+    assert keep["contours_pass"] is True
+    assert keep["product_type"] == "Cad"
+    assert keep["protect"] is True
+
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("7801ab99-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10365")
+    assert is_forbidden_quote_number("H.10.38")
+    assert spent_quote_number_block_reason("Q10365")
+    assert spent_quote_number_block_reason("H.10.38")
+    with pytest.raises(ForbiddenQuoteError, match="Q10365"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10365"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match=r"H\.10\.38"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "H.10.38"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="7801ab99"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="7801ab99"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
+        )
+    assert "Q10365" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "H.10.38" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10365" in step_contours_fill_hunt()["never_remint"]
+    assert "H.10.38" in step_contours_fill_hunt()["never_remint"]
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "7801ab99" in refuse
+    assert "Q10365" in refuse
+    assert "H.10.38" in refuse
+    assert "05bee105" in refuse
+    assert "Q10356" in refuse
+    assert "7881d4b3" in refuse
+    assert "Q10354" in refuse
+    assert "InternalData empty" in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert "c4394006" not in refuse
+    assert "Q10349" not in refuse
+    assert "D.H.30.96" not in refuse
+    assert "0c62fce9" not in refuse
+    assert "Q10351" not in refuse
+    part_why = plate_step_live_product_type_not_cad_refuses(
+        {
+            "ProductType": "part",
+            "ProductTypeName": "part",
+            "FileType": "Cad",
+            "ItemType": "Cad",
+        }
+    )
+    assert part_why is not None
+    assert "Q10365" in part_why
+    assert "H.10.38" in part_why
+    assert "7801ab99" in part_why
+    assert "Q10356" in part_why
     assert "Q10354" in part_why
     assert "not Contours empty" in part_why
     assert dump["invent"] is False

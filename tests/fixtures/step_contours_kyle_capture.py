@@ -32,6 +32,11 @@ leftover (Cad + 0.1875 in set, finished ProductType part;
 NumberOfContours missing / Contours PASS not proven) —
 same Contours-FAIL class as Q10354 / D.H.38.96.
 Never remint / PATCH. invent=false.
+Q10365 / 7801ab99 / H.10.38 Safe Cave is a Contours FAIL
+leftover (mouse Cad + 0.1875 in set, finished ProductType part;
+no Contours/InternalData fill; fill_xhr=null) —
+same Contours-FAIL class as Q10354 / Q10356.
+Never remint / PATCH. invent=false.
 Q10359 / 34328-FFE CoS leftover (tip ffe210e): keep-grid live +
 Cad+inches + copied_n=0 InternalData empty → EXEC_FAIL. UpdateData /
 editor Done is not a safe multi-kid fill. Never remint / PATCH.
@@ -102,6 +107,8 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "D.H.38.96",
     "Q10356",
     "V.20.78",
+    "Q10365",
+    "H.10.38",
     "Q10358",
     "Q10359",
     "H638-CADPLATE",

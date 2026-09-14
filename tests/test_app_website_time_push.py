@@ -1686,6 +1686,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "D.H.38.96" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10356" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "V.20.78" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10365" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "H.10.38" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10350" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21843-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10338" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -1739,6 +1741,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("7881d4b3-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("05bee105-824c-4100-9bc8-f66727fa5681")
     assert is_forbidden_quote_id("05bee105-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("7801ab99-13af-4efc-b996-897daf8e677a")
+    assert is_forbidden_quote_id("7801ab99-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
     assert is_forbidden_quote_id("eb6c48b8-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("4902c597-2ad6-4ebf-b577-dd6cf20a7d87")
@@ -1828,6 +1832,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "0c62fce9-d56a-434e-a33a-372ddb12a2b4" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "7881d4b3-5408-4ff4-ab18-6490170e6331" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "05bee105-824c-4100-9bc8-f66727fa5681" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "7801ab99-13af-4efc-b996-897daf8e677a" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "4902c597-2ad6-4ebf-b577-dd6cf20a7d87" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "5e7bfc0b-ecf9-46cf-8851-d61062141ce7" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -1942,6 +1947,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("7881d4b3-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("05bee105-824c-4100-9bc8-f66727fa5681")
     assert is_forbidden_quote_id("05bee105-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("7801ab99-13af-4efc-b996-897daf8e677a")
+    assert is_forbidden_quote_id("7801ab99-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
     assert is_forbidden_quote_id("eb6c48b8-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("4902c597-2ad6-4ebf-b577-dd6cf20a7d87")
@@ -2084,6 +2091,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "0c62fce9-d56a-434e-a33a-372ddb12a2b4",
         "7881d4b3-5408-4ff4-ab18-6490170e6331",
         "05bee105-824c-4100-9bc8-f66727fa5681",
+        "7801ab99-13af-4efc-b996-897daf8e677a",
         "eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4",
         "4902c597-2ad6-4ebf-b577-dd6cf20a7d87",
         "5e7bfc0b-ecf9-46cf-8851-d61062141ce7",

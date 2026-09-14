@@ -2731,9 +2731,9 @@ def product_type_is_part_noun(value: Any) -> bool:
 
     Q10056 maps enum 100 to Cad in classify, but live GET can render
     the same enum as ProductType ``part`` (Part / plate). Q10354 /
-    7881d4b3 Safe Cave D.H.38.96 and Q10356 / 05bee105 V.20.78:
-    Cad selector + 0.1875 in finished ``part`` / 100,
-    NumberOfContours missing. invent=false.
+    7881d4b3 Safe Cave D.H.38.96, Q10356 / 05bee105 V.20.78, and
+    Q10365 / 7801ab99 H.10.38: Cad selector + 0.1875 in finished
+    ``part`` / 100, NumberOfContours missing. invent=false.
     """
     return str(value or "").strip().casefold() == "part"
 
@@ -2743,7 +2743,7 @@ def product_type_display_token(row: dict[str, Any] | None) -> str:
 
     Prefer ProductTypeName, then a non-numeric ProductType string.
     Do not treat ItemType/FileType Cad (SetPartMode / UpdateItemType)
-    as the ProductType noun — that is the Q10354 / Q10356 miss. invent=false.
+    as the ProductType noun — that is the Q10354 / Q10356 / Q10365 miss. invent=false.
     """
     if not isinstance(row, dict):
         return ""
@@ -2976,7 +2976,7 @@ def step_cad_finish_hard_gate(
     1. Still Component → do not Finish (need UpdateItemType Cad / UI Cad).
     2. Live ProductType noun ``part`` (including enum 100 + name part)
        → EXEC_FAIL, not Contours empty (Q10354 / D.H.38.96;
-       Q10356 / V.20.78).
+       Q10356 / V.20.78; Q10365 / H.10.38).
     3. Thickness missing / not inch (blank or meter) → EXEC_FAIL, not
        Contours empty.
     4. Else None — proceed toward Finish. invent=false; never invent
@@ -3020,11 +3020,12 @@ def plate_step_live_product_type_not_cad_refuses(
 ) -> str | None:
     """EXEC_FAIL when live ProductType is the Part noun, not Cad.
 
-    Q10354 / 7881d4b3 Safe Cave D.H.38.96 and Q10356 / 05bee105
-    V.20.78: Cad workflow selector + 0.1875 in finished ProductType
-    ``part`` / enum 100. NumberOfContours missing; OCC=0 is not a
-    substitute. Align with Cad+inches hard-gate. invent=false —
-    do not invent Contours/InternalData.
+    Q10354 / 7881d4b3 Safe Cave D.H.38.96, Q10356 / 05bee105
+    V.20.78, and Q10365 / 7801ab99 H.10.38: Cad workflow selector
+    + 0.1875 in finished ProductType ``part`` / enum 100.
+    NumberOfContours missing; OCC=0 is not a substitute. Align with
+    Cad+inches hard-gate. invent=false — do not invent
+    Contours/InternalData.
     """
     if not isinstance(row, dict):
         return None
@@ -3036,6 +3037,7 @@ def plate_step_live_product_type_not_cad_refuses(
         "part (enum 100 is the Part noun, not Cad) after Cad selector "
         "+ inches — not Finishing (not Contours empty; Q10354 / "
         "7881d4b3 D.H.38.96; Q10356 / 05bee105 V.20.78; "
+        "Q10365 / 7801ab99 H.10.38; "
         "Q10344/46/48/49/51 PASSes finished Cad). "
         "Do not invent InternalData/Contours."
     )
@@ -3096,7 +3098,8 @@ def step_cad_live_product_type_hard_gate(
                 "is not Cad for Contours-intended plate kid — not "
                 "Finishing (Cad selector / ItemType Cad ≠ ProductType Cad; "
                 "Q10354 / 7881d4b3 D.H.38.96; Q10356 / 05bee105 "
-                "V.20.78 finished part / enum 100). "
+                "V.20.78; Q10365 / 7801ab99 H.10.38 finished part / "
+                "enum 100). "
                 "Do not invent InternalData/Contours."
             )
     return None
@@ -3272,7 +3275,9 @@ def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
         "7881d4b3 D.H.38.96 Cad+0.1875 in finished ProductType part / "
         "NumberOfContours unavailable Contours FAIL; Q10356 leftover "
         "05bee105 V.20.78 Cad+0.1875 in finished ProductType part / "
-        "NumberOfContours missing Contours FAIL; ZZ-DEL). "
+        "NumberOfContours missing Contours FAIL; Q10365 leftover "
+        "7801ab99 H.10.38 mouse Cad+0.1875 in finished ProductType "
+        "part / no Contours fill fill_xhr=null Contours FAIL; ZZ-DEL). "
         f"{STEP_EXPLODE_NO_INTERNALDATA} aliases "
         f"{CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE}. "
         "ImageString-without-InternalData is preview only (live 21785-2). "

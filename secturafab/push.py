@@ -3064,8 +3064,9 @@ class SecturaFabPushService:
         Fail-close if PartMode is still null after classify, if ProductType
         is still Component on a Cad plate, if live GET ProductType is
         ``part`` / not Cad (EXEC_FAIL, not Contours empty; Q10354 /
-        7881d4b3 D.H.38.96; Q10356 / 05bee105 V.20.78 Cad selector +
-        0.1875 in finished part / enum 100 — in-memory 100 is not Cad),
+        7881d4b3 D.H.38.96; Q10356 / 05bee105 V.20.78; Q10365 /
+        7801ab99 H.10.38 Cad selector + 0.1875 in finished part /
+        enum 100 — in-memory 100 is not Cad),
         if thickness is missing or not
         inch (EXEC_FAIL, not Contours empty; Q10344 / H.6.38 Kyle UI
         control Cad + 0.1875 inch),         if Adjust Properties / modal refresh
