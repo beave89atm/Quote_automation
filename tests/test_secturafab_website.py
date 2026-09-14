@@ -12669,6 +12669,74 @@ def test_producttype_cad_write_xhr_not_found():
     assert itemlist_contours_pass(number_of_contours=1, product_type="part") is True
 
 
+def test_contours_fill_xhr_not_found():
+    """CoS: chase NumberOfContours≥1 fill — no named XHR. invent=false.
+
+    Cad-noun write is closed. QuoteOrderEdit has 0 NumberOfContours
+    hits. Live GET Q10333/Q10348 Contours=1; Q10354 Contours=0.
+    Safe Cave burns paused. Do not invent Contours.
+    """
+    from pathlib import Path
+
+    from secturafab.website import (
+        CONTOURS_FILL_CAPTURE_NEEDED,
+        CONTOURS_FILL_HUNT_CLOSED,
+        CONTOURS_FILL_XHR,
+        SINGLE_PLATE_CONTOURS_FLIP_XHR,
+        STEP_CONTOURS_FILL_UNLOCKED,
+        contours_fill_xhr,
+        itemlist_contours_pass,
+        single_plate_contours_flip_xhr,
+        step_contours_fill_unlocked,
+    )
+    from tests.fixtures.live_contours_fill_xhr import live_contours_fill_xhr
+
+    dump = live_contours_fill_xhr()
+    assert dump["invent"] is False
+    assert dump["found"] is False
+    assert dump["cad_noun_write_closed"] is True
+    assert dump["product_type_cad_write_xhr"] is None
+    assert dump["contours_fill_xhr"] is CONTOURS_FILL_XHR is None
+    assert dump["single_plate_contours_flip_xhr"] is (
+        SINGLE_PLATE_CONTOURS_FLIP_XHR
+    ) is None
+    assert dump["classify_finish_internaldata_fill"] is None
+    assert dump["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
+    assert dump["hunt_closed"] is CONTOURS_FILL_HUNT_CLOSED is False
+    assert dump["pass_vs_fail"] == "number_of_contours_ge_1"
+    assert dump["pass_signal"] == "NumberOfContours>=1"
+    assert dump["quote_order_edit_number_of_contours_hits"] == 0
+    assert dump["safe_cave_burns_paused"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert dump["capture_needed"] == CONTOURS_FILL_CAPTURE_NEEDED
+    assert "NumberOfContours" in dump["capture_needed"]
+    assert contours_fill_xhr() is None
+    assert single_plate_contours_flip_xhr() is None
+    assert step_contours_fill_unlocked() is False
+    assert dump["q10333"]["number_of_contours"] == 1
+    assert dump["q10348"]["number_of_contours"] == 1
+    assert dump["q10354"]["number_of_contours"] == 0
+    assert itemlist_contours_pass(
+        number_of_contours=dump["q10333"]["number_of_contours"]
+    ) is True
+    assert itemlist_contours_pass(
+        number_of_contours=dump["q10354"]["number_of_contours"]
+    ) is False
+    assert "/Part/UpdateItemType" in dump["ruled_out"]
+
+    js_dir = Path(__file__).resolve().parent / "fixtures"
+    hits = 0
+    for name in (
+        "quote_order_edit_create_parts.js",
+        "quote_order_edit_getpdfdata.js",
+        "quote_order_edit_update_item_type.js",
+        "quote_order_edit_update_pdf_internal.js",
+    ):
+        hits += (js_dir / name).read_text().count("NumberOfContours")
+    assert hits == 0
+
+
 def test_leftover_q10335_update_item_type_forever_forbid():
     """Q10335 / bcff1a24 mouse UpdateItemType leftover. Empty Contours.
 

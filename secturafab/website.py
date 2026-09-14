@@ -1503,7 +1503,20 @@ PER_KID_CAD_INCHES_VIA = "single_plate_adjust_properties_page_fn"
 # Named single-plate PASS trail (Q10336) has no mid-wizard InternalData
 # writer. NumberOfContours≥1 appears on finished v1 ItemList only.
 # Q10335: UpdateItemType Contours still 0 before Finish.
+# CoS 2026-09-14: Cad-noun write hunt closed. Chase is Contours fill
+# (NumberOfContours≥1), not ProductType Cad. Fill XHR still unnamed.
+# Safe Cave burns paused. invent=false — do not invent Contours.
 SINGLE_PLATE_CONTOURS_FLIP_XHR = None
+CONTOURS_FILL_XHR = SINGLE_PLATE_CONTOURS_FLIP_XHR
+CONTOURS_FILL_HUNT_CLOSED = False
+CONTOURS_FILL_CAPTURE_NEEDED = (
+    "Fresh unused STEP — Safe Cave burns paused; never remint "
+    "Q10333/36/39/44/46/48/49/51/54. Mid-wizard HAR when "
+    "NumberOfContours flips 0→1. Persist method+path+body of the "
+    "first XHR that returns NumberOfContours≥1. Open URL-only "
+    "(no invented body): AddItem_DXFFiles, /quote/ItemEdit, "
+    "GET v1/quote ItemList, QuoteItem_ReadTreeListData."
+)
 MULTI_KID_CONTOURS_BLOCKED_ON_SECTURA = True
 MULTI_KID_CONTOURS_SUPPORT_ASK = (
     "Sectura: return nonempty InternalData+ImageString on POST /part/create "
@@ -1670,6 +1683,11 @@ def multi_kid_safe_contours_fill() -> str | None:
 def single_plate_contours_flip_xhr() -> str | None:
     """Named XHR that flips Contours/InternalData after Cad+inches — none."""
     return SINGLE_PLATE_CONTOURS_FLIP_XHR
+
+
+def contours_fill_xhr() -> str | None:
+    """Named NumberOfContours≥1 fill XHR — none. invent=false."""
+    return CONTOURS_FILL_XHR
 
 
 def per_kid_cad_inches_same_as_single_plate() -> bool:
