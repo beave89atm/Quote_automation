@@ -4896,6 +4896,7 @@ def test_cadimport_keep_grid_classify_spec_copies_inches_not_contours():
             "ProductType": 100,
             "Thickness": "0.25",
             "Thickness_Units": "inch",
+            "Material": "A36",
             "Machine": "Laser - Bay1",
             "InternalData": "server-stamped",
         },
@@ -4910,6 +4911,7 @@ def test_cadimport_keep_grid_classify_spec_copies_inches_not_contours():
             "ProductType": 100,
             "Thickness": "0.25",
             "Thickness_Units": "inch",
+            "Material": "A36",
             "InternalData": "",
         },
         {
@@ -5140,6 +5142,7 @@ def test_apply_grid_part_modes_js_live_keep_writes_inches_not_internaldata(
             "PartMode": 0,
             "ProductType": 100,
             "Machine": "Laser - Bay1",
+            "Material": "A36",
             "Thickness": "0.25",
             "Thickness_Units": "inch",
         }
@@ -5368,6 +5371,7 @@ def test_apply_grid_part_modes_js_runs_page_fn_cad_inches_per_kid(
             "PartMode": 0,
             "ProductType": 100,
             "Machine": "Laser - Bay1",
+            "Material": "A36",
             "Thickness": "0.1875",
             "Thickness_Units": "inch",
         }
@@ -5512,6 +5516,137 @@ Promise.resolve(done(result)).catch((err) => {
     assert out["per_kid"] is True
     assert set(out["mode_ids"]) == {"id-a", "id-b", "id-c"}
     assert set(out["type_ids"]) == {"id-a", "id-b", "id-c"}
+
+
+def test_apply_grid_part_modes_js_fail_closes_thickness_when_material_blank(
+    tmp_path: Path,
+):
+    """Q10366: page_fn does not write thickness while Material is blank."""
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    live_rows = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "H.6.38 PLATE",
+            "Category": "Component",
+            "FileType": "Component",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Thickness": "0.0048:meter",
+            "Thickness_Units": "meter",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+    ]
+    wants = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "H.6.38 PLATE",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser - Bay1",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        }
+    ]
+    spec = {"rows": wants, "keep_rows": []}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + "const live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+const store = { rows: live.map((r) => {
+  const row = { ...r };
+  row.set = function set(k, v) { this[k] = v; };
+  return row;
+}) };
+const dataSource = {
+  data() {
+    const arr = store.rows.slice();
+    arr.toJSON = function toJSON() {
+      return store.rows.map((r) => {
+        const copy = {};
+        Object.keys(r).forEach((k) => {
+          if (k !== "set" && k !== "uid") copy[k] = r[k];
+        });
+        return copy;
+      });
+    };
+    return arr;
+  },
+};
+const gridObj = { dataSource };
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "org" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax() { return { always(fn) { fn(); return this; } }; },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+global.window.SetPartMode = function SetPartMode() {};
+global.window.UpdateItemType = function UpdateItemType() {};
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") {
+    return value.then(done);
+  }
+  if (!value.thickness_blocked_blank_material) {
+    throw new Error("expected thickness_blocked_blank_material");
+  }
+  if (String(store.rows[0].Thickness) !== "0.0048:meter") {
+    throw new Error("wrote thickness=" + store.rows[0].Thickness);
+  }
+  if (String(store.rows[0].Thickness_Units) !== "meter") {
+    throw new Error("wrote units=" + store.rows[0].Thickness_Units);
+  }
+  if (store.rows[0].Contours != null || store.rows[0].NumberOfContours != null) {
+    throw new Error("invented Contours");
+  }
+  process.stdout.write(JSON.stringify({
+    blocked: value.thickness_blocked_blank_material,
+    thickness: store.rows[0].Thickness,
+    cad: value.cad,
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "material_before_thickness_fail_close.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["blocked"] >= 1
+    assert out["thickness"] == "0.0048:meter"
+    assert out["cad"] == 1
 
 
 def test_finish_skips_when_grid_classify_cad_is_zero(tmp_path: Path):
@@ -12104,6 +12239,7 @@ def test_plate_step_classify_bind_sets_cad_not_component():
         "PartMode": 2,
         "Thickness": "0.0048:meter",
         "Thickness_Units": "meter",
+        "Material": "A36",
         "Machine": "",
         "InternalData": "",
         "ImageString": "iVBORw0KGgo",
@@ -12177,6 +12313,89 @@ def test_plate_step_classify_bind_sets_cad_not_component():
     after = cad_filelist_refuses_additem_dxf(kid)
     assert after is not None
     assert "InternalData empty" in after
+
+
+def test_plate_step_material_before_thickness_fail_closes_when_blank():
+    """Q10366: Adjust Properties writes thickness only after Material A36.
+
+    Blank material blocks thickness in Sectura UI. invent=false.
+    """
+    from secturafab.website import (
+        bind_plate_step_product_type_cad,
+        cadimport_keep_grid_classify_spec,
+        drawing_material_type,
+        plate_step_thickness_blocked_by_blank_material,
+    )
+
+    blank = {
+        "Name": "H.6.38 PLATE",
+        "ProductType": "Component",
+        "FileType": "Component",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+    }
+    assert drawing_material_type(blank) == ""
+    why = plate_step_thickness_blocked_by_blank_material(blank)
+    assert why is not None
+    assert "blank" in why.lower()
+    assert "Q10366" in why
+    assert "A36" in why
+    assert "invent" in why.lower()
+    assert "Contours" in why
+
+    bound = bind_plate_step_product_type_cad(blank)
+    assert bound["ProductType"] == 100
+    assert bound["FileType"] == "Cad"
+    assert bound["Thickness"] == "0.1875"
+    assert bound["Thickness_Units"] == "inch"
+    meter_blank = dict(blank, Thickness="0.0048:meter", Thickness_Units="meter")
+    bound_meter = bind_plate_step_product_type_cad(meter_blank)
+    assert bound_meter["Thickness"] == "0.0048:meter"
+    assert bound_meter["Thickness_Units"] == "meter"
+
+    ready = dict(blank, Material="A36")
+    assert drawing_material_type(ready) == "A36"
+    assert plate_step_thickness_blocked_by_blank_material(ready) is None
+    bound_ready = bind_plate_step_product_type_cad(ready)
+    assert bound_ready["Material"] == "A36"
+    assert "meter" not in str(bound_ready["Thickness"]).lower()
+    assert bound_ready["Thickness_Units"] == "inch"
+
+    spec_blank = cadimport_keep_grid_classify_spec(
+        [
+            {
+                "ID": "id-a",
+                "Name": "H.6.38 PLATE",
+                "Category": "Cad",
+                "ItemType": "Cad",
+                "PartMode": 0,
+                "ProductType": 100,
+                "Thickness": "0.1875",
+                "Thickness_Units": "inch",
+            }
+        ]
+    )
+    assert "Thickness" not in spec_blank[0]
+    assert "Thickness_Units" not in spec_blank[0]
+    spec_ready = cadimport_keep_grid_classify_spec(
+        [
+            {
+                "ID": "id-a",
+                "Name": "H.6.38 PLATE",
+                "Category": "Cad",
+                "ItemType": "Cad",
+                "PartMode": 0,
+                "ProductType": 100,
+                "Material": "A36",
+                "Thickness": "0.1875",
+                "Thickness_Units": "inch",
+            }
+        ]
+    )
+    keys = list(spec_ready[0])
+    assert spec_ready[0]["Material"] == "A36"
+    assert spec_ready[0]["Thickness"] == "0.1875"
+    assert keys.index("Material") < keys.index("Thickness")
 
 
 def test_plate_step_classify_posts_update_item_type_cad():

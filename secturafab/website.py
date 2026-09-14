@@ -867,9 +867,10 @@ def cadimport_keep_grid_classify_spec(
 
     Copies classify fields already on the explode/overlay row. Does not
     invent Contours / NumberOfContours / InternalData. Inch thickness
-    is copied only when ``plate_step_thickness_units_are_inch`` — the
-    live-grid half of Cad+inches that apply_grid previously omitted.
-    invent=false.
+    is copied only when ``plate_step_thickness_units_are_inch`` **and**
+    Material type from the drawing is set — Q10366 / fd0b6e45 Contours
+    PASS required Material A36 before thickness; blank material blocks
+    thickness in Sectura UI. invent=false.
     """
     spec_rows: list[dict[str, Any]] = []
     for row in rows or []:
@@ -889,7 +890,10 @@ def cadimport_keep_grid_classify_spec(
             "ProductType": row.get("ProductType"),
             "Machine": str(row.get("Machine") or ""),
         }
-        if plate_step_thickness_units_are_inch(row):
+        mat = drawing_material_type(row)
+        if mat:
+            spec["Material"] = mat
+        if plate_step_thickness_units_are_inch(row) and mat:
             spec["Thickness"] = row.get("Thickness")
             spec["Thickness_Units"] = "inch"
         if not cad_payload_value_empty(row.get("InternalData")):
@@ -2878,6 +2882,48 @@ def sanitize_bind_thickness_inches(
     return _format_bind_thickness_inches(val)
 
 
+def drawing_material_type(row: dict[str, Any] | None) -> str:
+    """Material type from drawing (Material / MaterialGrade). Blank if unset.
+
+    Q10366 / fd0b6e45 Contours PASS required Material A36 before
+    thickness — blank material blocks thickness in Sectura UI.
+    invent=false.
+    """
+    if not isinstance(row, dict):
+        return ""
+    for key in ("Material", "MaterialGrade"):
+        val = str(row.get(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+def plate_step_thickness_blocked_by_blank_material(
+    row: dict[str, Any] | None,
+    *,
+    attempting_thickness: Any = None,
+) -> str | None:
+    """Fail-close when Adjust Properties would write thickness with Material blank.
+
+    Q10366 / fd0b6e45: Material A36 before thickness. Blank material
+    blocks thickness in Sectura UI. Does not invent Material or
+    Contours. invent=false.
+    """
+    raw = attempting_thickness
+    if raw in (None, "") and isinstance(row, dict):
+        raw = row.get("Thickness")
+    if raw in (None, ""):
+        return None
+    if drawing_material_type(row):
+        return None
+    return (
+        "STEP Cad Adjust Properties: Material type from drawing is blank "
+        "— cannot set thickness (Q10366 / fd0b6e45 Contours PASS required "
+        "Material A36 before thickness; blank material blocks thickness "
+        "in Sectura UI). Do not invent Material or Contours."
+    )
+
+
 def bind_plate_step_product_type_cad(row: dict[str, Any] | None) -> dict[str, Any]:
     """STEP CAD Files Adjust Properties / part bind: Component default → Cad.
 
@@ -2886,9 +2932,11 @@ def bind_plate_step_product_type_cad(row: dict[str, Any] | None) -> dict[str, An
     inches) and callers POST /Part/UpdateItemType ItemType=Cad (Q10335
     mouse classify XHR). Finished v1 GET of Contours PASSes Q10333 /
     Q10348 keep ProductType=100 with no ProductTypeName Cad noun —
-    do not invent a ProductType Cad persist XHR. Does not invent
-    InternalData / Contours / NumberOfContours. Still refuse Finish
-    if those stay empty.
+    do not invent a ProductType Cad persist XHR. Thickness inches are
+    written only after Material type from the drawing is set (Q10366 /
+    fd0b6e45: A36 before thickness; blank material blocks thickness in
+    Sectura UI). Does not invent InternalData / Contours /
+    NumberOfContours. Still refuse Finish if those stay empty.
     """
     out = dict(row) if isinstance(row, dict) else {}
     out["ProductType"] = 100
@@ -2903,12 +2951,13 @@ def bind_plate_step_product_type_cad(row: dict[str, Any] | None) -> dict[str, An
     if str(machine).casefold() == "laser":
         machine = "Laser - Bay1"
     out["Machine"] = machine
-    inch = sanitize_bind_thickness_inches(
-        out.get("Thickness"), out.get("Thickness_Units")
-    )
-    if inch is not None:
-        out["Thickness"] = inch
-        out["Thickness_Units"] = "inch"
+    if plate_step_thickness_blocked_by_blank_material(out) is None:
+        inch = sanitize_bind_thickness_inches(
+            out.get("Thickness"), out.get("Thickness_Units")
+        )
+        if inch is not None:
+            out["Thickness"] = inch
+            out["Thickness_Units"] = "inch"
     return out
 
 
@@ -7760,8 +7809,11 @@ def overlay_classified_row(
         out["Material"] = material
         out["MaterialGrade"] = material
     if thickness is not None and str(thickness) != "":
-        out["Thickness"] = thickness
-        out["Thickness_Units"] = out.get("Thickness_Units") or "inch"
+        # Cad Adjust Properties: Material from drawing before thickness
+        # (Q10366). Linear/Component overlay is unchanged.
+        if cat != "Cad" or drawing_material_type(out):
+            out["Thickness"] = thickness
+            out["Thickness_Units"] = out.get("Thickness_Units") or "inch"
     if product_id:
         out["ProductID"] = product_id
     if sku:

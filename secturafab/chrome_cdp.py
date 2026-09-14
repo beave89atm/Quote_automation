@@ -7719,6 +7719,38 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       return live ? live.length : 0;
     } catch (eB) { return 0; }
   }
+  var thicknessBlockedBlankMaterial = 0;
+  function drawingMaterialType(want, row) {
+    // Q10366 / fd0b6e45: Material A36 before thickness. Blank
+    // material blocks thickness in Sectura UI. invent=false.
+    var src = want || {};
+    var live = row || {};
+    var raw = (src.Material != null && String(src.Material) !== "")
+      ? src.Material
+      : ((src.MaterialGrade != null && String(src.MaterialGrade) !== "")
+        ? src.MaterialGrade
+        : ((live.Material != null && String(live.Material) !== "")
+          ? live.Material
+          : (live.MaterialGrade || "")));
+    return String(raw || "").trim();
+  }
+  function applyCadThickness(row, want, setter) {
+    var mat = drawingMaterialType(want, row);
+    if (mat) {
+      setter("Material", mat);
+    }
+    if (want.Thickness == null || String(want.Thickness) === "") {
+      return;
+    }
+    if (!mat) {
+      thicknessBlockedBlankMaterial += 1;
+      return;
+    }
+    setter("Thickness", want.Thickness);
+    if (want.Thickness_Units != null && String(want.Thickness_Units) !== "") {
+      setter("Thickness_Units", want.Thickness_Units);
+    }
+  }
   function applyFields(row, want, silent) {
     var cat = String(want.Category || "");
     var mode = Number(want.PartMode);
@@ -7748,12 +7780,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         if (want.InternalData != null && String(want.InternalData) !== "") {
           row.set("InternalData", want.InternalData);
         }
-        if (want.Thickness != null && String(want.Thickness) !== "") {
-          row.set("Thickness", want.Thickness);
-          if (want.Thickness_Units != null && String(want.Thickness_Units) !== "") {
-            row.set("Thickness_Units", want.Thickness_Units);
-          }
-        }
+        applyCadThickness(row, want, function(k, v) { row.set(k, v); });
       } else if (cat === "Linear") {
         row.set("Machine", want.Machine || "Saw");
         row.set("ProductType", Number(want.ProductType) || 10);
@@ -7784,12 +7811,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         if (want.InternalData != null && String(want.InternalData) !== "") {
           row.InternalData = want.InternalData;
         }
-        if (want.Thickness != null && String(want.Thickness) !== "") {
-          row.Thickness = want.Thickness;
-          if (want.Thickness_Units != null && String(want.Thickness_Units) !== "") {
-            row.Thickness_Units = want.Thickness_Units;
-          }
-        }
+        applyCadThickness(row, want, function(k, v) { row[k] = v; });
       } else if (cat === "Linear") {
         row.Machine = want.Machine || "Saw";
         row.ProductType = Number(want.ProductType) || 10;
@@ -7933,6 +7955,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     var via = "";
     var typeVia = "";
     var keepVia = "";
+    thicknessBlockedBlankMaterial = 0;
     var fnName = findSetFn();
     var itemTypeFnName = findUpdateItemTypeFn();
     function restoreIfWiped() {
@@ -8068,7 +8091,8 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         org_widget: org.org_widget,
         kendo_row_keys: kendoKeys,
         per_kid: true,
-        per_kid_cad_inches: "single_plate_adjust_properties_page_fn"
+        per_kid_cad_inches: "single_plate_adjust_properties_page_fn",
+        thickness_blocked_blank_material: thicknessBlockedBlankMaterial
       };
     });
   }
