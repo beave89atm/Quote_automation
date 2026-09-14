@@ -17416,6 +17416,8 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
         "multi_kid_keep_grid_data_getbordersize_not_fill",
         "multi_kid_updatedata_editor_done_not_safe_fill",
         "q10368_keep_grid_material_inches_not_enough",
+        "q10372_rd_bar_hook_contours_zero_expected",
+        "q10373_mixed_classify_pass_leftover",
     ]
     assert all(a["ruled_out"] is True for a in hunt["angles"])
     assert "/CadImport/ConvertTo" in PROVEN_EMPTY_PATHS
