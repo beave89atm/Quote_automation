@@ -5183,7 +5183,7 @@ def test_classify_stamps_drawing_thickness_from_pdf_lom():
         {
             "SourceDataID": "src-b",
             "ID": "id-b",
-            "Name": "31454-1 1/4 PLATE HOOK",
+            "Name": "HOOK 1/4 PLATE REST",
             "ProductType": "Component",
             "Qty": 1,
             "ErrorStatus": 0,
@@ -5197,12 +5197,7 @@ def test_classify_stamps_drawing_thickness_from_pdf_lom():
         default_material="A36",
         default_thickness="0.5",
         default_thickness_source="step",
-        bom_rows=[
-            {
-                "part_no": "31454-1",
-                "description": "1/4 PLATE A36 HOOK BOOM REST",
-            }
-        ],
+        bom_rows=[],
         library={},
         extra_pdfs=None,
         qty=1,
