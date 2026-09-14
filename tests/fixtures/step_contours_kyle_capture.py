@@ -73,6 +73,16 @@ Cad A572 G50 .375-3/8" NumberOfContours=1 (Finish→tree
 verify). Bar 31454-1 Long/Linear Saw IsLinear=true.
 Hardware 40003/40006 IsComponent=true. invent=false.
 Never remint Q10377. Do not forbid 1008399-1.
+Q10379 / 70e69d9c / 11643-1 remint (tip d34b5b4): mixed
+classify PASS leftover. Complete Quote NOT DONE.
+OPEN-NEW draft (CAD Finish ≠ Complete Quote).
+Plate Cad Contours + tube/slug
+Long/Linear. Plate 11640-1 Cad A572 G50 /.25
+NumberOfContours=1. Plate 11642-2 Cad A36 /.375
+NumberOfContours=1. Tube 11641-1 Long/Linear tube_round
+IsLinear A513 2.00×1.50×7.4375. Slug 32070-1 Long/Linear
+bar_round IsLinear C1018 2.00×0.45. invent=false.
+Never remint Q10379. Do not forbid 11643-1.
 Do not gate unlock
 on OCC≥1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
@@ -149,6 +159,7 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "Q10374",
     "Q10375",
     "Q10377",
+    "Q10379",
     "H638-CADPLATE",
     "Q10334",
     "Q10335",
