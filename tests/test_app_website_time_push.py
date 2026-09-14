@@ -1696,6 +1696,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "Q10374" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10375" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10377" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10379" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10350" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21843-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10338" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -2583,6 +2584,56 @@ def test_q10377_1008399_1_mixed_classify_pass_forever_forbid():
             method="PATCH",
             path="/Quote/UpdateItem_Part",
             payload={"ID": "12bd2530-e6ed-4792-9e47-bdd20fff1e70"},
+        )
+
+
+def test_q10379_11643_1_mixed_classify_pass_forever_forbid():
+    """Q10379 / 70e69d9c 11643-1 mixed classify PASS leftover — never remint / PATCH.
+
+    NEW remint PASS. Live report says quote completed/finished
+    (may have clicked Complete Quote — record as stated).
+    Plate 11640-1 Cad A572 G50 /.25 NumberOfContours=1.
+    Plate 11642-2 Cad A36 /.375 NumberOfContours=1.
+    Tube 11641-1 Long/Linear tube_round IsLinear A513
+    2.00×1.50×7.4375. Slug 32070-1 Long/Linear bar_round
+    IsLinear C1018 2.00×0.45. Do not forbid PN 11643-1
+    (PN remint). invent=false. Do not invent Contours.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "70e69d9c-9d9f-4b2e-b7f1-7ac9ae80da9e" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "70e69d9c" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10379" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "11643-1" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("70e69d9c-9d9f-4b2e-b7f1-7ac9ae80da9e")
+    assert is_forbidden_quote_id("70e69d9c-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10379")
+    assert not is_forbidden_quote_number("11643-1")
+    assert spent_quote_number_block_reason("Q10379")
+    assert spent_quote_number_block_reason("11643-1") is None
+    with pytest.raises(ForbiddenQuoteError, match="Q10379"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10379"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="70e69d9c"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "70e69d9c-9d9f-4b2e-b7f1-7ac9ae80da9e"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="70e69d9c"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "70e69d9c-9d9f-4b2e-b7f1-7ac9ae80da9e"},
         )
 
 
