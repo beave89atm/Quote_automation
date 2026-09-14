@@ -72,6 +72,11 @@ Plate 34329 Cad A36 .25-1/4" gauge Laser NumberOfContours≥1.
 HOOK 31454-1 Long/Linear Hot Rolled Round Bar CRS (closest to
 RD BAR CR 1018) 0.5" × 4.375" Saw; no Contours path.
 invent=false. Never remint Q10373. Do not forbid 34328-1.
+Q10374 / beb20d22 / 1008399-1 coverage remint (tip e604229):
+FAIL-CLOSE leftover. STEP uploaded; plate 1008400 gauge
+unverified (no local drawing / SharePoint unreachable).
+invent=false stop before Contours. Complete Quote NOT DONE.
+Never remint Q10374. Do not forbid 1008399-1.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -164,6 +169,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10368",
         "Q10372",
         "Q10373",
+        "Q10374",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
@@ -397,6 +403,20 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "0.5\" × 4.375\" Saw; no Contours path. Do not invent "
                 "Contours/InternalData. Never remint Q10373. "
                 "Do not forbid 34328-1."
+            ),
+        },
+        {
+            "id": "q10374_1008399_1_coverage_gauge_unverified_stop_before_contours",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10374 / beb20d22 / 1008399-1 coverage remint @ e604229: "
+                "FAIL-CLOSE leftover. STEP uploaded; plate 1008400 gauge "
+                "unverified (no local drawing / SharePoint unreachable). "
+                "invent=false stop before Contours. Complete Quote NOT "
+                "DONE. Do not invent Contours/InternalData/gauge. "
+                "Never remint Q10374. Do not forbid 1008399-1."
             ),
         },
     ),
