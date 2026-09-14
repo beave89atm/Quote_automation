@@ -17342,8 +17342,10 @@ def test_q10379_11643_1_mixed_classify_pass_forever_forbid():
     assert dump["quote_id"] == Q10379_QUOTE_ID
     assert dump["part_number"] == "11643-1"
     assert dump["job"] == "Platform Mount"
-    assert dump["complete_quote_done"] is True
-    assert "completed/finished" in dump["complete_quote_note"]
+    assert dump["complete_quote_done"] is False
+    assert dump["open_new_draft"] is True
+    assert "OPEN-NEW" in dump["complete_quote_note"]
+    assert "CAD Finish" in dump["complete_quote_note"]
     assert dump["pass"] is True
     assert dump["mixed_classify"] is True
     assert dump["kids"][0]["name"] == "11640-1"
@@ -17414,7 +17416,8 @@ def test_q10379_11643_1_mixed_classify_pass_forever_forbid():
     assert "11642-2" in angle["why"]
     assert "tube_round" in angle["why"]
     assert "bar_round" in angle["why"]
-    assert "completed/finished" in angle["why"]
+    assert "OPEN-NEW" in angle["why"]
+    assert "CAD Finish" in angle["why"]
     assert "Do not invent Contours" in angle["why"]
     with pytest.raises(ForbiddenQuoteError, match="Q10379"):
         refuse_forbidden_quote_write(

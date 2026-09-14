@@ -1,8 +1,8 @@
 """Q10379 / 11643-1 Platform Mount mixed classify PASS leftover.
 
 Live tip d34b5b4: NEW remint PASS — plate Cad Contours + tube/slug
-Long/Linear. invent=false. Live report says quote completed/finished
-(may have clicked Complete Quote — record as stated).
+Long/Linear. invent=false. Complete Quote NOT DONE. OPEN-NEW draft
+(CAD Finish ≠ Complete Quote).
 
 Per-kid (stated only; do not invent Contours / InternalData):
 - Plate 11640-1: Cad, A572 G50, .25, NumberOfContours=1
@@ -26,11 +26,9 @@ Q10379_11643_1_MIXED_CLASSIFY_PASS: dict[str, Any] = {
     "part_number": "11643-1",
     "job": "Platform Mount",
     "live_probe_tip": "d34b5b4",
-    "complete_quote_done": True,
-    "complete_quote_note": (
-        "live report says quote completed/finished "
-        "(may have clicked Complete Quote)"
-    ),
+    "complete_quote_done": False,
+    "open_new_draft": True,
+    "complete_quote_note": "OPEN-NEW (CAD Finish ≠ Complete Quote)",
     "pass": True,
     "mixed_classify": True,
     "kids": (

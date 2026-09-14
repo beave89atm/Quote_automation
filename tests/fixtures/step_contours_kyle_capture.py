@@ -74,9 +74,9 @@ verify). Bar 31454-1 Long/Linear Saw IsLinear=true.
 Hardware 40003/40006 IsComponent=true. invent=false.
 Never remint Q10377. Do not forbid 1008399-1.
 Q10379 / 70e69d9c / 11643-1 remint (tip d34b5b4): mixed
-classify PASS leftover. Live report says quote
-completed/finished (may have clicked Complete Quote —
-record as stated). Plate Cad Contours + tube/slug
+classify PASS leftover. Complete Quote NOT DONE.
+OPEN-NEW draft (CAD Finish ≠ Complete Quote).
+Plate Cad Contours + tube/slug
 Long/Linear. Plate 11640-1 Cad A572 G50 /.25
 NumberOfContours=1. Plate 11642-2 Cad A36 /.375
 NumberOfContours=1. Tube 11641-1 Long/Linear tube_round

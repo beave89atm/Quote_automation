@@ -2590,8 +2590,8 @@ def test_q10377_1008399_1_mixed_classify_pass_forever_forbid():
 def test_q10379_11643_1_mixed_classify_pass_forever_forbid():
     """Q10379 / 70e69d9c 11643-1 mixed classify PASS leftover — never remint / PATCH.
 
-    NEW remint PASS. Live report says quote completed/finished
-    (may have clicked Complete Quote — record as stated).
+    NEW remint PASS. Complete Quote NOT DONE. OPEN-NEW draft
+    (CAD Finish ≠ Complete Quote).
     Plate 11640-1 Cad A572 G50 /.25 NumberOfContours=1.
     Plate 11642-2 Cad A36 /.375 NumberOfContours=1.
     Tube 11641-1 Long/Linear tube_round IsLinear A513
