@@ -66,6 +66,12 @@ applies to plate/sheet Cad kids. Round-bar kids (RD BAR) are a
 different ops path; Contours=0 with Material+thickness set is
 expected until Profile/Saw/bar path exists. invent=false still.
 Never remint Q10372. Do not forbid 34328-1.
+Q10373 / 523d8328 / 34328-1 remint (tip 1650cf5): mixed classify
+PASS leftover. Complete Quote NOT DONE. OPEN-NEW draft.
+Plate 34329 Cad A36 .25-1/4" gauge Laser NumberOfContours≥1.
+HOOK 31454-1 Long/Linear Hot Rolled Round Bar CRS (closest to
+RD BAR CR 1018) 0.5" × 4.375" Saw; no Contours path.
+invent=false. Never remint Q10373. Do not forbid 34328-1.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -157,6 +163,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10359",
         "Q10368",
         "Q10372",
+        "Q10373",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
@@ -374,6 +381,22 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "Material+thickness set is expected until Profile/Saw/bar "
                 "path exists. Do not invent Contours/InternalData. "
                 "Never remint Q10372. Do not forbid 34328-1."
+            ),
+        },
+        {
+            "id": "q10373_mixed_classify_pass_leftover",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10373 / 523d8328 / 34328-1 remint @ 1650cf5: mixed "
+                "classify PASS leftover. Complete Quote NOT DONE. "
+                "OPEN-NEW draft. Plate 34329 Cad A36 .25-1/4\" gauge "
+                "Laser NumberOfContours≥1. HOOK 31454-1 Long/Linear "
+                "Hot Rolled Round Bar CRS (closest to RD BAR CR 1018) "
+                "0.5\" × 4.375\" Saw; no Contours path. Do not invent "
+                "Contours/InternalData. Never remint Q10373. "
+                "Do not forbid 34328-1."
             ),
         },
     ),

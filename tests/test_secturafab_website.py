@@ -2232,6 +2232,9 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("Q10372")
     assert is_forbidden_quote_id("d62e2ad1-7324-4034-a44e-cbd7a3acee9d")
     assert is_forbidden_quote_id("d62e2ad1-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10373")
+    assert is_forbidden_quote_id("523d8328-f310-434d-a502-00502c987dd2")
+    assert is_forbidden_quote_id("523d8328-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
@@ -10890,6 +10893,7 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("Q10368")
     assert is_forbidden_quote_number("Q10371")
     assert is_forbidden_quote_number("Q10372")
+    assert is_forbidden_quote_number("Q10373")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_number("Q10338")
@@ -11831,6 +11835,7 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "Q10368",
         "Q10371",
         "Q10372",
+        "Q10373",
         "Q10350",
         "21843-1",
         "Q10338",
@@ -13061,6 +13066,7 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_number("Q10368")
     assert is_forbidden_quote_number("Q10371")
     assert is_forbidden_quote_number("Q10372")
+    assert is_forbidden_quote_number("Q10373")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
@@ -13082,6 +13088,7 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_id("5e0ce1df-e18b-4118-945a-8be85378069e")
     assert is_forbidden_quote_id("67472e72-d01b-48e2-8040-1db505659d26")
     assert is_forbidden_quote_id("d62e2ad1-7324-4034-a44e-cbd7a3acee9d")
+    assert is_forbidden_quote_id("523d8328-f310-434d-a502-00502c987dd2")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
 
     refuse = cad_filelist_refuses_additem_dxf(
@@ -16934,6 +16941,94 @@ def test_q10372_34328_1_rd_bar_hook_contours_fail_forever_forbid():
         )
 
 
+def test_q10373_34328_1_mixed_classify_pass_forever_forbid():
+    """Q10373 remint: plate 34329 Cad Contours≥1; HOOK Long/Linear Saw."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10373_34328_1 import (
+        Q10373_QUOTE_ID,
+        q10373_34328_1_mixed_classify_pass,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10373_34328_1_mixed_classify_pass()
+    assert dump["quote_number"] == "Q10373"
+    assert dump["quote_id"] == Q10373_QUOTE_ID
+    assert dump["part_number"] == "34328-1"
+    assert dump["complete_quote_done"] is False
+    assert dump["open_new_draft"] is True
+    assert dump["pass"] is True
+    assert dump["mixed_classify"] is True
+    assert dump["kids"][0]["name"] == "34329"
+    assert dump["kids"][0]["classify"] == "Cad"
+    assert dump["kids"][0]["material"] == "A36"
+    assert dump["kids"][0]["thickness_in"] == 0.25
+    assert dump["kids"][0]["machine"] == "Laser"
+    assert dump["kids"][0]["is_plate"] is True
+    assert dump["kids"][0]["number_of_contours_ge1"] is True
+    assert dump["kids"][0]["contours_path"] is True
+    assert "number_of_contours" not in dump["kids"][0]
+    assert dump["kids"][1]["name"] == "HOOK 31454-1"
+    assert dump["kids"][1]["classify"] == "Long/Linear"
+    assert dump["kids"][1]["shape"] == "Hot Rolled Round Bar"
+    assert dump["kids"][1]["material"] == "CRS"
+    assert dump["kids"][1]["drawing_stock"] == "RD BAR CR 1018"
+    assert dump["kids"][1]["diameter_in"] == 0.5
+    assert dump["kids"][1]["length_in"] == 4.375
+    assert dump["kids"][1]["machine"] == "Saw"
+    assert dump["kids"][1]["is_plate"] is False
+    assert dump["kids"][1]["contours_path"] is False
+    assert "number_of_contours" not in dump["kids"][1]
+    assert dump["contours_ge1_laser_gate_applies_to"] == "plate_sheet_cad_kids"
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+
+    assert is_forbidden_quote_number("Q10373")
+    assert is_forbidden_quote_id(Q10373_QUOTE_ID)
+    assert not is_forbidden_quote_number("34328-1")
+    assert spent_quote_number_block_reason("Q10373")
+    assert spent_quote_number_block_reason("34328-1") is None
+    assert "Q10373" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "34328-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10373" in hunt["never_remint"]
+    assert "34328-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10373_mixed_classify_pass_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10373" in angle["why"]
+    assert "mixed" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10373"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10373"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="523d8328"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10373_QUOTE_ID},
+        )
+
+
 def test_finish_cad_files_multi_kid_keep_grid_empty_internaldata_is_exec_fail(
     tmp_path: Path,
 ):
@@ -17321,6 +17416,8 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
         "multi_kid_keep_grid_data_getbordersize_not_fill",
         "multi_kid_updatedata_editor_done_not_safe_fill",
         "q10368_keep_grid_material_inches_not_enough",
+        "q10372_rd_bar_hook_contours_zero_expected",
+        "q10373_mixed_classify_pass_leftover",
     ]
     assert all(a["ruled_out"] is True for a in hunt["angles"])
     assert "/CadImport/ConvertTo" in PROVEN_EMPTY_PATHS
