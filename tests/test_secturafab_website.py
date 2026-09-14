@@ -2226,6 +2226,9 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("Q10368")
     assert is_forbidden_quote_id("5e0ce1df-e18b-4118-945a-8be85378069e")
     assert is_forbidden_quote_id("5e0ce1df-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10371")
+    assert is_forbidden_quote_id("67472e72-d01b-48e2-8040-1db505659d26")
+    assert is_forbidden_quote_id("67472e72-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
@@ -10882,6 +10885,7 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("10289-5")
     assert is_forbidden_quote_number("Q10369")
     assert is_forbidden_quote_number("Q10368")
+    assert is_forbidden_quote_number("Q10371")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_number("Q10338")
@@ -11821,6 +11825,7 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "10289-5",
         "Q10369",
         "Q10368",
+        "Q10371",
         "Q10350",
         "21843-1",
         "Q10338",
@@ -13049,6 +13054,7 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_number("10289-5")
     assert is_forbidden_quote_number("Q10369")
     assert is_forbidden_quote_number("Q10368")
+    assert is_forbidden_quote_number("Q10371")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
@@ -13068,6 +13074,7 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_id("4c9c25d4-439f-42be-8f6f-7444e5f05497")
     assert is_forbidden_quote_id("82c28793-96e8-457b-9559-979c2b761d4e")
     assert is_forbidden_quote_id("5e0ce1df-e18b-4118-945a-8be85378069e")
+    assert is_forbidden_quote_id("67472e72-d01b-48e2-8040-1db505659d26")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
 
     refuse = cad_filelist_refuses_additem_dxf(
