@@ -5050,6 +5050,169 @@ def test_keep_grid_cad_kids_blank_material_refuses():
     assert keep_grid_cad_kids_blank_material_refuses([configured]) is None
 
 
+def test_keep_grid_cad_kids_drawing_thickness_refuses_step_and_red():
+    """Kyle 2026-09-14: STEP-only or red/invalid thickness is EXEC_FAIL.
+
+    After Material-before-thickness. invent=false — no Contours.
+    """
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+        cadimport_keep_grid_classify_spec,
+        drawing_thickness_in,
+        keep_grid_cad_kids_drawing_thickness_refuses,
+        plate_step_thickness_invalid_vs_drawing,
+        thickness_source_is_step,
+    )
+
+    drawing = {
+        "Name": "34329 BOOM SUPPORT",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "Material": "A36",
+        "Thickness": "0.25",
+        "Thickness_Units": "inch",
+        "thickness_source": "drawing",
+        "drawing_thickness_in": "0.25",
+    }
+    step_only = {
+        **drawing,
+        "Name": "HOOK BOOM REST-7742_31454-1",
+        "Thickness": "0.5",
+        "thickness_source": "step",
+        "drawing_thickness_in": "",
+    }
+    step_only.pop("drawing_thickness_in", None)
+    red = {
+        **drawing,
+        "Name": "HOOK BOOM REST-7742_31454-1",
+        "Thickness": "0.5",
+        "drawing_thickness_in": "0.1875",
+        "thickness_source": "drawing",
+    }
+
+    assert drawing_thickness_in(drawing) == "0.25"
+    assert drawing_thickness_in(step_only) is None
+    assert thickness_source_is_step(step_only) is True
+    assert plate_step_thickness_invalid_vs_drawing(drawing) is None
+    why_step = plate_step_thickness_invalid_vs_drawing(step_only)
+    assert why_step is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_step
+    assert "STEP-derived" in why_step
+    assert "invent" in why_step.lower()
+    assert "Contours" in why_step
+    why_red = plate_step_thickness_invalid_vs_drawing(red)
+    assert why_red is not None
+    assert "red/invalid" in why_red
+    assert "0.1875" in why_red
+    assert cad_finish_notes_refuse_additem_dxf([why_step]) == why_step
+    assert cad_finish_notes_refuse_additem_dxf([why_red]) == why_red
+
+    why_keep = keep_grid_cad_kids_drawing_thickness_refuses(
+        [drawing, step_only], keep_via="live"
+    )
+    assert why_keep is not None
+    assert "keep_grid_via=live" in why_keep
+    assert keep_grid_cad_kids_drawing_thickness_refuses(
+        [drawing, {**drawing, "Name": "34328-1 PLATE B"}],
+        keep_via="live",
+    ) is None
+
+    spec = cadimport_keep_grid_classify_spec([drawing, step_only])
+    assert spec[0]["Thickness"] == "0.25"
+    assert spec[0]["thickness_source"] == "drawing"
+    assert spec[0]["drawing_thickness_in"] == "0.25"
+    assert "Thickness" not in spec[1]
+    assert "Contours" not in spec[0]
+    assert "NumberOfContours" not in spec[0]
+    keys = list(spec[0])
+    assert keys.index("Material") < keys.index("Thickness")
+
+
+def test_classify_stamps_drawing_thickness_from_pdf_lom():
+    """Per-kid Cad+Material+inches uses PDF/LOM thickness, not STEP."""
+    from quote_core.part_materials import PartMaterial
+    from secturafab.push import SecturaFabPushService
+    from secturafab.website import drawing_thickness_in
+
+    rows = [
+        {
+            "SourceDataID": "src-a",
+            "ID": "id-a",
+            "Name": "34329 BOOM SUPPORT",
+            "ProductType": "Component",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "InternalData": "",
+        }
+    ]
+    pm = PartMaterial(
+        part_key="34329",
+        material_key="a36",
+        material="A36",
+        thickness_in=0.25,
+        source="MATERIAL block (1/4 / A36)",
+    )
+    with patch(
+        "quote_core.part_materials.build_part_material_map",
+        return_value={"34329": pm},
+    ):
+        classified, _notes = SecturaFabPushService(
+            client=MagicMock()
+        ).classify_cadimport_rows(
+            rows,
+            default_material="A36",
+            default_thickness="0.5",
+            default_thickness_source="step",
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            qty=1,
+            part_key="34328-1",
+        )
+    kid = classified[0]
+    assert kid["Category"] == "Cad"
+    assert kid["thickness_source"] == "drawing"
+    assert drawing_thickness_in(kid) == "0.25"
+    assert float(kid["Thickness"]) == 0.25
+
+    lom_rows = [
+        {
+            "SourceDataID": "src-b",
+            "ID": "id-b",
+            "Name": "31454-1 1/4 PLATE HOOK",
+            "ProductType": "Component",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "InternalData": "",
+        }
+    ]
+    lom_classified, _ = SecturaFabPushService(
+        client=MagicMock()
+    ).classify_cadimport_rows(
+        lom_rows,
+        default_material="A36",
+        default_thickness="0.5",
+        default_thickness_source="step",
+        bom_rows=[
+            {
+                "part_no": "31454-1",
+                "description": "1/4 PLATE A36 HOOK BOOM REST",
+            }
+        ],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+        part_key="34328-1",
+    )
+    lom_kid = lom_classified[0]
+    assert lom_kid["thickness_source"] == "drawing"
+    assert drawing_thickness_in(lom_kid) == "0.25"
+
+
 def test_apply_grid_part_modes_js_rehydrates_emptied_kendo_from_keep_rows(
     tmp_path: Path,
 ):

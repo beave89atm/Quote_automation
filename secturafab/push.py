@@ -88,6 +88,7 @@ from .website import (
     step_cad_post_finish_contours_gate,
     step_cad_wizard_state_hard_gate,
     keep_grid_cad_kids_blank_material_refuses,
+    keep_grid_cad_kids_drawing_thickness_refuses,
     step_finish_pack_missing,
     wizard_quote_live_item_count,
     wizard_quote_primary_organization_id,
@@ -944,10 +945,14 @@ def _resolve_push_material_thickness(
     takeoff: dict[str, Any] | None,
     stp_path: Path | None,
     pdf_path: Path | None,
-) -> tuple[str, str, list[str]]:
+) -> tuple[str, str, list[str], str]:
     """
     Prefer material/thickness read from the job PDF title block / stock line.
-    Returns (material, thickness, notes). Thickness never includes 'inch'.
+    Returns (material, thickness, notes, thickness_source).
+    Thickness never includes 'inch'. ``thickness_source`` is
+    ``drawing`` when PDF/LOM supplied the gauge, ``step`` when the
+    seed is STP bbox only — do not Finish Cad kids on STEP-only
+    thickness (Kyle 2026-09-14).
     """
     notes: list[str] = []
     material = _default_material(takeoff)
@@ -955,6 +960,8 @@ def _resolve_push_material_thickness(
     if named:
         material = named
     thickness = _sanitize_thickness_param(_default_thickness_in(takeoff, stp_path))
+    solids = list(((takeoff or {}).get("stp_summary") or {}).get("top_solids") or [])
+    thickness_source = "step" if solids else "unknown"
     known_from_pdf = False
 
     if pdf_path and Path(pdf_path).is_file():
@@ -996,6 +1003,7 @@ def _resolve_push_material_thickness(
                     f"Thickness from drawing: {thickness} ({pm.source})"
                 )
                 known_from_pdf = True
+                thickness_source = "drawing"
             if pm.material_key in {None, ""} or (
                 pm.source.startswith("no_material") or "unknown" in pm.source.lower()
             ):
@@ -1030,7 +1038,8 @@ def _resolve_push_material_thickness(
 
     material = _shop_material(material)
     thickness = _sanitize_thickness_param(thickness)
-    return material, thickness, notes
+    notes.append(f"thickness_source={thickness_source}")
+    return material, thickness, notes, thickness_source
 
 
 def _default_thickness_in(takeoff: dict[str, Any] | None, stp_path: Path | None) -> str:
@@ -2731,6 +2740,7 @@ class SecturaFabPushService:
         cad_files: list[Path] | None = None,
         stock_dims: Any = None,
         stock_kind: str | None = None,
+        default_thickness_source: str = "",
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """Cad / Linear / Component / Assembly + closest ProductID/SKU.
 
@@ -2741,7 +2751,10 @@ class SecturaFabPushService:
         from quote_core.part_materials import (
             build_part_material_map,
             lookup_part_material,
+            parse_material_block,
         )
+
+        from .website import thickness_looks_like_step_raw
 
         notes: list[str] = []
         library = library or {}
@@ -2869,6 +2882,7 @@ class SecturaFabPushService:
             aluminum_named = bool(re.search(r"\bALUMINI?UM\b", name, re.I))
             material = default_material
             thickness: str | float = _sanitize_thickness_param(default_thickness)
+            thk_source = str(default_thickness_source or "").strip().casefold()
             if pm and pm.material:
                 material = pm.material
             elif aluminum_named:
@@ -2877,8 +2891,27 @@ class SecturaFabPushService:
                 notes.append(
                     f"A36 on {name[:40]!r} — drawing named no grade"
                 )
+            lom_thk = _plate_thickness_in(
+                f"{name} {bom_noun}".strip()
+            )
+            if lom_thk is None and bom_noun:
+                parsed_thk, _parsed_key, _parsed_src = parse_material_block(bom_noun)
+                lom_thk = parsed_thk
             if pm and pm.thickness_in is not None:
                 thickness = _sanitize_thickness_param(pm.thickness_in)
+                thk_source = "drawing"
+            elif lom_thk is not None:
+                thickness = _sanitize_thickness_param(lom_thk)
+                thk_source = "drawing"
+            elif thickness_looks_like_step_raw(default_thickness) or thk_source in {
+                "step",
+                "stp",
+                "bbox",
+                "step_bbox",
+                "stp_bbox",
+                "step_derived",
+            }:
+                thk_source = "step"
             product_id = None
             sku = None
             machine = "Laser" if cat == "Cad" else None
@@ -2916,6 +2949,7 @@ class SecturaFabPushService:
                 sku=sku,
                 qty=row_qty,
                 machine=machine,
+                thickness_source=thk_source or None,
             )
             if bind:
                 cfg = str(bind.get("productConfigID") or "")
@@ -3047,6 +3081,7 @@ class SecturaFabPushService:
         explode_polls: int | None = None,
         explode_sleep_s: float | None = None,
         organization_name: str | None = None,
+        thickness_source: str = "",
     ) -> list[str]:
         """CAD Files: page #files → #gridDXF → page Next → SetPartMode → Finish.
 
@@ -3435,6 +3470,7 @@ class SecturaFabPushService:
             qty=qty,
             part_key=part_key,
             cad_files=cad_files,
+            default_thickness_source=thickness_source,
         )
         from .website import (
             copy_explode_internaldata_through,
@@ -3456,6 +3492,7 @@ class SecturaFabPushService:
             filelist_cad_payload_empty_bools,
             filelist_missing_cadimport_identity_keys,
             keep_grid_cad_kids_blank_material_refuses,
+            keep_grid_cad_kids_drawing_thickness_refuses,
             multi_kid_keep_grid_empty_internaldata_refuses,
         )
 
@@ -3497,11 +3534,31 @@ class SecturaFabPushService:
                 "Material or Contours."
             )
             return notes
+        try:
+            live_invalid_thk = int(applied.get("thickness_invalid_vs_drawing") or 0)
+        except (TypeError, ValueError):
+            live_invalid_thk = 0
+        if live_invalid_thk > 0:
+            notes.append(
+                f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: keep-grid Cad kid "
+                f"thickness red/invalid ({live_invalid_thk} live "
+                f"#gridDXFParts; keep_grid_via={keep_via or '?'}) — not "
+                "Finishing (Kyle 2026-09-14: thickness MUST match the "
+                "PDF drawing; STEP often wrong; Contours will not "
+                "process). Do not invent Contours."
+            )
+            return notes
         blank_mat = keep_grid_cad_kids_blank_material_refuses(
             classified, keep_via=keep_via
         )
         if blank_mat:
             notes.append(blank_mat)
+            return notes
+        drawing_thk = keep_grid_cad_kids_drawing_thickness_refuses(
+            classified, keep_via=keep_via
+        )
+        if drawing_thk:
+            notes.append(drawing_thk)
             return notes
         classified, post_overlay = self._overlay_cadimport_get_payloads(
             quote_id=quote_id,
@@ -3676,6 +3733,12 @@ class SecturaFabPushService:
         )
         if ready_blank_mat:
             notes.append(ready_blank_mat)
+            return notes
+        ready_drawing_thk = keep_grid_cad_kids_drawing_thickness_refuses(
+            ready, keep_via=keep_via
+        )
+        if ready_drawing_thk:
+            notes.append(ready_drawing_thk)
             return notes
         keep_empty = multi_kid_keep_grid_empty_internaldata_refuses(
             ready, keep_via=keep_via
@@ -5927,10 +5990,12 @@ class SecturaFabPushService:
                 )
 
             memo = _weld_memo(times, takeoff)
-            material, thickness, mat_notes = _resolve_push_material_thickness(
-                takeoff=takeoff,
-                stp_path=stp,
-                pdf_path=job_pdf,
+            material, thickness, mat_notes, thickness_source = (
+                _resolve_push_material_thickness(
+                    takeoff=takeoff,
+                    stp_path=stp,
+                    pdf_path=job_pdf,
+                )
             )
             notes.extend(mat_notes)
             machine = _default_machine()
@@ -6291,6 +6356,7 @@ class SecturaFabPushService:
                             part_key=part_key,
                             quote_request_id=quote_request_id,
                             organization_name=organization_name,
+                            thickness_source=thickness_source,
                         )
                     )
                     refuse = cad_finish_notes_refuse_additem_dxf(notes)

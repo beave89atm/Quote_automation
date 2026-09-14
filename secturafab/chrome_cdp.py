@@ -7720,6 +7720,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     } catch (eB) { return 0; }
   }
   var thicknessBlockedBlankMaterial = 0;
+  var thicknessInvalidVsDrawing = 0;
   var sharedDrawingMaterial = "";
   function drawingMaterialType(want, row) {
     // Q10366 / fd0b6e45: Material A36 before thickness. Blank
@@ -7739,21 +7740,77 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
             : sharedDrawingMaterial)));
     return String(raw || "").trim();
   }
+  function thicknessSourceToken(want, row) {
+    var src = want || {};
+    var live = row || {};
+    return String(src.thickness_source || src.ThicknessSource
+      || live.thickness_source || live.ThicknessSource || "")
+      .trim().toLowerCase();
+  }
+  function thicknessSourceIsStep(want, row) {
+    var tok = thicknessSourceToken(want, row);
+    return tok === "step" || tok === "stp" || tok === "bbox"
+      || tok === "step_bbox" || tok === "stp_bbox"
+      || tok === "step_derived";
+  }
+  function drawingThicknessIn(want, row) {
+    // Kyle 2026-09-14: thickness MUST match PDF/LOM. Do not
+    // trust STEP-derived thickness. invent=false — no Contours.
+    if (thicknessSourceIsStep(want, row)) return "";
+    var src = want || {};
+    var live = row || {};
+    var keys = [
+      "drawing_thickness_in", "DrawingThickness",
+      "ThicknessFromDrawing", "thickness_from_drawing"
+    ];
+    for (var i = 0; i < keys.length; i++) {
+      var v = src[keys[i]] != null ? src[keys[i]] : live[keys[i]];
+      if (v != null && String(v) !== "") return String(v);
+    }
+    var tok = thicknessSourceToken(want, row);
+    if (tok === "drawing" || tok === "pdf" || tok === "lom"
+        || tok === "pdf_lom" || tok === "drawing_pdf"
+        || tok === "part_material") {
+      if (src.Thickness != null && String(src.Thickness) !== "") {
+        return String(src.Thickness);
+      }
+      if (live.Thickness != null && String(live.Thickness) !== "") {
+        return String(live.Thickness);
+      }
+    }
+    return "";
+  }
   function applyCadThickness(row, want, setter) {
     var mat = drawingMaterialType(want, row);
     if (mat) {
       setter("Material", mat);
     }
-    if (want.Thickness == null || String(want.Thickness) === "") {
+    if (thicknessSourceIsStep(want, row)) {
+      thicknessInvalidVsDrawing += 1;
+      return;
+    }
+    var drawingThk = drawingThicknessIn(want, row);
+    var raw = (drawingThk !== "")
+      ? drawingThk
+      : ((want.Thickness != null && String(want.Thickness) !== "")
+        ? want.Thickness : "");
+    if (raw == null || String(raw) === "") {
       return;
     }
     if (!mat) {
       thicknessBlockedBlankMaterial += 1;
       return;
     }
-    setter("Thickness", want.Thickness);
+    if (drawingThk !== "" && want.Thickness != null
+        && String(want.Thickness) !== ""
+        && String(drawingThk) !== String(want.Thickness)) {
+      thicknessInvalidVsDrawing += 1;
+    }
+    setter("Thickness", raw);
     if (want.Thickness_Units != null && String(want.Thickness_Units) !== "") {
       setter("Thickness_Units", want.Thickness_Units);
+    } else if (drawingThk !== "") {
+      setter("Thickness_Units", "inch");
     }
   }
   function applyFields(row, want, silent) {
@@ -7961,6 +8018,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     var typeVia = "";
     var keepVia = "";
     thicknessBlockedBlankMaterial = 0;
+    thicknessInvalidVsDrawing = 0;
     sharedDrawingMaterial = "";
     for (var sm = 0; sm < wants.length; sm++) {
       var shared = drawingMaterialType(wants[sm], null);
@@ -8129,6 +8187,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         per_kid: true,
         per_kid_cad_inches: "single_plate_adjust_properties_page_fn",
         thickness_blocked_blank_material: thicknessBlockedBlankMaterial,
+        thickness_invalid_vs_drawing: thicknessInvalidVsDrawing,
         cad_blank_material: cadBlankMaterial
       };
     });
@@ -8290,6 +8349,13 @@ def apply_grid_dxf_part_modes(
             )
         except (TypeError, ValueError):
             out["thickness_blocked_blank_material"] = 0
+    if present and "thickness_invalid_vs_drawing" in value:
+        try:
+            out["thickness_invalid_vs_drawing"] = int(
+                value.get("thickness_invalid_vs_drawing") or 0
+            )
+        except (TypeError, ValueError):
+            out["thickness_invalid_vs_drawing"] = 0
     return out
 
 
