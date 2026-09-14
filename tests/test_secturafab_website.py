@@ -17703,6 +17703,7 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
         "q10373_mixed_classify_pass_leftover",
         "q10374_1008399_1_coverage_gauge_unverified_stop_before_contours",
         "q10375_1008399_1_contours_unverified_blank_cad_editor",
+        "q10377_1008399_1_mixed_classify_pass_leftover",
     ]
     assert all(a["ruled_out"] is True for a in hunt["angles"])
     assert "/CadImport/ConvertTo" in PROVEN_EMPTY_PATHS
