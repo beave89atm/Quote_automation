@@ -2256,6 +2256,50 @@ def test_q10369_34328_1_contours_fail_forever_forbid():
         )
 
 
+def test_q10368_34328_1_contours_fail_forever_forbid():
+    """Q10368 / 5e0ce1df 34328-1 Contours FAIL leftover — never remint / PATCH.
+
+    Keep-grid Material remint leftover. Do not forbid PN 34328-1 (PO remint).
+    invent=false. Do not invent Contours.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "5e0ce1df-e18b-4118-945a-8be85378069e" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "5e0ce1df" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10368" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "34328-1" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("5e0ce1df-e18b-4118-945a-8be85378069e")
+    assert is_forbidden_quote_id("5e0ce1df-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10368")
+    assert not is_forbidden_quote_number("34328-1")
+    assert spent_quote_number_block_reason("Q10368")
+    assert spent_quote_number_block_reason("34328-1") is None
+    with pytest.raises(ForbiddenQuoteError, match="Q10368"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10368"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="5e0ce1df"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "5e0ce1df-e18b-4118-945a-8be85378069e"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="5e0ce1df"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "5e0ce1df-e18b-4118-945a-8be85378069e"},
+        )
+
+
 def test_weld_does_not_post_before_cad_or_linear_kids():
     from secturafab.weld_ops import ensure_weld_ops
 
