@@ -2032,6 +2032,21 @@ class SecturaFabClient:
         )
         return self._parse_website_or_raise(response, require_session=False)
 
+    def quote_item_read_treelist(self, quote_id: str) -> Any:
+        """GET /Quote/QuoteItem_ReadTreeListData?ParentID=<quoteUUID>.
+
+        Q10366: after Cad+Material A36+.1875 Finish, NumberOfContours=1
+        on this payload. invent=false — do not invent Contours.
+        """
+        response = self.website_request(
+            "GET",
+            WEBSITE_FINISH_PATHS["quote_item_read_treelist"],
+            params={"ParentID": quote_id},
+            prefer_api_origin=False,
+            require_session=False,
+        )
+        return self._parse_website_or_raise(response, require_session=False)
+
     def add_operation(
         self,
         *,

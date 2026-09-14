@@ -12201,7 +12201,9 @@ def test_plate_step_classify_bind_sets_cad_not_component():
 
     Sectura defaults Component after Geometry Cleanup. Overlay/classify
     writes API/kendo ProductType=100 (not a UI click). Thickness
-    0.0048:meter becomes inches. Empty Contours still refuse Finish.
+    0.0048:meter becomes inches. Cad+Material+inches + empty
+    InternalData does not refuse Finish; Contours gate after Finish
+    is authority.
     """
     from secturafab.website import (
         KYLE_LOOM_COMPONENT_TO_CAD,
@@ -12274,9 +12276,7 @@ def test_plate_step_classify_bind_sets_cad_not_component():
     assert "meter" not in str(overlaid["Thickness"]).lower()
     assert overlaid["Thickness_Units"] == "inch"
     refuse = cad_filelist_refuses_additem_dxf(overlaid)
-    assert refuse is not None
-    assert "InternalData empty" in refuse or "Contours" in refuse
-    assert "invent" in refuse.lower()
+    assert refuse is None
 
     rows = [
         {
@@ -12311,8 +12311,7 @@ def test_plate_step_classify_bind_sets_cad_not_component():
     assert kid["Thickness_Units"] == "inch"
     assert "Cad: 1" in " ".join(notes)
     after = cad_filelist_refuses_additem_dxf(kid)
-    assert after is not None
-    assert "InternalData empty" in after
+    assert after is None
 
 
 def test_plate_step_material_before_thickness_fail_closes_when_blank():
@@ -12435,8 +12434,7 @@ def test_plate_step_classify_posts_update_item_type_cad():
     assert kwargs["row_id"] == "id-h638"
     assert kwargs["item_type"] == "Cad"
     refuse = cad_filelist_refuses_additem_dxf(classified[0])
-    assert refuse is not None
-    assert "InternalData empty" in refuse
+    assert refuse is None
     assert UPDATE_ITEM_TYPE_PATH == "/Part/UpdateItemType"
 
 
@@ -13512,6 +13510,7 @@ def test_read_quote_items_attaches_v1_itemlist_for_number_of_contours():
             }
         ]
     }
+    client.quote_item_read_treelist.return_value = None
     posted = SecturaFabPushService(client=client)._read_quote_items("qid")
     assert posted["Data"][0]["ProductType"] == 100
     assert posted["ItemList"][0]["NumberOfContours"] == 1
@@ -13522,9 +13521,136 @@ def test_read_quote_items_attaches_v1_itemlist_for_number_of_contours():
         "Total": 1,
     }
     empty_v1.get_json.return_value = {"ItemList": []}
+    empty_v1.quote_item_read_treelist.return_value = None
     posted_empty = SecturaFabPushService(client=empty_v1)._read_quote_items("qid")
     assert "ItemList" not in posted_empty
     assert posted_empty["Data"][0]["Category"] == "Cad"
+
+
+def test_cad_material_inches_recipe_complete_skips_empty_internaldata_refuse():
+    """Q10366: Cad+Material A36+.1875 + empty InternalData must not refuse Finish.
+
+    Contours fill server-side on Finish. Contours gate after Finish is
+    authority. Recipe incomplete still refuses. invent=false.
+    """
+    from secturafab.website import (
+        cad_filelist_refuses_additem_dxf,
+        cad_material_inches_recipe_complete,
+    )
+
+    recipe = {
+        "Name": "H.6.38 PLATE",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "ProductTypeName": "part",
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "InternalData": "",
+        "ImageString": "iVBORw0KGgo",
+    }
+    assert cad_material_inches_recipe_complete(recipe) is True
+    assert cad_filelist_refuses_additem_dxf(recipe) is None
+
+    no_mat = {**recipe, "Material": "", "MaterialGrade": ""}
+    no_mat.pop("MaterialGrade", None)
+    assert cad_material_inches_recipe_complete(no_mat) is False
+    why = cad_filelist_refuses_additem_dxf(no_mat)
+    assert why is not None
+    assert "InternalData empty" in why
+
+    meter = {**recipe, "Thickness": "0.0047625", "Thickness_Units": "meter"}
+    assert cad_material_inches_recipe_complete(meter) is False
+    assert cad_filelist_refuses_additem_dxf(meter) is not None
+
+
+def test_post_finish_contours_gate_treelist_number_of_contours():
+    """Post-Finish PASS is NumberOfContours≥1 on TreeListData. EXEC_FAIL if <1.
+
+    ProductType 100 / noun part is OK. OCC / Contours list are not the
+    PASS signal. QuoteItem_Read Data-only is not authority. invent=false.
+    """
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+        itemlist_contours_pass,
+        quote_treelist_rows,
+        step_cad_post_finish_contours_gate,
+    )
+
+    pass_row = {
+        "ProductType": 100,
+        "ProductTypeName": "part",
+        "Category": "Cad",
+        "NumberOfContours": 1,
+        "OpenContourCount": 0,
+    }
+    tree_pass = {"TreeListData": [pass_row]}
+    assert quote_treelist_rows(tree_pass) == [pass_row]
+    assert step_cad_post_finish_contours_gate(tree_pass) is None
+    assert itemlist_contours_pass(row=pass_row) is True
+
+    tree_data = {"Data": [{**pass_row}]}
+    assert quote_treelist_rows(tree_data)[0]["NumberOfContours"] == 1
+
+    fail_zero = {"TreeListData": [{**pass_row, "NumberOfContours": 0}]}
+    why_zero = step_cad_post_finish_contours_gate(fail_zero)
+    assert why_zero is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_zero
+    assert "NumberOfContours<1 after Finish" in why_zero
+    assert "Q10366" in why_zero
+    assert "invent" in why_zero.lower()
+    assert cad_finish_notes_refuse_additem_dxf([why_zero]) == why_zero
+
+    occ_only = {
+        "TreeListData": [
+            {
+                "ProductType": 100,
+                "Category": "Cad",
+                "OpenContourCount": 3,
+            }
+        ]
+    }
+    why_occ = step_cad_post_finish_contours_gate(occ_only)
+    assert why_occ is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_occ
+
+    read_only = {
+        "Data": [{**pass_row, "NumberOfContours": 1}],
+    }
+    why_read = step_cad_post_finish_contours_gate(read_only)
+    assert why_read is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_read
+
+    assert step_cad_post_finish_contours_gate(tree_pass, expect_cad=False) is None
+
+
+def test_read_quote_items_attaches_treelist_for_number_of_contours():
+    """QuoteItem_ReadTreeListData rows attach as TreeListData."""
+    from secturafab.push import SecturaFabPushService
+
+    client = MagicMock()
+    client.quote_item_read.return_value = {
+        "Data": [{"ProductType": 100, "Category": "Cad"}],
+        "Total": 1,
+    }
+    client.get_json.return_value = {"ItemList": []}
+    client.quote_item_read_treelist.return_value = {
+        "Data": [
+            {
+                "ProductType": 100,
+                "ProductTypeName": "part",
+                "NumberOfContours": 1,
+            }
+        ]
+    }
+    posted = SecturaFabPushService(client=client)._read_quote_items("qid")
+    client.quote_item_read_treelist.assert_called_once_with("qid")
+    assert posted["TreeListData"][0]["NumberOfContours"] == 1
+    assert posted["Data"][0]["Category"] == "Cad"
 
 
 def test_live_mid_wizard_contours_xhr_carrier_notes():

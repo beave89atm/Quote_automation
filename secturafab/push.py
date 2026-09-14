@@ -85,6 +85,7 @@ from .website import (
     _wizard_org_id_empty,
     step_cad_finish_hard_gate,
     step_cad_live_product_type_hard_gate,
+    step_cad_post_finish_contours_gate,
     step_cad_wizard_state_hard_gate,
     step_finish_pack_missing,
     wizard_quote_live_item_count,
@@ -117,6 +118,7 @@ from .website import (
     LINEAR_SKU_MISSING,
     pick_closest_linear_product,
     quote_item_rows,
+    quote_treelist_rows,
     row_name,
 )
 from .weld_ops import ensure_weld_ops, weld_ops_needs_info
@@ -3066,7 +3068,10 @@ class SecturaFabPushService:
         NumberOfContours≥1 only — enum 100 / noun ``part`` is normal
         (Q10333 / Q10348); do not require a Cad noun; do not refuse 100.
         UpdateItemType Cad does not write ProductType. Empty InternalData
-        / Contours=0 stay EXEC_FAIL,
+        does not block Finish when Cad+Material+inches is complete
+        (Q10366: Contours fill server-side on Finish). NumberOfContours<1
+        after Finish is EXEC_FAIL. Empty InternalData / Contours=0 stay
+        refuse when that recipe is incomplete,
         if thickness is missing or not
         inch (EXEC_FAIL, not Contours empty; Q10344 / H.6.38 Kyle UI
         control Cad + 0.1875 inch), if Adjust Properties / modal refresh
@@ -3081,8 +3086,9 @@ class SecturaFabPushService:
         (do not invent). Hard-gate before Finish: live wizard kids +
         org (multi-kid ≥2 for the grid gate), then inch thickness.
         invent=false.
-        After Finish, fail-close if PartMode is still null, or if Cad
-        Contours are empty / PR+laser pack is missing. Then log
+        After Finish, fail-close if PartMode is still null, if
+        NumberOfContours<1 on QuoteItem_ReadTreeListData / v1 ItemList
+        (EXEC_FAIL), or if Cad PR+laser pack is missing. Then log
         kendo row key names (CadType, Stock_*, FileType, SID/FileID/ID) and
         the same names on posted FileList.
         If kendo has CadType/Stock_*, copy them through — do not invent values.
@@ -3095,9 +3101,9 @@ class SecturaFabPushService:
         empty after explode is fail-close before Finish (live 28768-1
         page Finish HTTP 200 / GET 0). Clear Linear ProductSubType
         (bar_flat) on Cad PartMode rows. Do not invent InternalData.
-        After Finish, require Cad Contours≥1 + PR + laser (Linear Saw
-        if Linear). Do not fire UpdateDataNext. 21678-1 is UI-only
-        gold — do not open.
+        After Finish, require NumberOfContours≥1 (EXEC_FAIL if not)
+        + PR + laser (Linear Saw if Linear). Do not fire UpdateDataNext.
+        21678-1 is UI-only gold — do not open.
         """
         notes: list[str] = []
         from .chrome_cdp import chrome_session_lost
@@ -3945,6 +3951,11 @@ class SecturaFabPushService:
         )
         if pack_miss:
             notes.append(pack_miss)
+        contours_fail = step_cad_post_finish_contours_gate(
+            posted, expect_cad=want_cad
+        )
+        if contours_fail:
+            notes.append(contours_fail)
         return notes
 
     def finish_pdf_files(
@@ -4952,12 +4963,13 @@ class SecturaFabPushService:
         return notes
 
     def _read_quote_items(self, quote_id: str) -> dict[str, Any]:
-        """QuoteItem_Read for rows; attach v1 ItemList for NumberOfContours.
+        """QuoteItem_Read for rows; attach v1 ItemList + TreeListData.
 
         Mid-wizard notes: NumberOfContours is on finished GET v1 ItemList
         and QuoteItem_ReadTreeListData; absent on QuoteItem_Read list
         items. Persist Contours-good on NumberOfContours≥1, never OCC.
-        invent=false.
+        Q10366: GET /Quote/QuoteItem_ReadTreeListData?ParentID= after
+        Cad+Material A36+.1875 Finish. invent=false.
         """
         out: dict[str, Any] = {}
         if hasattr(self.client, "quote_item_read"):
@@ -4983,8 +4995,25 @@ class SecturaFabPushService:
                 if out:
                     merged = dict(out)
                     merged["ItemList"] = itemlist
-                    return merged
-                return peek
+                    out = merged
+                else:
+                    out = peek
+        tree = None
+        if hasattr(self.client, "quote_item_read_treelist"):
+            try:
+                tree = self.client.quote_item_read_treelist(quote_id)
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError, TypeError, ValueError):
+                tree = None
+        if not isinstance(tree, (dict, list)):
+            tree = None
+        tree_rows = quote_treelist_rows(tree) if tree is not None else []
+        if tree_rows:
+            if out:
+                merged = dict(out)
+                merged["TreeListData"] = tree_rows
+                out = merged
+            else:
+                out = {"TreeListData": tree_rows}
         if out:
             return out
         return {"ItemList": [], "Data": []}

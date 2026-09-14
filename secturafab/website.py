@@ -3050,6 +3050,26 @@ def plate_step_thickness_units_are_inch(row: dict[str, Any] | None) -> bool:
     return False
 
 
+def cad_material_inches_recipe_complete(row: dict[str, Any] | None) -> bool:
+    """True when Cad + drawing Material + inch thickness are set.
+
+    Q10366 / fd0b6e45: Cad+Material A36+.1875 Finish then
+    NumberOfContours=1 on QuoteItem_ReadTreeListData. ProductType
+    100 / noun ``part`` is OK — no Cad noun required. Still-Component
+    is not complete. Does not invent Material, thickness,
+    InternalData, or Contours. invent=false.
+    """
+    if not isinstance(row, dict):
+        return False
+    if plate_step_left_component_refuses_contours(row):
+        return False
+    if not _cad_plate_row_for_finish_gate(row):
+        return False
+    if not drawing_material_type(row):
+        return False
+    return plate_step_thickness_units_are_inch(row)
+
+
 def step_cad_finish_hard_gate(
     rows: list[dict[str, Any]] | None,
 ) -> str | None:
@@ -3057,8 +3077,10 @@ def step_cad_finish_hard_gate(
 
     Contours PASS is NumberOfContours≥1 only. Finished ProductType
     enum 100 / noun ``part`` is normal (Q10333 / Q10348) — do not
-    require a Cad noun; do not refuse 100. Empty InternalData /
-    Contours=0 stay EXEC_FAIL elsewhere. invent=false.
+    require a Cad noun; do not refuse 100. Empty InternalData does
+    not block Finish when Cad+Material+inches is complete; Contours
+    fill server-side on Finish (Q10366). NumberOfContours<1 after
+    Finish is EXEC_FAIL. invent=false.
 
     1. Still Component → do not Finish (need UpdateItemType Cad / UI Cad).
     2. Thickness missing / not inch (blank or meter) → EXEC_FAIL, not
@@ -3095,8 +3117,9 @@ def plate_step_live_product_type_not_cad_refuses(
 
     Kyle CoS: finished ProductType enum 100 / noun ``part`` is
     normal on Contours PASSes. Do not require a Cad noun. Do not
-    refuse 100. Empty InternalData / Contours=0 stay EXEC_FAIL
-    elsewhere. invent=false.
+    refuse 100. Empty InternalData does not block Finish when
+    Cad+Material+inches is complete. NumberOfContours<1 after
+    Finish is EXEC_FAIL. invent=false.
     """
     del row
     return None
@@ -3111,8 +3134,9 @@ def step_cad_live_product_type_hard_gate(
     Kyle CoS: Contours PASS is NumberOfContours≥1 only. Enum 100 /
     noun ``part`` is normal on PASSes. Do not require a Cad noun.
     Do not refuse 100. Empty live ItemList is Q10335 / mid-wizard
-    — no-op. Empty InternalData / Contours=0 stay EXEC_FAIL
-    elsewhere. invent=false.
+    — no-op. Empty InternalData does not block Finish when
+    Cad+Material+inches is complete. NumberOfContours<1 after
+    Finish is EXEC_FAIL. invent=false.
     """
     del live_rows, classified
     return None
@@ -3245,9 +3269,11 @@ def step_cad_wizard_state_hard_gate(
 def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
     """Refuse AddItem_DXFFiles when Cad InternalData is empty.
 
-    Live 28768-1: PartMode Cad + page Finish with InternalData null
-    landed GET 0 Cad. Kyle Loom c9d7 Cad plates Finish with real
-    profile geometry from explode — do not invent InternalData.
+    Q10366: AddItem_DXFFiles can return empty InternalData; Contours
+    fill server-side on Finish. Do not refuse solely on empty
+    InternalData when Cad+Material+inches is complete — the post-Finish
+    NumberOfContours≥1 gate is authority. Live 28768-1 leftovers
+    without that recipe still refuse. Do not invent InternalData.
     ImageString-without-InternalData is preview only (live 21785-2).
     Component left after Cad classify is the Contours fail path
     (Kyle Loom Component→Cad; Q10333 / H.6.38 PASS Cad / Contours=1 /
@@ -3270,6 +3296,8 @@ def cad_filelist_refuses_additem_dxf(row: dict[str, Any] | None) -> str | None:
                 "SetPartMode / UpdateItemType / unfold). "
                 "Do not invent InternalData."
             )
+        return None
+    if cad_material_inches_recipe_complete(row):
         return None
     if not (
         filelist_row_partmode_set(row)
@@ -3319,11 +3347,13 @@ def multi_kid_keep_grid_empty_internaldata_refuses(
     21839-1 full trail still empty) — neither fills Contours.
     ``POST /CadImport/UpdateData`` / editor Done is not a safe
     multi-kid fill (#DXFEdit + Q10355 wipe; ItemList is not
-    InternalData). Single-plate PASSes Q10344/46/48/49/51 fill after
+    InternalData).     Single-plate PASSes Q10344/46/48/49/51 fill after
     Kyle UI Cad+inches in Adjust Properties. Current apply_grid runs
     that same page_fn Cad+inches sequence one kid at a time; keep-grid
     is only the wipe safety net. Empty InternalData after that
-    sequence is still EXEC_FAIL — do not invent. invent=false.
+    sequence does not EXEC_FAIL when Cad+Material+inches is complete
+    (Q10366: Contours fill server-side on Finish). Contours gate
+    after Finish is authority. invent=false.
     """
     via = str(keep_via or "").strip()
     if via not in {"live", "rehydrate"}:
@@ -3374,6 +3404,7 @@ def cad_finish_notes_refuse_additem_dxf(
             or "organization lost mid CAD wizard" in text
             or "item_count dropped" in text
             or "keep-grid Cad+inches stuck" in text
+            or "NumberOfContours<1 after Finish" in text
         ):
             return text
     return None
@@ -3384,6 +3415,7 @@ def cad_finish_notes_pack_missing(notes: list[str] | None) -> str | None:
     markers = (
         "GET 0 Cad after Finish",
         "Cad Contours empty after Finish",
+        "NumberOfContours<1 after Finish",
         "Cad PR+laser pack missing after Finish",
         "Linear Saw pack missing after Finish",
     )
@@ -7581,6 +7613,53 @@ def finish_attempt_empty_partmode_or_internaldata(
                 "(Kyle Loom c9d7c05a classify-before-Finish)"
             )
     return None
+
+
+def quote_treelist_rows(payload: Any) -> list[dict[str, Any]]:
+    """Rows from QuoteItem_ReadTreeListData (TreeListData / TreeList / Data).
+
+    Unlike quote_contours_rows, Data is accepted here because the
+    TreeList endpoint may return Data with NumberOfContours (Q10366).
+    invent=false — do not invent Contours.
+    """
+    if isinstance(payload, list):
+        return [r for r in payload if isinstance(r, dict)]
+    if not isinstance(payload, dict):
+        return []
+    rows = quote_contours_rows(payload)
+    if rows:
+        return rows
+    for key in QUOTE_ITEM_READ_LIST_KEYS:
+        raw = payload.get(key)
+        if isinstance(raw, list) and any(isinstance(r, dict) for r in raw):
+            return [r for r in raw if isinstance(r, dict)]
+    return []
+
+
+def step_cad_post_finish_contours_gate(
+    posted: Any,
+    *,
+    expect_cad: bool = True,
+) -> str | None:
+    """After Finish: NumberOfContours≥1 on TreeListData / v1 ItemList.
+
+    Q10366: Cad+Material A36+.1875 Finish then GET
+    /Quote/QuoteItem_ReadTreeListData?ParentID= NumberOfContours=1.
+    ProductType 100 / noun ``part`` is OK — do not require a Cad noun.
+    QuoteItem_Read list items omit NumberOfContours — not the PASS
+    signal. invent=false — do not invent Contours.
+    """
+    if not expect_cad:
+        return None
+    rows = quote_contours_rows(posted)
+    if any(item_cad_contour_count(it) >= 1 for it in rows):
+        return None
+    return (
+        f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: NumberOfContours<1 after "
+        "Finish (GET /Quote/QuoteItem_ReadTreeListData?ParentID=; Q10366 "
+        "Cad+Material A36+.1875 NumberOfContours=1). ProductType 100/part "
+        "OK. Do not invent Contours/InternalData."
+    )
 
 
 def item_cad_contour_count(item: dict[str, Any] | None) -> int:
