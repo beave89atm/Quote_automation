@@ -3156,11 +3156,22 @@ STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL = "EXEC_FAIL"
 
 
 def _cad_plate_row_for_finish_gate(row: dict[str, Any] | None) -> bool:
-    """Cad-classified plate/sheet — not Assembly, Linear, or purchased Component."""
+    """Cad-classified plate/sheet — not Assembly, Linear, or bar stock.
+
+    Contours≥1 is a Laser plate gate only. RD BAR / round bar / DIA
+    kids are Long/Linear even if a leftover row still says Cad.
+    invent=false — do not invent Contours for bar kids.
+    """
     if not isinstance(row, dict):
         return False
     cat = str(row.get("Category") or row.get("ItemType") or "").strip()
     if cat in {"Assembly", "Linear"}:
+        return False
+    if str(row.get("FileType") or "").strip() == "Linear":
+        return False
+    from .step_classify import row_looks_like_round_bar_stock
+
+    if row_looks_like_round_bar_stock(row):
         return False
     if str(row.get("FileType") or "").strip() == "Component" and not is_cad_filelist_row(
         row
@@ -7942,6 +7953,8 @@ def step_cad_post_finish_contours_gate(
     """
     if not expect_cad:
         return None
+    from .step_classify import row_looks_like_round_bar_stock
+
     rows = quote_contours_rows(posted)
     cad_kids = [r for r in rows if _cad_plate_row_for_finish_gate(r)]
     if cad_kids:
@@ -7951,12 +7964,23 @@ def step_cad_post_finish_contours_gate(
                 f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: NumberOfContours<1 "
                 "after Finish (GET /Quote/QuoteItem_ReadTreeListData"
                 "?ParentID=; Q10366 Cad+Material A36+.1875 "
-                "NumberOfContours=1; Q10369 every Cad kid; Q10368 "
+                "NumberOfContours=1; Q10369 every Cad plate kid; Q10368 "
                 f"per-kid {per_kid}). ProductType "
-                "100/part OK. Do not invent Contours/InternalData."
+                "100/part OK. Linear/bar kids are not gated. "
+                "Do not invent Contours/InternalData."
             )
         return None
     if any(item_cad_contour_count(it) >= 1 for it in rows):
+        return None
+    # No plate/sheet Cad kids — Linear / RD BAR kids must not EXEC_FAIL
+    # solely for Contours=0. invent=false.
+    if any(
+        str(r.get("Category") or r.get("ItemType") or r.get("FileType") or "")
+        == "Linear"
+        or row_looks_like_round_bar_stock(r)
+        for r in rows
+        if isinstance(r, dict)
+    ):
         return None
     return (
         f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: NumberOfContours<1 after "
@@ -8035,8 +8059,11 @@ def step_finish_pack_missing(
         cad_items = []
         for it in items:
             cat = str(it.get("Category") or it.get("ItemType") or "")
-            if live_row_product_type_is_cad(it) or cat == "Cad":
-                cad_items.append(it)
+            if not (live_row_product_type_is_cad(it) or cat == "Cad"):
+                continue
+            if not _cad_plate_row_for_finish_gate(it):
+                continue
+            cad_items.append(it)
         if not cad_items:
             return (
                 "GET 0 Cad after Finish — not success "
@@ -8045,8 +8072,11 @@ def step_finish_pack_missing(
         contour_cad = []
         for it in contour_items:
             cat = str(it.get("Category") or it.get("ItemType") or "")
-            if live_row_product_type_is_cad(it) or cat == "Cad":
-                contour_cad.append(it)
+            if not (live_row_product_type_is_cad(it) or cat == "Cad"):
+                continue
+            if not _cad_plate_row_for_finish_gate(it):
+                continue
+            contour_cad.append(it)
         if not any(item_cad_contour_count(it) >= 1 for it in contour_cad):
             return (
                 "Cad Contours empty after Finish — not success "

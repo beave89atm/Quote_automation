@@ -287,6 +287,9 @@ _LINEAR_HINTS = (
     "HSS",
     "STRUCTURAL",
     "ROUND BAR",
+    "RD BAR",
+    "RD. BAR",
+    "RDBAR",
     "DOM",
     "PIVOT TUBE",
     "BOOM TUBE",
@@ -296,6 +299,7 @@ _LINEAR_HINTS = (
     "FLAT BAR",
     "SLUG",
 )
+_EXPLODE_PN_RE = re.compile(r"(?<![A-Z0-9])(\d{4,}(?:-\d+)?)(?![A-Z0-9])", re.I)
 _COMPONENT_HINTS = (
     "BOLT",
     "SCREW",
@@ -369,9 +373,41 @@ def _has_linear_noun(description: str) -> bool:
     text = f" {str(description or '').upper()} "
     if any(h in text for h in _LINEAR_HINTS):
         return True
+    from .step_classify import looks_like_round_bar_stock
     from .website import drawing_is_hss_dim_callout
 
+    if looks_like_round_bar_stock(description):
+        return True
     return bool(drawing_is_hss_dim_callout(description))
+
+
+def explode_kid_part_tokens(name: str) -> list[str]:
+    """Dashed PNs in STEP explode names (``HOOK …_31454-1`` → ``31454-1``)."""
+    found = [m.group(1) for m in _EXPLODE_PN_RE.finditer(str(name or ""))]
+    # Prefer dashed catalog PNs (31454-1) over bare job tokens (7742).
+    found.sort(key=lambda tok: (0 if "-" in tok else 1, -len(tok)))
+    return found
+
+
+def _kid_classify_blob(
+    name: str,
+    bom_noun: str = "",
+    pm: Any = None,
+    extra: str = "",
+) -> str:
+    """Name + LOM/PDF material/stock strings for Cad vs Linear classify."""
+    parts = [name, bom_noun, extra]
+    if pm is not None:
+        parts.extend(
+            [
+                getattr(pm, "source", "") or "",
+                getattr(pm, "raw_grade", "") or "",
+                getattr(pm, "raw_thickness", "") or "",
+                getattr(pm, "material", "") or "",
+                getattr(pm, "stock_text", "") or "",
+            ]
+        )
+    return " ".join(str(p).strip() for p in parts if str(p or "").strip())
 
 
 def _cad_plate_sheet_noun(description: str) -> bool:
@@ -404,7 +440,7 @@ def apply_step_stock_category(
         return cat
     if _cad_plate_sheet_noun(description):
         return cat
-    if kind == "flat_bar":
+    if kind in {"flat_bar", "round_bar"}:
         return "Linear"
     return cat
 
@@ -435,7 +471,9 @@ def classify_sectura_item(
 
     Unnamed STEP solids use vertex/opposing-PLANE bbox (not all
     CARTESIAN_POINT span). Elongated flat-bar (~1–2 in thick, high L/w)
-    is Linear — not ``strong_plate`` Cad Contours. Named plate stays Cad.
+    and RD BAR / round bar / diameter stock are Linear — not
+    ``strong_plate`` Cad Contours. Named plate stays Cad. Ambiguous
+    bar-vs-plate stock fail-closes away from the Laser Contours path.
     """
     from .locked_1001898 import locked_category
 
@@ -475,6 +513,10 @@ def classify_sectura_item(
         return "Component"
     if _looks_like_formed_plate(description):
         return "Cad"
+    from .step_classify import looks_like_round_bar_stock
+
+    if looks_like_round_bar_stock(description):
+        return "Linear"
     if _cad_plate_sheet_noun(description):
         return "Cad"
     if _has_linear_noun(description):
@@ -2829,8 +2871,14 @@ class SecturaFabPushService:
             stem = str(row.get("Name") or "").strip()
             stem_u = stem.upper()
             pm = lookup_part_material(part_materials, name)
+            if pm is None:
+                for tok in explode_kid_part_tokens(f"{dashed} {name} {stem}"):
+                    pm = lookup_part_material(part_materials, tok)
+                    if pm:
+                        break
+            classify_blob = _kid_classify_blob(name, bom_noun, pm)
             cat = classify_sectura_item(
-                name,
+                classify_blob,
                 pm.thickness_in if pm and pm.thickness_in is not None else None,
                 stock_dims=stock_dims,
                 stock_kind=stock_kind,
@@ -2863,7 +2911,7 @@ class SecturaFabPushService:
                         extra = lom_child_nouns[idx]
                     if extra:
                         cat = classify_sectura_item(
-                            f"{stem} {extra}",
+                            _kid_classify_blob(f"{stem} {extra}", bom_noun, pm),
                             pm.thickness_in if pm and pm.thickness_in is not None else None,
                             stock_dims=stock_dims,
                             stock_kind=stock_kind,
@@ -2951,6 +2999,17 @@ class SecturaFabPushService:
                 machine=machine,
                 thickness_source=thk_source or None,
             )
+            from .step_classify import STOCK_BAR_KINDS, looks_like_round_bar_stock
+
+            if looks_like_round_bar_stock(classify_blob) or (
+                str(stock_kind or "") in STOCK_BAR_KINDS
+            ):
+                overlaid["stock_kind"] = (
+                    "round_bar"
+                    if looks_like_round_bar_stock(classify_blob)
+                    else str(stock_kind)
+                )
+                overlaid["stock_text"] = classify_blob
             if bind:
                 cfg = str(bind.get("productConfigID") or "")
                 pid = str(bind.get("productID") or product_id or "")
