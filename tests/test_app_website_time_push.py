@@ -1692,6 +1692,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "H.6.38" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10367" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "10289-5" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10373" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10350" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21843-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10338" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -2389,6 +2390,54 @@ def test_q10372_34328_1_contours_fail_forever_forbid():
             method="PATCH",
             path="/Quote/UpdateItem_Part",
             payload={"ID": "d62e2ad1-7324-4034-a44e-cbd7a3acee9d"},
+        )
+
+
+def test_q10373_34328_1_mixed_classify_pass_forever_forbid():
+    """Q10373 / 523d8328 34328-1 mixed classify PASS leftover — never remint / PATCH.
+
+    NEW remint PASS. Complete Quote NOT DONE. OPEN-NEW draft.
+    Plate 34329 Cad A36 .25-1/4" gauge Laser NumberOfContours≥1.
+    HOOK 31454-1 Long/Linear Hot Rolled Round Bar CRS (closest to
+    RD BAR CR 1018) 0.5" × 4.375" Saw; no Contours path.
+    Do not forbid PN 34328-1 (PO remint). invent=false. Do not
+    invent Contours.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "523d8328-f310-434d-a502-00502c987dd2" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "523d8328" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10373" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "34328-1" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("523d8328-f310-434d-a502-00502c987dd2")
+    assert is_forbidden_quote_id("523d8328-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10373")
+    assert not is_forbidden_quote_number("34328-1")
+    assert spent_quote_number_block_reason("Q10373")
+    assert spent_quote_number_block_reason("34328-1") is None
+    with pytest.raises(ForbiddenQuoteError, match="Q10373"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10373"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="523d8328"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "523d8328-f310-434d-a502-00502c987dd2"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="523d8328"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "523d8328-f310-434d-a502-00502c987dd2"},
         )
 
 
