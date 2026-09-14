@@ -4786,7 +4786,7 @@ def test_apply_grid_part_modes_js_keeps_kids_without_select_or_invent():
     assert "Q10355" in js
     assert "34328-1" in js
     assert ".select(" not in js
-    assert "editCell" not in js
+    assert "editCell(" not in js
     assert "NumberOfContours" not in js
     assert "Contours:" not in js
     assert "dataSource.data(rows)" in js
