@@ -2300,6 +2300,51 @@ def test_q10368_34328_1_contours_fail_forever_forbid():
         )
 
 
+def test_q10371_34328_1_contours_fail_forever_forbid():
+    """Q10371 / 67472e72 34328-1 Contours FAIL leftover — never remint / PATCH.
+
+    Remint EXEC_FAIL leftover. 31454-1 Contours=1 @0.5in; 34329 red
+    thickness @0.25 Contours blocked (PR47 gate). Do not forbid PN
+    34328-1 (PO remint). invent=false. Do not invent Contours.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "67472e72-d01b-48e2-8040-1db505659d26" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "67472e72" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10371" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "34328-1" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("67472e72-d01b-48e2-8040-1db505659d26")
+    assert is_forbidden_quote_id("67472e72-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10371")
+    assert not is_forbidden_quote_number("34328-1")
+    assert spent_quote_number_block_reason("Q10371")
+    assert spent_quote_number_block_reason("34328-1") is None
+    with pytest.raises(ForbiddenQuoteError, match="Q10371"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10371"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="67472e72"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "67472e72-d01b-48e2-8040-1db505659d26"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="67472e72"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "67472e72-d01b-48e2-8040-1db505659d26"},
+        )
+
+
 def test_weld_does_not_post_before_cad_or_linear_kids():
     from secturafab.weld_ops import ensure_weld_ops
 
