@@ -3065,11 +3065,12 @@ class SecturaFabPushService:
         is still Component on a Cad plate, if live GET ProductType is
         ``part`` / not Cad (EXEC_FAIL, not Contours empty; Q10354 /
         7881d4b3 D.H.38.96; Q10356 / 05bee105 V.20.78; Q10365 /
-        7801ab99 H.10.38 Cad selector + 0.1875 in finished part /
-        enum 100 — in-memory 100 is not Cad),
+        7801ab99 H.10.38 mouse UpdateItemType Cad 200 then GET part /
+        fill_xhr=null — UpdateItemType is ItemType classify, not
+        ProductType Cad; in-memory 100 / ItemType Cad is not Cad),
         if thickness is missing or not
         inch (EXEC_FAIL, not Contours empty; Q10344 / H.6.38 Kyle UI
-        control Cad + 0.1875 inch),         if Adjust Properties / modal refresh
+        control Cad + 0.1875 inch), if Adjust Properties / modal refresh
         dropped #gridDXFParts to 0 or cleared Organization (EXEC_FAIL;
         Q10352 / 8679-1 org wipe, Q10353 / 12519-2 empty quote grid,
         Q10355 / 34328-1 first-child Adjust Properties edit — not only

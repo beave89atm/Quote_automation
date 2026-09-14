@@ -53,9 +53,11 @@ Live leftovers after Cad-for-plate:
     NumberOfContours missing / Contours PASS not proven.
     Same Contours-FAIL class as Q10354 / D.H.38.96. invent=false.
   7801ab99 Q10365 — Safe Cave H.10.38 Contours FAIL leftover.
-    Mouse Cad + 0.1875 in set, finished ProductType part;
-    no Contours/InternalData fill; fill_xhr=null.
-    Same Contours-FAIL class as Q10354 / Q10356. invent=false.
+    Mouse Product Type Cad + 0.1875 in; UpdateItemType 200 then
+    PartImage / UpdateData / CADData; fill_xhr=null; finished
+    ProductType ``part``. Same FAIL class as Q10354 / Q10356.
+    UpdateItemType is ItemType only — does not persist ProductType
+    Cad. invent=false. Forever-forbid; never remint.
 
 Human Kyle on Q10333 / b5f56ac3: real Component→Cad dropdown +
 thickness + Finish → NumberOfContours=1 PASS. Finished Q10336 /
@@ -95,6 +97,7 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
     "update_item_type_keys": UPDATE_ITEM_TYPE_BODY_KEYS,
     "update_item_type_is_classify_xhr": True,
     "update_item_type_fills_contours": False,
+    "update_item_type_sets_product_type_cad": False,
     "get_border_size_path": GET_BORDER_SIZE_PATH,
     "kendo_row_set_fills_contours": False,
     "human_dropdown_fills_contours": True,
@@ -149,6 +152,21 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
                 "(GetPDFData / onInternalDataChange). Wired keys ID + "
                 "ItemType=Cad only — capture did not restate keys. "
                 "Contours still 0 before Finish. Classify XHR, not fill."
+            ),
+        },
+        {
+            "id": "update_item_type_persists_product_type_cad",
+            "call": "POST /Part/UpdateItemType",
+            "fn": "UpdateItemType",
+            "ruled_out": True,
+            "why": (
+                "Q10365 / H.10.38 mouse Product Type dropdown Cad "
+                "fired UpdateItemType 200 then PartImage / UpdateData / "
+                "CADData; fill_xhr=null; finished GET ProductType "
+                "``part`` / enum 100. Body is ID + ItemType only. "
+                "Finish / AddItem_DXFFiles copies FileList ProductType "
+                "100. Same FAIL class as Q10354 / Q10356. Do not invent "
+                "a ProductType persist key or Contours fill."
             ),
         },
         {
