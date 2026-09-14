@@ -1491,6 +1491,10 @@ STEP_CONTOURS_UNLOCK_REQUIRES = "kyle_contours_ge1_or_sectura_support"
 # UpdateData / contour editor Done needs #DXFEdit (Q10355 wipe) and
 # ItemList is not InternalData. No safe multi-kid fill. invent=false.
 MULTI_KID_SAFE_CONTOURS_FILL = None
+# Named single-plate PASS trail (Q10336) has no mid-wizard InternalData
+# writer. NumberOfContours≥1 appears on finished v1 ItemList only.
+# Q10335: UpdateItemType Contours still 0 before Finish.
+SINGLE_PLATE_CONTOURS_FLIP_XHR = None
 MULTI_KID_CONTOURS_BLOCKED_ON_SECTURA = True
 MULTI_KID_CONTOURS_SUPPORT_ASK = (
     "Sectura: return nonempty InternalData+ImageString on POST /part/create "
@@ -1652,6 +1656,11 @@ def step_contours_unlock_requires() -> str:
 def multi_kid_safe_contours_fill() -> str | None:
     """Named non-destructive multi-kid Contours fill XHR — none exists."""
     return MULTI_KID_SAFE_CONTOURS_FILL
+
+
+def single_plate_contours_flip_xhr() -> str | None:
+    """Named XHR that flips Contours/InternalData after Cad+inches — none."""
+    return SINGLE_PLATE_CONTOURS_FLIP_XHR
 
 
 def multi_kid_contours_blocked_on_sectura() -> bool:

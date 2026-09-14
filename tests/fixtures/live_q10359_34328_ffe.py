@@ -70,10 +70,106 @@ from secturafab.website import (
     MULTI_KID_CONTOURS_BLOCKED_ON_SECTURA,
     MULTI_KID_CONTOURS_SUPPORT_ASK,
     MULTI_KID_SAFE_CONTOURS_FILL,
+    SINGLE_PLATE_CONTOURS_FLIP_XHR,
     STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
     STEP_CONTOURS_FILL_UNLOCKED,
     STEP_CONTOURS_MISSING_CALL,
     STEP_EXPLODE_NO_INTERNALDATA,
+)
+
+# CoS steer named these desktop-box captures. Absent on this VM, Dropbox,
+# git history, and prior cloud-agent transcripts (Q10336 fixture already
+# says "capture JSON was not on box"). Restatements only.
+BOX_ARTIFACT_MINE: tuple[dict[str, Any], ...] = (
+    {
+        "path": "/workspace/live-mouse-cad-click-xhr-capture.json",
+        "present": False,
+        "restate": "tests/fixtures/live_q10335_update_item_type.py",
+        "fills": False,
+        "named": ("POST /Part/UpdateItemType", "/part/PartImage", "/Quote/GetBorderSize"),
+        "note": "Q10335 Contours still 0 before Finish. Classify only.",
+    },
+    {
+        "path": "/workspace/live-mouse-cad-finish-xhr-capture.json",
+        "present": False,
+        "restate": "tests/fixtures/live_q10336_h638.py",
+        "fills": False,
+        "named": (
+            "/CadImport/UploadItem_DXFFiles",
+            "/CadImport/Data",
+            "/part/create",
+            "/Part/UpdateItemType",
+            "/part/PartImage",
+            "/Quote/GetBorderSize",
+            "/Quote/AddItem_DXFFiles",
+            "/quote/ItemEdit",
+        ),
+        "note": "capture JSON was not on box. No UpdateData. Flip is post-Finish NumberOfContours.",
+    },
+    {
+        "path": "/workspace/live-mid-wizard-contours-xhr.json",
+        "present": False,
+        "restate": "tests/fixtures/live_mid_wizard_contours_xhr.py",
+        "fills": False,
+        "named": ("/CadImport/Data", "/Part/UpdateItemType", "/Quote/GetBorderSize"),
+        "note": "Ruled out as Contours flip carrier. NumberOfContours on finished v1 ItemList.",
+    },
+    {
+        "path": "/workspace/step-contours-kyle-har-report.md",
+        "present": False,
+        "restate": "tests/fixtures/step_contours_kyle_capture.py",
+        "fills": False,
+        "named": (),
+        "note": "35136-1/14327-5 leftover HARs: explode InternalData empty. missing_call=/part/create t.List.",
+    },
+    {
+        "path": "/workspace/step-contours-kyle-har-summary.json",
+        "present": False,
+        "restate": "tests/fixtures/step_contours_kyle_capture.py",
+        "fills": False,
+        "named": (),
+        "note": "Same leftover emptiness. Does not name a fill XHR.",
+    },
+    {
+        "path": "/workspace/live-h638-kyle-ui-control.txt",
+        "present": False,
+        "restate": "tests/fixtures/live_q10344_h638.py",
+        "fills": False,
+        "named": (),
+        "note": "Kyle UI Cad+0.1875 inch → Contours fill → Finish. HAR unrecorded. Never remint Q10344.",
+    },
+    {
+        "path": "/workspace/live-q10333-h638-contours-pass.json",
+        "present": False,
+        "restate": "tests/fixtures/live_q10333_h638.py",
+        "fills": False,
+        "named": (),
+        "note": "Human Component→Cad + thickness + Finish. XHR sequence unrecorded. Never remint Q10333.",
+    },
+    {
+        "path": "/workspace/live-contours-our-bug-dig.md",
+        "present": False,
+        "restate": "tests/fixtures/q10333_q10336_contours_gap.py",
+        "fills": False,
+        "named": (),
+        "note": "Finished-field gap closed: NumberOfContours=1. OCC=0 expected. invent fill locked.",
+    },
+    {
+        "path": "/workspace/live-contours-our-bug-dig.json",
+        "present": False,
+        "restate": "tests/fixtures/q10333_q10336_contours_gap.py",
+        "fills": False,
+        "named": (),
+        "note": "Same as .md restatement.",
+    },
+    {
+        "path": "/workspace/live-time-34328-1-ffe210e-prove.json",
+        "present": False,
+        "restate": "tests/fixtures/live_q10359_34328_ffe.py",
+        "fills": False,
+        "named": (),
+        "note": "Q10359 CoS: keep_grid live Cad+inches copied_n=0 InternalData empty EXEC_FAIL.",
+    },
 )
 
 Q10359_34328_FFE_COS: dict[str, Any] = {
@@ -102,6 +198,7 @@ Q10359_34328_FFE_COS: dict[str, Any] = {
     "invent_internaldata": False,
     "fill_unlocked": STEP_CONTOURS_FILL_UNLOCKED,
     "safe_fill": MULTI_KID_SAFE_CONTOURS_FILL,
+    "single_plate_contours_flip_xhr": SINGLE_PLATE_CONTOURS_FLIP_XHR,
     "blocked_on_sectura": MULTI_KID_CONTOURS_BLOCKED_ON_SECTURA,
     "support_ask": MULTI_KID_CONTOURS_SUPPORT_ASK,
     "unlocks_automation_contours_fill": False,
@@ -144,7 +241,13 @@ def q10359_34328_ffe_cos() -> dict[str, Any]:
     out["single_plate_pass_contrast"] = tuple(
         Q10359_34328_FFE_COS["single_plate_pass_contrast"]
     )
+    out["box_artifact_mine"] = [dict(row) for row in BOX_ARTIFACT_MINE]
     return out
+
+
+def q10359_box_artifact_mine() -> list[dict[str, Any]]:
+    """Each CoS-steer box path: present=false, restatement only. invent=false."""
+    return [dict(row) for row in BOX_ARTIFACT_MINE]
 
 
 def q10359_single_vs_multi_xhr_diff() -> dict[str, Any]:

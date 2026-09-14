@@ -15177,6 +15177,7 @@ def test_q10359_34328_ffe_blocked_on_sectura_no_safe_fill():
     from secturafab.website import (
         MULTI_KID_CONTOURS_BLOCKED_ON_SECTURA,
         MULTI_KID_SAFE_CONTOURS_FILL,
+        SINGLE_PLATE_CONTOURS_FLIP_XHR,
         STEP_CONTOURS_FILL_UNLOCKED,
         STEP_CONTOURS_MISSING_CALL,
         STEP_CONTOURS_NOT_FILL_PATHS,
@@ -15184,9 +15185,11 @@ def test_q10359_34328_ffe_blocked_on_sectura_no_safe_fill():
         multi_kid_contours_support_ask,
         multi_kid_keep_grid_empty_internaldata_refuses,
         multi_kid_safe_contours_fill,
+        single_plate_contours_flip_xhr,
     )
     from tests.fixtures.live_q10359_34328_ffe import (
         q10359_34328_ffe_cos,
+        q10359_box_artifact_mine,
         q10359_single_vs_multi_xhr_diff,
     )
     from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
@@ -15205,6 +15208,8 @@ def test_q10359_34328_ffe_blocked_on_sectura_no_safe_fill():
     assert dump["finish_refused"] is True
     assert dump["invent"] is False
     assert dump["safe_fill"] is MULTI_KID_SAFE_CONTOURS_FILL is None
+    assert dump["single_plate_contours_flip_xhr"] is SINGLE_PLATE_CONTOURS_FLIP_XHR is None
+    assert single_plate_contours_flip_xhr() is None
     assert dump["blocked_on_sectura"] is MULTI_KID_CONTOURS_BLOCKED_ON_SECTURA is True
     assert dump["hypothesis_updatedata_editor_done_is_safe_fill"] is False
     assert dump["classify_finish_internaldata_fill"] is CLASSIFY_FINISH_INTERNALDATA_FILL
@@ -15214,6 +15219,14 @@ def test_q10359_34328_ffe_blocked_on_sectura_no_safe_fill():
     assert dump["box_artifacts_on_dropbox"] is False
     assert "live_mid_wizard_contours_xhr.py" in dump["box_restatements_mined"]
     assert "live_q10336_h638.py" in dump["box_restatements_mined"]
+    mined = q10359_box_artifact_mine()
+    assert len(mined) == 10
+    assert all(row["present"] is False for row in mined)
+    assert all(row["fills"] is False for row in mined)
+    paths = [row["path"] for row in mined]
+    assert "/workspace/live-mouse-cad-click-xhr-capture.json" in paths
+    assert "/workspace/live-mouse-cad-finish-xhr-capture.json" in paths
+    assert "/workspace/live-time-34328-1-ffe210e-prove.json" in paths
     assert dump["destructive_row_set_select_editcell_but_dxf"] is False
     assert dump["do_not_forbid_part_number"] is True
     assert dump["fill_unlocked"] is STEP_CONTOURS_FILL_UNLOCKED is False
