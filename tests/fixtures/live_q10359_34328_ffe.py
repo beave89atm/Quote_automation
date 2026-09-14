@@ -34,6 +34,24 @@ InternalData. ``UpdateDataNext`` is editor Previous/Next
 ``#DXFEdit``. Opening editDXFFile / select / editCell / ``#but_dxf``
 is the Q10355 ``#gridDXFParts`` wipe. Not a safe multi-kid fill.
 
+## Box artifacts (CoS steer)
+
+Named desktop-box captures were not on this VM or Kyle Dropbox
+(searched; invent=false). In-repo restatements were mined instead:
+
+- ``live_mid_wizard_contours_xhr.py`` ← live-mid-wizard-contours-xhr.json
+  Data / UpdateItemType / GetBorderSize are **not** the Contours flip.
+  NumberOfContours≥1 appears on finished v1 ItemList / TreeListData.
+- ``live_q10336_h638.py``: mouse trail named; "capture JSON was not on box".
+  No UpdateData. UpdateItemType + GetBorderSize do not fill InternalData.
+- ``live_q10333_h638.py`` / ``live_q10344_h638.py``: Kyle UI PASS;
+  human HAR unrecorded. Unlock named as Cad+inches then Contours fill.
+- ``live_q10358_34328_1.py`` + this CoS: empty InternalData EXEC_FAIL
+  contrast (ffe210e prove class).
+
+Still no named XHR that writes FileList InternalData after Cad+inches
+without select / editCell / ``#but_dxf``.
+
 ## Safe automation fill
 
 None. ``MULTI_KID_SAFE_CONTOURS_FILL`` is None. Blocked on Sectura:
@@ -99,6 +117,15 @@ Q10359_34328_FFE_COS: dict[str, Any] = {
     ),
     "single_plate_fill_via": "kyle_ui_adjust_properties_page_fn_cad_inches",
     "single_plate_fill_har": None,
+    "box_artifacts_on_this_vm": False,
+    "box_artifacts_on_dropbox": False,
+    "box_restatements_mined": (
+        "live_mid_wizard_contours_xhr.py",
+        "live_q10336_h638.py",
+        "live_q10333_h638.py",
+        "live_q10344_h638.py",
+        "live_q10358_34328_1.py",
+    ),
     "keep_grid_skips_page_fn": True,
     "not_grid_loss": True,
     "not_q10355_wipe": True,

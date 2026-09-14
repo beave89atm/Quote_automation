@@ -15210,6 +15210,10 @@ def test_q10359_34328_ffe_blocked_on_sectura_no_safe_fill():
     assert dump["classify_finish_internaldata_fill"] is CLASSIFY_FINISH_INTERNALDATA_FILL
     assert CLASSIFY_FINISH_INTERNALDATA_FILL is None
     assert dump["keep_grid_skips_page_fn"] is True
+    assert dump["box_artifacts_on_this_vm"] is False
+    assert dump["box_artifacts_on_dropbox"] is False
+    assert "live_mid_wizard_contours_xhr.py" in dump["box_restatements_mined"]
+    assert "live_q10336_h638.py" in dump["box_restatements_mined"]
     assert dump["destructive_row_set_select_editcell_but_dxf"] is False
     assert dump["do_not_forbid_part_number"] is True
     assert dump["fill_unlocked"] is STEP_CONTOURS_FILL_UNLOCKED is False
