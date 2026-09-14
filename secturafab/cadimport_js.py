@@ -295,6 +295,28 @@ UPDATE_ITEM_TYPE_PATH = "/Part/UpdateItemType"
 UPDATE_ITEM_TYPE_BODY_KEYS = ("ID", "ItemType")
 UPDATE_ITEM_TYPE_CAD = "Cad"
 UPDATE_ITEM_TYPE_SETS_PRODUCT_TYPE_CAD = False
+# Live GET 2026-09-14 of Contours PASSes Q10333 / Q10348 (and peers
+# Q10336/39/44/46/49/51): finished v1 ItemList has ProductType=100,
+# ProductTypeName absent, ItemType=null, ProductSubType=prt_dxf.
+# No UpdatePropertyValue / grid ProductType=Cad / AddItem_DXFFiles
+# Cad-noun write in artifacts, QuoteOrderEdit snippets, or GET.
+# Cad noun is UI mapping of enum 100, not a persisted v1 field.
+# invent=false — do not mint a ProductType Cad persist XHR.
+PRODUCT_TYPE_CAD_WRITE_XHR = None
+PRODUCT_TYPE_CAD_WRITE_METHOD = None
+PRODUCT_TYPE_CAD_WRITE_PATH = None
+PRODUCT_TYPE_CAD_WRITE_BODY = None
+PRODUCT_TYPE_CAD_SHOWN_VIA = (
+    "v1_itemlist_producttype_100_productsubtype_prt_dxf"
+)
+PRODUCT_TYPE_CAD_WRITE_CAPTURE_NEEDED = (
+    "Fresh unused STEP (never remint Q10333/36/39/44/46/48/49/51). "
+    "DevTools HAR of Kyle Adjust Properties Product Type dropdown "
+    "(not File type / UpdateItemType). Persist method+path+body of "
+    "any XHR whose request or response contains ProductTypeName, "
+    "ProductType:\"Cad\", or ProductType=Cad. If none fire before "
+    "Finish, Cad noun stays UI-only."
+)
 UPDATE_ITEM_TYPE_SNIPPET = (
     '$.ajax({type:"POST",url:"/Part/UpdateItemType",'
     "data:{ID:id,ItemType:type}})"
@@ -540,6 +562,11 @@ def update_item_type_fields(
 def update_item_type_sets_product_type_cad() -> bool:
     """Never. Classify XHR is ItemType only (Q10335 / Q10365)."""
     return UPDATE_ITEM_TYPE_SETS_PRODUCT_TYPE_CAD
+
+
+def product_type_cad_write_xhr() -> None:
+    """No captured XHR writes ProductType Cad. invent=false."""
+    return PRODUCT_TYPE_CAD_WRITE_XHR
 
 
 def get_border_size_fields(*, thickness_units: str | None = None) -> dict[str, str]:

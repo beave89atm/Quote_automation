@@ -73,6 +73,7 @@ from typing import Any
 from secturafab.cadimport_js import (
     CLASSIFY_FINISH_INTERNALDATA_FILL,
     GET_BORDER_SIZE_PATH,
+    PRODUCT_TYPE_CAD_WRITE_XHR,
     SET_PART_MODE_PATH,
     UPDATE_ITEM_TYPE_BODY_KEYS,
     UPDATE_ITEM_TYPE_PATH,
@@ -98,6 +99,7 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
     "update_item_type_is_classify_xhr": True,
     "update_item_type_fills_contours": False,
     "update_item_type_sets_product_type_cad": False,
+    "product_type_cad_write_xhr": PRODUCT_TYPE_CAD_WRITE_XHR,
     "get_border_size_path": GET_BORDER_SIZE_PATH,
     "kendo_row_set_fills_contours": False,
     "human_dropdown_fills_contours": True,
@@ -227,6 +229,34 @@ CAD_DROPDOWN_GAP: dict[str, Any] = {
                 "Do not invent an ItemEdit body."
             ),
         },
+        {
+            "id": "update_property_value_producttype_cad",
+            "call": None,
+            "fn": "UpdatePropertyValue",
+            "ruled_out": True,
+            "why": (
+                "No UpdatePropertyValue string in QuoteOrderEdit "
+                "fixtures, cadimport_js, or box/Dropbox HARs "
+                "(absent). Live GET of Q10333 / Q10348 has no "
+                "ProductTypeName and no ProductType Cad noun. "
+                "Do not invent that XHR."
+            ),
+        },
+        {
+            "id": "additem_dxf_writes_producttype_cad_noun",
+            "call": "POST /Quote/AddItem_DXFFiles",
+            "fn": "OnAddDXFClick",
+            "ruled_out": True,
+            "why": (
+                "OnAddDXFClick copies #gridDXFParts FileList "
+                "ProductType as-is (typically enum 100). Live GET "
+                "of Contours PASSes Q10333 / Q10348 / Q10344 / "
+                "Q10349 / Q10351 persist ProductType=100, "
+                "ProductTypeName absent, ItemType=null, "
+                "ProductSubType=prt_dxf. Cad noun is not a "
+                "Finish-written v1 field."
+            ),
+        },
     ),
 }
 
@@ -248,5 +278,6 @@ def cad_dropdown_contours_gap_exhausted() -> bool:
         and gap["unlocks_automation_contours_fill"] is False
         and gap["invent"] is False
         and gap["update_item_type_fills_contours"] is False
+        and gap["product_type_cad_write_xhr"] is None
         and all(h.get("ruled_out") for h in gap["hypotheses"])
     )

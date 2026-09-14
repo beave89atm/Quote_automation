@@ -2898,8 +2898,11 @@ def bind_plate_step_product_type_cad(row: dict[str, Any] | None) -> dict[str, An
     Writes the API/kendo fields Kyle's dropdown persists (ProductType=100,
     PartMode 0, FileType/ItemType/Category Cad, Machine Laser, thickness
     inches) and callers POST /Part/UpdateItemType ItemType=Cad (Q10335
-    mouse classify XHR). Does not invent InternalData / Contours /
-    NumberOfContours. Still refuse Finish if those stay empty.
+    mouse classify XHR). Finished v1 GET of Contours PASSes Q10333 /
+    Q10348 keep ProductType=100 with no ProductTypeName Cad noun —
+    do not invent a ProductType Cad persist XHR. Does not invent
+    InternalData / Contours / NumberOfContours. Still refuse Finish
+    if those stay empty.
     """
     out = dict(row) if isinstance(row, dict) else {}
     out["ProductType"] = 100

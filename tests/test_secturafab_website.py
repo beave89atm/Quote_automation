@@ -12514,6 +12514,7 @@ def test_leftover_cad_for_plate_h638_q10334_forever_forbid():
     assert gap["update_item_type_is_classify_xhr"] is True
     assert gap["update_item_type_fills_contours"] is False
     assert gap["update_item_type_sets_product_type_cad"] is False
+    assert gap["product_type_cad_write_xhr"] is None
     assert cad_dropdown_contours_gap_exhausted() is True
     ids = [h["id"] for h in gap["hypotheses"]]
     assert ids == [
@@ -12525,6 +12526,8 @@ def test_leftover_cad_for_plate_h638_q10334_forever_forbid():
         "finish_fills_contours",
         "thickness_unit_conversion",
         "quote_item_edit_post_finish",
+        "update_property_value_producttype_cad",
+        "additem_dxf_writes_producttype_cad_noun",
     ]
     assert all(h["ruled_out"] is True for h in gap["hypotheses"])
 
@@ -12573,6 +12576,80 @@ def test_leftover_cad_for_plate_h638_q10334_forever_forbid():
     assert "f73dd116" not in refuse
     assert "Q10336" not in refuse
     assert "InternalData empty" in refuse
+
+
+def test_producttype_cad_write_xhr_not_found():
+    """Contours PASSes persist ProductType=100 — no Cad-noun write XHR.
+
+    Live GET Q10333 / Q10348: enum 100, ProductTypeName absent,
+    ItemType=null, ProductSubType=prt_dxf. UpdateItemType / 
+    UpdatePropertyValue / AddItem_DXFFiles Cad noun ruled out.
+    invent=false; do not remint forever-protects.
+    """
+    from secturafab.cadimport_js import (
+        PRODUCT_TYPE_CAD_SHOWN_VIA,
+        PRODUCT_TYPE_CAD_WRITE_CAPTURE_NEEDED,
+        product_type_cad_write_xhr,
+        update_item_type_sets_product_type_cad,
+    )
+    from secturafab.website import (
+        live_get_product_type_is_cad,
+        live_row_product_type_is_cad,
+    )
+    from tests.fixtures.live_producttype_cad_write import (
+        live_producttype_cad_write,
+    )
+    from tests.fixtures.live_q10333_h638 import q10333_h638_pass_dump
+    from tests.fixtures.live_q10348_h1670 import q10348_h1670_pass_dump
+
+    dump = live_producttype_cad_write()
+    assert dump["invent"] is False
+    assert dump["found"] is False
+    assert dump["product_type_cad_write_xhr"] is None
+    assert dump["method"] is None
+    assert dump["path"] is None
+    assert dump["body"] is None
+    assert dump["update_item_type_sets_product_type_cad"] is False
+    assert dump["shown_via"] == PRODUCT_TYPE_CAD_SHOWN_VIA
+    assert "prt_dxf" in dump["shown_via"]
+    assert "Product Type dropdown" in dump["capture_needed"]
+    assert dump["capture_needed"] == PRODUCT_TYPE_CAD_WRITE_CAPTURE_NEEDED
+    assert dump["box_artifacts_present"] is False
+    assert dump["dropbox_artifacts_present"] is False
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert product_type_cad_write_xhr() is None
+    assert update_item_type_sets_product_type_cad() is False
+    assert "UpdatePropertyValue" in dump["ruled_out"]
+    assert "AddItem_DXFFiles ProductType Cad noun" in dump["ruled_out"]
+
+    q33 = dump["q10333"]
+    assert q33["quote_id"] == q10333_h638_pass_dump()["quote_id"]
+    assert q33["product_type"] == 100
+    assert q33["product_type_name"] is None
+    assert q33["item_type"] is None
+    assert q33["product_subtype"] == "prt_dxf"
+    assert q33["number_of_contours"] == 1
+    assert q33["contours_pass"] is True
+
+    q48 = dump["q10348"]
+    assert q48["quote_id"] == q10348_h1670_pass_dump()["quote_id"]
+    assert q48["product_type"] == 100
+    assert q48["product_type_name"] is None
+    assert q48["item_type"] is None
+    assert q48["product_subtype"] == "prt_dxf"
+    assert q48["number_of_contours"] == 1
+
+    # v1 PASS shape has no Cad noun — live_get gate needs ProductTypeName.
+    live_pass = {
+        "ProductType": 100,
+        "ItemType": None,
+        "ProductSubType": "prt_dxf",
+        "NumberOfContours": 1,
+    }
+    assert live_get_product_type_is_cad(live_pass) is False
+    assert live_row_product_type_is_cad(live_pass) is True
 
 
 def test_leftover_q10335_update_item_type_forever_forbid():
