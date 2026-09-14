@@ -6833,10 +6833,14 @@ def quote_contours_rows(payload: Any) -> list[dict[str, Any]]:
 
 
 def count_cad_product_type(payload: Any) -> int:
-    """Count live GET Cad rows. Enum 100 / noun ``part`` is not Cad."""
+    """Count Cad rows for pack/laser. Noun ``part`` is not Cad.
+
+    Enum 100 without a display token still counts here (Image Files
+    gold). Contours Cad-stick uses ``live_get_product_type_is_cad``.
+    """
     n = 0
     for it in quote_item_rows(payload):
-        if live_get_product_type_is_cad(it):
+        if live_row_product_type_is_cad(it):
             n += 1
     return n
 

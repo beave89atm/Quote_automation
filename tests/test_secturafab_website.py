@@ -14696,7 +14696,7 @@ def test_live_product_type_part_noun_is_not_cad():
     assert live_get_product_type_is_cad(part_row) is False
     assert live_get_product_type_is_cad(part_enum) is False
     assert live_get_product_type_is_cad(enum_only) is False
-    assert count_cad_product_type({"ItemList": [enum_only]}) == 0
+    assert count_cad_product_type({"ItemList": [enum_only]}) == 1
 
     why_part = step_cad_finish_hard_gate([part_row])
     assert why_part is not None
@@ -15062,7 +15062,7 @@ def test_q10365_h1038_mouse_updateitemtype_does_not_stick_cad():
     assert live_get_product_type_is_cad(live_part) is False
     assert live_get_product_type_is_cad(live_enum) is False
     assert count_cad_product_type({"ItemList": [live_part]}) == 0
-    assert count_cad_product_type({"ItemList": [live_enum]}) == 0
+    assert count_cad_product_type({"ItemList": [live_enum]}) == 1
     assert itemlist_contours_pass(row=live_part) is False
     assert itemlist_contours_pass(
         number_of_contours=1, product_type="part"
