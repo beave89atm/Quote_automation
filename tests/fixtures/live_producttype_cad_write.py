@@ -1,48 +1,22 @@
-"""ProductType=Cad write XHR hunt — not found. invent=false.
+"""ProductType=Cad write XHR hunt — closed. invent=false.
 
-PR39: POST /Part/UpdateItemType {ID, ItemType=Cad} sets ItemType only.
-Classify / kendo stamps ProductType=100. Live UI may render that enum
-as Cad or ``part``. This hunt asked for the write that persists a
-ProductType Cad noun on Contours PASSes.
+PO box hunt complete (2026-09-14):
+  No ProductType=Cad write XHR found.
+  UpdateItemType is ItemType-only.
+  SetPartMode is PartMode-only.
 
-Allowed sources (2026-09-14, PR18 tip + live GET):
+Read-only GET Contours PASSes (never remint / PATCH / Finish / ZZ-DEL):
+  Q10333 / b5f56ac3  ProductType=100  NumberOfContours=1
+                     Machine Laser  ProductSubType=prt_dxf  0.1875 in
+                     ItemType=null  PartMode=null
+  Q10348 / 1defeed8  same shape (H.16.70)
 
-1. Box / workspace artifacts named live-*-kyle-ui*, live-*-xhr*.json,
-   live-q10333*, live-h638*, live-mouse-cad-*, step-contours-kyle-har*,
-   live-contours-our-bug-dig*, mid-wizard xhr — absent on this VM and
-   Kyle Dropbox (same inventory as Q10359 BOX_ARTIFACT_MINE).
-2. Read-only GET v1/quote of forever-protects (never remint / PATCH /
-   Finish / ZZ-DEL):
-     Q10333 / b5f56ac3  ProductType=100  ProductTypeName absent
-                        ItemType=null  ProductSubType=prt_dxf
-                        NumberOfContours=1
-     Q10348 / 1defeed8  same shape (H.16.70)
-     Peers Q10336 / Q10339 / Q10344 / Q10349 / Q10351 same
-     Q10346 plate kid  ProductType=100  prt_dxf  NumberOfContours=12
-     Contrast Q10354   ProductType=100  prt_mill  NumberOfContours=0
-     Contrast Q10365   ProductType=100  prt_dxf  NumberOfContours=1
-                        (same v1 shape as PASSes; ``part`` was UI)
-3. PR18 bind_plate_step_product_type_cad writes kendo ProductType=100
-   plus UpdateItemType ItemType=Cad — not a Cad noun persist.
+There is no separate ProductType=Cad write — Contours PASSes ARE
+enum 100. Distinguish FAIL vs PASS by NumberOfContours≥1 / fill,
+not Cad noun. PRODUCT_TYPE_CAD_WRITE_XHR stays None.
 
-Hypothesis check:
-  UpdatePropertyValue / grid ProductType=Cad bind / AddItem_DXFFiles
-  Cad-noun field — not found. AddItem_DXFFiles copies FileList
-  ProductType (enum 100). QuoteOrderEdit GetPDFData includes
-  ProductType:r.ProductType (PDF path). No UpdatePropertyValue.
-
-Cad on Contours PASSes is shown via ProductType enum 100 +
-ProductSubType prt_dxf (UI may label 100 Cad). Not a separate
-ProductType=Cad write. PRODUCT_TYPE_CAD_WRITE_XHR stays None.
-Do not invent a persist call.
-
-Capture still needed (only if a Cad-noun persist is still believed):
-  Fresh unused STEP — never remint protected quotes.
-  DevTools HAR of Kyle Adjust Properties Product Type dropdown
-  (not File type / UpdateItemType). Persist method+path+body of any
-  XHR whose request or response contains ProductTypeName,
-  ProductType:"Cad", or ProductType=Cad. If none fire before Finish,
-  Cad noun stays UI-only.
+Next chase is Contours fill (not Cad noun). Safe Cave burns paused.
+Do not invent Contours or a Cad persist call.
 """
 
 from __future__ import annotations
@@ -50,12 +24,15 @@ from __future__ import annotations
 from typing import Any
 
 from secturafab.cadimport_js import (
+    CONTOURS_PASS_VS_FAIL,
     PRODUCT_TYPE_CAD_SHOWN_VIA,
     PRODUCT_TYPE_CAD_WRITE_BODY,
     PRODUCT_TYPE_CAD_WRITE_CAPTURE_NEEDED,
+    PRODUCT_TYPE_CAD_WRITE_HUNT_CLOSED,
     PRODUCT_TYPE_CAD_WRITE_METHOD,
     PRODUCT_TYPE_CAD_WRITE_PATH,
     PRODUCT_TYPE_CAD_WRITE_XHR,
+    SET_PART_MODE_SETS_PRODUCT_TYPE_CAD,
     UPDATE_ITEM_TYPE_SETS_PRODUCT_TYPE_CAD,
 )
 
@@ -67,8 +44,12 @@ Q10333_V1_PRODUCTTYPE: dict[str, Any] = {
     "product_type": 100,
     "product_type_name": None,
     "item_type": None,
+    "part_mode": None,
     "category": None,
     "product_subtype": "prt_dxf",
+    "machine": "Laser",
+    "thickness": 0.1875,
+    "thickness_units": "inch",
     "number_of_contours": 1,
     "contours_pass": True,
 }
@@ -79,8 +60,12 @@ Q10348_V1_PRODUCTTYPE: dict[str, Any] = {
     "product_type": 100,
     "product_type_name": None,
     "item_type": None,
+    "part_mode": None,
     "category": None,
     "product_subtype": "prt_dxf",
+    "machine": "Laser",
+    "thickness": 0.1875,
+    "thickness_units": "inch",
     "number_of_contours": 1,
     "contours_pass": True,
 }
@@ -88,14 +73,18 @@ Q10348_V1_PRODUCTTYPE: dict[str, Any] = {
 LIVE_PRODUCTTYPE_CAD_WRITE: dict[str, Any] = {
     "invent": False,
     "found": False,
+    "po_box_hunt_complete": True,
     "product_type_cad_write_xhr": PRODUCT_TYPE_CAD_WRITE_XHR,
     "method": PRODUCT_TYPE_CAD_WRITE_METHOD,
     "path": PRODUCT_TYPE_CAD_WRITE_PATH,
     "body": PRODUCT_TYPE_CAD_WRITE_BODY,
+    "hunt_closed": PRODUCT_TYPE_CAD_WRITE_HUNT_CLOSED,
     "update_item_type_sets_product_type_cad": (
         UPDATE_ITEM_TYPE_SETS_PRODUCT_TYPE_CAD
     ),
+    "set_part_mode_sets_product_type_cad": SET_PART_MODE_SETS_PRODUCT_TYPE_CAD,
     "shown_via": PRODUCT_TYPE_CAD_SHOWN_VIA,
+    "pass_vs_fail": CONTOURS_PASS_VS_FAIL,
     "capture_needed": PRODUCT_TYPE_CAD_WRITE_CAPTURE_NEEDED,
     "box_artifacts_present": False,
     "dropbox_artifacts_present": False,
@@ -106,6 +95,7 @@ LIVE_PRODUCTTYPE_CAD_WRITE: dict[str, Any] = {
     "q10348": dict(Q10348_V1_PRODUCTTYPE),
     "ruled_out": (
         "POST /Part/UpdateItemType {ID, ItemType}",
+        "POST /CadImport/SetPartMode {ID, PartMode}",
         "UpdatePropertyValue",
         "AddItem_DXFFiles ProductType Cad noun",
     ),

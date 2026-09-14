@@ -1733,28 +1733,16 @@ def itemlist_contours_pass(
     product_type: Any = None,
     row: dict[str, Any] | None = None,
 ) -> bool:
-    """Contours PASS: live ProductType Cad noun AND NumberOfContours ≥ 1.
+    """Contours PASS: v1 NumberOfContours ≥ 1.
 
-    UpdateItemType Cad / ItemType Cad / enum 100 / noun ``part`` is
-    not PASS (Q10354 / Q10356 / Q10365 H.10.38 fill_xhr=null).
-    NumberOfContours-only callers (no row / product_type) keep the
-    named-field signal. invent=false.
+    PO box hunt: Contours PASSes ARE ProductType enum 100. Finished
+    GET ItemType/PartMode are null. Cad noun / UpdateItemType Cad /
+    enum-vs-part is not the PASS signal. Distinguish FAIL vs PASS by
+    Contours≥1 / fill. ``product_type`` is ignored. invent=false.
     """
-    if row is not None:
-        if not live_get_product_type_is_cad(row):
-            return False
-        if number_of_contours is None:
-            number_of_contours = row.get("NumberOfContours")
-    elif product_type is not None:
-        probe = {"ProductType": product_type}
-        if product_type_is_part_noun(product_type):
-            return False
-        if not live_get_product_type_is_cad(
-            {**probe, "ProductTypeName": product_type}
-            if isinstance(product_type, str)
-            else probe
-        ):
-            return False
+    del product_type  # Cad noun is not the leftover PASS signal
+    if row is not None and number_of_contours is None:
+        number_of_contours = row.get("NumberOfContours")
     return contours_ge_1_from_named_fields(number_of_contours=number_of_contours)
 
 
