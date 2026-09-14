@@ -56,6 +56,11 @@ Plate 34329 Cad A36 .25-1/4" gauge Laser NumberOfContours≥1.
 HOOK 31454-1 Long/Linear Hot Rolled Round Bar CRS (closest to
 RD BAR CR 1018) 0.5" × 4.375" Saw; no Contours path.
 invent=false. Never remint Q10373. Do not forbid 34328-1.
+Q10374 / beb20d22 / 1008399-1 coverage remint (tip e604229):
+FAIL-CLOSE leftover. STEP uploaded; plate 1008400 gauge
+unverified (no local drawing / SharePoint unreachable).
+invent=false stop before Contours. Complete Quote NOT DONE.
+Never remint Q10374. Do not forbid 1008399-1.
 Do not gate unlock
 on OCC≥1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
@@ -129,6 +134,7 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "Q10368",
     "Q10372",
     "Q10373",
+    "Q10374",
     "H638-CADPLATE",
     "Q10334",
     "Q10335",
