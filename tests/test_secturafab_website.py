@@ -7960,7 +7960,10 @@ def test_filelist_errorstatus_qty_and_filetype_value_type():
 
 
 def test_kendo_without_cadimport_identity_skips_finish(tmp_path: Path):
-    """PartMode set + empty explode InternalData → refuse Finish (live 28768-1)."""
+    """PartMode set + Cad+Material+inches + empty InternalData → Finish.
+
+    Contours gate after Finish is authority (Q10366). invent=false.
+    """
     stp = tmp_path / "107292-1.STEP"
     stp.write_bytes(b"ISO")
     kids = [
@@ -8030,7 +8033,7 @@ def test_kendo_without_cadimport_identity_skips_finish(tmp_path: Path):
             explode_polls=1,
             explode_sleep_s=0,
         )
-    client.add_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_called()
     blob = " ".join(notes)
     assert "kendo_row_keys=" in blob
     assert "filelist_missing_keys=CadType,Stock_X,Stock_Y" in blob or (
@@ -8040,12 +8043,9 @@ def test_kendo_without_cadimport_identity_skips_finish(tmp_path: Path):
         and "Stock_Y" in blob
     )
     assert "partmode_set_allows_empty_cadtype_stock=true" in blob
-    assert "refusing AddItem_DXFFiles" in blob
-    assert "cad_internaldata_empty_after_explode" in blob or (
-        "InternalData empty after explode" in blob
-    )
-    assert "not Finishing" in blob
-    assert "not success" in blob
+    assert "refusing AddItem_DXFFiles" not in blob
+    assert "EXEC_FAIL" in blob
+    assert "NumberOfContours<1 after Finish" in blob
 
 
 def test_empty_griddxf_explode_miss_n1_cad_is_not_34632():
@@ -9609,18 +9609,19 @@ def test_filetype_cad_empty_body_is_not_success(tmp_path: Path):
     assert ok is False
     assert "internaldata_empty=true" in blob
     assert "imagestring_empty=true" in blob
-    assert "filelist_internaldata_empty=true" in blob
-    assert "filelist_imagestring_empty=true" in blob
-    assert "refusing AddItem_DXFFiles" in blob
-    assert "InternalData empty after explode" in blob
-    assert "not Finishing" in blob
+    assert "refusing AddItem_DXFFiles" not in blob
+    assert "EXEC_FAIL" in blob
+    assert "NumberOfContours<1 after Finish" in blob
     assert "not success" in blob
-    client.add_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_called()
     client.cadimport_update_data_next.assert_not_called()
 
 
 def test_weldment_explode_internaldata_empty_skips_finish(tmp_path: Path):
-    """Live SC0600: PartMode set + empty InternalData — refuse Finish (28768-1)."""
+    """Live SC0600: Cad+Material+inches + empty InternalData → Finish.
+
+    Contours gate after Finish is authority (Q10366). invent=false.
+    """
     stp = tmp_path / "SC0600.STEP"
     stp.write_bytes(b"ISO")
 
@@ -9758,16 +9759,19 @@ def test_weldment_explode_internaldata_empty_skips_finish(tmp_path: Path):
     assert "tlist_name_root_n=1" in blob
     assert "tlist_name_jobpn_n=2" in blob
     assert "tlist_name_other_n=0" in blob
-    assert "refusing AddItem_DXFFiles" in blob
-    assert "InternalData empty after explode" in blob
-    assert "not Finishing" in blob
+    assert "refusing AddItem_DXFFiles" not in blob
+    assert "EXEC_FAIL" in blob
+    assert "NumberOfContours<1 after Finish" in blob
     assert "not success" in blob
-    client.add_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_called()
     client.cadimport_update_data_next.assert_not_called()
 
 
 def test_img_hw_copy_empty_internaldata_is_not_success(tmp_path: Path):
-    """Live FA Assembly 0d4b8a46: empty InternalData refuses Finish (28768-1)."""
+    """Live FA Assembly 0d4b8a46: Cad+Material+inches + empty InternalData → Finish.
+
+    Contours gate after Finish is authority (Q10366). invent=false.
+    """
     stp = tmp_path / "FA-Assembly.STEP"
     stp.write_bytes(b"ISO")
 
@@ -9909,16 +9913,19 @@ def test_img_hw_copy_empty_internaldata_is_not_success(tmp_path: Path):
     assert "tlist_name_root_n=1" in blob
     assert "tlist_name_jobpn_n=0" in blob
     assert "tlist_name_other_n=2" in blob
-    assert "refusing AddItem_DXFFiles" in blob
-    assert "InternalData empty after explode" in blob
-    assert "not Finishing" in blob
+    assert "refusing AddItem_DXFFiles" not in blob
+    assert "EXEC_FAIL" in blob
+    assert "NumberOfContours<1 after Finish" in blob
     assert "not success" in blob
-    client.add_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_called()
     client.cadimport_update_data_next.assert_not_called()
 
 
 def test_jquery_ajax_edit_empty_internaldata_is_not_success(tmp_path: Path):
-    """Live Skin Assembly 5b622a0d: empty InternalData refuses Finish (28768-1)."""
+    """Live Skin Assembly 5b622a0d: Cad+Material+inches + empty InternalData → Finish.
+
+    Contours gate after Finish is authority (Q10366). invent=false.
+    """
     stp = tmp_path / "Skin-Assembly.STEP"
     stp.write_bytes(b"ISO")
 
@@ -10057,11 +10064,11 @@ def test_jquery_ajax_edit_empty_internaldata_is_not_success(tmp_path: Path):
     assert "part_create_af_present=true" in blob
     assert "internaldata_empty_n=3/3" in blob
     assert "internaldata_nonempty_n=0" in blob
-    assert "refusing AddItem_DXFFiles" in blob
-    assert "InternalData empty after explode" in blob
-    assert "not Finishing" in blob
+    assert "refusing AddItem_DXFFiles" not in blob
+    assert "EXEC_FAIL" in blob
+    assert "NumberOfContours<1 after Finish" in blob
     assert "not success" in blob
-    client.add_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_called()
     client.cadimport_update_data_next.assert_not_called()
 
 
@@ -10105,7 +10112,10 @@ def test_dxf_cookie_http_upload_does_not_bind_griddxf(tmp_path: Path):
 
 
 def test_dxf_page_next_empty_internaldata_finishes_when_partmode_set(tmp_path: Path):
-    """PartMode set + empty InternalData — refuse Finish before AddItem_DXFFiles."""
+    """PartMode set + Cad+Material+inches + empty InternalData → Finish.
+
+    Contours gate after Finish is authority (Q10366). invent=false.
+    """
     stp = tmp_path / "P904271-1.STEP"
     stp.write_bytes(b"ISO")
     kid = {
@@ -10192,14 +10202,14 @@ def test_dxf_page_next_empty_internaldata_finishes_when_partmode_set(tmp_path: P
             explode_sleep_s=0,
         )
     client.upload_item_dxf_files.assert_not_called()
-    client.add_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_called()
     client.cadimport_update_data_next.assert_not_called()
     blob = " ".join(notes)
     assert "next_via=createAllParts" in blob
     assert "kyle_classify_before_finish=true" in blob
-    assert "refusing AddItem_DXFFiles" in blob
-    assert "InternalData empty after explode" in blob
-    assert "not Finishing" in blob
+    assert "refusing AddItem_DXFFiles" not in blob
+    assert "EXEC_FAIL" in blob
+    assert "NumberOfContours<1 after Finish" in blob
     assert "not success" in blob
 
 
@@ -11481,17 +11491,16 @@ def test_cadimport_get_overlay_empty_still_refuses_finish(tmp_path: Path):
             explode_polls=1,
             explode_sleep_s=0,
         )
-    client.add_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_called()
     client.cadimport_update_data_next.assert_not_called()
     client.cadimport_convert_to.assert_not_called()
     blob = " ".join(notes)
-    assert "step_explode_no_internaldata" in blob
-    assert "cad_internaldata_empty_after_explode" in blob
     assert "cadimport_data_bindable=false" in blob
     assert "cadimport_caddata_bindable=false" in blob
     assert "cadimport_get_copied_n=0" in blob
-    assert "refusing AddItem_DXFFiles" in blob
-    assert "not Finishing" in blob
+    assert "refusing AddItem_DXFFiles" not in blob
+    assert "EXEC_FAIL" in blob
+    assert "NumberOfContours<1 after Finish" in blob
     assert "not success" in blob
 
 
