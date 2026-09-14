@@ -1688,6 +1688,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "V.20.78" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10365" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "H.10.38" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10366" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "H.6.38" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10350" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21843-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10338" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -1743,6 +1745,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("05bee105-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("7801ab99-13af-4efc-b996-897daf8e677a")
     assert is_forbidden_quote_id("7801ab99-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("fd0b6e45-d508-4b01-bbc0-45b338cd966d")
+    assert is_forbidden_quote_id("fd0b6e45-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
     assert is_forbidden_quote_id("eb6c48b8-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("4902c597-2ad6-4ebf-b577-dd6cf20a7d87")
@@ -1833,6 +1837,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "7881d4b3-5408-4ff4-ab18-6490170e6331" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "05bee105-824c-4100-9bc8-f66727fa5681" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "7801ab99-13af-4efc-b996-897daf8e677a" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "fd0b6e45-d508-4b01-bbc0-45b338cd966d" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "4902c597-2ad6-4ebf-b577-dd6cf20a7d87" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "5e7bfc0b-ecf9-46cf-8851-d61062141ce7" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -1949,6 +1954,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("05bee105-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("7801ab99-13af-4efc-b996-897daf8e677a")
     assert is_forbidden_quote_id("7801ab99-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("fd0b6e45-d508-4b01-bbc0-45b338cd966d")
+    assert is_forbidden_quote_id("fd0b6e45-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
     assert is_forbidden_quote_id("eb6c48b8-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("4902c597-2ad6-4ebf-b577-dd6cf20a7d87")
@@ -2092,6 +2099,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "7881d4b3-5408-4ff4-ab18-6490170e6331",
         "05bee105-824c-4100-9bc8-f66727fa5681",
         "7801ab99-13af-4efc-b996-897daf8e677a",
+        "fd0b6e45-d508-4b01-bbc0-45b338cd966d",
         "eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4",
         "4902c597-2ad6-4ebf-b577-dd6cf20a7d87",
         "5e7bfc0b-ecf9-46cf-8851-d61062141ce7",
@@ -2108,6 +2116,46 @@ def test_forbidden_includes_empty_1004747_draft():
                 path="/Quote/AddItem_PDFFiles",
                 payload={"ID": qid},
             )
+
+
+def test_q10366_h638_contours_pass_forever_forbid():
+    """Q10366 / fd0b6e45 Safe Cave H.6.38 Contours PASS — never remint / PATCH."""
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "fd0b6e45-d508-4b01-bbc0-45b338cd966d" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "fd0b6e45" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10366" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "H.6.38" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("fd0b6e45-d508-4b01-bbc0-45b338cd966d")
+    assert is_forbidden_quote_id("fd0b6e45-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10366")
+    assert is_forbidden_quote_number("H.6.38")
+    assert spent_quote_number_block_reason("Q10366")
+    assert spent_quote_number_block_reason("H.6.38")
+    with pytest.raises(ForbiddenQuoteError, match="Q10366"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10366"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="H.6.38"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "H.6.38"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="fd0b6e45"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "fd0b6e45-d508-4b01-bbc0-45b338cd966d"},
+        )
 
 
 def test_weld_does_not_post_before_cad_or_linear_kids():
