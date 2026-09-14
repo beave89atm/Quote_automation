@@ -9458,7 +9458,11 @@ def test_cadtype_stock_without_filetype_empty_body_is_not_success(tmp_path: Path
 
 
 def test_filetype_cad_empty_body_is_not_success(tmp_path: Path):
-    """Live 10098-1: FileType=Cad + CadType+Stock + 200 empty + GET 0 is not gold."""
+    """Live 10098-1: FileType=Cad + CadType+Stock + Finish then Contours gate.
+
+    Empty InternalData does not block Cad+Material+inches. GET 0 Cad
+    / NumberOfContours<1 after Finish is still not gold. invent=false.
+    """
     stp = tmp_path / "10098-1.STEP"
     stp.write_bytes(b"ISO")
     kids = [
@@ -11395,7 +11399,10 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
 
 
 def test_cadimport_get_overlay_empty_still_refuses_finish(tmp_path: Path):
-    """Empty GET Data/CADData after explode stays fail-close. No invented Contours."""
+    """Empty GET Data/CADData after explode: Finish, then Contours gate.
+
+    Cad+Material+inches does not invent Contours. invent=false.
+    """
     stp = tmp_path / "28769-1.STEP"
     stp.write_bytes(b"ISO")
     kids = [
