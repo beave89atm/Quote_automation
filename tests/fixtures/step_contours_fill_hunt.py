@@ -99,6 +99,14 @@ NumberOfContours=1. Tube 11641-1 Long/Linear tube_round
 IsLinear A513 2.00×1.50×7.4375. Slug 32070-1 Long/Linear
 bar_round IsLinear C1018 2.00×0.45. invent=false.
 Never remint Q10379. Do not forbid 11643-1.
+Q10380 / 754089f2 / 16630-1 remint (tip 937b19c): mixed
+classify PASS leftover. Complete Quote NOT DONE.
+OPEN-NEW draft (CAD Finish ≠ Complete Quote).
+Plate Cad Contours + CT/ring Long/Linear. Plate 16629-1
+EAR Cad A36 /.5-1/2" NumberOfContours=1 qty 2. Ring
+16628-1 Long/Linear tube IsLinear A513 7.25 OD × 6.0 ID
+× 1.69 L wall 0.625 qty 1. invent=false.
+Never remint Q10380. Do not forbid 16630-1.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -195,6 +203,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10375",
         "Q10377",
         "Q10379",
+        "Q10380",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
@@ -492,6 +501,24 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "bar_round IsLinear C1018 2.00×0.45. Do not invent "
                 "Contours/InternalData. Never remint Q10379. "
                 "Do not forbid 11643-1."
+            ),
+        },
+        {
+            "id": "q10380_16630_1_mixed_classify_pass_leftover",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10380 / 754089f2 / 16630-1 remint @ 937b19c: mixed "
+                "classify PASS leftover. Complete Quote NOT DONE. "
+                "OPEN-NEW draft (CAD Finish ≠ Complete Quote). "
+                "Plate Cad Contours + CT/ring "
+                "Long/Linear. Plate 16629-1 EAR Cad A36 /.5-1/2\" "
+                "NumberOfContours=1 qty 2. Ring 16628-1 Long/Linear "
+                "tube IsLinear A513 7.25 OD × 6.0 ID × 1.69 L wall "
+                "0.625 qty 1. Do not invent "
+                "Contours/InternalData. Never remint Q10380. "
+                "Do not forbid 16630-1."
             ),
         },
     ),
