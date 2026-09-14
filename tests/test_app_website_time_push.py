@@ -1700,6 +1700,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "Q10380" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10381" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10382" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10383" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10350" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21843-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10338" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -2781,6 +2782,54 @@ def test_q10382_35146_1_mixed_classify_pass_forever_forbid():
             method="PATCH",
             path="/Quote/UpdateItem_Part",
             payload={"ID": "2d42dcc3-76e3-439b-be02-32c2f1b3c9a2"},
+        )
+
+
+def test_q10383_21641_1_contours_fail_forever_forbid():
+    """Q10383 / 9d7cc06e 21641-1 Contours FAIL leftover — never remint / PATCH.
+
+    Remint EXEC_FAIL leftover. Complete Quote NOT DONE. OPEN-NEW leftover
+    from 21641-1 TIP SLEEVE remint attempt 2026-09-14. Contours=0 all
+    plate Cad kids after Finish. CadImport InternalData empty.
+    PrimaryOrganizationID lost mid CAD wizard. Kids not per-PN
+    classified (all named 21641-1 @ 0.25). Do not forbid PN 21641-1
+    (PN remint). invent=false. Do not invent Contours/InternalData.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "9d7cc06e-0c7a-4393-a49f-498a1f484c31" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "9d7cc06e" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10383" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21641-1" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("9d7cc06e-0c7a-4393-a49f-498a1f484c31")
+    assert is_forbidden_quote_id("9d7cc06e-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10383")
+    assert not is_forbidden_quote_number("21641-1")
+    assert spent_quote_number_block_reason("Q10383")
+    assert spent_quote_number_block_reason("21641-1") is None
+    with pytest.raises(ForbiddenQuoteError, match="Q10383"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10383"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="9d7cc06e"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "9d7cc06e-0c7a-4393-a49f-498a1f484c31"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="9d7cc06e"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "9d7cc06e-0c7a-4393-a49f-498a1f484c31"},
         )
 
 

@@ -123,6 +123,15 @@ OPEN-NEW draft (CAD Finish ≠ Complete Quote).
 each. Tube 35124 Long/Linear IsLinear A513 4.25×3.75×6.25.
 invent=false.
 Never remint Q10382. Do not forbid 35146-1.
+Q10383 / 9d7cc06e / 21641-1 remint (tip f7e689d):
+EXEC_FAIL leftover. Complete Quote NOT DONE.
+OPEN-NEW leftover from 21641-1 TIP SLEEVE remint
+attempt 2026-09-14. Contours=0 all plate Cad kids
+after Finish. CadImport InternalData empty.
+PrimaryOrganizationID lost mid CAD wizard. Kids
+not per-PN classified (all named 21641-1 @ 0.25).
+invent=false.
+Never remint Q10383. Do not forbid 21641-1.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -222,6 +231,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10380",
         "Q10381",
         "Q10382",
+        "Q10383",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
@@ -572,6 +582,23 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "IsLinear A513 4.25×3.75×6.25. Do not invent "
                 "Contours/InternalData. Never remint Q10382. "
                 "Do not forbid 35146-1."
+            ),
+        },
+        {
+            "id": "q10383_21641_1_contours_fail_leftover",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10383 / 9d7cc06e / 21641-1 remint @ f7e689d: "
+                "EXEC_FAIL leftover. Complete Quote NOT DONE. "
+                "OPEN-NEW leftover from 21641-1 TIP SLEEVE remint "
+                "attempt 2026-09-14. Contours=0 all plate Cad kids "
+                "after Finish. CadImport InternalData empty. "
+                "PrimaryOrganizationID lost mid CAD wizard. Kids "
+                "not per-PN classified (all named 21641-1 @ 0.25). "
+                "Do not invent Contours/InternalData. Never remint "
+                "Q10383. Do not forbid 21641-1."
             ),
         },
     ),
