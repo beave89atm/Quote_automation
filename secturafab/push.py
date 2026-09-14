@@ -3469,6 +3469,7 @@ class SecturaFabPushService:
             f"count={int(applied.get('updateitemtype_count') or 0)}"
         )
         notes.append("kyle_classify_before_finish=true")
+        notes.append("per_kid_cad_inches=single_plate_adjust_properties_page_fn")
         keep_via = str(applied.get("keep_via") or "")
         if keep_via:
             notes.append(f"keep_grid_via={keep_via}")

@@ -1486,11 +1486,20 @@ STEP_CONTOURS_NO_EXTRA_XHR = "createAllParts_no_intervening_xhr"
 # /part/PartImage / PDFGetData) exhausted in-repo. Fill stays locked.
 STEP_CONTOURS_FILL_UNLOCKED = False
 STEP_CONTOURS_UNLOCK_REQUIRES = "kyle_contours_ge1_or_sectura_support"
-# Q10359 / 34328-FFE CoS on tip ffe210e: keep-grid live + Cad×3 +
-# inches + re-GET Data copied_n=0 + InternalData empty 2/2 → EXEC_FAIL.
-# UpdateData / contour editor Done needs #DXFEdit (Q10355 wipe) and
-# ItemList is not InternalData. No safe multi-kid fill. invent=false.
+# Q10359 / 34328-FFE leftover (tip ffe210e): keep-grid live + silent
+# Cad stamp + inches + re-GET Data copied_n=0 + InternalData empty
+# 2/2 → EXEC_FAIL. That leftover skipped Adjust Properties page_fn.
+# Kyle: weldment kids are identical to one Safe Cave STP Contours
+# path (Cad + thickness inches in Adjust Properties → Contours fill).
+# Current apply_grid runs that same page_fn Cad+inches sequence one
+# kid at a time. Keep-grid is the wipe safety net (Q10355), not a
+# different Contours path. Still do not invent Contours/InternalData.
+# CLASSIFY_FINISH_INTERNALDATA_FILL stays None until a live kid
+# shows NumberOfContours≥1. invent=false.
 MULTI_KID_SAFE_CONTOURS_FILL = None
+# Same Cad+inches unlock sequence as one Safe Cave STP (Q10344/46/48/49/51).
+PER_KID_CAD_INCHES_SAME_AS_SINGLE_PLATE = True
+PER_KID_CAD_INCHES_VIA = "single_plate_adjust_properties_page_fn"
 # Named single-plate PASS trail (Q10336) has no mid-wizard InternalData
 # writer. NumberOfContours≥1 appears on finished v1 ItemList only.
 # Q10335: UpdateItemType Contours still 0 before Finish.
@@ -1661,6 +1670,30 @@ def multi_kid_safe_contours_fill() -> str | None:
 def single_plate_contours_flip_xhr() -> str | None:
     """Named XHR that flips Contours/InternalData after Cad+inches — none."""
     return SINGLE_PLATE_CONTOURS_FLIP_XHR
+
+
+def per_kid_cad_inches_same_as_single_plate() -> bool:
+    """True: each weldment kid uses the one Safe Cave STP Cad+inches path."""
+    return PER_KID_CAD_INCHES_SAME_AS_SINGLE_PLATE
+
+
+def per_kid_cad_inches_via() -> str:
+    """Adjust Properties page_fn Cad+inches — same via as single-plate."""
+    return PER_KID_CAD_INCHES_VIA
+
+
+def per_kid_cad_inches_contours_gate(
+    rows: list[dict[str, Any]] | None,
+) -> str | None:
+    """Each Cad kid must pass the same Cad+inches gate as one Safe Cave STP.
+
+    ProductType Cad, then inch thickness — the Q10344/46/48/49/51
+    Adjust Properties unlock, applied per kid. Does not invent
+    Contours / InternalData / NumberOfContours. Empty InternalData
+    after the sequence is still fail-close (keep-grid safety net).
+    invent=false.
+    """
+    return step_cad_finish_hard_gate(rows)
 
 
 def multi_kid_contours_blocked_on_sectura() -> bool:
@@ -3269,8 +3302,10 @@ def multi_kid_keep_grid_empty_internaldata_refuses(
     ``POST /CadImport/UpdateData`` / editor Done is not a safe
     multi-kid fill (#DXFEdit + Q10355 wipe; ItemList is not
     InternalData). Single-plate PASSes Q10344/46/48/49/51 fill after
-    Kyle UI Cad+inches in Adjust Properties; keep-grid skips that
-    page_fn to avoid the Q10355 wipe. Blocked on Sectura. invent=false.
+    Kyle UI Cad+inches in Adjust Properties. Current apply_grid runs
+    that same page_fn Cad+inches sequence one kid at a time; keep-grid
+    is only the wipe safety net. Empty InternalData after that
+    sequence is still EXEC_FAIL — do not invent. invent=false.
     """
     via = str(keep_via or "").strip()
     if via not in {"live", "rehydrate"}:

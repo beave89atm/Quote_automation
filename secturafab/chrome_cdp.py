@@ -7616,13 +7616,15 @@ def create_all_parts_from_grid_dxf(
 # Multi-kid keep (Q10353 / 12519-2, Q10355 / 34328-1, Q10358/Q10359 prove):
 # DoCreateDXFParts pushes t.List onto the *local* #gridDXFParts dataSource.
 # Kids are not quote ItemList yet. QuoteItem_Read after child-row
-# select / kendo .set() / page SetPartMode returns Data:[] and the
-# page rebinds the kendo grid to empty — main Items follow. #but_dxf
-# reopen is the same wipe. Keep-path: snapshot toJSON before classify;
-# silent field writes + jquery.ajax (no page_fn, no select/editCell);
-# Cad+inches (Thickness / Thickness_Units) write onto live kids;
-# if live n drops, dataSource.data(snapshot|keep_rows) last. Fail-close
-# if the widget is gone. Do not invent Contours/InternalData.
+# select / editCell / #but_dxf returns Data:[] and the page rebinds
+# the kendo grid to empty — main Items follow. Kyle: each kid is
+# identical to one Safe Cave STP Contours path (Cad + inches in
+# Adjust Properties → Contours fill). Apply that same page_fn
+# SetPartMode + UpdateItemType Cad + row.set inches one kid at a
+# time. Keep-path: snapshot toJSON; if live n drops after a kid,
+# dataSource.data(snapshot|keep_rows) then continue the next kid.
+# No select / editCell / #but_dxf. Fail-close if the widget is gone.
+# Do not invent Contours/InternalData.
 _APPLY_GRID_PART_MODES_JS = """(function(spec) {
   function readOrg() {
     try {
@@ -7723,9 +7725,9 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     if (cat === "Assembly" || row.IsAssembly || Number(row.ProductType) === 300) {
       return false;
     }
-    // Multi-kid: do not row.set() — Kendo change/select opens Adjust
-    // Properties on the first child and QuoteItem_Read Data:[] wipes
-    // #gridDXFParts (Q10355 / 34328-1 mouse prove). Silent assign.
+    // Live per-kid path uses row.set (same as one Safe Cave STP).
+    // mergeKeep rehydrate stays silent so restore does not select /
+    // editCell (Q10355 wipe class). invent=false.
     if (row.set && !silent) {
       row.set("PartMode", mode);
       row.set("ItemType", cat);
@@ -7830,8 +7832,10 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         resolve("");
         return;
       }
-      // Multi-kid: skip page SetPartMode — page fn / dropdown can select
-      // the first child and wipe #gridDXFParts (Q10355 / 34328-1).
+      // Same page_fn as single-plate Cad+inches. Multi-kid used to
+      // skip this (silent stamp / Q10358 empty InternalData). Kyle:
+      // each kid is identical to one STP. Keep-grid restores if the
+      // page fn wipes #gridDXFParts. No select/editCell/#but_dxf.
       if (fnName && typeof window[fnName] === "function") {
         try {
           var fn = window[fnName];
@@ -7895,6 +7899,14 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     }
     return out;
   }
+  function findLiveRow(fresh, want, fallback) {
+    if (want && fresh && fresh.length) {
+      for (var fi = 0; fi < fresh.length; fi++) {
+        if (matchWant(fresh[fi], [want])) return fresh[fi];
+      }
+    }
+    return fallback || null;
+  }
   function applyAll() {
     var g = grid();
     if (!g || !g.dataSource) {
@@ -7916,79 +7928,108 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       || wants.length >= 2
       || keepRows.length >= 2
       || snapshot.length >= 2;
-    var chain = Promise.resolve("");
     var setCount = 0;
     var typeSetCount = 0;
     var via = "";
     var typeVia = "";
-    // Multi-kid: do not call page SetPartMode / UpdateItemType — those
-    // select the child row (Q10355). jquery.ajax classify only.
-    var fnName = multi ? "" : findSetFn();
-    var itemTypeFnName = multi ? "" : findUpdateItemTypeFn();
-    for (var i = 0; i < data.length; i++) {
-      (function(row) {
-        var want = matchWant(row, wants) || wantFromName(row);
-        if (!want) return;
-        if (!applyFields(row, want, multi)) return;
+    var keepVia = "";
+    var fnName = findSetFn();
+    var itemTypeFnName = findUpdateItemTypeFn();
+    function restoreIfWiped() {
+      if (!multi) return false;
+      var freshNow = g.dataSource.data() || [];
+      var needKeep = freshNow.length === 0
+        || (snapshot.length >= 2 && freshNow.length < snapshot.length)
+        || (keepRows.length >= 2 && freshNow.length < keepRows.length);
+      if (!needKeep) return false;
+      var restored = mergeKeep(snapshot, wants, keepRows);
+      if (restored.length < 2) return false;
+      var bound = bindKeep(g, restored);
+      if (bound < 2) return false;
+      keepVia = "rehydrate";
+      setCount = setCount || restored.length;
+      return true;
+    }
+    function applyOneKid(want) {
+      return new Promise(function(resolve) {
+        if (!want) {
+          resolve("");
+          return;
+        }
+        var live = findLiveRow(g.dataSource.data() || [], want, null);
+        if (!live) {
+          restoreIfWiped();
+          live = findLiveRow(g.dataSource.data() || [], want, null);
+        }
+        if (!live) {
+          resolve("");
+          return;
+        }
+        if (!applyFields(live, want, false)) {
+          resolve("");
+          return;
+        }
         setCount += 1;
-        var id = String(row.ID || row.ItemID || want.ID || "");
+        restoreIfWiped();
+        live = findLiveRow(g.dataSource.data() || [], want, live);
+        var id = String((live && (live.ID || live.ItemID)) || want.ID || "");
         var cat = String(want.Category || "");
-        chain = chain.then(function(prev) {
-          if (prev && !via) via = prev;
-          return postMode(id, Number(want.PartMode), fnName);
-        }).then(function(modeVia) {
+        var modeFn = findSetFn();
+        var typeFn = findUpdateItemTypeFn();
+        if (modeFn) fnName = modeFn;
+        if (typeFn) itemTypeFnName = typeFn;
+        postMode(id, Number(want.PartMode), modeFn).then(function(modeVia) {
           if (modeVia && !via) via = modeVia;
-          if (cat !== "Cad") return modeVia;
-          return postItemType(id, "Cad", itemTypeFnName).then(function(itemVia) {
+          restoreIfWiped();
+          if (cat !== "Cad") {
+            resolve(modeVia);
+            return;
+          }
+          live = findLiveRow(g.dataSource.data() || [], want, live);
+          id = String((live && (live.ID || live.ItemID)) || want.ID || "");
+          return postItemType(id, "Cad", typeFn).then(function(itemVia) {
             typeSetCount += 1;
             if (itemVia && !typeVia) typeVia = itemVia;
-            return modeVia;
+            restoreIfWiped();
+            resolve(modeVia);
           });
         });
-      })(data[i]);
+      });
     }
-    if (multi && data.length === 0 && (keepRows.length >= 2 || wants.length >= 2)) {
-      for (var wi = 0; wi < wants.length; wi++) {
-        (function(want) {
-          var id = String(want.ID || "");
-          var cat = String(want.Category || "");
-          if (!id) return;
-          chain = chain.then(function(prev) {
-            if (prev && !via) via = prev;
-            return postMode(id, Number(want.PartMode), fnName);
-          }).then(function(modeVia) {
-            if (modeVia && !via) via = modeVia;
-            if (cat !== "Cad") return modeVia;
-            return postItemType(id, "Cad", itemTypeFnName).then(function(itemVia) {
-              typeSetCount += 1;
-              if (itemVia && !typeVia) typeVia = itemVia;
-              return modeVia;
-            });
-          });
-        })(wants[wi]);
-      }
+    if (multi && data.length === 0) {
+      restoreIfWiped();
+    }
+    var kids = [];
+    var seen = {};
+    function queueWant(want) {
+      if (!want) return;
+      var key = String(want.ID || want.SourceDataID || want.Name || "");
+      if (key && seen[key]) return;
+      if (key) seen[key] = true;
+      kids.push(want);
+    }
+    data = g.dataSource.data() || [];
+    for (var i = 0; i < data.length; i++) {
+      queueWant(matchWant(data[i], wants) || wantFromName(data[i]));
+    }
+    if (!kids.length) {
+      for (var wi = 0; wi < wants.length; wi++) queueWant(wants[wi]);
+    }
+    var chain = Promise.resolve("");
+    for (var ki = 0; ki < kids.length; ki++) {
+      (function(want) {
+        chain = chain.then(function() { return applyOneKid(want); });
+      })(kids[ki]);
     }
     return chain.then(function(last) {
       if (last && !via) via = last;
       var fresh = g.dataSource.data() || [];
-      var keepVia = "";
-      var needKeep = multi && (
-        fresh.length === 0
-        || (snapshot.length >= 2 && fresh.length < snapshot.length)
-        || (keepRows.length >= 2 && fresh.length < keepRows.length)
-      );
-      if (needKeep) {
-        var restored = mergeKeep(snapshot, wants, keepRows);
-        if (restored.length >= 2) {
-          var bound = bindKeep(g, restored);
-          if (bound >= 2) {
-            keepVia = "rehydrate";
-            setCount = setCount || restored.length;
-            fresh = g.dataSource.data() || [];
-          }
+      if (multi && !keepVia) {
+        if (restoreIfWiped()) {
+          fresh = g.dataSource.data() || [];
+        } else if (fresh.length >= 2) {
+          keepVia = "live";
         }
-      } else if (multi && fresh.length >= 2) {
-        keepVia = "live";
       }
       var counts = {Cad: 0, Linear: 0, Assembly: 0, Component: 0};
       for (var j = 0; j < fresh.length; j++) {
@@ -8023,9 +8064,11 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         grid_dxf_row_count: fresh.length,
         keep_via: keepVia,
         keep_n: fresh.length,
-        kendo_row_keys: kendoKeys,
         org_id: org.org_id,
-        org_widget: org.org_widget
+        org_widget: org.org_widget,
+        kendo_row_keys: kendoKeys,
+        per_kid: true,
+        per_kid_cad_inches: "single_plate_adjust_properties_page_fn"
       };
     });
   }
@@ -8085,12 +8128,13 @@ def apply_grid_dxf_part_modes(
     mouse dropdown classify XHR). Does not POST /Quote/AddItem_DXFFiles.
     Capture counts from the grid. Still refuse Finish if Contours empty.
 
-    Multi-kid: snapshot / CadImport keep_rows rehydrate if Adjust
-    Properties or child-row select emptied the local kendo grid
-    (Q10353 / Q10355 / 34328-1 first-child edit). Writes already-
-    classified inch thickness onto live kids (Cad+inches). Does not
-    invent Contours/InternalData. Fail-close if the widget is gone
-    (no #but_dxf reopen). invent=false.
+    Multi-kid: each kid runs the same page_fn SetPartMode +
+    UpdateItemType Cad + row.set inches sequence as one Safe Cave
+    STP (Q10344). One kid at a time. Snapshot / CadImport keep_rows
+    rehydrate if a kid's page_fn emptied #gridDXFParts (Q10355
+    wipe class) — safety net, not a different Contours path. Does
+    not invent Contours/InternalData. Fail-close if the widget is
+    gone (no #but_dxf reopen). invent=false.
     """
     from .website import cadimport_keep_grid_classify_spec, cadimport_keep_grid_rows
 
@@ -8167,6 +8211,12 @@ def apply_grid_dxf_part_modes(
     if "org_id" in value or "org_widget" in value:
         out["org_id"] = str(value.get("org_id") or "")
         out["org_widget"] = bool(value.get("org_widget"))
+    if present and value.get("per_kid"):
+        out["per_kid"] = True
+        out["per_kid_cad_inches"] = str(
+            value.get("per_kid_cad_inches")
+            or "single_plate_adjust_properties_page_fn"
+        )
     return out
 
 

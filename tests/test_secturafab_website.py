@@ -4790,7 +4790,10 @@ def test_apply_grid_part_modes_js_keeps_kids_without_select_or_invent():
     assert "NumberOfContours" not in js
     assert "Contours:" not in js
     assert "dataSource.data(rows)" in js
-    assert "multi ? \"\" : findSetFn()" in js
+    assert 'multi ? "" : findSetFn()' not in js
+    assert "applyOneKid" in js
+    assert "findSetFn()" in js
+    assert "single_plate_adjust_properties_page_fn" in js
     assert "want.Thickness" in js
     assert "Thickness_Units" in js
     apply_body = js.split("function applyAll()")[1].split(
@@ -5231,6 +5234,276 @@ Promise.resolve(done(result)).catch((err) => {
         "/CadImport/SetPartMode" in p or "/Part/UpdateItemType" in p
         for p in out["ajax_paths"]
     )
+
+
+def test_per_kid_cad_inches_contours_gate_same_as_single_plate():
+    """Each weldment kid uses the one Safe Cave Cad+inches gate. invent=false."""
+    from secturafab.website import (
+        PER_KID_CAD_INCHES_VIA,
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        STEP_CONTOURS_FILL_UNLOCKED,
+        per_kid_cad_inches_contours_gate,
+        per_kid_cad_inches_same_as_single_plate,
+        per_kid_cad_inches_via,
+        single_plate_contours_flip_xhr,
+        step_cad_finish_hard_gate,
+    )
+
+    assert per_kid_cad_inches_same_as_single_plate() is True
+    assert per_kid_cad_inches_via() == PER_KID_CAD_INCHES_VIA
+    assert PER_KID_CAD_INCHES_VIA == "single_plate_adjust_properties_page_fn"
+    assert STEP_CONTOURS_FILL_UNLOCKED is False
+    assert single_plate_contours_flip_xhr() is None
+
+    kid = {
+        "Name": "34328-1 PLATE A",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "ProductTypeName": "Cad",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "InternalData": "",
+    }
+    kids = [
+        dict(kid, Name="34328-1 PLATE A", ID="id-a"),
+        dict(kid, Name="34328-1 PLATE B", ID="id-b"),
+        dict(kid, Name="34328-1 GUSSET", ID="id-c"),
+    ]
+    assert per_kid_cad_inches_contours_gate(kids) is None
+    assert per_kid_cad_inches_contours_gate(kids) == step_cad_finish_hard_gate(
+        kids
+    )
+    assert per_kid_cad_inches_contours_gate(kids[:1]) is None
+
+    missing_inch = [dict(kids[0]), dict(kids[1], Thickness_Units="meter")]
+    why_inch = per_kid_cad_inches_contours_gate(missing_inch)
+    assert why_inch is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_inch
+    assert "thickness not set in inch" in why_inch
+    assert "Contours" in why_inch
+    assert "invent" in why_inch.lower()
+
+    still_component = [
+        dict(kids[0]),
+        dict(kids[1], ProductType=200, ProductTypeName="Component"),
+    ]
+    why_comp = per_kid_cad_inches_contours_gate(still_component)
+    assert why_comp is not None
+    assert "Component" in why_comp
+    assert "Contours" in why_comp
+    assert "invent" in why_comp.lower()
+
+    for row in kids:
+        assert "Contours" not in row
+        assert "NumberOfContours" not in row
+
+
+def test_apply_grid_part_modes_js_runs_page_fn_cad_inches_per_kid(
+    tmp_path: Path,
+):
+    """Multi-kid: each kid gets the same page_fn Cad+inches as one STP.
+
+    No Contours/InternalData invent. Keep-grid restores if page_fn wipes.
+    """
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    live_rows = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "Category": "Component",
+            "FileType": "Component",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Thickness": "0.0048:meter",
+            "Thickness_Units": "meter",
+            "InternalData": "",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "Category": "Component",
+            "FileType": "Component",
+            "PartMode": 2,
+            "ProductType": 200,
+            "InternalData": "",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-c",
+            "SourceDataID": "src-c",
+            "Name": "34328-1 GUSSET",
+            "Category": "Component",
+            "FileType": "Component",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+    ]
+    wants = [
+        {
+            "ID": row["ID"],
+            "SourceDataID": row["SourceDataID"],
+            "Name": row["Name"],
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser - Bay1",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        }
+        for row in live_rows
+    ]
+    spec = {"rows": wants, "keep_rows": live_rows}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + "const live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+const store = { rows: live.map((r) => {
+  const row = { ...r };
+  row.set = function set(k, v) { this[k] = v; };
+  return row;
+}) };
+const dataSource = {
+  data(rows) {
+    if (arguments.length) {
+      store.rows = (rows || []).map((r) => {
+        const row = { ...r };
+        if (typeof row.set !== "function") {
+          row.set = function set(k, v) { this[k] = v; };
+        }
+        return row;
+      });
+      return store.rows;
+    }
+    const arr = store.rows.slice();
+    arr.toJSON = function toJSON() {
+      return store.rows.map((r) => {
+        const copy = {};
+        Object.keys(r).forEach((k) => {
+          if (k !== "set" && k !== "uid") copy[k] = r[k];
+        });
+        return copy;
+      });
+    };
+    return arr;
+  },
+};
+const gridObj = { dataSource };
+const pageCalls = [];
+const ajaxCalls = [];
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "b7dbc294-3fd2-43aa-99be-268a6c4fce14" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax(opts) {
+    ajaxCalls.push(opts);
+    return { always(fn) { fn(); return this; } };
+  },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+global.window.SetPartMode = function SetPartMode(id, mode) {
+  pageCalls.push({ fn: "SetPartMode", id: String(id), mode: Number(mode) });
+  if (pageCalls.filter((c) => c.fn === "SetPartMode").length === 1) {
+    store.rows = [];
+  }
+};
+global.window.UpdateItemType = function UpdateItemType(id, itemType) {
+  pageCalls.push({ fn: "UpdateItemType", id: String(id), itemType: String(itemType) });
+};
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") {
+    return value.then(done);
+  }
+  if (!value.per_kid) throw new Error("per_kid false");
+  if (value.per_kid_cad_inches !== "single_plate_adjust_properties_page_fn") {
+    throw new Error("via=" + value.per_kid_cad_inches);
+  }
+  if (value.setpartmode_via !== "page_fn") throw new Error("set=" + value.setpartmode_via);
+  if (value.updateitemtype_via !== "page_fn") throw new Error("type=" + value.updateitemtype_via);
+  if (value.keep_via !== "rehydrate") throw new Error("keep_via=" + value.keep_via);
+  if (value.grid_dxf_row_count !== 3) throw new Error("n=" + value.grid_dxf_row_count);
+  if (value.cad !== 3) throw new Error("cad=" + value.cad);
+  if (value.updateitemtype_count !== 3) throw new Error("types=" + value.updateitemtype_count);
+  const modes = pageCalls.filter((c) => c.fn === "SetPartMode");
+  const types = pageCalls.filter((c) => c.fn === "UpdateItemType");
+  if (modes.length !== 3) throw new Error("SetPartMode n=" + modes.length);
+  if (types.length !== 3) throw new Error("UpdateItemType n=" + types.length);
+  if (!modes.every((c) => c.mode === 0)) throw new Error("PartMode not Cad");
+  if (!types.every((c) => c.itemType === "Cad")) throw new Error("ItemType not Cad");
+  const ids = ["id-a", "id-b", "id-c"];
+  if (!ids.every((id) => modes.some((c) => c.id === id))) throw new Error("mode ids");
+  if (!ids.every((id) => types.some((c) => c.id === id))) throw new Error("type ids");
+  if (store.rows.some((r) => r.Contours != null || r.NumberOfContours != null)) {
+    throw new Error("invented Contours");
+  }
+  if (store.rows.some((r) => r.InternalData)) throw new Error("invented InternalData");
+  if (store.rows.some((r) => String(r.Thickness) !== "0.1875")) {
+    throw new Error("inches missing");
+  }
+  if (store.rows.some((r) => String(r.Thickness_Units) !== "inch")) {
+    throw new Error("units missing");
+  }
+  if (ajaxCalls.length) throw new Error("silent ajax " + JSON.stringify(ajaxCalls));
+  process.stdout.write(JSON.stringify({
+    keep_via: value.keep_via,
+    cad: value.cad,
+    page_n: pageCalls.length,
+    mode_ids: modes.map((c) => c.id),
+    type_ids: types.map((c) => c.id),
+    per_kid: value.per_kid,
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "per_kid_page_fn_cad_inches.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["keep_via"] == "rehydrate"
+    assert out["cad"] == 3
+    assert out["page_n"] == 6
+    assert out["per_kid"] is True
+    assert set(out["mode_ids"]) == {"id-a", "id-b", "id-c"}
+    assert set(out["type_ids"]) == {"id-a", "id-b", "id-c"}
 
 
 def test_finish_skips_when_grid_classify_cad_is_zero(tmp_path: Path):
@@ -15031,6 +15304,7 @@ def test_finish_cad_files_multi_kid_keep_grid_rehydrate_allows_finish(
             explode_sleep_s=0,
         )
     blob = " ".join(notes)
+    assert "per_kid_cad_inches=single_plate_adjust_properties_page_fn" in blob
     assert "keep_grid_via=rehydrate" in blob
     assert "wizard lost FileList" not in blob
     assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL not in blob
@@ -15396,6 +15670,7 @@ def test_finish_cad_files_multi_kid_keep_grid_empty_internaldata_is_exec_fail(
         )
     client.add_item_dxf_files.assert_not_called()
     blob = " ".join(notes)
+    assert "per_kid_cad_inches=single_plate_adjust_properties_page_fn" in blob
     assert "keep_grid_via=live" in blob
     assert "cadimport_get_after_cad_inches=true" in blob
     assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
