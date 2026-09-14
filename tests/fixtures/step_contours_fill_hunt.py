@@ -132,6 +132,14 @@ PrimaryOrganizationID lost mid CAD wizard. Kids
 not per-PN classified (all named 21641-1 @ 0.25).
 invent=false.
 Never remint Q10383. Do not forbid 21641-1.
+Q10399 / 039d8464 / 21641-1 remint (tip 6a26835):
+EXEC_FAIL leftover. Complete Quote NOT DONE.
+OPEN-NEW leftover from hardened 21641 remint
+2026-09-14. Dig checklist gates 1–4 PASS. Gate5
+InternalData empty after explode refused
+AddItem_DXFFiles. Contours never filled.
+invent=false.
+Never remint Q10399. Do not forbid 21641-1.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -232,6 +240,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10381",
         "Q10382",
         "Q10383",
+        "Q10399",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
@@ -599,6 +608,22 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "not per-PN classified (all named 21641-1 @ 0.25). "
                 "Do not invent Contours/InternalData. Never remint "
                 "Q10383. Do not forbid 21641-1."
+            ),
+        },
+        {
+            "id": "q10399_21641_1_gate5_internaldata_empty_leftover",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10399 / 039d8464 / 21641-1 remint @ 6a26835: "
+                "EXEC_FAIL leftover. Complete Quote NOT DONE. "
+                "OPEN-NEW leftover from hardened 21641 remint "
+                "2026-09-14. Dig checklist gates 1–4 PASS. Gate5 "
+                "InternalData empty after explode refused "
+                "AddItem_DXFFiles. Contours never filled. Do not "
+                "invent Contours/InternalData. Never remint Q10399. "
+                "Do not forbid 21641-1."
             ),
         },
     ),
