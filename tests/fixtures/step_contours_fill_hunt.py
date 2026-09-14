@@ -82,6 +82,13 @@ EXEC_FAIL leftover. Cad/A572 G50/.375-3/8 plate + Linear
 Saw bar + Component hardware set. Contours≥1 not verified
 (blank CAD editor). invent=false. Complete Quote NOT DONE.
 Never remint Q10375. Do not forbid 1008399-1.
+Q10377 / 12bd2530 / 1008399-1 remint (tip 8f5d17c): mixed
+classify PASS leftover. Complete Quote NOT DONE.
+Cad Contours + Long/Linear + Component. Plate 1008400-1
+Cad A572 G50 .375-3/8" NumberOfContours=1 (Finish→tree
+verify). Bar 31454-1 Long/Linear Saw IsLinear=true.
+Hardware 40003/40006 IsComponent=true. invent=false.
+Never remint Q10377. Do not forbid 1008399-1.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -176,6 +183,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10373",
         "Q10374",
         "Q10375",
+        "Q10377",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
@@ -438,6 +446,22 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "Complete Quote NOT DONE. Do not invent Contours/"
                 "InternalData. Never remint Q10375. Do not forbid "
                 "1008399-1."
+            ),
+        },
+        {
+            "id": "q10377_1008399_1_mixed_classify_pass_leftover",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10377 / 12bd2530 / 1008399-1 remint @ 8f5d17c: mixed "
+                "classify PASS leftover. Complete Quote NOT DONE. "
+                "Cad Contours + Long/Linear + Component. Plate 1008400-1 "
+                "Cad A572 G50 .375-3/8\" NumberOfContours=1 (Finish→tree "
+                "verify). Bar 31454-1 Long/Linear Saw IsLinear=true. "
+                "Hardware 40003/40006 IsComponent=true. Do not invent "
+                "Contours/InternalData. Never remint Q10377. "
+                "Do not forbid 1008399-1."
             ),
         },
     ),
