@@ -5,18 +5,19 @@ Live mouse Product Type dropdown Cad + 0.1875 in on Safe Cave H.10.38:
   Then /part/PartImage, /CadImport/UpdateData, /CadImport/CADData
   fill_xhr=null
   Finished v1 item ProductType noun ``part`` (enum 100)
+  NumberOfContours unavailable / Contours PASS not proven
 
 Same FAIL class as Q10354 / D.H.38.96 and Q10356 / V.20.78 —
-Cad selector + inches set, finished ProductType is the Part noun,
-Contours PASS not proven. Contrast PASSes Q10344/46/48/49/51
-finished ProductType Cad with Contours fill.
+Cad selector + inches set, Contours PASS not proven. Contrast
+PASSes Q10333 / Q10348 (and Q10344/46/49/51): live GET
+ProductType=100 + NumberOfContours=1 + Laser / prt_dxf / inches.
+Do not refuse enum 100 — PASSes finish as 100 too.
 
 Root cause (in-repo, invent=false):
   UpdateItemType body is ID + ItemType only. The Product Type
   dropdown Cad click is that classify XHR — it does not persist
-  ProductType Cad. Classify/kendo stamps ProductType=100 (GET
-  noun ``part``). Finish / AddItem_DXFFiles copies FileList as-is
-  (OnAddDXFClick), so the finished item stays ``part`` / 100.
+  ProductType. Classify/kendo stamps ProductType=100. Contours
+  PASS gate is NumberOfContours≥1 (plus inches / Laser / prt_dxf).
   Do not invent a ProductType persist XHR or Contours fill.
 
 Quote UUID was not restated. Number-only leftover. Do not remint

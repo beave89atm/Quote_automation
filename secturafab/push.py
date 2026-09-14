@@ -3062,15 +3062,15 @@ class SecturaFabPushService:
         ItemType=Cad (live Q10335 mouse Component→Cad dropdown classify
         XHR, status 200). UpdateItemType is classify, not Contours fill.
         Fail-close if PartMode is still null after classify, if ProductType
-        is still Component on a Cad plate,         if live GET ProductType is
-        ``part`` / not Cad (EXEC_FAIL, not Contours empty; Q10354 /
-        7881d4b3 D.H.38.96; Q10356 / 05bee105 V.20.78; Q10365 /
-        H.10.38 mouse UpdateItemType Cad 200 then GET part /
-        fill_xhr=null — UpdateItemType is ItemType classify, not
-        ProductType Cad; in-memory 100 / ItemType Cad is not Cad),
+        is still Component on a Cad plate, if live GET ProductType is
+        the display noun ``part`` (EXEC_FAIL, not Contours empty; Q10354 /
+        7881d4b3 D.H.38.96; Q10356 / 05bee105 V.20.78; Q10365
+        UpdateItemType Cad does not write ProductType). Live Contours
+        PASSes finish ProductType=100 + NumberOfContours≥1 (Q10333 /
+        Q10348) — do not refuse enum 100,
         if thickness is missing or not
         inch (EXEC_FAIL, not Contours empty; Q10344 / H.6.38 Kyle UI
-        control Cad + 0.1875 inch),         if Adjust Properties / modal refresh
+        control Cad + 0.1875 inch), if Adjust Properties / modal refresh
         dropped #gridDXFParts to 0 or cleared Organization (EXEC_FAIL;
         Q10352 / 8679-1 org wipe, Q10353 / 12519-2 empty quote grid,
         Q10355 / 34328-1 first-child Adjust Properties edit — not only
@@ -3080,8 +3080,9 @@ class SecturaFabPushService:
         item_count dropped N→0 mid-wizard, or if
         Contours/InternalData stay empty after UpdateItemType
         (do not invent). Hard-gate before Finish: live wizard kids +
-        org (multi-kid ≥2 for the grid gate), then live ProductType Cad
-        (not part / enum 100), then inch thickness. invent=false.
+        org (multi-kid ≥2 for the grid gate), then live ProductType
+        (display noun ``part`` is EXEC_FAIL; enum 100 is Cad), then
+        inch thickness. invent=false.
         After Finish, fail-close if PartMode is still null, or if Cad
         Contours are empty / PR+laser pack is missing. Then log
         kendo row key names (CadType, Stock_*, FileType, SID/FileID/ID) and

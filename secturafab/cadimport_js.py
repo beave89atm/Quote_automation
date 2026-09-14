@@ -288,9 +288,9 @@ SET_PART_MODE_SNIPPET = (
 # two field names only. Do not invent extra keys. Does not fill Contours.
 # Q10365 / H.10.38 mouse Product Type dropdown Cad also fires this XHR
 # (then PartImage / UpdateData / CADData; fill_xhr=null). ItemType Cad
-# sticks; live GET ProductType noun stays ``part`` (enum 100). Same
-# FAIL class as Q10354 / Q10356. UpdateItemType does not persist
-# ProductType Cad. invent=false.
+# sticks. UpdateItemType does not persist ProductType. Live Contours
+# PASSes (Q10333 / Q10348) also finish ProductType=100 +
+# NumberOfContours=1 — do not refuse enum 100. invent=false.
 UPDATE_ITEM_TYPE_PATH = "/Part/UpdateItemType"
 UPDATE_ITEM_TYPE_BODY_KEYS = ("ID", "ItemType")
 UPDATE_ITEM_TYPE_CAD = "Cad"
@@ -529,7 +529,8 @@ def update_item_type_fields(
     """POST /Part/UpdateItemType body — ID + ItemType only. Do not invent keys.
 
     Does not write ProductType. Q10365 mouse Product Type Cad still
-    finishes GET noun ``part``. invent=false.
+    finishes GET noun ``part``; PASSes also finish enum 100.
+    invent=false.
     """
     return {
         "ID": str(row_id or ""),

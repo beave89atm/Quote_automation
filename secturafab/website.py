@@ -1727,34 +1727,13 @@ def contours_ge_1_from_named_fields(
         return False
 
 
-def itemlist_contours_pass(
-    *,
-    number_of_contours: Any = None,
-    product_type: Any = None,
-    row: dict[str, Any] | None = None,
-) -> bool:
-    """Contours PASS: live ProductType Cad noun AND NumberOfContours ≥ 1.
+def itemlist_contours_pass(*, number_of_contours: Any = None) -> bool:
+    """Contours PASS signal: NumberOfContours ≥ 1.
 
-    UpdateItemType Cad / ItemType Cad / enum 100 / noun ``part`` is
-    not PASS (Q10354 / Q10356 / Q10365 H.10.38 fill_xhr=null).
-    NumberOfContours-only callers (no row / product_type) keep the
-    named-field signal. invent=false.
+    Live GET Contours PASSes (Q10333 / b5f56ac3, Q10348 / 1defeed8)
+    finish ProductType=100 + NumberOfContours=1 + Laser / prt_dxf /
+    inches. Do not refuse enum 100. invent=false.
     """
-    if row is not None:
-        if not live_get_product_type_is_cad(row):
-            return False
-        if number_of_contours is None:
-            number_of_contours = row.get("NumberOfContours")
-    elif product_type is not None:
-        probe = {"ProductType": product_type}
-        if product_type_is_part_noun(product_type):
-            return False
-        if not live_get_product_type_is_cad(
-            {**probe, "ProductTypeName": product_type}
-            if isinstance(product_type, str)
-            else probe
-        ):
-            return False
     return contours_ge_1_from_named_fields(number_of_contours=number_of_contours)
 
 
@@ -2757,9 +2736,9 @@ def product_type_is_part_noun(value: Any) -> bool:
 
     Q10056 maps enum 100 to Cad in classify, but live GET can render
     the same enum as ProductType ``part`` (Part / plate). Q10354 /
-    7881d4b3 Safe Cave D.H.38.96, Q10356 / 05bee105 V.20.78, and
-    Q10365 / H.10.38 mouse UpdateItemType Cad 200: Cad selector +
-    inches finished ``part`` / 100, fill_xhr=null. invent=false.
+    Q10356 / Q10365 leftovers showed the ``part`` noun. Live
+    Contours PASSes (Q10333 / Q10348) finish ProductType=100 —
+    do not refuse enum 100. invent=false.
     """
     return str(value or "").strip().casefold() == "part"
 
@@ -2811,9 +2790,8 @@ def live_row_product_type_is_cad(row: dict[str, Any] | None) -> bool:
 
     Enum 100 alone is Cad only when the GET noun is not ``part``.
     UI Cad selector / ItemType Cad does not prove ProductType Cad.
-    In-memory classify stamps 100 without a noun — callers that need
-    the live GET Cad noun should use ``live_get_product_type_is_cad``.
-    invent=false.
+    Live Contours PASSes finish ProductType=100 (Q10333 / Q10348) —
+    do not refuse enum 100. invent=false.
     """
     if not isinstance(row, dict):
         return False
@@ -2823,21 +2801,6 @@ def live_row_product_type_is_cad(row: dict[str, Any] | None) -> bool:
     if token and token.casefold() == "cad":
         return True
     return product_type_is_cad(row.get("ProductType"))
-
-
-def live_get_product_type_is_cad(row: dict[str, Any] | None) -> bool:
-    """Live GET/kendo ProductType noun must be Cad.
-
-    UpdateItemType 200 / ItemType / FileType Cad / enum 100 do not
-    count. Q10365 / H.10.38 mouse Product Type Cad fired
-    UpdateItemType then finished ``part``. invent=false.
-    """
-    if not isinstance(row, dict):
-        return False
-    token = product_type_display_token(row)
-    if product_type_is_part_noun(token):
-        return False
-    return bool(token) and token.casefold() == "cad"
 
 
 def _format_bind_thickness_inches(val: float) -> str:
@@ -3063,11 +3026,13 @@ def plate_step_live_product_type_not_cad_refuses(
 ) -> str | None:
     """EXEC_FAIL when live ProductType is the Part noun, not Cad.
 
-    Q10354 / 7881d4b3 Safe Cave D.H.38.96 and Q10356 / 05bee105
-    V.20.78: Cad workflow selector + 0.1875 in finished ProductType
-    ``part`` / enum 100. NumberOfContours missing; OCC=0 is not a
-    substitute. Align with Cad+inches hard-gate. invent=false —
-    do not invent Contours/InternalData.
+    Q10354 / 7881d4b3 Safe Cave D.H.38.96, Q10356 / 05bee105
+    V.20.78, and Q10365 / H.10.38: Cad workflow selector + 0.1875
+    in finished display noun ``part``. NumberOfContours missing;
+    OCC=0 is not a substitute. Live Contours PASSes (Q10333 /
+    Q10348) also finish ProductType=100 — do not refuse enum 100
+    alone. Align with Cad+inches hard-gate. invent=false — do not
+    invent Contours/InternalData.
     """
     if not isinstance(row, dict):
         return None
@@ -3076,13 +3041,13 @@ def plate_step_live_product_type_not_cad_refuses(
         return None
     return (
         f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: live ProductType is "
-        "part (enum 100 is the Part noun, not Cad) after Cad selector "
-        "+ inches — not Finishing (not Contours empty; Q10354 / "
-        "7881d4b3 D.H.38.96; Q10356 / 05bee105 V.20.78; Q10365 / "
-        "H.10.38 mouse UpdateItemType Cad 200 then GET part / "
-        "fill_xhr=null; Q10344/46/48/49/51 PASSes finished Cad). "
+        "part after Cad selector + inches — not Finishing (not "
+        "Contours empty; Q10354 / 7881d4b3 D.H.38.96; Q10356 / "
+        "05bee105 V.20.78; Q10365 / H.10.38 mouse UpdateItemType "
+        "Cad 200 then GET part / fill_xhr=null; Q10333/48 PASSes "
+        "finish ProductType=100 + NumberOfContours=1). "
         "UpdateItemType is ItemType classify, not ProductType Cad. "
-        "Do not invent InternalData/Contours."
+        "Do not refuse enum 100. Do not invent InternalData/Contours."
     )
 
 
@@ -3095,11 +3060,10 @@ def step_cad_live_product_type_hard_gate(
     Classify stamps ProductType=100 on FileList rows; that enum can
     persist as GET ``part``. Cad+inches on in-memory rows is not
     enough (same class as wizard-state: live page/GET can disagree).
-    After UpdateItemType Cad, live GET must show the Cad noun —
-    enum 100 / ItemType Cad / UpdateItemType 200 do not count
-    (Q10365 / H.10.38 mouse Product Type Cad then finished part).
-    Empty live ItemList is Q10335 / mid-wizard — no-op (after-Finish
-    GET still gates). invent=false.
+    Live GET ProductType=100 is Cad (Q10333 / Q10348 Contours
+    PASSes). Do not refuse enum 100. Empty live ItemList is Q10335
+    / mid-wizard — no-op (after-Finish GET still gates).
+    invent=false.
     """
     cad_intended = [
         r
@@ -3138,14 +3102,14 @@ def step_cad_live_product_type_hard_gate(
         part_why = plate_step_live_product_type_not_cad_refuses(row)
         if part_why:
             return part_why
-        if not live_get_product_type_is_cad(row):
+        if not live_row_product_type_is_cad(row):
             return (
                 f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: live ProductType "
                 "is not Cad for Contours-intended plate kid — not "
-                "Finishing (Cad selector / ItemType Cad / UpdateItemType "
-                "200 ≠ ProductType Cad; Q10354 / 7881d4b3 D.H.38.96; "
-                "Q10356 / 05bee105 V.20.78; Q10365 / H.10.38 mouse "
-                "UpdateItemType Cad 200 finished part / enum 100). "
+                "Finishing (Cad selector / ItemType Cad ≠ ProductType "
+                "Cad; Q10354 / 7881d4b3 D.H.38.96; Q10356 / 05bee105 "
+                "V.20.78 finished display noun part). Live PASSes "
+                "finish ProductType=100 — do not refuse enum 100. "
                 "Do not invent InternalData/Contours."
             )
     return None
@@ -6833,10 +6797,10 @@ def quote_contours_rows(payload: Any) -> list[dict[str, Any]]:
 
 
 def count_cad_product_type(payload: Any) -> int:
-    """Count Cad rows for pack/laser. Noun ``part`` is not Cad.
+    """Count live Cad rows. Enum 100 with noun ``part`` is not Cad.
 
-    Enum 100 without a display token still counts here (Image Files
-    gold). Contours Cad-stick uses ``live_get_product_type_is_cad``.
+    Enum 100 without a display token still counts (Image Files gold;
+    Q10333 / Q10348 Contours PASSes finish ProductType=100).
     """
     n = 0
     for it in quote_item_rows(payload):
