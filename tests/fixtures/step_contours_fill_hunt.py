@@ -50,6 +50,14 @@ InternalData empty 2/2 → EXEC_FAIL. UpdateData / contour editor
 Done is not a safe multi-kid fill (#DXFEdit + Q10355 wipe).
 Blocked on Sectura /part/create t.List. Never remint Q10359.
 Do not forbid 34328-1. invent=false.
+Q10368 / 5e0ce1df / 34328-1 remint (tip 8d4626a): keep-grid
+Material worked — 3 Cad kids all A36 + per-kid inches through
+Finish; Contours 0/1/0. PASS 34329 BOOM SUPPORT 0.25in=1.
+FAIL two HOOK BOOM REST-7742_31454-1 0.5in=0. Thickness is
+per-row, not one drawing gauge. Duplicate explode name stays
+two Cad rows. HOOK is Cad (0.5in < flat_bar 0.76in) — not Long.
+Cad+Material+inches ≠ Contours fill. Never remint Q10368.
+Do not forbid 34328-1. invent=false.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -139,6 +147,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "H.10.38",
         "Q10358",
         "Q10359",
+        "Q10368",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
@@ -320,6 +329,25 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "keep-grid skips that page_fn. CLASSIFY_FINISH_INTERNALDATA_FILL "
                 "stays None. No safe multi-kid fill. Blocked on Sectura "
                 "POST /part/create t.List InternalData+ImageString."
+            ),
+        },
+        {
+            "id": "q10368_keep_grid_material_inches_not_enough",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10368 / 5e0ce1df / 34328-1 remint @ 8d4626a: keep-grid "
+                "Material worked — 3 Cad kids all A36 + per-kid inches "
+                "through Finish; Contours 0/1/0. PASS 34329 BOOM SUPPORT "
+                "A36 0.25in Contours=1. FAIL two HOOK BOOM REST-7742_31454-1 "
+                "A36 0.5in Contours=0. Thickness is per-row (0.25 vs 0.5), "
+                "not one drawing gauge stamped on all. Duplicate-named "
+                "explode kids stay two Cad rows. HOOK noun is not Linear "
+                "(0.5in < flat_bar 0.76in) — do not reclass Long. "
+                "Cad+Material+inches ≠ Contours fill on every kid. "
+                "Do not invent Contours. Never remint Q10368. "
+                "Do not forbid 34328-1."
             ),
         },
     ),

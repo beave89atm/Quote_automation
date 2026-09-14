@@ -890,7 +890,10 @@ def cadimport_keep_grid_classify_spec(
     PASS required Material A36 before thickness; blank material blocks
     thickness in Sectura UI. Drawing Material is shared across Cad kids
     so keep-grid rehydrate can Cad → Material → inches on every kid
-    (Q10369: first-kid wipe left later kids blank). invent=false.
+    (Q10369: first-kid wipe left later kids blank). Thickness stays
+    per-row — Q10368 remint had 0.25in vs 0.5in, not one drawing
+    gauge on all kids. Cad+Material+inches is not Contours fill.
+    invent=false.
     """
     drawing_mat = drawing_material_type_from_rows(rows)
     spec_rows: list[dict[str, Any]] = []
@@ -7708,8 +7711,9 @@ def step_cad_post_finish_contours_gate(
     ProductType 100 / noun ``part`` is OK — do not require a Cad noun.
     QuoteItem_Read list items omit NumberOfContours — not the PASS
     signal. Q10369: one kid Contours=1 does not pass the other kids;
-    any Cad plate still <1 is EXEC_FAIL. invent=false — do not invent
-    Contours.
+    any Cad plate still <1 is EXEC_FAIL. Q10368: keep-grid Material
+    + per-kid inches still left HOOK kids Contours=0 — name those
+    kids in the EXEC_FAIL. invent=false — do not invent Contours.
     """
     if not expect_cad:
         return None
@@ -7717,11 +7721,13 @@ def step_cad_post_finish_contours_gate(
     cad_kids = [r for r in rows if _cad_plate_row_for_finish_gate(r)]
     if cad_kids:
         if any(item_cad_contour_count(it) < 1 for it in cad_kids):
+            per_kid = "; ".join(cad_kid_contour_diag(it) for it in cad_kids)
             return (
                 f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: NumberOfContours<1 "
                 "after Finish (GET /Quote/QuoteItem_ReadTreeListData"
                 "?ParentID=; Q10366 Cad+Material A36+.1875 "
-                "NumberOfContours=1; Q10369 every Cad kid). ProductType "
+                "NumberOfContours=1; Q10369 every Cad kid; Q10368 "
+                f"per-kid {per_kid}). ProductType "
                 "100/part OK. Do not invent Contours/InternalData."
             )
         return None
@@ -7763,6 +7769,23 @@ def item_cad_contour_count(item: dict[str, Any] | None) -> int:
         except (TypeError, ValueError):
             return 0
     return 0
+
+
+def cad_kid_contour_diag(row: dict[str, Any] | None) -> str:
+    """Name + NumberOfContours for post-Finish per-kid EXEC_FAIL (Q10368).
+
+    Does not invent Contours. Does not collapse duplicate explode names.
+    """
+    if not isinstance(row, dict):
+        return "? Contours=0"
+    name = str(
+        row.get("Name")
+        or row.get("Description")
+        or row.get("FileName")
+        or row.get("PartNumber")
+        or ""
+    ).strip() or "?"
+    return f"{name} Contours={item_cad_contour_count(row)}"
 
 
 def step_finish_pack_missing(

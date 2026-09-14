@@ -41,6 +41,9 @@ Q10359 / 34328-FFE CoS leftover (tip ffe210e): keep-grid live +
 Cad+inches + copied_n=0 InternalData empty → EXEC_FAIL. UpdateData /
 editor Done is not a safe multi-kid fill. Never remint / PATCH.
 invent=false. Do not forbid 34328-1.
+Q10368 / 5e0ce1df / 34328-1 remint (tip 8d4626a): keep-grid
+Material worked; Contours 0/1/0 after Cad+A36+inches. Never remint
+Q10368. Do not forbid 34328-1. invent=false.
 Do not gate unlock
 on OCC≥1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
@@ -111,6 +114,7 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "H.10.38",
     "Q10358",
     "Q10359",
+    "Q10368",
     "H638-CADPLATE",
     "Q10334",
     "Q10335",

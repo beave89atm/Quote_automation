@@ -13947,6 +13947,9 @@ def test_post_finish_contours_gate_treelist_number_of_contours():
     assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_mixed
     assert "NumberOfContours<1 after Finish" in why_mixed
     assert "Q10369" in why_mixed
+    assert "Q10368" in why_mixed
+    assert "34328-1 PLATE A Contours=1" in why_mixed
+    assert "34328-1 PLATE B Contours=0" in why_mixed
     assert cad_finish_notes_refuse_additem_dxf([why_mixed]) == why_mixed
 
 
@@ -16568,6 +16571,125 @@ def test_q10359_34328_ffe_blocked_on_sectura_no_safe_fill():
         )
 
 
+def test_q10368_34328_1_keep_grid_material_contours_zero_findings():
+    """Q10368 remint: Material stuck; Contours 0/1/0; no Long reclass."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.push import classify_sectura_item
+    from secturafab.step_classify import STOCK_FLAT_BAR, score_step_stock
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+        cad_kid_contour_diag,
+        step_cad_post_finish_contours_gate,
+    )
+    from tests.fixtures.live_q10368_34328_1 import (
+        Q10368_QUOTE_ID,
+        q10368_34328_1_keep_grid_material,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10368_34328_1_keep_grid_material()
+    assert dump["quote_number"] == "Q10368"
+    assert dump["quote_id"] == Q10368_QUOTE_ID
+    assert dump["part_number"] == "34328-1"
+    assert dump["keep_grid_material_worked"] is True
+    assert dump["contours"] == (0, 1, 0)
+    assert dump["pass_kid"]["number_of_contours"] == 1
+    assert dump["fail_kids"][0]["name"] == "HOOK BOOM REST-7742_31454-1"
+    assert dump["fail_kids"][1]["name"] == dump["fail_kids"][0]["name"]
+    assert dump["thickness_from_drawing_stamped_on_all"] is False
+    assert dump["duplicate_explode_same_name"] is True
+    assert dump["hook_should_be_long"] is False
+    assert dump["hook_class"] == "Cad"
+    assert dump["invent"] is False
+    assert dump["do_not_weaken_every_cad_kid_gate"] is True
+    assert dump["do_not_forbid_part_number"] is True
+
+    assert classify_sectura_item("HOOK BOOM REST-7742_31454-1", 0.5) == "Cad"
+    assert classify_sectura_item("34329 BOOM SUPPORT", 0.25) == "Cad"
+    assert score_step_stock((10.0, 4.0, 0.5)) != STOCK_FLAT_BAR
+    assert score_step_stock((12.0, 1.0, 0.5)) != STOCK_FLAT_BAR
+
+    cad = {
+        "ProductType": 100,
+        "Category": "Cad",
+        "Material": "A36",
+        "Thickness": 0.5,
+        "Thickness_Units": "inch",
+    }
+    tree = {
+        "TreeListData": [
+            {
+                **cad,
+                "Name": "HOOK BOOM REST-7742_31454-1",
+                "NumberOfContours": 0,
+            },
+            {
+                **cad,
+                "Name": "34329 BOOM SUPPORT",
+                "Thickness": 0.25,
+                "NumberOfContours": 1,
+            },
+            {
+                **cad,
+                "Name": "HOOK BOOM REST-7742_31454-1",
+                "NumberOfContours": 0,
+            },
+        ]
+    }
+    why = step_cad_post_finish_contours_gate(tree)
+    assert why is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why
+    assert "NumberOfContours<1 after Finish" in why
+    assert "Q10368" in why
+    assert "Q10369" in why
+    assert cad_kid_contour_diag(tree["TreeListData"][0]) == (
+        "HOOK BOOM REST-7742_31454-1 Contours=0"
+    )
+    assert "HOOK BOOM REST-7742_31454-1 Contours=0" in why
+    assert "34329 BOOM SUPPORT Contours=1" in why
+    assert cad_finish_notes_refuse_additem_dxf([why]) == why
+
+    assert is_forbidden_quote_number("Q10368")
+    assert is_forbidden_quote_id(Q10368_QUOTE_ID)
+    assert not is_forbidden_quote_number("34328-1")
+    assert spent_quote_number_block_reason("Q10368")
+    assert spent_quote_number_block_reason("34328-1") is None
+    assert "Q10368" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "34328-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert "Q10368" in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10368_keep_grid_material_inches_not_enough"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10368" in angle["why"]
+    assert "do not reclass Long" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10368"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10368"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="5e0ce1df"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10368_QUOTE_ID},
+        )
+
+
 def test_finish_cad_files_multi_kid_keep_grid_empty_internaldata_is_exec_fail(
     tmp_path: Path,
 ):
@@ -16954,6 +17076,7 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
         "get_border_size",
         "multi_kid_keep_grid_data_getbordersize_not_fill",
         "multi_kid_updatedata_editor_done_not_safe_fill",
+        "q10368_keep_grid_material_inches_not_enough",
     ]
     assert all(a["ruled_out"] is True for a in hunt["angles"])
     assert "/CadImport/ConvertTo" in PROVEN_EMPTY_PATHS
