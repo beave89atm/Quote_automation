@@ -2769,10 +2769,14 @@ def page_dxf_finish_skip_why(rows: list[dict[str, Any]] | None) -> str | None:
 
     Live 28768-1: PartMode Cad + page Finish with InternalData null /
     OutsidePerimeter 0 / ProductSubType bar_flat → HTTP 200 / GET 0 Cad.
-    Cad explode InternalData empty is fail-close before Finish (do not
-    invent). PartMode set still allows page Finish when InternalData is
-    present even if CadType/Stock look empty (live 10289-4 reconstructed
-    skip). PartMode null + empty payload still skip.
+    Cad explode InternalData empty is fail-close before Finish unless
+    Cad+Material+inch thickness is complete (``cad_filelist_refuses_additem_dxf``
+    / Q10366 refuse-relax; Q10420 leftover skipped chrome_cdp Finish
+    on empty InternalData despite that recipe). Do not invent
+    Contours/InternalData. PartMode set still allows page Finish when
+    InternalData is present even if CadType/Stock look empty (live
+    10289-4 reconstructed skip). PartMode null + empty payload still
+    skip when the recipe is incomplete.
     """
     kids = [sanitize_cad_partmode_filelist_row(r) for r in (rows or []) if isinstance(r, dict)]
     if not kids:

@@ -74,8 +74,12 @@ ImageString/HadOpenContours/OutsidePerimeter *keys*. Finish still
 200 empty / GET 0. Unfold*/DXF* child keys absent. Named miss:
 Cad AddItem_DXFFiles no-ops when InternalData/ImageString are
 empty. Copy those keys through if present; log emptiness bools
-only; skip Finish. Do not invent unfold/geometry or FileType
-"CAD"/100. Bundle hunt: no fill after DoCreateDXFParts t.List;
+only; skip Finish unless Cad+Material+inch thickness is complete
+(``cad_material_inches_recipe_complete`` / Q10366 refuse-relax;
+Q10420 leftover 4054443b skipped page Finish on empty
+InternalData despite that recipe). Do not invent unfold/geometry,
+FileType "CAD"/100, Contours, or InternalData. Bundle hunt: no
+fill after DoCreateDXFParts t.List;
 form keys match the UI (no missing key). Live SC0600 weldment
 n=143 InternalData empty 143/143 after fetch Height/Width=0.
 Live Skin Assembly ``5b622a0d``: page ``$.ajax`` on EDIT still empty
@@ -1666,6 +1670,61 @@ _PAGE_FINISH_JS = """(function() {
     if (cat === "Cad") return true;
     return Number(r.PartMode) === 0;
   }
+  function productTypeIsComponent(v) {
+    if (v === 200 || v === "200") return true;
+    return String(v || "").trim().toLowerCase() === "component";
+  }
+  function drawingMaterialType(row) {
+    if (!row || typeof row !== "object") return "";
+    var keys = ["Material", "MaterialGrade"];
+    for (var mi = 0; mi < keys.length; mi++) {
+      var val = String(row[keys[mi]] || "").trim();
+      if (val) return val;
+    }
+    return "";
+  }
+  function thicknessUnitsAreInch(row) {
+    if (!row || typeof row !== "object") return false;
+    var raw = row.Thickness;
+    if (raw == null || raw === "") return false;
+    var unit_s = String(
+      row.Thickness_Units || row.thickness_units || row.Thickness_Unit || ""
+    ).trim().toLowerCase();
+    var meterish = {
+      meter: 1, metre: 1, meters: 1, metres: 1, m: 1, mm: 1,
+      millimeter: 1, millimeters: 1, millimetre: 1, millimetres: 1
+    };
+    if (meterish[unit_s]) return false;
+    var text = String(raw).trim();
+    var embedded = text.match(/^\s*([0-9]*\.?[0-9]+)\s*[:\s]\s*(meters?|metres?|millimeters?|millimetres?|inches?|inch|mm|in|m)\s*$/i);
+    if (embedded) {
+      var unitEmb = String(embedded[2] || "").toLowerCase();
+      if (meterish[unitEmb]) return false;
+      if (unitEmb === "inch" || unitEmb === "inches" || unitEmb === "in") {
+        return Number(embedded[1]) > 0;
+      }
+    }
+    if (unit_s === "inch" || unit_s === "inches" || unit_s === "in") {
+      var n = Number(text);
+      return isFinite(n) && n > 0;
+    }
+    return false;
+  }
+  function cadMaterialInchesRecipeComplete(row) {
+    // Same as website.cad_material_inches_recipe_complete.
+    // Q10420: do not skip page Finish solely because InternalData
+    // empty after explode when Cad+Material+inch thickness is set.
+    // invent=false: still refuse when recipe incomplete. Do not
+    // invent Contours/InternalData.
+    if (!row || typeof row !== "object") return false;
+    if (productTypeIsComponent(row.ProductType)) return false;
+    var cat = String(row.Category || row.ItemType || "").trim();
+    if (cat === "Assembly" || cat === "Linear") return false;
+    if (String(row.FileType || "").trim() === "Linear") return false;
+    if (!isCadRow(row) && cat !== "Cad") return false;
+    if (!drawingMaterialType(row)) return false;
+    return thicknessUnitsAreInch(row);
+  }
   function keepIdentity(src, dest) {
     var keys = [
       "CadType", "Stock_X", "Stock_Y", "Stock_Z", "Stock_Units",
@@ -1889,18 +1948,22 @@ _PAGE_FINISH_JS = """(function() {
   }
   function contoursWouldBeZero(row) {
     if (!row || !isCadRow(row)) return false;
-    if (row.InternalData !== undefined && payloadEmpty(row.InternalData)) return true;
+    if (row.InternalData !== undefined && payloadEmpty(row.InternalData)) {
+      if (cadMaterialInchesRecipeComplete(row)) return false;
+      return true;
+    }
     var nc = (row.NumberOfContours != null) ? row.NumberOfContours : row.Contours;
     if (nc === undefined || nc === null || nc === "") return false;
     var n = Number(nc);
     return !isFinite(n) || n < 1;
   }
+  var recipeOk = cadMaterialInchesRecipeComplete(rows[0]);
   if (isCadRow(rows[0]) && (
-      (payloadEmpty(rows[0].InternalData) && (
+      (!recipeOk && payloadEmpty(rows[0].InternalData) && (
         partModeReady || rows[0].InternalData !== undefined
       ))
       || contoursWouldBeZero(rows[0])
-      || (!partModeReady && rows[0].ImageString !== undefined && payloadEmpty(rows[0].ImageString))
+      || (!recipeOk && !partModeReady && rows[0].ImageString !== undefined && payloadEmpty(rows[0].ImageString))
   )) {
     return Promise.resolve(Object.assign(summarize(0, null), {
       via: "skipped",

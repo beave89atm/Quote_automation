@@ -140,6 +140,18 @@ InternalData empty after explode refused
 AddItem_DXFFiles. Contours never filled.
 invent=false.
 Never remint Q10399. Do not forbid 21641-1.
+Q10420 / 4054443b / 35146-1 remint (tip c08c47b):
+EXEC_FAIL leftover. Complete Quote NOT DONE.
+OPEN-NEW leftover from tip-prove 35146 remint
+2026-09-15. chrome_cdp skipped page Finish on empty
+InternalData despite tip refuse-relax
+(cad_material_inches_recipe_complete). Contours never
+filled. invent=false.
+Never remint Q10420. Do not forbid 35146-1.
+Q10407 / d796cdbe Safe Cave List=[] leftover.
+Never remint Q10407.
+Q10408 / 09bae33d Safe Cave List=[] leftover.
+Never remint Q10408.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -241,6 +253,9 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10382",
         "Q10383",
         "Q10399",
+        "Q10420",
+        "Q10407",
+        "Q10408",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
@@ -624,6 +639,44 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "AddItem_DXFFiles. Contours never filled. Do not "
                 "invent Contours/InternalData. Never remint Q10399. "
                 "Do not forbid 21641-1."
+            ),
+        },
+        {
+            "id": "q10420_35146_1_chrome_cdp_skip_finish_leftover",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10420 / 4054443b / 35146-1 remint @ c08c47b: "
+                "EXEC_FAIL leftover. Complete Quote NOT DONE. "
+                "OPEN-NEW leftover from tip-prove 35146 remint "
+                "2026-09-15. chrome_cdp skipped page Finish on "
+                "empty InternalData despite tip refuse-relax "
+                "(cad_material_inches_recipe_complete). Contours "
+                "never filled. Do not invent Contours/InternalData. "
+                "Never remint Q10420. Do not forbid 35146-1."
+            ),
+        },
+        {
+            "id": "q10407_safe_cave_list_empty_leftover",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10407 / d796cdbe Safe Cave List=[] leftover. "
+                "Do not invent Contours/InternalData. Never remint "
+                "Q10407."
+            ),
+        },
+        {
+            "id": "q10408_safe_cave_list_empty_leftover",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10408 / 09bae33d Safe Cave List=[] leftover. "
+                "Do not invent Contours/InternalData. Never remint "
+                "Q10408."
             ),
         },
     ),
