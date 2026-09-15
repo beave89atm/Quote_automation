@@ -2265,6 +2265,11 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("Q10420")
     assert is_forbidden_quote_id("4054443b-bc2a-47f4-95b1-b0ed037868c9")
     assert is_forbidden_quote_id("4054443b-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10450")
+    assert is_forbidden_quote_id("1d59ef4a-5b75-49e7-89fe-02e125830162")
+    assert is_forbidden_quote_id("1d59ef4a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10421")
+    assert is_forbidden_quote_id("38fa25fc-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10407")
     assert is_forbidden_quote_id("d796cdbe-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10408")
@@ -10938,6 +10943,8 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("Q10383")
     assert is_forbidden_quote_number("Q10399")
     assert is_forbidden_quote_number("Q10420")
+    assert is_forbidden_quote_number("Q10450")
+    assert is_forbidden_quote_number("Q10421")
     assert is_forbidden_quote_number("Q10407")
     assert is_forbidden_quote_number("Q10408")
     assert is_forbidden_quote_number("Q10350")
@@ -11895,6 +11902,8 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "Q10383",
         "Q10399",
         "Q10420",
+        "Q10450",
+        "Q10421",
         "Q10407",
         "Q10408",
         "Q10350",
@@ -13138,6 +13147,8 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_number("Q10383")
     assert is_forbidden_quote_number("Q10399")
     assert is_forbidden_quote_number("Q10420")
+    assert is_forbidden_quote_number("Q10450")
+    assert is_forbidden_quote_number("Q10421")
     assert is_forbidden_quote_number("Q10407")
     assert is_forbidden_quote_number("Q10408")
     assert is_forbidden_quote_number("Q10350")
@@ -18085,6 +18096,152 @@ def test_q10420_35146_1_chrome_cdp_skip_finish_forever_forbid():
             method="PATCH",
             path="/Quote/UpdateItem_Part",
             payload={"ID": Q10420_QUOTE_ID},
+        )
+
+
+def test_q10450_1d59ef4a_pr62_cdp_prove_forever_forbid():
+    """Q10450 leftover after PR62 CDP prove: Contours never landed."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10450_35146_1 import (
+        Q10450_QUOTE_ID,
+        q10450_35146_1_contours_never_landed,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10450_35146_1_contours_never_landed()
+    assert dump["quote_number"] == "Q10450"
+    assert dump["quote_id"] == Q10450_QUOTE_ID
+    assert dump["quote_id_prefix"] == "1d59ef4a"
+    assert dump["part_number"] == "35146-1"
+    assert dump["minted_after"] == "PR62 CDP prove"
+    assert dump["remint_attempt_date"] == "2026-09-15"
+    assert dump["complete_quote_done"] is False
+    assert dump["open_draft"] is True
+    assert "OPEN-DRAFT" in dump["complete_quote_note"]
+    assert dump["live_qn_drifted_toward"] == "Q10408"
+    assert dump["pass"] is False
+    assert dump["contours_never_landed"] is True
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert dump["protect"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+    assert "kids" not in dump
+
+    assert is_forbidden_quote_number("Q10450")
+    assert is_forbidden_quote_id(Q10450_QUOTE_ID)
+    assert is_forbidden_quote_id("1d59ef4a-1111-2222-3333-444444444444")
+    assert not is_forbidden_quote_number("35146-1")
+    assert spent_quote_number_block_reason("Q10450")
+    assert spent_quote_number_block_reason("35146-1") is None
+    assert "Q10450" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "35146-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10450" in hunt["never_remint"]
+    assert "35146-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10450_1d59ef4a_pr62_cdp_prove_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10450" in angle["why"]
+    assert "PR62 CDP prove" in angle["why"]
+    assert "Contours never landed" in angle["why"]
+    assert "Q10408" in angle["why"]
+    assert "OPEN-DRAFT" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10450"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10450"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="1d59ef4a"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10450_QUOTE_ID},
+        )
+
+
+def test_q10421_38fa25fc_q10407_drift_forever_forbid():
+    """Q10421 / 38fa25fc prior burn leftover — prefix only; full UUID not found."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10421_38fa25fc import (
+        Q10421_QUOTE_ID_PREFIX,
+        q10421_38fa25fc_drift,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10421_38fa25fc_drift()
+    assert dump["quote_number"] == "Q10421"
+    assert dump["quote_id_prefix"] == Q10421_QUOTE_ID_PREFIX == "38fa25fc"
+    assert dump["full_uuid_found"] is False
+    assert dump["full_uuid"] is None
+    assert dump["prior_burn"] == "Q10421→Q10407 drift"
+    assert dump["drifted_toward"] == "Q10407"
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+    assert "kids" not in dump
+
+    assert is_forbidden_quote_number("Q10421")
+    assert is_forbidden_quote_id("38fa25fc-1111-2222-3333-444444444444")
+    assert not is_forbidden_quote_number("35146-1")
+    assert spent_quote_number_block_reason("Q10421")
+    assert spent_quote_number_block_reason("35146-1") is None
+    assert "Q10421" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "35146-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10421" in hunt["never_remint"]
+    assert "35146-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10421_38fa25fc_q10407_drift_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "38fa25fc" in angle["why"]
+    assert "Q10421" in angle["why"]
+    assert "Q10407" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10421"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10421"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="38fa25fc"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "38fa25fc-1111-2222-3333-444444444444"},
         )
 
 

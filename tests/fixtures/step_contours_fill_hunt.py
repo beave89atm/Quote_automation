@@ -148,6 +148,14 @@ InternalData despite tip refuse-relax
 (cad_material_inches_recipe_complete). Contours never
 filled. invent=false.
 Never remint Q10420. Do not forbid 35146-1.
+Q10450 / 1d59ef4a leftover after PR62 CDP prove:
+Contours never landed. Live QN drifted toward
+forbid Q10408 label. OPEN-DRAFT. invent=false
+2026-09-15.
+Never remint Q10450. Do not forbid 35146-1.
+Q10421 / 38fa25fc prior burn Q10421→Q10407 drift:
+full UUID not found in repo/logs. Never remint /
+PATCH that UUID. Do not forbid 35146-1.
 Q10407 / d796cdbe Safe Cave List=[] leftover.
 Never remint Q10407.
 Q10408 / 09bae33d Safe Cave List=[] leftover.
@@ -254,6 +262,8 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10383",
         "Q10399",
         "Q10420",
+        "Q10450",
+        "Q10421",
         "Q10407",
         "Q10408",
         "H638-CADPLATE",
@@ -655,6 +665,31 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "(cad_material_inches_recipe_complete). Contours "
                 "never filled. Do not invent Contours/InternalData. "
                 "Never remint Q10420. Do not forbid 35146-1."
+            ),
+        },
+        {
+            "id": "q10450_1d59ef4a_pr62_cdp_prove_leftover",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10450 / 1d59ef4a leftover after PR62 CDP prove: "
+                "Contours never landed. Live QN drifted toward "
+                "forbid Q10408 label. OPEN-DRAFT. invent=false "
+                "2026-09-15. Do not invent Contours/InternalData. "
+                "Never remint Q10450. Do not forbid 35146-1."
+            ),
+        },
+        {
+            "id": "q10421_38fa25fc_q10407_drift_leftover",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10421 / 38fa25fc prior burn Q10421→Q10407 drift. "
+                "Full UUID not found in repo/logs. Do not invent "
+                "Contours/InternalData. Never remint / PATCH that "
+                "UUID. Do not forbid 35146-1."
             ),
         },
         {
