@@ -124,6 +124,18 @@ InternalData empty after explode refused
 AddItem_DXFFiles. Contours never filled.
 invent=false.
 Never remint Q10399. Do not forbid 21641-1.
+Q10420 / 4054443b / 35146-1 remint (tip c08c47b):
+EXEC_FAIL leftover. Complete Quote NOT DONE.
+OPEN-NEW leftover from tip-prove 35146 remint
+2026-09-15. chrome_cdp skipped page Finish on empty
+InternalData despite tip refuse-relax
+(cad_material_inches_recipe_complete). Contours never
+filled. invent=false.
+Never remint Q10420. Do not forbid 35146-1.
+Q10407 / d796cdbe Safe Cave List=[] leftover.
+Never remint Q10407.
+Q10408 / 09bae33d Safe Cave List=[] leftover.
+Never remint Q10408.
 Do not gate unlock
 on OCC≥1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
@@ -206,6 +218,9 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "Q10382",
     "Q10383",
     "Q10399",
+    "Q10420",
+    "Q10407",
+    "Q10408",
     "H638-CADPLATE",
     "Q10334",
     "Q10335",
