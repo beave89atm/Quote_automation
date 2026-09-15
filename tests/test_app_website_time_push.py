@@ -1704,6 +1704,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "Q10399" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10420" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10450" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10460" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10421" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10407" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10408" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -3010,6 +3011,52 @@ def test_q10421_38fa25fc_q10407_drift_forever_forbid():
             method="PATCH",
             path="/Quote/UpdateItem_Part",
             payload={"ID": "38fa25fc-1111-2222-3333-444444444444"},
+        )
+
+
+def test_q10460_2873e5f8_gate6_additem_dxffiles_empty_forever_forbid():
+    """Q10460 / 2873e5f8 gate6 AddItem_DXFFiles empty leftover — never remint / PATCH.
+
+    EXEC_FAIL gate6 AddItem_DXFFiles empty body / missing List,Result
+    after Linear stick + PR62 Finish. Contours none. OPEN-NEW leftover
+    2026-09-15. Do not forbid PN 35146-1 (PN remint). invent=false.
+    Do not invent Contours/InternalData.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "2873e5f8-4339-41b1-ab82-2fb6a27026d3" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "2873e5f8" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10460" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "35146-1" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("2873e5f8-4339-41b1-ab82-2fb6a27026d3")
+    assert is_forbidden_quote_id("2873e5f8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10460")
+    assert not is_forbidden_quote_number("35146-1")
+    assert spent_quote_number_block_reason("Q10460")
+    assert spent_quote_number_block_reason("35146-1") is None
+    with pytest.raises(ForbiddenQuoteError, match="Q10460"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10460"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="2873e5f8"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "2873e5f8-4339-41b1-ab82-2fb6a27026d3"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="2873e5f8"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "2873e5f8-4339-41b1-ab82-2fb6a27026d3"},
         )
 
 
