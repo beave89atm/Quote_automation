@@ -140,6 +140,13 @@ InternalData empty after explode refused
 AddItem_DXFFiles. Contours never filled.
 invent=false.
 Never remint Q10399. Do not forbid 21641-1.
+Q10407 / d796cdbe / H.8.42 remint (tip c08c47b):
+Safe Cave Contours FAIL leftover. OPEN-NEW.
+POST /part/create List=[] empty InternalData.
+invent=false. Never remint Q10407. Do not forbid H.8.42.
+Q10408 / 09bae33d / H.32.72.WBT remint (tip c08c47b):
+Safe Cave same List=[] class as Q10407. OPEN-NEW.
+invent=false. Never remint Q10408. Do not forbid H.32.72.WBT.
 Do not gate unlock on OCC≥1. Never invent Contours / InternalData.
 
 createAllParts still has no intervening CadImport/UI XHR. This follow-up
@@ -241,6 +248,8 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10382",
         "Q10383",
         "Q10399",
+        "Q10407",
+        "Q10408",
         "H638-CADPLATE",
         "Q10334",
         "Q10335",
@@ -624,6 +633,32 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "AddItem_DXFFiles. Contours never filled. Do not "
                 "invent Contours/InternalData. Never remint Q10399. "
                 "Do not forbid 21641-1."
+            ),
+        },
+        {
+            "id": "q10407_h842_part_create_list_empty_leftover",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10407 / d796cdbe / H.8.42 remint @ c08c47b: "
+                "Safe Cave Contours FAIL leftover. OPEN-NEW. "
+                "POST /part/create List=[] empty InternalData. "
+                "Do not invent Contours. Never remint Q10407. "
+                "Do not forbid H.8.42."
+            ),
+        },
+        {
+            "id": "q10408_h3272_wbt_part_create_list_empty_leftover",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10408 / 09bae33d / H.32.72.WBT remint @ c08c47b: "
+                "Safe Cave same List=[] class as Q10407. OPEN-NEW. "
+                "POST /part/create List=[] empty InternalData. "
+                "Do not invent Contours. Never remint Q10408. "
+                "Do not forbid H.32.72.WBT."
             ),
         },
     ),

@@ -124,6 +124,13 @@ InternalData empty after explode refused
 AddItem_DXFFiles. Contours never filled.
 invent=false.
 Never remint Q10399. Do not forbid 21641-1.
+Q10407 / d796cdbe / H.8.42 remint (tip c08c47b):
+Safe Cave Contours FAIL leftover. OPEN-NEW.
+POST /part/create List=[] empty InternalData.
+invent=false. Never remint Q10407. Do not forbid H.8.42.
+Q10408 / 09bae33d / H.32.72.WBT remint (tip c08c47b):
+Safe Cave same List=[] class as Q10407. OPEN-NEW.
+invent=false. Never remint Q10408. Do not forbid H.32.72.WBT.
 Do not gate unlock
 on OCC≥1. Kyle HAR leftover
 35136-1 / 8973f890: Upload → CadImport/Data OpenContourCount=0 →
@@ -206,6 +213,8 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "Q10382",
     "Q10383",
     "Q10399",
+    "Q10407",
+    "Q10408",
     "H638-CADPLATE",
     "Q10334",
     "Q10335",

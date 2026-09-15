@@ -2262,6 +2262,12 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("Q10399")
     assert is_forbidden_quote_id("039d8464-6fe1-424a-a120-a31e59964e7e")
     assert is_forbidden_quote_id("039d8464-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10407")
+    assert is_forbidden_quote_id("d796cdbe-b4b6-4d64-937f-826f19efa623")
+    assert is_forbidden_quote_id("d796cdbe-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10408")
+    assert is_forbidden_quote_id("09bae33d-f244-4afb-a25e-b40a98b725d1")
+    assert is_forbidden_quote_id("09bae33d-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
@@ -10930,6 +10936,8 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("Q10382")
     assert is_forbidden_quote_number("Q10383")
     assert is_forbidden_quote_number("Q10399")
+    assert is_forbidden_quote_number("Q10407")
+    assert is_forbidden_quote_number("Q10408")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_number("Q10338")
@@ -11881,6 +11889,8 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "Q10382",
         "Q10383",
         "Q10399",
+        "Q10407",
+        "Q10408",
         "Q10350",
         "21843-1",
         "Q10338",
@@ -13121,6 +13131,8 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_number("Q10382")
     assert is_forbidden_quote_number("Q10383")
     assert is_forbidden_quote_number("Q10399")
+    assert is_forbidden_quote_number("Q10407")
+    assert is_forbidden_quote_number("Q10408")
     assert is_forbidden_quote_number("Q10350")
     assert is_forbidden_quote_number("21843-1")
     assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
@@ -17961,6 +17973,165 @@ def test_q10399_21641_1_gate5_internaldata_empty_forever_forbid():
         )
 
 
+def test_q10407_h842_part_create_list_empty_forever_forbid():
+    """Q10407 remint: Safe Cave H.8.42 Contours FAIL List=[] leftover."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10407_h842 import (
+        Q10407_QUOTE_ID,
+        q10407_h842_contours_fail,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10407_h842_contours_fail()
+    assert dump["quote_number"] == "Q10407"
+    assert dump["quote_id"] == Q10407_QUOTE_ID
+    assert dump["part_number"] == "H.8.42"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["live_probe_tip"] == "c08c47b"
+    assert dump["complete_quote_done"] is False
+    assert dump["open_new_draft"] is True
+    assert dump["complete_quote_note"] == "OPEN-NEW leftover"
+    assert dump["pass"] is False
+    assert dump["contours_pass"] is False
+    assert dump["part_create_list"] == []
+    assert dump["part_create_list_empty"] is True
+    assert dump["internaldata_empty"] is True
+    assert dump["contours_never_filled"] is True
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert dump["protect"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+
+    assert is_forbidden_quote_number("Q10407")
+    assert is_forbidden_quote_id(Q10407_QUOTE_ID)
+    assert not is_forbidden_quote_number("H.8.42")
+    assert spent_quote_number_block_reason("Q10407")
+    assert spent_quote_number_block_reason("H.8.42") is None
+    assert "Q10407" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "H.8.42" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10407" in hunt["never_remint"]
+    assert "H.8.42" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10407_h842_part_create_list_empty_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10407" in angle["why"]
+    assert "H.8.42" in angle["why"]
+    assert "Safe Cave" in angle["why"]
+    assert "List=[]" in angle["why"]
+    assert "InternalData" in angle["why"]
+    assert "OPEN-NEW" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10407"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10407"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="d796cdbe"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10407_QUOTE_ID},
+        )
+
+
+def test_q10408_h3272_wbt_part_create_list_empty_forever_forbid():
+    """Q10408 remint: Safe Cave H.32.72.WBT same List=[] class leftover."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10408_h3272_wbt import (
+        Q10408_QUOTE_ID,
+        q10408_h3272_wbt_contours_fail,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10408_h3272_wbt_contours_fail()
+    assert dump["quote_number"] == "Q10408"
+    assert dump["quote_id"] == Q10408_QUOTE_ID
+    assert dump["part_number"] == "H.32.72.WBT"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["live_probe_tip"] == "c08c47b"
+    assert dump["complete_quote_done"] is False
+    assert dump["open_new_draft"] is True
+    assert dump["complete_quote_note"] == "OPEN-NEW leftover"
+    assert dump["pass"] is False
+    assert dump["contours_pass"] is False
+    assert dump["same_class_as"] == "Q10407 POST /part/create List=[] empty InternalData"
+    assert dump["part_create_list"] == []
+    assert dump["part_create_list_empty"] is True
+    assert dump["internaldata_empty"] is True
+    assert dump["contours_never_filled"] is True
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert dump["protect"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+
+    assert is_forbidden_quote_number("Q10408")
+    assert is_forbidden_quote_id(Q10408_QUOTE_ID)
+    assert not is_forbidden_quote_number("H.32.72.WBT")
+    assert spent_quote_number_block_reason("Q10408")
+    assert spent_quote_number_block_reason("H.32.72.WBT") is None
+    assert "Q10408" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "H.32.72.WBT" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10408" in hunt["never_remint"]
+    assert "H.32.72.WBT" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10408_h3272_wbt_part_create_list_empty_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10408" in angle["why"]
+    assert "H.32.72.WBT" in angle["why"]
+    assert "Safe Cave" in angle["why"]
+    assert "List=[]" in angle["why"]
+    assert "Q10407" in angle["why"]
+    assert "OPEN-NEW" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10408"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10408"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="09bae33d"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10408_QUOTE_ID},
+        )
+
+
 def test_finish_cad_files_multi_kid_keep_grid_empty_internaldata_is_exec_fail(
     tmp_path: Path,
 ):
@@ -18359,6 +18530,8 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
         "q10382_35146_1_mixed_classify_pass_leftover",
         "q10383_21641_1_contours_fail_leftover",
         "q10399_21641_1_gate5_internaldata_empty_leftover",
+        "q10407_h842_part_create_list_empty_leftover",
+        "q10408_h3272_wbt_part_create_list_empty_leftover",
     ]
     assert all(a["ruled_out"] is True for a in hunt["angles"])
     assert "/CadImport/ConvertTo" in PROVEN_EMPTY_PATHS
