@@ -153,6 +153,12 @@ Contours never landed. Live QN drifted toward
 forbid Q10408 label. OPEN-DRAFT. invent=false
 2026-09-15.
 Never remint Q10450. Do not forbid 35146-1.
+Q10460 / 2873e5f8 leftover:
+EXEC_FAIL gate6 AddItem_DXFFiles empty body /
+missing List,Result after Linear stick + PR62
+Finish. Contours none. OPEN-NEW. invent=false
+2026-09-15.
+Never remint Q10460. Do not forbid 35146-1.
 Q10421 / 38fa25fc prior burn Q10421→Q10407 drift:
 full UUID not found in repo/logs. Never remint /
 PATCH that UUID. Do not forbid 35146-1.
@@ -263,6 +269,7 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
         "Q10399",
         "Q10420",
         "Q10450",
+        "Q10460",
         "Q10421",
         "Q10407",
         "Q10408",
@@ -678,6 +685,20 @@ STEP_CONTOURS_FILL_HUNT: dict[str, Any] = {
                 "forbid Q10408 label. OPEN-DRAFT. invent=false "
                 "2026-09-15. Do not invent Contours/InternalData. "
                 "Never remint Q10450. Do not forbid 35146-1."
+            ),
+        },
+        {
+            "id": "q10460_2873e5f8_gate6_additem_dxffiles_empty_leftover",
+            "call": None,
+            "fn": None,
+            "ruled_out": True,
+            "why": (
+                "Q10460 / 2873e5f8 leftover: EXEC_FAIL gate6 "
+                "AddItem_DXFFiles empty body / missing List,Result "
+                "after Linear stick + PR62 Finish. Contours none. "
+                "OPEN-NEW. invent=false 2026-09-15. Do not invent "
+                "Contours/InternalData. Never remint Q10460. Do not "
+                "forbid 35146-1."
             ),
         },
         {

@@ -2268,6 +2268,9 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("Q10450")
     assert is_forbidden_quote_id("1d59ef4a-5b75-49e7-89fe-02e125830162")
     assert is_forbidden_quote_id("1d59ef4a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10460")
+    assert is_forbidden_quote_id("2873e5f8-4339-41b1-ab82-2fb6a27026d3")
+    assert is_forbidden_quote_id("2873e5f8-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10421")
     assert is_forbidden_quote_id("38fa25fc-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10407")
@@ -10944,6 +10947,7 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("Q10399")
     assert is_forbidden_quote_number("Q10420")
     assert is_forbidden_quote_number("Q10450")
+    assert is_forbidden_quote_number("Q10460")
     assert is_forbidden_quote_number("Q10421")
     assert is_forbidden_quote_number("Q10407")
     assert is_forbidden_quote_number("Q10408")
@@ -11903,6 +11907,7 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "Q10399",
         "Q10420",
         "Q10450",
+        "Q10460",
         "Q10421",
         "Q10407",
         "Q10408",
@@ -13148,6 +13153,7 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_number("Q10399")
     assert is_forbidden_quote_number("Q10420")
     assert is_forbidden_quote_number("Q10450")
+    assert is_forbidden_quote_number("Q10460")
     assert is_forbidden_quote_number("Q10421")
     assert is_forbidden_quote_number("Q10407")
     assert is_forbidden_quote_number("Q10408")
@@ -18242,6 +18248,91 @@ def test_q10421_38fa25fc_q10407_drift_forever_forbid():
             method="PATCH",
             path="/Quote/UpdateItem_Part",
             payload={"ID": "38fa25fc-1111-2222-3333-444444444444"},
+        )
+
+
+def test_q10460_2873e5f8_gate6_additem_dxffiles_empty_forever_forbid():
+    """Q10460 leftover: EXEC_FAIL gate6 AddItem_DXFFiles empty body."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10460_35146_1 import (
+        Q10460_QUOTE_ID,
+        q10460_35146_1_contours_none,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10460_35146_1_contours_none()
+    assert dump["quote_number"] == "Q10460"
+    assert dump["quote_id"] == Q10460_QUOTE_ID
+    assert dump["quote_id_prefix"] == "2873e5f8"
+    assert dump["part_number"] == "35146-1"
+    assert dump["remint_attempt_date"] == "2026-09-15"
+    assert dump["complete_quote_done"] is False
+    assert dump["open_new_draft"] is True
+    assert "OPEN-NEW" in dump["complete_quote_note"]
+    assert dump["pass"] is False
+    assert dump["exec_fail"] == "EXEC_FAIL"
+    assert dump["gate6_additem_dxffiles_empty_body"] is True
+    assert dump["missing_list_result"] is True
+    assert dump["after_linear_stick"] is True
+    assert dump["after_pr62_finish"] is True
+    assert dump["contours_none"] is True
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert dump["protect"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+    assert "kids" not in dump
+
+    assert is_forbidden_quote_number("Q10460")
+    assert is_forbidden_quote_id(Q10460_QUOTE_ID)
+    assert is_forbidden_quote_id("2873e5f8-1111-2222-3333-444444444444")
+    assert not is_forbidden_quote_number("35146-1")
+    assert spent_quote_number_block_reason("Q10460")
+    assert spent_quote_number_block_reason("35146-1") is None
+    assert "Q10460" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "35146-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10460" in hunt["never_remint"]
+    assert "35146-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10460_2873e5f8_gate6_additem_dxffiles_empty_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10460" in angle["why"]
+    assert "EXEC_FAIL" in angle["why"]
+    assert "gate6" in angle["why"]
+    assert "AddItem_DXFFiles empty body" in angle["why"]
+    assert "List,Result" in angle["why"]
+    assert "Linear stick" in angle["why"]
+    assert "PR62 Finish" in angle["why"]
+    assert "Contours none" in angle["why"]
+    assert "OPEN-NEW" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10460"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10460"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="2873e5f8"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10460_QUOTE_ID},
         )
 
 
