@@ -1701,6 +1701,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "Q10381" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10382" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10383" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10399" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10350" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "21843-1" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10338" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -2830,6 +2831,53 @@ def test_q10383_21641_1_contours_fail_forever_forbid():
             method="PATCH",
             path="/Quote/UpdateItem_Part",
             payload={"ID": "9d7cc06e-0c7a-4393-a49f-498a1f484c31"},
+        )
+
+
+def test_q10399_21641_1_gate5_internaldata_empty_forever_forbid():
+    """Q10399 / 039d8464 21641-1 gate5 FAIL leftover — never remint / PATCH.
+
+    Remint EXEC_FAIL leftover. Complete Quote NOT DONE. OPEN-NEW leftover
+    from hardened 21641 remint 2026-09-14. Dig checklist gates 1–4 PASS.
+    Gate5 InternalData empty after explode refused AddItem_DXFFiles.
+    Contours never filled. Do not forbid PN 21641-1 (PN remint).
+    invent=false. Do not invent Contours/InternalData.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "039d8464-6fe1-424a-a120-a31e59964e7e" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "039d8464" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10399" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "21641-1" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("039d8464-6fe1-424a-a120-a31e59964e7e")
+    assert is_forbidden_quote_id("039d8464-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10399")
+    assert not is_forbidden_quote_number("21641-1")
+    assert spent_quote_number_block_reason("Q10399")
+    assert spent_quote_number_block_reason("21641-1") is None
+    with pytest.raises(ForbiddenQuoteError, match="Q10399"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10399"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="039d8464"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "039d8464-6fe1-424a-a120-a31e59964e7e"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="039d8464"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "039d8464-6fe1-424a-a120-a31e59964e7e"},
         )
 
 
