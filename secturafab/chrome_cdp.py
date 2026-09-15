@@ -1696,7 +1696,7 @@ _PAGE_FINISH_JS = """(function() {
     };
     if (meterish[unit_s]) return false;
     var text = String(raw).trim();
-    var embedded = text.match(/^\s*([0-9]*\.?[0-9]+)\s*[:\s]\s*(meters?|metres?|millimeters?|millimetres?|inches?|inch|mm|in|m)\s*$/i);
+    var embedded = text.match(/^\\s*([0-9]*\\.?[0-9]+)\\s*[:\\s]\\s*(meters?|metres?|millimeters?|millimetres?|inches?|inch|mm|in|m)\\s*$/i);
     if (embedded) {
       var unitEmb = String(embedded[2] || "").toLowerCase();
       if (meterish[unitEmb]) return false;
