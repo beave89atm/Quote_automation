@@ -40,9 +40,18 @@ WEIGHT_RE = re.compile(
     r"(?<![\d.])(\d{1,4}(?:\.\d+)?)\s*(?:lbm|lbs?|pounds?)\b",
     re.IGNORECASE,
 )
-# Plate blank callout on component drawings: 7.00" X 3.19"
+# Plate blank callout on component drawings: 7.00" X 3.19" or 2" X 9"
 PLATE_BLANK_RE = re.compile(
-    r"(?<![\d.])(\d{1,2}\.\d{1,4})\s*[\"″']?\s*[Xx×]\s*(\d{1,2}\.\d{1,4})\s*[\"″']?",
+    r"(?<![\d.])(\d{1,3}(?:\.\d{1,4})?)\s*[\"″']?\s*[Xx×]\s*(\d{1,3}(?:\.\d{1,4})?)\s*[\"″']?",
+)
+_PLATE_OVERALL_RE = re.compile(
+    r"(?:OVERALL|BLANK|PLATE\s*SIZE|FINISHED\s*SIZE)[^\n]{0,40}?"
+    r"(\d{1,3}(?:\.\d{1,4})?)\s*[\"″']?\s*[Xx×]\s*(\d{1,3}(?:\.\d{1,4})?)",
+    re.IGNORECASE,
+)
+_SKIP_CAD_FLAT_RE = re.compile(
+    r"\b(CHANNEL|TUBE|PIPE|HOSE\s+GUARD)\b|\bC\d+X|\bL\d+/\d|\bRT\d",
+    re.IGNORECASE,
 )
 GUSSET_DESC_RE = re.compile(r"\bGUSSET\b", re.IGNORECASE)
 
@@ -70,6 +79,7 @@ class WeldTakeoffResult:
     stp_summary: dict[str, Any] = field(default_factory=dict)
 
     fitup_drivers: dict[str, Any] = field(default_factory=dict)
+    plates: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +89,7 @@ class WeldTakeoffResult:
             "notes": self.notes,
             "stp_summary": self.stp_summary,
             "fitup_drivers": self.fitup_drivers,
+            "plates": self.plates,
             "total_inches": sum(i.inches for i in self.items),
         }
 
@@ -391,31 +402,145 @@ def _estimate_segments_from_pdf(
     return segments
 
 
-def _plate_blank_size_from_text(text: str) -> tuple[float, float] | None:
-    """Return (L, W) from a plate blank callout like 7.00\" X 3.19\"."""
-    candidates: list[tuple[float, float]] = []
-    for m in PLATE_BLANK_RE.finditer(text or ""):
+def _looks_like_page_outline(a: float, b: float) -> bool:
+    """PDF crop / SCALE 1:N artifacts (1×2, 1×16), not the child-drawing flat."""
+    pair = (min(a, b), max(a, b))
+    return 0.90 <= pair[0] <= 1.10
+
+
+def _looks_like_sheet_outline(a: float, b: float) -> bool:
+    pair = (min(a, b), max(a, b))
+    if _looks_like_page_outline(a, b):
+        return True
+    for lo, hi in ((8.5, 11.0), (11.0, 17.0), (17.0, 22.0), (22.0, 28.5), (22.0, 34.0)):
+        if abs(pair[0] - lo) <= 0.6 and abs(pair[1] - hi) <= 0.6:
+            return True
+    return False
+
+
+def _plate_blank_size_from_text(
+    text: str,
+    *,
+    min_side: float = 0.75,
+    max_side: float = 24.0,
+) -> tuple[float, float] | None:
+    """Return (L, W) from a plate blank callout like 7.00\" X 3.19\" or 2\" X 9\"."""
+    overall: list[tuple[float, float]] = []
+    blanks: list[tuple[float, float]] = []
+    blob = text or ""
+
+    def _keep(a: float, b: float, bag: list[tuple[float, float]]) -> None:
+        if min_side <= a <= max_side and min_side <= b <= max_side:
+            if not _looks_like_sheet_outline(a, b):
+                bag.append((a, b))
+
+    for m in _PLATE_OVERALL_RE.finditer(blob):
         try:
             a = float(m.group(1))
             b = float(m.group(2))
         except ValueError:
             continue
-        # Gusset / plate blanks are typically under ~24" each side.
-        if 0.75 <= a <= 24.0 and 0.75 <= b <= 24.0:
-            candidates.append((max(a, b), min(a, b)))
-    if not candidates:
+        _keep(a, b, overall)
+    for m in PLATE_BLANK_RE.finditer(blob):
+        try:
+            a = float(m.group(1))
+            b = float(m.group(2))
+        except ValueError:
+            continue
+        _keep(a, b, blanks)
+    # Prefer OVERALL/BLANK labels, then the largest plausible child-drawing pair.
+    # Do not return a first-hit 1×N page outline.
+    pool = overall or blanks
+    if not pool:
         return None
-    # Prefer the first title-block blank (usually the overall plate size).
-    return candidates[0]
+    return max(pool, key=lambda p: p[0] * p[1])
 
 
-def _plate_blank_size_from_pdf(pdf_path: Path) -> tuple[float, float] | None:
+def _plate_blank_size_from_pdf(
+    pdf_path: Path,
+    *,
+    min_side: float = 0.75,
+    max_side: float = 24.0,
+) -> tuple[float, float] | None:
     from quote_core.weight import _read_pdf_text
 
     try:
-        return _plate_blank_size_from_text(_read_pdf_text(pdf_path))
+        text = _read_pdf_text(pdf_path)
     except Exception:  # noqa: BLE001
+        text = ""
+    got = _plate_blank_size_from_text(text, min_side=min_side, max_side=max_side)
+    if got:
+        return got
+    try:
+        from quote_core.ocr import ocr_pdf_pages
+
+        ocr = ocr_pdf_pages(pdf_path, max_pages=2, dpi=180)
+        return _plate_blank_size_from_text(
+            str((ocr or {}).get("text") or ""),
+            min_side=min_side,
+            max_side=max_side,
+        )
+    except Exception:  # noqa: BLE001 — OCR optional
         return None
+
+
+def collect_lom_cad_plates(
+    pdf_path: Path | str | None,
+    library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
+    bom_config: str | None = None,
+) -> list[dict[str, Any]]:
+    """L×W for LOM Cad PNs from each child drawing (not the 1001898 lock)."""
+    from quote_core.bom import extract_bom
+
+    plates: list[dict[str, Any]] = []
+    if not pdf_path or not Path(pdf_path).is_file():
+        return plates
+    try:
+        bom = extract_bom(
+            pdf_path,
+            library_folder=library_folder,
+            related_pdf_names=related_pdf_names,
+            bom_config=bom_config,
+        )
+    except Exception:  # noqa: BLE001 — LOM/PDF optional
+        return plates
+    search_dirs = _component_pdf_search_dirs(Path(pdf_path), library_folder)
+    try:
+        from quote_core.weight import _read_pdf_text
+
+        assembly_text = _read_pdf_text(Path(pdf_path))
+    except Exception:  # noqa: BLE001
+        assembly_text = ""
+    seen: set[str] = set()
+    for row in getattr(bom, "rows", None) or []:
+        pn = str(getattr(row, "part_no", "") or "").strip()
+        noun = str(getattr(row, "description", "") or "")
+        if not pn or pn in seen:
+            continue
+        if _SKIP_CAD_FLAT_RE.search(f"{pn} {noun}"):
+            continue
+        comp = _find_component_pdf(pn, search_dirs, related_pdf_names)
+        blank = None
+        if comp:
+            blank = _plate_blank_size_from_pdf(comp, min_side=0.26, max_side=240.0)
+        if not blank:
+            blank = _flats_near_part_no(assembly_text, pn)
+        if not blank:
+            continue
+        length_in, width_in = blank
+        seen.add(pn)
+        plates.append(
+            {
+                "part_no": pn,
+                "name": pn,
+                "description": noun,
+                "width_in": width_in,
+                "length_in": length_in,
+                "blank": [length_in, width_in],
+            }
+        )
+    return plates
 
 
 def _component_pdf_search_dirs(
@@ -465,11 +590,95 @@ def _find_component_pdf(
                 name_u = p.name.upper()
                 if "[1]" in name_u:
                     continue
-                if name_u.startswith(part_u) or p.stem.upper().startswith(part_u):
+                stem_u = p.stem.upper()
+                if name_u.startswith(part_u) or stem_u.startswith(part_u):
+                    return p
+                base = part_u.rsplit("-", 1)[0] if "-" in part_u else part_u
+                if base and (
+                    stem_u == base
+                    or stem_u.startswith(base + "-")
+                    or stem_u.startswith(base + ".")
+                ):
                     return p
         except OSError:
             continue
     return None
+
+
+def _flats_near_part_no(text: str, part_no: str) -> tuple[float, float] | None:
+    """L×W printed next to a balloon/PN on the assembly drawing."""
+    token = (part_no or "").strip()
+    if not token:
+        return None
+    base = token.rsplit("-", 1)[0] if "-" in token else token
+    needles = [token]
+    if base and base != token:
+        needles.append(base)
+    blob = text or ""
+    for needle in needles:
+        for match in re.finditer(re.escape(needle), blob, re.IGNORECASE):
+            window = blob[max(0, match.start() - 100) : match.end() + 100]
+            got = _plate_blank_size_from_text(window, min_side=0.26, max_side=240.0)
+            if got:
+                return got
+    return None
+
+
+def _estimate_plate_perimeter_segments(
+    pdf_path: Path | None,
+    library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
+    plates: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Fillet-symbol length from LOM/child-drawing plate perimeters."""
+    notes: list[str] = []
+    rows = list(plates or [])
+    if not rows:
+        try:
+            rows = collect_lom_cad_plates(
+                pdf_path,
+                library_folder=library_folder,
+                related_pdf_names=related_pdf_names,
+            )
+        except Exception:  # noqa: BLE001
+            rows = []
+    segments: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        width = row.get("width_in") or row.get("Width")
+        length = row.get("length_in") or row.get("Length")
+        blank = row.get("blank") or []
+        if (width in (None, "") or length in (None, "")) and isinstance(blank, (list, tuple)) and len(blank) >= 2:
+            length, width = blank[0], blank[1]
+        try:
+            width_f = float(width)
+            length_f = float(length)
+        except (TypeError, ValueError):
+            continue
+        if width_f <= 0.05 or length_f <= 0.05:
+            continue
+        perimeter = 2.0 * (length_f + width_f)
+        try:
+            qty = max(1, int(row.get("qty") or row.get("quantity") or 1))
+        except (TypeError, ValueError):
+            qty = 1
+        pn = str(row.get("part_no") or row.get("name") or "plate")
+        segments.append(
+            {
+                "length": round(perimeter, 4),
+                "qty": qty,
+                "sides": 1,
+                "kind": "plate_perimeter",
+                "name": pn,
+                "blank": [length_f, width_f],
+            }
+        )
+        notes.append(
+            f"Plate {pn}: fillet perimeter 2×({length_f:g}+{width_f:g})"
+            f" = {perimeter:g}\" × qty {qty}"
+        )
+    return segments, notes
 
 
 def _estimate_gusset_all_around_segments(
@@ -944,6 +1153,7 @@ def _build_items_from_signals(
     pdf_path: Path | str | None = None,
     library_folder: Path | str | None = None,
     related_pdf_names: list[str] | None = None,
+    plates: list[dict[str, Any]] | None = None,
 ) -> tuple[list[WeldLineItem], list[str]]:
     items: list[WeldLineItem] = []
     flags: list[str] = []
@@ -974,10 +1184,15 @@ def _build_items_from_signals(
         primary_sizes = list(size_counts.keys())
 
     # Prefer structural fillet sizes over thin 1/8 noise when both appear weakly.
+    # Keep 1/8 when it is the only fillet size on the sheet.
     if len(primary_sizes) > 1 and "1/8" in primary_sizes:
         stronger = [s for s in primary_sizes if s != "1/8"]
         if stronger and all(weld_sheet_sizes.get(s, size_counts.get(s, 0)) <= 2 for s in primary_sizes):
             primary_sizes = stronger
+    if not primary_sizes:
+        blob = " ".join(str(n) for n in notes).lower()
+        if "fillet" in blob and "1/8" in blob:
+            primary_sizes = ["1/8"]
 
     segments = _weld_segments_from_stp(stp_summary, notes)
     length_source = "stp_assembly"
@@ -994,8 +1209,21 @@ def _build_items_from_signals(
             segments = gusset_segs
             length_source = "gusset_all_around"
         else:
-            segments = _estimate_segments_from_pdf(pdf_dimensions, notes)
-            length_source = "pdf_dims"
+            plate_segs, plate_notes = _estimate_plate_perimeter_segments(
+                Path(pdf_path) if pdf_path else None,
+                library_folder=library_folder,
+                related_pdf_names=related_pdf_names,
+                plates=plates,  # optional LOM flats from caller / tests
+            )
+            for n in plate_notes:
+                if n not in flags:
+                    flags.append(n)
+            if plate_segs:
+                segments = plate_segs
+                length_source = "plate_perimeter"
+            else:
+                segments = _estimate_segments_from_pdf(pdf_dimensions, notes)
+                length_source = "pdf_dims"
     for n in stp_summary.get("qty_hint_notes") or []:
         if n not in flags:
             flags.append(n)
@@ -1099,6 +1327,10 @@ def _build_items_from_signals(
         flags.append(
             "Weld inches from gusset plate blank perimeters (all-around) — confirm weld symbols"
         )
+    elif length_source == "plate_perimeter":
+        flags.append(
+            "Weld inches from Cad plate blank perimeters (fillet symbols) — confirm"
+        )
     cover_inches = float(stp_summary.get("cover_inches") or 0)
     covers_included = bool(stp_summary.get("covers_included_in_total"))
     if cover_inches > 0 and not covers_included:
@@ -1164,7 +1396,8 @@ def estimate_fitup_drivers(
         part_count = int(stp_summary.get("solid_count") or 0)
     defaulted_part_count = False
     if part_count <= 0:
-        part_count = 1
+        # Do not invent 1 pc here — LOM clip failure is handled after weight_info.
+        part_count = 0
         defaulted_part_count = True
 
     skip_kinds = {"kingpin_all_around", "angle_end", "channel_end", "gusset_all_around"}
@@ -1192,11 +1425,13 @@ def estimate_fitup_drivers(
     assembly_weight = weight_info.get("assembly_weight_lb")
     component_weights = list(weight_info.get("component_weights_lb") or [])
     method = str(weight_info.get("method") or "")
+    lom_unknown = method == "lom_clip_empty" or bool(weight_info.get("needs_info"))
     bom_piece_count = int(weight_info.get("piece_count") or 0)
     bom_part_numbers = int(weight_info.get("part_number_count") or 0)
 
     if (
         method.startswith("pdf_bom")
+        or method.startswith("lom")
         or method.startswith("ocr_time")
         or method.startswith("native_mac")
         or method.startswith("native_parts_list")
@@ -1246,6 +1481,7 @@ def estimate_fitup_drivers(
 
     if bom_piece_count > 0 and (
         method.startswith("pdf_bom")
+        or method.startswith("lom")
         or method.startswith("ocr_time")
         or method.startswith("native_mac")
         or method.startswith("native_parts_list")
@@ -1254,7 +1490,16 @@ def estimate_fitup_drivers(
         part_count = bom_piece_count
         defaulted_part_count = False
 
-    if defaulted_part_count:
+    if lom_unknown and bom_piece_count <= 0:
+        part_count = 0
+        defaulted_part_count = False
+        notes_out.insert(
+            0,
+            "LIST OF MATERIAL clip produced 0 rows — piece count unknown (needs_info)",
+        )
+    elif defaulted_part_count and part_count <= 0 and not lom_unknown:
+        # Loose piece (no LOM grid): one quote = one PN. Not a failed clip.
+        part_count = 1
         notes_out.insert(0, "Part count defaulted to 1 — enter actual part count")
     if joint_estimated and bom_piece_count <= 0:
         notes_out.append("Joint count estimated from part count (parts - 1)")
@@ -1263,11 +1508,18 @@ def estimate_fitup_drivers(
         joint_count = max(1, part_count - 1)
         notes_out.append("Joint count estimated from BOM piece count (pieces - 1)")
 
+    if lom_unknown and bom_piece_count <= 0:
+        piece_out = 0
+    elif bom_piece_count > 0:
+        piece_out = bom_piece_count
+    elif component_weights:
+        piece_out = len(component_weights)
+    else:
+        piece_out = part_count
     return {
         "part_count": part_count,
-        "piece_count": bom_piece_count
-        if bom_piece_count > 0
-        else (len(component_weights) if component_weights else part_count),
+        "piece_count": piece_out,
+        "needs_info": bool(lom_unknown and bom_piece_count <= 0),
         "joint_count": joint_count,
         "assembly_weight_lb": assembly_weight,
         "component_weights_lb": component_weights,
@@ -1319,27 +1571,49 @@ def run_weld_takeoff(
             msg += " Attach STEP for geometry when available."
         flags.insert(0, msg)
 
+    fitup_drivers = estimate_fitup_drivers(
+        stp_summary,
+        notes,
+        pdf_path=pdf_path,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+        bom_config=bom_config,
+    )
     if not items:
-        fitup_drivers = {
-            "part_count": 0,
-            "joint_count": 0,
-            "assembly_weight_lb": None,
-            "component_weights_lb": [],
-            "source": "no_weld",
-            "notes": ["No weld symbols — weld and fit-up left at 0"],
-        }
-    else:
-        fitup_drivers = estimate_fitup_drivers(
-            stp_summary,
-            notes,
-            pdf_path=pdf_path,
-            library_folder=library_folder,
-            related_pdf_names=related_pdf_names,
-            bom_config=bom_config,
-        )
+        lom_takeoff = bool(fitup_drivers.get("needs_info")) or int(
+            fitup_drivers.get("piece_count") or 0
+        ) > 0
+        if lom_takeoff:
+            fitup_notes = list(fitup_drivers.get("notes") or [])
+            fitup_notes.insert(
+                0,
+                "No weld symbols — weld inches left at 0; piece count from LOM/BOM",
+            )
+            fitup_drivers["notes"] = fitup_notes
+        else:
+            fitup_drivers = {
+                "part_count": 0,
+                "piece_count": 0,
+                "joint_count": 0,
+                "assembly_weight_lb": None,
+                "component_weights_lb": [],
+                "source": "no_weld",
+                "notes": ["No weld symbols — weld and fit-up left at 0"],
+            }
     for n in fitup_drivers.get("notes") or []:
         if n not in flags:
             flags.append(n)
+
+    plates = collect_lom_cad_plates(
+        pdf_path,
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+        bom_config=bom_config,
+    )
+    if plates:
+        flags.append(
+            f"Takeoff Cad flats for {len(plates)} LOM PN(s) from child drawings"
+        )
 
     return WeldTakeoffResult(
         items=items,
@@ -1347,6 +1621,7 @@ def run_weld_takeoff(
         sizes_found=sorted(set(sizes)),
         notes=notes[:40],
         fitup_drivers=fitup_drivers,
+        plates=plates,
         stp_summary={
             "solid_count": stp_summary.get("solid_count", 0),
             "unit_scale": stp_summary.get("unit_scale"),

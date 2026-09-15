@@ -1,0 +1,1 @@
+# Makes ``python3 -m tests.fixtures.time_gold`` work.
