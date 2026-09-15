@@ -1703,6 +1703,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "Q10383" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10399" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10420" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10450" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10421" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10407" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10408" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10350" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -2927,6 +2929,87 @@ def test_q10420_35146_1_chrome_cdp_skip_finish_forever_forbid():
             method="PATCH",
             path="/Quote/UpdateItem_Part",
             payload={"ID": "4054443b-bc2a-47f4-95b1-b0ed037868c9"},
+        )
+
+
+def test_q10450_1d59ef4a_pr62_cdp_prove_forever_forbid():
+    """Q10450 / 1d59ef4a leftover after PR62 CDP prove — never remint / PATCH.
+
+    Contours never landed. Live QN drifted toward forbid Q10408 label.
+    OPEN-DRAFT. invent=false 2026-09-15. Do not forbid PN 35146-1
+    (PN remint). Do not invent Contours/InternalData.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "1d59ef4a-5b75-49e7-89fe-02e125830162" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "1d59ef4a" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10450" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "35146-1" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("1d59ef4a-5b75-49e7-89fe-02e125830162")
+    assert is_forbidden_quote_id("1d59ef4a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10450")
+    assert not is_forbidden_quote_number("35146-1")
+    assert spent_quote_number_block_reason("Q10450")
+    assert spent_quote_number_block_reason("35146-1") is None
+    with pytest.raises(ForbiddenQuoteError, match="Q10450"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10450"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="1d59ef4a"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "1d59ef4a-5b75-49e7-89fe-02e125830162"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="1d59ef4a"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "1d59ef4a-5b75-49e7-89fe-02e125830162"},
+        )
+
+
+def test_q10421_38fa25fc_q10407_drift_forever_forbid():
+    """Q10421 / 38fa25fc prior burn Q10421→Q10407 drift — never remint / PATCH.
+
+    Full UUID not found in repo/logs. Prefix-only forbid. Do not forbid
+    PN 35146-1. invent=false. Do not invent Contours/InternalData.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "38fa25fc" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10421" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "35146-1" not in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("38fa25fc-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10421")
+    assert not is_forbidden_quote_number("35146-1")
+    assert spent_quote_number_block_reason("Q10421")
+    assert spent_quote_number_block_reason("35146-1") is None
+    with pytest.raises(ForbiddenQuoteError, match="Q10421"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10421"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="38fa25fc"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "38fa25fc-1111-2222-3333-444444444444"},
         )
 
 

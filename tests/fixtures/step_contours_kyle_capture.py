@@ -132,6 +132,14 @@ InternalData despite tip refuse-relax
 (cad_material_inches_recipe_complete). Contours never
 filled. invent=false.
 Never remint Q10420. Do not forbid 35146-1.
+Q10450 / 1d59ef4a leftover after PR62 CDP prove:
+Contours never landed. Live QN drifted toward
+forbid Q10408 label. OPEN-DRAFT. invent=false
+2026-09-15.
+Never remint Q10450. Do not forbid 35146-1.
+Q10421 / 38fa25fc prior burn Q10421→Q10407 drift:
+full UUID not found in repo/logs. Never remint /
+PATCH that UUID. Do not forbid 35146-1.
 Q10407 / d796cdbe Safe Cave List=[] leftover.
 Never remint Q10407.
 Q10408 / 09bae33d Safe Cave List=[] leftover.
@@ -219,6 +227,8 @@ STEP_CONTOURS_CAPTURE_NEVER_REMINT = (
     "Q10383",
     "Q10399",
     "Q10420",
+    "Q10450",
+    "Q10421",
     "Q10407",
     "Q10408",
     "H638-CADPLATE",
