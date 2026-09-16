@@ -68,8 +68,11 @@ Live 16629-1: CadType+Stock on kendo and posted FileList; FileType
 and Status absent; 200 empty / GET 0. Persist FileType from
 SetPartMode ItemType/Category/PartMode onto the dataItem. Do not
 invent Status. Cad Contours plate Finish FileList matches Kyle
-Q10366 HAR: Status absent, ImageString omitted, cad + bar/bar_flat
-+ Laser, Length/Width meters. Do not invent Contours. Leave aab5b3e2 / 16629-1.
+Q10366 HAR: Status/ImageString/FileType/PartMode/SourceDataID absent,
+cad + bar/bar_flat + Laser, Length/Width meters. Lean FileList[0][k]
+form-urlencoded (not fat kendo ObservableObject). AddItem success =
+HTTP 200 AND List length ≥1 (List=[] is fail). Do not invent
+Contours. Leave aab5b3e2 / 16629-1.
 Live 10098-1 (315cb19 leftover PIVOTING FOOT, 6a568912): posted
 FileType=Cad (string) plus CadType+Stock+SID and InternalData/
 ImageString/HadOpenContours/OutsidePerimeter *keys*. Finish still
@@ -1701,16 +1704,23 @@ _PAGE_FINISH_JS = """(function() {
     try { delete r[key]; } catch (e2) {}
   }
   function applyKyleHarCadContoursPlateFileList(r) {
-    // Q10366 HAR Finish FileList: Status absent, ImageString absent,
-    // ItemType=cad ProductType=bar productSubType=bar_flat Machine=Laser
-    // Length/Width meters. invent=false. Do not invent Contours.
+    // Q10366 HAR Finish FileList: Status/ImageString/FileType/PartMode/
+    // SourceDataID absent. ItemType=cad ProductType=bar
+    // productSubType=bar_flat Machine=Laser Length/Width meters.
+    // Force VALUES last so SetPartMode ProductType=100 cannot win.
+    // invent=false. Do not invent Contours.
     if (!isCadRow(r)) return r;
     var cat = String(r.Category || r.ItemType || r.FileType || "");
     if (cat === "Linear" || cat === "Assembly") return r;
-    omitFileListKey(r, "Status");
-    omitFileListKey(r, "status");
-    omitFileListKey(r, "ImageString");
-    omitFileListKey(r, "imageString");
+    var stripKeys = [
+      "Status", "status", "ImageString", "imageString",
+      "FileType", "PartMode", "SourceDataID", "Width_Units",
+      "drawing_thickness_in", "thickness_source", "CadType",
+      "HadOpenContours", "IsPlate", "IsLinear", "IsPart", "Category"
+    ];
+    for (var si = 0; si < stripKeys.length; si++) {
+      omitFileListKey(r, stripKeys[si]);
+    }
     if (typeof r.set === "function") {
       r.set("ItemType", "cad");
       r.set("ProductType", "bar");
@@ -1743,13 +1753,43 @@ _PAGE_FINISH_JS = """(function() {
     if (widthM != null) {
       if (typeof r.set === "function") {
         r.set("Width", widthM);
-        r.set("Width_Units", "meter");
       } else {
         r.Width = widthM;
-        r.Width_Units = "meter";
       }
+      omitFileListKey(r, "Width_Units");
     }
     return r;
+  }
+  function leanKyleHarCadContoursPlateFileList(r) {
+    // Lean FileList[0][k] row — not the fat kendo ObservableObject.
+    // Force Kyle VALUES last after SetPartMode/classify.
+    if (!r || typeof r !== "object") return r;
+    applyKyleHarCadContoursPlateFileList(r);
+    if (!isCadRow(r)) return r;
+    var cat = String(r.Category || r.ItemType || r.FileType || "");
+    if (cat === "Linear" || cat === "Assembly") return r;
+    var keep = [
+      "ID", "FileID", "PartID", "ItemID",
+      "ItemType", "ProductType", "ProductSubType", "productSubType",
+      "Machine", "Material", "MaterialGrade",
+      "Thickness", "Thickness_Units",
+      "Length", "Width", "Length_Units",
+      "Name", "PartName", "FileName", "Description",
+      "Qty", "Quantity", "ErrorStatus",
+      "InternalData", "ProductID", "SKU"
+    ];
+    var lean = {};
+    for (var ki = 0; ki < keep.length; ki++) {
+      var k = keep[ki];
+      if (r[k] !== undefined) lean[k] = r[k];
+    }
+    lean.ItemType = "cad";
+    lean.ProductType = "bar";
+    lean.ProductSubType = "bar_flat";
+    lean.productSubType = "bar_flat";
+    lean.Machine = "Laser";
+    if (lean.InternalData == null) lean.InternalData = "";
+    return lean;
   }
   function productTypeIsComponent(v) {
     if (v === 200 || v === "200") return true;
@@ -1858,12 +1898,15 @@ _PAGE_FINISH_JS = """(function() {
     else if (isObj) body_type = "object";
     else if (typeof data === "string") body_type = "str";
     else body_type = typeof data;
+    var respList = isObj ? (data.List || data.list) : null;
+    var respListN = Array.isArray(respList) ? respList.length : 0;
     return {
       status: status || 0,
       body_keys: keys,
       body_type: body_type,
       has_NewItem: !!(isObj && (data.NewItem || data.newItem)),
       has_QuoteItem: !!(isObj && (data.QuoteItem || data.quoteItem)),
+      response_list_n: respListN,
       text_len: (typeof data === "string") ? data.length : (isObj ? 1 : 0),
       grid_dxf_row_count: gridData().length
     };
@@ -2127,11 +2170,18 @@ _PAGE_FINISH_JS = """(function() {
           opts.data = {};
         }
         var krows = gridData();
+        var origSidN = countField(krows, "SourceDataID");
+        var origIdN = countField(krows, "ID");
+        var origFileIdN = countField(krows, "FileID");
         if (krows.length) {
+          var leanRows = [];
           for (var ki = 0; ki < krows.length; ki++) {
-            applyKyleHarCadContoursPlateFileList(krows[ki]);
+            leanRows.push(leanKyleHarCadContoursPlateFileList(krows[ki]));
           }
-          opts.data.FileList = krows;
+          opts.data.FileList = leanRows;
+          opts.contentType = "application/x-www-form-urlencoded; charset=UTF-8";
+          opts.processData = true;
+          opts.traditional = false;
         }
         attachChromeDomAf(opts.data);
         arguments[0] = opts;
@@ -2139,9 +2189,9 @@ _PAGE_FINISH_JS = """(function() {
         var fl = d.FileList || d.fileList || [];
         var n = Array.isArray(fl) ? fl.length : 0;
         var req_keys = Object.keys(d);
-        var sid_n = countField(fl, "SourceDataID");
-        var id_n = countField(fl, "ID");
-        var fileid_n = countField(fl, "FileID");
+        var sid_n = origSidN;
+        var id_n = origIdN;
+        var fileid_n = origFileIdN;
         var ft = {Cad: 0, Linear: 0, Assembly: 0, Component: 0, blank: 0};
         for (var fi = 0; fi < n; fi++) {
           var r = fl[fi] || {};
@@ -2155,8 +2205,8 @@ _PAGE_FINISH_JS = """(function() {
           if (ft[cat] !== undefined) ft[cat] += 1;
           else ft.blank += 1;
         }
-        var fromThisDs = kendoGridPresent() && krows.length > 0 && fl === krows;
-        var fromKendo = fromThisDs && n > 0 && sid_n === n;
+        var fromThisDs = kendoGridPresent() && krows.length > 0;
+        var fromKendo = fromThisDs && n > 0 && (sid_n === n || id_n === n || fileid_n === n);
         var afOnDoc = hasChromeDomAf();
         var afInReq = hasAf(d);
         var postedKeys = n > 0 ? rowKeys(fl[0]) : [];
@@ -2206,7 +2256,17 @@ _PAGE_FINISH_JS = """(function() {
           finish_af_present: afInReq,
           finish_why: finishWhy(
             fromKendo, afOnDoc, afInReq, krows, sid_n, n, identMiss
-          )
+          ),
+          filelist0_values: {
+            ItemType: first.ItemType,
+            ProductType: first.ProductType,
+            productSubType: first.productSubType || first.ProductSubType,
+            FileType: first.FileType,
+            Machine: first.Machine,
+            Material: first.Material,
+            Thickness: first.Thickness,
+            Thickness_Units: first.Thickness_Units
+          }
         };
         var ret = orig.apply(this, arguments);
         Promise.resolve(ret).then(function(data) {
@@ -2308,6 +2368,8 @@ _PAGE_FINISH_JS = """(function() {
     extra.filelist_imagestring_empty = !!hit.filelist_imagestring_empty;
     extra.finish_af_present = !!hit.finish_af_present;
     extra.finish_why = String(hit.finish_why || "");
+    extra.filelist0_values = hit.filelist0_values || {};
+    extra.response_list_n = Number(extra.response_list_n || 0);
     extra.body_empty = extra.body_type === "empty" && !extra.has_NewItem;
     return extra;
   });
@@ -2666,6 +2728,8 @@ def invoke_page_dxf_finish(
         "filelist_imagestring_empty": True,
         "finish_af_present": False,
         "finish_why": "wrong_document",
+        "filelist0_values": {},
+        "response_list_n": 0,
     }
     if not gate.get("ok"):
         return skipped
@@ -2725,6 +2789,12 @@ def invoke_page_dxf_finish(
         "filelist_imagestring_empty": bool(value.get("filelist_imagestring_empty")),
         "finish_af_present": bool(value.get("finish_af_present")),
         "finish_why": str(value.get("finish_why") or ""),
+        "filelist0_values": (
+            value.get("filelist0_values")
+            if isinstance(value.get("filelist0_values"), dict)
+            else {}
+        ),
+        "response_list_n": int(value.get("response_list_n") or 0),
         "status": int(value.get("status") or 0),
         "body_keys": [str(k) for k in (value.get("body_keys") or [])],
         "body_type": str(value.get("body_type") or "empty"),
@@ -7731,6 +7801,62 @@ def create_all_parts_from_grid_dxf(
         "cadimport_xhr_capture": _sanitize_cadimport_xhr_capture(
             last.get("cadimport_xhr_capture")
         ),
+    }
+
+
+def wait_minted_edit_grid_dxf_parts(
+    quote_id: str,
+    *,
+    base: str | None = None,
+    polls: int = 32,
+    sleep_s: float = 0.25,
+) -> dict[str, Any]:
+    """Wait for #gridDXFParts on minted EDIT. Cookie GetItem_AddView is not bind.
+
+    Same wait as supplemental remint createAllParts. Do not Finish when
+    the Chrome Quotes EDIT grid is unbound.
+    """
+    empty: dict[str, Any] = {
+        "grid_present": False,
+        "has_gridDXFParts": False,
+        "grid_dxf_row_count": 0,
+        "list_len": 0,
+        "why": "wrong_document",
+    }
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
+    if not gate.get("ok"):
+        empty["why"] = str(gate.get("reason") or "wrong_document")
+        return empty
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    last: dict[str, Any] = {}
+    for _ in range(max(1, int(polls))):
+        count = _cdp_evaluate_promise(
+            _READ_GRID_DXF_PARTS_AFTER_NEXT_JS + "()",
+            base=base,
+            tab=tab,
+            fallback=False,
+        )
+        if isinstance(count, dict):
+            last = count
+            try:
+                n = int(count.get("grid_dxf_row_count") or count.get("list_len") or 0)
+            except (TypeError, ValueError):
+                n = 0
+            if n > 0 and count.get("grid_present"):
+                return {
+                    "grid_present": True,
+                    "has_gridDXFParts": True,
+                    "grid_dxf_row_count": n,
+                    "list_len": int(count.get("list_len") or n),
+                    "why": "",
+                }
+        time.sleep(max(0.0, float(sleep_s)))
+    return {
+        "grid_present": bool(last.get("grid_present")),
+        "has_gridDXFParts": bool(last.get("has_gridDXFParts")),
+        "grid_dxf_row_count": int(last.get("grid_dxf_row_count") or 0),
+        "list_len": int(last.get("list_len") or 0),
+        "why": str(last.get("why") or "empty_gridDXFParts"),
     }
 
 

@@ -75,8 +75,12 @@ from .website import (
     WEBSITE_AUTH_GAP,
     WEBSITE_SESSION_EXPIRED,
     SecturaFabWebsiteAuthError,
+    additem_dxf_list_empty_is_fail,
+    cad_contours_plate_filelist0_values,
     cad_finish_notes_pack_missing,
     cad_finish_notes_refuse_additem_dxf,
+    finish_cad_chrome_edit_grid_unbound,
+    kyle_har_cad_contours_plate_values_applied,
     classified_kids_missing_part_mode,
     filelist_kids_partmode_set,
     finish_attempt_empty_partmode_or_internaldata,
@@ -3397,6 +3401,26 @@ class SecturaFabPushService:
         )
         notes.extend(explode_notes)
         present = getattr(self.client, "_grid_present", None)
+        chrome_edit = False
+        try:
+            from .chrome_cdp import chrome_quotes_live, wait_minted_edit_grid_dxf_parts
+
+            chrome_edit = bool(chrome_quotes_live())
+        except (OSError, TypeError, ValueError):
+            chrome_edit = False
+        if chrome_edit and present is not True:
+            try:
+                waited = wait_minted_edit_grid_dxf_parts(quote_id)
+            except (OSError, TypeError, ValueError):
+                waited = {"grid_present": False, "grid_dxf_row_count": 0}
+            present = bool(waited.get("grid_present"))
+            self.client._grid_present = present
+            try:
+                waited_n = int(waited.get("grid_dxf_row_count") or 0)
+            except (TypeError, ValueError):
+                waited_n = 0
+            if present and waited_n > 0:
+                self.client._grid_dxf_row_count = waited_n
         if isinstance(present, bool):
             if f"grid_present={'true' if present else 'false'}" not in " ".join(notes):
                 notes.append(f"grid_present={'true' if present else 'false'}")
@@ -3420,6 +3444,16 @@ class SecturaFabPushService:
                         "— not Finishing"
                     )
                 return notes
+        if finish_cad_chrome_edit_grid_unbound(
+            grid_present=present if isinstance(present, bool) else None,
+            chrome_quotes_edit=chrome_edit,
+        ):
+            notes.append(
+                "WARNING: #gridDXFParts unbound on Chrome Quotes EDIT "
+                "(cookie GetItem_AddView is the wrong document; "
+                "need minted EDIT grid bound first) — not Finishing"
+            )
+            return notes
         n_list = getattr(self.client, "_part_create_list_len", None)
         if isinstance(n_list, (int, float)):
             if f"part_create_list_len={int(n_list)}" not in " ".join(notes):
@@ -3936,7 +3970,30 @@ class SecturaFabPushService:
             miss_cmp = [str(k) for k in (result.get("filelist_missing_keys") or [])]
             if miss_cmp:
                 notes.append("filelist_missing_keys=" + ",".join(miss_cmp))
-            if "FileType" in miss_cmp:
+            vals = result.get("filelist0_values")
+            if not isinstance(vals, dict) or not vals:
+                posted_rows = result.get("FileList") or result.get("filelist")
+                if isinstance(posted_rows, list) and posted_rows:
+                    vals = cad_contours_plate_filelist0_values(posted_rows[0])
+            if isinstance(vals, dict) and vals:
+                notes.append(
+                    "filelist0_values "
+                    + " ".join(
+                        f"{key}={vals.get(key)}"
+                        for key in (
+                            "ItemType",
+                            "ProductType",
+                            "productSubType",
+                            "FileType",
+                            "Machine",
+                            "Material",
+                            "Thickness",
+                            "Thickness_Units",
+                        )
+                    )
+                )
+            kyle_har = kyle_har_cad_contours_plate_values_applied(vals) if isinstance(vals, dict) else False
+            if "FileType" in miss_cmp and not kyle_har:
                 notes.append(
                     "WARNING: posted FileList lacks FileType — SetPartMode "
                     "badge/classify is not the posted key "
@@ -4036,6 +4093,14 @@ class SecturaFabPushService:
             body_keys = [str(k) for k in (result.get("body_keys") or [])]
             if body_keys:
                 notes.append("finish_body_keys=" + ",".join(body_keys[:12]))
+            if "response_list_n" in result:
+                notes.append(f"response_list_n={result.get('response_list_n')}")
+            if additem_dxf_list_empty_is_fail(result):
+                empty_finish = True
+                notes.append(
+                    "WARNING: AddItem_DXFFiles HTTP 200 List=[] — not success "
+                    "(List,Result keys without List length ≥1; Q10481)"
+                )
             if result.get("empty_body") or (
                 body_type in {"empty", "str"}
                 and not result.get("has_NewItem")
