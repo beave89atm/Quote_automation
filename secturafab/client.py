@@ -1655,6 +1655,16 @@ class SecturaFabClient:
             ),
             "finish_af_present": bool(result.get("finish_af_present")),
             "finish_why": str(result.get("finish_why") or ""),
+            "filelist0_values": (
+                result.get("filelist0_values")
+                if isinstance(result.get("filelist0_values"), dict)
+                else {}
+            ),
+            "response_list_n": (
+                int(result.get("response_list_n") or 0)
+                if "response_list_n" in result
+                else None
+            ),
             "empty_body": (
                 str(result.get("body_type") or "") in {"empty", "str"}
                 and not result.get("has_NewItem")

@@ -89,7 +89,10 @@ OnAddDXFClick FileList is #gridDXFParts rows with ErrorStatus===0 and
 Qty>0. Status>0 is Image Files GetPDFData / New Line Item, not CadImport.
 Cad Contours plate Finish FileList matches Kyle Q10366 HAR: do not
 invent Status; omit ImageString (default); cad + bar/bar_flat + Laser;
-Length/Width meters. Do not invent Contours.
+Length/Width meters. FileType / PartMode / SourceDataID / tip helpers
+absent at AddItem. AddItem success = HTTP 200 AND List length ≥1
+(List=[] is fail even if body has List,Result keys). Do not invent
+Contours.
 105918-1 List,Result stamped 66 Component — those rows carried FileType
 (page File type default Component). n=1 leftover with CadType+Stock and
 no FileType is empty. SetPartMode POSTs {ID, PartMode} and paints
@@ -3842,32 +3845,42 @@ def kendo_filelist_for_finish(
     """
     src_rows = [r for r in (rows or []) if isinstance(r, dict)]
     filled = fill_kendo_filelist_sourcedataid(src_rows)
-    filled = [
-        sanitize_cad_contours_plate_finish_filelist_row(
-            sanitize_cad_partmode_filelist_row(
-                persist_setpartmode_filetype(
-                    copy_cadimport_identity_through(
-                        src_rows[i] if i < len(src_rows) else {}, dest
-                    )
-                )
+    identified = [
+        persist_setpartmode_filetype(
+            copy_cadimport_identity_through(
+                src_rows[i] if i < len(src_rows) else {}, dest
             )
         )
         for i, dest in enumerate(filled)
     ]
-    n = len(filled)
-    sid_n = sum(1 for r in filled if not sourcedataid_empty(r.get("SourceDataID")))
-    id_n = sum(1 for r in filled if not sourcedataid_empty(r.get("ID")))
-    fileid_n = sum(1 for r in filled if not sourcedataid_empty(r.get("FileID")))
-    from_kendo = bool(from_datasource and n > 0 and sid_n == n)
-    ident_miss = kendo_lacks_cadimport_identity(filled)
+    n = len(identified)
+    sid_n = sum(
+        1 for r in identified if not sourcedataid_empty(r.get("SourceDataID"))
+    )
+    id_n = sum(1 for r in identified if not sourcedataid_empty(r.get("ID")))
+    fileid_n = sum(
+        1 for r in identified if not sourcedataid_empty(r.get("FileID"))
+    )
+    # Kyle HAR strips SourceDataID at AddItem. Bound-grid identity is
+    # FileID/ID/SID on the pre-strip row, not the posted SID key.
+    from_kendo = bool(
+        from_datasource and n > 0 and (sid_n == n or id_n == n or fileid_n == n)
+    )
+    filled = [
+        sanitize_cad_contours_plate_finish_filelist_row(
+            sanitize_cad_partmode_filelist_row(dest)
+        )
+        for dest in identified
+    ]
+    ident_miss = kendo_lacks_cadimport_identity(identified)
     row0 = filled[0] if filled else None
     payload_block = cad_filelist_payload_blocks_finish(row0)
     refuse = cad_filelist_refuses_additem_dxf(row0)
     # PartMode set still allows missing CadType/Stock (live 10289-4).
     # Empty Cad InternalData after explode is fail-close (live 28768-1).
-    partmode_ready = filelist_kids_partmode_set(filled)
+    partmode_ready = filelist_kids_partmode_set(identified)
     why = ""
-    if n > 0 and sid_n == 0:
+    if n > 0 and sid_n == 0 and id_n == 0 and fileid_n == 0:
         why = "filelist_missing_ids"
     elif refuse:
         if (
@@ -6383,13 +6396,66 @@ def sanitize_cad_partmode_filelist_row(
 
 
 # Kyle Q10366 HAR Finish FileList (Cad Contours plate). invent=false.
-# Status key absent. ImageString key absent. ItemType=cad ProductType=bar
-# productSubType=bar_flat Machine=Laser Length/Width in meters.
-# Do not invent Contours. Empty InternalData stays when recipe complete.
+# Status / ImageString / FileType / PartMode / SourceDataID absent.
+# ItemType=cad ProductType=bar productSubType=bar_flat Machine=Laser
+# Length/Width in meters. Tip helpers (CadType, IsPlate, drawing_thickness_in)
+# never sent. Keep PartID+FileID GUIDs. Do not invent Contours.
+# Empty InternalData stays when recipe complete.
 KYLE_HAR_CAD_CONTOURS_PLATE_ITEMTYPE = "cad"
 KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE = "bar"
 KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE = "bar_flat"
 KYLE_HAR_CAD_CONTOURS_PLATE_MACHINE = "Laser"
+KYLE_HAR_CAD_CONTOURS_PLATE_STRIP_KEYS = (
+    "Status",
+    "status",
+    "ImageString",
+    "imageString",
+    "FileType",
+    "PartMode",
+    "SourceDataID",
+    "Width_Units",
+    "drawing_thickness_in",
+    "thickness_source",
+    "CadType",
+    "HadOpenContours",
+    "IsPlate",
+    "IsLinear",
+    "IsPart",
+    "Category",
+    "uid",
+    "parent",
+    "children",
+    "_events",
+    "dirty",
+)
+KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS = (
+    "ID",
+    "FileID",
+    "PartID",
+    "ItemID",
+    "ItemType",
+    "ProductType",
+    "ProductSubType",
+    "productSubType",
+    "Machine",
+    "Material",
+    "MaterialGrade",
+    "Thickness",
+    "Thickness_Units",
+    "Length",
+    "Width",
+    "Length_Units",
+    "Name",
+    "PartName",
+    "FileName",
+    "Description",
+    "Qty",
+    "Quantity",
+    "ErrorStatus",
+    "InternalData",
+    "ProductID",
+    "SKU",
+)
 _INCH_TO_METER = 0.0254
 _METER_UNITS = frozenset(
     {"meter", "metre", "meters", "metres", "m"}
@@ -6419,6 +6485,75 @@ def _cad_finish_dim_to_meters(
     return n
 
 
+def cad_contours_plate_filelist0_values(row: dict[str, Any] | None) -> dict[str, Any]:
+    """FileList[0] VALUES for Finish remint digs. No Contours invent."""
+    if not isinstance(row, dict):
+        return {}
+    return {
+        "ItemType": row.get("ItemType"),
+        "ProductType": row.get("ProductType"),
+        "productSubType": row.get("productSubType") or row.get("ProductSubType"),
+        "FileType": row.get("FileType"),
+        "Machine": row.get("Machine"),
+        "Material": row.get("Material"),
+        "Thickness": row.get("Thickness"),
+        "Thickness_Units": row.get("Thickness_Units"),
+    }
+
+
+def kyle_har_cad_contours_plate_values_applied(row: dict[str, Any] | None) -> bool:
+    """True when posted FileList already has Kyle Q10366 HAR VALUES."""
+    if not isinstance(row, dict):
+        return False
+    item = str(row.get("ItemType") or "").strip()
+    pt = row.get("ProductType")
+    pst = row.get("productSubType") or row.get("ProductSubType")
+    machine = str(row.get("Machine") or "").strip()
+    return (
+        item == KYLE_HAR_CAD_CONTOURS_PLATE_ITEMTYPE
+        and str(pt or "").strip() == KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE
+        and str(pst or "").strip() == KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE
+        and machine == KYLE_HAR_CAD_CONTOURS_PLATE_MACHINE
+    )
+
+
+def additem_dxf_list_empty_is_fail(result: dict[str, Any] | None) -> bool:
+    """AddItem success only if HTTP 200 AND List length ≥1.
+
+    List=[] is fail even if body has List,Result keys (Q10481).
+    Older mocks without response_list_n pass through.
+    """
+    if not isinstance(result, dict):
+        return False
+    if "response_list_n" not in result:
+        return False
+    try:
+        status = int(result.get("status") or 0)
+    except (TypeError, ValueError):
+        status = 0
+    if status != 200:
+        return False
+    try:
+        return int(result.get("response_list_n") or 0) < 1
+    except (TypeError, ValueError):
+        return True
+
+
+def finish_cad_chrome_edit_grid_unbound(
+    *,
+    grid_present: bool | None,
+    chrome_quotes_edit: bool,
+) -> bool:
+    """Do not Finish when #gridDXFParts unbound on Chrome Quotes EDIT.
+
+    Cookie GetItem_AddView is markup without kendo (live a64509d).
+    Supplemental remint createAllParts already waits for grid_present.
+    """
+    if not chrome_quotes_edit:
+        return False
+    return grid_present is not True
+
+
 def sanitize_cad_contours_plate_finish_filelist_row(
     row: dict[str, Any] | None,
     *,
@@ -6428,25 +6563,18 @@ def sanitize_cad_contours_plate_finish_filelist_row(
 
     invent=false. Do not invent Status. Do not send ImageString unless
     Kyle path requires it (default omit like Q10366 HAR). Prefer HAR
-    shape: cad + bar/bar_flat + Laser, Length/Width meters. Do not
-    invent Contours/InternalData. PR62 empty InternalData stays OK
-    when the Cad+Material+inch recipe is complete.
+    shape: cad + bar/bar_flat + Laser, Length/Width meters. Strip
+    tip-only keys (FileType/PartMode/SourceDataID/CadType/IsPlate).
+    Force Kyle VALUES last so SetPartMode ProductType=100 / NULL
+    bar_flat cannot win at ajax send. Keep PartID+FileID GUIDs.
+    Do not invent Contours/InternalData. PR62 empty InternalData
+    stays OK when the Cad+Material+inch recipe is complete.
     """
     if not isinstance(row, dict):
         return {}
     out = dict(row)
     if not _cad_plate_row_for_finish_gate(out):
         return out
-    out.pop("Status", None)
-    out.pop("status", None)
-    if not kyle_send_imagestring:
-        out.pop("ImageString", None)
-        out.pop("imageString", None)
-    out["ItemType"] = KYLE_HAR_CAD_CONTOURS_PLATE_ITEMTYPE
-    out["ProductType"] = KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE
-    out["ProductSubType"] = KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE
-    out["productSubType"] = KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE
-    out["Machine"] = KYLE_HAR_CAD_CONTOURS_PLATE_MACHINE
     stock_y = _filelist_dim(out.get("Stock_Y") or out.get("Stock_Length"))
     stock_x = _filelist_dim(out.get("Stock_X"))
     length_src = out.get("Length")
@@ -6470,8 +6598,30 @@ def sanitize_cad_contours_plate_finish_filelist_row(
         out["Length_Units"] = "meter"
     if width_m is not None:
         out["Width"] = width_m
-        out["Width_Units"] = "meter"
-    return out
+    lean: dict[str, Any] = {}
+    strip = set(KYLE_HAR_CAD_CONTOURS_PLATE_STRIP_KEYS)
+    if kyle_send_imagestring:
+        strip.discard("ImageString")
+        strip.discard("imageString")
+    for key in KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS:
+        if key in strip:
+            continue
+        if key in out:
+            lean[key] = out[key]
+    if kyle_send_imagestring and out.get("ImageString") not in (None, ""):
+        lean["ImageString"] = out.get("ImageString")
+    for guid_key in ("ID", "FileID", "PartID"):
+        if out.get(guid_key) not in (None, ""):
+            lean[guid_key] = out[guid_key]
+    # Force Kyle VALUES last — after SetPartMode / classify ProductType=100.
+    lean["ItemType"] = KYLE_HAR_CAD_CONTOURS_PLATE_ITEMTYPE
+    lean["ProductType"] = KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE
+    lean["ProductSubType"] = KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE
+    lean["productSubType"] = KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE
+    lean["Machine"] = KYLE_HAR_CAD_CONTOURS_PLATE_MACHINE
+    if "InternalData" not in lean:
+        lean["InternalData"] = ""
+    return lean
 
 
 def copy_explode_internaldata_through(

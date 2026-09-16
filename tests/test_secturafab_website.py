@@ -8502,7 +8502,8 @@ def test_page_finish_js_posts_kendo_filelist_with_chrome_dom_af():
     js = _PAGE_FINISH_JS
     assert "if (count < 1)" in js
     assert "count <= 1" not in js
-    assert "opts.data.FileList = krows" in js
+    assert "opts.data.FileList = leanRows" in js
+    assert "leanKyleHarCadContoursPlateFileList" in js
     assert "dataSource.data()" in js
     assert "r.SourceDataID = id" in js
     assert "sidEmpty(r.SourceDataID)" in js
@@ -8718,8 +8719,12 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
         == "bar_flat"
     )
     assert har["machine"] == KYLE_HAR_CAD_CONTOURS_PLATE_MACHINE == "Laser"
+    assert har["additem_list_min"] == 1
     assert "Status" in har["absent_keys"]
     assert "ImageString" in har["absent_keys"]
+    assert "FileType" in har["absent_keys"]
+    assert "PartMode" in har["absent_keys"]
+    assert "SourceDataID" in har["absent_keys"]
 
     src = {
         "ID": "id-h638",
@@ -8748,20 +8753,31 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     posted = sanitize_cad_contours_plate_finish_filelist_row(src)
     assert "Status" not in posted
     assert "ImageString" not in posted
+    assert "FileType" not in posted
+    assert "PartMode" not in posted
+    assert "SourceDataID" not in posted
+    assert "Width_Units" not in posted
+    assert "CadType" not in posted
+    assert "HadOpenContours" not in posted
+    assert "IsPlate" not in posted
+    assert "drawing_thickness_in" not in posted
+    assert "thickness_source" not in posted
     assert "Contours" not in posted
     assert "NumberOfContours" not in posted
     assert posted["ItemType"] == "cad"
     assert posted["ProductType"] == "bar"
+    assert posted["ProductType"] != 100
     assert posted["ProductSubType"] == "bar_flat"
     assert posted["productSubType"] == "bar_flat"
     assert posted["Machine"] == "Laser"
     assert posted["Length_Units"] == "meter"
-    assert posted["Width_Units"] == "meter"
     assert posted["Length"] == pytest.approx(6.25 * 0.0254)
     assert posted["Width"] == pytest.approx(11.0 * 0.0254)
     assert posted["InternalData"] == ""
     assert posted["Thickness"] == "0.1875"
     assert posted["Thickness_Units"] == "inch"
+    assert posted["ID"] == "id-h638"
+    assert posted["FileID"] == "file-h638"
     already_m = sanitize_cad_contours_plate_finish_filelist_row(posted)
     assert already_m["Length"] == pytest.approx(posted["Length"])
     assert already_m["Width"] == pytest.approx(posted["Width"])
@@ -8791,6 +8807,9 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     row = cap["FileList"][0]
     assert "Status" not in row
     assert "ImageString" not in row
+    assert "FileType" not in row
+    assert "PartMode" not in row
+    assert "SourceDataID" not in row
     assert "Contours" not in row
     assert row["ItemType"] == "cad"
     assert row["ProductType"] == "bar"
@@ -8798,6 +8817,7 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert row["Machine"] == "Laser"
     assert row["Length_Units"] == "meter"
     assert cap["should_finish"] is True
+    assert cap["filelist_from_kendo"] is True
     assert cad_material_inches_recipe_complete(src) is True
     assert cad_filelist_refuses_additem_dxf(src) is None
 
@@ -8806,6 +8826,9 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     built = payload["FileList"][0]
     assert "Status" not in built
     assert "ImageString" not in built
+    assert "FileType" not in built
+    assert "PartMode" not in built
+    assert "SourceDataID" not in built
     assert built["ItemType"] == "cad"
     assert built["ProductType"] == "bar"
     assert built["ProductSubType"] == "bar_flat"
@@ -8838,16 +8861,207 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
 
     js = _PAGE_FINISH_JS
     assert "applyKyleHarCadContoursPlateFileList" in js
+    assert "leanKyleHarCadContoursPlateFileList" in js
     assert "omitFileListKey" in js
     assert 'r.set("ProductType", "bar")' in js or 'ProductType", "bar"' in js
     assert 'productSubType", "bar_flat"' in js
     assert "Do not invent Contours" in js
     assert "cadMaterialInchesRecipeComplete" in js
-    assert "opts.data.FileList = krows" in js
+    assert "opts.data.FileList = leanRows" in js
+    assert "application/x-www-form-urlencoded" in js
+    assert "response_list_n" in js
+    assert "filelist0_values" in js
+    from secturafab.website import (
+        additem_dxf_list_empty_is_fail,
+        finish_cad_chrome_edit_grid_unbound,
+    )
+
+    assert additem_dxf_list_empty_is_fail(
+        {"status": 200, "body_keys": ["List", "Result"], "response_list_n": 0}
+    ) is True
+    assert additem_dxf_list_empty_is_fail(
+        {"status": 200, "body_keys": ["List", "Result"], "response_list_n": 1}
+    ) is False
+    assert additem_dxf_list_empty_is_fail(
+        {"status": 200, "body_keys": ["List", "Result"]}
+    ) is False
+    assert finish_cad_chrome_edit_grid_unbound(
+        grid_present=None, chrome_quotes_edit=True
+    ) is True
+    assert finish_cad_chrome_edit_grid_unbound(
+        grid_present=True, chrome_quotes_edit=True
+    ) is False
     inch = _APPLY_GRID_PART_MODES_JS
     assert "Never stamp 0.1875 while units still meter" in inch
     assert 'setter("Thickness_Units", "inch")' in inch
     assert "inch_stamped" in inch or "Thickness_Units" in inch
+
+
+def test_additem_dxf_list_empty_is_not_success(tmp_path: Path):
+    """Q10481: HTTP 200 + List,Result keys + List=[] is not AddItem success."""
+    from secturafab.website import additem_dxf_list_empty_is_fail
+
+    stp = tmp_path / "H.6.38.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "ID": "id-1",
+            "FileID": "file-1",
+            "SourceDataID": "src-1",
+            "Name": "H.6.38 PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "Material": "A36",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 1
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0481"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": ["List", "Result"],
+        "body_type": "object",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "text_len": 8,
+        "empty_body": False,
+        "response_list_n": 0,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_filelist_n": 1,
+        "grid_dxf_row_count": 1,
+        "filelist_from_kendo": True,
+        "filelist_sourcedataid_n": 1,
+        "finish_af_present": True,
+        "finish_why": "",
+        "filelist0_values": {
+            "ItemType": "cad",
+            "ProductType": "bar",
+            "productSubType": "bar_flat",
+            "FileType": None,
+            "Machine": "Laser",
+            "Material": "A36",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        },
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    assert additem_dxf_list_empty_is_fail(client.add_item_dxf_files.return_value) is True
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": ["FileID", "ID", "SourceDataID"],
+        },
+    ), patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=False
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0481",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.1875",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="H.6.38",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert "List=[]" in blob
+    assert "not success" in blob
+    assert "filelist0_values" in blob
+    assert "ProductType=bar" in blob
+    assert "productSubType=bar_flat" in blob
+
+
+def test_finish_cad_files_refuses_unbound_chrome_edit_grid(tmp_path: Path):
+    """Cookie GetItem_AddView without #gridDXFParts on minted EDIT is not Finish."""
+    stp = tmp_path / "H.6.38.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "ID": "id-1",
+            "FileID": "file-1",
+            "SourceDataID": "src-1",
+            "Name": "H.6.38 PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Category": "Cad",
+            "FileType": "Cad",
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 1
+    client._grid_present = None
+    client._grid_dxf_row_count = None
+    client._stale_grid = False
+    client._edit_quote_id = ""
+    client._edit_gate = ""
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.chrome_cdp.wait_minted_edit_grid_dxf_parts",
+        return_value={
+            "grid_present": False,
+            "has_gridDXFParts": False,
+            "grid_dxf_row_count": 0,
+            "why": "empty_gridDXFParts",
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0481",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.1875",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="H.6.38",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "not Finishing" in blob
+    assert "gridDXFParts" in blob or "GetItem_AddView" in blob
 
 
 def test_cad_empty_internaldata_imagestring_skips_finish():
