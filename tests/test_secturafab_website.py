@@ -2301,6 +2301,9 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("Q10486")
     assert is_forbidden_quote_id("8f3a2eef-60dd-437c-a595-c63df1ded2d6")
     assert is_forbidden_quote_id("8f3a2eef-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10430")
+    assert is_forbidden_quote_id("15e6b5ad-9919-49ab-aae1-24a7b44f25c2")
+    assert is_forbidden_quote_id("15e6b5ad-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10470")
     assert is_forbidden_quote_number("Q10471")
     assert is_forbidden_quote_number("Q10472")
@@ -11940,6 +11943,7 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("Q10484")
     assert is_forbidden_quote_number("Q10485")
     assert is_forbidden_quote_number("Q10486")
+    assert is_forbidden_quote_number("Q10430")
     assert is_forbidden_quote_number("Q10470")
     assert is_forbidden_quote_number("Q10471")
     assert is_forbidden_quote_number("Q10472")
@@ -12915,6 +12919,7 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "Q10484",
         "Q10485",
         "Q10486",
+        "Q10430",
         "Q10470",
         "Q10471",
         "Q10472",
@@ -14176,6 +14181,7 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_number("Q10484")
     assert is_forbidden_quote_number("Q10485")
     assert is_forbidden_quote_number("Q10486")
+    assert is_forbidden_quote_number("Q10430")
     assert is_forbidden_quote_number("Q10470")
     assert is_forbidden_quote_number("Q10471")
     assert is_forbidden_quote_number("Q10472")
@@ -14212,6 +14218,7 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_id("98310eb3-a60d-42ea-bfa9-3fd8e408b013")
     assert is_forbidden_quote_id("e293584b-18bf-4114-8a07-2e2a942a941d")
     assert is_forbidden_quote_id("8f3a2eef-60dd-437c-a595-c63df1ded2d6")
+    assert is_forbidden_quote_id("15e6b5ad-9919-49ab-aae1-24a7b44f25c2")
     assert is_forbidden_quote_id("82c28793-96e8-457b-9559-979c2b761d4e")
     assert is_forbidden_quote_id("5e0ce1df-e18b-4118-945a-8be85378069e")
     assert is_forbidden_quote_id("67472e72-d01b-48e2-8040-1db505659d26")
