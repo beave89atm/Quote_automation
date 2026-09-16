@@ -4095,6 +4095,28 @@ class SecturaFabPushService:
                 notes.append("finish_body_keys=" + ",".join(body_keys[:12]))
             if "response_list_n" in result:
                 notes.append(f"response_list_n={result.get('response_list_n')}")
+            list0 = result.get("response_list0")
+            if isinstance(list0, dict) and list0:
+                notes.append(
+                    "response_list0 "
+                    + " ".join(
+                        f"{key}={list0.get(key)}"
+                        for key in (
+                            "ImgStr_len",
+                            "ProductType",
+                            "Description",
+                            "UnitCost",
+                            "Machine",
+                            "Material",
+                            "Thickness",
+                        )
+                    )
+                )
+            if result.get("has_NewItem") or result.get("result_NewItem") is not None:
+                notes.append(
+                    "has_NewItem="
+                    + ("true" if result.get("has_NewItem") else "false")
+                )
             if additem_dxf_list_empty_is_fail(result):
                 empty_finish = True
                 notes.append(
