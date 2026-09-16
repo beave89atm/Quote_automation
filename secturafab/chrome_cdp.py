@@ -7707,6 +7707,43 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       return window.jQuery && jQuery("#gridDXFParts").data("kendoGrid");
     } catch (e) { return null; }
   }
+  function kendoDataRows(ds) {
+    // Kendo ObservableArray: bare Array.isArray on data()/view() is
+    // false and stamped=0 (Q10476 inch-force). Use view()/data()
+    // with length iterate or Array.from / slice.call. invent=false.
+    if (!ds) return [];
+    var raw = null;
+    try {
+      if (typeof ds.view === "function") raw = ds.view();
+    } catch (eV) { raw = null; }
+    if (!raw || !(raw.length > 0)) {
+      try {
+        raw = (typeof ds.data === "function") ? ds.data() : ds.data;
+      } catch (eD) { raw = null; }
+    }
+    if (!raw) return [];
+    try {
+      if (typeof Array.from === "function") {
+        var fromRows = Array.from(raw);
+        if (fromRows && fromRows.length) return fromRows;
+      }
+    } catch (eA) {}
+    try {
+      var sliced = Array.prototype.slice.call(raw);
+      if (sliced && sliced.length) return sliced;
+    } catch (eS) {}
+    var out = [];
+    var n = Number(raw.length || 0);
+    for (var ki = 0; ki < n; ki++) out.push(raw[ki]);
+    return out;
+  }
+  function unitsAreMeterish(units) {
+    var u = String(units || "").trim().toLowerCase();
+    return u === "meter" || u === "metre" || u === "meters"
+      || u === "metres" || u === "m" || u === "mm"
+      || u === "millimeter" || u === "millimeters"
+      || u === "millimetre" || u === "millimetres";
+  }
   function catOf(row) {
     var mode = Number(row.PartMode);
     var pt = Number(row.ProductType);
@@ -7757,8 +7794,8 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
   }
   function snapshotRows(g) {
     try {
-      var raw = g && g.dataSource && g.dataSource.data();
-      if (!raw) return [];
+      var raw = g && g.dataSource ? kendoDataRows(g.dataSource) : [];
+      if (!raw || !raw.length) return [];
       var json = (raw.toJSON) ? raw.toJSON() : raw;
       var out = [];
       for (var si = 0; si < json.length; si++) {
@@ -7869,14 +7906,23 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         && String(drawingThk) !== String(want.Thickness)) {
       thicknessInvalidVsDrawing += 1;
     }
-    setter("Thickness", raw);
-    if (want.Thickness_Units != null && String(want.Thickness_Units) !== "") {
-      setter("Thickness_Units", want.Thickness_Units);
-    } else if (drawingThk !== "") {
+    // Never stamp 0.1875 while units still meter (7.3819 class /
+    // Q10476). Clear meter / set units=inch first, then drawing
+    // thickness. invent=false.
+    var liveUnits = row.Thickness_Units || row.thickness_units
+      || row.Thickness_Unit || "";
+    if (unitsAreMeterish(liveUnits) || unitsAreMeterish(raw)
+        || String(raw).toLowerCase().indexOf(":meter") >= 0) {
       setter("Thickness_Units", "inch");
     }
+    setter("Thickness_Units", "inch");
+    var nowUnits = row.Thickness_Units || row.thickness_units || "";
+    if (unitsAreMeterish(nowUnits)) {
+      return;
+    }
+    setter("Thickness", raw);
   }
-  function applyFields(row, want, silent) {
+  function applyFields(row, want, silent, classifyOnly) {
     var cat = String(want.Category || "");
     var mode = Number(want.PartMode);
     if (cat === "Assembly" || row.IsAssembly || Number(row.ProductType) === 300) {
@@ -7905,7 +7951,9 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         if (want.InternalData != null && String(want.InternalData) !== "") {
           row.set("InternalData", want.InternalData);
         }
-        applyCadThickness(row, want, function(k, v) { row.set(k, v); });
+        if (!classifyOnly) {
+          applyCadThickness(row, want, function(k, v) { row.set(k, v); });
+        }
       } else if (cat === "Linear") {
         row.set("Machine", want.Machine || "Saw");
         row.set("ProductType", Number(want.ProductType) || 10);
@@ -7936,7 +7984,9 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         if (want.InternalData != null && String(want.InternalData) !== "") {
           row.InternalData = want.InternalData;
         }
-        applyCadThickness(row, want, function(k, v) { row[k] = v; });
+        if (!classifyOnly) {
+          applyCadThickness(row, want, function(k, v) { row[k] = v; });
+        }
       } else if (cat === "Linear") {
         row.Machine = want.Machine || "Saw";
         row.ProductType = Number(want.ProductType) || 10;
@@ -7945,6 +7995,28 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       }
     }
     return true;
+  }
+  function force_live_grid_inch(g, want) {
+    // Thickness stamp must iterate ObservableArray safely. Bare
+    // Array.isArray(dataSource.data()) is false → stamped=0.
+    var stamped = 0;
+    if (!g || !g.dataSource) return 0;
+    var rows = kendoDataRows(g.dataSource);
+    for (var fi = 0; fi < rows.length; fi++) {
+      var row = rows[fi];
+      if (!row) continue;
+      var w = want || matchWant(row, (spec && spec.rows) || [])
+        || wantFromName(row);
+      if (!w || String(w.Category || "") !== "Cad") continue;
+      if (catOf(row) === "Assembly") continue;
+      var wrote = false;
+      applyCadThickness(row, w, function(k, v) {
+        if (row.set) row.set(k, v); else row[k] = v;
+        if (k === "Thickness") wrote = true;
+      });
+      if (wrote) stamped += 1;
+    }
+    return stamped;
   }
   function matchWant(row, wants) {
     var id = String(row.ID || row.ItemID || "").toLowerCase();
@@ -8041,7 +8113,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         row[mk] = s[mk];
       }
       var want = matchWant(row, wants) || wantFromName(row);
-      if (want) applyFields(row, want, true);
+      if (want) applyFields(row, want, true, true);
       out.push(row);
     }
     return out;
@@ -8070,7 +8142,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     var wants = (spec && spec.rows) || [];
     var keepRows = (spec && spec.keep_rows) || [];
     var snapshot = snapshotRows(g);
-    var data = g.dataSource.data();
+    var data = kendoDataRows(g.dataSource);
     var multi = (data && data.length >= 2)
       || wants.length >= 2
       || keepRows.length >= 2
@@ -8089,21 +8161,22 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     }
     var fnName = findSetFn();
     var itemTypeFnName = findUpdateItemTypeFn();
-    function applyAllKidsCadMaterialInches() {
-      // After wipe/rehydrate: Cad → drawing Material → inches on
-      // every kid. Silent so restore does not select/editCell
-      // (Q10355 / Q10369 wipe class). invent=false — no Contours.
-      var freshKids = g.dataSource.data() || [];
+    function applyAllKidsCadMaterialInches(classifyOnly) {
+      // After wipe/rehydrate: Cad classify first; Material → inches
+      // only after UpdateItemType Cad / SetPartMode. Silent so
+      // restore does not select/editCell (Q10355 / Q10369 wipe
+      // class). invent=false.
+      var freshKids = kendoDataRows(g.dataSource);
       for (var ak = 0; ak < freshKids.length; ak++) {
         var kidRow = freshKids[ak];
         var kidWant = matchWant(kidRow, wants) || wantFromName(kidRow);
         if (!kidWant) continue;
-        applyFields(kidRow, kidWant, true);
+        applyFields(kidRow, kidWant, true, !!classifyOnly);
       }
     }
-    function restoreIfWiped() {
+    function restoreIfWiped(classifyOnly) {
       if (!multi) return false;
-      var freshNow = g.dataSource.data() || [];
+      var freshNow = kendoDataRows(g.dataSource);
       var needKeep = freshNow.length === 0
         || (snapshot.length >= 2 && freshNow.length < snapshot.length)
         || (keepRows.length >= 2 && freshNow.length < keepRows.length);
@@ -8114,7 +8187,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       if (bound < 2) return false;
       keepVia = "rehydrate";
       setCount = setCount || restored.length;
-      applyAllKidsCadMaterialInches();
+      applyAllKidsCadMaterialInches(classifyOnly);
       return true;
     }
     function applyOneKid(want) {
@@ -8123,23 +8196,27 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
           resolve("");
           return;
         }
-        restoreIfWiped();
-        var live = findLiveRow(g.dataSource.data() || [], want, null);
+        restoreIfWiped(true);
+        var live = findLiveRow(kendoDataRows(g.dataSource), want, null);
         if (!live) {
-          restoreIfWiped();
-          live = findLiveRow(g.dataSource.data() || [], want, null);
+          restoreIfWiped(true);
+          live = findLiveRow(kendoDataRows(g.dataSource), want, null);
         }
         if (!live) {
           resolve("");
           return;
         }
-        if (!applyFields(live, want, false)) {
+        // Cad classify (UpdateItemType Cad / SetPartMode) BEFORE
+        // Material A36 and before stamping drawing thickness 0.1875.
+        // Do not leave ItemType=component / ProductType=bar on the
+        // plate path. invent=false.
+        if (!applyFields(live, want, false, true)) {
           resolve("");
           return;
         }
         setCount += 1;
-        restoreIfWiped();
-        live = findLiveRow(g.dataSource.data() || [], want, live);
+        restoreIfWiped(true);
+        live = findLiveRow(kendoDataRows(g.dataSource), want, live);
         var id = String((live && (live.ID || live.ItemID)) || want.ID || "");
         var cat = String(want.Category || "");
         var modeFn = findSetFn();
@@ -8148,24 +8225,27 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         if (typeFn) itemTypeFnName = typeFn;
         postMode(id, Number(want.PartMode), modeFn).then(function(modeVia) {
           if (modeVia && !via) via = modeVia;
-          restoreIfWiped();
+          restoreIfWiped(true);
           if (cat !== "Cad") {
             resolve(modeVia);
             return;
           }
-          live = findLiveRow(g.dataSource.data() || [], want, live);
+          live = findLiveRow(kendoDataRows(g.dataSource), want, live);
           id = String((live && (live.ID || live.ItemID)) || want.ID || "");
           return postItemType(id, "Cad", typeFn).then(function(itemVia) {
             typeSetCount += 1;
             if (itemVia && !typeVia) typeVia = itemVia;
-            restoreIfWiped();
+            restoreIfWiped(false);
+            live = findLiveRow(kendoDataRows(g.dataSource), want, live);
+            if (live) applyFields(live, want, false, false);
+            force_live_grid_inch(g, want);
             resolve(modeVia);
           });
         });
       });
     }
     if (multi && data.length === 0) {
-      restoreIfWiped();
+      restoreIfWiped(true);
     }
     var kids = [];
     var seen = {};
@@ -8176,7 +8256,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       if (key) seen[key] = true;
       kids.push(want);
     }
-    data = g.dataSource.data() || [];
+    data = kendoDataRows(g.dataSource);
     for (var i = 0; i < data.length; i++) {
       queueWant(matchWant(data[i], wants) || wantFromName(data[i]));
     }
@@ -8191,19 +8271,20 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     }
     return chain.then(function(last) {
       if (last && !via) via = last;
-      var fresh = g.dataSource.data() || [];
+      var fresh = kendoDataRows(g.dataSource);
       if (multi && !keepVia) {
-        if (restoreIfWiped()) {
-          fresh = g.dataSource.data() || [];
+        if (restoreIfWiped(false)) {
+          fresh = kendoDataRows(g.dataSource);
         } else if (fresh.length >= 2) {
           keepVia = "live";
         }
       }
       if (multi) {
-        restoreIfWiped();
-        applyAllKidsCadMaterialInches();
-        fresh = g.dataSource.data() || [];
+        restoreIfWiped(false);
+        applyAllKidsCadMaterialInches(false);
+        fresh = kendoDataRows(g.dataSource);
       }
+      var inchStamped = force_live_grid_inch(g, null);
       var counts = {Cad: 0, Linear: 0, Assembly: 0, Component: 0};
       for (var j = 0; j < fresh.length; j++) {
         counts[catOf(fresh[j])] += 1;
@@ -8251,7 +8332,10 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         per_kid_cad_inches: "single_plate_adjust_properties_page_fn",
         thickness_blocked_blank_material: thicknessBlockedBlankMaterial,
         thickness_invalid_vs_drawing: thicknessInvalidVsDrawing,
-        cad_blank_material: cadBlankMaterial
+        cad_blank_material: cadBlankMaterial,
+        inch_stamped: inchStamped,
+        force_live_grid_inch: true,
+        classify_before_material: true
       };
     });
   }
@@ -8299,6 +8383,36 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
 })"""
 
 
+def kendo_observable_array_rows(raw: Any) -> list[Any]:
+    """Iterate Kendo ObservableArray-like ``dataSource.data()`` / ``view()``.
+
+    ``Array.isArray`` is false for ObservableArray — do not use it
+    (Q10476 inch-force stamped=0). Prefer length iterate, then
+    ``list()`` / sequence. invent=false.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return list(raw)
+    n = getattr(raw, "length", None)
+    if n is None:
+        try:
+            n = len(raw)  # type: ignore[arg-type]
+        except TypeError:
+            return []
+    try:
+        count = int(n)
+    except (TypeError, ValueError):
+        return []
+    out: list[Any] = []
+    for i in range(count):
+        try:
+            out.append(raw[i])
+        except Exception:
+            break
+    return out
+
+
 def apply_grid_dxf_part_modes(
     rows: list[dict[str, Any]],
     *,
@@ -8310,6 +8424,13 @@ def apply_grid_dxf_part_modes(
     Cad plate/sheet also POST /Part/UpdateItemType ItemType=Cad (Q10335
     mouse dropdown classify XHR). Does not POST /Quote/AddItem_DXFFiles.
     Capture counts from the grid. Still refuse Finish if Contours empty.
+
+    Cad classify (SetPartMode + UpdateItemType Cad) runs BEFORE
+    Material A36 and before stamping drawing thickness 0.1875 with
+    Thickness_Units=inch. force_live_grid_inch iterates Kendo
+    ObservableArray via view()/data() length / Array.from /
+    slice.call — never bare Array.isArray (Q10476 stamped=0).
+    Never stamp 0.1875 while units still meter (7.3819 class).
 
     Multi-kid: each kid runs the same page_fn SetPartMode +
     UpdateItemType Cad + row.set inches sequence as one Safe Cave
@@ -8419,6 +8540,15 @@ def apply_grid_dxf_part_modes(
             )
         except (TypeError, ValueError):
             out["thickness_invalid_vs_drawing"] = 0
+    if present and "inch_stamped" in value:
+        try:
+            out["inch_stamped"] = int(value.get("inch_stamped") or 0)
+        except (TypeError, ValueError):
+            out["inch_stamped"] = 0
+    if present and value.get("force_live_grid_inch"):
+        out["force_live_grid_inch"] = True
+    if present and value.get("classify_before_material"):
+        out["classify_before_material"] = True
     return out
 
 
