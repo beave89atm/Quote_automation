@@ -87,6 +87,9 @@ Status. filelist_filetype Cad:1 was SetPartMode classify — that key
 was not on the posted row. GetDXFData is not in QuoteOrderEdit (404).
 OnAddDXFClick FileList is #gridDXFParts rows with ErrorStatus===0 and
 Qty>0. Status>0 is Image Files GetPDFData / New Line Item, not CadImport.
+Cad Contours plate Finish FileList matches Kyle Q10366 HAR: do not
+invent Status; omit ImageString (default); cad + bar/bar_flat + Laser;
+Length/Width meters. Do not invent Contours.
 105918-1 List,Result stamped 66 Component — those rows carried FileType
 (page File type default Component). n=1 leftover with CadType+Stock and
 no FileType is empty. SetPartMode POSTs {ID, PartMode} and paints
@@ -2651,14 +2654,18 @@ def part_create_list_name_tokens(
 
 
 def is_cad_filelist_row(row: dict[str, Any] | None) -> bool:
-    """Posted FileType/ItemType/Category Cad — do not guess CAD / ProductType 100."""
+    """Posted FileType/ItemType/Category Cad — do not guess CAD / ProductType 100.
+
+    FileType stays the SetPartMode token ``Cad`` (not ``CAD``). ItemType
+    ``cad`` is Kyle Q10366 HAR Finish FileList — accept that token too.
+    """
     if not isinstance(row, dict):
         return False
     ft = str(row.get("FileType") or "").strip()
     if ft == "Cad":
         return True
     cat = str(row.get("ItemType") or row.get("Category") or "").strip()
-    if cat == "Cad":
+    if cat == "Cad" or cat.casefold() == "cad":
         return True
     try:
         return int(row.get("PartMode")) == 0
@@ -3836,10 +3843,12 @@ def kendo_filelist_for_finish(
     src_rows = [r for r in (rows or []) if isinstance(r, dict)]
     filled = fill_kendo_filelist_sourcedataid(src_rows)
     filled = [
-        sanitize_cad_partmode_filelist_row(
-            persist_setpartmode_filetype(
-                copy_cadimport_identity_through(
-                    src_rows[i] if i < len(src_rows) else {}, dest
+        sanitize_cad_contours_plate_finish_filelist_row(
+            sanitize_cad_partmode_filelist_row(
+                persist_setpartmode_filetype(
+                    copy_cadimport_identity_through(
+                        src_rows[i] if i < len(src_rows) else {}, dest
+                    )
                 )
             )
         )
@@ -4216,7 +4225,10 @@ def build_dxf_finish_payload(
     customer_material: bool = False,
 ) -> dict[str, Any]:
     """POST /Quote/AddItem_DXFFiles body from the QuoteOrderEdit JS contract."""
-    rows = [slim_filelist_row(r) for r in filter_finish_filelist(file_list)]
+    rows = [
+        sanitize_cad_contours_plate_finish_filelist_row(slim_filelist_row(r))
+        for r in filter_finish_filelist(file_list)
+    ]
     return {
         "ID": quote_id,
         "ItemID": item_id or EMPTY_GUID,
@@ -6370,6 +6382,98 @@ def sanitize_cad_partmode_filelist_row(
     return out
 
 
+# Kyle Q10366 HAR Finish FileList (Cad Contours plate). invent=false.
+# Status key absent. ImageString key absent. ItemType=cad ProductType=bar
+# productSubType=bar_flat Machine=Laser Length/Width in meters.
+# Do not invent Contours. Empty InternalData stays when recipe complete.
+KYLE_HAR_CAD_CONTOURS_PLATE_ITEMTYPE = "cad"
+KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE = "bar"
+KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE = "bar_flat"
+KYLE_HAR_CAD_CONTOURS_PLATE_MACHINE = "Laser"
+_INCH_TO_METER = 0.0254
+_METER_UNITS = frozenset(
+    {"meter", "metre", "meters", "metres", "m"}
+)
+_INCH_UNITS = frozenset({"inch", "inches", "in"})
+
+
+def _cad_finish_dim_to_meters(
+    val: Any,
+    units: Any = None,
+    *,
+    stock_inch: float | None = None,
+) -> float | None:
+    """Length/Width for Kyle HAR FileList. Do not invent a missing dim."""
+    n = _filelist_dim(val)
+    if n <= 0:
+        return None
+    unit = str(units or "").strip().casefold()
+    if unit in _METER_UNITS:
+        return n
+    if unit in _INCH_UNITS:
+        return n * _INCH_TO_METER
+    if stock_inch is not None and stock_inch > 0 and abs(n - stock_inch) < 1e-9:
+        return n * _INCH_TO_METER
+    if n > 2.0:
+        return n * _INCH_TO_METER
+    return n
+
+
+def sanitize_cad_contours_plate_finish_filelist_row(
+    row: dict[str, Any] | None,
+    *,
+    kyle_send_imagestring: bool = False,
+) -> dict[str, Any]:
+    """Page Finish / AddItem_DXFFiles FileList for Cad Contours plate.
+
+    invent=false. Do not invent Status. Do not send ImageString unless
+    Kyle path requires it (default omit like Q10366 HAR). Prefer HAR
+    shape: cad + bar/bar_flat + Laser, Length/Width meters. Do not
+    invent Contours/InternalData. PR62 empty InternalData stays OK
+    when the Cad+Material+inch recipe is complete.
+    """
+    if not isinstance(row, dict):
+        return {}
+    out = dict(row)
+    if not _cad_plate_row_for_finish_gate(out):
+        return out
+    out.pop("Status", None)
+    out.pop("status", None)
+    if not kyle_send_imagestring:
+        out.pop("ImageString", None)
+        out.pop("imageString", None)
+    out["ItemType"] = KYLE_HAR_CAD_CONTOURS_PLATE_ITEMTYPE
+    out["ProductType"] = KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE
+    out["ProductSubType"] = KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE
+    out["productSubType"] = KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE
+    out["Machine"] = KYLE_HAR_CAD_CONTOURS_PLATE_MACHINE
+    stock_y = _filelist_dim(out.get("Stock_Y") or out.get("Stock_Length"))
+    stock_x = _filelist_dim(out.get("Stock_X"))
+    length_src = out.get("Length")
+    if length_src in (None, ""):
+        length_src = out.get("Stock_Y") or out.get("Stock_Length")
+    width_src = out.get("Width")
+    if width_src in (None, ""):
+        width_src = out.get("Stock_X")
+    length_m = _cad_finish_dim_to_meters(
+        length_src,
+        out.get("Length_Units") or out.get("Stock_Units"),
+        stock_inch=stock_y if stock_y > 0 else None,
+    )
+    width_m = _cad_finish_dim_to_meters(
+        width_src,
+        out.get("Width_Units") or out.get("Stock_Units"),
+        stock_inch=stock_x if stock_x > 0 else None,
+    )
+    if length_m is not None:
+        out["Length"] = length_m
+        out["Length_Units"] = "meter"
+    if width_m is not None:
+        out["Width"] = width_m
+        out["Width_Units"] = "meter"
+    return out
+
+
 def copy_explode_internaldata_through(
     src_rows: list[dict[str, Any]] | None,
     dest: dict[str, Any] | None,
@@ -8384,7 +8488,12 @@ def overlay_classified_row(
         if filelist_productsubtype_is_linear(out.get("ProductSubType")):
             out.pop("ProductSubType", None)
     out["ErrorStatus"] = _error_status(out)
-    if out.get("Status") in (None, "", 0, "0"):
+    # Status>0 is Image Files GetPDFData / New Line Item, not CadImport.
+    # Kyle Q10366 HAR Finish FileList omitted Status. invent=false.
+    if cat == "Cad":
+        if out.get("Status") in (None, "", 0, "0"):
+            out.pop("Status", None)
+    elif out.get("Status") in (None, "", 0, "0"):
         out["Status"] = 1
     return out
 
