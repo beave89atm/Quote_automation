@@ -6433,6 +6433,151 @@ Promise.resolve(done(result)).catch((err) => {
     assert "UpdateItemType" in out["order"]
 
 
+def test_apply_cad_thickness_row_set_defines_exclude(tmp_path: Path):
+    """Q10480: row.set threw ReferenceError: Exclude is not defined.
+
+    Define Exclude so Kendo model set works. If set still throws,
+    plain-assign fallback still stamps 0.1875 inch. invent=false.
+    """
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    js = _APPLY_GRID_PART_MODES_JS
+    assert "ensureExcludeDefined" in js
+    assert "kendoModelSet" in js
+    assert "ReferenceError: Exclude is not defined" in js
+    assert "window.Exclude" in js
+
+    live_rows = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "H.10.38 PLATE",
+            "Category": "component",
+            "FileType": "component",
+            "ItemType": "component",
+            "PartMode": 2,
+            "ProductType": "bar",
+            "ProductSubType": "bar",
+            "Thickness": "0.0048:meter",
+            "Thickness_Units": "meter",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+    ]
+    wants = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "H.10.38 PLATE",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser",
+            "Material": "A36",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+            "drawing_thickness_in": "0.1875",
+            "thickness_source": "drawing",
+        }
+    ]
+    spec = {"rows": wants, "keep_rows": []}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + "const live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+const store = { rows: live.map((r) => {
+  const row = { ...r };
+  row.set = function set(k, v) {
+    if (typeof Exclude === "undefined") {
+      throw new ReferenceError("Exclude is not defined");
+    }
+    Exclude(k);
+    this[k] = v;
+  };
+  return row;
+}) };
+const dataSource = {
+  data() {
+    if (arguments.length) store.rows = arguments[0] || store.rows;
+    return store.rows;
+  },
+  view() { return store.rows; },
+};
+const gridObj = { dataSource };
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "org" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax() { return { always(fn) { fn(); return this; } }; },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+delete global.Exclude;
+delete global.window.Exclude;
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") {
+    return value.then(done);
+  }
+  if (typeof Exclude !== "function") throw new Error("Exclude still missing");
+  if (Number(value.inch_stamped || 0) < 1) throw new Error("stamped=" + value.inch_stamped);
+  if (String(store.rows[0].Thickness) !== "0.1875") {
+    throw new Error("thickness=" + store.rows[0].Thickness);
+  }
+  if (String(store.rows[0].Thickness_Units) !== "inch") {
+    throw new Error("units=" + store.rows[0].Thickness_Units);
+  }
+  if (store.rows[0].Contours != null || store.rows[0].NumberOfContours != null) {
+    throw new Error("invented Contours");
+  }
+  process.stdout.write(JSON.stringify({
+    inch_stamped: value.inch_stamped,
+    thickness: store.rows[0].Thickness,
+    units: store.rows[0].Thickness_Units,
+    exclude_type: typeof Exclude,
+    item_type: store.rows[0].ItemType,
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "exclude_row_set_inch.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["inch_stamped"] >= 1
+    assert out["thickness"] == "0.1875"
+    assert out["units"] == "inch"
+    assert out["exclude_type"] == "function"
+    assert out["item_type"] == "Cad"
+
+
 def test_finish_skips_when_grid_classify_cad_is_zero(tmp_path: Path):
     """Live 105918-1: plates still Component on #gridDXFParts → not Finish."""
     stp = tmp_path / "105918-1.STEP"

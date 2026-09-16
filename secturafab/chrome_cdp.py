@@ -7760,6 +7760,10 @@ def create_all_parts_from_grid_dxf(
 # dataSource.data(snapshot|keep_rows) then continue the next kid.
 # No select / editCell / #but_dxf. Fail-close if the widget is gone.
 # Do not invent Contours/InternalData.
+# Q10480 remint: row.set threw ReferenceError: Exclude is not defined
+# so thickness stamp silent-failed; remint used plain assign. Define
+# Exclude + kendoModelSet (set then assign fallback) so row.set works
+# on Kendo models. invent=false.
 _APPLY_GRID_PART_MODES_JS = """(function(spec) {
   function readOrg() {
     try {
@@ -7952,6 +7956,30 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     }
     return "";
   }
+  function ensureExcludeDefined() {
+    // Q10480 remint: applyCadThickness / row.set threw
+    // ReferenceError: Exclude is not defined (TS helper leaked into
+    // Kendo model change). Define a runtime shim so row.set works.
+    // invent=false.
+    try {
+      if (typeof window !== "undefined" && typeof window.Exclude !== "function") {
+        window.Exclude = function Exclude(T) { return T; };
+      }
+    } catch (eEx) {}
+  }
+  function kendoModelSet(row, key, value) {
+    // Prefer ObservableObject.set after Exclude shim. If set still
+    // throws, plain-assign (Q10480 remint workaround). invent=false.
+    if (!row || key == null || key === "") return;
+    ensureExcludeDefined();
+    try {
+      if (typeof row.set === "function") {
+        row.set(key, value);
+        return;
+      }
+    } catch (eSet) {}
+    try { row[key] = value; } catch (eAssign) {}
+  }
   function applyCadThickness(row, want, setter) {
     var mat = drawingMaterialType(want, row);
     if (mat) {
@@ -8004,37 +8032,37 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     // mergeKeep rehydrate stays silent so restore does not select /
     // editCell (Q10355 wipe class). invent=false.
     if (row.set && !silent) {
-      row.set("PartMode", mode);
-      row.set("ItemType", cat);
-      row.set("Category", cat);
-      row.set("FileType", cat);
+      kendoModelSet(row, "PartMode", mode);
+      kendoModelSet(row, "ItemType", cat);
+      kendoModelSet(row, "Category", cat);
+      kendoModelSet(row, "FileType", cat);
       if (cat === "Cad") {
-        row.set("Machine", want.Machine || "Laser");
-        row.set("ProductType", 100);
-        row.set("IsPlate", true);
-        row.set("IsLinear", false);
+        kendoModelSet(row, "Machine", want.Machine || "Laser");
+        kendoModelSet(row, "ProductType", 100);
+        kendoModelSet(row, "IsPlate", true);
+        kendoModelSet(row, "IsLinear", false);
         var pst0 = row.ProductSubType != null ? String(row.ProductSubType).toLowerCase() : "";
         if (pst0 === "bar" || pst0.indexOf("bar_") === 0 || pst0 === "tube"
             || pst0 === "pipe" || pst0 === "channel" || pst0 === "angle"
             || pst0 === "hss" || pst0 === "beam" || pst0 === "structural"
             || pst0.indexOf("struct_") === 0) {
-          row.set("ProductSubType", null);
+          kendoModelSet(row, "ProductSubType", null);
         }
         if (want.InternalData != null && String(want.InternalData) !== "") {
-          row.set("InternalData", want.InternalData);
+          kendoModelSet(row, "InternalData", want.InternalData);
         }
         if (!classifyOnly) {
-          applyCadThickness(row, want, function(k, v) { row.set(k, v); });
+          applyCadThickness(row, want, function(k, v) { kendoModelSet(row, k, v); });
         }
       } else if (cat === "Linear") {
-        row.set("Machine", want.Machine || "Saw");
-        row.set("ProductType", Number(want.ProductType) || 10);
-        row.set("IsLinear", true);
-        row.set("IsPlate", false);
+        kendoModelSet(row, "Machine", want.Machine || "Saw");
+        kendoModelSet(row, "ProductType", Number(want.ProductType) || 10);
+        kendoModelSet(row, "IsLinear", true);
+        kendoModelSet(row, "IsPlate", false);
       } else if (cat === "Component") {
-        row.set("Machine", want.Machine || "");
-        row.set("IsLinear", false);
-        row.set("IsPlate", false);
+        kendoModelSet(row, "Machine", want.Machine || "");
+        kendoModelSet(row, "IsLinear", false);
+        kendoModelSet(row, "IsPlate", false);
       }
     } else {
       row.PartMode = mode;
@@ -8083,7 +8111,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       if (catOf(row) === "Assembly") continue;
       var wrote = false;
       applyCadThickness(row, w, function(k, v) {
-        if (row.set) row.set(k, v); else row[k] = v;
+        kendoModelSet(row, k, v);
         if (k === "Thickness") wrote = true;
       });
       if (wrote) stamped += 1;
