@@ -8570,8 +8570,9 @@ def test_filelist_row_keys_name_cadimport_identity_miss():
 
 
 def test_kendo_row_id_copied_to_sourcedataid():
-    """Live 11796-2: kendo {ID: x, FileType: Cad} posts SourceDataID x.
+    """Live 11796-2: kendo {ID: x} copies SID for the bound-grid gate.
 
+    Kyle HAR omits SourceDataID on the posted FileList. ID/FileID stay.
     CadType/Stock_* are still required to Finish — ID copy alone is not gold.
     """
     from secturafab.website import kendo_filelist_for_finish
@@ -8580,7 +8581,8 @@ def test_kendo_row_id_copied_to_sourcedataid():
         [{"ID": "x", "FileType": "Cad"}],
         from_datasource=True,
     )
-    assert cap["FileList"][0]["SourceDataID"] == "x"
+    assert cap["FileList"][0]["ID"] == "x"
+    assert "SourceDataID" not in cap["FileList"][0]
     assert cap["filelist_from_kendo"] is True
     assert cap["filelist_sourcedataid_n"] == 1
     assert cap["filelist_id_n"] == 1
@@ -8598,7 +8600,7 @@ def test_kendo_row_id_copied_to_sourcedataid():
 
 
 def test_kendo_cadimport_identity_survives_into_filelist():
-    """kendo CadType+Stock_X+Stock_Y must remain on the posted FileList."""
+    """kendo CadType+Stock stay on the grid; posted Finish is lean Kyle HAR."""
     from secturafab.website import (
         copy_cadimport_identity_through,
         kendo_filelist_for_finish,
@@ -8614,13 +8616,16 @@ def test_kendo_cadimport_identity_survives_into_filelist():
     }
     cap = kendo_filelist_for_finish([src], from_datasource=True)
     posted = cap["FileList"][0]
-    assert posted["SourceDataID"] == "x"
-    assert posted["CadType"] == 0
-    assert posted["Stock_X"] == 11.0
-    assert posted["Stock_Y"] == 6.25
+    assert posted["ID"] == "x"
+    assert "SourceDataID" not in posted
+    assert "FileType" not in posted
+    assert "CadType" not in posted
+    assert posted["ItemType"] == "cad"
+    assert posted["ProductType"] == "bar"
     assert cap["should_finish"] is True
     assert cap["finish_why"] == ""
     assert cap["filelist_missing_identity"] == []
+    assert cap["filelist_from_kendo"] is True
     assert "CadType" in cap["kendo_row_keys"]
     assert "Stock_X" in cap["kendo_row_keys"]
     dropped = {"ID": "x", "FileType": "Cad", "SourceDataID": "x"}
@@ -8645,7 +8650,7 @@ def test_kendo_cadimport_identity_survives_into_filelist():
 
 
 def test_setpartmode_filetype_survives_into_filelist():
-    """SetPartMode ItemType/Category must become posted FileType. Do not invent Status."""
+    """SetPartMode still paints kendo FileType; posted Kyle HAR omits FileType."""
     from secturafab.website import (
         kendo_filelist_for_finish,
         persist_setpartmode_filetype,
@@ -8664,9 +8669,11 @@ def test_setpartmode_filetype_survives_into_filelist():
     }
     cap = kendo_filelist_for_finish([src], from_datasource=True)
     posted = cap["FileList"][0]
-    assert posted["FileType"] == "Cad"
-    assert posted["CadType"] == 0
-    assert posted["Stock_X"] == 11.0
+    assert persist_setpartmode_filetype(dict(src))["FileType"] == "Cad"
+    assert "FileType" not in posted
+    assert "CadType" not in posted
+    assert posted["ItemType"] == "cad"
+    assert posted["ProductType"] == "bar"
     assert "Status" not in posted
     assert cap["should_finish"] is True
     bare = persist_setpartmode_filetype({"CadType": 0, "Stock_X": 1, "Stock_Y": 2})
@@ -9256,11 +9263,10 @@ def test_filelist_errorstatus_qty_and_filetype_value_type():
     cap = kendo_filelist_for_finish([row], from_datasource=True)
     assert cap["filelist_errorstatus"] == 0
     assert cap["filelist_qty"] == 1
-    assert cap["filelist_filetype_value"] == "Cad"
-    assert cap["filelist_filetype_type"] == "str"
-    assert cap["filelist_cad_path_keys"] == []
+    assert cap["filelist_filetype_value"] == ""
+    assert cap["filelist_filetype_type"] == "missing"
+    assert "FileType" not in cap["FileList"][0]
     assert cap["filelist_internaldata_empty"] is True
-    assert cap["filelist_imagestring_empty"] is True
     assert cap["should_finish"] is True
     js = _PAGE_FINISH_JS
     assert "filelist_errorstatus" in js

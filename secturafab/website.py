@@ -3873,20 +3873,22 @@ def kendo_filelist_for_finish(
         for dest in identified
     ]
     ident_miss = kendo_lacks_cadimport_identity(identified)
-    row0 = filled[0] if filled else None
-    payload_block = cad_filelist_payload_blocks_finish(row0)
-    refuse = cad_filelist_refuses_additem_dxf(row0)
+    gate_row = identified[0] if identified else None
+    payload_block = cad_filelist_payload_blocks_finish(gate_row)
+    refuse = cad_filelist_refuses_additem_dxf(gate_row)
     # PartMode set still allows missing CadType/Stock (live 10289-4).
     # Empty Cad InternalData after explode is fail-close (live 28768-1).
+    # Refuse/contours gates use the pre-strip kendo row — Kyle HAR
+    # omits FileType/CadType/NumberOfContours on the posted FileList.
     partmode_ready = filelist_kids_partmode_set(identified)
     why = ""
     if n > 0 and sid_n == 0 and id_n == 0 and fileid_n == 0:
         why = "filelist_missing_ids"
     elif refuse:
         if (
-            row0 is not None
-            and not cad_payload_value_empty(row0.get("InternalData"))
-            and cad_filelist_contours_would_be_zero(row0)
+            gate_row is not None
+            and not cad_payload_value_empty(gate_row.get("InternalData"))
+            and cad_filelist_contours_would_be_zero(gate_row)
         ):
             why = "filelist_contours_zero"
         elif payload_block and not partmode_ready:
@@ -3911,7 +3913,7 @@ def kendo_filelist_for_finish(
             refuse and why == CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
         ),
         "filelist_missing_identity": ident_miss,
-        "kendo_row_keys": kendo_identity_log_keys(filled[0]) if filled else [],
+        "kendo_row_keys": kendo_identity_log_keys(identified[0]) if identified else [],
         "should_finish": bool(
             from_kendo
             and not refuse
