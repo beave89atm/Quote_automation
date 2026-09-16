@@ -6634,14 +6634,23 @@ def sanitize_cad_contours_plate_finish_filelist_row(
     width_src = out.get("Width")
     if width_src in (None, ""):
         width_src = out.get("Stock_X")
+    length_units = out.get("Length_Units") or out.get("Stock_Units")
     length_m = _cad_finish_dim_to_meters(
         length_src,
-        out.get("Length_Units") or out.get("Stock_Units"),
+        length_units,
         stock_inch=stock_y if stock_y > 0 else None,
     )
+    # Kyle omits Width_Units. After Length_Units=meter, Width is meters
+    # too — do not fall back to Stock_Units=inch and reconvert.
+    width_units = out.get("Width_Units")
+    if width_units in (None, ""):
+        if str(out.get("Length_Units") or "").strip().casefold() in _METER_UNITS:
+            width_units = "meter"
+        else:
+            width_units = out.get("Stock_Units")
     width_m = _cad_finish_dim_to_meters(
         width_src,
-        out.get("Width_Units") or out.get("Stock_Units"),
+        width_units,
         stock_inch=stock_x if stock_x > 0 else None,
     )
     if length_m is not None:

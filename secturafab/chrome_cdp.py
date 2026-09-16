@@ -1745,7 +1745,11 @@ _PAGE_FINISH_JS = """(function() {
       ? r.Length : (r.Stock_Y != null ? r.Stock_Y : r.Stock_Length);
     var widthSrc = (r.Width != null && r.Width !== "") ? r.Width : r.Stock_X;
     var lengthM = toMeters(lengthSrc, r.Length_Units || r.Stock_Units, stockY);
-    var widthM = toMeters(widthSrc, r.Width_Units || r.Stock_Units, stockX);
+    var widthUnits = r.Width_Units;
+    if (widthUnits == null || widthUnits === "") {
+      widthUnits = isMeterUnit(r.Length_Units) ? "meter" : r.Stock_Units;
+    }
+    var widthM = toMeters(widthSrc, widthUnits, stockX);
     if (lengthM != null) {
       if (typeof r.set === "function") {
         r.set("Length", lengthM);
