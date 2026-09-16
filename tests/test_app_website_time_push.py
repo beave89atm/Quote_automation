@@ -1706,6 +1706,11 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "Q10450" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10429" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10475" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10470" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10471" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10472" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10473" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10474" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10421" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10407" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10408" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -3042,9 +3047,7 @@ def test_q10475_h838_tip_prove_exec_fail_forever_forbid():
     (ID + prefix + QN). This leftover does not add a PN lock —
     H.8.38 remints remain ALLOWED. Do not invent Contours.
     Existing Q10351 H.8.38 QuoteNumber forbid is unchanged.
-    Q10470–Q10474 Contours=0 shells: UUIDs not found in
-    live-H838-remint-kyle-path.txt / Dropbox / related logs —
-    do not invent those UUIDs. Q10429 protect / golds untouched.
+    Q10429 protect / golds untouched.
     """
     from secturafab.forbidden_quotes import (
         FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
@@ -3081,6 +3084,44 @@ def test_q10475_h838_tip_prove_exec_fail_forever_forbid():
             path="/Quote/UpdateItem_Part",
             payload={"ID": "eb9a17c4-c28b-4fc1-8bda-3d50d6ee2d3b"},
         )
+
+
+def test_q10470_q10474_h838_contours_zero_shells_forever_forbid():
+    """Q10470–Q10474 leftover shells Contours=0 — never remint / PATCH.
+
+    UUIDs not found in live-H838-remint-kyle-path.txt / Dropbox /
+    remint logs. Description-only QuoteNumber forbids. Do not invent
+    UUIDs or Contours. H.8.38 remints remain ALLOWED. Q10429 protect
+    / golds untouched.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_IDS,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    shells = ("Q10470", "Q10471", "Q10472", "Q10473", "Q10474")
+    for qn in shells:
+        assert qn in FORBIDDEN_LIVE_QUOTE_NUMBERS
+        assert is_forbidden_quote_number(qn)
+        assert spent_quote_number_block_reason(qn)
+        with pytest.raises(ForbiddenQuoteError, match=qn):
+            refuse_forbidden_quote_write(
+                method="POST",
+                path="/Quote/AddItem_PDFFiles",
+                payload={"QuoteNumber": qn},
+            )
+        with pytest.raises(ForbiddenQuoteError, match=qn):
+            refuse_forbidden_quote_write(
+                method="PATCH",
+                path="/Quote/UpdateItem_Part",
+                payload={"QuoteNumber": qn},
+            )
+    assert "a24c6896-ac5c-4d52-9ac6-1c208440940c" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "Q10429" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10475" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "eb9a17c4-c28b-4fc1-8bda-3d50d6ee2d3b" in FORBIDDEN_LIVE_QUOTE_IDS
 
 
 def test_q10421_38fa25fc_q10407_drift_forever_forbid():

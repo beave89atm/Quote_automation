@@ -2274,6 +2274,11 @@ def test_leftover_1020250_1_contours_zero_after_productid_hole():
     assert is_forbidden_quote_number("Q10475")
     assert is_forbidden_quote_id("eb9a17c4-c28b-4fc1-8bda-3d50d6ee2d3b")
     assert is_forbidden_quote_id("eb9a17c4-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10470")
+    assert is_forbidden_quote_number("Q10471")
+    assert is_forbidden_quote_number("Q10472")
+    assert is_forbidden_quote_number("Q10473")
+    assert is_forbidden_quote_number("Q10474")
     assert is_forbidden_quote_number("Q10421")
     assert is_forbidden_quote_id("38fa25fc-1111-2222-3333-444444444444")
     assert is_forbidden_quote_number("Q10407")
@@ -10952,6 +10957,11 @@ def test_kyle_classify_before_finish_helpers_and_35145_protect():
     assert is_forbidden_quote_number("Q10450")
     assert is_forbidden_quote_number("Q10429")
     assert is_forbidden_quote_number("Q10475")
+    assert is_forbidden_quote_number("Q10470")
+    assert is_forbidden_quote_number("Q10471")
+    assert is_forbidden_quote_number("Q10472")
+    assert is_forbidden_quote_number("Q10473")
+    assert is_forbidden_quote_number("Q10474")
     assert is_forbidden_quote_number("Q10421")
     assert is_forbidden_quote_number("Q10407")
     assert is_forbidden_quote_number("Q10408")
@@ -11913,6 +11923,11 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
         "Q10450",
         "Q10429",
         "Q10475",
+        "Q10470",
+        "Q10471",
+        "Q10472",
+        "Q10473",
+        "Q10474",
         "Q10421",
         "Q10407",
         "Q10408",
@@ -13160,6 +13175,11 @@ def test_q10333_h638_safecave_contours_pass_protect():
     assert is_forbidden_quote_number("Q10450")
     assert is_forbidden_quote_number("Q10429")
     assert is_forbidden_quote_number("Q10475")
+    assert is_forbidden_quote_number("Q10470")
+    assert is_forbidden_quote_number("Q10471")
+    assert is_forbidden_quote_number("Q10472")
+    assert is_forbidden_quote_number("Q10473")
+    assert is_forbidden_quote_number("Q10474")
     assert is_forbidden_quote_number("Q10421")
     assert is_forbidden_quote_number("Q10407")
     assert is_forbidden_quote_number("Q10408")
