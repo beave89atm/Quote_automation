@@ -8534,6 +8534,174 @@ def test_setpartmode_filetype_survives_into_filelist():
     assert persist_setpartmode_filetype({"FileType": 100}).get("FileType") == 100
 
 
+def test_cad_contours_plate_finish_filelist_matches_kyle_har():
+    """Q10366 HAR Finish FileList: no invented Status, omit ImageString.
+
+    Cad Contours plate → ItemType=cad ProductType=bar productSubType=bar_flat
+    Machine=Laser Length/Width meters. invent=false. Do not invent Contours.
+    PR62 empty InternalData still Finishes when recipe complete.
+    """
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS, _PAGE_FINISH_JS
+    from secturafab.website import (
+        KYLE_HAR_CAD_CONTOURS_PLATE_ITEMTYPE,
+        KYLE_HAR_CAD_CONTOURS_PLATE_MACHINE,
+        KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE,
+        KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE,
+        build_dxf_finish_payload,
+        cad_filelist_refuses_additem_dxf,
+        cad_material_inches_recipe_complete,
+        kendo_filelist_for_finish,
+        overlay_classified_row,
+        sanitize_cad_contours_plate_finish_filelist_row,
+    )
+    from tests.fixtures.kyle_q10366_har_filelist import (
+        KYLE_Q10366_HAR_FINISH_FILELIST,
+    )
+
+    har = KYLE_Q10366_HAR_FINISH_FILELIST
+    assert har["invent_status"] is False
+    assert har["send_imagestring"] is False
+    assert har["invent_contours"] is False
+    assert har["item_type"] == KYLE_HAR_CAD_CONTOURS_PLATE_ITEMTYPE == "cad"
+    assert har["product_type"] == KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE == "bar"
+    assert (
+        har["product_subtype"]
+        == KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE
+        == "bar_flat"
+    )
+    assert har["machine"] == KYLE_HAR_CAD_CONTOURS_PLATE_MACHINE == "Laser"
+    assert "Status" in har["absent_keys"]
+    assert "ImageString" in har["absent_keys"]
+
+    src = {
+        "ID": "id-h638",
+        "FileID": "file-h638",
+        "SourceDataID": "src-h638",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "CadType": 0,
+        "Stock_X": 11.0,
+        "Stock_Y": 6.25,
+        "Stock_Units": "inch",
+        "ErrorStatus": 0,
+        "Qty": 1,
+        "Status": 1,
+        "Machine": "Laser - Bay1",
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "InternalData": "",
+        "ImageString": "iVBORw0KGgo",
+        "Name": "H.6.38 PLATE",
+    }
+    posted = sanitize_cad_contours_plate_finish_filelist_row(src)
+    assert "Status" not in posted
+    assert "ImageString" not in posted
+    assert "Contours" not in posted
+    assert "NumberOfContours" not in posted
+    assert posted["ItemType"] == "cad"
+    assert posted["ProductType"] == "bar"
+    assert posted["ProductSubType"] == "bar_flat"
+    assert posted["productSubType"] == "bar_flat"
+    assert posted["Machine"] == "Laser"
+    assert posted["Length_Units"] == "meter"
+    assert posted["Width_Units"] == "meter"
+    assert posted["Length"] == pytest.approx(6.25 * 0.0254)
+    assert posted["Width"] == pytest.approx(11.0 * 0.0254)
+    assert posted["InternalData"] == ""
+    assert posted["Thickness"] == "0.1875"
+    assert posted["Thickness_Units"] == "inch"
+    already_m = sanitize_cad_contours_plate_finish_filelist_row(posted)
+    assert already_m["Length"] == pytest.approx(posted["Length"])
+    assert already_m["Width"] == pytest.approx(posted["Width"])
+    keep_img = sanitize_cad_contours_plate_finish_filelist_row(
+        src, kyle_send_imagestring=True
+    )
+    assert keep_img["ImageString"] == "iVBORw0KGgo"
+    assert "Status" not in keep_img
+
+    linear = sanitize_cad_contours_plate_finish_filelist_row(
+        {
+            "FileType": "Linear",
+            "ItemType": "Linear",
+            "Category": "Linear",
+            "PartMode": 1,
+            "Status": 1,
+            "ImageString": "preview",
+            "ProductSubType": "bar_flat",
+            "Machine": "Saw",
+        }
+    )
+    assert linear["Status"] == 1
+    assert linear["ImageString"] == "preview"
+    assert linear["Machine"] == "Saw"
+
+    cap = kendo_filelist_for_finish([src], from_datasource=True)
+    row = cap["FileList"][0]
+    assert "Status" not in row
+    assert "ImageString" not in row
+    assert "Contours" not in row
+    assert row["ItemType"] == "cad"
+    assert row["ProductType"] == "bar"
+    assert row["ProductSubType"] == "bar_flat"
+    assert row["Machine"] == "Laser"
+    assert row["Length_Units"] == "meter"
+    assert cap["should_finish"] is True
+    assert cad_material_inches_recipe_complete(src) is True
+    assert cad_filelist_refuses_additem_dxf(src) is None
+
+    payload = build_dxf_finish_payload("qid", [src])
+    assert len(payload["FileList"]) == 1
+    built = payload["FileList"][0]
+    assert "Status" not in built
+    assert "ImageString" not in built
+    assert built["ItemType"] == "cad"
+    assert built["ProductType"] == "bar"
+    assert built["ProductSubType"] == "bar_flat"
+    assert built["Machine"] == "Laser"
+    assert built["Length_Units"] == "meter"
+
+    overlaid = overlay_classified_row(
+        {
+            "Name": "H.6.38 PLATE",
+            "ErrorStatus": 0,
+            "InternalData": "",
+        },
+        category="Cad",
+        material="A36",
+        thickness="0.1875",
+        machine="Laser",
+    )
+    assert "Status" not in overlaid
+    assert overlaid["ErrorStatus"] == 0
+    linear_over = overlay_classified_row(
+        {"Name": "21684 TUBE", "ErrorStatus": 0},
+        category="Linear",
+        material="A519",
+        thickness=0.375,
+        product_id="pid",
+        sku="RT4X0.375-A519",
+        qty=1,
+    )
+    assert linear_over["Status"] == 1
+
+    js = _PAGE_FINISH_JS
+    assert "applyKyleHarCadContoursPlateFileList" in js
+    assert "omitFileListKey" in js
+    assert 'r.set("ProductType", "bar")' in js or 'ProductType", "bar"' in js
+    assert 'productSubType", "bar_flat"' in js
+    assert "Do not invent Contours" in js
+    assert "cadMaterialInchesRecipeComplete" in js
+    assert "opts.data.FileList = krows" in js
+    inch = _APPLY_GRID_PART_MODES_JS
+    assert "Never stamp 0.1875 while units still meter" in inch
+    assert 'setter("Thickness_Units", "inch")' in inch
+    assert "inch_stamped" in inch or "Thickness_Units" in inch
+
+
 def test_cad_empty_internaldata_imagestring_skips_finish():
     """Live 10098-1: Cad-path keys present and empty → fail-closed skip. Do not invent."""
     from secturafab.website import (
@@ -8582,7 +8750,8 @@ def test_cad_empty_internaldata_imagestring_skips_finish():
     assert cap["filelist_internaldata_empty"] is True
     assert cap["filelist_imagestring_empty"] is True
     assert cap["FileList"][0]["InternalData"] == ""
-    assert cap["FileList"][0]["ImageString"] == ""
+    assert "ImageString" not in cap["FileList"][0]
+    assert "Status" not in cap["FileList"][0]
     assert "Unfold" not in cap["FileList"][0]
     page = {
         **row,
@@ -8592,7 +8761,8 @@ def test_cad_empty_internaldata_imagestring_skips_finish():
     filled = kendo_filelist_for_finish([page], from_datasource=True)
     assert filled["should_finish"] is True
     assert filled["filelist_internaldata_empty"] is False
-    assert filled["filelist_imagestring_empty"] is False
+    assert filled["filelist_imagestring_empty"] is True
+    assert "ImageString" not in filled["FileList"][0]
     component = {
         "ID": "x",
         "FileType": "Component",

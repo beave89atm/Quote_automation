@@ -67,7 +67,9 @@ empty body vs 105918-1 List,Result. Leave d59318c8 / 107292-1.
 Live 16629-1: CadType+Stock on kendo and posted FileList; FileType
 and Status absent; 200 empty / GET 0. Persist FileType from
 SetPartMode ItemType/Category/PartMode onto the dataItem. Do not
-invent Status. Leave aab5b3e2 / 16629-1.
+invent Status. Cad Contours plate Finish FileList matches Kyle
+Q10366 HAR: Status absent, ImageString omitted, cad + bar/bar_flat
++ Laser, Length/Width meters. Do not invent Contours. Leave aab5b3e2 / 16629-1.
 Live 10098-1 (315cb19 leftover PIVOTING FOOT, 6a568912): posted
 FileType=Cad (string) plus CadType+Stock+SID and InternalData/
 ImageString/HadOpenContours/OutsidePerimeter *keys*. Finish still
@@ -1667,8 +1669,87 @@ _PAGE_FINISH_JS = """(function() {
     var ft = String(r.FileType || "");
     if (ft === "Cad") return true;
     var cat = String(r.ItemType || r.Category || "");
-    if (cat === "Cad") return true;
+    if (cat === "Cad" || String(cat).toLowerCase() === "cad") return true;
     return Number(r.PartMode) === 0;
+  }
+  function isMeterUnit(u) {
+    u = String(u || "").trim().toLowerCase();
+    return u === "meter" || u === "metre" || u === "meters"
+      || u === "metres" || u === "m";
+  }
+  function isInchUnit(u) {
+    u = String(u || "").trim().toLowerCase();
+    return u === "inch" || u === "inches" || u === "in";
+  }
+  function toMeters(val, units, stockInch) {
+    var n = parseFloat(val);
+    if (!isFinite(n) || n <= 0) return null;
+    if (isMeterUnit(units)) return n;
+    if (isInchUnit(units)) return n * 0.0254;
+    if (stockInch != null && isFinite(stockInch) && Math.abs(n - stockInch) < 1e-9) {
+      return n * 0.0254;
+    }
+    if (n > 2.0) return n * 0.0254;
+    return n;
+  }
+  function omitFileListKey(r, key) {
+    if (!r || typeof r !== "object") return;
+    try { delete r[key]; } catch (e0) {}
+    if (typeof r.set === "function") {
+      try { r.set(key, undefined); } catch (e1) {}
+    }
+    try { delete r[key]; } catch (e2) {}
+  }
+  function applyKyleHarCadContoursPlateFileList(r) {
+    // Q10366 HAR Finish FileList: Status absent, ImageString absent,
+    // ItemType=cad ProductType=bar productSubType=bar_flat Machine=Laser
+    // Length/Width meters. invent=false. Do not invent Contours.
+    if (!isCadRow(r)) return r;
+    var cat = String(r.Category || r.ItemType || r.FileType || "");
+    if (cat === "Linear" || cat === "Assembly") return r;
+    omitFileListKey(r, "Status");
+    omitFileListKey(r, "status");
+    omitFileListKey(r, "ImageString");
+    omitFileListKey(r, "imageString");
+    if (typeof r.set === "function") {
+      r.set("ItemType", "cad");
+      r.set("ProductType", "bar");
+      r.set("ProductSubType", "bar_flat");
+      r.set("productSubType", "bar_flat");
+      r.set("Machine", "Laser");
+    } else {
+      r.ItemType = "cad";
+      r.ProductType = "bar";
+      r.ProductSubType = "bar_flat";
+      r.productSubType = "bar_flat";
+      r.Machine = "Laser";
+    }
+    var stockY = parseFloat(r.Stock_Y != null ? r.Stock_Y : r.Stock_Length);
+    var stockX = parseFloat(r.Stock_X);
+    var lengthSrc = (r.Length != null && r.Length !== "")
+      ? r.Length : (r.Stock_Y != null ? r.Stock_Y : r.Stock_Length);
+    var widthSrc = (r.Width != null && r.Width !== "") ? r.Width : r.Stock_X;
+    var lengthM = toMeters(lengthSrc, r.Length_Units || r.Stock_Units, stockY);
+    var widthM = toMeters(widthSrc, r.Width_Units || r.Stock_Units, stockX);
+    if (lengthM != null) {
+      if (typeof r.set === "function") {
+        r.set("Length", lengthM);
+        r.set("Length_Units", "meter");
+      } else {
+        r.Length = lengthM;
+        r.Length_Units = "meter";
+      }
+    }
+    if (widthM != null) {
+      if (typeof r.set === "function") {
+        r.set("Width", widthM);
+        r.set("Width_Units", "meter");
+      } else {
+        r.Width = widthM;
+        r.Width_Units = "meter";
+      }
+    }
+    return r;
   }
   function productTypeIsComponent(v) {
     if (v === 200 || v === "200") return true;
@@ -2048,16 +2129,7 @@ _PAGE_FINISH_JS = """(function() {
         var krows = gridData();
         if (krows.length) {
           for (var ki = 0; ki < krows.length; ki++) {
-            var kr = krows[ki];
-            if (!isCadRow(kr)) continue;
-            var pst = kr.ProductSubType != null
-              ? String(kr.ProductSubType).toLowerCase() : "";
-            if (pst === "bar" || pst.indexOf("bar_") === 0 || pst === "tube"
-                || pst === "pipe" || pst === "channel" || pst === "angle"
-                || pst === "hss" || pst === "beam" || pst === "structural"
-                || pst.indexOf("struct_") === 0) {
-              kr.ProductSubType = null;
-            }
+            applyKyleHarCadContoursPlateFileList(krows[ki]);
           }
           opts.data.FileList = krows;
         }
