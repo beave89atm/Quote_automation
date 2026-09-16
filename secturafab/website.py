@@ -3229,6 +3229,94 @@ def plate_step_thickness_units_are_inch(row: dict[str, Any] | None) -> bool:
     return False
 
 
+HARD_GATE3_DRAWING_INCH = 0.1875
+HARD_GATE3_METER_CLASS = 0.0508
+HARD_GATE3_INCH_AS_METER_CLASS = 7.3819  # 0.1875 m read as inches
+HARD_GATE3_TOL = 0.0008
+
+
+def _thickness_numeric_raw(raw: Any) -> float | None:
+    """Parse the numeric thickness token without unit conversion."""
+    if raw in (None, ""):
+        return None
+    text = str(raw).strip().replace('"', "").replace("″", "").replace("'", "")
+    matched = _THICKNESS_VALUE_UNIT_RE.match(text)
+    token = matched.group(1) if matched else text
+    try:
+        val = float(token)
+    except (TypeError, ValueError):
+        return None
+    if val <= 0:
+        return None
+    return val
+
+
+def hard_gate3_drawing_inch_stuck(row: dict[str, Any] | None) -> str | None:
+    """HARD_GATE3: prove ~0.1875 inch stuck.
+
+    Reject 0.0508 meter, 7.3819 (0.1875 stamped while units still
+    meter), and meterish units. Q10476 leftover class. Does not
+    invent Contours. invent=false.
+    """
+    if not isinstance(row, dict):
+        return None
+    if not _cad_plate_row_for_finish_gate(row):
+        return None
+    drawing = drawing_thickness_in(row)
+    drawing_val = _thickness_inch_value(drawing, "inch") if drawing else None
+    raw_val = _thickness_numeric_raw(row.get("Thickness"))
+    units = str(
+        row.get("Thickness_Units")
+        or row.get("thickness_units")
+        or row.get("Thickness_Unit")
+        or ""
+    ).strip()
+    unit_s = units.casefold()
+    text = str(row.get("Thickness") or "").strip().casefold()
+    meterish = (not plate_step_thickness_units_are_inch(row)) and (
+        raw_val is not None or bool(text)
+    )
+    is_0508 = raw_val is not None and abs(raw_val - HARD_GATE3_METER_CLASS) <= HARD_GATE3_TOL
+    is_73819 = (
+        raw_val is not None
+        and abs(raw_val - HARD_GATE3_INCH_AS_METER_CLASS) <= 0.002
+    )
+    wanted_1875 = (
+        drawing_val is not None
+        and abs(drawing_val - HARD_GATE3_DRAWING_INCH) <= HARD_GATE3_TOL
+    )
+    if not wanted_1875:
+        # Still refuse the known 0.1875-conversion leftovers.
+        if not (is_0508 or is_73819):
+            return None
+    if meterish or is_0508 or is_73819 or unit_s in {
+        "meter",
+        "metre",
+        "meters",
+        "metres",
+        "m",
+        "mm",
+    }:
+        return (
+            f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: HARD_GATE3 "
+            "drawing 0.1875 inch not stuck "
+            f"(bound={row.get('Thickness')} units={units or '?'} — "
+            "reject 0.0508 meter / 7.3819 / meterish; Q10476 stamped "
+            "0.1875 while units still meter). Do not invent Contours."
+        )
+    inch_val = _thickness_inch_value(
+        row.get("Thickness"), row.get("Thickness_Units") or "inch"
+    )
+    if inch_val is None or abs(inch_val - HARD_GATE3_DRAWING_INCH) > HARD_GATE3_TOL:
+        return (
+            f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: HARD_GATE3 "
+            "drawing 0.1875 inch not stuck "
+            f"(bound={row.get('Thickness')} units={units or 'inch'}). "
+            "Do not invent Contours."
+        )
+    return None
+
+
 def cad_material_inches_recipe_complete(row: dict[str, Any] | None) -> bool:
     """True when Cad + drawing Material + inch thickness are set.
 
@@ -3264,7 +3352,9 @@ def step_cad_finish_hard_gate(
     1. Still Component → do not Finish (need UpdateItemType Cad / UI Cad).
     2. Thickness missing / not inch (blank or meter) → EXEC_FAIL, not
        Contours empty.
-    3. Else None — proceed toward Finish. Never invent
+    3. HARD_GATE3: ~0.1875 inch stuck — reject 0.0508 meter, 7.3819,
+       meterish (Q10476 stamped 0.1875 while units still meter).
+    4. Else None — proceed toward Finish. Never invent
        InternalData/Contours.
 
     Q10344 / 55f12530 H.6.38 Kyle UI control PASS: inches then
@@ -3286,6 +3376,9 @@ def step_cad_finish_hard_gate(
                 "control PASS Cad + 0.1875 inch). Do not invent "
                 "InternalData/Contours."
             )
+        gate3 = hard_gate3_drawing_inch_stuck(row)
+        if gate3:
+            return gate3
     return None
 
 

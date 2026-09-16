@@ -4880,6 +4880,102 @@ def test_apply_grid_part_modes_js_keeps_kids_without_select_or_invent():
         "if (grid() && grid().dataSource) return applyAll();"
     )[0]
     assert "but_dxf" not in apply_body
+    assert "kendoDataRows" in js
+    assert "force_live_grid_inch" in js
+    assert "if (!Array.isArray(dataSource.data()))" not in js
+    assert "if (Array.isArray(dataSource.data()))" not in js
+    assert "if (!Array.isArray(g.dataSource.data()))" not in js
+    assert "Array.isArray(ds.data())" not in js
+    assert "classifyOnly" in js
+    assert "Thickness_Units" in js
+    assert "7.3819" in js or "units still meter" in js
+
+
+def test_kendo_observable_array_rows_does_not_use_array_is_array():
+    """ObservableArray is array-like; Array.isArray is false. invent=false."""
+    from secturafab.chrome_cdp import kendo_observable_array_rows
+
+    class ObservableArray:
+        def __init__(self, items):
+            self._items = list(items)
+            self.length = len(items)
+
+        def __getitem__(self, i):
+            return self._items[i]
+
+        def __len__(self):
+            return self.length
+
+    raw = ObservableArray(
+        [
+            {"Name": "H.10.38", "Thickness": "0.0048:meter", "Thickness_Units": "meter"},
+        ]
+    )
+    assert not isinstance(raw, list)
+    rows = kendo_observable_array_rows(raw)
+    assert len(rows) == 1
+    assert rows[0]["Name"] == "H.10.38"
+    assert kendo_observable_array_rows(None) == []
+    assert kendo_observable_array_rows([]) == []
+
+
+def test_hard_gate3_drawing_inch_stuck_rejects_meter_class():
+    """HARD_GATE3: ~0.1875 inch stuck. Reject 0.0508 meter, 7.3819, meterish."""
+    from secturafab.website import (
+        HARD_GATE3_DRAWING_INCH,
+        HARD_GATE3_INCH_AS_METER_CLASS,
+        HARD_GATE3_METER_CLASS,
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        hard_gate3_drawing_inch_stuck,
+        step_cad_finish_hard_gate,
+    )
+
+    ready = {
+        "Name": "H.10.38 PLATE",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "drawing_thickness_in": "0.1875",
+        "thickness_source": "drawing",
+    }
+    assert abs(HARD_GATE3_DRAWING_INCH - 0.1875) < 1e-9
+    assert abs(HARD_GATE3_METER_CLASS - 0.0508) < 1e-9
+    assert abs(HARD_GATE3_INCH_AS_METER_CLASS - 7.3819) < 1e-9
+    assert hard_gate3_drawing_inch_stuck(ready) is None
+    assert step_cad_finish_hard_gate([ready]) is None
+
+    meterish = {**ready, "Thickness": "0.1875", "Thickness_Units": "meter"}
+    why_m = hard_gate3_drawing_inch_stuck(meterish)
+    assert why_m is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_m
+    assert "HARD_GATE3" in why_m
+    assert "0.0508" in why_m or "meterish" in why_m or "meter" in why_m
+    assert "invent" in why_m.lower()
+
+    cls_0508 = {**ready, "Thickness": "0.0508", "Thickness_Units": "meter"}
+    why_0508 = hard_gate3_drawing_inch_stuck(cls_0508)
+    assert why_0508 is not None
+    assert "0.0508" in why_0508
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_0508
+
+    cls_73819 = {**ready, "Thickness": "7.3819", "Thickness_Units": "inch"}
+    why_73819 = hard_gate3_drawing_inch_stuck(cls_73819)
+    assert why_73819 is not None
+    assert "7.3819" in why_73819
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_73819
+    assert step_cad_finish_hard_gate([cls_73819]) == why_73819
+
+    plate_25 = {
+        **ready,
+        "Thickness": "0.25",
+        "drawing_thickness_in": "0.25",
+    }
+    assert hard_gate3_drawing_inch_stuck(plate_25) is None
 
 
 def test_cadimport_keep_grid_rows_does_not_invent_contours():
@@ -6145,6 +6241,193 @@ Promise.resolve(done(result)).catch((err) => {
     assert out["cad"] == 2
     assert out["cad_blank_material"] == 0
     assert out["materials"] == ["A36", "A36"]
+
+
+def test_apply_grid_force_live_grid_inch_iterates_observable_array(
+    tmp_path: Path,
+):
+    """Kendo ObservableArray: Array.isArray is false; inch stamp still runs.
+
+    Cad classify (SetPartMode / UpdateItemType) before Material A36
+    and before 0.1875 with Thickness_Units=inch. Never stamp 0.1875
+    while units still meter (7.3819 class). invent=false.
+    """
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    live_rows = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "H.10.38 PLATE",
+            "Category": "component",
+            "FileType": "component",
+            "ItemType": "component",
+            "PartMode": 2,
+            "ProductType": "bar",
+            "ProductSubType": "bar",
+            "Thickness": "0.0048:meter",
+            "Thickness_Units": "meter",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+    ]
+    wants = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "H.10.38 PLATE",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser - Bay1",
+            "Material": "A36",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+            "drawing_thickness_in": "0.1875",
+            "thickness_source": "drawing",
+        }
+    ]
+    spec = {"rows": wants, "keep_rows": []}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + "const live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+function ObservableArray(items) {
+  this.length = items.length;
+  for (var i = 0; i < items.length; i++) this[i] = items[i];
+}
+ObservableArray.prototype.toJSON = function toJSON() {
+  var out = [];
+  for (var i = 0; i < this.length; i++) {
+    var r = this[i] || {};
+    var copy = {};
+    Object.keys(r).forEach(function(k) {
+      if (k !== "set" && k !== "uid") copy[k] = r[k];
+    });
+    out.push(copy);
+  }
+  return out;
+};
+const order = [];
+const store = { rows: live.map((r) => {
+  const row = { ...r };
+  row.set = function set(k, v) {
+    order.push(String(k));
+    this[k] = v;
+  };
+  return row;
+}) };
+const dataSource = {
+  data() {
+    if (arguments.length) {
+      store.rows = (arguments[0] || []).map((r) => {
+        const row = { ...r };
+        if (typeof row.set !== "function") {
+          row.set = function set(k, v) {
+            order.push(String(k));
+            this[k] = v;
+          };
+        }
+        return row;
+      });
+    }
+    return new ObservableArray(store.rows);
+  },
+  view() { return new ObservableArray(store.rows); },
+};
+if (Array.isArray(dataSource.data())) {
+  throw new Error("mock not ObservableArray");
+}
+const gridObj = { dataSource };
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "org" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax() { return { always(fn) { fn(); return this; } }; },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+global.window.SetPartMode = function SetPartMode() { order.push("SetPartMode"); };
+global.window.UpdateItemType = function UpdateItemType() { order.push("UpdateItemType"); };
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") {
+    return value.then(done);
+  }
+  if (!value.force_live_grid_inch) throw new Error("force_live_grid_inch missing");
+  if (!value.classify_before_material) throw new Error("classify_before_material missing");
+  if (Number(value.inch_stamped || 0) < 1) throw new Error("stamped=" + value.inch_stamped);
+  if (String(store.rows[0].Thickness) !== "0.1875") {
+    throw new Error("thickness=" + store.rows[0].Thickness);
+  }
+  if (String(store.rows[0].Thickness_Units) !== "inch") {
+    throw new Error("units=" + store.rows[0].Thickness_Units);
+  }
+  if (Number(store.rows[0].Thickness) === 7.3819) throw new Error("7.3819 class");
+  if (String(store.rows[0].Material) !== "A36") throw new Error("material=" + store.rows[0].Material);
+  if (String(store.rows[0].ItemType) !== "Cad") throw new Error("ItemType=" + store.rows[0].ItemType);
+  if (Number(store.rows[0].ProductType) !== 100) throw new Error("ProductType=" + store.rows[0].ProductType);
+  if (String(store.rows[0].ProductSubType || "") === "bar") throw new Error("ProductSubType still bar");
+  const modeAt = order.indexOf("SetPartMode");
+  const typeAt = order.indexOf("UpdateItemType");
+  const matAt = order.indexOf("Material");
+  const thkAt = order.indexOf("Thickness");
+  if (modeAt < 0 || typeAt < 0) throw new Error("classify missing " + JSON.stringify(order));
+  if (matAt < 0 || thkAt < 0) throw new Error("stamp missing " + JSON.stringify(order));
+  if (!(modeAt < matAt && typeAt < matAt)) throw new Error("classify after material " + JSON.stringify(order));
+  if (!(modeAt < thkAt && typeAt < thkAt)) throw new Error("classify after thickness " + JSON.stringify(order));
+  if (store.rows[0].Contours != null || store.rows[0].NumberOfContours != null) {
+    throw new Error("invented Contours");
+  }
+  process.stdout.write(JSON.stringify({
+    inch_stamped: value.inch_stamped,
+    thickness: store.rows[0].Thickness,
+    units: store.rows[0].Thickness_Units,
+    item_type: store.rows[0].ItemType,
+    product_type: store.rows[0].ProductType,
+    order: order,
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "observable_array_inch_force.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["inch_stamped"] >= 1
+    assert out["thickness"] == "0.1875"
+    assert out["units"] == "inch"
+    assert out["item_type"] == "Cad"
+    assert out["product_type"] == 100
+    assert "SetPartMode" in out["order"]
+    assert "UpdateItemType" in out["order"]
 
 
 def test_finish_skips_when_grid_classify_cad_is_zero(tmp_path: Path):
