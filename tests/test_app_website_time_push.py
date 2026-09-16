@@ -1712,6 +1712,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "Q10481" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10482" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10483" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10484" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10485" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10486" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10470" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10471" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -1796,6 +1798,10 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("07941333-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("11e2bd0a-bd0a-439b-b277-8862ac4528e2")
     assert is_forbidden_quote_id("11e2bd0a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("98310eb3-a60d-42ea-bfa9-3fd8e408b013")
+    assert is_forbidden_quote_id("98310eb3-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("e293584b-18bf-4114-8a07-2e2a942a941d")
+    assert is_forbidden_quote_id("e293584b-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("8f3a2eef-60dd-437c-a595-c63df1ded2d6")
     assert is_forbidden_quote_id("8f3a2eef-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
@@ -1898,6 +1904,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "2cd0281e-b5eb-4b51-9796-0cec3d482eb4" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "07941333-596d-4507-b72d-271a635e07d1" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "11e2bd0a-bd0a-439b-b277-8862ac4528e2" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "98310eb3-a60d-42ea-bfa9-3fd8e408b013" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "e293584b-18bf-4114-8a07-2e2a942a941d" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "8f3a2eef-60dd-437c-a595-c63df1ded2d6" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "4902c597-2ad6-4ebf-b577-dd6cf20a7d87" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -2035,6 +2043,10 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("07941333-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("11e2bd0a-bd0a-439b-b277-8862ac4528e2")
     assert is_forbidden_quote_id("11e2bd0a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("98310eb3-a60d-42ea-bfa9-3fd8e408b013")
+    assert is_forbidden_quote_id("98310eb3-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("e293584b-18bf-4114-8a07-2e2a942a941d")
+    assert is_forbidden_quote_id("e293584b-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("8f3a2eef-60dd-437c-a595-c63df1ded2d6")
     assert is_forbidden_quote_id("8f3a2eef-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
@@ -2190,6 +2202,8 @@ def test_forbidden_includes_empty_1004747_draft():
         "2cd0281e-b5eb-4b51-9796-0cec3d482eb4",
         "07941333-596d-4507-b72d-271a635e07d1",
         "11e2bd0a-bd0a-439b-b277-8862ac4528e2",
+        "98310eb3-a60d-42ea-bfa9-3fd8e408b013",
+        "e293584b-18bf-4114-8a07-2e2a942a941d",
         "8f3a2eef-60dd-437c-a595-c63df1ded2d6",
         "eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4",
         "4902c597-2ad6-4ebf-b577-dd6cf20a7d87",
@@ -3432,6 +3446,102 @@ def test_q10483_h1038_tip_prove_stock_xy_list_newitem_forever_forbid():
         )
 
 
+def test_q10484_h638_tip_remint_edit_tab_missing_forever_forbid():
+    """Q10484 / 98310eb3 Safe Cave H.6.38 tip remint leftover — never remint / PATCH.
+
+    edit_tab_missing abort. invent=false OPEN-NEW 2026-09-16. Same
+    leftover-protect shape as Q10483 (ID + prefix + QN). This leftover
+    does not add a PN lock — H.6.38 remints remain ALLOWED. Do not invent
+    Contours. Existing Q10366 H.6.38 QuoteNumber forbid is unchanged.
+    Q10429 protect / golds untouched. Q10486 is PR77, not this PR.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "98310eb3-a60d-42ea-bfa9-3fd8e408b013" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "98310eb3" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10484" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("98310eb3-a60d-42ea-bfa9-3fd8e408b013")
+    assert is_forbidden_quote_id("98310eb3-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10484")
+    assert spent_quote_number_block_reason("Q10484")
+    assert "a24c6896-ac5c-4d52-9ac6-1c208440940c" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "Q10429" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "11e2bd0a-bd0a-439b-b277-8862ac4528e2" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "Q10483" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    with pytest.raises(ForbiddenQuoteError, match="Q10484"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10484"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="98310eb3"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "98310eb3-a60d-42ea-bfa9-3fd8e408b013"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="98310eb3"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "98310eb3-a60d-42ea-bfa9-3fd8e408b013"},
+        )
+
+
+def test_q10485_h638_tip_remint_cookie_prt_mill_forever_forbid():
+    """Q10485 / e293584b Safe Cave H.6.38 tip remint leftover — never remint / PATCH.
+
+    Cookie-path prt_mill Contours=0. invent=false OPEN-NEW 2026-09-16.
+    Same leftover-protect shape as Q10483 (ID + prefix + QN). This leftover
+    does not add a PN lock — H.6.38 remints remain ALLOWED. Do not invent
+    Contours. Existing Q10366 H.6.38 QuoteNumber forbid is unchanged.
+    Q10429 protect / golds untouched. Q10486 is PR77, not this PR.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "e293584b-18bf-4114-8a07-2e2a942a941d" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "e293584b" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10485" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("e293584b-18bf-4114-8a07-2e2a942a941d")
+    assert is_forbidden_quote_id("e293584b-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10485")
+    assert spent_quote_number_block_reason("Q10485")
+    assert "a24c6896-ac5c-4d52-9ac6-1c208440940c" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "Q10429" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "98310eb3-a60d-42ea-bfa9-3fd8e408b013" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "Q10484" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    with pytest.raises(ForbiddenQuoteError, match="Q10485"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10485"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="e293584b"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "e293584b-18bf-4114-8a07-2e2a942a941d"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="e293584b"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "e293584b-18bf-4114-8a07-2e2a942a941d"},
+        )
+
+
 def test_q10486_h638_tip_prove_filelist_stock_list_newitem_forever_forbid():
     """Q10486 / 8f3a2eef Safe Cave H.6.38 tip-prove EXEC_FAIL — never remint / PATCH.
 
@@ -3530,6 +3640,10 @@ def test_q10470_q10474_h838_contours_zero_shells_forever_forbid():
     assert "07941333-596d-4507-b72d-271a635e07d1" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "Q10483" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "11e2bd0a-bd0a-439b-b277-8862ac4528e2" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "Q10484" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "98310eb3-a60d-42ea-bfa9-3fd8e408b013" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "Q10485" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "e293584b-18bf-4114-8a07-2e2a942a941d" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "Q10486" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "8f3a2eef-60dd-437c-a595-c63df1ded2d6" in FORBIDDEN_LIVE_QUOTE_IDS
 
