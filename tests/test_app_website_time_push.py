@@ -1716,6 +1716,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "Q10485" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10486" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10430" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "Q10431" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10470" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10471" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "Q10472" in FORBIDDEN_LIVE_QUOTE_NUMBERS
@@ -1807,6 +1808,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("8f3a2eef-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("15e6b5ad-9919-49ab-aae1-24a7b44f25c2")
     assert is_forbidden_quote_id("15e6b5ad-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("1ddb1b9a-0267-40d6-b448-3798dd6f3120")
+    assert is_forbidden_quote_id("1ddb1b9a-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
     assert is_forbidden_quote_id("eb6c48b8-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("4902c597-2ad6-4ebf-b577-dd6cf20a7d87")
@@ -1911,6 +1914,7 @@ def test_forbidden_includes_empty_1004747_draft():
     assert "e293584b-18bf-4114-8a07-2e2a942a941d" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "8f3a2eef-60dd-437c-a595-c63df1ded2d6" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "15e6b5ad-9919-49ab-aae1-24a7b44f25c2" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "1ddb1b9a-0267-40d6-b448-3798dd6f3120" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "4902c597-2ad6-4ebf-b577-dd6cf20a7d87" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "5e7bfc0b-ecf9-46cf-8851-d61062141ce7" in FORBIDDEN_LIVE_QUOTE_IDS
@@ -2055,6 +2059,8 @@ def test_forbidden_includes_empty_1004747_draft():
     assert is_forbidden_quote_id("8f3a2eef-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("15e6b5ad-9919-49ab-aae1-24a7b44f25c2")
     assert is_forbidden_quote_id("15e6b5ad-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("1ddb1b9a-0267-40d6-b448-3798dd6f3120")
+    assert is_forbidden_quote_id("1ddb1b9a-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
     assert is_forbidden_quote_id("eb6c48b8-1111-2222-3333-444444444444")
     assert is_forbidden_quote_id("4902c597-2ad6-4ebf-b577-dd6cf20a7d87")
@@ -2212,6 +2218,7 @@ def test_forbidden_includes_empty_1004747_draft():
         "e293584b-18bf-4114-8a07-2e2a942a941d",
         "8f3a2eef-60dd-437c-a595-c63df1ded2d6",
         "15e6b5ad-9919-49ab-aae1-24a7b44f25c2",
+        "1ddb1b9a-0267-40d6-b448-3798dd6f3120",
         "eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4",
         "4902c597-2ad6-4ebf-b577-dd6cf20a7d87",
         "5e7bfc0b-ecf9-46cf-8851-d61062141ce7",
@@ -3648,6 +3655,55 @@ def test_q10430_geometry_cleanup_stuck_forever_forbid():
         )
 
 
+def test_q10431_geometry_cleanup_stuck_forever_forbid():
+    """Q10431 / 1ddb1b9a leftover stuck Geometry Cleanup — never remint / PATCH.
+
+    CadImport handoff stuck on Geometry Cleanup spinner (dims 0.0).
+    Same class as Q10430. invent=false 2026-09-16. Same leftover-protect
+    shape as Q10430 (ID + prefix + QN). This leftover does not add a PN
+    lock — H.6.38 remints remain ALLOWED. Do not invent Contours.
+    Existing Q10366 H.6.38 QuoteNumber forbid is unchanged. Q10429 /
+    a24c6896 and Q10430 / 15e6b5ad protect untouched.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
+        FORBIDDEN_LIVE_QUOTE_NUMBERS,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+
+    assert "1ddb1b9a-0267-40d6-b448-3798dd6f3120" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "1ddb1b9a" in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES
+    assert "Q10431" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert is_forbidden_quote_id("1ddb1b9a-0267-40d6-b448-3798dd6f3120")
+    assert is_forbidden_quote_id("1ddb1b9a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10431")
+    assert spent_quote_number_block_reason("Q10431")
+    assert "a24c6896-ac5c-4d52-9ac6-1c208440940c" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "Q10429" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "15e6b5ad-9919-49ab-aae1-24a7b44f25c2" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "Q10430" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    with pytest.raises(ForbiddenQuoteError, match="Q10431"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10431"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="1ddb1b9a"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": "1ddb1b9a-0267-40d6-b448-3798dd6f3120"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="1ddb1b9a"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "1ddb1b9a-0267-40d6-b448-3798dd6f3120"},
+        )
+
+
 def test_q10470_q10474_h838_contours_zero_shells_forever_forbid():
     """Q10470–Q10474 leftover shells Contours=0 — never remint / PATCH.
 
@@ -3704,6 +3760,8 @@ def test_q10470_q10474_h838_contours_zero_shells_forever_forbid():
     assert "8f3a2eef-60dd-437c-a595-c63df1ded2d6" in FORBIDDEN_LIVE_QUOTE_IDS
     assert "Q10430" in FORBIDDEN_LIVE_QUOTE_NUMBERS
     assert "15e6b5ad-9919-49ab-aae1-24a7b44f25c2" in FORBIDDEN_LIVE_QUOTE_IDS
+    assert "Q10431" in FORBIDDEN_LIVE_QUOTE_NUMBERS
+    assert "1ddb1b9a-0267-40d6-b448-3798dd6f3120" in FORBIDDEN_LIVE_QUOTE_IDS
 
 
 def test_q10421_38fa25fc_q10407_drift_forever_forbid():
