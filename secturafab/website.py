@@ -90,9 +90,11 @@ Qty>0. Status>0 is Image Files GetPDFData / New Line Item, not CadImport.
 Cad Contours plate Finish FileList matches Kyle Q10366 HAR: do not
 invent Status; omit ImageString (default); cad + bar/bar_flat + Laser;
 Length/Width meters. FileType / PartMode / SourceDataID / tip helpers
-absent at AddItem. AddItem success = HTTP 200 AND List length ≥1
-(List=[] is fail even if body has List,Result keys). Do not invent
-Contours.
+absent at AddItem. KEEP Kyle-present Stock_X/Stock_Y and the rest of
+the HAR field bag — do not over-lean. AddItem success = HTTP 200 AND
+List length ≥1 (List=[] is fail even if body has List,Result keys).
+Remint PASS still needs tree prt_dxf + NumberOfContours≥1. Do not
+invent Contours.
 105918-1 List,Result stamped 66 Component — those rows carried FileType
 (page File type default Component). n=1 leftover with CadType+Stock and
 no FileType is empty. SetPartMode POSTs {ID, PartMode} and paints
@@ -6401,8 +6403,9 @@ def sanitize_cad_partmode_filelist_row(
 # Status / ImageString / FileType / PartMode / SourceDataID absent.
 # ItemType=cad ProductType=bar productSubType=bar_flat Machine=Laser
 # Length/Width in meters. Tip helpers (CadType, IsPlate, drawing_thickness_in)
-# never sent. Keep PartID+FileID GUIDs. Do not invent Contours.
-# Empty InternalData stays when recipe complete.
+# never sent. KEEP = Kyle HAR key set (~44 grid fields minus STRIP) —
+# include Stock_X/Stock_Y. Do not over-lean. Keep PartID+FileID GUIDs.
+# Do not invent Contours. Empty InternalData stays when recipe complete.
 KYLE_HAR_CAD_CONTOURS_PLATE_ITEMTYPE = "cad"
 KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE = "bar"
 KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE = "bar_flat"
@@ -6430,33 +6433,25 @@ KYLE_HAR_CAD_CONTOURS_PLATE_STRIP_KEYS = (
     "_events",
     "dirty",
 )
-KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS = (
-    "ID",
-    "FileID",
-    "PartID",
-    "ItemID",
-    "ItemType",
+# Kyle HAR extras not in FILELIST_FIELDS. CadType is Kyle-OK absent.
+_KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_EXTRA = (
     "ProductType",
     "ProductSubType",
     "productSubType",
-    "Machine",
-    "Material",
-    "MaterialGrade",
-    "Thickness",
-    "Thickness_Units",
-    "Length",
-    "Width",
     "Length_Units",
-    "Name",
-    "PartName",
-    "FileName",
-    "Description",
-    "Qty",
-    "Quantity",
-    "ErrorStatus",
     "InternalData",
-    "ProductID",
-    "SKU",
+    "InternalHTML",
+    "OutsidePerimeter",
+    "OutsidePerimeter_Units",
+    "OutsidePerimeter_UseLocal",
+    "Depth",
+)
+KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS = tuple(
+    dict.fromkeys(
+        key
+        for key in (*FILELIST_FIELDS, *_KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_EXTRA)
+        if key not in KYLE_HAR_CAD_CONTOURS_PLATE_STRIP_KEYS
+    )
 )
 _INCH_TO_METER = 0.0254
 _METER_UNITS = frozenset(
@@ -6524,6 +6519,7 @@ def additem_dxf_list_empty_is_fail(result: dict[str, Any] | None) -> bool:
 
     List=[] is fail even if body has List,Result keys (Q10481).
     Older mocks without response_list_n pass through.
+    List≥1 alone is not remint PASS — tree prt_dxf + NumberOfContours≥1.
     """
     if not isinstance(result, dict):
         return False
@@ -6539,6 +6535,57 @@ def additem_dxf_list_empty_is_fail(result: dict[str, Any] | None) -> bool:
         return int(result.get("response_list_n") or 0) < 1
     except (TypeError, ValueError):
         return True
+
+
+def additem_dxf_result_newitem(result: dict[str, Any] | None) -> Any:
+    """Result.NewItem nested under Result — not top-level NewItem."""
+    if not isinstance(result, dict):
+        return None
+    nested = result.get("Result")
+    if not isinstance(nested, dict):
+        nested = result.get("result")
+    if not isinstance(nested, dict):
+        return None
+    if "NewItem" in nested:
+        return nested.get("NewItem")
+    if "newItem" in nested:
+        return nested.get("newItem")
+    return None
+
+
+def additem_dxf_has_result_newitem(result: dict[str, Any] | None) -> bool:
+    """True when Result.NewItem is present (nested under Result)."""
+    return additem_dxf_result_newitem(result) is not None
+
+
+def additem_dxf_response_list0_focus(
+    result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """AddItem response List[0] focus. No Contours invent.
+
+    ImgStr length, ProductType, Description, UnitCost, Machine,
+    Material, Thickness. Empty List → empty focus (still fail).
+    """
+    if not isinstance(result, dict):
+        return {}
+    lst = result.get("List")
+    if not isinstance(lst, list):
+        lst = result.get("list")
+    row = lst[0] if isinstance(lst, list) and lst and isinstance(lst[0], dict) else {}
+    img = row.get("ImgStr")
+    if img is None:
+        img = row.get("imgStr")
+    if img is None:
+        img = ""
+    return {
+        "ImgStr_len": len(img) if isinstance(img, str) else 0,
+        "ProductType": row.get("ProductType"),
+        "Description": row.get("Description"),
+        "UnitCost": row.get("UnitCost"),
+        "Machine": row.get("Machine"),
+        "Material": row.get("Material"),
+        "Thickness": row.get("Thickness"),
+    }
 
 
 def finish_cad_chrome_edit_grid_unbound(
@@ -6567,9 +6614,11 @@ def sanitize_cad_contours_plate_finish_filelist_row(
     Kyle path requires it (default omit like Q10366 HAR). Prefer HAR
     shape: cad + bar/bar_flat + Laser, Length/Width meters. Strip
     tip-only keys (FileType/PartMode/SourceDataID/CadType/IsPlate).
-    Force Kyle VALUES last so SetPartMode ProductType=100 / NULL
-    bar_flat cannot win at ajax send. Keep PartID+FileID GUIDs.
-    Do not invent Contours/InternalData. PR62 empty InternalData
+    KEEP = Kyle HAR key set — copy all present non-STRIP keys so
+    Stock_X/Stock_Y and the rest of the ~44 Kyle-present fields
+    survive. Do not invent Stock/Contours. Force Kyle VALUES last
+    so SetPartMode ProductType=100 / NULL bar_flat cannot win at
+    ajax send. Keep PartID+FileID GUIDs. PR62 empty InternalData
     stays OK when the Cad+Material+inch recipe is complete.
     """
     if not isinstance(row, dict):
@@ -6585,14 +6634,23 @@ def sanitize_cad_contours_plate_finish_filelist_row(
     width_src = out.get("Width")
     if width_src in (None, ""):
         width_src = out.get("Stock_X")
+    length_units = out.get("Length_Units") or out.get("Stock_Units")
     length_m = _cad_finish_dim_to_meters(
         length_src,
-        out.get("Length_Units") or out.get("Stock_Units"),
+        length_units,
         stock_inch=stock_y if stock_y > 0 else None,
     )
+    # Kyle omits Width_Units. After Length_Units=meter, Width is meters
+    # too — do not fall back to Stock_Units=inch and reconvert.
+    width_units = out.get("Width_Units")
+    if width_units in (None, ""):
+        if str(out.get("Length_Units") or "").strip().casefold() in _METER_UNITS:
+            width_units = "meter"
+        else:
+            width_units = out.get("Stock_Units")
     width_m = _cad_finish_dim_to_meters(
         width_src,
-        out.get("Width_Units") or out.get("Stock_Units"),
+        width_units,
         stock_inch=stock_x if stock_x > 0 else None,
     )
     if length_m is not None:
@@ -6605,11 +6663,16 @@ def sanitize_cad_contours_plate_finish_filelist_row(
     if kyle_send_imagestring:
         strip.discard("ImageString")
         strip.discard("imageString")
-    for key in KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS:
+    # Copy every present non-STRIP key (Kyle HAR KEEP, not over-lean).
+    # Values come from the grid/Kyle apply — do not invent Stock/Contours.
+    for key, val in out.items():
         if key in strip:
             continue
-        if key in out:
-            lean[key] = out[key]
+        lean[key] = val
+    for key in KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS:
+        if key in strip or key not in out:
+            continue
+        lean[key] = out[key]
     if kyle_send_imagestring and out.get("ImageString") not in (None, ""):
         lean["ImageString"] = out.get("ImageString")
     for guid_key in ("ID", "FileID", "PartID"):

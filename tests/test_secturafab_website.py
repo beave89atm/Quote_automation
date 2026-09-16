@@ -8628,6 +8628,8 @@ def test_kendo_cadimport_identity_survives_into_filelist():
     assert "CadType" not in posted
     assert posted["ItemType"] == "cad"
     assert posted["ProductType"] == "bar"
+    assert posted["Stock_X"] == 11.0
+    assert posted["Stock_Y"] == 6.25
     assert cap["should_finish"] is True
     assert cap["finish_why"] == ""
     assert cap["filelist_missing_identity"] == []
@@ -8706,9 +8708,13 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS, _PAGE_FINISH_JS
     from secturafab.website import (
         KYLE_HAR_CAD_CONTOURS_PLATE_ITEMTYPE,
+        KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS,
         KYLE_HAR_CAD_CONTOURS_PLATE_MACHINE,
         KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE,
         KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE,
+        KYLE_HAR_CAD_CONTOURS_PLATE_STRIP_KEYS,
+        additem_dxf_has_result_newitem,
+        additem_dxf_response_list0_focus,
         build_dxf_finish_payload,
         cad_filelist_refuses_additem_dxf,
         cad_material_inches_recipe_complete,
@@ -8738,6 +8744,16 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert "FileType" in har["absent_keys"]
     assert "PartMode" in har["absent_keys"]
     assert "SourceDataID" in har["absent_keys"]
+    assert "Stock_X" in har["present_keys"]
+    assert "Stock_Y" in har["present_keys"]
+    assert "Stock_X" in KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS
+    assert "Stock_Y" in KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS
+    assert "FileType" not in KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS
+    assert "PartMode" not in KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS
+    assert "SourceDataID" not in KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS
+    assert "CadType" not in KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS
+    assert "CadType" in KYLE_HAR_CAD_CONTOURS_PLATE_STRIP_KEYS
+    assert len(KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS) >= 40
 
     src = {
         "ID": "id-h638",
@@ -8777,6 +8793,8 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert "thickness_source" not in posted
     assert "Contours" not in posted
     assert "NumberOfContours" not in posted
+    assert posted["Stock_X"] == 11.0
+    assert posted["Stock_Y"] == 6.25
     assert posted["ItemType"] == "cad"
     assert posted["ProductType"] == "bar"
     assert posted["ProductType"] != 100
@@ -8829,6 +8847,8 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert row["ProductSubType"] == "bar_flat"
     assert row["Machine"] == "Laser"
     assert row["Length_Units"] == "meter"
+    assert row["Stock_X"] == 11.0
+    assert row["Stock_Y"] == 6.25
     assert cap["should_finish"] is True
     assert cap["filelist_from_kendo"] is True
     assert cad_material_inches_recipe_complete(src) is True
@@ -8847,6 +8867,8 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert built["ProductSubType"] == "bar_flat"
     assert built["Machine"] == "Laser"
     assert built["Length_Units"] == "meter"
+    assert built["Stock_X"] == 11.0
+    assert built["Stock_Y"] == 6.25
 
     overlaid = overlay_classified_row(
         {
@@ -8884,6 +8906,48 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert "application/x-www-form-urlencoded" in js
     assert "response_list_n" in js
     assert "filelist0_values" in js
+    assert "POSTED_IDENTITY_KEYS" in js
+    assert "resultNewItem" in js
+    assert "list0Focus" in js
+    assert "response_list0" in js
+    assert "lean.Stock_X = raw.Stock_X" in js
+    assert "lean.Stock_Y = raw.Stock_Y" in js
+    assert "data.Result || data.result" in js
+    assert "data.NewItem || data.newItem" not in js.split("function summarize")[1].split(
+        "function kendoGridPresent"
+    )[0]
+    list0 = additem_dxf_response_list0_focus(
+        {
+            "List": [
+                {
+                    "ImgStr": "abc123",
+                    "ProductType": "prt_dxf",
+                    "Description": "H.6.38 PLATE",
+                    "UnitCost": 12.5,
+                    "Machine": "Laser",
+                    "Material": "A36",
+                    "Thickness": "0.1875",
+                }
+            ],
+            "Result": {"NewItem": {"ID": "new-1"}},
+        }
+    )
+    assert list0["ImgStr_len"] == 6
+    assert list0["ProductType"] == "prt_dxf"
+    assert list0["Description"] == "H.6.38 PLATE"
+    assert list0["UnitCost"] == 12.5
+    assert list0["Machine"] == "Laser"
+    assert list0["Material"] == "A36"
+    assert list0["Thickness"] == "0.1875"
+    assert additem_dxf_has_result_newitem(
+        {"List": [{}], "Result": {"NewItem": {"ID": "new-1"}}}
+    ) is True
+    assert additem_dxf_has_result_newitem({"NewItem": {"ID": "top"}}) is False
+    empty_list0 = additem_dxf_response_list0_focus(
+        {"List": [], "Result": {}, "status": 200, "response_list_n": 0}
+    )
+    assert empty_list0["ImgStr_len"] == 0
+    assert empty_list0["ProductType"] is None
     from secturafab.website import (
         additem_dxf_list_empty_is_fail,
         finish_cad_chrome_edit_grid_unbound,
@@ -8908,6 +8972,71 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert "Never stamp 0.1875 while units still meter" in inch
     assert 'setter("Thickness_Units", "inch")' in inch
     assert "inch_stamped" in inch or "Thickness_Units" in inch
+
+
+def test_additem_dxf_summarize_list0_and_result_newitem():
+    """summarize/invoke capture List[0] focus + Result.NewItem. List=[] fail.
+
+    has_NewItem is Result.NewItem (nested), not top-level NewItem.
+    List≥1 alone is not remint PASS. Do not invent Contours.
+    """
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+    from secturafab.website import (
+        additem_dxf_has_result_newitem,
+        additem_dxf_list_empty_is_fail,
+        additem_dxf_response_list0_focus,
+        additem_dxf_result_newitem,
+    )
+
+    js = _PAGE_FINISH_JS
+    assert "function resultNewItem" in js
+    assert "function list0Focus" in js
+    assert "response_list0: list0Focus(data)" in js
+    assert "has_NewItem: !!newItem" in js
+    assert "ImgStr_len" in js
+    body = {
+        "List": [
+            {
+                "ImgStr": "preview-bytes",
+                "ProductType": "prt_dxf",
+                "Description": "H.6.38 PLATE",
+                "UnitCost": 64.25,
+                "Machine": "Laser",
+                "Material": "A36",
+                "Thickness": "0.1875",
+            }
+        ],
+        "Result": {"NewItem": {"ID": "nested-new"}},
+        "NewItem": {"ID": "top-level-ignored"},
+    }
+    focus = additem_dxf_response_list0_focus(body)
+    assert focus["ImgStr_len"] == len("preview-bytes")
+    assert focus["ProductType"] == "prt_dxf"
+    assert focus["Description"] == "H.6.38 PLATE"
+    assert focus["UnitCost"] == 64.25
+    assert focus["Machine"] == "Laser"
+    assert focus["Material"] == "A36"
+    assert focus["Thickness"] == "0.1875"
+    assert additem_dxf_result_newitem(body) == {"ID": "nested-new"}
+    assert additem_dxf_has_result_newitem(body) is True
+    assert additem_dxf_has_result_newitem(
+        {"NewItem": {"ID": "top-only"}, "List": [{}]}
+    ) is False
+    empty = {
+        "status": 200,
+        "body_keys": ["List", "Result"],
+        "response_list_n": 0,
+        "List": [],
+        "Result": {},
+    }
+    assert additem_dxf_list_empty_is_fail(empty) is True
+    assert additem_dxf_has_result_newitem(empty) is False
+    empty_focus = additem_dxf_response_list0_focus(empty)
+    assert empty_focus["ImgStr_len"] == 0
+    assert empty_focus["ProductType"] is None
+    assert additem_dxf_list_empty_is_fail(
+        {"status": 200, "body_keys": ["List", "Result"], "response_list_n": 1}
+    ) is False
 
 
 def test_additem_dxf_list_empty_is_not_success(tmp_path: Path):

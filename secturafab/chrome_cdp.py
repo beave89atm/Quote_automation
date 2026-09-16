@@ -69,10 +69,13 @@ and Status absent; 200 empty / GET 0. Persist FileType from
 SetPartMode ItemType/Category/PartMode onto the dataItem. Do not
 invent Status. Cad Contours plate Finish FileList matches Kyle
 Q10366 HAR: Status/ImageString/FileType/PartMode/SourceDataID absent,
-cad + bar/bar_flat + Laser, Length/Width meters. Lean FileList[0][k]
-form-urlencoded (not fat kendo ObservableObject). AddItem success =
-HTTP 200 AND List length ≥1 (List=[] is fail). Do not invent
-Contours. Leave aab5b3e2 / 16629-1.
+cad + bar/bar_flat + Laser, Length/Width meters. KEEP Kyle HAR
+fields (Stock_X/Stock_Y and the rest of the ~44 present keys).
+Do not over-lean. Lean FileList[0][k] form-urlencoded (not fat
+kendo ObservableObject). AddItem success = HTTP 200 AND List
+length ≥1 (List=[] is fail). Remint PASS still needs tree
+prt_dxf + NumberOfContours≥1. Do not invent Contours.
+Leave aab5b3e2 / 16629-1.
 Live 10098-1 (315cb19 leftover PIVOTING FOOT, 6a568912): posted
 FileType=Cad (string) plus CadType+Stock+SID and InternalData/
 ImageString/HadOpenContours/OutsidePerimeter *keys*. Finish still
@@ -1705,8 +1708,10 @@ _PAGE_FINISH_JS = """(function() {
   }
   function applyKyleHarCadContoursPlateFileList(r) {
     // Q10366 HAR Finish FileList: Status/ImageString/FileType/PartMode/
-    // SourceDataID absent. ItemType=cad ProductType=bar
+    // SourceDataID/CadType absent. ItemType=cad ProductType=bar
     // productSubType=bar_flat Machine=Laser Length/Width meters.
+    // Keep Stock_X/Stock_Y (and other Kyle-present fields). CadType
+    // absent is Kyle-OK; Stock_X/Y absent is over-strip.
     // Force VALUES last so SetPartMode ProductType=100 cannot win.
     // invent=false. Do not invent Contours.
     if (!isCadRow(r)) return r;
@@ -1740,7 +1745,11 @@ _PAGE_FINISH_JS = """(function() {
       ? r.Length : (r.Stock_Y != null ? r.Stock_Y : r.Stock_Length);
     var widthSrc = (r.Width != null && r.Width !== "") ? r.Width : r.Stock_X;
     var lengthM = toMeters(lengthSrc, r.Length_Units || r.Stock_Units, stockY);
-    var widthM = toMeters(widthSrc, r.Width_Units || r.Stock_Units, stockX);
+    var widthUnits = r.Width_Units;
+    if (widthUnits == null || widthUnits === "") {
+      widthUnits = isMeterUnit(r.Length_Units) ? "meter" : r.Stock_Units;
+    }
+    var widthM = toMeters(widthSrc, widthUnits, stockX);
     if (lengthM != null) {
       if (typeof r.set === "function") {
         r.set("Length", lengthM);
@@ -1761,28 +1770,38 @@ _PAGE_FINISH_JS = """(function() {
     return r;
   }
   function leanKyleHarCadContoursPlateFileList(r) {
-    // Lean FileList[0][k] row — not the fat kendo ObservableObject.
+    // Lean FileList[0][k] — not the fat kendo ObservableObject.
+    // KEEP = Kyle HAR key set (copy all present non-STRIP keys).
+    // Restore Stock_X/Stock_Y. Do not over-lean. Do not invent Contours.
     // Force Kyle VALUES last after SetPartMode/classify.
     if (!r || typeof r !== "object") return r;
     applyKyleHarCadContoursPlateFileList(r);
     if (!isCadRow(r)) return r;
     var cat = String(r.Category || r.ItemType || r.FileType || "");
     if (cat === "Linear" || cat === "Assembly") return r;
-    var keep = [
-      "ID", "FileID", "PartID", "ItemID",
-      "ItemType", "ProductType", "ProductSubType", "productSubType",
-      "Machine", "Material", "MaterialGrade",
-      "Thickness", "Thickness_Units",
-      "Length", "Width", "Length_Units",
-      "Name", "PartName", "FileName", "Description",
-      "Qty", "Quantity", "ErrorStatus",
-      "InternalData", "ProductID", "SKU"
-    ];
+    var strip = {
+      Status: 1, status: 1, ImageString: 1, imageString: 1,
+      FileType: 1, PartMode: 1, SourceDataID: 1, Width_Units: 1,
+      drawing_thickness_in: 1, thickness_source: 1, CadType: 1,
+      HadOpenContours: 1, IsPlate: 1, IsLinear: 1, IsPart: 1,
+      Category: 1, uid: 1, parent: 1, children: 1, _events: 1, dirty: 1
+    };
+    var raw = r;
+    try {
+      if (typeof r.toJSON === "function") raw = r.toJSON() || r;
+    } catch (e0) { raw = r; }
     var lean = {};
-    for (var ki = 0; ki < keep.length; ki++) {
-      var k = keep[ki];
-      if (r[k] !== undefined) lean[k] = r[k];
+    var keys = [];
+    try { keys = Object.keys(raw); } catch (e1) { keys = []; }
+    for (var ki = 0; ki < keys.length; ki++) {
+      var k = keys[ki];
+      if (strip[k] || k.charAt(0) === "_") continue;
+      var v = raw[k];
+      if (typeof v === "function") continue;
+      lean[k] = v;
     }
+    if (raw.Stock_X !== undefined) lean.Stock_X = raw.Stock_X;
+    if (raw.Stock_Y !== undefined) lean.Stock_Y = raw.Stock_Y;
     lean.ItemType = "cad";
     lean.ProductType = "bar";
     lean.ProductSubType = "bar_flat";
@@ -1890,6 +1909,30 @@ _PAGE_FINISH_JS = """(function() {
     }
     return n;
   }
+  function resultNewItem(data) {
+    if (!data || typeof data !== "object") return null;
+    var res = data.Result || data.result;
+    if (!res || typeof res !== "object") return null;
+    if (res.NewItem !== undefined) return res.NewItem;
+    if (res.newItem !== undefined) return res.newItem;
+    return null;
+  }
+  function list0Focus(data) {
+    var list = data && (data.List || data.list);
+    var row = (Array.isArray(list) && list[0] && typeof list[0] === "object")
+      ? list[0] : {};
+    var img = (row.ImgStr != null) ? row.ImgStr
+      : ((row.imgStr != null) ? row.imgStr : "");
+    return {
+      ImgStr_len: (typeof img === "string") ? img.length : 0,
+      ProductType: (row.ProductType != null) ? row.ProductType : "",
+      Description: (row.Description != null) ? row.Description : "",
+      UnitCost: (row.UnitCost != null) ? row.UnitCost : null,
+      Machine: (row.Machine != null) ? row.Machine : "",
+      Material: (row.Material != null) ? row.Material : "",
+      Thickness: (row.Thickness != null) ? row.Thickness : ""
+    };
+  }
   function summarize(status, data) {
     var isObj = data && typeof data === "object" && !Array.isArray(data);
     var keys = isObj ? Object.keys(data) : [];
@@ -1900,13 +1943,16 @@ _PAGE_FINISH_JS = """(function() {
     else body_type = typeof data;
     var respList = isObj ? (data.List || data.list) : null;
     var respListN = Array.isArray(respList) ? respList.length : 0;
+    var newItem = resultNewItem(data);
     return {
       status: status || 0,
       body_keys: keys,
       body_type: body_type,
-      has_NewItem: !!(isObj && (data.NewItem || data.newItem)),
+      has_NewItem: !!newItem,
       has_QuoteItem: !!(isObj && (data.QuoteItem || data.quoteItem)),
       response_list_n: respListN,
+      response_list0: list0Focus(data),
+      result_NewItem: newItem,
       text_len: (typeof data === "string") ? data.length : (isObj ? 1 : 0),
       grid_dxf_row_count: gridData().length
     };
@@ -1989,6 +2035,8 @@ _PAGE_FINISH_JS = """(function() {
     "CadType", "FileType", "SourceDataID", "FileID", "Stock_X", "Stock_Y"
   ];
   var IDENTITY_KEYS = ["CadType", "Stock_X", "Stock_Y"];
+  // Posted Kyle HAR omits CadType (Kyle-OK). Stock_X/Y must stay.
+  var POSTED_IDENTITY_KEYS = ["Stock_X", "Stock_Y"];
   function missingOf(keys, need) {
     var have = {};
     for (var i = 0; i < keys.length; i++) have[keys[i]] = true;
@@ -2210,7 +2258,7 @@ _PAGE_FINISH_JS = """(function() {
         var afOnDoc = hasChromeDomAf();
         var afInReq = hasAf(d);
         var postedKeys = n > 0 ? rowKeys(fl[0]) : [];
-        var identMiss = missingOf(postedKeys, IDENTITY_KEYS);
+        var identMiss = missingOf(postedKeys, POSTED_IDENTITY_KEYS);
         var first = n > 0 ? (fl[0] || {}) : {};
         var ftRaw = first.FileType;
         var ftType = (ftRaw === undefined) ? "missing" : typeof ftRaw;
@@ -2370,6 +2418,9 @@ _PAGE_FINISH_JS = """(function() {
     extra.finish_why = String(hit.finish_why || "");
     extra.filelist0_values = hit.filelist0_values || {};
     extra.response_list_n = Number(extra.response_list_n || 0);
+    extra.response_list0 = extra.response_list0 || {};
+    extra.result_NewItem = (extra.result_NewItem !== undefined)
+      ? extra.result_NewItem : null;
     extra.body_empty = extra.body_type === "empty" && !extra.has_NewItem;
     return extra;
   });
@@ -2730,6 +2781,8 @@ def invoke_page_dxf_finish(
         "finish_why": "wrong_document",
         "filelist0_values": {},
         "response_list_n": 0,
+        "response_list0": {},
+        "result_NewItem": None,
     }
     if not gate.get("ok"):
         return skipped
@@ -2795,6 +2848,12 @@ def invoke_page_dxf_finish(
             else {}
         ),
         "response_list_n": int(value.get("response_list_n") or 0),
+        "response_list0": (
+            value.get("response_list0")
+            if isinstance(value.get("response_list0"), dict)
+            else {}
+        ),
+        "result_NewItem": value.get("result_NewItem"),
         "status": int(value.get("status") or 0),
         "body_keys": [str(k) for k in (value.get("body_keys") or [])],
         "body_type": str(value.get("body_type") or "empty"),

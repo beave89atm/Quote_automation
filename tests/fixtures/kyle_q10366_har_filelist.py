@@ -38,6 +38,12 @@ KYLE_Q10366_HAR_FINISH_FILELIST: dict[str, Any] = {
         "HadOpenContours",
         "IsPlate",
     ),
+    # Kyle HAR present on successful Contours AddItem. Values from
+    # grid/Kyle apply — do not invent Stock/Contours.
+    "present_keys": (
+        "Stock_X",
+        "Stock_Y",
+    ),
     "invent_contours": False,
     "additem_list_min": 1,
 }

@@ -1665,6 +1665,12 @@ class SecturaFabClient:
                 if "response_list_n" in result
                 else None
             ),
+            "response_list0": (
+                result.get("response_list0")
+                if isinstance(result.get("response_list0"), dict)
+                else {}
+            ),
+            "result_NewItem": result.get("result_NewItem"),
             "empty_body": (
                 str(result.get("body_type") or "") in {"empty", "str"}
                 and not result.get("has_NewItem")
