@@ -2313,7 +2313,11 @@ _PAGE_FINISH_JS = """(function() {
             Machine: first.Machine,
             Material: first.Material,
             Thickness: first.Thickness,
-            Thickness_Units: first.Thickness_Units
+            Thickness_Units: first.Thickness_Units,
+            Length: first.Length,
+            Width: first.Width,
+            Stock_X: first.Stock_X,
+            Stock_Y: first.Stock_Y
           }
         };
         var ret = orig.apply(this, arguments);
@@ -7651,13 +7655,25 @@ def upload_dxf_via_page_add_files(
     opened_via = ""
     if isinstance(opened, dict):
         opened_via = str(opened.get("opened_via") or "")
-    time.sleep(0.35)
-    found = _cdp_evaluate_promise(
-        _FIND_DXF_ADD_FILES_INPUT_JS + "()", base=base, tab=tab, fallback=False
-    )
-    selector = str((found or {}).get("selector") or "") if isinstance(found, dict) else ""
-    files_kendo = bool((found or {}).get("files_kendo")) if isinstance(found, dict) else False
-    save_url = str((found or {}).get("save_url") or "") if isinstance(found, dict) else ""
+    # AddNewItemHTML can paint before #dxfupload_Zone #files is queryable
+    # (H.6.38 remint Q10486 raced a fixed 0.35s sleep to no_add_files_input).
+    found: dict[str, Any] | None = None
+    selector = ""
+    files_kendo = False
+    save_url = ""
+    for attempt in range(12):
+        probed = _cdp_evaluate_promise(
+            _FIND_DXF_ADD_FILES_INPUT_JS + "()", base=base, tab=tab, fallback=False
+        )
+        if isinstance(probed, dict):
+            found = probed
+            selector = str(probed.get("selector") or "")
+            files_kendo = bool(probed.get("files_kendo"))
+            save_url = str(probed.get("save_url") or "")
+            if selector:
+                break
+        if attempt < 11:
+            time.sleep(0.75)
     if not selector or not paths:
         return {
             **empty,
