@@ -19791,6 +19791,8 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
         "q10383_21641_1_contours_fail_leftover",
         "q10399_21641_1_gate5_internaldata_empty_leftover",
         "q10420_35146_1_chrome_cdp_skip_finish_leftover",
+        "q10450_1d59ef4a_pr62_cdp_prove_leftover",
+        "q10421_38fa25fc_q10407_drift_leftover",
         "q10407_safe_cave_list_empty_leftover",
         "q10408_safe_cave_list_empty_leftover",
     ]
