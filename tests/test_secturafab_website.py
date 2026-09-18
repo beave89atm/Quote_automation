@@ -8545,6 +8545,12 @@ def test_page_finish_js_posts_kendo_filelist_with_chrome_dom_af():
     assert "af_missing_on_document" in js
     assert "af_not_in_request" in js
     assert "orig.apply(this, arguments)" in js.split("attachChromeDomAf(opts.data)")[1]
+    assert "Length: first.Length" in js
+    assert "Width: first.Width" in js
+    assert "Stock_X: first.Stock_X" in js
+    assert "Stock_Y: first.Stock_Y" in js
+    assert "Machine: first.Machine" in js
+    assert "Thickness_Units: first.Thickness_Units" in js
 
 
 def test_filelist_row_keys_name_cadimport_identity_miss():
@@ -8927,6 +8933,10 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert "application/x-www-form-urlencoded" in js
     assert "response_list_n" in js
     assert "filelist0_values" in js
+    assert "Length: first.Length" in js
+    assert "Width: first.Width" in js
+    assert "Stock_X: first.Stock_X" in js
+    assert "Stock_Y: first.Stock_Y" in js
     assert "POSTED_IDENTITY_KEYS" in js
     assert "resultNewItem" in js
     assert "list0Focus" in js
@@ -19781,6 +19791,8 @@ def test_step_contours_fill_hunt_exhausted_stays_locked():
         "q10383_21641_1_contours_fail_leftover",
         "q10399_21641_1_gate5_internaldata_empty_leftover",
         "q10420_35146_1_chrome_cdp_skip_finish_leftover",
+        "q10450_1d59ef4a_pr62_cdp_prove_leftover",
+        "q10421_38fa25fc_q10407_drift_leftover",
         "q10407_safe_cave_list_empty_leftover",
         "q10408_safe_cave_list_empty_leftover",
     ]
@@ -20714,6 +20726,15 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "#but_dxf" in _OPEN_CAD_FILES_JS
     assert "#dxfupload_Zone" in _FIND_DXF_ADD_FILES_INPUT_JS
     assert "#files" in _FIND_DXF_ADD_FILES_INPUT_JS
+    from inspect import getsource
+
+    from secturafab.chrome_cdp import upload_dxf_via_page_add_files
+
+    dxf_src = getsource(upload_dxf_via_page_add_files)
+    assert "for attempt in range(12)" in dxf_src
+    assert "time.sleep(0.75)" in dxf_src
+    assert "time.sleep(0.35)" not in dxf_src
+    assert "no_add_files_input" in dxf_src
     assert "kendoUpload" in _FIND_DXF_ADD_FILES_INPUT_JS
     assert "dropZoneElement" in _FIND_DXF_ADD_FILES_INPUT_JS
     assert "#gridDXF" in _READ_GRID_DXF_COUNT_JS
@@ -20902,6 +20923,167 @@ def test_upload_pdf_via_page_add_files_is_not_cookie_http():
     cookie.assert_not_called()
     assert result["upload_via"] == "page_add_files"
     assert not cookie_http_pdf_upload_is_fail(result["upload_via"])
+
+
+def test_upload_dxf_via_page_add_files_waits_for_files_input(tmp_path):
+    """AddNewItemHTML can race #dxfupload_Zone #files — wait/retry, not 0.35s."""
+    from secturafab.chrome_cdp import upload_dxf_via_page_add_files
+
+    step = tmp_path / "H.6.38.STEP"
+    step.write_bytes(b"ISO")
+    finds = {"n": 0}
+    sleeps: list[float] = []
+    tab = {
+        "title": "*Quote-H.6.38",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _eval(expr, **kwargs):
+        if "opened_via" in expr:
+            return {"opened_via": "AddNewItemHTML"}
+        if "dropZoneElement" in expr:
+            finds["n"] += 1
+            if finds["n"] < 4:
+                return {
+                    "selector": "",
+                    "files_kendo": False,
+                    "save_url": "",
+                    "zone": "",
+                    "grid_id": "",
+                }
+            return {
+                "selector": "#dxfupload_Zone #files",
+                "files_kendo": True,
+                "save_url": "/CadImport/UploadItem_DXFFiles",
+                "zone": "#dxfupload_Zone",
+                "grid_id": "#gridDXF",
+            }
+        if "gridDXF" in expr:
+            return {
+                "grid_id": "#gridDXF",
+                "gridDXF_n": 1,
+                "files_kendo": True,
+                "List": [{"FileName": "H.6.38.STEP"}],
+                "save_url": "/CadImport/UploadItem_DXFFiles",
+            }
+        return {"changed": True, "files_kendo": True}
+
+    with patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": tab, "reason": ""},
+    ), patch(
+        "secturafab.chrome_cdp._cdp_set_file_input_files", return_value="objectId"
+    ), patch(
+        "secturafab.chrome_cdp._cdp_evaluate_promise", side_effect=_eval
+    ), patch(
+        "secturafab.chrome_cdp.time.sleep", side_effect=lambda s: sleeps.append(s)
+    ):
+        result = upload_dxf_via_page_add_files(
+            [step], quote_id="11111111-aaaa-bbbb-cccc-000000000086"
+        )
+    assert result["bound"] is True
+    assert result["opened_via"] == "AddNewItemHTML"
+    assert result["files_kendo"] is True
+    assert result["save_url"] == "/CadImport/UploadItem_DXFFiles"
+    assert result["finish_why"] != "no_add_files_input"
+    assert finds["n"] == 4
+    assert sleeps.count(0.75) == 3
+    assert 0.35 not in sleeps
+
+
+def test_upload_dxf_via_page_add_files_retries_then_no_add_files_input(tmp_path):
+    """After ~12 probes the #files input is still missing — keep no_add_files_input."""
+    from secturafab.chrome_cdp import upload_dxf_via_page_add_files
+
+    step = tmp_path / "H.6.38.STEP"
+    step.write_bytes(b"ISO")
+    finds = {"n": 0}
+    sleeps: list[float] = []
+    tab = {
+        "title": "*Quote-H.6.38",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _eval(expr, **kwargs):
+        if "opened_via" in expr:
+            return {"opened_via": "AddNewItemHTML"}
+        if "dropZoneElement" in expr:
+            finds["n"] += 1
+            return {
+                "selector": "",
+                "files_kendo": False,
+                "save_url": "",
+                "zone": "",
+                "grid_id": "",
+            }
+        raise AssertionError("must not bind files when input never appears")
+
+    with patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": tab, "reason": ""},
+    ), patch(
+        "secturafab.chrome_cdp._cdp_set_file_input_files",
+        side_effect=AssertionError("must not set files"),
+    ), patch(
+        "secturafab.chrome_cdp._cdp_evaluate_promise", side_effect=_eval
+    ), patch(
+        "secturafab.chrome_cdp.time.sleep", side_effect=lambda s: sleeps.append(s)
+    ):
+        result = upload_dxf_via_page_add_files(
+            [step], quote_id="11111111-aaaa-bbbb-cccc-000000000086"
+        )
+    assert result["bound"] is False
+    assert result["opened_via"] == "AddNewItemHTML"
+    assert result["finish_why"] == "no_add_files_input"
+    assert result["files_kendo"] is False
+    assert result["save_url"] == ""
+    assert finds["n"] == 12
+    assert sleeps.count(0.75) == 11
+
+
+def test_cad_contours_plate_filelist0_values_copies_length_width_stock():
+    """Finish FileList VALUES pass through Length/Width/Stock from the row only."""
+    from secturafab.website import cad_contours_plate_filelist0_values
+
+    row = {
+        "ItemType": "cad",
+        "ProductType": "bar",
+        "productSubType": "bar_flat",
+        "FileType": None,
+        "Machine": "Laser",
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "Length": 0.2794,
+        "Width": 0.15875,
+        "Stock_X": 11.0,
+        "Stock_Y": 6.25,
+    }
+    vals = cad_contours_plate_filelist0_values(row)
+    assert vals["Length"] == 0.2794
+    assert vals["Width"] == 0.15875
+    assert vals["Stock_X"] == 11.0
+    assert vals["Stock_Y"] == 6.25
+    assert vals["Machine"] == "Laser"
+    assert vals["Thickness_Units"] == "inch"
+    bare = cad_contours_plate_filelist0_values(
+        {
+            "ItemType": "cad",
+            "ProductType": "bar",
+            "Machine": "Laser",
+            "Material": "A36",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        }
+    )
+    assert "Length" not in bare
+    assert "Width" not in bare
+    assert "Stock_X" not in bare
+    assert "Stock_Y" not in bare
 
 
 def test_upload_dxf_via_page_add_files_is_not_cookie_http():

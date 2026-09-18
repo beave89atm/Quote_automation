@@ -6486,7 +6486,7 @@ def cad_contours_plate_filelist0_values(row: dict[str, Any] | None) -> dict[str,
     """FileList[0] VALUES for Finish remint digs. No Contours invent."""
     if not isinstance(row, dict):
         return {}
-    return {
+    out = {
         "ItemType": row.get("ItemType"),
         "ProductType": row.get("ProductType"),
         "productSubType": row.get("productSubType") or row.get("ProductSubType"),
@@ -6496,6 +6496,11 @@ def cad_contours_plate_filelist0_values(row: dict[str, Any] | None) -> dict[str,
         "Thickness": row.get("Thickness"),
         "Thickness_Units": row.get("Thickness_Units"),
     }
+    # invent=false: copy Length/Width/Stock only when already on the row.
+    for key in ("Length", "Width", "Stock_X", "Stock_Y"):
+        if key in row:
+            out[key] = row[key]
+    return out
 
 
 def kyle_har_cad_contours_plate_values_applied(row: dict[str, Any] | None) -> bool:

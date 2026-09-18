@@ -3976,21 +3976,22 @@ class SecturaFabPushService:
                 if isinstance(posted_rows, list) and posted_rows:
                     vals = cad_contours_plate_filelist0_values(posted_rows[0])
             if isinstance(vals, dict) and vals:
+                note_keys = [
+                    "ItemType",
+                    "ProductType",
+                    "productSubType",
+                    "FileType",
+                    "Machine",
+                    "Material",
+                    "Thickness",
+                    "Thickness_Units",
+                ]
+                for key in ("Length", "Width", "Stock_X", "Stock_Y"):
+                    if key in vals:
+                        note_keys.append(key)
                 notes.append(
                     "filelist0_values "
-                    + " ".join(
-                        f"{key}={vals.get(key)}"
-                        for key in (
-                            "ItemType",
-                            "ProductType",
-                            "productSubType",
-                            "FileType",
-                            "Machine",
-                            "Material",
-                            "Thickness",
-                            "Thickness_Units",
-                        )
-                    )
+                    + " ".join(f"{key}={vals.get(key)}" for key in note_keys)
                 )
             kyle_har = kyle_har_cad_contours_plate_values_applied(vals) if isinstance(vals, dict) else False
             if "FileType" in miss_cmp and not kyle_har:
