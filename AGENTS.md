@@ -49,6 +49,7 @@ No lint or typecheck scripts are configured (no ruff/mypy/eslint/tsc).
 - Frontend: React Router under `frontend/src/pages/`; API via `frontend/src/api.js` with `X-App-Token`.
 - Auth: `POST /api/login` → `kannon_quote_token`; protect with `Depends(require_auth)`.
 - Shop rates: `config/shop_rates.yaml`. SecturaFAB: `.env` / `secturafab/config.py`.
+- Runtime is the Chief of Staff Linux box. Website Finish uses `SECTURA_WEBSITE_COOKIE` (env or file) from that box Chrome. Fail closed if missing. Do not unwrap Windows Chrome. Do not run on Kyle's quoting PC.
 - Quoting behavior: prefer `docs/quoting/*.md` before inventing shortcuts.
 - Prefer imperial labels on SecturaFAB line items; do not casually rewrite STEP geometry for units.
 - Imperial cleanup must run **last** in finalize (after settle). Delayed CAD can rewrite Descriptions back to `mm X` if skipped on the success path.

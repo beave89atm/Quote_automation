@@ -17,8 +17,9 @@ Import STEP → **root line = Assembly** (components roll up) → classify each 
 2. Drag/drop the STEP. Keep **component drawings** open on a second screen to verify material & thickness.
 3. **Root / top row = Assembly** (category Assembly, not Part/plate). Child qtys roll up with assembly qty (example: set assembly to 10 → children scale). Description is the **part number only** — not plate L×W.
 4. For each **component** solid (not the assembly root):
-   - **Sheet/plate (laser)** → set category to **Cad**. Confirm thickness (often 3/16 already correct). Confirm material vs PDF (**A36** may show oddly; Grade 50 → **A572 Grade 50**).
-   - Red thickness warning → re-pick the same thickness (e.g. 3/16) to clear it.
+   - **Sheet/plate (laser)** → set category to **Cad**. Confirm **thickness from the PDF / LOM** (Kyle 2026-09-14: MUST match the drawing). STEP solids often carry the wrong gauge — do not trust that value.
+   - **RD BAR / round bar / diameter stock** (example: **RD BAR CR 1018 / 1/2 DIA** on HOOK 31454-1) → **Linear / Long**, never Cad Contours. Contours≥1 is a plate/sheet Laser gate only — bar kids must not fail solely for Contours=0. invent=false (do not invent Contours).
+   - Red thickness warning → re-pick the **drawing** thickness (e.g. 3/16) to clear it. Red/invalid thickness means Contours will not process; automation fail-closes (`EXEC_FAIL`) and does not invent Contours.
    - **Angle with holes** → **Linear**; pick stock (e.g. **L 3×3×3/16 A36**). Length comes from STEP.
    - **Purchased part** (kingpin — not made in-house) → leave **Component**.
 5. **Finish** import — assembly + components appear; qtys follow assembly multiplier.
@@ -33,7 +34,7 @@ Import STEP → **root line = Assembly** (components roll up) → classify each 
 
 - Quote header **Description** = title from the **top-level assembly drawing** (e.g. `COUPLER ASM, 18-16, PNEUMATIC TANK`), not blank.
 - All fabricatable / purchased components **roll up** under that assembly.
-- STEP preferred; verify **per-line** material/thickness from PDFs (don’t trust a single assembly-wide guess).
+- STEP preferred; verify **per-line** material/thickness from PDFs (don’t trust a single assembly-wide guess, and don’t trust STEP-derived thickness alone).
 - **Cad** = laser plate/sheet; **Linear** = angle/tube/bar stock; **Component** = purchased / not fabricated in-house.
 - **King pins and hardware** are purchased (~99%) → always **Component** (no laser Profile / Bend).
 - **Tube laser** parts are often **outsourced** (flag for later; ERP will help identify buy vs make).

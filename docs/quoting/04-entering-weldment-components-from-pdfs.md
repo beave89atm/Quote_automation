@@ -22,8 +22,8 @@ Build a SecturaFAB **Assembly** (top-level weldment) by adding every BOM compone
    - Confirm **Product Type**:
      - Purchased hardware → **Component**
      - Plate / flat laser → **Cad** (Image/plate path)
-     - Tube / round bar / long stock → **Linear**
-   - Set **thickness** and **material** from the drawing (example: **1/4"** + **A572 Grade 50**, or **A36**).
+     - Tube / **RD BAR / round bar / DIA stock** / long stock → **Linear** (never Cad Contours; HOOK 31454-1 **RD BAR CR 1018 / 1/2 DIA** is Long)
+   - Set **thickness** and **material** from the drawing / LOM (example: **1/4"** + **A572 Grade 50**, or **A36**). Thickness MUST match the PDF (Kyle 2026-09-14). STEP-only or red/invalid thickness is fail-close — Contours will not process; do not invent Contours.
    - Set **quantity** from the BOM (example: **2** of 15864-2).
    - Set the **part name / dash** correctly (example: **15864-2** — dashes are different configs).
    - Enter **length × width** (and **holes** if shown) from the drawing when the image import does not fill them.
@@ -60,7 +60,7 @@ Build a SecturaFAB **Assembly** (top-level weldment) by adding every BOM compone
 - **No STEP** → **Image Files** + component PDFs, not CAD STEP import.
 - Always use the correct **BOM dash column** (-1 / -2 / …).
 - Part name must include the **dash** when the drawing has one.
-- **Cad** = laser plate; **Linear** = tube/bar; **Component** = purchased.
+- **Cad** = laser plate/sheet (Contours≥1 after Finish); **Linear** = tube / RD BAR / round bar / DIA stock (no Contours gate); **Component** = purchased. Ambiguous stock fail-closes away from the Laser Contours plate path — do not invent Contours.
 - After **New Line Item**, the part is **not** in the weldment until **Update Assembly**.
 - Material grades matter (A36 vs A572 GR50) — read each component PDF.
 - Tube machining can wait until after the structure is built.

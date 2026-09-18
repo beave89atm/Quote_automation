@@ -6,13 +6,11 @@ app:
   shared_password: "kannon"
   default_efficiency_pct: 85
 
-# Office drawing library (SharePoint / OneDrive synced path).
-# When a PDF is uploaded without an STP, the app looks here for a matching
-# part folder and attaches .stp/.step plus lists sibling component PDFs.
+# Box-local drawing library (LOM + child PDFs on this Linux box).
 # Override with env KANNON_DRAWING_LIBRARY (semicolon-separated paths).
+# Do not point this at Kyle's quoting PC.
 drawing_library:
-  roots:
-    - "C:\\Users\\Kyle\\Kannon Manufacturing Inc\\Fort Worth - Documents\\Engineering\\Customer Drawings"
+  roots: []
   auto_attach_stp: true
 
 weld:
