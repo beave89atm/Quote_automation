@@ -1502,12 +1502,16 @@ class SecturaFabClient:
         )
         from .website import (
             cad_filelist_refuses_additem_dxf,
+            contours_tip_flat_lw_refuses,
             filelist_kids_partmode_set,
             filelist_missing_cadimport_identity_keys,
         )
 
         partmode_ready = filelist_kids_partmode_set(file_list)
         for row in file_list or []:
+            flat_miss = contours_tip_flat_lw_refuses(row)
+            if flat_miss:
+                raise SecturaFabApiError(flat_miss)
             reason = cad_filelist_refuses_additem_dxf(row)
             if reason:
                 raise SecturaFabApiError(reason)

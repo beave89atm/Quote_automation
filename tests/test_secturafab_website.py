@@ -21086,6 +21086,164 @@ def test_cad_contours_plate_filelist0_values_copies_length_width_stock():
     assert "Stock_Y" not in bare
 
 
+def test_finish_preserves_cadimport_flat_lw_not_step_aabb():
+    """CadImport / part-create flat L/W (and Stock) win over STEP AABB.
+
+    invent=false. Finish FileList keeps the server flats. A bounding
+    box on the same row is not the Contours tip size.
+    """
+    from secturafab.website import (
+        build_dxf_finish_payload,
+        cad_contours_plate_filelist0_values,
+        contours_tip_flat_lw_refuses,
+        kendo_filelist_for_finish,
+        sanitize_cad_contours_plate_finish_filelist_row,
+        step_cad_finish_hard_gate,
+    )
+
+    server = {
+        "ID": "id-flat",
+        "FileID": "file-flat",
+        "SourceDataID": "src-flat",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "Length": 12.5,
+        "Width": 4.25,
+        "Length_Units": "inch",
+        "Stock_X": 4.25,
+        "Stock_Y": 12.5,
+        "Stock_Units": "inch",
+        "ErrorStatus": 0,
+        "Qty": 1,
+        "InternalData": "",
+        "Name": "H.6.38 PLATE",
+        "step_bbox": [18.0, 9.0, 0.1875],
+    }
+    assert contours_tip_flat_lw_refuses(server) is None
+    assert step_cad_finish_hard_gate([server]) is None
+    posted = sanitize_cad_contours_plate_finish_filelist_row(server)
+    assert posted["Length"] == pytest.approx(12.5 * 0.0254)
+    assert posted["Width"] == pytest.approx(4.25 * 0.0254)
+    assert posted["Stock_X"] == 4.25
+    assert posted["Stock_Y"] == 12.5
+    assert posted["Length"] != pytest.approx(18.0 * 0.0254)
+    assert posted["Width"] != pytest.approx(9.0 * 0.0254)
+    assert "step_bbox" not in posted
+    assert "NumberOfContours" not in posted
+    assert "Contours" not in posted
+    vals = cad_contours_plate_filelist0_values(posted)
+    assert vals["Length"] == pytest.approx(posted["Length"])
+    assert vals["Width"] == pytest.approx(posted["Width"])
+    assert vals["Stock_X"] == 4.25
+    assert vals["Stock_Y"] == 12.5
+    cap = kendo_filelist_for_finish([server], from_datasource=True)
+    assert cap["should_finish"] is True
+    assert cap["contours_tip_flat_lw"] == ""
+    built = build_dxf_finish_payload("qid", [server])["FileList"][0]
+    assert built["Length"] == pytest.approx(12.5 * 0.0254)
+    assert built["Stock_X"] == 4.25
+    assert "step_bbox" not in built
+    meters = dict(server)
+    meters["Length"] = 0.3175
+    meters["Width"] = 0.10795
+    meters["Length_Units"] = "meter"
+    kept = sanitize_cad_contours_plate_finish_filelist_row(meters)
+    assert kept["Length"] == pytest.approx(0.3175)
+    assert kept["Width"] == pytest.approx(0.10795)
+    assert kept["Length"] != pytest.approx(18.0)
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+
+    assert "flatDimSourceIsStepAabb" in _PAGE_FINISH_JS
+    assert "STEP AABB" in _PAGE_FINISH_JS
+
+
+def test_missing_cadimport_flat_lw_refuses_aabb_contours_tip():
+    """No server flat L/W → park Contours tip. Do not invent STEP AABB."""
+    from secturafab.website import (
+        CONTOURS_TIP_FLAT_LW_PARK,
+        build_dxf_finish_payload,
+        contours_tip_flat_lw_refuses,
+        kendo_filelist_for_finish,
+        sanitize_cad_contours_plate_finish_filelist_row,
+        step_cad_finish_hard_gate,
+    )
+
+    aabb = {
+        "ID": "id-aabb",
+        "FileID": "file-aabb",
+        "SourceDataID": "src-aabb",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "dim_source": "step_bbox",
+        "Length": 18.0,
+        "Width": 9.0,
+        "Length_Units": "inch",
+        "Stock_X": 9.0,
+        "Stock_Y": 18.0,
+        "Stock_Units": "inch",
+        "ErrorStatus": 0,
+        "Qty": 1,
+        "InternalData": "",
+        "Name": "H.6.38 PLATE",
+        "step_bbox": [18.0, 9.0, 0.1875],
+    }
+    why = contours_tip_flat_lw_refuses(aabb)
+    assert why == CONTOURS_TIP_FLAT_LW_PARK
+    assert "STEP AABB" in why
+    assert "invent=false" in why
+    assert step_cad_finish_hard_gate([aabb]) == why
+    posted = sanitize_cad_contours_plate_finish_filelist_row(aabb)
+    assert "Length" not in posted
+    assert "Width" not in posted
+    assert "Stock_X" not in posted
+    assert "Stock_Y" not in posted
+    assert "step_bbox" not in posted
+    assert "dim_source" not in posted
+    assert "NumberOfContours" not in posted
+    assert "Contours" not in posted
+    assert 18.0 not in posted.values()
+    assert 9.0 not in posted.values()
+    cap = kendo_filelist_for_finish([aabb], from_datasource=True)
+    assert cap["should_finish"] is False
+    assert cap["finish_why"] == "contours_tip_flat_lw_missing"
+    assert cap["contours_tip_flat_lw"] == why
+    built = build_dxf_finish_payload("qid", [aabb])["FileList"][0]
+    assert "Length" not in built
+    assert "Stock_X" not in built
+    box_only = {
+        "ID": "id-box",
+        "FileID": "file-box",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "Name": "H.6.38 PLATE",
+        "step_bbox": [18.0, 9.0, 0.1875],
+    }
+    assert contours_tip_flat_lw_refuses(box_only) == why
+    bare = sanitize_cad_contours_plate_finish_filelist_row(box_only)
+    assert "Length" not in bare
+    assert "Width" not in bare
+    assert 18.0 not in bare.values()
+    assert 9.0 not in bare.values()
+
+
 def test_upload_dxf_via_page_add_files_is_not_cookie_http():
     from secturafab.client import SecturaFabClient
     from secturafab.website import cookie_http_dxf_upload_is_fail

@@ -3377,6 +3377,9 @@ def step_cad_finish_hard_gate(
             continue
         if not _cad_plate_row_for_finish_gate(row):
             continue
+        flat_miss = contours_tip_flat_lw_refuses(row)
+        if flat_miss:
+            return flat_miss
         left = plate_step_left_component_refuses_contours(row)
         if left:
             return left
@@ -3878,13 +3881,16 @@ def kendo_filelist_for_finish(
     gate_row = identified[0] if identified else None
     payload_block = cad_filelist_payload_blocks_finish(gate_row)
     refuse = cad_filelist_refuses_additem_dxf(gate_row)
+    flat_refuse = contours_tip_flat_lw_refuses(gate_row)
     # PartMode set still allows missing CadType/Stock (live 10289-4).
     # Empty Cad InternalData after explode is fail-close (live 28768-1).
     # Refuse/contours gates use the pre-strip kendo row — Kyle HAR
     # omits FileType/CadType/NumberOfContours on the posted FileList.
     partmode_ready = filelist_kids_partmode_set(identified)
     why = ""
-    if n > 0 and sid_n == 0 and id_n == 0 and fileid_n == 0:
+    if flat_refuse:
+        why = "contours_tip_flat_lw_missing"
+    elif n > 0 and sid_n == 0 and id_n == 0 and fileid_n == 0:
         why = "filelist_missing_ids"
     elif refuse:
         if (
@@ -3919,8 +3925,10 @@ def kendo_filelist_for_finish(
         "should_finish": bool(
             from_kendo
             and not refuse
+            and not flat_refuse
             and (partmode_ready or (not payload_block and not ident_miss))
         ),
+        "contours_tip_flat_lw": flat_refuse or "",
         **filelist_errorstatus_qty(filled[0] if filled else None),
         **filelist_filetype_value_type(filled[0] if filled else None),
         "filelist_cad_path_keys": filelist_cad_path_keys(
@@ -6424,6 +6432,18 @@ KYLE_HAR_CAD_CONTOURS_PLATE_STRIP_KEYS = (
     "CadType",
     "HadOpenContours",
     "IsPlate",
+    "step_bbox",
+    "step_aabb",
+    "aabb",
+    "stp_bbox",
+    "dim_source",
+    "flat_source",
+    "length_source",
+    "Length_Source",
+    "width_source",
+    "Width_Source",
+    "stock_source",
+    "Stock_Source",
     "IsLinear",
     "IsPart",
     "Category",
@@ -6608,6 +6628,120 @@ def finish_cad_chrome_edit_grid_unbound(
     return grid_present is not True
 
 
+# CadImport / part-create flat Length/Width. STEP AABB is not a substitute.
+# invent=false — do not mint Contours tip dims from a bounding box.
+_FLAT_DIM_SOURCE_KEYS = (
+    "dim_source",
+    "flat_source",
+    "length_source",
+    "Length_Source",
+    "width_source",
+    "Width_Source",
+    "stock_source",
+    "Stock_Source",
+)
+_STEP_AABB_BOX_KEYS = ("step_bbox", "step_aabb", "aabb", "stp_bbox")
+CONTOURS_TIP_FLAT_LW_PARK = (
+    "EXEC_FAIL: Contours tip parked — CadImport flat Length/Width missing "
+    "after CadImport / part-create. Do not invent Contours tip from STEP "
+    "AABB. invent=false."
+)
+
+
+def flat_dim_source_token(row: dict[str, Any] | None) -> str:
+    """Normalized flat-dim source. Blank when the row does not name one."""
+    if not isinstance(row, dict):
+        return ""
+    for key in _FLAT_DIM_SOURCE_KEYS:
+        tok = str(row.get(key) or "").strip().casefold()
+        if tok:
+            return tok
+    return ""
+
+
+def flat_dim_source_is_step_aabb(row: dict[str, Any] | None) -> bool:
+    """True when Length/Width/Stock were taken from a STEP bounding box."""
+    return flat_dim_source_token(row) in STEP_THICKNESS_SOURCES
+
+
+def row_has_step_aabb_box(row: dict[str, Any] | None) -> bool:
+    """True when the row carries a STEP AABB box the Finish path must ignore."""
+    if not isinstance(row, dict):
+        return False
+    for key in _STEP_AABB_BOX_KEYS:
+        raw = row.get(key)
+        if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+            return True
+        if isinstance(raw, dict) and raw:
+            return True
+    return False
+
+
+def cadimport_server_flat_lw(row: dict[str, Any] | None) -> tuple[Any, Any] | None:
+    """CadImport / part-create Length and Width when both are already set.
+
+    STEP AABB-sourced numbers are not server flats. invent=false.
+    """
+    if not isinstance(row, dict) or flat_dim_source_is_step_aabb(row):
+        return None
+    length = row.get("Length")
+    width = row.get("Width")
+    if _filelist_dim(length) > 0 and _filelist_dim(width) > 0:
+        return length, width
+    return None
+
+
+def cadimport_server_stock_xy(row: dict[str, Any] | None) -> tuple[Any, Any] | None:
+    """CadImport Stock_X/Stock_Y when both are already set and not STEP AABB."""
+    if not isinstance(row, dict) or flat_dim_source_is_step_aabb(row):
+        return None
+    stock_x = row.get("Stock_X")
+    stock_y = row.get("Stock_Y")
+    if _filelist_dim(stock_x) > 0 and _filelist_dim(stock_y) > 0:
+        return stock_x, stock_y
+    return None
+
+
+def contours_tip_flat_lw_refuses(row: dict[str, Any] | None) -> str | None:
+    """Park Contours tip when server flat Length/Width never arrived.
+
+    CadImport Stock_X/Y (Kyle HAR) still counts as server flats. A STEP
+    AABB box, or dims tagged step/bbox, does not. Do not invent Length
+    or Width from that box. invent=false.
+    """
+    if not isinstance(row, dict):
+        return None
+    if not _cad_plate_row_for_finish_gate(row):
+        return None
+    if cadimport_server_flat_lw(row):
+        return None
+    aabb = flat_dim_source_is_step_aabb(row) or row_has_step_aabb_box(row)
+    if cadimport_server_stock_xy(row) and not aabb:
+        return None
+    if aabb:
+        return CONTOURS_TIP_FLAT_LW_PARK
+    return None
+
+
+def strip_step_aabb_from_finish_row(row: dict[str, Any] | None) -> dict[str, Any]:
+    """Drop STEP AABB keys. Drop Length/Width/Stock when those dims are AABB.
+
+    Server CadImport Length/Width/Stock stay. invent=false.
+    """
+    if not isinstance(row, dict):
+        return {}
+    out = dict(row)
+    aabb = flat_dim_source_is_step_aabb(out)
+    for key in _STEP_AABB_BOX_KEYS:
+        out.pop(key, None)
+    for key in _FLAT_DIM_SOURCE_KEYS:
+        out.pop(key, None)
+    if aabb:
+        for key in ("Length", "Width", "Stock_X", "Stock_Y", "Stock_Length"):
+            out.pop(key, None)
+    return out
+
+
 def sanitize_cad_contours_plate_finish_filelist_row(
     row: dict[str, Any] | None,
     *,
@@ -6621,14 +6755,16 @@ def sanitize_cad_contours_plate_finish_filelist_row(
     tip-only keys (FileType/PartMode/SourceDataID/CadType/IsPlate).
     KEEP = Kyle HAR key set — copy all present non-STRIP keys so
     Stock_X/Stock_Y and the rest of the ~44 Kyle-present fields
-    survive. Do not invent Stock/Contours. Force Kyle VALUES last
+    survive. Copy CadImport / part-create Length/Width/Stock when
+    they are already on the row. Do not replace them with STEP AABB
+    and do not invent Stock/Contours. Force Kyle VALUES last
     so SetPartMode ProductType=100 / NULL bar_flat cannot win at
     ajax send. Keep PartID+FileID GUIDs. PR62 empty InternalData
     stays OK when the Cad+Material+inch recipe is complete.
     """
     if not isinstance(row, dict):
         return {}
-    out = dict(row)
+    out = strip_step_aabb_from_finish_row(row)
     if not _cad_plate_row_for_finish_gate(out):
         return out
     stock_y = _filelist_dim(out.get("Stock_Y") or out.get("Stock_Length"))

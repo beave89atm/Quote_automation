@@ -1687,6 +1687,17 @@ _PAGE_FINISH_JS = """(function() {
     u = String(u || "").trim().toLowerCase();
     return u === "inch" || u === "inches" || u === "in";
   }
+  function flatDimSourceIsStepAabb(r) {
+    // STEP bounding box is not CadImport flat Length/Width.
+    // invent=false — do not post those dims as Contours tip.
+    var tok = String(
+      (r && (r.dim_source || r.flat_source || r.length_source
+        || r.Length_Source || r.width_source || r.Width_Source
+        || r.stock_source || r.Stock_Source)) || ""
+    ).trim().toLowerCase();
+    return tok === "step" || tok === "stp" || tok === "bbox"
+      || tok === "step_bbox" || tok === "stp_bbox" || tok === "step_derived";
+  }
   function toMeters(val, units, stockInch) {
     var n = parseFloat(val);
     if (!isFinite(n) || n <= 0) return null;
@@ -1717,11 +1728,15 @@ _PAGE_FINISH_JS = """(function() {
     if (!isCadRow(r)) return r;
     var cat = String(r.Category || r.ItemType || r.FileType || "");
     if (cat === "Linear" || cat === "Assembly") return r;
+    var aabbFlat = flatDimSourceIsStepAabb(r);
     var stripKeys = [
       "Status", "status", "ImageString", "imageString",
       "FileType", "PartMode", "SourceDataID", "Width_Units",
       "drawing_thickness_in", "thickness_source", "CadType",
-      "HadOpenContours", "IsPlate", "IsLinear", "IsPart", "Category"
+      "HadOpenContours", "IsPlate", "IsLinear", "IsPart", "Category",
+      "step_bbox", "step_aabb", "aabb", "stp_bbox",
+      "dim_source", "flat_source", "length_source", "Length_Source",
+      "width_source", "Width_Source", "stock_source", "Stock_Source"
     ];
     for (var si = 0; si < stripKeys.length; si++) {
       omitFileListKey(r, stripKeys[si]);
@@ -1738,6 +1753,16 @@ _PAGE_FINISH_JS = """(function() {
       r.ProductSubType = "bar_flat";
       r.productSubType = "bar_flat";
       r.Machine = "Laser";
+    }
+    // Keep CadImport / part-create Length/Width/Stock. Never replace
+    // them with STEP AABB. Missing server flats stay missing.
+    if (aabbFlat) {
+      omitFileListKey(r, "Length");
+      omitFileListKey(r, "Width");
+      omitFileListKey(r, "Stock_X");
+      omitFileListKey(r, "Stock_Y");
+      omitFileListKey(r, "Stock_Length");
+      return r;
     }
     var stockY = parseFloat(r.Stock_Y != null ? r.Stock_Y : r.Stock_Length);
     var stockX = parseFloat(r.Stock_X);
@@ -1784,7 +1809,10 @@ _PAGE_FINISH_JS = """(function() {
       FileType: 1, PartMode: 1, SourceDataID: 1, Width_Units: 1,
       drawing_thickness_in: 1, thickness_source: 1, CadType: 1,
       HadOpenContours: 1, IsPlate: 1, IsLinear: 1, IsPart: 1,
-      Category: 1, uid: 1, parent: 1, children: 1, _events: 1, dirty: 1
+      Category: 1, uid: 1, parent: 1, children: 1, _events: 1, dirty: 1,
+      step_bbox: 1, step_aabb: 1, aabb: 1, stp_bbox: 1,
+      dim_source: 1, flat_source: 1, length_source: 1, Length_Source: 1,
+      width_source: 1, Width_Source: 1, stock_source: 1, Stock_Source: 1
     };
     var raw = r;
     try {
@@ -6703,9 +6731,13 @@ def stamp_dxf_kendo_stock(
     DXF analog of Image Files L×W. Uses explode Stock values — do not invent.
     Do not fire UpdateDataNext.
     """
+    from .website import flat_dim_source_is_step_aabb
+
     spec_rows: list[dict[str, Any]] = []
     for row in rows or []:
         if not isinstance(row, dict):
+            continue
+        if flat_dim_source_is_step_aabb(row):
             continue
         sx = row.get("Stock_X")
         sy = row.get("Stock_Y")
