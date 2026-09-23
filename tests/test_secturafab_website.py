@@ -6237,6 +6237,9 @@ const done = (value) => {
   if (value.grid_dxf_row_count !== 2) throw new Error("n=" + value.grid_dxf_row_count);
   if (value.cad !== 2) throw new Error("cad=" + value.cad);
   if (value.cad_blank_material) throw new Error("blank=" + value.cad_blank_material);
+  if (value.producttype_still_component) {
+    throw new Error("still component=" + value.producttype_still_component);
+  }
   if (store.rows.some((r) => String(r.Material || "") !== "A36")) {
     throw new Error("material missing " + JSON.stringify(store.rows.map((r) => r.Material)));
   }
@@ -6250,6 +6253,7 @@ const done = (value) => {
     keep_via: value.keep_via,
     cad: value.cad,
     cad_blank_material: value.cad_blank_material,
+    producttype_still_component: value.producttype_still_component,
     materials: store.rows.map((r) => r.Material),
   }));
 };
@@ -6273,7 +6277,151 @@ Promise.resolve(done(result)).catch((err) => {
     assert out["keep_via"] == "rehydrate"
     assert out["cad"] == 2
     assert out["cad_blank_material"] == 0
+    assert out["producttype_still_component"] == 0
     assert out["materials"] == ["A36", "A36"]
+
+
+def test_apply_grid_counts_producttype_left_component(tmp_path: Path):
+    """Live grid ProductType stuck on Component is counted. invent=false.
+
+    row.set that drops the ProductType write leaves 200. The spec
+    still expects Cad. Do not invent Contours.
+    """
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    live_rows = [
+        {
+            "ID": "id-sheet",
+            "SourceDataID": "src-sheet",
+            "Name": "SIDE SHEET",
+            "Category": "Component",
+            "FileType": "Component",
+            "ItemType": "Component",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Material": "A36",
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+        }
+    ]
+    wants = [
+        {
+            "ID": "id-sheet",
+            "SourceDataID": "src-sheet",
+            "Name": "SIDE SHEET",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser - Bay1",
+            "Material": "A36",
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+        }
+    ]
+    spec = {"rows": wants, "keep_rows": []}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + "const live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+const store = { rows: live.map((r) => {
+  const row = { ...r };
+  row.set = function set(k, v) {
+    if (k === "ProductType") return;
+    this[k] = v;
+  };
+  return row;
+}) };
+const dataSource = {
+  data(rows) {
+    if (arguments.length) {
+      store.rows = (rows || []).map((r) => {
+        const row = { ...r };
+        if (typeof row.set !== "function") {
+          row.set = function set(k, v) {
+            if (k === "ProductType") return;
+            this[k] = v;
+          };
+        }
+        return row;
+      });
+      return store.rows;
+    }
+    const arr = store.rows.slice();
+    arr.toJSON = function toJSON() {
+      return store.rows.map((r) => {
+        const copy = {};
+        Object.keys(r).forEach((k) => {
+          if (k !== "set" && k !== "uid") copy[k] = r[k];
+        });
+        return copy;
+      });
+    };
+    return arr;
+  },
+};
+const gridObj = { dataSource };
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "org" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax() { return { always(fn) { fn(); return this; } }; },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") return value.then(done);
+  if (!value.producttype_still_component) {
+    throw new Error("expected still component, got " + value.producttype_still_component
+      + " pt=" + store.rows.map((r) => r.ProductType).join(","));
+  }
+  if (store.rows.some((r) => r.Contours != null || r.NumberOfContours != null)) {
+    throw new Error("invented Contours");
+  }
+  process.stdout.write(JSON.stringify({
+    producttype_still_component: value.producttype_still_component,
+    product_type: store.rows[0].ProductType,
+    item_type: store.rows[0].ItemType,
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "producttype_still_component.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["producttype_still_component"] >= 1
+    assert out["product_type"] == 200
+    assert out["item_type"] == "Cad"
 
 
 def test_apply_grid_force_live_grid_inch_iterates_observable_array(
@@ -6670,6 +6818,75 @@ def test_finish_skips_when_grid_classify_cad_is_zero(tmp_path: Path):
     blob = " ".join(notes)
     assert "grid_classify Cad:0" in blob
     assert "not Finishing" in blob
+
+
+def test_finish_refuses_live_grid_producttype_still_component(tmp_path: Path):
+    """In-memory Cad bind is not enough when the live grid stays Component.
+
+    Kyle 2026-09-12: plate/sheet STEP must be ProductType Cad before
+    Finish. invent=false — do not invent Contours.
+    """
+    stp = tmp_path / "H638.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-h638",
+            "ID": "id-h638",
+            "FileID": "file-h638",
+            "Name": "H.6.38 PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+            "ProductType": "Component",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "updateitemtype_count": 1,
+            "updateitemtype_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "producttype_still_component": 1,
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="22222222-aaaa-bbbb-cccc-000000000638",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.1875",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="H.6.38",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "producttype_still_component" in blob
+    assert "ProductType still Component" in blob
+    assert "Do not invent Contours" in blob
 
 
 def test_finish_get_zero_cad_is_not_gold(tmp_path: Path):

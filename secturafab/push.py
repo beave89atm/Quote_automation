@@ -3609,6 +3609,19 @@ class SecturaFabPushService:
         )
         notes.append("kyle_classify_before_finish=true")
         notes.append("per_kid_cad_inches=single_plate_adjust_properties_page_fn")
+        try:
+            still_component = int(applied.get("producttype_still_component") or 0)
+        except (TypeError, ValueError):
+            still_component = 0
+        if still_component > 0:
+            notes.append(
+                "Plate STEP ProductType still Component after Cad classify — "
+                f"{still_component} live #gridDXFParts kid(s) the flow expects "
+                "as Cad (Kyle 2026-09-12 Component→Cad before Finish; sets "
+                "Laser / Product Ready). producttype_still_component. "
+                "Do not invent Contours/InternalData."
+            )
+            return notes
         keep_via = str(applied.get("keep_via") or "")
         if keep_via:
             notes.append(f"keep_grid_via={keep_via}")

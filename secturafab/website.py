@@ -2794,6 +2794,11 @@ def page_dxf_finish_skip_why(rows: list[dict[str, Any]] | None) -> str | None:
     if not kids:
         return "empty_dataSource"
     for row in kids:
+        # Plate/sheet Cad still ProductType Component blocks Finish
+        # even when InternalData is already present (Kyle 2026-09-12
+        # Component→Cad). Do not invent Contours. invent=false.
+        if plate_step_left_component_refuses_contours(row):
+            return "producttype_still_component"
         if cad_filelist_refuses_additem_dxf(row):
             return "cad_internaldata_empty_after_explode"
     if filelist_kids_partmode_set(kids):
@@ -3412,20 +3417,74 @@ def plate_step_live_product_type_not_cad_refuses(
     return None
 
 
+def _row_identity_keys(row: dict[str, Any] | None) -> set[str]:
+    """ID / SourceDataID / FileID / Name tokens for live-vs-classify match."""
+    if not isinstance(row, dict):
+        return set()
+    keys: set[str] = set()
+    for field in ("ID", "ItemID", "SourceDataID", "FileID"):
+        tok = str(row.get(field) or "").strip().casefold()
+        if not tok or tok == EMPTY_GUID.casefold():
+            continue
+        keys.add("id:" + tok)
+    name = str(row.get("Name") or "").strip().casefold()
+    if len(name) >= 3 and name != "root":
+        keys.add("name:" + name)
+    return keys
+
+
 def step_cad_live_product_type_hard_gate(
     live_rows: list[dict[str, Any]] | None,
     classified: list[dict[str, Any]] | None = None,
 ) -> str | None:
-    """Live GET ProductType is not a Contours / Finish refuse.
+    """Pre-Finish: plate/sheet kids expected Cad cannot stay Component.
 
-    Kyle CoS: Contours PASS is NumberOfContours≥1 only. Enum 100 /
-    noun ``part`` is normal on PASSes. Do not require a Cad noun.
-    Do not refuse 100. Empty live ItemList is Q10335 / mid-wizard
-    — no-op. Empty InternalData does not block Finish when
-    Cad+Material+inches is complete. NumberOfContours<1 after
-    Finish is EXEC_FAIL. invent=false.
+    Kyle 2026-09-12: Adjust Properties defaults ProductType to
+    Component. Sheet/plate laser must change Component→Cad (Laser /
+    Product Ready) before Finish. Noun ``part`` and enum 100 are not
+    this refuse (Q10333 / Q10348). Empty live ItemList is mid-wizard
+    — no-op. Purchased Component kids and Linear/bar kids are not
+    this gate. invent=false. Do not invent Contours or flat L/W.
     """
-    del live_rows, classified
+    lives = [r for r in (live_rows or []) if isinstance(r, dict)]
+    if not lives:
+        return None
+    expected = [
+        row
+        for row in (classified or [])
+        if isinstance(row, dict)
+        and str(row.get("Category") or row.get("ItemType") or "").strip() == "Cad"
+        and _cad_plate_row_for_finish_gate(row)
+    ]
+    from .step_classify import row_looks_like_round_bar_stock
+
+    for live in lives:
+        if not product_type_is_component(live.get("ProductType")):
+            continue
+        cat = str(
+            live.get("Category") or live.get("ItemType") or live.get("FileType") or ""
+        ).strip()
+        if cat in {"Linear", "Assembly"}:
+            continue
+        if row_looks_like_round_bar_stock(live):
+            continue
+        expects_cad = _cad_plate_row_for_finish_gate(live)
+        if not expects_cad and expected:
+            live_keys = _row_identity_keys(live)
+            expects_cad = any(
+                live_keys & _row_identity_keys(exp) for exp in expected
+            )
+        if not expects_cad:
+            continue
+        probed = live
+        if not _cad_plate_row_for_finish_gate(live):
+            probed = dict(live)
+            probed["FileType"] = probed.get("FileType") or "Cad"
+            probed["Category"] = "Cad"
+            probed["ItemType"] = probed.get("ItemType") or "Cad"
+        why = plate_step_left_component_refuses_contours(probed)
+        if why:
+            return why
     return None
 
 
@@ -3802,6 +3861,7 @@ def cad_finish_notes_refuse_additem_dxf(
             or "refusing AddItem_DXFFiles" in text
             or "Contours fail path" in text
             or "ProductType still Component" in text
+            or "producttype_still_component" in text
             or "ProductType not Cad" in text
             or "live ProductType is part" in text
             or "live ProductType is not Cad" in text
@@ -3892,6 +3952,8 @@ def kendo_filelist_for_finish(
         why = "contours_tip_flat_lw_missing"
     elif n > 0 and sid_n == 0 and id_n == 0 and fileid_n == 0:
         why = "filelist_missing_ids"
+    elif refuse and plate_step_left_component_refuses_contours(gate_row):
+        why = "producttype_still_component"
     elif refuse:
         if (
             gate_row is not None

@@ -317,3 +317,90 @@ def test_classify_cadimport_h638_plate_stays_cad():
     overlaid = overlay_classified_row(rows[0], category="Cad", thickness="0.1875")
     assert overlaid["ProductType"] == 100
     assert "Cad: 1" in " ".join(notes)
+
+
+def test_plate_sheet_component_blocks_finish_cad_inch_allowed():
+    """Plate/sheet still ProductType Component cannot Finish.
+
+    Kyle 2026-09-12: Adjust Properties defaults Component; laser
+    plate/sheet must be Cad before Finish. Cad + inch thickness
+    still proceeds. Noun ``part`` and purchased Component do not
+    block. invent=false — do not invent Contours or flat L/W.
+    """
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS, _PAGE_FINISH_JS
+    from secturafab.website import (
+        cad_finish_notes_refuse_additem_dxf,
+        kendo_filelist_for_finish,
+        page_dxf_finish_skip_why,
+        step_cad_live_product_type_hard_gate,
+    )
+
+    component_plate = {
+        "Name": "H.6.38 PLATE",
+        "ID": "id-h638",
+        "FileID": "file-h638",
+        "SourceDataID": "src-h638",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": "Component",
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "InternalData": "server-stamped",
+    }
+    cad_inch = {**component_plate, "ProductType": 100}
+    why = step_cad_finish_hard_gate([component_plate])
+    assert why is not None
+    assert "Component" in why
+    assert "invent" in why.lower()
+    assert "Contours" in why
+    assert step_cad_finish_hard_gate([cad_inch]) is None
+    assert page_dxf_finish_skip_why([component_plate]) == "producttype_still_component"
+    assert page_dxf_finish_skip_why([cad_inch]) is None
+    blocked = kendo_filelist_for_finish([component_plate], from_datasource=True)
+    assert blocked["should_finish"] is False
+    assert blocked["finish_why"] == "producttype_still_component"
+    allowed = kendo_filelist_for_finish([cad_inch], from_datasource=True)
+    assert allowed["should_finish"] is True
+    assert allowed["finish_why"] == ""
+    assert step_cad_live_product_type_hard_gate([component_plate], [cad_inch]) == why
+    assert step_cad_live_product_type_hard_gate([cad_inch], [cad_inch]) is None
+    assert step_cad_live_product_type_hard_gate([], [cad_inch]) is None
+    part = {**cad_inch, "ProductType": "part", "ProductTypeName": "part"}
+    assert step_cad_live_product_type_hard_gate([part], [cad_inch]) is None
+    sheet_live = {
+        "Name": "SIDE SHEET",
+        "ID": "id-sheet",
+        "ProductType": 200,
+        "FileType": "Component",
+        "Category": "Component",
+        "ItemType": "Component",
+    }
+    sheet_cad = {
+        **sheet_live,
+        "FileType": "Cad",
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "Material": "A36",
+        "Thickness": "0.25",
+        "Thickness_Units": "inch",
+    }
+    sheet_why = step_cad_live_product_type_hard_gate([sheet_live], [sheet_cad])
+    assert sheet_why is not None
+    assert "Component" in sheet_why
+    assert cad_finish_notes_refuse_additem_dxf([sheet_why]) == sheet_why
+    bolt = {
+        "Name": "1/2-13 HEX BOLT",
+        "FileType": "Component",
+        "Category": "Component",
+        "ProductType": 200,
+    }
+    assert step_cad_live_product_type_hard_gate([bolt], [cad_inch]) is None
+    assert step_cad_finish_hard_gate([bolt, cad_inch]) is None
+    assert "producttype_still_component" in _PAGE_FINISH_JS
+    assert "cadPlateStillComponent" in _PAGE_FINISH_JS
+    assert "producttype_still_component" in _APPLY_GRID_PART_MODES_JS

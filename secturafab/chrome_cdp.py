@@ -1842,6 +1842,21 @@ _PAGE_FINISH_JS = """(function() {
     if (v === 200 || v === "200") return true;
     return String(v || "").trim().toLowerCase() === "component";
   }
+  function cadPlateStillComponent(list) {
+    // Kyle 2026-09-12: plate/sheet STEP must leave Adjust Properties
+    // as ProductType Cad before Finish. Component on a Cad row is
+    // the Contours fail path. Do not invent Contours. invent=false.
+    for (var i = 0; i < (list || []).length; i++) {
+      var r = list[i] || {};
+      if (!productTypeIsComponent(r.ProductType)) continue;
+      var cat = String(r.Category || r.ItemType || "").trim();
+      if (cat === "Linear" || cat === "Assembly" || cat === "Component") continue;
+      var ft = String(r.FileType || "").trim();
+      if (ft === "Linear" || ft === "Component") continue;
+      if (ft === "Cad" || cat === "Cad" || cat.toLowerCase() === "cad") return true;
+    }
+    return false;
+  }
   function drawingMaterialType(row) {
     if (!row || typeof row !== "object") return "";
     var keys = ["Material", "MaterialGrade"];
@@ -2109,6 +2124,17 @@ _PAGE_FINISH_JS = """(function() {
   }
   var rows = gridData();
   var count = rows.length;
+  if (cadPlateStillComponent(rows)) {
+    return Promise.resolve(Object.assign(summarize(0, null), {
+      via: "skipped",
+      finish_fn: "",
+      reads_kendo: kendoGridPresent(),
+      grid_dxf_row_count: count,
+      filelist_from_kendo: false,
+      finish_af_present: false,
+      finish_why: "producttype_still_component"
+    }));
+  }
   if (count < 1) {
     var skipWhy = kendoGridPresent() ? "empty_dataSource" : "wrong_document";
     return Promise.resolve(Object.assign(summarize(0, null), {
@@ -8067,6 +8093,10 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     }
     return "Component";
   }
+  function productTypeIsComponent(v) {
+    if (v === 200 || v === "200") return true;
+    return String(v || "").trim().toLowerCase() === "component";
+  }
   function findSetFn() {
     var names = [
       "SetPartMode", "ChangePartMode", "OnPartModeChange", "OnFileTypeChange"
@@ -8639,11 +8669,28 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       var org = readOrg();
       var present = fresh.length > 0;
       var cadBlankMaterial = 0;
+      var productTypeStillComponent = 0;
       for (var bm = 0; bm < fresh.length; bm++) {
         if (catOf(fresh[bm]) !== "Cad") continue;
         if (!drawingMaterialType(matchWant(fresh[bm], wants), fresh[bm])) {
           cadBlankMaterial += 1;
         }
+      }
+      // Plate/sheet the spec expects as Cad, still ProductType
+      // Component on the live grid. PartMode 0 counts as Cad in
+      // catOf, so this is a separate fail-close. invent=false.
+      for (var pc = 0; pc < fresh.length; pc++) {
+        var liveRow = fresh[pc];
+        var specWant = matchWant(liveRow, wants);
+        var expectsCad = !!(specWant && String(specWant.Category || "") === "Cad");
+        if (!expectsCad) {
+          var itemTok = String(
+            liveRow.ItemType || liveRow.Category || liveRow.FileType || ""
+          ).trim();
+          if (itemTok === "Cad" || itemTok.toLowerCase() === "cad") expectsCad = true;
+        }
+        if (!expectsCad) continue;
+        if (productTypeIsComponent(liveRow.ProductType)) productTypeStillComponent += 1;
       }
       return {
         grid_present: present,
@@ -8666,6 +8713,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         thickness_blocked_blank_material: thicknessBlockedBlankMaterial,
         thickness_invalid_vs_drawing: thicknessInvalidVsDrawing,
         cad_blank_material: cadBlankMaterial,
+        producttype_still_component: productTypeStillComponent,
         inch_stamped: inchStamped,
         force_live_grid_inch: true,
         classify_before_material: true
@@ -8859,6 +8907,13 @@ def apply_grid_dxf_part_modes(
             out["cad_blank_material"] = int(value.get("cad_blank_material") or 0)
         except (TypeError, ValueError):
             out["cad_blank_material"] = 0
+    if present and "producttype_still_component" in value:
+        try:
+            out["producttype_still_component"] = int(
+                value.get("producttype_still_component") or 0
+            )
+        except (TypeError, ValueError):
+            out["producttype_still_component"] = 0
     if present and "thickness_blocked_blank_material" in value:
         try:
             out["thickness_blocked_blank_material"] = int(
