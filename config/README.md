@@ -16,7 +16,7 @@ Fill these before trusting quote times:
 | `drawing_library.roots` | Shared-drive folders to search for STP / component PDFs |
 | `drawing_library.auto_attach_stp` | If true, auto-copy matching STP when upload has none |
 
-Set `KANNON_DRAWING_LIBRARY` to override roots (semicolon-separated) on each office PC.
+Set `KANNON_DRAWING_LIBRARY` to the box-local drawing library (semicolon-separated). Do not point this at Kyle's quoting PC.
 
 ### Fit-up formula
 

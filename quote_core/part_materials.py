@@ -72,6 +72,18 @@ _BARE_GRADE_KEYS: dict[str, str] = {
     "A36": "a36",
     "A572": "a572_gr50",
     "STEEL": "a36",
+    "5052": "aluminum_5052",
+    "5052-H32": "aluminum_5052",
+    "5052 H32": "aluminum_5052",
+    "AL 5052": "aluminum_5052",
+    "ALUMINUM 5052": "aluminum_5052",
+    "PL025-50K": "a572_gr50",
+    "PL02550K": "a572_gr50",
+    "PL025": "a572_gr50",
+    "100K": "a656_gr80",
+    "100 K": "a656_gr80",
+    "A1011": "a1011",
+    "A519": "a519",
 }
 
 _THICKNESS_LINE_RE = re.compile(
@@ -81,7 +93,8 @@ _THICKNESS_LINE_RE = re.compile(
 )
 _GRADE_LINE_RE = re.compile(
     r"^(?P<grade>A\s*572(?:\s*(?:GR|GRADE|G)?\s*\d+)?|A\s*656(?:\s*(?:GR|GRADE|G)?\s*\d+)?|"
-    r"A\s*36|A\s*514|A\s*992|GR\s*\d+|GRADE\s*\d+|G\s*\d+|STEEL|GALV(?:ANISED|ANIZED)?)$",
+    r"A\s*36|A\s*514|A\s*992|GR\s*\d+|GRADE\s*\d+|G\s*\d+|STEEL|GALV(?:ANISED|ANIZED)?|"
+    r"5052(?:\s*-?\s*H32)?|ALPL[A-Z0-9\-]*|PL025(?:-50K)?|100\s*K|A\s*1011|A\s*519)$",
     re.IGNORECASE,
 )
 
@@ -100,7 +113,8 @@ _MATERIAL_INLINE_RE = re.compile(
     r"(?P<thk>[0-9]+\s*/\s*[0-9]+|[0-9]+\s*GA(?:UGE)?)"
     r"\s+"
     r"(?P<grade>A\s*572(?:\s*(?:GR|GRADE)?\s*50)?|A\s*36|GR\s*50|GRADE\s*50|"
-    r"GALV(?:ANISED|ANIZED)?|A\s*656(?:\s*(?:GR|GRADE)?\s*\d+)?)"
+    r"GALV(?:ANISED|ANIZED)?|A\s*656(?:\s*(?:GR|GRADE)?\s*\d+)?|"
+    r"5052(?:\s*-?\s*H32)?|ALPL[A-Z0-9\-]*)"
 )
 
 # Time plate callouts: 1/4 PLATE ASTM A-572 (50K) / 1/4" HR PLATE (A572 GRADE 50)
@@ -125,6 +139,20 @@ _SKIP_NAME_HINTS = (
     "ASSEMBLY",
 )
 
+_RD_BAR_STOCK_RE = re.compile(
+    r"(?i)\b(?:RD\.?\s*BAR|ROUND\s+BAR|BAR\s+ROUND)\b[^\n]{0,80}"
+)
+
+
+def rd_bar_stock_phrase(text: str | None) -> str:
+    """Matched RD BAR / ROUND BAR stock line, or empty. invent=false."""
+    if not text:
+        return ""
+    m = _RD_BAR_STOCK_RE.search(text)
+    if not m:
+        return ""
+    return re.sub(r"\s+", " ", m.group(0)).strip()
+
 
 @dataclass(frozen=True)
 class PartMaterial:
@@ -148,6 +176,13 @@ class PartMaterial:
 
 def _parse_thickness_token(raw: str) -> float | None:
     text = (raw or "").strip().upper().replace('"', "").replace("″", "").replace("'", "")
+    mixed = re.fullmatch(r"(\d+)\s+(\d+)\s*/\s*(\d+)", text)
+    if mixed:
+        whole, num, den = int(mixed.group(1)), int(mixed.group(2)), int(mixed.group(3))
+        if den:
+            val = whole + (num / den)
+            if 0.01 <= val <= 2.0:
+                return val
     text = re.sub(r"\s+", "", text)
     if not text:
         return None
@@ -184,6 +219,10 @@ def _grade_to_material_key(grade: str) -> str:
         return "a572_gr50"
     if compact in {"A36", "ASTMA36"}:
         return "a36"
+    if "5052" in compact or compact.startswith("ALPL"):
+        return "aluminum_5052"
+    if "PL025" in compact or (compact.startswith("PL") and "50K" in compact):
+        return "a572_gr50"
     # Fall back to shared detector on the grade token only (not whole PDF).
     return detect_material_key([grade])
 
@@ -200,6 +239,10 @@ def _sectura_material_string(material_key: str) -> str:
         return label
     if material_key == "a36":
         return "A36"
+    if material_key == "aluminum_5052":
+        return "5052-H32"
+    if material_key == "aluminum_6061":
+        return "6061-T6"
     # First token of label for other steels (A514, A992, …)
     return label.split()[0] if label else "A36"
 
@@ -319,6 +362,31 @@ def parse_material_block(text: str) -> tuple[float | None, str | None, str]:
         if thk is not None:
             return thk, "a36", f"gauge callout on {ln!r}"
 
+    # RD BAR / ROUND BAR / 1/2 DIA stock — Linear, not Cad plate gauge.
+    snippet = rd_bar_stock_phrase(text)
+    if snippet:
+        dia = re.search(
+            r"(?i)(\d+\s*/\s*\d+|\d+(?:\.\d+)?)\s*[\"″']?\s*DIA",
+            snippet + "\n" + text,
+        )
+        thk = _parse_thickness_token(dia.group(1)) if dia else None
+        return thk, "a36", f"RD BAR stock {snippet!r}"
+
+    named_al = re.search(
+        r"(?i)\b(?:5052(?:\s*-?\s*H32)?|ALPL[A-Z0-9\-]*)\b",
+        text,
+    )
+    if named_al:
+        thk = None
+        for ln in lines:
+            tm = _THICKNESS_LINE_RE.fullmatch(ln)
+            if not tm:
+                continue
+            thk = _parse_thickness_token(tm.group("thk"))
+            if thk is not None:
+                break
+        return thk, "aluminum_5052", f"named grade {named_al.group(0)}"
+
     # Thickness-only line (e.g. 3/16 with no grade neighbor)
     for ln in lines:
         tm = _THICKNESS_LINE_RE.fullmatch(ln)
@@ -369,7 +437,10 @@ def extract_part_material_from_pdf(pdf_path: Path | str) -> PartMaterial | None:
         except Exception:  # noqa: BLE001
             text = text or ""
     thk, mat_key, source = parse_material_block(text)
-    if mat_key is None and thk is None:
+    stock = rd_bar_stock_phrase(text)
+    if stock and "RD BAR stock" not in str(source or ""):
+        source = f"{source}; RD BAR stock {stock!r}".strip("; ")
+    if mat_key is None and thk is None and not stock:
         return None
     if mat_key is None:
         mat_key = "a36"

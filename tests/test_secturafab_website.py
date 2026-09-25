@@ -1,0 +1,24898 @@
+"""Finish / CAD Files JS contract; Finish is additive when a website cookie exists."""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from secturafab.push import SecturaFabPushService, classify_sectura_item
+from secturafab.website import (
+    EMPTY_GUID,
+    WEBSITE_AUTH_GAP,
+    WEBSITE_FINISH_PATHS,
+    SecturaFabWebsiteAuthError,
+    build_dxf_finish_payload,
+    LINEAR_ADD_FIELDS,
+    PDF_GETDATA_FIELDS,
+    build_linear_add_payload,
+    build_pdf_finish_payload,
+    build_cadimport_next_payload,
+    cadimport_list_is_native_array,
+    cadimport_payload_preview,
+    filelist_from_cadimport_upload,
+    normalize_cadimport_list,
+    filter_finish_filelist,
+    filter_pdf_filelist,
+    linear_website_product_type,
+    overlay_classified_row,
+    pick_closest_linear_product,
+)
+
+
+def test_quote_order_edit_bundle_cites_do_create_dxf_parts():
+    """/bundles/QuoteOrderEdit: createAllParts → DoCreateDXFParts POST /part/create."""
+    from secturafab.cadimport_js import (
+        CREATE_DXF_PARTS_PATH,
+        build_create_dxf_parts_fields,
+        create_dxf_parts_xhr,
+        explode_xhrs,
+        extract_cadimport_xhrs,
+        jquery_ajax_form,
+    )
+
+    js = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "quote_order_edit_create_parts.js"
+    ).read_text()
+    xhrs = extract_cadimport_xhrs(js)
+    create = next(x for x in xhrs if x.path == CREATE_DXF_PARTS_PATH)
+    assert create.function == "DoCreateDXFParts"
+    assert create.method == "POST"
+    assert create.content_type == "application/x-www-form-urlencoded"
+    for key in ("Location", "IDList", "unitList", "OtherFileIDList", "Height", "Width"):
+        assert key in create.body_keys
+    convert = next(x for x in xhrs if x.path == "/CadImport/ConvertTo")
+    assert convert.function == "ConvertTo"
+    assert convert.body_keys == ["IDList", "Units"] or "IDList" in convert.body_keys
+    nxt = next(x for x in xhrs if x.path == "/CadImport/UpdateDataNext")
+    assert nxt.function == "UpdateDXF_LoadNew"
+    exploded = explode_xhrs(xhrs)
+    assert exploded
+    assert exploded[0].path == CREATE_DXF_PARTS_PATH
+    assert all("ConvertTo" not in x.path for x in exploded)
+    assert all("UpdateDataNext" not in x.path for x in exploded)
+    cited = create_dxf_parts_xhr()
+    assert "DoCreateDXFParts POST /part/create" in cited.cite()
+    fields = build_create_dxf_parts_fields(
+        [{"SourceDataID": "src-1", "Units": "inch"}],
+        location="",
+    )
+    form_keys = [k for k, _ in jquery_ajax_form(fields)]
+    assert form_keys.count("IDList[]") == 1
+    assert "unitList[]" in form_keys
+    assert "List" not in form_keys
+
+
+def test_docreate_dxf_parts_form_has_no_missing_ui_key():
+    """Cited DoCreateDXFParts data:{} is Location/IDList/unitList/OtherFileIDList/Height/Width."""
+    from secturafab.cadimport_js import (
+        CREATE_DXF_PARTS_BODY_KEYS,
+        build_create_dxf_parts_fields,
+        create_dxf_parts_missing_form_keys,
+    )
+
+    fields = build_create_dxf_parts_fields(
+        [{"SourceDataID": "src-1", "Units": "inch"}],
+        location="",
+        height=0,
+        width=0,
+    )
+    assert create_dxf_parts_missing_form_keys(fields) == []
+    assert set(fields) == set(CREATE_DXF_PARTS_BODY_KEYS)
+    assert "InternalData" not in fields
+    assert "ImageString" not in fields
+    assert "Unfold" not in fields
+    from secturafab.cadimport_js import jquery_ajax_form, part_create_form_shape
+
+    form = jquery_ajax_form(fields)
+    shape = part_create_form_shape(form, height=0, width=0)
+    assert shape["idlist_shape"] == "IDList[]"
+    assert shape["height_type"] == "int"
+    assert shape["width_type"] == "int"
+    assert shape["height_zero"] is True
+    assert shape["width_zero"] is True
+
+
+def test_part_create_t_list_emptiness_bools_at_bind():
+    """Log /part/create t.List InternalData/ImageString emptiness at bind — not values."""
+    from secturafab.website import part_create_list_payload_empty_bools
+
+    leftover = {
+        "SourceDataID": "src-1",
+        "FileType": "Cad",
+        "InternalData": "",
+        "ImageString": "",
+        "Name": "PIVOTING FOOT",
+    }
+    bools = part_create_list_payload_empty_bools([leftover])
+    assert bools["internaldata_empty"] is True
+    assert bools["imagestring_empty"] is True
+    assert bools["internaldata_empty_n"] == 1
+    assert bools["imagestring_empty_n"] == 1
+    assert bools["internaldata_nonempty_n"] == 0
+    filled = part_create_list_payload_empty_bools(
+        [{"InternalData": '[{"Type":"page"}]', "ImageString": "iVBORw0KGgo"}]
+    )
+    assert filled["internaldata_empty"] is False
+    assert filled["imagestring_empty"] is False
+    empty = part_create_list_payload_empty_bools([])
+    assert empty["internaldata_empty"] is True
+    assert empty["imagestring_empty"] is True
+    weldment = part_create_list_payload_empty_bools(
+        [
+            {"Name": "Root", "InternalData": "", "ImageString": ""},
+            {"Name": "SC0600", "InternalData": "", "ImageString": "iVBORw0KGgo"},
+            {"Name": "SC0600", "InternalData": "", "ImageString": "iVBORw0KGgo"},
+        ]
+    )
+    assert weldment["internaldata_empty"] is True
+    assert weldment["imagestring_empty"] is True
+    assert weldment["internaldata_empty_n"] == 3
+    assert weldment["imagestring_empty_n"] == 1
+    assert weldment["imagestring_nonempty_n"] == 2
+    assert weldment["internaldata_nonempty_n"] == 0
+    assert weldment["tlist_bind_source"] is False
+    assert bools["tlist_bind_source"] is False
+    assert filled["tlist_bind_source"] is True
+    assert "InternalData" in filled["tlist_bind_shape_keys"]
+    assert "ImageString" in filled["tlist_bind_shape_keys"]
+
+
+def test_part_create_tlist_bind_source_persists_shape_not_values():
+    """Live nonempty t.List is the #gridDXFParts bind source. Do not invent gold."""
+    from secturafab.forbidden_quotes import is_forbidden_quote_id
+    from secturafab.website import (
+        cad_filelist_refuses_additem_dxf,
+        part_create_tlist_bind_shape_keys,
+        part_create_tlist_is_bind_source,
+        persist_part_create_tlist_bind_source,
+    )
+    from tests.fixtures.live_21678_1 import GOLD_QUOTE_ID
+    from tests.fixtures.live_part_create_tlist_bind import LIVE_PART_CREATE_TLIST_BIND
+
+    leftover = [
+        {"Name": "Root", "FileType": "Cad", "InternalData": "", "ImageString": ""},
+        {
+            "Name": "SC0600",
+            "FileType": "Cad",
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        },
+    ]
+    assert part_create_tlist_is_bind_source(leftover) is False
+    assert part_create_tlist_bind_shape_keys(leftover) == []
+    empty_notes: list[str] = []
+    empty = persist_part_create_tlist_bind_source(leftover, notes=empty_notes)
+    assert empty["tlist_bind_source"] is False
+    assert "tlist_bind_source=false" in empty_notes
+    assert "step_explode_no_internaldata" in empty_notes
+    assert all("tlist_bind_shape_keys=" not in n for n in empty_notes)
+
+    live = [
+        {
+            "uid": "kendo-1",
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "ID": "id-1",
+            "Name": "PLATE",
+            "FileType": "Cad",
+            "InternalData": '[{"Type":"page","secret":"do-not-persist"}]',
+            "ImageString": "iVBORw0KGgoAAAANSUhEUg",
+        }
+    ]
+    assert part_create_tlist_is_bind_source(live) is True
+    keys = part_create_tlist_bind_shape_keys(live)
+    assert keys == [
+        "FileID",
+        "FileType",
+        "ID",
+        "ImageString",
+        "InternalData",
+        "Name",
+        "SourceDataID",
+    ]
+    assert "uid" not in keys
+    notes: list[str] = []
+    client = type("C", (), {})()
+    persisted = persist_part_create_tlist_bind_source(
+        live, notes=notes, client=client
+    )
+    assert persisted["tlist_bind_source"] is True
+    assert "tlist_bind_source=true" in notes
+    shape = next(n for n in notes if n.startswith("tlist_bind_shape_keys="))
+    assert "InternalData" in shape
+    assert "ImageString" in shape
+    assert "do-not-persist" not in shape
+    assert "iVBORw0KGgo" not in shape
+    assert client._tlist_bind_source is True
+    assert client._tlist_bind_shape_keys == keys
+    assert LIVE_PART_CREATE_TLIST_BIND is None
+    from tests.fixtures.live_21785_2 import (
+        SPENT_QUOTE_ID_PREFIX as LIVE_21785_PREFIX,
+        live_21785_2_tlist_empty,
+    )
+
+    cap = live_21785_2_tlist_empty()
+    assert cap["tlist_bind_source"] is False
+    assert cap["imagestring_without_internaldata"] is True
+    assert cap["internaldata_nonempty_n"] == 0
+    assert is_forbidden_quote_id(LIVE_21785_PREFIX + "-0000-0000-0000-000000000000")
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "InternalData": "",
+            "ImageString": "",
+        }
+    )
+    assert refuse is not None
+    assert "needs_internaldata_fill_xhr" in refuse
+    assert is_forbidden_quote_id(GOLD_QUOTE_ID)
+    assert is_forbidden_quote_id("a7d6ca50-efec-409d-bd32-e68012e710c3")
+
+
+def test_dxf_finish_payload_js_contract():
+    rows = [
+        {
+            "ErrorStatus": 0,
+            "Qty": 1,
+            "Machine": "Laser",
+            "Material": "100k",
+            "Thickness": 0.375,
+            "ProductID": None,
+            "Name": "21680-1 PLATE",
+        },
+        {"ErrorStatus": 1, "Qty": 1, "Machine": "Laser", "Name": "bad"},
+        {"ErrorStatus": 0, "Qty": 0, "Machine": "Saw", "Name": "zero"},
+        {
+            "ErrorStatus": 0,
+            "Qty": 2,
+            "Machine": "Saw",
+            "Material": "A519",
+            "ProductID": "abc-linear",
+            "IsLinear": True,
+            "LinearLength": 9.75,
+            "Name": "21684 TUBE",
+        },
+    ]
+    payload = build_dxf_finish_payload("quote-id", rows, item_id=None, customer_material=False)
+    assert payload["ID"] == "quote-id"
+    assert payload["ItemID"] == EMPTY_GUID
+    assert payload["customerMaterial"] is False
+    assert len(payload["FileList"]) == 2
+    assert payload["FileList"][0]["Machine"] == "Laser"
+    assert payload["FileList"][0]["Material"] == "100k"
+    assert payload["FileList"][0]["Thickness"] == 0.375
+    assert payload["FileList"][1]["ProductID"] == "abc-linear"
+    assert payload["FileList"][1]["LinearLength"] == 9.75
+    assert all(r.get("ErrorStatus") == 0 for r in payload["FileList"])
+    assert all(r.get("Qty") > 0 for r in payload["FileList"])
+
+
+def test_finish_filelist_keeps_cadimport_source_ids():
+    rows = [
+        {
+            "ErrorStatus": 0,
+            "Qty": 1,
+            "Name": "14500-1",
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "CadType": 0,
+            "FileType": ".pdf",
+            "Stock_X": 11.0,
+            "Stock_Y": 6.25,
+            "Stock_Units": "inch",
+            "Machine": None,
+            "Material": "A572",
+        }
+    ]
+    payload = build_dxf_finish_payload("qid", rows)
+    assert payload["FileList"][0]["SourceDataID"] == "src-1"
+    assert payload["FileList"][0]["FileID"] == "file-1"
+    assert payload["FileList"][0]["Stock_X"] == 11.0
+    uploaded = filelist_from_cadimport_upload(
+        {"status": "OK", "List": rows, "ListOther": []}
+    )
+    assert len(uploaded) == 1
+    assert uploaded[0]["SourceDataID"] == "src-1"
+
+
+def test_filelist_from_cadimport_parses_string_and_html_bodies():
+    """Live Next/Data returned HTTP 200 with a string; kids must still parse."""
+    kids = [
+        {
+            "SourceDataID": "src-plate",
+            "FileID": "file-plate",
+            "Name": "1007756-2 GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "SourceDataID": "src-slug",
+            "FileID": "file-slug",
+            "Name": "1007756-4 SLUG",
+            "Qty": 2,
+            "ErrorStatus": 0,
+        },
+    ]
+    as_json = json.dumps({"List": kids})
+    assert [r["Name"] for r in filelist_from_cadimport_upload(as_json)] == [
+        "1007756-2 GUSSET",
+        "1007756-4 SLUG",
+    ]
+    double = json.dumps(as_json)
+    assert len(filelist_from_cadimport_upload(double)) == 2
+    nested = {"Data": json.dumps({"FileList": kids})}
+    assert len(filelist_from_cadimport_upload(nested)) == 2
+    html = (
+        '<div id="gridDXFParts"></div><script>kendoGrid({data:'
+        + json.dumps({"FileList": kids})
+        + "});</script>"
+    )
+    html_rows = filelist_from_cadimport_upload(html)
+    assert len(html_rows) == 2
+    assert html_rows[0]["SourceDataID"] == "src-plate"
+    assert "string" in cadimport_payload_preview(html)
+
+
+def test_cadimport_next_list_is_json_array_not_python_repr():
+    """Live 1002381-1 sent List=str(rows) with single quotes; Next 200 empty."""
+    rows = [
+        {
+            "SourceDataID": "489f2a35-7617-47b2-a973-318a83574665",
+            "CadType": 1,
+            "PartMode": 0,
+            "FileType": ".STEP",
+            "PartCount": 4,
+            "Name": "1002381-1",
+        }
+    ]
+    py_repr = str(rows)
+    assert py_repr.startswith("[{'")
+    parsed = normalize_cadimport_list(py_repr)
+    assert len(parsed) == 1
+    assert parsed[0]["SourceDataID"] == "489f2a35-7617-47b2-a973-318a83574665"
+    payload = build_cadimport_next_payload(
+        "qid", py_repr, list_other="[]"
+    )
+    assert cadimport_list_is_native_array(payload)
+    assert payload["status"] == "OK"
+    assert payload["List"][0]["PartCount"] == 4
+    assert payload["ListOther"] == []
+    dumped = json.dumps(payload)
+    parsed = json.loads(dumped)
+    assert isinstance(parsed["List"], list)
+    assert parsed["List"][0]["SourceDataID"] == "489f2a35-7617-47b2-a973-318a83574665"
+
+
+def test_cadimport_update_data_next_posts_native_json_array():
+    """Live 34574-1: List must be list_type=list in the JSON body, not str."""
+    from secturafab.client import SecturaFabClient
+
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.timeout_seconds = 30
+    captured: dict[str, Any] = {}
+
+    def fake_website_request(method, path, **kwargs):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json"] = kwargs.get("json")
+        captured["data"] = kwargs.get("data")
+        captured["prefer_api_origin"] = kwargs.get("prefer_api_origin")
+        captured["www_only"] = kwargs.get("www_only")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = b""
+        resp.json.side_effect = ValueError("empty")
+        resp.headers = {}
+        resp.text = ""
+        resp.url = path
+        return resp
+
+    real.website_request = fake_website_request  # type: ignore[method-assign]
+    real.cadimport_update_data_next(
+        {
+            "ID": "qid",
+            "status": "OK",
+            "List": [
+                {
+                    "SourceDataID": "src-1",
+                    "Name": "34574-1",
+                    "PartCount": 12,
+                }
+            ],
+            "ListOther": [],
+        }
+    )
+    assert captured["path"] == "/CadImport/UpdateDataNext"
+    assert captured["data"] is None
+    assert captured["www_only"] is True
+    body = captured["json"]
+    assert isinstance(body["List"], list)
+    assert not isinstance(body["List"], str)
+    assert body["List"][0]["SourceDataID"] == "src-1"
+    assert body["ListOther"] == []
+    assert body["status"] == "OK"
+    assert body["ID"] == "qid"
+
+
+def test_filter_filelist_matches_js_grid_rule():
+    kept = filter_finish_filelist(
+        [
+            {"ErrorStatus": 0, "Qty": 1},
+            {"ErrorStatus": 2, "Qty": 4},
+            {"ErrorStatus": 0, "Quantity": 0},
+        ]
+    )
+    assert len(kept) == 1
+    assert kept[0]["Qty"] == 1
+
+
+def test_pdf_and_linear_payloads_share_id_itemid():
+    pdf = build_pdf_finish_payload(
+        "qid",
+        [
+            {
+                "Status": 1,
+                "Qty": 1,
+                "Machine": "Laser",
+                "FileName": "a.pdf",
+                "ItemType": "cad",
+                "Thickness": 0.25,
+                "Length": 6.25,
+                "Width": 11.0,
+            }
+        ],
+    )
+    assert pdf["ID"] == "qid"
+    assert pdf["ItemID"] == EMPTY_GUID
+    assert set(pdf.keys()) == {"ID", "ItemID", "FileList"}
+    assert "customerMaterial" not in pdf
+    assert pdf["FileList"][0]["ItemType"] == "cad"
+    assert pdf["FileList"][0]["Machine"] == "Laser - Bay1"
+    _lin_extra = {
+        "productConfigID": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "productSubType": "bar",
+        "dim1": 1,
+        "dim2": 0,
+        "dim3": 0,
+        "dim4": 0,
+        "weightLength": 1.2,
+    }
+    linear = build_linear_add_payload(
+        "qid", product_id="pid-1", qty=2, length=10.9, extra=_lin_extra
+    )
+    assert linear["ID"] == "qid"
+    assert linear["productID"] == "pid-1"
+    assert linear["qty"] == 2
+    assert linear["productType"] == "bar"
+    angle = build_linear_add_payload(
+        "qid",
+        product_id="pid-ang",
+        qty=2,
+        length=125,
+        name="29860-3 PEDESTAL BRACE ANGLE",
+        extra={**_lin_extra, "productSubType": "angle"},
+    )
+    assert angle["productType"] == "structural"
+    tube = build_linear_add_payload(
+        "qid",
+        product_id="pid-tube",
+        qty=1,
+        length=16,
+        name="1001880-2 PEDESTAL TUBE",
+        extra={**_lin_extra, "productSubType": "tube"},
+    )
+    assert tube["productType"] == "tube"
+    assert list(linear.keys()) == list(LINEAR_ADD_FIELDS)
+    assert linear["Internal"] == ""
+    assert linear["ItemID"] == EMPTY_GUID
+    assert linear["fixedPrice"] == 0
+    assert linear["productionReady"] is False
+    assert linear["outsource"] is False
+    assert not isinstance(linear["fixedPrice"], str)
+    assert isinstance(linear["productionReady"], bool)
+    assert isinstance(linear["outsource"], bool)
+
+
+def test_pdf_finish_payload_commits_cadimport_newline_fields():
+    """CadImport list-only rows (Status=0, Stock_X/Y, Machine Laser) must commit."""
+    from secturafab.website import prepare_pdf_newline_fields
+
+    raw = {
+        "Status": 0,
+        "Qty": 1,
+        "Machine": "Laser",
+        "FileName": "14501-1.pdf",
+        "Name": "14501-1 PEDESTAL TOP PLATE",
+        "Stock_X": 11.0,
+        "Stock_Y": 6.25,
+        "Material": "A572",
+        "Thickness": 0.25,
+    }
+    prepared = prepare_pdf_newline_fields(raw)
+    assert prepared["Status"] == 1
+    assert prepared["Machine"] == "Laser - Bay1"
+    assert prepared["ItemType"] == "cad"
+    assert int(prepared["ProductType"]) == 100
+    assert prepared["Width"] == 11.0
+    assert prepared["Length"] == 6.25
+    payload = build_pdf_finish_payload("qid", [raw])
+    assert len(payload["FileList"]) == 1
+    row = payload["FileList"][0]
+    assert row["Status"] == 1
+    assert row["Machine"] == "Laser - Bay1"
+    assert row["ItemType"] == "cad"
+    assert int(row["ProductType"]) == 100
+    assert row["Width"] == 11.0
+    assert row["Length"] == 6.25
+    assert row["Thickness"] == 0.25
+
+
+def test_cadimport_only_filelist_is_not_additem_pdf_body():
+    """CadImport identity without Thickness/Length/Width/ItemType=cad must not POST."""
+    from secturafab.website import (
+        attachment_pdf_filelist_ready,
+        is_cadimport_only_filelist_row,
+    )
+
+    cadimport_only = {
+        "SourceDataID": "src-1",
+        "FileID": "file-1",
+        "CadType": 0,
+        "Status": 1,
+        "Qty": 1,
+        "Machine": "Laser",
+        "FileName": "32259-1.pdf",
+        "Name": "32259-1",
+    }
+    assert is_cadimport_only_filelist_row(cadimport_only) is True
+    assert attachment_pdf_filelist_ready(cadimport_only) is False
+    payload = build_pdf_finish_payload("qid", [cadimport_only])
+    assert payload["FileList"] == []
+
+
+def test_linear_payload_rejects_empty_config_guid():
+    with pytest.raises(ValueError, match="productConfigID"):
+        build_linear_add_payload(
+            "qid",
+            product_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            qty=1,
+            length=12.5,
+            extra={"productConfigID": EMPTY_GUID, "productSubType": "bar"},
+        )
+    with pytest.raises(ValueError, match="productConfigID"):
+        build_linear_add_payload(
+            "qid",
+            product_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            qty=1,
+            length=12.5,
+        )
+
+
+def test_linear_payload_rejects_config_equal_product_id():
+    """productConfigID == productID 500s (live 7a555ac2)."""
+    pid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    with pytest.raises(ValueError, match="must not equal productID"):
+        build_linear_add_payload(
+            "qid",
+            product_id=pid,
+            qty=1,
+            length=12.5,
+            extra={
+                "productConfigID": pid,
+                "productSubType": "struct_ang",
+                "dim1": 0.5,
+                "weightLength": 0.37275,
+            },
+        )
+
+
+def test_pick_linear_config_id_reads_value_guid():
+    from secturafab.website import pick_linear_config_id
+
+    cfg20 = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    rows = [
+        {"ID": EMPTY_GUID, "Text": "24 ft", "Value": "dddddddd-dddd-4ddd-8ddd-dddddddddddd"},
+        {"ID": None, "Text": "20 ft", "Value": cfg20},
+    ]
+    assert pick_linear_config_id(rows) == cfg20
+    value_only = [{"Value": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "Text": "21 ft"}]
+    assert pick_linear_config_id(value_only) == "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    assert pick_linear_config_id([{"ID": EMPTY_GUID, "Name": "20 ft"}]) is None
+
+
+def test_linear_bind_uses_20ft_config_and_catalog_dims():
+    from secturafab.website import linear_bind_fields, pick_linear_config_id
+
+    cfg20 = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    cfg24 = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    configs = [
+        {"ID": cfg24, "Name": "24 ft"},
+        {"ID": EMPTY_GUID, "Name": "20 ft"},
+        {"ID": cfg20, "Name": "20 ft"},
+    ]
+    assert pick_linear_config_id(configs) == cfg20
+    bind = linear_bind_fields(
+        {
+            "ID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "ProductName": "L1/2X1/2X1/8-A36",
+            "ProductSubType": "bar",
+            "Dim1": 0.5,
+            "Dim2": 0.5,
+            "Dim3": 0.125,
+            "WeightLength": 0.38,
+        },
+        configs,
+    )
+    assert bind is not None
+    assert bind["productConfigID"] == cfg20
+    assert bind["productConfigID"] != EMPTY_GUID
+    assert bind["productSubType"] == "bar"
+    assert bind["dim1"] == 0.5
+    assert bind["weightLength"] == 0.38
+
+
+def test_linear_bind_does_not_copy_angle_dims_onto_channel_or_tube():
+    """C3X4.1 / RT* must not reuse L1/2 struct_ang dim1=0.5 from another SKU."""
+    from secturafab.website import build_linear_add_payload, linear_bind_fields
+
+    cfg_ang = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    cfg_ch = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    cfg_tu = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    angle_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    channel_id = "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    tube_id = "cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    shared = [
+        {
+            "Value": cfg_ang,
+            "Text": "20 ft",
+            "productSubType": "struct_ang",
+            "dim1": 0.5,
+            "dim2": 0.5,
+            "dim3": 0.125,
+            "weightLength": 0.37275,
+        },
+        {"Value": cfg_ch, "Text": "20 ft"},
+        {"Value": cfg_tu, "Text": "21 ft"},
+    ]
+    channel = linear_bind_fields(
+        {"ID": channel_id, "ProductName": "C3X4.1-A36"},
+        shared,
+        lookup_scoped=True,
+    )
+    tube = linear_bind_fields(
+        {"ID": tube_id, "ProductName": "RT1/8X0.022-A519"},
+        shared,
+        lookup_scoped=True,
+    )
+    angle = linear_bind_fields(
+        {
+            "ID": angle_id,
+            "ProductName": "L1/2X1/2X1/8-A36",
+            "ProductSubType": "struct_ang",
+            "Dim1": 0.5,
+            "WeightLength": 0.37275,
+        },
+        shared,
+        lookup_scoped=True,
+    )
+    assert channel is not None and tube is not None and angle is not None
+    assert channel["productSubType"] != "struct_ang"
+    assert float(channel["dim1"]) != 0.5
+    assert float(channel["weightLength"]) != 0.37275
+    assert float(channel["dim1"]) == 3
+    assert tube["productSubType"] != "struct_ang"
+    assert float(tube["dim1"]) != 0.5
+    assert float(tube["dim1"]) == 0.125
+    ch_payload = build_linear_add_payload(
+        "qid",
+        product_id=channel_id,
+        qty=1,
+        length=125,
+        name="1004740-1 C3X4.1-A36",
+        extra={k: v for k, v in channel.items() if k != "sku"},
+    )
+    tu_payload = build_linear_add_payload(
+        "qid",
+        product_id=tube_id,
+        qty=1,
+        length=125,
+        name="25060-6 RT1/8X0.022-A519",
+        extra={k: v for k, v in tube.items() if k != "sku"},
+    )
+    assert ch_payload["productType"] == "structural"
+    assert tu_payload["productType"] == "tube"
+    for payload in (ch_payload, tu_payload):
+        assert isinstance(payload["productType"], str)
+        assert payload["productType"] not in {10, 30, 40, "10", "30", "40"}
+
+
+def test_linear_bind_keeps_20ft_value_not_product_id():
+    """Live 7a555ac2: product-shaped lookup row must not hide a 20ft Value."""
+    from secturafab.website import (
+        linear_bind_fields,
+        linear_lookup_rows,
+        pick_linear_config_id,
+    )
+
+    pid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    cfg20 = "fd2cc452-aaaa-4bbb-8ccc-dddddddddddd"
+    cfg21 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    product_row = {
+        "ID": pid,
+        "Value": pid,
+        "ProductName": "L1/2X1/2X1/8-A36",
+        "productSubType": "struct_ang",
+        "dim1": 0.5,
+        "dim2": 0.5,
+        "dim3": 0.125,
+        "weightLength": 0.37275,
+    }
+    lookup_list = [
+        product_row,
+        {"Value": cfg20, "Text": "20 ft"},
+        {"Value": cfg21, "Text": "21 ft"},
+    ]
+    assert pick_linear_config_id(lookup_list, product_id=pid) == cfg20
+    assert pick_linear_config_id(lookup_list, product_id=pid) != pid
+
+    # Data=product, List=20ft/21ft — Value must not be discarded.
+    merged = linear_lookup_rows({"Data": [product_row], "List": lookup_list[1:]})
+    assert pick_linear_config_id(merged, product_id=pid) == cfg20
+    assert any(str(r.get("Value") or "") == cfg20 for r in merged)
+
+    cases = (
+        (
+            "32259-1",
+            "L1/2X1/2X1/8-A36",
+            {
+                "ProductSubType": "struct_ang",
+                "Dim1": 0.5,
+                "Dim2": 0.5,
+                "Dim3": 0.125,
+                "WeightLength": 0.37275,
+            },
+            "structural",
+        ),
+        (
+            "1004740-1",
+            "C3X4.1-A36",
+            {
+                "ProductSubType": "channel",
+                "Dim1": 3,
+                "Dim2": 0.17,
+                "Dim3": 1.41,
+                "WeightLength": 4.1,
+            },
+            "structural",
+        ),
+        (
+            "25060-6",
+            "RT1/8X0.022-A519",
+            {
+                "ProductSubType": "tube",
+                "Dim1": 0.125,
+                "Dim2": 0.022,
+                "Dim3": 0,
+                "WeightLength": 0.024,
+            },
+            "tube",
+        ),
+    )
+    for pn, sku, dims, ptype in cases:
+        product = {"ID": pid, "ProductName": sku, **dims}
+        shaped = {
+            "ID": pid,
+            "Value": pid,
+            "ProductName": sku,
+            **{k.lower() if k.startswith("Dim") else k: v for k, v in dims.items()},
+        }
+        rows = [
+            shaped,
+            {"Value": cfg20, "Text": "20 ft"},
+            {"Value": cfg21, "Text": "21 ft"},
+        ]
+        bind = linear_bind_fields(product, rows, lookup_scoped=True)
+        assert bind is not None, sku
+        assert bind["productConfigID"] == cfg20, sku
+        assert bind["productConfigID"] != bind["productID"], sku
+        payload = build_linear_add_payload(
+            "qid",
+            product_id=pid,
+            qty=1,
+            length=12.5,
+            name=f"{pn} {sku}",
+            extra={k: v for k, v in bind.items() if k != "sku"},
+        )
+        assert payload["productConfigID"] == cfg20, sku
+        assert payload["productConfigID"] != payload["productID"], sku
+        assert payload["productType"] == ptype
+
+
+def test_linear_catalog_bind_sends_distinct_config_guid():
+    """A Linear POST must send the 20ft List Value, never Data's productID."""
+    from secturafab.website import linear_lookup_rows, pick_linear_config_id
+
+    pid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    cfg20 = "fd2cc452-aaaa-4bbb-8ccc-dddddddddddd"
+    product = {
+        "ID": pid,
+        "ProductName": "L1/2X1/2X1/8-A36",
+        "ProductSubType": "struct_ang",
+        "Dim1": 0.5,
+        "Dim2": 0.5,
+        "Dim3": 0.125,
+        "WeightLength": 0.37275,
+    }
+    lookup = {
+        "Data": [
+            {
+                "ID": pid,
+                "Value": pid,
+                "ProductName": "L1/2X1/2X1/8-A36",
+                "productSubType": "struct_ang",
+                "dim1": 0.5,
+                "weightLength": 0.37275,
+            }
+        ],
+        "List": [
+            {"Value": cfg20, "Text": "20 ft"},
+            {"Value": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "Text": "21 ft"},
+        ],
+    }
+    rows = linear_lookup_rows(lookup)
+    assert pick_linear_config_id(rows, product_id=pid) == cfg20
+    client = MagicMock()
+    client.read_data_linear_lookup.return_value = lookup
+    svc = SecturaFabPushService(client=client)
+    bind = svc._linear_catalog_bind(product)
+    assert bind is not None
+    assert bind["productConfigID"] == cfg20
+    assert bind["productConfigID"] != bind["productID"]
+    extra = {k: v for k, v in bind.items() if k != "sku"}
+    payload = build_linear_add_payload(
+        "qid",
+        product_id=pid,
+        qty=1,
+        length=12.5,
+        name="32259-1 L1/2X1/2X1/8-A36",
+        extra=extra,
+    )
+    assert payload["productConfigID"] == cfg20
+    assert payload["productConfigID"] != payload["productID"]
+    assert payload["productType"] == "structural"
+
+
+def test_linear_add_product_type_is_website_string_not_int():
+    from secturafab.website import build_linear_add_payload
+
+    extra = {
+        "productConfigID": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "productSubType": "channel",
+        "dim1": 3,
+        "dim2": 1.41,
+        "dim3": 0,
+        "dim4": 0,
+        "weightLength": 4.1,
+        "productType": 40,
+    }
+    payload = build_linear_add_payload(
+        "qid",
+        product_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        qty=1,
+        length=125,
+        name="1004740-1 MASTER CYLINDER MOUNT CHANNEL",
+        extra=extra,
+    )
+    assert payload["productType"] == "structural"
+    assert not isinstance(payload["productType"], int)
+    assert payload["productType"] not in {10, 30, 40, "10", "30", "40"}
+    empty_bools = build_linear_add_payload(
+        "qid",
+        product_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        qty=1,
+        length=125,
+        name="1004740-1 MASTER CYLINDER MOUNT CHANNEL",
+        extra={**extra, "fixedPrice": "", "productionReady": "", "outsource": ""},
+    )
+    assert empty_bools["fixedPrice"] == 0
+    assert empty_bools["productionReady"] is False
+    assert empty_bools["outsource"] is False
+
+
+def test_pdf_finish_from_page_kendo_rejects_reconstructed():
+    from secturafab.website import (
+        pdf_finish_from_page_kendo,
+        reconstructed_pdf_filelist_is_fail,
+    )
+
+    kendo = {
+        "via": "page_fn",
+        "filelist_from_kendo": True,
+        "finish_fn": "OnAddPDFClick",
+        "ok": True,
+    }
+    rebuilt = {"ok": True, "via": "", "filelist_from_kendo": False}
+    assert pdf_finish_from_page_kendo(kendo) is True
+    assert reconstructed_pdf_filelist_is_fail(kendo) is False
+    assert pdf_finish_from_page_kendo(rebuilt) is False
+    assert reconstructed_pdf_filelist_is_fail(rebuilt) is True
+    assert reconstructed_pdf_filelist_is_fail({"ok": True, "via": "page_fn"}) is True
+
+
+def test_pdf_grid_upload_bound_requires_page_add_files():
+    from secturafab.website import (
+        cookie_http_additem_pdffiles_is_not_success,
+        cookie_http_pdf_upload_is_fail,
+        empty_gridpdf_after_stamp_is_fail,
+        image_files_cookie_http_empty_grid_is_fail,
+        pdf_grid_upload_bound,
+    )
+    from tests.fixtures.live_103535_1 import live_103535_1_cookie_http_empty_grid
+
+    assert pdf_grid_upload_bound(
+        {
+            "upload_via": "page_add_files",
+            "bound": True,
+            "files_kendo": True,
+            "status_gt0_n": 5,
+            "grid_pdf_row_count": 5,
+        }
+    )
+    assert not pdf_grid_upload_bound(
+        {
+            "upload_via": "page_add_files",
+            "bound": True,
+            "files_kendo": False,
+            "status_gt0_n": 5,
+            "grid_pdf_row_count": 5,
+        }
+    )
+    assert not pdf_grid_upload_bound(
+        {
+            "upload_via": "cookie_http",
+            "bound": True,
+            "files_kendo": True,
+            "status_gt0_n": 5,
+            "grid_pdf_row_count": 5,
+        }
+    )
+    assert not pdf_grid_upload_bound(
+        {
+            "upload_via": "page_add_files",
+            "bound": True,
+            "files_kendo": True,
+            "status_gt0_n": 0,
+            "grid_pdf_row_count": 0,
+        }
+    )
+    assert cookie_http_pdf_upload_is_fail("cookie_http")
+    assert cookie_http_pdf_upload_is_fail("")
+    assert not cookie_http_pdf_upload_is_fail("page_add_files")
+    assert cookie_http_additem_pdffiles_is_not_success(
+        {"via": "cookie_http", "ok": True}
+    )
+    assert cookie_http_additem_pdffiles_is_not_success(
+        {"via": "http", "filelist_from_kendo": False}
+    )
+    assert not cookie_http_additem_pdffiles_is_not_success(
+        {"via": "page_fn", "filelist_from_kendo": True}
+    )
+    assert empty_gridpdf_after_stamp_is_fail(
+        {"finish_why": "empty_dataSource", "filelist_from_kendo": False}
+    )
+    assert empty_gridpdf_after_stamp_is_fail(
+        {"finish_why": "", "filelist_from_kendo": False, "grid_pdf_row_count": 4}
+    )
+    assert not empty_gridpdf_after_stamp_is_fail(
+        {
+            "finish_why": "",
+            "filelist_from_kendo": True,
+            "grid_pdf_row_count": 4,
+        }
+    )
+    snap = live_103535_1_cookie_http_empty_grid()
+    assert image_files_cookie_http_empty_grid_is_fail(
+        cookie_http_uploads=snap["cookie_http_uploads"],
+        stamp_n=snap["stamp_n"],
+        finish_why=snap["finish_why"],
+        filelist_from_kendo=snap["filelist_from_kendo"],
+        cad_n=snap["cad_n"],
+    )
+
+
+def test_leftover_gridpdf_bind_is_files_kendo_onsuccess():
+    from secturafab.website import leftover_gridpdf_fills_only_via_onsuccess
+    from tests.fixtures.live_103535_1 import leftover_gridpdf_bind_dump
+
+    dump = leftover_gridpdf_bind_dump()
+    assert dump["readonly"] is True
+    assert dump["dialog_closed"] is True
+    assert dump["finish_posted"] is False
+    assert dump["getitem_addview"]["gridPDF"] == {"Data": [], "Total": 0}
+    assert dump["kendoUpload"]["selector"] == "#files"
+    assert dump["kendoUpload"]["success"] == "onSuccess_PDFUpload"
+    assert dump["kendoUpload"]["dropZone"] == ".dropZoneElement"
+    assert dump["kendoUpload"]["async"]["saveUrl"] == "/Attachment/UploadItem_PDFFiles"
+    assert dump["onSuccess_PDFUpload"]["only_fill"] is True
+    assert dump["gridPDF_transport"]["read"]["url"] == ""
+    assert dump["GetPDFData"]["is_xhr"] is False
+    assert "tbody" in dump["GetPDFData"]["walks"]
+    assert dump["GetPDFData"]["keeps"] == "Status>0"
+    assert dump["OnAddPDFClick"]["FileList"] == "GetPDFData()"
+    assert leftover_gridpdf_fills_only_via_onsuccess(dump) is True
+    broken = dict(dump)
+    broken["onSuccess_PDFUpload"] = {"only_fill": False}
+    assert leftover_gridpdf_fills_only_via_onsuccess(broken) is False
+    live = dump["live_103535_1"]
+    assert live["datasource_n"] == 0
+    assert live["getpdfdata_n"] == 0
+    assert live["finish_why"] == "empty_dataSource"
+
+
+def test_leftover_29340_1_api_mint_cookie_finish_is_fail():
+    """Live 29340-1: API mint + cookie AddView 302 / Image Files never ran."""
+    from secturafab.website import (
+        addview_302_after_refresh_is_fail,
+        cookie_http_additem_pdffiles_is_not_success,
+        inpage_mint_allowed,
+        leftover_api_mint_cookie_finish_is_fail,
+        leftover_gridpdf_fills_only_via_onsuccess,
+        list0_pack_badge_ocl_is_gold,
+    )
+    from tests.fixtures.live_103535_1 import leftover_gridpdf_bind_dump
+    from tests.fixtures.live_29340_1 import (
+        leftover_api_mint_cookie_finish_dump,
+        live_29340_1_quote,
+        SPENT_QUOTE_ID,
+        SPENT_QUOTE_NUMBER,
+    )
+
+    dump = leftover_api_mint_cookie_finish_dump()
+    assert dump["readonly"] is True
+    assert dump["itemlist_n"] == 0
+    assert dump["image_files_ran"] is False
+    assert dump["created_via"] == "api"
+    assert dump["finish_via"] == "cookie_http"
+    assert dump["getitem_addview"]["status"] == 302
+    assert dump["chrome_9224"]["login"] is False
+    assert dump["chrome_9224"]["signed_in"] is True
+    assert dump["cookie_302_is_logout"] is False
+    assert leftover_api_mint_cookie_finish_is_fail(dump) is True
+    quote = live_29340_1_quote()
+    assert quote["ID"] == SPENT_QUOTE_ID
+    assert quote["QuoteNumber"] == SPENT_QUOTE_NUMBER
+    assert quote["ItemList"] == []
+    signed_out = dict(dump)
+    signed_out["live_29340_1"] = dict(dump["live_29340_1"])
+    signed_out["live_29340_1"]["chrome_signed_in"] = False
+    assert leftover_api_mint_cookie_finish_is_fail(signed_out) is False
+    ran = dict(dump)
+    ran["live_29340_1"] = dict(dump["live_29340_1"])
+    ran["live_29340_1"]["image_files_ran"] = True
+    assert leftover_api_mint_cookie_finish_is_fail(ran) is False
+    assert leftover_api_mint_cookie_finish_is_fail(leftover_gridpdf_bind_dump()) is False
+    assert leftover_api_mint_cookie_finish_is_fail(MagicMock()) is False
+    assert leftover_api_mint_cookie_finish_is_fail(None) is False
+    assert leftover_gridpdf_fills_only_via_onsuccess(dump) is False
+    assert cookie_http_additem_pdffiles_is_not_success(
+        {"via": "cookie_http", "ok": True, "filelist_from_kendo": False}
+    ) is True
+    assert cookie_http_additem_pdffiles_is_not_success(
+        {"via": "page_fn", "filelist_from_kendo": True}
+    ) is False
+    assert addview_302_after_refresh_is_fail(
+        {"ok": False, "still_302": True, "refreshed": True, "status_code": 302}
+    ) is True
+    assert addview_302_after_refresh_is_fail(
+        {"ok": True, "still_302": False, "refreshed": True, "status_code": 200}
+    ) is False
+    assert addview_302_after_refresh_is_fail(
+        {"ok": False, "still_302": True, "refreshed": False, "status_code": 302}
+    ) is False
+    assert inpage_mint_allowed(
+        chrome_edit_signed_in=True,
+        chrome_login=False,
+        cookie_addview_302=True,
+    ) is True
+    assert inpage_mint_allowed(
+        chrome_edit_signed_in=True,
+        chrome_login=False,
+        cookie_addview_302=True,
+        quotes_fetch_200=True,
+    ) is True
+    assert inpage_mint_allowed(
+        chrome_edit_signed_in=True,
+        chrome_login=False,
+        cookie_addview_302=True,
+        quotes_fetch_200=False,
+    ) is False
+    assert inpage_mint_allowed(
+        chrome_edit_signed_in=True,
+        chrome_login=False,
+        cookie_addview_302=True,
+        quotes_fetch_200=False,
+        chrome_quotes_list_signed_in=True,
+    ) is True
+    assert inpage_mint_allowed(
+        chrome_edit_signed_in=False,
+        chrome_login=True,
+        cookie_addview_302=True,
+        chrome_quotes_list_signed_in=False,
+    ) is False
+    assert inpage_mint_allowed(
+        chrome_edit_signed_in=False,
+        chrome_login=True,
+        cookie_addview_302=True,
+    ) is False
+    assert inpage_mint_allowed(
+        chrome_edit_signed_in=False,
+        chrome_login=False,
+        cookie_addview_302=True,
+    ) is False
+    assert list0_pack_badge_ocl_is_gold(
+        {
+            "response_badge_string": "PR",
+            "response_ocl_names": [
+                "Laser",
+                "Drafting",
+                "Laser-Setup",
+                "Sheet Loading",
+                "Deburr",
+            ],
+            "response_unit_cost": 36.22,
+            "response_unit_weight_cost": 14.65,
+        }
+    ) is True
+    assert list0_pack_badge_ocl_is_gold(
+        {
+            "response_badge_string": "",
+            "response_ocl_names": [],
+            "response_unit_cost": 126.66,
+            "response_unit_weight_cost": 126.66,
+        }
+    ) is False
+
+
+def test_leftover_griddxf_bind_is_files_kendo_onsuccess():
+    from secturafab.website import (
+        leftover_cookie_http_dxf_empty_grid_is_fail,
+        leftover_getperimeter_is_gridpdf_only,
+        leftover_griddxf_fills_only_via_onsuccess,
+    )
+    from tests.fixtures.live_21678_1 import leftover_dxf_pack_bind_dump
+    from tests.fixtures.live_ehb3112_1 import (
+        leftover_griddxf_bind_dump,
+        live_ehb3112_1_cookie_http_empty_grid,
+    )
+
+    dump = leftover_griddxf_bind_dump()
+    assert dump["readonly"] is True
+    assert dump["dialog_closed"] is True
+    assert dump["finish_posted"] is False
+    assert dump["getitem_addview"]["ItemType"] == "dxf"
+    assert dump["kendoUpload"]["selector"] == "#files"
+    assert dump["kendoUpload"]["zone"] == "#dxfupload_Zone"
+    assert dump["kendoUpload"]["success"] == "onSuccess_Upload"
+    assert dump["kendoUpload"]["complete"] == "onComplete_Upload"
+    assert dump["kendoUpload"]["upload"] == "onUpload_DXFUpload"
+    assert dump["kendoUpload"]["dropZone"] == ".dropZoneElement"
+    assert dump["kendoUpload"]["async"]["saveUrl"] == "/CadImport/UploadItem_DXFFiles"
+    assert dump["onSuccess_Upload"]["only_fill"] is True
+    assert "#gridDXF" in dump["onSuccess_Upload"]["adds"]
+    assert dump["onSuccess_Upload"]["not_grid"] == "#gridDXFParts"
+    assert dump["GetDXFData"]["exists"] is False
+    assert dump["Next"]["caller"] == "createAllParts"
+    assert dump["Next"]["function"] == "DoCreateDXFParts"
+    assert dump["Next"]["path"] == "/part/create"
+    assert dump["Next"]["cookie_http_part_create_is_gold"] is False
+    assert dump["OnAddDXFClick"]["fills_internaldata"] is False
+    assert leftover_griddxf_fills_only_via_onsuccess(dump) is True
+    assert leftover_getperimeter_is_gridpdf_only(dump) is True
+    broken = dict(dump)
+    broken["onSuccess_Upload"] = {"only_fill": False}
+    assert leftover_griddxf_fills_only_via_onsuccess(broken) is False
+    live = dump["live_ehb3112_1"]
+    assert live["gridDXF_n"] == 0
+    assert live["finish_posted"] is False
+    snap = live_ehb3112_1_cookie_http_empty_grid()
+    assert leftover_cookie_http_dxf_empty_grid_is_fail(
+        cookie_http_uploads=snap["cookie_http_uploads"],
+        gridDXF_n=snap["gridDXF_n"],
+        finish_posted=snap["finish_posted"],
+        cad_n=snap["cad_n"],
+    )
+    gold = leftover_dxf_pack_bind_dump()
+    assert leftover_getperimeter_is_gridpdf_only(gold) is True
+
+
+def test_dxf_grid_upload_bound_requires_page_add_files():
+    from secturafab.website import (
+        cookie_http_dxf_upload_is_fail,
+        dxf_grid_upload_bound,
+    )
+
+    assert dxf_grid_upload_bound(
+        {
+            "upload_via": "page_add_files",
+            "bound": True,
+            "files_kendo": True,
+            "gridDXF_n": 1,
+        }
+    )
+    assert not dxf_grid_upload_bound(
+        {
+            "upload_via": "page_add_files",
+            "bound": True,
+            "files_kendo": False,
+            "gridDXF_n": 1,
+        }
+    )
+    assert not dxf_grid_upload_bound(
+        {
+            "upload_via": "cookie_http",
+            "bound": True,
+            "files_kendo": True,
+            "gridDXF_n": 1,
+        }
+    )
+    assert not dxf_grid_upload_bound(
+        {
+            "upload_via": "page_add_files",
+            "bound": True,
+            "files_kendo": True,
+            "gridDXF_n": 0,
+        }
+    )
+    assert cookie_http_dxf_upload_is_fail("cookie_http")
+    assert cookie_http_dxf_upload_is_fail("")
+    assert not cookie_http_dxf_upload_is_fail("page_add_files")
+
+
+def test_29743_1_files_kendo_bind_without_gold_pack_is_fail():
+    from secturafab.line_item_ops import (
+        cad_image_files_stamped,
+        cad_kids_bind_without_pr_pack,
+        cad_kids_unitcost_without_pr,
+        image_files_bind_without_gold_pack_is_fail,
+        image_files_dod_pass,
+        item_has_pr_tag,
+        item_has_saw_pack,
+        unitprice_is_not_gold_unitcost,
+    )
+    from tests.fixtures.live_29743_1 import live_29743_1_quote
+
+    quote = live_29743_1_quote()
+    cad = [it for it in quote["ItemList"] if it.get("ProductType") == 100]
+    linear = [it for it in quote["ItemList"] if it.get("IsLinear")]
+    assert len(cad) == 2
+    assert len(linear) == 2
+    assert all(it["Tag"] == "" for it in cad)
+    assert all(not it.get("OperationCostList") for it in cad)
+    assert all(float(it["UnitCost"]) == 0 for it in cad)
+    assert all(unitprice_is_not_gold_unitcost(it) for it in cad)
+    assert all(it["DataPartPDF"]["CuttingLength"] == 0 for it in cad)
+    assert all(not item_has_pr_tag(it) for it in cad)
+    assert all(not cad_image_files_stamped(it) for it in cad)
+    assert all(item_has_saw_pack(it) for it in linear)
+    assert cad_kids_bind_without_pr_pack(quote) is True
+    assert cad_kids_unitcost_without_pr(quote) is False
+    assert image_files_dod_pass(quote, expect_cad=True, expect_linear=True) is False
+    assert image_files_dod_pass(quote, expect_cad=False, expect_linear=True) is True
+    assert image_files_bind_without_gold_pack_is_fail(
+        files_kendo=True,
+        filelist_from_kendo=True,
+        cad_n=2,
+        tag_empty=True,
+        ocl_empty=True,
+        unit_cost=0,
+        cutting_length=0,
+        unit_price=28.82,
+    )
+
+
+def test_leftover_cad_pack_is_on_additem_list():
+    """Leftover 29743-1 EDIT: pack is on AddItem_PDFFiles List; no later XHR."""
+    from secturafab.website import leftover_cad_pack_is_on_additem_list
+    from tests.fixtures.live_29743_1 import leftover_cad_pack_bind_dump
+
+    dump = leftover_cad_pack_bind_dump()
+    assert leftover_cad_pack_is_on_additem_list(dump) is True
+    assert dump["GetPDFData"]["cuttinglengthdisp_display_only"] is True
+    broken = dict(dump)
+    broken["pack_xhr_named"] = True
+    assert leftover_cad_pack_is_on_additem_list(broken) is False
+    broken2 = dict(dump)
+    broken2["addrow_stamps_pr"] = True
+    assert leftover_cad_pack_is_on_additem_list(broken2) is False
+    live = dump["live_29743_1"]
+    assert live["lw_via"] == "dataItem.set"
+    assert live["update_perimeter_weight"] is False
+    assert live["outside_perimeter"] == ""
+    assert live["cutting_length"] == 0
+    assert live["tag"] == ""
+    assert live["operation_cost_list"] == []
+    assert live["unit_cost"] == 0
+    assert dump["GetPDFData"]["cuttinglengthdisp_display_only"] is True
+
+
+def test_leftover_perimeter_xhr_is_not_gold_pack():
+    """Live 1002323-1: perimeter XHR landed; CuttingLength 0 / no pack."""
+    from secturafab.line_item_ops import (
+        cad_image_files_stamped,
+        cad_kids_perimeter_without_cut_pack,
+        cad_kids_unitcost_without_pr,
+        image_files_dod_pass,
+        unitcost_equals_unitprice_is_material_only,
+    )
+    from secturafab.website import (
+        empty_internaldata_after_perimeter_is_fail,
+        empty_weight_after_perimeter_is_fail,
+        leftover_perimeter_xhr_is_not_gold_pack,
+        leftover_weight_is_getpdfdata_bag_not_cuttinglength,
+        filelist_bag_snapshot,
+        PDF_GETDATA_FIELDS,
+    )
+    from tests.fixtures.live_1002323_1 import (
+        leftover_perimeter_not_pack_dump,
+        live_1002323_1_quote,
+    )
+
+    dump = leftover_perimeter_not_pack_dump()
+    assert dump["readonly"] is True
+    assert dump["UpdatePerimeterWeight"]["is_gold_pack"] is False
+    assert dump["UpdatePerimeterWeight"]["bare_does_not_copy"] is True
+    assert "true,true" in dump["UpdatePerimeterWeight"]["call"].replace(" ", "")
+    assert dump["GetPDFData"]["cuttinglengthdisp_display_only"] is True
+    assert "CuttingLength" in dump["GetPDFData"]["omits"]
+    assert leftover_perimeter_xhr_is_not_gold_pack(dump) is True
+    broken = dict(dump)
+    broken["UpdatePerimeterWeight"] = dict(dump["UpdatePerimeterWeight"])
+    broken["UpdatePerimeterWeight"]["is_gold_pack"] = True
+    assert leftover_perimeter_xhr_is_not_gold_pack(broken) is False
+    quote = live_1002323_1_quote()
+    cad = quote["ItemList"][0]
+    assert cad["Tag"] == ""
+    assert cad["OperationCostList"] == []
+    assert cad["DataPartPDF"]["OutsidePerimeter"] == 44.64
+    assert cad["DataPartPDF"]["CuttingLength"] == 0
+    assert cad["DataPartPDF"]["InternalData"] == ""
+    assert cad["DataPartPDF"]["HasSelectedProductID"] is False
+    assert unitcost_equals_unitprice_is_material_only(cad) is True
+    assert cad_kids_perimeter_without_cut_pack(quote) is True
+    assert cad_kids_unitcost_without_pr(quote) is True
+    assert cad_image_files_stamped(cad) is False
+    assert image_files_dod_pass(quote, expect_cad=True) is False
+    assert dump["filelist_keys_logged"] is False
+    assert leftover_weight_is_getpdfdata_bag_not_cuttinglength(dump) is True
+    assert filelist_bag_snapshot(
+        {"Weight": 7.7607, "CuttingLength": 44.64, "Status": 1, "Machine": "Laser - Bay1"}
+    ) == {"Weight": 7.7607, "Machine": "Laser - Bay1"}
+    broken_wt = dict(dump)
+    broken_wt["Weight"] = dict(dump["Weight"])
+    broken_wt["Weight"]["invent_getpdfdata_key"] = True
+    assert leftover_weight_is_getpdfdata_bag_not_cuttinglength(broken_wt) is False
+    assert "CuttingLength" not in PDF_GETDATA_FIELDS
+    assert "HasSelectedProductID" not in PDF_GETDATA_FIELDS
+    assert "Weight" in PDF_GETDATA_FIELDS
+    assert "Weight_UseLocal" in PDF_GETDATA_FIELDS
+    assert empty_internaldata_after_perimeter_is_fail(
+        {"outside_perimeter_n": 1, "internaldata_n": 0}
+    ) is False
+    assert empty_internaldata_after_perimeter_is_fail(
+        {"outside_perimeter_n": 1, "internaldata_n": 1}
+    ) is False
+    assert empty_internaldata_after_perimeter_is_fail({"stamped": 1}) is False
+    assert empty_weight_after_perimeter_is_fail(
+        {"outside_perimeter_n": 1, "weight_n": 0}
+    ) is True
+    assert empty_weight_after_perimeter_is_fail(
+        {"outside_perimeter_n": 1, "weight_n": 1}
+    ) is False
+    assert empty_weight_after_perimeter_is_fail({"stamped": 1}) is False
+
+
+def test_leftover_weight_without_productid_is_fail():
+    """Live 33819-1: bag Weight+OP posted; ProductID None; Tag empty / OCL []."""
+    from secturafab.line_item_ops import (
+        cad_image_files_stamped,
+        cad_kids_perimeter_without_cut_pack,
+        cad_kids_unitcost_without_pr,
+        cad_kids_weight_without_productid_pack,
+        image_files_dod_pass,
+        unitcost_equals_unitprice_is_material_only,
+    )
+    from secturafab.website import (
+        empty_productid_after_bind_is_fail,
+        leftover_weight_without_productid_is_fail,
+        leftover_weight_is_getpdfdata_bag_not_cuttinglength,
+        leftover_perimeter_xhr_is_not_gold_pack,
+        leftover_cad_pack_is_on_additem_list,
+        filelist_bag_snapshot,
+        PDF_GETDATA_FIELDS,
+    )
+    from tests.fixtures.live_1002323_1 import (
+        leftover_perimeter_not_pack_dump,
+        live_1002323_1_quote,
+    )
+    from tests.fixtures.live_29743_1 import (
+        leftover_cad_pack_bind_dump,
+        live_29743_1_quote,
+    )
+    from tests.fixtures.live_33819_1 import (
+        leftover_weight_without_productid_dump,
+        live_33819_1_quote,
+        FILELIST_BAG,
+    )
+
+    dump = leftover_weight_without_productid_dump()
+    assert dump["readonly"] is True
+    assert dump["filelist_keys_logged"] is True
+    assert dump["filelist_bag"]["Weight"] == 15.0875
+    assert dump["filelist_bag"]["OutsidePerimeter"] == 40
+    assert dump["filelist_bag"]["ProductID"] is None
+    assert dump["filelist_bag"]["Weight_UseLocal"] is True
+    assert "CuttingLength" not in dump["filelist_bag"]
+    assert leftover_weight_without_productid_is_fail(dump) is True
+    filled = dict(dump)
+    filled["filelist_bag"] = dict(dump["filelist_bag"])
+    filled["filelist_bag"]["ProductID"] = "not-a-sku"
+    assert leftover_weight_without_productid_is_fail(filled) is False
+    no_live = dict(dump)
+    no_live.pop("live_33819_1")
+    assert leftover_weight_without_productid_is_fail(no_live) is False
+    tagged = dict(dump)
+    tagged["live_33819_1"] = dict(dump["live_33819_1"])
+    tagged["live_33819_1"]["tag"] = "PR"
+    assert leftover_weight_without_productid_is_fail(tagged) is False
+    assert leftover_weight_without_productid_is_fail(
+        leftover_perimeter_not_pack_dump()
+    ) is False
+    assert leftover_weight_without_productid_is_fail(
+        leftover_cad_pack_bind_dump()
+    ) is False
+    assert leftover_weight_without_productid_is_fail(MagicMock()) is False
+    assert leftover_weight_without_productid_is_fail(None) is False
+    from secturafab.website import leftover_empty_bind_productid_skip_is_wrong
+    from tests.fixtures.live_21681_1 import leftover_empty_bind_productid_skip_dump
+
+    skip_dump = leftover_empty_bind_productid_skip_dump()
+    assert leftover_empty_bind_productid_skip_is_wrong(skip_dump) is True
+    assert leftover_empty_bind_productid_skip_is_wrong(dump) is False
+    stamped_skip = dict(skip_dump)
+    stamped_skip["finish_skipped"] = False
+    assert leftover_empty_bind_productid_skip_is_wrong(stamped_skip) is False
+    assert leftover_perimeter_xhr_is_not_gold_pack(dump) is False
+    assert leftover_cad_pack_is_on_additem_list(dump) is False
+    assert leftover_weight_is_getpdfdata_bag_not_cuttinglength(dump) is False
+    quote = live_33819_1_quote()
+    cad = quote["ItemList"][0]
+    assert cad["Tag"] == ""
+    assert cad["OperationCostList"] == []
+    assert cad["ProductID"] is None
+    assert cad["FileList"][0]["ProductID"] is None
+    assert cad["FileList"][0]["Weight"] == 15.0875
+    assert cad["DataPartPDF"]["OutsidePerimeter"] == 40
+    assert cad["DataPartPDF"]["CuttingLength"] == 0
+    assert cad["UnitCost"] == cad["UnitPrice"] == cad["UnitWeightCost"] == 6.19
+    assert unitcost_equals_unitprice_is_material_only(cad) is True
+    assert cad_kids_weight_without_productid_pack(quote) is True
+    assert cad_kids_weight_without_productid_pack(live_1002323_1_quote()) is False
+    assert cad_kids_weight_without_productid_pack(live_29743_1_quote()) is False
+    assert cad_kids_unitcost_without_pr(quote) is True
+    assert cad_image_files_stamped(cad) is False
+    assert image_files_dod_pass(quote, expect_cad=True) is False
+    assert filelist_bag_snapshot(FILELIST_BAG)["ProductID"] is None
+    assert "CuttingLength" not in filelist_bag_snapshot(FILELIST_BAG)
+    assert "ProductID" in PDF_GETDATA_FIELDS
+    assert "CuttingLength" not in PDF_GETDATA_FIELDS
+    assert empty_productid_after_bind_is_fail({"productid_n": 0}) is False
+    assert empty_productid_after_bind_is_fail({"productid_n": 1}) is False
+    assert empty_productid_after_bind_is_fail({"stamped": 1}) is False
+    assert empty_productid_after_bind_is_fail(MagicMock()) is False
+    assert empty_productid_after_bind_is_fail(None) is False
+    from secturafab.website import (
+        filelist_productid_null_after_sku_bind_is_fail,
+        leftover_filelist_productid_null_after_bind_is_fail,
+    )
+
+    assert filelist_productid_null_after_sku_bind_is_fail(
+        {"productid_n": 0, "picker_sku": "PL7 Ga-A36"},
+        [{"ProductSku": "PL7 Ga-A36"}],
+    ) is True
+    assert filelist_productid_null_after_sku_bind_is_fail(
+        {"productid_n": 1, "picker_sku": "PL7 Ga-A36"},
+        [{"ProductSku": "PL7 Ga-A36"}],
+    ) is False
+    assert filelist_productid_null_after_sku_bind_is_fail({"productid_n": 0}, []) is False
+    dump_34603 = {
+        "filelist_bag": {"ProductID": None},
+        "live_34603_2": {"productid": None, "picker_sku": "PL025-A572"},
+    }
+    assert leftover_filelist_productid_null_after_bind_is_fail(dump_34603) is True
+    filled_34603 = dict(dump_34603)
+    filled_34603["filelist_bag"] = {"ProductID": "not-null"}
+    assert leftover_filelist_productid_null_after_bind_is_fail(filled_34603) is False
+    from secturafab.forbidden_quotes import is_forbidden_quote_id
+    from secturafab.website import leftover_plate_sku_missing_is_fail
+    from tests.fixtures.live_21682_1 import leftover_plate_sku_missing_dump
+    from tests.fixtures.live_33819_2 import SPENT_QUOTE_ID_PREFIX, SPENT_QUOTE_NUMBER
+
+    dump_21682 = leftover_plate_sku_missing_dump()
+    assert leftover_plate_sku_missing_is_fail(dump_21682) is True
+    filled_21682 = dict(dump_21682)
+    filled_21682["filelist_bag"] = {"ProductID": "not-null"}
+    assert leftover_plate_sku_missing_is_fail(filled_21682) is False
+    invented = leftover_plate_sku_missing_dump()
+    invented["live_21682_1"] = dict(invented["live_21682_1"])
+    invented["live_21682_1"]["invented_guid"] = True
+    assert leftover_plate_sku_missing_is_fail(invented) is False
+    assert SPENT_QUOTE_NUMBER == "33819-2"
+    assert is_forbidden_quote_id(f"{SPENT_QUOTE_ID_PREFIX}-1111-2222-3333-444444444444")
+
+
+def test_leftover_productid_is_not_the_pack():
+    """Live 1007092-1: GET ProductID set + Tag empty / OCL [] — pack miss is not ProductID."""
+    from secturafab.line_item_ops import (
+        cad_image_files_stamped,
+        cad_kids_productid_without_pack,
+        cad_kids_weight_without_productid_pack,
+        image_files_dod_pass,
+        unitcost_equals_unitprice_is_material_only,
+    )
+    from secturafab.website import (
+        leftover_productid_is_not_the_pack,
+        leftover_list0_pack_is_not_gold,
+        leftover_weight_without_productid_is_fail,
+        leftover_perimeter_xhr_is_not_gold_pack,
+        leftover_empty_bind_productid_skip_is_wrong,
+        empty_productid_after_bind_is_fail,
+        filelist_bag_snapshot,
+        PDF_GETDATA_FIELDS,
+    )
+    from tests.fixtures.live_1002323_1 import (
+        leftover_perimeter_not_pack_dump,
+        live_1002323_1_quote,
+    )
+    from tests.fixtures.live_1007092_1 import (
+        leftover_productid_not_pack_dump,
+        live_1007092_1_quote,
+        FILELIST_BAG,
+        GET_PRODUCT_ID,
+    )
+    from tests.fixtures.live_21681_1 import leftover_empty_bind_productid_skip_dump
+    from tests.fixtures.live_33819_1 import (
+        leftover_weight_without_productid_dump,
+        live_33819_1_quote,
+    )
+
+    dump = leftover_productid_not_pack_dump()
+    assert dump["readonly"] is True
+    assert dump["filelist_bag"]["ProductID"] is None
+    assert dump["filelist_bag"]["Weight"] == 0.2718
+    assert dump["filelist_bag"]["OutsidePerimeter"] == 5
+    assert dump["filelist_bag"]["Material"] == "A572"
+    assert dump["filelist_bag"]["Thickness"] == "0.3125"
+    assert dump["filelist_bag"]["Machine"] == "Laser - Bay1"
+    assert "CuttingLength" not in dump["filelist_bag"]
+    assert leftover_productid_is_not_the_pack(dump) is True
+    none_get = dict(dump)
+    none_get["live_1007092_1"] = dict(dump["live_1007092_1"])
+    none_get["live_1007092_1"]["get_productid"] = None
+    assert leftover_productid_is_not_the_pack(none_get) is False
+    tagged = dict(dump)
+    tagged["live_1007092_1"] = dict(dump["live_1007092_1"])
+    tagged["live_1007092_1"]["tag"] = "PR"
+    assert leftover_productid_is_not_the_pack(tagged) is False
+    ocl = dict(dump)
+    ocl["live_1007092_1"] = dict(dump["live_1007092_1"])
+    ocl["live_1007092_1"]["operation_cost_list"] = [{"OperationName": "Profile"}]
+    assert leftover_productid_is_not_the_pack(ocl) is False
+    bag_pid = dict(dump)
+    bag_pid["filelist_bag"] = dict(dump["filelist_bag"])
+    bag_pid["filelist_bag"]["ProductID"] = "not-a-sku"
+    assert leftover_productid_is_not_the_pack(bag_pid) is False
+    assert leftover_productid_is_not_the_pack(
+        leftover_weight_without_productid_dump()
+    ) is False
+    assert leftover_productid_is_not_the_pack(
+        leftover_perimeter_not_pack_dump()
+    ) is False
+    assert leftover_productid_is_not_the_pack(
+        leftover_empty_bind_productid_skip_dump()
+    ) is False
+    assert leftover_productid_is_not_the_pack(MagicMock()) is False
+    assert leftover_productid_is_not_the_pack(None) is False
+    assert leftover_weight_without_productid_is_fail(dump) is False
+    assert leftover_perimeter_xhr_is_not_gold_pack(dump) is False
+    assert leftover_empty_bind_productid_skip_is_wrong(dump) is False
+    quote = live_1007092_1_quote()
+    cad = quote["ItemList"][0]
+    assert cad["Tag"] == ""
+    assert cad["OperationCostList"] == []
+    assert cad["ProductID"] == GET_PRODUCT_ID
+    assert cad["FileList"][0]["ProductID"] is None
+    assert cad["FileList"][0]["Weight"] == 0.2718
+    assert cad["DataPartPDF"]["OutsidePerimeter"] == 5
+    assert cad["DataPartPDF"]["CuttingLength"] == 0
+    assert cad["DataPartPDF"]["InternalData"] == ""
+    assert cad["UnitCost"] == cad["UnitPrice"] == cad["UnitWeightCost"] == 0.11
+    assert unitcost_equals_unitprice_is_material_only(cad) is True
+    assert cad_kids_productid_without_pack(quote) is True
+    assert cad_kids_productid_without_pack(live_33819_1_quote()) is False
+    assert cad_kids_productid_without_pack(live_1002323_1_quote()) is True
+    assert cad_kids_weight_without_productid_pack(quote) is False
+    assert cad_image_files_stamped(cad) is False
+    assert image_files_dod_pass(quote, expect_cad=True) is False
+    assert filelist_bag_snapshot(FILELIST_BAG)["ProductID"] is None
+    assert "CuttingLength" not in filelist_bag_snapshot(FILELIST_BAG)
+    assert "CuttingLength" not in PDF_GETDATA_FIELDS
+    assert empty_productid_after_bind_is_fail({"productid_n": 0}) is False
+    assert leftover_list0_pack_is_not_gold(dump) is False
+
+
+def test_leftover_list0_pack_is_not_gold():
+    """Live 33204-1: list0_pack Tag empty / OCL 0 / UnitCost 5.05 even with full bag."""
+    from secturafab.line_item_ops import (
+        cad_image_files_stamped,
+        cad_kids_productid_without_pack,
+        cad_kids_weight_without_productid_pack,
+        image_files_dod_pass,
+        unitcost_equals_unitprice_is_material_only,
+    )
+    from secturafab.website import (
+        leftover_list0_pack_is_not_gold,
+        leftover_plate_modal_is_not_the_pack,
+        leftover_thick_plate_cad_laser_is_wrong,
+        leftover_addnewpdffeature_skipped_is_named_miss,
+        leftover_getpdfdata_candidates_named_not_invented,
+        list0_pack_badge_ocl_is_gold,
+        leftover_productid_is_not_the_pack,
+        leftover_weight_without_productid_is_fail,
+        leftover_perimeter_xhr_is_not_gold_pack,
+        leftover_empty_bind_productid_skip_is_wrong,
+        list0_pack_without_tag_ocl_is_fail,
+        empty_productid_after_bind_is_fail,
+        filelist_bag_snapshot,
+        PDF_GETDATA_FIELDS,
+    )
+    from tests.fixtures.live_1007092_1 import leftover_productid_not_pack_dump
+    from tests.fixtures.live_21681_1 import leftover_empty_bind_productid_skip_dump
+    from tests.fixtures.live_33204_1 import (
+        leftover_list0_pack_not_gold_dump,
+        live_33204_1_quote,
+        FILELIST_BAG,
+        GET_PRODUCT_ID,
+        LIST0_PACK,
+    )
+    from tests.fixtures.live_33819_1 import leftover_weight_without_productid_dump
+
+    dump = leftover_list0_pack_not_gold_dump()
+    assert dump["readonly"] is True
+    assert dump["list0_pack"]["tag"] == ""
+    assert dump["list0_pack"]["ocl_n"] == 0
+    assert dump["list0_pack"]["unit_cost"] == 5.05
+    assert dump["list0_pack"]["production_ready"] is False
+    assert dump["filelist_bag"]["ProductID"] is None
+    assert dump["filelist_bag"]["Weight"] == 1.4378
+    assert dump["filelist_bag"]["OutsidePerimeter"] == 18.25
+    assert dump["filelist_bag"]["Length"] == 9.125
+    assert dump["filelist_bag"]["Width"] == 7.5625
+    assert dump["filelist_bag"]["Material"] == "A572"
+    assert dump["filelist_bag"]["Thickness"] == "0.5"
+    assert dump["filelist_bag"]["Machine"] == "Laser - Bay1"
+    assert "CuttingLength" not in dump["filelist_bag"]
+    assert leftover_list0_pack_is_not_gold(dump) is True
+    assert leftover_getpdfdata_candidates_named_not_invented(dump) is True
+    tagged = dict(dump)
+    tagged["list0_pack"] = dict(dump["list0_pack"])
+    tagged["list0_pack"]["badge_string"] = "PR"
+    assert leftover_list0_pack_is_not_gold(tagged) is False
+    ocl = dict(dump)
+    ocl["list0_pack"] = dict(dump["list0_pack"])
+    ocl["list0_pack"]["ocl_n"] = 1
+    assert leftover_list0_pack_is_not_gold(ocl) is False
+    cheap = dict(dump)
+    cheap["list0_pack"] = dict(dump["list0_pack"])
+    cheap["list0_pack"]["unit_cost"] = 0
+    assert leftover_list0_pack_is_not_gold(cheap) is False
+    bag_pid = dict(dump)
+    bag_pid["filelist_bag"] = dict(dump["filelist_bag"])
+    bag_pid["filelist_bag"]["ProductID"] = "not-a-sku"
+    assert leftover_list0_pack_is_not_gold(bag_pid) is False
+    no_len = dict(dump)
+    no_len["filelist_bag"] = dict(dump["filelist_bag"])
+    no_len["filelist_bag"]["Length"] = 0
+    assert leftover_list0_pack_is_not_gold(no_len) is False
+    assert leftover_list0_pack_is_not_gold(
+        leftover_productid_not_pack_dump()
+    ) is False
+    assert leftover_list0_pack_is_not_gold(
+        leftover_weight_without_productid_dump()
+    ) is False
+    assert leftover_list0_pack_is_not_gold(
+        leftover_empty_bind_productid_skip_dump()
+    ) is False
+    assert leftover_list0_pack_is_not_gold(MagicMock()) is False
+    assert leftover_list0_pack_is_not_gold(None) is False
+    assert leftover_plate_modal_is_not_the_pack(dump) is False
+    assert leftover_thick_plate_cad_laser_is_wrong(dump) is False
+    assert leftover_addnewpdffeature_skipped_is_named_miss(dump) is False
+    assert list0_pack_badge_ocl_is_gold(
+        {
+            "response_badge_string": "PR",
+            "response_ocl_names": [
+                "Laser",
+                "Drafting",
+                "Laser-Setup",
+                "Sheet Loading",
+                "Deburr",
+            ],
+            "response_unit_cost": 36.22,
+            "response_unit_weight_cost": 14.65,
+        }
+    ) is True
+    assert list0_pack_badge_ocl_is_gold(
+        {
+            "response_badge_string": "",
+            "response_ocl_names": [],
+            "response_unit_cost": 126.66,
+            "response_unit_weight_cost": 126.66,
+        }
+    ) is False
+    assert list0_pack_badge_ocl_is_gold(
+        {
+            "response_tag": "",
+            "response_badge_string": "PR",
+            "response_ocl_names": ["Laser"],
+            "response_unit_cost": 36.22,
+            "response_unit_weight_cost": 14.65,
+        }
+    ) is False
+    assert leftover_productid_is_not_the_pack(dump) is False
+    assert leftover_weight_without_productid_is_fail(dump) is False
+    assert leftover_perimeter_xhr_is_not_gold_pack(dump) is False
+    assert leftover_empty_bind_productid_skip_is_wrong(dump) is False
+    quote = live_33204_1_quote()
+    cad = quote["ItemList"][0]
+    assert cad["Tag"] == ""
+    assert cad["OperationCostList"] == []
+    assert cad["ProductID"] == GET_PRODUCT_ID
+    assert cad["FileList"][0]["ProductID"] is None
+    assert cad["FileList"][0]["Weight"] == 1.4378
+    assert cad["DataPartPDF"]["OutsidePerimeter"] == 18.25
+    assert cad["DataPartPDF"]["CuttingLength"] == 0
+    assert cad["DataPartPDF"]["InternalData"] == ""
+    assert cad["UnitCost"] == cad["UnitPrice"] == cad["UnitWeightCost"] == 5.05
+    assert unitcost_equals_unitprice_is_material_only(cad) is True
+    assert cad_kids_productid_without_pack(quote) is True
+    assert cad_kids_weight_without_productid_pack(quote) is False
+    assert cad_image_files_stamped(cad) is False
+    assert image_files_dod_pass(quote, expect_cad=True) is False
+    assert filelist_bag_snapshot(FILELIST_BAG)["ProductID"] is None
+    assert "CuttingLength" not in filelist_bag_snapshot(FILELIST_BAG)
+    assert "CuttingLength" not in PDF_GETDATA_FIELDS
+    assert empty_productid_after_bind_is_fail({"productid_n": 0}) is False
+    assert list0_pack_without_tag_ocl_is_fail(
+        {
+            "response_badge_string": "",
+            "response_ocl_n": 0,
+            "response_unit_cost": LIST0_PACK["unit_cost"],
+        }
+    ) is True
+    assert list0_pack_without_tag_ocl_is_fail(
+        {"response_tag": "", "response_ocl_n": 0}
+    ) is False
+    assert list0_pack_without_tag_ocl_is_fail(
+        {"response_badge_string": "PR", "response_ocl_n": 0}
+    ) is False
+    assert list0_pack_without_tag_ocl_is_fail({"stamped": 1}) is False
+    assert list0_pack_without_tag_ocl_is_fail(MagicMock()) is False
+    assert list0_pack_without_tag_ocl_is_fail(None) is False
+    invented = dict(dump)
+    invented["invent_cuttinglength"] = True
+    assert leftover_getpdfdata_candidates_named_not_invented(invented) is False
+    no_cands = dict(dump)
+    no_cands.pop("getpdfdata_candidates_to_verify")
+    assert leftover_getpdfdata_candidates_named_not_invented(no_cands) is False
+    assert cad["DataPartPDF"]["NumberOfContours"] == 0
+    assert cad["DataPartPDF"]["NumberOfPierces"] == 0
+    assert "NumberOfContours" not in PDF_GETDATA_FIELDS
+    assert "NumberOfPierces" not in PDF_GETDATA_FIELDS
+
+
+def test_gold_cad_pack_is_contours_pierces_and_list0_pack():
+    """Gold 14501-1: 1/1 + BadgeString PR + laser OCL + UnitCost>UWC.
+
+    Leftover Cad misses with L×W/weight/machine still had 0/0.
+    Missing step is wait-for GET /Quote/PDFInternal.
+    """
+    from secturafab.website import (
+        leftover_contours_pierces_zero_is_not_gold,
+        leftover_list0_pack_is_not_gold,
+        list0_pack_badge_ocl_contours_is_gold,
+        list0_pack_badge_ocl_is_gold,
+        list0_pack_without_tag_ocl_is_fail,
+        hole_feature_without_pdfinternal_is_fail,
+        PDF_GETDATA_FIELDS,
+        GOLD_LASER_CALCULATOR_NAMES,
+    )
+    from tests.fixtures.live_gold_cad_pack import (
+        GOLD_PART_NO,
+        GOLD_QUOTE_ID,
+        gold_cad_pack_bind_dump,
+        gold_list0_pack_result,
+        leftover_list0_pack_zero_contours_result,
+    )
+    from tests.fixtures.live_33204_1 import leftover_list0_pack_not_gold_dump
+
+    dump = gold_cad_pack_bind_dump()
+    assert dump["readonly"] is True
+    assert dump["quote_id"] == GOLD_QUOTE_ID
+    assert dump["part_no"] == GOLD_PART_NO
+    assert dump["gold_14501_1"]["number_of_contours"] == 1
+    assert dump["gold_14501_1"]["number_of_pierces"] == 1
+    assert dump["gold_14501_1"]["badge_string"] == "PR"
+    assert dump["gold_14501_1"]["product_name"] == "PL7 Ga-A36"
+    assert set(dump["gold_14501_1"]["ocl_names"]) == set(GOLD_LASER_CALCULATOR_NAMES)
+    assert dump["leftover_miss"]["number_of_contours"] == 0
+    assert dump["leftover_miss"]["number_of_pierces"] == 0
+    assert dump["leftover_miss"]["pdfinternal_xhr"] is False
+    assert dump["AddNewPDFFeature"]["xhr"] == "GET /Quote/PDFInternal"
+    assert dump["AddNewPDFFeature"]["wait_for_pdfinternal"] is True
+    assert dump["AddNewPDFFeature"]["race_400ms_not_gold"] is True
+    assert dump["AddNewPDFFeature"]["invent_internaldata"] is False
+    assert dump["GetPDFData"]["contours_not_a_bag_key"] is True
+    assert leftover_contours_pierces_zero_is_not_gold(dump) is True
+    raced = dict(dump)
+    raced["AddNewPDFFeature"] = dict(dump["AddNewPDFFeature"])
+    raced["AddNewPDFFeature"]["wait_for_pdfinternal"] = False
+    assert leftover_contours_pierces_zero_is_not_gold(raced) is False
+    invented = dict(dump)
+    invented["invent_contours_on_filelist"] = True
+    assert leftover_contours_pierces_zero_is_not_gold(invented) is False
+    assert leftover_contours_pierces_zero_is_not_gold(
+        leftover_list0_pack_not_gold_dump()
+    ) is False
+    assert leftover_contours_pierces_zero_is_not_gold(MagicMock()) is False
+    assert leftover_contours_pierces_zero_is_not_gold(None) is False
+    gold = gold_list0_pack_result()
+    assert list0_pack_badge_ocl_is_gold(gold) is True
+    assert list0_pack_badge_ocl_contours_is_gold(gold) is True
+    zero = leftover_list0_pack_zero_contours_result()
+    assert list0_pack_without_tag_ocl_is_fail(zero) is True
+    assert list0_pack_badge_ocl_is_gold(zero) is False
+    assert list0_pack_badge_ocl_contours_is_gold(zero) is False
+    no_cont = dict(gold)
+    no_cont["response_number_of_contours"] = 0
+    no_cont["response_number_of_pierces"] = 0
+    assert list0_pack_badge_ocl_is_gold(no_cont) is True
+    assert list0_pack_badge_ocl_contours_is_gold(no_cont) is False
+    assert leftover_list0_pack_is_not_gold(dump) is False
+    assert "NumberOfContours" not in PDF_GETDATA_FIELDS
+    assert "NumberOfPierces" not in PDF_GETDATA_FIELDS
+    assert hole_feature_without_pdfinternal_is_fail(
+        {"pdfinternal_xhr": False, "internaldata_n": 0},
+        [{"HoleDiameter": 0.5}],
+    ) is True
+    assert hole_feature_without_pdfinternal_is_fail(
+        {"pdfinternal_xhr": True, "internaldata_n": 1},
+        [{"HoleDiameter": 0.5}],
+    ) is False
+    assert hole_feature_without_pdfinternal_is_fail(
+        {"pdfinternal_xhr": False, "internaldata_n": 0},
+        [{"Length": 9.125, "Width": 7.5625}],
+    ) is False
+    assert hole_feature_without_pdfinternal_is_fail(None, [{"HoleDiameter": 0.75}]) is True
+    assert hole_feature_without_pdfinternal_is_fail({"pdfinternal_xhr": True}, None) is False
+
+
+def test_leftover_29341_1_productid_hole_empty_badge():
+    """Live 29341-1: ProductID+InternalData+hole; list0_pack BadgeString empty."""
+    from secturafab.forbidden_quotes import is_forbidden_quote_id, is_forbidden_quote_number
+    from secturafab.website import (
+        leftover_29341_1_hypotheses_named,
+        leftover_contours_pierces_zero_is_not_gold,
+        leftover_list0_pack_is_not_gold,
+        leftover_productid_hole_empty_badge_is_fail,
+        leftover_productid_is_not_the_pack,
+        list0_pack_badge_empty_after_productid_hole_is_fail,
+        list0_pack_badge_ocl_is_gold,
+        list0_pack_without_tag_ocl_is_fail,
+        PDF_GETDATA_FIELDS,
+        PDFGETDATA_FEATURE_KEYS,
+        QUOTE_ORDER_EDIT_GETPDFDATA,
+    )
+    from tests.fixtures.live_29341_1 import (
+        FILELIST_PRODUCT_ID,
+        SPENT_QUOTE_ID,
+        SPENT_QUOTE_NUMBER,
+        leftover_productid_hole_empty_badge_dump,
+        leftover_productid_hole_empty_badge_result,
+    )
+    from tests.fixtures.live_gold_cad_pack import (
+        gold_cad_pack_bind_dump,
+        gold_list0_pack_result,
+    )
+
+    js = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "quote_order_edit_getpdfdata.js"
+    ).read_text()
+    assert "function GetPDFData()" in js
+    assert "ProductID:r.ProductID" in js
+    assert "HasSelectedProductID" not in js
+    assert "ProductName:" not in js.split("function GetPDFData()")[1].split(
+        "function OnAddPDFClick"
+    )[0]
+    assert "NumberOfContours" not in js
+    assert "data-edit='dim1'" in js
+    assert "JSON.stringify(r)" in js
+    assert "function PDFGetData()" in js
+    assert QUOTE_ORDER_EDIT_GETPDFDATA["copies_productid_from_dataitem"] is True
+    assert "HasSelectedProductID" not in PDF_GETDATA_FIELDS
+    assert "ProductName" not in PDF_GETDATA_FIELDS
+    assert "NumberOfContours" not in PDF_GETDATA_FIELDS
+    assert "Dim1" in PDFGETDATA_FEATURE_KEYS
+
+    dump = leftover_productid_hole_empty_badge_dump()
+    assert dump["readonly"] is True
+    assert dump["quote_id"] == SPENT_QUOTE_ID
+    assert dump["filelist_bag"]["ProductID"] == FILELIST_PRODUCT_ID
+    assert dump["list0_pack"]["badge_string"] == ""
+    assert dump["list0_pack"]["ocl_n"] == 0
+    assert dump["list0_pack"]["unit_cost"] == dump["list0_pack"]["unit_weight_cost"]
+    assert dump["live_29341_1"]["internaldata_n"] == 1
+    assert dump["live_29341_1"]["internaldata_n1_is_gold_contours"] is False
+    assert leftover_productid_hole_empty_badge_is_fail(dump) is True
+    assert leftover_29341_1_hypotheses_named(dump) is True
+    assert leftover_list0_pack_is_not_gold(dump) is False
+    assert leftover_productid_is_not_the_pack(dump) is False
+    assert leftover_contours_pierces_zero_is_not_gold(dump) is False
+    tagged = dict(dump)
+    tagged["list0_pack"] = dict(dump["list0_pack"])
+    tagged["list0_pack"]["badge_string"] = "PR"
+    assert leftover_productid_hole_empty_badge_is_fail(tagged) is False
+    no_pid = dict(dump)
+    no_pid["filelist_bag"] = dict(dump["filelist_bag"])
+    no_pid["filelist_bag"]["ProductID"] = None
+    assert leftover_productid_hole_empty_badge_is_fail(no_pid) is False
+    invented = dict(dump)
+    invented["invent_internaldata"] = True
+    assert leftover_productid_hole_empty_badge_is_fail(invented) is False
+    assert leftover_productid_hole_empty_badge_is_fail(MagicMock()) is False
+    assert leftover_productid_hole_empty_badge_is_fail(None) is False
+    assert leftover_29341_1_hypotheses_named(gold_cad_pack_bind_dump()) is False
+
+    leftover = leftover_productid_hole_empty_badge_result()
+    assert list0_pack_without_tag_ocl_is_fail(leftover) is True
+    assert list0_pack_badge_ocl_is_gold(leftover) is False
+    assert list0_pack_badge_empty_after_productid_hole_is_fail(
+        leftover,
+        {"productid_n": 1, "internaldata_n": 1, "pdfinternal_xhr": True},
+        [{"HoleDiameter": 0.5, "ProductID": FILELIST_PRODUCT_ID}],
+    ) is True
+    assert list0_pack_badge_empty_after_productid_hole_is_fail(
+        leftover, {"productid_n": 1, "internaldata_n": 0}, []
+    ) is False
+    gold = gold_list0_pack_result()
+    assert list0_pack_badge_empty_after_productid_hole_is_fail(
+        gold, {"productid_n": 1, "internaldata_n": 1}, [{"HoleDiameter": 0.5}]
+    ) is False
+    assert list0_pack_badge_empty_after_productid_hole_is_fail(MagicMock()) is False
+    assert list0_pack_badge_empty_after_productid_hole_is_fail(None) is False
+    assert is_forbidden_quote_id(SPENT_QUOTE_ID)
+    assert is_forbidden_quote_number(SPENT_QUOTE_NUMBER)
+
+
+def test_leftover_1020250_1_contours_zero_after_productid_hole():
+    """Live 1020250-1: ProductID+Dim1+InternalData; Contours=0 / empty pack."""
+    from secturafab.website import (
+        leftover_1020250_1_hypotheses_named,
+        leftover_contours_zero_after_productid_hole_is_fail,
+        list0_pack_badge_ocl_is_gold,
+        list0_pack_contours_zero_after_productid_hole_is_fail,
+        QUOTE_ORDER_EDIT_UPW_INTERNAL,
+    )
+    from tests.fixtures.live_1020250_1 import (
+        FILELIST_PRODUCT_ID,
+        HOLE_DIM1,
+        leftover_contours_zero_after_productid_hole_dump,
+        leftover_contours_zero_after_productid_hole_result,
+    )
+    from tests.fixtures.live_gold_cad_pack import gold_list0_pack_result
+
+    js = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "quote_order_edit_update_pdf_internal.js"
+    ).read_text()
+    assert "function UpdatePerimeterWeight" in js
+    assert "Internal:b" in js
+    assert '$("#length").val()' in js
+    assert "function onInternalDataChange" in js
+    assert "UpdatePerimeterWeight(!0,!1)" in js
+    assert "function onLengthChangePDF" in js
+    assert "NumberOfContours" not in js
+    assert QUOTE_ORDER_EDIT_UPW_INTERNAL["posts_internal"] == "PDFGetData()"
+    assert QUOTE_ORDER_EDIT_UPW_INTERNAL["number_of_contours_bundle_hits"] == 0
+    assert QUOTE_ORDER_EDIT_UPW_INTERNAL["nest_is_later"] is True
+    assert QUOTE_ORDER_EDIT_UPW_INTERNAL["invent_contours_on_filelist"] is False
+
+    dump = leftover_contours_zero_after_productid_hole_dump()
+    assert dump["filelist_bag"]["ProductID"] == FILELIST_PRODUCT_ID
+    assert dump["live_1020250_1"]["hole_dim1"] == HOLE_DIM1
+    assert dump["list0_pack"]["number_of_contours"] == 0
+    assert dump["list0_pack"]["badge_string"] == ""
+    assert leftover_contours_zero_after_productid_hole_is_fail(dump) is True
+    assert leftover_1020250_1_hypotheses_named(dump) is True
+    invented = dict(dump)
+    invented["invent_contours_on_filelist"] = True
+    assert leftover_contours_zero_after_productid_hole_is_fail(invented) is False
+    nest = dict(dump)
+    nest["live_1020250_1"] = dict(dump["live_1020250_1"])
+    nest["live_1020250_1"]["nest_best_sheet"] = True
+    assert leftover_contours_zero_after_productid_hole_is_fail(nest) is False
+    assert leftover_contours_zero_after_productid_hole_is_fail(None) is False
+
+    from tests.fixtures.live_1020250_1 import (
+        leftover_form_lw_unsynced_after_internal_dim1_dump,
+        leftover_form_lw_unsynced_stamp,
+    )
+    from secturafab.website import (
+        leftover_form_lw_unsynced_after_internal_dim1_is_fail,
+        form_lw_unsynced_or_empty_perimeter_is_fail,
+    )
+    from secturafab.forbidden_quotes import is_forbidden_quote_id, is_forbidden_quote_number
+
+    lw = leftover_form_lw_unsynced_after_internal_dim1_dump()
+    assert leftover_form_lw_unsynced_after_internal_dim1_is_fail(lw) is True
+    synced = dict(lw)
+    synced["live_5a231aa"] = dict(lw["live_5a231aa"])
+    synced["live_5a231aa"]["form_lw_synced"] = True
+    synced["live_5a231aa"]["outside_perimeter_n"] = 1
+    assert leftover_form_lw_unsynced_after_internal_dim1_is_fail(synced) is False
+    stamp_miss = leftover_form_lw_unsynced_stamp()
+    assert form_lw_unsynced_or_empty_perimeter_is_fail(stamp_miss) is True
+    stamp_ok = dict(stamp_miss)
+    stamp_ok["form_lw_synced"] = True
+    stamp_ok["outside_perimeter_n"] = 1
+    assert form_lw_unsynced_or_empty_perimeter_is_fail(stamp_ok) is False
+    assert form_lw_unsynced_or_empty_perimeter_is_fail({"outside_perimeter_n": 1}) is False
+    assert form_lw_unsynced_or_empty_perimeter_is_fail(None) is False
+    assert is_forbidden_quote_id("3e222215-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("1ca884cc-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("111633b8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("6150c5c7-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("bab8f668-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("c751780e-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("2a83a96b-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("9ef2fedd-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("97ae3e4f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("3ac04f8a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("6d4373bc-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("d2ec4357-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("bf4221e8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("ad1777be-1951-42b6-9be4-d97c3a42dd94")
+    assert is_forbidden_quote_id("7a631c5f-39ca-40fc-b733-88b2b2d04636")
+    assert is_forbidden_quote_id("4b8d6ae6-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("6bfde652-b65a-41b7-840c-af8f088097d4")
+    assert is_forbidden_quote_id("87e64b3a-210e-42d9-bfae-1921b1540f16")
+    assert is_forbidden_quote_id("5804a001-68ef-4eab-a587-ba2d73718924")
+    assert is_forbidden_quote_id("3f3802da-bc11-4a71-83a0-62454b33f69c")
+    assert is_forbidden_quote_id("8e5f04fa-661c-4624-8047-8d3c8c6b359d")
+    assert is_forbidden_quote_id("3aae24a8-d619-4906-ab00-6db4d7950d0e")
+    assert is_forbidden_quote_id("2a07e6d0-cb9d-42f6-959f-5f33ea9fb381")
+    assert is_forbidden_quote_id("aa55937d-45af-4559-9542-843a144e9865")
+    assert is_forbidden_quote_id("84234fb5-42cb-49a4-b701-931e834c4ca8")
+    assert is_forbidden_quote_id("4216109a-4603-45ed-a83d-6c2f071a8c6c")
+    assert is_forbidden_quote_id("8a66e074-1c50-4671-82ff-d2d2d8e82082")
+    assert is_forbidden_quote_id("c71d2096-1cbd-40c8-877e-97f4c86df410")
+    assert is_forbidden_quote_id("30550221-733a-4baf-866a-73396a0d799b")
+    assert is_forbidden_quote_id("7f768328-1a9a-4498-af74-f2aa78b930ef")
+    assert is_forbidden_quote_id("3ff05f3a-79a3-48f7-add1-0ea8bbf9d884")
+    assert is_forbidden_quote_id("b15a892e-aca3-47aa-8272-3e436e980468")
+    assert is_forbidden_quote_id("fb3080d8-ad8d-4e8b-9902-c5e155ab6dc1")
+    assert is_forbidden_quote_id("5c245fbb-04aa-4746-9845-4dc59aa2d9fe")
+    assert is_forbidden_quote_id("cf656d2a-a432-46c4-9ad2-439807194442")
+    assert is_forbidden_quote_id("50c6d543-05e4-4b76-a507-4b6b7a19d6b4")
+    assert is_forbidden_quote_id("aae055fe-46c7-4fc7-bc12-f10d4de30f54")
+    assert is_forbidden_quote_id("46eed794-257d-4987-ae48-98c7d6c7dd07")
+    assert is_forbidden_quote_id("f300ecea-ccf3-4c5e-adaf-db73bdfb80fb")
+    assert is_forbidden_quote_id("5dc50b55-f546-449f-9f23-7f7ddf67772b")
+    assert is_forbidden_quote_number("1007471-1")
+    assert is_forbidden_quote_number("34602-2")
+    assert is_forbidden_quote_number("34603-2")
+    assert is_forbidden_quote_number("1007756-1")
+    assert is_forbidden_quote_number("1001898-4")
+    assert is_forbidden_quote_number("1008763-1")
+    assert is_forbidden_quote_number("1020243-1")
+    assert is_forbidden_quote_number("33209-1")
+    assert is_forbidden_quote_number("21846-1")
+    assert is_forbidden_quote_number("20860-1")
+    assert is_forbidden_quote_number("1002013-1")
+    assert is_forbidden_quote_number("25587")
+    assert is_forbidden_quote_number("25587-1")
+    assert is_forbidden_quote_number("21625-1")
+    assert is_forbidden_quote_number("15046-1")
+    assert is_forbidden_quote_number("10081-1")
+    assert is_forbidden_quote_number("21667-1")
+    assert is_forbidden_quote_number("21666-1")
+    assert is_forbidden_quote_number("21674-1")
+    assert is_forbidden_quote_number("21671-1")
+    assert is_forbidden_quote_number("21675-1")
+    assert is_forbidden_quote_number("1007510-1")
+    assert is_forbidden_quote_number("1010110-1")
+    assert is_forbidden_quote_number("1004711-1")
+    assert is_forbidden_quote_number("25009-1")
+    assert is_forbidden_quote_number("25009-2")
+    assert is_forbidden_quote_number("1010106-1")
+    assert is_forbidden_quote_number("1010111-1")
+    assert is_forbidden_quote_number("35136-1")
+    assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
+    assert is_forbidden_quote_id("8973f890-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("14327-5")
+    assert is_forbidden_quote_id("c5cd8689-fed4-44d6-b2f5-f96bda8af424")
+    assert is_forbidden_quote_id("c5cd8689-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("14327-8")
+    assert is_forbidden_quote_id("1cd941c6-9167-41e9-ac93-b7268f18f282")
+    assert is_forbidden_quote_id("1cd941c6-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10329")
+    assert is_forbidden_quote_number("14327-3")
+    assert is_forbidden_quote_id("75f07c2b-b000-47f4-9caa-c14520e2b068")
+    assert is_forbidden_quote_id("75f07c2b-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10330")
+    assert is_forbidden_quote_number("21841-1")
+    assert is_forbidden_quote_id("aed89628-b018-4b11-852f-bfed5bf8b964")
+    assert is_forbidden_quote_id("aed89628-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10331")
+    assert is_forbidden_quote_number("14327-1")
+    assert is_forbidden_quote_id("5e72fe39-edc1-467c-925d-f1c8d74cc5d3")
+    assert is_forbidden_quote_id("5e72fe39-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10332")
+    assert is_forbidden_quote_number("ZZ-DEL-wrong-org-Time")
+    assert is_forbidden_quote_number("Q10333")
+    assert is_forbidden_quote_id("b5f56ac3-326d-48e9-b82d-1e09a7897107")
+    assert is_forbidden_quote_id("b5f56ac3-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10336")
+    assert is_forbidden_quote_id("f73dd116-f33e-485f-947c-f5662633d23a")
+    assert is_forbidden_quote_id("f73dd116-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10339")
+    assert is_forbidden_quote_id("76cecc73-257e-4fa7-91b7-ed15a4c90caa")
+    assert is_forbidden_quote_id("76cecc73-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10344")
+    assert is_forbidden_quote_id("55f12530-e97b-40cc-8e7f-e799d9d6b234")
+    assert is_forbidden_quote_id("55f12530-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10346")
+    assert is_forbidden_quote_number("B80510901")
+    assert is_forbidden_quote_id("d859a239-a811-4b23-a812-29921956e880")
+    assert is_forbidden_quote_id("d859a239-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10348")
+    assert is_forbidden_quote_number("H.16.70")
+    assert is_forbidden_quote_id("1defeed8-d95d-4939-b2fd-0a1774e56c6e")
+    assert is_forbidden_quote_id("1defeed8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10349")
+    assert is_forbidden_quote_number("D.H.30.96")
+    assert is_forbidden_quote_id("c4394006-667f-4bf6-a9b0-aa4b1722160a")
+    assert is_forbidden_quote_id("c4394006-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10351")
+    assert is_forbidden_quote_number("H.8.38")
+    assert is_forbidden_quote_id("0c62fce9-d56a-434e-a33a-372ddb12a2b4")
+    assert is_forbidden_quote_id("0c62fce9-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10354")
+    assert is_forbidden_quote_number("D.H.38.96")
+    assert is_forbidden_quote_id("7881d4b3-5408-4ff4-ab18-6490170e6331")
+    assert is_forbidden_quote_id("7881d4b3-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10356")
+    assert is_forbidden_quote_number("V.20.78")
+    assert is_forbidden_quote_id("05bee105-824c-4100-9bc8-f66727fa5681")
+    assert is_forbidden_quote_id("05bee105-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10365")
+    assert is_forbidden_quote_number("H.10.38")
+    assert is_forbidden_quote_id("7801ab99-13af-4efc-b996-897daf8e677a")
+    assert is_forbidden_quote_id("7801ab99-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10366")
+    assert is_forbidden_quote_number("H.6.38")
+    assert is_forbidden_quote_id("fd0b6e45-d508-4b01-bbc0-45b338cd966d")
+    assert is_forbidden_quote_id("fd0b6e45-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10367")
+    assert is_forbidden_quote_number("10289-5")
+    assert is_forbidden_quote_id("4c9c25d4-439f-42be-8f6f-7444e5f05497")
+    assert is_forbidden_quote_id("4c9c25d4-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10369")
+    assert is_forbidden_quote_id("82c28793-96e8-457b-9559-979c2b761d4e")
+    assert is_forbidden_quote_id("82c28793-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10368")
+    assert is_forbidden_quote_id("5e0ce1df-e18b-4118-945a-8be85378069e")
+    assert is_forbidden_quote_id("5e0ce1df-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10371")
+    assert is_forbidden_quote_id("67472e72-d01b-48e2-8040-1db505659d26")
+    assert is_forbidden_quote_id("67472e72-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10372")
+    assert is_forbidden_quote_id("d62e2ad1-7324-4034-a44e-cbd7a3acee9d")
+    assert is_forbidden_quote_id("d62e2ad1-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10373")
+    assert is_forbidden_quote_id("523d8328-f310-434d-a502-00502c987dd2")
+    assert is_forbidden_quote_id("523d8328-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10374")
+    assert is_forbidden_quote_id("beb20d22-173a-4b0d-be8d-c1263538cdb5")
+    assert is_forbidden_quote_id("beb20d22-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10375")
+    assert is_forbidden_quote_id("60de939f-85f0-4f1a-9412-39c29211ad30")
+    assert is_forbidden_quote_id("60de939f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10377")
+    assert is_forbidden_quote_id("12bd2530-e6ed-4792-9e47-bdd20fff1e70")
+    assert is_forbidden_quote_id("12bd2530-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10379")
+    assert is_forbidden_quote_id("70e69d9c-9d9f-4b2e-b7f1-7ac9ae80da9e")
+    assert is_forbidden_quote_id("70e69d9c-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10380")
+    assert is_forbidden_quote_id("754089f2-fd55-4e3d-865c-8dffa63181fa")
+    assert is_forbidden_quote_id("754089f2-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10381")
+    assert is_forbidden_quote_id("bb31a132-c93a-4c21-84f3-7a83c62cead6")
+    assert is_forbidden_quote_id("bb31a132-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10382")
+    assert is_forbidden_quote_id("2d42dcc3-76e3-439b-be02-32c2f1b3c9a2")
+    assert is_forbidden_quote_id("2d42dcc3-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10383")
+    assert is_forbidden_quote_id("9d7cc06e-0c7a-4393-a49f-498a1f484c31")
+    assert is_forbidden_quote_id("9d7cc06e-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10399")
+    assert is_forbidden_quote_id("039d8464-6fe1-424a-a120-a31e59964e7e")
+    assert is_forbidden_quote_id("039d8464-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10420")
+    assert is_forbidden_quote_id("4054443b-bc2a-47f4-95b1-b0ed037868c9")
+    assert is_forbidden_quote_id("4054443b-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10450")
+    assert is_forbidden_quote_id("1d59ef4a-5b75-49e7-89fe-02e125830162")
+    assert is_forbidden_quote_id("1d59ef4a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10429")
+    assert is_forbidden_quote_id("a24c6896-ac5c-4d52-9ac6-1c208440940c")
+    assert is_forbidden_quote_id("a24c6896-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10475")
+    assert is_forbidden_quote_id("eb9a17c4-c28b-4fc1-8bda-3d50d6ee2d3b")
+    assert is_forbidden_quote_id("eb9a17c4-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10476")
+    assert is_forbidden_quote_id("d667c6f2-6075-4ff1-8688-3ac9671f9bd6")
+    assert is_forbidden_quote_id("d667c6f2-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10479")
+    assert is_forbidden_quote_id("e0990112-d127-4db3-8276-3e80bee233ee")
+    assert is_forbidden_quote_id("e0990112-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10480")
+    assert is_forbidden_quote_id("e7e4abd1-bb4f-4b6e-be18-269b2d17e2bf")
+    assert is_forbidden_quote_id("e7e4abd1-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10481")
+    assert is_forbidden_quote_id("2cd0281e-b5eb-4b51-9796-0cec3d482eb4")
+    assert is_forbidden_quote_id("2cd0281e-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10482")
+    assert is_forbidden_quote_id("07941333-596d-4507-b72d-271a635e07d1")
+    assert is_forbidden_quote_id("07941333-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10483")
+    assert is_forbidden_quote_id("11e2bd0a-bd0a-439b-b277-8862ac4528e2")
+    assert is_forbidden_quote_id("11e2bd0a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10484")
+    assert is_forbidden_quote_id("98310eb3-a60d-42ea-bfa9-3fd8e408b013")
+    assert is_forbidden_quote_id("98310eb3-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10485")
+    assert is_forbidden_quote_id("e293584b-18bf-4114-8a07-2e2a942a941d")
+    assert is_forbidden_quote_id("e293584b-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10486")
+    assert is_forbidden_quote_id("8f3a2eef-60dd-437c-a595-c63df1ded2d6")
+    assert is_forbidden_quote_id("8f3a2eef-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10430")
+    assert is_forbidden_quote_id("15e6b5ad-9919-49ab-aae1-24a7b44f25c2")
+    assert is_forbidden_quote_id("15e6b5ad-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10431")
+    assert is_forbidden_quote_id("1ddb1b9a-0267-40d6-b448-3798dd6f3120")
+    assert is_forbidden_quote_id("1ddb1b9a-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10435")
+    assert is_forbidden_quote_id("bec3c218-de87-4a3d-b9db-2429aaeb5e45")
+    assert is_forbidden_quote_id("bec3c218-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10470")
+    assert is_forbidden_quote_number("Q10471")
+    assert is_forbidden_quote_number("Q10472")
+    assert is_forbidden_quote_number("Q10473")
+    assert is_forbidden_quote_number("Q10474")
+    assert is_forbidden_quote_number("Q10421")
+    assert is_forbidden_quote_id("38fa25fc-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10407")
+    assert is_forbidden_quote_id("d796cdbe-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10408")
+    assert is_forbidden_quote_id("09bae33d-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10350")
+    assert is_forbidden_quote_number("21843-1")
+    assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
+    assert is_forbidden_quote_id("eb6c48b8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10338")
+    assert is_forbidden_quote_number("Q10339")
+    assert is_forbidden_quote_number("CROSSDRAIN-12X7X60")
+    assert is_forbidden_quote_id("4902c597-2ad6-4ebf-b577-dd6cf20a7d87")
+    assert is_forbidden_quote_id("4902c597-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("H638-CADPLATE")
+    assert is_forbidden_quote_number("ZZ-DEL-H638-CADPLATE")
+    assert is_forbidden_quote_number("Q10334")
+    assert is_forbidden_quote_number("ZZ-DEL-Q10334")
+    assert is_forbidden_quote_number("Q10335")
+    assert is_forbidden_quote_number("ZZ-DEL-Q10335")
+    assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
+    assert is_forbidden_quote_id("5e7bfc0b-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
+    assert is_forbidden_quote_id("e2683a3f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("bcff1a24-1111-2222-3333-444444444444")
+
+    from tests.fixtures.live_1020250_1 import (
+        leftover_finish_filelist_n0_after_form_lw_dump,
+        leftover_finish_filelist_n0_stamp,
+        leftover_finish_filelist_n0_result,
+    )
+    from secturafab.website import (
+        leftover_finish_filelist_n0_after_form_lw_is_fail,
+        getpdfdata_empty_or_incomplete_before_finish_is_fail,
+        finish_empty_filelist_after_good_stamp_is_fail,
+    )
+
+    fl0 = leftover_finish_filelist_n0_after_form_lw_dump()
+    assert leftover_finish_filelist_n0_after_form_lw_is_fail(fl0) is True
+    fl0_ok = dict(fl0)
+    fl0_ok["live_1ca884cc"] = dict(fl0["live_1ca884cc"])
+    fl0_ok["live_1ca884cc"]["finish_filelist_n"] = 1
+    assert leftover_finish_filelist_n0_after_form_lw_is_fail(fl0_ok) is False
+    stamp_empty = leftover_finish_filelist_n0_stamp()
+    assert getpdfdata_empty_or_incomplete_before_finish_is_fail(
+        stamp_empty, [{"HoleDiameter": HOLE_DIM1}]
+    ) is True
+    stamp_ready = dict(stamp_empty)
+    stamp_ready["getpdfdata_n"] = 1
+    stamp_ready["getpdfdata_productid_n"] = 1
+    stamp_ready["getpdfdata_outside_perimeter_n"] = 1
+    stamp_ready["getpdfdata_internal_dim1_n"] = 1
+    assert getpdfdata_empty_or_incomplete_before_finish_is_fail(
+        stamp_ready, [{"HoleDiameter": HOLE_DIM1}]
+    ) is False
+    assert getpdfdata_empty_or_incomplete_before_finish_is_fail(
+        {"outside_perimeter_n": 1, "form_lw_synced": True}
+    ) is False
+    fl0_result = leftover_finish_filelist_n0_result()
+    assert finish_empty_filelist_after_good_stamp_is_fail(
+        fl0_result, stamp_empty
+    ) is True
+    assert finish_empty_filelist_after_good_stamp_is_fail(None) is False
+
+    from tests.fixtures.live_1020250_1 import (
+        leftover_finish_internaldata_null_dump,
+        leftover_finish_internaldata_null_result,
+    )
+    from secturafab.website import (
+        leftover_finish_internaldata_null_after_dim1_count_is_fail,
+        finish_bag_internaldata_empty_after_hole_is_fail,
+    )
+
+    id_null = leftover_finish_internaldata_null_dump()
+    assert leftover_1020250_1_hypotheses_named(id_null) is True
+    assert leftover_finish_internaldata_null_after_dim1_count_is_fail(id_null) is True
+    assert leftover_finish_internaldata_null_after_dim1_count_is_fail(None) is False
+    assert id_null["filelist_bag"]["InternalData"] is None
+    id_ok = dict(id_null)
+    id_ok["live_6150c5c7"] = dict(id_null["live_6150c5c7"])
+    id_ok["live_6150c5c7"]["filelist_internaldata"] = (
+        '[{"Type":"hole","Dim1":0.5,"Dim2":0,"Qty":1,"Qty2":0,"Note":""}]'
+    )
+    id_ok["live_6150c5c7"]["filelist_internaldata_dim1_n"] = 1
+    id_ok["filelist_bag"] = dict(id_null["filelist_bag"])
+    id_ok["filelist_bag"]["InternalData"] = (
+        id_ok["live_6150c5c7"]["filelist_internaldata"]
+    )
+    assert leftover_finish_internaldata_null_after_dim1_count_is_fail(id_ok) is False
+    id_result = leftover_finish_internaldata_null_result()
+    assert list0_pack_badge_ocl_is_gold(id_result) is False
+    stamp_id = leftover_finish_filelist_n0_stamp()
+    stamp_id["getpdfdata_n"] = 1
+    stamp_id["getpdfdata_productid_n"] = 1
+    stamp_id["getpdfdata_outside_perimeter_n"] = 1
+    stamp_id["getpdfdata_internal_dim1_n"] = 1
+    assert finish_bag_internaldata_empty_after_hole_is_fail(
+        id_result, stamp_id, [{"HoleDiameter": HOLE_DIM1}]
+    ) is True
+    assert finish_bag_internaldata_empty_after_hole_is_fail(fl0_result) is False
+    assert leftover_finish_internaldata_null_after_dim1_count_is_fail(
+        {
+            "invent_contours_on_filelist": False,
+            "operation_profile_graft": False,
+            "live_6150c5c7": {
+                "getpdfdata_n": 1,
+                "getpdfdata_internal_dim1_n": 1,
+                "finish_filelist_n": 1,
+                "filelist_internaldata": None,
+                "filelist_internaldata_dim1_n": 0,
+                "finish_why": "ok",
+            },
+            "filelist_bag": {
+                "ProductID": FILELIST_PRODUCT_ID,
+                "OutsidePerimeter": 69.5,
+                "InternalData": None,
+            },
+        }
+    ) is True
+
+    from tests.fixtures.live_1020250_1 import (
+        leftover_finish_producttype_bar_dump,
+        leftover_finish_producttype_bar_result,
+    )
+    from secturafab.website import (
+        leftover_finish_producttype_bar_after_plate_is_fail,
+        cad_plate_filelist_bar_producttype_is_fail,
+        CAD_IMAGE_FILES_PLATE_PRODUCT_TYPE,
+        filelist_producttype_is_linear_bar,
+        filelist_producttype_is_plate_or_sheet,
+    )
+
+    assert CAD_IMAGE_FILES_PLATE_PRODUCT_TYPE == "prt_pdf"
+    assert filelist_producttype_is_linear_bar("bar") is True
+    assert filelist_producttype_is_linear_bar("bar_flat") is True
+    assert filelist_producttype_is_linear_bar("prt_pdf") is False
+    assert filelist_producttype_is_plate_or_sheet("prt_pdf") is True
+    assert filelist_producttype_is_plate_or_sheet("bar") is False
+    pt_bar = leftover_finish_producttype_bar_dump()
+    assert leftover_1020250_1_hypotheses_named(pt_bar) is True
+    assert leftover_finish_producttype_bar_after_plate_is_fail(pt_bar) is True
+    assert leftover_finish_producttype_bar_after_plate_is_fail(None) is False
+    pt_ok = dict(pt_bar)
+    pt_ok["live_bab8f668"] = dict(pt_bar["live_bab8f668"])
+    pt_ok["live_bab8f668"]["filelist_producttype"] = "prt_pdf"
+    pt_ok["live_bab8f668"]["filelist_productsubtype"] = "prt_pdf"
+    pt_ok["filelist_bag"] = dict(pt_bar["filelist_bag"])
+    pt_ok["filelist_bag"]["ProductType"] = "prt_pdf"
+    pt_ok["filelist_bag"]["ProductSubType"] = "prt_pdf"
+    assert leftover_finish_producttype_bar_after_plate_is_fail(pt_ok) is False
+    pt_result = leftover_finish_producttype_bar_result()
+    assert list0_pack_badge_ocl_is_gold(pt_result) is False
+    assert cad_plate_filelist_bar_producttype_is_fail(
+        pt_result,
+        stamp_id,
+        [{"HoleDiameter": HOLE_DIM1, "ProductID": FILELIST_PRODUCT_ID, "ItemType": "cad"}],
+    ) is True
+    assert cad_plate_filelist_bar_producttype_is_fail(fl0_result) is False
+
+    from tests.fixtures.live_1020250_1 import (
+        leftover_finish_prt_pdf_still_contours_zero_dump,
+        leftover_finish_prt_pdf_still_contours_zero_result,
+    )
+    from secturafab.website import (
+        leftover_finish_prt_pdf_still_contours_zero_is_fail,
+        finish_prt_pdf_still_contours_zero_is_fail,
+    )
+
+    prt = leftover_finish_prt_pdf_still_contours_zero_dump()
+    assert leftover_1020250_1_hypotheses_named(prt) is True
+    assert leftover_finish_prt_pdf_still_contours_zero_is_fail(prt) is True
+    assert leftover_finish_prt_pdf_still_contours_zero_is_fail(None) is False
+    prt_ok = dict(prt)
+    prt_ok["live_c751780e"] = dict(prt["live_c751780e"])
+    prt_ok["live_c751780e"]["number_of_contours"] = 1
+    prt_ok["live_c751780e"]["badge_string"] = "PR"
+    assert leftover_finish_prt_pdf_still_contours_zero_is_fail(prt_ok) is False
+    prt_result = leftover_finish_prt_pdf_still_contours_zero_result()
+    assert list0_pack_badge_ocl_is_gold(prt_result) is False
+    assert finish_prt_pdf_still_contours_zero_is_fail(prt_result, stamp_id) is True
+    assert finish_prt_pdf_still_contours_zero_is_fail(fl0_result) is False
+
+    from tests.fixtures.live_1020250_1 import (
+        leftover_finish_materialcost_empty_after_plate_dump,
+        leftover_finish_materialcost_empty_after_plate_result,
+        leftover_empty_materialcost_abort_blocked_dump,
+        leftover_empty_materialcost_abort_blocked_result,
+        OUTSIDE_AREA,
+        TRUE_WEIGHT,
+    )
+    from secturafab.website import (
+        leftover_finish_materialcost_empty_after_plate_is_fail,
+        leftover_empty_materialcost_abort_blocked_finish_is_fail,
+        finish_empty_materialcost_after_plate_is_fail,
+        finish_empty_materialcost_must_not_skip,
+        filelist_material_cost_empty,
+        catalog_material_cost_value,
+    )
+
+    assert filelist_material_cost_empty("") is True
+    assert filelist_material_cost_empty(0) is True
+    assert filelist_material_cost_empty(None) is True
+    assert filelist_material_cost_empty(0.55) is False
+    assert catalog_material_cost_value({}) is None
+    assert catalog_material_cost_value({"Cost": 12.5}) is None
+    assert catalog_material_cost_value({"Price": 9.9}) is None
+    assert catalog_material_cost_value({"UnitCost": 7.7}) is None
+    assert catalog_material_cost_value({"MaterialCost": 0.55}) == 0.55
+    assert catalog_material_cost_value({"CostPerPound": 0.41}) == 0.41
+    assert catalog_material_cost_value({"PricePerPound": 0.62}) == 0.62
+    assert catalog_material_cost_value({"Cost_Per_Pound": 0.44}) == 0.44
+    from secturafab.website import catalog_material_cost_units
+
+    assert catalog_material_cost_units({"CostPerPound_Units": "pound"}) == "pound"
+    assert catalog_material_cost_units({"Cost": 12.5}) == ""
+    mc = leftover_finish_materialcost_empty_after_plate_dump()
+    assert leftover_1020250_1_hypotheses_named(mc) is True
+    assert leftover_finish_materialcost_empty_after_plate_is_fail(mc) is True
+    assert leftover_finish_materialcost_empty_after_plate_is_fail(None) is False
+    assert leftover_finish_materialcost_empty_after_plate_is_fail(prt) is False
+    assert mc["filelist_bag"]["OutsideArea"] == OUTSIDE_AREA
+    assert mc["filelist_bag"]["TrueWeight"] == TRUE_WEIGHT
+    assert mc["filelist_bag"]["MaterialCost"] == ""
+    assert mc["filelist_bag"]["Description"] == "1020250-1"
+    mc_ok = dict(mc)
+    mc_ok["live_2a83a96b"] = dict(mc["live_2a83a96b"])
+    mc_ok["live_2a83a96b"]["materialcost"] = 0.55
+    mc_ok["filelist_bag"] = dict(mc["filelist_bag"])
+    mc_ok["filelist_bag"]["MaterialCost"] = 0.55
+    assert leftover_finish_materialcost_empty_after_plate_is_fail(mc_ok) is False
+    mc_result = leftover_finish_materialcost_empty_after_plate_result()
+    assert list0_pack_badge_ocl_is_gold(mc_result) is False
+    assert finish_empty_materialcost_after_plate_is_fail(
+        mc_result,
+        stamp_id,
+        [{"HoleDiameter": HOLE_DIM1, "ProductID": FILELIST_PRODUCT_ID, "ItemType": "cad"}],
+    ) is True
+    assert finish_empty_materialcost_must_not_skip(mc_result) is False
+    assert finish_empty_materialcost_after_plate_is_fail(fl0_result) is False
+    assert finish_empty_materialcost_after_plate_is_fail(None) is False
+    from secturafab.website import (
+        GOLD_LASER_CALCULATOR_NAMES,
+        plate_filelist_material_cost_empty,
+    )
+
+    gold_mc = dict(mc_result)
+    gold_mc["response_badge_string"] = "PR"
+    gold_mc["response_ocl_n"] = len(GOLD_LASER_CALCULATOR_NAMES)
+    gold_mc["response_ocl_names"] = list(GOLD_LASER_CALCULATOR_NAMES)
+    gold_mc["response_unit_cost"] = 12.5
+    gold_mc["response_unit_weight_cost"] = 3.0
+    gold_mc["response_number_of_contours"] = 1
+    gold_mc["response_number_of_pierces"] = 1
+    assert plate_filelist_material_cost_empty(
+        gold_mc,
+        stamp_id,
+        [{"HoleDiameter": HOLE_DIM1, "ProductID": FILELIST_PRODUCT_ID, "ItemType": "cad"}],
+    ) is True
+    assert finish_empty_materialcost_after_plate_is_fail(
+        gold_mc,
+        stamp_id,
+        [{"HoleDiameter": HOLE_DIM1, "ProductID": FILELIST_PRODUCT_ID, "ItemType": "cad"}],
+    ) is False
+    abort = leftover_empty_materialcost_abort_blocked_dump()
+    assert leftover_1020250_1_hypotheses_named(abort) is True
+    assert leftover_empty_materialcost_abort_blocked_finish_is_fail(abort) is True
+    assert leftover_empty_materialcost_abort_blocked_finish_is_fail(None) is False
+    assert leftover_empty_materialcost_abort_blocked_finish_is_fail(mc) is False
+    abort_ok = dict(abort)
+    abort_ok["live_9ef2fedd"] = dict(abort["live_9ef2fedd"])
+    abort_ok["live_9ef2fedd"]["finish_why"] = ""
+    abort_ok["live_9ef2fedd"]["via"] = "page_fn"
+    assert leftover_empty_materialcost_abort_blocked_finish_is_fail(abort_ok) is False
+    abort_result = leftover_empty_materialcost_abort_blocked_result()
+    assert finish_empty_materialcost_must_not_skip(abort_result) is True
+    assert abort_result["via"] == "skipped"
+    assert abort_result["finish_why"] == "empty_materialcost"
+
+    from tests.fixtures.live_1020250_1 import (
+        leftover_list0_data_null_errorcount_dump,
+        leftover_list0_data_null_errorcount_result,
+    )
+    from secturafab.website import (
+        leftover_list0_data_null_errorcount_is_fail,
+        finish_list0_data_null_or_errorcount_is_fail,
+        CAD_IMAGE_FILES_MACHINE,
+        CAD_IMAGE_FILES_LOCATION,
+    )
+
+    assert CAD_IMAGE_FILES_MACHINE == "Laser"
+    assert CAD_IMAGE_FILES_LOCATION == "Bay1"
+    data_none = leftover_list0_data_null_errorcount_dump()
+    assert leftover_1020250_1_hypotheses_named(data_none) is True
+    assert leftover_list0_data_null_errorcount_is_fail(data_none) is True
+    assert leftover_list0_data_null_errorcount_is_fail(None) is False
+    assert leftover_list0_data_null_errorcount_is_fail(mc) is False
+    assert leftover_list0_data_null_errorcount_is_fail(abort) is False
+    assert data_none["filelist_bag"]["Machine"] == "Laser - Bay1"
+    assert data_none["filelist_bag"]["Location"] is None
+    assert data_none["live_97ae3e4f"]["data"] is None
+    assert data_none["live_97ae3e4f"]["error_count"] == 1
+    data_ok = dict(data_none)
+    data_ok["live_97ae3e4f"] = dict(data_none["live_97ae3e4f"])
+    data_ok["live_97ae3e4f"]["data"] = "DataPartPDF"
+    data_ok["live_97ae3e4f"]["data_kind"] = "DataPartPDF"
+    data_ok["live_97ae3e4f"]["data_present"] = True
+    data_ok["live_97ae3e4f"]["error_count"] = 0
+    data_ok["live_97ae3e4f"]["number_of_contours"] = 1
+    assert leftover_list0_data_null_errorcount_is_fail(data_ok) is False
+    data_result = leftover_list0_data_null_errorcount_result()
+    assert list0_pack_badge_ocl_is_gold(data_result) is False
+    assert finish_list0_data_null_or_errorcount_is_fail(data_result) is True
+    assert finish_list0_data_null_or_errorcount_is_fail(fl0_result) is False
+    assert finish_list0_data_null_or_errorcount_is_fail(mc_result) is False
+    assert finish_list0_data_null_or_errorcount_is_fail(None) is False
+    gold_data = gold_list0_pack_result()
+    assert finish_list0_data_null_or_errorcount_is_fail(gold_data) is False
+    assert gold_data["response_data_kind"] == "DataPartPDF"
+    assert gold_data["response_error_count"] == 0
+
+    leftover = leftover_contours_zero_after_productid_hole_result()
+    assert list0_pack_badge_ocl_is_gold(leftover) is False
+    assert list0_pack_contours_zero_after_productid_hole_is_fail(
+        leftover,
+        {"productid_n": 1, "internaldata_n": 1, "getperim_internal_dim1_n": 0},
+        [{"HoleDiameter": HOLE_DIM1, "ProductID": FILELIST_PRODUCT_ID}],
+    ) is True
+    gold = gold_list0_pack_result()
+    assert list0_pack_contours_zero_after_productid_hole_is_fail(
+        gold, {"productid_n": 1, "internaldata_n": 1}, [{"HoleDiameter": 0.5}]
+    ) is False
+    assert list0_pack_contours_zero_after_productid_hole_is_fail(None) is False
+
+
+def test_gold_linear_pack_is_saw_and_list0_pack():
+    """Gold Long: Saw + Saw-Setup + UnitCost filled + ProductID/SKU.
+
+    Leftover cookie AddItem_Linear 302 / empty Saw OCL is FAIL.
+    Missing step is the page Long click (not cookie HTTP).
+    """
+    from secturafab.website import (
+        GOLD_SAW_CALCULATOR_NAMES,
+        cookie_http_additem_linear_is_not_success,
+        leftover_cookie_linear_empty_saw_is_fail,
+        linear_finish_from_page_fn,
+        list0_pack_empty_saw_ocl_is_fail,
+        list0_pack_saw_ocl_is_gold,
+        long_without_page_click_is_fail,
+    )
+    from tests.fixtures.live_gold_linear_pack import (
+        GOLD_QUOTE_ID,
+        gold_linear_list0_pack_result,
+        gold_linear_pack_bind_dump,
+        leftover_cookie_linear_302_result,
+        leftover_cookie_linear_empty_saw_dump,
+    )
+
+    dump = gold_linear_pack_bind_dump()
+    assert dump["readonly"] is True
+    assert dump["quote_id"] == GOLD_QUOTE_ID
+    assert dump["invent_internal"] is False
+    assert dump["cookie_additem_linear"] is False
+    assert dump["graft_operation_saw"] is False
+    assert set(dump["gold_linear"]["ocl_names"]) == set(GOLD_SAW_CALCULATOR_NAMES)
+    assert dump["gold_linear"]["internal"] == ""
+    assert dump["OnAddLinearClick"]["via"] == "page_fn"
+    assert dump["OnAddLinearClick"]["cookie_http_fail_closed"] is True
+    assert dump["OnAddLinearClick"]["not"] == "AddNewItemHTML('linear')"
+    assert dump["Long"]["open"] == "AddNewItemHTML('bar') / #but_bar"
+    assert dump["Long"]["not"] == "AddNewItemHTML('linear')"
+    gold = gold_linear_list0_pack_result()
+    assert list0_pack_saw_ocl_is_gold(gold) is True
+    assert list0_pack_empty_saw_ocl_is_fail(gold) is False
+    assert linear_finish_from_page_fn(gold) is True
+    assert cookie_http_additem_linear_is_not_success(gold) is False
+    leftover = leftover_cookie_linear_302_result()
+    assert leftover["via"] == "cookie_http"
+    assert leftover["status"] == 302
+    assert leftover["cookie_302_is_logout"] is False
+    assert list0_pack_saw_ocl_is_gold(leftover) is False
+    assert list0_pack_empty_saw_ocl_is_fail(leftover) is True
+    assert cookie_http_additem_linear_is_not_success(leftover) is True
+    assert leftover_cookie_linear_empty_saw_is_fail(
+        leftover_cookie_linear_empty_saw_dump()
+    ) is True
+    page = dict(leftover_cookie_linear_empty_saw_dump())
+    page["live_leftover"] = dict(page["live_leftover"])
+    page["live_leftover"]["finish_via"] = "page_fn"
+    assert leftover_cookie_linear_empty_saw_is_fail(page) is False
+    assert leftover_cookie_linear_empty_saw_is_fail(MagicMock()) is False
+    assert leftover_cookie_linear_empty_saw_is_fail(None) is False
+    assert long_without_page_click_is_fail(None) is True
+    assert long_without_page_click_is_fail({"long_clicked": False}) is True
+    assert long_without_page_click_is_fail(
+        {"long_clicked": True, "opened_via": "AddNewItemHTML"}
+    ) is False
+    assert long_without_page_click_is_fail(
+        {"long_clicked": False, "opened_via": "#but_bar"}
+    ) is False
+    from secturafab.website import long_opened_via_addnewitemhtml_linear_is_fail
+
+    assert long_opened_via_addnewitemhtml_linear_is_fail(
+        {"opened_via": 'AddNewItemHTML("linear")'}
+    ) is True
+    assert long_opened_via_addnewitemhtml_linear_is_fail(
+        {"opened_via": "#but_linear"}
+    ) is True
+    assert long_opened_via_addnewitemhtml_linear_is_fail(
+        {"opened_via": "AddNewItemHTML(bar)"}
+    ) is False
+    assert long_opened_via_addnewitemhtml_linear_is_fail(
+        {"opened_via": "#but_bar"}
+    ) is False
+    assert long_opened_via_addnewitemhtml_linear_is_fail(None) is False
+    assert long_opened_via_addnewitemhtml_linear_is_fail({"long_clicked": True}) is False
+    cheap = dict(gold)
+    cheap["response_unit_cost"] = 0
+    assert list0_pack_saw_ocl_is_gold(cheap) is False
+    no_sku = dict(gold)
+    no_sku["response_product_id"] = ""
+    no_sku["response_sku"] = ""
+    assert list0_pack_saw_ocl_is_gold(no_sku) is False
+    setup_only = dict(gold)
+    setup_only["response_ocl_names"] = ["Saw-Setup"]
+    assert list0_pack_saw_ocl_is_gold(setup_only) is False
+    assert list0_pack_empty_saw_ocl_is_fail({"stamped": 1}) is False
+    assert list0_pack_saw_ocl_is_gold(MagicMock()) is False
+    assert list0_pack_saw_ocl_is_gold(None) is False
+
+
+def test_leftover_plate_modal_is_not_the_pack():
+    """Live 1009213-1: modal SKU + FileList ProductID null + list0_pack empty."""
+    from secturafab.line_item_ops import (
+        cad_image_files_stamped,
+        cad_kids_productid_without_pack,
+        cad_kids_weight_without_productid_pack,
+        image_files_dod_pass,
+        unitcost_equals_unitprice_is_material_only,
+    )
+    from secturafab.website import (
+        leftover_plate_modal_is_not_the_pack,
+        leftover_thick_plate_cad_laser_is_wrong,
+        leftover_addnewpdffeature_skipped_is_named_miss,
+        leftover_getpdfdata_values_named_not_invented,
+        leftover_getpdfdata_candidates_named_not_invented,
+        leftover_list0_pack_is_not_gold,
+        leftover_productid_is_not_the_pack,
+        leftover_weight_without_productid_is_fail,
+        leftover_perimeter_xhr_is_not_gold_pack,
+        leftover_empty_bind_productid_skip_is_wrong,
+        plate_modal_without_filelist_productid_is_fail,
+        list0_pack_without_tag_ocl_is_fail,
+        empty_productid_after_bind_is_fail,
+        filelist_bag_snapshot,
+        PDF_GETDATA_FIELDS,
+    )
+    from tests.fixtures.live_1009213_1 import (
+        leftover_plate_modal_not_pack_dump,
+        live_1009213_1_quote,
+        FILELIST_BAG,
+        GET_PRODUCT_ID,
+        LIST0_PACK,
+        SKU,
+    )
+    from tests.fixtures.live_33204_1 import leftover_list0_pack_not_gold_dump
+    from tests.fixtures.live_1007092_1 import leftover_productid_not_pack_dump
+    from tests.fixtures.live_21681_1 import leftover_empty_bind_productid_skip_dump
+    from tests.fixtures.live_33819_1 import leftover_weight_without_productid_dump
+
+    dump = leftover_plate_modal_not_pack_dump()
+    assert dump["readonly"] is True
+    assert dump["modal_driven"] is True
+    assert dump["filelist_bag"]["ProductID"] is None
+    assert dump["filelist_bag"]["Weight"] == 308.9387
+    assert dump["filelist_bag"]["OutsidePerimeter"] == 114
+    assert dump["filelist_bag"]["Length"] == 28.5
+    assert dump["filelist_bag"]["Width"] == 28.5
+    assert dump["filelist_bag"]["Material"] == "A572"
+    assert dump["filelist_bag"]["Thickness"] == "1.25"
+    assert dump["filelist_bag"]["Machine"] == "Laser - Bay1"
+    assert "CuttingLength" not in dump["filelist_bag"]
+    assert dump["list0_pack"]["tag"] == ""
+    assert dump["list0_pack"]["ocl_n"] == 0
+    assert dump["list0_pack"]["unit_cost"] == 126.66
+    assert dump["live_1009213_1"]["sku"] == SKU
+    assert dump["live_1009213_1"]["modal_is_gold"] is False
+    assert leftover_plate_modal_is_not_the_pack(dump) is True
+    assert leftover_getpdfdata_values_named_not_invented(dump) is True
+    bag_pid = dict(dump)
+    bag_pid["filelist_bag"] = dict(dump["filelist_bag"])
+    bag_pid["filelist_bag"]["ProductID"] = GET_PRODUCT_ID
+    assert leftover_plate_modal_is_not_the_pack(bag_pid) is False
+    tagged = dict(dump)
+    tagged["list0_pack"] = dict(dump["list0_pack"])
+    tagged["list0_pack"]["badge_string"] = "PR"
+    assert leftover_plate_modal_is_not_the_pack(tagged) is False
+    ocl = dict(dump)
+    ocl["list0_pack"] = dict(dump["list0_pack"])
+    ocl["list0_pack"]["ocl_n"] = 1
+    assert leftover_plate_modal_is_not_the_pack(ocl) is False
+    not_modal = dict(dump)
+    not_modal["modal_driven"] = False
+    assert leftover_plate_modal_is_not_the_pack(not_modal) is False
+    assert leftover_plate_modal_is_not_the_pack(
+        leftover_list0_pack_not_gold_dump()
+    ) is False
+    assert leftover_plate_modal_is_not_the_pack(
+        leftover_productid_not_pack_dump()
+    ) is False
+    assert leftover_plate_modal_is_not_the_pack(
+        leftover_weight_without_productid_dump()
+    ) is False
+    assert leftover_plate_modal_is_not_the_pack(
+        leftover_empty_bind_productid_skip_dump()
+    ) is False
+    assert leftover_plate_modal_is_not_the_pack(MagicMock()) is False
+    assert leftover_plate_modal_is_not_the_pack(None) is False
+    assert leftover_list0_pack_is_not_gold(dump) is False
+    assert leftover_thick_plate_cad_laser_is_wrong(dump) is True
+    assert leftover_addnewpdffeature_skipped_is_named_miss(dump) is True
+    assert leftover_thick_plate_cad_laser_is_wrong(
+        leftover_list0_pack_not_gold_dump()
+    ) is False
+    assert leftover_addnewpdffeature_skipped_is_named_miss(
+        leftover_list0_pack_not_gold_dump()
+    ) is False
+    assert leftover_getpdfdata_candidates_named_not_invented(dump) is False
+    assert leftover_getpdfdata_values_named_not_invented(
+        leftover_list0_pack_not_gold_dump()
+    ) is False
+    assert leftover_productid_is_not_the_pack(dump) is False
+    assert leftover_weight_without_productid_is_fail(dump) is False
+    assert leftover_perimeter_xhr_is_not_gold_pack(dump) is False
+    assert leftover_empty_bind_productid_skip_is_wrong(dump) is False
+    quote = live_1009213_1_quote()
+    cad = quote["ItemList"][0]
+    assert cad["Tag"] == ""
+    assert cad["OperationCostList"] == []
+    assert cad["ProductID"] == GET_PRODUCT_ID
+    assert cad["FileList"][0]["ProductID"] is None
+    assert cad["FileList"][0]["Weight"] == 308.9387
+    assert cad["DataPartPDF"]["OutsidePerimeter"] == 114
+    assert cad["DataPartPDF"]["CuttingLength"] == 0
+    assert cad["DataPartPDF"]["InternalData"] == ""
+    assert cad["UnitCost"] == cad["UnitPrice"] == cad["UnitWeightCost"] == 126.66
+    assert unitcost_equals_unitprice_is_material_only(cad) is True
+    assert cad_kids_productid_without_pack(quote) is True
+    assert cad_kids_weight_without_productid_pack(quote) is False
+    assert cad_image_files_stamped(cad) is False
+    assert image_files_dod_pass(quote, expect_cad=True) is False
+    assert filelist_bag_snapshot(FILELIST_BAG)["ProductID"] is None
+    assert "CuttingLength" not in filelist_bag_snapshot(FILELIST_BAG)
+    assert "CuttingLength" not in PDF_GETDATA_FIELDS
+    assert empty_productid_after_bind_is_fail({"productid_n": 0}) is False
+    assert empty_productid_after_bind_is_fail({"productid_n": 1}) is False
+    assert list0_pack_without_tag_ocl_is_fail(
+        {
+            "response_badge_string": "",
+            "response_ocl_n": 0,
+            "response_unit_cost": LIST0_PACK["unit_cost"],
+        }
+    ) is True
+    assert plate_modal_without_filelist_productid_is_fail(
+        {"picker_via": "#gridSelectProductPlate"},
+        {
+            "filelist_bag": {"ProductID": None},
+            "response_badge_string": "",
+            "response_ocl_n": 0,
+            "response_unit_cost": 126.66,
+        },
+    ) is True
+    assert plate_modal_without_filelist_productid_is_fail(
+        {"picker_via": "none_plate_widget"},
+        {
+            "filelist_bag": {"ProductID": None},
+            "response_badge_string": "",
+            "response_ocl_n": 0,
+            "response_unit_cost": 126.66,
+        },
+    ) is False
+    invented = dict(dump)
+    invented["invent_cuttinglength"] = True
+    assert leftover_getpdfdata_values_named_not_invented(invented) is False
+    no_named = dict(dump)
+    no_named.pop("getpdfdata_values_named")
+    assert leftover_getpdfdata_values_named_not_invented(no_named) is False
+    assert leftover_getpdfdata_values_named_not_invented(MagicMock()) is False
+    assert leftover_getpdfdata_values_named_not_invented(None) is False
+
+
+def test_empty_perimeter_weight_is_fail():
+    from secturafab.website import empty_perimeter_weight_is_fail
+
+    assert empty_perimeter_weight_is_fail(
+        {"outside_perimeter_n": 0, "cutting_length_n": 0}
+    ) is True
+    assert empty_perimeter_weight_is_fail(
+        {"outside_perimeter_n": 2, "cutting_length_n": 2}
+    ) is False
+    assert empty_perimeter_weight_is_fail({"stamped": 2}) is False
+    assert empty_perimeter_weight_is_fail(MagicMock()) is False
+    assert empty_perimeter_weight_is_fail(None) is False
+
+
+def test_leftover_dxf_pack_is_on_additem_list():
+    """Gold 21678-1 analog: pack is on AddItem_DXFFiles List after Stock type."""
+    from secturafab.cadimport_js import (
+        NEEDS_INTERNALDATA_FILL_XHR,
+        STOCK_PERIMETER_FILL_ON,
+        STOCK_PERIMETER_FILL_XHR,
+        classify_finish_internaldata_fill,
+        needs_internaldata_fill_xhr,
+        stock_perimeter_fill_xhr,
+    )
+    from secturafab.website import leftover_dxf_pack_is_on_additem_list
+    from tests.fixtures.live_21678_1 import leftover_dxf_pack_bind_dump
+
+    dump = leftover_dxf_pack_bind_dump()
+    assert leftover_dxf_pack_is_on_additem_list(dump) is True
+    broken = dict(dump)
+    broken["pack_xhr_named"] = True
+    assert leftover_dxf_pack_is_on_additem_list(broken) is False
+    assert classify_finish_internaldata_fill() is None
+    assert needs_internaldata_fill_xhr() == NEEDS_INTERNALDATA_FILL_XHR
+    assert needs_internaldata_fill_xhr() == "needs_internaldata_fill_xhr"
+    assert stock_perimeter_fill_xhr() == "/Quote/GetPerimeterAndWeight"
+    assert STOCK_PERIMETER_FILL_XHR == "/Quote/GetPerimeterAndWeight"
+    assert "Stock_X" in STOCK_PERIMETER_FILL_ON
+    assert dump["UpdateDataNext"]["gold"] is False
+
+
+def test_empty_dxf_stock_perimeter_is_fail():
+    from secturafab.website import (
+        dxf_stock_perimeter_filled,
+        empty_dxf_stock_perimeter_is_fail,
+        v1_quote_body_without_itemlist,
+        v1_quote_itemlist_post_wipes_gold,
+    )
+
+    assert empty_dxf_stock_perimeter_is_fail(
+        {
+            "stamped": 1,
+            "cutting_length_n": 0,
+            "outside_perimeter_n": 0,
+            "internaldata_n": 0,
+        }
+    ) is True
+    assert empty_dxf_stock_perimeter_is_fail(
+        {
+            "stamped": 0,
+            "cutting_length_n": 0,
+            "outside_perimeter_n": 0,
+            "internaldata_n": 0,
+        }
+    ) is False
+    assert empty_dxf_stock_perimeter_is_fail({"cutting_length_n": 2}) is False
+    assert empty_dxf_stock_perimeter_is_fail({"stamped": 2}) is False
+    assert empty_dxf_stock_perimeter_is_fail(MagicMock()) is False
+    assert dxf_stock_perimeter_filled({"cutting_length_n": 2}) is True
+    assert dxf_stock_perimeter_filled({"internaldata_n": 0}) is False
+    assert v1_quote_itemlist_post_wipes_gold({"ItemList": [], "ID": "x"}) is True
+    assert v1_quote_itemlist_post_wipes_gold({"ID": "x", "Description": "n"}) is False
+    stripped = v1_quote_body_without_itemlist(
+        {"ID": "x", "ItemList": [{"ID": "c"}], "Description": "n"}
+    )
+    assert "ItemList" not in stripped
+    assert stripped["Description"] == "n"
+
+
+def test_additem_pdf_filelist_keeps_all_upload_list_keys():
+    """FileList must not slim away Upload List calculator keys (SourceDataID may be absent)."""
+    from secturafab.website import (
+        build_pdf_finish_payload,
+        filelist_row_from_attachment_upload,
+        jquery_ajax_form,
+    )
+
+    upload = {
+        "List": [
+            {
+                "FileID": "file-upload-1",
+                "ImageID": "img-1",
+                "DataPartID": "dp-keep",
+                "ThumbnailID": "th-keep",
+                "CadType": 2,
+                "ExtraCalcKey": "keep-me",
+                "FileName": "1004738-1.pdf",
+            }
+        ]
+    }
+    row = filelist_row_from_attachment_upload(
+        upload,
+        part_name="1004738-1 - 1/4 A36 2 in x 9 in",
+        qty=1,
+        material="A36",
+        thickness=0.25,
+        length=9.0,
+        width=2.0,
+        file_name="1004738-1.pdf",
+    )
+    payload = build_pdf_finish_payload("qid", [row])
+    posted = payload["FileList"][0]
+    src = upload["List"][0]
+    for key, val in src.items():
+        assert key in posted, key
+        assert posted[key] == val
+    assert posted["Machine"] == "Laser - Bay1"
+    form = dict(jquery_ajax_form(payload))
+    assert form["FileList[0][DataPartID]"] == "dp-keep"
+    assert form["FileList[0][ExtraCalcKey]"] == "keep-me"
+    assert form["FileList[0][FileID]"] == "file-upload-1"
+
+
+def test_linear_bind_uses_lookup_row_subtype_dims_weightlength():
+    """(b) AddItem_Linear must copy subtype/dims/weightLength from the lookup row."""
+    from secturafab.website import build_linear_add_payload, linear_bind_fields
+
+    cfg20 = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    product = {
+        "ID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "ProductName": "C3X4.1-A36",
+    }
+    lookup = [
+        {
+            "Value": cfg20,
+            "Text": "20 ft",
+            "ProductID": product["ID"],
+            "productSubType": "channel",
+            "dim1": 3,
+            "dim2": 1.41,
+            "dim3": 0.17,
+            "dim4": 0.273,
+            "weightLength": 4.1,
+        }
+    ]
+    bind = linear_bind_fields(product, lookup)
+    assert bind is not None
+    assert bind["productConfigID"] == cfg20
+    assert bind["productSubType"] == "channel"
+    assert bind["dim1"] == 3
+    assert bind["dim2"] == 1.41
+    assert bind["dim3"] == 0.17
+    assert bind["dim4"] == 0.273
+    assert bind["weightLength"] == 4.1
+    extra = {k: v for k, v in bind.items() if k != "sku"}
+    payload = build_linear_add_payload(
+        "qid",
+        product_id=product["ID"],
+        qty=1,
+        length=125,
+        machine="Saw",
+        name="1004740-1 C3X4.1-A36",
+        extra=extra,
+    )
+    assert payload["productSubType"] == "channel"
+    assert payload["dim1"] == 3
+    assert payload["dim2"] == 1.41
+    assert payload["dim3"] == 0.17
+    assert payload["dim4"] == 0.273
+    assert payload["weightLength"] == 4.1
+
+
+def test_filelist_from_upload_keeps_sourcedataid_and_fileid():
+    """(c) AddItem_PDFFiles FileList must keep SourceDataID/FileID from the upload List."""
+    from secturafab.website import (
+        build_pdf_finish_payload,
+        filelist_row_from_attachment_upload,
+        jquery_ajax_form,
+    )
+
+    upload = {
+        "List": [
+            {
+                "SourceDataID": "src-upload-1",
+                "FileID": "file-upload-1",
+                "ImageID": "img-1",
+                "CadType": 0,
+                "FileName": "1004738-1.pdf",
+                "Stock_X": 2.0,
+                "Stock_Y": 9.0,
+            }
+        ]
+    }
+    row = filelist_row_from_attachment_upload(
+        upload,
+        part_name="1004738-1 - 1/4 A36 2 in x 9 in",
+        qty=1,
+        material="A36",
+        thickness=0.25,
+        length=9.0,
+        width=2.0,
+        file_name="1004738-1.pdf",
+    )
+    assert row["SourceDataID"] == "src-upload-1"
+    assert row["FileID"] == "file-upload-1"
+    payload = build_pdf_finish_payload("qid", [row])
+    posted = payload["FileList"][0]
+    assert posted["SourceDataID"] == "src-upload-1"
+    assert posted["FileID"] == "file-upload-1"
+    form = dict(jquery_ajax_form(payload))
+    assert form["FileList[0][SourceDataID]"] == "src-upload-1"
+    assert form["FileList[0][FileID]"] == "file-upload-1"
+
+
+def test_getpdfdata_keeps_status_gt_zero_only():
+    kept = filter_pdf_filelist(
+        [
+            {"Status": 1, "FileName": "ok.pdf", "Qty": 1},
+            {"Status": 0, "FileName": "zero.pdf", "Qty": 4},
+            {"ErrorStatus": 0, "FileName": "dxf-rule.pdf", "Qty": 1},
+        ]
+    )
+    assert [r["FileName"] for r in kept] == ["ok.pdf"]
+
+
+def test_website_paths_are_quote_mvc_not_quickadd():
+    assert WEBSITE_FINISH_PATHS["add_item_dxf_files"] == "/Quote/AddItem_DXFFiles"
+    assert WEBSITE_FINISH_PATHS["part_update_item_type"] == "/Part/UpdateItemType"
+    assert WEBSITE_FINISH_PATHS["quote_get_border_size"] == "/Quote/GetBorderSize"
+    assert WEBSITE_FINISH_PATHS["quote_item_edit"] == "/quote/ItemEdit"
+    assert WEBSITE_FINISH_PATHS["add_item_pdf_files"] == "/Quote/AddItem_PDFFiles"
+    assert WEBSITE_FINISH_PATHS["get_perimeter_and_weight"] == "/Quote/GetPerimeterAndWeight"
+    assert WEBSITE_FINISH_PATHS["add_item_linear"] == "/Quote/AddItem_Linear"
+    assert WEBSITE_FINISH_PATHS["add_operation"] == "/Quote/AddOperation"
+    assert WEBSITE_FINISH_PATHS["copy_move_to_assembly"] == "/Quote/CopyMoveItemToAssembly"
+    assert WEBSITE_FINISH_PATHS["add_feature"] == "/Quote/AddFeature"
+    assert WEBSITE_FINISH_PATHS["upload_dxf"] == "/CadImport/UploadItem_DXFFiles"
+    assert WEBSITE_FINISH_PATHS["upload_pdf_attachment"] == "/Attachment/UploadItem_PDFFiles"
+    assert WEBSITE_FINISH_PATHS["linear_lookup"] == "/Product/Read_DataLinearlookup"
+    assert WEBSITE_FINISH_PATHS["plate_config"] == "/Product/ReadData_PlateConfig"
+    assert WEBSITE_FINISH_PATHS["renest_linear"] == "/Nest/RenestLinear"
+    assert "nest_quote_renest" not in WEBSITE_FINISH_PATHS
+    assert "/Quote/NestQuoteMultiPart_Renest" not in WEBSITE_FINISH_PATHS.values()
+    assert "quickAddCAD" not in str(WEBSITE_FINISH_PATHS)
+
+
+def test_renest_linear_payload_checks_20ft_not_40ft():
+    from secturafab.website import (
+        LINEAR_RENEST_20FT_IN,
+        build_renest_linear_payload,
+        collect_nest_stock_lengths,
+        item_linear_config_id,
+        linear_config_stock_feet,
+        nest_has_480_stock,
+        nest_task_ids,
+    )
+
+    payload = build_renest_linear_payload(
+        "qid-1", nest_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    )
+    assert payload["QuoteID"] == "qid-1"
+    assert payload["ID"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    assert payload["Length20"] is True
+    assert payload["Length40"] is False
+    assert payload["SheetSizeLength"] == int(LINEAR_RENEST_20FT_IN)
+    assert payload["StockLength"] == int(LINEAR_RENEST_20FT_IN)
+    nest = {
+        "Results": [
+            {
+                "ID": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                "SheetSizeLength": 480,
+                "StockList": [{"StockLength": 480}],
+            }
+        ]
+    }
+    assert nest_has_480_stock(nest) is True
+    assert 480.0 in collect_nest_stock_lengths(nest)
+    assert nest_task_ids(nest) == ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]
+    assert nest_has_480_stock({"Results": [{"SheetSizeLength": 240}]}) is False
+    cfg40 = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    cfg20 = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    assert item_linear_config_id({"productConfigID": cfg40}) == cfg40
+    assert linear_config_stock_feet(
+        [{"Text": "40 ft", "Value": cfg40}, {"Text": "20 ft", "Value": cfg20}],
+        cfg40,
+    ) == 40.0
+
+
+def test_renest_linear_client_posts_nest_path_not_multipart():
+    from secturafab.client import SecturaFabClient
+
+    assert hasattr(SecturaFabClient, "renest_linear")
+    assert not hasattr(SecturaFabClient, "nest_quote_multipart_renest")
+    src_client = Path("secturafab/client.py").read_text(encoding="utf-8")
+    src_push = Path("secturafab/push.py").read_text(encoding="utf-8")
+    assert 'WEBSITE_FINISH_PATHS["renest_linear"]' in src_client
+    assert "nest_quote_multipart_renest" not in src_push
+    assert "self.client.renest_linear(" in src_push
+
+
+def test_renest_linear_480_posts_and_persists_20ft():
+    qid = "qid-renest"
+    nest_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    pid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    cfg40 = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    cfg20 = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    item_id = "11111111-1111-4111-8111-111111111111"
+    nest_480 = {"Results": [{"ID": nest_id, "SheetSizeLength": 480}]}
+    nest_240 = {"Results": [{"ID": nest_id, "SheetSizeLength": 240}]}
+    quote = {
+        "ItemList": [
+            {
+                "ID": item_id,
+                "ProductType": 40,
+                "Category": "Linear",
+                "ProductID": pid,
+                "productConfigID": cfg40,
+            }
+        ],
+        "StockList": [],
+    }
+    lookup = {
+        "List": [
+            {"Text": "40 ft", "Value": cfg40},
+            {"Text": "20 ft", "Value": cfg20},
+        ]
+    }
+    client = MagicMock()
+    client.nest_quote_edit.return_value = {}
+    client.renest_linear.return_value = {}
+    client.read_data_linear_lookup.return_value = lookup
+
+    def _get(path: str):
+        if str(path).startswith("v1/Nest"):
+            if client.renest_linear.called:
+                return nest_240
+            return nest_480
+        if str(path).startswith("v1/quote/"):
+            return quote
+        raise AssertionError(path)
+
+    client.get_json.side_effect = _get
+    with patch(
+        "secturafab.quote_update.quote_online_update", return_value=True
+    ) as persist:
+        notes = SecturaFabPushService(client=client).nest_after_finish(
+            qid, item_count=1
+        )
+    client.renest_linear.assert_called_once()
+    payload = client.renest_linear.call_args.kwargs.get("extra") or {}
+    assert payload.get("Length20") is True
+    assert payload.get("Length40") is False
+    assert payload.get("SheetSizeLength") == 240
+    persist.assert_called_once()
+    params = persist.call_args.args[2]
+    assert any(p.get("Value") == cfg20 for p in params)
+    assert any("RenestLinear" in n for n in notes)
+    assert any("40ft→20ft" in n for n in notes)
+
+
+def test_renest_linear_skips_when_already_240():
+    client = MagicMock()
+    client.nest_quote_edit.return_value = {}
+    client.get_json.side_effect = [
+        {"Results": [{"SheetSizeLength": 240, "StockLength": 240}]},
+        {"ItemList": [], "StockList": [{"StockLength": 240}]},
+    ]
+    notes = SecturaFabPushService(client=client).nest_after_finish(
+        "qid-240", item_count=1
+    )
+    client.renest_linear.assert_not_called()
+    assert not any("RenestLinear" in n for n in notes)
+
+
+def test_renest_linear_404_fail_closes():
+    from secturafab.client import SecturaFabApiError
+
+    client = MagicMock()
+    client.nest_quote_edit.return_value = {}
+    client.get_json.side_effect = [
+        {"Results": [{"SheetSizeLength": 480}]},
+        {"ItemList": [], "StockList": []},
+    ]
+    client.read_data_linear_lookup.return_value = {"List": []}
+    client.renest_linear.side_effect = SecturaFabApiError(
+        "API request failed (404)", status_code=404
+    )
+    with pytest.raises(SecturaFabApiError, match="RenestLinear failed"):
+        SecturaFabPushService(client=client).nest_after_finish("qid-404", item_count=1)
+
+
+def test_renest_linear_still_480_fail_closes():
+    from secturafab.client import SecturaFabApiError
+
+    client = MagicMock()
+    client.nest_quote_edit.return_value = {}
+    client.renest_linear.return_value = {}
+    client.get_json.side_effect = [
+        {"Results": [{"SheetSizeLength": 480}]},
+        {"ItemList": [], "StockList": []},
+        {"Results": [{"SheetSizeLength": 480}]},
+    ]
+    with pytest.raises(SecturaFabApiError, match="still 480"):
+        SecturaFabPushService(client=client).nest_after_finish(
+            "qid-still-480", item_count=1
+        )
+
+
+def test_copy_move_and_weld_page_fn_helpers():
+    from secturafab.website import (
+        cookie_http_add_operation_is_not_success,
+        cookie_http_copy_move_is_not_success,
+        copy_move_from_page_fn,
+        weld_add_from_page_fn,
+    )
+
+    gold_move = {
+        "via": "page_fn",
+        "copy_move_from_page": True,
+        "ok": True,
+        "finish_fn": "CopyMoveItemToAssembly",
+    }
+    leftover_move = {"via": "cookie_http", "status": 302, "ok": False}
+    assert copy_move_from_page_fn(gold_move) is True
+    assert cookie_http_copy_move_is_not_success(gold_move) is False
+    assert cookie_http_copy_move_is_not_success(leftover_move) is True
+    gold_weld = {
+        "via": "page_fn",
+        "weld_from_page": True,
+        "ok": True,
+        "finish_fn": "OnAddOperationClick",
+    }
+    leftover_weld = {"via": "skipped", "weld_from_page": False, "ok": False}
+    assert weld_add_from_page_fn(gold_weld) is True
+    assert cookie_http_add_operation_is_not_success(gold_weld) is False
+    assert cookie_http_add_operation_is_not_success(leftover_weld) is True
+
+
+def test_invoke_page_copy_move_evaluates_page_fn():
+    from secturafab.chrome_cdp import invoke_page_copy_move_to_assembly
+
+    tab = {
+        "title": "*Quote-1001898-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        assert method == "Runtime.evaluate"
+        assert "/Quote/CopyMoveItemToAssembly" in expr
+        assert "CopyMoveItemToAssembly" in expr
+        assert "fetch(" not in expr
+        assert params.get("awaitPromise") is True
+        return {
+            "result": {
+                "value": {
+                    "via": "page_fn",
+                    "finish_fn": "CopyMoveItemToAssembly",
+                    "copy_move_from_page": True,
+                    "request_itemid": "cad-1",
+                    "request_assemblyid": "asm-1",
+                    "request_mode": "Move",
+                    "status": 200,
+                }
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        result = invoke_page_copy_move_to_assembly(
+            quote_id="qid", item_id="cad-1", assembly_id="asm-1", mode="Move"
+        )
+    assert result["via"] == "page_fn"
+    assert result["ok"] is True
+    assert result["request_itemid"] == "cad-1"
+    assert result["request_assemblyid"] == "asm-1"
+
+
+def test_invoke_page_add_weld_evaluates_page_fn():
+    from secturafab.chrome_cdp import invoke_page_add_weld_operation
+
+    tab = {
+        "title": "*Quote-1001898-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        assert method == "Runtime.evaluate"
+        assert "/Quote/AddOperation" in expr
+        assert "OnAddOperationClick" in expr
+        assert "op_weld" in expr
+        assert "selectAssemblyRow" in expr
+        assert "weld_itemid_not_assembly" in expr
+        assert "fetch(" not in expr
+        assert params.get("awaitPromise") is True
+        return {
+            "result": {
+                "value": {
+                    "via": "page_fn",
+                    "finish_fn": "OnAddOperationClick",
+                    "weld_from_page": True,
+                    "request_itemid": "asm-1",
+                    "request_operation_code": "op_weld",
+                    "request_weld": 308.66,
+                    "request_perunittime": 154.33 / 60.0,
+                    "request_perunittime2": 108.0 / 60.0,
+                    "request_fixedtime": 0.25,
+                    "status": 200,
+                }
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        result = invoke_page_add_weld_operation(
+            quote_id="qid",
+            item_id="asm-1",
+            weld_inches=308.66,
+            weld_hours=154.33 / 60.0,
+            fitup_hours=108.0 / 60.0,
+            setup_hours=0.25,
+        )
+    assert result["via"] == "page_fn"
+    assert result["ok"] is True
+    assert result["request_itemid"] == "asm-1"
+    assert result["request_weld"] == pytest.approx(308.66)
+
+
+def test_invoke_page_add_weld_fail_closes_kid_itemid():
+    from secturafab.chrome_cdp import invoke_page_add_weld_operation
+
+    tab = {
+        "title": "*Quote-1001898-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        return {
+            "result": {
+                "value": {
+                    "via": "page_fn",
+                    "finish_fn": "OnAddOperationClick",
+                    "weld_from_page": True,
+                    "request_itemid": "cad-1",
+                    "request_operation_code": "op_weld",
+                    "request_weld": 308.66,
+                    "request_perunittime": 154.33 / 60.0,
+                    "request_perunittime2": 108.0 / 60.0,
+                    "request_fixedtime": 0.25,
+                    "status": 200,
+                }
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        result = invoke_page_add_weld_operation(
+            quote_id="qid",
+            item_id="asm-1",
+            weld_inches=308.66,
+            weld_hours=154.33 / 60.0,
+            fitup_hours=108.0 / 60.0,
+            setup_hours=0.25,
+        )
+    assert result["ok"] is False
+    assert result["via"] == "skipped"
+    assert result["weld_from_page"] is False
+    assert result["finish_why"] == "weld_itemid_not_assembly"
+
+
+def test_classify_hose_guard_is_linear():
+    assert classify_sectura_item("21689-1 HOSE GUARD") == "Linear"
+    assert classify_sectura_item("HOSEGUARD FORMED VIEW") == "Linear"
+
+
+def test_overlay_linear_sets_saw_and_product():
+    row = overlay_classified_row(
+        {"Name": "21684 TUBE", "ErrorStatus": 0},
+        category="Linear",
+        material="A519",
+        thickness=0.375,
+        product_id="pid",
+        sku="RT4X0.375-A519",
+        qty=1,
+    )
+    assert row["Machine"] == "Saw"
+    assert row["IsLinear"] is True
+    assert row["ProductID"] == "pid"
+    assert row["PartMode"] == 1
+    assert row["ProductType"] == 30
+
+
+def test_linear_website_product_type_bar_tube_angle():
+    assert linear_website_product_type("29860-3 PEDESTAL BRACE ANGLE") == 40
+    assert linear_website_product_type("1001880-2 PEDESTAL TUBE") == 30
+    assert linear_website_product_type("10081-2 PEDESTAL HOSE TUBE") == 30
+    assert linear_website_product_type("33637-1 1 1/4 RETURN TUBE") == 30
+    assert linear_website_product_type("21689-1 HOSE GUARD") == 10
+    assert linear_website_product_type("ROUND BAR") == 10
+    assert linear_website_product_type("29860-3", sku="L2X1 1/4X1/8-A36") == 40
+
+
+def test_pick_closest_linear_prefers_rt_over_pipe_sku_for_tube():
+    products = [
+        {
+            "ID": "pipe",
+            "ProductName": "P1/8-5-A36",
+            "ProductDescription": "Pipe 1/8 A36",
+            "ShapeName": "Pipe",
+            "MaterialGrade": "A36",
+            "Dim1": 0.405,
+            "Active": True,
+        },
+        {
+            "ID": "rct",
+            "ProductName": "RCT1.25X.120-A513",
+            "ProductDescription": "Mechanical Tube 1.25 X .120 A513",
+            "ShapeName": "Mechanical Tube",
+            "MaterialGrade": "A513",
+            "Dim1": 1.25,
+            "Active": True,
+        },
+    ]
+    best, _note = pick_closest_linear_product(
+        products, description="33637-1 1 1/4 RETURN TUBE", material="A36"
+    )
+    assert best is not None
+    assert best["ID"] == "rct"
+
+
+def test_pick_closest_linear_prefers_round_bar_for_hose_guard():
+    products = [
+        {
+            "ID": "tube",
+            "ProductName": "RT4X0.375-A519",
+            "ProductDescription": "Mechanical Tube 4 X 0.375 A519",
+            "ShapeName": "Mechanical Tube",
+            "MaterialGrade": "A519",
+            "Dim1": 4.0,
+            "Dim2": 0.375,
+            "Active": True,
+        },
+        {
+            "ID": "bar",
+            "ProductName": "RB3/8-A36",
+            "ProductDescription": "Round Bar 3/8 A36",
+            "ShapeName": "Round Bar",
+            "MaterialGrade": "A36",
+            "Dim1": 0.375,
+            "Active": True,
+        },
+    ]
+    best, note = pick_closest_linear_product(
+        products, description="21689-1 HOSE GUARD", material="A36"
+    )
+    assert best is not None
+    assert best["ID"] == "bar"
+    assert note is None or "mismatch" not in note.lower() or "A36" in (note or "")
+
+
+def test_pick_closest_linear_matches_rect_hss_a500b_from_dims():
+    """1007038-1 2.5×5×0.25 A500B hits RT/HSS, not a silent L3 graft."""
+    from secturafab.website import (
+        LINEAR_SKU_MISSING,
+        extract_linear_dims,
+        parse_linear_sku_dims,
+        pick_closest_linear_product,
+    )
+
+    parsed = parse_linear_sku_dims("RT2.5X5X0.25-A500")
+    assert parsed["dim1"] == 2.5
+    assert parsed["dim2"] == 5.0
+    assert parsed["dim3"] == 0.25
+    rtd = parse_linear_sku_dims("RTD4X0.375-A513")
+    assert rtd["dim1"] == 4.0
+    assert rtd["dim2"] == 0.375
+    st = parse_linear_sku_dims("ST8X0.375-A500")
+    assert st["dim1"] == 8.0
+    assert extract_linear_dims("1007038-1 2.5×5×0.25 A500B") == [2.5, 5.0, 0.25]
+    assert extract_linear_dims("33637-1 1 1/4 RETURN TUBE") == [1.25]
+
+    products = [
+        {
+            "ID": "angle",
+            "ProductName": "L3X3X1/4-A36",
+            "ProductDescription": "Angle 3 X 3 X 1/4 A36",
+            "ShapeName": "Angle",
+            "MaterialGrade": "A36",
+            "Active": True,
+        },
+        {
+            "ID": "hss",
+            "ProductName": "RT2.5X5X0.25-A500",
+            "ProductDescription": "Mechanical Tube 2.5 X 5 X 0.25 A500",
+            "ShapeName": "Mechanical Tube",
+            "MaterialGrade": "A500",
+            "Active": True,
+        },
+        {
+            "ID": "wrong-tube",
+            "ProductName": "RT4X0.375-A500",
+            "ProductDescription": "Mechanical Tube 4 X 0.375 A500",
+            "ShapeName": "Mechanical Tube",
+            "MaterialGrade": "A500",
+            "Active": True,
+        },
+    ]
+    best, note = pick_closest_linear_product(
+        products,
+        description="1007038-1 2.5×5×0.25 A500B",
+        material="A500B",
+    )
+    assert best is not None
+    assert best["ID"] == "hss"
+    assert note is None or LINEAR_SKU_MISSING not in (note or "")
+
+    miss, miss_note = pick_closest_linear_product(
+        [products[0], products[2]],
+        description="1007038-1 2.5×5×0.25 A500B",
+        material="A500B",
+    )
+    assert miss is None
+    assert miss_note and LINEAR_SKU_MISSING in miss_note
+    assert "no silent SKU graft" in miss_note
+
+
+def test_pick_closest_linear_fitting_noun_is_not_grafted():
+    from secturafab.website import LINEAR_SKU_MISSING, pick_closest_linear_product
+
+    products = [
+        {
+            "ID": "pipe",
+            "ProductName": "P2.5-40-A36",
+            "ProductDescription": "Pipe 2.5 A36",
+            "ShapeName": "Pipe",
+            "MaterialGrade": "A36",
+            "Active": True,
+        }
+    ]
+    best, note = pick_closest_linear_product(
+        products,
+        description="50122-1 2.5 NPT PIPE CAP",
+        material="A36",
+    )
+    assert best is None
+    assert note and LINEAR_SKU_MISSING in note
+
+
+def test_finish_cad_files_refuses_oversize_step_no_chunk(tmp_path: Path):
+    """Live 106687-1: 43MB Upload 502 — do not POST or invent chunked upload."""
+    from secturafab.push import CADIMPORT_UPLOAD_MAX_BYTES
+
+    stp = tmp_path / "106687-1.STEP"
+    stp.write_bytes(b"ISO-10303")
+    client = MagicMock()
+    with patch("secturafab.push.CADIMPORT_UPLOAD_MAX_BYTES", 4):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="qid",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="106687-1",
+        )
+    client.upload_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "not POSTing" in blob
+    assert "not chunking" in blob
+    assert "not Image Files" in blob
+    assert CADIMPORT_UPLOAD_MAX_BYTES == 28 * 1024 * 1024
+
+
+def test_finish_cad_files_uses_upload_filelist_ids(tmp_path: Path):
+    stp = tmp_path / "21678-1.STEP"
+    stp.write_bytes(b"ISO")
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {
+        "status": "OK",
+        "List": [
+            {
+                "SourceDataID": "src-cad",
+                "FileID": "file-cad",
+                "FileName": "21678-1.STEP",
+                "Name": "21680-1 PLATE",
+                "Qty": 1,
+                "ErrorStatus": 0,
+                "Stock_X": 18.7,
+                "Stock_Y": 23.4,
+                "InternalData": "server-stamped",
+            },
+            {
+                "SourceDataID": "src-cad-2",
+                "FileID": "file-cad-2",
+                "FileName": "21681-1.STEP",
+                "Name": "21681-1 GUSSET",
+                "Qty": 1,
+                "ErrorStatus": 0,
+                "InternalData": "server-stamped",
+            },
+        ],
+    }
+    client.cadimport_data.return_value = {}
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    client.add_item_dxf_files.side_effect = _add
+    service = SecturaFabPushService(client=client)
+    notes = service.finish_cad_files(
+        quote_id="qid",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="21678-1",
+    )
+    assert captured["file_list"][0]["SourceDataID"] == "src-cad"
+    assert captured["file_list"][0]["FileID"] == "file-cad"
+    assert any("SourceDataID" in n or "exploded" in n.lower() for n in notes)
+
+
+def test_raw_step_upload_row_is_not_finish_success(tmp_path: Path):
+    """1 STEP upload-row FileList must not be posted as AddItem_DXFFiles success."""
+    from secturafab.website import (
+        cadimport_filelist_exploded,
+        is_raw_step_upload_row,
+    )
+
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "1010103-1.STEP",
+        "Name": "1010103-1.STEP",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 10,
+    }
+    assert is_raw_step_upload_row(
+        raw, part_key="1010103-1", cad_filename="1010103-1.STEP"
+    )
+    assert cadimport_filelist_exploded(
+        [raw], part_key="1010103-1", cad_filename="1010103-1.STEP"
+    ) is False
+    stp = tmp_path / "1010103-1.STEP"
+    stp.write_bytes(b"ISO")
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client.cadimport_data.return_value = {"List": [raw]}
+    client.cadimport_update_data_next.return_value = {"List": [raw]}
+    client.cadimport_get_dxf_data.return_value = {}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001010",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="1010103-1",
+        explode_polls=2,
+        explode_sleep_s=0,
+    )
+    client.add_item_dxf_files.assert_not_called()
+    client.create_dxf_parts.assert_not_called()
+    blob = " ".join(notes)
+    assert "raw upload" in blob.lower() or "not explode" in blob.lower()
+    assert "not success" in blob.lower() or "not Finishing" in blob
+    assert "af_extracted=false" in blob
+    assert "has_antiforgery=false" in blob
+
+
+def test_cadimport_next_exploded_kids_are_finished(tmp_path: Path):
+    """DoCreateDXFParts /part/create t.List kids are the Finish FileList, not the STEP row."""
+    stp = tmp_path / "1010103-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "1010103-1.STEP",
+        "Name": "1010103-1",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 3,
+    }
+    kids = [
+        {
+            "SourceDataID": "src-plate",
+            "FileID": "file-plate",
+            "FileName": "1010104-1",
+            "Name": "1010104-1 GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        },
+        {
+            "SourceDataID": "src-slug",
+            "FileID": "file-slug",
+            "FileName": "1010108-1",
+            "Name": "1010108-1 SLUG",
+            "Qty": 2,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        },
+        {
+            "SourceDataID": "src-bar",
+            "FileID": "file-bar",
+            "FileName": "1010109-1",
+            "Name": "1010109-1 TUBE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        },
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_update_data_next.return_value = {"List": [raw]}
+    client.cadimport_data.return_value = {"List": kids}
+    client.cadimport_get_dxf_data.return_value = {"FileList": kids}
+    client.get_item_add_view.return_value = {"FileList": kids}
+    client.quote_item_read.return_value = {
+        "Data": [
+            {"ProductType": 100, "ProductTypeName": "Cad", "Description": "1010104-1"},
+            {"ProductType": 10, "Description": "1010108-1"},
+        ],
+        "Total": 2,
+    }
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    client.add_item_dxf_files.side_effect = _add
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001011",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[
+            {"part_no": "1010104-1", "description": "GUSSET 100K", "qty": 1},
+            {"part_no": "1010108-1", "description": "SLUG A519", "qty": 2},
+            {"part_no": "1010109-1", "description": "TUBE A1011", "qty": 1},
+        ],
+        library={},
+        extra_pdfs=None,
+        part_key="1010103-1",
+        explode_polls=2,
+        explode_sleep_s=0,
+    )
+    client.create_dxf_parts.assert_called()
+    assert client.create_dxf_parts.call_count == 1
+    ids, units = client.create_dxf_parts.call_args.args[:2]
+    assert ids == ["src-step"]
+    assert units
+    client.cadimport_convert_to.assert_not_called()
+    client.cadimport_update_data_next.assert_not_called()
+    client.add_item_dxf_files.assert_called()
+    posted = captured["file_list"]
+    assert len(posted) == 3
+    names = {str(r.get("Name") or r.get("Description") or "") for r in posted}
+    assert any("1010104" in n for n in names)
+    assert any("1010108" in n for n in names)
+    assert not any(str(r.get("Name") or "").endswith(".STEP") for r in posted)
+    cats = {str(r.get("Category") or r.get("ItemType")) for r in posted}
+    assert "Cad" in cats
+    assert "Linear" in cats
+    mats = " ".join(str(r.get("Material") or "") for r in posted)
+    assert "A36" not in mats or "100K" in mats or "A519" in mats or "A1011" in mats
+    for row in posted:
+        assert float(row.get("Status") or 0) > 0
+    assert any("exploded" in n.lower() for n in notes)
+    blob = " ".join(notes)
+    assert "af_extracted=true" in blob
+    assert "has_antiforgery=true" in blob
+
+
+def test_cadimport_next_json_string_body_is_finished(tmp_path: Path):
+    """Next 200 with a JSON *string* must still Finish exploded kids."""
+    stp = tmp_path / "1007756-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "1007756-1.STEP",
+        "Name": "1007756-1",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 2,
+    }
+    kids = [
+        {
+            "SourceDataID": "src-plate",
+            "FileID": "file-plate",
+            "FileName": "1007756-2",
+            "Name": "1007756-2 GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        },
+        {
+            "SourceDataID": "src-bar",
+            "FileID": "file-bar",
+            "FileName": "1007756-4",
+            "Name": "1007756-4 TUBE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        },
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client.create_dxf_parts.return_value = json.dumps({"List": kids})
+    client.cadimport_update_data_next.return_value = json.dumps({"List": [raw]})
+    client.cadimport_data.return_value = json.dumps({"Data": kids})
+    client.cadimport_get_dxf_data.return_value = (
+        '<div id="gridDXFParts"></div>' + json.dumps({"FileList": kids})
+    )
+    client.get_item_add_view.return_value = {"FileList": kids}
+    client.quote_item_read.return_value = {
+        "Data": [
+            {"ProductType": 100, "ProductTypeName": "Cad", "Description": "1007756-2"},
+            {"ProductType": 10, "Description": "1007756-4"},
+        ],
+        "Total": 2,
+    }
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    client.add_item_dxf_files.side_effect = _add
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001013",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[
+            {"part_no": "1007756-2", "description": "GUSSET 100K", "qty": 1},
+            {"part_no": "1007756-4", "description": "TUBE A1011", "qty": 1},
+        ],
+        library={},
+        extra_pdfs=None,
+        part_key="1007756-1",
+        explode_polls=2,
+        explode_sleep_s=0,
+    )
+    client.add_item_dxf_files.assert_called()
+    assert len(captured["file_list"]) == 2
+    assert not any(
+        str(r.get("Name") or "").endswith(".STEP") for r in captured["file_list"]
+    )
+    assert any("exploded" in n.lower() for n in notes)
+
+
+def test_step_create_all_parts_posts_part_create_not_convert_to(tmp_path: Path):
+    """QuoteOrderEdit createAllParts → DoCreateDXFParts POST /part/create."""
+    stp = tmp_path / "34574-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "fc29e35e-aaaa-bbbb-cccc-000000003457",
+        "FileID": "file-step",
+        "FileName": "34574-1.STEP",
+        "Name": "34574-1",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 12,
+        "PartMode": 0,
+        "FileType": ".STEP",
+        "CadType": 1,
+        "Units": "inch",
+    }
+    kids = [
+        {
+            "SourceDataID": f"src-{i}",
+            "FileID": f"file-{i}",
+            "Name": f"34574-{i + 2} PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        }
+        for i in range(3)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {
+        "status": "OK",
+        "List": [raw],
+        "ListOther": [],
+    }
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_convert_to.return_value = {"List": []}
+    client.cadimport_update_data_next.return_value = {"List": []}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {"FileList": kids}
+    client.quote_item_read.return_value = {
+        "Data": [{"ProductType": 100, "ProductTypeName": "Cad", "Description": "34574-2"}],
+        "Total": 1,
+    }
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    client.add_item_dxf_files.side_effect = _add
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003457",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[{"part_no": "34574-2", "description": "PLATE 100K", "qty": 1}],
+        library={},
+        extra_pdfs=None,
+        part_key="34574-1",
+        explode_polls=2,
+        explode_sleep_s=0,
+    )
+    client.create_dxf_parts.assert_called()
+    ids, units = client.create_dxf_parts.call_args.args[:2]
+    assert ids == ["fc29e35e-aaaa-bbbb-cccc-000000003457"]
+    assert units == ["inch"]
+    client.cadimport_convert_to.assert_not_called()
+    client.cadimport_update_data_next.assert_not_called()
+    client.cadimport_get_dxf_data.assert_not_called()
+    client.add_item_dxf_files.assert_called()
+    assert len(captured["file_list"]) == 3
+    assert any("DoCreateDXFParts" in n or "exploded" in n.lower() for n in notes)
+
+
+def test_part_create_fetches_upload_ids_then_binds_grid():
+    """Explode = fetch Upload IDs; bind = DoCreateDXFParts success on t.List."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    token = "af-secret-token-value"
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=boxcookie",
+    )
+    client._af_source = "chrome_dom"
+    client._request_verification_fields = [("__RequestVerificationToken", token)]
+    client._request_verification_token = token
+    posted: list[list[tuple[str, str]]] = []
+    bound: list[list[dict[str, Any]]] = []
+
+    def _fetch(form_pairs, **_k):
+        posted.append(list(form_pairs))
+        return {
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["List"],
+            "list_len": 2,
+            "List": [{"SourceDataID": "kid-1"}, {"SourceDataID": "kid-2"}],
+            "via": "chrome_dom_fetch",
+        }
+
+    def _bind(rows, **_k):
+        bound.append(list(rows))
+        return {
+            "grid_present": True,
+            "has_gridDXFParts": True,
+            "grid_dxf_row_count": 2,
+            "bound": True,
+            "list_len": 2,
+            "opened_via": "already",
+        }
+
+    client.session = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.post_part_create_from_quotes_tab", side_effect=_fetch
+    ), patch(
+        "secturafab.chrome_cdp.bind_do_create_dxf_parts_success", side_effect=_bind
+    ):
+        result = client.create_dxf_parts(["src-1"], ["inch"], location="", quote_id="qid")
+    client.session.request.assert_not_called()
+    assert posted
+    form_map = {k: v for k, v in posted[0]}
+    assert form_map.get("IDList[]") == "src-1"
+    assert form_map.get("unitList[]") == "inch"
+    assert "__RequestVerificationToken" not in form_map
+    assert bound[0][0]["SourceDataID"] == "kid-1"
+    assert result["List"][0]["SourceDataID"] == "kid-1"
+    assert client._part_create_via == "chrome_dom_fetch"
+    assert client._part_create_list_len == 2
+    assert client._grid_dxf_row_count == 2
+    assert token not in json.dumps(result)
+
+
+def test_request_verification_fields_matches_kendo_selectors():
+    """kendo.antiForgeryTokens: input[name^=] + csrf meta; AddView partial empty."""
+    from secturafab.website import request_verification_fields
+
+    add_view = (
+        "<div id='gridDXF'><input id='InventoryLocation' value='' /></div>"
+        + ("x" * 200)
+    )
+    assert request_verification_fields(add_view) == []
+
+    quote_html = (
+        "<!DOCTYPE html><html><head>"
+        '<meta name="csrf-param" content="__RequestVerificationToken" />'
+        '<meta name="csrf-token" content="meta-token-value" />'
+        "</head><body>"
+        '<input type="hidden" name="__RequestVerificationToken" '
+        'value="af-secret-token-value" />'
+        '<input type="hidden" name="afToken" value="af-alt-token" />'
+        "</body></html>"
+    )
+    fields = request_verification_fields(quote_html)
+    names = [n for n, _ in fields]
+    values = [v for _, v in fields]
+    assert "__RequestVerificationToken" in names
+    assert "afToken" in names
+    assert "af-secret-token-value" in values
+    assert "af-alt-token" in values
+
+    prefixed = (
+        '<input name="__RequestVerificationToken_Lw__" type="hidden" '
+        'value="prefixed-token" />'
+    )
+    pref = request_verification_fields(prefixed)
+    assert pref[0][0].startswith("__RequestVerificationToken")
+    assert pref[0][1] == "prefixed-token"
+
+
+def test_ensure_quote_antiforgery_reads_quote_layout_not_addview():
+    """GET /Quote (no XHR) has the token; AddView partial does not."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+    from secturafab.website import client_antiforgery_extracted
+
+    token = "af-secret-token-value"
+    add_view = "<div id='gridDXF'>partial no layout token</div>"
+    quote_html = (
+        '<!DOCTYPE html><html><body>'
+        f'<input type="hidden" name="__RequestVerificationToken" value="{token}" />'
+        "</body></html>"
+    )
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=boxcookie",
+    )
+    client._token = MagicMock()
+    client._token.authorization_header = "Bearer tok"
+    client._token.is_expired = False
+    client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
+    client._request_verification_token = None
+    client._request_verification_fields = []
+    client._last_item_add_view_html = add_view
+    captured: list[dict[str, Any]] = []
+
+    def _req(method, path, **kwargs):
+        captured.append(
+            {
+                "method": method,
+                "path": path,
+                "headers": kwargs.get("headers") or {},
+                "params": kwargs.get("params"),
+            }
+        )
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {}
+        resp.url = path
+        if path in {"/Quote", "/Quote/QuoteOrderEdit"}:
+            resp.text = quote_html
+            resp.content = quote_html.encode()
+        else:
+            resp.text = add_view
+            resp.content = add_view.encode()
+        return resp
+
+    client._af_source = ""
+    client.website_request = _req  # type: ignore[method-assign]
+    with patch("secturafab.chrome_cdp.chrome_quotes_live", return_value=False), patch(
+        "secturafab.chrome_cdp.chrome_debug_base", return_value=None
+    ), patch("secturafab.chrome_cdp.scrape_quotes_af_fields", return_value=[]):
+        assert client.ensure_quote_antiforgery("qid-new") is False
+    assert client._af_source != "cookie_quote_html"
+    assert token not in json.dumps(captured)
+
+
+def test_part_create_not_posted_when_af_extracted_false():
+    """Fail closed: empty AF must not POST /part/create."""
+    from secturafab.client import SecturaFabApiError, SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+    )
+    client._request_verification_token = None
+    client._request_verification_fields = []
+    called = []
+
+    def _req(*args, **kwargs):
+        called.append((args, kwargs))
+        raise AssertionError("website_request must not run when af_extracted=false")
+
+    client.website_request = _req  # type: ignore[method-assign]
+    with pytest.raises(SecturaFabApiError, match="af_extracted=false"):
+        client.create_dxf_parts(["src-1"], ["inch"], location="")
+    assert called == []
+
+
+def test_explode_skips_part_create_when_quote_html_has_no_token(tmp_path: Path):
+    """Quote + AddView both tokenless → no /part/create; Finish withheld."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+    from secturafab.website import client_antiforgery_extracted
+
+    token = "af-secret-token-value"
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+    )
+    client._request_verification_token = None
+    client._request_verification_fields = []
+    client._last_item_add_view_html = "<div id='gridDXF'>no token</div>"
+    posted: list[str] = []
+
+    def _website_request(method, path, **kwargs):
+        posted.append(f"{method} {path}")
+        if path == "/part/create":
+            raise AssertionError("must not POST /part/create when af_extracted=false")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {}
+        resp.text = "<html><body>quote page without antiforgery</body></html>"
+        resp.content = resp.text.encode()
+        resp.url = path
+        return resp
+
+    client.website_request = _website_request  # type: ignore[method-assign]
+    assert client.ensure_quote_antiforgery("qid") is False
+    assert client_antiforgery_extracted(client) is False
+    assert "/part/create" not in " ".join(posted)
+
+    stp = tmp_path / "34999-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "34999-1.STEP",
+        "Name": "34999-1",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 8,
+        "Units": "inch",
+    }
+    mock = MagicMock()
+    mock.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    mock.cadimport_data.return_value = {"List": [raw]}
+    mock.get_item_add_view.return_value = {}
+    mock.quote_item_read.return_value = {"Data": [], "Total": 0}
+    mock.get_json.return_value = {"ItemList": []}
+    mock._request_verification_fields = []
+    mock._request_verification_token = None
+    notes = SecturaFabPushService(client=mock).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003499",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="34999-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    blob = " ".join(notes)
+    assert "af_extracted=false" in blob
+    assert "has_antiforgery=false" in blob
+    assert token not in blob
+    mock.create_dxf_parts.assert_not_called()
+    mock.add_item_dxf_files.assert_not_called()
+
+
+def test_explode_posts_part_create_from_quotes_tab(tmp_path: Path):
+    """Fetch /part/create with Upload IDs, then bind t.List onto #gridDXFParts."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    stp = tmp_path / "34998-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "34998-1.STEP",
+        "Name": "34998-1",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 3,
+        "Units": "inch",
+    }
+    kids = [
+        {
+            "SourceDataID": "src-a",
+            "FileID": "file-a",
+            "Name": "34998-2 PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        },
+        {
+            "SourceDataID": "src-b",
+            "FileID": "file-b",
+            "Name": "34998-3 GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        },
+    ]
+    token = "af-secret-token-value"
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=boxcookie",
+    )
+    client._token = MagicMock()
+    client._token.authorization_header = "Bearer tok"
+    client._token.is_expired = False
+    client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
+    client._request_verification_token = token
+    client._request_verification_fields = [("__RequestVerificationToken", token)]
+    client._af_source = "chrome_dom"
+    client._quotes_tab_live = True
+    client._last_item_add_view_html = "<div id='gridDXF'>partial</div>"
+    posted: list[list[tuple[str, str]]] = []
+    bound: list[int] = []
+
+    def _fetch(form_pairs, **_k):
+        posted.append(list(form_pairs))
+        return {
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["List"],
+            "list_len": 2,
+            "List": kids,
+            "via": "chrome_dom_fetch",
+        }
+
+    def _bind(rows, **_k):
+        bound.append(len(rows))
+        return {
+            "grid_present": True,
+            "has_gridDXFParts": True,
+            "grid_dxf_row_count": 2,
+            "bound": True,
+            "list_len": 2,
+            "opened_via": "click",
+        }
+
+    client.session = MagicMock()
+
+    def _session_req(method, url, **kwargs):
+        assert "/part/create" not in str(url)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {}
+        resp.text = "{}"
+        resp.content = b"{}"
+        resp.url = url
+        resp.json.return_value = {}
+        return resp
+
+    client.session.request.side_effect = _session_req
+
+    def _upload(*_a, **_k):
+        return {"status": "OK", "List": [raw]}
+
+    client.upload_item_dxf_files = _upload  # type: ignore[method-assign]
+    client.cadimport_set_units = lambda *a, **k: {}  # type: ignore[method-assign]
+    client.get_item_add_view = lambda *a, **k: {}  # type: ignore[method-assign]
+    client.cadimport_data = lambda *a, **k: {"List": kids}  # type: ignore[method-assign]
+    client.quote_item_read = lambda *a, **k: {  # type: ignore[method-assign]
+        "Data": [{"ProductType": 100, "ProductTypeName": "Cad", "Description": "34998-2"}],
+        "Total": 1,
+    }
+    finish_args: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        finish_args.update(kwargs)
+        return {"ok": True}
+
+    client.add_item_dxf_files = _add  # type: ignore[method-assign]
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.post_part_create_from_quotes_tab", side_effect=_fetch
+    ), patch(
+        "secturafab.chrome_cdp.bind_do_create_dxf_parts_success", side_effect=_bind
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="11111111-aaaa-bbbb-cccc-000000003498",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[{"part_no": "34998-2", "description": "PLATE", "qty": 1}],
+            library={},
+            extra_pdfs=None,
+            part_key="34998-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert "af_extracted=true" in blob
+    assert "has_antiforgery=true" in blob
+    assert "af_source=chrome_dom" in blob
+    assert "part_create_via=chrome_dom_fetch" in blob
+    assert "part_create_list_len=2" in blob
+    assert "grid_present=true" in blob
+    assert "grid_dxf_row_count=2" in blob
+    assert token not in blob
+    assert posted
+    form_map = {k: v for k, v in posted[0]}
+    assert form_map.get("IDList[]") == "src-step"
+    assert bound == [2]
+    assert finish_args.get("file_list")
+    assert len(finish_args["file_list"]) == 2
+
+
+def test_cookie_name_presence_never_includes_values():
+    from secturafab.chrome_cdp import (
+        compare_cookie_name_presence,
+        cookie_names_from_header,
+    )
+
+    header = ".AspNet.ApplicationCookie=SECRET; ASP.NET_SessionId=sess"
+    names = cookie_names_from_header(header)
+    assert names == [".AspNet.ApplicationCookie", "ASP.NET_SessionId"]
+    diff = compare_cookie_name_presence(
+        header,
+        [".AspNet.ApplicationCookie", "ASP.NET_SessionId", "__RequestVerificationToken"],
+    )
+    blob = json.dumps(diff)
+    assert "SECRET" not in blob
+    assert "sess" not in blob
+    assert diff["chrome_only"] == ["__RequestVerificationToken"]
+
+
+def test_post_part_create_from_quotes_tab_uses_page_jquery_ajax():
+    """DoCreateDXFParts is page $.ajax on EDIT, not chrome fetch / cookie HTTP."""
+    from secturafab.chrome_cdp import post_part_create_from_quotes_tab
+
+    token = "af-secret-token-value"
+    tab = {
+        "title": "*Quote-FA Assembly",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid-minted",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        assert method == "Runtime.evaluate"
+        expr = str((params or {}).get("expression") or "")
+        assert "jQuery.ajax" in expr or "$.ajax" in expr
+        assert "/part/create" in expr
+        assert 'dataType:"json"' in expr or "dataType: \"json\"" in expr
+        assert "antiForgeryTokens" in expr
+        assert "InternalData" not in expr
+        assert "Unfold" not in expr
+        assert "fetch(" not in expr
+        assert params.get("awaitPromise") is True
+        assert params.get("returnByValue") is True
+        assert token not in expr
+        assert kwargs.get("timeout", 0) >= 60
+        return {
+            "result": {
+                "value": {
+                    "has_antiforgery": True,
+                    "af_names": ["__RequestVerificationToken"],
+                    "status": 200,
+                    "body_keys": ["List"],
+                    "list_len": 2,
+                    "List": [{"SourceDataID": "a"}, {"SourceDataID": "b"}],
+                    "via": "jquery_ajax",
+                }
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        result = post_part_create_from_quotes_tab(
+            [("IDList[]", "src-1"), ("unitList[]", "inch"), ("Height", "400.5"), ("Width", "300.25")],
+            quote_id="qid-minted",
+        )
+    assert result["status"] == 200
+    assert result["via"] == "jquery_ajax"
+    assert result["from_edit"] is True
+    assert result["body_keys"] == ["List"]
+    assert result["list_len"] == 2
+    assert len(result["List"]) == 2
+    blob = json.dumps(result)
+    assert token not in blob
+
+
+def test_post_part_create_falls_back_to_fetch_when_jquery_missing():
+    """Page $.ajax is the explode XHR; fetch only if jQuery is missing."""
+    from secturafab.chrome_cdp import post_part_create_from_quotes_tab
+
+    tab = {
+        "title": "Quotes",
+        "url": "https://www.secturafab.com/Quote",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+        "type": "page",
+    }
+    calls: list[str] = []
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        calls.append(expr)
+        if "jQuery.ajax" in expr or "$.ajax" in expr:
+            return {
+                "result": {
+                    "value": {
+                        "via": "jquery_ajax_missing",
+                        "has_antiforgery": False,
+                        "af_names": [],
+                        "status": 0,
+                        "body_keys": [],
+                        "list_len": 0,
+                        "List": None,
+                    }
+                }
+            }
+        assert "fetch(" in expr
+        assert "/part/create" in expr
+        return {
+            "result": {
+                "value": {
+                    "has_antiforgery": True,
+                    "af_names": ["__RequestVerificationToken"],
+                    "status": 200,
+                    "body_keys": ["List"],
+                    "list_len": 1,
+                    "List": [{"SourceDataID": "a"}],
+                }
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quotes_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.quote_edit_tab", return_value=None
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        result = post_part_create_from_quotes_tab(
+            [("IDList[]", "src-1"), ("unitList[]", "inch")]
+        )
+    assert any("jQuery.ajax" in e or "$.ajax" in e for e in calls)
+    assert any("fetch(" in e for e in calls)
+    assert result["via"] == "chrome_dom_fetch"
+    assert result["list_len"] == 1
+
+
+def test_add_item_dxf_files_quotes_tab_fetch_not_cookie_http():
+    """Finish POST /Quote/AddItem_DXFFiles is fetch in the Quotes document."""
+    from secturafab.chrome_cdp import post_add_item_dxf_files_from_quotes_tab
+
+    token = "af-secret-token-value"
+    tab = {
+        "title": "Quotes",
+        "url": "https://www.secturafab.com/Quote",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        assert method == "Runtime.evaluate"
+        assert "fetch(" in expr
+        assert "/Quote/AddItem_DXFFiles" in expr
+        assert "credentials" in expr
+        assert "same-origin" in expr
+        assert params.get("awaitPromise") is True
+        assert token not in expr
+        return {
+            "result": {
+                "value": {
+                    "has_antiforgery": True,
+                    "af_names": ["__RequestVerificationToken"],
+                    "status": 200,
+                    "body_keys": ["NewItem"],
+                    "body_type": "object",
+                    "has_NewItem": True,
+                    "has_QuoteItem": False,
+                    "list_len": 0,
+                    "text_len": 40,
+                }
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=None), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        result = post_add_item_dxf_files_from_quotes_tab(
+            {"ID": "qid", "ItemID": EMPTY_GUID, "customerMaterial": False, "FileList": []}
+        )
+    assert result["status"] == 200
+    assert result["via"] == "chrome_dom_fetch"
+    assert result["has_NewItem"] is True
+    assert token not in json.dumps(result)
+
+
+def test_bind_do_create_dxf_parts_success_evaluates_quote_order_edit():
+    """Click #but_dxf on /Quote/EDIT, then DoCreateDXFParts success if kendo."""
+    from secturafab.chrome_cdp import bind_do_create_dxf_parts_success
+
+    tab = {
+        "title": "*Quote-106386-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        if method == "Page.navigate":
+            raise AssertionError("grid_present true must not navigate")
+        assert method == "Runtime.evaluate"
+        assert ws_url.endswith("/edit")
+        assert "gridDXFParts" in expr
+        assert "grid_present" in expr
+        assert "#but_dxf" in expr
+        assert "AddNewItemHTML" in expr
+        assert "cad files" in expr
+        assert "dataSource.data().toJSON().push" in expr
+        assert "kendo_row_keys" in expr
+        assert "CadType" in expr
+        assert "Stock_X" in expr
+        assert "innerHTML" not in expr
+        assert "cadFilesDialog" not in expr
+        assert "createAllParts" not in expr
+        assert params.get("awaitPromise") is True
+        assert kwargs.get("timeout", 0) >= 60
+        assert "af-secret" not in expr
+        return {
+            "result": {
+                "value": {
+                    "grid_present": True,
+                    "has_gridDXFParts": True,
+                    "grid_dxf_row_count": 31,
+                    "bound": True,
+                    "list_len": 31,
+                    "opened_via": "but_dxf",
+                }
+            }
+        }
+
+    kids = [{"SourceDataID": "a"}, {"SourceDataID": "b"}]
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        result = bind_do_create_dxf_parts_success(kids, quote_id="qid")
+    assert result["bound"] is True
+    assert result["grid_present"] is True
+    assert result["grid_dxf_row_count"] == 31
+    assert result["has_gridDXFParts"] is True
+    assert result["opened_via"] == "but_dxf"
+
+
+def test_invoke_page_dxf_finish_evaluates_page_fn():
+    """Page Finish reads #gridDXFParts and POSTs /Quote/AddItem_DXFFiles."""
+    from secturafab.chrome_cdp import invoke_page_dxf_finish
+
+    tab = {
+        "title": "*Quote-106386-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        assert method == "Runtime.evaluate"
+        assert "gridDXFParts" in expr
+        assert "/Quote/AddItem_DXFFiles" in expr
+        assert "OnAddDXFClick" in expr
+        assert "fetch(" not in expr
+        assert params.get("awaitPromise") is True
+        return {
+            "result": {
+                "value": {
+                    "via": "page_fn",
+                    "finish_fn": "OnAddDXFClick",
+                    "grid_dxf_row_count": 30,
+                    "status": 200,
+                    "body_keys": ["NewItem"],
+                    "body_type": "object",
+                    "has_NewItem": True,
+                    "has_QuoteItem": False,
+                    "text_len": 40,
+                }
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        result = invoke_page_dxf_finish(quote_id="qid")
+    assert result["via"] == "page_fn"
+    assert result["has_NewItem"] is True
+    assert result["grid_dxf_row_count"] == 30
+    assert result["edit_quote_id"] == "qid"
+    assert result["minted_id"] == "qid"
+
+
+def test_apply_grid_dxf_part_modes_evaluates_setpartmode_on_edit():
+    """QuoteOrderEdit SetPartMode on #gridDXFParts before Finish."""
+    from secturafab.chrome_cdp import apply_grid_dxf_part_modes
+
+    tab = {
+        "title": "*Quote-105918-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        assert method == "Runtime.evaluate"
+        assert ws_url.endswith("/edit")
+        assert "/CadImport/SetPartMode" in expr
+        assert "/Part/UpdateItemType" in expr
+        assert "gridDXFParts" in expr
+        assert "PartMode" in expr
+        assert "ItemType" in expr
+        assert "PrimaryOrganizationID" in expr
+        assert "org_widget" in expr
+        assert "kendo_row_keys" in expr
+        assert "CadType" in expr
+        assert "Stock_X" in expr
+        assert 'set("FileType"' in expr or "row.FileType = cat" in expr
+        assert "keep_rows" in expr
+        assert "AddItem_DXFFiles" not in expr
+        assert params.get("awaitPromise") is True
+        return {
+            "result": {
+                "value": {
+                    "grid_present": True,
+                    "cad": 3,
+                    "linear": 2,
+                    "assembly": 1,
+                    "component": 1,
+                    "set_count": 6,
+                    "setpartmode_via": "jquery_ajax",
+                    "grid_dxf_row_count": 7,
+                    "keep_via": "live",
+                    "keep_n": 7,
+                    "kendo_row_keys": [
+                        "CadType",
+                        "FileID",
+                        "FileType",
+                        "ID",
+                        "SourceDataID",
+                        "Stock_X",
+                        "Stock_Y",
+                    ],
+                }
+            }
+        }
+
+    rows = [
+        {"ID": "a", "SourceDataID": "s1", "Name": "PLATE", "Category": "Cad", "PartMode": 0},
+        {"ID": "b", "SourceDataID": "s2", "Name": "TUBE", "Category": "Linear", "PartMode": 1},
+    ]
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=tab), patch(
+        "secturafab.chrome_cdp.cdp_call", side_effect=_call
+    ):
+        result = apply_grid_dxf_part_modes(rows, quote_id="qid")
+    assert result["grid_present"] is True
+    assert result["cad"] == 3
+    assert result["linear"] == 2
+    assert result["setpartmode_via"] == "jquery_ajax"
+    assert result["keep_via"] == "live"
+    assert "CadType" in result["kendo_row_keys"]
+    assert "Stock_X" in result["kendo_row_keys"]
+    assert "Stock_Y" in result["kendo_row_keys"]
+
+
+def test_apply_grid_part_modes_js_does_not_reopen_cad_when_kids_exist():
+    """Multi-kid Adjust Properties: do not click #but_dxf if spec.rows exist.
+
+    That reopen dumps the empty quote grid (Q10353 / 12519-2).
+    Q10355 / 34328-1: first-child edit can empty the grid without
+    #but_dxf — keep-grid is a separate dig; this JS still must not
+    reopen. invent=false; no remint.
+    """
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    js = _APPLY_GRID_PART_MODES_JS
+    assert "wants.length > 0" in js
+    assert "but_dxf" in js
+    reopen = js.split("wants.length > 0")[1]
+    before_fallback = reopen.split("querySelector(\"#but_dxf\")")[0]
+    assert "grid_dxf_row_count: 0" in before_fallback
+    assert "but_dxf" not in before_fallback
+    assert "readOrg" in js
+    assert "Q10355" in js
+    assert "34328-1" in js
+
+
+def test_apply_grid_part_modes_js_keeps_kids_without_select_or_invent():
+    """Q10355 / 34328-1: child-row select empties #gridDXFParts.
+
+    Keep-path snapshots / rehydrates CadImport kids. No select, no
+    editCell, no Contours invent, no #but_dxf before fail-close.
+    """
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    js = _APPLY_GRID_PART_MODES_JS
+    assert "snapshotRows" in js
+    assert "bindKeep" in js
+    assert "keep_rows" in js
+    assert "keep_via" in js
+    assert 'keepVia = "rehydrate"' in js
+    assert "Q10355" in js
+    assert "34328-1" in js
+    assert ".select(" not in js
+    assert "editCell(" not in js
+    assert "NumberOfContours" not in js
+    assert "Contours:" not in js
+    assert "dataSource.data(rows)" in js
+    assert 'multi ? "" : findSetFn()' not in js
+    assert "applyOneKid" in js
+    assert "findSetFn()" in js
+    assert "single_plate_adjust_properties_page_fn" in js
+    assert "want.Thickness" in js
+    assert "Thickness_Units" in js
+    apply_body = js.split("function applyAll()")[1].split(
+        "if (grid() && grid().dataSource) return applyAll();"
+    )[0]
+    assert "but_dxf" not in apply_body
+    assert "kendoDataRows" in js
+    assert "force_live_grid_inch" in js
+    assert "if (!Array.isArray(dataSource.data()))" not in js
+    assert "if (Array.isArray(dataSource.data()))" not in js
+    assert "if (!Array.isArray(g.dataSource.data()))" not in js
+    assert "Array.isArray(ds.data())" not in js
+    assert "classifyOnly" in js
+    assert "Thickness_Units" in js
+    assert "7.3819" in js or "units still meter" in js
+
+
+def test_kendo_observable_array_rows_does_not_use_array_is_array():
+    """ObservableArray is array-like; Array.isArray is false. invent=false."""
+    from secturafab.chrome_cdp import kendo_observable_array_rows
+
+    class ObservableArray:
+        def __init__(self, items):
+            self._items = list(items)
+            self.length = len(items)
+
+        def __getitem__(self, i):
+            return self._items[i]
+
+        def __len__(self):
+            return self.length
+
+    raw = ObservableArray(
+        [
+            {"Name": "H.10.38", "Thickness": "0.0048:meter", "Thickness_Units": "meter"},
+        ]
+    )
+    assert not isinstance(raw, list)
+    rows = kendo_observable_array_rows(raw)
+    assert len(rows) == 1
+    assert rows[0]["Name"] == "H.10.38"
+    assert kendo_observable_array_rows(None) == []
+    assert kendo_observable_array_rows([]) == []
+
+
+def test_hard_gate3_drawing_inch_stuck_rejects_meter_class():
+    """HARD_GATE3: ~0.1875 inch stuck. Reject 0.0508 meter, 7.3819, meterish."""
+    from secturafab.website import (
+        HARD_GATE3_DRAWING_INCH,
+        HARD_GATE3_INCH_AS_METER_CLASS,
+        HARD_GATE3_METER_CLASS,
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        hard_gate3_drawing_inch_stuck,
+        step_cad_finish_hard_gate,
+    )
+
+    ready = {
+        "Name": "H.10.38 PLATE",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "drawing_thickness_in": "0.1875",
+        "thickness_source": "drawing",
+    }
+    assert abs(HARD_GATE3_DRAWING_INCH - 0.1875) < 1e-9
+    assert abs(HARD_GATE3_METER_CLASS - 0.0508) < 1e-9
+    assert abs(HARD_GATE3_INCH_AS_METER_CLASS - 7.3819) < 1e-9
+    assert hard_gate3_drawing_inch_stuck(ready) is None
+    assert step_cad_finish_hard_gate([ready]) is None
+
+    meterish = {**ready, "Thickness": "0.1875", "Thickness_Units": "meter"}
+    why_m = hard_gate3_drawing_inch_stuck(meterish)
+    assert why_m is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_m
+    assert "HARD_GATE3" in why_m
+    assert "0.0508" in why_m or "meterish" in why_m or "meter" in why_m
+    assert "invent" in why_m.lower()
+
+    cls_0508 = {**ready, "Thickness": "0.0508", "Thickness_Units": "meter"}
+    why_0508 = hard_gate3_drawing_inch_stuck(cls_0508)
+    assert why_0508 is not None
+    assert "0.0508" in why_0508
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_0508
+
+    cls_73819 = {**ready, "Thickness": "7.3819", "Thickness_Units": "inch"}
+    why_73819 = hard_gate3_drawing_inch_stuck(cls_73819)
+    assert why_73819 is not None
+    assert "7.3819" in why_73819
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_73819
+    assert step_cad_finish_hard_gate([cls_73819]) == why_73819
+
+    plate_25 = {
+        **ready,
+        "Thickness": "0.25",
+        "drawing_thickness_in": "0.25",
+    }
+    assert hard_gate3_drawing_inch_stuck(plate_25) is None
+
+
+def test_cadimport_keep_grid_rows_does_not_invent_contours():
+    """Rehydrate copies explode keys only. invent=false."""
+    from secturafab.website import (
+        cadimport_keep_grid_rows,
+        keep_grid_dxf_parts_via,
+    )
+
+    kids = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "FileType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "server-stamped",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "FileType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-c",
+            "SourceDataID": "src-c",
+            "Name": "34328-1 GUSSET",
+            "FileType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+    ]
+    kept = cadimport_keep_grid_rows(kids)
+    assert len(kept) == 3
+    assert kept[0]["InternalData"] == "server-stamped"
+    assert "InternalData" not in kept[1]
+    assert "Contours" not in kept[0]
+    assert "NumberOfContours" not in kept[0]
+    assert "Contours" not in kept[1]
+    assert keep_grid_dxf_parts_via(
+        widget_present=True, live_grid_n=3, cadimport_n=3
+    ) == "live"
+    assert keep_grid_dxf_parts_via(
+        widget_present=True, live_grid_n=0, cadimport_n=3
+    ) == "rehydrate"
+    assert keep_grid_dxf_parts_via(
+        widget_present=True, live_grid_n=1, cadimport_n=3
+    ) == "rehydrate"
+    assert keep_grid_dxf_parts_via(
+        widget_present=False, live_grid_n=0, cadimport_n=3
+    ) == ""
+    assert keep_grid_dxf_parts_via(
+        widget_present=True, live_grid_n=0, cadimport_n=1
+    ) == ""
+
+
+def test_cadimport_keep_grid_classify_spec_copies_inches_not_contours():
+    """Cad+inches spec for live #gridDXFParts. invent=false."""
+    from secturafab.website import cadimport_keep_grid_classify_spec
+
+    kids = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "FileType": "Cad",
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "Material": "A36",
+            "Machine": "Laser - Bay1",
+            "InternalData": "server-stamped",
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "FileType": "Cad",
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "Material": "A36",
+            "InternalData": "",
+        },
+        {
+            "ID": "id-c",
+            "SourceDataID": "src-c",
+            "Name": "34328-1 GUSSET",
+            "FileType": "Cad",
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.0048:meter",
+            "Thickness_Units": "meter",
+        },
+    ]
+    spec = cadimport_keep_grid_classify_spec(kids)
+    assert len(spec) == 3
+    assert spec[0]["Thickness"] == "0.25"
+    assert spec[0]["Thickness_Units"] == "inch"
+    assert spec[0]["InternalData"] == "server-stamped"
+    assert spec[1]["Thickness"] == "0.25"
+    assert spec[1]["Thickness_Units"] == "inch"
+    assert "InternalData" not in spec[1]
+    assert "Thickness" not in spec[2]
+    assert "Thickness_Units" not in spec[2]
+    for row in spec:
+        assert "Contours" not in row
+        assert "NumberOfContours" not in row
+
+
+def test_cadimport_keep_grid_classify_spec_shares_drawing_material():
+    """Q10369: drawing Material on one kid is copied onto every Cad spec.
+
+    Thickness inches follow Material. invent=false — no Contours.
+    """
+    from secturafab.website import (
+        cadimport_keep_grid_classify_spec,
+        drawing_material_type_from_rows,
+    )
+
+    kids = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Material": "A36",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        },
+    ]
+    assert drawing_material_type_from_rows(kids) == "A36"
+    spec = cadimport_keep_grid_classify_spec(kids)
+    assert len(spec) == 2
+    assert spec[0]["Material"] == "A36"
+    assert spec[1]["Material"] == "A36"
+    assert spec[0]["Thickness"] == "0.1875"
+    assert spec[1]["Thickness"] == "0.1875"
+    assert spec[0]["Thickness_Units"] == "inch"
+    assert spec[1]["Thickness_Units"] == "inch"
+    keys = list(spec[1])
+    assert keys.index("Material") < keys.index("Thickness")
+    for row in spec:
+        assert "Contours" not in row
+        assert "NumberOfContours" not in row
+
+
+def test_keep_grid_cad_kids_blank_material_refuses():
+    """Q10369: any Cad kid still blank Material after keep-grid is EXEC_FAIL."""
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+        keep_grid_cad_kids_blank_material_refuses,
+    )
+
+    configured = {
+        "Name": "34328-1 PLATE A",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+    }
+    blank = {
+        **configured,
+        "Name": "34328-1 PLATE B",
+        "Material": "",
+        "Thickness": "",
+        "Thickness_Units": "",
+    }
+    why = keep_grid_cad_kids_blank_material_refuses(
+        [configured, blank], keep_via="rehydrate"
+    )
+    assert why is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why
+    assert "Material blank" in why
+    assert "Q10369" in why
+    assert "invent" in why.lower()
+    assert "Contours" in why
+    assert cad_finish_notes_refuse_additem_dxf([why]) == why
+    assert (
+        keep_grid_cad_kids_blank_material_refuses(
+            [configured, {**blank, "Material": "A36", "Thickness": "0.1875",
+                          "Thickness_Units": "inch"}],
+            keep_via="rehydrate",
+        )
+        is None
+    )
+    assert keep_grid_cad_kids_blank_material_refuses([configured]) is None
+
+
+def test_keep_grid_cad_kids_drawing_thickness_refuses_step_and_red():
+    """Kyle 2026-09-14: STEP-only or red/invalid thickness is EXEC_FAIL.
+
+    After Material-before-thickness. invent=false — no Contours.
+    """
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+        cadimport_keep_grid_classify_spec,
+        drawing_thickness_in,
+        keep_grid_cad_kids_drawing_thickness_refuses,
+        plate_step_thickness_invalid_vs_drawing,
+        thickness_source_is_step,
+    )
+
+    drawing = {
+        "Name": "34329 BOOM SUPPORT",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "Material": "A36",
+        "Thickness": "0.25",
+        "Thickness_Units": "inch",
+        "thickness_source": "drawing",
+        "drawing_thickness_in": "0.25",
+    }
+    step_only = {
+        **drawing,
+        "Name": "HOOK BOOM REST-7742_31454-1",
+        "Thickness": "0.5",
+        "thickness_source": "step",
+        "drawing_thickness_in": "",
+    }
+    step_only.pop("drawing_thickness_in", None)
+    red = {
+        **drawing,
+        "Name": "HOOK BOOM REST-7742_31454-1",
+        "Thickness": "0.5",
+        "drawing_thickness_in": "0.1875",
+        "thickness_source": "drawing",
+    }
+
+    assert drawing_thickness_in(drawing) == "0.25"
+    assert drawing_thickness_in(step_only) is None
+    assert thickness_source_is_step(step_only) is True
+    assert plate_step_thickness_invalid_vs_drawing(drawing) is None
+    why_step = plate_step_thickness_invalid_vs_drawing(step_only)
+    assert why_step is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_step
+    assert "STEP-derived" in why_step
+    assert "invent" in why_step.lower()
+    assert "Contours" in why_step
+    why_red = plate_step_thickness_invalid_vs_drawing(red)
+    assert why_red is not None
+    assert "red/invalid" in why_red
+    assert "0.1875" in why_red
+    assert cad_finish_notes_refuse_additem_dxf([why_step]) == why_step
+    assert cad_finish_notes_refuse_additem_dxf([why_red]) == why_red
+
+    why_keep = keep_grid_cad_kids_drawing_thickness_refuses(
+        [drawing, step_only], keep_via="live"
+    )
+    assert why_keep is not None
+    assert "keep_grid_via=live" in why_keep
+    assert keep_grid_cad_kids_drawing_thickness_refuses(
+        [drawing, {**drawing, "Name": "34328-1 PLATE B"}],
+        keep_via="live",
+    ) is None
+
+    spec = cadimport_keep_grid_classify_spec([drawing, step_only])
+    assert spec[0]["Thickness"] == "0.25"
+    assert spec[0]["thickness_source"] == "drawing"
+    assert spec[0]["drawing_thickness_in"] == "0.25"
+    assert "Thickness" not in spec[1]
+    assert "Contours" not in spec[0]
+    assert "NumberOfContours" not in spec[0]
+    keys = list(spec[0])
+    assert keys.index("Material") < keys.index("Thickness")
+
+
+def test_classify_stamps_drawing_thickness_from_pdf_lom():
+    """Per-kid Cad+Material+inches uses PDF/LOM thickness, not STEP."""
+    from quote_core.part_materials import PartMaterial
+    from secturafab.push import SecturaFabPushService
+    from secturafab.website import drawing_thickness_in
+
+    rows = [
+        {
+            "SourceDataID": "src-a",
+            "ID": "id-a",
+            "Name": "34329 BOOM SUPPORT",
+            "ProductType": "Component",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "InternalData": "",
+        }
+    ]
+    pm = PartMaterial(
+        part_key="34329",
+        material_key="a36",
+        material="A36",
+        thickness_in=0.25,
+        source="MATERIAL block (1/4 / A36)",
+    )
+    with patch(
+        "quote_core.part_materials.build_part_material_map",
+        return_value={"34329": pm},
+    ):
+        classified, _notes = SecturaFabPushService(
+            client=MagicMock()
+        ).classify_cadimport_rows(
+            rows,
+            default_material="A36",
+            default_thickness="0.5",
+            default_thickness_source="step",
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            qty=1,
+            part_key="34328-1",
+        )
+    kid = classified[0]
+    assert kid["Category"] == "Cad"
+    assert kid["thickness_source"] == "drawing"
+    assert drawing_thickness_in(kid) == "0.25"
+    assert float(kid["Thickness"]) == 0.25
+
+    lom_rows = [
+        {
+            "SourceDataID": "src-b",
+            "ID": "id-b",
+            "Name": "HOOK 1/4 PLATE REST",
+            "ProductType": "Component",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "InternalData": "",
+        }
+    ]
+    lom_classified, _ = SecturaFabPushService(
+        client=MagicMock()
+    ).classify_cadimport_rows(
+        lom_rows,
+        default_material="A36",
+        default_thickness="0.5",
+        default_thickness_source="step",
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+        part_key="34328-1",
+    )
+    lom_kid = lom_classified[0]
+    assert lom_kid["thickness_source"] == "drawing"
+    assert drawing_thickness_in(lom_kid) == "0.25"
+
+
+def test_apply_grid_part_modes_js_rehydrates_emptied_kendo_from_keep_rows(
+    tmp_path: Path,
+):
+    """Keep-path: widget exists, live data [], CadImport keep_rows restore 3 kids.
+
+    Models Q10355 child-select wipe without #but_dxf. No Contours invent.
+    """
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    keep_rows = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "server-stamped",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-c",
+            "SourceDataID": "src-c",
+            "Name": "34328-1 GUSSET",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+    ]
+    spec = {"rows": keep_rows, "keep_rows": keep_rows}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + r"""
+const store = { rows: [] };
+const dataSource = {
+  data(rows) {
+    if (arguments.length) {
+      store.rows = (rows || []).map((r) => ({ ...r }));
+      return store.rows;
+    }
+    const arr = store.rows.slice();
+    arr.toJSON = function toJSON() {
+      return store.rows.map((r) => ({ ...r }));
+    };
+    return arr;
+  },
+};
+const gridObj = { dataSource };
+const ajaxCalls = [];
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "b7dbc294-3fd2-43aa-99be-268a6c4fce14" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax(opts) {
+    ajaxCalls.push(opts);
+    return { always(fn) { fn(); return this; } };
+  },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") {
+    return value.then(done);
+  }
+  if (!value.grid_present) throw new Error("grid_present false");
+  if (value.keep_via !== "rehydrate") throw new Error("keep_via=" + value.keep_via);
+  if (value.grid_dxf_row_count !== 3) throw new Error("n=" + value.grid_dxf_row_count);
+  if (value.cad !== 3) throw new Error("cad=" + value.cad);
+  if (store.rows.some((r) => r.Contours != null || r.NumberOfContours != null)) {
+    throw new Error("invented Contours");
+  }
+  if (store.rows[0].InternalData !== "server-stamped") {
+    throw new Error("lost InternalData");
+  }
+  if (store.rows[1].InternalData) throw new Error("invented InternalData");
+  if (store.rows[0].Thickness !== "0.25") throw new Error("lost inches");
+  if (store.rows[1].Thickness !== "0.25") throw new Error("lost inches b");
+  if (ajaxCalls.some((c) => String(c.url || "").indexOf("QuoteItem_Read") >= 0)) {
+    throw new Error("QuoteItem_Read fired");
+  }
+  process.stdout.write(JSON.stringify({
+    keep_via: value.keep_via,
+    grid_dxf_row_count: value.grid_dxf_row_count,
+    cad: value.cad,
+    ajax_n: ajaxCalls.length,
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "keep_grid_rehydrate.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["keep_via"] == "rehydrate"
+    assert out["grid_dxf_row_count"] == 3
+    assert out["cad"] == 3
+
+
+def test_apply_grid_part_modes_js_live_keep_writes_inches_not_internaldata(
+    tmp_path: Path,
+):
+    """Q10358: keep_via=live writes Cad+inches; does not invent InternalData."""
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    live_rows = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Thickness": "0.0048:meter",
+            "Thickness_Units": "meter",
+            "InternalData": "",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 2,
+            "ProductType": 200,
+            "InternalData": "",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-c",
+            "SourceDataID": "src-c",
+            "Name": "34328-1 GUSSET",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+    ]
+    wants = [
+        {
+            "ID": row["ID"],
+            "SourceDataID": row["SourceDataID"],
+            "Name": row["Name"],
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser - Bay1",
+            "Material": "A36",
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+        }
+        for row in live_rows
+    ]
+    spec = {"rows": wants, "keep_rows": live_rows}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + "const live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+const store = { rows: live.map((r) => ({ ...r })) };
+const dataSource = {
+  data(rows) {
+    if (arguments.length) {
+      store.rows = (rows || []).map((r) => ({ ...r }));
+      return store.rows;
+    }
+    const arr = store.rows.slice();
+    arr.toJSON = function toJSON() {
+      return store.rows.map((r) => ({ ...r }));
+    };
+    return arr;
+  },
+};
+const gridObj = { dataSource };
+const ajaxCalls = [];
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "b7dbc294-3fd2-43aa-99be-268a6c4fce14" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax(opts) {
+    ajaxCalls.push(opts);
+    return { always(fn) { fn(); return this; } };
+  },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") {
+    return value.then(done);
+  }
+  if (value.keep_via !== "live") throw new Error("keep_via=" + value.keep_via);
+  if (value.cad !== 3) throw new Error("cad=" + value.cad);
+  if (store.rows.some((r) => r.Contours != null || r.NumberOfContours != null)) {
+    throw new Error("invented Contours");
+  }
+  if (store.rows.some((r) => r.InternalData)) throw new Error("invented InternalData");
+  if (store.rows.some((r) => String(r.Thickness) !== "0.25")) {
+    throw new Error("inches missing");
+  }
+  if (store.rows.some((r) => String(r.Thickness_Units) !== "inch")) {
+    throw new Error("units missing");
+  }
+  if (ajaxCalls.some((c) => /GetBorderSize|UpdateData|CadImport\/Data/.test(String(c.url || "")))) {
+    throw new Error("fill xhr " + JSON.stringify(ajaxCalls.map((c) => c.url)));
+  }
+  process.stdout.write(JSON.stringify({
+    keep_via: value.keep_via,
+    cad: value.cad,
+    ajax_n: ajaxCalls.length,
+    ajax_paths: ajaxCalls.map((c) => c.url),
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "keep_grid_live_inches.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["keep_via"] == "live"
+    assert out["cad"] == 3
+    assert out["ajax_n"] >= 3
+    assert all(
+        "/CadImport/SetPartMode" in p or "/Part/UpdateItemType" in p
+        for p in out["ajax_paths"]
+    )
+
+
+def test_per_kid_cad_inches_contours_gate_same_as_single_plate():
+    """Each weldment kid uses the one Safe Cave Cad+inches gate. invent=false."""
+    from secturafab.website import (
+        PER_KID_CAD_INCHES_VIA,
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        STEP_CONTOURS_FILL_UNLOCKED,
+        per_kid_cad_inches_contours_gate,
+        per_kid_cad_inches_same_as_single_plate,
+        per_kid_cad_inches_via,
+        single_plate_contours_flip_xhr,
+        step_cad_finish_hard_gate,
+    )
+
+    assert per_kid_cad_inches_same_as_single_plate() is True
+    assert per_kid_cad_inches_via() == PER_KID_CAD_INCHES_VIA
+    assert PER_KID_CAD_INCHES_VIA == "single_plate_adjust_properties_page_fn"
+    assert STEP_CONTOURS_FILL_UNLOCKED is False
+    assert single_plate_contours_flip_xhr() is None
+
+    kid = {
+        "Name": "34328-1 PLATE A",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "ProductTypeName": "Cad",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "InternalData": "",
+    }
+    kids = [
+        dict(kid, Name="34328-1 PLATE A", ID="id-a"),
+        dict(kid, Name="34328-1 PLATE B", ID="id-b"),
+        dict(kid, Name="34328-1 GUSSET", ID="id-c"),
+    ]
+    assert per_kid_cad_inches_contours_gate(kids) is None
+    assert per_kid_cad_inches_contours_gate(kids) == step_cad_finish_hard_gate(
+        kids
+    )
+    assert per_kid_cad_inches_contours_gate(kids[:1]) is None
+
+    missing_inch = [dict(kids[0]), dict(kids[1], Thickness_Units="meter")]
+    why_inch = per_kid_cad_inches_contours_gate(missing_inch)
+    assert why_inch is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_inch
+    assert "thickness not set in inch" in why_inch
+    assert "Contours" in why_inch
+    assert "invent" in why_inch.lower()
+
+    still_component = [
+        dict(kids[0]),
+        dict(kids[1], ProductType=200, ProductTypeName="Component"),
+    ]
+    why_comp = per_kid_cad_inches_contours_gate(still_component)
+    assert why_comp is not None
+    assert "Component" in why_comp
+    assert "Contours" in why_comp
+    assert "invent" in why_comp.lower()
+
+    for row in kids:
+        assert "Contours" not in row
+        assert "NumberOfContours" not in row
+
+
+def test_apply_grid_part_modes_js_runs_page_fn_cad_inches_per_kid(
+    tmp_path: Path,
+):
+    """Multi-kid: each kid gets the same page_fn Cad+inches as one STP.
+
+    No Contours/InternalData invent. Keep-grid restores if page_fn wipes.
+    """
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    live_rows = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "Category": "Component",
+            "FileType": "Component",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Thickness": "0.0048:meter",
+            "Thickness_Units": "meter",
+            "InternalData": "",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "Category": "Component",
+            "FileType": "Component",
+            "PartMode": 2,
+            "ProductType": 200,
+            "InternalData": "",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-c",
+            "SourceDataID": "src-c",
+            "Name": "34328-1 GUSSET",
+            "Category": "Component",
+            "FileType": "Component",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+    ]
+    wants = [
+        {
+            "ID": row["ID"],
+            "SourceDataID": row["SourceDataID"],
+            "Name": row["Name"],
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser - Bay1",
+            "Material": "A36",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        }
+        for row in live_rows
+    ]
+    spec = {"rows": wants, "keep_rows": live_rows}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + "const live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+const store = { rows: live.map((r) => {
+  const row = { ...r };
+  row.set = function set(k, v) { this[k] = v; };
+  return row;
+}) };
+const dataSource = {
+  data(rows) {
+    if (arguments.length) {
+      store.rows = (rows || []).map((r) => {
+        const row = { ...r };
+        if (typeof row.set !== "function") {
+          row.set = function set(k, v) { this[k] = v; };
+        }
+        return row;
+      });
+      return store.rows;
+    }
+    const arr = store.rows.slice();
+    arr.toJSON = function toJSON() {
+      return store.rows.map((r) => {
+        const copy = {};
+        Object.keys(r).forEach((k) => {
+          if (k !== "set" && k !== "uid") copy[k] = r[k];
+        });
+        return copy;
+      });
+    };
+    return arr;
+  },
+};
+const gridObj = { dataSource };
+const pageCalls = [];
+const ajaxCalls = [];
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "b7dbc294-3fd2-43aa-99be-268a6c4fce14" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax(opts) {
+    ajaxCalls.push(opts);
+    return { always(fn) { fn(); return this; } };
+  },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+global.window.SetPartMode = function SetPartMode(id, mode) {
+  pageCalls.push({ fn: "SetPartMode", id: String(id), mode: Number(mode) });
+  if (pageCalls.filter((c) => c.fn === "SetPartMode").length === 1) {
+    store.rows = [];
+  }
+};
+global.window.UpdateItemType = function UpdateItemType(id, itemType) {
+  pageCalls.push({ fn: "UpdateItemType", id: String(id), itemType: String(itemType) });
+};
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") {
+    return value.then(done);
+  }
+  if (!value.per_kid) throw new Error("per_kid false");
+  if (value.per_kid_cad_inches !== "single_plate_adjust_properties_page_fn") {
+    throw new Error("via=" + value.per_kid_cad_inches);
+  }
+  if (value.setpartmode_via !== "page_fn") throw new Error("set=" + value.setpartmode_via);
+  if (value.updateitemtype_via !== "page_fn") throw new Error("type=" + value.updateitemtype_via);
+  if (value.keep_via !== "rehydrate") throw new Error("keep_via=" + value.keep_via);
+  if (value.grid_dxf_row_count !== 3) throw new Error("n=" + value.grid_dxf_row_count);
+  if (value.cad !== 3) throw new Error("cad=" + value.cad);
+  if (value.updateitemtype_count !== 3) throw new Error("types=" + value.updateitemtype_count);
+  const modes = pageCalls.filter((c) => c.fn === "SetPartMode");
+  const types = pageCalls.filter((c) => c.fn === "UpdateItemType");
+  if (modes.length !== 3) throw new Error("SetPartMode n=" + modes.length);
+  if (types.length !== 3) throw new Error("UpdateItemType n=" + types.length);
+  if (!modes.every((c) => c.mode === 0)) throw new Error("PartMode not Cad");
+  if (!types.every((c) => c.itemType === "Cad")) throw new Error("ItemType not Cad");
+  const ids = ["id-a", "id-b", "id-c"];
+  if (!ids.every((id) => modes.some((c) => c.id === id))) throw new Error("mode ids");
+  if (!ids.every((id) => types.some((c) => c.id === id))) throw new Error("type ids");
+  if (store.rows.some((r) => r.Contours != null || r.NumberOfContours != null)) {
+    throw new Error("invented Contours");
+  }
+  if (store.rows.some((r) => r.InternalData)) throw new Error("invented InternalData");
+  if (store.rows.some((r) => String(r.Thickness) !== "0.1875")) {
+    throw new Error("inches missing");
+  }
+  if (store.rows.some((r) => String(r.Thickness_Units) !== "inch")) {
+    throw new Error("units missing");
+  }
+  if (ajaxCalls.length) throw new Error("silent ajax " + JSON.stringify(ajaxCalls));
+  process.stdout.write(JSON.stringify({
+    keep_via: value.keep_via,
+    cad: value.cad,
+    page_n: pageCalls.length,
+    mode_ids: modes.map((c) => c.id),
+    type_ids: types.map((c) => c.id),
+    per_kid: value.per_kid,
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "per_kid_page_fn_cad_inches.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["keep_via"] == "rehydrate"
+    assert out["cad"] == 3
+    assert out["page_n"] == 6
+    assert out["per_kid"] is True
+    assert set(out["mode_ids"]) == {"id-a", "id-b", "id-c"}
+    assert set(out["type_ids"]) == {"id-a", "id-b", "id-c"}
+
+
+def test_apply_grid_part_modes_js_fail_closes_thickness_when_material_blank(
+    tmp_path: Path,
+):
+    """Q10366: page_fn does not write thickness while Material is blank."""
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    live_rows = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "H.6.38 PLATE",
+            "Category": "Component",
+            "FileType": "Component",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Thickness": "0.0048:meter",
+            "Thickness_Units": "meter",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+    ]
+    wants = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "H.6.38 PLATE",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser - Bay1",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        }
+    ]
+    spec = {"rows": wants, "keep_rows": []}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + "const live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+const store = { rows: live.map((r) => {
+  const row = { ...r };
+  row.set = function set(k, v) { this[k] = v; };
+  return row;
+}) };
+const dataSource = {
+  data() {
+    const arr = store.rows.slice();
+    arr.toJSON = function toJSON() {
+      return store.rows.map((r) => {
+        const copy = {};
+        Object.keys(r).forEach((k) => {
+          if (k !== "set" && k !== "uid") copy[k] = r[k];
+        });
+        return copy;
+      });
+    };
+    return arr;
+  },
+};
+const gridObj = { dataSource };
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "org" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax() { return { always(fn) { fn(); return this; } }; },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+global.window.SetPartMode = function SetPartMode() {};
+global.window.UpdateItemType = function UpdateItemType() {};
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") {
+    return value.then(done);
+  }
+  if (!value.thickness_blocked_blank_material) {
+    throw new Error("expected thickness_blocked_blank_material");
+  }
+  if (String(store.rows[0].Thickness) !== "0.0048:meter") {
+    throw new Error("wrote thickness=" + store.rows[0].Thickness);
+  }
+  if (String(store.rows[0].Thickness_Units) !== "meter") {
+    throw new Error("wrote units=" + store.rows[0].Thickness_Units);
+  }
+  if (store.rows[0].Contours != null || store.rows[0].NumberOfContours != null) {
+    throw new Error("invented Contours");
+  }
+  process.stdout.write(JSON.stringify({
+    blocked: value.thickness_blocked_blank_material,
+    thickness: store.rows[0].Thickness,
+    cad: value.cad,
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "material_before_thickness_fail_close.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["blocked"] >= 1
+    assert out["thickness"] == "0.0048:meter"
+    assert out["cad"] == 1
+
+
+def test_apply_grid_part_modes_js_rehydrates_material_on_every_kid(
+    tmp_path: Path,
+):
+    """Q10369: after first-kid wipe, keep-grid stamps Material+inches on all.
+
+    Only the first want carries drawing Material. invent=false.
+    """
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    live_rows = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "Category": "Component",
+            "FileType": "Component",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "Category": "Component",
+            "FileType": "Component",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+    ]
+    wants = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "34328-1 PLATE A",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser - Bay1",
+            "Material": "A36",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        },
+        {
+            "ID": "id-b",
+            "SourceDataID": "src-b",
+            "Name": "34328-1 PLATE B",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser - Bay1",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        },
+    ]
+    spec = {"rows": wants, "keep_rows": live_rows}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + "const live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+const store = { rows: live.map((r) => {
+  const row = { ...r };
+  row.set = function set(k, v) { this[k] = v; };
+  return row;
+}) };
+const dataSource = {
+  data(rows) {
+    if (arguments.length) {
+      store.rows = (rows || []).map((r) => {
+        const row = { ...r };
+        if (typeof row.set !== "function") {
+          row.set = function set(k, v) { this[k] = v; };
+        }
+        return row;
+      });
+      return store.rows;
+    }
+    const arr = store.rows.slice();
+    arr.toJSON = function toJSON() {
+      return store.rows.map((r) => {
+        const copy = {};
+        Object.keys(r).forEach((k) => {
+          if (k !== "set" && k !== "uid") copy[k] = r[k];
+        });
+        return copy;
+      });
+    };
+    return arr;
+  },
+};
+const gridObj = { dataSource };
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "org" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax() { return { always(fn) { fn(); return this; } }; },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+global.window.SetPartMode = function SetPartMode() {
+  store.rows = [];
+};
+global.window.UpdateItemType = function UpdateItemType() {};
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") {
+    return value.then(done);
+  }
+  if (value.keep_via !== "rehydrate") throw new Error("keep_via=" + value.keep_via);
+  if (value.grid_dxf_row_count !== 2) throw new Error("n=" + value.grid_dxf_row_count);
+  if (value.cad !== 2) throw new Error("cad=" + value.cad);
+  if (value.cad_blank_material) throw new Error("blank=" + value.cad_blank_material);
+  if (value.producttype_still_component) {
+    throw new Error("still component=" + value.producttype_still_component);
+  }
+  if (store.rows.some((r) => String(r.Material || "") !== "A36")) {
+    throw new Error("material missing " + JSON.stringify(store.rows.map((r) => r.Material)));
+  }
+  if (store.rows.some((r) => String(r.Thickness) !== "0.1875")) {
+    throw new Error("inches missing");
+  }
+  if (store.rows.some((r) => r.Contours != null || r.NumberOfContours != null)) {
+    throw new Error("invented Contours");
+  }
+  process.stdout.write(JSON.stringify({
+    keep_via: value.keep_via,
+    cad: value.cad,
+    cad_blank_material: value.cad_blank_material,
+    producttype_still_component: value.producttype_still_component,
+    materials: store.rows.map((r) => r.Material),
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "keep_grid_material_every_kid.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["keep_via"] == "rehydrate"
+    assert out["cad"] == 2
+    assert out["cad_blank_material"] == 0
+    assert out["producttype_still_component"] == 0
+    assert out["materials"] == ["A36", "A36"]
+
+
+def test_apply_grid_counts_producttype_left_component(tmp_path: Path):
+    """Live grid ProductType stuck on Component is counted. invent=false.
+
+    row.set that drops the ProductType write leaves 200. The spec
+    still expects Cad. Do not invent Contours.
+    """
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    live_rows = [
+        {
+            "ID": "id-sheet",
+            "SourceDataID": "src-sheet",
+            "Name": "SIDE SHEET",
+            "Category": "Component",
+            "FileType": "Component",
+            "ItemType": "Component",
+            "PartMode": 2,
+            "ProductType": 200,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Material": "A36",
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+        }
+    ]
+    wants = [
+        {
+            "ID": "id-sheet",
+            "SourceDataID": "src-sheet",
+            "Name": "SIDE SHEET",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser - Bay1",
+            "Material": "A36",
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+        }
+    ]
+    spec = {"rows": wants, "keep_rows": []}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + "const live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+const store = { rows: live.map((r) => {
+  const row = { ...r };
+  row.set = function set(k, v) {
+    if (k === "ProductType") return;
+    this[k] = v;
+  };
+  return row;
+}) };
+const dataSource = {
+  data(rows) {
+    if (arguments.length) {
+      store.rows = (rows || []).map((r) => {
+        const row = { ...r };
+        if (typeof row.set !== "function") {
+          row.set = function set(k, v) {
+            if (k === "ProductType") return;
+            this[k] = v;
+          };
+        }
+        return row;
+      });
+      return store.rows;
+    }
+    const arr = store.rows.slice();
+    arr.toJSON = function toJSON() {
+      return store.rows.map((r) => {
+        const copy = {};
+        Object.keys(r).forEach((k) => {
+          if (k !== "set" && k !== "uid") copy[k] = r[k];
+        });
+        return copy;
+      });
+    };
+    return arr;
+  },
+};
+const gridObj = { dataSource };
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "org" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax() { return { always(fn) { fn(); return this; } }; },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") return value.then(done);
+  if (!value.producttype_still_component) {
+    throw new Error("expected still component, got " + value.producttype_still_component
+      + " pt=" + store.rows.map((r) => r.ProductType).join(","));
+  }
+  if (store.rows.some((r) => r.Contours != null || r.NumberOfContours != null)) {
+    throw new Error("invented Contours");
+  }
+  process.stdout.write(JSON.stringify({
+    producttype_still_component: value.producttype_still_component,
+    product_type: store.rows[0].ProductType,
+    item_type: store.rows[0].ItemType,
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "producttype_still_component.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["producttype_still_component"] >= 1
+    assert out["product_type"] == 200
+    assert out["item_type"] == "Cad"
+
+
+def test_apply_grid_force_live_grid_inch_iterates_observable_array(
+    tmp_path: Path,
+):
+    """Kendo ObservableArray: Array.isArray is false; inch stamp still runs.
+
+    Cad classify (SetPartMode / UpdateItemType) before Material A36
+    and before 0.1875 with Thickness_Units=inch. Never stamp 0.1875
+    while units still meter (7.3819 class). invent=false.
+    """
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    live_rows = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "H.10.38 PLATE",
+            "Category": "component",
+            "FileType": "component",
+            "ItemType": "component",
+            "PartMode": 2,
+            "ProductType": "bar",
+            "ProductSubType": "bar",
+            "Thickness": "0.0048:meter",
+            "Thickness_Units": "meter",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+    ]
+    wants = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "H.10.38 PLATE",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser - Bay1",
+            "Material": "A36",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+            "drawing_thickness_in": "0.1875",
+            "thickness_source": "drawing",
+        }
+    ]
+    spec = {"rows": wants, "keep_rows": []}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + "const live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+function ObservableArray(items) {
+  this.length = items.length;
+  for (var i = 0; i < items.length; i++) this[i] = items[i];
+}
+ObservableArray.prototype.toJSON = function toJSON() {
+  var out = [];
+  for (var i = 0; i < this.length; i++) {
+    var r = this[i] || {};
+    var copy = {};
+    Object.keys(r).forEach(function(k) {
+      if (k !== "set" && k !== "uid") copy[k] = r[k];
+    });
+    out.push(copy);
+  }
+  return out;
+};
+const order = [];
+const store = { rows: live.map((r) => {
+  const row = { ...r };
+  row.set = function set(k, v) {
+    order.push(String(k));
+    this[k] = v;
+  };
+  return row;
+}) };
+const dataSource = {
+  data() {
+    if (arguments.length) {
+      store.rows = (arguments[0] || []).map((r) => {
+        const row = { ...r };
+        if (typeof row.set !== "function") {
+          row.set = function set(k, v) {
+            order.push(String(k));
+            this[k] = v;
+          };
+        }
+        return row;
+      });
+    }
+    return new ObservableArray(store.rows);
+  },
+  view() { return new ObservableArray(store.rows); },
+};
+if (Array.isArray(dataSource.data())) {
+  throw new Error("mock not ObservableArray");
+}
+const gridObj = { dataSource };
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "org" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax() { return { always(fn) { fn(); return this; } }; },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+global.window.SetPartMode = function SetPartMode() { order.push("SetPartMode"); };
+global.window.UpdateItemType = function UpdateItemType() { order.push("UpdateItemType"); };
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") {
+    return value.then(done);
+  }
+  if (!value.force_live_grid_inch) throw new Error("force_live_grid_inch missing");
+  if (!value.classify_before_material) throw new Error("classify_before_material missing");
+  if (Number(value.inch_stamped || 0) < 1) throw new Error("stamped=" + value.inch_stamped);
+  if (String(store.rows[0].Thickness) !== "0.1875") {
+    throw new Error("thickness=" + store.rows[0].Thickness);
+  }
+  if (String(store.rows[0].Thickness_Units) !== "inch") {
+    throw new Error("units=" + store.rows[0].Thickness_Units);
+  }
+  if (Number(store.rows[0].Thickness) === 7.3819) throw new Error("7.3819 class");
+  if (String(store.rows[0].Material) !== "A36") throw new Error("material=" + store.rows[0].Material);
+  if (String(store.rows[0].ItemType) !== "Cad") throw new Error("ItemType=" + store.rows[0].ItemType);
+  if (Number(store.rows[0].ProductType) !== 100) throw new Error("ProductType=" + store.rows[0].ProductType);
+  if (String(store.rows[0].ProductSubType || "") === "bar") throw new Error("ProductSubType still bar");
+  const modeAt = order.indexOf("SetPartMode");
+  const typeAt = order.indexOf("UpdateItemType");
+  const matAt = order.indexOf("Material");
+  const thkAt = order.indexOf("Thickness");
+  if (modeAt < 0 || typeAt < 0) throw new Error("classify missing " + JSON.stringify(order));
+  if (matAt < 0 || thkAt < 0) throw new Error("stamp missing " + JSON.stringify(order));
+  if (!(modeAt < matAt && typeAt < matAt)) throw new Error("classify after material " + JSON.stringify(order));
+  if (!(modeAt < thkAt && typeAt < thkAt)) throw new Error("classify after thickness " + JSON.stringify(order));
+  if (store.rows[0].Contours != null || store.rows[0].NumberOfContours != null) {
+    throw new Error("invented Contours");
+  }
+  process.stdout.write(JSON.stringify({
+    inch_stamped: value.inch_stamped,
+    thickness: store.rows[0].Thickness,
+    units: store.rows[0].Thickness_Units,
+    item_type: store.rows[0].ItemType,
+    product_type: store.rows[0].ProductType,
+    order: order,
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "observable_array_inch_force.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["inch_stamped"] >= 1
+    assert out["thickness"] == "0.1875"
+    assert out["units"] == "inch"
+    assert out["item_type"] == "Cad"
+    assert out["product_type"] == 100
+    assert "SetPartMode" in out["order"]
+    assert "UpdateItemType" in out["order"]
+
+
+def test_apply_cad_thickness_row_set_defines_exclude(tmp_path: Path):
+    """Q10480: row.set threw ReferenceError: Exclude is not defined.
+
+    Define Exclude so Kendo model set works. If set still throws,
+    plain-assign fallback still stamps 0.1875 inch. invent=false.
+    """
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    js = _APPLY_GRID_PART_MODES_JS
+    assert "ensureExcludeDefined" in js
+    assert "kendoModelSet" in js
+    assert "ReferenceError: Exclude is not defined" in js
+    assert "window.Exclude" in js
+
+    live_rows = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "H.10.38 PLATE",
+            "Category": "component",
+            "FileType": "component",
+            "ItemType": "component",
+            "PartMode": 2,
+            "ProductType": "bar",
+            "ProductSubType": "bar",
+            "Thickness": "0.0048:meter",
+            "Thickness_Units": "meter",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+    ]
+    wants = [
+        {
+            "ID": "id-a",
+            "SourceDataID": "src-a",
+            "Name": "H.10.38 PLATE",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Machine": "Laser",
+            "Material": "A36",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+            "drawing_thickness_in": "0.1875",
+            "thickness_source": "drawing",
+        }
+    ]
+    spec = {"rows": wants, "keep_rows": []}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\n"
+        + "const live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+const store = { rows: live.map((r) => {
+  const row = { ...r };
+  row.set = function set(k, v) {
+    if (typeof Exclude === "undefined") {
+      throw new ReferenceError("Exclude is not defined");
+    }
+    Exclude(k);
+    this[k] = v;
+  };
+  return row;
+}) };
+const dataSource = {
+  data() {
+    if (arguments.length) store.rows = arguments[0] || store.rows;
+    return store.rows;
+  },
+  view() { return store.rows; },
+};
+const gridObj = { dataSource };
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "org" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax() { return { always(fn) { fn(); return this; } }; },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+delete global.Exclude;
+delete global.window.Exclude;
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+const result = apply(spec);
+const done = (value) => {
+  if (value && typeof value.then === "function") {
+    return value.then(done);
+  }
+  if (typeof Exclude !== "function") throw new Error("Exclude still missing");
+  if (Number(value.inch_stamped || 0) < 1) throw new Error("stamped=" + value.inch_stamped);
+  if (String(store.rows[0].Thickness) !== "0.1875") {
+    throw new Error("thickness=" + store.rows[0].Thickness);
+  }
+  if (String(store.rows[0].Thickness_Units) !== "inch") {
+    throw new Error("units=" + store.rows[0].Thickness_Units);
+  }
+  if (store.rows[0].Contours != null || store.rows[0].NumberOfContours != null) {
+    throw new Error("invented Contours");
+  }
+  process.stdout.write(JSON.stringify({
+    inch_stamped: value.inch_stamped,
+    thickness: store.rows[0].Thickness,
+    units: store.rows[0].Thickness_Units,
+    exclude_type: typeof Exclude,
+    item_type: store.rows[0].ItemType,
+  }));
+};
+Promise.resolve(done(result)).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "exclude_row_set_inch.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        ["node", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["inch_stamped"] >= 1
+    assert out["thickness"] == "0.1875"
+    assert out["units"] == "inch"
+    assert out["exclude_type"] == "function"
+    assert out["item_type"] == "Cad"
+
+
+def test_finish_skips_when_grid_classify_cad_is_zero(tmp_path: Path):
+    """Live 105918-1: plates still Component on #gridDXFParts → not Finish."""
+    stp = tmp_path / "105918-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-a",
+            "FileID": "file-a",
+            "Name": "PLATE-1297_30345-19",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+        {
+            "SourceDataID": "src-b",
+            "FileID": "file-b",
+            "Name": "TRIANGLE GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 0,
+            "linear": 0,
+            "assembly": 1,
+            "component": 61,
+            "set_count": 0,
+            "setpartmode_via": "",
+            "grid_dxf_row_count": 67,
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="11111111-aaaa-bbbb-cccc-000000001059",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="105918-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "grid_classify Cad:0" in blob
+    assert "not Finishing" in blob
+
+
+def test_finish_refuses_live_grid_producttype_still_component(tmp_path: Path):
+    """In-memory Cad bind is not enough when the live grid stays Component.
+
+    Kyle 2026-09-12: plate/sheet STEP must be ProductType Cad before
+    Finish. invent=false — do not invent Contours.
+    """
+    stp = tmp_path / "H638.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-h638",
+            "ID": "id-h638",
+            "FileID": "file-h638",
+            "Name": "H.6.38 PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+            "ProductType": "Component",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "updateitemtype_count": 1,
+            "updateitemtype_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "producttype_still_component": 1,
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="22222222-aaaa-bbbb-cccc-000000000638",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.1875",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="H.6.38",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "producttype_still_component" in blob
+    assert "ProductType still Component" in blob
+    assert "Do not invent Contours" in blob
+
+
+def test_finish_get_zero_cad_is_not_gold(tmp_path: Path):
+    """Live 105918-1: ItemList 66 with 0 Cad is not gold."""
+    stp = tmp_path / "105918-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-a",
+            "FileID": "file-a",
+            "Name": "PLATE-1297_30345-19",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        },
+        {
+            "SourceDataID": "src-b",
+            "FileID": "file-b",
+            "Name": "TRIANGLE GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        },
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {
+        "Data": [
+            {"ProductType": 300, "Description": "105918-1"},
+            {"ProductType": 200, "Description": "PLATE-1297_30345-19"},
+        ],
+        "Total": 2,
+    }
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 2,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 2,
+            "setpartmode_via": "jquery_ajax",
+            "grid_dxf_row_count": 2,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "FileType",
+                "ID",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="11111111-aaaa-bbbb-cccc-000000001060",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="105918-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_called()
+    blob = " ".join(notes)
+    assert "grid_classify Cad:2" in blob
+    assert "GET 0 Cad" in blob
+    assert "not gold" in blob
+
+
+def test_finish_empty_body_200_is_not_success(tmp_path: Path):
+    """Live 34137-1: Finish 200 empty str / no NewItem / GET 0 Cad → not ok."""
+    stp = tmp_path / "34996-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-a",
+            "FileID": "file-a",
+            "Name": "34996-2 PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        },
+        {
+            "SourceDataID": "src-b",
+            "FileID": "file-b",
+            "Name": "34996-3 GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        },
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._finish_via = "chrome_dom_fetch"
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": [],
+        "body_type": "str",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "text_len": 0,
+        "empty_body": True,
+        "via": "chrome_dom_fetch",
+    }
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003496",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="34996-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    blob = " ".join(notes)
+    assert "finish_via=chrome_dom_fetch" in blob
+    assert "empty body" in blob.lower() or "no NewItem" in blob
+    assert "0 ItemList" in blob or "not success" in blob.lower()
+    client.add_item_dxf_files.assert_called()
+
+
+def test_finish_skips_root_only_filelist(tmp_path: Path):
+    stp = tmp_path / "34995-1.STEP"
+    stp.write_bytes(b"ISO")
+    rows = [
+        {
+            "SourceDataID": "src-root",
+            "FileID": "file-root",
+            "Name": "Root",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+        {
+            "SourceDataID": "src-step",
+            "FileID": "file-step",
+            "FileName": "34995-1.STEP",
+            "Name": "34995-1.STEP",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "PartCount": 8,
+            "Status": 1,
+        },
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": rows}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.cadimport_data.return_value = {"List": rows}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003495",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="34995-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "not Finishing" in blob or "Root" in blob
+
+
+def test_classify_nested_weldment_hinge_not_a36_plate():
+    assert classify_sectura_item(
+        "34136-1 Aluminum Platform Weldment_34136-1"
+    ) == "Assembly"
+    assert classify_sectura_item(
+        "34134 ALUMINUM DOOR WELDMENT-4159_34134-1"
+    ) == "Assembly"
+    assert classify_sectura_item(
+        "88010 ALUMINUM HINGE-4209_88010-1 Flexible"
+    ) == "Component"
+    assert classify_sectura_item("102196-5 PLATE (HINGE PLATE)") == "Cad"
+    service = SecturaFabPushService(client=MagicMock())
+    rows = [
+        {
+            "SourceDataID": "a",
+            "Name": "34136-1 Aluminum Platform Weldment_34136-1",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "SourceDataID": "b",
+            "Name": "88010 ALUMINUM HINGE-4209_88010-1 Flexible",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "SourceDataID": "c",
+            "Name": "34137-4 GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+    ]
+    classified, notes = service.classify_cadimport_rows(
+        rows,
+        default_material="A36",
+        default_thickness="0.25",
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+    )
+    cats = {r["Category"] for r in classified}
+    assert "Assembly" in cats
+    assert "Component" in cats
+    assert "Cad" in cats
+    weld = next(r for r in classified if r["Category"] == "Assembly")
+    assert weld.get("IsPlate") is False
+    assert weld.get("Material") in (None, "", weld.get("Material"))
+    assert str(weld.get("Material") or "") != "A36"
+    hinge = next(r for r in classified if r["Category"] == "Component")
+    assert str(hinge.get("Material") or "") != "A36"
+    blob = " ".join(notes)
+    assert "Assembly:" in blob
+
+
+def test_classify_job_pn_only_leaves_are_cad():
+    """Live 1020249-1: 14× job PN with no WELDMENT sibling → Cad, not Assembly."""
+    service = SecturaFabPushService(client=MagicMock())
+    rows = [
+        {
+            "SourceDataID": f"s{i}",
+            "Name": "1020249-1",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+        for i in range(14)
+    ]
+    classified, _notes = service.classify_cadimport_rows(
+        rows,
+        default_material="A36",
+        default_thickness="0.25",
+        bom_rows=[{"part_no": "99991-1", "description": "FLOOR PLATE", "qty": 1}],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+        part_key="1020249-1",
+    )
+    cats = [str(r.get("Category") or "") for r in classified]
+    assert cats
+    assert "Assembly" not in cats
+    assert cats.count("Cad") == 14
+
+
+def test_classify_w001544_occurrence_is_assembly_w001531_is_cad():
+    """Live P001545: 34× W001544 is the weldment; W001531_* are Cad plates."""
+    service = SecturaFabPushService(client=MagicMock())
+    rows = (
+        [{"SourceDataID": "root", "Name": "Root", "Qty": 1, "ErrorStatus": 0}]
+        + [
+            {
+                "SourceDataID": f"weld-{i}",
+                "Name": "W001544",
+                "Qty": 1,
+                "ErrorStatus": 0,
+            }
+            for i in range(34)
+        ]
+        + [
+            {
+                "SourceDataID": "p2",
+                "Name": "W001531_2",
+                "Qty": 1,
+                "ErrorStatus": 0,
+            },
+            {
+                "SourceDataID": "p3",
+                "Name": "W001531_3",
+                "Qty": 1,
+                "ErrorStatus": 0,
+            },
+            {
+                "SourceDataID": "rev",
+                "Name": "P001545 Rev B",
+                "Qty": 1,
+                "ErrorStatus": 0,
+            },
+        ]
+    )
+    classified, _notes = service.classify_cadimport_rows(
+        rows,
+        default_material="A36",
+        default_thickness="0.25",
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+        part_key="P001545",
+    )
+    by_name = {str(r.get("Name") or ""): str(r.get("Category") or "") for r in classified}
+    weld_cats = [
+        str(r.get("Category") or "")
+        for r in classified
+        if str(r.get("Name") or "") == "W001544"
+    ]
+    assert weld_cats.count("Assembly") == 34
+    assert by_name.get("W001531_2") == "Cad"
+    assert by_name.get("W001531_3") == "Cad"
+    assert by_name.get("P001545 Rev B") == "Assembly"
+
+
+def test_classify_bare_part_key_is_assembly_not_cad():
+    """Live 105918-1 root landed Assembly with bare PN desc — keep that type."""
+    service = SecturaFabPushService(client=MagicMock())
+    rows = [
+        {
+            "SourceDataID": "root",
+            "Name": "105918-1",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+        {
+            "SourceDataID": "plate",
+            "Name": "PLATE-1297_30345-19",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        },
+    ]
+    classified, _notes = service.classify_cadimport_rows(
+        rows,
+        default_material="A36",
+        default_thickness="0.25",
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+        part_key="105918-1",
+    )
+    by_src = {r["SourceDataID"]: r["Category"] for r in classified}
+    assert by_src["root"] == "Assembly"
+    assert by_src["plate"] == "Cad"
+
+
+def test_live_105918_kid_names_are_not_all_component():
+    """Live 105918-1 GET: plates/gussets/mounts Cad, channels/tubes Linear."""
+    from tests.fixtures.live_105918_classify import LIVE_105918_KID_NAMES
+
+    from secturafab.website import overlay_classified_row, part_mode_int
+
+    rows = [
+        {
+            "SourceDataID": f"s{i}",
+            "ID": f"id-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+        for i, (name, _want) in enumerate(LIVE_105918_KID_NAMES)
+    ]
+    classified, notes = SecturaFabPushService(client=MagicMock()).classify_cadimport_rows(
+        rows,
+        default_material="A36",
+        default_thickness="0.25",
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+        part_key="105918-1",
+    )
+    counts = {"Cad": 0, "Linear": 0, "Assembly": 0, "Component": 0}
+    assert len(classified) == len(LIVE_105918_KID_NAMES)
+    for row, (name, want) in zip(classified, LIVE_105918_KID_NAMES, strict=True):
+        cat = str(row.get("Category") or "")
+        assert cat == want, f"{name!r} want {want} got {cat}"
+        counts[want] += 1
+        if want != "Assembly":
+            over = overlay_classified_row({"Name": name}, category=want)
+            assert over["PartMode"] == part_mode_int(want)
+    assert counts["Cad"] >= 8
+    assert counts["Linear"] == 3
+    assert counts["Assembly"] == 5
+    assert counts["Component"] == 0
+    assert "Cad:" in " ".join(notes)
+
+
+def test_28110_nested_names_are_assembly_only():
+    """Live 28110-2 first FileList: ASSY/WELDMENT only — not leaf-exploded."""
+    from tests.fixtures.live_28110_nested import LIVE_28110_NESTED_NAMES
+    from secturafab.website import (
+        filelist_is_assembly_only,
+        filelist_leaf_noun_names,
+        is_nested_assembly_name,
+        nested_assembly_id_list,
+    )
+
+    rows = [
+        {
+            "SourceDataID": f"nest-{i}",
+            "ID": f"id-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+        for i, name in enumerate(LIVE_28110_NESTED_NAMES)
+    ]
+    assert filelist_is_assembly_only(
+        rows, part_key="28110-2", cad_filename="28110-2.STEP"
+    )
+    assert filelist_leaf_noun_names(
+        rows, part_key="28110-2", cad_filename="28110-2.STEP"
+    ) == []
+    one = [
+        {
+            "SourceDataID": "w1",
+            "Name": "END WELDMENT",
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+    ]
+    assert filelist_is_assembly_only(one, part_key="28110-2")
+    assert is_nested_assembly_name("28109 COMP LINK ASSY WITH INSERT-5997_28109-1")
+    assert is_nested_assembly_name(
+        "28248 COMPLINK END WELDMENT INSULATED-5994_28248-2"
+    )
+    ids = [sid for sid, _u in nested_assembly_id_list(
+        rows, part_key="28110-2", cad_filename="28110-2.STEP"
+    )]
+    assert "nest-0" not in ids  # Root
+    assert "nest-1" not in ids  # job PN is a leaf, not a nest
+    assert "nest-2" in ids  # ASSY
+    assert classify_sectura_item("28109 COMP LINK ASSY WITH INSERT") == "Assembly"
+
+
+def test_107877_shared_sourcedataid_still_builds_pass2_idlist():
+    """Live 107877-1: child SourceDataID == pass-1 upload id — use ID/FileID."""
+    from tests.fixtures.live_107877_nested import LIVE_107877_NESTED_NAMES
+    from secturafab.website import (
+        filelist_id_fields_present,
+        filelist_is_assembly_only,
+        filelist_row_explode_id,
+        is_unnamed_step_node,
+        nested_assembly_id_list,
+        overlay_filelist_ids,
+    )
+
+    assert is_unnamed_step_node("-28656")
+    assert not is_unnamed_step_node("GATE WELDMENT-2640_103535-1")
+    rows = [
+        {
+            "SourceDataID": "src-step",
+            "ID": f"id-{i}",
+            "FileID": f"file-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+        for i, name in enumerate(LIVE_107877_NESTED_NAMES)
+    ]
+    assert filelist_is_assembly_only(
+        rows, part_key="107877-1", cad_filename="107877-1 without floor.STEP"
+    )
+    used = {"src-step"}
+    nested = nested_assembly_id_list(
+        rows,
+        part_key="107877-1",
+        cad_filename="107877-1 without floor.STEP",
+        used_ids=used,
+    )
+    ids = [sid for sid, _u in nested]
+    assert ids
+    assert "src-step" not in ids
+    assert any(x.startswith("id-") for x in ids)
+    assert filelist_row_explode_id(rows[1], used_ids=used) == "id-1"
+    blob = filelist_id_fields_present(rows)
+    assert "SourceDataID:" in blob and "ID:" in blob
+    names_only = [
+        {"Name": name, "Qty": 1, "ErrorStatus": 0}
+        for name in LIVE_107877_NESTED_NAMES
+    ]
+    empty = nested_assembly_id_list(
+        names_only, part_key="107877-1", used_ids=used
+    )
+    assert empty == []
+    filled = overlay_filelist_ids(names_only, rows)
+    recovered = nested_assembly_id_list(
+        filled, part_key="107877-1", used_ids=used
+    )
+    assert [sid for sid, _u in recovered]
+
+
+def test_1020249_job_pn_kids_are_not_nests():
+    """Live 1020249-1: 14× job PN after pass 1 must not build a pass-2 IDList."""
+    from tests.fixtures.live_1020249_pn_leaves import LIVE_1020249_PN_LEAF_NAMES
+    from secturafab.website import (
+        filelist_is_assembly_only,
+        is_nested_assembly_row,
+        nested_assembly_id_list,
+    )
+
+    rows = [
+        {
+            "SourceDataID": "src-step" if i == 0 else f"id-{i}",
+            "ID": f"id-{i}",
+            "FileID": f"file-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+        for i, name in enumerate(LIVE_1020249_PN_LEAF_NAMES)
+    ]
+    assert not filelist_is_assembly_only(
+        rows, part_key="1020249-1", cad_filename="1020249-1.STEP"
+    )
+    assert not is_nested_assembly_row(
+        rows[1], part_key="1020249-1", cad_filename="1020249-1.STEP"
+    )
+    nested = nested_assembly_id_list(
+        rows,
+        part_key="1020249-1",
+        cad_filename="1020249-1.STEP",
+        used_ids={"src-step"},
+    )
+    assert nested == []
+
+
+def test_bb2000_asm_nested_names_build_pass2_idlist():
+    """Live BB2000-ASM: *ASM / *-ASM re-explode; job-PN leaves do not."""
+    from tests.fixtures.live_bb2000_asm import LIVE_BB2000_ASM_NAMES
+    from secturafab.website import (
+        filelist_is_assembly_only,
+        is_nested_assembly_name,
+        is_nested_assembly_row,
+        nested_assembly_id_list,
+    )
+
+    assert len(LIVE_BB2000_ASM_NAMES) == 19
+    assert is_nested_assembly_name("BB1000-ASM")
+    assert is_nested_assembly_name("BB1010-ASM")
+    assert is_nested_assembly_name("BB2000-ASM")
+    assert not is_nested_assembly_name("Root")
+    assert not is_nested_assembly_name("PLASMA CUT PLATE")
+    rows = [
+        {
+            "SourceDataID": "src-step" if i == 0 else f"id-{i}",
+            "ID": f"id-{i}",
+            "FileID": f"file-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+        for i, name in enumerate(LIVE_BB2000_ASM_NAMES)
+    ]
+    assert filelist_is_assembly_only(
+        rows, part_key="BB2000-ASM", cad_filename="BB2000-ASM.STEP"
+    )
+    assert not is_nested_assembly_row(
+        {"Name": "BB2000-ASM", "ID": "job-pn"},
+        part_key="BB2000-ASM",
+        cad_filename="BB2000-ASM.STEP",
+    )
+    assert is_nested_assembly_row(
+        {"Name": "BB1000-ASM", "ID": "nest-a"},
+        part_key="BB2000-ASM",
+        cad_filename="BB2000-ASM.STEP",
+    )
+    nested = nested_assembly_id_list(
+        rows,
+        part_key="BB2000-ASM",
+        cad_filename="BB2000-ASM.STEP",
+        used_ids={"src-step"},
+    )
+    ids = [sid for sid, _u in nested]
+    names_by_id = {f"id-{i}": name for i, name in enumerate(LIVE_BB2000_ASM_NAMES)}
+    nest_names = [names_by_id[sid] for sid in ids]
+    assert nest_names.count("BB1000-ASM") == 6
+    assert nest_names.count("BB1010-ASM") == 2
+    assert "BB2000-ASM" not in nest_names
+    assert "Root" not in nest_names
+    assert classify_sectura_item("BB1000-ASM") == "Assembly"
+    assert classify_sectura_item("BB1010-ASM") == "Assembly"
+
+
+def test_nested_assy_reexplode_then_finish_leaf_filelist(tmp_path: Path):
+    """After /part/create, re-explode ASSY/WELDMENT IDs until plate/tube nouns."""
+    from tests.fixtures.live_28110_nested import (
+        LIVE_28110_LEAF_NAMES,
+        LIVE_28110_NESTED_NAMES,
+    )
+
+    stp = tmp_path / "28110-2.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "28110-2.STEP",
+        "Name": "28110-2.STEP",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 15,
+    }
+    nested = [
+        {
+            "SourceDataID": f"nest-{i}",
+            "FileID": f"file-n{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        }
+        for i, name in enumerate(LIVE_28110_NESTED_NAMES)
+    ]
+    leaves = [
+        {
+            "SourceDataID": f"leaf-{i}",
+            "FileID": f"file-l{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        }
+        for i, name in enumerate(LIVE_28110_LEAF_NAMES)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.side_effect = [
+        {"List": nested},
+        {"List": leaves},
+    ]
+    client.cadimport_data.return_value = {"List": leaves}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {
+        "Data": [
+            {"ProductType": 100, "ProductTypeName": "Cad", "Description": "LINK PLATE"},
+            {"ProductType": 10, "Description": "END TUBE"},
+        ],
+        "Total": 2,
+    }
+    client.get_json.return_value = {
+        "ItemList": [
+            {"ProductType": 100, "ProductTypeName": "Cad", "Description": "LINK PLATE"},
+            {"ProductType": 10, "Description": "END TUBE"},
+        ]
+    }
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"body_keys": ["List", "Result"], "has_NewItem": True}
+
+    client.add_item_dxf_files.side_effect = _add
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000002811",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="28110-2",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    assert client.create_dxf_parts.call_count == 2
+    first_ids = client.create_dxf_parts.call_args_list[0].args[0]
+    second_ids = client.create_dxf_parts.call_args_list[1].args[0]
+    assert first_ids == ["src-step"]
+    assert "nest-0" not in second_ids
+    assert "nest-1" not in second_ids
+    assert "nest-2" in second_ids
+    client.add_item_dxf_files.assert_called()
+    posted_names = {
+        str(r.get("Name") or "") for r in captured.get("file_list") or []
+    }
+    assert "LINK PLATE" in posted_names
+    assert "END TUBE" in posted_names
+    blob = " ".join(notes)
+    assert "explode_passes=2" in blob
+    assert "LINK PLATE" in blob
+    assert "leaf_names=" in blob
+
+
+def test_assembly_only_filelist_does_not_finish(tmp_path: Path):
+    """Live 28110-2: still ASSY/WELDMENT after re-explode → no Finish."""
+    from tests.fixtures.live_28110_nested import LIVE_28110_NESTED_NAMES
+
+    stp = tmp_path / "28110-2.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "28110-2.STEP",
+        "Name": "28110-2.STEP",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 15,
+    }
+    nested = [
+        {
+            "SourceDataID": f"nest-{i}",
+            "FileID": f"file-n{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        }
+        for i, name in enumerate(LIVE_28110_NESTED_NAMES)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.return_value = {"List": nested}
+    client.cadimport_data.return_value = {"List": nested}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000002812",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="28110-2",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "assembly-only" in blob.lower() or "ASSY/WELDMENT" in blob
+    assert "not Finishing" in blob
+    assert "want_cad=0 is not a license" in blob
+    assert client.create_dxf_parts.call_count >= 2
+
+
+def test_finish_get_zero_items_is_not_success(tmp_path: Path):
+    """Finish 200 + GET ItemList 0 → not success (leave shell, no remint)."""
+    stp = tmp_path / "1020249-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-a",
+            "FileID": "file-a",
+            "Name": "LINK PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        },
+        {
+            "SourceDataID": "src-b",
+            "FileID": "file-b",
+            "Name": "END TUBE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        },
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    client.add_item_dxf_files.return_value = {
+        "body_keys": ["List", "Result"],
+        "has_NewItem": False,
+    }
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001020",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="1020249-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    client.add_item_dxf_files.assert_called()
+    blob = " ".join(notes)
+    assert "item_count=0" in blob
+    assert "not success" in blob
+
+
+def test_107877_shared_parent_id_reexplodes_unnamed_and_weldment(tmp_path: Path):
+    """Pass 1 kids share upload SourceDataID — pass 2 IDList is child ID/FileID."""
+    from tests.fixtures.live_107877_nested import (
+        LIVE_107877_LEAF_NAMES,
+        LIVE_107877_NESTED_NAMES,
+    )
+
+    stp = tmp_path / "107877-1 without floor.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "107877-1 without floor.STEP",
+        "Name": "107877-1 without floor.STEP",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 65,
+    }
+    nested = [
+        {
+            "SourceDataID": "src-step",
+            "ID": f"id-{i}",
+            "FileID": f"file-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        }
+        for i, name in enumerate(LIVE_107877_NESTED_NAMES)
+    ]
+    leaves = [
+        {
+            "SourceDataID": "src-step",
+            "ID": f"leaf-{i}",
+            "FileID": f"fleaf-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        }
+        for i, name in enumerate(LIVE_107877_LEAF_NAMES)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.side_effect = [
+        {"List": nested},
+        {"List": leaves},
+    ]
+    client.cadimport_data.return_value = {"List": leaves}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {
+        "Data": [
+            {"ProductType": 100, "ProductTypeName": "Cad", "Description": "FLOOR PLATE"},
+            {"ProductType": 10, "Description": "GATE TUBE"},
+        ],
+        "Total": 2,
+    }
+    client.get_json.return_value = {
+        "ItemList": [
+            {"ProductType": 100, "ProductTypeName": "Cad", "Description": "FLOOR PLATE"},
+            {"ProductType": 10, "Description": "GATE TUBE"},
+        ]
+    }
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"body_keys": ["List", "Result"], "has_NewItem": True}
+
+    client.add_item_dxf_files.side_effect = _add
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001078",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="107877-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    assert client.create_dxf_parts.call_count == 2
+    first_ids = client.create_dxf_parts.call_args_list[0].args[0]
+    second_ids = client.create_dxf_parts.call_args_list[1].args[0]
+    assert first_ids == ["src-step"]
+    assert "src-step" not in second_ids
+    assert any(str(x).startswith("id-") for x in second_ids)
+    blob = " ".join(notes)
+    assert "explode_passes=2" in blob
+    assert "nested_ids_found=" in blob
+    assert "id_fields_present=" in blob
+    assert "FLOOR PLATE" in blob or "leaf_names=" in blob
+    client.add_item_dxf_files.assert_called()
+    posted = {str(r.get("Name") or "") for r in captured.get("file_list") or []}
+    assert "FLOOR PLATE" in posted
+    assert "GATE TUBE" in posted
+
+
+def test_1020249_pn_leaves_finish_without_pass2(tmp_path: Path):
+    """Root + 14× 1020249-1 → one /part/create, then Finish the 15."""
+    from tests.fixtures.live_1020249_pn_leaves import LIVE_1020249_PN_LEAF_NAMES
+
+    stp = tmp_path / "1020249-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "1020249-1.STEP",
+        "Name": "1020249-1.STEP",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 15,
+    }
+    kids = [
+        {
+            "SourceDataID": f"id-{i}",
+            "ID": f"id-{i}",
+            "FileID": f"file-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        }
+        for i, name in enumerate(LIVE_1020249_PN_LEAF_NAMES)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {
+        "Data": [{"ProductType": 100, "ProductTypeName": "Cad", "Description": "1020249-1"}],
+        "Total": 1,
+    }
+    client.get_json.return_value = {
+        "ItemList": [{"ProductType": 100, "ProductTypeName": "Cad", "Description": "1020249-1"}]
+    }
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"body_keys": ["List", "Result"], "has_NewItem": True}
+
+    client.add_item_dxf_files.side_effect = _add
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001020",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[{"part_no": "14500-1", "description": "PEDESTAL TOP PLATE", "qty": 1}],
+        library={},
+        extra_pdfs=None,
+        part_key="1020249-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    assert client.create_dxf_parts.call_count == 1
+    client.add_item_dxf_files.assert_called()
+    blob = " ".join(notes)
+    assert "explode_passes=1" in blob
+    posted = captured.get("file_list") or []
+    assert len(posted) >= 2
+    cats = {str(r.get("Category") or "") for r in posted}
+    assert "Assembly" not in cats or any(
+        str(r.get("Name") or "") != "1020249-1" for r in posted if r.get("Category") == "Assembly"
+    )
+    assert any(str(r.get("Category") or "") == "Cad" for r in posted)
+
+
+def test_empty_pass2_keeps_prior_grid(tmp_path: Path):
+    """If pass-2 List=0, keep the 15 kids — not the 34632-2 first-pass abort."""
+    from tests.fixtures.live_107877_nested import LIVE_107877_NESTED_NAMES
+
+    stp = tmp_path / "107877-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "107877-1.STEP",
+        "Name": "107877-1.STEP",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 15,
+    }
+    nested = [
+        {
+            "SourceDataID": f"id-{i}",
+            "ID": f"id-{i}",
+            "FileID": f"file-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        }
+        for i, name in enumerate(LIVE_107877_NESTED_NAMES)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client.create_dxf_parts.side_effect = [
+        {"List": nested},
+        {"List": []},
+    ]
+    client.cadimport_data.return_value = {"List": nested}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000001078",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="107877-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    assert client.create_dxf_parts.call_count == 2
+    blob = " ".join(notes)
+    assert "kept_prior_grid=true" in blob
+    assert "34632-2" not in blob
+
+
+def test_explode_skips_cookie_quote_html_even_when_fields_present(tmp_path: Path):
+    """cookie_quote_html is the wrong claims user — no /part/create."""
+    stp = tmp_path / "34997-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "34997-1.STEP",
+        "Name": "34997-1",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 4,
+        "Units": "inch",
+    }
+    token = "af-secret-token-value"
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", token)]
+    client._request_verification_token = token
+    client._af_source = "cookie_quote_html"
+    client._quotes_tab_live = True
+    client.cadimport_data.return_value = {"List": [raw]}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003497",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="34997-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    blob = " ".join(notes)
+    client.create_dxf_parts.assert_not_called()
+    client.add_item_dxf_files.assert_not_called()
+    assert "cookie_quote_html is the wrong" in blob
+    assert "no cookie HTTP /part/create" in blob
+    assert token not in blob
+
+
+def test_quotes_tab_skips_login_and_claims_mismatch():
+    from secturafab.chrome_cdp import quotes_tab
+
+    tabs = [
+        {
+            "type": "page",
+            "title": "Login",
+            "url": "https://www.secturafab.com/Account/Login",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/login",
+        },
+        {
+            "type": "page",
+            "title": (
+                "The provided anti-forgery token was meant for a different "
+                "claims-based user than"
+            ),
+            "url": "https://www.secturafab.com/Quote",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/claims",
+        },
+        {
+            "type": "page",
+            "title": "Quotes",
+            "url": "https://www.secturafab.com/Quote",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+        },
+    ]
+    with patch("secturafab.chrome_cdp.list_chrome_targets", return_value=tabs):
+        tab = quotes_tab("http://127.0.0.1:9224")
+    assert tab is not None
+    assert tab["title"] == "Quotes"
+    assert tab["webSocketDebuggerUrl"].endswith("/quotes")
+
+
+def test_chrome_quotes_list_signed_in_not_leftover_edit():
+    """Live Quotes list footer amtech is a mint session; leftover EDIT is not."""
+    from secturafab.chrome_cdp import (
+        chrome_quotes_list_signed_in,
+        sectura_cookies_from_cdp,
+    )
+
+    listing = {
+        "type": "page",
+        "title": "Quotes",
+        "url": "https://www.secturafab.com/Quote",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+    }
+    leftover = {
+        "type": "page",
+        "title": "*Quote-P904272-1",
+        "url": (
+            "https://www.secturafab.com/Quote/EDIT/"
+            "30f50f96-aaaa-bbbb-cccc-000000000001"
+        ),
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+    }
+    login = {
+        "type": "page",
+        "title": "Login",
+        "url": "https://www.secturafab.com/Account/Login",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/login",
+    }
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[listing, leftover]
+    ), patch(
+        "secturafab.chrome_cdp._chrome_footer_signed_in",
+        return_value={"amtech": True, "login": False},
+    ):
+        assert chrome_quotes_list_signed_in("http://127.0.0.1:9224") is True
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[leftover]
+    ), patch(
+        "secturafab.chrome_cdp._chrome_footer_signed_in",
+        return_value={"amtech": True, "login": False},
+    ):
+        assert chrome_quotes_list_signed_in("http://127.0.0.1:9224") is False
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[login]
+    ), patch(
+        "secturafab.chrome_cdp._chrome_footer_signed_in",
+        return_value={"amtech": False, "login": True},
+    ):
+        assert chrome_quotes_list_signed_in("http://127.0.0.1:9224") is False
+
+    used: list[str] = []
+
+    def _call(ws_url, method, params=None, **_k):
+        used.append(str(ws_url))
+        return {
+            "cookies": [
+                {
+                    "name": "ASP.NET_SessionId",
+                    "value": "from-quotes-list",
+                    "domain": "www.secturafab.com",
+                }
+            ]
+        }
+
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[listing, leftover]
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        pairs = sectura_cookies_from_cdp("http://127.0.0.1:9224")
+    assert pairs == [("ASP.NET_SessionId", "from-quotes-list")]
+    assert used
+    assert used[0].endswith("/quotes")
+    assert not any(u.endswith("/edit") for u in used)
+
+
+def test_chrome_edit_signed_in_not_login_and_login_aborts():
+    """Footer/tab signed-in EDIT is not cookie 302. Login-only still aborts."""
+    from secturafab.chrome_cdp import chrome_edit_signed_in, chrome_login_page
+
+    edit = {
+        "type": "page",
+        "title": "*Quote-Q10101",
+        "url": (
+            "https://www.secturafab.com/Quote/EDIT/"
+            "11111111-aaaa-bbbb-cccc-000000010101"
+        ),
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+    }
+    login = {
+        "type": "page",
+        "title": "Login",
+        "url": "https://www.secturafab.com/Account/Login",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/login",
+    }
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[edit, login]
+    ), patch(
+        "secturafab.chrome_cdp._chrome_footer_signed_in",
+        return_value={"amtech": True, "login": False},
+    ):
+        assert chrome_edit_signed_in("http://127.0.0.1:9224") is True
+        assert chrome_login_page("http://127.0.0.1:9224") is False
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[login]
+    ), patch(
+        "secturafab.chrome_cdp._chrome_footer_signed_in", return_value=None
+    ):
+        assert chrome_edit_signed_in("http://127.0.0.1:9224") is False
+        assert chrome_login_page("http://127.0.0.1:9224") is True
+
+
+def test_chrome_session_lost_when_leftover_edit_quotes_fetch_not_200():
+    """P904272-1: leftover EDIT amtech footer is not a live session."""
+    from secturafab.chrome_cdp import chrome_session_lost
+    from secturafab.website import live_quotes_fetch_ok
+
+    leftover = {
+        "type": "page",
+        "title": "*Quote-P904272-1",
+        "url": (
+            "https://www.secturafab.com/Quote/EDIT/"
+            "30f50f96-aaaa-bbbb-cccc-000000000001"
+        ),
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+    }
+    dead = {
+        "status": 302,
+        "url": "https://www.secturafab.com/Account/Login",
+        "login": True,
+        "via": "chrome_dom_fetch",
+    }
+    live = {
+        "status": 200,
+        "url": "https://www.secturafab.com/Quote",
+        "login": False,
+        "via": "chrome_dom_fetch",
+    }
+    assert live_quotes_fetch_ok(dead) is False
+    assert live_quotes_fetch_ok(live) is True
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[leftover]
+    ), patch(
+        "secturafab.chrome_cdp._chrome_footer_signed_in",
+        return_value={"amtech": True, "login": False},
+    ), patch(
+        "secturafab.chrome_cdp.quotes_list_session_fetch", return_value=dead
+    ):
+        assert chrome_session_lost("http://127.0.0.1:9224") is True
+        assert chrome_session_lost("http://127.0.0.1:9224", fetch=dead) is True
+    with patch(
+        "secturafab.chrome_cdp.list_chrome_targets", return_value=[leftover]
+    ), patch(
+        "secturafab.chrome_cdp._chrome_footer_signed_in",
+        return_value={"amtech": True, "login": False},
+    ), patch(
+        "secturafab.chrome_cdp.quotes_list_session_fetch", return_value=live
+    ):
+        assert chrome_session_lost("http://127.0.0.1:9224") is False
+        assert chrome_session_lost("http://127.0.0.1:9224", fetch=live) is False
+    with patch("secturafab.chrome_cdp.list_chrome_targets", return_value=[]):
+        assert chrome_session_lost("http://127.0.0.1:9224") is False
+
+
+def test_quote_edit_tab_matches_star_quote_title_and_edit_url():
+    """Live a64509d: QuoteOrderEdit is *Quote-{PN} on /Quote/EDIT/{id}."""
+    from secturafab.chrome_cdp import (
+        chrome_quotes_live,
+        quote_edit_tab,
+        quotes_tab,
+    )
+
+    listing = {
+        "type": "page",
+        "title": "Quotes",
+        "url": "https://www.secturafab.com/Quote",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+    }
+    edit = {
+        "type": "page",
+        "title": "*Quote-106386-1",
+        "url": (
+            "https://www.secturafab.com/Quote/EDIT/"
+            "a6ef6891-e080-45de-b57c-1a55fee00c19"
+        ),
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+    }
+    addview = {
+        "type": "page",
+        "title": "Quote",
+        "url": (
+            "https://www.secturafab.com/Quote/GetItem_AddView/"
+            "a6ef6891-e080-45de-b57c-1a55fee00c19"
+        ),
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/addview",
+    }
+    with patch("secturafab.chrome_cdp.list_chrome_targets", return_value=[listing, edit, addview]):
+        assert quotes_tab("http://127.0.0.1:9224")["title"] == "Quotes"
+        picked = quote_edit_tab(
+            "http://127.0.0.1:9224",
+            quote_id="a6ef6891-e080-45de-b57c-1a55fee00c19",
+            quote_number="106386-1",
+        )
+        assert picked is not None
+        assert picked["webSocketDebuggerUrl"].endswith("/edit")
+        assert picked["title"] == "*Quote-106386-1"
+
+
+def test_chrome_quotes_live_when_only_quote_edit_tab():
+    """Session is live if Kyle has /Quote/EDIT open — do not require title Quotes."""
+    from secturafab.chrome_cdp import chrome_quotes_live, quote_edit_tab, quotes_tab
+
+    edit = {
+        "type": "page",
+        "title": "*Quote-106386-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+    }
+    with patch("secturafab.chrome_cdp.list_chrome_targets", return_value=[edit]), patch(
+        "secturafab.chrome_cdp.chrome_debug_bases", return_value=["http://127.0.0.1:9224"]
+    ):
+        assert quotes_tab("http://127.0.0.1:9224") is edit
+        assert quote_edit_tab("http://127.0.0.1:9224") is edit
+        assert chrome_quotes_live("http://127.0.0.1:9224") is True
+
+
+def test_quote_edit_tab_skips_getitem_addview_and_login():
+    from secturafab.chrome_cdp import quote_edit_tab, quotes_tab
+
+    tabs = [
+        {
+            "type": "page",
+            "title": "Login",
+            "url": "https://www.secturafab.com/Quote/EDIT/qid",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/login",
+        },
+        {
+            "type": "page",
+            "title": "*Quote-106386-1",
+            "url": "https://www.secturafab.com/Quote/GetItem_AddView/qid",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/addview",
+        },
+    ]
+    with patch("secturafab.chrome_cdp.list_chrome_targets", return_value=tabs):
+        assert quote_edit_tab("http://127.0.0.1:9224") is None
+        assert quotes_tab("http://127.0.0.1:9224") is None
+
+
+def test_bind_evaluates_on_quote_edit_not_list_tab():
+    """Bind must use /Quote/EDIT even when the Quotes list tab is also open."""
+    from secturafab.chrome_cdp import bind_do_create_dxf_parts_success
+
+    listing = {
+        "title": "Quotes",
+        "url": "https://www.secturafab.com/Quote",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+        "type": "page",
+    }
+    edit = {
+        "title": "*Quote-106386-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **kwargs):
+        assert method == "Runtime.evaluate"
+        assert ws_url.endswith("/edit")
+        assert "/quotes" not in ws_url
+        return {
+            "result": {
+                "value": {
+                    "grid_present": True,
+                    "has_gridDXFParts": True,
+                    "grid_dxf_row_count": 26,
+                    "bound": True,
+                    "list_len": 26,
+                    "opened_via": "but_dxf",
+                }
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=edit), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=listing
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        result = bind_do_create_dxf_parts_success(
+            [{"SourceDataID": "a"}, {"SourceDataID": "b"}],
+            quote_id="qid",
+        )
+    assert result["grid_present"] is True
+    assert result["grid_dxf_row_count"] == 26
+    assert result["opened_via"] == "but_dxf"
+
+
+def test_ensure_quote_edit_navigates_edit_path_not_quote_query():
+    """Live a64509d: /Quote?ID= is the list. Open /Quote/EDIT/{id}."""
+    from secturafab.chrome_cdp import _ensure_quote_edit_page, _quote_edit_url
+
+    qid = "a6ef6891-e080-45de-b57c-1a55fee00c19"
+    listing = {
+        "title": "Quotes",
+        "url": "https://www.secturafab.com/Quote",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/quotes",
+        "type": "page",
+    }
+    navigated: list[str] = []
+
+    def _call(ws_url, method, params=None, **kwargs):
+        if method == "Page.navigate":
+            navigated.append(str((params or {}).get("url") or ""))
+            return {}
+        return {"result": {"value": {"edit_quote_id": qid, "ok": True}}}
+
+    assert _quote_edit_url(qid) == f"https://www.secturafab.com/Quote/EDIT/{qid}"
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=None), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=listing
+    ), patch(
+        "secturafab.chrome_cdp.chrome_session_lost", return_value=False
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        tab = _ensure_quote_edit_page(qid)
+    assert tab is not None
+    assert tab["webSocketDebuggerUrl"] == listing["webSocketDebuggerUrl"]
+    assert tab["url"] == f"https://www.secturafab.com/Quote/EDIT/{qid}"
+    assert navigated == [f"https://www.secturafab.com/Quote/EDIT/{qid}"]
+    assert "Quote?ID=" not in navigated[0]
+    assert "GetItem_AddView" not in navigated[0]
+
+
+def test_ensure_quote_edit_does_not_stomp_leftover_or_login():
+    """Session lost / leftover Edit: fail-close. Do not Page.navigate every EDIT."""
+    from secturafab.chrome_cdp import (
+        _ensure_quote_edit_page,
+        edit_tab_navigate_would_stomp,
+        minted_edit_tab_ready,
+    )
+
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2178"
+    leftover_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbb2178"
+    leftover = {
+        "type": "page",
+        "title": "*Quote-21785-1",
+        "url": f"https://www.secturafab.com/Quote/EDIT/{leftover_id}",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/leftover",
+    }
+    assert edit_tab_navigate_would_stomp(leftover, minted) is True
+    navigated: list[str] = []
+
+    def fake_edit(base=None, quote_id=None, quote_number=None):
+        qid = str(quote_id or "").strip().lower()
+        if qid and qid in leftover["url"].lower():
+            return leftover
+        if qid:
+            return None
+        return leftover
+
+    def _call(ws_url, method, params=None, **kwargs):
+        if method == "Page.navigate":
+            navigated.append(str((params or {}).get("url") or ""))
+            raise AssertionError("must not Page.navigate leftover Edit or Login")
+        return {}
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", side_effect=fake_edit), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=leftover
+    ), patch("secturafab.chrome_cdp.quotes_list_tab", return_value=None), patch(
+        "secturafab.chrome_cdp.chrome_session_lost", return_value=False
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        assert _ensure_quote_edit_page(minted) is None
+        gate = minted_edit_tab_ready(minted, navigate=True)
+    assert navigated == []
+    assert gate["ok"] is False
+    assert gate["reason"] in {"session_lost", "edit_quote_id!=minted_id", "edit_tab_missing"}
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=leftover), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=leftover
+    ), patch("secturafab.chrome_cdp.chrome_session_lost", return_value=True), patch(
+        "secturafab.chrome_cdp.cdp_call", side_effect=_call
+    ):
+        assert _ensure_quote_edit_page(minted) is None
+        lost = minted_edit_tab_ready(minted, navigate=True)
+    assert lost["ok"] is False
+    assert lost["reason"] == "session_lost"
+    assert navigated == []
+
+
+def test_finish_cad_files_session_lost_does_not_upload(tmp_path: Path):
+    """STEP upload after Login: leave leftover Edit tabs, do not remint."""
+    from secturafab.push import SecturaFabPushService
+
+    stp = tmp_path / "21785-2.STEP"
+    stp.write_bytes(b"ISO-10303-21;")
+    client = MagicMock()
+    with patch("secturafab.chrome_cdp.chrome_session_lost", return_value=True):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2178",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="21785-2",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert "session lost" in blob
+    assert "not uploading STEP" in blob
+    assert "not navigating Edit tabs" in blob
+    client.upload_item_dxf_files.assert_not_called()
+    client.upload_dxf_via_page_add_files.assert_not_called()
+    client.add_item_dxf_files.assert_not_called()
+    client.create_dxf_parts.assert_not_called()
+
+
+def test_quote_edit_tab_does_not_return_leftover_when_id_requested():
+    """Live 5003313-001: leftover /Quote/EDIT/997f1eb7 is not the minted tab."""
+    from secturafab.chrome_cdp import edit_tab_quote_id, quote_edit_tab
+
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0001"
+    leftover_id = "997f1eb7-3eb0-4a76-83f9-4c3439e929b7"
+    leftover = {
+        "type": "page",
+        "title": "*Quote-105918-1",
+        "url": f"https://www.secturafab.com/Quote/EDIT/{leftover_id}",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/leftover",
+    }
+    with patch("secturafab.chrome_cdp.list_chrome_targets", return_value=[leftover]):
+        assert quote_edit_tab("http://127.0.0.1:9224", quote_id=minted) is None
+        picked = quote_edit_tab("http://127.0.0.1:9224")
+        assert picked is leftover
+        assert edit_tab_quote_id(picked) == leftover_id
+
+
+def test_leftover_edit_tab_does_not_bind_or_finish():
+    """Minted A, Chrome still EDIT/B → no #but_dxf and no AddItem_DXFFiles POST."""
+    from secturafab.chrome_cdp import (
+        bind_do_create_dxf_parts_success,
+        invoke_page_dxf_finish,
+    )
+
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0001"
+    leftover_id = "997f1eb7-3eb0-4a76-83f9-4c3439e929b7"
+    leftover = {
+        "type": "page",
+        "title": "*Quote-105918-1",
+        "url": f"https://www.secturafab.com/Quote/EDIT/{leftover_id}",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/leftover",
+    }
+    exprs: list[str] = []
+
+    def fake_edit(base=None, quote_id=None, quote_number=None):
+        qid = str(quote_id or "").strip().lower()
+        if qid and qid in leftover["url"].lower():
+            return leftover
+        if qid:
+            return None
+        return leftover
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        exprs.append(expr)
+        if method == "Page.navigate":
+            return {}
+        return {
+            "result": {
+                "value": {"edit_quote_id": leftover_id, "ok": False}
+            }
+        }
+
+    kids = [{"SourceDataID": "a", "Name": "5003313-001"}] * 12
+    with patch("secturafab.chrome_cdp.quote_edit_tab", side_effect=fake_edit), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=leftover
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        bound = bind_do_create_dxf_parts_success(kids, quote_id=minted)
+        finished = invoke_page_dxf_finish(quote_id=minted)
+    assert bound["bound"] is False
+    assert bound["grid_present"] is False
+    assert bound["edit_quote_id"] == leftover_id
+    assert bound["minted_id"] == minted
+    assert bound["edit_gate"]
+    assert finished["via"] == "skipped"
+    assert finished["status"] == 0
+    assert finished["edit_quote_id"] == leftover_id
+    assert finished["minted_id"] == minted
+    blob = "\n".join(exprs)
+    assert "#but_dxf" not in blob
+    assert "AddItem_DXFFiles" not in blob
+    assert "AddNewItemHTML" not in blob
+
+
+def test_add_item_dxf_files_leftover_edit_does_not_post():
+    """add_item_dxf_files must not POST Finish when the tab is still spent EDIT."""
+    from secturafab.client import SecturaFabClient
+
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0001"
+    leftover_id = "997f1eb7-3eb0-4a76-83f9-4c3439e929b7"
+    leftover = {
+        "type": "page",
+        "title": "*Quote-105918-1",
+        "url": f"https://www.secturafab.com/Quote/EDIT/{leftover_id}",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/leftover",
+    }
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.timeout_seconds = 30
+    real._af_source = "chrome_dom"
+    real._part_create_list_len = 12
+    real._grid_present = True
+    real._grid_dxf_row_count = 12
+    real._stale_grid = False
+    real.session = MagicMock()
+
+    def fake_edit(base=None, quote_id=None, quote_number=None):
+        qid = str(quote_id or "").strip().lower()
+        if qid and qid in leftover["url"].lower():
+            return leftover
+        if qid:
+            return None
+        return leftover
+
+    def _call(ws_url, method, params=None, **kwargs):
+        expr = str((params or {}).get("expression") or "")
+        if "AddItem_DXFFiles" in expr:
+            raise AssertionError("must not POST AddItem_DXFFiles on leftover EDIT")
+        if method == "Page.navigate":
+            return {}
+        return {
+            "result": {
+                "value": {"edit_quote_id": leftover_id, "ok": False}
+            }
+        }
+
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.quote_edit_tab", side_effect=fake_edit
+    ), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=leftover
+    ), patch(
+        "secturafab.chrome_cdp.cdp_call", side_effect=_call
+    ), patch(
+        "secturafab.chrome_cdp.post_add_item_dxf_files_from_quotes_tab",
+    ) as fetch_finish:
+        result = real.add_item_dxf_files(
+            quote_id=minted,
+            file_list=[{"Name": "5003313-001", "Qty": 1}] * 12,
+        )
+    real.session.request.assert_not_called()
+    fetch_finish.assert_not_called()
+    assert result["via"] == "skipped"
+    assert real._finish_via == "skipped"
+    assert real._edit_quote_id == leftover_id
+    assert real._minted_id == minted
+
+
+def test_reconstructed_filelist_is_not_page_grid_finish():
+    """EDIT-id match + grid==FileList + reconstructed POST → still not success."""
+    from secturafab.client import SecturaFabClient
+
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0545"
+    edit = {
+        "title": "*Quote-P001545",
+        "url": f"https://www.secturafab.com/Quote/EDIT/{minted}",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.timeout_seconds = 30
+    real._af_source = "chrome_dom"
+    real._part_create_list_len = 53
+    real._grid_present = True
+    real._grid_dxf_row_count = 53
+    real._stale_grid = False
+    real.session = MagicMock()
+    rebuilt = [{"Name": f"W001544-{i}", "Qty": 1, "ErrorStatus": 0} for i in range(52)]
+
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.quote_edit_tab", return_value=edit
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_dxf_finish",
+        return_value={
+            "via": "",
+            "finish_fn": "",
+            "grid_dxf_row_count": 53,
+            "finish_filelist_n": 0,
+            "status": 0,
+            "body_keys": [],
+            "body_type": "empty",
+            "has_NewItem": False,
+            "has_QuoteItem": False,
+            "text_len": 0,
+            "List": rebuilt,
+        },
+    ), patch(
+        "secturafab.chrome_cdp.post_add_item_dxf_files_from_quotes_tab",
+    ) as fetch_finish:
+        result = real.add_item_dxf_files(quote_id=minted, file_list=rebuilt)
+    real.session.request.assert_not_called()
+    fetch_finish.assert_not_called()
+    assert result["via"] == "skipped"
+    assert real._finish_via == "skipped"
+
+
+def test_bb2000_edit_match_skip_finish_fails_fixture():
+    """EDIT match + grid==filelist + skip-Finish is a fail — must call page fn."""
+    from secturafab.chrome_cdp import (
+        _PAGE_FINISH_JS,
+        page_finish_skip_after_edit_match_is_fail,
+    )
+    from secturafab.client import SecturaFabClient
+
+    spent = "a9497a26-cba8-4ec9-a849-cb8bef81cbcc"
+    assert page_finish_skip_after_edit_match_is_fail(
+        edit_quote_id=spent,
+        minted_id=spent,
+        grid_n=19,
+        filelist_n=19,
+        via="skipped",
+    ) is True
+    js = _PAGE_FINISH_JS
+    find_body = js.split("function findFinishName")[1].split("var finishName")[0]
+    assert "OnAddDXFClick" in find_body
+    assert "typeof window[preferred[i]] === \"function\"" in find_body
+    assert "gridDXFParts" not in find_body
+    assert "via: \"page_fn\"" in js.split("if (!hit)")[1]
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2000"
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.timeout_seconds = 30
+    real._af_source = "chrome_dom"
+    real._part_create_list_len = 19
+    real._grid_present = True
+    real._grid_dxf_row_count = 19
+    real._stale_grid = False
+    real.session = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={
+            "ok": True,
+            "edit_quote_id": minted,
+            "minted_id": minted,
+            "reason": "",
+        },
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_dxf_finish",
+        return_value={
+            "via": "page_fn",
+            "finish_fn": "OnAddDXFClick",
+            "reads_kendo": False,
+            "grid_dxf_row_count": 19,
+            "finish_filelist_n": 19,
+            "status": 200,
+            "body_keys": [],
+            "body_type": "empty",
+            "has_NewItem": False,
+            "has_QuoteItem": False,
+            "text_len": 0,
+            "empty_body": True,
+            "request_keys": ["ID", "ItemID", "customerMaterial", "FileList"],
+        },
+    ), patch(
+        "secturafab.chrome_cdp.post_add_item_dxf_files_from_quotes_tab",
+    ) as fetch_finish:
+        result = real.add_item_dxf_files(
+            quote_id=minted,
+            file_list=[{"Name": "PYTHON_REBUILT", "Qty": 1}] * 18,
+        )
+    real.session.request.assert_not_called()
+    fetch_finish.assert_not_called()
+    assert result["via"] == "page_fn"
+    assert result["finish_fn"] == "OnAddDXFClick"
+    assert result["reads_kendo"] is False
+    assert result["empty_body"] is True
+    assert result["has_NewItem"] is False
+    assert not page_finish_skip_after_edit_match_is_fail(
+        edit_quote_id=minted,
+        minted_id=minted,
+        grid_n=19,
+        filelist_n=19,
+        via=result["via"],
+    )
+    assert page_finish_skip_after_edit_match_is_fail(
+        edit_quote_id=minted,
+        minted_id=minted,
+        grid_n=1,
+        filelist_n=1,
+        via="skipped",
+    ) is True
+
+
+def test_page_finish_js_posts_kendo_filelist_with_chrome_dom_af():
+    """OnAddDXFClick FileList must be EDIT kendo + chrome_dom AF (live 11796-1)."""
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+
+    js = _PAGE_FINISH_JS
+    assert "if (count < 1)" in js
+    assert "count <= 1" not in js
+    assert "opts.data.FileList = leanRows" in js
+    assert "leanKyleHarCadContoursPlateFileList" in js
+    assert "dataSource.data()" in js
+    assert "r.SourceDataID = id" in js
+    assert "sidEmpty(r.SourceDataID)" in js
+    assert "attachChromeDomAf" in js
+    assert "hasChromeDomAf" in js
+    assert "sid_n === n" in js
+    assert "filelist_missing_ids" in js
+    assert "finish_why" in js
+    assert "wrong_document" in js
+    assert "empty_dataSource" in js
+    assert "filelist_not_kendo" in js
+    assert "af_missing_on_document" in js
+    assert "af_not_in_request" in js
+    assert "orig.apply(this, arguments)" in js.split("attachChromeDomAf(opts.data)")[1]
+    assert "Length: first.Length" in js
+    assert "Width: first.Width" in js
+    assert "Stock_X: first.Stock_X" in js
+    assert "Stock_Y: first.Stock_Y" in js
+    assert "Machine: first.Machine" in js
+    assert "Thickness_Units: first.Thickness_Units" in js
+
+
+def test_filelist_row_keys_name_cadimport_identity_miss():
+    """Log posted FileList key names. Live 16629-1 miss is FileType (not CadType/Stock)."""
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+    from secturafab.website import (
+        filelist_missing_cadimport_identity_keys,
+        filelist_missing_compare_keys,
+        filelist_posted_row_keys,
+    )
+
+    leftover = {
+        "ID": "x",
+        "FileID": "f",
+        "SourceDataID": "x",
+        "FileType": "Cad",
+        "Name": "OPERATOR PLATFORM LOWER CONTROL MOUNT",
+    }
+    keys = filelist_posted_row_keys(leftover)
+    assert "SourceDataID" in keys
+    assert "FileType" in keys
+    assert filelist_missing_cadimport_identity_keys(keys) == [
+        "CadType",
+        "Stock_X",
+        "Stock_Y",
+    ]
+    gold = {
+        **leftover,
+        "CadType": 0,
+        "Stock_X": 11.0,
+        "Stock_Y": 6.25,
+        "Status": 0,
+        "Thickness": 0.105,
+        "Material": "A1011",
+        "Width": 11.0,
+        "Length": 6.25,
+    }
+    assert filelist_missing_cadimport_identity_keys(filelist_posted_row_keys(gold)) == []
+    assert "CadType" not in filelist_missing_compare_keys(filelist_posted_row_keys(gold))
+    js = _PAGE_FINISH_JS
+    assert "filelist_row_keys" in js
+    assert "filelist_missing_keys" in js
+    assert "CadType" in js
+    assert "Stock_X" in js
+    assert "filelist_missing_keys=" in js
+    assert "keepIdentity" in js
+    assert "persistFileType" in js
+    assert "IDENTITY_KEYS" in js
+    assert "kidsPartModeSet" in js
+
+
+def test_kendo_row_id_copied_to_sourcedataid():
+    """Live 11796-2: kendo {ID: x} copies SID for the bound-grid gate.
+
+    Kyle HAR omits SourceDataID on the posted FileList. ID/FileID stay.
+    CadType/Stock_* are still required to Finish — ID copy alone is not gold.
+    """
+    from secturafab.website import kendo_filelist_for_finish
+
+    cap = kendo_filelist_for_finish(
+        [{"ID": "x", "FileType": "Cad"}],
+        from_datasource=True,
+    )
+    assert cap["FileList"][0]["ID"] == "x"
+    assert "SourceDataID" not in cap["FileList"][0]
+    assert cap["filelist_from_kendo"] is True
+    assert cap["filelist_sourcedataid_n"] == 1
+    assert cap["filelist_id_n"] == 1
+    assert cap["finish_filelist_n"] == 1
+    assert cap["should_finish"] is False
+    assert cap["finish_why"] == "filelist_missing_keys=CadType+Stock_X+Stock_Y"
+    zero = kendo_filelist_for_finish(
+        [{"SourceDataID": 0, "FileType": "Cad"}],
+        from_datasource=True,
+    )
+    assert zero["filelist_from_kendo"] is False
+    assert zero["filelist_sourcedataid_n"] == 0
+    assert zero["should_finish"] is False
+    assert zero["finish_why"] == "filelist_missing_ids"
+
+
+def test_kendo_cadimport_identity_survives_into_filelist():
+    """kendo CadType+Stock stay on the grid; posted Finish is lean Kyle HAR."""
+    from secturafab.website import (
+        copy_cadimport_identity_through,
+        kendo_filelist_for_finish,
+    )
+
+    src = {
+        "ID": "x",
+        "FileType": "Cad",
+        "CadType": 0,
+        "Stock_X": 11.0,
+        "Stock_Y": 6.25,
+        "Name": "OPERATOR PLATFORM LOWER CONTROL MOUNT",
+    }
+    cap = kendo_filelist_for_finish([src], from_datasource=True)
+    posted = cap["FileList"][0]
+    assert posted["ID"] == "x"
+    assert "SourceDataID" not in posted
+    assert "FileType" not in posted
+    assert "CadType" not in posted
+    assert posted["ItemType"] == "cad"
+    assert posted["ProductType"] == "bar"
+    assert posted["Stock_X"] == 11.0
+    assert posted["Stock_Y"] == 6.25
+    assert cap["should_finish"] is True
+    assert cap["finish_why"] == ""
+    assert cap["filelist_missing_identity"] == []
+    assert cap["filelist_from_kendo"] is True
+    assert "CadType" in cap["kendo_row_keys"]
+    assert "Stock_X" in cap["kendo_row_keys"]
+    dropped = {"ID": "x", "FileType": "Cad", "SourceDataID": "x"}
+    kept = copy_cadimport_identity_through(src, dropped)
+    assert kept["CadType"] == 0
+    assert kept["Stock_X"] == 11.0
+    assert kept["Stock_Y"] == 6.25
+    invented = copy_cadimport_identity_through({"ID": "x", "FileType": "Cad"}, {})
+    assert "CadType" not in invented
+    assert "Stock_X" not in invented
+    assert "Stock_Y" not in invented
+    assert "InternalData" not in invented
+    assert "ImageString" not in invented
+    src_payload = {**src, "InternalData": "", "ImageString": ""}
+    kept_payload = copy_cadimport_identity_through(
+        src_payload, {"ID": "x", "FileType": "Cad", "SourceDataID": "x"}
+    )
+    assert kept_payload["InternalData"] == ""
+    assert kept_payload["ImageString"] == ""
+    assert "Unfold" not in kept_payload
+    assert "DXF" not in kept_payload
+
+
+def test_setpartmode_filetype_survives_into_filelist():
+    """SetPartMode still paints kendo FileType; posted Kyle HAR omits FileType."""
+    from secturafab.website import (
+        kendo_filelist_for_finish,
+        persist_setpartmode_filetype,
+    )
+
+    src = {
+        "ID": "x",
+        "CadType": 0,
+        "Stock_X": 11.0,
+        "Stock_Y": 6.25,
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "InternalData": "server-stamped",
+        "Name": "EAR",
+    }
+    cap = kendo_filelist_for_finish([src], from_datasource=True)
+    posted = cap["FileList"][0]
+    assert persist_setpartmode_filetype(dict(src))["FileType"] == "Cad"
+    assert "FileType" not in posted
+    assert "CadType" not in posted
+    assert posted["ItemType"] == "cad"
+    assert posted["ProductType"] == "bar"
+    assert "Status" not in posted
+    assert cap["should_finish"] is True
+    bare = persist_setpartmode_filetype({"CadType": 0, "Stock_X": 1, "Stock_Y": 2})
+    assert "FileType" not in bare
+    assert "Status" not in bare
+    page = persist_setpartmode_filetype(
+        {"FileType": "Cad", "ItemType": "Cad", "ProductType": 100}
+    )
+    assert page["FileType"] == "Cad"
+    assert page["FileType"] != "CAD"
+    assert page["FileType"] != 100
+    assert persist_setpartmode_filetype({"FileType": "Cad"})["FileType"] == "Cad"
+    assert "FileType" not in persist_setpartmode_filetype({"ItemType": "CAD"})
+    assert persist_setpartmode_filetype({"FileType": 100}).get("FileType") == 100
+
+
+def test_cad_contours_plate_finish_filelist_matches_kyle_har():
+    """Q10366 HAR Finish FileList: no invented Status, omit ImageString.
+
+    Cad Contours plate → ItemType=cad ProductType=bar productSubType=bar_flat
+    Machine=Laser Length/Width meters. invent=false. Do not invent Contours.
+    PR62 empty InternalData still Finishes when recipe complete.
+    """
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS, _PAGE_FINISH_JS
+    from secturafab.website import (
+        KYLE_HAR_CAD_CONTOURS_PLATE_ITEMTYPE,
+        KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS,
+        KYLE_HAR_CAD_CONTOURS_PLATE_MACHINE,
+        KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE,
+        KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE,
+        KYLE_HAR_CAD_CONTOURS_PLATE_STRIP_KEYS,
+        additem_dxf_has_result_newitem,
+        additem_dxf_response_list0_focus,
+        build_dxf_finish_payload,
+        cad_filelist_refuses_additem_dxf,
+        cad_material_inches_recipe_complete,
+        kendo_filelist_for_finish,
+        overlay_classified_row,
+        sanitize_cad_contours_plate_finish_filelist_row,
+    )
+    from tests.fixtures.kyle_q10366_har_filelist import (
+        KYLE_Q10366_HAR_FINISH_FILELIST,
+    )
+
+    har = KYLE_Q10366_HAR_FINISH_FILELIST
+    assert har["invent_status"] is False
+    assert har["send_imagestring"] is False
+    assert har["invent_contours"] is False
+    assert har["item_type"] == KYLE_HAR_CAD_CONTOURS_PLATE_ITEMTYPE == "cad"
+    assert har["product_type"] == KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE == "bar"
+    assert (
+        har["product_subtype"]
+        == KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE
+        == "bar_flat"
+    )
+    assert har["machine"] == KYLE_HAR_CAD_CONTOURS_PLATE_MACHINE == "Laser"
+    assert har["additem_list_min"] == 1
+    assert "Status" in har["absent_keys"]
+    assert "ImageString" in har["absent_keys"]
+    assert "FileType" in har["absent_keys"]
+    assert "PartMode" in har["absent_keys"]
+    assert "SourceDataID" in har["absent_keys"]
+    assert "Stock_X" in har["present_keys"]
+    assert "Stock_Y" in har["present_keys"]
+    assert "Stock_X" in KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS
+    assert "Stock_Y" in KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS
+    assert "FileType" not in KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS
+    assert "PartMode" not in KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS
+    assert "SourceDataID" not in KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS
+    assert "CadType" not in KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS
+    assert "CadType" in KYLE_HAR_CAD_CONTOURS_PLATE_STRIP_KEYS
+    assert len(KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS) >= 40
+
+    src = {
+        "ID": "id-h638",
+        "FileID": "file-h638",
+        "SourceDataID": "src-h638",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "CadType": 0,
+        "Stock_X": 11.0,
+        "Stock_Y": 6.25,
+        "Stock_Units": "inch",
+        "ErrorStatus": 0,
+        "Qty": 1,
+        "Status": 1,
+        "Machine": "Laser - Bay1",
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "InternalData": "",
+        "ImageString": "iVBORw0KGgo",
+        "Name": "H.6.38 PLATE",
+    }
+    posted = sanitize_cad_contours_plate_finish_filelist_row(src)
+    assert "Status" not in posted
+    assert "ImageString" not in posted
+    assert "FileType" not in posted
+    assert "PartMode" not in posted
+    assert "SourceDataID" not in posted
+    assert "Width_Units" not in posted
+    assert "CadType" not in posted
+    assert "HadOpenContours" not in posted
+    assert "IsPlate" not in posted
+    assert "drawing_thickness_in" not in posted
+    assert "thickness_source" not in posted
+    assert "Contours" not in posted
+    assert "NumberOfContours" not in posted
+    assert posted["Stock_X"] == 11.0
+    assert posted["Stock_Y"] == 6.25
+    assert posted["ItemType"] == "cad"
+    assert posted["ProductType"] == "bar"
+    assert posted["ProductType"] != 100
+    assert posted["ProductSubType"] == "bar_flat"
+    assert posted["productSubType"] == "bar_flat"
+    assert posted["Machine"] == "Laser"
+    assert posted["Length_Units"] == "meter"
+    assert posted["Length"] == pytest.approx(6.25 * 0.0254)
+    assert posted["Width"] == pytest.approx(11.0 * 0.0254)
+    assert posted["InternalData"] == ""
+    assert posted["Thickness"] == "0.1875"
+    assert posted["Thickness_Units"] == "inch"
+    assert posted["ID"] == "id-h638"
+    assert posted["FileID"] == "file-h638"
+    already_m = sanitize_cad_contours_plate_finish_filelist_row(posted)
+    assert already_m["Length"] == pytest.approx(posted["Length"])
+    assert already_m["Width"] == pytest.approx(posted["Width"])
+    keep_img = sanitize_cad_contours_plate_finish_filelist_row(
+        src, kyle_send_imagestring=True
+    )
+    assert keep_img["ImageString"] == "iVBORw0KGgo"
+    assert "Status" not in keep_img
+
+    linear = sanitize_cad_contours_plate_finish_filelist_row(
+        {
+            "FileType": "Linear",
+            "ItemType": "Linear",
+            "Category": "Linear",
+            "PartMode": 1,
+            "Status": 1,
+            "ImageString": "preview",
+            "ProductSubType": "bar_flat",
+            "Machine": "Saw",
+        }
+    )
+    assert linear["Status"] == 1
+    assert linear["ImageString"] == "preview"
+    assert linear["Machine"] == "Saw"
+
+    cap = kendo_filelist_for_finish([src], from_datasource=True)
+    row = cap["FileList"][0]
+    assert "Status" not in row
+    assert "ImageString" not in row
+    assert "FileType" not in row
+    assert "PartMode" not in row
+    assert "SourceDataID" not in row
+    assert "Contours" not in row
+    assert row["ItemType"] == "cad"
+    assert row["ProductType"] == "bar"
+    assert row["ProductSubType"] == "bar_flat"
+    assert row["Machine"] == "Laser"
+    assert row["Length_Units"] == "meter"
+    assert row["Stock_X"] == 11.0
+    assert row["Stock_Y"] == 6.25
+    assert cap["should_finish"] is True
+    assert cap["filelist_from_kendo"] is True
+    assert cad_material_inches_recipe_complete(src) is True
+    assert cad_filelist_refuses_additem_dxf(src) is None
+
+    payload = build_dxf_finish_payload("qid", [src])
+    assert len(payload["FileList"]) == 1
+    built = payload["FileList"][0]
+    assert "Status" not in built
+    assert "ImageString" not in built
+    assert "FileType" not in built
+    assert "PartMode" not in built
+    assert "SourceDataID" not in built
+    assert built["ItemType"] == "cad"
+    assert built["ProductType"] == "bar"
+    assert built["ProductSubType"] == "bar_flat"
+    assert built["Machine"] == "Laser"
+    assert built["Length_Units"] == "meter"
+    assert built["Stock_X"] == 11.0
+    assert built["Stock_Y"] == 6.25
+
+    overlaid = overlay_classified_row(
+        {
+            "Name": "H.6.38 PLATE",
+            "ErrorStatus": 0,
+            "InternalData": "",
+        },
+        category="Cad",
+        material="A36",
+        thickness="0.1875",
+        machine="Laser",
+    )
+    assert "Status" not in overlaid
+    assert overlaid["ErrorStatus"] == 0
+    linear_over = overlay_classified_row(
+        {"Name": "21684 TUBE", "ErrorStatus": 0},
+        category="Linear",
+        material="A519",
+        thickness=0.375,
+        product_id="pid",
+        sku="RT4X0.375-A519",
+        qty=1,
+    )
+    assert linear_over["Status"] == 1
+
+    js = _PAGE_FINISH_JS
+    assert "applyKyleHarCadContoursPlateFileList" in js
+    assert "leanKyleHarCadContoursPlateFileList" in js
+    assert "omitFileListKey" in js
+    assert 'r.set("ProductType", "bar")' in js or 'ProductType", "bar"' in js
+    assert 'productSubType", "bar_flat"' in js
+    assert "Do not invent Contours" in js
+    assert "cadMaterialInchesRecipeComplete" in js
+    assert "opts.data.FileList = leanRows" in js
+    assert "application/x-www-form-urlencoded" in js
+    assert "response_list_n" in js
+    assert "filelist0_values" in js
+    assert "Length: first.Length" in js
+    assert "Width: first.Width" in js
+    assert "Stock_X: first.Stock_X" in js
+    assert "Stock_Y: first.Stock_Y" in js
+    assert "POSTED_IDENTITY_KEYS" in js
+    assert "resultNewItem" in js
+    assert "list0Focus" in js
+    assert "response_list0" in js
+    assert "lean.Stock_X = raw.Stock_X" in js
+    assert "lean.Stock_Y = raw.Stock_Y" in js
+    assert "data.Result || data.result" in js
+    assert "data.NewItem || data.newItem" not in js.split("function summarize")[1].split(
+        "function kendoGridPresent"
+    )[0]
+    list0 = additem_dxf_response_list0_focus(
+        {
+            "List": [
+                {
+                    "ImgStr": "abc123",
+                    "ProductType": "prt_dxf",
+                    "Description": "H.6.38 PLATE",
+                    "UnitCost": 12.5,
+                    "Machine": "Laser",
+                    "Material": "A36",
+                    "Thickness": "0.1875",
+                }
+            ],
+            "Result": {"NewItem": {"ID": "new-1"}},
+        }
+    )
+    assert list0["ImgStr_len"] == 6
+    assert list0["ProductType"] == "prt_dxf"
+    assert list0["Description"] == "H.6.38 PLATE"
+    assert list0["UnitCost"] == 12.5
+    assert list0["Machine"] == "Laser"
+    assert list0["Material"] == "A36"
+    assert list0["Thickness"] == "0.1875"
+    assert additem_dxf_has_result_newitem(
+        {"List": [{}], "Result": {"NewItem": {"ID": "new-1"}}}
+    ) is True
+    assert additem_dxf_has_result_newitem({"NewItem": {"ID": "top"}}) is False
+    empty_list0 = additem_dxf_response_list0_focus(
+        {"List": [], "Result": {}, "status": 200, "response_list_n": 0}
+    )
+    assert empty_list0["ImgStr_len"] == 0
+    assert empty_list0["ProductType"] is None
+    from secturafab.website import (
+        additem_dxf_list_empty_is_fail,
+        finish_cad_chrome_edit_grid_unbound,
+    )
+
+    assert additem_dxf_list_empty_is_fail(
+        {"status": 200, "body_keys": ["List", "Result"], "response_list_n": 0}
+    ) is True
+    assert additem_dxf_list_empty_is_fail(
+        {"status": 200, "body_keys": ["List", "Result"], "response_list_n": 1}
+    ) is False
+    assert additem_dxf_list_empty_is_fail(
+        {"status": 200, "body_keys": ["List", "Result"]}
+    ) is False
+    assert finish_cad_chrome_edit_grid_unbound(
+        grid_present=None, chrome_quotes_edit=True
+    ) is True
+    assert finish_cad_chrome_edit_grid_unbound(
+        grid_present=True, chrome_quotes_edit=True
+    ) is False
+    inch = _APPLY_GRID_PART_MODES_JS
+    assert "Never stamp 0.1875 while units still meter" in inch
+    assert 'setter("Thickness_Units", "inch")' in inch
+    assert "inch_stamped" in inch or "Thickness_Units" in inch
+
+
+def test_additem_dxf_summarize_list0_and_result_newitem():
+    """summarize/invoke capture List[0] focus + Result.NewItem. List=[] fail.
+
+    has_NewItem is Result.NewItem (nested), not top-level NewItem.
+    List≥1 alone is not remint PASS. Do not invent Contours.
+    """
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+    from secturafab.website import (
+        additem_dxf_has_result_newitem,
+        additem_dxf_list_empty_is_fail,
+        additem_dxf_response_list0_focus,
+        additem_dxf_result_newitem,
+    )
+
+    js = _PAGE_FINISH_JS
+    assert "function resultNewItem" in js
+    assert "function list0Focus" in js
+    assert "response_list0: list0Focus(data)" in js
+    assert "has_NewItem: !!newItem" in js
+    assert "ImgStr_len" in js
+    body = {
+        "List": [
+            {
+                "ImgStr": "preview-bytes",
+                "ProductType": "prt_dxf",
+                "Description": "H.6.38 PLATE",
+                "UnitCost": 64.25,
+                "Machine": "Laser",
+                "Material": "A36",
+                "Thickness": "0.1875",
+            }
+        ],
+        "Result": {"NewItem": {"ID": "nested-new"}},
+        "NewItem": {"ID": "top-level-ignored"},
+    }
+    focus = additem_dxf_response_list0_focus(body)
+    assert focus["ImgStr_len"] == len("preview-bytes")
+    assert focus["ProductType"] == "prt_dxf"
+    assert focus["Description"] == "H.6.38 PLATE"
+    assert focus["UnitCost"] == 64.25
+    assert focus["Machine"] == "Laser"
+    assert focus["Material"] == "A36"
+    assert focus["Thickness"] == "0.1875"
+    assert additem_dxf_result_newitem(body) == {"ID": "nested-new"}
+    assert additem_dxf_has_result_newitem(body) is True
+    assert additem_dxf_has_result_newitem(
+        {"NewItem": {"ID": "top-only"}, "List": [{}]}
+    ) is False
+    empty = {
+        "status": 200,
+        "body_keys": ["List", "Result"],
+        "response_list_n": 0,
+        "List": [],
+        "Result": {},
+    }
+    assert additem_dxf_list_empty_is_fail(empty) is True
+    assert additem_dxf_has_result_newitem(empty) is False
+    empty_focus = additem_dxf_response_list0_focus(empty)
+    assert empty_focus["ImgStr_len"] == 0
+    assert empty_focus["ProductType"] is None
+    assert additem_dxf_list_empty_is_fail(
+        {"status": 200, "body_keys": ["List", "Result"], "response_list_n": 1}
+    ) is False
+
+
+def test_additem_dxf_list_empty_is_not_success(tmp_path: Path):
+    """Q10481: HTTP 200 + List,Result keys + List=[] is not AddItem success."""
+    from secturafab.website import additem_dxf_list_empty_is_fail
+
+    stp = tmp_path / "H.6.38.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "ID": "id-1",
+            "FileID": "file-1",
+            "SourceDataID": "src-1",
+            "Name": "H.6.38 PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "Material": "A36",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 1
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0481"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": ["List", "Result"],
+        "body_type": "object",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "text_len": 8,
+        "empty_body": False,
+        "response_list_n": 0,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_filelist_n": 1,
+        "grid_dxf_row_count": 1,
+        "filelist_from_kendo": True,
+        "filelist_sourcedataid_n": 1,
+        "finish_af_present": True,
+        "finish_why": "",
+        "filelist0_values": {
+            "ItemType": "cad",
+            "ProductType": "bar",
+            "productSubType": "bar_flat",
+            "FileType": None,
+            "Machine": "Laser",
+            "Material": "A36",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        },
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    assert additem_dxf_list_empty_is_fail(client.add_item_dxf_files.return_value) is True
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": ["FileID", "ID", "SourceDataID"],
+        },
+    ), patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=False
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0481",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.1875",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="H.6.38",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert "List=[]" in blob
+    assert "not success" in blob
+    assert "filelist0_values" in blob
+    assert "ProductType=bar" in blob
+    assert "productSubType=bar_flat" in blob
+
+
+def test_finish_cad_files_refuses_unbound_chrome_edit_grid(tmp_path: Path):
+    """Cookie GetItem_AddView without #gridDXFParts on minted EDIT is not Finish."""
+    stp = tmp_path / "H.6.38.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "ID": "id-1",
+            "FileID": "file-1",
+            "SourceDataID": "src-1",
+            "Name": "H.6.38 PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Category": "Cad",
+            "FileType": "Cad",
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 1
+    client._grid_present = None
+    client._grid_dxf_row_count = None
+    client._stale_grid = False
+    client._edit_quote_id = ""
+    client._edit_gate = ""
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.chrome_cdp.wait_minted_edit_grid_dxf_parts",
+        return_value={
+            "grid_present": False,
+            "has_gridDXFParts": False,
+            "grid_dxf_row_count": 0,
+            "why": "empty_gridDXFParts",
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0481",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.1875",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="H.6.38",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "not Finishing" in blob
+    assert "gridDXFParts" in blob or "GetItem_AddView" in blob
+
+
+def test_cad_empty_internaldata_imagestring_skips_finish():
+    """Live 10098-1: Cad-path keys present and empty → fail-closed skip. Do not invent."""
+    from secturafab.website import (
+        cad_filelist_contours_would_be_zero,
+        cad_filelist_payload_blocks_finish,
+        cad_filelist_refuses_additem_dxf,
+        cad_payload_value_empty,
+        copy_cadimport_identity_through,
+        filelist_cad_payload_empty_bools,
+        kendo_filelist_for_finish,
+    )
+
+    row = {
+        "ID": "x",
+        "FileID": "f",
+        "SourceDataID": "x",
+        "FileType": "Cad",
+        "CadType": 0,
+        "Stock_X": 11.0,
+        "Stock_Y": 6.25,
+        "ErrorStatus": 0,
+        "Qty": 1,
+        "ItemType": "Cad",
+        "InternalData": "",
+        "ImageString": "",
+        "InternalHTML": "",
+        "HadOpenContours": False,
+        "OutsidePerimeter": 0,
+        "Name": "PIVOTING FOOT",
+    }
+    bools = filelist_cad_payload_empty_bools(row)
+    assert bools["filelist_internaldata_empty"] is True
+    assert bools["filelist_imagestring_empty"] is True
+    assert cad_payload_value_empty("") is True
+    assert cad_payload_value_empty("[]") is True
+    assert cad_payload_value_empty({"holes": 1}) is False
+    assert cad_filelist_payload_blocks_finish(row) is True
+    assert cad_filelist_contours_would_be_zero(row) is True
+    refuse = cad_filelist_refuses_additem_dxf(row)
+    assert refuse is not None
+    assert "needs_internaldata_fill_xhr" in refuse
+    assert "refusing AddItem_DXFFiles" in refuse
+    cap = kendo_filelist_for_finish([row], from_datasource=True)
+    assert cap["should_finish"] is False
+    assert cap["finish_why"] == "filelist_cad_payload_empty"
+    assert cap["filelist_internaldata_empty"] is True
+    assert cap["filelist_imagestring_empty"] is True
+    assert cap["FileList"][0]["InternalData"] == ""
+    assert "ImageString" not in cap["FileList"][0]
+    assert "Status" not in cap["FileList"][0]
+    assert "Unfold" not in cap["FileList"][0]
+    page = {
+        **row,
+        "InternalData": '[{"Type":"page"}]',
+        "ImageString": "iVBORw0KGgo",
+    }
+    filled = kendo_filelist_for_finish([page], from_datasource=True)
+    assert filled["should_finish"] is True
+    assert filled["filelist_internaldata_empty"] is False
+    assert filled["filelist_imagestring_empty"] is True
+    assert "ImageString" not in filled["FileList"][0]
+    component = {
+        "ID": "x",
+        "FileType": "Component",
+        "CadType": 0,
+        "Stock_X": 1,
+        "Stock_Y": 2,
+        "InternalData": "",
+        "ImageString": "",
+    }
+    assert cad_filelist_payload_blocks_finish(component) is False
+    assert kendo_filelist_for_finish([component], from_datasource=True)[
+        "should_finish"
+    ] is True
+    invented = copy_cadimport_identity_through({"ID": "x", "FileType": "Cad"}, {})
+    assert "InternalData" not in invented
+    assert "ImageString" not in invented
+
+
+def test_cad_filelist_contours_zero_refuses_additem_dxf():
+    """Nonempty InternalData + NumberOfContours 0 still refuses Finish."""
+    from secturafab.website import (
+        cad_filelist_contours_would_be_zero,
+        cad_filelist_payload_blocks_finish,
+        cad_filelist_refuses_additem_dxf,
+        cad_finish_notes_refuse_additem_dxf,
+        kendo_filelist_for_finish,
+    )
+
+    row = {
+        "ID": "x",
+        "FileID": "f",
+        "SourceDataID": "x",
+        "FileType": "Cad",
+        "CadType": 0,
+        "Stock_X": 8.0,
+        "Stock_Y": 4.0,
+        "ErrorStatus": 0,
+        "Qty": 1,
+        "ItemType": "Cad",
+        "InternalData": '[{"Type":"page"}]',
+        "ImageString": "preview",
+        "NumberOfContours": 0,
+    }
+    assert cad_filelist_payload_blocks_finish(row) is False
+    assert cad_filelist_contours_would_be_zero(row) is True
+    refuse = cad_filelist_refuses_additem_dxf(row)
+    assert refuse is not None
+    assert "needs_internaldata_fill_xhr" in refuse
+    cap = kendo_filelist_for_finish([row], from_datasource=True)
+    assert cap["should_finish"] is False
+    assert cap["finish_why"] == "filelist_contours_zero"
+    assert cad_finish_notes_refuse_additem_dxf([refuse]) == refuse
+    assert cad_finish_notes_refuse_additem_dxf(["ok"]) is None
+    ok = dict(row)
+    del ok["NumberOfContours"]
+    assert cad_filelist_contours_would_be_zero(ok) is False
+    assert cad_filelist_refuses_additem_dxf(ok) is None
+
+
+def test_add_item_dxf_files_refuses_empty_internaldata():
+    from secturafab.client import SecturaFabApiError, SecturaFabClient
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    with pytest.raises(SecturaFabApiError, match="needs_internaldata_fill_xhr"):
+        client.add_item_dxf_files(
+            quote_id="qid",
+            file_list=[
+                {
+                    "FileType": "Cad",
+                    "ItemType": "Cad",
+                    "InternalData": "",
+                    "ImageString": "",
+                }
+            ],
+        )
+
+
+def test_part_create_list_name_tokens_root_and_jobpn():
+    """Live SC0600: t.List Name/PartName/FileName are Root or job PN — counts only."""
+    from secturafab.website import part_create_list_name_tokens
+
+    rows = [
+        {"Name": "Root", "PartName": "Root", "FileName": "SC0600.STEP"},
+        {"Name": "SC0600", "PartName": "SC0600", "FileName": "SC0600"},
+        {"Name": "SC0600", "PartName": "SC0600", "FileName": "SC0600"},
+    ]
+    tok = part_create_list_name_tokens(rows, part_key="SC0600")
+    assert tok["tlist_name_root_n"] == 1
+    assert tok["tlist_name_jobpn_n"] == 2
+    assert tok["tlist_name_other_n"] == 0
+    assert tok["tlist_partname_root_n"] == 1
+    assert tok["tlist_partname_jobpn_n"] == 2
+    assert tok["tlist_filename_jobpn_n"] == 2
+    assert tok["tlist_filename_other_n"] == 1
+
+
+def test_filelist_errorstatus_qty_and_filetype_value_type():
+    """Log posted ErrorStatus/Qty values and FileType value/type — do not invent."""
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+    from secturafab.website import (
+        filelist_cad_path_keys,
+        filelist_errorstatus_qty,
+        filelist_filetype_value_type,
+        kendo_filelist_for_finish,
+    )
+
+    row = {
+        "ID": "x",
+        "FileID": "f",
+        "SourceDataID": "x",
+        "FileType": "Cad",
+        "CadType": 0,
+        "Stock_X": 11.0,
+        "Stock_Y": 6.25,
+        "ErrorStatus": 0,
+        "Qty": 1,
+        "ItemType": "Cad",
+        "Name": "PIVOTING FOOT",
+    }
+    vals = filelist_errorstatus_qty(row)
+    assert vals["filelist_errorstatus"] == 0
+    assert vals["filelist_qty"] == 1
+    ft = filelist_filetype_value_type(row)
+    assert ft["filelist_filetype_value"] == "Cad"
+    assert ft["filelist_filetype_type"] == "str"
+    assert filelist_cad_path_keys(row) == []
+    missing = filelist_filetype_value_type({"Qty": 1})
+    assert missing["filelist_filetype_type"] == "missing"
+    cap = kendo_filelist_for_finish([row], from_datasource=True)
+    assert cap["filelist_errorstatus"] == 0
+    assert cap["filelist_qty"] == 1
+    assert cap["filelist_filetype_value"] == ""
+    assert cap["filelist_filetype_type"] == "missing"
+    assert "FileType" not in cap["FileList"][0]
+    assert cap["filelist_internaldata_empty"] is True
+    assert cap["should_finish"] is True
+    js = _PAGE_FINISH_JS
+    assert "filelist_errorstatus" in js
+    assert "filelist_qty" in js
+    assert "filelist_filetype_value" in js
+    assert "filelist_filetype_type" in js
+    assert "filelist_internaldata_empty" in js
+    assert "filelist_imagestring_empty" in js
+    assert "filelist_cad_payload_empty" in js
+    assert "InternalData" in js
+    assert "ImageString" in js
+    assert "Unfold" in js
+
+
+def test_kendo_without_cadimport_identity_skips_finish(tmp_path: Path):
+    """PartMode set + Cad+Material+inches + empty InternalData → Finish.
+
+    Contours gate after Finish is authority (Q10366). invent=false.
+    """
+    stp = tmp_path / "107292-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "ID": "id-1",
+            "Name": "OPERATOR PLATFORM LOWER CONTROL MOUNT",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 1
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._kendo_row_keys = ["FileID", "FileType", "ID", "SourceDataID"]
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0002"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": ["FileID", "FileType", "ID", "SourceDataID"],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0002",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.105",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="107292-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_called()
+    blob = " ".join(notes)
+    assert "kendo_row_keys=" in blob
+    assert "filelist_missing_keys=CadType,Stock_X,Stock_Y" in blob or (
+        "filelist_missing_keys=" in blob
+        and "CadType" in blob
+        and "Stock_X" in blob
+        and "Stock_Y" in blob
+    )
+    assert "partmode_set_allows_empty_cadtype_stock=true" in blob
+    assert "refusing AddItem_DXFFiles" not in blob
+    assert "EXEC_FAIL" in blob
+    assert "NumberOfContours<1 after Finish" in blob
+
+
+def test_empty_griddxf_explode_miss_n1_cad_is_not_34632():
+    """1 Cad on EDIT is Finishable; empty/missing #gridDXFParts is the 34632-2 miss."""
+    from secturafab.website import empty_griddxf_explode_miss
+
+    assert empty_griddxf_explode_miss(
+        grid_present=True, n_grid=1, n_list=1
+    ) is False
+    assert empty_griddxf_explode_miss(n_grid=1) is False
+    assert empty_griddxf_explode_miss(
+        grid_present=True, n_grid=0, n_list=0
+    ) is True
+    assert empty_griddxf_explode_miss(n_list=0) is True
+    assert empty_griddxf_explode_miss(
+        grid_present=False, n_grid=1, n_list=1
+    ) is True
+
+
+def test_onadddxfclick_without_setpartmode_is_not_success(tmp_path: Path):
+    """Live EHB3112: OnAddDXFClick without SetPartMode is not success."""
+    stp = tmp_path / "EHB3112.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": f"src-{i}",
+            "FileID": f"file-{i}",
+            "Name": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        }
+        for i, name in enumerate(
+            ("EHB3111-1", "EHB3111-2", "EHB3111-2", "EHB3112-3")
+        )
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 4
+    client._grid_present = True
+    client._grid_dxf_row_count = 4
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa3112"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = ""
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": [],
+        "body_type": "empty",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "text_len": 0,
+        "empty_body": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_filelist_n": 4,
+        "grid_dxf_row_count": 4,
+        "filelist_from_kendo": True,
+        "filelist_sourcedataid_n": 4,
+        "filelist_filetype": {
+            "Cad": 0,
+            "Linear": 0,
+            "Assembly": 0,
+            "Component": 0,
+            "blank": 4,
+        },
+        "finish_af_present": True,
+        "request_keys": ["ID", "ItemID", "customerMaterial", "FileList"],
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": False,
+            "cad": 0,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 0,
+            "setpartmode_via": "",
+            "grid_dxf_row_count": 4,
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa3112",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="EHB3112",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert "setpartmode_via=?" in blob
+    assert "OnAddDXFClick without SetPartMode" in blob
+    assert "not success" in blob
+    assert "finish_fn=OnAddDXFClick" in blob
+    assert "filelist_from_kendo=true" in blob
+    assert "filelist_sourcedataid_n=4" in blob
+    client.add_item_dxf_files.assert_called()
+
+
+def test_page_grid_finish_empty_body_is_not_success(tmp_path: Path):
+    """Live P001545: page_fn 200 empty body + GET 0 is not success."""
+    stp = tmp_path / "P001545.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": f"src-{i}",
+            "FileID": f"file-{i}",
+            "Name": "W001544" if i < 50 else f"W001531_{i}",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "InternalData": "server-stamped",
+        }
+        for i in range(53)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 53
+    client._grid_present = True
+    client._grid_dxf_row_count = 53
+    client._stale_grid = False
+    client._edit_quote_id = "31204345-6c91-4122-a859-09f7d7a3ea9f"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": [],
+        "body_type": "empty",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "text_len": 0,
+        "empty_body": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_filelist_n": 52,
+        "grid_dxf_row_count": 53,
+        "request_keys": ["ID", "ItemID", "customerMaterial", "FileList"],
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="31204345-6c91-4122-a859-09f7d7a3ea9f",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="P001545",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    blob = " ".join(notes)
+    assert "finish_via=page_fn" in blob
+    assert "finish_fn=OnAddDXFClick" in blob
+    assert "finish_filelist_n=52" in blob
+    assert "grid_dxf_row_count=53" in blob
+    assert "empty body" in blob.lower()
+    assert "not success" in blob.lower()
+
+
+def test_stale_grid_65_vs_filelist_12_skips_finish(tmp_path: Path):
+    """Live 5003313-001: leftover kendo 65 after bind of List=12 — do not Finish."""
+    from secturafab.chrome_cdp import grid_dxf_count_is_stale
+
+    assert grid_dxf_count_is_stale(65, 12) is True
+    assert grid_dxf_count_is_stale(15, 15) is False
+    assert grid_dxf_count_is_stale(12, 12) is False
+    stp = tmp_path / "5003313-001.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": f"src-{i}",
+            "FileID": f"file-{i}",
+            "Name": "5003313-001" if i else "Root",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        }
+        for i in range(12)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 12
+    client._grid_present = True
+    client._grid_dxf_row_count = 65
+    client._stale_grid = True
+    client._edit_quote_id = "997f1eb7-3eb0-4a76-83f9-4c3439e929b7"
+    client._edit_gate = ""
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0001",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="5003313-001",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "edit_quote_id=997f1eb7-3eb0-4a76-83f9-4c3439e929b7" in blob
+    assert "minted_id=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0001" in blob
+    assert "stale" in blob.lower()
+    assert "grid_dxf_row_count=65" in blob
+
+
+def test_scrape_quotes_af_fields_from_cdp_evaluate():
+    from secturafab.chrome_cdp import scrape_quotes_af_fields
+
+    token = "af-secret-token-value"
+    tab = {
+        "url": "https://www.secturafab.com/Quote?ID=x",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/q",
+        "type": "page",
+    }
+
+    def _call(ws_url, method, params=None, **_k):
+        assert method == "Runtime.evaluate"
+        assert "querySelector" in str((params or {}).get("expression") or "")
+        return {
+            "result": {
+                "value": [{"name": "__RequestVerificationToken", "value": token}]
+            }
+        }
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=None), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=tab
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        fields = scrape_quotes_af_fields("http://127.0.0.1:9222")
+    assert fields == [("__RequestVerificationToken", token)]
+
+
+def test_ensure_prefers_chrome_dom_over_cookie_quote_html():
+    """Live 7b723b9: cookie /Quote 200 AF is the wrong claims user."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+    from secturafab.website import client_antiforgery_extracted
+
+    token = "af-secret-token-value"
+    cookie_token = "cookie-html-wrong-user-token"
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=filecookie",
+    )
+    client._token = MagicMock()
+    client._token.authorization_header = "Bearer tok"
+    client._token.is_expired = False
+    client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
+    client._request_verification_token = cookie_token
+    client._request_verification_fields = [
+        ("__RequestVerificationToken", cookie_token)
+    ]
+    client._af_source = "cookie_quote_html"
+    client._chrome_user_agent = ""
+    client._chrome_cookie_name_diff = {}
+    client._cookie_quote_access_denied = False
+    client._website_cookie_override = ""
+    client._quotes_tab_live = False
+
+    def _req(*_a, **_k):
+        raise AssertionError("cookie GET /Quote must not supply AF when Quotes is live")
+
+    client.website_request = _req  # type: ignore[method-assign]
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.chrome_cdp.chrome_debug_base", return_value="http://127.0.0.1:9224"
+    ), patch(
+        "secturafab.chrome_cdp.chrome_version_user_agent",
+        return_value="Mozilla/5.0 Chrome/120",
+    ), patch(
+        "secturafab.chrome_cdp.sectura_cookies_from_cdp", return_value=[]
+    ), patch(
+        "secturafab.chrome_cdp.scrape_quotes_af_fields",
+        return_value=[("__RequestVerificationToken", token)],
+    ):
+        assert client.ensure_quote_antiforgery("qid") is True
+    assert client_antiforgery_extracted(client) is True
+    assert client._af_source == "chrome_dom"
+    assert client._quotes_tab_live is True
+    notes = SecturaFabPushService(client=client)._antiforgery_capture_notes()
+    blob = " ".join(notes)
+    assert "af_extracted=true" in blob
+    assert "af_source=chrome_dom" in blob
+    assert "cookie_quote_html" not in blob
+    assert token not in blob
+    assert cookie_token not in blob
+    assert "filecookie" not in blob
+
+
+def test_push_job_does_not_mint_when_af_extracted_false(tmp_path: Path):
+    """No AF from cookie or Chrome DOM → no new quote."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    stp = tmp_path / "10072-1.STEP"
+    stp.write_bytes(b"ISO")
+    pdf = tmp_path / "10072-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=box",
+    )
+    client._token = MagicMock()
+    client._token.authorization_header = "Bearer tok"
+    client._token.is_expired = False
+    client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
+    client._request_verification_token = None
+    client._request_verification_fields = []
+    client._last_item_add_view_html = ""
+    client._af_source = ""
+    client._chrome_user_agent = ""
+    client._chrome_cookie_name_diff = {}
+    client._cookie_quote_access_denied = False
+
+    def _req(method, path, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 302
+        resp.headers = {"Location": "/Account/AccessDenied"}
+        resp.text = ""
+        resp.content = b""
+        resp.url = path
+        return resp
+
+    client.website_request = _req  # type: ignore[method-assign]
+    client.get_json = MagicMock(return_value={"ItemList": []})  # type: ignore[method-assign]
+    service = SecturaFabPushService(client=client)
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp.chrome_debug_base", return_value=None
+    ), patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ), patch.object(
+        service, "create_quote", return_value="must-not-mint"
+    ) as create_q, patch.object(
+        service, "allocate_quote_number", return_value="10072-1"
+    ), patch.object(
+        service, "finish_cad_files", return_value=[]
+    ) as finish, patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value="WELDMENT"
+    ):
+        result = service.push_job(
+            title="10072-1",
+            pdf_filename="10072-1.pdf",
+            pdf_path=pdf,
+            stp_path=stp,
+            takeoff={"library": {"part_key": "10072-1"}},
+            times={},
+            job_id=7,
+        )
+    assert result.ok is False
+    create_q.assert_not_called()
+    finish.assert_not_called()
+    blob = " ".join(result.notes or []) + " " + (result.error or "")
+    assert "af_extracted=false" in blob
+    assert "not minting" in blob
+    assert "must-not-mint" not in blob
+
+
+def test_part_create_403_logonurl_does_not_finish_raw_step(tmp_path: Path):
+    """Live 34639-1: www 403 LogOnUrl is not Login; withhold raw STEP Finish."""
+    from secturafab.client import SecturaFabApiError
+
+    stp = tmp_path / "34639-1.STEP"
+    stp.write_bytes(b"ISO")
+    raw = {
+        "SourceDataID": "src-step",
+        "FileID": "file-step",
+        "FileName": "34639-1.STEP",
+        "Name": "34639-1",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "PartCount": 8,
+        "Units": "inch",
+    }
+    token = "af-secret-token-value"
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": [raw]}
+    client._request_verification_fields = [("__RequestVerificationToken", token)]
+    client.create_dxf_parts.side_effect = SecturaFabApiError(
+        "API request failed (403) for https://www.secturafab.com/part/create",
+        status_code=403,
+        body={
+            "Error": "denied",
+            "LogOnUrl": "/Account/Login",
+            "login_redirect": False,
+            "access_denied": False,
+        },
+    )
+    client.cadimport_data.return_value = {"List": [raw]}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003463",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="34639-1",
+        explode_polls=2,
+        explode_sleep_s=0,
+    )
+    client.add_item_dxf_files.assert_not_called()
+    client.cadimport_convert_to.assert_not_called()
+    blob = " ".join(notes)
+    assert "403" in blob
+    assert "LogOnUrl" in blob
+    assert "not Login" in blob
+    assert token not in blob
+    assert "not Finishing" in blob or "raw upload" in blob.lower()
+
+
+def test_collect_cadimport_grid_skips_get_dxf_data():
+    client = MagicMock()
+    client.cadimport_data.return_value = {}
+    client.get_item_add_view.return_value = {}
+    SecturaFabPushService(client=client)._collect_cadimport_grid(quote_id="qid")
+    client.cadimport_get_dxf_data.assert_not_called()
+    client.cadimport_data.assert_called()
+
+
+def test_cadimport_explode_routes_use_www():
+    """CadImport Next/Data/SetUnits/ConvertTo must hit www, not api first."""
+    from secturafab.client import SecturaFabClient
+
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.timeout_seconds = 30
+    real.config.website_root = "https://www.secturafab.com"
+    real._request_verification_token = "x"
+    real._request_verification_fields = [("__RequestVerificationToken", "x")]
+    captured: list[dict[str, Any]] = []
+
+    def fake_website_request(method, path, **kwargs):
+        captured.append(
+            {
+                "method": method,
+                "path": path,
+                "prefer_api_origin": kwargs.get("prefer_api_origin"),
+                "www_only": kwargs.get("www_only"),
+                "headers": kwargs.get("headers") or {},
+                "params": kwargs.get("params"),
+                "json": kwargs.get("json"),
+                "data": kwargs.get("data"),
+            }
+        )
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = b"{}"
+        resp.json.return_value = {}
+        resp.headers = {}
+        resp.text = "{}"
+        resp.url = path
+        return resp
+
+    real._af_source = "chrome_dom"
+    real.website_request = fake_website_request  # type: ignore[method-assign]
+    real.cadimport_data(params={"ID": "qid"})
+    real.cadimport_caddata(params={"ID": "qid"})
+    real.cadimport_update_data_next({"ID": "qid", "List": [], "ListOther": []})
+    real.cadimport_convert_to({"ID": "qid", "List": [], "ListOther": []})
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.post_part_create_from_quotes_tab",
+        return_value={
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["List"],
+            "list_len": 0,
+            "List": [],
+            "via": "chrome_dom_fetch",
+        },
+    ), patch(
+        "secturafab.chrome_cdp.bind_do_create_dxf_parts_success",
+        return_value={
+            "has_gridDXFParts": False,
+            "grid_dxf_row_count": 0,
+            "bound": False,
+            "list_len": 0,
+            "opened_via": "",
+        },
+    ) as bind_fn:
+        real.create_dxf_parts(["src-1"], ["inch"], location="")
+    bind_fn.assert_not_called()
+    real.cadimport_set_units("inch")
+    real.get_item_add_view("qid")
+    real.upload_item_dxf_files(
+        [("files", ("a.step", b"ISO", "application/octet-stream"))],
+        quote_id="qid",
+    )
+    assert captured
+    assert all(row["prefer_api_origin"] is False for row in captured)
+    assert all(row["www_only"] is True for row in captured)
+    assert all(
+        row["headers"].get("X-Requested-With") == "XMLHttpRequest" for row in captured
+    )
+    paths = {row["path"] for row in captured}
+    assert "/CadImport/UpdateDataNext" in paths
+    assert "/CadImport/ConvertTo" in paths
+    assert "/part/create" not in paths
+    assert "/CadImport/Data" in paths
+    assert "/CadImport/CADData" in paths
+    assert "/CadImport/SetUnits" in paths
+    caddata = next(r for r in captured if r["path"] == "/CadImport/CADData")
+    assert caddata["method"] == "GET"
+    assert caddata["www_only"] is True
+    assert "/CadImport/GetDXFData" not in paths
+    assert "/Quote/GetDXFData" not in paths
+    next_row = next(r for r in captured if r["path"] == "/CadImport/UpdateDataNext")
+    assert isinstance((next_row.get("json") or {}).get("List"), list)
+    assert next_row.get("data") is None
+    units = next(r for r in captured if r["path"] == "/CadImport/SetUnits")
+    assert units["params"] == {"units": "inch"}
+    assert units["json"] is None
+    assert "Units" not in (units["params"] or {})
+
+
+def test_website_request_retries_www_after_api_500():
+    """API SetUnits 500 / GetDXFData 404 must fall through to www."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+    )
+    client._token = MagicMock()
+    client._token.authorization_header = "Bearer tok"
+    client._token.is_expired = False
+    client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
+    urls: list[str] = []
+
+    def _req(method, url, **_kwargs):
+        urls.append(url)
+        resp = MagicMock()
+        resp.headers = {}
+        resp.text = ""
+        resp.content = b""
+        resp.url = url
+        if "api.example.test" in url:
+            resp.status_code = 500 if "SetUnits" in url else 404
+            return resp
+        resp.status_code = 200
+        resp.content = b"{}"
+        resp.text = "{}"
+        resp.json.return_value = {"ok": True}
+        return resp
+
+    session = MagicMock()
+    session.request.side_effect = _req
+    client.session = session
+    resp = client.website_request(
+        "POST",
+        "/CadImport/SetUnits",
+        prefer_api_origin=True,
+        require_session=False,
+    )
+    assert resp.status_code == 200
+    assert any("api.example.test" in u for u in urls)
+    assert any("www.example.test" in u for u in urls)
+
+
+def test_cadimport_set_units_www_only_does_not_hit_api():
+    """www SetUnits 500 must not fall through to api (live 1002381-1)."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+    )
+    client._token = MagicMock()
+    client._token.authorization_header = "Bearer tok"
+    client._token.is_expired = False
+    client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
+    urls: list[str] = []
+
+    def _req(method, url, **kwargs):
+        urls.append(url)
+        resp = MagicMock()
+        resp.headers = {}
+        resp.text = "An item with the same key has already been added."
+        resp.content = b"err"
+        resp.url = url
+        resp.status_code = 500
+        resp.json.side_effect = ValueError("not json")
+        return resp
+
+    session = MagicMock()
+    session.request.side_effect = _req
+    client.session = session
+    with pytest.raises(Exception, match="500|same key|API request failed"):
+        client.cadimport_set_units("inch")
+    assert urls
+    assert all("www.example.test" in u for u in urls)
+    assert not any("api.example.test" in u for u in urls)
+    called_params = session.request.call_args.kwargs.get("params") or {}
+    assert called_params == {"units": "inch"}
+    assert session.request.call_args.kwargs.get("json") is None
+
+
+def test_step_job_does_not_call_image_files(tmp_path: Path, monkeypatch):
+    """Do not use Image Files when a STEP is on the job."""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    pdf = tmp_path / "1010103-1.pdf"
+    stp = tmp_path / "1010103-1.STEP"
+    pdf.write_bytes(b"%PDF")
+    stp.write_bytes(b"ISO")
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "1010104.pdf").write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.get_json.return_value = {
+        "QuoteNumber": "1010103-1",
+        "ItemCount": 0,
+        "ItemList": [],
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    service = SecturaFabPushService(client=client)
+    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "create_quote", return_value="11111111-aaaa-bbbb-cccc-000000001012"
+    ), patch.object(
+        service, "allocate_quote_number", return_value="1010103-1"
+    ), patch.object(
+        service, "finish_cad_files", return_value=["CadImport exploded 3 FileList row(s)"]
+    ) as finish_cad, patch.object(
+        service, "finish_pdf_files"
+    ) as finish_pdf, patch(
+        "secturafab.push.refresh_bom_rows_for_push",
+        return_value=(
+            [{"part_no": "1010104-1", "qty": 1, "description": "GUSSET"}],
+            [],
+        ),
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value="WELDMENT"
+    ), patch(
+        "secturafab.push.apply_quote_organization", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
+    ), patch(
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_weld_ops", return_value=[]
+    ):
+        result = service.push_job(
+            title="1010103-1",
+            pdf_filename="1010103-1.pdf",
+            pdf_path=pdf,
+            stp_path=stp,
+            takeoff={
+                "library": {
+                    "part_key": "1010103-1",
+                    "folder": str(lib),
+                    "related_pdfs": ["1010104.pdf"],
+                }
+            },
+            times={},
+            job_id=10103,
+        )
+    finish_cad.assert_called()
+    finish_pdf.assert_not_called()
+    assert result.ok is False
+    err = result.error or ""
+    assert "Image Files Finish landed" not in err
+    assert "CAD Files" in err or "AddItem_DXFFiles" in err
+
+
+def test_add_item_dxf_files_sends_js_contract():
+    """Finish is the page fn that reads #gridDXFParts (live 34137-2)."""
+    from secturafab.client import SecturaFabClient
+
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.timeout_seconds = 30
+    real._af_source = "chrome_dom"
+    real._grid_dxf_row_count = 3
+    real.session = MagicMock()
+    edit = {
+        "title": "*Quote-x",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.quote_edit_tab", return_value=edit
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_dxf_finish",
+        return_value={
+            "via": "page_fn",
+            "finish_fn": "OnAddDXFClick",
+            "grid_dxf_row_count": 3,
+            "status": 200,
+            "body_keys": ["NewItem"],
+            "body_type": "object",
+            "has_NewItem": True,
+            "has_QuoteItem": False,
+            "text_len": 80,
+            "List": [],
+        },
+    ), patch(
+        "secturafab.chrome_cdp.post_add_item_dxf_files_from_quotes_tab",
+    ) as fetch_finish:
+        result = real.add_item_dxf_files(
+            quote_id="qid",
+            file_list=[
+                {
+                    "ErrorStatus": 0,
+                    "Qty": 1,
+                    "Machine": "Laser",
+                    "Material": "100k",
+                    "Thickness": 0.375,
+                    "ProductID": None,
+                }
+            ],
+        )
+    real.session.request.assert_not_called()
+    fetch_finish.assert_not_called()
+    assert result["via"] == "page_fn"
+    assert result["has_NewItem"] is True
+    assert real._finish_via == "page_fn"
+
+
+def test_add_item_dxf_files_grid_finish_uses_grid_rows_not_python():
+    """Live P001545: reconstructed FileList POST is not success — skip it."""
+    from secturafab.client import SecturaFabClient
+
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.timeout_seconds = 30
+    real._af_source = "chrome_dom"
+    real._grid_dxf_row_count = 2
+    real.session = MagicMock()
+    edit = {
+        "title": "*Quote-x",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+    grid_rows = [
+        {
+            "SourceDataID": "grid-a",
+            "Name": "FROM_GRID_PLATE",
+            "ErrorStatus": 0,
+            "Qty": 1,
+        },
+        {
+            "SourceDataID": "grid-b",
+            "Name": "FROM_GRID_GUSSET",
+            "ErrorStatus": 0,
+            "Qty": 1,
+        },
+    ]
+    posted: list[dict[str, Any]] = []
+
+    def _fetch(payload, **_k):
+        posted.append(payload)
+        return {
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["NewItem"],
+            "body_type": "object",
+            "has_NewItem": True,
+            "has_QuoteItem": False,
+            "text_len": 40,
+            "via": "chrome_dom_fetch",
+        }
+
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.quote_edit_tab", return_value=edit
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_dxf_finish",
+        return_value={
+            "via": "",
+            "finish_fn": "",
+            "grid_dxf_row_count": 2,
+            "status": 0,
+            "body_keys": [],
+            "body_type": "empty",
+            "has_NewItem": False,
+            "has_QuoteItem": False,
+            "text_len": 0,
+            "List": grid_rows,
+        },
+    ), patch(
+        "secturafab.chrome_cdp.post_add_item_dxf_files_from_quotes_tab",
+        side_effect=_fetch,
+    ) as fetch_finish:
+        result = real.add_item_dxf_files(
+            quote_id="qid",
+            file_list=[{"Name": "PYTHON_REBUILT", "Machine": "Laser", "Qty": 1}],
+        )
+    real.session.request.assert_not_called()
+    fetch_finish.assert_not_called()
+    assert not posted
+    assert result["via"] == "skipped"
+    assert real._finish_via == "skipped"
+
+
+def test_grid_dxf_row_count_empty_skips_finish(tmp_path: Path):
+    """Fail-closed: #gridDXFParts missing/empty → no Finish, no remint."""
+    stp = tmp_path / "34994-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-a",
+            "FileID": "file-a",
+            "Name": "34994-2 PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+        {
+            "SourceDataID": "src-b",
+            "FileID": "file-b",
+            "Name": "34994-3 GUSSET",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+        },
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 0
+    client._grid_present = True
+    client._grid_dxf_row_count = 0
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="11111111-aaaa-bbbb-cccc-000000003494",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="34994-1",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    blob = " ".join(notes)
+    assert "grid_dxf_row_count=0" in blob
+    assert "not Finishing" in blob
+    client.add_item_dxf_files.assert_not_called()
+
+
+def test_n1_cad_on_edit_allows_finish(tmp_path: Path):
+    """Live 11796-1: 1 Cad row on EDIT is Finishable (not the 34632-2 miss)."""
+    stp = tmp_path / "11796-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "ID": "id-1",
+            "Name": "TURRET SIDE PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "InternalData": "server-stamped",
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 1
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1796"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": ["NewItem"],
+        "body_type": "object",
+        "has_NewItem": True,
+        "has_QuoteItem": False,
+        "text_len": 8,
+        "empty_body": False,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_filelist_n": 1,
+        "grid_dxf_row_count": 1,
+        "filelist_from_kendo": True,
+        "filelist_sourcedataid_n": 1,
+        "filelist_filetype": {"Cad": 1, "Linear": 0, "Assembly": 0, "Component": 0, "blank": 0},
+        "finish_af_present": True,
+        "finish_why": "",
+        "request_keys": [
+            "ID",
+            "ItemID",
+            "customerMaterial",
+            "FileList",
+            "__RequestVerificationToken",
+        ],
+    }
+    client.quote_item_read.return_value = {
+        "Data": [{"ProductType": 100, "ProductTypeName": "Cad", "Name": "TURRET SIDE PLATE"}],
+        "Total": 1,
+    }
+    client.get_json.return_value = {
+        "ItemList": [{"ProductType": 100, "ProductTypeName": "Cad", "Name": "TURRET SIDE PLATE"}]
+    }
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "FileType",
+                "ID",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1796",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="11796-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    client.add_item_dxf_files.assert_called()
+    assert "empty #gridDXFParts" not in blob
+    assert "List=0" not in blob
+    assert "filelist_from_kendo=true" in blob
+    assert "finish_af_present=true" in blob
+    assert "not the 105918-1 path" not in blob
+
+
+def test_filelist_not_kendo_or_af_missing_is_not_success(tmp_path: Path):
+    """Live 11796-1: filelist_from_kendo=false or finish_af_present=false is not gold."""
+    stp = tmp_path / "11796-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "Name": "TURRET SIDE PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "InternalData": "server-stamped",
+        }
+    ]
+
+    def _run(*, from_kendo: bool, af: bool, why: str, sid_n: int = 0) -> str:
+        client = MagicMock()
+        client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+        client._request_verification_fields = [("__RequestVerificationToken", "x")]
+        client._af_source = "chrome_dom"
+        client._part_create_list_len = 1
+        client._grid_present = True
+        client._grid_dxf_row_count = 1
+        client._stale_grid = False
+        client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1796"
+        client._edit_gate = ""
+        client._finish_via = "page_fn"
+        client._setpartmode_via = "page_fn"
+        client.create_dxf_parts.return_value = {"List": kids}
+        client.cadimport_data.return_value = {"List": kids}
+        client.get_item_add_view.return_value = {}
+        client.add_item_dxf_files.return_value = {
+            "status": 200,
+            "body_keys": [],
+            "body_type": "empty",
+            "has_NewItem": False,
+            "has_QuoteItem": False,
+            "text_len": 0,
+            "empty_body": True,
+            "via": "page_fn",
+            "finish_fn": "OnAddDXFClick",
+            "finish_filelist_n": 1,
+            "grid_dxf_row_count": 1,
+            "filelist_from_kendo": from_kendo,
+            "filelist_sourcedataid_n": sid_n,
+            "filelist_id_n": 1 if sid_n else 0,
+            "filelist_fileid_n": 0,
+            "finish_af_present": af,
+            "finish_why": why,
+            "request_keys": ["ID", "ItemID", "customerMaterial", "FileList"],
+        }
+        client.quote_item_read.return_value = {"Data": [], "Total": 0}
+        client.get_json.return_value = {"ItemList": []}
+        with patch(
+            "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+            return_value={
+                "grid_present": True,
+                "cad": 1,
+                "linear": 0,
+                "assembly": 0,
+                "component": 0,
+                "set_count": 1,
+                "setpartmode_via": "page_fn",
+                "grid_dxf_row_count": 1,
+                "kendo_row_keys": [
+                    "CadType",
+                    "FileID",
+                    "FileType",
+                    "ID",
+                    "SourceDataID",
+                    "Stock_X",
+                    "Stock_Y",
+                ],
+            },
+        ):
+            notes = SecturaFabPushService(client=client).finish_cad_files(
+                quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1796",
+                cad_files=[stp],
+                material="A36",
+                thickness="0.25",
+                qty=1,
+                takeoff={},
+                bom_rows=[],
+                library={},
+                extra_pdfs=None,
+                part_key="11796-1",
+                explode_polls=1,
+                explode_sleep_s=0,
+            )
+        return " ".join(notes)
+
+    missing_kendo = _run(
+        from_kendo=False, af=True, why="filelist_not_kendo", sid_n=1
+    )
+    assert "filelist_from_kendo=false" in missing_kendo
+    assert "not the 105918-1 path" in missing_kendo
+    assert "not success" in missing_kendo
+    missing_af = _run(
+        from_kendo=True, af=False, why="af_missing_on_document", sid_n=1
+    )
+    assert "finish_af_present=false" in missing_af
+    assert "not the 105918-1 path" in missing_af
+    assert "not success" in missing_af
+    missing_ids = _run(
+        from_kendo=False, af=True, why="filelist_missing_ids", sid_n=0
+    )
+    assert "filelist_sourcedataid_n=0" in missing_ids
+    assert "filelist_missing_ids" in missing_ids
+    assert "not the 105918-1 path" in missing_ids
+    assert "not success" in missing_ids
+
+
+def test_kendo_af_sid_cad_empty_body_is_not_success(tmp_path: Path):
+    """Live 107292-1: checklist green + 200 empty + GET 0 is not gold."""
+    stp = tmp_path / "107292-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "ID": "id-1",
+            "Name": "OPERATOR PLATFORM LOWER CONTROL MOUNT",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "InternalData": "server-stamped",
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 1
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "d59318c8-9c39-43a2-aef6-cbd28203ee82"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": [],
+        "body_type": "empty",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "text_len": 0,
+        "empty_body": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_filelist_n": 1,
+        "grid_dxf_row_count": 1,
+        "filelist_from_kendo": True,
+        "filelist_sourcedataid_n": 1,
+        "filelist_id_n": 1,
+        "filelist_fileid_n": 1,
+        "filelist_filetype": {"Cad": 1, "Linear": 0, "Assembly": 0, "Component": 0, "blank": 0},
+        "filelist_row_keys": ["FileID", "FileType", "ID", "SourceDataID"],
+        "filelist_missing_keys": [
+            "CadType",
+            "Length",
+            "Material",
+            "Status",
+            "Stock_X",
+            "Stock_Y",
+            "Thickness",
+            "Width",
+        ],
+        "filelist_missing_identity": ["CadType", "Stock_X", "Stock_Y"],
+        "finish_af_present": True,
+        "finish_why": "filelist_missing_keys=CadType+Stock_X+Stock_Y",
+        "request_keys": [
+            "ID",
+            "ItemID",
+            "customerMaterial",
+            "FileList",
+            "__RequestVerificationToken",
+        ],
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "FileType",
+                "ID",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="d59318c8-9c39-43a2-aef6-cbd28203ee82",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.105",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="107292-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert "filelist_from_kendo=true" in blob
+    assert "finish_af_present=true" in blob
+    assert "filelist_sourcedataid_n=1" in blob
+    assert "Cad:1" in blob
+    assert "filelist_row_keys=" in blob
+    assert "CadType" in blob and "Stock_X" in blob
+    assert "empty body" in blob.lower()
+    assert "List,Result" in blob
+    assert "not success" in blob
+    assert "item_count=0" in blob or "GET item_count=0" in blob
+
+
+def test_cadtype_stock_without_filetype_empty_body_is_not_success(tmp_path: Path):
+    """Live 16629-1: CadType+Stock on kendo/FileList + no FileType/Status is not gold."""
+    stp = tmp_path / "16629-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "ID": "id-1",
+            "Name": "EAR",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "CadType": 0,
+            "Stock_X": 11.0,
+            "Stock_Y": 6.25,
+            "Stock_Z": 0.105,
+            "Stock_Units": "inch",
+            "Width": 11.0,
+            "Length": 6.25,
+            "Thickness": 0.105,
+            "Material": "A1011",
+            "ProductType": 100,
+            "Category": "Cad",
+            "PartMode": 0,
+            "InternalData": "server-stamped",
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 1
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa6629"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": [],
+        "body_type": "empty",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "text_len": 0,
+        "empty_body": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_filelist_n": 1,
+        "grid_dxf_row_count": 1,
+        "filelist_from_kendo": True,
+        "filelist_sourcedataid_n": 1,
+        "filelist_id_n": 1,
+        "filelist_fileid_n": 1,
+        "filelist_filetype": {"Cad": 1, "Linear": 0, "Assembly": 0, "Component": 0, "blank": 0},
+        "filelist_row_keys": [
+            "CadType",
+            "FileID",
+            "ID",
+            "Length",
+            "Material",
+            "ProductType",
+            "SourceDataID",
+            "Stock_Units",
+            "Stock_X",
+            "Stock_Y",
+            "Stock_Z",
+            "Thickness",
+            "Width",
+        ],
+        "filelist_missing_keys": ["FileType", "Status"],
+        "filelist_missing_identity": [],
+        "finish_af_present": True,
+        "finish_why": "filelist_missing_keys=Status+FileType",
+        "request_keys": [
+            "ID",
+            "ItemID",
+            "customerMaterial",
+            "FileList",
+            "__RequestVerificationToken",
+        ],
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "ID",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa6629",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.105",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="16629-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert "filelist_from_kendo=true" in blob
+    assert "CadType" in blob and "Stock_X" in blob
+    assert "filelist_missing_keys=" in blob
+    assert "FileType" in blob
+    assert "posted FileList lacks FileType" in blob
+    assert "empty body" in blob.lower()
+    assert "not success" in blob
+    assert "item_count=0" in blob or "GET item_count=0" in blob
+    client.add_item_dxf_files.assert_called()
+
+
+def test_filetype_cad_empty_body_is_not_success(tmp_path: Path):
+    """Live 10098-1: FileType=Cad + CadType+Stock + Finish then Contours gate.
+
+    Empty InternalData does not block Cad+Material+inches. GET 0 Cad
+    / NumberOfContours<1 after Finish is still not gold. invent=false.
+    """
+    stp = tmp_path / "10098-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "ID": "id-1",
+            "Name": "PIVOTING FOOT",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "CadType": 0,
+            "Stock_X": 11.0,
+            "Stock_Y": 6.25,
+            "Stock_Z": 0.105,
+            "Width": 11.0,
+            "Length": 6.25,
+            "Thickness": 0.105,
+            "Material": "A1011",
+            "ProductType": 100,
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "FileType": "Cad",
+            "InternalData": "",
+            "ImageString": "",
+            "InternalHTML": "",
+            "HadOpenContours": False,
+            "OutsidePerimeter": 0,
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 1
+    client._part_create_internaldata_empty = True
+    client._part_create_imagestring_empty = True
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0098"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": [],
+        "body_type": "empty",
+        "has_NewItem": False,
+        "has_QuoteItem": False,
+        "text_len": 0,
+        "empty_body": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_filelist_n": 1,
+        "grid_dxf_row_count": 1,
+        "filelist_from_kendo": True,
+        "filelist_sourcedataid_n": 1,
+        "filelist_id_n": 1,
+        "filelist_fileid_n": 1,
+        "filelist_filetype": {
+            "Cad": 1,
+            "Linear": 0,
+            "Assembly": 0,
+            "Component": 0,
+            "blank": 0,
+        },
+        "filelist_errorstatus": 0,
+        "filelist_qty": 1,
+        "filelist_filetype_value": "Cad",
+        "filelist_filetype_type": "str",
+        "filelist_cad_path_keys": [],
+        "filelist_row_keys": [
+            "CadType",
+            "FileID",
+            "FileType",
+            "ID",
+            "ItemType",
+            "Length",
+            "Material",
+            "ProductType",
+            "SourceDataID",
+            "Stock_X",
+            "Stock_Y",
+            "Stock_Z",
+            "Thickness",
+            "Width",
+        ],
+        "filelist_missing_keys": ["Status"],
+        "filelist_missing_identity": [],
+        "finish_af_present": True,
+        "finish_why": "filelist_missing_keys=Status",
+        "request_keys": [
+            "ID",
+            "ItemID",
+            "customerMaterial",
+            "FileList",
+            "__RequestVerificationToken",
+        ],
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "FileType",
+                "ID",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0098",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.105",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="10098-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    ok = (
+        "not success" not in blob
+        and "not Finishing" not in blob
+        and "filelist_internaldata_empty=true" not in blob
+    )
+    assert ok is False
+    assert "internaldata_empty=true" in blob
+    assert "imagestring_empty=true" in blob
+    assert "refusing AddItem_DXFFiles" not in blob
+    assert "EXEC_FAIL" in blob
+    assert "NumberOfContours<1 after Finish" in blob
+    assert "not success" in blob
+    client.add_item_dxf_files.assert_called()
+    client.cadimport_update_data_next.assert_not_called()
+
+
+def test_weldment_explode_internaldata_empty_skips_finish(tmp_path: Path):
+    """Live SC0600: Cad+Material+inches + empty InternalData → Finish.
+
+    Contours gate after Finish is authority (Q10366). invent=false.
+    """
+    stp = tmp_path / "SC0600.STEP"
+    stp.write_bytes(b"ISO")
+
+    def kid(name: str, *, image: str) -> dict[str, Any]:
+        return {
+            "SourceDataID": f"src-{name}",
+            "FileID": f"file-{name}",
+            "ID": f"id-{name}",
+            "Name": name,
+            "PartName": name,
+            "FileName": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "CadType": 0,
+            "Stock_X": 11.0,
+            "Stock_Y": 6.25,
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "FileType": "Cad",
+            "InternalData": "",
+            "ImageString": image,
+        }
+
+    kids = [
+        kid("Root", image=""),
+        kid("SC0600", image="iVBORw0KGgo"),
+        kid("SC0600", image="iVBORw0KGgo"),
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 3
+    client._part_create_internaldata_empty = True
+    client._part_create_imagestring_empty = True
+    client._part_create_payload = {
+        "n": 3,
+        "internaldata_empty_n": 3,
+        "imagestring_empty_n": 1,
+        "internaldata_nonempty_n": 0,
+        "imagestring_nonempty_n": 2,
+    }
+    client._part_create_form_shape = {
+        "idlist_shape": "IDList[]",
+        "height_type": "int",
+        "width_type": "int",
+        "height_zero": True,
+        "width_zero": True,
+    }
+    client._part_create_img_hw = False
+    client._part_create_af_present = True
+    client._part_create_name_tokens = {
+        "tlist_name_root_n": 1,
+        "tlist_name_jobpn_n": 2,
+        "tlist_name_other_n": 0,
+        "tlist_partname_root_n": 1,
+        "tlist_partname_jobpn_n": 2,
+        "tlist_partname_other_n": 0,
+        "tlist_filename_root_n": 1,
+        "tlist_filename_jobpn_n": 2,
+        "tlist_filename_other_n": 0,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 3
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0600"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 3,
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 3,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 3,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 3,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "FileType",
+                "ID",
+                "InternalData",
+                "ImageString",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0600",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.105",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="SC0600",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    ok = (
+        "not success" not in blob
+        and "not Finishing" not in blob
+        and "internaldata_empty_n=3/3" not in blob
+    )
+    assert ok is False
+    assert "internaldata_empty_n=3/3" in blob
+    assert "imagestring_empty_n=1/3" in blob
+    assert "internaldata_nonempty_n=0" in blob
+    assert "tlist_bind_source=false" in blob
+    assert "part_create_idlist_shape=IDList[]" in blob
+    assert "part_create_height_zero=true" in blob
+    assert "part_create_width_zero=true" in blob
+    assert "tlist_name_root_n=1" in blob
+    assert "tlist_name_jobpn_n=2" in blob
+    assert "tlist_name_other_n=0" in blob
+    assert "refusing AddItem_DXFFiles" not in blob
+    assert "EXEC_FAIL" in blob
+    assert "NumberOfContours<1 after Finish" in blob
+    assert "not success" in blob
+    client.add_item_dxf_files.assert_called()
+    client.cadimport_update_data_next.assert_not_called()
+
+
+def test_img_hw_copy_empty_internaldata_is_not_success(tmp_path: Path):
+    """Live FA Assembly 0d4b8a46: Cad+Material+inches + empty InternalData → Finish.
+
+    Contours gate after Finish is authority (Q10366). invent=false.
+    """
+    stp = tmp_path / "FA-Assembly.STEP"
+    stp.write_bytes(b"ISO")
+
+    def kid(name: str, *, image: str) -> dict[str, Any]:
+        return {
+            "SourceDataID": f"src-{name}",
+            "FileID": f"file-{name}",
+            "ID": f"id-{name}",
+            "Name": name,
+            "PartName": name,
+            "FileName": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "CadType": 0,
+            "Stock_X": 8.0,
+            "Stock_Y": 4.0,
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "FileType": "Cad",
+            "InternalData": "",
+            "ImageString": image,
+        }
+
+    kids = [
+        kid("Root", image=""),
+        kid("PLATE-A", image="iVBORw0KGgo"),
+        kid("PLATE-B", image="iVBORw0KGgo"),
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 3
+    client._part_create_internaldata_empty = True
+    client._part_create_imagestring_empty = True
+    client._part_create_payload = {
+        "n": 3,
+        "internaldata_empty_n": 3,
+        "imagestring_empty_n": 1,
+        "internaldata_nonempty_n": 0,
+        "imagestring_nonempty_n": 2,
+    }
+    client._part_create_form_shape = {
+        "idlist_shape": "IDList[]",
+        "height_type": "float",
+        "width_type": "float",
+        "height_zero": False,
+        "width_zero": False,
+    }
+    client._part_create_img_hw = True
+    client._part_create_via = "chrome_dom_fetch"
+    client._part_create_from_edit = False
+    client._part_create_af_present = True
+    client._part_create_name_tokens = {
+        "tlist_name_root_n": 1,
+        "tlist_name_jobpn_n": 0,
+        "tlist_name_other_n": 2,
+        "tlist_partname_root_n": 1,
+        "tlist_partname_jobpn_n": 0,
+        "tlist_partname_other_n": 2,
+        "tlist_filename_root_n": 1,
+        "tlist_filename_jobpn_n": 0,
+        "tlist_filename_other_n": 2,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 3
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0d4b"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 3,
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 3,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 3,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 3,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "FileType",
+                "ID",
+                "InternalData",
+                "ImageString",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0d4b",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="FA-ASM",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    ok = (
+        "not success" not in blob
+        and "not Finishing" not in blob
+        and "internaldata_empty_n=3/3" not in blob
+    )
+    assert ok is False
+    assert "part_create_img_hw=true" in blob
+    assert "part_create_height_zero=false" in blob
+    assert "part_create_width_zero=false" in blob
+    assert "part_create_height_type=float" in blob
+    assert "part_create_width_type=float" in blob
+    assert "part_create_idlist_shape=IDList[]" in blob
+    assert "part_create_af_present=true" in blob
+    assert "internaldata_empty_n=3/3" in blob
+    assert "internaldata_nonempty_n=0" in blob
+    assert "tlist_name_root_n=1" in blob
+    assert "tlist_name_jobpn_n=0" in blob
+    assert "tlist_name_other_n=2" in blob
+    assert "refusing AddItem_DXFFiles" not in blob
+    assert "EXEC_FAIL" in blob
+    assert "NumberOfContours<1 after Finish" in blob
+    assert "not success" in blob
+    client.add_item_dxf_files.assert_called()
+    client.cadimport_update_data_next.assert_not_called()
+
+
+def test_jquery_ajax_edit_empty_internaldata_is_not_success(tmp_path: Path):
+    """Live Skin Assembly 5b622a0d: Cad+Material+inches + empty InternalData → Finish.
+
+    Contours gate after Finish is authority (Q10366). invent=false.
+    """
+    stp = tmp_path / "Skin-Assembly.STEP"
+    stp.write_bytes(b"ISO")
+
+    def kid(name: str, *, image: str) -> dict[str, Any]:
+        return {
+            "SourceDataID": f"src-{name}",
+            "FileID": f"file-{name}",
+            "ID": f"id-{name}",
+            "Name": name,
+            "PartName": name,
+            "FileName": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "CadType": 0,
+            "Stock_X": 8.0,
+            "Stock_Y": 4.0,
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "FileType": "Cad",
+            "InternalData": "",
+            "ImageString": image,
+        }
+
+    kids = [
+        kid("Root", image=""),
+        kid("SKIN-A", image="iVBORw0KGgo"),
+        kid("SKIN-B", image="iVBORw0KGgo"),
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 3
+    client._part_create_internaldata_empty = True
+    client._part_create_imagestring_empty = True
+    client._part_create_payload = {
+        "n": 3,
+        "internaldata_empty_n": 3,
+        "imagestring_empty_n": 1,
+        "internaldata_nonempty_n": 0,
+        "imagestring_nonempty_n": 2,
+    }
+    client._part_create_form_shape = {
+        "idlist_shape": "IDList[]",
+        "height_type": "float",
+        "width_type": "float",
+        "height_zero": False,
+        "width_zero": False,
+    }
+    client._part_create_img_hw = True
+    client._part_create_via = "jquery_ajax"
+    client._part_create_from_edit = True
+    client._part_create_af_present = True
+    client._part_create_name_tokens = {
+        "tlist_name_root_n": 1,
+        "tlist_name_jobpn_n": 0,
+        "tlist_name_other_n": 2,
+        "tlist_partname_root_n": 1,
+        "tlist_partname_jobpn_n": 0,
+        "tlist_partname_other_n": 2,
+        "tlist_filename_root_n": 1,
+        "tlist_filename_jobpn_n": 0,
+        "tlist_filename_other_n": 2,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 3
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa5b62"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 3,
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 3,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 3,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 3,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "FileType",
+                "ID",
+                "InternalData",
+                "ImageString",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa5b62",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="SKIN-ASM",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    ok = (
+        "not success" not in blob
+        and "not Finishing" not in blob
+        and "internaldata_empty_n=3/3" not in blob
+    )
+    assert ok is False
+    assert "part_create_via=jquery_ajax" in blob
+    assert "part_create_from_edit=true" in blob
+    assert "part_create_img_hw=true" in blob
+    assert "part_create_height_zero=false" in blob
+    assert "part_create_width_zero=false" in blob
+    assert "part_create_idlist_shape=IDList[]" in blob
+    assert "part_create_af_present=true" in blob
+    assert "internaldata_empty_n=3/3" in blob
+    assert "internaldata_nonempty_n=0" in blob
+    assert "refusing AddItem_DXFFiles" not in blob
+    assert "EXEC_FAIL" in blob
+    assert "NumberOfContours<1 after Finish" in blob
+    assert "not success" in blob
+    client.add_item_dxf_files.assert_called()
+    client.cadimport_update_data_next.assert_not_called()
+
+
+def test_dxf_cookie_http_upload_does_not_bind_griddxf(tmp_path: Path):
+    """Cookie HTTP UploadItem_DXFFiles leaves #gridDXF empty — do not Finish."""
+    stp = tmp_path / "EHB3112.STEP"
+    stp.write_bytes(b"ISO")
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": False,
+        "upload_via": "cookie_http",
+        "files_kendo": False,
+        "gridDXF_n": 0,
+        "List": [],
+    }
+    client.get_item_add_view.return_value = {}
+    notes = SecturaFabPushService(client=client).finish_cad_files(
+        quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0ehb",
+        cad_files=[stp],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        takeoff={},
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        part_key="EHB3112",
+        explode_polls=1,
+        explode_sleep_s=0,
+    )
+    client.upload_item_dxf_files.assert_not_called()
+    client.create_dxf_parts.assert_not_called()
+    client.add_item_dxf_files.assert_not_called()
+    client.cadimport_update_data_next.assert_not_called()
+    client.stamp_dxf_kendo_stock.assert_not_called()
+    blob = " ".join(notes)
+    assert "upload_via=cookie_http" in blob
+    assert "gridDXF_n=0" in blob
+    assert "does not bind #gridDXF" in blob
+    assert "onSuccess_Upload" in blob
+
+
+def test_dxf_page_next_empty_internaldata_finishes_when_partmode_set(tmp_path: Path):
+    """PartMode set + Cad+Material+inches + empty InternalData → Finish.
+
+    Contours gate after Finish is authority (Q10366). invent=false.
+    """
+    stp = tmp_path / "P904271-1.STEP"
+    stp.write_bytes(b"ISO")
+    kid = {
+        "SourceDataID": "src-21680",
+        "FileID": "file-21680",
+        "ID": "id-21680",
+        "Name": "GUSSET PLATE",
+        "FileName": "GUSSET PLATE",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "CadType": 0,
+        "Stock_X": 8.0,
+        "Stock_Y": 4.0,
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "PartMode": 0,
+        "FileType": "Cad",
+        "InternalData": "",
+        "ImageString": "",
+    }
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": [kid],
+        "grid_present": True,
+        "grid_dxf_row_count": 1,
+        "list_len": 1,
+        "internaldata_key_n": 1,
+        "internaldata_empty_n": 1,
+        "internaldata_nonempty_n": 0,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2168"
+    client._edit_gate = ""
+    client._setpartmode_via = "page_fn"
+    client._finish_via = "page_fn"
+    client._part_create_list_len = 1
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": ["CadType", "Stock_X", "Stock_Y", "FileType", "SourceDataID"],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2168",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="P904271-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.upload_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_called()
+    client.cadimport_update_data_next.assert_not_called()
+    blob = " ".join(notes)
+    assert "next_via=createAllParts" in blob
+    assert "kyle_classify_before_finish=true" in blob
+    assert "refusing AddItem_DXFFiles" not in blob
+    assert "EXEC_FAIL" in blob
+    assert "NumberOfContours<1 after Finish" in blob
+    assert "not success" in blob
+
+
+def test_dxf_page_next_nonempty_internaldata_finishes(tmp_path: Path):
+    """Page #gridDXF bind + Next with nonempty InternalData on t.List → Finish."""
+    stp = tmp_path / "21680-1.STEP"
+    stp.write_bytes(b"ISO")
+    kid = {
+        "SourceDataID": "src-21680",
+        "FileID": "file-21680",
+        "ID": "id-21680",
+        "Name": "21680-1 PLATE",
+        "FileName": "21680-1 PLATE",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "CadType": 0,
+        "Stock_X": 8.0,
+        "Stock_Y": 4.0,
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "PartMode": 0,
+        "FileType": "Cad",
+        "InternalData": "server-stamped",
+        "ImageString": "preview",
+    }
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": [kid],
+        "grid_present": True,
+        "grid_dxf_row_count": 1,
+        "list_len": 1,
+        "internaldata_key_n": 1,
+        "internaldata_empty_n": 0,
+        "internaldata_nonempty_n": 1,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2168"
+    client._edit_gate = ""
+    client._setpartmode_via = "page_fn"
+    client._finish_via = "page_fn"
+    client._part_create_list_len = 1
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": ["CadType", "Stock_X", "Stock_Y", "FileType", "SourceDataID"],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2168",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="21680-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.upload_item_dxf_files.assert_not_called()
+    client.add_item_dxf_files.assert_called_once()
+    client.cadimport_update_data_next.assert_not_called()
+    client.stamp_dxf_kendo_stock.assert_not_called()
+    blob = " ".join(notes)
+    assert "next_via=createAllParts" in blob
+    assert "part_create_via=createAllParts" in blob
+    assert "tlist_bind_source=true" in blob
+    shape = next(n for n in notes if n.startswith("tlist_bind_shape_keys="))
+    assert "InternalData" in shape
+    assert "ImageString" in shape
+    assert "server-stamped" not in shape
+    assert "preview" not in shape
+
+
+def test_kyle_classify_before_finish_helpers_and_35145_protect():
+    """Kyle Loom c9d7c05a: PartMode 0 is Cad; null after classify is fail-close."""
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+    )
+    from secturafab.website import (
+        WEBSITE_FINISH_PATHS,
+        finish_attempt_empty_partmode_or_internaldata,
+        kyle_classify_before_finish_blocked,
+        part_mode_is_null,
+        part_mode_int,
+    )
+    from tests.fixtures.live_21678_1 import GOLD_QUOTE_ID
+    from tests.fixtures.live_35145_1 import (
+        GOLD_PART_KEY,
+        GOLD_QUOTE_NUMBER,
+        kyle_step_classify_dump,
+    )
+    from tests.fixtures.live_part_create_tlist_bind import LIVE_PART_CREATE_TLIST_BIND
+
+    assert part_mode_is_null(None) is True
+    assert part_mode_is_null("null") is True
+    assert part_mode_is_null("") is True
+    assert part_mode_is_null(0) is False
+    assert part_mode_int("Cad") == 0
+    assert part_mode_int("Linear") == 1
+    assert part_mode_int("Component") == 2
+    explode_null = [
+        {
+            "Name": "KID-0 PLATE",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": None,
+            "InternalData": "server-stamped",
+        }
+    ]
+    blocked = kyle_classify_before_finish_blocked(explode_null)
+    assert blocked is not None
+    assert "PartMode still null after classify" in blocked
+    assert kyle_classify_before_finish_blocked(
+        [{"Name": "KID-0 PLATE", "Category": "Cad", "PartMode": 0}]
+    ) is None
+    assert kyle_classify_before_finish_blocked(
+        [{"Name": "Root", "Category": "Assembly"}]
+    ) is None
+    after = finish_attempt_empty_partmode_or_internaldata(
+        [{"Name": "KID-0 PLATE", "Category": "Cad", "PartMode": 0, "InternalData": "x"}],
+        {
+            "FileList": [
+                {
+                    "Name": "KID-0 PLATE",
+                    "Category": "Cad",
+                    "FileType": "Cad",
+                    "PartMode": 0,
+                    "InternalData": "",
+                }
+            ]
+        },
+    )
+    assert after is None
+    after_pm = finish_attempt_empty_partmode_or_internaldata(
+        [],
+        {
+            "FileList": [
+                {
+                    "Name": "KID-0 PLATE",
+                    "Category": "Cad",
+                    "FileType": "Cad",
+                    "PartMode": None,
+                    "InternalData": "x",
+                }
+            ]
+        },
+    )
+    assert after_pm is not None
+    assert "PartMode still null after Finish attempt" in after_pm
+    dump = kyle_step_classify_dump()
+    assert dump["finish"]["path"] == "/Quote/AddItem_DXFFiles"
+    assert dump["finish"]["fn"] == "OnAddDXFClick"
+    assert dump["finish"]["not"] == "UpdateDXF_LoadNew"
+    assert dump["part_key"] == GOLD_PART_KEY == "35145-1"
+    assert dump["quote_number"] == GOLD_QUOTE_NUMBER == "Q10243"
+    assert WEBSITE_FINISH_PATHS["add_item_dxf_files"] == "/Quote/AddItem_DXFFiles"
+    assert WEBSITE_FINISH_PATHS["part_update_item_type"] == "/Part/UpdateItemType"
+    assert LIVE_PART_CREATE_TLIST_BIND is None
+    assert is_forbidden_quote_number("35145-1")
+    assert is_forbidden_quote_number("Q10243")
+    assert is_forbidden_quote_number("P904272-1")
+    assert is_forbidden_quote_number("P904271-1")
+    assert is_forbidden_quote_number("10289-4")
+    assert is_forbidden_quote_number("28768-1")
+    assert is_forbidden_quote_number("28769-1")
+    assert is_forbidden_quote_number("35136-1")
+    assert is_forbidden_quote_number("14327-5")
+    assert is_forbidden_quote_number("14327-8")
+    assert is_forbidden_quote_number("Q10329")
+    assert is_forbidden_quote_number("14327-3")
+    assert is_forbidden_quote_number("Q10330")
+    assert is_forbidden_quote_number("21841-1")
+    assert is_forbidden_quote_number("Q10331")
+    assert is_forbidden_quote_number("14327-1")
+    assert is_forbidden_quote_number("Q10332")
+    assert is_forbidden_quote_number("Q10333")
+    assert is_forbidden_quote_number("Q10336")
+    assert is_forbidden_quote_number("Q10339")
+    assert is_forbidden_quote_number("Q10344")
+    assert is_forbidden_quote_number("Q10346")
+    assert is_forbidden_quote_number("B80510901")
+    assert is_forbidden_quote_number("Q10348")
+    assert is_forbidden_quote_number("H.16.70")
+    assert is_forbidden_quote_number("Q10349")
+    assert is_forbidden_quote_number("D.H.30.96")
+    assert is_forbidden_quote_number("Q10351")
+    assert is_forbidden_quote_number("H.8.38")
+    assert is_forbidden_quote_number("Q10354")
+    assert is_forbidden_quote_number("D.H.38.96")
+    assert is_forbidden_quote_number("Q10356")
+    assert is_forbidden_quote_number("V.20.78")
+    assert is_forbidden_quote_number("Q10365")
+    assert is_forbidden_quote_number("H.10.38")
+    assert is_forbidden_quote_number("Q10366")
+    assert is_forbidden_quote_number("H.6.38")
+    assert is_forbidden_quote_number("Q10367")
+    assert is_forbidden_quote_number("10289-5")
+    assert is_forbidden_quote_number("Q10369")
+    assert is_forbidden_quote_number("Q10368")
+    assert is_forbidden_quote_number("Q10371")
+    assert is_forbidden_quote_number("Q10372")
+    assert is_forbidden_quote_number("Q10373")
+    assert is_forbidden_quote_number("Q10374")
+    assert is_forbidden_quote_number("Q10375")
+    assert is_forbidden_quote_number("Q10377")
+    assert is_forbidden_quote_number("Q10379")
+    assert is_forbidden_quote_number("Q10380")
+    assert is_forbidden_quote_number("Q10381")
+    assert is_forbidden_quote_number("Q10382")
+    assert is_forbidden_quote_number("Q10383")
+    assert is_forbidden_quote_number("Q10399")
+    assert is_forbidden_quote_number("Q10420")
+    assert is_forbidden_quote_number("Q10450")
+    assert is_forbidden_quote_number("Q10429")
+    assert is_forbidden_quote_number("Q10475")
+    assert is_forbidden_quote_number("Q10476")
+    assert is_forbidden_quote_number("Q10479")
+    assert is_forbidden_quote_number("Q10480")
+    assert is_forbidden_quote_number("Q10481")
+    assert is_forbidden_quote_number("Q10482")
+    assert is_forbidden_quote_number("Q10483")
+    assert is_forbidden_quote_number("Q10484")
+    assert is_forbidden_quote_number("Q10485")
+    assert is_forbidden_quote_number("Q10486")
+    assert is_forbidden_quote_number("Q10430")
+    assert is_forbidden_quote_number("Q10431")
+    assert is_forbidden_quote_number("Q10435")
+    assert is_forbidden_quote_number("Q10470")
+    assert is_forbidden_quote_number("Q10471")
+    assert is_forbidden_quote_number("Q10472")
+    assert is_forbidden_quote_number("Q10473")
+    assert is_forbidden_quote_number("Q10474")
+    assert is_forbidden_quote_number("Q10421")
+    assert is_forbidden_quote_number("Q10407")
+    assert is_forbidden_quote_number("Q10408")
+    assert is_forbidden_quote_number("Q10350")
+    assert is_forbidden_quote_number("21843-1")
+    assert is_forbidden_quote_number("Q10338")
+    assert is_forbidden_quote_number("Q10339")
+    assert is_forbidden_quote_number("CROSSDRAIN-12X7X60")
+    assert is_forbidden_quote_number("H638-CADPLATE")
+    assert is_forbidden_quote_number("Q10334")
+    assert is_forbidden_quote_number("Q10335")
+    assert is_forbidden_quote_id("c146ce6d-aaaa-bbbb-cccc-000000000001")
+    assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
+    assert is_forbidden_quote_id("c5cd8689-fed4-44d6-b2f5-f96bda8af424")
+    assert is_forbidden_quote_id("1cd941c6-9167-41e9-ac93-b7268f18f282")
+    assert is_forbidden_quote_id("75f07c2b-b000-47f4-9caa-c14520e2b068")
+    assert is_forbidden_quote_id("aed89628-b018-4b11-852f-bfed5bf8b964")
+    assert is_forbidden_quote_id("5e72fe39-edc1-467c-925d-f1c8d74cc5d3")
+    assert is_forbidden_quote_id("b5f56ac3-326d-48e9-b82d-1e09a7897107")
+    assert is_forbidden_quote_id("f73dd116-f33e-485f-947c-f5662633d23a")
+    assert is_forbidden_quote_id("76cecc73-257e-4fa7-91b7-ed15a4c90caa")
+    assert is_forbidden_quote_id("4902c597-2ad6-4ebf-b577-dd6cf20a7d87")
+    assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
+    assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
+    assert is_forbidden_quote_id("30f50f96-aaaa-bbbb-cccc-000000000001")
+    assert is_forbidden_quote_id("0837ad33-aaaa-bbbb-cccc-000000000001")
+    assert is_forbidden_quote_id("1004f017-aaaa-bbbb-cccc-000000000001")
+    assert is_forbidden_quote_id("28708035-aaaa-bbbb-cccc-000000000001")
+    assert is_forbidden_quote_number("21785-1")
+    assert is_forbidden_quote_number("21785-2")
+    assert is_forbidden_quote_number("21785-3")
+    assert is_forbidden_quote_id(GOLD_QUOTE_ID)
+    assert is_forbidden_quote_id("a7d6ca50-efec-409d-bd32-e68012e710c3")
+
+
+def test_finish_cad_files_classify_before_finish_then_additem_dxf(tmp_path: Path):
+    """Kyle Loom c9d7c05a: Next → Part Mode classify → Finish, not UpdateDXF_LoadNew."""
+    from tests.fixtures.live_35145_1 import KYLE_STEP_CLASSIFY_BEFORE_FINISH
+
+    assert KYLE_STEP_CLASSIFY_BEFORE_FINISH["finish"]["path"] == "/Quote/AddItem_DXFFiles"
+    stp = tmp_path / "35145-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-plate",
+            "FileID": "file-plate",
+            "ID": "id-plate",
+            "Name": "GUSSET PLATE",
+            "FileName": "GUSSET PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "CadType": 0,
+            "Stock_X": 8.0,
+            "Stock_Y": 4.0,
+            "PartMode": None,
+            "InternalData": "server-stamped",
+            "ImageString": "iVBORw0KGgo",
+        },
+        {
+            "SourceDataID": "src-tube",
+            "FileID": "file-tube",
+            "ID": "id-tube",
+            "Name": "RETURN TUBE",
+            "FileName": "RETURN TUBE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "CadType": 0,
+            "Stock_X": 12.0,
+            "Stock_Y": 1.0,
+            "PartMode": None,
+            "ImageString": "iVBORw0KGgo",
+        },
+    ]
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": kids,
+        "grid_present": True,
+        "grid_dxf_row_count": 2,
+        "list_len": 2,
+        "internaldata_key_n": 1,
+        "internaldata_empty_n": 0,
+        "internaldata_nonempty_n": 1,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 2
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa3514"
+    client._edit_gate = ""
+    client._setpartmode_via = "page_fn"
+    client._finish_via = "page_fn"
+    client._part_create_list_len = 2
+    client.get_item_add_view.return_value = {}
+    captured: dict[str, Any] = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "via": "page_fn",
+            "finish_fn": "OnAddDXFClick",
+            "filelist_from_kendo": True,
+            "finish_filelist_n": 2,
+        }
+
+    client.add_item_dxf_files.side_effect = _add
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    service = SecturaFabPushService(client=client)
+    service._linear_product_cache = [
+        {
+            "ID": "pid-rct",
+            "ProductName": "RCT1.25X.120-A513",
+            "ProductDescription": "Mechanical Tube 1.25 X .120 A513",
+            "ShapeName": "Mechanical Tube",
+            "MaterialGrade": "A513",
+            "Dim1": 1.25,
+            "Active": True,
+        }
+    ]
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 1,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 2,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 2,
+            "kendo_row_keys": [
+                "CadType",
+                "Stock_X",
+                "Stock_Y",
+                "FileType",
+                "SourceDataID",
+            ],
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa3514",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="35145-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_called_once()
+    client.cadimport_update_data_next.assert_not_called()
+    blob = " ".join(notes)
+    assert "next_via=createAllParts" in blob
+    assert "kyle_classify_before_finish=true" in blob
+    assert "PartMode still null after classify" not in blob
+    posted = captured["file_list"]
+    by_name = {str(r.get("Name") or ""): r for r in posted}
+    plate = by_name["GUSSET PLATE"]
+    tube = by_name["RETURN TUBE"]
+    assert plate["PartMode"] == 0
+    assert plate["Category"] == "Cad"
+    assert tube["PartMode"] == 1
+    assert tube["Category"] == "Linear"
+    assert tube["Machine"] == "Saw"
+    assert tube.get("ProductID") == "pid-rct"
+    assert tube.get("SKU") == "RCT1.25X.120-A513"
+
+
+def test_finish_cad_files_refuses_when_partmode_still_null_after_classify(
+    tmp_path: Path,
+):
+    """Kyle Loom c9d7c05a: do not Finish if classify left PartMode null."""
+    stp = tmp_path / "21785-2.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-kid",
+            "FileID": "file-kid",
+            "ID": "id-kid",
+            "Name": "KID-0 PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "CadType": 0,
+            "Stock_X": 8.0,
+            "Stock_Y": 4.0,
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "FileType": "Cad",
+            "InternalData": "server-stamped",
+            "ImageString": "iVBORw0KGgo",
+        }
+    ]
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": kids,
+        "grid_present": True,
+        "grid_dxf_row_count": 1,
+        "list_len": 1,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2178"
+    client._edit_gate = ""
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    service = SecturaFabPushService(client=client)
+
+    def _classify(rows, **_kwargs):
+        out = []
+        for row in rows:
+            copy = dict(row)
+            copy.pop("PartMode", None)
+            out.append(copy)
+        return out, ["Classified CAD Files kids — Cad: 1, Linear: 0, Component: 0, Assembly: 0"]
+
+    with (
+        patch.object(service, "classify_cadimport_rows", side_effect=_classify),
+        patch(
+            "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+            return_value={
+                "grid_present": True,
+                "cad": 1,
+                "linear": 0,
+                "assembly": 0,
+                "component": 0,
+                "set_count": 0,
+                "setpartmode_via": "page_fn",
+                "grid_dxf_row_count": 1,
+                "kendo_row_keys": ["CadType", "Stock_X", "Stock_Y"],
+            },
+        ),
+    ):
+        notes = service.finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2178",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="21785-2",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    client.cadimport_update_data_next.assert_not_called()
+    blob = " ".join(notes)
+    assert "kyle_classify_before_finish=true" in blob
+    assert "PartMode still null after classify" in blob
+    assert "next_via=createAllParts" in blob
+
+
+def test_finish_cad_files_after_finish_empty_internaldata_is_not_success(
+    tmp_path: Path,
+):
+    """After AddItem_DXFFiles, 0 Cad / empty pack is fail-close — do not invent."""
+    stp = tmp_path / "P904271-1.STEP"
+    stp.write_bytes(b"ISO")
+    kid = {
+        "SourceDataID": "src-21680",
+        "FileID": "file-21680",
+        "ID": "id-21680",
+        "Name": "GUSSET PLATE",
+        "FileName": "GUSSET PLATE",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "Status": 1,
+        "CadType": 0,
+        "Stock_X": 8.0,
+        "Stock_Y": 4.0,
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "PartMode": 0,
+        "FileType": "Cad",
+        "InternalData": "server-stamped",
+        "ImageString": "preview",
+    }
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": [kid],
+        "grid_present": True,
+        "grid_dxf_row_count": 1,
+        "list_len": 1,
+        "internaldata_key_n": 1,
+        "internaldata_empty_n": 0,
+        "internaldata_nonempty_n": 1,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2168"
+    client._edit_gate = ""
+    client._setpartmode_via = "page_fn"
+    client._finish_via = "page_fn"
+    client._part_create_list_len = 1
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {
+        "ok": True,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "filelist_from_kendo": True,
+        "finish_filelist_n": 1,
+        "FileList": [
+            {
+                "Name": "21680-1 PLATE",
+                "Category": "Cad",
+                "FileType": "Cad",
+                "PartMode": 0,
+                "InternalData": "",
+            }
+        ],
+    }
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": [
+                "CadType",
+                "Stock_X",
+                "Stock_Y",
+                "FileType",
+                "SourceDataID",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2168",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="P904271-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_called_once()
+    client.cadimport_update_data_next.assert_not_called()
+    blob = " ".join(notes)
+    assert "kyle_classify_before_finish=true" in blob
+    assert "InternalData empty after Finish attempt" not in blob
+    assert "GET 0 Cad after Finish" in blob or "Cad Contours empty after Finish" in blob
+    assert "not success" in blob
+
+
+def test_partmode_set_empty_internaldata_allows_additem_dxf():
+    """Live 28768-1: PartMode set + empty InternalData refuses AddItem_DXFFiles."""
+    from secturafab.website import (
+        cad_filelist_refuses_additem_dxf,
+        cad_finish_notes_pack_missing,
+        imagestring_without_internaldata_refuses_finish,
+        item_cad_contour_count,
+        kendo_filelist_for_finish,
+        kyle_classify_before_finish_blocked,
+        step_finish_pack_missing,
+    )
+    from tests.fixtures.live_p904271_1 import (
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        live_p904271_1_classify_dump,
+    )
+
+    dump = live_p904271_1_classify_dump()
+    assert dump["quote_number"] == SPENT_QUOTE_NUMBER == "P904271-1"
+    assert dump["quote_id_prefix"] == SPENT_QUOTE_ID_PREFIX == "0837ad33"
+    assert dump["classify_ran"] is True
+    assert dump["finish_refused_too_early"] is True
+    classified = [
+        {
+            "Name": f"KID-{i} PLATE",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+        for i in range(3)
+    ]
+    assert kyle_classify_before_finish_blocked(classified) is None
+    for row in classified:
+        assert imagestring_without_internaldata_refuses_finish(row) is True
+        assert cad_filelist_refuses_additem_dxf(row) is not None
+    kendo_rows = [
+        {
+            "ID": "id-0",
+            "FileID": "file-0",
+            "SourceDataID": "src-0",
+            "CadType": 0,
+            "Stock_X": 8.0,
+            "Stock_Y": 4.0,
+            "Name": "KID-0 PLATE",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    ]
+    cap = kendo_filelist_for_finish(kendo_rows, from_datasource=True)
+    assert cap["should_finish"] is False
+    assert cap["finish_why"] == "cad_internaldata_empty_after_explode"
+    assert cap["filelist_internaldata_empty"] is True
+    null_row = {
+        "Name": "KID-0 PLATE",
+        "Category": "Cad",
+        "FileType": "Cad",
+        "InternalData": "",
+        "ImageString": "iVBORw0KGgo",
+    }
+    assert cad_filelist_refuses_additem_dxf(null_row) is not None
+    assert kyle_classify_before_finish_blocked([null_row]) is not None
+    assert item_cad_contour_count({"ProductType": 100}) == 0
+    assert item_cad_contour_count(
+        {"ProductType": 100, "Data": {"NumberOfContours": 2}}
+    ) == 2
+    empty_get = {"ItemList": []}
+    miss = step_finish_pack_missing(empty_get, expect_cad=True, expect_linear=False)
+    assert miss is not None
+    assert "GET 0 Cad after Finish" in miss
+    contours_zero = {
+        "ItemList": [
+            {
+                "ProductType": 100,
+                "Category": "Cad",
+                "BadgeString": "PR",
+                "NumberOfContours": 0,
+                "OperationCostList": [
+                    {"CalculatorName": "Laser"},
+                    {"CalculatorName": "Deburr"},
+                    {"CalculatorName": "Laser-Setup"},
+                    {"CalculatorName": "Sheet Loading"},
+                ],
+            }
+        ]
+    }
+    miss_c = step_finish_pack_missing(
+        contours_zero, expect_cad=True, expect_linear=False
+    )
+    assert miss_c is not None
+    assert "Cad Contours empty after Finish" in miss_c
+    no_pack = {
+        "ItemList": [
+            {
+                "ProductType": 100,
+                "Category": "Cad",
+                "NumberOfContours": 1,
+                "BadgeString": "",
+                "OperationCostList": [],
+            }
+        ]
+    }
+    miss_p = step_finish_pack_missing(no_pack, expect_cad=True, expect_linear=False)
+    assert miss_p is not None
+    assert "PR+laser pack missing" in miss_p
+    gold = {
+        "ItemList": [
+            {
+                "ProductType": 100,
+                "Category": "Cad",
+                "NumberOfContours": 1,
+                "BadgeString": "PR",
+                "OperationCostList": [
+                    {"CalculatorName": "Laser"},
+                    {"CalculatorName": "Deburr"},
+                    {"CalculatorName": "Laser-Setup"},
+                    {"CalculatorName": "Sheet Loading"},
+                ],
+            }
+        ]
+    }
+    assert step_finish_pack_missing(gold, expect_cad=True, expect_linear=False) is None
+    assert cad_finish_notes_pack_missing([miss]) == miss
+    assert cad_finish_notes_pack_missing([miss_c]) == miss_c
+    assert cad_finish_notes_pack_missing([miss_p]) == miss_p
+    assert cad_finish_notes_pack_missing(["kyle_classify_before_finish=true"]) is None
+
+
+def test_cad_partmode_clears_bar_flat_and_copies_explode_internaldata():
+    """Cad PartMode FileList must not ship Linear bar_flat; copy explode ID only."""
+    from secturafab.website import (
+        copy_explode_internaldata_through,
+        filelist_productsubtype_is_linear,
+        overlay_classified_row,
+        sanitize_cad_partmode_filelist_row,
+    )
+
+    assert filelist_productsubtype_is_linear("bar_flat") is True
+    assert filelist_productsubtype_is_linear("prt_dxf") is False
+    posted = {
+        "FileType": "Cad",
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "PartMode": 0,
+        "ProductType": "100",
+        "ProductSubType": "bar_flat",
+        "IsPlate": True,
+        "IsLinear": False,
+        "InternalData": None,
+        "SourceDataID": "src-1",
+        "ID": "id-1",
+        "FileID": "file-1",
+    }
+    cleaned = sanitize_cad_partmode_filelist_row(posted)
+    assert "ProductSubType" not in cleaned
+    assert cleaned["PartMode"] == 0
+    assert cleaned["FileType"] == "Cad"
+    assert cleaned.get("InternalData") is None
+    linear = sanitize_cad_partmode_filelist_row(
+        {
+            "FileType": "Linear",
+            "Category": "Linear",
+            "PartMode": 1,
+            "ProductSubType": "bar_flat",
+        }
+    )
+    assert linear["ProductSubType"] == "bar_flat"
+    overlaid = overlay_classified_row(
+        {
+            "Name": "28768-1",
+            "ProductSubType": "bar_flat",
+            "InternalData": None,
+        },
+        category="Cad",
+        material="A36",
+        thickness="3",
+        machine="Laser - Bay1",
+    )
+    assert overlaid.get("ProductSubType") in (None, "")
+    assert "ProductSubType" not in overlaid
+    explode = [
+        {
+            "SourceDataID": "src-1",
+            "ID": "id-1",
+            "FileID": "file-1",
+            "InternalData": "server-stamped",
+            "InternalHTML": "<svg/>",
+        }
+    ]
+    dest = {
+        "SourceDataID": "src-1",
+        "ID": "id-1",
+        "FileID": "file-1",
+        "InternalData": None,
+        "FileType": "Cad",
+        "PartMode": 0,
+    }
+    copied = copy_explode_internaldata_through(explode, dest)
+    assert copied["InternalData"] == "server-stamped"
+    assert copied["InternalHTML"] == "<svg/>"
+    empty_src = copy_explode_internaldata_through(
+        [{"SourceDataID": "src-1", "InternalData": None}],
+        dest,
+    )
+    assert empty_src.get("InternalData") is None
+    other = copy_explode_internaldata_through(
+        [{"SourceDataID": "other", "InternalData": "nope"}],
+        dest,
+    )
+    assert other.get("InternalData") is None
+    keep = copy_explode_internaldata_through(
+        explode, {**dest, "InternalData": "already"}
+    )
+    assert keep["InternalData"] == "already"
+
+
+def test_partmode_set_invokes_page_finish_when_payload_and_cadtype_empty():
+    """Live 28768-1 empty InternalData fail-close; 10289-4 still Finishes with ID."""
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+    from secturafab.website import (
+        filelist_post_key_shape,
+        kendo_filelist_for_finish,
+        kyle_classify_before_finish_blocked,
+        page_dxf_finish_skip_why,
+    )
+    from tests.fixtures.live_10289_4 import (
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        live_10289_4_skip_dump,
+    )
+    from tests.fixtures.live_additem_dxf_filelist_post import (
+        LIVE_ADDITEM_DXF_FILELIST_POST,
+    )
+    from tests.fixtures.live_28768_1 import (
+        SPENT_QUOTE_ID_PREFIX as PREFIX_28768,
+        SPENT_QUOTE_NUMBER as NUMBER_28768,
+        live_28768_1_finish_dump,
+    )
+
+    dump = live_10289_4_skip_dump()
+    assert dump["quote_number"] == SPENT_QUOTE_NUMBER == "10289-4"
+    assert dump["quote_id_prefix"] == SPENT_QUOTE_ID_PREFIX == "1004f017"
+    assert dump["finish_why"] == "filelist_cad_payload_empty"
+    assert dump["page_finish"] is False
+    assert dump["get_cad"] == 0
+    miss = LIVE_ADDITEM_DXF_FILELIST_POST
+    assert miss["wrong_productsubtype"] == "bar_flat"
+    assert miss["internaldata_empty"] is True
+    assert miss["quote_number"] == NUMBER_28768
+    assert miss["quote_id_prefix"] == PREFIX_28768
+    spent = live_28768_1_finish_dump()
+    assert spent["zz_del"] is True
+    assert spent["productsubtype"] == "bar_flat"
+    assert spent["get_cad"] == 0
+    empty_id = [
+        {
+            "ID": "id-0",
+            "FileID": "file-0",
+            "SourceDataID": "src-0",
+            "Name": "PLATE",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "",
+        }
+    ]
+    assert kyle_classify_before_finish_blocked(empty_id) is None
+    assert page_dxf_finish_skip_why(empty_id) == "cad_internaldata_empty_after_explode"
+    cap = kendo_filelist_for_finish(empty_id, from_datasource=True)
+    assert cap["should_finish"] is False
+    assert cap["finish_why"] == "cad_internaldata_empty_after_explode"
+    assert cap["filelist_internaldata_empty"] is True
+    with_id = [
+        {
+            "ID": "id-0",
+            "FileID": "file-0",
+            "SourceDataID": "src-0",
+            "Name": "PLATE",
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "InternalData": "server-stamped",
+            "ImageString": "",
+        }
+    ]
+    assert page_dxf_finish_skip_why(with_id) is None
+    filled = kendo_filelist_for_finish(with_id, from_datasource=True)
+    assert filled["should_finish"] is True
+    assert filled["filelist_internaldata_empty"] is False
+    null_row = {
+        "ID": "id-0",
+        "FileID": "file-0",
+        "SourceDataID": "src-0",
+        "CadType": 0,
+        "Stock_X": 8.0,
+        "Stock_Y": 4.0,
+        "Name": "PLATE",
+        "Category": "Cad",
+        "FileType": "Cad",
+        "InternalData": "",
+        "ImageString": "",
+    }
+    assert page_dxf_finish_skip_why([null_row]) == "cad_internaldata_empty_after_explode"
+    assert kendo_filelist_for_finish([null_row], from_datasource=True)[
+        "should_finish"
+    ] is False
+    assert kyle_classify_before_finish_blocked([null_row]) is not None
+    shape = filelist_post_key_shape(
+        {"PartMode": 0, "FileType": "Cad", "InternalData": "", "Name": "PLATE"}
+    )
+    assert shape["keys"] == ["FileType", "InternalData", "Name", "PartMode"]
+    assert "PartMode" in shape["nonempty_keys"]
+    assert "InternalData" in shape["empty_keys"]
+    assert "" not in shape["keys"]
+    js = _PAGE_FINISH_JS
+    assert "kidsPartModeSet" in js
+    assert "partModeReady" in js
+    assert "filelist_nonempty_keys" in js
+    assert "filelist_cad_payload_empty" in js
+    assert "cad_internaldata_empty_after_explode" in js
+    assert "step_explode_no_internaldata" in js
+    assert "cadMaterialInchesRecipeComplete" in js
+    assert "cad_material_inches_recipe_complete" in js
+    assert "!recipeOk && payloadEmpty(rows[0].InternalData)" in js
+    assert "bar_" in js
+
+
+def test_step_explode_no_internaldata_aliases_empty_bind_source():
+    """Empty explode bind source aliases step_explode_no_internaldata. No Finish."""
+    from secturafab.cadimport_js import (
+        CADIMPORT_CADDATA_PATH,
+        CADIMPORT_DATA_PATH,
+        STEP_EXPLODE_NO_INTERNALDATA as JS_ALIAS,
+    )
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+        STEP_EXPLODE_NO_INTERNALDATA,
+        WEBSITE_FINISH_PATHS,
+        cad_filelist_refuses_additem_dxf,
+        cadimport_get_payload_empty_bools,
+        cadimport_identity_match,
+        copy_cadimport_get_payload_through,
+        empty_explode_internaldata_reason,
+        is_empty_explode_internaldata_reason,
+        kendo_filelist_for_finish,
+        persist_cadimport_get_empty_shape,
+        persist_part_create_tlist_bind_source,
+        step_explode_no_internaldata,
+    )
+    from tests.fixtures.live_28769_1 import (
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        live_28769_1_cadimport_empty,
+    )
+
+    assert step_explode_no_internaldata() == "step_explode_no_internaldata"
+    assert step_explode_no_internaldata() == STEP_EXPLODE_NO_INTERNALDATA == JS_ALIAS
+    assert empty_explode_internaldata_reason(bind_source=False) == (
+        STEP_EXPLODE_NO_INTERNALDATA
+    )
+    assert empty_explode_internaldata_reason(bind_source=True) == (
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    )
+    assert is_empty_explode_internaldata_reason(
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    )
+    assert is_empty_explode_internaldata_reason(STEP_EXPLODE_NO_INTERNALDATA)
+    assert not is_empty_explode_internaldata_reason("filelist_cad_payload_empty")
+    leftover = [
+        {
+            "Name": "PLATE",
+            "FileType": "Cad",
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+            "SourceDataID": "src-1",
+            "ID": "id-1",
+            "FileID": "file-1",
+        }
+    ]
+    notes: list[str] = []
+    persist_part_create_tlist_bind_source(leftover, notes=notes)
+    assert "tlist_bind_source=false" in notes
+    assert STEP_EXPLODE_NO_INTERNALDATA in notes
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert STEP_EXPLODE_NO_INTERNALDATA in refuse
+    assert CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE in refuse
+    assert "c146ce6d" in refuse
+    assert "8973f890" in refuse
+    assert "35136-1" in refuse
+    assert "c5cd8689" in refuse
+    assert "14327-5" in refuse
+    assert "1cd941c6" in refuse
+    assert "14327-8" in refuse
+    assert "75f07c2b" in refuse
+    assert "14327-3" in refuse
+    assert "aed89628" in refuse
+    assert "21841-1" in refuse
+    assert "5e72fe39" in refuse
+    assert "14327-1" in refuse
+    assert "5e7bfc0b" in refuse
+    assert "e2683a3f" in refuse
+    assert "bcff1a24" in refuse
+    assert "Q10335" in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert "f73dd116" not in refuse
+    assert "Q10336" not in refuse
+    assert "missing_call=POST /part/create t.List InternalData+ImageString" in refuse
+    cap = kendo_filelist_for_finish(
+        [
+            {
+                "ID": "id-1",
+                "FileID": "file-1",
+                "SourceDataID": "src-1",
+                "Name": "PLATE",
+                "Category": "Cad",
+                "FileType": "Cad",
+                "PartMode": 0,
+                "InternalData": "",
+                "ImageString": "iVBORw0KGgo",
+            }
+        ],
+        from_datasource=True,
+    )
+    assert cap["should_finish"] is False
+    assert cap["finish_why"] == CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    assert cap["step_explode_no_internaldata"] is True
+    dest = {
+        "SourceDataID": "src-1",
+        "ID": "id-1",
+        "FileID": "file-1",
+        "InternalData": "",
+        "Contours": None,
+    }
+    empty_get = copy_cadimport_get_payload_through(
+        [{"SourceDataID": "src-1", "InternalData": "", "Contours": []}],
+        dest,
+    )
+    assert cadimport_get_payload_empty_bools(
+        [{"InternalData": "", "Contours": []}]
+    )["bindable"] is False
+    assert empty_get.get("InternalData") in ("", None)
+    assert empty_get.get("Contours") in (None, [])
+    filled = copy_cadimport_get_payload_through(
+        [
+            {
+                "SourceDataID": "src-1",
+                "InternalData": "server-stamped",
+                "NumberOfContours": 2,
+            }
+        ],
+        dest,
+    )
+    assert filled["InternalData"] == "server-stamped"
+    assert filled["NumberOfContours"] == 2
+    assert cadimport_identity_match(dest, {"FileID": "file-1"}) is True
+    other = copy_cadimport_get_payload_through(
+        [{"SourceDataID": "other", "InternalData": "nope", "NumberOfContours": 9}],
+        dest,
+    )
+    assert other.get("InternalData") in ("", None)
+    assert "NumberOfContours" not in other or other.get("NumberOfContours") != 9
+    persist_notes: list[str] = []
+    persist_cadimport_get_empty_shape(
+        {
+            "cadimport_data": cadimport_get_payload_empty_bools([]),
+            "cadimport_caddata": cadimport_get_payload_empty_bools([]),
+        },
+        notes=persist_notes,
+    )
+    assert "cadimport_data_bindable=false" in persist_notes
+    assert "cadimport_caddata_bindable=false" in persist_notes
+    dump = live_28769_1_cadimport_empty()
+    assert dump["quote_number"] == SPENT_QUOTE_NUMBER == "28769-1"
+    assert dump["quote_id_prefix"] == SPENT_QUOTE_ID_PREFIX == "c146ce6d"
+    assert dump["tlist_bind_source"] is False
+    assert dump["step_explode_no_internaldata"] is True
+    assert dump["routes"]["GET /CadImport/Data"]["bindable"] is False
+    assert dump["routes"]["GET /CadImport/CADData"]["bindable"] is False
+    assert dump["routes"]["POST /part/create"]["bindable"] is False
+    leftover_json = json.loads(
+        (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "live_28769_1_cadimport_empty.json"
+        ).read_text()
+    )
+    assert leftover_json["quote_number"] == "28769-1"
+    assert leftover_json["routes"]["GET /CadImport/CADData"]["bindable"] is False
+    assert leftover_json["routes"]["GET /CadImport/Data"]["bindable"] is False
+    assert leftover_json["routes"]["POST /part/create"]["bindable"] is False
+    assert WEBSITE_FINISH_PATHS["cadimport_data"] == CADIMPORT_DATA_PATH
+    assert WEBSITE_FINISH_PATHS["cadimport_caddata"] == CADIMPORT_CADDATA_PATH
+    assert is_forbidden_quote_number("28769-1")
+    assert is_forbidden_quote_id("c146ce6d-1111-2222-3333-444444444444")
+    assert spent_quote_number_block_reason("28769-1")
+    for spent in (
+        "35136-1",
+        "14327-5",
+        "14327-8",
+        "Q10329",
+        "14327-3",
+        "Q10330",
+        "21841-1",
+        "Q10331",
+        "14327-1",
+        "Q10332",
+        "Q10333",
+        "Q10336",
+        "Q10339",
+        "Q10344",
+        "Q10346",
+        "B80510901",
+        "Q10348",
+        "H.16.70",
+        "Q10349",
+        "D.H.30.96",
+        "Q10351",
+        "H.8.38",
+        "Q10354",
+        "D.H.38.96",
+        "Q10356",
+        "V.20.78",
+        "Q10365",
+        "H.10.38",
+        "Q10366",
+        "H.6.38",
+        "Q10367",
+        "10289-5",
+        "Q10369",
+        "Q10368",
+        "Q10371",
+        "Q10372",
+        "Q10373",
+        "Q10374",
+        "Q10375",
+        "Q10377",
+        "Q10379",
+        "Q10380",
+        "Q10381",
+        "Q10382",
+        "Q10383",
+        "Q10399",
+        "Q10420",
+        "Q10450",
+        "Q10429",
+        "Q10475",
+        "Q10476",
+        "Q10479",
+        "Q10480",
+        "Q10481",
+        "Q10482",
+        "Q10483",
+        "Q10484",
+        "Q10485",
+        "Q10486",
+        "Q10430",
+        "Q10431",
+        "Q10435",
+        "Q10470",
+        "Q10471",
+        "Q10472",
+        "Q10473",
+        "Q10474",
+        "Q10421",
+        "Q10407",
+        "Q10408",
+        "Q10350",
+        "21843-1",
+        "Q10338",
+        "Q10339",
+        "CROSSDRAIN-12X7X60",
+        "H638-CADPLATE",
+        "Q10334",
+        "Q10335",
+        "28768-1",
+        "10289-4",
+        "P904271-1",
+        "P904272-1",
+        "21785-1",
+        "21785-2",
+        "21785-3",
+        "35145-1",
+        "11796-1",
+    ):
+        assert is_forbidden_quote_number(spent)
+
+
+def test_cadimport_get_overlay_empty_still_refuses_finish(tmp_path: Path):
+    """Empty GET Data/CADData after explode: Finish, then Contours gate.
+
+    Cad+Material+inches does not invent Contours. invent=false.
+    """
+    stp = tmp_path / "28769-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "ID": "id-1",
+            "Name": "PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+            "CadType": 0,
+            "Stock_X": 8.0,
+            "Stock_Y": 4.0,
+        }
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = 1
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._kendo_row_keys = [
+        "FileID",
+        "FileType",
+        "ID",
+        "SourceDataID",
+        "InternalData",
+        "CadType",
+        "Stock_X",
+        "Stock_Y",
+    ]
+    client._edit_quote_id = "c146ce6d-aaaa-bbbb-cccc-000000000001"
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client._part_create_payload = {
+        "n": 1,
+        "internaldata_empty": True,
+        "internaldata_empty_n": 1,
+        "internaldata_nonempty_n": 0,
+        "imagestring_empty": False,
+        "imagestring_empty_n": 0,
+        "tlist_bind_source": False,
+    }
+    client._tlist_bind_source = False
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.cadimport_caddata.return_value = {"List": []}
+    client.get_item_add_view.return_value = {}
+    client.add_item_dxf_files.return_value = {"ok": True}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 1,
+            "kendo_row_keys": [
+                "FileID",
+                "FileType",
+                "ID",
+                "SourceDataID",
+                "InternalData",
+                "CadType",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id="c146ce6d-aaaa-bbbb-cccc-000000000001",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="28769-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_called()
+    client.cadimport_update_data_next.assert_not_called()
+    client.cadimport_convert_to.assert_not_called()
+    blob = " ".join(notes)
+    assert "cadimport_data_bindable=false" in blob
+    assert "cadimport_caddata_bindable=false" in blob
+    assert "cadimport_get_copied_n=0" in blob
+    assert "refusing AddItem_DXFFiles" not in blob
+    assert "EXEC_FAIL" in blob
+    assert "NumberOfContours<1 after Finish" in blob
+    assert "not success" in blob
+
+
+def test_cadimport_get_overlay_copies_nonempty_by_identity():
+    """GET Data/CADData copy Contours/InternalData by SID/ID/FileID only if nonempty."""
+    service = SecturaFabPushService(client=MagicMock())
+    dest = [
+        {
+            "SourceDataID": "src-1",
+            "ID": "id-1",
+            "FileID": "file-1",
+            "InternalData": "",
+            "Name": "PLATE",
+        }
+    ]
+    service.client.cadimport_data.return_value = {
+        "List": [
+            {
+                "SourceDataID": "src-1",
+                "InternalData": "from-data",
+                "NumberOfContours": 2,
+            }
+        ]
+    }
+    service.client.cadimport_caddata.return_value = {"List": []}
+    out, notes = service._overlay_cadimport_get_payloads(
+        quote_id="qid", rows=dest
+    )
+    assert out[0]["InternalData"] == "from-data"
+    assert out[0]["NumberOfContours"] == 2
+    assert "cadimport_data_bindable=true" in notes
+    assert "cadimport_get_copied_n=1" in notes
+    empty_dest = [
+        {
+            "SourceDataID": "src-1",
+            "ID": "id-1",
+            "FileID": "file-1",
+            "InternalData": "",
+        }
+    ]
+    service.client.cadimport_data.return_value = {"List": []}
+    service.client.cadimport_caddata.return_value = {
+        "List": [
+            {
+                "FileID": "file-1",
+                "InternalData": "",
+                "Contours": [],
+            }
+        ]
+    }
+    empty_out, empty_notes = service._overlay_cadimport_get_payloads(
+        quote_id="qid", rows=empty_dest
+    )
+    assert empty_out[0].get("InternalData") in ("", None)
+    assert "cadimport_caddata_bindable=false" in empty_notes
+    assert "cadimport_get_copied_n=0" in empty_notes
+    service.client.cadimport_update_data_next.assert_not_called()
+    service.client.cadimport_convert_to.assert_not_called()
+
+
+def test_cadimport_get_rows_unwraps_single_editor_preview_without_inventing():
+    """Single CADData leftover object is visible; empty still not bindable."""
+    from secturafab.website import (
+        cadimport_get_is_editor_preview,
+        cadimport_get_payload_empty_bools,
+        cadimport_get_rows,
+        copy_cadimport_get_payload_through,
+    )
+
+    preview = {
+        "ID": "id-1",
+        "FileID": "file-1",
+        "Length": 8.0,
+        "Width": 4.0,
+        "WebGL": True,
+        "InternalData": "",
+        "Contours": [],
+    }
+    rows = cadimport_get_rows(preview)
+    assert len(rows) == 1
+    assert cadimport_get_is_editor_preview(rows[0]) is True
+    bools = cadimport_get_payload_empty_bools(rows)
+    assert bools["bindable"] is False
+    assert bools["internaldata_empty"] is True
+    dest = {
+        "ID": "id-1",
+        "FileID": "file-1",
+        "InternalData": "",
+    }
+    copied = copy_cadimport_get_payload_through(rows, dest)
+    assert copied.get("InternalData") in ("", None)
+    assert "Length" not in copied or copied.get("InternalData") in ("", None)
+    wrapper = cadimport_get_rows({"ID": "quote-only"})
+    assert wrapper == []
+    filled = cadimport_get_rows(
+        {
+            "FileID": "file-1",
+            "InternalData": "server-stamped",
+            "NumberOfContours": 2,
+        }
+    )
+    dest2 = {"FileID": "file-1", "InternalData": ""}
+    through = copy_cadimport_get_payload_through(filled, dest2)
+    assert through["InternalData"] == "server-stamped"
+    assert through["NumberOfContours"] == 2
+
+
+def test_cadimport_get_overlay_unwraps_single_caddata_object(tmp_path: Path):
+    """Overlay sees a leftover CADData object; copies only if nonempty."""
+    service = SecturaFabPushService(client=MagicMock())
+    dest = [
+        {
+            "SourceDataID": "src-1",
+            "ID": "id-1",
+            "FileID": "file-1",
+            "InternalData": "",
+        }
+    ]
+    service.client.cadimport_data.return_value = {"List": []}
+    service.client.cadimport_caddata.return_value = {
+        "ID": "id-1",
+        "FileID": "file-1",
+        "Length": 12.0,
+        "Width": 6.0,
+        "WebGL": True,
+        "InternalData": "",
+        "Contours": [],
+    }
+    empty_out, empty_notes = service._overlay_cadimport_get_payloads(
+        quote_id="qid", rows=dest
+    )
+    assert empty_out[0].get("InternalData") in ("", None)
+    assert "cadimport_caddata_editor_preview=true" in empty_notes
+    assert "cadimport_caddata_bindable=false" in empty_notes
+    assert "cadimport_get_copied_n=0" in empty_notes
+    assert any("kyle_step_contours_capture=" in n for n in empty_notes)
+    service.client.cadimport_caddata.return_value = {
+        "FileID": "file-1",
+        "InternalData": "from-caddata-object",
+        "NumberOfContours": 1,
+    }
+    filled_out, filled_notes = service._overlay_cadimport_get_payloads(
+        quote_id="qid", rows=dest
+    )
+    assert filled_out[0]["InternalData"] == "from-caddata-object"
+    assert filled_out[0]["NumberOfContours"] == 1
+    assert "cadimport_get_copied_n=1" in filled_notes
+    service.client.cadimport_update_data_next.assert_not_called()
+
+
+def test_kyle_step_contours_devtools_capture_recipe_is_exact():
+    """Kyle must save these XHRs on a manual STEP Finish that shows Contours."""
+    from secturafab.forbidden_quotes import is_forbidden_quote_number
+    from secturafab.website import (
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+        STEP_CONTOURS_CAPTURE_NEVER_SAVE,
+        STEP_CONTOURS_CAPTURE_WINDOWS,
+        classify_step_contours_capture,
+        kyle_step_contours_devtools_capture,
+        persist_part_create_tlist_bind_source,
+    )
+    from tests.fixtures.live_part_create_tlist_bind import LIVE_PART_CREATE_TLIST_BIND
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+        step_contours_kyle_capture,
+    )
+
+    recipe = kyle_step_contours_devtools_capture()
+    dump = step_contours_kyle_capture()
+    assert recipe["invent"] is False
+    assert recipe["fail_close_if_empty"] is True
+    assert recipe["fresh_pn_only"] is True
+    assert recipe["missing_call"] == "POST /part/create t.List InternalData+ImageString"
+    assert recipe["no_extra_cadimport_xhr"] == "createAllParts_no_intervening_xhr"
+    assert recipe["fill_unlocked"] is False
+    assert recipe["unlock_requires"] == "kyle_contours_ge1_or_sectura_support"
+    assert recipe["windows"] == list(STEP_CONTOURS_CAPTURE_WINDOWS)
+    assert dump["windows"] == list(STEP_CONTOURS_CAPTURE_WINDOWS)
+    paths = {row["path"] for row in recipe["must_save"] if row["path"] != "*"}
+    assert "/part/create" in paths
+    assert "/CadImport/UploadItem_DXFFiles" in paths
+    assert "/CadImport/Data" in paths
+    assert "/CadImport/CADData" in paths
+    assert "/Quote/AddItem_DXFFiles" in paths
+    assert "upload_to_next" in recipe["windows"]
+    assert "explode_to_finish" in recipe["windows"]
+    bind = next(row for row in recipe["must_save"] if row["path"] == "/part/create")
+    assert bind["role"] == "expected_bind_source"
+    assert "InternalData nonempty AND ImageString nonempty" in bind["bindable_when"]
+    assert "InternalData JSON" in recipe["never_save"]
+    assert recipe["never_save"] == STEP_CONTOURS_CAPTURE_NEVER_SAVE
+    assert LIVE_PART_CREATE_TLIST_BIND is None
+    for spent in STEP_CONTOURS_CAPTURE_NEVER_REMINT:
+        assert is_forbidden_quote_number(spent)
+    leftover = classify_step_contours_capture(
+        [
+            {
+                "method": "POST",
+                "path": "https://www.secturafab.com/part/create?x=1",
+                "request_keys": ["Location", "IDList", "__RequestVerificationToken"],
+                "List": [
+                    {
+                        "Name": "PLATE",
+                        "InternalData": "",
+                        "ImageString": "iVBORw0KGgo",
+                        "SourceDataID": "src-1",
+                    }
+                ],
+            },
+            {
+                "method": "GET",
+                "path": "/CadImport/CADData",
+                "response": {
+                    "ID": "id-1",
+                    "FileID": "file-1",
+                    "Length": 8,
+                    "Width": 4,
+                    "WebGL": True,
+                    "InternalData": "",
+                },
+            },
+        ]
+    )
+    assert leftover["bindable"] is False
+    assert leftover["finish_ok"] is False
+    assert leftover["invent"] is False
+    assert leftover["finish_why"] == CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    assert leftover["step_explode_no_internaldata"] is True
+    assert leftover["missing_call"] == "POST /part/create t.List InternalData+ImageString"
+    assert leftover["no_extra_cadimport_xhr"] == "createAllParts_no_intervening_xhr"
+    part = next(x for x in leftover["xhrs"] if x["path"] == "/part/create")
+    assert part["tlist_bind_source"] is False
+    assert "__RequestVerificationToken" not in part["request_keys"]
+    assert "iVBORw0KGgo" not in json.dumps(leftover)
+    cad = next(x for x in leftover["xhrs"] if x["path"] == "/CadImport/CADData")
+    assert cad["editor_preview"] is True
+    assert cad["bindable"] is False
+    filled = classify_step_contours_capture(
+        [
+            {
+                "method": "POST",
+                "path": "/part/create",
+                "List": [
+                    {
+                        "InternalData": "server-stamped",
+                        "ImageString": "iVBORw0KGgo",
+                        "Name": "PLATE",
+                    }
+                ],
+            }
+        ]
+    )
+    assert filled["bindable"] is True
+    assert filled["finish_ok"] is True
+    assert filled["bind_source_path"] == "/part/create"
+    assert "server-stamped" not in json.dumps(filled)
+    mystery = classify_step_contours_capture(
+        [
+            {
+                "method": "POST",
+                "path": "/CadImport/UnknownFill",
+                "List": [
+                    {
+                        "SourceDataID": "src-1",
+                        "InternalData": "from-unknown",
+                        "Contours": [1, 2],
+                    }
+                ],
+            }
+        ]
+    )
+    assert "/CadImport/UnknownFill" in mystery["candidate_fill_paths"]
+    assert mystery["invent"] is False
+    notes: list[str] = []
+    persist_part_create_tlist_bind_source(
+        [{"InternalData": "", "ImageString": "x", "FileType": "Cad"}],
+        notes=notes,
+    )
+    assert "tlist_bind_source=false" in notes
+    assert any("kyle_step_contours_capture=" in n for n in notes)
+    assert "kyle_capture_windows=upload_to_next,part_create,explode_to_finish,additem_dxffiles" in notes
+
+
+def test_leftover_35136_1_kyle_har_confirms_fail_close():
+    """Kyle HAR leftover 35136-1: OpenContourCount=0 / 3× bar empty / bar_flat.
+
+    Contours never filled. Confirms fail-close. Does not unlock Contours fill.
+    Do not invent Contours/InternalData. Do not remint 8973f890 / 35136-1.
+    """
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+        cad_filelist_refuses_additem_dxf,
+        cadimport_get_payload_empty_bools,
+        classify_step_contours_capture,
+        persist_part_create_tlist_bind_source,
+    )
+    from tests.fixtures.live_35136_1 import (
+        LEFTOVER_CHILD_NAMES,
+        SPENT_QUOTE_ID,
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        leftover_35136_1_har_dump,
+        leftover_35136_1_har_xhrs,
+    )
+    from tests.fixtures.live_part_create_tlist_bind import LIVE_PART_CREATE_TLIST_BIND
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = leftover_35136_1_har_dump()
+    assert dump["quote_id"] == SPENT_QUOTE_ID == "8973f890-b2a1-48fb-b6be-3530caeb1819"
+    assert dump["quote_id_prefix"] == SPENT_QUOTE_ID_PREFIX == "8973f890"
+    assert dump["quote_number"] == SPENT_QUOTE_NUMBER == "35136-1"
+    assert dump["child_names"] == list(LEFTOVER_CHILD_NAMES) == ["35137", "35138"]
+    assert dump["opencontourcount"] == 0
+    assert dump["part_create_n"] == 3
+    assert dump["part_create_producttype"] == "bar"
+    assert dump["additem_productsubtype"] == "bar_flat"
+    assert dump["tlist_bind_source"] is False
+    assert dump["contours_never_filled"] is True
+    assert dump["invent"] is False
+    assert dump["unlocks_contours_fill"] is False
+    assert dump["fail_close"] is True
+    assert dump["routes"]["GET /CadImport/Data"]["opencontourcount"] == 0
+    assert dump["routes"]["GET /CadImport/Data"]["bindable"] is False
+    assert dump["routes"]["POST /part/create"]["n"] == 3
+    assert dump["routes"]["POST /part/create"]["bindable"] is False
+    assert dump["routes"]["POST /Quote/AddItem_DXFFiles"]["productsubtype"] == (
+        "bar_flat"
+    )
+    assert dump["routes"]["POST /Quote/AddItem_DXFFiles"]["bindable"] is False
+    assert "silent-graft" in dump["follow_up"]
+    assert is_forbidden_quote_id(SPENT_QUOTE_ID)
+    assert is_forbidden_quote_id("8973f890-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("35136-1")
+    assert spent_quote_number_block_reason("35136-1")
+    assert "35136-1" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert LIVE_PART_CREATE_TLIST_BIND is None
+    classified = classify_step_contours_capture(leftover_35136_1_har_xhrs())
+    assert classified["invent"] is False
+    assert classified["bindable"] is False
+    assert classified["finish_ok"] is False
+    assert classified["step_explode_no_internaldata"] is True
+    assert classified["finish_why"] == CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    data = next(x for x in classified["xhrs"] if x["path"] == "/CadImport/Data")
+    assert data["contours_empty"] is True
+    assert data["bindable"] is False
+    part = next(x for x in classified["xhrs"] if x["path"] == "/part/create")
+    assert part["n"] == 3
+    assert part["tlist_bind_source"] is False
+    assert part["internaldata_empty"] is True
+    add = next(x for x in classified["xhrs"] if x["path"] == "/Quote/AddItem_DXFFiles")
+    assert add["internaldata_empty"] is True
+    assert add["bindable"] is False
+    assert cadimport_get_payload_empty_bools(
+        [{"OpenContourCount": 0, "InternalData": "", "Contours": []}]
+    )["bindable"] is False
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": "bar",
+            "ProductSubType": "bar_flat",
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "8973f890" in refuse
+    assert "35136-1" in refuse
+    notes: list[str] = []
+    persist_part_create_tlist_bind_source(
+        [
+            {
+                "Name": "35137",
+                "ProductType": "bar",
+                "InternalData": "",
+                "ImageString": "",
+            }
+        ],
+        notes=notes,
+    )
+    assert "tlist_bind_source=false" in notes
+    blob = json.dumps(classified)
+    assert classified["invent"] is False
+    assert leftover_35136_1_har_xhrs()[1]["response"]["List"][0]["Contours"] == []
+    assert "iVBORw0KGgo" not in blob
+
+
+def test_leftover_14327_5_flat_plate_confirms_no_extra_xhr():
+    """Live 14327-5 flat-plate STEP: empty InternalData after /part/create.
+
+    QuoteOrderEdit createAllParts has no intervening CadImport/UI fill.
+    CadImport Data/CADData bindable=false; OpenContourCount empty/null;
+    ProductType null; ImageString preview-only; Finish refused; invented=false.
+    Exact missing call is POST /part/create t.List InternalData+ImageString.
+    Do not invent Contours. Do not remint c5cd8689 / 14327-5.
+    """
+    from secturafab.cadimport_js import (
+        STEP_CONTOURS_MISSING_CALL as JS_MISSING,
+        STEP_CONTOURS_NO_EXTRA_XHR as JS_NO_EXTRA,
+        explode_docreate_internaldata_fill,
+        step_contours_missing_call as js_missing_call,
+        step_contours_no_extra_xhr as js_no_extra,
+    )
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+        STEP_CONTOURS_MISSING_CALL,
+        STEP_CONTOURS_NO_EXTRA_XHR,
+        cad_filelist_refuses_additem_dxf,
+        cadimport_get_field_empty,
+        cadimport_get_payload_empty_bools,
+        classify_step_contours_capture,
+        persist_part_create_tlist_bind_source,
+        step_contours_missing_call,
+        step_contours_no_extra_xhr,
+    )
+    from tests.fixtures.live_14327_5 import (
+        SPENT_QUOTE_ID,
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        leftover_14327_5_capture_xhrs,
+        leftover_14327_5_plate_dump,
+    )
+    from tests.fixtures.live_part_create_tlist_bind import LIVE_PART_CREATE_TLIST_BIND
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = leftover_14327_5_plate_dump()
+    assert dump["quote_id"] == SPENT_QUOTE_ID == "c5cd8689-fed4-44d6-b2f5-f96bda8af424"
+    assert dump["quote_id_prefix"] == SPENT_QUOTE_ID_PREFIX == "c5cd8689"
+    assert dump["quote_number"] == SPENT_QUOTE_NUMBER == "14327-5"
+    assert dump["zz_del_number"] == "ZZ-DEL-14327-5"
+    assert dump["step_kind"] == "flat_plate"
+    assert dump["part_create_n"] == 1
+    assert dump["part_create_producttype"] is None
+    assert dump["producttype_empty"] is True
+    assert dump["opencontourcount"] is None
+    assert dump["opencontourcount_empty"] is True
+    assert dump["tlist_bind_source"] is False
+    assert dump["imagestring_without_internaldata"] is True
+    assert dump["cadimport_data_bindable"] is False
+    assert dump["cadimport_caddata_bindable"] is False
+    assert dump["contours_never_filled"] is True
+    assert dump["invent"] is False
+    assert dump["unlocks_contours_fill"] is False
+    assert dump["fail_close"] is True
+    assert dump["no_extra_cadimport_xhr"] is True
+    assert dump["missing_call"] == STEP_CONTOURS_MISSING_CALL
+    assert dump["routes"]["POST /part/create"]["n"] == 1
+    assert dump["routes"]["POST /part/create"]["bindable"] is False
+    assert dump["routes"]["GET /CadImport/Data"]["bindable"] is False
+    assert dump["routes"]["GET /CadImport/Data"]["opencontourcount_empty"] is True
+    assert dump["routes"]["GET /CadImport/CADData"]["bindable"] is False
+    assert is_forbidden_quote_id(SPENT_QUOTE_ID)
+    assert is_forbidden_quote_id("c5cd8689-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("14327-5")
+    assert spent_quote_number_block_reason("14327-5")
+    assert "14327-5" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert LIVE_PART_CREATE_TLIST_BIND is None
+    assert step_contours_missing_call() == JS_MISSING == STEP_CONTOURS_MISSING_CALL
+    assert step_contours_no_extra_xhr() == JS_NO_EXTRA == STEP_CONTOURS_NO_EXTRA_XHR
+    assert js_missing_call() == STEP_CONTOURS_MISSING_CALL
+    assert js_no_extra() == "createAllParts_no_intervening_xhr"
+    assert explode_docreate_internaldata_fill() is None
+    classified = classify_step_contours_capture(leftover_14327_5_capture_xhrs())
+    assert classified["invent"] is False
+    assert classified["bindable"] is False
+    assert classified["finish_ok"] is False
+    assert classified["step_explode_no_internaldata"] is True
+    assert classified["finish_why"] == CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    assert classified["missing_call"] == STEP_CONTOURS_MISSING_CALL
+    assert classified["no_extra_cadimport_xhr"] == STEP_CONTOURS_NO_EXTRA_XHR
+    part = next(x for x in classified["xhrs"] if x["path"] == "/part/create")
+    assert part["n"] == 1
+    assert part["tlist_bind_source"] is False
+    assert part["internaldata_empty"] is True
+    assert part["producttype_empty"] is True
+    data = next(x for x in classified["xhrs"] if x["path"] == "/CadImport/Data")
+    assert data["contours_empty"] is True
+    assert data["opencontourcount_empty"] is True
+    assert data["bindable"] is False
+    cad = next(x for x in classified["xhrs"] if x["path"] == "/CadImport/CADData")
+    assert cad["bindable"] is False
+    assert cadimport_get_field_empty("OpenContourCount", None) is True
+    assert cadimport_get_field_empty("OpenContourCount", 0) is True
+    assert cadimport_get_payload_empty_bools(
+        [{"OpenContourCount": None, "InternalData": "", "Contours": None}]
+    )["opencontourcount_empty"] is True
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": None,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "c5cd8689" in refuse
+    assert "14327-5" in refuse
+    assert "1cd941c6" in refuse
+    assert "14327-8" in refuse
+    assert "75f07c2b" in refuse
+    assert "14327-3" in refuse
+    assert "aed89628" in refuse
+    assert "21841-1" in refuse
+    assert "5e72fe39" in refuse
+    assert "14327-1" in refuse
+    assert STEP_CONTOURS_MISSING_CALL in refuse
+    assert STEP_CONTOURS_NO_EXTRA_XHR in refuse
+    notes: list[str] = []
+    persist_part_create_tlist_bind_source(
+        [
+            {
+                "Name": "14327-5",
+                "ProductType": None,
+                "InternalData": "",
+                "ImageString": "iVBORw0KGgo",
+            }
+        ],
+        notes=notes,
+    )
+    assert "tlist_bind_source=false" in notes
+    assert "missing_call=" + STEP_CONTOURS_MISSING_CALL in notes
+    assert "no_extra_cadimport_xhr=" + STEP_CONTOURS_NO_EXTRA_XHR in notes
+    blob = json.dumps(classified)
+    assert "iVBORw0KGgo" not in blob
+    assert leftover_14327_5_capture_xhrs()[2]["response"]["List"][0][
+        "OpenContourCount"
+    ] is None
+
+
+def test_leftover_14327_8_same_empty_internaldata_forever_forbid():
+    """Live 14327-8 / 1cd941c6: same empty-InternalData FAIL as 14327-5.
+
+    ZZ-DEL-14327-8 @ 7b59ff0. invented=false. Do not remint. Do not invent Contours.
+    """
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        STEP_CONTOURS_MISSING_CALL,
+        cad_filelist_refuses_additem_dxf,
+    )
+    from tests.fixtures.live_14327_8 import (
+        SPENT_QUOTE_ID,
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        leftover_14327_8_dump,
+    )
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = leftover_14327_8_dump()
+    assert dump["quote_id"] == SPENT_QUOTE_ID == "1cd941c6-9167-41e9-ac93-b7268f18f282"
+    assert dump["quote_id_prefix"] == SPENT_QUOTE_ID_PREFIX == "1cd941c6"
+    assert dump["quote_number"] == SPENT_QUOTE_NUMBER == "14327-8"
+    assert dump["zz_del_number"] == "ZZ-DEL-14327-8"
+    assert dump["same_pattern_as"] == "14327-5"
+    assert dump["invent"] is False
+    assert dump["unlocks_contours_fill"] is False
+    assert dump["fail_close"] is True
+    assert dump["tlist_bind_source"] is False
+    assert dump["missing_call"] == STEP_CONTOURS_MISSING_CALL
+    assert is_forbidden_quote_id(SPENT_QUOTE_ID)
+    assert is_forbidden_quote_id("1cd941c6-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("14327-8")
+    assert spent_quote_number_block_reason("14327-8")
+    assert "14327-8" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "1cd941c6" in refuse
+    assert "14327-8" in refuse
+    assert dump["invent"] is False
+
+
+def test_leftover_contours_ui_q10329_q10330_q10331_forever_forbid():
+    """Unfinished Contours UI leftovers: never remint / PATCH.
+
+    Q10329 / 75f07c2b / 14327-3, Q10330 / aed89628 / 21841-1,
+    Q10331 / 5e72fe39 / 14327-1. Contours column absent; Finish never
+    clicked. invented=false. Q10333 is NOT this class (live PASS:
+    Cad / Contours=1 / 8 bends + Profile / Laser Bay1 / UC 176.96).
+    Keep 14327-5 / c5cd8689 and 14327-8 / 1cd941c6.
+    """
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    expected = (
+        (
+            "75f07c2b-b000-47f4-9caa-c14520e2b068",
+            "75f07c2b",
+            "Q10329",
+            "14327-3",
+            "ZZ-DEL-Q10329-14327-3-contours-ui",
+        ),
+        (
+            "aed89628-b018-4b11-852f-bfed5bf8b964",
+            "aed89628",
+            "Q10330",
+            "21841-1",
+            "ZZ-DEL-Q10330-21841-1-contours-ui",
+        ),
+        (
+            "5e72fe39-edc1-467c-925d-f1c8d74cc5d3",
+            "5e72fe39",
+            "Q10331",
+            "14327-1",
+            "ZZ-DEL-Q10331-14327-1-contours-ui",
+        ),
+    )
+    dumps = leftover_contours_ui_dumps()
+    assert len(dumps) == 3
+    assert all(row["quote_number"] != "Q10333" for row in dumps)
+    for dump, (qid, prefix, qn, pn, zz) in zip(dumps, expected, strict=True):
+        assert dump["quote_id"] == qid
+        assert dump["quote_id_prefix"] == prefix
+        assert dump["quote_number"] == qn
+        assert dump["part_number"] == pn
+        assert dump["zz_del_number"] == zz
+        assert dump["contours_column_absent"] is True
+        assert dump["finish_clicked"] is False
+        assert dump["finish_posted"] is False
+        assert dump["invent"] is False
+        assert dump["unlocks_contours_fill"] is False
+        assert dump["fail_close"] is True
+        assert is_forbidden_quote_id(qid)
+        assert is_forbidden_quote_id(f"{prefix}-1111-2222-3333-444444444444")
+        assert is_forbidden_quote_number(qn)
+        assert is_forbidden_quote_number(pn)
+        assert spent_quote_number_block_reason(qn)
+        assert spent_quote_number_block_reason(pn)
+        assert qn in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+        assert pn in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+
+    assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
+    assert is_forbidden_quote_number("35136-1")
+    assert is_forbidden_quote_id("c5cd8689-fed4-44d6-b2f5-f96bda8af424")
+    assert is_forbidden_quote_number("14327-5")
+    assert is_forbidden_quote_id("1cd941c6-9167-41e9-ac93-b7268f18f282")
+    assert is_forbidden_quote_number("14327-8")
+    assert "35136-1" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "14327-5" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "14327-8" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    for _qid, prefix, _qn, pn, _zz in expected:
+        assert prefix in refuse
+        assert pn in refuse
+    assert "c5cd8689" in refuse
+    assert "1cd941c6" in refuse
+    assert "8973f890" in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert "f73dd116" not in refuse
+    assert "Q10336" not in refuse
+    assert "5e7bfc0b" in refuse
+    assert "e2683a3f" in refuse
+    assert "bcff1a24" in refuse
+    assert "Q10335" in refuse
+
+
+def test_plate_step_classify_bind_sets_cad_not_component():
+    """STEP CAD Files Adjust Properties / bind: plate laser → ProductType Cad.
+
+    Sectura defaults Component after Geometry Cleanup. Overlay/classify
+    writes API/kendo ProductType=100 (not a UI click). Thickness
+    0.0048:meter becomes inches. Cad+Material+inches + empty
+    InternalData does not refuse Finish; Contours gate after Finish
+    is authority.
+    """
+    from secturafab.website import (
+        KYLE_LOOM_COMPONENT_TO_CAD,
+        bind_plate_step_product_type_cad,
+        cad_filelist_refuses_additem_dxf,
+        overlay_classified_row,
+        plate_step_left_component_refuses_contours,
+        product_type_is_cad,
+        product_type_is_component,
+        sanitize_bind_thickness_inches,
+    )
+
+    assert "Component" in KYLE_LOOM_COMPONENT_TO_CAD
+    assert "Cad" in KYLE_LOOM_COMPONENT_TO_CAD
+    assert "API/kendo" in KYLE_LOOM_COMPONENT_TO_CAD
+    assert "UpdateItemType" in KYLE_LOOM_COMPONENT_TO_CAD
+    assert "Q10333" in KYLE_LOOM_COMPONENT_TO_CAD
+    assert "Q10335" in KYLE_LOOM_COMPONENT_TO_CAD
+    assert "Q10336" in KYLE_LOOM_COMPONENT_TO_CAD
+    assert "Q10344" in KYLE_LOOM_COMPONENT_TO_CAD
+
+    inch = sanitize_bind_thickness_inches("0.0048:meter")
+    assert inch is not None
+    assert "meter" not in inch.lower()
+    assert ":" not in inch
+    assert abs(float(inch) - (0.0048 / 0.0254)) < 0.002
+
+    leftover = {
+        "Name": "H.6.38 PLATE",
+        "Description": "H.6.38 PLATE",
+        "ProductType": "Component",
+        "FileType": "Component",
+        "ItemType": "Component",
+        "Category": "Component",
+        "PartMode": 2,
+        "Thickness": "0.0048:meter",
+        "Thickness_Units": "meter",
+        "Material": "A36",
+        "Machine": "",
+        "InternalData": "",
+        "ImageString": "iVBORw0KGgo",
+        "ErrorStatus": 0,
+        "Qty": 1,
+    }
+    assert product_type_is_component(leftover["ProductType"]) is True
+    bound = bind_plate_step_product_type_cad(leftover)
+    assert product_type_is_cad(bound["ProductType"]) is True
+    assert bound["ProductType"] == 100
+    assert bound["FileType"] == "Cad"
+    assert bound["ItemType"] == "Cad"
+    assert bound["Category"] == "Cad"
+    assert bound["PartMode"] == 0
+    assert "Laser" in str(bound["Machine"])
+    assert "meter" not in str(bound["Thickness"]).lower()
+    assert ":" not in str(bound["Thickness"])
+    assert bound["Thickness_Units"] == "inch"
+    assert bound.get("InternalData") == ""
+    assert plate_step_left_component_refuses_contours(bound) is None
+
+    overlaid = overlay_classified_row(
+        leftover,
+        category="Cad",
+        material="A36",
+        thickness="0.0048:meter",
+        machine="Laser",
+    )
+    assert overlaid["ProductType"] == 100
+    assert overlaid["FileType"] == "Cad"
+    assert overlaid["PartMode"] == 0
+    assert "meter" not in str(overlaid["Thickness"]).lower()
+    assert overlaid["Thickness_Units"] == "inch"
+    refuse = cad_filelist_refuses_additem_dxf(overlaid)
+    assert refuse is None
+
+    rows = [
+        {
+            "SourceDataID": "h638",
+            "ID": "id-h638",
+            "Name": "H.6.38 PLATE",
+            "ProductType": "Component",
+            "Thickness": "0.0048:meter",
+            "Thickness_Units": "meter",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "InternalData": "",
+        }
+    ]
+    classified, notes = SecturaFabPushService(client=MagicMock()).classify_cadimport_rows(
+        rows,
+        default_material="A36",
+        default_thickness="0.0048:meter",
+        bom_rows=[],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+        part_key="H.6.38",
+    )
+    assert len(classified) == 1
+    kid = classified[0]
+    assert kid["Category"] == "Cad"
+    assert kid["ProductType"] == 100
+    assert kid["PartMode"] == 0
+    assert kid["FileType"] == "Cad"
+    assert "meter" not in str(kid["Thickness"]).lower()
+    assert kid["Thickness_Units"] == "inch"
+    assert "Cad: 1" in " ".join(notes)
+    after = cad_filelist_refuses_additem_dxf(kid)
+    assert after is None
+
+
+def test_plate_step_material_before_thickness_fail_closes_when_blank():
+    """Q10366: Adjust Properties writes thickness only after Material A36.
+
+    Blank material blocks thickness in Sectura UI. invent=false.
+    """
+    from secturafab.website import (
+        bind_plate_step_product_type_cad,
+        cadimport_keep_grid_classify_spec,
+        drawing_material_type,
+        plate_step_thickness_blocked_by_blank_material,
+    )
+
+    blank = {
+        "Name": "H.6.38 PLATE",
+        "ProductType": "Component",
+        "FileType": "Component",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+    }
+    assert drawing_material_type(blank) == ""
+    why = plate_step_thickness_blocked_by_blank_material(blank)
+    assert why is not None
+    assert "blank" in why.lower()
+    assert "Q10366" in why
+    assert "A36" in why
+    assert "invent" in why.lower()
+    assert "Contours" in why
+
+    bound = bind_plate_step_product_type_cad(blank)
+    assert bound["ProductType"] == 100
+    assert bound["FileType"] == "Cad"
+    assert bound["Thickness"] == "0.1875"
+    assert bound["Thickness_Units"] == "inch"
+    meter_blank = dict(blank, Thickness="0.0048:meter", Thickness_Units="meter")
+    bound_meter = bind_plate_step_product_type_cad(meter_blank)
+    assert bound_meter["Thickness"] == "0.0048:meter"
+    assert bound_meter["Thickness_Units"] == "meter"
+
+    ready = dict(blank, Material="A36")
+    assert drawing_material_type(ready) == "A36"
+    assert plate_step_thickness_blocked_by_blank_material(ready) is None
+    bound_ready = bind_plate_step_product_type_cad(ready)
+    assert bound_ready["Material"] == "A36"
+    assert "meter" not in str(bound_ready["Thickness"]).lower()
+    assert bound_ready["Thickness_Units"] == "inch"
+
+    spec_blank = cadimport_keep_grid_classify_spec(
+        [
+            {
+                "ID": "id-a",
+                "Name": "H.6.38 PLATE",
+                "Category": "Cad",
+                "ItemType": "Cad",
+                "PartMode": 0,
+                "ProductType": 100,
+                "Thickness": "0.1875",
+                "Thickness_Units": "inch",
+            }
+        ]
+    )
+    assert "Thickness" not in spec_blank[0]
+    assert "Thickness_Units" not in spec_blank[0]
+    spec_ready = cadimport_keep_grid_classify_spec(
+        [
+            {
+                "ID": "id-a",
+                "Name": "H.6.38 PLATE",
+                "Category": "Cad",
+                "ItemType": "Cad",
+                "PartMode": 0,
+                "ProductType": 100,
+                "Material": "A36",
+                "Thickness": "0.1875",
+                "Thickness_Units": "inch",
+            }
+        ]
+    )
+    keys = list(spec_ready[0])
+    assert spec_ready[0]["Material"] == "A36"
+    assert spec_ready[0]["Thickness"] == "0.1875"
+    assert keys.index("Material") < keys.index("Thickness")
+
+
+def test_plate_step_classify_posts_update_item_type_cad():
+    """Cookie-HTTP classify: Cad plate POSTs UpdateItemType after SetPartMode."""
+    from secturafab.cadimport_js import UPDATE_ITEM_TYPE_PATH
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+
+    rows = [
+        {
+            "SourceDataID": "h638",
+            "ID": "id-h638",
+            "Name": "H.6.38 PLATE",
+            "ProductType": "Component",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "InternalData": "",
+        }
+    ]
+    client = MagicMock()
+    with patch("secturafab.chrome_cdp.chrome_quotes_live", return_value=False):
+        classified, notes = SecturaFabPushService(client=client).classify_cadimport_rows(
+            rows,
+            default_material="A36",
+            default_thickness="0.1875",
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            qty=1,
+            part_key="H.6.38",
+        )
+    assert classified[0]["ProductType"] == 100
+    client.cadimport_set_part_mode.assert_called()
+    client.part_update_item_type.assert_called_once()
+    kwargs = client.part_update_item_type.call_args.kwargs
+    assert kwargs["row_id"] == "id-h638"
+    assert kwargs["item_type"] == "Cad"
+    refuse = cad_filelist_refuses_additem_dxf(classified[0])
+    assert refuse is None
+    assert UPDATE_ITEM_TYPE_PATH == "/Part/UpdateItemType"
+
+
+def test_plate_step_component_left_is_contours_fail_path():
+    """Cad classify with ProductType still Component → Contours fail-close."""
+    from secturafab.website import (
+        cad_filelist_refuses_additem_dxf,
+        cad_finish_notes_refuse_additem_dxf,
+        plate_step_left_component_refuses_contours,
+    )
+
+    left = {
+        "Name": "H.6.38 PLATE",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": "Component",
+        "InternalData": "",
+        "ImageString": "preview",
+    }
+    why = plate_step_left_component_refuses_contours(left)
+    assert why is not None
+    assert "Component" in why
+    assert "Contours fail path" in why
+    assert "Q10333" in why
+    assert "invent" in why.lower()
+    refuse = cad_filelist_refuses_additem_dxf(left)
+    assert refuse == why
+    assert cad_finish_notes_refuse_additem_dxf([why]) == why
+
+    purchased = {
+        "Name": "1/2-13 HEX BOLT",
+        "FileType": "Component",
+        "Category": "Component",
+        "ProductType": 200,
+    }
+    assert plate_step_left_component_refuses_contours(purchased) is None
+
+
+def test_q10333_h638_safecave_contours_pass_protect():
+    """Q10333 / b5f56ac3 Safe Cave H.6.38: Contours PASS protect.
+
+    Live UI: ProductType Cad / Contours=1 / 8 bends + Profile /
+    Laser Bay1 / UC 176.96. Unlock: Component→Cad then inches then
+    Contours fill. Never remint / PATCH / ZZ-DEL. invent=false.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10333_h638 import q10333_h638_pass_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10333_h638_pass_dump()
+    assert dump["quote_id"] == "b5f56ac3-326d-48e9-b82d-1e09a7897107"
+    assert dump["quote_id_prefix"] == "b5f56ac3"
+    assert dump["quote_number"] == "Q10333"
+    assert dump["part_number"] == "H.6.38"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["source"] == "Onshape STEP"
+    assert dump["pass"] is True
+    assert dump["contours_pass"] is True
+    assert dump["product_type"] == "Cad"
+    assert dump["product_type_enum"] == 100
+    assert dump["number_of_contours"] == 1
+    assert dump["open_contour_count"] == 0
+    assert dump["contours_ge_1"] is True
+    assert dump["contours_pass_signal"] == "v1_itemlist_number_of_contours_ge_1"
+    assert dump["bends"] == 8
+    assert dump["profile"] is True
+    assert dump["ocl_profile_count"] == 5
+    assert dump["ocl_bend_count"] == 2
+    assert dump["internaldata_absent_post_finish"] is True
+    assert dump["machine"] == "Laser Bay1"
+    assert dump["unit_cost"] == 176.96
+    assert dump["unlock"] == "component_to_cad_then_thickness_inches_then_contours_fill"
+    assert dump["laser_costs_filled"] is True
+    assert dump["kyle_component_to_cad"] is True
+    assert dump["thickness_inches"] is True
+    assert dump["finish_clicked"] is True
+    assert dump["finish_posted"] is True
+    assert dump["invent"] is False
+    assert dump["zz_del"] is False
+    assert dump["zz_del_number"] is None
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["kyle_loom_component_to_cad"] is True
+    assert dump["cad_set_via"] == "adjust_properties_dropdown_human"
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert all(row["quote_number"] != "Q10333" for row in leftover_contours_ui_dumps())
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("b5f56ac3-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10333")
+    assert spent_quote_number_block_reason("Q10333")
+    with pytest.raises(ForbiddenQuoteError, match="Q10333"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10333"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="b5f56ac3"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    assert "Q10333" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10333" in step_contours_fill_hunt()["never_remint"]
+
+    assert is_forbidden_quote_id("8973f890-b2a1-48fb-b6be-3530caeb1819")
+    assert is_forbidden_quote_number("35136-1")
+    assert is_forbidden_quote_id("c5cd8689-fed4-44d6-b2f5-f96bda8af424")
+    assert is_forbidden_quote_number("14327-5")
+    assert is_forbidden_quote_id("1cd941c6-9167-41e9-ac93-b7268f18f282")
+    assert is_forbidden_quote_number("14327-8")
+    assert is_forbidden_quote_number("Q10329")
+    assert is_forbidden_quote_number("Q10330")
+    assert is_forbidden_quote_number("Q10331")
+    assert is_forbidden_quote_number("H638-CADPLATE")
+    assert is_forbidden_quote_number("Q10334")
+    assert is_forbidden_quote_number("Q10335")
+    assert is_forbidden_quote_number("Q10336")
+    assert is_forbidden_quote_number("Q10339")
+    assert is_forbidden_quote_number("Q10344")
+    assert is_forbidden_quote_number("Q10346")
+    assert is_forbidden_quote_number("B80510901")
+    assert is_forbidden_quote_number("Q10348")
+    assert is_forbidden_quote_number("H.16.70")
+    assert is_forbidden_quote_number("Q10349")
+    assert is_forbidden_quote_number("D.H.30.96")
+    assert is_forbidden_quote_number("Q10351")
+    assert is_forbidden_quote_number("H.8.38")
+    assert is_forbidden_quote_number("Q10354")
+    assert is_forbidden_quote_number("D.H.38.96")
+    assert is_forbidden_quote_number("Q10356")
+    assert is_forbidden_quote_number("V.20.78")
+    assert is_forbidden_quote_number("Q10365")
+    assert is_forbidden_quote_number("H.10.38")
+    assert is_forbidden_quote_number("Q10366")
+    assert is_forbidden_quote_number("H.6.38")
+    assert is_forbidden_quote_number("Q10367")
+    assert is_forbidden_quote_number("10289-5")
+    assert is_forbidden_quote_number("Q10369")
+    assert is_forbidden_quote_number("Q10368")
+    assert is_forbidden_quote_number("Q10371")
+    assert is_forbidden_quote_number("Q10372")
+    assert is_forbidden_quote_number("Q10373")
+    assert is_forbidden_quote_number("Q10374")
+    assert is_forbidden_quote_number("Q10375")
+    assert is_forbidden_quote_number("Q10377")
+    assert is_forbidden_quote_number("Q10379")
+    assert is_forbidden_quote_number("Q10380")
+    assert is_forbidden_quote_number("Q10381")
+    assert is_forbidden_quote_number("Q10382")
+    assert is_forbidden_quote_number("Q10383")
+    assert is_forbidden_quote_number("Q10399")
+    assert is_forbidden_quote_number("Q10420")
+    assert is_forbidden_quote_number("Q10450")
+    assert is_forbidden_quote_number("Q10429")
+    assert is_forbidden_quote_number("Q10475")
+    assert is_forbidden_quote_number("Q10476")
+    assert is_forbidden_quote_number("Q10479")
+    assert is_forbidden_quote_number("Q10480")
+    assert is_forbidden_quote_number("Q10481")
+    assert is_forbidden_quote_number("Q10482")
+    assert is_forbidden_quote_number("Q10483")
+    assert is_forbidden_quote_number("Q10484")
+    assert is_forbidden_quote_number("Q10485")
+    assert is_forbidden_quote_number("Q10486")
+    assert is_forbidden_quote_number("Q10430")
+    assert is_forbidden_quote_number("Q10431")
+    assert is_forbidden_quote_number("Q10435")
+    assert is_forbidden_quote_number("Q10470")
+    assert is_forbidden_quote_number("Q10471")
+    assert is_forbidden_quote_number("Q10472")
+    assert is_forbidden_quote_number("Q10473")
+    assert is_forbidden_quote_number("Q10474")
+    assert is_forbidden_quote_number("Q10421")
+    assert is_forbidden_quote_number("Q10407")
+    assert is_forbidden_quote_number("Q10408")
+    assert is_forbidden_quote_number("Q10350")
+    assert is_forbidden_quote_number("21843-1")
+    assert is_forbidden_quote_id("5e7bfc0b-ecf9-46cf-8851-d61062141ce7")
+    assert is_forbidden_quote_id("e2683a3f-daf5-49ff-83c1-79aed35207a1")
+    assert is_forbidden_quote_id("bcff1a24-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("f73dd116-f33e-485f-947c-f5662633d23a")
+    assert is_forbidden_quote_id("76cecc73-257e-4fa7-91b7-ed15a4c90caa")
+    assert is_forbidden_quote_id("55f12530-e97b-40cc-8e7f-e799d9d6b234")
+    assert is_forbidden_quote_id("d859a239-a811-4b23-a812-29921956e880")
+    assert is_forbidden_quote_id("1defeed8-d95d-4939-b2fd-0a1774e56c6e")
+    assert is_forbidden_quote_id("c4394006-667f-4bf6-a9b0-aa4b1722160a")
+    assert is_forbidden_quote_id("0c62fce9-d56a-434e-a33a-372ddb12a2b4")
+    assert is_forbidden_quote_id("7881d4b3-5408-4ff4-ab18-6490170e6331")
+    assert is_forbidden_quote_id("05bee105-824c-4100-9bc8-f66727fa5681")
+    assert is_forbidden_quote_id("7801ab99-13af-4efc-b996-897daf8e677a")
+    assert is_forbidden_quote_id("fd0b6e45-d508-4b01-bbc0-45b338cd966d")
+    assert is_forbidden_quote_id("4c9c25d4-439f-42be-8f6f-7444e5f05497")
+    assert is_forbidden_quote_id("a24c6896-ac5c-4d52-9ac6-1c208440940c")
+    assert is_forbidden_quote_id("eb9a17c4-c28b-4fc1-8bda-3d50d6ee2d3b")
+    assert is_forbidden_quote_id("d667c6f2-6075-4ff1-8688-3ac9671f9bd6")
+    assert is_forbidden_quote_id("e0990112-d127-4db3-8276-3e80bee233ee")
+    assert is_forbidden_quote_id("e7e4abd1-bb4f-4b6e-be18-269b2d17e2bf")
+    assert is_forbidden_quote_id("2cd0281e-b5eb-4b51-9796-0cec3d482eb4")
+    assert is_forbidden_quote_id("07941333-596d-4507-b72d-271a635e07d1")
+    assert is_forbidden_quote_id("11e2bd0a-bd0a-439b-b277-8862ac4528e2")
+    assert is_forbidden_quote_id("98310eb3-a60d-42ea-bfa9-3fd8e408b013")
+    assert is_forbidden_quote_id("e293584b-18bf-4114-8a07-2e2a942a941d")
+    assert is_forbidden_quote_id("8f3a2eef-60dd-437c-a595-c63df1ded2d6")
+    assert is_forbidden_quote_id("15e6b5ad-9919-49ab-aae1-24a7b44f25c2")
+    assert is_forbidden_quote_id("1ddb1b9a-0267-40d6-b448-3798dd6f3120")
+    assert is_forbidden_quote_id("bec3c218-de87-4a3d-b9db-2429aaeb5e45")
+    assert is_forbidden_quote_id("82c28793-96e8-457b-9559-979c2b761d4e")
+    assert is_forbidden_quote_id("5e0ce1df-e18b-4118-945a-8be85378069e")
+    assert is_forbidden_quote_id("67472e72-d01b-48e2-8040-1db505659d26")
+    assert is_forbidden_quote_id("d62e2ad1-7324-4034-a44e-cbd7a3acee9d")
+    assert is_forbidden_quote_id("523d8328-f310-434d-a502-00502c987dd2")
+    assert is_forbidden_quote_id("beb20d22-173a-4b0d-be8d-c1263538cdb5")
+    assert is_forbidden_quote_id("60de939f-85f0-4f1a-9412-39c29211ad30")
+    assert is_forbidden_quote_id("12bd2530-e6ed-4792-9e47-bdd20fff1e70")
+    assert is_forbidden_quote_id("70e69d9c-9d9f-4b2e-b7f1-7ac9ae80da9e")
+    assert is_forbidden_quote_id("754089f2-fd55-4e3d-865c-8dffa63181fa")
+    assert is_forbidden_quote_id("bb31a132-c93a-4c21-84f3-7a83c62cead6")
+    assert is_forbidden_quote_id("2d42dcc3-76e3-439b-be02-32c2f1b3c9a2")
+    assert is_forbidden_quote_id("eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4")
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert "f73dd116" not in refuse
+    assert "Q10336" not in refuse
+    assert "5e7bfc0b" in refuse
+    assert "e2683a3f" in refuse
+    assert "bcff1a24" in refuse
+    assert "7881d4b3" in refuse
+    assert "Q10354" in refuse
+    assert "05bee105" in refuse
+    assert "Q10356" in refuse
+    assert "7801ab99" in refuse
+    assert "Q10365" in refuse
+    assert dump["invent"] is False
+
+
+def test_leftover_cad_for_plate_h638_q10334_forever_forbid():
+    """Cad-for-plate leftovers: automation Cad classify ≠ Contours fill.
+
+    5e7bfc0b / H638-CADPLATE SetPartMode 0 + ProductType 100 Cad:1,
+    InternalData empty, Finish refuse. e2683a3f / Q10334 kendo
+    Cad/100 + 0.1875 in + Laser-Bay1, Contours empty. invented=false.
+    Q10333 / b5f56ac3 stays Contours PASS protect. Fill stays locked.
+    """
+    from pathlib import Path
+
+    from secturafab.cadimport_js import (
+        CLASSIFY_FINISH_INTERNALDATA_FILL,
+        SET_PART_MODE_PATH,
+        extract_cadimport_xhrs,
+    )
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        STEP_CONTOURS_FILL_UNLOCKED,
+        cad_filelist_refuses_additem_dxf,
+        step_contours_fill_unlocked,
+    )
+    from tests.fixtures.cad_dropdown_contours_gap import (
+        cad_dropdown_contours_gap,
+        cad_dropdown_contours_gap_exhausted,
+    )
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_q10333_h638 import q10333_h638_pass_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    expected = (
+        (
+            "5e7bfc0b-ecf9-46cf-8851-d61062141ce7",
+            "5e7bfc0b",
+            "H638-CADPLATE",
+            "ZZ-DEL-H638-CADPLATE",
+        ),
+        (
+            "e2683a3f-daf5-49ff-83c1-79aed35207a1",
+            "e2683a3f",
+            "Q10334",
+            "ZZ-DEL-Q10334",
+        ),
+    )
+    dumps = leftover_cad_for_plate_dumps()
+    assert len(dumps) == 2
+    assert all(row["quote_number"] != "Q10333" for row in dumps)
+    for dump, (qid, prefix, qn, zz) in zip(dumps, expected, strict=True):
+        assert dump["quote_id"] == qid
+        assert dump["quote_id_prefix"] == prefix
+        assert dump["quote_number"] == qn
+        assert dump["zz_del_number"] == zz
+        assert dump["internaldata_empty"] is True
+        assert dump["contours_empty"] is True
+        assert dump["invent"] is False
+        assert dump["unlocks_automation_contours_fill"] is False
+        assert dump["unlocks_contours_fill"] is False
+        assert dump["fail_close"] is True
+        assert is_forbidden_quote_id(qid)
+        assert is_forbidden_quote_id(f"{prefix}-1111-2222-3333-444444444444")
+        assert is_forbidden_quote_number(qn)
+        assert is_forbidden_quote_number(zz)
+        assert spent_quote_number_block_reason(qn)
+        assert qn in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+        with pytest.raises(ForbiddenQuoteError, match=qn):
+            refuse_forbidden_quote_write(
+                method="POST",
+                path="/Quote/AddItem_DXFFiles",
+                payload={"QuoteNumber": qn},
+            )
+        with pytest.raises(ForbiddenQuoteError, match=prefix):
+            refuse_forbidden_quote_write(
+                method="POST",
+                path="/Quote/AddItem_DXFFiles",
+                payload={"ID": qid},
+            )
+
+    protect = q10333_h638_pass_dump()
+    assert protect["quote_number"] == "Q10333"
+    assert protect["quote_id"] == "b5f56ac3-326d-48e9-b82d-1e09a7897107"
+    assert protect["pass"] is True
+    assert protect["unlocks_automation_contours_fill"] is False
+    assert is_forbidden_quote_number("Q10333")
+    assert is_forbidden_quote_id(protect["quote_id"])
+
+    gap = cad_dropdown_contours_gap()
+    assert gap["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
+    assert step_contours_fill_unlocked() is False
+    assert gap["cad_dropdown_contours_fill"] is None
+    assert gap["classify_finish_internaldata_fill"] is CLASSIFY_FINISH_INTERNALDATA_FILL
+    assert CLASSIFY_FINISH_INTERNALDATA_FILL is None
+    assert gap["cad_classify_neq_contours_fill"] is True
+    assert gap["unlocks_automation_contours_fill"] is False
+    assert gap["invent"] is False
+    assert gap["kendo_row_set_fills_contours"] is False
+    assert gap["human_dropdown_fills_contours"] is True
+    assert gap["human_dropdown_reproduced"] is False
+    assert gap["human_dropdown_classify_xhr"] == "/Part/UpdateItemType"
+    assert gap["next"] == "finish_or_further_calls_after_updateitemtype"
+    assert gap["set_part_mode_path"] == SET_PART_MODE_PATH
+    assert gap["set_part_mode_keys"] == ("ID", "PartMode")
+    assert gap["update_item_type_path"] == "/Part/UpdateItemType"
+    assert gap["update_item_type_keys"] == ("ID", "ItemType")
+    assert gap["update_item_type_is_classify_xhr"] is True
+    assert gap["update_item_type_fills_contours"] is False
+    assert gap["update_item_type_sets_product_type_cad"] is False
+    assert gap["set_part_mode_sets_product_type_cad"] is False
+    assert gap["product_type_cad_write_xhr"] is None
+    assert cad_dropdown_contours_gap_exhausted() is True
+    ids = [h["id"] for h in gap["hypotheses"]]
+    assert ids == [
+        "native_select_vs_kendo_set",
+        "update_item_type_classify",
+        "update_item_type_persists_product_type_cad",
+        "price_list_manual_entry_cad",
+        "details_form_save",
+        "finish_fills_contours",
+        "thickness_unit_conversion",
+        "quote_item_edit_post_finish",
+        "update_property_value_producttype_cad",
+        "additem_dxf_writes_producttype_cad_noun",
+    ]
+    assert all(h["ruled_out"] is True for h in gap["hypotheses"])
+
+    js = (
+        Path(__file__).resolve().parent / "fixtures" / "quote_order_edit_create_parts.js"
+    ).read_text()
+    assert "InternalData" not in js
+    assert "SetPartMode" not in js
+    assert "ProductType" not in js
+    xhrs = extract_cadimport_xhrs(js)
+    assert {x.path for x in xhrs} <= {
+        "/CadImport/ConvertTo",
+        "/CadImport/UpdateDataNext",
+        "/part/create",
+    }
+    pdf_js = (
+        Path(__file__).resolve().parent / "fixtures" / "quote_order_edit_getpdfdata.js"
+    ).read_text()
+    assert "PriceListID" in pdf_js
+    assert "/CadImport/SetPartMode" not in pdf_js
+    assert "AddItem_DXFFiles" not in pdf_js
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "5e7bfc0b" in refuse
+    assert "e2683a3f" in refuse
+    assert "bcff1a24" in refuse
+    assert "Q10335" in refuse
+    assert "7881d4b3" in refuse
+    assert "Q10354" in refuse
+    assert "05bee105" in refuse
+    assert "Q10356" in refuse
+    assert "7801ab99" in refuse
+    assert "Q10365" in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert "f73dd116" not in refuse
+    assert "Q10336" not in refuse
+    assert "InternalData empty" in refuse
+
+
+def test_producttype_cad_write_xhr_not_found():
+    """PO box hunt: no ProductType=Cad write. PASSes ARE enum 100.
+
+    Q10333 / Q10348: ProductType=100, Contours=1, Laser, prt_dxf,
+    0.1875 in, ItemType/PartMode null. FAIL vs PASS is Contours≥1,
+    not Cad noun. UpdateItemType ItemType-only; SetPartMode
+    PartMode-only. invent=false; do not remint forever-protects.
+    """
+    from secturafab.cadimport_js import (
+        CONTOURS_PASS_VS_FAIL,
+        PRODUCT_TYPE_CAD_SHOWN_VIA,
+        PRODUCT_TYPE_CAD_WRITE_CAPTURE_NEEDED,
+        PRODUCT_TYPE_CAD_WRITE_HUNT_CLOSED,
+        product_type_cad_write_xhr,
+        set_part_mode_sets_product_type_cad,
+        update_item_type_sets_product_type_cad,
+    )
+    from secturafab.website import itemlist_contours_pass
+    from tests.fixtures.live_producttype_cad_write import (
+        live_producttype_cad_write,
+    )
+    from tests.fixtures.live_q10333_h638 import q10333_h638_pass_dump
+    from tests.fixtures.live_q10348_h1670 import q10348_h1670_pass_dump
+
+    dump = live_producttype_cad_write()
+    assert dump["invent"] is False
+    assert dump["found"] is False
+    assert dump["po_box_hunt_complete"] is True
+    assert dump["product_type_cad_write_xhr"] is None
+    assert dump["method"] is None
+    assert dump["path"] is None
+    assert dump["body"] is None
+    assert dump["hunt_closed"] is PRODUCT_TYPE_CAD_WRITE_HUNT_CLOSED is True
+    assert dump["update_item_type_sets_product_type_cad"] is False
+    assert dump["set_part_mode_sets_product_type_cad"] is False
+    assert dump["shown_via"] == PRODUCT_TYPE_CAD_SHOWN_VIA
+    assert dump["pass_vs_fail"] == CONTOURS_PASS_VS_FAIL
+    assert dump["pass_vs_fail"] == "number_of_contours_ge_1"
+    assert "Closed" in dump["capture_needed"]
+    assert "NumberOfContours" in dump["capture_needed"]
+    assert dump["capture_needed"] == PRODUCT_TYPE_CAD_WRITE_CAPTURE_NEEDED
+    assert dump["box_artifacts_present"] is False
+    assert dump["dropbox_artifacts_present"] is False
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert product_type_cad_write_xhr() is None
+    assert update_item_type_sets_product_type_cad() is False
+    assert set_part_mode_sets_product_type_cad() is False
+    assert "POST /CadImport/SetPartMode {ID, PartMode}" in dump["ruled_out"]
+    assert "UpdatePropertyValue" in dump["ruled_out"]
+    assert "AddItem_DXFFiles ProductType Cad noun" in dump["ruled_out"]
+
+    q33 = dump["q10333"]
+    assert q33["quote_id"] == q10333_h638_pass_dump()["quote_id"]
+    assert q33["product_type"] == 100
+    assert q33["product_type_name"] is None
+    assert q33["item_type"] is None
+    assert q33["part_mode"] is None
+    assert q33["product_subtype"] == "prt_dxf"
+    assert q33["machine"] == "Laser"
+    assert q33["thickness"] == 0.1875
+    assert q33["number_of_contours"] == 1
+    assert q33["contours_pass"] is True
+
+    q48 = dump["q10348"]
+    assert q48["quote_id"] == q10348_h1670_pass_dump()["quote_id"]
+    assert q48["product_type"] == 100
+    assert q48["product_type_name"] is None
+    assert q48["item_type"] is None
+    assert q48["part_mode"] is None
+    assert q48["product_subtype"] == "prt_dxf"
+    assert q48["machine"] == "Laser"
+    assert q48["thickness"] == 0.1875
+    assert q48["number_of_contours"] == 1
+
+    live_pass = {
+        "ProductType": 100,
+        "ItemType": None,
+        "PartMode": None,
+        "ProductSubType": "prt_dxf",
+        "NumberOfContours": 1,
+    }
+    live_fail = {**live_pass, "NumberOfContours": 0}
+    assert itemlist_contours_pass(row=live_pass) is True
+    assert itemlist_contours_pass(row=live_fail) is False
+    assert itemlist_contours_pass(number_of_contours=1, product_type=100) is True
+    assert itemlist_contours_pass(number_of_contours=1, product_type="part") is True
+
+
+def test_contours_fill_xhr_not_found():
+    """CoS: chase NumberOfContours≥1 fill — no named XHR. invent=false.
+
+    Cad-noun write is closed. QuoteOrderEdit has 0 NumberOfContours
+    hits. Live GET Q10333/Q10348 Contours=1; Q10354 Contours=0.
+    Safe Cave burns paused. Do not invent Contours.
+    """
+    from pathlib import Path
+
+    from secturafab.website import (
+        CONTOURS_FILL_CAPTURE_NEEDED,
+        CONTOURS_FILL_HUNT_CLOSED,
+        CONTOURS_FILL_XHR,
+        SINGLE_PLATE_CONTOURS_FLIP_XHR,
+        STEP_CONTOURS_FILL_UNLOCKED,
+        contours_fill_xhr,
+        itemlist_contours_pass,
+        single_plate_contours_flip_xhr,
+        step_contours_fill_unlocked,
+    )
+    from tests.fixtures.live_contours_fill_xhr import live_contours_fill_xhr
+
+    dump = live_contours_fill_xhr()
+    assert dump["invent"] is False
+    assert dump["found"] is False
+    assert dump["cad_noun_write_closed"] is True
+    assert dump["product_type_cad_write_xhr"] is None
+    assert dump["contours_fill_xhr"] is CONTOURS_FILL_XHR is None
+    assert dump["single_plate_contours_flip_xhr"] is (
+        SINGLE_PLATE_CONTOURS_FLIP_XHR
+    ) is None
+    assert dump["classify_finish_internaldata_fill"] is None
+    assert dump["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
+    assert dump["hunt_closed"] is CONTOURS_FILL_HUNT_CLOSED is False
+    assert dump["pass_vs_fail"] == "number_of_contours_ge_1"
+    assert dump["pass_signal"] == "NumberOfContours>=1"
+    assert dump["quote_order_edit_number_of_contours_hits"] == 0
+    assert dump["safe_cave_burns_paused"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert dump["capture_needed"] == CONTOURS_FILL_CAPTURE_NEEDED
+    assert "NumberOfContours" in dump["capture_needed"]
+    assert contours_fill_xhr() is None
+    assert single_plate_contours_flip_xhr() is None
+    assert step_contours_fill_unlocked() is False
+    assert dump["q10333"]["number_of_contours"] == 1
+    assert dump["q10348"]["number_of_contours"] == 1
+    assert dump["q10354"]["number_of_contours"] == 0
+    assert itemlist_contours_pass(
+        number_of_contours=dump["q10333"]["number_of_contours"]
+    ) is True
+    assert itemlist_contours_pass(
+        number_of_contours=dump["q10354"]["number_of_contours"]
+    ) is False
+    assert "/Part/UpdateItemType" in dump["ruled_out"]
+
+    js_dir = Path(__file__).resolve().parent / "fixtures"
+    hits = 0
+    for name in (
+        "quote_order_edit_create_parts.js",
+        "quote_order_edit_getpdfdata.js",
+        "quote_order_edit_update_item_type.js",
+        "quote_order_edit_update_pdf_internal.js",
+    ):
+        hits += (js_dir / name).read_text().count("NumberOfContours")
+    assert hits == 0
+
+
+def test_leftover_q10335_update_item_type_forever_forbid():
+    """Q10335 / bcff1a24 mouse UpdateItemType leftover. Empty Contours.
+
+    POST /Part/UpdateItemType 200 on Component→Cad. Companions:
+    /part/PartImage, /Quote/GetBorderSize on thickness. Finish
+    diagnostic: QuoteItem_Read Data:[] lost CAD row before Finish —
+    ZZ-DEL leftover, not PASS protect. Full GUID not restated.
+    invent=false. Recapture in flight. Fill stays locked.
+    """
+    from pathlib import Path
+
+    from secturafab.cadimport_js import (
+        GET_BORDER_SIZE_PATH,
+        UPDATE_ITEM_TYPE_BODY_KEYS,
+        UPDATE_ITEM_TYPE_CAD,
+        UPDATE_ITEM_TYPE_PATH,
+        extract_cadimport_xhrs,
+        update_item_type_fields,
+    )
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        STEP_CONTOURS_FILL_UNLOCKED,
+        cad_filelist_refuses_additem_dxf,
+        step_contours_fill_unlocked,
+    )
+    from tests.fixtures.cad_dropdown_contours_gap import cad_dropdown_contours_gap
+    from tests.fixtures.live_q10335_update_item_type import (
+        leftover_q10335_update_item_type_dump,
+    )
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = leftover_q10335_update_item_type_dump()
+    assert dump["quote_id"] is None
+    assert dump["quote_id_prefix"] == "bcff1a24"
+    assert dump["quote_number"] == "Q10335"
+    assert dump["zz_del_number"] == "ZZ-DEL-Q10335"
+    assert dump["id_unknown"] is True
+    assert dump["update_item_type_path"] == UPDATE_ITEM_TYPE_PATH
+    assert dump["update_item_type_status"] == 200
+    assert dump["update_item_type_itemtype"] == UPDATE_ITEM_TYPE_CAD
+    assert dump["update_item_type_keys"] == UPDATE_ITEM_TYPE_BODY_KEYS
+    assert dump["companions"] == ("/part/PartImage", GET_BORDER_SIZE_PATH)
+    assert dump["contours_empty_before_finish"] is True
+    assert dump["lost_cad_row_before_finish"] is True
+    assert dump["quoteitem_read_data"] == []
+    assert dump["quoteitem_read_data_empty"] is True
+    assert dump["finish_diagnostic_in_flight"] is False
+    assert dump["finish_diagnostic"] == "quoteitem_read_data_empty_lost_cad_row"
+    assert dump["finish_clicked"] is False
+    assert dump["finish_posted"] is False
+    assert dump["finish_refused"] is True
+    assert dump["zz_del"] is True
+    assert dump["recapture_in_flight"] is False
+    assert dump["recapture_quote"] == "Q10336"
+    assert dump["pass"] is False
+    assert dump["protect"] is False
+    assert dump["invent"] is False
+    assert dump["update_item_type_is_classify_xhr"] is True
+    assert dump["update_item_type_fills_contours"] is False
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert dump["fail_close"] is True
+    assert is_forbidden_quote_id("bcff1a24-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10335")
+    assert is_forbidden_quote_number("ZZ-DEL-Q10335")
+    assert spent_quote_number_block_reason("Q10335")
+    assert "Q10335" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10335" in step_contours_fill_hunt()["never_remint"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10335"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10335"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="bcff1a24"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": "bcff1a24-1111-2222-3333-444444444444"},
+        )
+
+    fields = update_item_type_fields("row-1", "Cad")
+    assert fields == {"ID": "row-1", "ItemType": "Cad"}
+    js = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "quote_order_edit_update_item_type.js"
+    ).read_text()
+    assert UPDATE_ITEM_TYPE_PATH in js
+    xhrs = extract_cadimport_xhrs(js)
+    assert any(x.path == UPDATE_ITEM_TYPE_PATH for x in xhrs)
+    item = next(x for x in xhrs if x.path == UPDATE_ITEM_TYPE_PATH)
+    assert item.method == "POST"
+    assert "ID" in item.body_keys
+    assert "ItemType" in item.body_keys
+
+    gap = cad_dropdown_contours_gap()
+    assert gap["update_item_type_path"] == UPDATE_ITEM_TYPE_PATH
+    assert gap["update_item_type_fills_contours"] is False
+    assert step_contours_fill_unlocked() is False is STEP_CONTOURS_FILL_UNLOCKED
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "bcff1a24" in refuse
+    assert "Q10335" in refuse
+    assert "UpdateItemType" in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert "f73dd116" not in refuse
+    assert "Q10336" not in refuse
+    assert "InternalData empty" in refuse
+    assert dump["invent"] is False
+
+
+def test_q10336_h638_cad_finish_soft_protect():
+    """Q10336 / f73dd116 Safe Cave H.6.38: Cad+Laser Finish leftover.
+
+    Mouse UpdateItemType Cad then AddItem_DXFFiles. Live GET finished
+    NumberOfContours=1 matches Q10333; OCC=0 expected; bends=8 /
+    Laser Bay1 / UC 64.25. Soft-pass labels were stage notes. Forever
+    protect; never remint / PATCH / ZZ-DEL. Q10335 stays fail leftover.
+    invent=false. Invent fill stays locked.
+    """
+    from secturafab.cadimport_js import (
+        GET_BORDER_SIZE_PATH,
+        UPDATE_ITEM_TYPE_CAD,
+        UPDATE_ITEM_TYPE_PATH,
+    )
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10336_h638 import q10336_h638_cad_finish_dump
+    from tests.fixtures.q10333_q10336_contours_gap import q10333_q10336_contours_gap
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10336_h638_cad_finish_dump()
+    assert dump["quote_id"] == "f73dd116-f33e-485f-947c-f5662633d23a"
+    assert dump["quote_id_prefix"] == "f73dd116"
+    assert dump["quote_number"] == "Q10336"
+    assert dump["part_number"] == "H.6.38"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["source"] == "Onshape STEP"
+    assert dump["same_step_family_as"] == "Q10333"
+    assert dump["update_item_type_path"] == UPDATE_ITEM_TYPE_PATH
+    assert dump["update_item_type_itemtype"] == UPDATE_ITEM_TYPE_CAD
+    assert dump["update_item_type_before_additem_dxf"] is True
+    assert dump["get_border_size_path"] == GET_BORDER_SIZE_PATH
+    assert dump["get_border_size_thickness_units"] == "inch"
+    assert dump["finish_path"] == "/Quote/AddItem_DXFFiles"
+    assert dump["xhr_sequence"][-2] == "/Quote/AddItem_DXFFiles"
+    assert dump["xhr_sequence"][3] == UPDATE_ITEM_TYPE_PATH
+    assert dump["pass"] is True
+    assert dump["contours_pass"] is True
+    assert dump["cad_laser_finish_soft_pass"] is True
+    assert dump["soft_pass_labels_were_stage_notes"] is True
+    assert dump["finished_semantics_match_q10333"] is True
+    assert dump["product_type"] == "Cad"
+    assert dump["product_type_enum"] == 100
+    assert dump["open_contour_count"] == 0
+    assert dump["number_of_contours"] == 1
+    assert dump["contours_ge_1"] is True
+    assert dump["contours_pass_signal"] == "v1_itemlist_number_of_contours_ge_1"
+    assert dump["bends"] == 8
+    assert dump["profile"] is True
+    assert dump["ocl_profile_count"] == 5
+    assert dump["ocl_bend_count"] == 2
+    assert dump["internaldata_absent_post_finish"] is True
+    assert dump["machine"] == "Laser Bay1"
+    assert dump["unit_cost"] == 64.25
+    assert dump["laser_costs_filled"] is True
+    assert dump["finish_clicked"] is True
+    assert dump["finish_posted"] is True
+    assert dump["invent"] is False
+    assert dump["zz_del"] is False
+    assert dump["zz_del_number"] is None
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert dump["update_item_type_fills_contours"] is False
+    assert all(row["quote_number"] != "Q10336" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10336" for row in leftover_cad_for_plate_dumps())
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("f73dd116-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10336")
+    assert spent_quote_number_block_reason("Q10336")
+    with pytest.raises(ForbiddenQuoteError, match="Q10336"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10336"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="f73dd116"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    assert "Q10336" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10336" in step_contours_fill_hunt()["never_remint"]
+
+    gap = q10333_q10336_contours_gap()
+    assert gap["invent"] is False
+    assert gap["unlocks_automation_contours_fill"] is False
+    assert gap["finished_field_gap_closed"] is True
+    assert gap["contours_pass_signal"] == "v1_itemlist_number_of_contours_ge_1"
+    assert gap["open_contour_count_unlocks_contours"] is False
+    assert gap["soft_pass_labels_were_stage_notes"] is True
+    assert gap["same_step_family"] == "H.6.38"
+    assert gap["q10333_contours"] == 1
+    assert gap["q10333_bends"] == 8
+    assert gap["q10333_open_contour_count"] == 0
+    assert gap["q10336_open_contour_count"] == 0
+    assert gap["q10336_number_of_contours"] == 1
+    assert gap["q10336_bends"] == 8
+    assert gap["q10333_pass"] is True
+    assert gap["q10336_contours_pass"] is True
+    assert gap["q10336_cad_laser_finish_soft_pass"] is True
+    assert gap["q10336_finished_semantics_match_q10333"] is True
+    assert gap["q10339_finished_semantics_match_q10333"] is True
+    assert gap["forever_protect"] == ("Q10333", "Q10336", "Q10339", "Q10344")
+    assert [h["id"] for h in gap["hypotheses"]] == [
+        "number_of_contours_vs_open_contour_count",
+        "bend_vs_outer_contour",
+        "thickness_material",
+        "post_finish_internaldata_absent",
+        "human_q10333_xhr_unrecorded",
+        "cad_finish_soft_pass_class",
+        "get_border_size_other_keys_unrecorded",
+        "unused_time_step_explode_empty",
+        "mid_wizard_number_of_contours_flip",
+        "cadimport_data_and_updateitemtype_not_contours_flip",
+        "quote_item_read_omits_number_of_contours",
+        "open_url_only_additem_dxf_itemedit_v1_tree",
+    ]
+    ruled = {h["id"]: h["ruled_out"] for h in gap["hypotheses"]}
+    assert ruled["number_of_contours_vs_open_contour_count"] is True
+    assert ruled["bend_vs_outer_contour"] is True
+    assert ruled["thickness_material"] is False
+    assert ruled["post_finish_internaldata_absent"] is True
+    assert ruled["human_q10333_xhr_unrecorded"] is False
+    assert ruled["cad_finish_soft_pass_class"] is True
+    assert ruled["get_border_size_other_keys_unrecorded"] is False
+    assert ruled["unused_time_step_explode_empty"] is False
+    assert ruled["mid_wizard_number_of_contours_flip"] is False
+    assert ruled["cadimport_data_and_updateitemtype_not_contours_flip"] is True
+    assert ruled["quote_item_read_omits_number_of_contours"] is False
+    assert ruled["open_url_only_additem_dxf_itemedit_v1_tree"] is False
+    assert gap["q10333"]["number_of_contours"] == 1
+    assert gap["q10333"]["open_contour_count"] == 0
+    assert gap["q10336"]["open_contour_count"] == 0
+    assert gap["q10336"]["number_of_contours"] == 1
+    assert gap["q10339"]["quote_number"] == "Q10339"
+    assert gap["q10339"]["id_unknown"] is False
+    assert gap["q10339"]["quote_id_prefix"] == "76cecc73"
+    assert gap["q10339"]["open_contour_count"] == 0
+    assert gap["q10339"]["number_of_contours"] == 1
+    assert gap["q10339_contours_pass"] is True
+    assert gap["q10339_cad_laser_finish_soft_pass"] is True
+    assert gap["mid_wizard_xhr_probe_useful"] is True
+    assert gap["explode_empty_internaldata_fail_close"] is True
+    assert gap["named_cad_finish_xhr_sequence"][-1] == "/quote/ItemEdit"
+    assert "/Quote/GetBorderSize" in gap["named_cad_finish_xhr_sequence"]
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "f73dd116" not in refuse
+    assert "Q10336" not in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert "bcff1a24" in refuse
+    assert "Q10335" in refuse
+    assert dump["invent"] is False
+
+
+def test_cad_finish_named_xhr_probe_itemedit_getbordersize_fail_closed():
+    """Named Q10336 XHRs are probed; invent fill stays locked. No invent."""
+    from secturafab.cadimport_js import (
+        CAD_FINISH_NAMED_XHR_SEQUENCE,
+        GET_BORDER_SIZE_FILLS_CONTOURS,
+        GET_BORDER_SIZE_PATH,
+        GET_BORDER_SIZE_PROVEN_KEYS,
+        GET_BORDER_SIZE_THICKNESS_UNITS_INCH,
+        QUOTE_ITEM_EDIT_FILLS_CONTOURS,
+        QUOTE_ITEM_EDIT_PATH,
+        cad_finish_named_xhr_probe,
+        cad_finish_named_xhr_sequence,
+        get_border_size_fields,
+        get_border_size_fills_contours,
+        quote_item_edit_fills_contours,
+    )
+    from secturafab.website import (
+        CADIMPORT_OPEN_CONTOUR_COUNT_UNLOCKS_CONTOURS,
+        CONTOURS_PASS_SIGNAL,
+        STEP_CONTOURS_FILL_UNLOCKED,
+        STEP_CONTOURS_KNOWN_PATHS,
+        STEP_CONTOURS_NOT_FILL_PATHS,
+        WEBSITE_FINISH_PATHS,
+        cad_filelist_refuses_additem_dxf,
+        cad_finish_named_sequence_unlocks_contours,
+        cadimport_open_contour_count_unlocks_contours,
+        contours_ge_1_from_named_fields,
+        itemlist_contours_pass,
+        step_contours_fill_unlocked,
+    )
+    from tests.fixtures.live_q10336_h638 import q10336_h638_cad_finish_dump
+
+    assert cad_finish_named_xhr_sequence() == CAD_FINISH_NAMED_XHR_SEQUENCE
+    assert CAD_FINISH_NAMED_XHR_SEQUENCE[-1] == QUOTE_ITEM_EDIT_PATH
+    assert CAD_FINISH_NAMED_XHR_SEQUENCE[5] == GET_BORDER_SIZE_PATH
+    dump = q10336_h638_cad_finish_dump()
+    assert tuple(dump["xhr_sequence"]) == CAD_FINISH_NAMED_XHR_SEQUENCE
+
+    full = cad_finish_named_xhr_probe(CAD_FINISH_NAMED_XHR_SEQUENCE)
+    assert full["missing_named"] == []
+    assert full["fills_contours"] is False
+    assert full["invent"] is False
+    assert full["unlocks_automation_contours_fill"] is False
+    assert full["quote_item_edit_path"] == QUOTE_ITEM_EDIT_PATH
+    assert full["get_border_size_proven_keys"] == list(GET_BORDER_SIZE_PROVEN_KEYS)
+
+    miss = cad_finish_named_xhr_probe(
+        [
+            "/CadImport/UploadItem_DXFFiles",
+            "/part/create",
+            "/Part/UpdateItemType",
+            "/Quote/AddItem_DXFFiles",
+        ]
+    )
+    assert QUOTE_ITEM_EDIT_PATH in miss["missing_named"]
+    assert GET_BORDER_SIZE_PATH in miss["missing_named"]
+    assert "/part/PartImage" in miss["missing_named"]
+    assert miss["fills_contours"] is False
+
+    assert get_border_size_fields() == {}
+    assert get_border_size_fields(thickness_units="") == {}
+    assert get_border_size_fields(
+        thickness_units=GET_BORDER_SIZE_THICKNESS_UNITS_INCH
+    ) == {"Thickness_Units": "inch"}
+    assert get_border_size_fills_contours() is False is GET_BORDER_SIZE_FILLS_CONTOURS
+    assert quote_item_edit_fills_contours() is False is QUOTE_ITEM_EDIT_FILLS_CONTOURS
+    assert GET_BORDER_SIZE_PROVEN_KEYS == ("Thickness_Units",)
+    assert QUOTE_ITEM_EDIT_PATH in STEP_CONTOURS_NOT_FILL_PATHS
+    assert QUOTE_ITEM_EDIT_PATH in STEP_CONTOURS_KNOWN_PATHS
+    assert GET_BORDER_SIZE_PATH in STEP_CONTOURS_KNOWN_PATHS
+    assert WEBSITE_FINISH_PATHS["quote_item_edit"] == QUOTE_ITEM_EDIT_PATH
+
+    assert CONTOURS_PASS_SIGNAL == "v1_itemlist_number_of_contours_ge_1"
+    assert itemlist_contours_pass(number_of_contours=1) is True
+    assert itemlist_contours_pass(number_of_contours=0) is False
+    assert itemlist_contours_pass(
+        number_of_contours=1, product_type="Cad"
+    ) is True
+    assert itemlist_contours_pass(
+        number_of_contours=1, product_type="part"
+    ) is True
+    assert itemlist_contours_pass(
+        number_of_contours=1, product_type=100
+    ) is True
+    assert contours_ge_1_from_named_fields(number_of_contours=1) is True
+    assert contours_ge_1_from_named_fields(
+        number_of_contours=None, open_contour_count=0
+    ) is False
+    assert contours_ge_1_from_named_fields(
+        number_of_contours=0, open_contour_count=0
+    ) is False
+    assert contours_ge_1_from_named_fields(
+        number_of_contours=1, open_contour_count=0
+    ) is True
+    assert cadimport_open_contour_count_unlocks_contours(0) is False
+    assert cadimport_open_contour_count_unlocks_contours(1) is False
+    assert (
+        CADIMPORT_OPEN_CONTOUR_COUNT_UNLOCKS_CONTOURS is False
+    )
+    assert cad_finish_named_sequence_unlocks_contours(
+        CAD_FINISH_NAMED_XHR_SEQUENCE,
+        number_of_contours=1,
+        open_contour_count=0,
+    ) is False
+    assert cad_finish_named_sequence_unlocks_contours(
+        CAD_FINISH_NAMED_XHR_SEQUENCE,
+        number_of_contours=1,
+        open_contour_count=1,
+    ) is False
+    assert step_contours_fill_unlocked() is False is STEP_CONTOURS_FILL_UNLOCKED
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "InternalData empty" in refuse
+
+
+def test_persist_number_of_contours_gate_ignores_occ_and_contours_key():
+    """Persist PASS is NumberOfContours≥1 on v1 ItemList / TreeListData.
+
+    OpenContourCount and a Contours list key are not the PASS signal
+    (OCC=0 even on H.6.38 PASS). QuoteItem_Read Data-only Cad fails
+    contours even if a Contours key is present. invent=false.
+    """
+    from secturafab.website import (
+        WEBSITE_FINISH_PATHS,
+        item_cad_contour_count,
+        quote_contours_rows,
+        quote_item_rows,
+        step_finish_pack_missing,
+    )
+
+    laser_pr = {
+        "ProductType": 100,
+        "Category": "Cad",
+        "BadgeString": "PR",
+        "OperationCostList": [
+            {"CalculatorName": "Laser"},
+            {"CalculatorName": "Deburr"},
+            {"CalculatorName": "Laser-Setup"},
+            {"CalculatorName": "Sheet Loading"},
+        ],
+    }
+    assert item_cad_contour_count({**laser_pr, "OpenContourCount": 3}) == 0
+    assert item_cad_contour_count({**laser_pr, "Contours": [1]}) == 0
+    assert item_cad_contour_count({**laser_pr, "NumberOfContours": 1}) == 1
+    assert item_cad_contour_count(
+        {**laser_pr, "NumberOfContours": 1, "OpenContourCount": 0}
+    ) == 1
+
+    occ_only = {"ItemList": [{**laser_pr, "OpenContourCount": 3}]}
+    miss_occ = step_finish_pack_missing(
+        occ_only, expect_cad=True, expect_linear=False
+    )
+    assert miss_occ is not None
+    assert "Cad Contours empty after Finish" in miss_occ
+
+    contours_key = {"ItemList": [{**laser_pr, "Contours": 1}]}
+    miss_key = step_finish_pack_missing(
+        contours_key, expect_cad=True, expect_linear=False
+    )
+    assert miss_key is not None
+    assert "Cad Contours empty after Finish" in miss_key
+
+    noc_pass = {
+        "ItemList": [{**laser_pr, "NumberOfContours": 1, "OpenContourCount": 0}]
+    }
+    assert step_finish_pack_missing(
+        noc_pass, expect_cad=True, expect_linear=False
+    ) is None
+    part_noun_pass = {
+        "ItemList": [
+            {
+                **laser_pr,
+                "ProductType": 100,
+                "ProductTypeName": "part",
+                "NumberOfContours": 1,
+            }
+        ]
+    }
+    assert step_finish_pack_missing(
+        part_noun_pass, expect_cad=True, expect_linear=False
+    ) is None
+
+    read_only = {
+        "Data": [{**laser_pr, "NumberOfContours": 1, "Contours": 1}],
+    }
+    assert quote_item_rows(read_only)
+    assert quote_contours_rows(read_only) == []
+    miss_read = step_finish_pack_missing(
+        read_only, expect_cad=True, expect_linear=False
+    )
+    assert miss_read is not None
+    assert "Cad Contours empty after Finish" in miss_read
+
+    tree = {
+        "TreeListData": [
+            {**laser_pr, "NumberOfContours": 1, "OpenContourCount": 0}
+        ]
+    }
+    assert step_finish_pack_missing(
+        tree, expect_cad=True, expect_linear=False
+    ) is None
+    assert WEBSITE_FINISH_PATHS["quote_item_read_treelist"] == (
+        "/Quote/QuoteItem_ReadTreeListData"
+    )
+
+
+def test_read_quote_items_attaches_v1_itemlist_for_number_of_contours():
+    """QuoteItem_Read Data stays; nonempty v1 ItemList is attached."""
+    from secturafab.push import SecturaFabPushService
+
+    client = MagicMock()
+    client.quote_item_read.return_value = {
+        "Data": [{"ProductType": 100, "Category": "Cad"}],
+        "Total": 1,
+    }
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ProductType": 100,
+                "Category": "Cad",
+                "NumberOfContours": 1,
+            }
+        ]
+    }
+    client.quote_item_read_treelist.return_value = None
+    posted = SecturaFabPushService(client=client)._read_quote_items("qid")
+    assert posted["Data"][0]["ProductType"] == 100
+    assert posted["ItemList"][0]["NumberOfContours"] == 1
+
+    empty_v1 = MagicMock()
+    empty_v1.quote_item_read.return_value = {
+        "Data": [{"ProductType": 100, "Category": "Cad"}],
+        "Total": 1,
+    }
+    empty_v1.get_json.return_value = {"ItemList": []}
+    empty_v1.quote_item_read_treelist.return_value = None
+    posted_empty = SecturaFabPushService(client=empty_v1)._read_quote_items("qid")
+    assert "ItemList" not in posted_empty
+    assert posted_empty["Data"][0]["Category"] == "Cad"
+
+
+def test_cad_material_inches_recipe_complete_skips_empty_internaldata_refuse():
+    """Q10366: Cad+Material A36+.1875 + empty InternalData must not refuse Finish.
+
+    Contours fill server-side on Finish. Contours gate after Finish is
+    authority. Recipe incomplete still refuses. invent=false.
+    """
+    from secturafab.website import (
+        cad_filelist_refuses_additem_dxf,
+        cad_material_inches_recipe_complete,
+    )
+
+    recipe = {
+        "Name": "H.6.38 PLATE",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "ProductTypeName": "part",
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "InternalData": "",
+        "ImageString": "iVBORw0KGgo",
+    }
+    assert cad_material_inches_recipe_complete(recipe) is True
+    assert cad_filelist_refuses_additem_dxf(recipe) is None
+
+    no_mat = {**recipe, "Material": "", "MaterialGrade": ""}
+    no_mat.pop("MaterialGrade", None)
+    assert cad_material_inches_recipe_complete(no_mat) is False
+    why = cad_filelist_refuses_additem_dxf(no_mat)
+    assert why is not None
+    assert "InternalData empty" in why
+
+    meter = {**recipe, "Thickness": "0.0047625", "Thickness_Units": "meter"}
+    assert cad_material_inches_recipe_complete(meter) is False
+    assert cad_filelist_refuses_additem_dxf(meter) is not None
+
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+    from secturafab.website import (
+        kendo_filelist_for_finish,
+        page_dxf_finish_skip_why,
+    )
+
+    recipe_sid = {
+        **recipe,
+        "ID": "id-0",
+        "FileID": "file-0",
+        "SourceDataID": "src-0",
+    }
+    assert page_dxf_finish_skip_why([recipe_sid]) is None
+    cap = kendo_filelist_for_finish([recipe_sid], from_datasource=True)
+    assert cap["should_finish"] is True
+    assert cap["finish_why"] != "cad_internaldata_empty_after_explode"
+    assert page_dxf_finish_skip_why([no_mat]) == "cad_internaldata_empty_after_explode"
+    js = _PAGE_FINISH_JS
+    assert "cadMaterialInchesRecipeComplete" in js
+    assert "cad_material_inches_recipe_complete" in js
+    assert "Q10420" in js
+    assert "!recipeOk && payloadEmpty(rows[0].InternalData)" in js
+
+
+def test_post_finish_contours_gate_treelist_number_of_contours():
+    """Post-Finish PASS is NumberOfContours≥1 on TreeListData. EXEC_FAIL if <1.
+
+    ProductType 100 / noun part is OK. OCC / Contours list are not the
+    PASS signal. QuoteItem_Read Data-only is not authority. invent=false.
+    """
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+        itemlist_contours_pass,
+        quote_treelist_rows,
+        step_cad_post_finish_contours_gate,
+    )
+
+    pass_row = {
+        "ProductType": 100,
+        "ProductTypeName": "part",
+        "Category": "Cad",
+        "NumberOfContours": 1,
+        "OpenContourCount": 0,
+    }
+    tree_pass = {"TreeListData": [pass_row]}
+    assert quote_treelist_rows(tree_pass) == [pass_row]
+    assert step_cad_post_finish_contours_gate(tree_pass) is None
+    assert itemlist_contours_pass(row=pass_row) is True
+
+    tree_data = {"Data": [{**pass_row}]}
+    assert quote_treelist_rows(tree_data)[0]["NumberOfContours"] == 1
+
+    fail_zero = {"TreeListData": [{**pass_row, "NumberOfContours": 0}]}
+    why_zero = step_cad_post_finish_contours_gate(fail_zero)
+    assert why_zero is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_zero
+    assert "NumberOfContours<1 after Finish" in why_zero
+    assert "Q10366" in why_zero
+    assert "invent" in why_zero.lower()
+    assert cad_finish_notes_refuse_additem_dxf([why_zero]) == why_zero
+
+    occ_only = {
+        "TreeListData": [
+            {
+                "ProductType": 100,
+                "Category": "Cad",
+                "OpenContourCount": 3,
+            }
+        ]
+    }
+    why_occ = step_cad_post_finish_contours_gate(occ_only)
+    assert why_occ is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_occ
+
+    read_only = {
+        "Data": [{**pass_row, "NumberOfContours": 1}],
+    }
+    why_read = step_cad_post_finish_contours_gate(read_only)
+    assert why_read is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_read
+
+    assert step_cad_post_finish_contours_gate(tree_pass, expect_cad=False) is None
+
+    mixed = {
+        "TreeListData": [
+            {**pass_row, "Name": "34328-1 PLATE A", "NumberOfContours": 1},
+            {**pass_row, "Name": "34328-1 PLATE B", "NumberOfContours": 0},
+        ]
+    }
+    why_mixed = step_cad_post_finish_contours_gate(mixed)
+    assert why_mixed is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_mixed
+    assert "NumberOfContours<1 after Finish" in why_mixed
+    assert "Q10369" in why_mixed
+    assert "Q10368" in why_mixed
+    assert "34328-1 PLATE A Contours=1" in why_mixed
+    assert "34328-1 PLATE B Contours=0" in why_mixed
+    assert cad_finish_notes_refuse_additem_dxf([why_mixed]) == why_mixed
+
+
+def test_read_quote_items_attaches_treelist_for_number_of_contours():
+    """QuoteItem_ReadTreeListData rows attach as TreeListData."""
+    from secturafab.push import SecturaFabPushService
+
+    client = MagicMock()
+    client.quote_item_read.return_value = {
+        "Data": [{"ProductType": 100, "Category": "Cad"}],
+        "Total": 1,
+    }
+    client.get_json.return_value = {"ItemList": []}
+    client.quote_item_read_treelist.return_value = {
+        "Data": [
+            {
+                "ProductType": 100,
+                "ProductTypeName": "part",
+                "NumberOfContours": 1,
+            }
+        ]
+    }
+    posted = SecturaFabPushService(client=client)._read_quote_items("qid")
+    client.quote_item_read_treelist.assert_called_once_with("qid")
+    assert posted["TreeListData"][0]["NumberOfContours"] == 1
+    assert posted["Data"][0]["Category"] == "Cad"
+
+
+def test_live_mid_wizard_contours_xhr_carrier_notes():
+    """Mid-wizard mint skipped. Persist NumberOfContours≥1, never OCC."""
+    from secturafab.cadimport_js import GET_BORDER_SIZE_PATH, UPDATE_ITEM_TYPE_PATH
+    from secturafab.website import STEP_CONTOURS_FILL_UNLOCKED, WEBSITE_FINISH_PATHS
+    from tests.fixtures.live_mid_wizard_contours_xhr import (
+        live_mid_wizard_contours_xhr,
+    )
+
+    notes = live_mid_wizard_contours_xhr()
+    assert notes["invent"] is False
+    assert notes["mid_wizard_live_mint"] == "skipped_session_busy_protected_tabs"
+    assert notes["unlocks_automation_contours_fill"] is False
+    assert notes["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
+    assert notes["pass_signal"] == "NumberOfContours>=1"
+    assert notes["not_pass_signal"] == "OpenContourCount"
+    assert "v1/quote ItemList" in notes["number_of_contours_on"]
+    assert "/Quote/QuoteItem_ReadTreeListData" in notes["number_of_contours_on"]
+    assert "/Quote/QuoteItem_Read list items" in notes["number_of_contours_absent_on"]
+    assert notes["cadimport_data_has_number_of_contours"] is False
+    assert notes["cadimport_open_contour_count_even_on_pass"] == 0
+    assert "/CadImport/Data" in notes["ruled_out_flip_carriers"]
+    assert UPDATE_ITEM_TYPE_PATH in notes["ruled_out_flip_carriers"]
+    assert GET_BORDER_SIZE_PATH in notes["ruled_out_flip_carriers"]
+    assert "/Quote/AddItem_DXFFiles" in notes["open_url_only"]
+    assert "/quote/ItemEdit" in notes["open_url_only"]
+    assert "GET v1/quote ItemList" in notes["open_url_only"]
+    assert (
+        WEBSITE_FINISH_PATHS["quote_item_read_treelist"] in notes["open_url_only"]
+    )
+    assert notes["forever_protect"] == ("Q10333", "Q10336", "Q10339", "Q10344")
+
+
+def test_time_step_empty_internaldata_dig_fail_closed():
+    """28898-1 / 28772-1 / 14327-18 / 15911-9 / 21839-1: empty explode InternalData stay refuse."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+        STEP_CONTOURS_FILL_UNLOCKED,
+        cad_filelist_refuses_additem_dxf,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.time_step_empty_internaldata import (
+        TIME_STEP_EMPTY_INTERNALDATA_21839_QUOTE_ID,
+        TIME_STEP_EMPTY_INTERNALDATA_21839_QUOTE_ID_PREFIX,
+        TIME_STEP_EMPTY_INTERNALDATA_21839_ZZ_DEL,
+        TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID,
+        TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID_PREFIX,
+        TIME_STEP_EMPTY_INTERNALDATA_ZZ_DEL,
+        time_step_empty_internaldata_dig,
+        time_step_empty_internaldata_pns,
+    )
+
+    dig = time_step_empty_internaldata_dig()
+    assert time_step_empty_internaldata_pns() == (
+        "28898-1",
+        "28772-1",
+        "14327-18",
+        "15911-9",
+        "21839-1",
+    )
+    assert dig["invent"] is False
+    assert dig["unlocks_automation_contours_fill"] is False
+    assert dig["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
+    assert dig["separate_from_h638_family"] is True
+    assert dig["h638_contours_good"] == ("Q10333", "Q10336", "Q10339", "Q10344")
+    assert dig["ids_restated"] == ("15911-9", "21839-1")
+    assert dig["id_unknown"] is True
+    assert dig["id_unknown_pns"] == ("28898-1", "28772-1", "14327-18")
+    assert dig["known_quote_id"] == TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID
+    assert (
+        dig["known_quote_id_prefix"]
+        == TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID_PREFIX
+        == "ef865b0f"
+    )
+    assert dig["zz_del_number"] == TIME_STEP_EMPTY_INTERNALDATA_ZZ_DEL
+    assert dig["known_quote_id_21839"] == TIME_STEP_EMPTY_INTERNALDATA_21839_QUOTE_ID
+    assert (
+        dig["known_quote_id_prefix_21839"]
+        == TIME_STEP_EMPTY_INTERNALDATA_21839_QUOTE_ID_PREFIX
+        == "1994392f"
+    )
+    assert dig["zz_del_number_21839"] == TIME_STEP_EMPTY_INTERNALDATA_21839_ZZ_DEL
+    assert dig["live_probe_tip"] == "62f7a92"
+    assert dig["live_probe_tip_21839"] == "bb4998a"
+    assert dig["missing_mid_wizard_xhrs_vs_h638"] == (
+        "/CadImport/Data",
+        "/part/PartImage",
+        "/Quote/GetBorderSize",
+    )
+    assert dig["missing_mid_wizard_xhrs_observed"] is False
+    assert dig["full_trail_xhrs"] == (
+        "/CadImport/Data",
+        "/Quote/GetBorderSize",
+        "/part/PartImage",
+    )
+    assert dig["full_trail_observed_still_empty"] is True
+    assert dig["update_item_type_ok"] is True
+    assert dig["internaldata_empty_after_explode"] is True
+    assert dig["finish_refused"] is True
+    assert dig["finish_why"] == CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    assert dig["named_sequence_unlocks_fill"] is False
+    assert dig["do_not_remint"] is True
+    assert dig["do_not_patch"] is True
+    assert "28769-1" in dig["prior_captures"]
+    assert "14327-5" in dig["prior_captures"]
+    ids = [h["id"] for h in dig["hypotheses"]]
+    assert "server_explode_empty_tlist" in ids
+    assert "update_item_type_does_not_fill_internaldata" in ids
+    assert "15911_9_missing_mid_wizard_xhrs" in ids
+    assert "21839_1_full_trail_still_empty" in ids
+    assert "sprout_gsb20570006_outside_time_pick" in ids
+    ruled = {h["id"]: h["ruled_out"] for h in dig["hypotheses"]}
+    assert ruled["update_item_type_does_not_fill_internaldata"] is True
+    assert ruled["not_h638_finished_get_contours_good"] is True
+    assert ruled["15911_9_missing_mid_wizard_xhrs"] is True
+    assert ruled["21839_1_full_trail_still_empty"] is True
+    assert ruled["sprout_gsb20570006_outside_time_pick"] is True
+    assert is_forbidden_quote_id(TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID)
+    assert is_forbidden_quote_id("ef865b0f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number(TIME_STEP_EMPTY_INTERNALDATA_ZZ_DEL)
+    assert is_forbidden_quote_id(TIME_STEP_EMPTY_INTERNALDATA_21839_QUOTE_ID)
+    assert is_forbidden_quote_id("1994392f-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number(TIME_STEP_EMPTY_INTERNALDATA_21839_ZZ_DEL)
+    with pytest.raises(
+        ForbiddenQuoteError, match=TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID
+    ):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": TIME_STEP_EMPTY_INTERNALDATA_KNOWN_QUOTE_ID},
+        )
+    with pytest.raises(ForbiddenQuoteError, match=TIME_STEP_EMPTY_INTERNALDATA_ZZ_DEL):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": TIME_STEP_EMPTY_INTERNALDATA_ZZ_DEL},
+        )
+    with pytest.raises(
+        ForbiddenQuoteError, match=TIME_STEP_EMPTY_INTERNALDATA_21839_QUOTE_ID
+    ):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": TIME_STEP_EMPTY_INTERNALDATA_21839_QUOTE_ID},
+        )
+    with pytest.raises(
+        ForbiddenQuoteError, match=TIME_STEP_EMPTY_INTERNALDATA_21839_ZZ_DEL
+    ):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": TIME_STEP_EMPTY_INTERNALDATA_21839_ZZ_DEL},
+        )
+    for pn in time_step_empty_internaldata_pns():
+        assert is_forbidden_quote_number(pn)
+        assert spent_quote_number_block_reason(pn)
+        assert pn in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+        assert pn in step_contours_fill_hunt()["never_remint"]
+        with pytest.raises(ForbiddenQuoteError, match=pn):
+            refuse_forbidden_quote_write(
+                method="POST",
+                path="/Quote/AddItem_DXFFiles",
+                payload={"QuoteNumber": pn},
+            )
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "InternalData empty" in refuse
+    assert "28898-1" not in refuse
+    assert "28772-1" not in refuse
+    assert "14327-18" not in refuse
+    assert "15911-9" not in refuse
+    assert "ef865b0f" not in refuse
+    assert "21839-1" not in refuse
+    assert "1994392f" not in refuse
+    assert "GSB20570006" not in refuse
+    assert "afee7458" not in refuse
+
+
+def test_sprout_empty_internaldata_dig_fail_closed():
+    """GSB20570006 / afee7458: empty InternalData outside H.6.38 / Time pick."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE,
+        STEP_CONTOURS_FILL_UNLOCKED,
+        cad_filelist_refuses_additem_dxf,
+    )
+    from tests.fixtures.sprout_empty_internaldata import (
+        SPROUT_EMPTY_INTERNALDATA_PN,
+        SPROUT_EMPTY_INTERNALDATA_QUOTE_ID,
+        SPROUT_EMPTY_INTERNALDATA_QUOTE_ID_PREFIX,
+        SPROUT_EMPTY_INTERNALDATA_ZZ_DEL,
+        sprout_empty_internaldata_dig,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.time_step_empty_internaldata import (
+        time_step_empty_internaldata_pns,
+    )
+
+    dig = sprout_empty_internaldata_dig()
+    assert dig["invent"] is False
+    assert dig["unlocks_automation_contours_fill"] is False
+    assert dig["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
+    assert dig["outside_h638_family"] is True
+    assert dig["outside_time_pick"] is True
+    assert dig["h638_contours_good"] == ("Q10333", "Q10336", "Q10339", "Q10344")
+    assert dig["part_number"] == SPROUT_EMPTY_INTERNALDATA_PN == "GSB20570006"
+    assert dig["customer"] == "Sprout"
+    assert dig["piece_part"] == "1.1"
+    assert dig["part_count"] == 11
+    assert dig["known_quote_id"] == SPROUT_EMPTY_INTERNALDATA_QUOTE_ID
+    assert (
+        dig["known_quote_id_prefix"]
+        == SPROUT_EMPTY_INTERNALDATA_QUOTE_ID_PREFIX
+        == "afee7458"
+    )
+    assert dig["zz_del_number"] == SPROUT_EMPTY_INTERNALDATA_ZZ_DEL
+    assert dig["live_probe_tip"] == "2f6d74f"
+    assert dig["cos_hold"] is True
+    assert dig["full_cad_wizard_mid_wizard"] is True
+    assert dig["internaldata_empty_after_full_trail"] is True
+    assert dig["finish_refused"] is True
+    assert dig["finish_why"] == CAD_INTERNALDATA_EMPTY_AFTER_EXPLODE
+    assert dig["named_sequence_unlocks_fill"] is False
+    assert dig["do_not_remint"] is True
+    assert dig["do_not_patch"] is True
+    assert SPROUT_EMPTY_INTERNALDATA_PN not in time_step_empty_internaldata_pns()
+    assert dig["same_class_as_time_steps"] == time_step_empty_internaldata_pns()
+    assert is_forbidden_quote_id(SPROUT_EMPTY_INTERNALDATA_QUOTE_ID)
+    assert is_forbidden_quote_id("afee7458-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number(SPROUT_EMPTY_INTERNALDATA_PN)
+    assert is_forbidden_quote_number(SPROUT_EMPTY_INTERNALDATA_ZZ_DEL)
+    assert spent_quote_number_block_reason(SPROUT_EMPTY_INTERNALDATA_PN)
+    assert SPROUT_EMPTY_INTERNALDATA_PN in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert SPROUT_EMPTY_INTERNALDATA_PN in step_contours_fill_hunt()["never_remint"]
+    with pytest.raises(
+        ForbiddenQuoteError, match=SPROUT_EMPTY_INTERNALDATA_QUOTE_ID
+    ):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": SPROUT_EMPTY_INTERNALDATA_QUOTE_ID},
+        )
+    with pytest.raises(ForbiddenQuoteError, match=SPROUT_EMPTY_INTERNALDATA_PN):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": SPROUT_EMPTY_INTERNALDATA_PN},
+        )
+    with pytest.raises(
+        ForbiddenQuoteError, match=SPROUT_EMPTY_INTERNALDATA_ZZ_DEL
+    ):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": SPROUT_EMPTY_INTERNALDATA_ZZ_DEL},
+        )
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "InternalData empty" in refuse
+    assert "GSB20570006" not in refuse
+    assert "afee7458" not in refuse
+
+
+def test_q10338_crossdrain_image_files_pass_protect():
+    """Q10338 / 4902c597 AIM Cross Drain: Cad Image Files PASS leftover.
+
+    CROSSDRAIN-12X7X60 / Time Waco / PL14 Ga-SS316 / 69.875×25.875 /
+    Laser Bay1 / Contours=1 / Finish UC 100.45 + PR laser pack /
+    bends_count=8 shop PDF / UpdateItemType Cad 200. invent=false.
+    Post-pass bend-API dabble may show live UC 3.25 — Finish snapshot
+    UC 100.45 is PASS basis. Forever-protect; never remint / PATCH.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10338_crossdrain import q10338_crossdrain_pass_dump
+
+    dump = q10338_crossdrain_pass_dump()
+    assert dump["quote_id"] == "4902c597-2ad6-4ebf-b577-dd6cf20a7d87"
+    assert dump["quote_id_prefix"] == "4902c597"
+    assert dump["quote_number"] == "Q10338"
+    assert dump["part_number"] == "CROSSDRAIN-12X7X60"
+    assert dump["customer"] == "AIM Cross Drain"
+    assert dump["org"] == "Time Waco"
+    assert dump["source"] == "Kyle inbox Cross Drain zip"
+    assert dump["path"] == "image_files"
+    assert dump["pass"] is True
+    assert dump["image_files_pass"] is True
+    assert dump["contours_pass"] is True
+    assert dump["product_type"] == "Cad"
+    assert dump["product_type_enum"] == 100
+    assert dump["update_item_type_status"] == 200
+    assert dump["update_item_type_itemtype"] == "Cad"
+    assert dump["number_of_contours"] == 1
+    assert dump["bends_count"] == 8
+    assert dump["bends_from"] == "shop_pdf"
+    assert dump["material"] == "PL14 Ga-SS316"
+    assert dump["size"] == "69.875×25.875"
+    assert dump["machine"] == "Laser Bay1"
+    assert dump["unit_cost"] == 100.45
+    assert dump["finish_unit_cost"] == 100.45
+    assert dump["live_unit_cost_after_bend_dabble"] == 3.25
+    assert dump["pass_basis_unit_cost"] == 100.45
+    assert dump["pr_laser_pack"] is True
+    assert dump["invent"] is False
+    assert dump["zz_del"] is False
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["do_not_repair_via_patch"] is True
+    assert all(row["quote_number"] != "Q10338" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10338" for row in leftover_cad_for_plate_dumps())
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("4902c597-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10338")
+    assert is_forbidden_quote_number("CROSSDRAIN-12X7X60")
+    assert spent_quote_number_block_reason("Q10338")
+    assert spent_quote_number_block_reason("CROSSDRAIN-12X7X60")
+    with pytest.raises(ForbiddenQuoteError, match="Q10338"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "Q10338"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="CROSSDRAIN-12X7X60"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"QuoteNumber": "CROSSDRAIN-12X7X60"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="4902c597"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_PDFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="4902c597"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
+        )
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "4902c597" not in refuse
+    assert "Q10338" not in refuse
+    assert "CROSSDRAIN-12X7X60" not in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert "f73dd116" not in refuse
+    assert "Q10336" not in refuse
+    assert dump["invent"] is False
+
+
+def test_q10339_h638_cad_finish_soft_protect():
+    """Q10339 / 76cecc73 Safe Cave H.6.38: Cad+Laser Finish leftover.
+
+    EOD STP Cad→Finish. Live GET finished NumberOfContours=1 matches
+    Q10333; OCC=0 expected; Laser Bay1 / UC 64.25 / unit price 176.96.
+    Soft-pass labels were stage notes. Forever protect; never remint /
+    PATCH / ZZ-DEL. invent=false. Invent fill stays locked.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10339_h638 import q10339_h638_cad_finish_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10339_h638_cad_finish_dump()
+    assert dump["quote_id"] == "76cecc73-257e-4fa7-91b7-ed15a4c90caa"
+    assert dump["quote_id_prefix"] == "76cecc73"
+    assert dump["quote_number"] == "Q10339"
+    assert dump["part_number"] == "H.6.38"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["source"] == "STP"
+    assert dump["same_step_family_as"] == "Q10333"
+    assert dump["via"] == "eod_stp_cad_then_finish"
+    assert dump["id_unknown"] is False
+    assert dump["pass"] is True
+    assert dump["contours_pass"] is True
+    assert dump["cad_laser_finish_soft_pass"] is True
+    assert dump["soft_pass_labels_were_stage_notes"] is True
+    assert dump["finished_semantics_match_q10333"] is True
+    assert dump["machine"] == "Laser Bay1"
+    assert dump["unit_cost"] == 64.25
+    assert dump["unit_price"] == 176.96
+    assert dump["number_of_contours"] == 1
+    assert dump["open_contour_count"] == 0
+    assert dump["contours_ge_1"] is True
+    assert dump["contours_pass_signal"] == "v1_itemlist_number_of_contours_ge_1"
+    assert dump["bends"] == 8
+    assert dump["profile"] is True
+    assert dump["ocl_profile_count"] == 5
+    assert dump["ocl_bend_count"] == 2
+    assert dump["internaldata_absent_post_finish"] is True
+    assert dump["finish_clicked"] is True
+    assert dump["finish_posted"] is True
+    assert dump["invent"] is False
+    assert dump["zz_del"] is False
+    assert dump["zz_del_number"] is None
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert all(row["quote_number"] != "Q10339" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10339" for row in leftover_cad_for_plate_dumps())
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("76cecc73-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10339")
+    assert spent_quote_number_block_reason("Q10339")
+    with pytest.raises(ForbiddenQuoteError, match="Q10339"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10339"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="76cecc73"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="76cecc73"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
+        )
+    assert "Q10339" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10339" in step_contours_fill_hunt()["never_remint"]
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "76cecc73" not in refuse
+    assert "Q10339" not in refuse
+    assert "f73dd116" not in refuse
+    assert "Q10336" not in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert "bcff1a24" in refuse
+    assert "Q10335" in refuse
+    assert dump["invent"] is False
+    assert dump["unlocks_automation_contours_fill"] is False
+
+
+def test_q10344_h638_kyle_ui_control_forever_forbid():
+    """Q10344 / 55f12530 Safe Cave H.6.38: Kyle UI control PASS leftover.
+
+    ProductType Cad + thickness 0.1875 inch → Contours fill → Finish.
+    Forever protect; never remint / PATCH / ZZ-DEL. invent=false.
+    Invent fill stays locked. Do not invent Contours/InternalData.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10344_h638 import q10344_h638_kyle_ui_control_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10344_h638_kyle_ui_control_dump()
+    assert dump["quote_id"] == "55f12530-e97b-40cc-8e7f-e799d9d6b234"
+    assert dump["quote_id_prefix"] == "55f12530"
+    assert dump["quote_number"] == "Q10344"
+    assert dump["part_number"] == "H.6.38"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["source"] == "Kyle UI control"
+    assert dump["same_step_family_as"] == "Q10333"
+    assert dump["via"] == (
+        "kyle_ui_producttype_cad_thickness_0_1875_inch_then_contours_fill_then_finish"
+    )
+    assert dump["id_unknown"] is False
+    assert dump["pass"] is True
+    assert dump["contours_pass"] is True
+    assert dump["kyle_ui_control_pass"] is True
+    assert dump["product_type"] == "Cad"
+    assert dump["product_type_enum"] == 100
+    assert dump["thickness"] == "0.1875"
+    assert dump["thickness_units"] == "inch"
+    assert dump["thickness_inches"] is True
+    assert dump["contours_fill"] is True
+    assert dump["finish_clicked"] is True
+    assert dump["finish_posted"] is True
+    assert dump["invent"] is False
+    assert dump["zz_del"] is False
+    assert dump["zz_del_number"] is None
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert all(row["quote_number"] != "Q10344" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10344" for row in leftover_cad_for_plate_dumps())
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("55f12530-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10344")
+    assert spent_quote_number_block_reason("Q10344")
+    with pytest.raises(ForbiddenQuoteError, match="Q10344"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10344"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="55f12530"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="55f12530"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
+        )
+    assert "Q10344" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10344" in step_contours_fill_hunt()["never_remint"]
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "55f12530" not in refuse
+    assert "Q10344" not in refuse
+    assert "76cecc73" not in refuse
+    assert "Q10339" not in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert dump["invent"] is False
+    assert dump["unlocks_automation_contours_fill"] is False
+
+
+def test_q10346_sprout_b80510901_contours_pass_forever_forbid():
+    """Q10346 / d859a239 Sprout Contours PASS outside H.6.38.
+
+    ProductType Cad + thickness 0.0598 inch → Contours fill → Finish.
+    Forever protect; never remint / PATCH. invent=false.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10346_sprout import q10346_sprout_pass_dump
+    from tests.fixtures.sprout_empty_internaldata import sprout_empty_internaldata_dig
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10346_sprout_pass_dump()
+    assert dump["quote_id"] == "d859a239-a811-4b23-a812-29921956e880"
+    assert dump["quote_id_prefix"] == "d859a239"
+    assert dump["quote_number"] == "Q10346"
+    assert dump["part_number"] == "B80510901"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["piece"] == "Sprout B80510901 main plate"
+    assert dump["outside_h638_family"] is True
+    assert dump["h638_contours_good"] is False
+    assert dump["id_unknown"] is False
+    assert dump["pass"] is True
+    assert dump["contours_pass"] is True
+    assert dump["product_type"] == "Cad"
+    assert dump["thickness"] == "0.0598"
+    assert dump["thickness_units"] == "inch"
+    assert dump["contours_fill"] is True
+    assert dump["finish_clicked"] is True
+    assert dump["finish_posted"] is True
+    assert dump["invent"] is False
+    assert dump["zz_del"] is False
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert all(row["quote_number"] != "Q10346" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10346" for row in leftover_cad_for_plate_dumps())
+    assert sprout_empty_internaldata_dig()["part_number"] != "B80510901"
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("d859a239-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10346")
+    assert is_forbidden_quote_number("B80510901")
+    assert spent_quote_number_block_reason("Q10346")
+    assert spent_quote_number_block_reason("B80510901")
+    with pytest.raises(ForbiddenQuoteError, match="Q10346"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10346"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="B80510901"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "B80510901"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="d859a239"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="d859a239"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
+        )
+    assert "Q10346" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "B80510901" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10346" in step_contours_fill_hunt()["never_remint"]
+    assert "B80510901" in step_contours_fill_hunt()["never_remint"]
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "d859a239" not in refuse
+    assert "Q10346" not in refuse
+    assert "B80510901" not in refuse
+    assert "55f12530" not in refuse
+    assert "Q10344" not in refuse
+    assert dump["invent"] is False
+
+
+def test_q10348_h1670_contours_pass_forever_forbid():
+    """Q10348 / 1defeed8 Safe Cave H.16.70 Contours PASS leftover.
+
+    ProductType Cad + thickness 0.1875 inch → Contours fill → Finish.
+    Forever protect; never remint / PATCH. invent=false.
+    Invent fill stays locked. Do not invent Contours/InternalData.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10348_h1670 import q10348_h1670_pass_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10348_h1670_pass_dump()
+    assert dump["quote_id"] == "1defeed8-d95d-4939-b2fd-0a1774e56c6e"
+    assert dump["quote_id_prefix"] == "1defeed8"
+    assert dump["quote_number"] == "Q10348"
+    assert dump["part_number"] == "H.16.70"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["piece"] == "H.16.70"
+    assert dump["outside_h638_family"] is True
+    assert dump["h638_contours_good"] is False
+    assert dump["via"] == (
+        "producttype_cad_thickness_0_1875_inch_then_contours_fill_then_finish"
+    )
+    assert dump["id_unknown"] is False
+    assert dump["pass"] is True
+    assert dump["contours_pass"] is True
+    assert dump["product_type"] == "Cad"
+    assert dump["product_type_enum"] == 100
+    assert dump["thickness"] == "0.1875"
+    assert dump["thickness_units"] == "inch"
+    assert dump["thickness_inches"] is True
+    assert dump["contours_fill"] is True
+    assert dump["finish_clicked"] is True
+    assert dump["finish_posted"] is True
+    assert dump["invent"] is False
+    assert dump["zz_del"] is False
+    assert dump["zz_del_number"] is None
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert all(row["quote_number"] != "Q10348" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10348" for row in leftover_cad_for_plate_dumps())
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("1defeed8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10348")
+    assert is_forbidden_quote_number("H.16.70")
+    assert spent_quote_number_block_reason("Q10348")
+    assert spent_quote_number_block_reason("H.16.70")
+    with pytest.raises(ForbiddenQuoteError, match="Q10348"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10348"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match=r"H\.16\.70"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "H.16.70"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="1defeed8"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="1defeed8"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
+        )
+    assert "Q10348" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "H.16.70" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10348" in step_contours_fill_hunt()["never_remint"]
+    assert "H.16.70" in step_contours_fill_hunt()["never_remint"]
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "1defeed8" not in refuse
+    assert "Q10348" not in refuse
+    assert "H.16.70" not in refuse
+    assert "d859a239" not in refuse
+    assert "Q10346" not in refuse
+    assert "55f12530" not in refuse
+    assert "Q10344" not in refuse
+    assert dump["invent"] is False
+    assert dump["unlocks_automation_contours_fill"] is False
+
+
+def test_q10349_dh3096_contours_pass_forever_forbid():
+    """Q10349 / c4394006 Safe Cave D.H.30.96 Contours PASS leftover.
+
+    ProductType Cad + thickness 0.1875 inch → Contours fill → Finish.
+    Forever protect; never remint / PATCH. invent=false.
+    Invent fill stays locked. Do not invent Contours/InternalData.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10349_dh3096 import q10349_dh3096_pass_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10349_dh3096_pass_dump()
+    assert dump["quote_id"] == "c4394006-667f-4bf6-a9b0-aa4b1722160a"
+    assert dump["quote_id_prefix"] == "c4394006"
+    assert dump["quote_number"] == "Q10349"
+    assert dump["part_number"] == "D.H.30.96"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["piece"] == "D.H.30.96"
+    assert dump["outside_h638_family"] is True
+    assert dump["h638_contours_good"] is False
+    assert dump["via"] == (
+        "producttype_cad_thickness_0_1875_inch_then_contours_fill_then_finish"
+    )
+    assert dump["id_unknown"] is False
+    assert dump["pass"] is True
+    assert dump["contours_pass"] is True
+    assert dump["product_type"] == "Cad"
+    assert dump["product_type_enum"] == 100
+    assert dump["thickness"] == "0.1875"
+    assert dump["thickness_units"] == "inch"
+    assert dump["thickness_inches"] is True
+    assert dump["contours_fill"] is True
+    assert dump["finish_clicked"] is True
+    assert dump["finish_posted"] is True
+    assert dump["invent"] is False
+    assert dump["zz_del"] is False
+    assert dump["zz_del_number"] is None
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert all(row["quote_number"] != "Q10349" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10349" for row in leftover_cad_for_plate_dumps())
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("c4394006-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10349")
+    assert is_forbidden_quote_number("D.H.30.96")
+    assert spent_quote_number_block_reason("Q10349")
+    assert spent_quote_number_block_reason("D.H.30.96")
+    with pytest.raises(ForbiddenQuoteError, match="Q10349"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10349"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match=r"D\.H\.30\.96"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "D.H.30.96"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="c4394006"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="c4394006"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
+        )
+    assert "Q10349" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "D.H.30.96" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10349" in step_contours_fill_hunt()["never_remint"]
+    assert "D.H.30.96" in step_contours_fill_hunt()["never_remint"]
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "c4394006" not in refuse
+    assert "Q10349" not in refuse
+    assert "D.H.30.96" not in refuse
+    assert "1defeed8" not in refuse
+    assert "Q10348" not in refuse
+    assert "d859a239" not in refuse
+    assert "Q10346" not in refuse
+    assert "55f12530" not in refuse
+    assert "Q10344" not in refuse
+    assert dump["invent"] is False
+    assert dump["unlocks_automation_contours_fill"] is False
+
+
+def test_q10351_h838_contours_pass_forever_forbid():
+    """Q10351 / 0c62fce9 Safe Cave H.8.38 Contours PASS leftover.
+
+    ProductType Cad + thickness inches → Contours fill → Finish.
+    Forever protect; never remint / PATCH. invent=false.
+    Invent fill stays locked. Do not invent Contours/InternalData.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10351_h838 import q10351_h838_pass_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10351_h838_pass_dump()
+    assert dump["quote_id"] == "0c62fce9-d56a-434e-a33a-372ddb12a2b4"
+    assert dump["quote_id_prefix"] == "0c62fce9"
+    assert dump["quote_number"] == "Q10351"
+    assert dump["part_number"] == "H.8.38"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["piece"] == "H.8.38"
+    assert dump["outside_h638_family"] is True
+    assert dump["h638_contours_good"] is False
+    assert dump["via"] == (
+        "producttype_cad_thickness_inches_then_contours_fill_then_finish"
+    )
+    assert dump["id_unknown"] is False
+    assert dump["pass"] is True
+    assert dump["contours_pass"] is True
+    assert dump["product_type"] == "Cad"
+    assert dump["product_type_enum"] == 100
+    assert dump["thickness_units"] == "inch"
+    assert dump["thickness_inches"] is True
+    assert "thickness" not in dump
+    assert dump["contours_fill"] is True
+    assert dump["finish_clicked"] is True
+    assert dump["finish_posted"] is True
+    assert dump["invent"] is False
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+    assert dump["zz_del"] is False
+    assert dump["zz_del_number"] is None
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert all(row["quote_number"] != "Q10351" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10351" for row in leftover_cad_for_plate_dumps())
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("0c62fce9-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10351")
+    assert is_forbidden_quote_number("H.8.38")
+    assert spent_quote_number_block_reason("Q10351")
+    assert spent_quote_number_block_reason("H.8.38")
+    with pytest.raises(ForbiddenQuoteError, match="Q10351"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10351"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match=r"H\.8\.38"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "H.8.38"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="0c62fce9"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="0c62fce9"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
+        )
+    assert "Q10351" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "H.8.38" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10351" in step_contours_fill_hunt()["never_remint"]
+    assert "H.8.38" in step_contours_fill_hunt()["never_remint"]
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "0c62fce9" not in refuse
+    assert "Q10351" not in refuse
+    assert "H.8.38" not in refuse
+    assert "c4394006" not in refuse
+    assert "Q10349" not in refuse
+    assert "1defeed8" not in refuse
+    assert "Q10348" not in refuse
+    assert "d859a239" not in refuse
+    assert "Q10346" not in refuse
+    assert "55f12530" not in refuse
+    assert "Q10344" not in refuse
+    assert dump["invent"] is False
+    assert dump["unlocks_automation_contours_fill"] is False
+
+
+def test_q10354_dh3896_contours_fail_forever_forbid():
+    """Q10354 / 7881d4b3 Safe Cave D.H.38.96 Contours FAIL leftover.
+
+    Cad selector + 0.1875 in were set but finished ProductType
+    rendered part. NumberOfContours unavailable / Contours PASS
+    not proven. Same empty-InternalData Contours-FAIL class as
+    Q10334 / Q10335 — not Contours PASS. Forever-forbid; never
+    remint / PATCH. invent=false. Do not invent Contours/InternalData.
+    Q10349 / D.H.30.96 stays PASS.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import cad_filelist_refuses_additem_dxf
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10349_dh3096 import q10349_dh3096_pass_dump
+    from tests.fixtures.live_q10354_dh3896 import q10354_dh3896_fail_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10354_dh3896_fail_dump()
+    assert dump["quote_id"] == "7881d4b3-5408-4ff4-ab18-6490170e6331"
+    assert dump["quote_id_prefix"] == "7881d4b3"
+    assert dump["quote_number"] == "Q10354"
+    assert dump["part_number"] == "D.H.38.96"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["piece"] == "D.H.38.96"
+    assert dump["outside_h638_family"] is True
+    assert dump["h638_contours_good"] is False
+    assert dump["via"] == "cad_selector_0_1875_in_finished_producttype_part"
+    assert dump["same_pattern_as"] == "empty-InternalData Contours FAIL"
+    assert dump["id_unknown"] is False
+    assert dump["pass"] is False
+    assert dump["contours_pass"] is False
+    assert dump["contours_pass_proven"] is False
+    assert dump["product_type"] == "part"
+    assert dump["cad_selector_set"] is True
+    assert dump["thickness"] == "0.1875"
+    assert dump["thickness_units"] == "inch"
+    assert dump["thickness_inches"] is True
+    assert dump["number_of_contours_unavailable"] is True
+    assert dump["internaldata_empty"] is True
+    assert dump["contours_empty"] is True
+    assert dump["contours_fill"] is False
+    assert dump["invent"] is False
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+    assert dump["zz_del"] is False
+    assert dump["zz_del_number"] is None
+    assert dump["protect"] is False
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert dump["unlocks_contours_fill"] is False
+    assert dump["fail_close"] is True
+    assert all(row["quote_number"] != "Q10354" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10354" for row in leftover_cad_for_plate_dumps())
+
+    keep = q10349_dh3096_pass_dump()
+    assert keep["quote_number"] == "Q10349"
+    assert keep["part_number"] == "D.H.30.96"
+    assert keep["pass"] is True
+    assert keep["contours_pass"] is True
+    assert keep["product_type"] == "Cad"
+    assert keep["protect"] is True
+
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("7881d4b3-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10354")
+    assert is_forbidden_quote_number("D.H.38.96")
+    assert spent_quote_number_block_reason("Q10354")
+    assert spent_quote_number_block_reason("D.H.38.96")
+    with pytest.raises(ForbiddenQuoteError, match="Q10354"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10354"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match=r"D\.H\.38\.96"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "D.H.38.96"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="7881d4b3"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="7881d4b3"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
+        )
+    assert "Q10354" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "D.H.38.96" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10354" in step_contours_fill_hunt()["never_remint"]
+    assert "D.H.38.96" in step_contours_fill_hunt()["never_remint"]
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "7881d4b3" in refuse
+    assert "Q10354" in refuse
+    assert "D.H.38.96" in refuse
+    assert "InternalData empty" in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert "c4394006" not in refuse
+    assert "Q10349" not in refuse
+    assert "D.H.30.96" not in refuse
+    assert "0c62fce9" not in refuse
+    assert "Q10351" not in refuse
+    assert dump["invent"] is False
+    assert dump["unlocks_automation_contours_fill"] is False
+
+
+def test_q10356_v2078_contours_fail_forever_forbid():
+    """Q10356 / 05bee105 Safe Cave V.20.78 Contours FAIL leftover.
+
+    Cad selector + 0.1875 in were set but finished ProductType
+    rendered part. NumberOfContours missing / Contours PASS
+    not proven. Same Contours-FAIL class as Q10354 / D.H.38.96
+    — not Contours PASS. Forever-forbid; never remint / PATCH.
+    invent=false. Do not invent Contours/InternalData.
+    Q10354 stays FAIL. Q10349 / D.H.30.96 stays PASS.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        cad_filelist_refuses_additem_dxf,
+        plate_step_live_product_type_not_cad_refuses,
+    )
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10349_dh3096 import q10349_dh3096_pass_dump
+    from tests.fixtures.live_q10354_dh3896 import q10354_dh3896_fail_dump
+    from tests.fixtures.live_q10356_v2078 import q10356_v2078_fail_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10356_v2078_fail_dump()
+    assert dump["quote_id"] == "05bee105-824c-4100-9bc8-f66727fa5681"
+    assert dump["quote_id_prefix"] == "05bee105"
+    assert dump["quote_number"] == "Q10356"
+    assert dump["part_number"] == "V.20.78"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["piece"] == "V.20.78"
+    assert dump["outside_h638_family"] is True
+    assert dump["h638_contours_good"] is False
+    assert dump["via"] == "cad_selector_0_1875_in_finished_producttype_part"
+    assert dump["same_pattern_as"] == "empty-InternalData Contours FAIL"
+    assert dump["same_class_as"] == "Q10354 / D.H.38.96"
+    assert dump["id_unknown"] is False
+    assert dump["pass"] is False
+    assert dump["contours_pass"] is False
+    assert dump["contours_pass_proven"] is False
+    assert dump["product_type"] == "part"
+    assert dump["cad_selector_set"] is True
+    assert dump["thickness"] == "0.1875"
+    assert dump["thickness_units"] == "inch"
+    assert dump["thickness_inches"] is True
+    assert dump["number_of_contours_unavailable"] is True
+    assert dump["internaldata_empty"] is True
+    assert dump["contours_empty"] is True
+    assert dump["contours_fill"] is False
+    assert dump["invent"] is False
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+    assert dump["zz_del"] is False
+    assert dump["zz_del_number"] is None
+    assert dump["protect"] is False
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert dump["unlocks_contours_fill"] is False
+    assert dump["fail_close"] is True
+    assert all(row["quote_number"] != "Q10356" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10356" for row in leftover_cad_for_plate_dumps())
+
+    keep_fail = q10354_dh3896_fail_dump()
+    assert keep_fail["quote_number"] == "Q10354"
+    assert keep_fail["part_number"] == "D.H.38.96"
+    assert keep_fail["pass"] is False
+    assert keep_fail["contours_pass"] is False
+    assert keep_fail["product_type"] == "part"
+
+    keep = q10349_dh3096_pass_dump()
+    assert keep["quote_number"] == "Q10349"
+    assert keep["part_number"] == "D.H.30.96"
+    assert keep["pass"] is True
+    assert keep["contours_pass"] is True
+    assert keep["product_type"] == "Cad"
+    assert keep["protect"] is True
+
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("05bee105-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10356")
+    assert is_forbidden_quote_number("V.20.78")
+    assert spent_quote_number_block_reason("Q10356")
+    assert spent_quote_number_block_reason("V.20.78")
+    with pytest.raises(ForbiddenQuoteError, match="Q10356"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10356"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match=r"V\.20\.78"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "V.20.78"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="05bee105"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="05bee105"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
+        )
+    assert "Q10356" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "V.20.78" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10356" in step_contours_fill_hunt()["never_remint"]
+    assert "V.20.78" in step_contours_fill_hunt()["never_remint"]
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "05bee105" in refuse
+    assert "Q10356" in refuse
+    assert "V.20.78" in refuse
+    assert "7881d4b3" in refuse
+    assert "Q10354" in refuse
+    assert "InternalData empty" in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert "c4394006" not in refuse
+    assert "Q10349" not in refuse
+    assert "D.H.30.96" not in refuse
+    assert "0c62fce9" not in refuse
+    assert "Q10351" not in refuse
+    assert plate_step_live_product_type_not_cad_refuses(
+        {
+            "ProductType": "part",
+            "ProductTypeName": "part",
+            "FileType": "Cad",
+            "ItemType": "Cad",
+        }
+    ) is None
+    assert dump["invent"] is False
+    assert dump["unlocks_automation_contours_fill"] is False
+
+
+def test_q10365_h1038_contours_fail_forever_forbid():
+    """Q10365 / 7801ab99 Safe Cave H.10.38 Contours FAIL leftover.
+
+    Mouse Cad + 0.1875 in were set but finished ProductType
+    rendered part. No Contours / InternalData fill; fill_xhr=null.
+    Contours PASS not proven. Same Contours-FAIL class as
+    Q10354 / Q10356 — not Contours PASS. Forever-forbid; never
+    remint / PATCH. invent=false. Do not invent Contours/InternalData.
+    Q10354 and Q10356 stay FAIL. Q10349 / D.H.30.96 stays PASS.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        cad_filelist_refuses_additem_dxf,
+        plate_step_live_product_type_not_cad_refuses,
+    )
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10349_dh3096 import q10349_dh3096_pass_dump
+    from tests.fixtures.live_q10354_dh3896 import q10354_dh3896_fail_dump
+    from tests.fixtures.live_q10356_v2078 import q10356_v2078_fail_dump
+    from tests.fixtures.live_q10365_h1038 import q10365_h1038_fail_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10365_h1038_fail_dump()
+    assert dump["quote_id"] == "7801ab99-13af-4efc-b996-897daf8e677a"
+    assert dump["quote_id_prefix"] == "7801ab99"
+    assert dump["quote_number"] == "Q10365"
+    assert dump["part_number"] == "H.10.38"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["piece"] == "H.10.38"
+    assert dump["outside_h638_family"] is True
+    assert dump["h638_contours_good"] is False
+    assert dump["via"] == "cad_selector_0_1875_in_finished_producttype_part"
+    assert dump["same_pattern_as"] == "empty-InternalData Contours FAIL"
+    assert dump["same_class_as"] == "Q10354 / Q10356"
+    assert dump["id_unknown"] is False
+    assert dump["pass"] is False
+    assert dump["contours_pass"] is False
+    assert dump["contours_pass_proven"] is False
+    assert dump["product_type"] == "part"
+    assert dump["cad_selector_set"] is True
+    assert dump["thickness"] == "0.1875"
+    assert dump["thickness_units"] == "inch"
+    assert dump["thickness_inches"] is True
+    assert dump["number_of_contours_unavailable"] is True
+    assert dump["internaldata_empty"] is True
+    assert dump["contours_empty"] is True
+    assert dump["contours_fill"] is False
+    assert dump["fill_xhr"] is None
+    assert dump["invent"] is False
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+    assert dump["zz_del"] is False
+    assert dump["zz_del_number"] is None
+    assert dump["protect"] is False
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert dump["unlocks_contours_fill"] is False
+    assert dump["fail_close"] is True
+    assert all(row["quote_number"] != "Q10365" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10365" for row in leftover_cad_for_plate_dumps())
+
+    keep_fail_54 = q10354_dh3896_fail_dump()
+    assert keep_fail_54["quote_number"] == "Q10354"
+    assert keep_fail_54["part_number"] == "D.H.38.96"
+    assert keep_fail_54["pass"] is False
+    assert keep_fail_54["contours_pass"] is False
+    assert keep_fail_54["product_type"] == "part"
+
+    keep_fail_56 = q10356_v2078_fail_dump()
+    assert keep_fail_56["quote_number"] == "Q10356"
+    assert keep_fail_56["part_number"] == "V.20.78"
+    assert keep_fail_56["pass"] is False
+    assert keep_fail_56["contours_pass"] is False
+    assert keep_fail_56["product_type"] == "part"
+
+    keep = q10349_dh3096_pass_dump()
+    assert keep["quote_number"] == "Q10349"
+    assert keep["part_number"] == "D.H.30.96"
+    assert keep["pass"] is True
+    assert keep["contours_pass"] is True
+    assert keep["product_type"] == "Cad"
+    assert keep["protect"] is True
+
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("7801ab99-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10365")
+    assert is_forbidden_quote_number("H.10.38")
+    assert spent_quote_number_block_reason("Q10365")
+    assert spent_quote_number_block_reason("H.10.38")
+    with pytest.raises(ForbiddenQuoteError, match="Q10365"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10365"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match=r"H\.10\.38"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "H.10.38"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="7801ab99"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="7801ab99"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
+        )
+    assert "Q10365" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "H.10.38" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10365" in step_contours_fill_hunt()["never_remint"]
+    assert "H.10.38" in step_contours_fill_hunt()["never_remint"]
+
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    assert "7801ab99" in refuse
+    assert "Q10365" in refuse
+    assert "H.10.38" in refuse
+    assert "05bee105" in refuse
+    assert "Q10356" in refuse
+    assert "7881d4b3" in refuse
+    assert "Q10354" in refuse
+    assert "InternalData empty" in refuse
+    assert "b5f56ac3" not in refuse
+    assert "Q10333" not in refuse
+    assert "c4394006" not in refuse
+    assert "Q10349" not in refuse
+    assert "D.H.30.96" not in refuse
+    assert "0c62fce9" not in refuse
+    assert "Q10351" not in refuse
+    assert plate_step_live_product_type_not_cad_refuses(
+        {
+            "ProductType": "part",
+            "ProductTypeName": "part",
+            "FileType": "Cad",
+            "ItemType": "Cad",
+        }
+    ) is None
+    assert dump["invent"] is False
+    assert dump["unlocks_automation_contours_fill"] is False
+
+
+def test_q10350_21843_1_long_linear_pass_forever_forbid():
+    """Q10350 / eb6c48b8 Time Waco 21843-1 Long/Linear PASS leftover.
+
+    Hot Rolled Round Bar Ø0.625 × 28.0843 Finish. Bar / Linear path.
+    Not a Contours leftover. Forever protect; never remint / PATCH.
+    invent=false. Do not invent Contours/InternalData.
+    """
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_cad_for_plate_leftovers import leftover_cad_for_plate_dumps
+    from tests.fixtures.live_contours_ui_leftovers import leftover_contours_ui_dumps
+    from tests.fixtures.live_q10350_21843_1 import q10350_21843_1_pass_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+
+    dump = q10350_21843_1_pass_dump()
+    assert dump["quote_id"] == "eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4"
+    assert dump["quote_id_prefix"] == "eb6c48b8"
+    assert dump["quote_number"] == "Q10350"
+    assert dump["part_number"] == "21843-1"
+    assert dump["customer"] == "Time Manufacturing Waco"
+    assert dump["piece"] == "21843-1"
+    assert dump["description"] == "Hot Rolled Round Bar Ø0.625 × 28.0843 Finish"
+    assert dump["shape"] == "Hot Rolled Round Bar"
+    assert dump["diameter_in"] == 0.625
+    assert dump["length_in"] == 28.0843
+    assert dump["path"] == "long_linear"
+    assert dump["is_linear"] is True
+    assert dump["is_bar"] is True
+    assert dump["contours_leftover"] is False
+    assert dump["id_unknown"] is False
+    assert dump["pass"] is True
+    assert dump["linear_pass"] is True
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+    assert "contours_fill" not in dump
+    assert dump["zz_del"] is False
+    assert dump["zz_del_number"] is None
+    assert dump["protect"] is True
+    assert dump["do_not_remint"] is True
+    assert dump["do_not_patch"] is True
+    assert all(row["quote_number"] != "Q10350" for row in leftover_contours_ui_dumps())
+    assert all(row["quote_number"] != "Q10350" for row in leftover_cad_for_plate_dumps())
+    assert "Q10350" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "21843-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10350" not in step_contours_fill_hunt()["never_remint"]
+    assert "21843-1" not in step_contours_fill_hunt()["never_remint"]
+    assert is_forbidden_quote_id(dump["quote_id"])
+    assert is_forbidden_quote_id("eb6c48b8-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_number("Q10350")
+    assert is_forbidden_quote_number("21843-1")
+    assert spent_quote_number_block_reason("Q10350")
+    assert spent_quote_number_block_reason("21843-1")
+    with pytest.raises(ForbiddenQuoteError, match="Q10350"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10350"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="21843-1"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "21843-1"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="eb6c48b8"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"ID": dump["quote_id"]},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="eb6c48b8"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": dump["quote_id"]},
+        )
+    assert dump["invent"] is False
+    assert dump["contours_leftover"] is False
+
+
+def test_step_cad_finish_hard_gate_cad_then_inch_before_finish():
+    """Mid-wizard before Finish: Cad ProductType, then inch thickness.
+
+    Still Component → do not Finish. Missing / meter thickness →
+    EXEC_FAIL, not Contours empty. Cad + 0.1875 inch proceeds.
+    invent=false; never invent InternalData/Contours.
+    """
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+        plate_step_thickness_units_are_inch,
+        step_cad_finish_hard_gate,
+    )
+
+    ready = [
+        {
+            "Name": "H.6.38 PLATE",
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+            "InternalData": "server-stamped",
+        }
+    ]
+    assert plate_step_thickness_units_are_inch(ready[0]) is True
+    assert step_cad_finish_hard_gate(ready) is None
+
+    still_component = [{**ready[0], "ProductType": "Component"}]
+    why_comp = step_cad_finish_hard_gate(still_component)
+    assert why_comp is not None
+    assert "Component" in why_comp
+    assert "not invent" in why_comp.lower()
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL not in why_comp
+    assert "Contours empty" not in why_comp
+
+    blank_thick = [{**ready[0], "Thickness": "", "Thickness_Units": "inch"}]
+    why_blank = step_cad_finish_hard_gate(blank_thick)
+    assert why_blank is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_blank
+    assert "not Contours empty" in why_blank
+    assert "inch" in why_blank
+    assert cad_finish_notes_refuse_additem_dxf([why_blank]) == why_blank
+
+    meter = [{**ready[0], "Thickness": "0.0047625", "Thickness_Units": "meter"}]
+    why_meter = step_cad_finish_hard_gate(meter)
+    assert why_meter is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_meter
+    assert "not Contours empty" in why_meter
+    assert plate_step_thickness_units_are_inch(meter[0]) is False
+
+    no_units = [{**ready[0], "Thickness": "0.1875", "Thickness_Units": ""}]
+    why_units = step_cad_finish_hard_gate(no_units)
+    assert why_units is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_units
+
+    purchased = [
+        {
+            "Name": "1/2-13 HEX BOLT",
+            "FileType": "Component",
+            "Category": "Component",
+            "ProductType": 200,
+        }
+    ]
+    assert step_cad_finish_hard_gate(purchased) is None
+
+
+def test_live_product_type_part_noun_is_not_cad():
+    """Contours PASS is NumberOfContours≥1 — not Cad noun / refuse 100.
+
+    Kyle CoS: finished enum 100 / noun ``part`` is normal on PASSes.
+    invent=false.
+    """
+    from secturafab.website import (
+        cad_filelist_refuses_additem_dxf,
+        count_cad_product_type,
+        itemlist_contours_pass,
+        live_row_product_type_is_cad,
+        plate_step_live_product_type_not_cad_refuses,
+        product_type_display_token,
+        product_type_is_cad,
+        product_type_is_part_noun,
+        step_cad_finish_hard_gate,
+        step_cad_live_product_type_hard_gate,
+    )
+
+    assert product_type_is_part_noun("part") is True
+    assert product_type_is_part_noun("Part") is True
+    assert product_type_is_part_noun("Cad") is False
+    assert product_type_is_cad("part") is False
+    assert product_type_is_cad(100) is True
+    assert product_type_is_cad("Cad") is True
+
+    cad_row = {
+        "Name": "H.6.38 PLATE",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "ProductTypeName": "Cad",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+    }
+    part_row = {
+        **cad_row,
+        "Name": "D.H.38.96",
+        "ProductType": "part",
+        "ProductTypeName": "part",
+    }
+    part_enum = {
+        **cad_row,
+        "Name": "D.H.38.96",
+        "ProductType": 100,
+        "ProductTypeName": "part",
+    }
+    assert live_row_product_type_is_cad(cad_row) is True
+    assert live_row_product_type_is_cad(part_enum) is True
+    assert product_type_display_token(part_enum) == "part"
+    assert count_cad_product_type({"ItemList": [cad_row]}) == 1
+    assert count_cad_product_type({"ItemList": [part_enum]}) == 1
+    enum_only = {
+        **cad_row,
+        "Name": "H.10.38",
+        "ProductType": 100,
+    }
+    enum_only.pop("ProductTypeName", None)
+    assert live_row_product_type_is_cad(enum_only) is True
+    assert count_cad_product_type({"ItemList": [enum_only]}) == 1
+    assert itemlist_contours_pass(number_of_contours=1) is True
+    assert itemlist_contours_pass(number_of_contours=0) is False
+    assert plate_step_live_product_type_not_cad_refuses(part_row) is None
+    assert plate_step_live_product_type_not_cad_refuses(part_enum) is None
+    assert step_cad_finish_hard_gate([part_row]) is None
+    assert step_cad_finish_hard_gate([part_enum]) is None
+    assert step_cad_finish_hard_gate([cad_row]) is None
+    assert step_cad_finish_hard_gate([enum_only]) is None
+    classified = [cad_row]
+    assert step_cad_live_product_type_hard_gate([part_enum], classified) is None
+    assert step_cad_live_product_type_hard_gate([part_row], classified) is None
+    assert step_cad_live_product_type_hard_gate([enum_only], classified) is None
+    empty_id = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert empty_id is not None
+    assert "InternalData empty" in empty_id
+
+
+def test_q10365_h1038_mouse_updateitemtype_does_not_stick_cad():
+    """Q10365 / H.10.38: UpdateItemType Cad does not write ProductType.
+
+    Mouse Product Type dropdown Cad + 0.1875 in. Network UpdateItemType
+    200 then PartImage / UpdateData / CADData; fill_xhr=null.
+    Contours PASS is NumberOfContours≥1 — not a Cad noun. Enum 100
+    alone is not refuse (Q10333 / Q10348 PASSes finish 100).
+    Same leftover class as Q10354 / Q10356. invent=false; no remint.
+    """
+    from secturafab.cadimport_js import (
+        UPDATE_ITEM_TYPE_BODY_KEYS,
+        UPDATE_ITEM_TYPE_PATH,
+        update_item_type_fields,
+        update_item_type_sets_product_type_cad,
+    )
+    from secturafab.website import (
+        count_cad_product_type,
+        itemlist_contours_pass,
+        live_row_product_type_is_cad,
+        plate_step_live_product_type_not_cad_refuses,
+        step_cad_finish_hard_gate,
+        step_cad_live_product_type_hard_gate,
+    )
+    from tests.fixtures.live_q10344_h638 import q10344_h638_kyle_ui_control_dump
+    from tests.fixtures.live_q10354_dh3896 import q10354_dh3896_fail_dump
+    from tests.fixtures.live_q10365_h1038 import q10365_h1038_fail_dump
+
+    dump = q10365_h1038_fail_dump()
+    assert dump["quote_id"] == "7801ab99-13af-4efc-b996-897daf8e677a"
+    assert dump["quote_id_prefix"] == "7801ab99"
+    assert dump["quote_number"] == "Q10365"
+    assert dump["part_number"] == "H.10.38"
+    assert dump["customer"] == "Safe Cave"
+    assert dump["via"] == "cad_selector_0_1875_in_finished_producttype_part"
+    assert dump["same_pattern_as"] == "empty-InternalData Contours FAIL"
+    assert dump["same_class_as"] == "Q10354 / Q10356"
+    assert dump["id_unknown"] is False
+    assert dump["pass"] is False
+    assert dump["contours_pass"] is False
+    assert dump["number_of_contours_unavailable"] is True
+    assert dump["product_type"] == "part"
+    assert dump["product_type_enum"] == 100
+    assert dump["cad_selector_set"] is True
+    assert dump["update_item_type_path"] == UPDATE_ITEM_TYPE_PATH
+    assert dump["update_item_type_status"] == 200
+    assert dump["update_item_type_itemtype"] == "Cad"
+    assert dump["update_item_type_keys"] == UPDATE_ITEM_TYPE_BODY_KEYS
+    assert dump["update_item_type_sets_product_type_cad"] is False
+    assert dump["fill_xhr"] is None
+    assert dump["invent"] is False
+    assert dump["protect"] is False
+    assert dump["do_not_remint"] is True
+    assert dump["unlocks_automation_contours_fill"] is False
+    assert dump["unlocks_contours_fill"] is False
+    assert dump["fail_close"] is True
+    assert "ProductType" not in dump["update_item_type_keys"]
+    assert update_item_type_sets_product_type_cad() is False
+    assert update_item_type_fields("id-h1038", "Cad") == {
+        "ID": "id-h1038",
+        "ItemType": "Cad",
+    }
+    assert itemlist_contours_pass(number_of_contours=None) is False
+    assert itemlist_contours_pass(number_of_contours=1) is True
+
+    keep_fail = q10354_dh3896_fail_dump()
+    assert keep_fail["quote_number"] == "Q10354"
+    assert keep_fail["product_type"] == "part"
+    assert keep_fail["do_not_remint"] is True
+    keep_pass = q10344_h638_kyle_ui_control_dump()
+    assert keep_pass["quote_number"] == "Q10344"
+    assert keep_pass["product_type"] == "Cad"
+    assert keep_pass["contours_pass"] is True
+    assert keep_pass["do_not_remint"] is True
+
+    live_part = {
+        "Name": "H.10.38",
+        "ProductType": "part",
+        "ProductTypeName": "part",
+        "Category": "Cad",
+        "ItemType": "Cad",
+        "FileType": "Cad",
+        "PartMode": 0,
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+    }
+    live_enum = {
+        **live_part,
+        "ProductType": 100,
+        "NumberOfContours": 1,
+        "Machine": "Laser",
+        "ProductSubType": "prt_dxf",
+    }
+    live_enum.pop("ProductTypeName", None)
+    classified = [
+        {
+            **live_enum,
+            "ProductType": 100,
+            "ItemType": "Cad",
+            "FileType": "Cad",
+            "Category": "Cad",
+        }
+    ]
+    assert live_row_product_type_is_cad(live_enum) is True
+    assert count_cad_product_type({"ItemList": [live_enum]}) == 1
+    assert itemlist_contours_pass(
+        number_of_contours=1, product_type="part"
+    ) is True
+    assert plate_step_live_product_type_not_cad_refuses(live_part) is None
+    assert plate_step_live_product_type_not_cad_refuses(live_enum) is None
+    assert step_cad_live_product_type_hard_gate([live_part], classified) is None
+    assert step_cad_live_product_type_hard_gate([live_enum], classified) is None
+    assert step_cad_finish_hard_gate(classified) is None
+    assert itemlist_contours_pass(number_of_contours=0) is False
+
+
+def test_live_get_contours_pass_enum_100_is_not_refused():
+    """Live GET ProductType=100 + NumberOfContours=1 is Contours PASS.
+
+    Q10333 / b5f56ac3 and Q10348 / 1defeed8 finish enum 100, Laser,
+    prt_dxf, 0.1875 inch. Do not refuse ProductType=100. invent=false.
+    """
+    from secturafab.cadimport_js import update_item_type_sets_product_type_cad
+    from secturafab.website import (
+        itemlist_contours_pass,
+        live_row_product_type_is_cad,
+        plate_step_live_product_type_not_cad_refuses,
+        step_cad_finish_hard_gate,
+        step_cad_live_product_type_hard_gate,
+    )
+    from tests.fixtures.live_q10333_h638 import q10333_h638_pass_dump
+    from tests.fixtures.live_q10348_h1670 import q10348_h1670_pass_dump
+
+    assert update_item_type_sets_product_type_cad() is False
+    q10333 = q10333_h638_pass_dump()
+    q10348 = q10348_h1670_pass_dump()
+    assert q10333["quote_id"] == "b5f56ac3-326d-48e9-b82d-1e09a7897107"
+    assert q10333["product_type_enum"] == 100
+    assert q10333["number_of_contours"] == 1
+    assert q10333["contours_pass"] is True
+    assert q10348["quote_id"] == "1defeed8-d95d-4939-b2fd-0a1774e56c6e"
+    assert q10348["product_type_enum"] == 100
+    assert q10348["contours_pass"] is True
+    assert itemlist_contours_pass(number_of_contours=1) is True
+
+    for name, quote_id in (
+        ("H.6.38", "b5f56ac3-326d-48e9-b82d-1e09a7897107"),
+        ("H.16.70", "1defeed8-d95d-4939-b2fd-0a1774e56c6e"),
+    ):
+        row = {
+            "Name": name,
+            "ProductType": 100,
+            "NumberOfContours": 1,
+            "Machine": "Laser",
+            "ProductSubType": "prt_dxf",
+            "Thickness": 0.1875,
+            "Thickness_Units": "inch",
+            "Category": "Cad",
+            "ItemType": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+        }
+        classified = [{**row}]
+        assert live_row_product_type_is_cad(row) is True
+        assert plate_step_live_product_type_not_cad_refuses(row) is None
+        assert step_cad_live_product_type_hard_gate([row], classified) is None
+        assert step_cad_finish_hard_gate([row]) is None
+        assert quote_id  # leftover IDs stay protected; read-only restatement
+
+
+def test_step_cad_wizard_state_hard_gate_kids_or_org_lost_is_exec_fail():
+    """Multi-kid STEP: lost #gridDXFParts or org mid-wizard is EXEC_FAIL.
+
+    Q10352 / 8679-1: org cleared on modal refresh. Q10353 / 12519-2:
+    Adjust Properties returned to an empty quote grid. Q10355 /
+    34328-1: 3 live #gridDXFParts + org Time Waco, first-child edit
+    emptied the CAD grid / Items=0 without #but_dxf. Do not invent
+    Contours. Cad+inches on in-memory rows is not enough. Orthogonal
+    to Q10354 Cad→part. invent=false; no remint.
+    """
+    from secturafab.website import (
+        EMPTY_GUID,
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+        step_cad_finish_hard_gate,
+        step_cad_wizard_state_hard_gate,
+    )
+
+    memory_ready = [
+        {
+            "Name": "8679-1 PLATE A",
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "server-stamped",
+        }
+    ] * 4
+    assert step_cad_finish_hard_gate(memory_ready) is None
+
+    lost_kids = step_cad_wizard_state_hard_gate(
+        exploded_n=4,
+        live_grid_n=0,
+        org_id="b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+        org_widget=True,
+    )
+    assert lost_kids is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in lost_kids
+    assert "wizard lost FileList" in lost_kids
+    assert "Q10353" in lost_kids
+    assert "Q10355" in lost_kids
+    assert "not Contours empty" in lost_kids
+    assert "invent" in lost_kids.lower()
+    assert cad_finish_notes_refuse_additem_dxf([lost_kids]) == lost_kids
+
+    q10355 = step_cad_wizard_state_hard_gate(
+        exploded_n=3,
+        live_grid_n=0,
+        org_id="time-waco",
+        org_widget=True,
+    )
+    assert q10355 is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in q10355
+    assert "Q10355" in q10355
+    assert "#but_dxf" in q10355
+    assert cad_finish_notes_refuse_additem_dxf([q10355]) == q10355
+
+    lost_org = step_cad_wizard_state_hard_gate(
+        exploded_n=4,
+        live_grid_n=4,
+        org_id="",
+        org_widget=True,
+    )
+    assert lost_org is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in lost_org
+    assert "organization lost mid CAD wizard" in lost_org
+    assert "Q10352" in lost_org
+    assert "not Contours empty" in lost_org
+    assert cad_finish_notes_refuse_additem_dxf([lost_org]) == lost_org
+
+    empty_guid = step_cad_wizard_state_hard_gate(
+        exploded_n=3,
+        live_grid_n=3,
+        org_id=EMPTY_GUID,
+        org_checked=True,
+    )
+    assert empty_guid is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in empty_guid
+
+    hidden_org = step_cad_wizard_state_hard_gate(
+        exploded_n=4,
+        live_grid_n=4,
+        org_id="",
+        org_widget=False,
+    )
+    assert hidden_org is None
+
+    ok = step_cad_wizard_state_hard_gate(
+        exploded_n=4,
+        live_grid_n=4,
+        org_id="b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+        org_widget=True,
+    )
+    assert ok is None
+
+    single = step_cad_wizard_state_hard_gate(
+        exploded_n=1,
+        live_grid_n=1,
+    )
+    assert single is None
+
+    chrome_miss = step_cad_wizard_state_hard_gate(
+        exploded_n=4,
+        live_grid_n=None,
+    )
+    assert chrome_miss is None
+
+    single_empty = step_cad_wizard_state_hard_gate(
+        exploded_n=1,
+        live_grid_n=0,
+    )
+    assert single_empty is None
+
+    why_items = step_cad_wizard_state_hard_gate(
+        exploded_n=3,
+        live_grid_n=3,
+        prior_item_count=3,
+        live_item_count=0,
+    )
+    assert why_items is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why_items
+    assert "item_count dropped" in why_items
+    assert "Q10353" in why_items
+    assert cad_finish_notes_refuse_additem_dxf([why_items]) == why_items
+
+    from secturafab.org_ops import TIME_WACO_ORG_ID
+    from secturafab.website import (
+        wizard_quote_live_item_count,
+        wizard_quote_primary_organization_id,
+    )
+
+    assert wizard_quote_live_item_count({"ItemList": []}) == 0
+    assert wizard_quote_live_item_count({"Data": [], "Total": 0}) == 0
+    assert wizard_quote_live_item_count({"PrimaryOrganizationID": TIME_WACO_ORG_ID}) is None
+    assert wizard_quote_primary_organization_id({"ItemList": []}) is None
+    assert wizard_quote_primary_organization_id(
+        {"PrimaryOrganizationID": EMPTY_GUID}
+    ) == EMPTY_GUID
+    assert (
+        wizard_quote_primary_organization_id(
+            {"PrimaryOrganizationID": TIME_WACO_ORG_ID}
+        )
+        == TIME_WACO_ORG_ID
+    )
+
+
+def _multi_kid_cad_finish_client(tmp_path: Path, *, names: list[str], part_key: str):
+    from secturafab.push import SecturaFabPushService
+
+    stp = tmp_path / f"{part_key}.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": f"src-{i}",
+            "FileID": f"file-{i}",
+            "ID": f"id-{i}",
+            "Name": name,
+            "FileName": name,
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "Category": "Cad",
+            "FileType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "server-stamped",
+        }
+        for i, name in enumerate(names)
+    ]
+    client = MagicMock()
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": kids}
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._af_source = "chrome_dom"
+    client._part_create_list_len = len(kids)
+    client._grid_present = True
+    client._grid_dxf_row_count = len(kids)
+    client._stale_grid = False
+    client._edit_quote_id = f"aaaaaaaa-aaaa-bbbb-cccc-{part_key[:8].ljust(12, '0')}"
+    client._edit_gate = ""
+    client.create_dxf_parts.return_value = {"List": kids}
+    client.cadimport_data.return_value = {"List": kids}
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    return SecturaFabPushService(client=client), client, stp, kids
+
+
+def test_finish_cad_files_multi_kid_grid_empty_after_adjust_is_exec_fail(
+    tmp_path: Path,
+):
+    """Q10353 / 12519-2: Adjust Properties left an empty quote grid.
+
+    Q10355 / 34328-1: same live #gridDXFParts=0 after first-child
+    edit, without #but_dxf. In-memory Cad+inches rows must not Finish.
+    invent=false; no remint.
+    """
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+    )
+
+    service, client, stp, _kids = _multi_kid_cad_finish_client(
+        tmp_path,
+        names=["12519-2 PLATE A", "12519-2 PLATE B", "12519-2 PLATE C"],
+        part_key="12519-2",
+    )
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": False,
+            "cad": 0,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 0,
+            "setpartmode_via": "",
+            "grid_dxf_row_count": 0,
+            "edit_gate": "",
+            "org_id": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+            "org_widget": True,
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id=client._edit_quote_id,
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="12519-2",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
+    assert "wizard lost FileList" in blob
+    assert "Q10353" in blob
+    assert "Q10355" in blob
+    assert "not Contours empty" in blob
+    assert cad_finish_notes_refuse_additem_dxf(notes) is not None
+
+
+def test_finish_cad_files_multi_kid_keep_grid_rehydrate_allows_finish(
+    tmp_path: Path,
+):
+    """Q10355 / 34328-1: child select emptied live grid; keep rehydrates.
+
+    Cad+inches hard-gate runs on live kids after keep. invent=false.
+    Fail-close stays if keep cannot restore the widget.
+    """
+    from secturafab.website import STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL
+
+    service, client, stp, _kids = _multi_kid_cad_finish_client(
+        tmp_path,
+        names=["34328-1 PLATE A", "34328-1 PLATE B", "34328-1 GUSSET"],
+        part_key="34328-1",
+    )
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "jquery_ajax"
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "body_keys": ["NewItem"],
+        "body_type": "object",
+        "has_NewItem": True,
+        "has_QuoteItem": False,
+        "text_len": 8,
+        "empty_body": False,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_filelist_n": 3,
+        "grid_dxf_row_count": 3,
+        "filelist_from_kendo": True,
+        "filelist_sourcedataid_n": 3,
+        "filelist_filetype": {
+            "Cad": 3,
+            "Linear": 0,
+            "Assembly": 0,
+            "Component": 0,
+            "blank": 0,
+        },
+        "finish_af_present": True,
+        "finish_why": "",
+        "kendo_row_keys": ["FileType", "SourceDataID", "ID", "CadType"],
+        "request_keys": [
+            "ID",
+            "ItemID",
+            "customerMaterial",
+            "FileList",
+            "__RequestVerificationToken",
+        ],
+    }
+    live_items = [
+        {
+            "ID": "id-a",
+            "Name": "34328-1 PLATE A",
+            "ProductType": 100,
+            "ProductTypeName": "Cad",
+            "NumberOfContours": 1,
+        },
+        {
+            "ID": "id-b",
+            "Name": "34328-1 PLATE B",
+            "ProductType": 100,
+            "ProductTypeName": "Cad",
+            "NumberOfContours": 1,
+        },
+        {
+            "ID": "id-c",
+            "Name": "34328-1 GUSSET",
+            "ProductType": 100,
+            "ProductTypeName": "Cad",
+            "NumberOfContours": 1,
+        },
+    ]
+    client.quote_item_read.return_value = {"Data": live_items, "Total": 3}
+    client.get_json.return_value = {
+        "ItemList": live_items,
+        "PrimaryOrganizationID": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+    }
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 3,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 3,
+            "setpartmode_via": "jquery_ajax",
+            "updateitemtype_via": "jquery_ajax",
+            "updateitemtype_count": 3,
+            "grid_dxf_row_count": 3,
+            "keep_via": "rehydrate",
+            "keep_n": 3,
+            "edit_gate": "",
+            "org_id": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+            "org_widget": True,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "FileType",
+                "ID",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id=client._edit_quote_id,
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="34328-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert "per_kid_cad_inches=single_plate_adjust_properties_page_fn" in blob
+    assert "keep_grid_via=rehydrate" in blob
+    assert "wizard lost FileList" not in blob
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL not in blob
+    client.add_item_dxf_files.assert_called()
+
+
+def test_multi_kid_keep_grid_empty_internaldata_is_exec_fail():
+    """Q10358: keep-grid + Cad+inches + empty InternalData → EXEC_FAIL.
+
+    Hypothesis Data/GetBorderSize-is-fill is discarded. invent=false.
+    """
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        STEP_CONTOURS_MISSING_CALL,
+        cad_finish_notes_refuse_additem_dxf,
+        multi_kid_keep_grid_empty_internaldata_refuses,
+    )
+
+    kids = [
+        {
+            "Name": "34328-1 PLATE A",
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "",
+        },
+        {
+            "Name": "34328-1 PLATE B",
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "",
+        },
+        {
+            "Name": "34328-1 GUSSET",
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "Category": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.25",
+            "Thickness_Units": "inch",
+            "InternalData": "",
+        },
+    ]
+    why = multi_kid_keep_grid_empty_internaldata_refuses(
+        kids, keep_via="live"
+    )
+    assert why is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why
+    assert "keep-grid Cad+inches stuck" in why
+    assert "keep_grid_via=live" in why
+    assert "kid_n=3" in why
+    assert "Q10358" in why
+    assert "Q10359" in why
+    assert "34328-1" in why
+    assert "not grid-loss" in why
+    assert "GetBorderSize" in why
+    assert "copy-if-nonempty" in why
+    assert "blocked-on-Sectura" in why
+    assert STEP_CONTOURS_MISSING_CALL in why
+    assert "invent" in why.lower()
+    assert cad_finish_notes_refuse_additem_dxf([why]) == why
+
+    filled = [{**r, "InternalData": "server-stamped"} for r in kids]
+    assert multi_kid_keep_grid_empty_internaldata_refuses(
+        filled, keep_via="live"
+    ) is None
+    assert multi_kid_keep_grid_empty_internaldata_refuses(
+        kids, keep_via=""
+    ) is None
+    assert multi_kid_keep_grid_empty_internaldata_refuses(
+        kids[:1], keep_via="live"
+    ) is None
+
+
+def test_q10358_34328_1_keep_grid_prove_does_not_invent():
+    """Q10358 leftover: keep-grid worked; InternalData empty; invent=false."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10358_34328_1 import q10358_34328_1_keep_grid_prove
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10358_34328_1_keep_grid_prove()
+    assert dump["quote_number"] == "Q10358"
+    assert dump["part_number"] == "34328-1"
+    assert dump["keep_grid_via"] == "live"
+    assert dump["live_grid_n"] == 3
+    assert dump["keep_grid_works"] is True
+    assert dump["internaldata_empty_after_explode"] is True
+    assert dump["finish_refused"] is True
+    assert dump["invent"] is False
+    assert dump["hypothesis_data_getbordersize_is_fill"] is False
+    assert dump["hypothesis_discarded"] is True
+    assert dump["do_not_forbid_part_number"] is True
+    assert is_forbidden_quote_number("Q10358")
+    assert not is_forbidden_quote_number("34328-1")
+    assert spent_quote_number_block_reason("Q10358")
+    assert spent_quote_number_block_reason("34328-1") is None
+    assert "Q10358" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "34328-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert "Q10358" in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "multi_kid_keep_grid_data_getbordersize_not_fill"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10358" in angle["why"]
+    assert "discarded" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10358"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10358"},
+        )
+
+
+def test_q10359_34328_ffe_blocked_on_sectura_no_safe_fill():
+    """Q10359 CoS: keep-grid + copied_n=0; UpdateData not a safe fill."""
+    from secturafab.cadimport_js import CLASSIFY_FINISH_INTERNALDATA_FILL
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.website import (
+        MULTI_KID_CONTOURS_BLOCKED_ON_SECTURA,
+        MULTI_KID_SAFE_CONTOURS_FILL,
+        SINGLE_PLATE_CONTOURS_FLIP_XHR,
+        STEP_CONTOURS_FILL_UNLOCKED,
+        STEP_CONTOURS_MISSING_CALL,
+        STEP_CONTOURS_NOT_FILL_PATHS,
+        multi_kid_contours_blocked_on_sectura,
+        multi_kid_contours_support_ask,
+        multi_kid_keep_grid_empty_internaldata_refuses,
+        multi_kid_safe_contours_fill,
+        single_plate_contours_flip_xhr,
+    )
+    from tests.fixtures.live_q10359_34328_ffe import (
+        q10359_34328_ffe_cos,
+        q10359_box_artifact_mine,
+        q10359_single_vs_multi_xhr_diff,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10359_34328_ffe_cos()
+    assert dump["quote_number"] == "Q10359"
+    assert dump["part_number"] == "34328-1"
+    assert dump["probe_label"] == "34328-FFE"
+    assert dump["live_probe_tip"] == "ffe210e3edc7d8820c1afb7e09aabddd3c8e1a58"
+    assert dump["keep_grid_via"] == "live"
+    assert dump["cadimport_get_copied_n"] == 0
+    assert dump["internaldata_empty"] == "2/2"
+    assert dump["finish_refused"] is True
+    assert dump["invent"] is False
+    assert dump["safe_fill"] is MULTI_KID_SAFE_CONTOURS_FILL is None
+    assert dump["single_plate_contours_flip_xhr"] is SINGLE_PLATE_CONTOURS_FLIP_XHR is None
+    assert single_plate_contours_flip_xhr() is None
+    assert dump["blocked_on_sectura"] is MULTI_KID_CONTOURS_BLOCKED_ON_SECTURA is True
+    assert dump["hypothesis_updatedata_editor_done_is_safe_fill"] is False
+    assert dump["classify_finish_internaldata_fill"] is CLASSIFY_FINISH_INTERNALDATA_FILL
+    assert CLASSIFY_FINISH_INTERNALDATA_FILL is None
+    assert dump["keep_grid_skips_page_fn"] is True
+    assert dump["box_artifacts_on_this_vm"] is False
+    assert dump["box_artifacts_on_dropbox"] is False
+    assert "live_mid_wizard_contours_xhr.py" in dump["box_restatements_mined"]
+    assert "live_q10336_h638.py" in dump["box_restatements_mined"]
+    mined = q10359_box_artifact_mine()
+    assert len(mined) == 10
+    assert all(row["present"] is False for row in mined)
+    assert all(row["fills"] is False for row in mined)
+    paths = [row["path"] for row in mined]
+    assert "/workspace/live-mouse-cad-click-xhr-capture.json" in paths
+    assert "/workspace/live-mouse-cad-finish-xhr-capture.json" in paths
+    assert "/workspace/live-time-34328-1-ffe210e-prove.json" in paths
+    assert dump["destructive_row_set_select_editcell_but_dxf"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert dump["fill_unlocked"] is STEP_CONTOURS_FILL_UNLOCKED is False
+    assert multi_kid_safe_contours_fill() is None
+    assert multi_kid_contours_blocked_on_sectura() is True
+    ask = multi_kid_contours_support_ask()
+    assert "POST /part/create" in ask
+    assert "InternalData" in ask
+    assert "#but_dxf" in ask
+    assert dump["support_ask"] == ask
+    assert dump["missing_call"] == STEP_CONTOURS_MISSING_CALL
+
+    diff = q10359_single_vs_multi_xhr_diff()
+    assert diff["invent"] is False
+    assert diff["single_plate_kyle_ui_pass"]["har"] is None
+    assert diff["single_plate_kyle_ui_pass"]["updateitemtype_fills_contours"] is False
+    assert diff["multi_kid_keep_grid"]["apply_grid_page_fn"] is False
+    assert diff["multi_kid_keep_grid"]["safe_fill"] is None
+    assert "POST /CadImport/UpdateData" in diff["multi_kid_keep_grid"]["skips"]
+    assert diff["updatedata_editor_done"]["writes_internaldata"] is False
+    assert diff["updatedata_editor_done"]["safe_on_multi_kid"] is False
+    assert diff["updatedata_editor_done"]["wipe_class"] == "Q10355"
+    assert "/CadImport/UpdateData" in STEP_CONTOURS_NOT_FILL_PATHS
+
+    why = multi_kid_keep_grid_empty_internaldata_refuses(
+        [
+            {
+                "Name": "34328-FFE PLATE A",
+                "FileType": "Cad",
+                "ItemType": "Cad",
+                "Category": "Cad",
+                "PartMode": 0,
+                "ProductType": 100,
+                "Thickness": "0.25",
+                "Thickness_Units": "inch",
+                "InternalData": "",
+            },
+            {
+                "Name": "34328-FFE PLATE B",
+                "FileType": "Cad",
+                "ItemType": "Cad",
+                "Category": "Cad",
+                "PartMode": 0,
+                "ProductType": 100,
+                "Thickness": "0.25",
+                "Thickness_Units": "inch",
+                "InternalData": "",
+            },
+        ],
+        keep_via="live",
+    )
+    assert why is not None
+    assert "Q10359" in why
+    assert "copied_n=0" in why
+    assert "blocked-on-Sectura" in why
+    assert "UpdateData" in why
+
+    assert is_forbidden_quote_number("Q10359")
+    assert not is_forbidden_quote_number("34328-1")
+    assert not is_forbidden_quote_number("34328-FFE")
+    assert spent_quote_number_block_reason("Q10359")
+    assert spent_quote_number_block_reason("34328-1") is None
+    assert "Q10359" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "34328-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert "Q10359" in hunt["never_remint"]
+    assert hunt["multi_kid_safe_fill"] is None
+    assert hunt["multi_kid_blocked_on_sectura"] is True
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "multi_kid_updatedata_editor_done_not_safe_fill"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10359" in angle["why"]
+    assert "ffe210e" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10359"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10359"},
+        )
+
+
+def test_q10368_34328_1_keep_grid_material_contours_zero_findings():
+    """Q10368 remint: Material stuck; Contours 0/1/0; no Long reclass."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.push import classify_sectura_item
+    from secturafab.step_classify import STOCK_FLAT_BAR, score_step_stock
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+        cad_kid_contour_diag,
+        step_cad_post_finish_contours_gate,
+    )
+    from tests.fixtures.live_q10368_34328_1 import (
+        Q10368_QUOTE_ID,
+        q10368_34328_1_keep_grid_material,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10368_34328_1_keep_grid_material()
+    assert dump["quote_number"] == "Q10368"
+    assert dump["quote_id"] == Q10368_QUOTE_ID
+    assert dump["part_number"] == "34328-1"
+    assert dump["keep_grid_material_worked"] is True
+    assert dump["contours"] == (0, 1, 0)
+    assert dump["pass_kid"]["number_of_contours"] == 1
+    assert dump["fail_kids"][0]["name"] == "HOOK BOOM REST-7742_31454-1"
+    assert dump["fail_kids"][1]["name"] == dump["fail_kids"][0]["name"]
+    assert dump["thickness_from_drawing_stamped_on_all"] is False
+    assert dump["duplicate_explode_same_name"] is True
+    assert dump["hook_should_be_long"] is False
+    assert dump["hook_class"] == "Cad"
+    assert dump["invent"] is False
+    assert dump["do_not_weaken_every_cad_kid_gate"] is True
+    assert dump["do_not_forbid_part_number"] is True
+
+    assert classify_sectura_item("HOOK BOOM REST-7742_31454-1", 0.5) == "Cad"
+    assert classify_sectura_item("34329 BOOM SUPPORT", 0.25) == "Cad"
+    assert score_step_stock((10.0, 4.0, 0.5)) != STOCK_FLAT_BAR
+    assert score_step_stock((12.0, 1.0, 0.5)) != STOCK_FLAT_BAR
+
+    cad = {
+        "ProductType": 100,
+        "Category": "Cad",
+        "Material": "A36",
+        "Thickness": 0.5,
+        "Thickness_Units": "inch",
+    }
+    tree = {
+        "TreeListData": [
+            {
+                **cad,
+                "Name": "HOOK BOOM REST-7742_31454-1",
+                "NumberOfContours": 0,
+            },
+            {
+                **cad,
+                "Name": "34329 BOOM SUPPORT",
+                "Thickness": 0.25,
+                "NumberOfContours": 1,
+            },
+            {
+                **cad,
+                "Name": "HOOK BOOM REST-7742_31454-1",
+                "NumberOfContours": 0,
+            },
+        ]
+    }
+    why = step_cad_post_finish_contours_gate(tree)
+    assert why is not None
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in why
+    assert "NumberOfContours<1 after Finish" in why
+    assert "Q10368" in why
+    assert "Q10369" in why
+    assert cad_kid_contour_diag(tree["TreeListData"][0]) == (
+        "HOOK BOOM REST-7742_31454-1 Contours=0"
+    )
+    assert "HOOK BOOM REST-7742_31454-1 Contours=0" in why
+    assert "34329 BOOM SUPPORT Contours=1" in why
+    assert cad_finish_notes_refuse_additem_dxf([why]) == why
+
+    assert is_forbidden_quote_number("Q10368")
+    assert is_forbidden_quote_id(Q10368_QUOTE_ID)
+    assert not is_forbidden_quote_number("34328-1")
+    assert spent_quote_number_block_reason("Q10368")
+    assert spent_quote_number_block_reason("34328-1") is None
+    assert "Q10368" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "34328-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert "Q10368" in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10368_keep_grid_material_inches_not_enough"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10368" in angle["why"]
+    assert "do not reclass Long" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10368"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10368"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="5e0ce1df"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10368_QUOTE_ID},
+        )
+
+
+def test_q10372_34328_1_rd_bar_hook_contours_fail_forever_forbid():
+    """Q10372 remint: RD BAR HOOK Contours=0 expected; plate 34329=1."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10372_34328_1 import (
+        Q10372_QUOTE_ID,
+        q10372_34328_1_contours_fail,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10372_34328_1_contours_fail()
+    assert dump["quote_number"] == "Q10372"
+    assert dump["quote_id"] == Q10372_QUOTE_ID
+    assert dump["part_number"] == "34328-1"
+    assert dump["complete_quote_done"] is False
+    assert dump["kids"][0]["name"] == "HOOK 31454-1"
+    assert dump["kids"][0]["drawing_stock"] == "RD BAR CR 1018"
+    assert dump["kids"][0]["drawing_size"] == "1/2 DIA"
+    assert dump["kids"][0]["is_plate"] is False
+    assert dump["kids"][0]["number_of_contours"] == 0
+    assert dump["kids"][0]["contours_zero_expected_until_bar_path"] is True
+    assert dump["kids"][1]["name"] == "34329"
+    assert dump["kids"][1]["is_plate"] is True
+    assert dump["kids"][1]["number_of_contours"] == 1
+    assert dump["contours_ge1_laser_gate_applies_to"] == "plate_sheet_cad_kids"
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+
+    assert is_forbidden_quote_number("Q10372")
+    assert is_forbidden_quote_id(Q10372_QUOTE_ID)
+    assert not is_forbidden_quote_number("34328-1")
+    assert spent_quote_number_block_reason("Q10372")
+    assert spent_quote_number_block_reason("34328-1") is None
+    assert "Q10372" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "34328-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10372" in hunt["never_remint"]
+    assert "34328-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10372_rd_bar_hook_contours_zero_expected"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10372" in angle["why"]
+    assert "RD BAR CR 1018" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10372"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10372"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="d62e2ad1"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10372_QUOTE_ID},
+        )
+
+
+def test_q10373_34328_1_mixed_classify_pass_forever_forbid():
+    """Q10373 remint: plate 34329 Cad Contours≥1; HOOK Long/Linear Saw."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10373_34328_1 import (
+        Q10373_QUOTE_ID,
+        q10373_34328_1_mixed_classify_pass,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10373_34328_1_mixed_classify_pass()
+    assert dump["quote_number"] == "Q10373"
+    assert dump["quote_id"] == Q10373_QUOTE_ID
+    assert dump["part_number"] == "34328-1"
+    assert dump["complete_quote_done"] is False
+    assert dump["open_new_draft"] is True
+    assert dump["pass"] is True
+    assert dump["mixed_classify"] is True
+    assert dump["kids"][0]["name"] == "34329"
+    assert dump["kids"][0]["classify"] == "Cad"
+    assert dump["kids"][0]["material"] == "A36"
+    assert dump["kids"][0]["thickness_in"] == 0.25
+    assert dump["kids"][0]["machine"] == "Laser"
+    assert dump["kids"][0]["is_plate"] is True
+    assert dump["kids"][0]["number_of_contours_ge1"] is True
+    assert dump["kids"][0]["contours_path"] is True
+    assert "number_of_contours" not in dump["kids"][0]
+    assert dump["kids"][1]["name"] == "HOOK 31454-1"
+    assert dump["kids"][1]["classify"] == "Long/Linear"
+    assert dump["kids"][1]["shape"] == "Hot Rolled Round Bar"
+    assert dump["kids"][1]["material"] == "CRS"
+    assert dump["kids"][1]["drawing_stock"] == "RD BAR CR 1018"
+    assert dump["kids"][1]["diameter_in"] == 0.5
+    assert dump["kids"][1]["length_in"] == 4.375
+    assert dump["kids"][1]["machine"] == "Saw"
+    assert dump["kids"][1]["is_plate"] is False
+    assert dump["kids"][1]["contours_path"] is False
+    assert "number_of_contours" not in dump["kids"][1]
+    assert dump["contours_ge1_laser_gate_applies_to"] == "plate_sheet_cad_kids"
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+
+    assert is_forbidden_quote_number("Q10373")
+    assert is_forbidden_quote_id(Q10373_QUOTE_ID)
+    assert not is_forbidden_quote_number("34328-1")
+    assert spent_quote_number_block_reason("Q10373")
+    assert spent_quote_number_block_reason("34328-1") is None
+    assert "Q10373" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "34328-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10373" in hunt["never_remint"]
+    assert "34328-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10373_mixed_classify_pass_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10373" in angle["why"]
+    assert "mixed" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10373"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10373"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="523d8328"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10373_QUOTE_ID},
+        )
+
+
+def test_q10374_1008399_1_coverage_fail_forever_forbid():
+    """Q10374 remint: STEP uploaded; plate 1008400 gauge unverified; stop before Contours."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10374_1008399_1 import (
+        Q10374_QUOTE_ID,
+        q10374_1008399_1_coverage_fail,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10374_1008399_1_coverage_fail()
+    assert dump["quote_number"] == "Q10374"
+    assert dump["quote_id"] == Q10374_QUOTE_ID
+    assert dump["part_number"] == "1008399-1"
+    assert dump["coverage_remint"] is True
+    assert dump["fail_close"] is True
+    assert dump["step_uploaded"] is True
+    assert dump["complete_quote_done"] is False
+    assert dump["stopped_before_contours"] is True
+    assert dump["kids"][0]["name"] == "1008400"
+    assert dump["kids"][0]["is_plate"] is True
+    assert dump["kids"][0]["gauge_verified"] is False
+    assert "SharePoint unreachable" in dump["kids"][0]["gauge_unverified_reason"]
+    assert "number_of_contours" not in dump["kids"][0]
+    assert "NumberOfContours" not in dump
+    assert "InternalData" not in dump
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["invent_gauge"] is False
+    assert dump["do_not_forbid_part_number"] is True
+
+    assert is_forbidden_quote_number("Q10374")
+    assert is_forbidden_quote_id(Q10374_QUOTE_ID)
+    assert not is_forbidden_quote_number("1008399-1")
+    assert spent_quote_number_block_reason("Q10374")
+    assert spent_quote_number_block_reason("1008399-1") is None
+    assert "Q10374" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "1008399-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10374" in hunt["never_remint"]
+    assert "1008399-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10374_1008399_1_coverage_gauge_unverified_stop_before_contours"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10374" in angle["why"]
+    assert "1008400" in angle["why"]
+    assert "gauge unverified" in angle["why"]
+    assert "stop before Contours" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10374"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10374"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="beb20d22"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10374_QUOTE_ID},
+        )
+
+
+def test_q10375_1008399_1_contours_fail_forever_forbid():
+    """Q10375 remint: Cad plate + Linear Saw bar + Component; Contours unverified."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10375_1008399_1 import (
+        Q10375_QUOTE_ID,
+        q10375_1008399_1_contours_fail,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10375_1008399_1_contours_fail()
+    assert dump["quote_number"] == "Q10375"
+    assert dump["quote_id"] == Q10375_QUOTE_ID
+    assert dump["part_number"] == "1008399-1"
+    assert dump["complete_quote_done"] is False
+    assert dump["exec_fail"] == "EXEC_FAIL"
+    assert dump["contours_ge1_verified"] is False
+    assert dump["blank_cad_editor"] is True
+    assert dump["kids"][0]["role"] == "plate"
+    assert dump["kids"][0]["classify"] == "Cad"
+    assert dump["kids"][0]["material"] == "A572 G50"
+    assert dump["kids"][0]["thickness_label"] == ".375-3/8"
+    assert dump["kids"][0]["is_plate"] is True
+    assert dump["kids"][0]["contours_ge1_verified"] is False
+    assert dump["kids"][0]["blank_cad_editor"] is True
+    assert "number_of_contours" not in dump["kids"][0]
+    assert dump["kids"][1]["role"] == "bar"
+    assert dump["kids"][1]["classify"] == "Linear"
+    assert dump["kids"][1]["machine"] == "Saw"
+    assert dump["kids"][1]["is_bar"] is True
+    assert dump["kids"][1]["contours_path"] is False
+    assert "number_of_contours" not in dump["kids"][1]
+    assert dump["kids"][2]["role"] == "hardware"
+    assert dump["kids"][2]["classify"] == "Component"
+    assert dump["kids"][2]["is_hardware"] is True
+    assert dump["kids"][2]["contours_path"] is False
+    assert "number_of_contours" not in dump["kids"][2]
+    assert "NumberOfContours" not in dump
+    assert "InternalData" not in dump
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+
+    assert is_forbidden_quote_number("Q10375")
+    assert is_forbidden_quote_id(Q10375_QUOTE_ID)
+    assert not is_forbidden_quote_number("1008399-1")
+    assert spent_quote_number_block_reason("Q10375")
+    assert spent_quote_number_block_reason("1008399-1") is None
+    assert "Q10375" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "1008399-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10375" in hunt["never_remint"]
+    assert "1008399-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10375_1008399_1_contours_unverified_blank_cad_editor"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10375" in angle["why"]
+    assert "blank CAD editor" in angle["why"]
+    assert "Contours≥1" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10375"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10375"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="60de939f"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10375_QUOTE_ID},
+        )
+
+
+def test_q10377_1008399_1_mixed_classify_pass_forever_forbid():
+    """Q10377 remint: plate 1008400-1 Cad Contours=1; bar Long/Linear; hardware Component."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10377_1008399_1 import (
+        Q10377_QUOTE_ID,
+        q10377_1008399_1_mixed_classify_pass,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10377_1008399_1_mixed_classify_pass()
+    assert dump["quote_number"] == "Q10377"
+    assert dump["quote_id"] == Q10377_QUOTE_ID
+    assert dump["part_number"] == "1008399-1"
+    assert dump["job"] == "Time Boom Rest"
+    assert dump["complete_quote_done"] is False
+    assert dump["pass"] is True
+    assert dump["mixed_classify"] is True
+    assert dump["kids"][0]["name"] == "1008400-1"
+    assert dump["kids"][0]["classify"] == "Cad"
+    assert dump["kids"][0]["material"] == "A572 G50"
+    assert dump["kids"][0]["thickness_label"] == '.375-3/8"'
+    assert dump["kids"][0]["is_plate"] is True
+    assert dump["kids"][0]["number_of_contours"] == 1
+    assert dump["kids"][0]["finish_tree_verify"] is True
+    assert dump["kids"][0]["number_of_contours_ge1"] is True
+    assert dump["kids"][0]["contours_path"] is True
+    assert dump["kids"][1]["name"] == "31454-1"
+    assert dump["kids"][1]["classify"] == "Long/Linear"
+    assert dump["kids"][1]["machine"] == "Saw"
+    assert dump["kids"][1]["is_bar"] is True
+    assert dump["kids"][1]["is_linear"] is True
+    assert dump["kids"][1]["contours_path"] is False
+    assert "number_of_contours" not in dump["kids"][1]
+    assert dump["kids"][2]["name"] == "40003"
+    assert dump["kids"][2]["classify"] == "Component"
+    assert dump["kids"][2]["is_hardware"] is True
+    assert dump["kids"][2]["is_component"] is True
+    assert dump["kids"][2]["contours_path"] is False
+    assert "number_of_contours" not in dump["kids"][2]
+    assert dump["kids"][3]["name"] == "40006"
+    assert dump["kids"][3]["classify"] == "Component"
+    assert dump["kids"][3]["is_hardware"] is True
+    assert dump["kids"][3]["is_component"] is True
+    assert dump["kids"][3]["contours_path"] is False
+    assert "number_of_contours" not in dump["kids"][3]
+    assert dump["contours_ge1_laser_gate_applies_to"] == "plate_sheet_cad_kids"
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert dump["protect"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+
+    assert is_forbidden_quote_number("Q10377")
+    assert is_forbidden_quote_id(Q10377_QUOTE_ID)
+    assert not is_forbidden_quote_number("1008399-1")
+    assert spent_quote_number_block_reason("Q10377")
+    assert spent_quote_number_block_reason("1008399-1") is None
+    assert "Q10377" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "1008399-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10377" in hunt["never_remint"]
+    assert "1008399-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10377_1008399_1_mixed_classify_pass_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10377" in angle["why"]
+    assert "mixed" in angle["why"]
+    assert "1008400-1" in angle["why"]
+    assert "Finish→tree" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10377"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10377"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="12bd2530"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10377_QUOTE_ID},
+        )
+
+
+def test_q10379_11643_1_mixed_classify_pass_forever_forbid():
+    """Q10379 remint: plates Cad Contours=1; tube/slug Long/Linear."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10379_11643_1 import (
+        Q10379_QUOTE_ID,
+        q10379_11643_1_mixed_classify_pass,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10379_11643_1_mixed_classify_pass()
+    assert dump["quote_number"] == "Q10379"
+    assert dump["quote_id"] == Q10379_QUOTE_ID
+    assert dump["part_number"] == "11643-1"
+    assert dump["job"] == "Platform Mount"
+    assert dump["complete_quote_done"] is False
+    assert dump["open_new_draft"] is True
+    assert "OPEN-NEW" in dump["complete_quote_note"]
+    assert "CAD Finish" in dump["complete_quote_note"]
+    assert dump["pass"] is True
+    assert dump["mixed_classify"] is True
+    assert dump["kids"][0]["name"] == "11640-1"
+    assert dump["kids"][0]["classify"] == "Cad"
+    assert dump["kids"][0]["material"] == "A572 G50"
+    assert dump["kids"][0]["thickness_in"] == 0.25
+    assert dump["kids"][0]["thickness_label"] == ".25"
+    assert dump["kids"][0]["is_plate"] is True
+    assert dump["kids"][0]["number_of_contours"] == 1
+    assert dump["kids"][0]["number_of_contours_ge1"] is True
+    assert dump["kids"][0]["contours_path"] is True
+    assert dump["kids"][1]["name"] == "11642-2"
+    assert dump["kids"][1]["classify"] == "Cad"
+    assert dump["kids"][1]["material"] == "A36"
+    assert dump["kids"][1]["thickness_in"] == 0.375
+    assert dump["kids"][1]["thickness_label"] == ".375"
+    assert dump["kids"][1]["is_plate"] is True
+    assert dump["kids"][1]["number_of_contours"] == 1
+    assert dump["kids"][1]["number_of_contours_ge1"] is True
+    assert dump["kids"][1]["contours_path"] is True
+    assert dump["kids"][2]["name"] == "11641-1"
+    assert dump["kids"][2]["classify"] == "Long/Linear"
+    assert dump["kids"][2]["shape"] == "tube_round"
+    assert dump["kids"][2]["material"] == "A513"
+    assert dump["kids"][2]["size_label"] == "2.00×1.50×7.4375"
+    assert dump["kids"][2]["is_tube"] is True
+    assert dump["kids"][2]["is_linear"] is True
+    assert dump["kids"][2]["contours_path"] is False
+    assert "number_of_contours" not in dump["kids"][2]
+    assert dump["kids"][3]["name"] == "32070-1"
+    assert dump["kids"][3]["classify"] == "Long/Linear"
+    assert dump["kids"][3]["shape"] == "bar_round"
+    assert dump["kids"][3]["material"] == "C1018"
+    assert dump["kids"][3]["size_label"] == "2.00×0.45"
+    assert dump["kids"][3]["is_bar"] is True
+    assert dump["kids"][3]["is_linear"] is True
+    assert dump["kids"][3]["contours_path"] is False
+    assert "number_of_contours" not in dump["kids"][3]
+    assert dump["contours_ge1_laser_gate_applies_to"] == "plate_sheet_cad_kids"
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert dump["protect"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+
+    assert is_forbidden_quote_number("Q10379")
+    assert is_forbidden_quote_id(Q10379_QUOTE_ID)
+    assert not is_forbidden_quote_number("11643-1")
+    assert spent_quote_number_block_reason("Q10379")
+    assert spent_quote_number_block_reason("11643-1") is None
+    assert "Q10379" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "11643-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10379" in hunt["never_remint"]
+    assert "11643-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10379_11643_1_mixed_classify_pass_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10379" in angle["why"]
+    assert "mixed" in angle["why"]
+    assert "11640-1" in angle["why"]
+    assert "11642-2" in angle["why"]
+    assert "tube_round" in angle["why"]
+    assert "bar_round" in angle["why"]
+    assert "OPEN-NEW" in angle["why"]
+    assert "CAD Finish" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10379"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10379"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="70e69d9c"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10379_QUOTE_ID},
+        )
+
+
+def test_q10380_16630_1_mixed_classify_pass_forever_forbid():
+    """Q10380 remint: plate Cad Contours=1; CT/ring Long/Linear."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10380_16630_1 import (
+        Q10380_QUOTE_ID,
+        q10380_16630_1_mixed_classify_pass,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10380_16630_1_mixed_classify_pass()
+    assert dump["quote_number"] == "Q10380"
+    assert dump["quote_id"] == Q10380_QUOTE_ID
+    assert dump["part_number"] == "16630-1"
+    assert dump["job"] == "Rotation Top Stop"
+    assert dump["complete_quote_done"] is False
+    assert dump["open_new_draft"] is True
+    assert "OPEN-NEW" in dump["complete_quote_note"]
+    assert "CAD Finish" in dump["complete_quote_note"]
+    assert dump["pass"] is True
+    assert dump["mixed_classify"] is True
+    assert dump["kids"][0]["name"] == "16629-1"
+    assert dump["kids"][0]["label"] == "EAR"
+    assert dump["kids"][0]["classify"] == "Cad"
+    assert dump["kids"][0]["material"] == "A36"
+    assert dump["kids"][0]["thickness_in"] == 0.5
+    assert dump["kids"][0]["thickness_label"] == '.5-1/2"'
+    assert dump["kids"][0]["qty"] == 2
+    assert dump["kids"][0]["is_plate"] is True
+    assert dump["kids"][0]["number_of_contours"] == 1
+    assert dump["kids"][0]["number_of_contours_ge1"] is True
+    assert dump["kids"][0]["contours_path"] is True
+    assert dump["kids"][1]["name"] == "16628-1"
+    assert dump["kids"][1]["classify"] == "Long/Linear"
+    assert dump["kids"][1]["shape"] == "tube"
+    assert dump["kids"][1]["material"] == "A513"
+    assert dump["kids"][1]["size_label"] == "7.25 OD × 6.0 ID × 1.69 L wall 0.625"
+    assert dump["kids"][1]["qty"] == 1
+    assert dump["kids"][1]["is_tube"] is True
+    assert dump["kids"][1]["is_ring"] is True
+    assert dump["kids"][1]["is_linear"] is True
+    assert dump["kids"][1]["contours_path"] is False
+    assert "number_of_contours" not in dump["kids"][1]
+    assert dump["contours_ge1_laser_gate_applies_to"] == "plate_sheet_cad_kids"
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert dump["protect"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+
+    assert is_forbidden_quote_number("Q10380")
+    assert is_forbidden_quote_id(Q10380_QUOTE_ID)
+    assert not is_forbidden_quote_number("16630-1")
+    assert spent_quote_number_block_reason("Q10380")
+    assert spent_quote_number_block_reason("16630-1") is None
+    assert "Q10380" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "16630-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10380" in hunt["never_remint"]
+    assert "16630-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10380_16630_1_mixed_classify_pass_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10380" in angle["why"]
+    assert "mixed" in angle["why"]
+    assert "16629-1" in angle["why"]
+    assert "16628-1" in angle["why"]
+    assert "tube" in angle["why"]
+    assert "OPEN-NEW" in angle["why"]
+    assert "CAD Finish" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10380"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10380"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="754089f2"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10380_QUOTE_ID},
+        )
+
+
+def test_q10381_1001093_1_mixed_classify_pass_forever_forbid():
+    """Q10381 remint: 3 plates Cad Contours=1; RD BAR Long/Linear."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10381_1001093_1 import (
+        Q10381_QUOTE_ID,
+        q10381_1001093_1_mixed_classify_pass,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10381_1001093_1_mixed_classify_pass()
+    assert dump["quote_number"] == "Q10381"
+    assert dump["quote_id"] == Q10381_QUOTE_ID
+    assert dump["part_number"] == "1001093-1"
+    assert dump["job"] == "Hose Guide"
+    assert dump["complete_quote_done"] is False
+    assert dump["open_new_draft"] is True
+    assert "OPEN-NEW" in dump["complete_quote_note"]
+    assert "CAD Finish" in dump["complete_quote_note"]
+    assert dump["pass"] is True
+    assert dump["mixed_classify"] is True
+    assert dump["kids"][0]["name"] == "1000480"
+    assert dump["kids"][0]["classify"] == "Cad"
+    assert dump["kids"][0]["material"] == "A572 G50"
+    assert dump["kids"][0]["thickness_in"] == 0.1875
+    assert dump["kids"][0]["thickness_label"] == ".1875-3/16"
+    assert dump["kids"][0]["is_plate"] is True
+    assert dump["kids"][0]["number_of_contours"] == 1
+    assert dump["kids"][0]["number_of_contours_ge1"] is True
+    assert dump["kids"][0]["contours_path"] is True
+    assert dump["kids"][1]["name"] == "1001090"
+    assert dump["kids"][1]["classify"] == "Cad"
+    assert dump["kids"][1]["material"] == "A572 G50"
+    assert dump["kids"][1]["thickness_in"] == 0.1875
+    assert dump["kids"][1]["is_plate"] is True
+    assert dump["kids"][1]["number_of_contours"] == 1
+    assert dump["kids"][1]["contours_path"] is True
+    assert dump["kids"][2]["name"] == "1001091"
+    assert dump["kids"][2]["classify"] == "Cad"
+    assert dump["kids"][2]["material"] == "A572 G50"
+    assert dump["kids"][2]["thickness_in"] == 0.1875
+    assert dump["kids"][2]["is_plate"] is True
+    assert dump["kids"][2]["number_of_contours"] == 1
+    assert dump["kids"][2]["contours_path"] is True
+    assert dump["kids"][3]["name"] == "1001092-1"
+    assert dump["kids"][3]["classify"] == "Long/Linear"
+    assert dump["kids"][3]["shape"] == "bar_round"
+    assert dump["kids"][3]["label"] == "RD BAR"
+    assert dump["kids"][3]["material"] == "CRS/CR1018"
+    assert dump["kids"][3]["size_label"] == ".188 × 5.5625"
+    assert dump["kids"][3]["is_bar"] is True
+    assert dump["kids"][3]["is_linear"] is True
+    assert dump["kids"][3]["contours_path"] is False
+    assert "number_of_contours" not in dump["kids"][3]
+    assert dump["contours_ge1_laser_gate_applies_to"] == "plate_sheet_cad_kids"
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert dump["protect"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+
+    assert is_forbidden_quote_number("Q10381")
+    assert is_forbidden_quote_id(Q10381_QUOTE_ID)
+    assert not is_forbidden_quote_number("1001093-1")
+    assert spent_quote_number_block_reason("Q10381")
+    assert spent_quote_number_block_reason("1001093-1") is None
+    assert "Q10381" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "1001093-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10381" in hunt["never_remint"]
+    assert "1001093-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10381_1001093_1_mixed_classify_pass_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10381" in angle["why"]
+    assert "mixed" in angle["why"]
+    assert "1000480" in angle["why"]
+    assert "1001090" in angle["why"]
+    assert "1001091" in angle["why"]
+    assert "1001092-1" in angle["why"]
+    assert "RD BAR" in angle["why"]
+    assert "OPEN-NEW" in angle["why"]
+    assert "CAD Finish" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10381"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10381"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="bb31a132"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10381_QUOTE_ID},
+        )
+
+
+def test_q10382_35146_1_mixed_classify_pass_forever_forbid():
+    """Q10382 remint: 2 plates Cad Contours=1; CT Long/Linear."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10382_35146_1 import (
+        Q10382_QUOTE_ID,
+        q10382_35146_1_mixed_classify_pass,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10382_35146_1_mixed_classify_pass()
+    assert dump["quote_number"] == "Q10382"
+    assert dump["quote_id"] == Q10382_QUOTE_ID
+    assert dump["part_number"] == "35146-1"
+    assert dump["job"] == "Jib Turret"
+    assert dump["complete_quote_done"] is False
+    assert dump["open_new_draft"] is True
+    assert "OPEN-NEW" in dump["complete_quote_note"]
+    assert "CAD Finish" in dump["complete_quote_note"]
+    assert dump["pass"] is True
+    assert dump["mixed_classify"] is True
+    assert dump["kids"][0]["name"] == "35123"
+    assert dump["kids"][0]["classify"] == "Cad"
+    assert dump["kids"][0]["material"] == "DOMEX"
+    assert dump["kids"][0]["thickness_in"] == 0.1875
+    assert dump["kids"][0]["thickness_label"] == ".1875"
+    assert dump["kids"][0]["is_plate"] is True
+    assert dump["kids"][0]["number_of_contours"] == 1
+    assert dump["kids"][0]["number_of_contours_ge1"] is True
+    assert dump["kids"][0]["contours_path"] is True
+    assert dump["kids"][1]["name"] == "35125"
+    assert dump["kids"][1]["classify"] == "Cad"
+    assert dump["kids"][1]["material"] == "DOMEX"
+    assert dump["kids"][1]["thickness_label"] == "10GA"
+    assert "thickness_in" not in dump["kids"][1]
+    assert dump["kids"][1]["is_plate"] is True
+    assert dump["kids"][1]["number_of_contours"] == 1
+    assert dump["kids"][1]["number_of_contours_ge1"] is True
+    assert dump["kids"][1]["contours_path"] is True
+    assert dump["kids"][2]["name"] == "35124"
+    assert dump["kids"][2]["classify"] == "Long/Linear"
+    assert dump["kids"][2]["shape"] == "tube"
+    assert dump["kids"][2]["label"] == "CT"
+    assert dump["kids"][2]["material"] == "A513"
+    assert dump["kids"][2]["size_label"] == "4.25×3.75×6.25"
+    assert dump["kids"][2]["is_tube"] is True
+    assert dump["kids"][2]["is_linear"] is True
+    assert dump["kids"][2]["contours_path"] is False
+    assert "number_of_contours" not in dump["kids"][2]
+    assert dump["contours_ge1_laser_gate_applies_to"] == "plate_sheet_cad_kids"
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert dump["protect"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+
+    assert is_forbidden_quote_number("Q10382")
+    assert is_forbidden_quote_id(Q10382_QUOTE_ID)
+    assert not is_forbidden_quote_number("35146-1")
+    assert spent_quote_number_block_reason("Q10382")
+    assert spent_quote_number_block_reason("35146-1") is None
+    assert "Q10382" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "35146-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10382" in hunt["never_remint"]
+    assert "35146-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10382_35146_1_mixed_classify_pass_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10382" in angle["why"]
+    assert "mixed" in angle["why"]
+    assert "35123" in angle["why"]
+    assert "35125" in angle["why"]
+    assert "35124" in angle["why"]
+    assert "10GA" in angle["why"]
+    assert "CT" in angle["why"]
+    assert "OPEN-NEW" in angle["why"]
+    assert "CAD Finish" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10382"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10382"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="2d42dcc3"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10382_QUOTE_ID},
+        )
+
+
+def test_q10383_21641_1_contours_fail_forever_forbid():
+    """Q10383 remint: EXEC_FAIL Contours=0 all plate Cad kids after Finish."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10383_21641_1 import (
+        Q10383_QUOTE_ID,
+        q10383_21641_1_contours_fail,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10383_21641_1_contours_fail()
+    assert dump["quote_number"] == "Q10383"
+    assert dump["quote_id"] == Q10383_QUOTE_ID
+    assert dump["part_number"] == "21641-1"
+    assert dump["job"] == "TIP SLEEVE"
+    assert dump["live_probe_tip"] == "f7e689d"
+    assert dump["remint_attempt_date"] == "2026-09-14"
+    assert dump["complete_quote_done"] is False
+    assert dump["open_new_draft"] is True
+    assert "OPEN-NEW" in dump["complete_quote_note"]
+    assert "TIP SLEEVE" in dump["complete_quote_note"]
+    assert dump["pass"] is False
+    assert dump["exec_fail"] == "EXEC_FAIL"
+    assert dump["cadimport_internaldata_empty"] is True
+    assert dump["primary_organization_id_lost_mid_cad_wizard"] is True
+    assert dump["kids_not_per_pn_classified"] is True
+    assert dump["kids_all_named"] == "21641-1"
+    assert dump["kids_all_thickness_in"] == 0.25
+    assert dump["all_plate_cad_kids_contours_after_finish"] == 0
+    assert dump["kids"][0]["name"] == "21641-1"
+    assert dump["kids"][0]["classify"] == "Cad"
+    assert dump["kids"][0]["is_plate"] is True
+    assert dump["kids"][0]["thickness_in"] == 0.25
+    assert dump["kids"][0]["per_pn_classified"] is False
+    assert dump["kids"][0]["number_of_contours"] == 0
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert dump["protect"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+
+    assert is_forbidden_quote_number("Q10383")
+    assert is_forbidden_quote_id(Q10383_QUOTE_ID)
+    assert not is_forbidden_quote_number("21641-1")
+    assert spent_quote_number_block_reason("Q10383")
+    assert spent_quote_number_block_reason("21641-1") is None
+    assert "Q10383" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "21641-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10383" in hunt["never_remint"]
+    assert "21641-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10383_21641_1_contours_fail_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10383" in angle["why"]
+    assert "EXEC_FAIL" in angle["why"]
+    assert "Contours=0" in angle["why"]
+    assert "InternalData empty" in angle["why"]
+    assert "PrimaryOrganizationID" in angle["why"]
+    assert "21641-1 @ 0.25" in angle["why"]
+    assert "OPEN-NEW" in angle["why"]
+    assert "TIP SLEEVE" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10383"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10383"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="9d7cc06e"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10383_QUOTE_ID},
+        )
+
+
+def test_q10399_21641_1_gate5_internaldata_empty_forever_forbid():
+    """Q10399 remint: EXEC_FAIL gate5 InternalData empty after explode."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10399_21641_1 import (
+        Q10399_QUOTE_ID,
+        q10399_21641_1_contours_fail,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10399_21641_1_contours_fail()
+    assert dump["quote_number"] == "Q10399"
+    assert dump["quote_id"] == Q10399_QUOTE_ID
+    assert dump["part_number"] == "21641-1"
+    assert dump["job"] == "TIP SLEEVE"
+    assert dump["live_probe_tip"] == "6a26835"
+    assert dump["remint_attempt_date"] == "2026-09-14"
+    assert dump["hardened_remint"] is True
+    assert dump["complete_quote_done"] is False
+    assert dump["open_new_draft"] is True
+    assert "OPEN-NEW" in dump["complete_quote_note"]
+    assert "hardened 21641" in dump["complete_quote_note"]
+    assert dump["pass"] is False
+    assert dump["exec_fail"] == "EXEC_FAIL"
+    assert dump["dig_checklist_gates_1_to_4_pass"] is True
+    assert dump["gate5_internaldata_empty_after_explode"] is True
+    assert dump["additem_dxffiles_refused"] is True
+    assert dump["contours_never_filled"] is True
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert dump["protect"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+    assert "kids" not in dump
+
+    assert is_forbidden_quote_number("Q10399")
+    assert is_forbidden_quote_id(Q10399_QUOTE_ID)
+    assert not is_forbidden_quote_number("21641-1")
+    assert spent_quote_number_block_reason("Q10399")
+    assert spent_quote_number_block_reason("21641-1") is None
+    assert "Q10399" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "21641-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10399" in hunt["never_remint"]
+    assert "21641-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10399_21641_1_gate5_internaldata_empty_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10399" in angle["why"]
+    assert "EXEC_FAIL" in angle["why"]
+    assert "gates 1–4 PASS" in angle["why"]
+    assert "Gate5" in angle["why"]
+    assert "InternalData empty" in angle["why"]
+    assert "AddItem_DXFFiles" in angle["why"]
+    assert "Contours never filled" in angle["why"]
+    assert "OPEN-NEW" in angle["why"]
+    assert "hardened 21641" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10399"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10399"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="039d8464"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10399_QUOTE_ID},
+        )
+
+
+def test_q10420_35146_1_chrome_cdp_skip_finish_forever_forbid():
+    """Q10420 remint: EXEC_FAIL chrome_cdp skipped Finish on empty InternalData."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10420_35146_1 import (
+        Q10420_QUOTE_ID,
+        q10420_35146_1_contours_fail,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10420_35146_1_contours_fail()
+    assert dump["quote_number"] == "Q10420"
+    assert dump["quote_id"] == Q10420_QUOTE_ID
+    assert dump["part_number"] == "35146-1"
+    assert dump["job"] == "Jib Turret"
+    assert dump["live_probe_tip"] == "c08c47b"
+    assert dump["remint_attempt_date"] == "2026-09-15"
+    assert dump["tip_prove"] is True
+    assert dump["complete_quote_done"] is False
+    assert dump["open_new_draft"] is True
+    assert "OPEN-NEW" in dump["complete_quote_note"]
+    assert "35146" in dump["complete_quote_note"]
+    assert dump["pass"] is False
+    assert dump["exec_fail"] == "EXEC_FAIL"
+    assert dump["chrome_cdp_skipped_page_finish"] is True
+    assert dump["skip_why"] == "cad_internaldata_empty_after_explode"
+    assert dump["tip_refuse_relax_ignored"] is True
+    assert dump["cad_material_inches_recipe_complete"] is True
+    assert dump["contours_never_filled"] is True
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert dump["protect"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+    assert "kids" not in dump
+
+    assert is_forbidden_quote_number("Q10420")
+    assert is_forbidden_quote_id(Q10420_QUOTE_ID)
+    assert not is_forbidden_quote_number("35146-1")
+    assert spent_quote_number_block_reason("Q10420")
+    assert spent_quote_number_block_reason("35146-1") is None
+    assert "Q10420" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "35146-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10420" in hunt["never_remint"]
+    assert "35146-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10420_35146_1_chrome_cdp_skip_finish_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10420" in angle["why"]
+    assert "EXEC_FAIL" in angle["why"]
+    assert "chrome_cdp skipped page Finish" in angle["why"]
+    assert "refuse-relax" in angle["why"]
+    assert "cad_material_inches_recipe_complete" in angle["why"]
+    assert "Contours never filled" in angle["why"]
+    assert "OPEN-NEW" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10420"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10420"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="4054443b"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10420_QUOTE_ID},
+        )
+
+
+def test_q10450_1d59ef4a_pr62_cdp_prove_forever_forbid():
+    """Q10450 leftover after PR62 CDP prove: Contours never landed."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10450_35146_1 import (
+        Q10450_QUOTE_ID,
+        q10450_35146_1_contours_never_landed,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10450_35146_1_contours_never_landed()
+    assert dump["quote_number"] == "Q10450"
+    assert dump["quote_id"] == Q10450_QUOTE_ID
+    assert dump["quote_id_prefix"] == "1d59ef4a"
+    assert dump["part_number"] == "35146-1"
+    assert dump["minted_after"] == "PR62 CDP prove"
+    assert dump["remint_attempt_date"] == "2026-09-15"
+    assert dump["complete_quote_done"] is False
+    assert dump["open_draft"] is True
+    assert "OPEN-DRAFT" in dump["complete_quote_note"]
+    assert dump["live_qn_drifted_toward"] == "Q10408"
+    assert dump["pass"] is False
+    assert dump["contours_never_landed"] is True
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert dump["protect"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+    assert "kids" not in dump
+
+    assert is_forbidden_quote_number("Q10450")
+    assert is_forbidden_quote_id(Q10450_QUOTE_ID)
+    assert is_forbidden_quote_id("1d59ef4a-1111-2222-3333-444444444444")
+    assert not is_forbidden_quote_number("35146-1")
+    assert spent_quote_number_block_reason("Q10450")
+    assert spent_quote_number_block_reason("35146-1") is None
+    assert "Q10450" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "35146-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10450" in hunt["never_remint"]
+    assert "35146-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10450_1d59ef4a_pr62_cdp_prove_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "Q10450" in angle["why"]
+    assert "PR62 CDP prove" in angle["why"]
+    assert "Contours never landed" in angle["why"]
+    assert "Q10408" in angle["why"]
+    assert "OPEN-DRAFT" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10450"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10450"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="1d59ef4a"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": Q10450_QUOTE_ID},
+        )
+
+
+def test_q10421_38fa25fc_q10407_drift_forever_forbid():
+    """Q10421 / 38fa25fc prior burn leftover — prefix only; full UUID not found."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10421_38fa25fc import (
+        Q10421_QUOTE_ID_PREFIX,
+        q10421_38fa25fc_drift,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = q10421_38fa25fc_drift()
+    assert dump["quote_number"] == "Q10421"
+    assert dump["quote_id_prefix"] == Q10421_QUOTE_ID_PREFIX == "38fa25fc"
+    assert dump["full_uuid_found"] is False
+    assert dump["full_uuid"] is None
+    assert dump["prior_burn"] == "Q10421→Q10407 drift"
+    assert dump["drifted_toward"] == "Q10407"
+    assert dump["invent"] is False
+    assert dump["invent_contours"] is False
+    assert dump["invent_internaldata"] is False
+    assert dump["do_not_forbid_part_number"] is True
+    assert "InternalData" not in dump
+    assert "NumberOfContours" not in dump
+    assert "kids" not in dump
+
+    assert is_forbidden_quote_number("Q10421")
+    assert is_forbidden_quote_id("38fa25fc-1111-2222-3333-444444444444")
+    assert not is_forbidden_quote_number("35146-1")
+    assert spent_quote_number_block_reason("Q10421")
+    assert spent_quote_number_block_reason("35146-1") is None
+    assert "Q10421" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "35146-1" not in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert hunt["invent"] is False
+    assert "Q10421" in hunt["never_remint"]
+    assert "35146-1" not in hunt["never_remint"]
+    angle = next(
+        a
+        for a in hunt["angles"]
+        if a["id"] == "q10421_38fa25fc_q10407_drift_leftover"
+    )
+    assert angle["ruled_out"] is True
+    assert "38fa25fc" in angle["why"]
+    assert "Q10421" in angle["why"]
+    assert "Q10407" in angle["why"]
+    assert "Do not invent Contours" in angle["why"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10421"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10421"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="38fa25fc"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "38fa25fc-1111-2222-3333-444444444444"},
+        )
+
+
+def test_q10407_q10408_safe_cave_list_empty_forever_forbid():
+    """Q10407 d796cdbe / Q10408 09bae33d Safe Cave List=[] leftovers."""
+    from secturafab.forbidden_quotes import (
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_q10407_q10408_safe_cave import (
+        Q10407_QUOTE_ID_PREFIX,
+        Q10408_QUOTE_ID_PREFIX,
+        q10407_safe_cave_list_empty,
+        q10408_safe_cave_list_empty,
+    )
+    from tests.fixtures.step_contours_fill_hunt import step_contours_fill_hunt
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    q07 = q10407_safe_cave_list_empty()
+    q08 = q10408_safe_cave_list_empty()
+    assert q07["quote_number"] == "Q10407"
+    assert q07["quote_id_prefix"] == Q10407_QUOTE_ID_PREFIX == "d796cdbe"
+    assert q07["customer"] == "Safe Cave"
+    assert q07["list_empty"] is True
+    assert q07["itemlist"] == []
+    assert q07["invent"] is False
+    assert q08["quote_number"] == "Q10408"
+    assert q08["quote_id_prefix"] == Q10408_QUOTE_ID_PREFIX == "09bae33d"
+    assert q08["customer"] == "Safe Cave"
+    assert q08["list_empty"] is True
+    assert q08["itemlist"] == []
+    assert q08["invent"] is False
+
+    assert is_forbidden_quote_number("Q10407")
+    assert is_forbidden_quote_number("Q10408")
+    assert is_forbidden_quote_id("d796cdbe-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id("09bae33d-1111-2222-3333-444444444444")
+    assert spent_quote_number_block_reason("Q10407")
+    assert spent_quote_number_block_reason("Q10408")
+    assert "Q10407" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert "Q10408" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    hunt = step_contours_fill_hunt()
+    assert "Q10407" in hunt["never_remint"]
+    assert "Q10408" in hunt["never_remint"]
+    with pytest.raises(ForbiddenQuoteError, match="Q10407"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10407"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="d796cdbe"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "d796cdbe-1111-2222-3333-444444444444"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="Q10408"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10408"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="09bae33d"):
+        refuse_forbidden_quote_write(
+            method="PATCH",
+            path="/Quote/UpdateItem_Part",
+            payload={"ID": "09bae33d-1111-2222-3333-444444444444"},
+        )
+
+
+def test_finish_cad_files_multi_kid_keep_grid_empty_internaldata_is_exec_fail(
+    tmp_path: Path,
+):
+    """Q10358 path: keep-grid live + Cad+inches + empty InternalData.
+
+    Re-GET Data is copy-if-nonempty. Still empty → EXEC_FAIL. invent=false.
+    """
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+    )
+
+    service, client, stp, kids = _multi_kid_cad_finish_client(
+        tmp_path,
+        names=["34328-1 PLATE A", "34328-1 PLATE B", "34328-1 GUSSET"],
+        part_key="34328-1",
+    )
+    empty_kids = [{**r, "InternalData": ""} for r in kids]
+    client.upload_item_dxf_files.return_value = {"status": "OK", "List": empty_kids}
+    client.create_dxf_parts.return_value = {"List": empty_kids}
+    client.cadimport_data.return_value = {"List": empty_kids}
+    client.cadimport_caddata = MagicMock(return_value={"List": empty_kids})
+    live_items = [
+        {
+            "ID": f"id-{i}",
+            "Name": name,
+            "ProductType": 100,
+            "ProductTypeName": "Cad",
+        }
+        for i, name in enumerate(
+            ["34328-1 PLATE A", "34328-1 PLATE B", "34328-1 GUSSET"]
+        )
+    ]
+    client.quote_item_read.return_value = {"Data": live_items, "Total": 3}
+    client.get_json.return_value = {
+        "ItemList": live_items,
+        "PrimaryOrganizationID": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+    }
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 3,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 3,
+            "setpartmode_via": "jquery_ajax",
+            "updateitemtype_via": "jquery_ajax",
+            "updateitemtype_count": 3,
+            "grid_dxf_row_count": 3,
+            "keep_via": "live",
+            "keep_n": 3,
+            "edit_gate": "",
+            "org_id": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+            "org_widget": True,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "FileType",
+                "ID",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+                "Thickness",
+                "Thickness_Units",
+            ],
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id=client._edit_quote_id,
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="34328-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert "per_kid_cad_inches=single_plate_adjust_properties_page_fn" in blob
+    assert "keep_grid_via=live" in blob
+    assert "cadimport_get_after_cad_inches=true" in blob
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
+    assert "keep-grid Cad+inches stuck" in blob
+    assert "InternalData empty" in blob
+    assert "Q10358" in blob
+    assert "Q10359" in blob
+    assert "blocked-on-Sectura" in blob
+    assert "wizard lost FileList" not in blob
+    assert cad_finish_notes_refuse_additem_dxf(notes) is not None
+
+
+def test_finish_cad_files_multi_kid_org_cleared_mid_wizard_is_exec_fail(
+    tmp_path: Path,
+):
+    """Q10352 / 8679-1: org widget cleared on CAD modal refresh.
+
+    Cad+inches not proven. Do not invent Contours. Not Finish.
+    """
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+    )
+
+    service, client, stp, _kids = _multi_kid_cad_finish_client(
+        tmp_path,
+        names=[
+            "8679-1 PLATE A",
+            "8679-1 PLATE B",
+            "8679-1 PLATE C",
+            "8679-1 PLATE D",
+        ],
+        part_key="8679-1",
+    )
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 4,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 4,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 4,
+            "edit_gate": "",
+            "org_id": "",
+            "org_widget": True,
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id=client._edit_quote_id,
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="8679-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    client.add_item_dxf_files.assert_not_called()
+    blob = " ".join(notes)
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
+    assert "organization lost mid CAD wizard" in blob
+    assert "Q10352" in blob
+    assert "Cad+inches not proven" in blob or "not proven" in blob
+    assert cad_finish_notes_refuse_additem_dxf(notes) is not None
+
+
+def test_finish_cad_files_exec_fail_when_item_count_drops_to_zero(tmp_path: Path):
+    """Q10353 / Q10335: QuoteItem_Read / ItemList dropped 3→0 — not Finish."""
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+    )
+
+    service, client, stp, _kids = _multi_kid_cad_finish_client(
+        tmp_path,
+        names=["12519-2 PLATE A", "12519-2 PLATE B", "12519-2 TUBE"],
+        part_key="12519-2",
+    )
+    phase = {"after_apply": False}
+
+    def _apply(*_a, **_k):
+        phase["after_apply"] = True
+        return {
+            "grid_present": True,
+            "cad": 2,
+            "linear": 1,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 3,
+            "setpartmode_via": "page_fn",
+            "updateitemtype_via": "page_fn",
+            "updateitemtype_count": 2,
+            "grid_dxf_row_count": 3,
+            "edit_gate": "",
+            "kendo_row_keys": ["FileType", "SourceDataID", "ID"],
+        }
+
+    def _get_json(path):
+        if "v1/quote/" in str(path) and not phase["after_apply"]:
+            return {
+                "ItemList": [
+                    {"ID": "id-a", "Name": "12519-2 PLATE A"},
+                    {"ID": "id-b", "Name": "12519-2 PLATE B"},
+                    {"ID": "id-c", "Name": "12519-2 TUBE"},
+                ]
+            }
+        if "v1/quote/" in str(path):
+            return {"ItemList": []}
+        return []
+
+    client.get_json.side_effect = _get_json
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        side_effect=_apply,
+    ):
+        notes = service.finish_cad_files(
+            quote_id=client._edit_quote_id,
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="12519-2",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
+    assert "item_count dropped" in blob
+    assert cad_finish_notes_refuse_additem_dxf(notes) is not None
+    client.add_item_dxf_files.assert_not_called()
+
+
+def test_finish_cad_files_exec_fail_when_get_org_empty_guid(tmp_path: Path):
+    """Q10352: GET PrimaryOrganizationID empty GUID after apply — not Finish."""
+    from secturafab.website import (
+        EMPTY_GUID,
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+    )
+
+    service, client, stp, _kids = _multi_kid_cad_finish_client(
+        tmp_path,
+        names=["8679-1 PLATE A", "8679-1 PLATE B", "8679-1 PLATE C"],
+        part_key="8679-1",
+    )
+    client.get_json.return_value = {
+        "ItemList": [],
+        "PrimaryOrganizationID": EMPTY_GUID,
+    }
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 3,
+            "linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 3,
+            "setpartmode_via": "page_fn",
+            "grid_dxf_row_count": 3,
+            "edit_gate": "",
+        },
+    ):
+        notes = service.finish_cad_files(
+            quote_id=client._edit_quote_id,
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="8679-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+            organization_name="Time Manufacturing Waco",
+        )
+    blob = " ".join(notes)
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
+    assert "organization lost" in blob
+    assert cad_finish_notes_refuse_additem_dxf(notes) is not None
+    client.add_item_dxf_files.assert_not_called()
+
+
+def test_wrong_org_time_q10332_forever_forbid_description_only():
+    """Q10332 wrong-org Time mint: number-only forbid. ID unknown.
+
+    Renamed ZZ-DEL-wrong-org-Time. Quote ID was not restated in recent
+    notes — do not invent an ID.
+    """
+    from secturafab.forbidden_quotes import (
+        FORBIDDEN_LIVE_QUOTE_IDS,
+        ForbiddenQuoteError,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        refuse_forbidden_quote_write,
+        spent_quote_number_block_reason,
+    )
+    from tests.fixtures.live_contours_ui_leftovers import wrong_org_time_q10332_dump
+    from tests.fixtures.step_contours_kyle_capture import (
+        STEP_CONTOURS_CAPTURE_NEVER_REMINT,
+    )
+
+    dump = wrong_org_time_q10332_dump()
+    assert dump["quote_number"] == "Q10332"
+    assert dump["zz_del_number"] == "ZZ-DEL-wrong-org-Time"
+    assert dump["quote_id"] is None
+    assert dump["quote_id_prefix"] is None
+    assert dump["id_unknown"] is True
+    assert dump["invent"] is False
+    assert is_forbidden_quote_number("Q10332")
+    assert is_forbidden_quote_number("ZZ-DEL-wrong-org-Time")
+    assert spent_quote_number_block_reason("Q10332")
+    assert spent_quote_number_block_reason("ZZ-DEL-wrong-org-Time")
+    with pytest.raises(ForbiddenQuoteError, match="Q10332"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="/Quote/AddItem_DXFFiles",
+            payload={"QuoteNumber": "Q10332"},
+        )
+    assert "Q10332" in STEP_CONTOURS_CAPTURE_NEVER_REMINT
+    assert dump["quote_id"] not in FORBIDDEN_LIVE_QUOTE_IDS
+    assert not is_forbidden_quote_id(dump["quote_id"])
+
+
+def test_step_contours_fill_hunt_exhausted_stays_locked():
+    """Alternate fill paths ruled out. Contours fill stays locked. No invent."""
+    from pathlib import Path
+
+    from secturafab.cadimport_js import (
+        CLASSIFY_FINISH_INTERNALDATA_FILL,
+        EXPLODE_DOCREATE_INTERNALDATA_FILL,
+        PROVEN_EMPTY_PATHS,
+        extract_cadimport_xhrs,
+    )
+    from secturafab.forbidden_quotes import is_forbidden_quote_number
+    from secturafab.website import (
+        STEP_CONTOURS_FILL_UNLOCKED,
+        STEP_CONTOURS_MISSING_CALL,
+        STEP_CONTOURS_NOT_FILL_PATHS,
+        cad_filelist_refuses_additem_dxf,
+        persist_part_create_tlist_bind_source,
+        step_contours_fill_unlocked,
+        step_contours_unlock_requires,
+    )
+    from tests.fixtures.live_part_create_tlist_bind import LIVE_PART_CREATE_TLIST_BIND
+    from tests.fixtures.step_contours_fill_hunt import (
+        step_contours_fill_hunt,
+        step_contours_fill_hunt_exhausted,
+    )
+
+    hunt = step_contours_fill_hunt()
+    assert hunt["fill_unlocked"] is False is STEP_CONTOURS_FILL_UNLOCKED
+    assert step_contours_fill_unlocked() is False
+    assert hunt["invent"] is False
+    assert hunt["fail_close"] is True
+    assert hunt["missing_call"] == STEP_CONTOURS_MISSING_CALL
+    assert hunt["classify_finish_internaldata_fill"] is CLASSIFY_FINISH_INTERNALDATA_FILL
+    assert hunt["explode_docreate_internaldata_fill"] is EXPLODE_DOCREATE_INTERNALDATA_FILL
+    assert CLASSIFY_FINISH_INTERNALDATA_FILL is None
+    assert EXPLODE_DOCREATE_INTERNALDATA_FILL is None
+    assert hunt["unlock_requires"] == step_contours_unlock_requires()
+    assert "kyle_contours_ge1" in hunt["unlock_requires"]
+    assert "sectura_support" in hunt["unlock_requires"]
+    assert hunt["kyle_loom_component_to_cad"] is True
+    assert hunt["kyle_loom_cad_set_via"] == (
+        "api_kendo_producttype_100_setpartmode_0_updateitemtype_cad"
+    )
+    assert hunt["q10333_component_to_cad_proof"] is True
+    assert hunt["multi_kid_safe_fill"] is None
+    assert hunt["multi_kid_blocked_on_sectura"] is True
+    assert "POST /part/create" in hunt["multi_kid_support_ask"]
+    assert step_contours_fill_hunt_exhausted() is True
+    ids = [a["id"] for a in hunt["angles"]]
+    assert ids == [
+        "cadimport_update_data",
+        "cadimport_update_data_next",
+        "cadimport_data",
+        "cadimport_caddata",
+        "convert_to",
+        "flatten_unfold",
+        "part_star",
+        "quote_helpers",
+        "pdf_image_files_parallel",
+        "quote_item_edit",
+        "get_border_size",
+        "multi_kid_keep_grid_data_getbordersize_not_fill",
+        "multi_kid_updatedata_editor_done_not_safe_fill",
+        "q10368_keep_grid_material_inches_not_enough",
+        "q10372_rd_bar_hook_contours_zero_expected",
+        "q10373_mixed_classify_pass_leftover",
+        "q10374_1008399_1_coverage_gauge_unverified_stop_before_contours",
+        "q10375_1008399_1_contours_unverified_blank_cad_editor",
+        "q10377_1008399_1_mixed_classify_pass_leftover",
+        "q10379_11643_1_mixed_classify_pass_leftover",
+        "q10380_16630_1_mixed_classify_pass_leftover",
+        "q10381_1001093_1_mixed_classify_pass_leftover",
+        "q10382_35146_1_mixed_classify_pass_leftover",
+        "q10383_21641_1_contours_fail_leftover",
+        "q10399_21641_1_gate5_internaldata_empty_leftover",
+        "q10420_35146_1_chrome_cdp_skip_finish_leftover",
+        "q10450_1d59ef4a_pr62_cdp_prove_leftover",
+        "q10421_38fa25fc_q10407_drift_leftover",
+        "q10407_safe_cave_list_empty_leftover",
+        "q10408_safe_cave_list_empty_leftover",
+    ]
+    assert all(a["ruled_out"] is True for a in hunt["angles"])
+    assert "/CadImport/ConvertTo" in PROVEN_EMPTY_PATHS
+    assert "/CadImport/UpdateDataNext" in PROVEN_EMPTY_PATHS
+    assert "/CadImport/UpdateData" in STEP_CONTOURS_NOT_FILL_PATHS
+    assert "/part/PartImage" in STEP_CONTOURS_NOT_FILL_PATHS
+    assert "/Part/UpdateItemType" in STEP_CONTOURS_NOT_FILL_PATHS
+    assert "/Quote/GetPerimeterAndWeight" in STEP_CONTOURS_NOT_FILL_PATHS
+    assert "/Quote/GetBorderSize" in STEP_CONTOURS_NOT_FILL_PATHS
+    assert "/quote/ItemEdit" in STEP_CONTOURS_NOT_FILL_PATHS
+    assert "/Quote/QuoteItem_Read" in STEP_CONTOURS_NOT_FILL_PATHS
+    assert "/Quote/QuoteItem_ReadTreeListData" in STEP_CONTOURS_NOT_FILL_PATHS
+    js = (
+        Path(__file__).resolve().parent / "fixtures" / "quote_order_edit_create_parts.js"
+    ).read_text()
+    assert "InternalData" not in js
+    assert "PDFGetData" not in js
+    assert "Unfold" not in js
+    xhrs = extract_cadimport_xhrs(js)
+    assert {x.path for x in xhrs} <= {
+        "/CadImport/ConvertTo",
+        "/CadImport/UpdateDataNext",
+        "/part/create",
+    }
+    pdf_js = (
+        Path(__file__).resolve().parent / "fixtures" / "quote_order_edit_getpdfdata.js"
+    ).read_text()
+    assert "PDFGetData" in pdf_js
+    assert "/part/create" not in pdf_js
+    assert "AddItem_DXFFiles" not in pdf_js
+    assert LIVE_PART_CREATE_TLIST_BIND is None
+    for spent in hunt["never_remint"]:
+        assert is_forbidden_quote_number(spent)
+    refuse = cad_filelist_refuses_additem_dxf(
+        {
+            "FileType": "Cad",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "InternalData": "",
+            "ImageString": "iVBORw0KGgo",
+        }
+    )
+    assert refuse is not None
+    notes: list[str] = []
+    persist_part_create_tlist_bind_source(
+        [{"InternalData": "", "ImageString": "x", "FileType": "Cad"}],
+        notes=notes,
+    )
+    assert "fill_unlocked=false" in notes
+    assert "unlock_requires=kyle_contours_ge1_or_sectura_support" in notes
+    blob = str(hunt)
+    assert "server-stamped" not in blob
+    assert "iVBORw0KGgo" not in blob
+
+
+def test_create_all_parts_js_records_cadimport_xhr_emptiness_only():
+    """Page Next hook records CadImport/part paths + emptiness, never values."""
+    from secturafab.chrome_cdp import (
+        _INVOKE_CREATE_ALL_PARTS_JS,
+        _READ_GRID_DXF_PARTS_AFTER_NEXT_JS,
+        _sanitize_cadimport_xhr_capture,
+    )
+
+    assert "createAllParts" in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "empty_gridDXF" in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "__kannonCadImportCapture" in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "tlist_bind_source" in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "InternalData" in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "UpdateDataNext" not in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "GetPerimeterAndWeight" not in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "cadimport_xhr_capture" in _READ_GRID_DXF_PARTS_AFTER_NEXT_JS
+    raw = [
+        {
+            "method": "POST",
+            "path": "/part/create",
+            "request_keys": ["Location", "IDList"],
+            "keys": ["InternalData", "ImageString"],
+            "n": 1,
+            "internaldata_empty_n": 1,
+            "internaldata_nonempty_n": 0,
+            "imagestring_empty_n": 0,
+            "imagestring_nonempty_n": 1,
+            "tlist_bind_source": False,
+            "InternalData": "do-not-keep",
+        }
+    ]
+    cleaned = _sanitize_cadimport_xhr_capture(raw)
+    assert cleaned[0]["path"] == "/part/create"
+    assert cleaned[0]["tlist_bind_source"] is False
+    assert "InternalData" not in cleaned[0] or cleaned[0].get("InternalData") != "do-not-keep"
+    assert "do-not-keep" not in json.dumps(cleaned)
+
+
+def test_add_item_invokes_page_finish_when_partmode_set_without_cadtype():
+    """PartMode set + kendo missing CadType/Stock → still invoke page Finish."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=boxcookie",
+    )
+    client._af_source = "chrome_dom"
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._part_create_list_len = 1
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._kendo_row_keys = ["FileID", "FileType", "ID", "SourceDataID"]
+    client.session = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "edit_quote_id": "qid", "minted_id": "qid"},
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_dxf_finish",
+        return_value={
+            "via": "page_fn",
+            "finish_fn": "OnAddDXFClick",
+            "filelist_from_kendo": True,
+            "finish_af_present": True,
+            "finish_filelist_n": 1,
+            "grid_dxf_row_count": 1,
+            "status": 200,
+            "filelist_row_keys": ["FileType", "PartMode", "SourceDataID"],
+            "filelist_nonempty_keys": ["FileType", "PartMode", "SourceDataID"],
+            "filelist_empty_keys": ["InternalData"],
+        },
+    ) as finish_fn:
+        result = client.add_item_dxf_files(
+            quote_id="qid",
+            file_list=[
+                {
+                    "ID": "x",
+                    "FileType": "Cad",
+                    "Category": "Cad",
+                    "PartMode": 0,
+                    "InternalData": "server-stamped",
+                }
+            ],
+        )
+    finish_fn.assert_called_once()
+    assert result["via"] == "page_fn"
+    assert result["finish_fn"] == "OnAddDXFClick"
+    assert result["filelist_nonempty_keys"] == [
+        "FileType",
+        "PartMode",
+        "SourceDataID",
+    ]
+    assert result["filelist_empty_keys"] == ["InternalData"]
+
+
+def test_cad_editor_update_data_next_is_not_explode_fill():
+    """UpdateDXF_LoadNew is CAD editor next-file, not /part/create InternalData."""
+    from secturafab.cadimport_js import (
+        CREATE_DXF_PARTS_PATH,
+        UPDATE_DATA_NEXT_SNIPPET,
+        explode_xhrs,
+        extract_cadimport_xhrs,
+    )
+
+    js = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "quote_order_edit_create_parts.js"
+    ).read_text()
+    assert "UpdateDXF_LoadNew" in js
+    assert "WebGLCADDisp" in js
+    assert "DXFEditID" in js
+    assert "GetUpdateList" in js
+    assert "/CadImport/UpdateDataNext" in js
+    assert "InternalData" not in js
+    xhrs = extract_cadimport_xhrs(js)
+    nxt = next(x for x in xhrs if x.path == "/CadImport/UpdateDataNext")
+    assert nxt.function == "UpdateDXF_LoadNew"
+    assert nxt.body_keys == ["ItemList", "SourceID", "ReturnItemID"] or set(
+        nxt.body_keys
+    ) >= {"ItemList", "SourceID", "ReturnItemID"}
+    exploded = explode_xhrs(xhrs)
+    assert exploded[0].path == CREATE_DXF_PARTS_PATH
+    assert all("UpdateDataNext" not in x.path for x in exploded)
+    assert "UpdateDataNext" in UPDATE_DATA_NEXT_SNIPPET
+    assert "InternalData" not in UPDATE_DATA_NEXT_SNIPPET
+
+
+def test_apply_bom_quantities_does_not_post_itemlist():
+    from secturafab.qty_ops import apply_bom_quantities
+
+    client = MagicMock()
+    client.get_json.return_value = {
+        "ItemList": [
+            {
+                "ID": "cad-1",
+                "Description": "21680-1 PLATE",
+                "ProductType": 100,
+                "Quantity": 1,
+            }
+        ]
+    }
+    with patch("secturafab.quote_update.quote_online_update", return_value=True) as upd:
+        notes = apply_bom_quantities(
+            client,
+            "qid",
+            bom_rows=[{"part_no": "21680-1", "qty": 2, "description": "PLATE"}],
+        )
+    upd.assert_called_once()
+    for call in client.request.call_args_list:
+        path = call.args[1] if len(call.args) > 1 else ""
+        body = (call.kwargs or {}).get("json") or {}
+        assert path != "v1/quote" or "ItemList" not in body
+    assert any("BOM quantities" in n for n in notes)
+
+
+def test_updatedxf_loadnew_is_editor_only_not_gold():
+    """Box hunt: UpdateDXF_LoadNew is editor-only. Classify→Finish has no fill."""
+    from secturafab.cadimport_js import (
+        CLASSIFY_FINISH_FUNCTIONS,
+        CLASSIFY_FINISH_INTERNALDATA_FILL,
+        NEEDS_INTERNALDATA_FILL_XHR,
+        UPDATE_DXF_LOADNEW_ITEMLIST_KEYS,
+        UPDATE_DXF_LOADNEW_NOT_CALLED_FROM,
+        classify_finish_internaldata_fill,
+        needs_internaldata_fill_xhr,
+    )
+
+    hunt = json.loads(
+        (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "cad_updatedxf_loadnew.json"
+        ).read_text()
+    )
+    assert hunt["function"] == "UpdateDXF_LoadNew"
+    assert hunt["path"] == "/CadImport/UpdateDataNext"
+    assert hunt["editor_only"] is True
+    assert hunt["gold"] is False
+    assert hunt["itemlist_keys"] == list(UPDATE_DXF_LOADNEW_ITEMLIST_KEYS)
+    assert hunt["not_called_from"] == list(UPDATE_DXF_LOADNEW_NOT_CALLED_FROM)
+    assert hunt["classify_finish_internaldata_fill"] is None
+    assert hunt["needs_internaldata_fill_xhr"] == NEEDS_INTERNALDATA_FILL_XHR
+    assert classify_finish_internaldata_fill() is None
+    assert needs_internaldata_fill_xhr() == "needs_internaldata_fill_xhr"
+    assert hunt["live_leftover_edit"]["WebGLCADDisp"] is False
+    assert hunt["preview"] == "WebGLDisp"
+    assert classify_finish_internaldata_fill() is None
+    assert CLASSIFY_FINISH_INTERNALDATA_FILL is None
+    for name in (
+        "DoCreateDXFParts",
+        "createAllParts",
+        "SetDXFFilePartMode",
+        "OnAddDXFClick",
+    ):
+        assert name in CLASSIFY_FINISH_FUNCTIONS or name in UPDATE_DXF_LOADNEW_NOT_CALLED_FROM
+    assert "UpdateDXF_LoadNew" not in CLASSIFY_FINISH_FUNCTIONS
+    assert "editDXFFile" not in CLASSIFY_FINISH_FUNCTIONS
+
+
+def test_imagestring_without_internaldata_still_refuses_finish():
+    """Live 21785-2: ImageString 13/13 preview, InternalData 14/14 empty — refuse."""
+    from secturafab.cadimport_js import (
+        CLASSIFY_FINISH_INTERNALDATA_FILL,
+        EXPLODE_DOCREATE_INTERNALDATA_FILL,
+        explode_docreate_internaldata_fill,
+        extract_cadimport_xhrs,
+    )
+    from secturafab.forbidden_quotes import (
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+    )
+    from secturafab.website import (
+        cad_filelist_refuses_additem_dxf,
+        explode_to_docreate_fills_internaldata,
+        imagestring_without_internaldata_refuses_finish,
+        part_create_tlist_is_bind_source,
+        persist_part_create_tlist_bind_source,
+        tlist_imagestring_without_internaldata,
+    )
+    from tests.fixtures.live_21678_1 import GOLD_QUOTE_ID
+    from tests.fixtures.live_21785_2 import (
+        SPENT_QUOTE_ID_PREFIX,
+        SPENT_QUOTE_NUMBER,
+        explode_to_docreate_fill_dump,
+        live_21785_2_tlist_empty,
+    )
+    from tests.fixtures.live_part_create_tlist_bind import LIVE_PART_CREATE_TLIST_BIND
+
+    rows = [
+        {
+            "Name": "Root",
+            "FileType": "Cad",
+            "InternalData": "",
+            "ImageString": "",
+            "OutsidePerimeter": 0,
+        }
+    ]
+    for i in range(13):
+        rows.append(
+            {
+                "Name": f"KID-{i}",
+                "FileType": "Cad",
+                "InternalData": "",
+                "ImageString": "iVBORw0KGgo",
+                "OutsidePerimeter": 0,
+            }
+        )
+    assert len(rows) == 14
+    assert tlist_imagestring_without_internaldata(rows) is True
+    assert part_create_tlist_is_bind_source(rows) is False
+    assert imagestring_without_internaldata_refuses_finish(rows[1]) is True
+    refuse = cad_filelist_refuses_additem_dxf(rows[1])
+    assert refuse is not None
+    assert "needs_internaldata_fill_xhr" in refuse
+    assert "ImageString-without-InternalData" in refuse
+    assert "21785-2" in refuse
+    notes: list[str] = []
+    persist_part_create_tlist_bind_source(rows, notes=notes)
+    assert "tlist_bind_source=false" in notes
+    assert "imagestring_without_internaldata=true" in notes
+    cap = live_21785_2_tlist_empty()
+    assert cap["list_n"] == 14
+    assert cap["internaldata_empty_n"] == 14
+    assert cap["imagestring_nonempty_n"] == 13
+    assert cap["outsideperimeter"] == 0
+    assert cap["finish_refused"] is True
+    hunt = explode_to_docreate_fill_dump()
+    assert explode_to_docreate_fills_internaldata(hunt) is False
+    assert hunt["createAllParts"]["xhr"] is None
+    assert hunt["SetPartMode"]["writes_internaldata"] is False
+    assert hunt["Unfold"]["hits"] == 0
+    assert hunt["classify_finish_internaldata_fill"] is None
+    assert explode_docreate_internaldata_fill() is None
+    assert EXPLODE_DOCREATE_INTERNALDATA_FILL is None
+    assert CLASSIFY_FINISH_INTERNALDATA_FILL is None
+    js = (
+        Path(__file__).resolve().parent / "fixtures" / "quote_order_edit_create_parts.js"
+    ).read_text()
+    assert "InternalData" not in js
+    assert "CuttingLength" not in js
+    assert "Unfold" not in js
+    assert "SetPartMode" not in js
+    xhrs = extract_cadimport_xhrs(js)
+    assert all(x.function != "createAllParts" for x in xhrs)
+    assert LIVE_PART_CREATE_TLIST_BIND is None
+    assert is_forbidden_quote_number(SPENT_QUOTE_NUMBER)
+    assert is_forbidden_quote_id(SPENT_QUOTE_ID_PREFIX + "-1111-2222-3333-444444444444")
+    assert is_forbidden_quote_id(GOLD_QUOTE_ID)
+    assert is_forbidden_quote_number("21785-1")
+    assert is_forbidden_quote_number("21785-3")
+
+
+def test_gold_q10056_itemlist_has_no_internaldata_field():
+    """21678-1 / Q10056 GET Cad gold is PR+laser. InternalData is FileList-at-Finish."""
+    from secturafab.line_item_ops import finish_produced_gold, item_has_laser_pack
+
+    cad = _gold_cad("21680-1 PLATE")
+    assert "InternalData" not in cad
+    assert "ImageString" not in cad
+    assert item_has_laser_pack(cad) is True
+    quote = {"QuoteNumber": "21678-1", "ItemList": [cad]}
+    assert finish_produced_gold(quote, expect_cad=True, expect_linear=False) is True
+
+
+def test_part_create_empty_list_skips_bind_and_finish():
+    """Live 34632-2: /part/create List=0 → no bind, no Finish, no remint."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=boxcookie",
+    )
+    client._af_source = "chrome_dom"
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client.session = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.post_part_create_from_quotes_tab",
+        return_value={
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["List"],
+            "list_len": 0,
+            "List": [],
+            "via": "chrome_dom_fetch",
+        },
+    ), patch(
+        "secturafab.chrome_cdp.bind_do_create_dxf_parts_success",
+    ) as bind_fn, patch(
+        "secturafab.chrome_cdp.invoke_page_dxf_finish",
+    ) as finish_fn:
+        result = client.create_dxf_parts(["src-1"], ["inch"], location="")
+        finish = client.add_item_dxf_files(quote_id="qid", file_list=[{"Qty": 1}])
+    bind_fn.assert_not_called()
+    finish_fn.assert_not_called()
+    assert result["List"] == []
+    assert client._part_create_via == "chrome_dom_fetch"
+    assert client._part_create_list_len == 0
+    assert client._grid_dxf_row_count == 0
+    assert finish["via"] == "skipped"
+    assert client._finish_via == "skipped"
+
+
+def test_part_create_list_1_binds_and_allows_finish():
+    """Live 11796-1: List=1 Cad binds and Finish is allowed."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    kid = {
+        "SourceDataID": "src-1",
+        "FileID": "file-1",
+        "Name": "TURRET SIDE PLATE",
+        "Qty": 1,
+        "ErrorStatus": 0,
+    }
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=boxcookie",
+    )
+    client._af_source = "chrome_dom"
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._stale_grid = False
+    client.session = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.post_part_create_from_quotes_tab",
+        return_value={
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["List"],
+            "list_len": 1,
+            "List": [kid],
+            "via": "chrome_dom_fetch",
+        },
+    ), patch(
+        "secturafab.chrome_cdp.bind_do_create_dxf_parts_success",
+        return_value={
+            "grid_present": True,
+            "has_gridDXFParts": True,
+            "grid_dxf_row_count": 1,
+            "bound": True,
+            "list_len": 1,
+            "opened_via": "but_dxf",
+            "stale_grid": False,
+            "kendo_row_keys": [
+                "CadType",
+                "FileID",
+                "FileType",
+                "ID",
+                "SourceDataID",
+                "Stock_X",
+                "Stock_Y",
+            ],
+        },
+    ) as bind_fn, patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={
+            "ok": True,
+            "edit_quote_id": "qid",
+            "minted_id": "qid",
+            "reason": "",
+        },
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_dxf_finish",
+        return_value={
+            "via": "page_fn",
+            "finish_fn": "OnAddDXFClick",
+            "reads_kendo": True,
+            "grid_dxf_row_count": 1,
+            "finish_filelist_n": 1,
+            "filelist_from_kendo": True,
+            "finish_af_present": True,
+            "finish_why": "",
+            "status": 200,
+            "body_keys": ["NewItem"],
+            "body_type": "object",
+            "has_NewItem": True,
+            "has_QuoteItem": False,
+            "text_len": 8,
+            "request_keys": ["ID", "FileList", "__RequestVerificationToken"],
+        },
+    ) as finish_fn:
+        result = client.create_dxf_parts(
+            ["src-1"], ["inch"], location="", quote_id="qid"
+        )
+        finish = client.add_item_dxf_files(quote_id="qid", file_list=[kid])
+    bind_fn.assert_called()
+    finish_fn.assert_called()
+    assert len(result["List"]) == 1
+    assert client._part_create_list_len == 1
+    assert client._part_create_internaldata_empty is True
+    assert client._part_create_imagestring_empty is True
+    assert client._grid_dxf_row_count == 1
+    assert finish["via"] == "page_fn"
+    assert finish["filelist_from_kendo"] is True
+    assert finish["finish_af_present"] is True
+
+
+def test_add_item_skips_finish_when_kendo_lacks_cadimport_identity():
+    """Bind captured kendo without CadType/Stock_* → do not invoke page Finish."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=boxcookie",
+    )
+    client._af_source = "chrome_dom"
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client._part_create_list_len = 1
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._kendo_row_keys = ["FileID", "FileType", "ID", "SourceDataID"]
+    client.session = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_dxf_finish",
+    ) as finish_fn:
+        result = client.add_item_dxf_files(
+            quote_id="qid",
+            file_list=[{"ID": "x", "FileType": "Cad"}],
+        )
+    finish_fn.assert_not_called()
+    assert result["via"] == "skipped"
+    assert result["finish_why"] == "filelist_missing_keys=CadType+Stock_X+Stock_Y"
+    assert result["filelist_missing_identity"] == ["CadType", "Stock_X", "Stock_Y"]
+
+
+def test_grid_present_false_skips_bind_and_finish():
+    """Live 106386-1: t.List>1 but #gridDXFParts not in Chrome → no Finish."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    kids = [
+        {"SourceDataID": "a", "Name": "PLATE", "Qty": 1, "ErrorStatus": 0},
+        {"SourceDataID": "b", "Name": "GUSSET", "Qty": 1, "ErrorStatus": 0},
+    ]
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(
+        base_url="https://api.example.test",
+        website_url="https://www.example.test",
+        client_id="x",
+        client_secret="y",
+        website_cookie=".AspNet.ApplicationCookie=boxcookie",
+    )
+    client._af_source = "chrome_dom"
+    client._request_verification_fields = [("__RequestVerificationToken", "x")]
+    client.session = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.post_part_create_from_quotes_tab",
+        return_value={
+            "has_antiforgery": True,
+            "af_names": ["__RequestVerificationToken"],
+            "status": 200,
+            "body_keys": ["List"],
+            "list_len": 2,
+            "List": kids,
+            "via": "chrome_dom_fetch",
+        },
+    ), patch(
+        "secturafab.chrome_cdp.bind_do_create_dxf_parts_success",
+        return_value={
+            "grid_present": False,
+            "has_gridDXFParts": False,
+            "grid_dxf_row_count": 0,
+            "bound": False,
+            "list_len": 2,
+            "opened_via": "",
+        },
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_dxf_finish",
+    ) as finish_fn:
+        result = client.create_dxf_parts(["src-1"], ["inch"], location="", quote_id="qid")
+        finish = client.add_item_dxf_files(quote_id="qid", file_list=kids)
+    finish_fn.assert_not_called()
+    assert len(result["List"]) == 2
+    assert client._part_create_list_len == 2
+    assert client._grid_present is False
+    assert client._grid_dxf_row_count == 0
+    assert finish["via"] == "skipped"
+
+
+def test_add_item_pdf_files_reconstructed_filelist_is_fail_closed():
+    """Reconstructed FileList must not cookie-HTTP POST (live 1001898-5)."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = SecturaFabConfig(website_cookie="ASP.NET_SessionId=fixture")
+    real._af_source = ""
+    called = {"n": 0}
+
+    def boom(*_a, **_k):
+        called["n"] += 1
+        raise AssertionError("must not POST reconstructed FileList")
+
+    real.website_request = boom  # type: ignore[method-assign]
+    with patch("secturafab.chrome_cdp.chrome_quotes_live", return_value=False):
+        result = real.add_item_pdf_files(
+            quote_id="qid",
+            file_list=[
+                {
+                    "Status": 1,
+                    "Qty": 1,
+                    "Machine": "Laser - Bay1",
+                    "Material": "A36",
+                    "Thickness": 0.25,
+                    "Length": 6.25,
+                    "Width": 11.0,
+                    "ItemType": "cad",
+                    "FileName": "14500-1.pdf",
+                }
+            ],
+        )
+    assert called["n"] == 0
+    assert result["ok"] is False
+    assert result["filelist_from_kendo"] is False
+    assert result["via"] == "skipped"
+
+
+def test_add_item_pdf_files_posts_page_kendo_via_onaddpdfclick():
+    """OnAddPDFClick FileList is GetPDFData / #gridPDF, not reconstructed."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.chrome_cdp import _PAGE_PDF_FINISH_JS
+
+    js = _PAGE_PDF_FINISH_JS
+    assert "GetPDFData" in js
+    assert "OnAddPDFClick" in js
+    assert "/Quote/AddItem_PDFFiles" in js
+    assert "gridPDF" in js
+    assert "Status>0" in js or "statusOf(r) > 0" in js
+    assert "d.FileList = pageRows" in js
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1898"
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.timeout_seconds = 30
+    real.config.website_cookie = "ASP.NET_SessionId=box"
+    real._af_source = "chrome_dom"
+    real.session = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={
+            "ok": True,
+            "edit_quote_id": minted,
+            "minted_id": minted,
+            "reason": "",
+        },
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_pdf_finish",
+        return_value={
+            "via": "page_fn",
+            "finish_fn": "OnAddPDFClick",
+            "reads_kendo": True,
+            "filelist_from_kendo": True,
+            "grid_pdf_row_count": 3,
+            "finish_filelist_n": 3,
+            "status": 200,
+            "body_keys": [],
+            "body_type": "empty",
+            "request_keys": ["ID", "ItemID", "FileList"],
+        },
+    ):
+        result = real.add_item_pdf_files(
+            quote_id=minted,
+            file_list=[{"Status": 1, "FileName": "RECONSTRUCTED.pdf"}],
+        )
+    real.session.request.assert_not_called()
+    assert result["ok"] is True
+    assert result["via"] == "page_fn"
+    assert result["finish_fn"] == "OnAddPDFClick"
+    assert result["filelist_from_kendo"] is True
+    assert result["finish_filelist_n"] == 3
+
+
+def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
+    from secturafab.chrome_cdp import (
+        _DISPATCH_FILES_CHANGE_JS,
+        _FIND_PDF_ADD_FILES_INPUT_JS,
+        _OPEN_IMAGE_FILES_JS,
+        _PAGE_PDF_FINISH_JS,
+        _READ_GRID_PDF_COUNT_JS,
+    )
+
+    assert "AddNewItemHTML" in _OPEN_IMAGE_FILES_JS
+    assert "#ButtonAdd" in _OPEN_IMAGE_FILES_JS
+    assert "image files" in _OPEN_IMAGE_FILES_JS
+    assert '"#files"' in _FIND_PDF_ADD_FILES_INPUT_JS
+    assert "kendoUpload" in _FIND_PDF_ADD_FILES_INPUT_JS
+    assert "dropZoneElement" in _FIND_PDF_ADD_FILES_INPUT_JS
+    assert "select files" in _FIND_PDF_ADD_FILES_INPUT_JS
+    assert "add files" in _FIND_PDF_ADD_FILES_INPUT_JS
+    assert "GetPDFData" in _READ_GRID_PDF_COUNT_JS
+    assert "gridPDF" in _READ_GRID_PDF_COUNT_JS
+    assert "dataItem" in _READ_GRID_PDF_COUNT_JS
+    assert "tbody" in _READ_GRID_PDF_COUNT_JS
+    assert "getpdfdata_is_xhr: false" in _READ_GRID_PDF_COUNT_JS
+    assert "status_gt0_n" in _READ_GRID_PDF_COUNT_JS
+    assert "#files" in _DISPATCH_FILES_CHANGE_JS
+    assert "getPdfDataFromTbody" in _PAGE_PDF_FINISH_JS
+    assert "dataItem" in _PAGE_PDF_FINISH_JS
+    assert "overlayStatusFromDataItem" in _PAGE_PDF_FINISH_JS
+    from secturafab.chrome_cdp import _STAMP_PDF_KENDO_JS
+
+    assert "editCell" in _STAMP_PDF_KENDO_JS
+    assert "editSet" in _STAMP_PDF_KENDO_JS
+    assert "UpdatePerimeterWeight" in _STAMP_PDF_KENDO_JS
+    assert "UpdatePerimeterWeight(true, true)" in _STAMP_PDF_KENDO_JS
+    assert "window.UpdatePerimeterWeight()" not in _STAMP_PDF_KENDO_JS
+    assert "AddNewPDFFeature" in _STAMP_PDF_KENDO_JS
+    assert 'AddNewPDFFeature("Hole", "cad")' in _STAMP_PDF_KENDO_JS
+    assert "PDFGetData" in _STAMP_PDF_KENDO_JS
+    assert "/Quote/PDFInternal" in _STAMP_PDF_KENDO_JS
+    assert "waitPdfInternal" in _STAMP_PDF_KENDO_JS
+    assert "s.HoleDiameter" in _STAMP_PDF_KENDO_JS
+    assert "data-edit='dim1'" in _STAMP_PDF_KENDO_JS
+    assert "hole_dim1_via" in _STAMP_PDF_KENDO_JS
+    assert "29341-1" in _STAMP_PDF_KENDO_JS
+    assert "waitPdfInternalHtml" in _STAMP_PDF_KENDO_JS
+    assert "onLengthChangePDF" in _STAMP_PDF_KENDO_JS
+    assert "onWidthChangePDF" in _STAMP_PDF_KENDO_JS
+    assert "onChange_GridPDF" in _STAMP_PDF_KENDO_JS
+    assert "typeFormLengthWidth" in _STAMP_PDF_KENDO_JS
+    assert "setFormNumeric" in _STAMP_PDF_KENDO_JS
+    assert "formInput" in _STAMP_PDF_KENDO_JS
+    assert "onChange_GridPDF cannot win" in _STAMP_PDF_KENDO_JS
+    assert "form_lw_synced=false" in _STAMP_PDF_KENDO_JS
+    assert "3e222215" in _STAMP_PDF_KENDO_JS
+    assert "1ca884cc" in _STAMP_PDF_KENDO_JS
+    assert "ensureGetPdfDataReady" in _STAMP_PDF_KENDO_JS
+    assert "SetStatus" in _STAMP_PDF_KENDO_JS
+    assert "getpdfdata_n" in _STAMP_PDF_KENDO_JS
+    assert "empty_getpdfdata" in _PAGE_PDF_FINISH_JS
+    assert "empty_internaldata" in _PAGE_PDF_FINISH_JS
+    assert "writeHoleInternalData" in _PAGE_PDF_FINISH_JS
+    assert "writeHoleInternalData" in _STAMP_PDF_KENDO_JS
+    assert "filelist_internaldata" in _PAGE_PDF_FINISH_JS
+    assert "filelist_internaldata_dim1_n" in _PAGE_PDF_FINISH_JS
+    assert "6150c5c7" in _PAGE_PDF_FINISH_JS
+    assert "6150c5c7" in _STAMP_PDF_KENDO_JS
+    assert "writePlateProductType" in _PAGE_PDF_FINISH_JS
+    assert "writePlateProductType" in _STAMP_PDF_KENDO_JS
+    assert "bar_producttype" in _PAGE_PDF_FINISH_JS
+    assert "prt_pdf" in _PAGE_PDF_FINISH_JS
+    assert "prt_pdf" in _STAMP_PDF_KENDO_JS
+    assert "bab8f668" in _PAGE_PDF_FINISH_JS
+    assert "bab8f668" in _STAMP_PDF_KENDO_JS
+    assert "filelist_producttype" in _PAGE_PDF_FINISH_JS
+    assert "writeGetPdfShapeFields" in _PAGE_PDF_FINISH_JS
+    assert "writeGetPdfShapeFields" in _STAMP_PDF_KENDO_JS
+    assert "c751780e" in _PAGE_PDF_FINISH_JS
+    assert "c751780e" in _STAMP_PDF_KENDO_JS
+    assert "OutsideArea" in _PAGE_PDF_FINISH_JS
+    assert "writeCatalogMaterialCost" in _PAGE_PDF_FINISH_JS
+    assert "writeCatalogMaterialCost" in _STAMP_PDF_KENDO_JS
+    assert "catalogCostFrom" in _PAGE_PDF_FINISH_JS
+    assert "catalogCostFrom" in _STAMP_PDF_KENDO_JS
+    assert "PricePerPound" in _PAGE_PDF_FINISH_JS
+    assert "PricePerPound" in _STAMP_PDF_KENDO_JS
+    assert "rememberPlateMaterialCost" in _STAMP_PDF_KENDO_JS
+    assert "readFormMaterialCost" in _STAMP_PDF_KENDO_JS
+    assert "empty_materialcost" in _PAGE_PDF_FINISH_JS
+    assert "filelist_materialcost" in _PAGE_PDF_FINISH_JS
+    assert "filelist_materialcost_empty" in _PAGE_PDF_FINISH_JS
+    assert "2a83a96b" in _PAGE_PDF_FINISH_JS
+    assert "2a83a96b" in _STAMP_PDF_KENDO_JS
+    assert "9ef2fedd" in _PAGE_PDF_FINISH_JS
+    assert "9ef2fedd" in _STAMP_PDF_KENDO_JS
+    assert "97ae3e4f" in _PAGE_PDF_FINISH_JS
+    assert "97ae3e4f" in _STAMP_PDF_KENDO_JS
+    assert "writeGoldCadMachineLocation" in _PAGE_PDF_FINISH_JS
+    assert "writeGoldCadMachineLocation" in _STAMP_PDF_KENDO_JS
+    assert "writeGoldPdfUseLocal" in _PAGE_PDF_FINISH_JS
+    assert "writeGoldPdfUseLocal" in _STAMP_PDF_KENDO_JS
+    assert "response_error_count" in _PAGE_PDF_FINISH_JS
+    assert "response_data_kind" in _PAGE_PDF_FINISH_JS
+    assert "list0DataKind" in _PAGE_PDF_FINISH_JS
+    assert 'r.set("Machine", "Laser")' in _PAGE_PDF_FINISH_JS
+    assert 'r.set("Location", "Bay1")' in _PAGE_PDF_FINISH_JS
+    assert 's.Machine || "Laser"' in _STAMP_PDF_KENDO_JS
+    assert 's.Machine || "Laser - Bay1"' not in _STAMP_PDF_KENDO_JS
+    assert "__kannonPlateMaterialCost" in _STAMP_PDF_KENDO_JS
+    assert "do not invent a $/lb" in _PAGE_PDF_FINISH_JS
+    assert "cadPlateNeedsMaterialCost" in _PAGE_PDF_FINISH_JS
+    assert "OutsideArea_Units" in _PAGE_PDF_FINISH_JS
+    assert "|| emptyMc" not in _PAGE_PDF_FINISH_JS
+    assert 'emptyMc ? "empty_materialcost"' not in _PAGE_PDF_FINISH_JS
+    assert "ensureGetPdfDataReady" in _PAGE_PDF_FINISH_JS
+    assert "filelist_raw" in _PAGE_PDF_FINISH_JS
+    assert "n < 1" in _PAGE_PDF_FINISH_JS
+    assert "d.FileList_raw" not in _PAGE_PDF_FINISH_JS
+    assert "fireOnInternalDataChange" in _STAMP_PDF_KENDO_JS
+    assert "getperim_internal_dim1_n" in _STAMP_PDF_KENDO_JS
+    assert "form_lw_synced" in _STAMP_PDF_KENDO_JS
+    assert "1020250-1" in _STAMP_PDF_KENDO_JS
+    assert 'setField(r, "NumberOfContours"' not in _STAMP_PDF_KENDO_JS
+    assert "pdfinternal_xhr" in _STAMP_PDF_KENDO_JS
+    assert "400ms race is leftover 0/0" in _STAMP_PDF_KENDO_JS
+    assert 'url.indexOf("/Quote/AddFeature")' not in _STAMP_PDF_KENDO_JS
+    assert "add_item_feature" not in _STAMP_PDF_KENDO_JS
+    assert "onInternalDataChange" in _STAMP_PDF_KENDO_JS
+    assert "badge_string" in _PAGE_PDF_FINISH_JS
+    assert "ocl_names" in _PAGE_PDF_FINISH_JS
+    assert "number_of_contours" in _PAGE_PDF_FINISH_JS
+    assert "number_of_pierces" in _PAGE_PDF_FINISH_JS
+    assert "setField(r, \"CuttingLength\"" not in _STAMP_PDF_KENDO_JS
+    assert "Weight_UseLocal" in _STAMP_PDF_KENDO_JS
+    assert "#Weight" in _STAMP_PDF_KENDO_JS
+    assert "bag omits Status" in _PAGE_PDF_FINISH_JS
+    assert "internaldata_n" in _STAMP_PDF_KENDO_JS
+    assert "/Quote/GetPerimeterAndWeight" in _STAMP_PDF_KENDO_JS
+    assert "outside_perimeter_n" in _STAMP_PDF_KENDO_JS
+    assert "weight_n" in _STAMP_PDF_KENDO_JS
+    assert "productid_n" in _STAMP_PDF_KENDO_JS
+    assert "keepPid" in _STAMP_PDF_KENDO_JS
+    assert "setField(r, \"ProductID\", keepPid)" in _STAMP_PDF_KENDO_JS
+    assert "pickProduct" in _STAMP_PDF_KENDO_JS
+    assert "findProductWidget" in _STAMP_PDF_KENDO_JS
+    assert "kendoComboBox" in _STAMP_PDF_KENDO_JS
+    assert "s.ProductSku" in _STAMP_PDF_KENDO_JS
+    assert "s.ProductID" in _STAMP_PDF_KENDO_JS
+    assert "picker_via" in _STAMP_PDF_KENDO_JS
+    assert "isProductTypeBar" in _STAMP_PDF_KENDO_JS
+    assert "isPlateProductWidget" in _STAMP_PDF_KENDO_JS
+    assert "none_plate_widget" in _STAMP_PDF_KENDO_JS
+    assert "isThicknessGauge" in _STAMP_PDF_KENDO_JS
+    assert "gridSelectProductPlate" in _STAMP_PDF_KENDO_JS
+    assert "Read_DataThicknessGauge" in _STAMP_PDF_KENDO_JS
+    assert "thicknesspdf" in _STAMP_PDF_KENDO_JS
+    assert "pickPlateModal" in _STAMP_PDF_KENDO_JS
+    assert "modal_apply" in _STAMP_PDF_KENDO_JS
+    assert "search_only" in _STAMP_PDF_KENDO_JS
+    assert "dblclick" in _STAMP_PDF_KENDO_JS
+    assert "clickSheetsAndPlates" in _STAMP_PDF_KENDO_JS
+    assert "sheets_and_plates" in _STAMP_PDF_KENDO_JS
+    assert "picker_apply" in _STAMP_PDF_KENDO_JS
+    assert "normSku" in _STAMP_PDF_KENDO_JS
+    assert "OnSelectProductPlate" in _STAMP_PDF_KENDO_JS
+    assert "SelectProductPlateOK" in _STAMP_PDF_KENDO_JS
+    assert "ApplySelectProductPlate" in _STAMP_PDF_KENDO_JS
+    assert "s.ProductID" in _STAMP_PDF_KENDO_JS
+    assert "v1/product/plate" in _STAMP_PDF_KENDO_JS
+    assert "waitModalRows" in _STAMP_PDF_KENDO_JS
+    assert "modalSearchInput" in _STAMP_PDF_KENDO_JS
+    assert "34603-2" in _STAMP_PDF_KENDO_JS
+    assert "21682-1" in _STAMP_PDF_KENDO_JS
+    assert "ReadData_PlateConfig" in _STAMP_PDF_KENDO_JS
+    assert "readPlateGridBroad" in _STAMP_PDF_KENDO_JS
+    assert "pageSize(200)" in _STAMP_PDF_KENDO_JS
+    assert "PL7 Ga-A36" in _STAMP_PDF_KENDO_JS
+    assert "pickPlateModal(sku, pdfRow)" in _STAMP_PDF_KENDO_JS
+    from secturafab.chrome_cdp import _BIND_QUOTE_ORG_JS
+
+    assert "b7dbc294-3fd2-43aa-99be-268a6c4fce14" in _BIND_QUOTE_ORG_JS
+    assert "PrimaryOrganizationID" in _BIND_QUOTE_ORG_JS
+    assert "OrganizationID" in _BIND_QUOTE_ORG_JS
+    assert "w.search" not in _BIND_QUOTE_ORG_JS
+    assert "autocomplete_hits" in _BIND_QUOTE_ORG_JS
+    assert "search: false" in _BIND_QUOTE_ORG_JS
+    assert "list0Pack" in _PAGE_PDF_FINISH_JS
+    assert "response_tag" in _PAGE_PDF_FINISH_JS
+    assert "response_ocl_n" in _PAGE_PDF_FINISH_JS
+    assert "response_list_n" in _PAGE_PDF_FINISH_JS
+    assert "response_unit_cost" in _PAGE_PDF_FINISH_JS
+    assert "empty_perimeter" in _PAGE_PDF_FINISH_JS
+    assert "OutsidePerimeter" in _PAGE_PDF_FINISH_JS
+    from secturafab.chrome_cdp import _STAMP_DXF_STOCK_JS
+
+    assert "Stock_X" in _STAMP_DXF_STOCK_JS
+    assert "Stock_Y" in _STAMP_DXF_STOCK_JS
+    assert "UpdatePerimeterWeight" in _STAMP_DXF_STOCK_JS
+    assert "/Quote/GetPerimeterAndWeight" in _STAMP_DXF_STOCK_JS
+    assert "gridDXFParts" in _STAMP_DXF_STOCK_JS
+    assert "UpdateDataNext" not in _STAMP_DXF_STOCK_JS
+    from secturafab.chrome_cdp import (
+        _DISPATCH_DXF_FILES_CHANGE_JS,
+        _FIND_DXF_ADD_FILES_INPUT_JS,
+        _INVOKE_CREATE_ALL_PARTS_JS,
+        _OPEN_CAD_FILES_JS,
+        _READ_GRID_DXF_COUNT_JS,
+        _READ_GRID_DXF_PARTS_AFTER_NEXT_JS,
+    )
+
+    assert "AddNewItemHTML" in _OPEN_CAD_FILES_JS
+    assert "cad files" in _OPEN_CAD_FILES_JS
+    assert "#but_dxf" in _OPEN_CAD_FILES_JS
+    assert "#dxfupload_Zone" in _FIND_DXF_ADD_FILES_INPUT_JS
+    assert "#files" in _FIND_DXF_ADD_FILES_INPUT_JS
+    from inspect import getsource
+
+    from secturafab.chrome_cdp import upload_dxf_via_page_add_files
+
+    dxf_src = getsource(upload_dxf_via_page_add_files)
+    assert "for attempt in range(12)" in dxf_src
+    assert "time.sleep(0.75)" in dxf_src
+    assert "time.sleep(0.35)" not in dxf_src
+    assert "no_add_files_input" in dxf_src
+    assert "kendoUpload" in _FIND_DXF_ADD_FILES_INPUT_JS
+    assert "dropZoneElement" in _FIND_DXF_ADD_FILES_INPUT_JS
+    assert "#gridDXF" in _READ_GRID_DXF_COUNT_JS
+    assert "gridDXFParts" not in _READ_GRID_DXF_COUNT_JS
+    assert "GetDXFData" not in _READ_GRID_DXF_COUNT_JS
+    assert "#dxfupload_Zone" in _DISPATCH_DXF_FILES_CHANGE_JS
+    assert "createAllParts" in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "empty_gridDXF" in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "gridDXFParts" in _READ_GRID_DXF_PARTS_AFTER_NEXT_JS
+    assert "InternalData" in _READ_GRID_DXF_PARTS_AFTER_NEXT_JS
+    assert "UpdateDataNext" not in _INVOKE_CREATE_ALL_PARTS_JS
+    assert "GetPerimeterAndWeight" not in _INVOKE_CREATE_ALL_PARTS_JS
+    from secturafab.chrome_cdp import (
+        _OPEN_LONG_JS,
+        _PAGE_LINEAR_FINISH_JS,
+        _STAMP_LINEAR_FORM_JS,
+    )
+
+    assert "AddNewItemHTML" in _OPEN_LONG_JS
+    assert 'AddNewItemHTML("bar")' in _OPEN_LONG_JS
+    assert 'AddNewItemHTML("linear"' not in _OPEN_LONG_JS
+    assert "#but_bar" in _OPEN_LONG_JS
+    assert "LinearProduct" in _STAMP_LINEAR_FORM_JS
+    assert "LinearConfigList" in _STAMP_LINEAR_FORM_JS
+    assert "20 ft" in _STAMP_LINEAR_FORM_JS
+    assert "long" in _OPEN_LONG_JS
+    assert "image files" in _OPEN_LONG_JS
+    assert "OnAddLinearClick" in _PAGE_LINEAR_FINISH_JS
+    assert "/Quote/AddItem_Linear" in _PAGE_LINEAR_FINISH_JS
+    assert "opts.data.Internal = \"\"" in _PAGE_LINEAR_FINISH_JS
+    assert "ItemID" in _PAGE_LINEAR_FINISH_JS
+    assert "new line item" in _PAGE_LINEAR_FINISH_JS
+    assert "list0Pack" in _PAGE_LINEAR_FINISH_JS
+    assert "ocl_names" in _PAGE_LINEAR_FINISH_JS
+    assert "product_id" in _PAGE_LINEAR_FINISH_JS
+    assert "findLinearProductWidget" in _STAMP_LINEAR_FORM_JS
+    assert "isProductTypeBar" in _STAMP_LINEAR_FORM_JS
+    assert "s.sku" in _STAMP_LINEAR_FORM_JS or "spec.sku" in _STAMP_LINEAR_FORM_JS
+    assert "Internal" in _STAMP_LINEAR_FORM_JS
+    assert "Hole" not in _STAMP_LINEAR_FORM_JS or "holes" in _STAMP_LINEAR_FORM_JS.lower()
+    assert "AddNewPDFFeature" not in _STAMP_LINEAR_FORM_JS
+    assert "AddFeature" not in _STAMP_LINEAR_FORM_JS
+
+
+def test_pdf_upload_settle_polls_scales_with_kids():
+    from secturafab.chrome_cdp import _pdf_upload_settle_polls
+
+    assert _pdf_upload_settle_polls(1) == 28
+    assert _pdf_upload_settle_polls(3) == 52
+    assert _pdf_upload_settle_polls(3) > 24
+
+
+def test_upload_pdf_quiet_retry_after_empty_datasource(tmp_path):
+    from secturafab.chrome_cdp import upload_pdf_via_page_add_files
+
+    pdf = tmp_path / "1007471-1.pdf"
+    pdf.write_bytes(b"%PDF")
+    sets = {"n": 0}
+    tab = {
+        "title": "*Quote-1007471-1",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _set_files(ws, selector, paths):
+        sets["n"] += 1
+        return "objectId"
+
+    def _eval(expr, **kwargs):
+        if "GetPDFData" in expr:
+            n = 2 if sets["n"] >= 2 else 0
+            return {
+                "grid_id": "#gridPDF",
+                "grid_pdf_row_count": n,
+                "status_gt0_n": n,
+                "getpdfdata_n": n,
+                "files_kendo": True,
+                "productid_n": 0,
+            }
+        if "opened_via" in expr:
+            return {"opened_via": "AddNewItemHTML"}
+        if "dropZoneElement" in expr or "data-kannon-add-files" in expr:
+            return {"selector": "#files", "files_kendo": True, "grid_id": "#gridPDF"}
+        return {"changed": True, "files_kendo": True}
+
+    with patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": tab, "reason": ""},
+    ), patch(
+        "secturafab.chrome_cdp._cdp_set_file_input_files", side_effect=_set_files
+    ), patch(
+        "secturafab.chrome_cdp._cdp_evaluate_promise", side_effect=_eval
+    ), patch("secturafab.chrome_cdp.time.sleep"):
+        result = upload_pdf_via_page_add_files(
+            [pdf], quote_id="11111111-aaaa-bbbb-cccc-000000000012", settle_polls=2
+        )
+    assert result["bound"] is True
+    assert result["set_files_via"] == "objectId"
+    assert result.get("settle_retry") == 1
+    assert result.get("finish_why") != "empty_dataSource"
+    assert sets["n"] == 2
+
+
+def test_cdp_set_file_input_files_prefers_objectid_same_session():
+    from secturafab.chrome_cdp import _cdp_set_file_input_files
+
+    calls: list[tuple[str, dict | None]] = []
+
+    def _on_sock(sock, method, params=None, **kwargs):
+        calls.append((method, params))
+        if method == "Runtime.evaluate":
+            return {
+                "result": {
+                    "type": "object",
+                    "subtype": "node",
+                    "objectId": "oid-1",
+                }
+            }
+        if method == "DOM.setFileInputFiles":
+            return {}
+        return {}
+
+    with patch("secturafab.chrome_cdp._ws_handshake", return_value=MagicMock()), patch(
+        "secturafab.chrome_cdp._cdp_call_on_sock", side_effect=_on_sock
+    ):
+        via = _cdp_set_file_input_files("ws://127.0.0.1/devtools/page/x", "#files", ["/tmp/a.pdf"])
+    assert via == "objectId"
+    methods = [c[0] for c in calls]
+    assert methods == ["Runtime.evaluate", "DOM.setFileInputFiles"]
+    assert calls[1][1]["objectId"] == "oid-1"
+    assert "nodeId" not in (calls[1][1] or {})
+    assert methods.count("DOM.setFileInputFiles") == 1
+
+
+def test_cdp_set_file_input_files_one_nodeid_fallback_no_triple_retry():
+    from secturafab.chrome_cdp import _cdp_set_file_input_files
+
+    calls: list[str] = []
+
+    def _on_sock(sock, method, params=None, **kwargs):
+        calls.append(method)
+        if method == "Runtime.evaluate":
+            return {"result": {"type": "object", "subtype": "null"}}
+        if method == "DOM.getDocument":
+            return {"root": {"nodeId": 1}}
+        if method == "DOM.querySelector":
+            return {"nodeId": 9}
+        if method == "DOM.setFileInputFiles":
+            assert params and "nodeId" in params
+            assert "objectId" not in params
+            return {}
+        return {}
+
+    with patch("secturafab.chrome_cdp._ws_handshake", return_value=MagicMock()), patch(
+        "secturafab.chrome_cdp._cdp_call_on_sock", side_effect=_on_sock
+    ):
+        via = _cdp_set_file_input_files("ws://127.0.0.1/devtools/page/x", "#files", ["/tmp/a.pdf"])
+    assert via == "nodeId"
+    assert calls.count("DOM.setFileInputFiles") == 1
+    assert calls.count("Runtime.evaluate") == 1
+
+
+def test_upload_pdf_via_page_add_files_is_not_cookie_http():
+    from secturafab.client import SecturaFabClient
+    from secturafab.website import cookie_http_pdf_upload_is_fail
+
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.upload_pdf_via_page_add_files",
+        return_value={
+            "bound": True,
+            "upload_via": "page_add_files",
+            "files_kendo": True,
+            "grid_pdf_row_count": 2,
+            "status_gt0_n": 2,
+            "getpdfdata_n": 2,
+        },
+    ) as page, patch.object(real, "upload_item_pdf_attachment") as cookie:
+        result = real.upload_pdf_via_page_add_files(
+            quote_id="11111111-aaaa-bbbb-cccc-000000000011",
+            files=["a.pdf", "b.pdf"],
+        )
+    page.assert_called_once()
+    cookie.assert_not_called()
+    assert result["upload_via"] == "page_add_files"
+    assert not cookie_http_pdf_upload_is_fail(result["upload_via"])
+
+
+def test_upload_dxf_via_page_add_files_waits_for_files_input(tmp_path):
+    """AddNewItemHTML can race #dxfupload_Zone #files — wait/retry, not 0.35s."""
+    from secturafab.chrome_cdp import upload_dxf_via_page_add_files
+
+    step = tmp_path / "H.6.38.STEP"
+    step.write_bytes(b"ISO")
+    finds = {"n": 0}
+    sleeps: list[float] = []
+    tab = {
+        "title": "*Quote-H.6.38",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _eval(expr, **kwargs):
+        if "opened_via" in expr:
+            return {"opened_via": "AddNewItemHTML"}
+        if "dropZoneElement" in expr:
+            finds["n"] += 1
+            if finds["n"] < 4:
+                return {
+                    "selector": "",
+                    "files_kendo": False,
+                    "save_url": "",
+                    "zone": "",
+                    "grid_id": "",
+                }
+            return {
+                "selector": "#dxfupload_Zone #files",
+                "files_kendo": True,
+                "save_url": "/CadImport/UploadItem_DXFFiles",
+                "zone": "#dxfupload_Zone",
+                "grid_id": "#gridDXF",
+            }
+        if "gridDXF" in expr:
+            return {
+                "grid_id": "#gridDXF",
+                "gridDXF_n": 1,
+                "files_kendo": True,
+                "List": [{"FileName": "H.6.38.STEP"}],
+                "save_url": "/CadImport/UploadItem_DXFFiles",
+            }
+        return {"changed": True, "files_kendo": True}
+
+    with patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": tab, "reason": ""},
+    ), patch(
+        "secturafab.chrome_cdp._cdp_set_file_input_files", return_value="objectId"
+    ), patch(
+        "secturafab.chrome_cdp._cdp_evaluate_promise", side_effect=_eval
+    ), patch(
+        "secturafab.chrome_cdp.time.sleep", side_effect=lambda s: sleeps.append(s)
+    ):
+        result = upload_dxf_via_page_add_files(
+            [step], quote_id="11111111-aaaa-bbbb-cccc-000000000086"
+        )
+    assert result["bound"] is True
+    assert result["opened_via"] == "AddNewItemHTML"
+    assert result["files_kendo"] is True
+    assert result["save_url"] == "/CadImport/UploadItem_DXFFiles"
+    assert result["finish_why"] != "no_add_files_input"
+    assert finds["n"] == 4
+    assert sleeps.count(0.75) == 3
+    assert 0.35 not in sleeps
+
+
+def test_upload_dxf_via_page_add_files_retries_then_no_add_files_input(tmp_path):
+    """After ~12 probes the #files input is still missing — keep no_add_files_input."""
+    from secturafab.chrome_cdp import upload_dxf_via_page_add_files
+
+    step = tmp_path / "H.6.38.STEP"
+    step.write_bytes(b"ISO")
+    finds = {"n": 0}
+    sleeps: list[float] = []
+    tab = {
+        "title": "*Quote-H.6.38",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _eval(expr, **kwargs):
+        if "opened_via" in expr:
+            return {"opened_via": "AddNewItemHTML"}
+        if "dropZoneElement" in expr:
+            finds["n"] += 1
+            return {
+                "selector": "",
+                "files_kendo": False,
+                "save_url": "",
+                "zone": "",
+                "grid_id": "",
+            }
+        raise AssertionError("must not bind files when input never appears")
+
+    with patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": tab, "reason": ""},
+    ), patch(
+        "secturafab.chrome_cdp._cdp_set_file_input_files",
+        side_effect=AssertionError("must not set files"),
+    ), patch(
+        "secturafab.chrome_cdp._cdp_evaluate_promise", side_effect=_eval
+    ), patch(
+        "secturafab.chrome_cdp.time.sleep", side_effect=lambda s: sleeps.append(s)
+    ):
+        result = upload_dxf_via_page_add_files(
+            [step], quote_id="11111111-aaaa-bbbb-cccc-000000000086"
+        )
+    assert result["bound"] is False
+    assert result["opened_via"] == "AddNewItemHTML"
+    assert result["finish_why"] == "no_add_files_input"
+    assert result["files_kendo"] is False
+    assert result["save_url"] == ""
+    assert finds["n"] == 12
+    assert sleeps.count(0.75) == 11
+
+
+def test_cad_contours_plate_filelist0_values_copies_length_width_stock():
+    """Finish FileList VALUES pass through Length/Width/Stock from the row only."""
+    from secturafab.website import cad_contours_plate_filelist0_values
+
+    row = {
+        "ItemType": "cad",
+        "ProductType": "bar",
+        "productSubType": "bar_flat",
+        "FileType": None,
+        "Machine": "Laser",
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "Length": 0.2794,
+        "Width": 0.15875,
+        "Stock_X": 11.0,
+        "Stock_Y": 6.25,
+    }
+    vals = cad_contours_plate_filelist0_values(row)
+    assert vals["Length"] == 0.2794
+    assert vals["Width"] == 0.15875
+    assert vals["Stock_X"] == 11.0
+    assert vals["Stock_Y"] == 6.25
+    assert vals["Machine"] == "Laser"
+    assert vals["Thickness_Units"] == "inch"
+    bare = cad_contours_plate_filelist0_values(
+        {
+            "ItemType": "cad",
+            "ProductType": "bar",
+            "Machine": "Laser",
+            "Material": "A36",
+            "Thickness": "0.1875",
+            "Thickness_Units": "inch",
+        }
+    )
+    assert "Length" not in bare
+    assert "Width" not in bare
+    assert "Stock_X" not in bare
+    assert "Stock_Y" not in bare
+
+
+def test_finish_preserves_cadimport_flat_lw_not_step_aabb():
+    """CadImport / part-create flat L/W (and Stock) win over STEP AABB.
+
+    invent=false. Finish FileList keeps the server flats. A bounding
+    box on the same row is not the Contours tip size.
+    """
+    from secturafab.website import (
+        build_dxf_finish_payload,
+        cad_contours_plate_filelist0_values,
+        contours_tip_flat_lw_refuses,
+        kendo_filelist_for_finish,
+        sanitize_cad_contours_plate_finish_filelist_row,
+        step_cad_finish_hard_gate,
+    )
+
+    server = {
+        "ID": "id-flat",
+        "FileID": "file-flat",
+        "SourceDataID": "src-flat",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "Length": 12.5,
+        "Width": 4.25,
+        "Length_Units": "inch",
+        "Stock_X": 4.25,
+        "Stock_Y": 12.5,
+        "Stock_Units": "inch",
+        "ErrorStatus": 0,
+        "Qty": 1,
+        "InternalData": "",
+        "Name": "H.6.38 PLATE",
+        "step_bbox": [18.0, 9.0, 0.1875],
+    }
+    assert contours_tip_flat_lw_refuses(server) is None
+    assert step_cad_finish_hard_gate([server]) is None
+    posted = sanitize_cad_contours_plate_finish_filelist_row(server)
+    assert posted["Length"] == pytest.approx(12.5 * 0.0254)
+    assert posted["Width"] == pytest.approx(4.25 * 0.0254)
+    assert posted["Stock_X"] == 4.25
+    assert posted["Stock_Y"] == 12.5
+    assert posted["Length"] != pytest.approx(18.0 * 0.0254)
+    assert posted["Width"] != pytest.approx(9.0 * 0.0254)
+    assert "step_bbox" not in posted
+    assert "NumberOfContours" not in posted
+    assert "Contours" not in posted
+    vals = cad_contours_plate_filelist0_values(posted)
+    assert vals["Length"] == pytest.approx(posted["Length"])
+    assert vals["Width"] == pytest.approx(posted["Width"])
+    assert vals["Stock_X"] == 4.25
+    assert vals["Stock_Y"] == 12.5
+    cap = kendo_filelist_for_finish([server], from_datasource=True)
+    assert cap["should_finish"] is True
+    assert cap["contours_tip_flat_lw"] == ""
+    built = build_dxf_finish_payload("qid", [server])["FileList"][0]
+    assert built["Length"] == pytest.approx(12.5 * 0.0254)
+    assert built["Stock_X"] == 4.25
+    assert "step_bbox" not in built
+    meters = dict(server)
+    meters["Length"] = 0.3175
+    meters["Width"] = 0.10795
+    meters["Length_Units"] = "meter"
+    kept = sanitize_cad_contours_plate_finish_filelist_row(meters)
+    assert kept["Length"] == pytest.approx(0.3175)
+    assert kept["Width"] == pytest.approx(0.10795)
+    assert kept["Length"] != pytest.approx(18.0)
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+
+    assert "flatDimSourceIsStepAabb" in _PAGE_FINISH_JS
+    assert "STEP AABB" in _PAGE_FINISH_JS
+
+
+def test_missing_cadimport_flat_lw_refuses_aabb_contours_tip():
+    """No server flat L/W → park Contours tip. Do not invent STEP AABB."""
+    from secturafab.website import (
+        CONTOURS_TIP_FLAT_LW_PARK,
+        build_dxf_finish_payload,
+        contours_tip_flat_lw_refuses,
+        kendo_filelist_for_finish,
+        sanitize_cad_contours_plate_finish_filelist_row,
+        step_cad_finish_hard_gate,
+    )
+
+    aabb = {
+        "ID": "id-aabb",
+        "FileID": "file-aabb",
+        "SourceDataID": "src-aabb",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "dim_source": "step_bbox",
+        "Length": 18.0,
+        "Width": 9.0,
+        "Length_Units": "inch",
+        "Stock_X": 9.0,
+        "Stock_Y": 18.0,
+        "Stock_Units": "inch",
+        "ErrorStatus": 0,
+        "Qty": 1,
+        "InternalData": "",
+        "Name": "H.6.38 PLATE",
+        "step_bbox": [18.0, 9.0, 0.1875],
+    }
+    why = contours_tip_flat_lw_refuses(aabb)
+    assert why == CONTOURS_TIP_FLAT_LW_PARK
+    assert "STEP AABB" in why
+    assert "invent=false" in why
+    assert step_cad_finish_hard_gate([aabb]) == why
+    posted = sanitize_cad_contours_plate_finish_filelist_row(aabb)
+    assert "Length" not in posted
+    assert "Width" not in posted
+    assert "Stock_X" not in posted
+    assert "Stock_Y" not in posted
+    assert "step_bbox" not in posted
+    assert "dim_source" not in posted
+    assert "NumberOfContours" not in posted
+    assert "Contours" not in posted
+    assert 18.0 not in posted.values()
+    assert 9.0 not in posted.values()
+    cap = kendo_filelist_for_finish([aabb], from_datasource=True)
+    assert cap["should_finish"] is False
+    assert cap["finish_why"] == "contours_tip_flat_lw_missing"
+    assert cap["contours_tip_flat_lw"] == why
+    built = build_dxf_finish_payload("qid", [aabb])["FileList"][0]
+    assert "Length" not in built
+    assert "Stock_X" not in built
+    box_only = {
+        "ID": "id-box",
+        "FileID": "file-box",
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "Material": "A36",
+        "Thickness": "0.1875",
+        "Thickness_Units": "inch",
+        "Name": "H.6.38 PLATE",
+        "step_bbox": [18.0, 9.0, 0.1875],
+    }
+    assert contours_tip_flat_lw_refuses(box_only) == why
+    bare = sanitize_cad_contours_plate_finish_filelist_row(box_only)
+    assert "Length" not in bare
+    assert "Width" not in bare
+    assert 18.0 not in bare.values()
+    assert 9.0 not in bare.values()
+
+
+def test_upload_dxf_via_page_add_files_is_not_cookie_http():
+    from secturafab.client import SecturaFabClient
+    from secturafab.website import cookie_http_dxf_upload_is_fail
+
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    with patch(
+        "secturafab.chrome_cdp.upload_dxf_via_page_add_files",
+        return_value={
+            "bound": True,
+            "upload_via": "page_add_files",
+            "files_kendo": True,
+            "gridDXF_n": 1,
+        },
+    ) as page, patch.object(real, "upload_item_dxf_files") as cookie:
+        result = real.upload_dxf_via_page_add_files(
+            quote_id="11111111-aaaa-bbbb-cccc-000000000011",
+            files=["a.step"],
+        )
+    page.assert_called_once()
+    cookie.assert_not_called()
+    assert result["upload_via"] == "page_add_files"
+    assert not cookie_http_dxf_upload_is_fail(result["upload_via"])
+
+
+def test_add_item_linear_does_not_cookie_http():
+    """Cookie HTTP AddItem_Linear is fail-closed — same leftover class as 29340-1."""
+    from secturafab.client import SecturaFabClient
+
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.website_cookie = "ASP.NET_SessionId=box"
+    real._af_source = "chrome_dom"
+    real.session = MagicMock()
+    called = {"n": 0}
+
+    def boom(*_a, **_k):
+        called["n"] += 1
+        raise AssertionError("must not cookie-POST /Quote/AddItem_Linear")
+
+    real.website_request = boom  # type: ignore[method-assign]
+    with patch("secturafab.chrome_cdp.chrome_quotes_live", return_value=False):
+        result = real.add_item_linear(
+            quote_id="qid",
+            product_id="pid-tube",
+            extra={"sku": "RT4X0.375-A519"},
+        )
+    assert called["n"] == 0
+    assert result["ok"] is False
+    assert result["via"] == "skipped"
+    assert result["long_from_page"] is False
+
+
+def test_add_item_linear_posts_page_onaddlinearclick():
+    """OnAddLinearClick after orange Long — not cookie HTTP."""
+    from secturafab.client import SecturaFabClient
+    from secturafab.chrome_cdp import _PAGE_LINEAR_FINISH_JS
+    from tests.fixtures.live_gold_linear_pack import gold_linear_list0_pack_result
+
+    js = _PAGE_LINEAR_FINISH_JS
+    assert "OnAddLinearClick" in js
+    assert "/Quote/AddItem_Linear" in js
+    assert "opts.data.Internal = \"\"" in js
+    assert "00000000-0000-0000-0000-000000000000" in js
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1898"
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = MagicMock()
+    real.config.website_cookie = "ASP.NET_SessionId=box"
+    real._af_source = "chrome_dom"
+    real.session = MagicMock()
+    gold = gold_linear_list0_pack_result()
+    with patch(
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+    ), patch(
+        "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
+        return_value="chrome_dom",
+    ), patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={
+            "ok": True,
+            "edit_quote_id": minted,
+            "minted_id": minted,
+            "reason": "",
+        },
+    ), patch(
+        "secturafab.client.SecturaFabClient.stamp_linear_form",
+        return_value={
+            "ok": True,
+            "long_clicked": True,
+            "opened_via": "AddNewItemHTML",
+            "picker_sku": "RT4X0.375-A519",
+        },
+    ), patch(
+        "secturafab.chrome_cdp.invoke_page_linear_finish",
+        return_value=gold,
+    ):
+        result = real.add_item_linear(
+            quote_id=minted,
+            product_id="pid-tube",
+            qty=1,
+            length=16.0,
+            name="1001880-2 RT4X0.375-A519",
+            extra={"sku": "RT4X0.375-A519", "productType": "tube"},
+        )
+    real.session.request.assert_not_called()
+    assert result["ok"] is True
+    assert result["via"] == "page_fn"
+    assert result["finish_fn"] == "OnAddLinearClick"
+    assert result["long_from_page"] is True
+    assert result["response_ocl_names"] == ["Saw", "Saw-Setup"]
+    assert result["response_unit_cost"] == 7.63
+
+
+def test_add_item_pdf_files_fails_closed_without_cookie(monkeypatch):
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    monkeypatch.delenv("SECTURA_WEBSITE_COOKIE", raising=False)
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = SecturaFabConfig(website_cookie="")
+    called = {"n": 0}
+
+    def boom(*_a, **_k):
+        called["n"] += 1
+        raise AssertionError("must not POST without a cookie")
+
+    real.website_request = boom  # type: ignore[method-assign]
+    with pytest.raises(SecturaFabWebsiteAuthError, match="SECTURA_WEBSITE_COOKIE|session"):
+        real.add_item_pdf_files(
+            quote_id="qid",
+            file_list=[{"Status": 1, "Qty": 1, "Machine": "Laser"}],
+        )
+    assert called["n"] == 0
+
+
+def test_add_item_linear_fails_closed_without_cookie(monkeypatch):
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    monkeypatch.delenv("SECTURA_WEBSITE_COOKIE", raising=False)
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
+    real = SecturaFabClient.__new__(SecturaFabClient)
+    real.config = SecturaFabConfig(website_cookie="")
+    called = {"n": 0}
+
+    def boom(*_a, **_k):
+        called["n"] += 1
+        raise AssertionError("must not POST without a cookie")
+
+    real.website_request = boom  # type: ignore[method-assign]
+    with pytest.raises(SecturaFabWebsiteAuthError, match="SECTURA_WEBSITE_COOKIE|session"):
+        real.add_item_linear(quote_id="qid", product_id="pid")
+    assert called["n"] == 0
+
+
+def _gold_cad(desc: str = "21680-1 PLATE") -> dict[str, Any]:
+    return {
+        "Description": desc,
+        "ProductType": 100,
+        "ProductTypeName": "Cad",
+        "Category": "Cad",
+        "BadgeString": "PR",
+        "UnitCost": 12.5,
+        "MaterialCost": 1.1,
+        "Material": "A36",
+        "Thickness": 0.25,
+        "Machine": "Laser",
+        "OperationCostList": [
+            {"OperationName": "Profile", "OperationLabel": "PR", "CalculatorName": "Laser", "UnitTime": 0.03},
+            {"OperationName": "Profile", "OperationLabel": "PR", "CalculatorName": "Drafting", "UnitTime": 0.05},
+            {"OperationName": "Profile", "OperationLabel": "PR", "CalculatorName": "Laser-Setup", "UnitTime": 0.16},
+            {"OperationName": "Profile", "OperationLabel": "PR", "CalculatorName": "Sheet Loading", "UnitTime": 0.05},
+            {"OperationName": "Profile", "OperationLabel": "PR", "CalculatorName": "Deburr", "UnitTime": 0.03},
+        ],
+    }
+
+
+def _gold_lin(desc: str = "21679-1 TUBE") -> dict[str, Any]:
+    return {
+        "Description": desc,
+        "ProductType": 30,
+        "Category": "Linear",
+        "IsLinear": True,
+        "Machine": "Saw",
+        "Length": 16,
+        "UnitCost": 7.63,
+        "MaterialCost": 0.55,
+        "SKU": "RT",
+        "BadgeString": "",
+        "OperationCostList": [
+            {"CalculatorName": "Saw", "OperationName": "Cut"},
+            {"CalculatorName": "Saw Setup", "OperationName": "Cut"},
+        ],
+    }
+
+
+def test_push_job_no_cookie_fails_without_quickadd(tmp_path: Path):
+    pdf = tmp_path / "part.pdf"
+    stp = tmp_path / "part.stp"
+    pdf.write_bytes(b"%PDF")
+    stp.write_bytes(b"ISO")
+    client = MagicMock()
+    client.config.website_cookie = ""
+    client.get_json.return_value = {
+        "QuoteNumber": "part",
+        "ItemCount": 0,
+        "ItemList": [],
+    }
+    service = SecturaFabPushService(client=client)
+    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "create_quote", return_value="qid"
+    ) as create_q, patch.object(
+        service, "allocate_quote_number", return_value="part"
+    ), patch.object(
+        service, "quick_add_cad", return_value={"ok": True}
+    ) as qadd, patch.object(
+        service, "finish_cad_files", return_value=[]
+    ) as finish, patch.object(
+        service, "apply_item_categories", return_value=[]
+    ), patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value=None
+    ):
+        result = service.push_job(
+            title="part",
+            pdf_filename="part.pdf",
+            pdf_path=pdf,
+            stp_path=stp,
+            takeoff={"library": {"part_key": "part"}},
+            times={},
+            job_id=2,
+        )
+    assert result.ok is False
+    create_q.assert_called_once()
+    qadd.assert_not_called()
+    finish.assert_called()
+    blob = " ".join(result.notes or []) + " " + (result.error or "")
+    assert "Chrome" in blob or "session" in blob.lower()
+    assert "quickAddCAD" not in blob
+    assert "falling back" not in blob
+
+
+def test_push_job_cookie_uses_finish_not_quickadd(tmp_path: Path):
+    pdf = tmp_path / "21678-1.pdf"
+    stp = tmp_path / "21678-1.STEP"
+    pdf.write_bytes(b"%PDF")
+    stp.write_bytes(b"ISO")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    populated = {
+        "QuoteNumber": "21678-1",
+        "ItemCount": 12,
+        "ItemList": [_gold_cad("21680-1 PLATE"), _gold_lin("21679-1 TUBE")],
+    }
+    _n = {"i": 0}
+
+    def _get_json(_path):
+        _n["i"] += 1
+        return {"QuoteNumber": "21678-1", "ItemCount": 0, "ItemList": []} if _n["i"] == 1 else populated
+
+    client.get_json.side_effect = _get_json
+    service = SecturaFabPushService(client=client)
+    finish = MagicMock(return_value=["Finish CAD"])
+    with patch.object(service, "finish_cad_files", finish), patch.object(
+        service, "nest_after_finish", return_value=["Nest"]
+    ), patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ), patch.object(
+        service, "create_quote", return_value="qid"
+    ), patch.object(
+        service, "allocate_quote_number", return_value="remint-ok"
+    ), patch.object(
+        service, "quick_add_cad"
+    ) as qadd, patch(
+        "secturafab.push.ensure_weld_ops", return_value=["Attached Weld"]
+    ), patch(
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
+    ), patch(
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value="KNUCKLE"
+    ):
+        result = service.push_job(
+            title="21678-1",
+            pdf_filename="21678-1.pdf",
+            pdf_path=pdf,
+            stp_path=stp,
+            takeoff={"library": {"part_key": "21678-1"}},
+            times={"weld_minutes": 10, "total_inches": 20},
+            job_id=1,
+        )
+    assert result.ok is True
+    finish.assert_called_once()
+    qadd.assert_not_called()
+    import secturafab.push as pushmod
+
+    assert hasattr(pushmod, "ensure_laser_profile_ops")
+    assert hasattr(pushmod, "finalize_quote_ops")
+    assert hasattr(pushmod, "quick_add_cad") or hasattr(SecturaFabPushService, "quick_add_cad")
+
+
+def test_push_job_finish_failure_fails_without_quickadd(tmp_path: Path):
+    pdf = tmp_path / "part.pdf"
+    stp = tmp_path / "part.stp"
+    pdf.write_bytes(b"%PDF")
+    stp.write_bytes(b"ISO")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    client.get_json.return_value = {
+        "QuoteNumber": "part",
+        "ItemCount": 0,
+        "ItemList": [],
+    }
+    service = SecturaFabPushService(client=client)
+
+    def _finish_fail(**kwargs):
+        raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
+
+    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+        service, "create_quote", return_value="qid"
+    ) as create_q, patch.object(
+        service, "allocate_quote_number", return_value="part"
+    ), patch.object(
+        service, "finish_cad_files", side_effect=_finish_fail
+    ), patch.object(
+        service, "quick_add_cad", return_value={"ok": True}
+    ) as qadd, patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value=None
+    ):
+        result = service.push_job(
+            title="part",
+            pdf_filename="part.pdf",
+            pdf_path=pdf,
+            stp_path=stp,
+            takeoff={"library": {"part_key": "part"}},
+            times={},
+            job_id=3,
+        )
+    assert result.ok is False
+    create_q.assert_called_once()
+    qadd.assert_not_called()
+    blob = " ".join(result.notes or []) + " " + (result.error or "")
+    assert "Chrome" in blob or "session" in blob.lower()
+    assert "falling back" not in blob
+
+
+def test_push_pdf_only_with_cookie_uses_image_files_finish(tmp_path: Path):
+    pdf = tmp_path / "lonely.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    populated = {
+        "QuoteNumber": "lonely",
+        "ItemCount": 1,
+        "ItemList": [_gold_cad("lonely")],
+    }
+    _n = {"i": 0}
+
+    def _get_json(_path):
+        _n["i"] += 1
+        return {"QuoteNumber": "lonely", "ItemCount": 0, "ItemList": []} if _n["i"] == 1 else populated
+
+    client.get_json.side_effect = _get_json
+    service = SecturaFabPushService(client=client)
+    pdf_finish = MagicMock(return_value=["Image Files Finish"])
+    with patch.object(service, "finish_pdf_files", pdf_finish), patch.object(
+        service, "nest_after_finish", return_value=[]
+    ), patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ), patch.object(
+        service, "create_quote", return_value="qid"
+    ) as create_q, patch.object(
+        service, "allocate_quote_number", return_value="lonely"
+    ), patch.object(
+        service, "quick_add_cad"
+    ) as qadd, patch(
+        "secturafab.pdf_assembly_ops.build_single_pdf_quote"
+    ) as old_pdf, patch(
+        "secturafab.push.ensure_weld_ops", return_value=[]
+    ), patch(
+        "secturafab.push.ensure_imperial_item_units", return_value=[]
+    ), patch(
+        "secturafab.push.apply_bom_quantities", return_value=[]
+    ), patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ), patch(
+        "secturafab.push.extract_assembly_description", return_value=None
+    ):
+        result = service.push_job(
+            title="lonely Title",
+            pdf_filename="lonely.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={"library": {}},
+            times={},
+            job_id=99,
+        )
+    assert result.ok is True
+    pdf_finish.assert_called_once()
+    qadd.assert_not_called()
+    old_pdf.assert_not_called()
+    create_q.assert_called_once()
+
+
+def test_website_request_login_redirect_is_auth_gap():
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(client_id="x", client_secret="y")
+    client._token = MagicMock()
+    client._token.authorization_header = "Bearer tok"
+    client._token.is_expired = False
+    session = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 302
+    resp.headers = {"Location": "/Account/Login?ReturnUrl=%2FQuote%2FAddItem_DXFFiles"}
+    resp.text = ""
+    session.request.return_value = resp
+    client.session = session
+    client.authenticate = lambda force=False: client._token  # type: ignore[method-assign]
+    with pytest.raises(SecturaFabWebsiteAuthError, match="Chrome|session"):
+        client.website_request("POST", "/Quote/AddItem_DXFFiles", json={})
+
+
+def test_classify_filelist_restores_dashed_cad_pn():
+    service = SecturaFabPushService(client=MagicMock())
+    rows = [
+        {
+            "ErrorStatus": 0,
+            "Qty": 1,
+            "FileName": "14500.pdf",
+            "Name": "14500",
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "Stock_X": 11.0,
+        }
+    ]
+    classified, _notes = service.classify_cadimport_rows(
+        rows,
+        default_material="A36",
+        default_thickness="0.25",
+        bom_rows=[{"part_no": "14500-1", "qty": 1, "description": "PEDESTAL TOP PLATE"}],
+        library={},
+        extra_pdfs=None,
+        qty=1,
+    )
+    assert classified[0]["Name"] == "14500-1"
+    assert str(classified[0]["Description"]).startswith("14500-1")
+    assert classified[0]["SourceDataID"] == "src-1"
+    assert classified[0]["FileID"] == "file-1"
+
+
+def test_effective_cookie_prefers_config_not_chrome():
+    from secturafab.browser_session import effective_website_cookie
+    from secturafab.config import SecturaFabConfig
+
+    cfg = SecturaFabConfig(website_cookie="ASP.NET_SessionId=from-env")
+    assert effective_website_cookie(cfg) == "ASP.NET_SessionId=from-env"
+
+
+def test_effective_cookie_reads_sectura_website_cookie_env(monkeypatch):
+    from secturafab.browser_session import effective_website_cookie
+
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=from-box")
+    assert effective_website_cookie() == "ASP.NET_SessionId=from-box"
+
+
+def test_effective_cookie_reads_cookie_file(tmp_path: Path, monkeypatch):
+    from secturafab.browser_session import effective_website_cookie
+
+    path = tmp_path / "box.cookie"
+    path.write_text("ASP.NET_SessionId=box-sess\n", encoding="utf-8")
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", str(path))
+    assert effective_website_cookie() == "ASP.NET_SessionId=box-sess"
+
+
+def test_effective_cookie_does_not_call_windows_discover(monkeypatch):
+    from secturafab.browser_session import effective_website_cookie
+    from secturafab.config import SecturaFabConfig
+
+    monkeypatch.delenv("SECTURA_WEBSITE_COOKIE", raising=False)
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
+    with patch(
+        "secturafab.browser_session.discover_sectura_website_cookie",
+        side_effect=AssertionError("Windows unwrap is dead"),
+    ) as disc:
+        assert effective_website_cookie(SecturaFabConfig()) == ""
+        disc.assert_not_called()
+
+
+def test_public_discover_never_unwraps_windows_chrome(monkeypatch):
+    from secturafab import browser_session as bs
+
+    monkeypatch.delenv("SECTURA_WEBSITE_COOKIE", raising=False)
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
+    with patch.object(
+        bs, "_discover_uncached", side_effect=AssertionError("must not unwrap")
+    ), patch.object(
+        bs, "_memscan_abe_key", side_effect=AssertionError("must not memscan")
+    ), patch.object(
+        bs, "_discover_windows_chrome", side_effect=AssertionError("must not unwrap")
+    ):
+        assert bs.discover_sectura_website_cookie(force=True) == ""
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    with patch.object(
+        bs, "_discover_windows_chrome", side_effect=AssertionError("must not unwrap")
+    ):
+        assert bs.discover_sectura_website_cookie(force=True) == "ASP.NET_SessionId=box"
+
+
+def test_finish_pdf_and_linear_never_call_windows_discover(monkeypatch):
+    from secturafab.client import SecturaFabClient, SecturaFabWebsiteAuthError
+    from secturafab.config import SecturaFabConfig
+    from secturafab.push import SecturaFabPushService
+
+    monkeypatch.delenv("SECTURA_WEBSITE_COOKIE", raising=False)
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client.config = SecturaFabConfig(website_cookie="")
+    svc = SecturaFabPushService(client=client)
+    with patch(
+        "secturafab.browser_session._discover_windows_chrome",
+        side_effect=AssertionError("must not unwrap"),
+    ), patch(
+        "secturafab.browser_session._discover_uncached",
+        side_effect=AssertionError("must not unwrap"),
+    ):
+        with pytest.raises(SecturaFabWebsiteAuthError):
+            svc.finish_pdf_files(
+                quote_id="qid",
+                pdf_files=[],
+                material="A36",
+                thickness="0.25",
+                qty=1,
+                description="x",
+            )
+        with pytest.raises(SecturaFabWebsiteAuthError):
+            svc.finish_linear_bom_rows(
+                quote_id="qid",
+                linear_rows=[{"part_no": "29860-3", "description": "ANGLE", "qty": 1}],
+                material="A36",
+                library={},
+                extra_pdfs=[],
+            )
+
+
+def test_discover_cookie_from_sqlite(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        (".secturafab.com", ".AspNet.ApplicationCookie", "auth-token", b""),
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "ASP.NET_SessionId", "sess", b""),
+    )
+    conn.commit()
+    conn.close()
+    profile = {
+        "label": "test",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+    }
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]):
+        header = bs._discover_windows_chrome(force=True)
+    assert ".AspNet.ApplicationCookie=auth-token" in header
+    assert "ASP.NET_SessionId=sess" in header
+    status = bs.discover_status()
+    assert status["session_found"] is True
+    assert status["source"] == "test"
+    assert "auth-token" not in str(status)
+    assert status.get("error") in {"", None}
+
+
+def _write_cookie_db(path: Path, *, host: str = ".secturafab.com") -> None:
+    import sqlite3
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        (host, ".AspNet.ApplicationCookie", "auth-token", b""),
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "ASP.NET_SessionId", "sess", b""),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_locked_shutil_copy_still_reads_chrome_default(tmp_path: Path):
+    """WinError 32 on shutil.copy2 must not hide Chrome Default cookies."""
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Default" / "Network" / "Cookies"
+    _write_cookie_db(db)
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path / "Default",
+        "history_hit": True,
+    }
+
+    def _locked(*_a, **_k):
+        raise OSError(32, "The process cannot access the file")
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs.shutil, "copy2", side_effect=_locked
+    ):
+        header = bs._discover_windows_chrome(force=True)
+    assert header
+    assert bs.session_found() is True
+    assert bs.last_discover_source() == "chrome:Default"
+    assert "auth-token" not in bs.last_discover_error()
+
+
+def test_share_copy_when_sqlite_backup_and_copy2_fail(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db)
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_sqlite_backup_nolock", side_effect=sqlite3.Error("locked")
+    ), patch.object(bs.shutil, "copy2", side_effect=OSError(32, "locked")):
+        header = bs._discover_windows_chrome(force=True)
+    assert header
+    assert bs.discover_status()["session_found"] is True
+
+
+def test_chrome_default_ranks_before_profile_1():
+    from secturafab.browser_session import _profile_rank
+
+    default = {
+        "label": "chrome:Default",
+        "cookies": "C:/x/Default/Network/Cookies",
+        "history_hit": True,
+    }
+    profile1 = {
+        "label": "chrome:Profile 1",
+        "cookies": "C:/x/Profile 1/Network/Cookies",
+        "history_hit": False,
+    }
+    edge = {
+        "label": "edge:Default",
+        "cookies": "C:/x/Edge/Default/Network/Cookies",
+        "history_hit": False,
+    }
+    ranked = sorted([profile1, edge, default], key=_profile_rank)
+    assert ranked[0]["label"] == "chrome:Default"
+    assert ranked[1]["label"] == "chrome:Profile 1"
+
+
+def test_snapshot_uses_lock_bypass_when_share_and_copy2_fail(tmp_path: Path):
+    """Exclusive Chrome lock: share-open/copy2 fail; backup/dup/VSS must still copy."""
+    import shutil
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db)
+    dest = tmp_path / "snap" / "Cookies"
+    dest.parent.mkdir()
+
+    def _bypass(src: Path, dest_path: Path, **_k) -> None:
+        shutil.copy2(src, dest_path)
+
+    with patch.object(bs, "_sqlite_backup_nolock", side_effect=sqlite3.Error("locked")), patch.object(
+        bs, "_share_copy_with_wal", side_effect=OSError(32, "locked")
+    ), patch.object(
+        bs, "_shutil_copy_with_wal", side_effect=OSError(32, "locked")
+    ), patch.object(bs, "_win_lock_bypass_with_wal", side_effect=_bypass):
+        bs._snapshot_sqlite_file(db, dest)
+    assert dest.is_file() and dest.stat().st_size > 0
+
+
+def test_dup_handle_timeout_raises_quickly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from secturafab import browser_session as bs
+
+    monkeypatch.setattr(bs, "_DUP_HANDLE_TIMEOUT_S", 0.35)
+
+    def _hang(*_a, **_k):
+        time.sleep(30)
+
+    monkeypatch.setattr(bs, "_win_dup_handle_copy_inner", _hang)
+    t0 = time.monotonic()
+    with pytest.raises(OSError) as ei:
+        bs._win_dup_handle_copy(tmp_path / "Cookies", tmp_path / "out")
+    assert "dup_handle_timeout" in str(ei.value)
+    assert time.monotonic() - t0 < 3.0
+
+
+def test_lock_bypass_times_out_dup_then_uses_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import shutil
+
+    from secturafab import browser_session as bs
+
+    monkeypatch.setattr(bs, "_DUP_HANDLE_TIMEOUT_S", 0.35)
+    monkeypatch.setattr(bs.os, "name", "nt")
+    bs._cache["dup_timed_out"] = False
+    bs._cache["lock_bypass_pinned"] = False
+    bs._cache["lock_bypass"] = ""
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db)
+    dest = tmp_path / "snap" / "Cookies"
+    dest.parent.mkdir()
+
+    def _hang(*_a, **_k):
+        time.sleep(30)
+
+    def _ok(src: Path, dest_path: Path) -> None:
+        shutil.copy2(src, dest_path)
+
+    def _fail(*_a, **_k):
+        raise OSError(32, "skip")
+
+    with patch.object(bs, "_win_dup_handle_copy_inner", _hang), patch.object(
+        bs, "_win_backup_copy", _ok
+    ), patch.object(bs, "_win_ntcreatefile_backup_copy", _fail), patch.object(
+        bs, "_win_esentutl_copy", _fail
+    ), patch.object(bs, "_win_robocopy_backup_copy", _fail), patch.object(
+        bs, "_win_vss_existing_copy", _fail
+    ):
+        t0 = time.monotonic()
+        bs._win_lock_bypass_with_wal(db, dest, allow_vss=False)
+    assert dest.is_file() and dest.stat().st_size > 0
+    assert bs._cache["lock_bypass"] == "backup_priv"
+    assert time.monotonic() - t0 < 4.0
+
+
+def test_nt_native_path_strips_extended_prefix():
+    from secturafab.browser_session import _nt_native_path
+
+    assert _nt_native_path(r"C:\Users\kyle\Cookies") == r"\??\C:\Users\kyle\Cookies"
+    assert _nt_native_path(r"\\?\C:\Users\kyle\Cookies") == r"\??\C:\Users\kyle\Cookies"
+    assert _nt_native_path(r"\??\C:\Users\kyle\Cookies") == r"\??\C:\Users\kyle\Cookies"
+
+
+def test_rank_browser_pids_puts_network_first():
+    from secturafab import browser_session as bs
+
+    def _cmd(pid: int) -> str:
+        return {
+            11: r"chrome.exe",
+            22: r"chrome.exe --type=utility --utility-sub-type=network.mojom.NetworkService",
+            33: r"chrome.exe --type=renderer",
+            44: r"chrome.exe --type=utility --utility-sub-type=storage.mojom.StorageService",
+        }[pid]
+
+    with patch.object(bs, "_process_command_line", side_effect=_cmd):
+        ranked = bs._rank_browser_pids([11, 22, 33, 44])
+    assert ranked[0] == 22
+    assert ranked[1] == 44
+    assert 11 in ranked
+
+
+def test_lock_bypass_creates_vss_when_allowed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import shutil
+
+    from secturafab import browser_session as bs
+
+    monkeypatch.setattr(bs.os, "name", "nt")
+    bs._cache["dup_timed_out"] = False
+    bs._cache["lock_bypass_pinned"] = False
+    bs._cache["lock_bypass"] = ""
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db)
+    dest = tmp_path / "snap" / "Cookies"
+    dest.parent.mkdir()
+    order: list[str] = []
+
+    def _fail(name: str):
+        def _inner(*_a, **_k):
+            order.append(name)
+            raise OSError(32, name)
+
+        return _inner
+
+    def _vss(src: Path, dest_path: Path) -> None:
+        order.append("vss")
+        shutil.copy2(src, dest_path)
+
+    with patch.object(bs, "_win_dup_handle_copy", _fail("dup_handle")), patch.object(
+        bs, "_win_backup_copy", _fail("backup_priv")
+    ), patch.object(bs, "_win_ntcreatefile_backup_copy", _fail("nt_backup")), patch.object(
+        bs, "_win_vss_copy", _vss
+    ):
+        bs._win_lock_bypass_with_wal(db, dest, allow_vss=True)
+    assert dest.is_file()
+    assert bs._cache["lock_bypass"] == "vss"
+    assert order == ["dup_handle", "backup_priv", "nt_backup", "vss"]
+
+
+def test_history_snapshot_does_not_scan_handles(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    hist = tmp_path / "History"
+    conn = sqlite3.connect(str(hist))
+    conn.execute("CREATE TABLE urls (url TEXT)")
+    conn.commit()
+    conn.close()
+
+    def _nope(*_a, **_k):
+        raise AssertionError("lock bypass must not run for History")
+
+    with patch.object(bs, "_win_lock_bypass_with_wal", side_effect=_nope):
+        assert bs._history_has_sectura(tmp_path) is False
+
+
+def test_win_paths_match_strips_extended_prefix():
+    from secturafab.browser_session import _paths_match
+
+    assert _paths_match(
+        r"\\?\C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies",
+        r"C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies",
+    )
+    assert _paths_match(
+        r"\Device\HarddiskVolume3\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies",
+        r"D:\unused\Google\Chrome\User Data\Default\Network\Cookies",
+    )
+    # FileNameInfo is volume-relative (no drive) when GetFinalPathName is empty.
+    assert _paths_match(
+        r"\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies",
+        r"C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies",
+    )
+
+
+def test_snapshot_failure_reports_bypass_not_bare_oserror(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    db.write_bytes(b"x")
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+
+    def _fail(*_a, **_k):
+        raise OSError(32, "locked")
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_sqlite_backup_nolock", side_effect=sqlite3.Error("locked")
+    ), patch.object(bs, "_share_copy_with_wal", side_effect=_fail), patch.object(
+        bs, "_shutil_copy_with_wal", side_effect=_fail
+    ), patch.object(bs, "_win_lock_bypass_with_wal", side_effect=_fail), patch.object(
+        bs.time, "sleep", return_value=None
+    ):
+        header = bs._discover_windows_chrome(force=True)
+    assert header == ""
+    status = bs.discover_status()
+    assert status["session_found"] is False
+    assert status["source"] == "chrome:Default"
+    err = status["error"]
+    assert "OSError" not in err or "nolock" in err or "lock_bypass" in err
+    assert "lock_bypass=" in err
+    assert "do not paste" in err.lower()
+    assert status["lock_bypass"]
+    assert status["lock_bypass"] != ""
+    assert status["lock_bypass"]
+    assert "open_copy_failed" not in status["lock_bypass"]
+
+
+def test_localserver32_cmd_uses_console():
+    from secturafab.browser_session import _localserver32_cmd
+
+    cmd = _localserver32_cmd(
+        Path(r"C:\Program Files\Google\Chrome\Application\151.0.7922.174\elevation_service.exe")
+    )
+    assert "--console" in cmd
+    assert "-Embedding" in cmd
+    assert "elevation_service.exe" in cmd
+
+
+def test_rm_file_pids_empty_off_windows(tmp_path: Path):
+    from secturafab.browser_session import _rm_file_pids
+
+    assert _rm_file_pids(tmp_path / "Cookies") == []
+
+
+def test_unwrap_keeps_helper_timeout_as_chrome_dir():
+    from secturafab import browser_session as bs
+
+    b64 = base64.b64encode(b"APPB" + b"\x01" * 40).decode("ascii")
+
+    def _no_elevator(*_a, **_k):
+        raise AssertionError("in-process CoCreate must not run")
+
+    with patch.object(
+        bs, "_elevator_decrypt_via_chrome_dir", return_value=(None, "helper:timeout")
+    ), patch.object(bs, "_elevator_decrypt", side_effect=_no_elevator):
+        key, status, hr = bs._unwrap_app_bound_key(b64, v20_sample=b"v20" + b"\x00" * 40)
+    assert key is None
+    assert status == "chrome_dir"
+    assert hr == "helper:timeout"
+    assert "CLASSNOTREG" not in hr
+
+
+def test_hr_label_surfaces_classnotreg():
+    from secturafab.browser_session import _hr_label, _label_classnotreg
+
+    assert _hr_label(0x80040154) == "0x80040154:CLASSNOTREG"
+    assert _hr_label(-2147221164) == "0x80040154:CLASSNOTREG"
+    assert _hr_label(0x80040155) == "0x80040155:IIDNOTREG"
+    assert _hr_label(0x80080005) == "0x80080005:SERVER_EXEC_FAILURE"
+    assert "CLASSNOTREG" in _label_classnotreg("0x80040154", "no_elevation_service")
+    assert "no_elevation_service" in _label_classnotreg("0x80040154", "no_elevation_service")
+    assert _hr_label(0) == "0x00000000"
+
+
+def test_elevation_service_exes_finds_versioned_151(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from secturafab import browser_session as bs
+
+    root = tmp_path / "Google" / "Chrome" / "Application"
+    root.mkdir(parents=True)
+    (root / "chrome.exe").write_bytes(b"mz")
+    ver = root / "151.0.7922.174"
+    ver.mkdir()
+    (ver / "chrome.exe").write_bytes(b"mz")
+    (ver / "elevation_service.exe").write_bytes(b"mz")
+    monkeypatch.setenv("PROGRAMFILES", str(tmp_path))
+    monkeypatch.delenv("PROGRAMFILES(X86)", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    with patch.object(bs, "_chrome_exe_from_registry", return_value=Path()):
+        exes = bs._elevation_service_exes()
+        dirs = bs._chrome_helper_dirs()
+    assert any(p.name.lower() == "elevation_service.exe" for p in exes)
+    assert dirs and dirs[0].name == "151.0.7922.174"
+
+
+def test_prepare_elevator_without_exe_is_classnotreg_reason():
+    from secturafab import browser_session as bs
+
+    with patch.object(bs.os, "name", "nt"), patch.object(
+        bs, "_elevation_service_exes", return_value=[]
+    ):
+        assert bs._prepare_elevator_com() == "no_elevation_service"
+
+
+def test_unwrap_helper_miss_is_chrome_dir_not_classnotreg():
+    from secturafab import browser_session as bs
+
+    b64 = base64.b64encode(b"APPB" + b"\x01" * 40).decode("ascii")
+
+    def _no_elevator(*_a, **_k):
+        raise AssertionError("in-process CoCreate must not run")
+
+    with patch.object(
+        bs, "_elevator_decrypt_via_chrome_dir", return_value=(None, "csc_missing")
+    ), patch.object(bs, "_elevator_decrypt", side_effect=_no_elevator):
+        key, status, hr = bs._unwrap_app_bound_key(b64, v20_sample=b"v20" + b"\x00" * 40)
+    assert key is None
+    assert status == "chrome_dir"
+    assert hr == "csc_missing"
+    assert "CLASSNOTREG" not in hr
+    assert "0x80040154" not in hr
+
+
+def test_discover_abe_hr_is_chrome_dir(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "ASP.NET_SessionId", "", b"v20" + b"\x00" * 40),
+    )
+    conn.commit()
+    conn.close()
+    local_state = tmp_path / "Local State"
+    local_state.write_text(
+        json.dumps(
+            {"os_crypt": {"app_bound_encrypted_key": base64.b64encode(b"APPB" + b"\x01" * 40).decode()}}
+        ),
+        encoding="utf-8",
+    )
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": local_state,
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_unwrap_app_bound_key", return_value=(None, "chrome_dir", "csc_missing")
+    ):
+        header = bs._discover_windows_chrome(force=True)
+    assert header == ""
+    status = bs.discover_status()
+    assert status["abe"] == "chrome_dir"
+    assert status["abe_hr"] == "csc_missing"
+    assert "CLASSNOTREG" not in status["abe_hr"]
+    assert "csc_missing" in status["error"]
+    assert "do not paste" in status["error"].lower()
+
+
+def test_app_bound_strips_appb_prefix():
+    from secturafab.browser_session import _accept_aes_key, _app_bound_ciphertext
+
+    inner = b"\x01\x02\x03\x04" + (b"\xab" * 20)
+    b64 = base64.b64encode(b"APPB" + inner).decode("ascii")
+    assert _app_bound_ciphertext(b64) == inner
+    assert _accept_aes_key(b"x" * 32) == b"x" * 32
+    assert _accept_aes_key(b"x" * 16) == b"x" * 16
+    assert _accept_aes_key(b"too-short") is None
+    packed = (32).to_bytes(4, "little") + (b"k" * 32) + b"trailer"
+    assert _accept_aes_key(packed) == b"k" * 32
+
+
+def test_v20_cookie_uses_abe_key_never_v10():
+    from secturafab.browser_session import _BrowserKeys, _decrypt_cookie_value, _v20_cookie_text
+
+    abe = os.urandom(32)
+    v10 = os.urandom(32)
+    nonce = os.urandom(12)
+    secret = b"sectura-session-value"
+    plain = (b"\x11" * 32) + secret
+    payload = _aes_gcm_encrypt(plain, abe, nonce)
+    blob = b"v20" + nonce + payload
+    assert _decrypt_cookie_value(blob, _BrowserKeys(abe=abe, v10=v10)) == secret.decode()
+    assert _decrypt_cookie_value(blob, _BrowserKeys(abe=None, v10=abe)) == ""
+    assert _v20_cookie_text(plain) == secret.decode()
+
+
+def test_v20_blobs_fail_closed_without_abe(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        (
+            "www.secturafab.com",
+            "ASP.NET_SessionId",
+            "",
+            b"v20" + b"\x00" * 40,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    local_state = tmp_path / "Local State"
+    local_state.write_text(
+        json.dumps(
+            {
+                "os_crypt": {
+                    "app_bound_encrypted_key": base64.b64encode(b"APPB" + b"\x01" * 40).decode(),
+                    "encrypted_key": base64.b64encode(b"DPAPI" + b"\x02" * 40).decode(),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": local_state,
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+    fake_v10 = b"V" * 32
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_unwrap_app_bound_key", return_value=(None, "failed", "0x80070005")
+    ), patch.object(bs, "_v10_os_crypt_key", return_value=fake_v10):
+        header = bs._discover_windows_chrome(force=True)
+    assert header == ""
+    assert bs.session_found() is False
+    status = bs.discover_status()
+    assert status["session_found"] is False
+    assert status["source"] == "chrome:Default"
+    assert status["abe"] == "failed"
+    assert status["abe_hr"] == "0x80070005"
+    assert status["v20_blobs"] == 1
+    assert status["v20_ok"] == 0
+    assert "0x80070005" in status["error"]
+    assert "do not paste" in status["error"].lower()
+    assert "auth-token" not in str(status)
+    assert fake_v10.hex() not in str(status)
+
+
+def test_elevator_overflow_does_not_crash_discover(tmp_path: Path):
+    """SysFreeString OverflowError must set abe=failed and keep source."""
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "ASP.NET_SessionId", "", b"v20" + b"\x00" * 40),
+    )
+    conn.commit()
+    conn.close()
+    local_state = tmp_path / "Local State"
+    local_state.write_text(
+        json.dumps(
+            {"os_crypt": {"app_bound_encrypted_key": base64.b64encode(b"APPB" + b"\x01" * 40).decode()}}
+        ),
+        encoding="utf-8",
+    )
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": local_state,
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_elevator_decrypt_via_chrome_dir",
+        side_effect=OverflowError("int too long to convert"),
+    ), patch.object(
+        bs, "_elevator_decrypt",
+        side_effect=AssertionError("in-process CoCreate must not run"),
+    ):
+        header = bs._discover_windows_chrome(force=True)
+    assert header == ""
+    status = bs.discover_status()
+    assert status["session_found"] is False
+    assert status["source"] == "chrome:Default"
+    assert status["abe"] == "chrome_dir"
+    assert status["abe_hr"] == "OverflowError"
+    assert status["v20_blobs"] == 1
+    assert status["v20_ok"] == 0
+    assert "OverflowError" in status["error"]
+    assert "do not paste" in status["error"].lower()
+
+
+def test_local_free_uses_c_void_p_not_raw_int():
+    """Win64 LocalFree must get a pointer-width c_void_p, not a raw int."""
+    import ctypes
+    from ctypes import c_void_p
+    from unittest.mock import Mock
+
+    from secturafab.browser_session import _local_free
+
+    k32 = Mock()
+    huge = 0x7FFF_FFFF_ABCD_1234
+    _local_free(k32, huge)
+    k32.LocalFree.assert_called_once()
+    arg = k32.LocalFree.call_args[0][0]
+    assert isinstance(arg, c_void_p)
+    assert int(arg.value) == huge
+    k32.LocalFree.side_effect = ctypes.ArgumentError(
+        "argument 1: OverflowError: int too long to convert"
+    )
+    _local_free(k32, c_void_p(huge))  # must not raise
+
+
+def test_app_bound_layout_keeps_dpapi_fp_when_unprotect_raises():
+    import ctypes
+
+    from secturafab import browser_session as bs
+
+    blob = b"\x01\x00\x00\x00" + os.urandom(636)
+    assert len(blob) == 640
+    with patch.object(
+        bs,
+        "_dpapi_unprotect_local",
+        side_effect=ctypes.ArgumentError("argument 1: OverflowError: int too long to convert"),
+    ):
+        fp, views = bs._app_bound_layout_views(blob)
+    assert fp.startswith("appb:dpapi:640")
+    assert views
+
+
+def test_v10_os_crypt_key_swallows_localfree_argument_error():
+    import ctypes
+
+    from secturafab import browser_session as bs
+
+    b64 = base64.b64encode(b"DPAPI" + b"\x01\x00\x00\x00" + os.urandom(32)).decode("ascii")
+    with patch.object(
+        bs,
+        "_dpapi_unprotect",
+        side_effect=ctypes.ArgumentError("argument 1: OverflowError: int too long to convert"),
+    ):
+        assert bs._v10_os_crypt_key(b64) is None
+
+
+def test_bstr_free_uses_c_void_p_not_raw_int():
+    """Win64 SysFreeString must get a pointer-width c_void_p."""
+    import ctypes
+    from ctypes import c_void_p
+    from unittest.mock import Mock
+
+    from secturafab.browser_session import _bstr_free
+
+    ole = Mock()
+    huge = 0x7FFF_FFFF_ABCD_1234
+    _bstr_free(ole, huge)
+    ole.SysFreeString.assert_called_once()
+    arg = ole.SysFreeString.call_args[0][0]
+    assert isinstance(arg, c_void_p)
+    assert int(arg.value) == huge
+    ole.SysFreeString.side_effect = OverflowError("int too long to convert")
+    _bstr_free(ole, c_void_p(huge))  # must not raise
+
+
+def test_discover_outer_catch_writes_abe_after_crash(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    profile = {
+        "label": "chrome:Default",
+        "cookies": tmp_path / "Cookies",
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+
+    def _boom(*_a, **_k):
+        bs._cache["lock_bypass"] = "dup_handle"
+        bs._cache["source"] = "chrome:Default"
+        raise OverflowError("int too long to convert")
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_read_cookie_rows", side_effect=_boom
+    ):
+        header = bs._discover_windows_chrome(force=True)
+    assert header == ""
+    status = bs.discover_status()
+    assert status["session_found"] is False
+    assert status["source"] == "chrome:Default"
+    assert status["lock_bypass"] == "dup_handle"
+    assert status["abe"] == "failed"
+    assert status["abe_hr"] == "OverflowError"
+
+
+def test_v20_discover_succeeds_with_elevator_key(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    abe = os.urandom(32)
+    nonce = os.urandom(12)
+    secret = b"sess-ok"
+    payload = _aes_gcm_encrypt((b"\x22" * 32) + secret, abe, nonce)
+    db = tmp_path / "Cookies"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "ASP.NET_SessionId", "", b"v20" + nonce + payload),
+    )
+    conn.commit()
+    conn.close()
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+    keys = bs._BrowserKeys(abe=abe, status="elevator", hr="0x00000000")
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_browser_keys", return_value=keys
+    ):
+        header = bs._discover_windows_chrome(force=True)
+    assert "ASP.NET_SessionId=sess-ok" in header
+    status = bs.discover_status()
+    assert status["session_found"] is True
+    assert status["source"] == "chrome:Default"
+    assert status["abe"] == "elevator"
+    assert status["v20_ok"] == 1
+    assert "sess-ok" not in str(status)
+
+
+def test_finish_session_error_is_env_cookie_only(monkeypatch):
+    from secturafab.push import SecturaFabPushService
+
+    monkeypatch.delenv("SECTURA_WEBSITE_COOKIE", raising=False)
+    monkeypatch.delenv("SECTURAFAB_WEBSITE_COOKIE", raising=False)
+    svc = SecturaFabPushService(MagicMock())
+    msg = svc._finish_session_error()
+    assert "session_found=false" in msg
+    assert "SECTURA_WEBSITE_COOKIE" in msg
+    assert "abe=" not in msg
+    assert "abe_hr=" not in msg
+    assert "lock_bypass=" not in msg
+    assert "vss=" not in msg
+    assert "do not paste a cookie" in msg.lower()
+    assert "quoting pc" in msg.lower() or "unwrap" in msg.lower()
+
+
+def test_chrome_default_uses_cached_snapshot_when_live_copy_fails(tmp_path: Path):
+    """Chrome-open copy can reuse a Cookies DB that already landed."""
+    from secturafab import browser_session as bs
+
+    live = tmp_path / "live" / "Cookies"
+    live.parent.mkdir()
+    live.write_bytes(b"locked")
+    cached = tmp_path / "cache" / "Cookies"
+    _write_cookie_db(cached)
+    profile = {
+        "label": "chrome:Default",
+        "cookies": live,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+
+    def _vss_miss(*_a, **_k):
+        return False
+
+    with patch.dict(os.environ, {"KANNON_COOKIE_CACHE": str(tmp_path / "cache")}), patch.object(
+        bs, "_browser_cookie_dbs", return_value=[profile]
+    ), patch.object(bs, "_try_nolock_copy", return_value=False), patch.object(
+        bs, "_try_handle_dup_copy", return_value=False
+    ), patch.object(bs, "_try_vss_create_copy", side_effect=_vss_miss), patch.object(
+        bs, "_sqlite_backup_nolock", side_effect=OSError(32, "locked")
+    ), patch.object(bs, "_share_copy_with_wal", side_effect=OSError(32, "locked")), patch.object(
+        bs, "_shutil_copy_with_wal", side_effect=OSError(32, "locked")
+    ):
+        header = bs._discover_windows_chrome(force=True)
+    assert header
+    status = bs.discover_status()
+    assert "cached" in status["lock_bypass"]
+    assert status["session_found"] is True
+    assert status["source"] == "chrome:Default"
+
+
+def test_vss_create_hresult_stays_visible_after_fallback(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db)
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+
+    def _vss_create(*_a, **_k):
+        bs._record_vss("create:5")
+        return False
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_try_nolock_copy", return_value=False
+    ), patch.object(
+        bs, "_try_vss_create_copy", side_effect=_vss_create
+    ):
+        header = bs._discover_windows_chrome(force=True)
+    assert header
+    status = bs.discover_status()
+    assert status["vss"] == "create:5"
+    assert status["lock_bypass"].startswith("vss=create:5")
+
+
+def test_lock_bypass_with_vss_prefixes_create_hresult():
+    from secturafab import browser_session as bs
+
+    bs._cache["vss"] = "create:5"
+    assert (
+        bs._lock_bypass_with_vss("dup_handle_not_found")
+        == "vss=create:5;dup_handle_not_found"
+    )
+    bs._cache["vss"] = "ok"
+    assert bs._lock_bypass_with_vss("") == "vss"
+
+
+def test_later_profile_cannot_wipe_default_vss_pin():
+    from secturafab import browser_session as bs
+
+    bs._cache["lock_bypass_pinned"] = False
+    bs._cache["vss"] = "ok"
+    bs._set_lock_bypass("vss", pin=True)
+    bs._set_lock_bypass(
+        "dup_handle_not_found;backup_priv:errno 6;vss_existing:errno 1"
+    )
+    assert bs._cache["lock_bypass"] == "vss"
+    assert bs._cache["vss"] == "ok"
+
+
+def test_chrome_default_records_vss_skip_on_linux(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db)
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]):
+        header = bs._discover_windows_chrome(force=True)
+    assert header
+    status = bs.discover_status()
+    assert "nolock" in status["lock_bypass"]
+    assert status["session_found"] is True
+
+
+def test_chrome_default_uses_nolock_before_vss(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db)
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+
+    def _no_vss(*_a, **_k):
+        raise AssertionError("VSS must not run when nolock lands Cookies")
+
+    def _no_dup(*_a, **_k):
+        raise AssertionError("handle-dup must not run when nolock lands Cookies")
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_try_vss_create_copy", side_effect=_no_vss
+    ), patch.object(bs, "_try_handle_dup_copy", side_effect=_no_dup):
+        header = bs._discover_windows_chrome(force=True)
+    assert header
+    status = bs.discover_status()
+    assert "nolock" in status["lock_bypass"]
+    assert status["session_found"] is True
+    assert status["source"] == "chrome:Default"
+
+
+def test_vss_create_script_uses_cim_not_file_drive_arg():
+    from secturafab import browser_session as bs
+
+    script = bs._vss_create_ps1()
+    assert "Invoke-CimMethod" in script
+    assert "Win32_ShadowCopy" in script
+    assert "ClientAccessible" in script
+    assert "param($ArgsFile)" in script
+    assert "param($Drive,$Rel,$Dest,$Status)" not in script
+
+
+def test_parse_vssadmin_create_output():
+    from secturafab import browser_session as bs
+
+    text = (
+        "Successfully created shadow copy for 'C:\\'\n"
+        "    Shadow Copy ID: {C7C1D1A0-1111-2222-3333-444444444444}\n"
+        "    Shadow Copy Volume Name: "
+        "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy12\n"
+    )
+    parsed = bs._parse_vss_create_output(text)
+    assert parsed is not None
+    assert parsed[0] == "{C7C1D1A0-1111-2222-3333-444444444444}"
+    assert parsed[1].endswith("HarddiskVolumeShadowCopy12")
+    assert bs._parse_vss_create_output("VSS none") is None
+
+
+def test_parse_vss_list_output_newest_globalroot_first():
+    from secturafab import browser_session as bs
+
+    text = (
+        "Contents of shadow copy set ID: {AAAAAAAA-1111-2222-3333-444444444444}\n"
+        "    Shadow Copy Volume: "
+        "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy2\n"
+        "Contents of shadow copy set ID: {BBBBBBBB-1111-2222-3333-444444444444}\n"
+        "    Shadow Copy Volume: "
+        "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy7\n"
+    )
+    devices = bs._parse_vss_list_output(text)
+    assert devices[0].endswith("HarddiskVolumeShadowCopy7")
+    assert devices[1].endswith("HarddiskVolumeShadowCopy2")
+    assert all(d.startswith("\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy") for d in devices)
+    assert bs._normalize_shadow_device(r"C:\Users\kyle\Cookies") == ""
+    assert bs._normalize_shadow_device("HarddiskVolumeShadowCopy9") == (
+        "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy9"
+    )
+
+
+def test_decode_vssadmin_utf16_lists_globalroot():
+    from secturafab import browser_session as bs
+
+    text = (
+        "Successfully created shadow copy for 'C:\\'\r\n"
+        "    Shadow Copy ID: {C7C1D1A0-1111-2222-3333-444444444444}\r\n"
+        "    Shadow Copy Volume Name: "
+        "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy12\r\n"
+    )
+    raw = text.encode("utf-16-le")
+    decoded = bs._decode_vss_output(raw, b"")
+    parsed = bs._parse_vss_create_output(decoded)
+    assert parsed is not None
+    assert parsed[1].endswith("HarddiskVolumeShadowCopy12")
+    listed = bs._parse_vss_list_output(decoded)
+    assert listed[0].endswith("HarddiskVolumeShadowCopy12")
+
+
+def test_win_volume_relpath_strips_extended_prefix():
+    from secturafab import browser_session as bs
+
+    letter, rel = bs._win_volume_relpath(
+        r"\\?\C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"
+    )
+    assert letter == "C:"
+    assert rel.endswith(r"Default\Network\Cookies")
+    assert not rel.startswith("C:")
+    assert "?\\" not in rel
+    letter2, rel2 = bs._win_volume_relpath(
+        r"C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"
+    )
+    assert (letter2, rel2) == (letter, rel)
+
+
+def test_chrome_shadow_cookie_rels_default_cookies_first():
+    from secturafab import browser_session as bs
+
+    src = r"C:\Users\Kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"
+    rels = bs._chrome_shadow_cookie_rels(src)
+    assert rels[0].replace("/", "\\").endswith(r"Default\Cookies")
+    assert not rels[0].lower().endswith(r"network\cookies")
+    assert any(r.lower().endswith(r"default\network\cookies") for r in rels)
+    assert all(not bs._looks_like_live_dos_path(r) for r in rels)
+
+
+def test_vss_dest_ok_needs_session_or_26_v20(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    empty = tmp_path / "empty"
+    empty.write_bytes(b"x" * 8)
+    assert bs._vss_dest_ok(empty) is False
+    cookies = tmp_path / "Cookies"
+    _write_cookie_db(cookies)
+    assert bs._vss_dest_ok(cookies) is True
+
+
+def test_win_copy_from_shadow_device_uses_globalroot_not_live(tmp_path: Path):
+    import inspect
+
+    from secturafab import browser_session as bs
+
+    dest = tmp_path / "Cookies"
+    seen: list[str] = []
+    rel = r"Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"
+
+    def fake_raw(src_win: str, out: Path) -> None:
+        seen.append(src_win)
+        assert "GLOBALROOT" in src_win
+        assert "HarddiskVolumeShadowCopy3" in src_win
+        assert src_win[1:3] != ":\\"
+        if src_win.endswith("Cookies"):
+            out.write_bytes(b"sqlite-shadow")
+        else:
+            raise OSError(2, "no sidecar")
+
+    with patch.object(bs, "_win_copy_raw", side_effect=fake_raw):
+        bs._win_copy_from_shadow_device(
+            r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy3",
+            rel,
+            dest,
+        )
+    assert dest.read_bytes() == b"sqlite-shadow"
+    assert seen[0] == (
+        r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy3"
+        r"\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"
+    )
+    assert any(p.endswith("Cookies-wal") for p in seen)
+    assert any(p.endswith("Cookies-shm") for p in seen)
+    src = inspect.getsource(bs._win_copy_from_shadow_device)
+    assert "cmd.exe" not in src
+    assert "_win_copy_raw" in src
+    with pytest.raises(OSError):
+        bs._win_copy_from_shadow_device(r"C:\Users\kyle\Cookies", rel, dest)
+
+
+def test_vssadmin_create_rc2_copies_from_listed_shadow(tmp_path: Path):
+    import subprocess
+
+    from secturafab import browser_session as bs
+
+    dest = tmp_path / "snap" / "Cookies"
+    dest.parent.mkdir()
+    rel = r"Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"
+    copied: list[str] = []
+
+    def fake_run(args, **_k):
+        argv = [str(a) for a in args]
+        if "create" in argv:
+            return subprocess.CompletedProcess(argv, 2, "Shadow copy created.\n", "")
+        if "list" in argv:
+            text = (
+                "Contents of shadow copy set ID: {AAAAAAAA-1111-2222-3333-444444444444}\n"
+                "    Shadow Copy Volume: "
+                "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy7\n"
+            )
+            return subprocess.CompletedProcess(argv, 0, text, "")
+        return subprocess.CompletedProcess(argv, 1, "", "")
+
+    def fake_raw(src_win: str, out: Path) -> None:
+        copied.append(src_win)
+        assert "GLOBALROOT" in src_win
+        assert "HarddiskVolumeShadowCopy7" in src_win
+        assert src_win[1:3] != ":\\"
+        if src_win.endswith("Cookies"):
+            _write_cookie_db(out)
+        else:
+            out.write_bytes(b"side")
+
+    with patch.object(bs.subprocess, "run", side_effect=fake_run), patch.object(
+        bs, "_win_copy_raw", side_effect=fake_raw
+    ), patch.object(bs, "_windows_system32_exe", return_value="vssadmin.exe"):
+        bs._cache["vss"] = ""
+        bs._win_vss_vssadmin_copy(tmp_path / "Cookies", dest, rel, "C:")
+    assert dest.is_file() and dest.stat().st_size > 0
+    assert bs._cache["vss"] == "shadow"
+    assert any(p.endswith("Cookies") for p in copied)
+    assert any("Default\\Cookies" in p.replace("/", "\\") or p.endswith("Cookies") for p in copied)
+    assert any(p.endswith("Cookies-wal") for p in copied)
+    assert any(p.endswith("Cookies-shm") for p in copied)
+    assert not any("delete" in str(a).lower() for a in copied)
+
+
+def test_prefer_vss_status_keeps_create_returnvalue():
+    from secturafab import browser_session as bs
+
+    wrapped = "exc:MethodInvocationException:0x80131501"
+    assert bs._prefer_vss_status(wrapped, "create:1") == "create:1"
+    assert bs._prefer_vss_status("", wrapped) == wrapped
+
+
+def test_vss_ps_command_is_args_file_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import subprocess
+
+    from secturafab import browser_session as bs
+
+    dest = tmp_path / "out" / "Cookies"
+    dest.parent.mkdir()
+    seen: dict[str, list[str]] = {}
+
+    def fake_run(args, **_k):
+        seen["args"] = [str(a) for a in args]
+        dest.write_bytes(b"sqlite")
+        (dest.parent / (dest.name + ".vss-status")).write_text("ok", encoding="ascii")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(bs, "_windows_powershell", lambda: "powershell.exe")
+    with patch.object(bs.subprocess, "run", side_effect=fake_run):
+        bs._win_vss_ps_create_copy(tmp_path / "Cookies", dest, r"Users\x\Cookies", "C:")
+    args = seen["args"]
+    assert args[0] == "powershell.exe"
+    file_i = args.index("-File")
+    assert len(args) == file_i + 3
+    assert not any(a == "C:\\" or a.endswith("\\") and a[1:2] == ":" for a in args)
+    assert args[-1].endswith(".vss-args")
+    assert bs._cache["vss"] == "ok"
+
+
+def test_win_vss_copy_uses_vssadmin_after_cim_throw(tmp_path: Path):
+    import shutil
+
+    from secturafab import browser_session as bs
+
+    real = tmp_path / "Cookies"
+    _write_cookie_db(real)
+    dest = tmp_path / "snap" / "Cookies"
+    dest.parent.mkdir()
+    order: list[str] = []
+
+    class _Driven:
+        drive = "C:"
+
+        def resolve(self):
+            return self
+
+        def __str__(self) -> str:
+            return r"C:\Users\kyle\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"
+
+    def _ps(*_a, **_k):
+        order.append("ps")
+        bs._record_vss("exc:MethodInvocationException:0x80131501")
+        raise OSError(1, "ps")
+
+    def _va(_src: Path, dest_path: Path, rel: str, letter: str) -> None:
+        order.append("vssadmin")
+        assert letter == "C:"
+        assert rel.replace("\\", "/").endswith("Cookies")
+        shutil.copy2(real, dest_path)
+        bs._record_vss("ok")
+
+    def _ds(*_a, **_k):
+        raise AssertionError("diskshadow must not run after vssadmin ok")
+
+    with patch.object(bs, "_win_vss_ps_create_copy", _ps), patch.object(
+        bs, "_win_vss_vssadmin_copy", _va
+    ), patch.object(bs, "_win_vss_diskshadow_copy", _ds), patch.object(
+        bs, "_enable_privilege", lambda *_a, **_k: None
+    ):
+        bs._cache["vss"] = ""
+        bs._win_vss_copy(_Driven(), dest)  # type: ignore[arg-type]
+    assert dest.is_file() and dest.stat().st_size > 0
+    assert order == ["ps", "vssadmin"]
+    assert bs._cache["vss"] == "shadow"
+
+
+def test_sqlite_has_cookie_table(tmp_path: Path):
+    from secturafab.browser_session import _sqlite_has_cookie_table
+
+    missing = tmp_path / "nope"
+    assert _sqlite_has_cookie_table(missing) is False
+    junk = tmp_path / "junk"
+    junk.write_bytes(b"not-sqlite")
+    assert _sqlite_has_cookie_table(junk) is False
+    other = tmp_path / "other.db"
+    import sqlite3
+
+    conn = sqlite3.connect(str(other))
+    conn.execute("CREATE TABLE hosts (name TEXT)")
+    conn.commit()
+    conn.close()
+    assert _sqlite_has_cookie_table(other) is False
+    cookies = tmp_path / "Cookies"
+    _write_cookie_db(cookies)
+    assert _sqlite_has_cookie_table(cookies) is True
+
+
+def test_call_with_timeout_returns_default_on_hang():
+    from secturafab import browser_session as bs
+
+    def _hang() -> str:
+        time.sleep(8)
+        return "late"
+
+    t0 = time.monotonic()
+    got = bs._call_with_timeout(_hang, 0.25, (None, "0x80080005:SERVER_EXEC_FAILURE:timeout"))
+    elapsed = time.monotonic() - t0
+    assert got == (None, "0x80080005:SERVER_EXEC_FAILURE:timeout")
+    assert elapsed < 2.0
+
+
+def test_elevator_decrypt_times_out_with_server_exec_failure():
+    from secturafab import browser_session as bs
+
+    def _hang(_blob: bytes):
+        time.sleep(8)
+        return b"k" * 32, "0x00000000"
+
+    with patch.object(bs.os, "name", "nt"), patch.object(
+        bs, "_elevator_decrypt_uncapped", side_effect=_hang
+    ):
+        t0 = time.monotonic()
+        key, hr = bs._elevator_decrypt(b"\x01" * 40)
+        elapsed = time.monotonic() - t0
+    assert key is None
+    assert "0x80080005" in hr
+    assert "SERVER_EXEC_FAILURE" in hr
+    assert "timeout" in hr
+    assert elapsed < 6.0
+
+
+def test_chrome_open_uses_vss_then_cached_not_dup(tmp_path: Path):
+    """Chrome-open: VSS first (create:vssadmin:2), then cached. Do not skip VSS."""
+    from secturafab import browser_session as bs
+
+    live = tmp_path / "live" / "Cookies"
+    live.parent.mkdir()
+    live.write_bytes(b"locked")
+    cached = tmp_path / "cache" / "Cookies"
+    _write_cookie_db(cached)
+    profile = {
+        "label": "chrome:Default",
+        "cookies": live,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+    order: list[str] = []
+
+    def _vss(*_a, **_k):
+        order.append("vss")
+        bs._record_vss("create:vssadmin:2")
+        return False
+
+    def _no_dup(*_a, **_k):
+        order.append("dup")
+        raise AssertionError("dup_handle must not run before VSS+cached")
+
+    def _no_live_nolock(*_a, **_k):
+        raise AssertionError("nolock must not touch the live Cookies path when Chrome is open")
+
+    sprayed: list[str] = []
+
+    def _spray(name: str):
+        def _inner(*_a, **_k):
+            sprayed.append(name)
+            raise AssertionError(name)
+
+        return _inner
+
+    with patch.dict(os.environ, {"KANNON_COOKIE_CACHE": str(tmp_path / "cache")}), patch.object(
+        bs, "_browser_cookie_dbs", return_value=[profile]
+    ), patch.object(bs, "_chrome_is_open", return_value=True), patch.object(
+        bs, "_try_nolock_copy", side_effect=_no_live_nolock
+    ), patch.object(bs, "_sqlite_backup_nolock", side_effect=_no_live_nolock), patch.object(
+        bs, "_try_vss_create_copy", side_effect=_vss
+    ), patch.object(bs, "_try_handle_dup_copy", side_effect=_no_dup), patch.object(
+        bs, "_win_lock_bypass_with_wal", side_effect=_spray("lock_bypass")
+    ), patch.object(bs, "_win_backup_copy", side_effect=_spray("backup_priv")), patch.object(
+        bs, "_win_ntcreatefile_backup_copy", side_effect=_spray("nt_backup")
+    ), patch.object(bs, "_win_esentutl_copy", side_effect=_spray("esentutl")), patch.object(
+        bs, "_win_robocopy_backup_copy", side_effect=_spray("robocopy_b")
+    ):
+        header = bs._discover_windows_chrome(force=True)
+    assert header
+    status = bs.discover_status()
+    assert order == ["vss"]
+    assert sprayed == []
+    assert status["lock_bypass"].startswith("vss=create:vssadmin:2")
+    assert "cached" in status["lock_bypass"]
+    assert "dup_handle" not in status["lock_bypass"]
+    assert "backup_priv" not in status["lock_bypass"]
+    assert "nt_backup" not in status["lock_bypass"]
+    assert "esentutl" not in status["lock_bypass"]
+    assert "robocopy_b" not in status["lock_bypass"]
+    assert "nolock" not in status["lock_bypass"]
+    assert "live_path" not in status["lock_bypass"]
+    assert "shadow_miss" not in status["lock_bypass"]
+    assert status["session_found"] is True
+    assert status["source"] == "chrome:Default"
+
+
+def test_chrome_open_vss_miss_does_not_nolock_live_path(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    live = tmp_path / "live" / "Cookies"
+    live.parent.mkdir()
+    live.write_bytes(b"locked")
+    profile = {
+        "label": "chrome:Default",
+        "cookies": live,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+
+    def _vss(*_a, **_k):
+        bs._record_vss("create:vssadmin:2")
+        return False
+
+    def _no_live(*_a, **_k):
+        raise AssertionError("must not open the live Cookies path when Chrome is open")
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_chrome_is_open", return_value=True
+    ), patch.object(bs, "_try_nolock_copy", side_effect=_no_live), patch.object(
+        bs, "_sqlite_backup_nolock", side_effect=_no_live
+    ), patch.object(bs, "_try_vss_create_copy", side_effect=_vss), patch.object(
+        bs, "_try_live_cookie_sidecar_copy", side_effect=_no_live
+    ), patch.object(bs, "_try_handle_dup_copy", side_effect=_no_live):
+        header = bs._discover_windows_chrome(force=True)
+    assert header == ""
+    status = bs.discover_status()
+    assert status["session_found"] is False
+    assert status["source"] == "chrome:Default"
+    assert "nolock" not in status["lock_bypass"]
+    assert "live_path" not in status["lock_bypass"]
+    assert "shadow_miss" in status["lock_bypass"]
+    assert "GLOBALROOT" in status["error"] or "shadow" in status["error"].casefold()
+
+
+def test_vss_success_does_not_copy_live_sidecars(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    live = tmp_path / "live" / "Cookies"
+    live.parent.mkdir()
+    live.write_bytes(b"locked")
+    profile = {
+        "label": "chrome:Default",
+        "cookies": live,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+
+    def _vss(_src: Path, dest: Path) -> bool:
+        _write_cookie_db(dest)
+        bs._record_vss("create:vssadmin:2")
+        return True
+
+    def _no_live(*_a, **_k):
+        raise AssertionError("must not copy live Chrome sidecars after a shadow copy")
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_chrome_is_open", return_value=True
+    ), patch.object(bs, "_try_nolock_copy", side_effect=_no_live), patch.object(
+        bs, "_try_vss_create_copy", side_effect=_vss
+    ), patch.object(bs, "_copy_cookie_sidecars", side_effect=_no_live):
+        header = bs._discover_windows_chrome(force=True)
+    assert header
+    status = bs.discover_status()
+    assert status["source"] == "chrome:Default"
+    assert status["lock_bypass"] == "vss=shadow"
+    assert "live_path" not in status["lock_bypass"]
+    assert "cached" not in status["lock_bypass"]
+
+
+def test_browser_dbs_omit_edge_when_chrome_default_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from secturafab import browser_session as bs
+
+    local = tmp_path / "Local"
+    chrome = local / "Google" / "Chrome" / "User Data" / "Default" / "Network"
+    edge = local / "Microsoft" / "Edge" / "User Data" / "Default" / "Network"
+    chrome.mkdir(parents=True)
+    edge.mkdir(parents=True)
+    _write_cookie_db(chrome / "Cookies")
+    _write_cookie_db(edge / "Cookies")
+    (local / "Google" / "Chrome" / "User Data" / "Local State").write_text("{}", encoding="utf-8")
+    (local / "Microsoft" / "Edge" / "User Data" / "Local State").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    dbs = bs._browser_cookie_dbs()
+    labels = [str(p["label"]) for p in dbs]
+    assert "chrome:Default" in labels
+    assert all(not lab.startswith("edge:") for lab in labels)
+
+
+def test_discover_does_not_read_edge_after_chrome_default(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    chrome_db = tmp_path / "chrome" / "Cookies"
+    edge_db = tmp_path / "edge" / "Cookies"
+    _write_cookie_db(chrome_db)
+    _write_cookie_db(edge_db)
+    chrome = {
+        "label": "chrome:Default",
+        "cookies": chrome_db,
+        "local_state": tmp_path / "chrome-state",
+        "profile_dir": tmp_path / "chrome",
+        "history_hit": True,
+    }
+    edge = {
+        "label": "edge:Default",
+        "cookies": edge_db,
+        "local_state": tmp_path / "edge-state",
+        "profile_dir": tmp_path / "edge",
+        "history_hit": False,
+    }
+    seen: list[str] = []
+
+    real = bs._read_cookie_rows
+
+    def _track(profile):
+        seen.append(str(profile.get("label") or ""))
+        return real(profile)
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[chrome, edge]), patch.object(
+        bs, "_read_cookie_rows", side_effect=_track
+    ):
+        header = bs._discover_windows_chrome(force=True)
+    assert header
+    assert seen == ["chrome:Default"]
+    assert bs.discover_status()["source"] == "chrome:Default"
+
+
+def test_abe_helper_has_no_cocreate():
+    from secturafab import browser_session as bs
+
+    assert bs._ABE_HELPER_TIMEOUT_S <= 8
+    cs = bs._ABE_HELPER_CS
+    assert "CoCreateInstance" not in cs
+    assert "ole32" not in cs
+    assert "LocalServer32" not in cs
+    assert "elevation_service" not in cs
+    assert "CLASSNOTREG" not in cs
+    assert "ReadProcessMemory" in cs
+    assert "VirtualQueryEx" in cs
+    assert "cand=" in cs
+    assert "AbePid" in cs
+    assert "SkipPid" in cs
+    assert "PreferPid" in cs
+    assert "--type=" in cs
+    assert "MEM_MAPPED" in cs
+    assert "KANNON_CHROME_PIDS" in cs
+    assert "memscan:no_chrome" in cs
+    assert "memscan:no_browser" not in cs
+    assert "CryptUnprotectMemory" in cs
+    assert "NtQueueApcThread" in cs
+    assert "NtTestAlert" in cs
+    assert "32, 40, 48" in cs
+    import inspect
+
+    memscan = inspect.getsource(bs._memscan_abe_key)
+    elev = (
+        inspect.getsource(bs._chrome_elevator_abe_key)
+        + inspect.getsource(bs._chrome_elevator_decrypt_once)
+        + inspect.getsource(bs._chrome_elevator_via_exports)
+        + inspect.getsource(bs._queue_special_apc)
+        + inspect.getsource(bs._hijack_existing_thread)
+        + inspect.getsource(bs._elev_hr_token)
+        + inspect.getsource(bs._apc_q_err)
+        + inspect.getsource(bs._apc_force_miss_open)
+    )
+    assert "def consider(" in memscan
+    assert "consider_heap" not in memscan
+    assert "consider_apc" not in memscan
+    assert "consider_appb_apc" not in memscan
+    assert "_ABE_HEAP_MARKS" not in memscan
+    assert "os_crypt" in memscan
+    assert "KeyRing" in memscan
+    assert "encryptor" in memscan
+    assert "_chrome_browser_pids" in memscan
+    assert "_chrome_pids_prioritized" in memscan
+    assert "starved tried=145" in memscan
+    assert "tried=1080" in memscan
+    assert "tried=392" in memscan
+    assert "_ABE_HEAP_STRIDE" in memscan
+    assert bs._ABE_HEAP_STRIDE == 8
+    assert bs._ABE_MEMSCAN_TIMEOUT_S >= 12.0
+    assert "_RemoteUnprotect" not in memscan
+    assert "apc:key:off=" not in memscan
+    assert "heap:hit" in memscan
+    assert "memscan:cands=" in memscan
+    assert "tried=" in memscan
+    assert "no_cand" not in memscan
+    assert "20000" in memscan or bs._ABE_MEMSCAN_MAX_CAND == 20000
+    assert "tried >= 200" not in memscan
+    assert "cands == 200" not in memscan
+    assert memscan.index("def consider(") < memscan.index("hit = consider(")
+    assert memscan.index("hit = consider(") < memscan.index("nxt = addr + size")
+    assert "apc:0" in elev
+    assert "apc:hr=" in elev
+    assert "apc:key" in elev
+    assert "apc:q:err=" in elev
+    assert "apc:ran" in elev
+    assert "apc:force=miss" in elev
+    assert "apc:force=miss:open" in elev
+    assert 'return None, "apc:force=miss"' not in elev
+    assert 'return None, "apc:force=miss:open"' not in elev
+    assert "memmove" in elev
+    assert "SleepEx" in elev
+    assert "handshake" in elev
+    assert "crt:err" not in elev
+    assert "CreateRemoteThread" not in elev
+    assert "alloc:err" in elev
+    assert "elev:len=" in elev
+    assert "DecryptData" in elev
+    assert "vtable" in elev
+    assert "CoCreateInstance" in elev
+    assert "CoInitializeEx" in elev
+    assert "NtTestAlert" in elev
+    assert "NtQueueApcThread" in elev
+    assert "QueueUserAPC" in elev
+    assert "SetThreadContext" in elev
+    assert "CryptUnprotectMemory" not in elev
+    assert "CryptUnprotectData" not in elev
+    assert bs._ABE_ELEVATOR_TIMEOUT_S <= 3.0
+    assert bs._ABE_BROWSER_KEYS_TIMEOUT_S <= 15.0
+    assert "_chrome_elevator_via_exports" in inspect.getsource(bs)
+    assert "_v20_prove_samples" in inspect.getsource(bs)
+    assert "BCrypt first" in inspect.getsource(bs._aes_gcm_decrypt_bytes)
+    assert "_aes_key_windows_offs" in inspect.getsource(bs)
+    assert "_v20_one_ok" in inspect.getsource(bs)
+    assert "try_blobs" not in memscan
+    assert "memscan:cands=" in memscan
+    assert "tried=" in memscan
+    assert memscan.index("_keyring_v20_key_ptrs") < memscan.index(
+        "_extract_abe_candidate_ptrs(data)"
+    )
+    apc = inspect.getsource(bs._RemoteUnprotect._apc)
+    assert "CRYPTPROTECTMEMORY_SAME_PROCESS" in apc
+    assert "same_process" in apc
+    assert "_aes_gcm_decrypt_bcrypt" in inspect.getsource(bs)
+    assert "_aes_gcm_decrypt_stdlib" in inspect.getsource(bs)
+    assert "_v20_verify_samples" in inspect.getsource(bs)
+    assert "_abe_key_from_material" in inspect.getsource(bs)
+    assert "_cookie_keys_from_wrap" in inspect.getsource(bs)
+    assert "_abe_proves_cookies" in inspect.getsource(bs)
+    assert "_aes_gcm_decrypt_layouts" in inspect.getsource(bs)
+    assert "_app_bound_layout_views" in inspect.getsource(bs)
+    assert "_static_app_bound_cookie_key" in inspect.getsource(bs)
+    assert "_dpapi_unprotect_appb" in inspect.getsource(bs)
+    assert "_chrome_unprotect_data" in inspect.getsource(bs)
+    assert "_chrome_unprotect_data_once" in inspect.getsource(bs)
+    assert "_impersonate_chrome_unprotect" in inspect.getsource(bs)
+    assert "_cookie_key_from_unprotect_plain" in inspect.getsource(bs)
+    chrome_once = inspect.getsource(bs._chrome_unprotect_data_once)
+    assert "7th pDataOut @+0x38" in chrome_once
+    assert "stack[0x38:0x40]" in chrome_once
+    assert "stack[0x30:0x38] = int(out_blob_addr)" not in chrome_once
+    assert "ImpersonateLoggedOnUser" in inspect.getsource(bs)
+    assert "c_void_p" in inspect.getsource(bs._dpapi_unprotect_ex)
+    assert "addressof" in inspect.getsource(bs._dpapi_unprotect_ex)
+    assert "_local_free" in inspect.getsource(bs._dpapi_unprotect_ex)
+    assert "ArgumentError" in inspect.getsource(bs._dpapi_unprotect_ex)
+    assert "entropy is not None" in inspect.getsource(bs._dpapi_unprotect_ex)
+    assert "get_last_error" in inspect.getsource(bs._dpapi_unprotect_ex)
+    assert "dpapi:ok" in inspect.getsource(bs)
+    assert "dpapi:win32=" in inspect.getsource(bs)
+    assert "dpapi:len=" in inspect.getsource(bs)
+    assert "dpapi:off=" in inspect.getsource(bs)
+    assert "dpapi:all13" in inspect.getsource(bs)
+    assert "next=chrome_open" in inspect.getsource(bs)
+    assert "_abe_all13_appb" in inspect.getsource(bs)
+    elevator = inspect.getsource(bs._elevator_decrypt_via_chrome_dir)
+    assert "if all13:" in elevator
+    assert elevator.index("if pids:") < elevator.index("if all13:")
+    assert elevator.index("_memscan_abe_key") < elevator.index("_chrome_elevator_abe_key")
+    assert elevator.index("_chrome_elevator_abe_key") < elevator.index("_compiled_abe_helper_exe")
+    assert "_call_with_timeout" in elevator
+    assert "_ABE_ELEVATOR_TIMEOUT_S" in elevator
+    assert "apc:force=miss" in elevator
+    assert "apc:force=miss:open" in elevator
+    assert "apc:force=miss:open=timeout" in elevator
+    assert '(None, "apc:force=miss")' not in elevator
+    assert '(None, "apc:force=miss:open")' not in elevator
+    keys_src = inspect.getsource(bs._browser_keys)
+    assert "_call_with_timeout" in keys_src
+    assert "_ABE_BROWSER_KEYS_TIMEOUT_S" in keys_src
+    assert "apc:q:err=timeout" in keys_src
+    rows_src = inspect.getsource(bs._read_cookie_rows)
+    assert rows_src.index("_try_vss_create_copy") < rows_src.index("_try_live_cookie_sidecar_copy")
+    assert rows_src.index("_try_live_cookie_sidecar_copy") < rows_src.index("_try_cached_cookie_copy")
+    assert rows_src.index("_try_cached_cookie_copy") < rows_src.index("_try_handle_dup_copy")
+    assert "allow_lock_bypass=False" in rows_src
+    assert "same GLOBALROOT shadow" in rows_src
+    assert "_chrome_is_open" in rows_src
+    assert "not chrome_open" in rows_src
+    assert "_SHADOW_MISS_ERR" in rows_src
+    assert "_LIVE_COOKIES_PATH_ERR" not in inspect.getsource(bs)
+    assert "live_path" not in rows_src
+    assert "vss=shadow" in rows_src
+    vssadmin_src = inspect.getsource(bs._win_vss_vssadmin_copy)
+    assert "_win_guess_shadow_devices" in vssadmin_src
+    assert "_win_copy_from_shadow_src" in vssadmin_src
+    assert "_decode_vss_output" in vssadmin_src
+    shadow_src = inspect.getsource(bs._win_copy_from_shadow_device)
+    assert "cmd.exe" not in shadow_src
+    assert "_win_copy_raw" in shadow_src
+    assert "_win_copy_raw_nt" in shadow_src
+    assert "_COOKIE_SIDECARS" in shadow_src
+    assert "_looks_like_live_dos_path" in inspect.getsource(bs._win_copy_raw)
+    assert "_host_is_sectura" in inspect.getsource(bs)
+    assert "_collect_v20_from_db" in inspect.getsource(bs)
+    assert "_cookie_blob_bytes" in inspect.getsource(bs)
+    assert "_COOKIE_SIDECARS" in inspect.getsource(bs)
+    assert bs._COOKIE_SIDECARS == ("-journal", "-wal", "-shm")
+    assert "_DPAPI_WALK_OFFS" in inspect.getsource(bs)
+    assert bs._DPAPI_WALK_OFFS == (0, 4, 8, 12, 16, 32, 44)
+    assert "_note_dpapi_hr" in inspect.getsource(bs)
+    assert "_dpapi_unprotect_local" in inspect.getsource(bs._app_bound_layout_views)
+    assert "Chrome not required" in inspect.getsource(bs._dpapi_unprotect_appb)
+    assert '_join_abe_hr(["memscan:no_chrome"])' in inspect.getsource(bs._memscan_abe_key)
+    assert "kernel32.LocalFree(out_blob.pbData)" not in inspect.getsource(bs)
+    assert "UnprotectOnce" in cs
+    assert "CryptUnprotectData" in cs
+    assert "KANNON_APPB_PATH" in cs
+    assert "_abe_proves_cookies" in inspect.getsource(bs._unwrap_app_bound_key)
+    assert "return _abe_key_from_material(cand, v20_sample)" not in memscan
+    assert "_abe_key_from_material" not in memscan
+    assert "keyring_pending" not in memscan
+    assert 'unprotect(b"\\x00" * 32)' not in memscan
+    assert "_chrome_elevator_abe_key" in inspect.getsource(bs._elevator_decrypt_via_chrome_dir)
+    assert "_elevator_decrypt(" not in inspect.getsource(bs._elevator_decrypt_via_chrome_dir)
+    assert "public long cbData" in cs
+    assert "new IntPtr(32), new IntPtr(0)" in cs
+    assert "new IntPtr(32), new IntPtr(1)" not in cs
+    assert "idx < 4" not in cs
+    assert "bool entropy" not in cs
+    assert "aligned_entropy" not in cs
+    assert bs._ABE_MEMSCAN_MAX_CAND == 20000
+    assert "const int MAX_CAND = 20000" in cs
+
+
+def test_run_abe_helper_timeout_is_helper_timeout():
+    import subprocess
+
+    from secturafab import browser_session as bs
+
+    def _expire(*_a, **_k):
+        raise subprocess.TimeoutExpired(cmd="abe", timeout=8)
+
+    with patch.object(bs.subprocess, "run", side_effect=_expire):
+        key, hr = bs._run_abe_helper(Path("kannon_quote_abe.exe"), b"v20" + b"\x00" * 40)
+    assert key is None
+    assert hr == "helper:timeout"
+    assert "CLASSNOTREG" not in hr
+
+
+def test_persist_cookie_snapshot_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from secturafab import browser_session as bs
+
+    monkeypatch.setenv("KANNON_COOKIE_CACHE", str(tmp_path / "cache"))
+    src = tmp_path / "Cookies"
+    _write_cookie_db(src)
+    (tmp_path / "Cookies-wal").write_bytes(b"wal")
+    (tmp_path / "Cookies-shm").write_bytes(b"shm")
+    (tmp_path / "Cookies-journal").write_bytes(b"jnl")
+    bs._persist_cookie_snapshot(src)
+    dest = tmp_path / "out" / "Cookies"
+    dest.parent.mkdir()
+    assert bs._try_cached_cookie_copy(dest) is True
+    assert bs._sqlite_has_cookie_table(dest)
+    assert (tmp_path / "cache" / "Cookies-wal").read_bytes() == b"wal"
+    assert (tmp_path / "cache" / "Cookies-shm").read_bytes() == b"shm"
+    assert (tmp_path / "cache" / "Cookies-journal").read_bytes() == b"jnl"
+
+
+def test_host_is_sectura_contains_domain_not_www_only():
+    from secturafab import browser_session as bs
+
+    assert bs._host_is_sectura(".secturafab.com")
+    assert bs._host_is_sectura("www.secturafab.com")
+    assert bs._host_is_sectura("APP.SECTURAFAB.COM")
+    assert bs._host_is_sectura("https://login.secturafab.com/")
+    assert not bs._host_is_sectura("www.example.com")
+    assert not bs._host_is_sectura("www.secturafab.com.evil.test")
+
+
+def test_cookie_blob_bytes_coerces_memoryview_and_str():
+    from secturafab import browser_session as bs
+
+    raw = b"v20" + b"\x00" * 40
+    assert bs._cookie_blob_bytes(memoryview(raw)) == raw
+    assert bs._is_v20_prefix(bs._cookie_blob_bytes("v20" + "\x00" * 40))
+    assert bs._V20_PREFIX == b"\x76\x32\x30"
+
+
+def test_collect_v20_counts_every_prefix_and_keeps_a_sample(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    blob = b"v20" + b"\x11" * 40
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.example.com", "other", "", blob),
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "sid", "", blob),
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "plain", "x", b""),
+    )
+    conn.commit()
+    conn.close()
+    n, samples = bs._collect_v20_from_db(db)
+    assert n == 2
+    assert samples and samples[0] == blob
+
+
+def test_discover_passes_db_v20_sample_to_chrome_dir(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    sample = b"v20" + b"\x22" * 40
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.example.com", "x", "", sample),
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.secturafab.com", "sid", "", b""),
+    )
+    conn.commit()
+    conn.close()
+    local_state = tmp_path / "Local State"
+    local_state.write_text(
+        json.dumps(
+            {"os_crypt": {"app_bound_encrypted_key": base64.b64encode(b"APPB" + b"\x01" * 40).decode()}}
+        ),
+        encoding="utf-8",
+    )
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": local_state,
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+    seen: list[bytes | None] = []
+
+    def _unwrap(_b64, v20_sample=None):
+        seen.append(v20_sample)
+        return None, "chrome_dir", "ok"
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_unwrap_app_bound_key", side_effect=_unwrap
+    ):
+        bs._discover_windows_chrome(force=True)
+    status = bs.discover_status()
+    assert status["source"] == "chrome:Default"
+    assert status["v20_blobs"] == 1
+    assert seen and seen[0] == sample
+    assert status["abe"] == "chrome_dir"
+
+
+def test_query_matches_non_www_sectura_host(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db, host="app.secturafab.com")
+    rows = bs._query_sectura_cookie_rows(db)
+    hosts = {r[0] for r in rows}
+    assert "app.secturafab.com" in hosts
+    assert "www.secturafab.com" in hosts
+
+
+def test_empty_chrome_default_keeps_source(tmp_path: Path):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.example.com", "sid", "x", b""),
+    )
+    conn.commit()
+    conn.close()
+    profile = {
+        "label": "chrome:Default",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": True,
+    }
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]):
+        header = bs._discover_windows_chrome(force=True)
+    assert header == ""
+    assert bs.discover_status()["source"] == "chrome:Default"
+
+
+def test_cached_without_sectura_rows_is_not_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import sqlite3
+
+    from secturafab import browser_session as bs
+
+    monkeypatch.setenv("KANNON_COOKIE_CACHE", str(tmp_path / "cache"))
+    cache = tmp_path / "cache" / "Cookies"
+    cache.parent.mkdir()
+    conn = sqlite3.connect(str(cache))
+    conn.execute(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO cookies VALUES (?,?,?,?)",
+        ("www.example.com", "sid", "x", b""),
+    )
+    conn.commit()
+    conn.close()
+    dest = tmp_path / "out" / "Cookies"
+    dest.parent.mkdir()
+    assert bs._try_cached_cookie_copy(dest) is False
+
+
+def test_copy_dup_handle_bytes_tries_mapview_first():
+    import inspect
+
+    from secturafab.browser_session import _copy_dup_handle_bytes
+
+    src = inspect.getsource(_copy_dup_handle_bytes)
+    assert "_mapview_handle_to_file" in src
+    assert src.index("_mapview_handle_to_file") < src.index("_read_handle_to_file")
+
+
+def test_unwrap_source_never_cocreates():
+    import inspect
+
+    from secturafab import browser_session as bs
+
+    src = inspect.getsource(bs._unwrap_app_bound_key)
+    assert "_prepare_elevator_com" not in src
+    assert "_elevator_decrypt(" not in src.replace("_elevator_decrypt_via_chrome_dir", "CHROME_DIR")
+
+
+def test_unwrap_real_path_is_chrome_dir_not_classnotreg():
+    from secturafab import browser_session as bs
+
+    b64 = base64.b64encode(b"APPB" + b"\x01" * 40).decode("ascii")
+    key, status, hr = bs._unwrap_app_bound_key(b64, v20_sample=b"v20" + b"\x00" * 40)
+    assert key is None
+    assert status == "chrome_dir"
+    assert "CLASSNOTREG" not in hr
+    assert "0x80040154" not in hr
+    assert "chrome_dir:not_nt" in hr or "csc_missing" in hr or "memscan:not_nt" in hr
+
+
+def test_unwrap_uses_chrome_dir_helper_first():
+    from secturafab import browser_session as bs
+
+    key = os.urandom(32)
+    nonce = os.urandom(12)
+    cookie_blob = b"v20" + nonce + _aes_gcm_encrypt((b"\x22" * 32) + b"session", key, nonce)
+    b64 = base64.b64encode(b"APPB" + b"\x01" * 40).decode("ascii")
+    bs._cache["_v20_verify"] = [cookie_blob]
+
+    def _no_elevator(*_a, **_k):
+        raise AssertionError("in-process CoCreate must not run when chrome_dir returns a key")
+
+    try:
+        with patch.object(
+            bs, "_elevator_decrypt_via_chrome_dir", return_value=(key, "0x00000000")
+        ), patch.object(bs, "_elevator_decrypt", side_effect=_no_elevator):
+            got, status, hr = bs._unwrap_app_bound_key(b64, v20_sample=cookie_blob)
+        assert got == key
+        assert status == "chrome_dir"
+        assert hr == "0x00000000"
+    finally:
+        bs._cache["_v20_verify"] = []
+
+
+def test_user_abe_helper_dirs_skips_program_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from secturafab import browser_session as bs
+
+    pf = tmp_path / "Program Files" / "Google" / "Chrome" / "Application" / "151.0.7922.174"
+    pf.mkdir(parents=True)
+    (pf / "chrome.exe").write_bytes(b"mz")
+    local = tmp_path / "Local"
+    monkeypatch.setenv("PROGRAMFILES", str(tmp_path / "Program Files"))
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    with patch.object(bs, "_chrome_helper_dirs", return_value=[pf]):
+        dirs = bs._user_abe_helper_dirs()
+    assert dirs
+    assert all("program files" not in str(d).lower() for d in dirs)
+    assert any(d.name == "151.0.7922.174" and "Local" in str(d) for d in dirs)
+    assert any(d.name == "abe" for d in dirs)
+
+
+def test_install_abe_helper_writes_localapp_not_program_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from secturafab import browser_session as bs
+
+    helper = tmp_path / "kannon_quote_abe.exe"
+    helper.write_bytes(b"mz")
+    local = tmp_path / "Local"
+    dest_dir = local / "KannonQuote" / "abe"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    with patch.object(bs, "_user_abe_helper_dirs", return_value=[dest_dir]):
+        dests, hr = bs._install_abe_helper(helper)
+    assert hr == ""
+    assert dests and dests[0].is_file()
+    assert "Program Files" not in str(dests[0])
+
+
+def test_extract_abe_candidate_ptrs_follows_vector():
+    import struct
+
+    from secturafab import browser_session as bs
+
+    key_addr = 0x000001A2B3C4D500
+    buf = bytearray(48)
+    struct.pack_into("<QQQ", buf, 0, key_addr, key_addr + 32, key_addr + 32)
+    assert (key_addr, 32) in bs._extract_abe_candidate_ptrs(bytes(buf))
+
+
+def test_extract_abe_candidate_ptrs_follows_v20_keyring_tag():
+    import struct
+
+    from secturafab import browser_session as bs
+
+    key_addr = 0x000001A2B3C4D500
+    buf = bytearray(48)
+    buf[0:4] = b"v20\x00"
+    buf[23:29] = bs._KEYRING_V20_MARK
+    struct.pack_into("<Q", buf, 32, key_addr)
+    assert (key_addr, 32) in bs._extract_abe_candidate_ptrs(bytes(buf))
+
+
+def test_extract_abe_size_first_sso_keyring():
+    import struct
+
+    from secturafab import browser_session as bs
+
+    key_addr = 0x000001A2B3C4D500
+    buf = bytearray(56)
+    buf[0] = 6
+    buf[1:5] = b"v20\x00"
+    struct.pack_into("<QQ", buf, 32, key_addr, key_addr + 32)
+    assert (key_addr, 32) in bs._extract_abe_candidate_ptrs(bytes(buf))
+
+
+def test_extract_abe_optional_key_vector_at_plus_40():
+    import struct
+
+    from secturafab import browser_session as bs
+
+    key_addr = 0x000001A2B3C4D500
+    buf = bytearray(64)
+    buf[0:4] = b"v20\x00"
+    struct.pack_into("<QQ", buf, 40, key_addr, key_addr + 32)
+    assert (key_addr, 32) in bs._extract_abe_candidate_ptrs(bytes(buf))
+
+
+def test_extract_abe_msvc_string_v20_vector_at_plus_40():
+    import struct
+
+    from secturafab import browser_session as bs
+
+    key_addr = 0x000001A2B3C4D500
+    buf = bytearray(64)
+    buf[0:4] = b"v20\x00"
+    struct.pack_into("<Q", buf, 16, 3)
+    struct.pack_into("<Q", buf, 24, 15)
+    struct.pack_into("<QQ", buf, 40, key_addr, key_addr + 32)
+    assert (key_addr, 32) in bs._extract_abe_candidate_ptrs(bytes(buf))
+
+
+def test_extract_abe_msvc_string_size3_vector_at_plus_32():
+    import struct
+
+    from secturafab import browser_session as bs
+
+    key_addr = 0x000001A2B3C4D500
+    buf = bytearray(48)
+    buf[0:4] = b"v20\x00"
+    struct.pack_into("<Q", buf, 16, 3)
+    struct.pack_into("<Q", buf, 24, 15)
+    struct.pack_into("<Q", buf, 32, key_addr)
+    assert (key_addr, 32) in bs._extract_abe_candidate_ptrs(bytes(buf))
+
+
+def test_extract_abe_skips_inline_dword_32_spray():
+    from secturafab import browser_session as bs
+
+    junk = bytes(range(32))
+    assert bs._extract_abe_candidate_ptrs(b"\x20\x00\x00\x00" + junk) == []
+    assert bs._aligned_entropy_keys(junk * 4) == []
+    loose = bytearray(40)
+    loose[0:4] = b"v20\x00"
+    assert bs._extract_abe_candidate_ptrs(bytes(loose)) == []
+
+
+def test_inline_bstr_keys_reads_after_size_t_and_dword():
+    from secturafab import browser_session as bs
+
+    junk = bytes(range(32))
+    blob = b"\x20\x00\x00\x00\x00\x00\x00\x00" + junk
+    assert junk in bs._inline_bstr_keys(blob)
+    bstr = b"\x20\x00\x00\x00" + junk
+    assert junk in bs._inline_bstr_keys(bstr)
+
+
+def test_keys_from_key_blob_parses_elevator_layout():
+    from secturafab import browser_session as bs
+
+    key = bytes(range(32))
+    blob = (8).to_bytes(4, "little") + b"validate" + (32).to_bytes(4, "little") + key
+    assert key in bs._keys_from_key_blob(blob)
+
+
+def test_chrome_abe_cmd_ok_skips_renderer():
+    from secturafab import browser_session as bs
+
+    assert bs._chrome_abe_cmd_ok("") is True
+    assert bs._chrome_abe_cmd_ok(r"C:\...\chrome.exe") is True
+    assert (
+        bs._chrome_abe_cmd_ok(r'chrome.exe --utility-sub-type=network.mojom.NetworkService')
+        is True
+    )
+    assert bs._chrome_abe_cmd_ok(r"chrome.exe --type=utility") is True
+    assert bs._chrome_abe_cmd_ok(r"chrome.exe --type=renderer") is False
+    assert bs._chrome_abe_cmd_ok(r"chrome.exe --type=gpu-process") is False
+
+
+def test_chrome_pids_prioritized_falls_back_to_running_chrome():
+    from secturafab import browser_session as bs
+
+    with patch.object(bs, "_chrome_pids", return_value=[111, 222]), patch.object(
+        bs.subprocess, "run", side_effect=OSError("no powershell")
+    ):
+        assert bs._chrome_pids_prioritized() == [111, 222]
+
+
+def test_chrome_pids_prioritized_puts_browser_first():
+    from secturafab import browser_session as bs
+
+    class _Run:
+        stdout = (
+            "22\tchrome.exe --type=utility --utility-sub-type=network.mojom.NetworkService\n"
+            "11\tchrome.exe\n"
+            "33\tchrome.exe --type=renderer\n"
+            "44\tchrome.exe --type=utility --utility-sub-type=storage.mojom.StorageService\n"
+        )
+        returncode = 0
+
+    with patch.object(bs, "_chrome_pids", return_value=[22, 11, 33, 44]), patch.object(
+        bs, "_windows_powershell", return_value="powershell"
+    ), patch.object(bs.subprocess, "run", return_value=_Run):
+        ranked = bs._chrome_pids_prioritized()
+        assert bs._chrome_browser_pids() == [11]
+    assert ranked[0] == 11
+    assert ranked[1] == 22
+    assert 44 in ranked
+    assert 33 not in ranked
+
+
+def test_chrome_elevator_abe_key_is_apc_0_off_windows():
+    from secturafab import browser_session as bs
+
+    key, hr = bs._chrome_elevator_abe_key(b"v20" + b"\x00" * 40)
+    assert key is None
+    assert hr == "apc:0"
+    stub = bs._elevator_remote_stub_bytes()
+    assert stub.startswith(bytes((0xC6, 0x41, 0x18, 0xA1)))
+    assert stub.endswith(b"\xc3")
+    assert bs._elevator_handshake_stub_bytes() == bytes((0xC6, 0x41, 0x18, 0xA1, 0xC3))
+    assert 80 <= len(stub) <= 256
+
+
+def test_chrome_elevator_reports_apc_q_err_not_crt():
+    import inspect
+
+    from secturafab import browser_session as bs
+
+    elev = (
+        inspect.getsource(bs._chrome_elevator_abe_key)
+        + inspect.getsource(bs._chrome_elevator_decrypt_once)
+        + inspect.getsource(bs._chrome_elevator_via_exports)
+        + inspect.getsource(bs._apc_force_miss_open)
+    )
+    assert "crt:err" not in elev
+    assert "CreateRemoteThread" not in elev
+    assert "PROCESS_CREATE_THREAD" not in elev or "No PROCESS_CREATE_THREAD" in elev
+    assert "apc:q:err=" in elev
+    assert "_elev_hr_token" in elev
+    assert "elev:len=" in elev
+    assert "apc:key" in elev
+    assert "apc:ran" in elev
+    assert "apc:force=miss" in elev
+    assert "apc:force=miss:open" in elev
+    assert 'return None, "apc:force=miss"' not in elev
+    assert 'return None, "apc:force=miss:open"' not in elev
+    assert "memmove" in elev
+    assert "SleepEx" in elev
+    assert "for flag in (1, 0)" in elev
+    token = bs._apc_q_err(5)
+    assert token == "apc:q:err=5"
+    assert "crt:" not in token
+    assert bs._apc_q_err(0xC0000022) == "apc:q:err=0xc0000022"
+    assert bs._elev_hr_token(0x80040154) == "apc:hr=0x80040154"
+    assert bs._apc_force_miss_open(0xC0000001) == "apc:force=miss:open=0xc0000001"
+    assert bs._apc_force_miss_open("queued") == "apc:force=miss:open=queued"
+    assert bs._apc_force_miss_open("apc:force=miss:open") == "apc:force=miss:open=queued"
+    assert bs._apc_force_miss_open("timeout") == "apc:force=miss:open=timeout"
+    assert bs._apc_force_miss_open("") == "apc:force=miss:open=queued"
+
+
+def test_v20_one_ok_is_gcm_success_not_printable_or_longest():
+    from secturafab import browser_session as bs
+
+    key = os.urandom(32)
+    other = os.urandom(32)
+    nonce_long = os.urandom(12)
+    nonce_ok = os.urandom(12)
+    long_plain = os.urandom(80)
+    ok_plain = os.urandom(32) + b"session"
+    long_blob = b"v20" + nonce_long + _aes_gcm_encrypt(long_plain, other, nonce_long)
+    ok_blob = b"v20" + nonce_ok + _aes_gcm_encrypt(ok_plain, key, nonce_ok)
+    assert len(long_blob) > len(ok_blob)
+    bs._cache["_v20_verify"] = [long_blob, ok_blob]
+    bs._cache["_v20_sectura"] = [ok_blob]
+    bs._cache["_v20_prove"] = []
+    try:
+        assert bs._v20_one_ok(key, long_blob) is True
+        assert bs._abe_proves_cookies(key, long_blob) is True
+        binary_only = b"\xff" * 48
+        nonce_bin = os.urandom(12)
+        bin_blob = b"v20" + nonce_bin + _aes_gcm_encrypt(binary_only, key, nonce_bin)
+        bs._cache["_v20_verify"] = [bin_blob]
+        bs._cache["_v20_sectura"] = [bin_blob]
+        assert bs._aes_gcm_decrypt_bytes(bin_blob[3:], key)
+        assert bs._v20_one_ok(key, bin_blob) is True
+        assert bs._abe_proves_cookies(key, bin_blob) is True
+        assert bs._v20_cookie_text(binary_only) == ""
+    finally:
+        bs._cache["_v20_verify"] = []
+        bs._cache["_v20_sectura"] = []
+        bs._cache["_v20_prove"] = []
+
+
+def test_pick_v20_sample_skips_short():
+    from secturafab import browser_session as bs
+
+    short = b"v20" + b"\x00" * 10
+    long = b"v20" + b"\x00" * 40
+    assert bs._pick_v20_sample([("h", "n", "", short)]) is None
+    assert bs._pick_v20_sample([("h", "n", "", short), ("h", "n", "", long)]) == long
+    assert bs._v20_samples_from_rows([("h", "n", "", short), ("h", "n", "", long)]) == [long]
+
+
+def test_aes_gcm_stdlib_matches_cryptography():
+    from secturafab import browser_session as bs
+
+    key = os.urandom(32)
+    nonce = os.urandom(12)
+    plain = (b"\x11" * 32) + b"session"
+    payload = nonce + _aes_gcm_encrypt(plain, key, nonce)
+    assert bs._aes_gcm_decrypt_stdlib(payload, key) == plain
+    assert bs._aes_gcm_decrypt_stdlib(payload, os.urandom(32)) == b""
+
+
+def test_aes_key_windows_takes_offset_32():
+    from secturafab import browser_session as bs
+
+    key = bytes(range(32))
+    padded = b"\xaa" * 8 + key + b"\xbb" * 8
+    assert key in bs._aes_key_windows(padded)
+    assert key in bs._aes_key_windows(key)
+    flagged = b"\x01" + key + b"\xcc" * 8
+    assert key in bs._aes_key_windows(flagged)
+    buried = b"\xaa" * 7 + key
+    assert key in bs._aes_key_windows(buried)
+    offs = {off for off, cand in bs._aes_key_windows_offs(flagged) if cand == key}
+    assert 1 in offs
+
+
+def test_abe_key_from_material_walks_flag_byte_key():
+    from secturafab import browser_session as bs
+
+    cookie_key = os.urandom(32)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x66" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    bs._cache["_v20_verify"] = [cookie_blob]
+    bs._cache["_abe_hit"] = ""
+    bs._cache["_app_bound_blob"] = None
+    try:
+        assert bs._abe_key_from_material(b"\x01" + cookie_key, cookie_blob) == cookie_key
+        assert str(bs._cache.get("_abe_hit") or "").startswith("apc:key:off=1")
+        buried = b"\x00" * 7 + cookie_key
+        assert bs._abe_key_from_material(buried, cookie_blob) == cookie_key
+        assert "off=7" in str(bs._cache.get("_abe_hit") or "")
+        assert bs._v20_one_ok(cookie_key, cookie_blob) is True
+        assert bs._v20_one_ok(os.urandom(32), cookie_blob) is False
+    finally:
+        bs._cache["_v20_verify"] = []
+        bs._cache["_abe_hit"] = ""
+
+
+def test_app_bound_layout_fingerprint_dpapi_and_flag():
+    from secturafab import browser_session as bs
+
+    dpapi = b"\x01\x00\x00\x00" + os.urandom(80)
+    fp, views = bs._app_bound_layout_views(dpapi)
+    assert fp.startswith("appb:dpapi:")
+    assert dpapi[-60:] in views
+    flag = b"\x01" + os.urandom(12) + os.urandom(32) + os.urandom(16)
+    fp2, views2 = bs._app_bound_layout_views(flag)
+    assert fp2.startswith("appb:flag1:")
+    assert flag[1:] in views2
+
+
+def test_dpapi_640_plain_length_prefix_is_cookie_key():
+    from secturafab import browser_session as bs
+
+    cookie_key = os.urandom(32)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x55" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    inner = (0).to_bytes(4, "little") + (32).to_bytes(4, "little") + cookie_key
+    blob = b"\x01\x00\x00\x00" + os.urandom(636)
+    assert len(blob) == 640
+    bs._cache["_app_bound_blob"] = blob
+    bs._cache["_v20_verify"] = [cookie_blob]
+    bs._cache["_dpapi_hr"] = ""
+    try:
+        fp, _views = bs._app_bound_layout_views(blob)
+        assert fp.startswith("appb:dpapi:640")
+        assert bs._cookie_key_from_unprotect_plain(inner, cookie_blob) == cookie_key
+        with patch.object(bs, "_dpapi_unprotect_appb", return_value=inner):
+            assert bs._static_app_bound_cookie_key(cookie_blob) == cookie_key
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+        bs._cache["_appb_views"] = []
+        bs._cache["_appb_fp"] = ""
+        bs._cache["_dpapi_hr"] = ""
+
+
+def test_dpapi_640_nested_unprotect_then_length_prefix():
+    from secturafab import browser_session as bs
+
+    cookie_key = os.urandom(32)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x77" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    inner = (32).to_bytes(4, "little") + cookie_key
+    user_dpapi = b"\x01\x00\x00\x00" + os.urandom(80)
+    blob = b"\x01\x00\x00\x00" + os.urandom(636)
+    assert len(blob) == 640
+    bs._cache["_app_bound_blob"] = blob
+    bs._cache["_v20_verify"] = [cookie_blob]
+    bs._cache["_dpapi_hr"] = ""
+    plains = iter([user_dpapi, inner])
+
+    def _once(current):
+        try:
+            return next(plains)
+        except StopIteration:
+            return None
+
+    try:
+        with patch.object(bs, "_dpapi_unprotect_local", side_effect=_once), patch.object(
+            bs, "_impersonate_chrome_unprotect", return_value=None
+        ), patch.object(bs, "_chrome_unprotect_data", return_value=None), patch.object(
+            bs, "_chrome_unprotect_memory_blob", return_value=None
+        ):
+            assert bs._static_app_bound_cookie_key(cookie_blob) == cookie_key
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+        bs._cache["_appb_views"] = []
+        bs._cache["_appb_fp"] = ""
+        bs._cache["_dpapi_hr"] = ""
+
+
+def test_dpapi_blob_slices_full_then_appb_then_header():
+    from secturafab import browser_session as bs
+
+    body = b"\x01\x00\x00\x00" + os.urandom(636)
+    raw = b"APPB" + body
+    bs._cache["_app_bound_raw"] = raw
+    try:
+        slices = bs._dpapi_blob_slices(body)
+        assert slices[0] == raw
+        assert slices[1] == body
+        assert slices[2] == body[4:]
+        labels = [lab for lab, _part in bs._dpapi_offset_views(body)]
+        assert labels[0] == "appb"
+        for off in (0, 4, 8, 12, 16, 32, 44):
+            assert str(off) in labels
+    finally:
+        bs._cache["_app_bound_raw"] = None
+
+
+def test_dpapi_walk_records_winning_offset():
+    from secturafab import browser_session as bs
+
+    body = b"\x01\x00\x00\x00" + os.urandom(636)
+    bs._cache["_app_bound_raw"] = b"APPB" + body
+    bs._cache["_dpapi_hr"] = ""
+
+    def _ex(part: bytes, flags: int = 0, entropy: bytes | None = None):
+        del flags, entropy
+        if part == body[16:]:
+            bs._cache["_dpapi_last_win32"] = 0
+            return b"\x22" * 32
+        bs._cache["_dpapi_last_win32"] = 13
+        return None
+
+    try:
+        with patch.object(bs, "_dpapi_unprotect_ex", side_effect=_ex):
+            got = bs._dpapi_unprotect_local(body)
+        assert got == b"\x22" * 32
+        hr = str(bs._cache.get("_dpapi_hr") or "")
+        assert "dpapi:ok" in hr
+        assert "dpapi:len=32" in hr
+        assert "dpapi:off=16" in hr
+    finally:
+        bs._cache["_app_bound_raw"] = None
+        bs._cache["_dpapi_hr"] = ""
+        bs._cache["_dpapi_last_win32"] = None
+
+
+def test_dpapi_walk_all13():
+    from secturafab import browser_session as bs
+
+    body = b"\x01\x00\x00\x00" + os.urandom(636)
+    bs._cache["_app_bound_raw"] = b"APPB" + body
+    bs._cache["_dpapi_hr"] = ""
+
+    def _ex(*_a, **_k):
+        bs._cache["_dpapi_last_win32"] = 13
+        return None
+
+    try:
+        with patch.object(bs, "_dpapi_unprotect_ex", side_effect=_ex):
+            assert bs._dpapi_unprotect_local(body) is None
+        assert bs._cache["_dpapi_hr"] == "dpapi:all13;next=chrome_open"
+        bs._cache["_appb_fp"] = "appb:dpapi:640"
+        hr = bs._join_abe_hr(["run:4551"])
+        assert hr.startswith("dpapi:all13")
+        assert "next=chrome_open" in hr
+        assert "appb:dpapi:640" in hr
+    finally:
+        bs._cache["_app_bound_raw"] = None
+        bs._cache["_dpapi_hr"] = ""
+        bs._cache["_appb_fp"] = ""
+        bs._cache["_dpapi_last_win32"] = None
+
+
+def test_join_abe_hr_includes_dpapi_win32_and_len():
+    from secturafab import browser_session as bs
+
+    bs._cache["_appb_fp"] = "appb:dpapi:640"
+    bs._cache["_dpapi_hr"] = "dpapi:ok;dpapi:len=32;dpapi:off=16"
+    try:
+        hr = bs._join_abe_hr(["run:4551"])
+        assert hr.startswith("dpapi:ok")
+        assert "appb:dpapi:640" in hr
+        assert "dpapi:len=32" in hr
+        assert "dpapi:off=16" in hr
+    finally:
+        bs._cache["_appb_fp"] = ""
+        bs._cache["_dpapi_hr"] = ""
+    bs._cache["_appb_fp"] = "appb:dpapi:640"
+    bs._cache["_dpapi_hr"] = "dpapi:win32=13"
+    try:
+        hr = bs._join_abe_hr(["run:4551"])
+        assert "dpapi:win32=13" in hr
+        assert "appb:dpapi:640" in hr
+    finally:
+        bs._cache["_appb_fp"] = ""
+        bs._cache["_dpapi_hr"] = ""
+
+
+def test_dpapi_ok_plain_after_header_is_cookie_key():
+    from secturafab import browser_session as bs
+
+    cookie_key = os.urandom(32)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x99" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    # Successful CryptUnprotect payload after the DPAPI version dword.
+    inner = b"\x01\x00\x00\x00" + cookie_key
+    blob = b"\x01\x00\x00\x00" + os.urandom(636)
+    bs._cache["_app_bound_blob"] = blob
+    bs._cache["_v20_verify"] = [cookie_blob]
+    try:
+        assert bs._cookie_key_from_unprotect_plain(inner, cookie_blob) == cookie_key
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+
+
+def test_offs_plus_win32_13_is_all13():
+    from secturafab import browser_session as bs
+
+    body = b"\x01\x00\x00\x00" + os.urandom(636)
+    bs._cache["_app_bound_raw"] = b"APPB" + body
+    bs._cache["_appb_fp"] = "appb:dpapi:640"
+    bs._cache["_dpapi_hr"] = ""
+    n = {"i": 0}
+
+    def _ex(*_a, **_k):
+        # First slice 13, later 0 — b3117cb reported win32=13;offs=9 instead of all13.
+        n["i"] += 1
+        bs._cache["_dpapi_last_win32"] = 13 if n["i"] == 1 else 0
+        return None
+
+    try:
+        with patch.object(bs, "_dpapi_unprotect_ex", side_effect=_ex):
+            assert bs._dpapi_unprotect_local(body) is None
+        assert bs._cache["_dpapi_hr"] == "dpapi:all13;next=chrome_open"
+        bs._cache["_dpapi_hr"] = "dpapi:win32=13;dpapi:offs=9"
+        hr = bs._join_abe_hr(["run:4551"])
+        assert hr.startswith("dpapi:all13")
+        assert "next=chrome_open" in hr
+    finally:
+        bs._cache["_app_bound_raw"] = None
+        bs._cache["_appb_fp"] = ""
+        bs._cache["_dpapi_hr"] = ""
+
+
+def test_dpapi_unprotect_appb_stops_after_all13():
+    from secturafab import browser_session as bs
+
+    blob = b"\x01\x00\x00\x00" + os.urandom(636)
+    bs._cache["_dpapi_hr"] = "dpapi:all13;next=chrome_open"
+    try:
+        with patch.object(
+            bs, "_dpapi_unprotect_local", side_effect=AssertionError("all13 must not CryptUnprotect")
+        ), patch.object(
+            bs, "_impersonate_chrome_unprotect", side_effect=AssertionError("all13 must not CryptUnprotect")
+        ), patch.object(
+            bs, "_chrome_unprotect_data", side_effect=AssertionError("all13 must not CryptUnprotect")
+        ), patch.object(
+            bs, "_chrome_unprotect_memory_blob", side_effect=AssertionError("all13 must not CryptUnprotect")
+        ):
+            assert bs._dpapi_unprotect_appb(blob) is None
+    finally:
+        bs._cache["_dpapi_hr"] = ""
+
+
+def test_all13_chrome_open_uses_memscan():
+    from secturafab import browser_session as bs
+
+    cookie_key = os.urandom(32)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\xaa" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    body = b"\x01\x00\x00\x00" + os.urandom(636)
+    bs._cache["_app_bound_blob"] = body
+    bs._cache["_app_bound_raw"] = b"APPB" + body
+    bs._cache["_v20_verify"] = [cookie_blob]
+    bs._cache["_dpapi_hr"] = ""
+
+    def _ex(*_a, **_k):
+        bs._cache["_dpapi_last_win32"] = 13
+        return None
+
+    try:
+        def _no_dpapi(*_a, **_k):
+            raise AssertionError("all13 must not retry CryptUnprotect")
+
+        with patch.object(bs, "_dpapi_unprotect_ex", side_effect=_ex), patch.object(
+            bs, "_chrome_pids_prioritized", return_value=[4242]
+        ), patch.object(
+            bs, "_memscan_abe_key", return_value=(cookie_key, "ok")
+        ), patch.object(
+            bs, "_static_app_bound_cookie_key", side_effect=_no_dpapi
+        ), patch.object(
+            bs, "_dpapi_unprotect_appb", side_effect=_no_dpapi
+        ), patch.object(
+            bs, "_impersonate_chrome_unprotect", side_effect=_no_dpapi
+        ), patch.object(
+            bs, "_chrome_unprotect_data", side_effect=_no_dpapi
+        ), patch.object(
+            bs,
+            "_compiled_abe_helper_exe",
+            side_effect=AssertionError("all13 must not CoCreate or retry DPAPI"),
+        ):
+            key, hr = bs._elevator_decrypt_via_chrome_dir(cookie_blob)
+        assert key == cookie_key
+        assert hr == "0x00000000"
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_app_bound_raw"] = None
+        bs._cache["_v20_verify"] = []
+        bs._cache["_dpapi_hr"] = ""
+        bs._cache["_appb_fp"] = ""
+
+
+def test_all13_skips_helper_and_leads_abe_hr():
+    from secturafab import browser_session as bs
+
+    body = b"\x01\x00\x00\x00" + os.urandom(636)
+    sample = b"v20" + b"\x00" * 40
+    bs._cache["_app_bound_blob"] = body
+    bs._cache["_app_bound_raw"] = b"APPB" + body
+    bs._cache["_v20_verify"] = [sample]
+    bs._cache["_dpapi_hr"] = ""
+
+    def _ex(*_a, **_k):
+        bs._cache["_dpapi_last_win32"] = 13
+        return None
+
+    try:
+        with patch.object(bs, "_dpapi_unprotect_ex", side_effect=_ex), patch.object(
+            bs, "_chrome_pids_prioritized", return_value=[]
+        ), patch.object(
+            bs,
+            "_compiled_abe_helper_exe",
+            side_effect=AssertionError("all13 must not retry CryptUnprotect"),
+        ):
+            key, hr = bs._elevator_decrypt_via_chrome_dir(sample)
+        assert key is None
+        assert hr.startswith("dpapi:all13")
+        assert "next=chrome_open" in hr
+        assert "appb:dpapi:640" in hr
+        assert "run:4551" not in hr
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_app_bound_raw"] = None
+        bs._cache["_v20_verify"] = []
+        bs._cache["_dpapi_hr"] = ""
+        bs._cache["_appb_fp"] = ""
+
+
+def test_disk_dpapi_unwrap_succeeds_without_chrome():
+    from secturafab import browser_session as bs
+
+    cookie_key = os.urandom(32)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x88" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    inner = (32).to_bytes(4, "little") + cookie_key
+    blob = b"\x01\x00\x00\x00" + os.urandom(636)
+    bs._cache["_app_bound_blob"] = blob
+    bs._cache["_v20_verify"] = [cookie_blob]
+    bs._cache["_appb_fp"] = ""
+    try:
+        with patch.object(bs, "_dpapi_unprotect_local", return_value=inner), patch.object(
+            bs, "_chrome_pids_prioritized", return_value=[]
+        ), patch.object(
+            bs, "_memscan_abe_key", side_effect=AssertionError("disk unwrap must not need memscan")
+        ), patch.object(
+            bs, "_compiled_abe_helper_exe", side_effect=AssertionError("disk unwrap must not need helper")
+        ):
+            key, hr = bs._elevator_decrypt_via_chrome_dir(cookie_blob)
+        assert key == cookie_key
+        assert hr == "0x00000000"
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+        bs._cache["_appb_views"] = []
+        bs._cache["_appb_fp"] = ""
+
+
+def test_no_chrome_hr_keeps_appb_fp():
+    from secturafab import browser_session as bs
+
+    blob = b"\x01\x00\x00\x00" + os.urandom(636)
+    sample = b"v20" + b"\x00" * 40
+    bs._cache["_app_bound_blob"] = blob
+    bs._cache["_v20_verify"] = [sample]
+    bs._cache["_appb_fp"] = ""
+    try:
+        with patch.object(bs, "_dpapi_unprotect_local", return_value=None), patch.object(
+            bs, "_dpapi_unprotect_appb", return_value=None
+        ), patch.object(bs, "_chrome_pids_prioritized", return_value=[]), patch.object(
+            bs, "_compiled_abe_helper_exe", return_value=(None, "csc_missing")
+        ), patch.object(
+            bs, "_memscan_abe_key", side_effect=AssertionError("closed Chrome skips memscan")
+        ):
+            key, hr = bs._elevator_decrypt_via_chrome_dir(sample)
+        assert key is None
+        assert "appb:dpapi:640" in hr
+        assert "CLASSNOTREG" not in hr
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+        bs._cache["_appb_views"] = []
+        bs._cache["_appb_fp"] = ""
+
+
+def test_dpapi_640_plain_flag1_inner_is_cookie_key():
+    from secturafab import browser_session as bs
+
+    cookie_key = os.urandom(32)
+    nonce = os.urandom(12)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x66" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    inner = b"\x01" + nonce + _aes_gcm_encrypt(cookie_key, bs._FLAG1_AES, nonce)
+    blob = b"\x01\x00\x00\x00" + os.urandom(636)
+    bs._cache["_app_bound_blob"] = blob
+    bs._cache["_v20_verify"] = [cookie_blob]
+    bs._cache["_dpapi_hr"] = ""
+    try:
+        with patch.object(bs, "_dpapi_unprotect_appb", return_value=inner):
+            assert bs._static_app_bound_cookie_key(cookie_blob) == cookie_key
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+        bs._cache["_appb_views"] = []
+        bs._cache["_appb_fp"] = ""
+        bs._cache["_dpapi_hr"] = ""
+
+
+def test_flag1_wrap_unwraps_local_state_then_cookie():
+    from secturafab import browser_session as bs
+
+    cookie_key = os.urandom(32)
+    nonce = os.urandom(12)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x44" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    inner = b"\x01" + nonce + _aes_gcm_encrypt(cookie_key, bs._FLAG1_AES, nonce)
+    bs._cache["_app_bound_blob"] = inner
+    bs._cache["_v20_verify"] = [cookie_blob]
+    bs._cache["_v10_key"] = None
+    try:
+        assert bs._static_app_bound_cookie_key(cookie_blob) == cookie_key
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+        bs._cache["_appb_views"] = []
+        bs._cache["_appb_fp"] = ""
+
+
+def test_abe_wrap_key_unwraps_app_bound_then_cookie():
+    from secturafab import browser_session as bs
+
+    wrap = os.urandom(32)
+    cookie_key = os.urandom(32)
+    nonce = os.urandom(12)
+    cookie_nonce = os.urandom(12)
+    cookie_plain = (b"\x22" * 32) + b"session"
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(cookie_plain, cookie_key, cookie_nonce)
+    app_bound = nonce + _aes_gcm_encrypt(cookie_key, wrap, nonce)
+    bs._cache["_app_bound_blob"] = app_bound
+    bs._cache["_v20_verify"] = [cookie_blob]
+    try:
+        assert bs._v20_key_ok(wrap, cookie_blob) is False
+        assert bs._abe_key_from_material(wrap, cookie_blob) == cookie_key
+        prefixed = b"APPB" + app_bound
+        bs._cache["_app_bound_blob"] = prefixed
+        assert bs._abe_key_from_material(wrap, cookie_blob) == cookie_key
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+
+
+def test_abe_wrap_key_unwraps_embedded_and_tag_before_ct():
+    """Chrome 151: GCM record is not always the whole APPB body; tag may precede ct."""
+    from secturafab import browser_session as bs
+
+    wrap = os.urandom(32)
+    cookie_key = os.urandom(32)
+    cookie_nonce = os.urandom(12)
+    cookie_blob = b"v20" + cookie_nonce + _aes_gcm_encrypt(
+        (b"\x33" * 32) + b"session", cookie_key, cookie_nonce
+    )
+    nonce = os.urandom(12)
+    ct_tag = _aes_gcm_encrypt(cookie_key, wrap, nonce)
+    ct, tag = ct_tag[:-16], ct_tag[-16:]
+    headered = b"\x00" * 40 + nonce + ct_tag
+    tag_first = nonce + tag + ct
+    flagged = b"\x01" + nonce + ct_tag
+    bs._cache["_v20_verify"] = [cookie_blob]
+    try:
+        bs._cache["_app_bound_blob"] = headered
+        assert bs._abe_key_from_material(wrap, cookie_blob) == cookie_key
+        bs._cache["_app_bound_blob"] = tag_first
+        assert bs._abe_key_from_material(wrap, cookie_blob) == cookie_key
+        bs._cache["_app_bound_blob"] = flagged
+        assert bs._abe_key_from_material(wrap, cookie_blob) == cookie_key
+    finally:
+        bs._cache["_app_bound_blob"] = None
+        bs._cache["_v20_verify"] = []
+
+
+def test_unwrap_zero_hr_requires_cookie_text():
+    from secturafab import browser_session as bs
+
+    wrap = os.urandom(32)
+    b64 = base64.b64encode(b"APPB" + b"\x01" * 40).decode("ascii")
+    dummy = b"v20" + b"\x00" * 40
+    bs._cache["_v20_verify"] = [dummy]
+    try:
+        with patch.object(
+            bs, "_elevator_decrypt_via_chrome_dir", return_value=(wrap, "0x00000000")
+        ), patch.object(
+            bs, "_elevator_decrypt", side_effect=AssertionError("no CoCreate")
+        ):
+            key, status, hr = bs._unwrap_app_bound_key(b64, v20_sample=dummy)
+        assert key is None
+        assert status == "chrome_dir"
+        assert hr != "0x00000000"
+        assert "CLASSNOTREG" not in hr
+    finally:
+        bs._cache["_v20_verify"] = []
+        bs._cache["_app_bound_blob"] = None
+
+
+def test_v20_key_ok_accepts_offset_apc_plain():
+    from secturafab import browser_session as bs
+
+    key = os.urandom(32)
+    nonce = os.urandom(12)
+    plain = (b"\x22" * 32) + b"session"
+    blob = b"v20" + nonce + _aes_gcm_encrypt(plain, key, nonce)
+    bs._cache["_v20_verify"] = [blob]
+    try:
+        assert bs._v20_key_ok(b"\xaa" * 8 + key + b"\xbb" * 8, blob) is True
+    finally:
+        bs._cache["_v20_verify"] = []
+
+
+def test_v20_key_ok_uses_apc_plain_against_any_of_the_blobs():
+    from secturafab import browser_session as bs
+
+    key = os.urandom(32)
+    other = os.urandom(32)
+    nonce_long = os.urandom(12)
+    nonce_ok = os.urandom(12)
+    long_plain = (b"\x11" * 32) + (b"x" * 80)
+    ok_plain = (b"\x22" * 32) + b"session"
+    long_blob = b"v20" + nonce_long + _aes_gcm_encrypt(long_plain, other, nonce_long)
+    ok_blob = b"v20" + nonce_ok + _aes_gcm_encrypt(ok_plain, key, nonce_ok)
+    assert len(long_blob) > len(ok_blob)
+    bs._cache["_v20_verify"] = []
+    assert bs._v20_key_ok(key, long_blob) is False
+    bs._cache["_v20_verify"] = [long_blob, ok_blob]
+    try:
+        assert bs._v20_key_ok(key, long_blob) is True
+        assert bs._pick_v20_sample([("h", "n", "", long_blob), ("h", "n", "", ok_blob)]) == long_blob
+    finally:
+        bs._cache["_v20_verify"] = []
+
+
+def test_chrome_dir_copy_denied_is_not_classnotreg(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    helper = tmp_path / "kannon_quote_abe.exe"
+    helper.write_bytes(b"mz")
+
+    def _denied(*_a, **_k):
+        exc = OSError(13, "Permission denied")
+        raise exc
+
+    with patch.object(bs.os, "name", "nt"), patch.object(
+        bs, "_compiled_abe_helper_exe", return_value=(helper, "")
+    ), patch.object(
+        bs, "_user_abe_helper_dirs", return_value=[tmp_path / "abe"]
+    ), patch.object(
+        bs.shutil, "copy2", side_effect=_denied
+    ), patch.object(
+        bs, "_run_abe_helper", return_value=(None, "helper:exit1")
+    ), patch.object(
+        bs, "_memscan_abe_key", return_value=(None, "memscan:no_key")
+    ):
+        key, hr = bs._elevator_decrypt_via_chrome_dir(b"v20" + b"\x00" * 40)
+    assert key is None
+    assert "CLASSNOTREG" not in hr
+    assert "copy:errno13" in hr or "helper:exit1" in hr or "memscan:no_key" in hr
+
+
+def test_key_from_helper_candidates_decrypts_v20():
+    from secturafab import browser_session as bs
+
+    key = os.urandom(32)
+    nonce = os.urandom(12)
+    plain = (b"\x11" * 32) + b"session"
+    payload = _aes_gcm_encrypt(plain, key, nonce)
+    sample = b"v20" + nonce + payload
+    stdout = f"cand={'00' * 32}\ncand={key.hex()}\n".encode("ascii")
+    got = bs._key_from_helper_candidates(stdout, sample)
+    assert got == key
+
+
+def test_profile_1_does_not_run_vss_or_lock_bypass(tmp_path: Path):
+    from secturafab import browser_session as bs
+
+    db = tmp_path / "Cookies"
+    _write_cookie_db(db)
+    profile = {
+        "label": "chrome:Profile 1",
+        "cookies": db,
+        "local_state": tmp_path / "Local State",
+        "profile_dir": tmp_path,
+        "history_hit": False,
+    }
+
+    def _nope(*_a, **_k):
+        raise AssertionError("Profile 1 must not CREATE VSS or lock-bypass")
+
+    with patch.object(bs, "_browser_cookie_dbs", return_value=[profile]), patch.object(
+        bs, "_win_vss_copy", side_effect=_nope
+    ), patch.object(bs, "_win_lock_bypass_with_wal", side_effect=_nope):
+        header = bs._discover_windows_chrome(force=True)
+    assert header
+    status = bs.discover_status()
+    assert status["vss"] == ""
+    assert status["source"] == "chrome:Profile 1"
+
+
+def _aes_gcm_encrypt(plain: bytes, key: bytes, nonce: bytes) -> bytes:
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        return AESGCM(key).encrypt(nonce, plain, None)
+    except Exception:  # noqa: BLE001
+        from Crypto.Cipher import AES  # type: ignore[import-untyped]
+
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        ct, tag = cipher.encrypt_and_digest(plain)
+        return ct + tag
