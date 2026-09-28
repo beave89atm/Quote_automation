@@ -9,6 +9,16 @@ from pathlib import Path
 import pytest
 
 FIXTURE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "q10488_p5_tree.json"
+LIVE = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "q10488_live_tree_20260928.json"
+)
+SUMMARY = (
+    "8 parts / 10 pcs match LOM · all inch · Contours ok · "
+    "4/4 formed have Bend · Err 0 · $1,087.70"
+)
 EXPECTED = {
     "35PX0.105RIB002": 3,
     "35PX0.075DPBOX025A": 1,
@@ -55,10 +65,43 @@ def test_q10488_flags_only_missing_weld_labor():
     text = report.text()
     assert text.splitlines()[0] == "Q10488 Diamond C — FLAG"
     assert text.splitlines()[1] == f" - {WELD_FLAG}"
-    assert text.splitlines()[2] == (
-        "8 parts / 10 pcs match LOM · all inch · Contours ok · "
-        "4/4 formed have Bend · Err 0 · $1,087.70"
+    assert text.splitlines()[2] == SUMMARY
+
+
+def test_q10488_live_tree_flags_only_missing_weld_labor():
+    tree = json.loads(LIVE.read_text(encoding="utf-8"))
+    assert isinstance(tree.get("Data"), list) and len(tree["Data"]) == 9
+    report = _report(tree)
+    assert report.status == "FLAG"
+    assert report.flags == [WELD_FLAG]
+    text = report.text()
+    assert text.splitlines()[0] == "Q10488 Diamond C — FLAG"
+    assert text.splitlines()[1] == f" - {WELD_FLAG}"
+    assert text.splitlines()[2] == SUMMARY
+
+
+def test_live_parent_id_is_quote_not_assembly_link():
+    tree = json.loads(LIVE.read_text(encoding="utf-8"))
+    child = tree["Data"][0]
+    assert child["ParentID"]
+    assert child["ItemNumber"] == "35PX0.105RIB002"
+    child["AssemblyName"] = None
+    child["AssemblyID"] = None
+    report = _report(tree)
+    assert any(
+        flag.startswith("loose top-level lines with assembly present:")
+        and "35PX0.105RIB002" in flag
+        for flag in report.flags
     )
+
+
+def test_live_weld_operation_on_parent_passes():
+    tree = json.loads(LIVE.read_text(encoding="utf-8"))
+    parent = next(row for row in tree["Data"] if row.get("ProductType") == 300)
+    parent["OperationCostList"] = [{"OperationName": "Weld"}]
+    report = _report(tree)
+    assert report.status == "PASS"
+    assert report.flags == []
 
 
 def test_weld_on_parent_passes():

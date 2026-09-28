@@ -72,6 +72,96 @@ def _money(value: float) -> str:
     return f"${value:,.2f}"
 
 
+def _tree_shape(tree: dict) -> tuple[str, list[dict]] | None:
+    """Live GET is ``{Data: [...]}``. The p5 snapshot is ``{rows: [...]}``."""
+    data = tree.get("Data")
+    if isinstance(data, list):
+        return "live", [row for row in data if isinstance(row, dict)]
+    rows = tree.get("rows")
+    if isinstance(rows, list):
+        return "snapshot", [row for row in rows if isinstance(row, dict)]
+    return None
+
+
+def _row_name(row: dict, shape: str) -> str:
+    if shape == "snapshot":
+        raw = row.get("N") if "N" in row else ""
+        return "" if _blank(raw) else str(raw).strip()
+    if "ItemNumber" in row and not _blank(row.get("ItemNumber")):
+        return str(row["ItemNumber"]).strip()
+    desc = row.get("Description") if "Description" in row else None
+    if isinstance(desc, str) and desc.strip():
+        return desc.strip().split()[0]
+    return ""
+
+
+def _product_type(row: dict, shape: str) -> Any:
+    key = "PT" if shape == "snapshot" else "ProductType"
+    if key in row:
+        return row.get(key)
+    alt = "ProductType" if shape == "snapshot" else "PT"
+    if alt in row:
+        return row.get(alt)
+    return None
+
+
+def _is_assembly(pt: Any) -> bool:
+    return pt == 300 or pt == "300"
+
+
+def _is_component(row: dict, pt: Any) -> bool:
+    if pt == 200 or pt == "200" or str(pt or "").strip().casefold() == "component":
+        return True
+    return row.get("IsComponent") is True
+
+
+def _parent_link_blank(row: dict, shape: str) -> bool:
+    if shape == "snapshot":
+        return "AID" not in row or _blank(row.get("AID"))
+    # ParentID is the quote id on every live row. The assembly link is
+    # AssemblyName / AssemblyID (null on the assembly row itself).
+    named = "AssemblyName" in row and not _blank(row.get("AssemblyName"))
+    linked = "AssemblyID" in row and not _blank(row.get("AssemblyID"))
+    return not (named or linked)
+
+
+def _op_names(
+    row: dict, shape: str, grid_ops: dict[str, str], name: str
+) -> list[str] | None:
+    if shape == "snapshot":
+        if name not in grid_ops:
+            return []
+        return [grid_ops[name]]
+    if "OperationCostList" not in row or not isinstance(row.get("OperationCostList"), list):
+        return None
+    names: list[str] = []
+    for op in row["OperationCostList"]:
+        if isinstance(op, dict) and not _blank(op.get("OperationName")):
+            names.append(str(op["OperationName"]))
+        elif isinstance(op, str) and op.strip():
+            names.append(op.strip())
+    return names
+
+
+def _is_laser(op_names: list[str] | None, row: dict, shape: str) -> bool:
+    for op in op_names or []:
+        token = str(op)
+        if token.startswith(_LASER_PREFIX) or token.casefold().startswith("profile"):
+            return True
+    if shape == "live" and isinstance(row.get("Machine"), str):
+        if "laser" in row["Machine"].casefold():
+            return True
+    return False
+
+
+def _has_bend(op_names: list[str] | None) -> bool:
+    return any("Bend" in str(op) for op in (op_names or []))
+
+
+def _has_weld(op_names: list[str] | None) -> bool:
+    return any("weld" in str(op).casefold() for op in (op_names or []))
+
+
 def parse_grid_ops(grid: Any) -> dict[str, str]:
     ops: dict[str, str] = {}
     if not isinstance(grid, list):
@@ -130,24 +220,39 @@ def check_tree(
 ) -> QcReport:
     """FLAG unless the tree proves every §12 check. Never default a field."""
     flags: list[str] = []
-    if not isinstance(tree, dict) or not isinstance(tree.get("rows"), list):
+    parsed = _tree_shape(tree) if isinstance(tree, dict) else None
+    if parsed is None:
         return QcReport(
             label=label or "quote",
             status="FLAG",
             flags=["tree rows missing"],
             summary="part list mismatch · units not all inch · Contours not ok · formed unknown · Err not 0 · price missing",
         )
-    rows = [r for r in tree["rows"] if isinstance(r, dict)]
-    ops = parse_grid_ops(tree.get("grid"))
-    if "grid" not in tree or not isinstance(tree.get("grid"), list):
+    shape, rows = parsed
+    if isinstance(tree, dict) and "Errors" in tree:
+        envelope = tree.get("Errors")
+        if envelope not in (None, [], "", {}):
+            flags.append(f"tree Errors present: {envelope}")
+    qty_key = "Q" if shape == "snapshot" else "Quantity"
+    unit_key = "U" if shape == "snapshot" else "Length_Units"
+    len_key = "Len" if shape == "snapshot" else "Length"
+    wid_key = "W" if shape == "snapshot" else "Width"
+    contour_key = "C" if shape == "snapshot" else "NumberOfContours"
+    err_key = "Err" if shape == "snapshot" else "ErrorCount"
+    cost_key = "UC" if shape == "snapshot" else "UnitCost"
+    price_key = "UP" if shape == "snapshot" else "UnitPrice"
+    ops = parse_grid_ops(tree.get("grid")) if shape == "snapshot" else {}
+    if shape == "snapshot" and (
+        "grid" not in tree or not isinstance(tree.get("grid"), list)
+    ):
         flags.append("grid missing")
-    parents = [r for r in rows if r.get("PT") == 300]
-    kids = [r for r in rows if r.get("PT") != 300]
+    parents = [r for r in rows if _is_assembly(_product_type(r, shape))]
+    kids = [r for r in rows if not _is_assembly(_product_type(r, shape))]
     got: dict[str, int] = {}
     qty_missing = False
     for row in kids:
-        name = str(row.get("N") or "")
-        qty = _qty(row.get("Q")) if "Q" in row else None
+        name = _row_name(row, shape)
+        qty = _qty(row.get(qty_key)) if qty_key in row else None
         if not name or qty is None:
             qty_missing = True
             if name:
@@ -156,15 +261,13 @@ def check_tree(
         got[name] = qty
     if qty_missing or got != expected:
         flags.append(f"part list mismatch: expected {expected} got {got}")
-    names = [str(r.get("N") or "") for r in rows]
+    names = [_row_name(r, shape) for r in rows]
     dups = sorted({n for n in names if n and names.count(n) > 1})
     if dups:
         flags.append(f"duplicate lines: {dups}")
     if parents:
         loose = [
-            str(r.get("N") or "")
-            for r in kids
-            if "AID" not in r or _blank(r.get("AID"))
+            _row_name(r, shape) for r in kids if _parent_link_blank(r, shape)
         ]
         loose = [n for n in loose if n]
         if loose:
@@ -173,81 +276,97 @@ def check_tree(
     contours_ok = True
     err_ok = True
     for row in kids:
-        name = str(row.get("N") or "")
+        name = _row_name(row, shape)
         if not name:
             flags.append("part name missing")
             all_inch = False
             contours_ok = False
             err_ok = False
             continue
-        desc = row.get("Desc")
-        if not isinstance(desc, str) or not desc.strip():
-            flags.append(f"{name}: thickness missing")
-            flags.append(f"{name}: material missing")
-        else:
-            if not _THICKNESS_RE.search(desc):
-                flags.append(f"{name}: thickness missing")
-            if not _MATERIAL_RE.search(desc):
+        if shape == "live" or "Material" in row or "Thickness" in row:
+            if "Material" not in row or _blank(row.get("Material")):
                 flags.append(f"{name}: material missing")
-        pt = row.get("PT")
-        if pt == 200 or pt == "200" or str(pt or "").strip().casefold() == "component":
+            thick = _num(row.get("Thickness")) if "Thickness" in row else None
+            if "Thickness" not in row or thick is None or thick <= 0:
+                flags.append(f"{name}: thickness missing")
+            elif "Thickness_Units" not in row or _blank(row.get("Thickness_Units")):
+                flags.append(f"{name}: thickness missing")
+            elif str(row.get("Thickness_Units")) != "inch":
+                flags.append(
+                    f"{name}: thickness units {row.get('Thickness_Units')} not inch"
+                )
+                all_inch = False
+        else:
+            desc = row.get("Desc")
+            if not isinstance(desc, str) or not desc.strip():
+                flags.append(f"{name}: thickness missing")
+                flags.append(f"{name}: material missing")
+            else:
+                if not _THICKNESS_RE.search(desc):
+                    flags.append(f"{name}: thickness missing")
+                if not _MATERIAL_RE.search(desc):
+                    flags.append(f"{name}: material missing")
+        pt = _product_type(row, shape)
+        if _is_component(row, pt):
             flags.append(f"{name}: producttype_still_component")
-        for key, label_s in (("UC", "cost"), ("UP", "price")):
+        for key, label_s in ((cost_key, "cost"), (price_key, "price")):
             if key not in row or row.get(key) is None:
                 flags.append(f"{name}: {label_s} missing")
                 continue
             num = _num(row.get(key))
             if num is None or num <= 0:
                 flags.append(f"{name}: zero cost/price")
-        if "U" not in row or _blank(row.get("U")):
+        if unit_key not in row or _blank(row.get(unit_key)):
             flags.append(f"{name}: units missing")
             all_inch = False
-        elif str(row.get("U")) != "inch":
-            flags.append(f"{name}: units {row.get('U')} not inch")
+        elif str(row.get(unit_key)) != "inch":
+            flags.append(f"{name}: units {row.get(unit_key)} not inch")
             all_inch = False
-        length = _num(row.get("Len")) if "Len" in row else None
-        width = _num(row.get("W")) if "W" in row else None
-        if "Len" not in row or "W" not in row or length is None or width is None:
+        length = _num(row.get(len_key)) if len_key in row else None
+        width = _num(row.get(wid_key)) if wid_key in row else None
+        if len_key not in row or wid_key not in row or length is None or width is None:
             flags.append(f"{name}: dims missing")
         elif not (0 < length <= 240 and 0 < width <= 120):
             flags.append(f"{name}: implausible dims L={length} W={width}")
-        op = ops.get(name, "")
-        if tree.get("grid") is not None and name not in ops:
+        row_ops = _op_names(row, shape, ops, name)
+        if shape == "snapshot" and tree.get("grid") is not None and name not in ops:
             flags.append(f"{name}: grid op missing")
-        if str(op).startswith(_LASER_PREFIX):
-            if "C" not in row or row.get("C") is None:
+        if shape == "live" and row_ops is None:
+            flags.append(f"{name}: operations missing")
+        if _is_laser(row_ops, row, shape):
+            if contour_key not in row or row.get(contour_key) is None:
                 flags.append(f"{name}: Contours missing")
                 contours_ok = False
             else:
-                contours = _num(row.get("C"))
+                contours = _num(row.get(contour_key))
                 if contours is None or contours < 1:
-                    shown = row.get("C")
+                    shown = row.get(contour_key)
                     flags.append(f"{name}: Contours {shown} < 1")
                     contours_ok = False
             if "InternalData" in row and _blank(row.get("InternalData")):
                 flags.append(f"{name}: InternalData empty")
                 contours_ok = False
-        if "Err" not in row or row.get("Err") is None:
+        if err_key not in row or row.get(err_key) is None:
             flags.append(f"{name}: ErrorStatus missing")
             err_ok = False
         else:
-            err = _num(row.get("Err"))
+            err = _num(row.get(err_key))
             if err is None or err != 0:
-                flags.append(f"{name}: ErrorStatus {row.get('Err')}")
+                flags.append(f"{name}: ErrorStatus {row.get(err_key)}")
                 err_ok = False
     parent_price: float | None = None
     for parent in parents:
-        name = str(parent.get("N") or "")
-        if "UP" not in parent or parent.get("UP") is None:
+        name = _row_name(parent, shape)
+        if price_key not in parent or parent.get(price_key) is None:
             flags.append(f"{name}: price missing")
         else:
-            price = _num(parent.get("UP"))
+            price = _num(parent.get(price_key))
             if price is None or price <= 0:
                 flags.append(f"{name}: zero-price parent")
             elif parent_price is None:
                 parent_price = price
-        op = ops.get(name, "")
-        if "weld" not in str(op).lower():
+        parent_ops = _op_names(parent, shape, ops, name)
+        if not _has_weld(parent_ops):
             flags.append(
                 f"{name}: weld labor not on parent (waiting on Kyle; not guessed)"
             )
@@ -259,9 +378,10 @@ def check_tree(
         flags.append("formed list missing")
     else:
         bend_need = len(formed)
+        by_name = {_row_name(row, shape): row for row in rows}
         for name in formed:
-            op = ops.get(name, "")
-            if "Bend" in op:
+            row = by_name.get(name, {})
+            if _has_bend(_op_names(row, shape, ops, name)):
                 bend_have += 1
             else:
                 flags.append(f"{name}: formed part has no Bend op")
