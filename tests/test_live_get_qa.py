@@ -195,7 +195,7 @@ def test_push_job_fails_closed_when_live_get_has_empty_ops(tmp_path):
     assert "Chrome" in blob or "session" in blob.lower() or "Live GET QA failed" in blob
 
 
-def test_bare_folder_push_still_uses_bom_pedestal_title(tmp_path):
+def test_bare_folder_does_not_invent_quote_description(tmp_path):
     from unittest.mock import MagicMock, patch
 
     from secturafab.push import SecturaFabPushService
@@ -239,7 +239,8 @@ def test_bare_folder_push_still_uses_bom_pedestal_title(tmp_path):
             times={},
             job_id=91,
         )
-    assert create_q.call_args.kwargs.get("description") == HEADER_DESC
+    assert create_q.call_args.kwargs.get("description") == ""
+    assert create_q.call_args.kwargs.get("quote_number") == "remint-ok"
 
 
 def test_push_addplate_then_addlinear_without_graft(tmp_path):

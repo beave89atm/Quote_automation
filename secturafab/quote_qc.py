@@ -180,6 +180,53 @@ def _within_one_cent(left: float, right: float) -> bool:
     return abs(round(left * 100.0) - round(right * 100.0)) <= 1
 
 
+def _part_token(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.upper().startswith("PN "):
+        text = text[3:].strip()
+    return text.casefold()
+
+
+def _top_level_part(parents: list[dict], kids: list[dict], shape: str) -> str:
+    """Assembly parent, or the only line when the quote has no parent."""
+    if len(parents) == 1:
+        return _row_name(parents[0], shape)
+    if not parents and len(kids) == 1:
+        return _row_name(kids[0], shape)
+    return ""
+
+
+def _header_flags(
+    tree: dict, parents: list[dict], kids: list[dict], shape: str
+) -> list[str]:
+    """Kyle 9/28: Quote Number is the top part. Description is the title block.
+
+    Line-only trees omit these keys and are not flagged here. A present
+    key that is blank or wrong FLAGs. Never invent a header.
+    """
+    has_number = "QuoteNumber" in tree
+    has_desc = "HeaderDescription" in tree
+    if not has_number and not has_desc:
+        return []
+    flags: list[str] = []
+    top = _top_level_part(parents, kids, shape)
+    if not top:
+        flags.append("top-level part number missing")
+        return flags
+    if not has_number or _blank(tree.get("QuoteNumber")):
+        flags.append("Quote Number blank")
+    elif _part_token(tree.get("QuoteNumber")) != _part_token(top):
+        flags.append(
+            f"Quote Number {tree.get('QuoteNumber')} does not match "
+            f"top-level part {top}"
+        )
+    if not has_desc or _blank(tree.get("HeaderDescription")):
+        flags.append("quote Description blank")
+    elif _part_token(tree.get("HeaderDescription")) == _part_token(top):
+        flags.append("quote Description is the part number")
+    return flags
+
+
 def parse_grid_ops(grid: Any) -> dict[str, str]:
     ops: dict[str, str] = {}
     if not isinstance(grid, list):
@@ -419,6 +466,8 @@ def check_tree(
                 bend_have += 1
             else:
                 flags.append(f"{name}: formed part has no Bend op")
+    if isinstance(tree, dict):
+        flags.extend(_header_flags(tree, parents, kids, shape))
     pcs: int | None = None
     if not qty_missing and got:
         pcs = sum(got.values())

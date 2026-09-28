@@ -31,7 +31,7 @@ from .item_desc import (
     is_bare_part_number,
     match_bom_part_no,
     normalize_part_token,
-    title_from_bom_family,
+    title_from_bom_part,
     title_from_job_title,
     title_from_library_folder,
 )
@@ -261,6 +261,17 @@ def _is_quote_number_token(key: str) -> bool:
     if any(tok in upper for tok in ("WELDMENT", "ASSEMBLY", "FRAME PLATE")):
         return bool(re.fullmatch(r"[A-Z]{1,3}\d{4,}(?:-[A-Z0-9]+)?", upper))
     return True
+
+
+def quote_header_fields(part_key: str, title: str | None) -> tuple[str, str]:
+    """Quote Number is the top-level part. Description is the title, or blank.
+
+    Kyle 9/28: do not put the part number in Description. A missing
+    title-block or BOM description stays blank. Never invent one.
+    """
+    number = _pn_quote_number(part_key)
+    description = format_quote_header_description(title, part_key=number or part_key)
+    return number, description
 
 
 def _pn_quote_number(part_key: str) -> str:
@@ -1380,15 +1391,13 @@ class SecturaFabPushService:
         """
         display = _pn_quote_number(quote_number)
         from .forbidden_quotes import ForbiddenQuoteError, spent_quote_number_block_reason
-        from .item_desc import quote_description_is_blank
 
         blocked = spent_quote_number_block_reason(display)
         if blocked:
             raise ForbiddenQuoteError(blocked)
-        if quote_description_is_blank(description):
-            raise ValueError(
-                "Quote Description is blank — not minting (live 1007756-1)"
-            )
+        header_number, header_description = quote_header_fields(display, description)
+        display = header_number or display
+        description = header_description
         temp_rev = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
         payload: dict[str, Any] = {
             "QuoteNumber": display,
@@ -6407,7 +6416,7 @@ class SecturaFabPushService:
                 or title_from_library_folder(library.get("folder"), part_key=part_key)
                 or title_from_library_folder(title, part_key=part_key)
                 or title_from_job_title(title, part_key=part_key)
-                or title_from_bom_family(bom_rows)
+                or title_from_bom_part(bom_rows, part_key=part_key)
             )
             if (
                 is_drawing_boilerplate_title(raw_title)
@@ -6429,7 +6438,7 @@ class SecturaFabPushService:
                     or title_from_library_folder(library.get("folder"), part_key=part_key)
                     or title_from_library_folder(title, part_key=part_key)
                     or title_from_job_title(title, part_key=part_key)
-                    or title_from_bom_family(bom_rows)
+                    or title_from_bom_part(bom_rows, part_key=part_key)
                 )
             elif is_child_part_title(raw_title):
                 fallback = (
@@ -6437,7 +6446,7 @@ class SecturaFabPushService:
                     or title_from_library_folder(library.get("folder"), part_key=part_key)
                     or title_from_library_folder(title, part_key=part_key)
                     or title_from_job_title(title, part_key=part_key)
-                    or title_from_bom_family(bom_rows)
+                    or title_from_bom_part(bom_rows, part_key=part_key)
                 )
                 if fallback and not is_child_part_title(fallback) and re.search(
                     r"WELDMENT|ASSEMBLY|\bASSY\b|\bASM\b",
@@ -6456,50 +6465,16 @@ class SecturaFabPushService:
             ):
                 raw_title = None
             assembly_description = format_assembly_description(part_key, raw_title)
-            header_noun = bool(
-                bom_rows
-                or (
-                    raw_title
-                    and not is_material_callout_title(raw_title)
-                    and re.search(
-                        r"WELDMENT|ASSEMBLY|\bASSY\b|\bASM\b|\bPLATE\b|"
-                        r"\bPLATFORM\b|\bMOUNT\b",
-                        str(raw_title),
-                        re.I,
-                    )
-                )
-            )
-            if header_noun:
-                quote_description = format_quote_header_description(
-                    raw_title, part_key=part_key
+            quote_description = quote_header_fields(quote_number, raw_title)[1]
+            if quote_description:
+                desc_note = (
+                    "Quote Description from title block or BOM: "
+                    f"{quote_description}"
                 )
             else:
-                quote_description = format_assembly_description(part_key, raw_title)
-            if raw_title:
-                desc_note = f"Quote Description from assembly drawing: {quote_description}"
-            else:
-                desc_note = f"Quote Description from job title: {quote_description}"
-            if not quote_description or is_bare_part_number(quote_description, part_key):
-                notes.append(
-                    "WARNING: Quote Description is still a bare PN — "
-                    "need folder / PDF / BOM weldment title"
-                )
-            from .item_desc import quote_description_is_blank
-
-            if quote_description_is_blank(quote_description):
-                msg = (
-                    "Quote Description is blank — not minting, not stamping kids "
-                    "(live 1007756-1)"
-                )
-                notes.append(msg)
-                return PushResult(
-                    ok=False,
-                    error=msg,
-                    notes=notes,
-                    status="failed",
-                    quote_number=quote_number,
-                    created_new_quote=False,
-                    attempts=createfile_attempts,
+                desc_note = (
+                    "Quote Description left blank — no title-block or BOM "
+                    "description (QC will FLAG; not inventing)"
                 )
             quote_id = self.create_quote(
                 quote_number=quote_number,
@@ -6990,24 +6965,6 @@ class SecturaFabPushService:
             if persist_org_fail:
                 return self._fail_push(
                     msg=persist_org_fail,
-                    notes=notes,
-                    quote_id=quote_id,
-                    quote_number=quote_number,
-                    quote_request_id=quote_request_id,
-                    uploaded=uploaded,
-                    attempts=createfile_attempts,
-                )
-            if any(
-                "Quote Description is blank after mint/header" in str(n)
-                for n in notes
-            ):
-                msg = next(
-                    n
-                    for n in notes
-                    if "Quote Description is blank after mint/header" in str(n)
-                )
-                return self._fail_push(
-                    msg=str(msg),
                     notes=notes,
                     quote_id=quote_id,
                     quote_number=quote_number,

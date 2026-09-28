@@ -275,16 +275,28 @@ def test_create_quote_refuses_forbidden_number_before_post():
     client.request.assert_not_called()
 
 
-def test_create_quote_refuses_blank_description_before_post():
+def test_create_quote_leaves_blank_description_off_the_payload():
+    """Kyle 9/28: no title block means Description stays blank, not the part number."""
     client = MagicMock()
-    service = SecturaFabPushService(client=client)
-    with pytest.raises(ValueError, match="Description is blank"):
-        service.create_quote(quote_number="remint-ok", description="  ")
-    client.request.assert_not_called()
+    minted = MagicMock()
+    minted.status_code = 201
+    minted.text = ""
+    strip = MagicMock()
+    strip.status_code = 200
+    strip.text = ""
+    client.request.side_effect = [minted, strip]
+    client._parse_or_raise.return_value = "new-qid"
+    quote_id = SecturaFabPushService(client=client).create_quote(
+        quote_number="A-11949-000", description="  "
+    )
+    assert quote_id == "new-qid"
+    mint_body = client.request.call_args_list[0].kwargs["json"]
+    assert mint_body["QuoteNumber"] == "A-11949-000"
+    assert "Description" not in mint_body
 
 
-def test_push_job_refuses_blank_description_before_mint(tmp_path: Path):
-    """Live 1007756-1: header Description was null after mint."""
+def test_push_job_mints_with_blank_description_when_title_missing(tmp_path: Path):
+    """Kyle 9/28: no title-block text leaves Description blank and still mints."""
     pdf = tmp_path / "lonely.pdf"
     pdf.write_bytes(b"%PDF")
     client = MagicMock()
@@ -312,7 +324,7 @@ def test_push_job_refuses_blank_description_before_mint(tmp_path: Path):
     ), patch(
         "secturafab.push.title_from_job_title", return_value=None
     ), patch(
-        "secturafab.push.title_from_bom_family", return_value=None
+        "secturafab.push.title_from_bom_part", return_value=None
     ):
         result = service.push_job(
             title="lonely",
@@ -323,13 +335,12 @@ def test_push_job_refuses_blank_description_before_mint(tmp_path: Path):
             times={},
             job_id=10,
         )
-    assert result.ok is False
-    assert result.created_new_quote is False
-    create_q.assert_not_called()
-    pdf_finish.assert_not_called()
+    create_q.assert_called_once()
+    assert create_q.call_args.kwargs.get("description") == ""
+    assert create_q.call_args.kwargs.get("quote_number") == "remint-ok"
     blob = (result.error or "") + " " + " ".join(result.notes or [])
-    assert "Description is blank" in blob
-    assert "not minting" in blob
+    assert "left blank" in blob
+    assert "not minting" not in blob
 
 
 def test_ensure_weld_ops_skips_zz_del_revive():

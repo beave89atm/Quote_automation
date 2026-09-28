@@ -555,6 +555,68 @@ def test_quote_qc_live_read_is_in_page_ajax():
     assert 'method="GET"' in src
 
 
+def test_quote_header_number_is_part_and_description_is_title():
+    from secturafab.item_desc import title_from_bom_part
+    from secturafab.push import quote_header_fields
+    from secturafab.quote_qc import check_tree
+
+    number, description = quote_header_fields(
+        "A-11949-000", "NECK WINCH BOX ASSEMBLY (CENTERED)"
+    )
+    assert number == "A-11949-000"
+    assert description == "NECK WINCH BOX ASSEMBLY (CENTERED)"
+    blank_number, blank_description = quote_header_fields("A-11949-000", "A-11949-000")
+    assert blank_number == "A-11949-000"
+    assert blank_description == ""
+    assert (
+        title_from_bom_part(
+            [
+                {"part_no": "A-11521-000", "description": "14 Ga plate"},
+                {
+                    "part_no": "A-11949-000",
+                    "description": "NECK WINCH BOX ASSEMBLY (CENTERED)",
+                },
+            ],
+            part_key="A-11949-000",
+        )
+        == "NECK WINCH BOX ASSEMBLY (CENTERED)"
+    )
+    assert title_from_bom_part(
+        [{"part_no": "A-11949-000", "description": "A-11949-000"}],
+        part_key="A-11949-000",
+    ) is None
+
+    tree = json.loads(Q10504.read_text(encoding="utf-8"))
+    tree["QuoteNumber"] = "A-11521-000"
+    tree["HeaderDescription"] = "NECK WINCH BOX ASSEMBLY (CENTERED)"
+    report = check_tree(
+        tree, {"A-11521-000": 1}, formed=["A-11521-000"], label="Q10504"
+    )
+    assert report.flags == []
+    assert "quote Description" not in report.text()
+
+    tree["HeaderDescription"] = ""
+    blank = check_tree(
+        tree, {"A-11521-000": 1}, formed=["A-11521-000"], label="Q10504"
+    )
+    assert "quote Description blank" in blank.flags
+
+    tree["HeaderDescription"] = "A-11521-000"
+    numbered = check_tree(
+        tree, {"A-11521-000": 1}, formed=["A-11521-000"], label="Q10504"
+    )
+    assert "quote Description is the part number" in numbered.flags
+
+    tree["HeaderDescription"] = "NECK WINCH BOX ASSEMBLY (CENTERED)"
+    tree["QuoteNumber"] = "Q10504"
+    mismatch = check_tree(
+        tree, {"A-11521-000": 1}, formed=["A-11521-000"], label="Q10504"
+    )
+    assert mismatch.flags == [
+        "Quote Number Q10504 does not match top-level part A-11521-000"
+    ]
+
+
 def test_q10504_single_part_sums_line_price():
     from secturafab.quote_qc import check_tree
 

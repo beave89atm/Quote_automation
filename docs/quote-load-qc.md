@@ -75,6 +75,7 @@ Tool: `python -m secturafab.quote_qc --quote <id> --expected <LOM/STEP list>`. I
 | Pricing | parent unit price = sum of (child unit price × child qty) within $0.01, otherwise FLAG |
 | Dims | inch units, plausible |
 | Laser | Contours >= 1; ErrorCount 0 |
+| Quote header | Quote Number is the top-level part or assembly number. Description is the title-block or BOM description. FLAG when Description is blank or equals that part number, or when Quote Number does not match it |
 
 Output (30-second read):
 ```
@@ -82,6 +83,13 @@ Q10488 Diamond C — FLAG
  - A-11949-000: weld labor not on parent (waiting on Kyle; not guessed)
  8 parts / 10 pcs match LOM · all inch · Contours ok · 4/4 formed have Bend · Err 0 · $1,087.70
 ```
+
+## 13. Quote header (Kyle, 9/28)
+When the app creates or names a Sectura quote:
+- **Quote Number** is the top-level part or assembly number (for example `A-11949-000`). It is not the drawing title.
+- **Description** is the title-block or BOM description passed in with the RFQ or drawing (for example `NECK WINCH BOX ASSEMBLY (CENTERED)`). It is not the part number.
+- If that description is not on the input, leave Description blank. Do not invent one, and do not copy the part number into Description.
+- **Check:** FLAG `quote Description blank`, `quote Description is the part number`, or `Quote Number … does not match top-level part …`. The tree read stays read-only. Line-only snapshots that omit `QuoteNumber` and `HeaderDescription` do not invent a header.
 
 ## References
 `docs/sectura-api-coverage.md` (PR 18); skill `secturafab-time-weldment-quote`; artifacts `/workspace/q10488/` (p3/p4/p5 json, `p5_tree_after_assembly.json`).

@@ -650,8 +650,8 @@ def test_push_pdf_only_uses_single_pdf_shell(tmp_path: Path):
     up_d.assert_called_once()
     build_pdf.assert_not_called()
     desc = create_q.call_args.kwargs.get("description") or ""
-    assert "lonely" in desc
-    assert "Title" in desc
+    assert desc == ""
+    assert create_q.call_args.kwargs.get("quote_number") == "lonely"
     blob = (result.error or "") + " " + " ".join(result.notes or [])
     assert "Chrome" in blob or "session" in blob.lower()
 
@@ -759,10 +759,9 @@ def test_push_ok_requires_nonzero_item_count(tmp_path: Path):
     assert result.item_count == 0
     assert result.status == "failed"
     qadd.assert_not_called()
-    # Description fallback used when creating the quote
-    desc = create_q.call_args.kwargs.get("description") or ""
-    assert "part" in desc
-    assert "Title From Job" in desc
+    # "Title From Job" is not a title-block description. Do not put the part number there.
+    assert create_q.call_args.kwargs.get("description") == ""
+    assert create_q.call_args.kwargs.get("quote_number") == "part"
 
 
 def test_push_refuses_oversize_step_without_mint(tmp_path: Path):

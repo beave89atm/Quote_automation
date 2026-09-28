@@ -425,6 +425,32 @@ _GENERIC_BOM_LEAD = {
 }
 
 
+def title_from_bom_part(
+    bom_rows: list[dict] | None, *, part_key: str | None
+) -> str | None:
+    """BOM description for the top-level part. Does not synthesize a title."""
+    key = normalize_part_token(part_key)
+    if not key:
+        return None
+    want = key.replace("-", "").upper()
+    for row in bom_rows or []:
+        pn = normalize_part_token(
+            str(
+                row.get("part_no")
+                or row.get("part_number")
+                or row.get("PartNumber")
+                or ""
+            )
+        )
+        if not pn or pn.replace("-", "").upper() != want:
+            continue
+        noun = str(row.get("description") or row.get("Description") or "").strip()
+        if not noun or is_bare_part_number(noun, key):
+            return None
+        return noun
+    return None
+
+
 def title_from_bom_family(bom_rows: list[dict] | None) -> str | None:
     """PEDESTAL TOP PLATE / PEDESTAL TUBE / … → ``PEDESTAL WELDMENT``."""
     leads: list[str] = []
