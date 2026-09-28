@@ -402,6 +402,10 @@ def check_tree(
             )
     elif len(parents) > 1:
         flags.append("parent price rollup unproved")
+    else:
+        line_sum = _child_price_sum(kids, price_key, qty_key)
+        if line_sum is not None:
+            parent_price = line_sum
     bend_have = 0
     bend_need = 0
     if formed is None:

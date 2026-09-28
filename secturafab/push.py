@@ -5263,7 +5263,18 @@ class SecturaFabPushService:
         items. Persist Contours-good on NumberOfContours≥1, never OCC.
         Q10366: GET /Quote/QuoteItem_ReadTreeListData?ParentID= after
         Cad+Material A36+.1875 Finish. invent=false.
+        When Chrome is on the quote, that GET runs in the page. Cookie
+        QuoteItem_Read and v1/quote come back empty and look like GET 0.
         """
+        in_page = False
+        try:
+            from .chrome_cdp import chrome_quotes_live
+
+            in_page = bool(chrome_quotes_live())
+        except (OSError, TypeError, ValueError):
+            in_page = False
+        if in_page:
+            return self._read_quote_tree_in_page(quote_id)
         out: dict[str, Any] = {}
         if hasattr(self.client, "quote_item_read"):
             try:
@@ -5310,6 +5321,28 @@ class SecturaFabPushService:
         if out:
             return out
         return {"ItemList": [], "Data": []}
+
+    def _read_quote_tree_in_page(self, quote_id: str) -> dict[str, Any]:
+        """GET QuoteItem_ReadTreeListData through the page. No cookie read."""
+        from .chrome_cdp import page_jquery_ajax
+        from .website import WEBSITE_FINISH_PATHS
+
+        result = page_jquery_ajax(
+            url=WEBSITE_FINISH_PATHS["quote_item_read_treelist"],
+            method="GET",
+            data={"ParentID": str(quote_id)},
+            quote_id=str(quote_id),
+        )
+        body = result.get("body") if isinstance(result, dict) else None
+        rows = quote_treelist_rows(body) if isinstance(result, dict) and result.get("ok") else []
+        if not rows:
+            return {"ItemList": [], "Data": []}
+        if isinstance(body, dict):
+            out = dict(body)
+        else:
+            out = {"Data": rows}
+        out["TreeListData"] = rows
+        return out
 
     def add_loose_linears(
         self,

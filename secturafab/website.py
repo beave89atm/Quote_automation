@@ -8679,6 +8679,39 @@ def cad_kid_contour_diag(row: dict[str, Any] | None) -> str:
     return f"{name} Contours={item_cad_contour_count(row)}"
 
 
+def _post_finish_tree_cad_plate(row: dict[str, Any] | None) -> bool:
+    """Finished tree plate: ProductType 100 plus NumberOfContours.
+
+    Wizard FileType/Category Cad still counts via the plate gate.
+    Q10504 A-11521-000 lands ProductType 100, contours, and no FileType.
+    QuoteItem_Read Data rows omit NumberOfContours and stay out.
+    invent=false — do not treat ProductType 100 alone as Cad.
+    """
+    if not isinstance(row, dict) or "NumberOfContours" not in row:
+        return False
+    if not live_row_product_type_is_cad(row):
+        return False
+    cat = str(row.get("Category") or row.get("ItemType") or "").strip()
+    if cat in {"Assembly", "Linear"}:
+        return False
+    if str(row.get("FileType") or "").strip() in {"Linear", "Component"}:
+        return False
+    from .step_classify import row_looks_like_round_bar_stock
+
+    if row_looks_like_round_bar_stock(row):
+        return False
+    return True
+
+
+def _pack_cad_plate(row: dict[str, Any], *, from_contours: bool) -> bool:
+    cat = str(row.get("Category") or row.get("ItemType") or "")
+    if not (live_row_product_type_is_cad(row) or cat == "Cad"):
+        return False
+    if _cad_plate_row_for_finish_gate(row):
+        return True
+    return from_contours and _post_finish_tree_cad_plate(row)
+
+
 def step_finish_pack_missing(
     posted: Any,
     *,
@@ -8697,28 +8730,23 @@ def step_finish_pack_missing(
     contour_items = [
         it for it in quote_contours_rows(posted) if isinstance(it, dict)
     ]
+    contour_ids = {id(it) for it in contour_items}
     if expect_cad:
-        cad_items = []
-        for it in items:
-            cat = str(it.get("Category") or it.get("ItemType") or "")
-            if not (live_row_product_type_is_cad(it) or cat == "Cad"):
-                continue
-            if not _cad_plate_row_for_finish_gate(it):
-                continue
-            cad_items.append(it)
+        cad_items = [
+            it
+            for it in items
+            if _pack_cad_plate(it, from_contours=id(it) in contour_ids)
+        ]
         if not cad_items:
             return (
                 "GET 0 Cad after Finish — not success "
                 "(live P904271-1; ZZ-DEL; do not invent InternalData)"
             )
-        contour_cad = []
-        for it in contour_items:
-            cat = str(it.get("Category") or it.get("ItemType") or "")
-            if not (live_row_product_type_is_cad(it) or cat == "Cad"):
-                continue
-            if not _cad_plate_row_for_finish_gate(it):
-                continue
-            contour_cad.append(it)
+        contour_cad = [
+            it
+            for it in contour_items
+            if _pack_cad_plate(it, from_contours=True)
+        ]
         if not any(item_cad_contour_count(it) >= 1 for it in contour_cad):
             return (
                 "Cad Contours empty after Finish — not success "

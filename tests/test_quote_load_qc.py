@@ -16,6 +16,12 @@ LIVE = (
     / "fixtures"
     / "q10488_live_tree_20260928.json"
 )
+Q10504 = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "q10504_after_finish_tree.json"
+)
 SUMMARY = (
     "8 parts / 10 pcs match LOM · all inch · Contours ok · "
     "4/4 formed have Bend · Err 0 · $1,087.70"
@@ -327,6 +333,8 @@ def test_single_part_without_assembly_does_not_flag_weld():
     report = check_tree(tree, {"A-11521-000": 1}, formed=[], label="Q10504")
     assert report.status == "PASS"
     assert report.flags == []
+    assert "$10.00" in report.summary
+    assert "price missing" not in report.text()
 
 
 def test_page_native_description_gauge_and_delayed_errorstatus():
@@ -545,3 +553,62 @@ def test_quote_qc_live_read_is_in_page_ajax():
     assert "page_jquery_ajax" in src
     assert "quote_item_read_treelist" not in src
     assert 'method="GET"' in src
+
+
+def test_q10504_single_part_sums_line_price():
+    from secturafab.quote_qc import check_tree
+
+    tree = json.loads(Q10504.read_text(encoding="utf-8"))
+    report = check_tree(
+        tree, {"A-11521-000": 1}, formed=["A-11521-000"], label="Q10504"
+    )
+    assert report.status == "PASS"
+    assert report.flags == []
+    assert (
+        report.summary
+        == "1 parts / 1 pcs match LOM · all inch · Contours ok · "
+        "1/1 formed have Bend · Err 0 · $177.46"
+    )
+    assert "price missing" not in report.text()
+
+
+def test_read_quote_items_live_chrome_reads_tree_in_page(monkeypatch):
+    """Chrome-live post-Finish read stays in the page. Q10504 is a Cad plate."""
+    from secturafab.push import SecturaFabPushService
+    from secturafab.website import (
+        WEBSITE_FINISH_PATHS,
+        step_cad_post_finish_contours_gate,
+        step_finish_pack_missing,
+    )
+
+    tree = json.loads(Q10504.read_text(encoding="utf-8"))
+    quote_id = "b78fd84e-4fe3-460d-878d-fd251dafe8e6"
+    calls: list[dict] = []
+
+    def _ajax(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "status": 200, "body": tree}
+
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *a, **k: True)
+    monkeypatch.setattr("secturafab.chrome_cdp.page_jquery_ajax", _ajax)
+    client = MagicMock()
+    posted = SecturaFabPushService(client=client)._read_quote_items(quote_id)
+    client.quote_item_read.assert_not_called()
+    client.get_json.assert_not_called()
+    client.quote_item_read_treelist.assert_not_called()
+    assert len(calls) == 1
+    assert calls[0]["url"] == WEBSITE_FINISH_PATHS["quote_item_read_treelist"]
+    assert calls[0]["method"] == "GET"
+    assert calls[0]["data"] == {"ParentID": quote_id}
+    assert calls[0]["quote_id"] == quote_id
+    row = posted["TreeListData"][0]
+    assert row["ItemNumber"] == "A-11521-000"
+    assert row["NumberOfContours"] == 1
+    assert row["UnitPrice"] == 177.46
+    assert step_finish_pack_missing(
+        posted, expect_cad=True, expect_linear=False
+    ) is None
+    assert step_cad_post_finish_contours_gate(posted, expect_cad=True) is None
+    data_only = step_finish_pack_missing(tree, expect_cad=True, expect_linear=False)
+    assert data_only is not None
+    assert "GET 0 Cad after Finish" in data_only
