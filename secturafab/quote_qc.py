@@ -162,6 +162,24 @@ def _has_weld(op_names: list[str] | None) -> bool:
     return any("weld" in str(op).casefold() for op in (op_names or []))
 
 
+def _child_price_sum(kids: list[dict], price_key: str, qty_key: str) -> float | None:
+    """Sum of child unit price × qty. None when any price or qty is unproved."""
+    total = 0.0
+    for row in kids:
+        if price_key not in row or qty_key not in row:
+            return None
+        price = _num(row.get(price_key))
+        qty = _qty(row.get(qty_key))
+        if price is None or qty is None:
+            return None
+        total += price * qty
+    return total
+
+
+def _within_one_cent(left: float, right: float) -> bool:
+    return abs(round(left * 100.0) - round(right * 100.0)) <= 1
+
+
 def parse_grid_ops(grid: Any) -> dict[str, str]:
     ops: dict[str, str] = {}
     if not isinstance(grid, list):
@@ -370,6 +388,20 @@ def check_tree(
             flags.append(
                 f"{name}: weld labor not on parent (waiting on Kyle; not guessed)"
             )
+    if len(parents) == 1:
+        parent = parents[0]
+        name = _row_name(parent, shape)
+        child_sum = _child_price_sum(kids, price_key, qty_key)
+        proved_parent = _num(parent.get(price_key)) if price_key in parent else None
+        if proved_parent is None or child_sum is None:
+            flags.append(f"{name}: parent price rollup unproved")
+        elif not _within_one_cent(proved_parent, child_sum):
+            flags.append(
+                f"{name}: parent unit price {_money(proved_parent)} "
+                f"is outside $0.01 of child sum {_money(child_sum)}"
+            )
+    elif len(parents) > 1:
+        flags.append("parent price rollup unproved")
     if not parents:
         flags.append("weld labor not on parent (waiting on Kyle; not guessed)")
     bend_have = 0

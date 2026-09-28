@@ -104,6 +104,18 @@ def test_live_weld_operation_on_parent_passes():
     assert report.flags == []
 
 
+def test_negative_parent_unit_price_outside_child_sum():
+    tree = json.loads(LIVE.read_text(encoding="utf-8"))
+    parent = next(row for row in tree["Data"] if row.get("ProductType") == 300)
+    parent["OperationCostList"] = [{"OperationName": "Weld"}]
+    parent["UnitPrice"] = 1087.72
+    report = _report(tree)
+    assert report.status == "FLAG"
+    assert report.flags == [
+        "A-11949-000: parent unit price $1,087.72 is outside $0.01 of child sum $1,087.70"
+    ]
+
+
 def test_weld_on_parent_passes():
     report = _report(_with_weld(_tree()))
     assert report.status == "PASS"

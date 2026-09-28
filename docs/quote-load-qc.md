@@ -1,10 +1,10 @@
 # Quote load QC: intake to done (SecturaFAB)
 
-Owner: Quote Automation PO. Draft 1, Fri 9/25/2026. Rule for every step: **invent=false**. A check that can't prove a value **fails closed** (FLAG, stop). It never fills in a guess. Protected quotes are never reminted or PATCHed (golds a7dc46bf/8bcc226b, a7d6ca50; PDF PASSes 1020250-1, 21684-1, 1007922-3, 29743-2, 1007471-1, 34602-2, 1007756-1, 1001898-4, 1008763-1, 1020243-1; Q10429/a24c6896; Q10435; spent leftovers).
+Owner: Quote Automation PO. Draft 2, Mon 9/28/2026. Checker and session guard: `e995b21` / `8b75d82`. Rule for every step: **invent=false**. A check that can't prove a value **fails closed** (FLAG, stop). It never fills in a guess. Protected quotes are never reminted or PATCHed (golds a7dc46bf/8bcc226b, a7d6ca50; PDF PASSes 1020250-1, 21684-1, 1007922-3, 29743-2, 1007471-1, 34602-2, 1007756-1, 1001898-4, 1008763-1, 1020243-1; Q10429/a24c6896; Q10435; spent leftovers).
 
 ## 0. Session check (before any action)
 - **Check:** open the quote URL. If the page is `/Account/Login*`, or the title is `SecturaFAB-Login`, or any XHR returns a 302 to login, the session is **dead**. Stop all writes.
-- **Recovery:** sign in as AI.Agent ourselves in an **Incognito** window. Regular Chrome has looped on login before. Get credentials from the shared vault. Don't read or export cookies.
+- **Recovery:** when the session is dead, stop and tell Chief of Staff. Chief of Staff signs in again in an **Incognito** window, with Kyle filling the AI.Agent website credentials through a secure form until they're stored properly, and Remember Me checked. Regular Chrome has looped on login before. Don't read or export cookies. The vault has only the API login; the website rejects that username.
 - **Watch for:** the banner "Another user has logged in with your credentials on a different system. If you login, they will be logged out." That means the AI Agent license (`[REDACTED]`) is in use somewhere else. Don't log in over it without CoS clearing it.
 - **Human only:** an email code/MFA, missing vault credentials, or a license conflict goes to Chief of Staff. CoS decides whether to involve Kyle.
 - **Past miss:** the session died mid-day and Finish got a 302, which left empty assembly shells.
@@ -61,7 +61,7 @@ What can go wrong:
 - **Past miss:** the app's own Finish rewrote L/W into meters, which made a **$7.2M line on Q10488** (later deleted). That path is removed or fails closed. **Check:** every line has `U == inch` and plausible dims (0 < L <= 240 in, 0 < W <= 120 in). Unit price over the per-line sanity cap means FLAG.
 
 ## 11. Pricing
-- Every line needs nonzero cost and price. No duplicate lines. The parent total should roughly equal the sum of the children. Any zero line means FLAG.
+- Every line needs nonzero cost and price. No duplicate lines. The parent unit price must equal the sum of (child unit price × child qty) within $0.01, otherwise FLAG. Any zero line means FLAG.
 
 ## 12. Final pre-handoff check (per quote, read-only)
 Tool: `python -m secturafab.quote_qc --quote <id> --expected <LOM/STEP list>`. It reads `/Quote/QuoteItem_ReadTreeListData?ParentID=<quote id>` and **writes nothing**.
@@ -72,6 +72,7 @@ Tool: `python -m secturafab.quote_qc --quote <id> --expected <LOM/STEP list>`. I
 | Bends | every formed part has a Bend op |
 | Weld | weld labor on the parent, otherwise FLAG |
 | Lines | no zero-price, no duplicates, no loose top-level lines when an assembly exists |
+| Pricing | parent unit price = sum of (child unit price × child qty) within $0.01, otherwise FLAG |
 | Dims | inch units, plausible |
 | Laser | Contours >= 1; ErrorCount 0 |
 
