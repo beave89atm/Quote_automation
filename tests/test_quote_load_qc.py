@@ -230,14 +230,20 @@ def test_cli_offline_tree_does_not_read_live(tmp_path, monkeypatch):
     assert code == 1
 
 
-def test_session_dead_signals_abort():
+def test_session_dead_signals_abort(tmp_path, monkeypatch):
     from secturafab.chrome_cdp import (
         ANOTHER_USER_BANNER,
         SessionDeadError,
         abort_if_session_dead,
         session_is_dead,
     )
+    from secturafab.web_login import SecturaReloginError, reset_relogin_attempt_for_tests
 
+    monkeypatch.setenv("SECTURA_RELOGIN_ALERT_DIR", str(tmp_path / "alerts"))
+    monkeypatch.setenv("SECTURA_RELOGIN_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.delenv("SECTURA_WEB_EMAIL", raising=False)
+    monkeypatch.delenv("SECTURA_WEB_PASSWORD", raising=False)
+    reset_relogin_attempt_for_tests()
     assert session_is_dead(url="https://www.secturafab.com/Account/Login?return=1") == "login_url"
     assert session_is_dead(url="https://www.secturafab.com/Account/LoginExtra") == "login_url"
     assert session_is_dead(title="SecturaFAB-Login") == "login_title"
@@ -247,9 +253,11 @@ def test_session_dead_signals_abort():
     )
     assert session_is_dead(body="ok " + ANOTHER_USER_BANNER) == "license_in_use"
     assert session_is_dead(url="https://www.secturafab.com/Quote/EDIT/abc", status=200) is None
-    with pytest.raises(SessionDeadError) as raised:
+    with pytest.raises(SecturaReloginError) as raised:
         abort_if_session_dead(title="SecturaFAB-Login")
-    assert raised.value.reason == "login_title"
+    assert isinstance(raised.value, SessionDeadError)
+    assert raised.value.reason == "login_title: env_missing"
+    assert raised.value.page_state == "env_missing"
 
 
 def test_page_native_cad_thickness_recipe_and_inch_finish():

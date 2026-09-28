@@ -503,7 +503,10 @@ def fetch_tree(quote_id: str, *, reader: Callable[[str], Any]) -> Any:
 def _default_reader(quote_id: str) -> Any:
     """In-page tree read. The page session is used. Cookies are not read."""
     from .chrome_cdp import SessionDeadError, abort_if_session_dead, page_jquery_ajax
+    from .web_login import sectura_tab_open
 
+    if not sectura_tab_open():
+        abort_if_session_dead(no_sectura_tab=True)
     try:
         result = page_jquery_ajax(
             url=TREE_PATH,

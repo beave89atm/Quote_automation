@@ -637,11 +637,28 @@ def session_is_dead(
     return None
 
 
-def abort_if_session_dead(**kwargs: Any) -> None:
-    """Raise before any write when the session probe is dead."""
+def abort_if_session_dead(*, no_sectura_tab: bool = False, **kwargs: Any) -> None:
+    """Raise before any write when the session probe is dead.
+
+    A login redirect or a missing Sectura tab gets one Incognito sign-in.
+    The other-user banner does not. A failed sign-in stops fail-closed.
+    """
     reason = session_is_dead(**kwargs)
-    if reason:
+    if reason is None and no_sectura_tab:
+        reason = "no_sectura_tab"
+    if not reason:
+        return
+    if reason == "license_in_use":
+        from .web_login import alert_chief_of_staff, alert_dir, _alert_message
+
+        alert_chief_of_staff(
+            _alert_message(trigger=reason, page_state="license_in_use"),
+            folder=alert_dir(),
+        )
         raise SessionDeadError(reason)
+    from .web_login import attempt_sectura_relogin
+
+    attempt_sectura_relogin(trigger=reason)
 
 
 _QUOTES_LIST_SESSION_JS = """(function() {
