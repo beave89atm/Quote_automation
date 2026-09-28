@@ -1706,7 +1706,7 @@ _BIND_DO_CREATE_SUCCESS_JS = """(function(spec) {
 })"""
 
 
-_PAGE_FINISH_JS = """(function(spec) {
+_PAGE_FINISH_JS = """(async function(spec) {
   function sidEmpty(v) {
     return v == null || v === "" || v === 0 || v === "0";
   }
@@ -2206,16 +2206,106 @@ _PAGE_FINISH_JS = """(function(spec) {
     if (!hasDim) return false;
     return !(isInchUnit(r.Length_Units) || isInchUnit(r.Stock_Units) || isInchUnit(r.Width_Units));
   }
-  function applyPageNativeCadThickness(gridRows, specIn) {
-    // Q10488 proven recipe. Cad via #DXFItemType change posts
-    // /Part/UpdateItemType. Thickness via #ThicknessEdit
+  async function applyPageNativeCadThickness(gridRows, specIn) {
+    // Q10488 / Q10504 recipe. Cad via #DXFItemType change runs
+    // /Part/UpdateItemType in the background. Thickness via #ThicknessEdit
     // kendoComboBox select() + trigger("change") runs
     // onThicknessChangeDXF and GET /Quote/GetBorderSize.
-    // Direct thickness-field writes do not clear ErrorStatus.
-    // Require ErrorStatus 0 and the quote id before OnAddDXFClick.
-    // Do not invent L/W, Contours, or a gauge. invent=false.
+    // UpdateItemType does not copy ErrorStatus onto the grid row.
+    // Only GetBorderSize writes it. Wait for each request, then require 0.
+    // Gauge comes from spec.thickness (drawing or classify), never the
+    // model thickness on the row. Direct field writes do not clear
+    // ErrorStatus. Do not invent L/W, Contours, or a gauge. invent=false.
     function fail(w, component) {
       return {why: w, component: component || 0};
+    }
+    function sleep(ms) {
+      return new Promise(function(resolve) { setTimeout(resolve, ms); });
+    }
+    function armAjax(substr, timeoutMs) {
+      return new Promise(function(resolve) {
+        if (!window.jQuery || !jQuery.ajax) { resolve(false); return; }
+        var orig = jQuery.ajax;
+        var settled = false;
+        var timer = setTimeout(function() { finish(false); }, timeoutMs);
+        function finish(ok) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (jQuery.ajax === wrapped) jQuery.ajax = orig;
+          resolve(!!ok);
+        }
+        function wrapped() {
+          var opts = arguments[0];
+          var url = "";
+          if (typeof opts === "string") url = opts;
+          else if (opts && opts.url) url = String(opts.url);
+          var ret = orig.apply(this, arguments);
+          if (url.indexOf(substr) >= 0) {
+            var done = function() { finish(true); };
+            if (ret && typeof ret.always === "function") ret.always(done);
+            else if (ret && typeof ret.then === "function") ret.then(done, done);
+            else done();
+          }
+          return ret;
+        }
+        jQuery.ajax = wrapped;
+      });
+    }
+    function gaugeIndex(data, token) {
+      var wantText = String(token || "").trim();
+      if (!wantText) return -1;
+      var wantN = null;
+      var numMatch = wantText.match(/-?\\d+(?:\\.\\d+)?/);
+      if (numMatch) {
+        var parsed = parseFloat(numMatch[0]);
+        if (isFinite(parsed)) wantN = parsed;
+      }
+      for (var ti = 0; ti < data.length; ti++) {
+        var item = data[ti];
+        if (item == null) continue;
+        if (typeof item === "string") {
+          if (item === wantText || item.indexOf(wantText) >= 0) return ti;
+          continue;
+        }
+        var desc = String(item.Description || item.description || "");
+        if (desc && (desc === wantText || desc.indexOf(wantText) >= 0 || wantText.indexOf(desc) >= 0)) {
+          return ti;
+        }
+        var thick = parseFloat(item.Thickness);
+        if (wantN != null && isFinite(thick) && Math.abs(thick - wantN) <= 1e-4) return ti;
+      }
+      return -1;
+    }
+    function readFresh() {
+      var fresh = [];
+      try {
+        var ds = g && g.dataSource && g.dataSource.data();
+        if (ds && ds.toJSON) fresh = ds.toJSON();
+      } catch (e4) { fresh = []; }
+      return fresh;
+    }
+    function inspectFresh(fresh) {
+      var component = 0;
+      for (var fi = 0; fi < fresh.length; fi++) {
+        var fr = fresh[fi] || {};
+        var fcat = String(fr.ItemType || fr.Category || fr.FileType || "");
+        if (fcat === "Linear" || fcat === "Assembly") continue;
+        if (fr.IsAssembly || Number(fr.ProductType) === 300) continue;
+        if (Number(fr.PartMode) === 1 || fr.IsLinear) continue;
+        var pt = fr.ProductType;
+        if (pt === 200 || pt === "200" || String(pt || "").toLowerCase() === "component") {
+          component += 1;
+        }
+        if (!Object.prototype.hasOwnProperty.call(fr, "ErrorStatus")
+            || fr.ErrorStatus === null || fr.ErrorStatus === "") {
+          return fail("errorstatus_not_zero", component);
+        }
+        var errN = Number(fr.ErrorStatus);
+        if (!isFinite(errN) || errN !== 0) return fail("errorstatus_not_zero", component);
+      }
+      if (component > 0) return fail("producttype_still_component", component);
+      return fail("", 0);
     }
     var want = String((specIn && specIn.quoteId) || "").trim().toLowerCase();
     if (!want) return fail("quote_id_missing", 0);
@@ -2240,6 +2330,8 @@ _PAGE_FINISH_JS = """(function(spec) {
       plates.push(r);
     }
     if (!plates.length) return fail("", 0);
+    var gauge = String((specIn && specIn.thickness) != null ? specIn.thickness : "").trim();
+    if (!gauge) return fail("thickness_missing", 0);
     var ddl = jQuery("#DXFItemType").data("kendoDropDownList");
     if (!ddl) return fail("no_dxfitemtype", 0);
     var cb = jQuery("#ThicknessEdit").data("kendoComboBox");
@@ -2251,50 +2343,26 @@ _PAGE_FINISH_JS = """(function(spec) {
       if (g && row.uid) {
         try { g.select(g.tbody.find("tr[data-uid='" + row.uid + "']")); } catch (e2) {}
       }
+      var cadDone = armAjax("/Part/UpdateItemType", 12000);
       ddl.value("cad");
       ddl.trigger("change");
-      var token = (row.Thickness == null) ? "" : String(row.Thickness).trim();
-      if (!token) return fail("thickness_missing", 0);
+      await cadDone;
       var data = [];
       try { data = (cb.dataSource && cb.dataSource.data()) || []; } catch (e3) { data = []; }
-      var idx = -1;
-      for (var ti = 0; ti < data.length; ti++) {
-        var item = data[ti];
-        var text = "";
-        if (item == null) text = "";
-        else if (typeof item === "string") text = item;
-        else text = String(item.Text || item.text || item.Name || item.Value || item.value || "");
-        if (text && (text === token || text.indexOf(token) >= 0)) { idx = ti; break; }
-      }
+      var idx = gaugeIndex(data, gauge);
       if (idx < 0) return fail("gauge_not_in_list", 0);
+      var borderDone = armAjax("/Quote/GetBorderSize", 12000);
       cb.select(idx);
       cb.trigger("change");
+      await borderDone;
     }
-    var fresh = [];
-    try {
-      var ds = g && g.dataSource && g.dataSource.data();
-      if (ds && ds.toJSON) fresh = ds.toJSON();
-    } catch (e4) { fresh = []; }
-    var component = 0;
-    for (var fi = 0; fi < fresh.length; fi++) {
-      var fr = fresh[fi] || {};
-      var fcat = String(fr.ItemType || fr.Category || fr.FileType || "");
-      if (fcat === "Linear" || fcat === "Assembly") continue;
-      if (fr.IsAssembly || Number(fr.ProductType) === 300) continue;
-      if (Number(fr.PartMode) === 1 || fr.IsLinear) continue;
-      var pt = fr.ProductType;
-      if (pt === 200 || pt === "200" || String(pt || "").toLowerCase() === "component") {
-        component += 1;
-      }
-      if (!Object.prototype.hasOwnProperty.call(fr, "ErrorStatus")
-          || fr.ErrorStatus === null || fr.ErrorStatus === "") {
-        return fail("errorstatus_not_zero", component);
-      }
-      var errN = Number(fr.ErrorStatus);
-      if (!isFinite(errN) || errN !== 0) return fail("errorstatus_not_zero", component);
+    var deadline = Date.now() + 2000;
+    var inspected = inspectFresh(readFresh());
+    while (inspected.why === "errorstatus_not_zero" && Date.now() < deadline) {
+      await sleep(25);
+      inspected = inspectFresh(readFresh());
     }
-    if (component > 0) return fail("producttype_still_component", component);
-    return fail("", 0);
+    return inspected;
   }
   function skipFinish(why) {
     return Promise.resolve(Object.assign(summarize(0, null), {
@@ -2310,7 +2378,7 @@ _PAGE_FINISH_JS = """(function(spec) {
   var rows = gridData();
   var count = rows.length;
   if (count >= 1) {
-    var native = applyPageNativeCadThickness(rows, spec);
+    var native = await applyPageNativeCadThickness(rows, spec);
     if (native && native.why) return skipFinish(native.why);
     rows = gridData();
     count = rows.length;
@@ -2990,12 +3058,93 @@ def page_finish_skip_after_edit_match_is_fail(
     return str(via or "").strip() in {"", "skipped"}
 
 
+_PAGE_JQUERY_AJAX_JS = """(function(spec) {
+  return new Promise(function(resolve) {
+    var token = "";
+    var tokenName = "__RequestVerificationToken";
+    try {
+      var el = document.querySelector("input[name='__RequestVerificationToken']");
+      if (!el) el = document.querySelector("input[name='RequestVerificationToken']");
+      if (!el) el = document.querySelector("input[name*='RequestVerification']");
+      if (el && String(el.value || "").trim()) {
+        token = String(el.value);
+        tokenName = el.getAttribute("name") || tokenName;
+      }
+    } catch (e0) {}
+    if (!window.jQuery || !jQuery.ajax) {
+      resolve({ok: false, why: "no_jquery", status: 0});
+      return;
+    }
+    var data = {};
+    var src = (spec && spec.data && typeof spec.data === "object") ? spec.data : {};
+    var keys = Object.keys(src);
+    for (var i = 0; i < keys.length; i++) data[keys[i]] = src[keys[i]];
+    var method = String((spec && spec.method) || "GET").toUpperCase();
+    if (token && method !== "GET") data[tokenName] = token;
+    jQuery.ajax({
+      url: String((spec && spec.url) || ""),
+      type: method,
+      data: data,
+      dataType: String((spec && spec.dataType) || "json")
+    }).done(function(body, _t, xhr) {
+      resolve({ok: true, status: (xhr && xhr.status) || 200, body: body});
+    }).fail(function(xhr) {
+      var text = "";
+      try { text = String((xhr && (xhr.responseText || xhr.statusText)) || ""); } catch (e1) {}
+      resolve({ok: false, status: (xhr && xhr.status) || 0, why: "ajax_failed", body: text});
+    });
+  });
+})"""
+
+
+def page_jquery_ajax(
+    *,
+    url: str,
+    method: str,
+    data: dict[str, Any] | None,
+    quote_id: str,
+    data_type: str = "json",
+    base: str | None = None,
+) -> dict[str, Any]:
+    """In-page $.ajax. Reads the antiforgery token from the DOM. No cookies."""
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=False)
+    if not gate.get("ok"):
+        return {
+            "ok": False,
+            "why": str(gate.get("reason") or "wrong_document"),
+            "status": 0,
+            "body": None,
+        }
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    spec = {
+        "url": str(url),
+        "method": str(method or "GET"),
+        "data": data or {},
+        "dataType": str(data_type or "json"),
+    }
+    value = _cdp_evaluate_promise(
+        _PAGE_JQUERY_AJAX_JS + "(" + json.dumps(spec) + ")",
+        base=base,
+        tab=tab,
+        fallback=False,
+    )
+    if not isinstance(value, dict):
+        return {"ok": False, "why": "empty", "status": 0, "body": None}
+    return value
+
+
 def invoke_page_dxf_finish(
     *,
     base: str | None = None,
     quote_id: str | None = None,
+    thickness: str | None = None,
 ) -> dict[str, Any]:
-    """Kyle Finish on /Quote/EDIT: page fn that POSTs /Quote/AddItem_DXFFiles."""
+    """Kyle Finish on /Quote/EDIT: page fn that POSTs /Quote/AddItem_DXFFiles.
+
+    ``thickness`` is the drawing or classify gauge (``0.076`` or
+    ``.076 - 14 Ga``). The page does not read the model thickness.
+    Missing gauge fails closed inside the page script.
+    """
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     skipped = {
         "via": "skipped",
@@ -3041,11 +3190,12 @@ def invoke_page_dxf_finish(
     if not gate.get("ok"):
         return skipped
     tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    spec: dict[str, str] = {"quoteId": str(quote_id or "")}
+    gauge = str(thickness or "").strip()
+    if gauge:
+        spec["thickness"] = gauge
     value = _cdp_evaluate_promise(
-        _PAGE_FINISH_JS
-        + "("
-        + json.dumps({"quoteId": str(quote_id or "")})
-        + ")",
+        _PAGE_FINISH_JS + "(" + json.dumps(spec) + ")",
         base=base,
         tab=tab,
         fallback=False,

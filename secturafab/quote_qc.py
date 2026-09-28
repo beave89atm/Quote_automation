@@ -239,12 +239,12 @@ def check_tree(
     """FLAG unless the tree proves every §12 check. Never default a field."""
     flags: list[str] = []
     parsed = _tree_shape(tree) if isinstance(tree, dict) else None
-    if parsed is None:
+    if parsed is None or not parsed[1]:
         return QcReport(
             label=label or "quote",
             status="FLAG",
-            flags=["tree rows missing"],
-            summary="part list mismatch · units not all inch · Contours not ok · formed unknown · Err not 0 · price missing",
+            flags=["no lines"],
+            summary="n/a",
         )
     shape, rows = parsed
     if isinstance(tree, dict) and "Errors" in tree:
@@ -402,8 +402,6 @@ def check_tree(
             )
     elif len(parents) > 1:
         flags.append("parent price rollup unproved")
-    if not parents:
-        flags.append("weld labor not on parent (waiting on Kyle; not guessed)")
     bend_have = 0
     bend_need = 0
     if formed is None:
@@ -450,20 +448,29 @@ def fetch_tree(quote_id: str, *, reader: Callable[[str], Any]) -> Any:
 
 
 def _default_reader(quote_id: str) -> Any:
-    from .chrome_cdp import SessionDeadError, abort_if_session_dead
-    from .client import SecturaFabClient
+    """In-page tree read. The page session is used. Cookies are not read."""
+    from .chrome_cdp import SessionDeadError, abort_if_session_dead, page_jquery_ajax
 
-    client = SecturaFabClient()
     try:
-        data = client.quote_item_read_treelist(str(quote_id))
+        result = page_jquery_ajax(
+            url=TREE_PATH,
+            method="GET",
+            data={"ParentID": str(quote_id)},
+            quote_id=str(quote_id),
+        )
     except SessionDeadError:
         raise
     except Exception as exc:
         abort_if_session_dead(body=str(exc), url=str(getattr(exc, "body", "") or ""))
         raise
-    if isinstance(data, str):
-        abort_if_session_dead(body=data, url=data)
-    return data
+    body = result.get("body") if isinstance(result, dict) else None
+    if isinstance(body, str):
+        abort_if_session_dead(body=body, url=body)
+    if isinstance(result, dict) and result.get("ok") and isinstance(body, (dict, list)):
+        return body
+    why = result.get("why") if isinstance(result, dict) else "empty"
+    abort_if_session_dead(body=str(body or ""), url=str(why or ""))
+    raise RuntimeError(f"in-page tree read failed ({why})")
 
 
 def main(argv: list[str] | None = None) -> int:

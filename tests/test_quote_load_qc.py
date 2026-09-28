@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -268,6 +269,12 @@ def test_page_native_cad_thickness_recipe_and_inch_finish():
     assert "cb.value" not in native
     assert 'set("Thickness"' not in native
     assert "fetch(" not in native
+    assert "item.Description" in native
+    assert "1e-4" in native
+    assert "specIn.thickness" in native
+    assert "row.Thickness" not in native
+    assert "/Part/UpdateItemType" in native
+    assert "armAjax" in native
     assert _PAGE_FINISH_JS.index("applyPageNativeCadThickness(rows, spec)") < _PAGE_FINISH_JS.index(
         "var finishName = findFinishName()"
     )
@@ -276,3 +283,265 @@ def test_page_native_cad_thickness_recipe_and_inch_finish():
     assert 'throw new Error("units_not_inch")' in _PAGE_FINISH_JS
     with pytest.raises(CadFinishNotInches):
         _cad_finish_dim_to_meters(12.5, "inch")
+
+
+def test_empty_tree_is_na_not_false_green():
+    from secturafab.quote_qc import check_tree
+
+    report = check_tree({"rows": [], "grid": []}, EXPECTED, formed=FORMED, label=LABEL)
+    assert report.status == "FLAG"
+    assert report.flags == ["no lines"]
+    assert report.summary == "n/a"
+    text = report.text()
+    assert "all inch" not in text
+    assert "Contours ok" not in text
+    assert "Err 0" not in text
+    live_empty = check_tree(
+        {"Data": [], "Total": 0, "Errors": None}, EXPECTED, formed=[], label="Q"
+    )
+    assert live_empty.flags == ["no lines"]
+    assert live_empty.summary == "n/a"
+
+
+def test_single_part_without_assembly_does_not_flag_weld():
+    from secturafab.quote_qc import check_tree
+
+    tree = {
+        "rows": [
+            {
+                "N": "A-11521-000",
+                "PT": 100,
+                "Q": 1,
+                "Desc": "A-11521-000  - 14 Ga A36 26.64 in X 37.5 in",
+                "U": "inch",
+                "Len": 37.5,
+                "W": 26.64,
+                "C": 1,
+                "Err": 0,
+                "UP": 10.0,
+                "UC": 4.0,
+            }
+        ],
+        "grid": ["1 1 0 A-11521-000 dummy in PR part 1 lbs 1m $10.00 $10.00"],
+    }
+    report = check_tree(tree, {"A-11521-000": 1}, formed=[], label="Q10504")
+    assert report.status == "PASS"
+    assert report.flags == []
+
+
+def test_page_native_description_gauge_and_delayed_errorstatus():
+    import shutil
+    import subprocess
+    import textwrap
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+
+    start = _PAGE_FINISH_JS.index("async function applyPageNativeCadThickness")
+    end = _PAGE_FINISH_JS.index("  function skipFinish")
+    fn = _PAGE_FINISH_JS[start:end]
+    script = textwrap.dedent(
+        r"""
+        const vm = require("vm");
+        const code = require("fs").readFileSync(process.argv[2], "utf8");
+        const row = {
+          uid: "u1",
+          ItemType: "Cad",
+          PartMode: 0,
+          ProductType: 100,
+          Thickness: 0.075,
+          ErrorStatus: 2,
+          Material: "A36"
+        };
+        const items = [{
+          Thickness: 0.076,
+          Thickness_Units: "inch",
+          Value: "0.0760:inch",
+          Description: ".076 - 14 Ga"
+        }];
+        let selected = -1;
+        const sandbox = {
+          setTimeout, clearTimeout, Date, Promise, console, Math, parseFloat,
+          isFinite, Number, String, Object
+        };
+        sandbox.window = sandbox;
+        sandbox.document = { querySelector: () => ({ textContent: "Q10504" }) };
+        sandbox.location = { href: "https://www.secturafab.com/Quote/EDIT/qid" };
+        function Deferred() {
+          const fns = [];
+          return {
+            always(fn) { fns.push(fn); return this; },
+            then(fn) { fns.push(fn); return this; },
+            resolve() { fns.forEach((fn) => fn()); }
+          };
+        }
+        sandbox.jQuery = function(sel) {
+          return {
+            data(name) {
+              if (name === "kendoDropDownList") {
+                return {
+                  value() {},
+                  trigger() { sandbox.jQuery.ajax({ url: "/Part/UpdateItemType" }); }
+                };
+              }
+              if (name === "kendoComboBox") {
+                return {
+                  dataSource: { data() { return items; } },
+                  select(idx) { selected = idx; },
+                  trigger() { sandbox.jQuery.ajax({ url: "/Quote/GetBorderSize" }); }
+                };
+              }
+              if (name === "kendoGrid") {
+                return {
+                  select() {},
+                  tbody: { find() { return {}; } },
+                  dataSource: { data() { return { toJSON() { return [row]; } }; } }
+                };
+              }
+              return null;
+            }
+          };
+        };
+        sandbox.jQuery.ajax = function(opts) {
+          const d = Deferred();
+          const url = String((opts && opts.url) || "");
+          if (url.indexOf("GetBorderSize") >= 0) {
+            setTimeout(() => {
+              d.resolve();
+              setTimeout(() => { row.ErrorStatus = 0; }, 40);
+            }, 15);
+          } else {
+            setTimeout(() => d.resolve(), 10);
+          }
+          return d;
+        };
+        sandbox.getSelected = () => selected;
+        sandbox.currentErr = () => row.ErrorStatus;
+        sandbox.resetErr = () => { row.ErrorStatus = 2; selected = -1; };
+        vm.createContext(sandbox);
+        const runner = `
+          (async () => {
+            const rows = [{
+              uid: "u1", ItemType: "Cad", PartMode: 0, ProductType: 100,
+              Thickness: 0.075, ErrorStatus: 2
+            }];
+            const described = await applyPageNativeCadThickness(
+              rows, { quoteId: "qid", thickness: ".076 - 14 Ga" }
+            );
+            const describedIdx = getSelected();
+            const errAfter = currentErr();
+            resetErr();
+            const numeric = await applyPageNativeCadThickness(
+              rows, { quoteId: "qid", thickness: "0.076" }
+            );
+            const numericIdx = getSelected();
+            resetErr();
+            const model = await applyPageNativeCadThickness(
+              rows, { quoteId: "qid", thickness: "0.075" }
+            );
+            const missing = await applyPageNativeCadThickness(
+              rows, { quoteId: "qid" }
+            );
+            return {
+              described: described.why,
+              describedIdx,
+              numeric: numeric.why,
+              numericIdx,
+              model: model.why,
+              missing: missing.why,
+              err: errAfter
+            };
+          })()
+        `;
+        vm.runInContext(code + "\n" + runner, sandbox).then((out) => {
+          console.log(JSON.stringify(out));
+        }).catch((err) => {
+          console.error(err && err.stack || err);
+          process.exit(1);
+        });
+        """
+    )
+    path = Path(__file__).resolve().parent / "_page_native_thickness_probe.js"
+    fn_path = Path(__file__).resolve().parent / "_page_native_thickness_fn.js"
+    fn_path.write_text(fn, encoding="utf-8")
+    path.write_text(script, encoding="utf-8")
+    try:
+        proc = subprocess.run(
+            [node, str(path), str(fn_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    finally:
+        path.unlink(missing_ok=True)
+        fn_path.unlink(missing_ok=True)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out["described"] == ""
+    assert out["describedIdx"] == 0
+    assert out["numeric"] == ""
+    assert out["numericIdx"] == 0
+    assert out["model"] == "gauge_not_in_list"
+    assert out["missing"] == "thickness_missing"
+    assert out["err"] == 0
+
+
+def test_finish_cad_files_live_chrome_skips_cookie_reads(tmp_path, monkeypatch):
+    from secturafab.push import SecturaFabPushService
+
+    calls: list[dict] = []
+
+    def _ajax(**kwargs):
+        calls.append(kwargs)
+        if str(kwargs.get("url") or "").endswith("SetUnits"):
+            raise RuntimeError("stop-after-units")
+        return {"ok": True, "status": 200, "body": "<div id='dxf'></div>"}
+
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_session_lost", lambda *a, **k: False)
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *a, **k: True)
+    monkeypatch.setattr("secturafab.chrome_cdp.page_jquery_ajax", _ajax)
+    stp = tmp_path / "A-11521-000.step"
+    stp.write_bytes(b"ISO")
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "files_kendo": True,
+        "upload_via": "page_add_files",
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-1", "ID": "src-1"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {"via": "not-yet"}
+    service = SecturaFabPushService(client=client)
+    with pytest.raises(RuntimeError, match="stop-after-units"):
+        service.finish_cad_files(
+            quote_id="b78fd84e-4fe3-460d-878d-fd251dafe8e6",
+            cad_files=[stp],
+            material="A36",
+            thickness="0.076",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="A-11521-000",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    urls = [str(call.get("url") or "") for call in calls]
+    assert urls == ["/Quote/GetItem_AddView", "/CadImport/SetUnits"]
+    assert calls[0]["method"] == "GET"
+    assert calls[1]["method"] == "POST"
+    assert calls[1]["data"] == {"units": "inch"}
+    client.get_item_add_view.assert_not_called()
+    client.cadimport_set_units.assert_not_called()
+    client.harvest_chrome_antiforgery.assert_not_called()
+
+
+def test_quote_qc_live_read_is_in_page_ajax():
+    src = Path("secturafab/quote_qc.py").read_text(encoding="utf-8")
+    assert "page_jquery_ajax" in src
+    assert "quote_item_read_treelist" not in src
+    assert 'method="GET"' in src

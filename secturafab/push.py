@@ -3225,19 +3225,42 @@ class SecturaFabPushService:
                 "/CadImport/UploadItem_DXFFiles, not chunking, not Image Files"
             )
             return notes
+        in_page = False
         try:
-            self.client.get_item_add_view(quote_id, item_type="dxf")
-            notes.append(
-                "GetItem_AddView cookie-HTTP (AF scrape, not the Chrome "
-                "CAD Files dialog)"
+            from .chrome_cdp import chrome_quotes_live as _chrome_quotes_live
+
+            in_page = bool(_chrome_quotes_live())
+        except (OSError, TypeError, ValueError):
+            in_page = False
+        if in_page:
+            from .chrome_cdp import page_jquery_ajax
+
+            view = page_jquery_ajax(
+                url="/Quote/GetItem_AddView",
+                method="GET",
+                data={"ID": quote_id, "ItemType": "dxf"},
+                quote_id=quote_id,
+                data_type="html",
             )
-        except SecturaFabWebsiteAuthError:
+            html = view.get("body") if isinstance(view, dict) else ""
+            self.client._last_item_add_view_html = html if isinstance(html, str) else ""
             notes.append(
-                "GetItem_AddView 302 — continuing CadImport upload / Finish "
-                "with bearer (AddItem_DXFFiles still needs a website session)"
+                "GetItem_AddView in-page $.ajax (DOM antiforgery, no cookie read)"
             )
-        except SecturaFabApiError as exc:
-            notes.append(f"WARNING: GetItem_AddView returned {exc}")
+        else:
+            try:
+                self.client.get_item_add_view(quote_id, item_type="dxf")
+                notes.append(
+                    "GetItem_AddView cookie-HTTP (AF scrape, not the Chrome "
+                    "CAD Files dialog)"
+                )
+            except SecturaFabWebsiteAuthError:
+                notes.append(
+                    "GetItem_AddView 302 — continuing CadImport upload / Finish "
+                    "with bearer (AddItem_DXFFiles still needs a website session)"
+                )
+            except SecturaFabApiError as exc:
+                notes.append(f"WARNING: GetItem_AddView returned {exc}")
 
         cad_filename = cad_files[0].name if cad_files else ""
         upload_payload: Any = None
@@ -3340,10 +3363,27 @@ class SecturaFabPushService:
                     fh.close()
             upload_rows = filelist_from_cadimport_upload(upload_payload)
 
-        try:
-            self.client.cadimport_set_units("inch")
-        except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
-            notes.append(f"WARNING: CadImport SetUnits failed: {exc}")
+        if in_page:
+            from .chrome_cdp import page_jquery_ajax
+
+            units = page_jquery_ajax(
+                url="/CadImport/SetUnits",
+                method="POST",
+                data={"units": "inch"},
+                quote_id=quote_id,
+            )
+            if not (isinstance(units, dict) and units.get("ok")):
+                why = units.get("why") if isinstance(units, dict) else "empty"
+                notes.append(f"WARNING: CadImport SetUnits in-page failed: {why}")
+            else:
+                notes.append(
+                    "CadImport SetUnits in-page $.ajax (DOM antiforgery, no cookie read)"
+                )
+        else:
+            try:
+                self.client.cadimport_set_units("inch")
+            except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
+                notes.append(f"WARNING: CadImport SetUnits failed: {exc}")
 
         if page_next_rows is not None:
             from .cadimport_js import (
@@ -3924,6 +3964,7 @@ class SecturaFabPushService:
             file_list=ready,
             item_id=EMPTY_GUID,
             customer_material=False,
+            thickness=str(thickness or ""),
         )
         via = getattr(self.client, "_finish_via", "") or ""
         if isinstance(via, str) and via:

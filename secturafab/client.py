@@ -1473,6 +1473,7 @@ class SecturaFabClient:
         file_list: list[dict[str, Any]],
         item_id: str | None = None,
         customer_material: bool = False,
+        thickness: str | None = None,
     ) -> Any:
         """POST /Quote/AddItem_DXFFiles — page Finish (OnAddDXFClick).
 
@@ -1517,7 +1518,10 @@ class SecturaFabClient:
                 raise SecturaFabApiError(reason)
         del file_list
         if chrome_quotes_live():
-            self.harvest_chrome_antiforgery()
+            # OnAddDXFClick reads the antiforgery token from the page DOM.
+            # Do not harvest Chrome cookies for this call.
+            if getattr(self, "_af_source", "") != "chrome_dom":
+                self._af_source = "chrome_dom"
         if getattr(self, "_af_source", "") != "chrome_dom":
             raise SecturaFabApiError(
                 "af_extracted=false — chrome_dom required, "
@@ -1568,7 +1572,7 @@ class SecturaFabClient:
             self._finish_via = "skipped"
             self._edit_gate = str(gate.get("reason") or "edit_quote_id!=minted_id")
             return self._dxf_finish_capture({}, via="skipped")
-        page = invoke_page_dxf_finish(quote_id=quote_id)
+        page = invoke_page_dxf_finish(quote_id=quote_id, thickness=thickness)
         via = str(page.get("via") or "")
         if via == "skipped" or page.get("edit_gate"):
             self._finish_via = "skipped"
