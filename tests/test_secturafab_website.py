@@ -8946,7 +8946,8 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     """Q10366 HAR Finish FileList: no invented Status, omit ImageString.
 
     Cad Contours plate → ItemType=cad ProductType=bar productSubType=bar_flat
-    Machine=Laser Length/Width meters. invent=false. Do not invent Contours.
+    Machine=Laser. Length/Width stay inches. Meter units raise.
+    invent=false. Do not invent Contours.
     PR62 empty InternalData still Finishes when recipe complete.
     """
     from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS, _PAGE_FINISH_JS
@@ -9045,9 +9046,9 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert posted["ProductSubType"] == "bar_flat"
     assert posted["productSubType"] == "bar_flat"
     assert posted["Machine"] == "Laser"
-    assert posted["Length_Units"] == "meter"
-    assert posted["Length"] == pytest.approx(6.25 * 0.0254)
-    assert posted["Width"] == pytest.approx(11.0 * 0.0254)
+    assert posted["Length_Units"] == "inch"
+    assert posted["Length"] == pytest.approx(6.25)
+    assert posted["Width"] == pytest.approx(11.0)
     assert posted["InternalData"] == ""
     assert posted["Thickness"] == "0.1875"
     assert posted["Thickness_Units"] == "inch"
@@ -9090,7 +9091,9 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert row["ProductType"] == "bar"
     assert row["ProductSubType"] == "bar_flat"
     assert row["Machine"] == "Laser"
-    assert row["Length_Units"] == "meter"
+    assert row["Length_Units"] == "inch"
+    assert row["Length"] == pytest.approx(6.25)
+    assert row["Width"] == pytest.approx(11.0)
     assert row["Stock_X"] == 11.0
     assert row["Stock_Y"] == 6.25
     assert cap["should_finish"] is True
@@ -9110,7 +9113,9 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert built["ProductType"] == "bar"
     assert built["ProductSubType"] == "bar_flat"
     assert built["Machine"] == "Laser"
-    assert built["Length_Units"] == "meter"
+    assert built["Length_Units"] == "inch"
+    assert built["Length"] == pytest.approx(6.25)
+    assert built["Width"] == pytest.approx(11.0)
     assert built["Stock_X"] == 11.0
     assert built["Stock_Y"] == 6.25
 
@@ -21345,12 +21350,13 @@ def test_finish_preserves_cadimport_flat_lw_not_step_aabb():
     assert contours_tip_flat_lw_refuses(server) is None
     assert step_cad_finish_hard_gate([server]) is None
     posted = sanitize_cad_contours_plate_finish_filelist_row(server)
-    assert posted["Length"] == pytest.approx(12.5 * 0.0254)
-    assert posted["Width"] == pytest.approx(4.25 * 0.0254)
+    assert posted["Length"] == pytest.approx(12.5)
+    assert posted["Width"] == pytest.approx(4.25)
+    assert posted["Length_Units"] == "inch"
     assert posted["Stock_X"] == 4.25
     assert posted["Stock_Y"] == 12.5
-    assert posted["Length"] != pytest.approx(18.0 * 0.0254)
-    assert posted["Width"] != pytest.approx(9.0 * 0.0254)
+    assert posted["Length"] != pytest.approx(18.0)
+    assert posted["Width"] != pytest.approx(9.0)
     assert "step_bbox" not in posted
     assert "NumberOfContours" not in posted
     assert "Contours" not in posted
@@ -21363,17 +21369,18 @@ def test_finish_preserves_cadimport_flat_lw_not_step_aabb():
     assert cap["should_finish"] is True
     assert cap["contours_tip_flat_lw"] == ""
     built = build_dxf_finish_payload("qid", [server])["FileList"][0]
-    assert built["Length"] == pytest.approx(12.5 * 0.0254)
+    assert built["Length"] == pytest.approx(12.5)
+    assert built["Length_Units"] == "inch"
     assert built["Stock_X"] == 4.25
     assert "step_bbox" not in built
+    from secturafab.website import CadFinishNotInches
+
     meters = dict(server)
     meters["Length"] = 0.3175
     meters["Width"] = 0.10795
     meters["Length_Units"] = "meter"
-    kept = sanitize_cad_contours_plate_finish_filelist_row(meters)
-    assert kept["Length"] == pytest.approx(0.3175)
-    assert kept["Width"] == pytest.approx(0.10795)
-    assert kept["Length"] != pytest.approx(18.0)
+    with pytest.raises(CadFinishNotInches):
+        sanitize_cad_contours_plate_finish_filelist_row(meters)
     from secturafab.chrome_cdp import _PAGE_FINISH_JS
 
     assert "flatDimSourceIsStepAabb" in _PAGE_FINISH_JS

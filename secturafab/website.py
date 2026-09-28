@@ -6537,9 +6537,17 @@ KYLE_HAR_CAD_CONTOURS_PLATE_KEEP_KEYS = tuple(
 )
 _INCH_TO_METER = 0.0254
 _METER_UNITS = frozenset(
-    {"meter", "metre", "meters", "metres", "m"}
+    {"meter", "metre", "meters", "metres", "m", "mm", "millimeter", "millimeters"}
 )
 _INCH_UNITS = frozenset({"inch", "inches", "in"})
+
+
+class CadFinishNotInches(RuntimeError):
+    """App Finish refuses a line that is not already in inches.
+
+    Q10488: rewriting L/W into meters posted a multi-million-dollar line.
+    Do not convert. invent=false.
+    """
 
 
 def _cad_finish_dim_to_meters(
@@ -6548,20 +6556,65 @@ def _cad_finish_dim_to_meters(
     *,
     stock_inch: float | None = None,
 ) -> float | None:
-    """Length/Width for Kyle HAR FileList. Do not invent a missing dim."""
-    n = _filelist_dim(val)
-    if n <= 0:
-        return None
-    unit = str(units or "").strip().casefold()
-    if unit in _METER_UNITS:
-        return n
-    if unit in _INCH_UNITS:
-        return n * _INCH_TO_METER
-    if stock_inch is not None and stock_inch > 0 and abs(n - stock_inch) < 1e-9:
-        return n * _INCH_TO_METER
-    if n > 2.0:
-        return n * _INCH_TO_METER
-    return n
+    """Removed. Rewriting L/W into meters is fail-closed."""
+    del val, units, stock_inch
+    raise CadFinishNotInches(
+        "Finish refused: do not rewrite L/W into meters. "
+        "Lines must already be inches. invent=false."
+    )
+
+
+def _finish_dim_units(out: dict[str, Any]) -> str:
+    for key in ("Length_Units", "Width_Units", "Stock_Units"):
+        raw = out.get(key)
+        if raw not in (None, ""):
+            return str(raw).strip().casefold()
+    return ""
+
+
+def _keep_finish_dims_inches(out: dict[str, Any]) -> None:
+    """Keep server L/W only when units are already inches.
+
+    Meter or other named units raise. Missing units do not get a
+    guessed inch label and are not rewritten into meters. Stock is
+    copied onto Length/Width only when the row is already inches.
+    invent=false.
+    """
+    unit = _finish_dim_units(out)
+    length_src = out.get("Length")
+    width_src = out.get("Width")
+    has_lw = _filelist_dim(length_src) > 0 or _filelist_dim(width_src) > 0
+    has_stock = (
+        _filelist_dim(out.get("Stock_X")) > 0
+        or _filelist_dim(out.get("Stock_Y")) > 0
+        or _filelist_dim(out.get("Stock_Length")) > 0
+    )
+    if unit in _METER_UNITS or (unit and unit not in _INCH_UNITS):
+        if has_lw or has_stock:
+            raise CadFinishNotInches(
+                "Finish refused: L/W units "
+                f"{unit} are not inch. "
+                "Do not rewrite L/W into meters. invent=false."
+            )
+        return
+    if unit not in _INCH_UNITS:
+        if has_lw:
+            raise CadFinishNotInches(
+                "Finish refused: L/W units missing are not inch. "
+                "Do not rewrite L/W into meters. invent=false."
+            )
+        return
+    if length_src in (None, ""):
+        length_src = out.get("Stock_Y")
+        if length_src in (None, ""):
+            length_src = out.get("Stock_Length")
+    if width_src in (None, ""):
+        width_src = out.get("Stock_X")
+    if _filelist_dim(length_src) > 0:
+        out["Length"] = _filelist_dim(length_src)
+        out["Length_Units"] = "inch"
+    if _filelist_dim(width_src) > 0:
+        out["Width"] = _filelist_dim(width_src)
 
 
 def cad_contours_plate_filelist0_values(row: dict[str, Any] | None) -> dict[str, Any]:
@@ -6813,7 +6866,8 @@ def sanitize_cad_contours_plate_finish_filelist_row(
 
     invent=false. Do not invent Status. Do not send ImageString unless
     Kyle path requires it (default omit like Q10366 HAR). Prefer HAR
-    shape: cad + bar/bar_flat + Laser, Length/Width meters. Strip
+    shape: cad + bar/bar_flat + Laser. Length/Width stay inches.
+    Meter or unknown units raise CadFinishNotInches (Q10488). Strip
     tip-only keys (FileType/PartMode/SourceDataID/CadType/IsPlate).
     KEEP = Kyle HAR key set — copy all present non-STRIP keys so
     Stock_X/Stock_Y and the rest of the ~44 Kyle-present fields
@@ -6829,38 +6883,7 @@ def sanitize_cad_contours_plate_finish_filelist_row(
     out = strip_step_aabb_from_finish_row(row)
     if not _cad_plate_row_for_finish_gate(out):
         return out
-    stock_y = _filelist_dim(out.get("Stock_Y") or out.get("Stock_Length"))
-    stock_x = _filelist_dim(out.get("Stock_X"))
-    length_src = out.get("Length")
-    if length_src in (None, ""):
-        length_src = out.get("Stock_Y") or out.get("Stock_Length")
-    width_src = out.get("Width")
-    if width_src in (None, ""):
-        width_src = out.get("Stock_X")
-    length_units = out.get("Length_Units") or out.get("Stock_Units")
-    length_m = _cad_finish_dim_to_meters(
-        length_src,
-        length_units,
-        stock_inch=stock_y if stock_y > 0 else None,
-    )
-    # Kyle omits Width_Units. After Length_Units=meter, Width is meters
-    # too — do not fall back to Stock_Units=inch and reconvert.
-    width_units = out.get("Width_Units")
-    if width_units in (None, ""):
-        if str(out.get("Length_Units") or "").strip().casefold() in _METER_UNITS:
-            width_units = "meter"
-        else:
-            width_units = out.get("Stock_Units")
-    width_m = _cad_finish_dim_to_meters(
-        width_src,
-        width_units,
-        stock_inch=stock_x if stock_x > 0 else None,
-    )
-    if length_m is not None:
-        out["Length"] = length_m
-        out["Length_Units"] = "meter"
-    if width_m is not None:
-        out["Width"] = width_m
+    _keep_finish_dims_inches(out)
     lean: dict[str, Any] = {}
     strip = set(KYLE_HAR_CAD_CONTOURS_PLATE_STRIP_KEYS)
     if kyle_send_imagestring:

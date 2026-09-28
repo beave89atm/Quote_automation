@@ -583,6 +583,67 @@ def chrome_login_page(base: str | None = None) -> bool:
     return False
 
 
+ANOTHER_USER_BANNER = (
+    "Another user has logged in with your credentials on a different system. "
+    "If you login, they will be logged out."
+)
+
+
+class SessionDeadError(RuntimeError):
+    """Sectura session is dead. Stop writes. invent=false."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(
+            f"Sectura session dead ({reason}). Stop all writes. invent=false."
+        )
+
+
+def session_is_dead(
+    *,
+    url: str | None = None,
+    title: str | None = None,
+    status: int | None = None,
+    location: str | None = None,
+    body: str | None = None,
+) -> str | None:
+    """Reason the session is dead, or None when these signals are absent.
+
+    Dead when the page is ``/Account/Login*``, the title is
+    ``SecturaFAB-Login``, an XHR is a 302 to login, or the other-user
+    banner is on the page. Does not invent a live session from a blank
+    probe — a blank probe is not itself dead.
+    """
+    url_s = str(url or "")
+    title_s = str(title or "")
+    loc_s = str(location or "")
+    blob = str(body or "")
+    if re.search(r"/Account/Login", url_s, flags=re.IGNORECASE):
+        return "login_url"
+    if title_s.strip() == "SecturaFAB-Login":
+        return "login_title"
+    try:
+        code = int(status) if status is not None and status != "" else 0
+    except (TypeError, ValueError):
+        code = 0
+    if code in {301, 302, 303, 307, 308} and re.search(
+        r"/Account/Login|SecturaFAB-Login",
+        f"{loc_s} {url_s}",
+        flags=re.IGNORECASE,
+    ):
+        return "login_redirect"
+    if ANOTHER_USER_BANNER in blob or "Another user has logged in" in blob:
+        return "license_in_use"
+    return None
+
+
+def abort_if_session_dead(**kwargs: Any) -> None:
+    """Raise before any write when the session probe is dead."""
+    reason = session_is_dead(**kwargs)
+    if reason:
+        raise SessionDeadError(reason)
+
+
 _QUOTES_LIST_SESSION_JS = """(function() {
   return fetch("/Quote", {
     method: "GET",
@@ -640,9 +701,17 @@ def chrome_session_lost(
 
     Login page is lost. No Chrome tab (unit tests) is not lost. A Quotes or
     leftover EDIT tab requires in-page GET /Quote 200 (live P904272-1).
+    Also dead: ``/Account/Login*``, title ``SecturaFAB-Login``, a 302 to
+    login, or the other-user banner. Stop writes. invent=false.
     """
     if chrome_login_page(base):
         return True
+    for tab in _chrome_page_targets(base):
+        if session_is_dead(
+            url=str(tab.get("url") or ""),
+            title=str(tab.get("title") or ""),
+        ):
+            return True
     if quotes_tab(base) is None:
         return False
     from .website import live_quotes_fetch_ok
@@ -650,6 +719,14 @@ def chrome_session_lost(
     probe = fetch if isinstance(fetch, dict) and fetch else quotes_list_session_fetch(
         base
     )
+    if isinstance(probe, dict) and session_is_dead(
+        url=str(probe.get("url") or ""),
+        title=str(probe.get("title") or ""),
+        status=probe.get("status"),
+        location=str(probe.get("location") or ""),
+        body=str(probe.get("body") or probe.get("text") or ""),
+    ):
+        return True
     return not live_quotes_fetch_ok(probe)
 
 
@@ -1629,7 +1706,7 @@ _BIND_DO_CREATE_SUCCESS_JS = """(function(spec) {
 })"""
 
 
-_PAGE_FINISH_JS = """(function() {
+_PAGE_FINISH_JS = """(function(spec) {
   function sidEmpty(v) {
     return v == null || v === "" || v === 0 || v === "0";
   }
@@ -1698,16 +1775,10 @@ _PAGE_FINISH_JS = """(function() {
     return tok === "step" || tok === "stp" || tok === "bbox"
       || tok === "step_bbox" || tok === "stp_bbox" || tok === "step_derived";
   }
-  function toMeters(val, units, stockInch) {
-    var n = parseFloat(val);
-    if (!isFinite(n) || n <= 0) return null;
-    if (isMeterUnit(units)) return n;
-    if (isInchUnit(units)) return n * 0.0254;
-    if (stockInch != null && isFinite(stockInch) && Math.abs(n - stockInch) < 1e-9) {
-      return n * 0.0254;
-    }
-    if (n > 2.0) return n * 0.0254;
-    return n;
+  function toMeters() {
+    // Q10488: rewriting L/W into meters posted a multi-million line.
+    // Fail closed. Do not convert. invent=false.
+    throw new Error("units_not_inch");
   }
   function omitFileListKey(r, key) {
     if (!r || typeof r !== "object") return;
@@ -1764,33 +1835,33 @@ _PAGE_FINISH_JS = """(function() {
       omitFileListKey(r, "Stock_Length");
       return r;
     }
-    var stockY = parseFloat(r.Stock_Y != null ? r.Stock_Y : r.Stock_Length);
-    var stockX = parseFloat(r.Stock_X);
+    // Keep CadImport flats in inches. Do not rewrite L/W into meters.
     var lengthSrc = (r.Length != null && r.Length !== "")
       ? r.Length : (r.Stock_Y != null ? r.Stock_Y : r.Stock_Length);
     var widthSrc = (r.Width != null && r.Width !== "") ? r.Width : r.Stock_X;
-    var lengthM = toMeters(lengthSrc, r.Length_Units || r.Stock_Units, stockY);
-    var widthUnits = r.Width_Units;
-    if (widthUnits == null || widthUnits === "") {
-      widthUnits = isMeterUnit(r.Length_Units) ? "meter" : r.Stock_Units;
+    var unitTok = r.Length_Units || r.Width_Units || r.Stock_Units;
+    var lenN = parseFloat(lengthSrc);
+    var widN = parseFloat(widthSrc);
+    var hasDim = (isFinite(lenN) && lenN > 0) || (isFinite(widN) && widN > 0);
+    if (hasDim && !isInchUnit(unitTok)) {
+      if (typeof r.set === "function") r.set("_units_not_inch", true);
+      else r._units_not_inch = true;
+      return r;
     }
-    var widthM = toMeters(widthSrc, widthUnits, stockX);
-    if (lengthM != null) {
-      if (typeof r.set === "function") {
-        r.set("Length", lengthM);
-        r.set("Length_Units", "meter");
-      } else {
-        r.Length = lengthM;
-        r.Length_Units = "meter";
+    if (hasDim && isInchUnit(unitTok)) {
+      if (isFinite(lenN) && lenN > 0) {
+        if (typeof r.set === "function") {
+          r.set("Length", lenN);
+          r.set("Length_Units", "inch");
+        } else {
+          r.Length = lenN;
+          r.Length_Units = "inch";
+        }
       }
-    }
-    if (widthM != null) {
-      if (typeof r.set === "function") {
-        r.set("Width", widthM);
-      } else {
-        r.Width = widthM;
+      if (isFinite(widN) && widN > 0) {
+        if (typeof r.set === "function") r.set("Width", widN);
+        else r.Width = widN;
       }
-      omitFileListKey(r, "Width_Units");
     }
     return r;
   }
@@ -2122,8 +2193,133 @@ _PAGE_FINISH_JS = """(function() {
     }
     return why.join(",");
   }
+  function rowNotInches(r) {
+    if (!r || typeof r !== "object") return false;
+    if (r._units_not_inch) return true;
+    if (!isCadRow(r)) return false;
+    var probes = [r.Length, r.Width, r.Stock_X, r.Stock_Y, r.Stock_Length];
+    var hasDim = false;
+    for (var di = 0; di < probes.length; di++) {
+      var dn = parseFloat(probes[di]);
+      if (isFinite(dn) && dn > 0) hasDim = true;
+    }
+    if (!hasDim) return false;
+    return !(isInchUnit(r.Length_Units) || isInchUnit(r.Stock_Units) || isInchUnit(r.Width_Units));
+  }
+  function applyPageNativeCadThickness(gridRows, specIn) {
+    // Q10488 proven recipe. Cad via #DXFItemType change posts
+    // /Part/UpdateItemType. Thickness via #ThicknessEdit
+    // kendoComboBox select() + trigger("change") runs
+    // onThicknessChangeDXF and GET /Quote/GetBorderSize.
+    // Direct thickness-field writes do not clear ErrorStatus.
+    // Require ErrorStatus 0 and the quote id before OnAddDXFClick.
+    // Do not invent L/W, Contours, or a gauge. invent=false.
+    function fail(w, component) {
+      return {why: w, component: component || 0};
+    }
+    var want = String((specIn && specIn.quoteId) || "").trim().toLowerCase();
+    if (!want) return fail("quote_id_missing", 0);
+    var href = "";
+    var header = "";
+    try { href = String(location.href || ""); } catch (e0) {}
+    try {
+      var hid = document.querySelector("#QuoteNumber, #lblQuote, .quote-title, h1");
+      if (hid) header = String(hid.textContent || hid.value || "");
+    } catch (e1) {}
+    var idBlob = (href + " " + header).toLowerCase();
+    if (idBlob.indexOf(want) < 0) return fail("wrong_quote", 0);
+    if (!window.jQuery) return fail("no_dxfitemtype", 0);
+    var plates = [];
+    for (var i = 0; i < (gridRows || []).length; i++) {
+      var r = gridRows[i];
+      if (!r) continue;
+      var cat = String(r.ItemType || r.Category || r.FileType || "");
+      if (cat === "Linear" || cat === "Assembly") continue;
+      if (r.IsAssembly || Number(r.ProductType) === 300) continue;
+      if (Number(r.PartMode) === 1 || r.IsLinear) continue;
+      plates.push(r);
+    }
+    if (!plates.length) return fail("", 0);
+    var ddl = jQuery("#DXFItemType").data("kendoDropDownList");
+    if (!ddl) return fail("no_dxfitemtype", 0);
+    var cb = jQuery("#ThicknessEdit").data("kendoComboBox");
+    if (!cb) return fail("no_thicknessedit", 0);
+    var g = null;
+    try { g = jQuery("#gridDXFParts").data("kendoGrid"); } catch (eG) { g = null; }
+    for (var p = 0; p < plates.length; p++) {
+      var row = plates[p];
+      if (g && row.uid) {
+        try { g.select(g.tbody.find("tr[data-uid='" + row.uid + "']")); } catch (e2) {}
+      }
+      ddl.value("cad");
+      ddl.trigger("change");
+      var token = (row.Thickness == null) ? "" : String(row.Thickness).trim();
+      if (!token) return fail("thickness_missing", 0);
+      var data = [];
+      try { data = (cb.dataSource && cb.dataSource.data()) || []; } catch (e3) { data = []; }
+      var idx = -1;
+      for (var ti = 0; ti < data.length; ti++) {
+        var item = data[ti];
+        var text = "";
+        if (item == null) text = "";
+        else if (typeof item === "string") text = item;
+        else text = String(item.Text || item.text || item.Name || item.Value || item.value || "");
+        if (text && (text === token || text.indexOf(token) >= 0)) { idx = ti; break; }
+      }
+      if (idx < 0) return fail("gauge_not_in_list", 0);
+      cb.select(idx);
+      cb.trigger("change");
+    }
+    var fresh = [];
+    try {
+      var ds = g && g.dataSource && g.dataSource.data();
+      if (ds && ds.toJSON) fresh = ds.toJSON();
+    } catch (e4) { fresh = []; }
+    var component = 0;
+    for (var fi = 0; fi < fresh.length; fi++) {
+      var fr = fresh[fi] || {};
+      var fcat = String(fr.ItemType || fr.Category || fr.FileType || "");
+      if (fcat === "Linear" || fcat === "Assembly") continue;
+      if (fr.IsAssembly || Number(fr.ProductType) === 300) continue;
+      if (Number(fr.PartMode) === 1 || fr.IsLinear) continue;
+      var pt = fr.ProductType;
+      if (pt === 200 || pt === "200" || String(pt || "").toLowerCase() === "component") {
+        component += 1;
+      }
+      if (!Object.prototype.hasOwnProperty.call(fr, "ErrorStatus")
+          || fr.ErrorStatus === null || fr.ErrorStatus === "") {
+        return fail("errorstatus_not_zero", component);
+      }
+      var errN = Number(fr.ErrorStatus);
+      if (!isFinite(errN) || errN !== 0) return fail("errorstatus_not_zero", component);
+    }
+    if (component > 0) return fail("producttype_still_component", component);
+    return fail("", 0);
+  }
+  function skipFinish(why) {
+    return Promise.resolve(Object.assign(summarize(0, null), {
+      via: "skipped",
+      finish_fn: "",
+      reads_kendo: kendoGridPresent(),
+      grid_dxf_row_count: count,
+      filelist_from_kendo: false,
+      finish_af_present: false,
+      finish_why: why
+    }));
+  }
   var rows = gridData();
   var count = rows.length;
+  if (count >= 1) {
+    var native = applyPageNativeCadThickness(rows, spec);
+    if (native && native.why) return skipFinish(native.why);
+    rows = gridData();
+    count = rows.length;
+    var inchMiss = false;
+    for (var ui = 0; ui < rows.length; ui++) {
+      if (rowNotInches(rows[ui])) inchMiss = true;
+    }
+    if (inchMiss) return skipFinish("units_not_inch");
+  }
   if (cadPlateStillComponent(rows)) {
     return Promise.resolve(Object.assign(summarize(0, null), {
       via: "skipped",
@@ -2846,7 +3042,13 @@ def invoke_page_dxf_finish(
         return skipped
     tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
     value = _cdp_evaluate_promise(
-        _PAGE_FINISH_JS + "()", base=base, tab=tab, fallback=False
+        _PAGE_FINISH_JS
+        + "("
+        + json.dumps({"quoteId": str(quote_id or "")})
+        + ")",
+        base=base,
+        tab=tab,
+        fallback=False,
     )
     if not isinstance(value, dict):
         skipped["edit_gate"] = "finish_eval_empty"
