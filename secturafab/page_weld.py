@@ -182,11 +182,11 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
       status: addStatus
     };
   }
-  // AddItem_Assembly ignores Description. A hand-built
-  // UpdatePropertyValue body does not store it either. After the line
-  // exists, edit this line's Description cell and trigger change. The
-  // page posts. Do not write the quote-number field or the header
-  // description. Fail only when the tree read-back is still wrong.
+  // AddItem_Assembly ignores Description. The assembly panel field
+  // is #assemblyDescription. Select the assembly row so that panel is
+  // showing, set the field, and trigger change. The page posts. Do not
+  // edit a TreeList cell, do not touch #GridItem, and do not write the
+  // quote header. Fail only when the tree read-back is still wrong.
   // Never store Root.
   function treeRows(body) {
     if (!body) return [];
@@ -325,84 +325,47 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
           posted_description: ""
         };
       }
-      // Quote lines are the TreeList behind QuoteItem_ReadTreeListData.
-      // #GridItem is the CAD-files grid. Editing it does not store the
-      // line. Trigger change on the parent Description cell. The page
-      // posts. Do not hand-build a body, and do not write the header.
-      function treeReadUrl(widget) {
-        try {
-          var ds = widget.dataSource || {};
-          var read = ds.options && ds.options.transport && ds.options.transport.read;
-          if (typeof read === "string") return read;
-          if (read && read.url) return String(read.url);
-          var opt = ds.transport && ds.transport.options && ds.transport.options.read;
-          if (typeof opt === "string") return opt;
-          if (opt && opt.url) return String(opt.url);
-        } catch (eU) {}
-        return "";
-      }
-      function quoteLineTreeList() {
-        var nodes = [];
-        try {
-          var found = document.querySelectorAll("[data-role='treelist'], .k-treelist");
-          if (found && found.length != null) {
-            for (var i = 0; i < found.length; i++) nodes.push(found[i]);
+      // GridDXFPart_OnChangeUpdate fills #assemblyDescription from
+      // ProductDescription when the assembly row is selected. Set that
+      // field and trigger change. The page posts. A missing field does
+      // not count as posted.
+      function selectAssemblyRow(lineId) {
+        var ids = ["#gridQuoteItems", "#gridItems", "#gridQuote", "#QuoteItems"];
+        for (var i = 0; i < ids.length; i++) {
+          var grid = null;
+          try { grid = jQuery(ids[i]).data("kendoGrid"); } catch (eG) { grid = null; }
+          if (!grid || typeof grid.select !== "function" || !grid.tbody) continue;
+          var data = [];
+          try { data = (grid.dataSource && grid.dataSource.data()) || []; } catch (eD) { data = []; }
+          var found = false;
+          for (var r = 0; r < data.length; r++) {
+            var row = data[r] || {};
+            var id = String(row.ID || row.Id || "").trim();
+            if (id && id === lineId) { found = true; break; }
           }
-        } catch (eQ) { nodes = []; }
-        var matched = null;
-        var unlabeled = null;
-        var unlabeledCount = 0;
-        for (var n = 0; n < nodes.length; n++) {
-          var widget = null;
-          try { widget = jQuery(nodes[n]).data("kendoTreeList"); } catch (eW) { widget = null; }
-          if (!widget || typeof widget.editCell !== "function" || !widget.tbody) continue;
-          var url = treeReadUrl(widget);
-          if (url.indexOf("QuoteItem_ReadTreeListData") >= 0) return widget;
-          if (!url) { unlabeled = widget; unlabeledCount += 1; }
+          if (!found) continue;
+          var tr = null;
+          try {
+            var trs = grid.tbody.find("tr");
+            var list = [];
+            if (trs && trs.toArray) list = trs.toArray();
+            for (var ti = 0; ti < list.length; ti++) {
+              var item = {};
+              try { item = grid.dataItem(list[ti]) || {}; } catch (eItem) { item = {}; }
+              if (String(item.ID || item.Id || "") === lineId) { tr = list[ti]; break; }
+            }
+          } catch (eR) { tr = null; }
+          if (!tr || (tr.length != null && !tr.length)) continue;
+          try { grid.select(tr); } catch (eS) { return false; }
+          return true;
         }
-        if (!matched && unlabeledCount === 1) return unlabeled;
-        return matched;
+        return false;
       }
       function triggerLineDescription(lineId, value) {
-        var tree = quoteLineTreeList();
-        if (!tree) return false;
-        var found = null;
+        if (!document.querySelector("#assemblyDescription")) return false;
+        if (!selectAssemblyRow(lineId)) return false;
         try {
-          var trs = tree.tbody.find("tr");
-          var list = [];
-          if (trs && trs.toArray) list = trs.toArray();
-          else if (trs && trs.length != null) {
-            for (var ti = 0; ti < trs.length; ti++) list.push(trs[ti]);
-          }
-          for (var ri = 0; ri < list.length; ri++) {
-            var item = {};
-            try { item = tree.dataItem(list[ri]) || {}; } catch (eD) { item = {}; }
-            var id = String(item.ID || item.Id || "").trim();
-            if (id && id === lineId) { found = list[ri]; break; }
-          }
-        } catch (eR) { found = null; }
-        if (!found) return false;
-        var tr = jQuery(found);
-        var cell = tr.find("td[data-field='Description']");
-        if ((!cell || !cell.length) && tree.columns) {
-          for (var c = 0; c < tree.columns.length; c++) {
-            if (String((tree.columns[c] && tree.columns[c].field) || "") === "Description") {
-              cell = tr.find("td").eq(c);
-              break;
-            }
-          }
-        }
-        if (!cell || !cell.length) return false;
-        try { tree.editCell(cell); } catch (eE) { return false; }
-        var editor = null;
-        try { editor = cell.find("input, textarea").first(); } catch (eF) { editor = null; }
-        if (!editor || !editor.length) {
-          try { if (typeof tree.closeCell === "function") tree.closeCell(); } catch (eC) {}
-          return false;
-        }
-        try {
-          editor.val(value).trigger("change");
-          if (typeof tree.closeCell === "function") tree.closeCell();
+          jQuery("#assemblyDescription").val(value).trigger("change");
         } catch (eV) { return false; }
         return true;
       }

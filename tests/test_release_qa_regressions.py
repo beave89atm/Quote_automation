@@ -2002,13 +2002,13 @@ def test_assembly_line_uses_part_number_and_chosen_description(monkeypatch):
     )
     assert '"description": "11521-000 - ZZ-TEST weldment"' in seen["expr"]
     assert "applyAssemblyLineDesc" in PAGE_ADD_ASSEMBLY_JS
-    desc_fn = PAGE_ADD_ASSEMBLY_JS.split("function treeReadUrl", 1)[1]
+    desc_fn = PAGE_ADD_ASSEMBLY_JS.split("function selectAssemblyRow", 1)[1]
     desc_fn = desc_fn.split("postedDescription = triggerLineDescription", 1)[0]
-    assert "kendoTreeList" in desc_fn
-    assert "QuoteItem_ReadTreeListData" in desc_fn
+    assert "#assemblyDescription" in desc_fn
+    assert "kendoTreeList" not in desc_fn
     assert "#GridItem" not in desc_fn
-    assert "editCell" in desc_fn
-    assert "data-field='Description'" in PAGE_ADD_ASSEMBLY_JS
+    assert "editCell" not in desc_fn
+    assert 'parameter: "Description"' not in PAGE_ADD_ASSEMBLY_JS
     assert 'parameter: "Description"' not in PAGE_ADD_ASSEMBLY_JS
     assert "#quote_Text" not in PAGE_ADD_ASSEMBLY_JS
     assert "quoteOnline/update" not in PAGE_ADD_ASSEMBLY_JS
@@ -2042,8 +2042,9 @@ def test_unlisted_gauge_drops_that_kid_and_keeps_the_rest():
         const fs = require("fs");
         const code = fs.readFileSync(process.argv[2], "utf8");
         const store = [
-          { uid: "good", PartID: "good", Name: "34890 PLATE", ItemType: "Cad",
-            PartMode: 0, ProductType: 100, Thickness: 0.076, ErrorStatus: 0, Material: "A36" },
+          { uid: "good", PartID: "good", Name: "34890 PLATE", Description: "14 GA",
+            ItemType: "Cad", PartMode: 0, ProductType: 100, Thickness: 0.076,
+            ErrorStatus: 0, Material: "A36" },
           { uid: "bad", PartID: "bad", Name: "34892 BOTTOM PLATE", ItemType: "Cad",
             PartMode: 0, ProductType: 100, Thickness: 0.125, ErrorStatus: 2, Material: "A36" },
           { uid: "tube", PartID: "tube", Name: "34536 PIVOT TUBE", ItemType: "Linear",
@@ -2552,8 +2553,8 @@ def test_page_finish_drops_0188_root_and_unpriced_tube():
             ItemType: "Cad", PartMode: 0, ProductType: 100, Thickness: "11 Ga",
             Stock_Z: 0.188, Length: 43.5625, Width: 8.4375, ErrorStatus: 0, Material: "A36" },
           { uid: "good", PartID: "good", Name: "34887-1", PartName: "34889 PLATE",
-            ItemType: "Cad", PartMode: 0, ProductType: 100, Thickness: "0.1345",
-            Stock_Z: 0.1345, ErrorStatus: 0, Material: "A36" },
+            Description: "10 GA", ItemType: "Cad", PartMode: 0, ProductType: 100,
+            Thickness: "0.1345", Stock_Z: 0.1345, ErrorStatus: 0, Material: "A36" },
           { uid: "tube", PartID: "tube", Name: "34887-1",
             PartName: "34536 PIVOT TUBE, BOOM TIP_34536-1",
             ItemType: "Cad", PartMode: 0, ProductType: 100, ErrorStatus: 0 },
@@ -2698,7 +2699,7 @@ def test_page_finish_drops_0188_root_and_unpriced_tube():
     assert "7 Ga" not in out["selected"]
 
 
-def _run_page_finish(store, gauges, thickness):
+def _run_page_finish(store, gauges, thickness, defer_gauges=False):
     """applyPageNativeCadThickness is the Finish function push_job calls."""
     import json
     import shutil
@@ -2723,6 +2724,7 @@ def _run_page_finish(store, gauges, thickness):
         const gauges = spec.gauges;
         const thickness = spec.thickness;
         const selected = [];
+        let loaded = !spec.defer;
         let current = store[0];
         const sandbox = {
           setTimeout, clearTimeout, Date, Promise, console, Math, parseFloat,
@@ -2753,9 +2755,9 @@ def _run_page_finish(store, gauges, thickness):
               }
               if (name === "kendoComboBox") {
                 return {
-                  dataSource: { data() { return gauges; } },
+                  dataSource: { data() { return loaded ? gauges : []; } },
                   select(idx) {
-                    const item = gauges[idx];
+                    const item = (loaded ? gauges : [])[idx];
                     selected.push(
                       (item && (item.Description || item.Text)) || String(item || "")
                     );
@@ -2770,6 +2772,7 @@ def _run_page_finish(store, gauges, thickness):
                     if (tr === undefined) {
                       return { length: 1, toArray() { return [{ id: current.uid }]; } };
                     }
+                    loaded = true;
                     return { length: 1 };
                   },
                   dataItem() { return current; },
@@ -2831,7 +2834,12 @@ def _run_page_finish(store, gauges, thickness):
     fn_path.write_text(fn, encoding="utf-8")
     run_path.write_text(script, encoding="utf-8")
     spec_path.write_text(
-        json.dumps({"store": store, "gauges": gauges, "thickness": thickness}),
+        json.dumps({
+            "store": store,
+            "gauges": gauges,
+            "thickness": thickness,
+            "defer": defer_gauges,
+        }),
         encoding="utf-8",
     )
     try:
@@ -2906,13 +2914,13 @@ def test_drawing_14_ga_0747_selects_dropdown_076():
 
 
 def test_kid_without_callout_keeps_job_level_14_ga():
-    """A-11513-000. The job token is the number 0.0747, not the string 14 Ga.
+    """A-11513-000 keeps 14 Ga. The thickness list loads after the row click.
 
-    The drawing note is Thickness from drawing: 0.0747 (gauge callout on
-    '14 GA DP -'). That number is spec.thickness. The combobox row is
-    {Description: '.076 - 14 Ga', Thickness: 0.076}. Passing only the
-    string '14 Ga' does not cover this. 0.0747 and 0.076 are both 14 Ga.
-    applyPageNativeCadThickness is the Finish function push_job calls.
+    #ThicknessEdit starts empty. Replacing the job gauge with row.Thickness
+    would pick 11 Ga once that list arrives. The job token is the number
+    0.0747. 0.0747 and 0.076 are both 14 Ga. A preloaded combobox array
+    does not cover this. applyPageNativeCadThickness is the Finish
+    function push_job calls.
     """
     store = [
         {
@@ -2938,21 +2946,25 @@ def test_kid_without_callout_keeps_job_level_14_ga():
             "ItemType": "Cad",
             "PartMode": 0,
             "ProductType": 100,
-            "Thickness": "not a dropdown row",
+            "Thickness": "0.1196",
             "ErrorStatus": 0,
             "Material": "A36",
             "Length": 15.0,
             "Width": 37.5,
         },
     ]
-    gauges = [{"Description": ".076 - 14 Ga", "Thickness": 0.076}]
-    out = _run_page_finish(store, gauges, 0.0747)
+    gauges = [
+        {"Description": ".076 - 14 Ga", "Thickness": 0.076},
+        {"Description": "11 Ga", "Thickness": 0.1196},
+    ]
+    out = _run_page_finish(store, gauges, 0.0747, defer_gauges=True)
     assert out["why"] == "", out
     assert "A-11513-000" in out["left"]
     assert "A-11521-000" in out["left"]
     assert "A-11513-000" not in " ".join(out["skipped"])
     assert "gauge_not_in_list" not in out["whyList"]
     assert out["selected"].count(".076 - 14 Ga") == 2
+    assert "11 Ga" not in out["selected"]
 
 
 def test_page_finish_34892_three_sixteenth_not_11_ga():

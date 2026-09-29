@@ -2882,25 +2882,29 @@ _PAGE_FINISH_JS = """(async function(spec) {
       var row = plates[p];
       var gauge = sharedGauge;
       var callout = rowGaugeCallout(row);
-      if (callout) {
-        gauge = callout;
-      } else if (plates.length > 1) {
-        // A kid with no callout of its own keeps the job-level named
-        // gauge. The grid Thickness field is not that name. Use it only
-        // when it is itself a dropdown row. Do not invent a gauge.
-        var liveGauge = (row && row._gridItem) || row || {};
-        var ownGauge = liveGauge.Thickness != null ? String(liveGauge.Thickness).trim() : "";
-        var ownData = [];
-        try { ownData = (cb.dataSource && cb.dataSource.data()) || []; } catch (eOwn) { ownData = []; }
-        if (ownGauge && gaugeIndex(ownData, ownGauge) >= 0) gauge = ownGauge;
-      }
+      if (callout) gauge = callout;
+      // A kid with no callout keeps the job gauge. Do not replace it
+      // with the grid Thickness field.
       if (!gauge) {
         dropUnlistedGauge(row);
         continue;
       }
       gauge = drawingNamedGauge(gauge);
-      var data = [];
-      try { data = (cb.dataSource && cb.dataSource.data()) || []; } catch (e3) { data = []; }
+      // #ThicknessEdit has no rows until this row is clicked.
+      // Select first, then wait for the list. Do not drop on an empty box.
+      var selWhy = selectExactlyOne(row);
+      if (selWhy) return fail(selWhy, 0);
+      function comboRows() {
+        var rows = [];
+        try { rows = (cb.dataSource && cb.dataSource.data()) || []; } catch (e3) { rows = []; }
+        return rows;
+      }
+      var data = comboRows();
+      var listDeadline = Date.now() + 4000;
+      while ((!data || !data.length) && Date.now() < listDeadline) {
+        await sleep(25);
+        data = comboRows();
+      }
       var idx = gaugeIndex(data, gauge);
       if (idx < 0) {
         dropUnlistedGauge(row, "gauge_not_in_list");
