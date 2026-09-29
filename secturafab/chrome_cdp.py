@@ -2877,6 +2877,16 @@ _PAGE_FINISH_JS = """(async function(spec) {
       if (!isFinite(n) || !(n > 0)) return null;
       return n;
     }
+    // #ThicknessEdit is loaded before the first row click. A later
+    // plate's cb.select + change empties that live dataSource. Keep
+    // this copy for every gaugeIndex. Do not re-read the combobox.
+    var gaugeRows = [];
+    try {
+      var liveGaugeRows = (cb.dataSource && cb.dataSource.data()) || [];
+      for (var gri = 0; gri < liveGaugeRows.length; gri++) {
+        gaugeRows.push(liveGaugeRows[gri]);
+      }
+    } catch (eSnap) { gaugeRows = []; }
     var keptPlates = 0;
     for (var p = 0; p < plates.length; p++) {
       var row = plates[p];
@@ -2890,17 +2900,14 @@ _PAGE_FINISH_JS = """(async function(spec) {
         // when it is itself a dropdown row. Do not invent a gauge.
         var liveGauge = (row && row._gridItem) || row || {};
         var ownGauge = liveGauge.Thickness != null ? String(liveGauge.Thickness).trim() : "";
-        var ownData = [];
-        try { ownData = (cb.dataSource && cb.dataSource.data()) || []; } catch (eOwn) { ownData = []; }
-        if (ownGauge && gaugeIndex(ownData, ownGauge) >= 0) gauge = ownGauge;
+        if (ownGauge && gaugeIndex(gaugeRows, ownGauge) >= 0) gauge = ownGauge;
       }
       if (!gauge) {
         dropUnlistedGauge(row);
         continue;
       }
       gauge = drawingNamedGauge(gauge);
-      var data = [];
-      try { data = (cb.dataSource && cb.dataSource.data()) || []; } catch (e3) { data = []; }
+      var data = gaugeRows;
       var idx = gaugeIndex(data, gauge);
       if (idx < 0) {
         dropUnlistedGauge(row, "gauge_not_in_list");

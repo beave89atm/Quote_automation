@@ -2702,6 +2702,7 @@ def _run_page_finish(
     thickness,
     defer_gauges=False,
     clear_on_select=False,
+    empty_after_thickness_change=False,
 ):
     """applyPageNativeCadThickness is the Finish function push_job calls."""
     import json
@@ -2728,6 +2729,7 @@ def _run_page_finish(
         const thickness = spec.thickness;
         const selected = [];
         let loaded = !spec.defer;
+        let thicknessLive = gauges.slice();
         let current = store[0];
         const sandbox = {
           setTimeout, clearTimeout, Date, Promise, console, Math, parseFloat,
@@ -2747,7 +2749,7 @@ def _run_page_finish(
             resolve() { fns.forEach((fn) => fn()); }
           };
         }
-        sandbox.jQuery = function() {
+        sandbox.jQuery = function(sel) {
           return {
             data(name) {
               if (name === "kendoDropDownList") {
@@ -2757,15 +2759,32 @@ def _run_page_finish(
                 };
               }
               if (name === "kendoComboBox") {
+                const isThickness = String(sel || "") === "#ThicknessEdit";
                 return {
-                  dataSource: { data() { return loaded ? gauges : []; } },
+                  dataSource: {
+                    data() {
+                      if (spec.emptyAfterThicknessChange && isThickness) {
+                        return thicknessLive.slice();
+                      }
+                      return loaded ? gauges : [];
+                    }
+                  },
                   select(idx) {
                     const item = gauges[idx];
                     selected.push(
                       (item && (item.Description || item.Text)) || String(item || "")
                     );
                   },
-                  trigger() { sandbox.jQuery.ajax({ url: "/Quote/GetBorderSize" }); }
+                  trigger(ev) {
+                    if (
+                      spec.emptyAfterThicknessChange
+                      && isThickness
+                      && ev === "change"
+                    ) {
+                      thicknessLive = [];
+                    }
+                    sandbox.jQuery.ajax({ url: "/Quote/GetBorderSize" });
+                  }
                 };
               }
               if (name === "kendoGrid") {
@@ -2848,6 +2867,7 @@ def _run_page_finish(
             "thickness": thickness,
             "defer": defer_gauges,
             "clearOnSelect": clear_on_select,
+            "emptyAfterThicknessChange": empty_after_thickness_change,
         }),
         encoding="utf-8",
     )
@@ -2970,6 +2990,63 @@ def test_kid_without_callout_keeps_job_level_14_ga():
     assert "A-11513-000" not in " ".join(out["skipped"])
     assert "gauge_not_in_list" not in out["whyList"]
     assert out["selected"].count(".076 - 14 Ga") == 2
+
+
+def test_second_plate_keeps_14_ga_after_the_combobox_clears():
+    """A-11513-000 is the second plate. The job token is the number 0.0747.
+
+    The first plate's cb.select and change empty #ThicknessEdit. A-11513
+    has no 14 GA text on the row. gaugeIndex has to use the snapshot
+    taken before that click. Re-reading the emptied combobox drops the
+    kid as gauge_not_in_list. A list that stays populated does not
+    cover this. applyPageNativeCadThickness is the Finish function
+    push_job calls.
+    """
+    store = [
+        {
+            "uid": "sib",
+            "PartID": "sib",
+            "Name": "A-11521-000",
+            "PartName": "A-11521-000",
+            "Description": "A-11521-000",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "not a dropdown row",
+            "ErrorStatus": 0,
+            "Material": "A36",
+            "Length": 26.6,
+            "Width": 37.5,
+        },
+        {
+            "uid": "kid",
+            "PartID": "kid",
+            "Name": "A-11513-000",
+            "PartName": "A-11513-000",
+            "Description": "A-11513-000",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "not a dropdown row",
+            "ErrorStatus": 0,
+            "Material": "A36",
+            "Length": 15.0,
+            "Width": 37.5,
+        },
+    ]
+    gauges = [{"Description": ".076 - 14 Ga", "Thickness": 0.076}]
+    out = _run_page_finish(
+        store,
+        gauges,
+        0.0747,
+        empty_after_thickness_change=True,
+    )
+    assert out["why"] == "", out
+    assert "A-11513-000" in out["left"]
+    assert "A-11521-000" in out["left"]
+    assert "A-11513-000" not in " ".join(out["skipped"])
+    assert "gauge_not_in_list" not in out["whyList"]
+    assert out["selected"] == [".076 - 14 Ga", ".076 - 14 Ga"]
 
 
 def test_three_sixteenth_callout_is_not_dropped_on_an_empty_click():
