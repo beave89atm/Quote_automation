@@ -2001,14 +2001,12 @@ def test_assembly_line_uses_part_number_and_chosen_description(monkeypatch):
         description="11521-000 - ZZ-TEST weldment",
     )
     assert '"description": "11521-000 - ZZ-TEST weldment"' in seen["expr"]
-    assert "applyAssemblyLineDesc" in PAGE_ADD_ASSEMBLY_JS
-    desc_fn = PAGE_ADD_ASSEMBLY_JS.split("function selectAssemblyRow", 1)[1]
-    desc_fn = desc_fn.split("postedDescription = triggerLineDescription", 1)[0]
-    assert "#assemblyDescription" in desc_fn
-    assert "kendoTreeList" not in desc_fn
-    assert "#GridItem" not in desc_fn
-    assert "editCell" not in desc_fn
-    assert 'parameter: "Description"' not in PAGE_ADD_ASSEMBLY_JS
+    assert "var assemblyName = lineDesc || name;" in PAGE_ADD_ASSEMBLY_JS
+    assert 'jQuery("#AssemblyName").val(assemblyName)' in PAGE_ADD_ASSEMBLY_JS
+    assert "applyAssemblyLineDesc" not in PAGE_ADD_ASSEMBLY_JS
+    assert "#assemblyDescription" not in PAGE_ADD_ASSEMBLY_JS
+    assert "kendoTreeList" not in PAGE_ADD_ASSEMBLY_JS
+    assert "editCell" not in PAGE_ADD_ASSEMBLY_JS
     assert 'parameter: "Description"' not in PAGE_ADD_ASSEMBLY_JS
     assert "#quote_Text" not in PAGE_ADD_ASSEMBLY_JS
     assert "quoteOnline/update" not in PAGE_ADD_ASSEMBLY_JS

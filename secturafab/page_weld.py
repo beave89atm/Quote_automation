@@ -84,40 +84,15 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
   if (!document.querySelector("#AssemblyName")) {
     return {ok: false, why: "assembly_name_field_missing", posted_additem: false};
   }
-  jQuery("#AssemblyName").val(name).trigger("change");
   var lineDesc = String((spec && spec.description) || "").trim();
-  var nameEl = document.querySelector("#AssemblyName");
-  var form = nameEl && nameEl.form;
-  if (lineDesc && form) {
-    var fields = form.querySelectorAll(
-      "input[name='Description'], textarea[name='Description']"
-    );
-    for (var di = 0; di < fields.length; di++) {
-      if (!form.contains(fields[di])) continue;
-      jQuery(fields[di]).val(lineDesc).trigger("change");
-      break;
-    }
+  if (lineDesc.toLowerCase() === "root") {
+    return {ok: false, why: "assembly_description_not_stored", posted_additem: false};
   }
-  function applyAssemblyLineDesc(opts) {
-    if (!lineDesc || !opts) return;
-    if (typeof opts.data === "string") {
-      var parts = opts.data.split("&");
-      var found = false;
-      for (var pi = 0; pi < parts.length; pi++) {
-        if (parts[pi].indexOf("Description=") === 0) {
-          parts[pi] = "Description=" + encodeURIComponent(lineDesc);
-          found = true;
-          break;
-        }
-      }
-      if (!found) parts.push("Description=" + encodeURIComponent(lineDesc));
-      opts.data = parts.join("&");
-      return;
-    }
-    if (opts.data && typeof opts.data === "object" && !Array.isArray(opts.data)) {
-      opts.data.Description = lineDesc;
-    }
-  }
+  // AddItem_Assembly posts this name. The tree stores it as Description
+  // and as ItemNumber. A formatted description is that name. An empty
+  // description keeps the bare part number.
+  var assemblyName = lineDesc || name;
+  jQuery("#AssemblyName").val(assemblyName).trigger("change");
   var before = 0;
   try {
     before = jQuery("#GridItem").data("kendoGrid").dataSource.data().length;
@@ -142,7 +117,6 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
     var url = "";
     if (typeof opts === "string") url = opts;
     else if (opts && opts.url) url = String(opts.url);
-    if (url.indexOf("/Quote/AddItem_Assembly") >= 0) applyAssemblyLineDesc(opts);
     var ret = orig.apply(this, arguments);
     if (!pending && url.indexOf("/Quote/AddItem_Assembly") >= 0) {
       pending = new Promise(function(resolve) {
@@ -182,11 +156,8 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
       status: addStatus
     };
   }
-  // AddItem_Assembly ignores Description. The assembly panel field
-  // is #assemblyDescription. Select the assembly row so that panel is
-  // showing, set the field, and trigger change. The page posts. Do not
-  // edit a TreeList cell, do not touch #GridItem, and do not write the
-  // quote header. Fail only when the tree read-back is still wrong.
+  // The add posts #AssemblyName. After OnAddClick the parent
+  // Description is that string. ItemNumber is the same string.
   // Never store Root.
   function treeRows(body) {
     if (!body) return [];
@@ -237,7 +208,6 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
   }
   var quoteId = String((spec && spec.quoteId) || "").trim();
   var stored = "";
-  var postedDescription = "";
   async function readTree() {
     return ajaxBody({
       url: "/Quote/QuoteItem_ReadTreeListData",
@@ -298,83 +268,9 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
       posted_description: ""
     };
   }
-  if (lineDesc && lineDesc.toLowerCase() === "root") {
-    return {
-      ok: false,
-      why: "assembly_description_not_stored",
-      posted_additem: true,
-      staged: staged,
-      status: addStatus,
-      stored_description: "Root",
-      posted_description: ""
-    };
-  }
   if (lineDesc) {
     stored = parent ? String(parent.Description || "").trim() : "";
-    if (stored.toLowerCase() === "root") stored = "";
-    if (stored !== lineDesc) {
-      var itemId = parent ? String(parent.ID || parent.Id || "").trim() : "";
-      if (!itemId) {
-        return {
-          ok: false,
-          why: "assembly_description_not_stored",
-          posted_additem: true,
-          staged: staged,
-          status: addStatus,
-          stored_description: stored,
-          posted_description: ""
-        };
-      }
-      // GridDXFPart_OnChangeUpdate fills #assemblyDescription from
-      // ProductDescription when the assembly row is selected. Set that
-      // field and trigger change. The page posts. A missing field does
-      // not count as posted.
-      function selectAssemblyRow(lineId) {
-        var ids = ["#gridQuoteItems", "#gridItems", "#gridQuote", "#QuoteItems"];
-        for (var i = 0; i < ids.length; i++) {
-          var grid = null;
-          try { grid = jQuery(ids[i]).data("kendoGrid"); } catch (eG) { grid = null; }
-          if (!grid || typeof grid.select !== "function" || !grid.tbody) continue;
-          var data = [];
-          try { data = (grid.dataSource && grid.dataSource.data()) || []; } catch (eD) { data = []; }
-          var found = false;
-          for (var r = 0; r < data.length; r++) {
-            var row = data[r] || {};
-            var id = String(row.ID || row.Id || "").trim();
-            if (id && id === lineId) { found = true; break; }
-          }
-          if (!found) continue;
-          var tr = null;
-          try {
-            var trs = grid.tbody.find("tr");
-            var list = [];
-            if (trs && trs.toArray) list = trs.toArray();
-            for (var ti = 0; ti < list.length; ti++) {
-              var item = {};
-              try { item = grid.dataItem(list[ti]) || {}; } catch (eItem) { item = {}; }
-              if (String(item.ID || item.Id || "") === lineId) { tr = list[ti]; break; }
-            }
-          } catch (eR) { tr = null; }
-          if (!tr || (tr.length != null && !tr.length)) continue;
-          try { grid.select(tr); } catch (eS) { return false; }
-          return true;
-        }
-        return false;
-      }
-      function triggerLineDescription(lineId, value) {
-        if (!document.querySelector("#assemblyDescription")) return false;
-        if (!selectAssemblyRow(lineId)) return false;
-        try {
-          jQuery("#assemblyDescription").val(value).trigger("change");
-        } catch (eV) { return false; }
-        return true;
-      }
-      postedDescription = triggerLineDescription(itemId, lineDesc) ? lineDesc : "";
-      var second = await readTree();
-      parent = assemblyParent(treeRows(second && second.body));
-      stored = parent ? String(parent.Description || "").trim() : "";
-    }
-    if (stored.toLowerCase() === "root" || stored !== lineDesc) {
+    if (!stored || stored.toLowerCase() === "root" || stored !== lineDesc) {
       return {
         ok: false,
         why: "assembly_description_not_stored",
@@ -382,7 +278,7 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
         staged: staged,
         status: addStatus,
         stored_description: stored,
-        posted_description: postedDescription
+        posted_description: ""
       };
     }
   }
@@ -393,7 +289,7 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
     staged: staged,
     status: addStatus,
     stored_description: stored,
-    posted_description: postedDescription
+    posted_description: ""
   };
 })"""
 

@@ -111,16 +111,17 @@ def test_additem_assembly_is_checked_on_the_tree(monkeypatch):
 
 
 def test_assembly_description_is_posted_after_the_line_exists():
-    """The tree starts as the bare part number. #assemblyDescription stores it.
+    """AddItem_Assembly stores #AssemblyName as the tree Description.
 
-    Select the assembly row, set #assemblyDescription, and trigger change.
-    A TreeList cell, #GridItem, and a hand-built UpdatePropertyValue body
-    do not change the stored line. The read-back is the full description.
+    A formatted description is that name. The bare part number is not.
+    #assemblyDescription does not persist, and AddItem_Assembly does not
+    take a Description parameter. ItemNumber is the same string.
     """
     import json
     import shutil
     import subprocess
     import textwrap
+    from urllib.parse import unquote
 
     node = shutil.which("node")
     if not node:
@@ -151,7 +152,7 @@ def test_assembly_description_is_posted_after_the_line_exists():
         };
         if (process.argv[6]) parent.Description = process.argv[6];
         const reads = [];
-        let persistedVia = "";
+        let assemblyNameValue = "";
         let cellOpen = false;
         const sandbox = {
           setTimeout, clearTimeout, Date, Promise, console, JSON, encodeURIComponent,
@@ -169,7 +170,7 @@ def test_assembly_description_is_posted_after_the_line_exists():
         sandbox.document = {
           querySelector(sel) {
             if (sel === "#AssemblyName") return { form: null };
-            if (sel === "#assemblyDescription") return { id: "assemblyDescription" };
+            if (sel === "#assemblyDescription") return null;
             if (sel === "#quote_Text" || sel === "#Description") {
               throw new Error("header field must stay untouched");
             }
@@ -190,10 +191,13 @@ def test_assembly_description_is_posted_after_the_line_exists():
         sandbox.AddNewItemHTML = function() {};
         sandbox.OnCopyAll = function() {};
         sandbox.OnAddClick = function() {
+          const storedName = assemblyNameValue || part;
+          parent.Description = storedName;
+          parent.ItemNumber = storedName;
           sandbox.jQuery.ajax({
             url: "/Quote/AddItem_Assembly",
             type: "POST",
-            data: "AssemblyName=" + encodeURIComponent(part)
+            data: "name=" + encodeURIComponent(storedName)
           });
         };
         function Deferred() {
@@ -329,36 +333,23 @@ def test_assembly_description_is_posted_after_the_line_exists():
         };
         sandbox.jQuery = function(sel) {
           if (sel === "#AssemblyName") {
-            return { val() { return this; }, trigger() { return this; } };
+            return {
+              val(v) {
+                if (arguments.length === 0) return assemblyNameValue;
+                assemblyNameValue = String(v == null ? "" : v);
+                return this;
+              },
+              trigger() { return this; }
+            };
           }
           if (sel === "#quote_Text" || sel === "#Description") {
             throw new Error("header field must stay untouched");
           }
           if (sel === "#assemblyDescription") {
-            const field = {
-              length: 1,
-              _v: "",
-              val(v) {
-                if (arguments.length === 0) return this._v;
-                this._v = v;
-                return this;
-              },
-              trigger(ev) {
-                if (
-                  ev === "change"
-                  && panelShowing
-                  && writerTargets.length === 0
-                ) {
-                  const text = String(this._v || "");
-                  if (text && text.toLowerCase() !== "root") {
-                    parent.Description = text;
-                    persistedVia = "assemblyDescription";
-                  }
-                }
-                return this;
-              }
+            return {
+              val() { return this; },
+              trigger() { return this; }
             };
-            return field;
           }
           if (sel === "#gridQuoteItems") {
             return { data() { return quoteGrid; } };
@@ -442,7 +433,8 @@ def test_assembly_description_is_posted_after_the_line_exists():
             posts: posts,
             started: started,
             reads: reads,
-            persistedVia: persistedVia
+            assemblyName: assemblyNameValue,
+            itemNumber: parent.ItemNumber
           }));
         }).catch((err) => {
           console.error(err && err.stack || err);
@@ -454,7 +446,7 @@ def test_assembly_description_is_posted_after_the_line_exists():
     run_path = Path(__file__).resolve().parent / "_assembly_desc_run.js"
     js_path.write_text(PAGE_ADD_ASSEMBLY_JS, encoding="utf-8")
     run_path.write_text(script, encoding="utf-8")
-    wanted = "11521-000 - ZZ-TEST weldment 2b8fc8c inch push_job 9/29"
+    wanted = "11521-000 - DIAG DESC"
     try:
         proc = subprocess.run(
             [node, str(run_path), str(js_path), wanted, "11521-000"],
@@ -469,15 +461,22 @@ def test_assembly_description_is_posted_after_the_line_exists():
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout.strip().splitlines()[-1])
     posts = payload["posts"]
+    add_posts = [row for row in posts if "AddItem_Assembly" in row["url"]]
     assert payload["started"] == "11521-000"
-    assert payload["reads"][0] == "11521-000"
+    assert payload["assemblyName"] == wanted
+    assert payload["assemblyName"] != "11521-000"
+    assert payload["reads"][0] == wanted
     assert payload["reads"][-1] == wanted
-    assert payload["persistedVia"] == "assemblyDescription"
+    assert payload["itemNumber"] == wanted
     assert payload["out"]["stored_description"] == wanted
     assert payload["out"]["ok"] is True
+    assert add_posts
+    add_body = unquote(str(add_posts[0].get("data") or ""))
+    assert wanted in add_body
+    assert "Description=" not in add_body
     assert not any(
-        isinstance(row.get("data"), dict) and row["data"].get("parameter") == "Description"
-        for row in posts
+        isinstance(row.get("data"), dict) and "Description" in (row.get("data") or {})
+        for row in add_posts
     )
     assert not any("quoteOnline/update" in row["url"] for row in posts)
     assert not any("quote_Text" in row["url"] for row in posts)
@@ -498,9 +497,11 @@ def test_assembly_description_is_posted_after_the_line_exists():
     assert proc.returncode == 0, proc.stderr
     linear_out = json.loads(proc.stdout.strip().splitlines()[-1])
     assert linear_out["started"] == "1020243-1"
-    assert linear_out["reads"][0] == "1020243-1"
+    assert linear_out["assemblyName"] == linear
+    assert linear_out["assemblyName"] != "1020243-1"
+    assert linear_out["reads"][0] == linear
     assert linear_out["reads"][-1] == linear
-    assert linear_out["persistedVia"] == "assemblyDescription"
+    assert linear_out["itemNumber"] == linear
     assert linear_out["out"]["stored_description"] == linear
     assert linear_out["out"]["ok"] is True
     bare_parent = "34887-1 - chosen description"
@@ -520,9 +521,11 @@ def test_assembly_description_is_posted_after_the_line_exists():
     assert proc.returncode == 0, proc.stderr
     parent_out = json.loads(proc.stdout.strip().splitlines()[-1])
     assert parent_out["started"] == "34887-1"
-    assert parent_out["reads"][0] == "34887-1"
+    assert parent_out["assemblyName"] == bare_parent
+    assert parent_out["assemblyName"] != "34887-1"
+    assert parent_out["reads"][0] == bare_parent
     assert parent_out["reads"][-1] == bare_parent
-    assert parent_out["persistedVia"] == "assemblyDescription"
+    assert parent_out["itemNumber"] == bare_parent
     assert parent_out["out"]["stored_description"] == bare_parent
     assert parent_out["out"]["ok"] is True
     rooted = "34887-1 - chosen description"
@@ -542,8 +545,11 @@ def test_assembly_description_is_posted_after_the_line_exists():
     assert proc.returncode == 0, proc.stderr
     root_out = json.loads(proc.stdout.strip().splitlines()[-1])
     assert root_out["started"] == "Root"
-    assert root_out["reads"][0] == "Root"
+    assert root_out["assemblyName"] == rooted
+    assert root_out["assemblyName"] != "34887-1"
+    assert root_out["reads"][0] == rooted
     assert root_out["reads"][-1] == rooted
+    assert root_out["itemNumber"] == rooted
     assert root_out["out"]["stored_description"] == rooted
     assert root_out["out"]["stored_description"] != "Root"
     assert root_out["out"]["ok"] is True
@@ -564,12 +570,33 @@ def test_assembly_description_is_posted_after_the_line_exists():
     assert proc.returncode == 0, proc.stderr
     loose_out = json.loads(proc.stdout.strip().splitlines()[-1])
     assert loose_out["started"] == "34887-1"
-    assert loose_out["reads"][0] == "34887-1"
+    assert loose_out["assemblyName"] == loose_wanted
+    assert loose_out["assemblyName"] != "34887-1"
+    assert loose_out["reads"][0] == loose_wanted
     assert loose_out["reads"][-1] == loose_wanted
-    assert loose_out["persistedVia"] == "assemblyDescription"
+    assert loose_out["itemNumber"] == loose_wanted
     assert loose_out["out"]["ok"] is True, loose_out["out"]
     assert loose_out["out"]["stored_description"] == loose_wanted
     assert any("CopyMoveItemToAssembly" in row["url"] for row in loose_out["posts"])
+    js_path.write_text(PAGE_ADD_ASSEMBLY_JS, encoding="utf-8")
+    run_path.write_text(script, encoding="utf-8")
+    try:
+        proc = subprocess.run(
+            [node, str(run_path), str(js_path), "", "11521-000"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    finally:
+        js_path.unlink(missing_ok=True)
+        run_path.unlink(missing_ok=True)
+    assert proc.returncode == 0, proc.stderr
+    empty_out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert empty_out["assemblyName"] == "11521-000"
+    assert empty_out["reads"][0] == "11521-000"
+    assert empty_out["itemNumber"] == "11521-000"
+    assert empty_out["out"]["ok"] is True, empty_out["out"]
 
 
 def test_quote_number_posts_update_property_value(monkeypatch):
