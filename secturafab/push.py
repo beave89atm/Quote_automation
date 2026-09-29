@@ -179,7 +179,10 @@ def _log_part_create_payload_empty(notes: list[str], client: Any) -> None:
             line = "tlist_bind_shape_keys=" + ",".join(str(k) for k in keys)
             if line not in notes:
                 notes.append(line)
-        if bind is False:
+        preview_only = False
+        if isinstance(payload, dict):
+            preview_only = bool(payload.get("imagestring_without_internaldata"))
+        if bind is False and not preview_only:
             from .website import STEP_EXPLODE_NO_INTERNALDATA
 
             if STEP_EXPLODE_NO_INTERNALDATA not in notes:
@@ -862,7 +865,7 @@ def _sanitize_thickness_param(raw: str | float | None) -> str:
     from .website import sanitize_bind_thickness_inches
 
     if raw is None:
-        return "0.25"
+        return ""
     converted = sanitize_bind_thickness_inches(raw)
     if converted:
         return converted
@@ -872,17 +875,18 @@ def _sanitize_thickness_param(raw: str | float | None) -> str:
     text = re.sub(r"(?i)\s*(inches|inch|in)\s*$", "", text)
     text = text.replace('"', "").replace("″", "").replace("'", "").strip()
     if not text:
-        return "0.25"
+        return ""
     try:
         return _format_thickness(float(text))
     except ValueError:
-        # Fraction like 1/4
+        # Fraction like 1/4, or "14 GA DP -".
         from quote_core.part_materials import _parse_thickness_token
 
         parsed = _parse_thickness_token(text)
         if parsed is not None:
             return _format_thickness(parsed)
-        return re.sub(r"(?i)[^0-9./]", "", text) or "0.25"
+        stripped = re.sub(r"(?i)[^0-9./]", "", text)
+        return stripped if stripped else ""
 
 
 def _default_machine() -> str:
@@ -1143,7 +1147,7 @@ def _default_thickness_in(takeoff: dict[str, Any] | None, stp_path: Path | None)
     for size in sizes:
         if str(size) in size_map:
             return _format_thickness(size_map[str(size)])
-    return "0.25"
+    return ""
 
 
 def _api_error_detail(exc: SecturaFabApiError) -> str:
@@ -1354,6 +1358,34 @@ def collect_job_files(
     return drawings, cad
 
 
+def _organization_bind_fields(
+    org_id: str,
+    name: str,
+    *,
+    quote_id: str = "",
+) -> dict[str, Any]:
+    """Organization object plus both ID fields. Bare IDs do not bind the dropdown."""
+    label = str(name or "").strip()
+    entry: dict[str, Any] = {
+        "ID": org_id,
+        "OrganizationName": label,
+        "DisplayName": label,
+        "NameAndLocation": label,
+        "Active": True,
+    }
+    if quote_id:
+        entry["ParentID"] = quote_id
+    fields: dict[str, Any] = {
+        "PrimaryOrganizationID": org_id,
+        "OrganizationID": org_id,
+        "Organization": entry,
+        "OrganizationList": [entry],
+    }
+    if label:
+        fields["OrganizationName"] = label
+    return fields
+
+
 class SecturaFabPushService:
     def __init__(self, client: SecturaFabClient | None = None) -> None:
         self.client = client or SecturaFabClient()
@@ -1414,10 +1446,13 @@ class SecturaFabPushService:
         if org_empty_guid_is_fail(org_id):
             org_id = str(time_waco_org_id_for_name(organization_name) or "").strip()
         if org_id and not org_empty_guid_is_fail(org_id):
-            # Live 6d4373bc: org bind + POST 201 left empty GUID. Stamp the
-            # known Time Waco ID on mint and rev-strip so it can stick.
-            payload["PrimaryOrganizationID"] = org_id
-            payload["OrganizationID"] = org_id
+            # ID fields alone do not bind the dropdown. Send the Organization
+            # object the page posts (live probe left OrganizationID null).
+            payload.update(
+                _organization_bind_fields(
+                    org_id, str(organization_name or "").strip()
+                )
+            )
         response = self.client.request("POST", "v1/quote", json=payload)
         if response.status_code >= 400:
             raise SecturaFabApiError(
@@ -1439,8 +1474,13 @@ class SecturaFabPushService:
         if description:
             strip_payload["Description"] = description[:500]
         if org_id and not org_empty_guid_is_fail(org_id):
-            strip_payload["PrimaryOrganizationID"] = org_id
-            strip_payload["OrganizationID"] = org_id
+            strip_payload.update(
+                _organization_bind_fields(
+                    org_id,
+                    str(organization_name or "").strip(),
+                    quote_id=quote_id,
+                )
+            )
         strip = self.client.request(
             "POST",
             "v1/quote",
@@ -1462,9 +1502,14 @@ class SecturaFabPushService:
                 slim = {
                     "ID": quote_id,
                     "QuoteNumber": display,
-                    "PrimaryOrganizationID": org_id,
-                    "OrganizationID": org_id,
                 }
+                slim.update(
+                    _organization_bind_fields(
+                        org_id,
+                        str(organization_name or "").strip(),
+                        quote_id=quote_id,
+                    )
+                )
                 if description:
                     slim["Description"] = description[:500]
                 self.client.request("POST", "v1/quote", json=slim)
@@ -1726,6 +1771,38 @@ class SecturaFabPushService:
         """True when SECTURA_WEBSITE_COOKIE (env/file) is set. No Windows unwrap."""
         cfg = getattr(self.client, "config", None)
         return bool(effective_website_cookie(cfg))
+
+    def _page_session_live(self) -> bool:
+        """Signed-in Chrome tab. Does not read or export cookies."""
+        try:
+            from .chrome_cdp import chrome_quotes_live
+
+            return bool(chrome_quotes_live())
+        except (OSError, TypeError, ValueError):
+            return False
+
+    def _website_or_page_session(self) -> bool:
+        return self._website_cookie_present() or self._page_session_live()
+
+    def _open_item_add_view(self, quote_id: str, item_type: str, notes: list[str]) -> None:
+        """In-page GetItem_AddView when Chrome is live. Cookie HTTP otherwise."""
+        if self._page_session_live():
+            from .chrome_cdp import page_jquery_ajax
+
+            view = page_jquery_ajax(
+                url="/Quote/GetItem_AddView",
+                method="GET",
+                data={"ID": quote_id, "ItemType": item_type},
+                quote_id=quote_id,
+                data_type="html",
+            )
+            html = view.get("body") if isinstance(view, dict) else ""
+            self.client._last_item_add_view_html = html if isinstance(html, str) else ""
+            notes.append(
+                f"GetItem_AddView({item_type}) in-page $.ajax (no cookie read)"
+            )
+            return
+        self.client.get_item_add_view(quote_id, item_type=item_type)
 
     def _antiforgery_capture_notes(self) -> list[str]:
         """Bools + cookie name presence. Never token/cookie values."""
@@ -2824,6 +2901,7 @@ class SecturaFabPushService:
             extra_pdfs=extra_pdfs,
         )
         classified: list[dict[str, Any]] = []
+        blocked_thickness = False
         counts = {"Cad": 0, "Linear": 0, "Component": 0, "Assembly": 0}
         sibling_nouns = any(
             is_nested_assembly_name(row_name(r))
@@ -2940,9 +3018,23 @@ class SecturaFabPushService:
                 token in purchased or token.replace("-", "") in compact
             ):
                 cat = "Component"
+            # Tubes stay Linear. Plate/gusset nouns stay Cad — ANGLE is a
+            # substring of TRIANGLE, so TRIANGLE GUSSET must not flip.
+            if (
+                cat == "Cad"
+                and not _cad_plate_sheet_noun(name)
+                and not _cad_plate_sheet_noun(bom_noun)
+                and not _cad_plate_sheet_noun(stem)
+                and (
+                    _has_linear_noun(name)
+                    or _has_linear_noun(bom_noun)
+                    or _has_linear_noun(stem)
+                )
+            ):
+                cat = "Linear"
             aluminum_named = bool(re.search(r"\bALUMINI?UM\b", name, re.I))
             material = default_material
-            thickness: str | float = _sanitize_thickness_param(default_thickness)
+            thickness: str | float = _sanitize_thickness_param(default_thickness) or ""
             thk_source = str(default_thickness_source or "").strip().casefold()
             if pm and pm.material:
                 material = pm.material
@@ -2998,6 +3090,13 @@ class SecturaFabPushService:
                 )
                 del _sku2, _note2
                 bind = self._linear_catalog_bind(product)
+            if cat == "Cad" and not str(thickness or "").strip():
+                label = dashed or name or stem or "part"
+                notes.append(
+                    f"FLAG: thickness unresolved for {label} — not Finishing"
+                )
+                blocked_thickness = True
+                continue
             row_qty = _row_qty(row)
             if row_qty <= 0:
                 row_qty = max(1, int(qty or 1))
@@ -3063,6 +3162,8 @@ class SecturaFabPushService:
                 notes.append(
                     f"WARNING: CadImport classify post failed for {name[:40]!r}: {exc}"
                 )
+        if blocked_thickness:
+            return [], notes
         notes.append(
             f"Classified CAD Files kids — Cad: {counts['Cad']}, "
             f"Linear: {counts['Linear']}, Component: {counts['Component']}, "
@@ -3275,6 +3376,7 @@ class SecturaFabPushService:
         upload_payload: Any = None
         upload_rows: list[dict[str, Any]] = []
         page_next_rows: list[dict[str, Any]] | None = None
+        defer_page_create = False
         from .website import (
             cookie_http_dxf_upload_is_fail,
             dxf_grid_upload_bound,
@@ -3315,45 +3417,16 @@ class SecturaFabPushService:
                 upload_rows = [
                     r for r in (page_bind.get("List") or []) if isinstance(r, dict)
                 ]
-                nexter = getattr(self.client, "create_all_parts_from_grid_dxf", None)
-                next_out: Any = {}
-                if callable(nexter):
-                    next_out = nexter(quote_id=quote_id)
-                if (
-                    isinstance(next_out, dict)
-                    and str(next_out.get("via") or "") == "createAllParts"
-                ):
-                    notes.append("next_via=createAllParts")
-                    from .website import persist_cadimport_xhr_capture
-
-                    persist_cadimport_xhr_capture(
-                        next_out.get("cadimport_xhr_capture"), notes=notes
-                    )
-                    self.client._part_create_via = "createAllParts"
-                    self.client._part_create_from_edit = True
-                    kids = [
-                        r for r in (next_out.get("List") or []) if isinstance(r, dict)
-                    ]
-                    page_next_rows = kids
-                    present = bool(next_out.get("grid_present"))
-                    if "grid_present" not in next_out:
-                        present = bool(kids)
-                    self.client._grid_present = present
-                    try:
-                        self.client._grid_dxf_row_count = int(
-                            next_out.get("grid_dxf_row_count") or len(kids) or 0
-                        )
-                    except (TypeError, ValueError):
-                        self.client._grid_dxf_row_count = len(kids)
-                    try:
-                        self.client._part_create_list_len = int(
-                            next_out.get("list_len") or len(kids) or 0
-                        )
-                    except (TypeError, ValueError):
-                        self.client._part_create_list_len = len(kids)
-                    notes.append("part_create_via=createAllParts")
+                defer_page_create = True
 
         if page_next_rows is None and not upload_rows:
+            if in_page:
+                notes.append(
+                    "WARNING: page CAD upload did not bind #gridDXF — "
+                    "not Finishing, not falling back to cookie HTTP "
+                    "UploadItem_DXFFiles"
+                )
+                return notes
             open_files = []
             try:
                 form_files = []
@@ -3374,53 +3447,104 @@ class SecturaFabPushService:
 
         if in_page:
             from .chrome_cdp import page_jquery_ajax
-            from .page_weld import STEP_MM_NOTE, set_units_body, step_header_is_millimetre
+            from .page_weld import (
+                STEP_MM_CONTINUE_NOTE,
+                STEP_UNITS_UNKNOWN_NOTE,
+                resolve_cad_length_unit,
+                set_units_body,
+            )
 
-            milli_names: list[str] = []
+            headers: list[str] = []
             for path in cad_files:
                 try:
-                    header = path.read_text(encoding="utf-8", errors="replace")
+                    headers.append(path.read_text(encoding="utf-8", errors="replace"))
                 except OSError:
                     notes.append(
                         f"WARNING: STEP unreadable — not calling SetDXFFileUnits ({path.name})"
                     )
                     return notes
-                if step_header_is_millimetre(header):
-                    milli_names.append(path.name)
-            if milli_names:
-                notes.append(STEP_MM_NOTE + " (" + ", ".join(milli_names) + ")")
+            length_unit = resolve_cad_length_unit(headers=headers, grid_rows=upload_rows)
+            if length_unit == "unknown":
+                notes.append(STEP_UNITS_UNKNOWN_NOTE)
                 return notes
-            source_ids: list[str] = []
-            for row in upload_rows:
-                sid = str(row.get("SourceDataID") or row.get("ID") or "").strip()
-                if sid and sid not in source_ids:
-                    source_ids.append(sid)
-            if not source_ids:
+            if length_unit == "mm":
                 notes.append(
-                    "WARNING: SetDXFFileUnits missing SourceDataID — not posting inch"
+                    STEP_MM_CONTINUE_NOTE
+                    + " ("
+                    + ", ".join(path.name for path in cad_files)
+                    + ")"
                 )
-            posted_inch = False
-            for sid in source_ids:
-                units = page_jquery_ajax(
-                    url="/CadImport/SetUnits",
-                    method="POST",
-                    data=set_units_body(sid),
-                    quote_id=quote_id,
-                )
-                if not (isinstance(units, dict) and units.get("ok")):
-                    why = units.get("why") if isinstance(units, dict) else "empty"
-                    notes.append(f"WARNING: CadImport SetUnits in-page failed: {why}")
-                else:
-                    posted_inch = True
-            if posted_inch:
-                notes.append(
-                    "CadImport SetDXFFileUnits inch in-page (IDList, no cookie read)"
-                )
+            else:
+                source_ids: list[str] = []
+                for row in upload_rows:
+                    sid = str(row.get("SourceDataID") or row.get("ID") or "").strip()
+                    if sid and sid not in source_ids:
+                        source_ids.append(sid)
+                if not source_ids:
+                    notes.append(
+                        "WARNING: SetDXFFileUnits missing SourceDataID — not posting inch"
+                    )
+                posted_inch = False
+                for sid in source_ids:
+                    units = page_jquery_ajax(
+                        url="/CadImport/SetUnits",
+                        method="POST",
+                        data=set_units_body(sid),
+                        quote_id=quote_id,
+                    )
+                    if not (isinstance(units, dict) and units.get("ok")):
+                        why = units.get("why") if isinstance(units, dict) else "empty"
+                        notes.append(f"WARNING: CadImport SetUnits in-page failed: {why}")
+                    else:
+                        posted_inch = True
+                if posted_inch:
+                    notes.append(
+                        "CadImport SetDXFFileUnits inch in-page (IDList, no cookie read)"
+                    )
         else:
             try:
                 self.client.cadimport_set_units("inch")
             except (SecturaFabApiError, SecturaFabWebsiteAuthError) as exc:
                 notes.append(f"WARNING: CadImport SetUnits failed: {exc}")
+
+        if defer_page_create and page_next_rows is None:
+            nexter = getattr(self.client, "create_all_parts_from_grid_dxf", None)
+            next_out: Any = {}
+            if callable(nexter):
+                next_out = nexter(quote_id=quote_id)
+            if (
+                isinstance(next_out, dict)
+                and str(next_out.get("via") or "") == "createAllParts"
+            ):
+                notes.append("next_via=createAllParts")
+                from .website import persist_cadimport_xhr_capture
+
+                persist_cadimport_xhr_capture(
+                    next_out.get("cadimport_xhr_capture"), notes=notes
+                )
+                self.client._part_create_via = "createAllParts"
+                self.client._part_create_from_edit = True
+                kids = [
+                    r for r in (next_out.get("List") or []) if isinstance(r, dict)
+                ]
+                page_next_rows = kids
+                present = bool(next_out.get("grid_present"))
+                if "grid_present" not in next_out:
+                    present = bool(kids)
+                self.client._grid_present = present
+                try:
+                    self.client._grid_dxf_row_count = int(
+                        next_out.get("grid_dxf_row_count") or len(kids) or 0
+                    )
+                except (TypeError, ValueError):
+                    self.client._grid_dxf_row_count = len(kids)
+                try:
+                    self.client._part_create_list_len = int(
+                        next_out.get("list_len") or len(kids) or 0
+                    )
+                except (TypeError, ValueError):
+                    self.client._part_create_list_len = len(kids)
+                notes.append("part_create_via=createAllParts")
 
         if page_next_rows is not None:
             from .cadimport_js import (
@@ -3654,6 +3778,8 @@ class SecturaFabPushService:
             for row in classified
         ]
         notes.extend(class_notes)
+        if any("thickness unresolved" in note for note in class_notes):
+            return notes
         notes.append("kyle_loom_component_to_cad=true")
         from .chrome_cdp import apply_grid_dxf_part_modes
         from .website import (
@@ -4385,7 +4511,7 @@ class SecturaFabPushService:
         Operation→Profile. Do not graft. Do not add CuttingLength
         to the bag.
         """
-        if not self._website_cookie_present():
+        if not self._website_or_page_session():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
         from .item_desc import (
             format_cad_description,
@@ -4414,11 +4540,14 @@ class SecturaFabPushService:
         except Exception:  # noqa: BLE001
             plate_catalog = []
         try:
-            self.client.get_item_add_view(quote_id, item_type="pdf")
-            notes.append(
-                "GetItem_AddView cookie-HTTP (AF scrape, not the Chrome "
-                "Image Files dialog) — #ButtonAdd / #files is gold"
-            )
+            if self._page_session_live():
+                self._open_item_add_view(quote_id, "pdf", notes)
+            else:
+                self.client.get_item_add_view(quote_id, item_type="pdf")
+                notes.append(
+                    "GetItem_AddView cookie-HTTP (AF scrape, not the Chrome "
+                    "Image Files dialog) — #ButtonAdd / #files is gold"
+                )
         except SecturaFabWebsiteAuthError as exc:
             notes.append(
                 "GetItem_AddView(pdf) 302 — cookie 302 is not logout "
@@ -5391,7 +5520,7 @@ class SecturaFabPushService:
         length: float | None = None,
     ) -> list[str]:
         """Long: in-page OnAddLinearClick for a job that is itself a linear."""
-        if not self._website_cookie_present():
+        if not self._website_or_page_session():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
         from .website import (
             cookie_http_additem_linear_is_not_success,
@@ -5402,8 +5531,11 @@ class SecturaFabPushService:
         )
 
         notes: list[str] = []
+        from .chrome_cdp import dismiss_image_files_dialog
+
+        notes.extend(dismiss_image_files_dialog(quote_id))
         try:
-            self.client.get_item_add_view(quote_id, item_type="linear")
+            self._open_item_add_view(quote_id, "linear", notes)
             notes.append(
                 "GetItem_AddView cookie-HTTP (AF scrape, not the Chrome "
                 "Long dialog) — orange Long is gold"
@@ -5578,7 +5710,7 @@ class SecturaFabPushService:
                 f"Refusing to PATCH/reuse forbidden live quote {quote_id}"
             )
         notes: list[str] = []
-        if not self._website_cookie_present():
+        if not self._website_or_page_session():
             notes.append(
                 "Pack-stamp / Copy-Move / AddFeature fail-closed — no website session"
             )
@@ -5664,7 +5796,7 @@ class SecturaFabPushService:
         holes_by_pn = _holes_from_takeoff_or_bom(takeoff, bom_rows)
         if not holes_by_pn:
             return notes
-        if not self._website_cookie_present():
+        if not self._website_or_page_session():
             notes.append("AddFeature holes fail-closed — no website session")
             return notes
         try:
@@ -5713,7 +5845,7 @@ class SecturaFabPushService:
         extra_pdfs: list[Path] | None,
     ) -> list[str]:
         """Long Finish: in-page OnAddLinearClick (10 bar / 30 tube / 40 angle)."""
-        if not self._website_cookie_present():
+        if not self._website_or_page_session():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
         from .line_item_ops import (
             _length_from_library,
@@ -5730,12 +5862,18 @@ class SecturaFabPushService:
         )
 
         notes: list[str] = []
+        from .chrome_cdp import dismiss_image_files_dialog
+
+        notes.extend(dismiss_image_files_dialog(quote_id))
         try:
-            self.client.get_item_add_view(quote_id, item_type="linear")
-            notes.append(
-                "GetItem_AddView cookie-HTTP (AF scrape, not the Chrome "
-                "Long dialog) — orange Long is gold"
-            )
+            if self._page_session_live():
+                self._open_item_add_view(quote_id, "linear", notes)
+            else:
+                self.client.get_item_add_view(quote_id, item_type="linear")
+                notes.append(
+                    "GetItem_AddView cookie-HTTP (AF scrape, not the Chrome "
+                    "Long dialog) — orange Long is gold"
+                )
         except SecturaFabWebsiteAuthError as exc:
             notes.append(
                 "GetItem_AddView(linear) 302 — cookie 302 is not logout "
@@ -6025,12 +6163,26 @@ class SecturaFabPushService:
         """UI nest first; documented public Nest API if the website nest 302s."""
         notes: list[str] = []
         nest_type = "single" if item_count <= 1 else "multi"
+        id_list: list[str] = []
+        try:
+            detail = self.client.get_json(f"v1/quote/{quote_id}")
+        except SecturaFabApiError:
+            detail = {}
+        if isinstance(detail, dict):
+            for item in detail.get("ItemList") or []:
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get("ID") or "").strip()
+                if item_id:
+                    id_list.append(item_id)
         try:
             self.client.nest_quote_edit(quote_id)
             notes.append("Nest POST /Quote/NestQuote_Edit")
         except SecturaFabWebsiteAuthError:
             try:
-                self.client.nest_quote_api(quote_id, nest_type=nest_type)
+                self.client.nest_quote_api(
+                    quote_id, nest_type=nest_type, id_list=id_list
+                )
                 notes.append(
                     f"Nest POST /api/v1/Nest/quote/{quote_id}/{nest_type} "
                     "(website NestQuote_Edit needs session — used documented public nest)"
@@ -6041,7 +6193,9 @@ class SecturaFabPushService:
         except SecturaFabApiError as exc:
             notes.append(f"WARNING: NestQuote_Edit failed: {exc}")
             try:
-                self.client.nest_quote_api(quote_id, nest_type=nest_type)
+                self.client.nest_quote_api(
+                    quote_id, nest_type=nest_type, id_list=id_list
+                )
                 notes.append(f"Nest POST /api/v1/Nest/quote/{quote_id}/{nest_type}")
             except SecturaFabApiError as exc2:
                 notes.append(f"WARNING: Public nest failed: {exc2}")
@@ -6251,12 +6405,18 @@ class SecturaFabPushService:
                 stp_path=stp,
                 library=library,
             )
-            # STEP/STP is the CAD source of truth for SecturaFAB part import.
+            # Keep every STEP. A weldment is len(cad) >= 2 (Q10506).
             if stp and stp.exists():
-                cad = [stp]
-            elif cad:
-                # Library may have found a STEP beside the drawings.
-                cad = [cad[0]]
+                already = False
+                for path in cad:
+                    try:
+                        already = Path(path).resolve() == stp.resolve()
+                    except OSError:
+                        already = Path(path) == stp
+                    if already:
+                        break
+                if not already:
+                    cad = [stp, *list(cad)]
             if not drawings and not cad:
                 return PushResult(
                     ok=False,
@@ -6539,6 +6699,7 @@ class SecturaFabPushService:
                 memo="",
                 quote_request_id=quote_request_id,
                 organization_name=organization_name,
+                organization_id=time_waco_org_id_for_name(organization_name),
             )
             from .forbidden_quotes import is_forbidden_quote_id
 
@@ -6649,7 +6810,23 @@ class SecturaFabPushService:
                         )
                     from .page_weld import step_unit_fail_note
 
+                    from .page_weld import mm_kept_flats_fail
+
                     unit_fail = step_unit_fail_note(notes)
+                    if not unit_fail:
+                        peeked = None
+                        try:
+                            peeked = self.client.get_json(f"v1/quote/{quote_id}")
+                        except Exception:  # noqa: BLE001
+                            peeked = None
+                        items = (
+                            peeked.get("ItemList")
+                            if isinstance(peeked, dict)
+                            else None
+                        )
+                        unit_fail = mm_kept_flats_fail(
+                            notes, items if isinstance(items, list) else None
+                        )
                     if unit_fail:
                         return self._fail_push(
                             msg=unit_fail,

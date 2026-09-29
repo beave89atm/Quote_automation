@@ -620,7 +620,8 @@ def session_is_dead(
     blob = str(body or "")
     if re.search(r"/Account/Login", url_s, flags=re.IGNORECASE):
         return "login_url"
-    if title_s.strip() == "SecturaFAB-Login":
+    compact_title = re.sub(r"\s+", "", title_s)
+    if compact_title.casefold() == "secturafab-login":
         return "login_title"
     try:
         code = int(status) if status is not None and status != "" else 0
@@ -637,11 +638,18 @@ def session_is_dead(
     return None
 
 
-def abort_if_session_dead(*, no_sectura_tab: bool = False, **kwargs: Any) -> None:
+def abort_if_session_dead(
+    *,
+    no_sectura_tab: bool = False,
+    on_alert: Any = None,
+    **kwargs: Any,
+) -> None:
     """Raise before any write when the session probe is dead.
 
     A login redirect or a missing Sectura tab gets one Incognito sign-in.
     The other-user banner does not. A failed sign-in stops fail-closed.
+    ``on_alert`` is the Chief of Staff notifier: the alert file is written
+    and the hook is called.
     """
     reason = session_is_dead(**kwargs)
     if reason is None and no_sectura_tab:
@@ -654,11 +662,12 @@ def abort_if_session_dead(*, no_sectura_tab: bool = False, **kwargs: Any) -> Non
         alert_chief_of_staff(
             _alert_message(trigger=reason, page_state="license_in_use"),
             folder=alert_dir(),
+            on_alert=on_alert,
         )
         raise SessionDeadError(reason)
     from .web_login import attempt_sectura_relogin
 
-    attempt_sectura_relogin(trigger=reason)
+    attempt_sectura_relogin(trigger=reason, on_alert=on_alert)
 
 
 _QUOTES_LIST_SESSION_JS = """(function() {
@@ -1831,15 +1840,15 @@ _PAGE_FINISH_JS = """(async function(spec) {
     }
     if (typeof r.set === "function") {
       r.set("ItemType", "cad");
-      r.set("ProductType", "bar");
-      r.set("ProductSubType", "bar_flat");
-      r.set("productSubType", "bar_flat");
+      r.set("ProductType", "prt_dxf");
+      r.set("ProductSubType", "prt_dxf");
+      r.set("productSubType", "prt_dxf");
       r.set("Machine", "Laser");
     } else {
       r.ItemType = "cad";
-      r.ProductType = "bar";
-      r.ProductSubType = "bar_flat";
-      r.productSubType = "bar_flat";
+      r.ProductType = "prt_dxf";
+      r.ProductSubType = "prt_dxf";
+      r.productSubType = "prt_dxf";
       r.Machine = "Laser";
     }
     // Keep CadImport / part-create Length/Width/Stock. Never replace
@@ -1919,9 +1928,9 @@ _PAGE_FINISH_JS = """(async function(spec) {
     if (raw.Stock_X !== undefined) lean.Stock_X = raw.Stock_X;
     if (raw.Stock_Y !== undefined) lean.Stock_Y = raw.Stock_Y;
     lean.ItemType = "cad";
-    lean.ProductType = "bar";
-    lean.ProductSubType = "bar_flat";
-    lean.productSubType = "bar_flat";
+    lean.ProductType = "prt_dxf";
+    lean.ProductSubType = "prt_dxf";
+    lean.productSubType = "prt_dxf";
     lean.Machine = "Laser";
     if (lean.InternalData == null) lean.InternalData = "";
     return lean;
@@ -2025,6 +2034,7 @@ _PAGE_FINISH_JS = """(async function(spec) {
         var json = (raw[i] && raw[i].toJSON) ? raw[i].toJSON() : raw[i];
         if (json && typeof json === "object") {
           keepIdentity(raw[i], json);
+          if (raw[i] && raw[i].uid && !json.uid) json.uid = raw[i].uid;
           persistFileType(json);
           fillRowSid(json);
           out.push(json);
@@ -2270,19 +2280,40 @@ _PAGE_FINISH_JS = """(async function(spec) {
       });
     }
     function gaugeIndex(data, token) {
+      // 14GA is 0.0747; the list row is '.076 - 14 Ga'. Match the gauge
+      // label first, then the nearest decimal within 0.003. invent=false.
       var wantText = String(token || "").trim();
       if (!wantText) return -1;
+      var label = wantText.match(/(\\d+)\\s*ga/i);
+      if (label) {
+        var gaRe = new RegExp("(^|[^0-9])" + label[1] + "\\\\s*ga", "i");
+        for (var gi = 0; gi < data.length; gi++) {
+          var gItem = data[gi];
+          var gDesc = "";
+          if (typeof gItem === "string") gDesc = gItem;
+          else if (gItem) gDesc = String(gItem.Description || gItem.description || gItem.Text || "");
+          if (gDesc && gaRe.test(gDesc)) return gi;
+        }
+      }
       var wantN = null;
       var numMatch = wantText.match(/-?\\d+(?:\\.\\d+)?/);
       if (numMatch) {
         var parsed = parseFloat(numMatch[0]);
         if (isFinite(parsed)) wantN = parsed;
       }
+      var best = -1;
+      var bestAbs = 0.003 + 1;
       for (var ti = 0; ti < data.length; ti++) {
         var item = data[ti];
         if (item == null) continue;
         if (typeof item === "string") {
           if (item === wantText || item.indexOf(wantText) >= 0) return ti;
+          var fromText = item.match(/-?\\d+(?:\\.\\d+)?/);
+          var textN = fromText ? parseFloat(fromText[0]) : NaN;
+          if (wantN != null && isFinite(textN)) {
+            var textAbs = Math.abs(textN - wantN);
+            if (textAbs <= 0.003 && textAbs < bestAbs) { best = ti; bestAbs = textAbs; }
+          }
           continue;
         }
         var desc = String(item.Description || item.description || "");
@@ -2290,9 +2321,16 @@ _PAGE_FINISH_JS = """(async function(spec) {
           return ti;
         }
         var thick = parseFloat(item.Thickness);
-        if (wantN != null && isFinite(thick) && Math.abs(thick - wantN) <= 1e-4) return ti;
+        if (!isFinite(thick)) {
+          var descNum = desc.match(/-?\\d+(?:\\.\\d+)?/);
+          if (descNum) thick = parseFloat(descNum[0]);
+        }
+        if (wantN != null && isFinite(thick)) {
+          var ad = Math.abs(thick - wantN);
+          if (ad <= 0.003 && ad < bestAbs) { best = ti; bestAbs = ad; }
+        }
       }
-      return -1;
+      return best;
     }
     function readFresh() {
       var fresh = [];
@@ -2336,6 +2374,12 @@ _PAGE_FINISH_JS = """(async function(spec) {
     var idBlob = (href + " " + header).toLowerCase();
     if (idBlob.indexOf(want) < 0) return fail("wrong_quote", 0);
     if (!window.jQuery) return fail("no_dxfitemtype", 0);
+    function linearStockName(r) {
+      var blob = String(
+        (r && (r.Name || r.PartName || r.Description || r.FileName || r.ItemNumber)) || ""
+      ).toUpperCase();
+      return /\\b(TUBE|PIPE|HSS|BEAM|ANGLE|CHANNEL)\\b/.test(blob);
+    }
     var plates = [];
     for (var i = 0; i < (gridRows || []).length; i++) {
       var r = gridRows[i];
@@ -2344,6 +2388,7 @@ _PAGE_FINISH_JS = """(async function(spec) {
       if (cat === "Linear" || cat === "Assembly") continue;
       if (r.IsAssembly || Number(r.ProductType) === 300) continue;
       if (Number(r.PartMode) === 1 || r.IsLinear) continue;
+      if (linearStockName(r)) continue;
       plates.push(r);
     }
     if (!plates.length) return fail("", 0);
@@ -2376,19 +2421,52 @@ _PAGE_FINISH_JS = """(async function(spec) {
       return ids;
     }
     function selectExactlyOne(row) {
-      // grid.select does not fire change. onChangeDXFItemType applies to
-      // every selected row, so the selection must be exactly this row.
+      // kendo toJSON() drops uid. Match dataSource.view() items (uid kept)
+      // or grid.items(), then select that tr. grid.select does not fire
+      // change, so the selection must be exactly this row.
       if (!g) return "selection_not_one";
       try {
         if (typeof g.clearSelection === "function") g.clearSelection();
       } catch (eC) {}
+      var view = [];
+      try {
+        view = (g.dataSource && g.dataSource.view) ? g.dataSource.view() : [];
+      } catch (eV) { view = []; }
+      var wantPart = String((row && (row.PartID || row.ID)) || "");
+      var wantUid = String((row && row.uid) || "");
+      var match = null;
+      for (var vi = 0; vi < view.length; vi++) {
+        var item = view[vi];
+        var uid = String((item && item.uid) || "");
+        var pid = String((item && (item.PartID || item.ID)) || "");
+        if (wantUid && uid === wantUid) { match = item; break; }
+        if (wantPart && pid && pid === wantPart) { match = item; break; }
+      }
+      var uidUse = (match && match.uid) ? String(match.uid) : wantUid;
       var tr = null;
       try {
-        if (row && row.uid && g.tbody && g.tbody.find) {
-          tr = g.tbody.find("tr[data-uid='" + row.uid + "']");
+        if (uidUse && g.tbody && g.tbody.find) {
+          tr = g.tbody.find("tr[data-uid='" + uidUse + "']");
         }
       } catch (eT) { tr = null; }
+      if ((!tr || !tr.length) && g.items && window.jQuery) {
+        try {
+          var domRows = g.items();
+          for (var ii = 0; ii < domRows.length; ii++) {
+            var di = {};
+            try { di = g.dataItem(domRows[ii]) || {}; } catch (eD) { di = {}; }
+            var diUid = String(di.uid || "");
+            var diPid = String(di.PartID || di.ID || "");
+            if ((uidUse && diUid === uidUse) || (wantPart && diPid && diPid === wantPart)) {
+              tr = jQuery(domRows[ii]);
+              if (!uidUse && diUid) uidUse = diUid;
+              break;
+            }
+          }
+        } catch (eI) {}
+      }
       if (!tr || !tr.length) return "selection_not_one";
+      if (match && match.uid) row = match;
       try { g.select(tr); } catch (eS) { return "selection_not_one"; }
       try { if (typeof g.trigger === "function") g.trigger("change"); } catch (eCh) {}
       var ids = selectedKeys();
@@ -6779,6 +6857,49 @@ _PAGE_LINEAR_FINISH_JS = """(function() {
 })"""
 
 
+_DISCARD_PDF_CONFIRM_JS = r"""(function() {
+  window.confirm = function(msg) {
+    var text = String(msg || "");
+    if (/discard the PDF files/i.test(text)) return true;
+    return true;
+  };
+  var closed = 0;
+  try {
+    if (window.jQuery) {
+      jQuery(".k-window").each(function() {
+        var title = "";
+        try { title = jQuery(this).find(".k-window-title").text() || jQuery(this).text() || ""; }
+        catch (e0) { title = ""; }
+        if (!/image files/i.test(title)) return;
+        var win = jQuery(this).data("kendoWindow");
+        if (win && typeof win.close === "function") { win.close(); closed += 1; }
+      });
+    }
+  } catch (e1) {}
+  return {ok: true, closed: closed};
+})"""
+
+
+def dismiss_image_files_dialog(quote_id: str | None = None) -> list[str]:
+    """Close Image Files and accept the discard-PDF confirm before Long.
+
+    The native confirm hangs page JS. Override it in the signed-in tab
+    before the next action. Does not read cookies.
+    """
+    gate = minted_edit_tab_ready(str(quote_id or ""), navigate=False)
+    if not gate.get("ok"):
+        return []
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    value = _cdp_evaluate_promise(
+        _DISCARD_PDF_CONFIRM_JS + "()",
+        tab=tab,
+        fallback=False,
+    )
+    if isinstance(value, dict) and value.get("ok"):
+        return ["Image Files dialog closed; discard-PDF confirm overridden in-page"]
+    return ["WARNING: Image Files dialog dismiss did not run"]
+
+
 def invoke_page_linear_finish(
     *,
     base: str | None = None,
@@ -6860,7 +6981,7 @@ def invoke_page_linear_finish(
         "edit_quote_id": str(gate.get("edit_quote_id") or ""),
         "minted_id": str(gate.get("minted_id") or quote_id or ""),
         "edit_gate": "",
-        "ok": long_from_page,
+        "ok": long_from_page and 200 <= int(value.get("status") or 0) < 300,
         "response_list_n": response_list_n,
         "response_tag": str(value.get("response_tag") or ""),
         "response_badge_string": str(value.get("response_badge_string") or ""),

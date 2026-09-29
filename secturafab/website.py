@@ -2173,10 +2173,14 @@ def persist_part_create_tlist_bind_source(
         )
         if preview not in notes:
             notes.append(preview)
+        # ImageString-only preview is not a push refuse. The token is
+        # for a real empty explode (no InternalData and no ImageString).
+        # Kyle's capture-gap notes still record the missing bind.
         if not is_bind:
-            alias = STEP_EXPLODE_NO_INTERNALDATA
-            if alias not in notes:
-                notes.append(alias)
+            if not preview_only:
+                alias = STEP_EXPLODE_NO_INTERNALDATA
+                if alias not in notes:
+                    notes.append(alias)
             persist_kyle_step_contours_capture_gap(notes)
     return out
 
@@ -6471,15 +6475,19 @@ def sanitize_cad_partmode_filelist_row(
 
 # Kyle Q10366 HAR Finish FileList (Cad Contours plate). invent=false.
 # Status / ImageString / FileType / PartMode / SourceDataID absent.
-# ItemType=cad ProductType=bar productSubType=bar_flat Machine=Laser
+# ItemType=cad ProductType=prt_dxf productSubType=prt_dxf Machine=Laser
+# Sheet OnAddDXFClick. bar/bar_flat is the grid default and does not
+# add a laser Profile op (Q10506 kids were $48.99/$43.19 Bend-only).
 # Length/Width in meters. Tip helpers (CadType, IsPlate, drawing_thickness_in)
 # never sent. KEEP = Kyle HAR key set (~44 grid fields minus STRIP) —
 # include Stock_X/Stock_Y. Do not over-lean. Keep PartID+FileID GUIDs.
 # Do not invent Contours. Empty InternalData stays when recipe complete.
 KYLE_HAR_CAD_CONTOURS_PLATE_ITEMTYPE = "cad"
-KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE = "bar"
-KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE = "bar_flat"
+KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE = "prt_dxf"
+KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE = "prt_dxf"
 KYLE_HAR_CAD_CONTOURS_PLATE_MACHINE = "Laser"
+# Proven Q10506 sheet prices when Profile is on the laser part.
+Q10506_PROVEN_UNIT_PRICE = {"A-11521-000": 177.46, "A-11513-000": 159.58}
 KYLE_HAR_CAD_CONTOURS_PLATE_STRIP_KEYS = (
     "Status",
     "status",
@@ -6865,8 +6873,8 @@ def sanitize_cad_contours_plate_finish_filelist_row(
     """Page Finish / AddItem_DXFFiles FileList for Cad Contours plate.
 
     invent=false. Do not invent Status. Do not send ImageString unless
-    Kyle path requires it (default omit like Q10366 HAR). Prefer HAR
-    shape: cad + bar/bar_flat + Laser. Length/Width stay inches.
+    Kyle path requires it (default omit like Q10366 HAR).     Sheet OnAddDXFClick sends prt_dxf (not grid-default bar/bar_flat).
+    Length/Width stay inches.
     Meter or unknown units raise CadFinishNotInches (Q10488). Strip
     tip-only keys (FileType/PartMode/SourceDataID/CadType/IsPlate).
     KEEP = Kyle HAR key set — copy all present non-STRIP keys so
@@ -9205,6 +9213,17 @@ def extract_linear_dims(description: str, row: dict[str, Any] | None = None) -> 
     return out
 
 
+_GENERIC_LINEAR_NOUN_ONLY_RE = re.compile(
+    r"(?i)^(TUBES?|PIPES?|BEAMS?|ANGLES?|CHANNELS?|BARS?|HSS)$"
+)
+
+
+def _generic_linear_noun_only(description: str) -> bool:
+    """True for a stock noun with no part number and no size (TUBE, BEAM)."""
+    text = re.sub(r"\s+", " ", str(description or "")).strip()
+    return bool(_GENERIC_LINEAR_NOUN_ONLY_RE.match(text))
+
+
 def pick_closest_linear_product(
     products: list[dict[str, Any]],
     *,
@@ -9237,6 +9256,13 @@ def pick_closest_linear_product(
         return None, (
             f"{LINEAR_SKU_MISSING} no tenant SKU for {description!r} "
             f"(closest {sku} score={best_score:.1f}; no silent SKU graft)"
+        )
+    # invent=false: a bare noun (TUBE, BEAM) must not fuzzy-pick a SKU.
+    # "12689-1 TUBE" and "RETURN TUBE" still bind; "TUBE" / "BEAM" do not.
+    if _generic_linear_noun_only(description):
+        return None, (
+            f"{LINEAR_SKU_MISSING} no tenant SKU for {description!r} "
+            f"(closest {sku} is a fuzzy noun hit; no silent SKU graft)"
         )
     if len(dims) >= 3 and _dim_match_score(dims, product_linear_dims(best)) < 20:
         return None, (

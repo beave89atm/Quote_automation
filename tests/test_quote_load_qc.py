@@ -292,7 +292,7 @@ def test_page_native_cad_thickness_recipe_and_inch_finish():
     assert 'set("Thickness"' not in native
     assert "fetch(" not in native
     assert "item.Description" in native
-    assert "1e-4" in native
+    assert "0.003" in native
     assert "specIn.thickness" in native
     assert "row.Thickness" not in native
     assert "/Part/UpdateItemType" in native
@@ -479,7 +479,7 @@ def test_page_native_description_gauge_and_delayed_errorstatus():
             const numericIdx = getSelected();
             resetErr();
             const model = await applyPageNativeCadThickness(
-              rows, { quoteId: "qid", thickness: "0.075" }
+              rows, { quoteId: "qid", thickness: "0.250" }
             );
             const missing = await applyPageNativeCadThickness(
               rows, { quoteId: "qid" }
@@ -550,7 +550,10 @@ def test_finish_cad_files_live_chrome_skips_cookie_reads(tmp_path, monkeypatch):
     monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *a, **k: True)
     monkeypatch.setattr("secturafab.chrome_cdp.page_jquery_ajax", _ajax)
     stp = tmp_path / "A-11521-000.step"
-    stp.write_bytes(b"ISO")
+    stp.write_text(
+        "CONVERSION_BASED_UNIT('INCH',#12);",
+        encoding="utf-8",
+    )
     client = MagicMock()
     client.upload_dxf_via_page_add_files.return_value = {
         "bound": True,

@@ -1109,27 +1109,25 @@ def _length_from_library(
         got = _cut_from_text(text, part_no, allow_unmarked=True)
         if got:
             return got
+    # invent=false: a sibling drawing may name this part, but a bare
+    # CUT LENGTH on an unrelated PDF must not apply to every row.
     others: list[Path] = []
-    for raw in list(extra_pdfs or []) + _iter_folder_pdfs(library_folder):
+    others.extend(_iter_folder_pdfs(library_folder))
+    for raw in extra_pdfs or []:
         try:
-            path = Path(raw)
+            others.append(Path(raw))
         except TypeError:
             continue
-        if not path.is_file():
-            continue
-        key = str(path.resolve()).lower()
-        if key in seen:
+    for path in others:
+        try:
+            key = str(path.resolve()).lower()
+        except OSError:
+            key = str(path).lower()
+        if key in seen or not path.is_file():
             continue
         seen.add(key)
-        others.append(path)
-    for path in others:
-        text = _cached_drawing_text(path, cache, ocr=False)
-        got = _cut_from_text(text, part_no, allow_unmarked=False)
-        if got:
-            return got
-    for path in others:
         text = _cached_drawing_text(path, cache, ocr=True)
-        got = _length_near_part(text, part_no) or parse_cut_length(text)
+        got = _length_near_part(text, part_no)
         if got:
             return got
     return None

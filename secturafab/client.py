@@ -1710,7 +1710,12 @@ class SecturaFabClient:
             minted_edit_tab_ready,
         )
 
-        if not effective_website_cookie(self.config):
+        live_pdf = False
+        try:
+            live_pdf = bool(chrome_quotes_live())
+        except (OSError, TypeError, ValueError):
+            live_pdf = False
+        if not effective_website_cookie(self.config) and not live_pdf:
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
         del file_list
         del files
@@ -1913,7 +1918,12 @@ class SecturaFabClient:
         )
         from .website import long_without_page_click_is_fail
 
-        if not effective_website_cookie(self.config):
+        live_linear = False
+        try:
+            live_linear = bool(chrome_quotes_live())
+        except (OSError, TypeError, ValueError):
+            live_linear = False
+        if not effective_website_cookie(self.config) and not live_linear:
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
         del product_id
         del item_id
@@ -2279,8 +2289,14 @@ class SecturaFabClient:
     ) -> Any:
         """POST /Quote/AddFeature — Internal hole on a Cad plate."""
         from .browser_session import effective_website_cookie
+        from .chrome_cdp import chrome_quotes_live, page_jquery_ajax
 
-        if not effective_website_cookie(self.config):
+        live = False
+        try:
+            live = bool(chrome_quotes_live())
+        except (OSError, TypeError, ValueError):
+            live = False
+        if not effective_website_cookie(self.config) and not live:
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
         refuse_forbidden_quote_write(
             method="POST",
@@ -2294,6 +2310,19 @@ class SecturaFabClient:
             qty=qty,
             feature_type=feature_type,
         )
+        if live:
+            result = page_jquery_ajax(
+                url="/Quote/AddFeature",
+                method="POST",
+                data=payload,
+                quote_id=quote_id,
+            )
+            if not (isinstance(result, dict) and result.get("ok")):
+                why = result.get("why") if isinstance(result, dict) else "empty"
+                raise SecturaFabWebsiteAuthError(
+                    f"AddFeature in-page failed ({why})"
+                )
+            return result.get("body")
         response = self.website_request(
             "POST",
             WEBSITE_FINISH_PATHS["add_feature"],
@@ -2355,9 +2384,12 @@ class SecturaFabClient:
         nest_type: str = "multi",
         id_list: list[str] | None = None,
     ) -> Any:
-        """Documented public nest: POST /api/v1/Nest/quote/{quoteID}/{nestType}."""
+        """Documented public nest: POST /api/v1/Nest/quote/{quoteID}/{nestType}.
+
+        ASP.NET rejects a JSON null for optional IDList. Send the page body.
+        """
         path = f"v1/Nest/quote/{quote_id}/{nest_type}"
-        return self.post_json(path, payload=id_list)
+        return self.post_json(path, payload={"IDList": list(id_list or [])})
 
     @staticmethod
     def _parse_or_raise(response: requests.Response) -> Any:

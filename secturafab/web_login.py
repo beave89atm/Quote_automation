@@ -315,13 +315,24 @@ def _credentials(
     return email, password
 
 
+def _lock_page_state(text: str) -> str:
+    for line in text.splitlines():
+        if line.startswith("page_state="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
 def _cooldown_active(folder: Path, *, now: float, cooldown_s: float) -> bool:
+    """Cooldown only after a failed attempt. Success and in-progress locks do not."""
     if not folder.is_dir():
         return False
     for path in folder.glob("relogin-*.txt"):
         try:
             text = path.read_text(encoding="utf-8")
         except OSError:
+            continue
+        state = _lock_page_state(text)
+        if state in {"", "started", "success"}:
             continue
         for line in text.splitlines():
             if not line.startswith("epoch="):
@@ -333,6 +344,30 @@ def _cooldown_active(folder: Path, *, now: float, cooldown_s: float) -> bool:
             if now - stamp < cooldown_s:
                 return True
     return False
+
+
+def _mark_latest_lock(folder: Path, page_state: str) -> None:
+    if not folder.is_dir():
+        return
+    paths = sorted(folder.glob("relogin-*.txt"))
+    if not paths:
+        return
+    path = paths[-1]
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    lines = []
+    seen = False
+    for line in text.splitlines():
+        if line.startswith("page_state="):
+            lines.append(f"page_state={page_state}")
+            seen = True
+        else:
+            lines.append(line)
+    if not seen:
+        lines.append(f"page_state={page_state}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _write_lock(folder: Path, *, trigger: str, page_state: str, now: float) -> None:
@@ -394,7 +429,10 @@ def _fail(
     url_path: str = "",
     on_alert: Callable[[str], None] | None = None,
     alerts: Path | None = None,
+    locks: Path | None = None,
 ) -> NoReturn:
+    if locks is not None:
+        _mark_latest_lock(locks, page_state)
     message = _alert_message(trigger=trigger, page_state=page_state, url_path=url_path)
     alert_chief_of_staff(message, folder=alerts, on_alert=on_alert)
     raise SecturaReloginError(page_state, trigger=trigger)
@@ -483,6 +521,7 @@ def attempt_sectura_relogin(
             page_state=exc.page_state,
             on_alert=on_alert,
             alerts=alert_folder,
+            locks=lock_folder,
         )
     client = cdp or ChromeCdp()
     start = launcher or launch_chrome_incognito
@@ -495,6 +534,7 @@ def attempt_sectura_relogin(
                 page_state="chrome_launch_failed",
                 on_alert=on_alert,
                 alerts=alert_folder,
+                locks=lock_folder,
             )
         opened = False
         for _ in range(max_polls):
@@ -508,6 +548,7 @@ def attempt_sectura_relogin(
                 page_state="cdp_unreachable",
                 on_alert=on_alert,
                 alerts=alert_folder,
+                locks=lock_folder,
             )
     page = _pick_page(client.pages(debug_port))
     if page is None:
@@ -516,6 +557,7 @@ def attempt_sectura_relogin(
             page_state="chrome_no_page",
             on_alert=on_alert,
             alerts=alert_folder,
+            locks=lock_folder,
         )
     ws = str(page.get("webSocketDebuggerUrl") or "")
     here = str(page.get("url") or "")
@@ -528,12 +570,14 @@ def attempt_sectura_relogin(
                 page_state="navigate_failed",
                 on_alert=on_alert,
                 alerts=alert_folder,
+                locks=lock_folder,
             )
         wait(0.05)
     probe = client.evaluate(ws, _PROBE_JS)
     state = _page_state(probe)
     url_path = _safe_path(probe.get("url") if isinstance(probe, dict) else "")
     if state == "quote":
+        _mark_latest_lock(lock_folder, "success")
         return
     if state in {"license_in_use", "verification_page"}:
         _fail(
@@ -542,6 +586,7 @@ def attempt_sectura_relogin(
             url_path=url_path,
             on_alert=on_alert,
             alerts=alert_folder,
+            locks=lock_folder,
         )
     filled = _submit_login(client, ws, email, password)
     del email, password
@@ -552,6 +597,7 @@ def attempt_sectura_relogin(
             page_state="license_in_use",
             on_alert=on_alert,
             alerts=alert_folder,
+            locks=lock_folder,
         )
     if fill_state != "submitted":
         _fail(
@@ -559,6 +605,7 @@ def attempt_sectura_relogin(
             page_state=fill_state or "login_form_missing",
             on_alert=on_alert,
             alerts=alert_folder,
+            locks=lock_folder,
         )
     last_path = ""
     last_state = "still_dead"
@@ -568,6 +615,7 @@ def attempt_sectura_relogin(
         last_state = _page_state(probe)
         last_path = _safe_path(probe.get("url") if isinstance(probe, dict) else "")
         if last_state == "quote":
+            _mark_latest_lock(lock_folder, "success")
             return
         if last_state in {"license_in_use", "verification_page", "login_error"}:
             break
@@ -577,4 +625,5 @@ def attempt_sectura_relogin(
         url_path=last_path,
         on_alert=on_alert,
         alerts=alert_folder,
+        locks=lock_folder,
     )

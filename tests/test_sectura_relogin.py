@@ -371,7 +371,7 @@ def test_relogin_cooldown_refuses_second_attempt(tmp_path):
     alerts, locks = _dirs(tmp_path)
     locks.mkdir()
     (locks / "relogin-earlier.txt").write_text(
-        f"epoch={time.time()}\ntrigger=login_url\npage_state=started\n",
+        f"epoch={time.time()}\ntrigger=login_url\npage_state=login_error\n",
         encoding="utf-8",
     )
     launched = []

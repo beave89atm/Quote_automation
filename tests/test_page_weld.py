@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 from secturafab.page_weld import (
     PAGE_ADD_ASSEMBLY_JS,
-    STEP_MM_NOTE,
+    STEP_MM_CONTINUE_NOTE,
     add_page_assembly,
     assembly_tree_problems,
     set_page_quote_number,
@@ -151,7 +151,11 @@ def test_millimetre_step_does_not_call_set_units(tmp_path, monkeypatch):
         "gridDXF_n": 1,
         "List": [{"SourceDataID": "src-mm"}],
     }
-    client.create_all_parts_from_grid_dxf.return_value = {"via": "not-yet"}
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "List": [],
+        "grid_present": False,
+    }
     notes = SecturaFabPushService(client=client).finish_cad_files(
         quote_id="eefcc4e3-761e-4355-af46-fb2b6982cb8a",
         cad_files=[stp],
@@ -166,6 +170,7 @@ def test_millimetre_step_does_not_call_set_units(tmp_path, monkeypatch):
         explode_polls=1,
         explode_sleep_s=0,
     )
-    assert [call["url"] for call in calls] == ["/Quote/GetItem_AddView"]
-    assert any(STEP_MM_NOTE in note for note in notes)
+    assert "/CadImport/SetUnits" not in [call["url"] for call in calls]
+    assert any(STEP_MM_CONTINUE_NOTE in note for note in notes)
+    client.create_all_parts_from_grid_dxf.assert_called_once()
     client.cadimport_set_units.assert_not_called()

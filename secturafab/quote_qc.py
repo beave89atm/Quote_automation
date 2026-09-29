@@ -162,6 +162,28 @@ def _has_weld(op_names: list[str] | None) -> bool:
     return any("weld" in str(op).casefold() for op in (op_names or []))
 
 
+def _has_profile(op_names: list[str] | None) -> bool:
+    for op in op_names or []:
+        token = str(op)
+        if token.startswith(_LASER_PREFIX) or token.casefold().startswith("profile"):
+            return True
+    return False
+
+
+def _is_sheet_or_laser(row: dict, shape: str, op_names: list[str] | None) -> bool:
+    """Laser/sheet part that must carry a Profile op."""
+    if _is_laser(op_names, row, shape):
+        return True
+    pt = _product_type(row, shape)
+    if pt in (100, "100"):
+        return True
+    pst = str(row.get("ProductSubType") or row.get("PST") or "").strip().lower()
+    if pst in {"prt_dxf", "prt_pdf"}:
+        return True
+    machine = str(row.get("Machine") or "")
+    return "laser" in machine.casefold()
+
+
 def _child_price_sum(kids: list[dict], price_key: str, qty_key: str) -> float | None:
     """Sum of child unit price × qty. None when any price or qty is unproved."""
     total = 0.0
@@ -398,6 +420,9 @@ def check_tree(
             flags.append(f"{name}: grid op missing")
         if shape == "live" and row_ops is None:
             flags.append(f"{name}: operations missing")
+        ops_known = row_ops is not None and (shape != "snapshot" or name in ops)
+        if ops_known and _is_sheet_or_laser(row, shape, row_ops) and not _has_profile(row_ops):
+            flags.append(f"{name}: no Profile op")
         if _is_laser(row_ops, row, shape):
             if contour_key not in row or row.get(contour_key) is None:
                 flags.append(f"{name}: Contours missing")
@@ -450,6 +475,8 @@ def check_tree(
     elif len(parents) > 1:
         flags.append("parent price rollup unproved")
     else:
+        if len(kids) > 1:
+            flags.append("weldment has no parent line")
         line_sum = _child_price_sum(kids, price_key, qty_key)
         if line_sum is not None:
             parent_price = line_sum
@@ -501,12 +528,20 @@ def fetch_tree(quote_id: str, *, reader: Callable[[str], Any]) -> Any:
 
 
 def _default_reader(quote_id: str) -> Any:
-    """In-page tree read. The page session is used. Cookies are not read."""
-    from .chrome_cdp import SessionDeadError, abort_if_session_dead, page_jquery_ajax
-    from .web_login import sectura_tab_open
+    """In-page tree read. Navigates to the quote edit page. Cookies are not read."""
+    from .chrome_cdp import (
+        SessionDeadError,
+        abort_if_session_dead,
+        minted_edit_tab_ready,
+        page_jquery_ajax,
+    )
 
-    if not sectura_tab_open():
-        abort_if_session_dead(no_sectura_tab=True)
+    gate = minted_edit_tab_ready(str(quote_id), navigate=True)
+    if not gate.get("ok"):
+        why = str(gate.get("reason") or "edit_tab_missing")
+        if why in {"session_lost", "no_sectura_tab"}:
+            abort_if_session_dead(no_sectura_tab=True)
+        raise RuntimeError(f"in-page tree read failed ({why})")
     try:
         result = page_jquery_ajax(
             url=TREE_PATH,

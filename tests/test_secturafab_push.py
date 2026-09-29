@@ -377,7 +377,11 @@ def test_push_single_solid_step_skips_assembly_root(tmp_path: Path):
     client.get_json.side_effect = _get_json
     service = SecturaFabPushService(client=client)
 
-    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+    with patch("secturafab.chrome_cdp.chrome_quotes_live", return_value=False), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=None
+    ), patch(
+        "secturafab.chrome_cdp.chrome_session_lost", return_value=False
+    ), patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "finish_cad_files", return_value=["Finish CAD"]
     ), patch.object(
         service, "quick_add_cad"
@@ -824,7 +828,11 @@ def test_push_success_sets_item_count_gt_zero(tmp_path: Path):
     client.get_json.side_effect = _get_json
     service = SecturaFabPushService(client=client)
 
-    with patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
+    with patch("secturafab.chrome_cdp.chrome_quotes_live", return_value=False), patch(
+        "secturafab.chrome_cdp.quotes_tab", return_value=None
+    ), patch(
+        "secturafab.chrome_cdp.chrome_session_lost", return_value=False
+    ), patch.object(service, "upload_drawings_quote_request", return_value="qr"), patch.object(
         service, "finish_cad_files", return_value=["Finish CAD"]
     ), patch.object(
         service, "quick_add_cad"

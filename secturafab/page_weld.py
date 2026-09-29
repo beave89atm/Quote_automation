@@ -7,15 +7,19 @@ fail-closed. This module does not read cookies and does not log secrets.
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
-_MM_HEADER_RE = re.compile(
-    r"SI_UNIT\s*\(\s*\.MILLI\.\s*,\s*\.METRE\.\s*\)",
-    re.IGNORECASE,
-)
 STEP_MM_NOTE = (
     "STEP header SI_UNIT(.MILLI.,.METRE.) — not calling SetDXFFileUnits('inch')"
+)
+STEP_MM_CONTINUE_NOTE = (
+    "STEP is millimetres — skipping SetDXFFileUnits('inch'); Sectura keeps mm"
+)
+STEP_UNITS_UNKNOWN_NOTE = (
+    "STEP length unit unknown — not calling SetDXFFileUnits and not creating parts"
+)
+STEP_MM_DIMS_NOTE = (
+    "millimetre STEP Finish L/W not in plausible inch range"
 )
 
 _PAGE_SET_PROPERTY_JS = r"""(async function(spec) {
@@ -67,6 +71,10 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
   if (typeof AddNewItemHTML === "function") {
     try { AddNewItemHTML("assembly", "top"); } catch (e0) {}
   }
+  var nameDeadline = Date.now() + 8000;
+  while (!document.querySelector("#AssemblyName") && Date.now() < nameDeadline) {
+    await new Promise(function(resolve) { setTimeout(resolve, 25); });
+  }
   if (!document.querySelector("#AssemblyName")) {
     return {ok: false, why: "assembly_name_field_missing", posted_additem: false};
   }
@@ -89,37 +97,151 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
   if (typeof OnAddClick !== "function") {
     return {ok: false, why: "no_onaddclick", posted_additem: false, staged: staged};
   }
-  var posted = false;
+  var pending = null;
   var orig = jQuery.ajax;
   jQuery.ajax = function(opts) {
     var url = "";
     if (typeof opts === "string") url = opts;
     else if (opts && opts.url) url = String(opts.url);
-    if (url.indexOf("/Quote/AddItem_Assembly") >= 0) posted = true;
-    return orig.apply(this, arguments);
+    var ret = orig.apply(this, arguments);
+    if (!pending && url.indexOf("/Quote/AddItem_Assembly") >= 0) {
+      pending = new Promise(function(resolve) {
+        function finish(xhr) {
+          var st = 0;
+          try { st = (xhr && xhr.status) ? Number(xhr.status) : 0; } catch (eS) { st = 0; }
+          resolve(st);
+        }
+        if (ret && typeof ret.always === "function") {
+          ret.always(function(a, b, c) {
+            var xhr = (c && c.status != null) ? c : ((a && a.status != null) ? a : ret);
+            finish(xhr);
+          });
+        } else {
+          finish(ret);
+        }
+      });
+    }
+    return ret;
   };
   try { OnAddClick(); } catch (e3) {}
   var deadline = Date.now() + 8000;
-  while (!posted && Date.now() < deadline) {
+  while (!pending && Date.now() < deadline) {
     await new Promise(function(resolve) { setTimeout(resolve, 25); });
   }
   jQuery.ajax = orig;
-  if (!posted) {
+  if (!pending) {
     return {ok: false, why: "additem_assembly_missing", posted_additem: false, staged: staged};
   }
-  return {ok: true, why: "", posted_additem: true, staged: staged};
+  var addStatus = await pending;
+  if (!(addStatus >= 200 && addStatus < 400)) {
+    return {
+      ok: false,
+      why: "additem_assembly_http",
+      posted_additem: false,
+      staged: staged,
+      status: addStatus
+    };
+  }
+  return {ok: true, why: "", posted_additem: true, staged: staged, status: addStatus};
 })"""
 
 
 def step_header_is_millimetre(text: str) -> bool:
-    """True when the STEP header is SI_UNIT(.MILLI.,.METRE.)."""
-    return bool(_MM_HEADER_RE.search(text or ""))
+    """True only for a real millimetre length unit, not an inch conversion base."""
+    from .step_units import step_uses_millimetres
+
+    return step_uses_millimetres(text or "")
+
+
+def _unit_token(raw: Any) -> str:
+    text = str(raw or "").strip().lower()
+    if text in {"inch", "inches", "in"}:
+        return "inch"
+    if text in {"mm", "millimetre", "millimeter", "millimetres", "millimeters"}:
+        return "mm"
+    if text:
+        return "unknown"
+    return ""
+
+
+def grid_dxf_units(rows: list[dict[str, Any]] | None) -> str | None:
+    """Agreed ``#gridDXF`` Units column, or None when the column is blank.
+
+    Disagreeing or unrecognized tokens are ``unknown`` (fail closed).
+    """
+    seen: list[str] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        token = _unit_token(row.get("Units") if "Units" in row else row.get("units"))
+        if token:
+            seen.append(token)
+    if not seen:
+        return None
+    if len(set(seen)) == 1:
+        return seen[0]
+    return "unknown"
+
+
+def resolve_cad_length_unit(
+    *,
+    headers: list[str],
+    grid_rows: list[dict[str, Any]] | None = None,
+) -> str:
+    """Prefer the upload grid Units column over the STEP header."""
+    from .step_units import step_length_unit
+
+    grid = grid_dxf_units(grid_rows)
+    if grid in {"inch", "mm", "unknown"}:
+        return grid
+    found = [step_length_unit(text) for text in headers]
+    if not found or any(unit == "unknown" for unit in found):
+        return "unknown"
+    if all(unit == "inch" for unit in found):
+        return "inch"
+    if all(unit == "mm" for unit in found):
+        return "mm"
+    return "unknown"
+
+
+def flats_are_plausible_inches(length: Any, width: Any) -> bool:
+    try:
+        length_in = float(length)
+        width_in = float(width)
+    except (TypeError, ValueError):
+        return False
+    return 0 < length_in <= 240 and 0 < width_in <= 120
 
 
 def step_unit_fail_note(notes: list[str] | None) -> str | None:
+    """Unknown units fail closed. A true mm file continues and is not this note."""
     for note in notes or []:
-        if STEP_MM_NOTE in str(note):
-            return str(note)
+        text = str(note)
+        if STEP_UNITS_UNKNOWN_NOTE in text or STEP_MM_DIMS_NOTE in text:
+            return text
+    return None
+
+
+def mm_kept_flats_fail(
+    notes: list[str] | None,
+    items: list[dict[str, Any]] | None,
+) -> str | None:
+    """After a mm continue, previously blank L/W must land in inch range."""
+    if not any(STEP_MM_CONTINUE_NOTE in str(note) for note in (notes or [])):
+        return None
+    rows = []
+    for row in items or []:
+        if not isinstance(row, dict):
+            continue
+        if row.get("ProductType") in (300, "300") or row.get("IsAssembly"):
+            continue
+        rows.append(row)
+    if not rows:
+        return None
+    for row in rows:
+        if not flats_are_plausible_inches(row.get("Length"), row.get("Width")):
+            name = str(row.get("ItemNumber") or row.get("Description") or "part")
+            return f"{STEP_MM_DIMS_NOTE} ({name})"
     return None
 
 

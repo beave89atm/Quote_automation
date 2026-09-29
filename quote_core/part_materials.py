@@ -175,6 +175,11 @@ class PartMaterial:
 
 
 def _parse_thickness_token(raw: str) -> float | None:
+    gauge_loose = re.search(r"(?i)\b(\d{1,2})\s*GA(?:UGE)?\b", raw or "")
+    if gauge_loose:
+        hit = _GAUGE_IN.get(gauge_loose.group(1))
+        if hit is not None:
+            return hit
     text = (raw or "").strip().upper().replace('"', "").replace("″", "").replace("'", "")
     mixed = re.fullmatch(r"(\d+)\s+(\d+)\s*/\s*(\d+)", text)
     if mixed:
@@ -356,7 +361,7 @@ def parse_material_block(text: str) -> tuple[float | None, str | None, str]:
         m_ga = re.search(r"(?i)\b(\d{1,2})\s*GA(?:UGE)?\b", ln)
         if not m_ga:
             continue
-        if not re.search(r"(?i)GAUGE|P\s*&\s*O|HRPO|SHEET|PLATE|STOCK", ln):
+        if not re.search(r"(?i)GAUGE|P\s*&\s*O|HRPO|SHEET|PLATE|STOCK|\bDP\b", ln):
             continue
         thk = _parse_thickness_token(f"{m_ga.group(1)}GA")
         if thk is not None:

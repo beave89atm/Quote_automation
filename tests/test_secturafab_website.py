@@ -183,7 +183,8 @@ def test_part_create_tlist_bind_source_persists_shape_not_values():
     empty = persist_part_create_tlist_bind_source(leftover, notes=empty_notes)
     assert empty["tlist_bind_source"] is False
     assert "tlist_bind_source=false" in empty_notes
-    assert "step_explode_no_internaldata" in empty_notes
+    assert "imagestring_without_internaldata=true" in empty_notes
+    assert "step_explode_no_internaldata" not in empty_notes
     assert all("tlist_bind_shape_keys=" not in n for n in empty_notes)
 
     live = [
@@ -3270,6 +3271,7 @@ def test_renest_linear_skips_when_already_240():
     client = MagicMock()
     client.nest_quote_edit.return_value = {}
     client.get_json.side_effect = [
+        {"ItemList": []},
         {"Results": [{"SheetSizeLength": 240, "StockLength": 240}]},
         {"ItemList": [], "StockList": [{"StockLength": 240}]},
     ]
@@ -3286,6 +3288,7 @@ def test_renest_linear_404_fail_closes():
     client = MagicMock()
     client.nest_quote_edit.return_value = {}
     client.get_json.side_effect = [
+        {"ItemList": []},
         {"Results": [{"SheetSizeLength": 480}]},
         {"ItemList": [], "StockList": []},
     ]
@@ -3304,6 +3307,7 @@ def test_renest_linear_still_480_fail_closes():
     client.nest_quote_edit.return_value = {}
     client.renest_linear.return_value = {}
     client.get_json.side_effect = [
+        {"ItemList": []},
         {"Results": [{"SheetSizeLength": 480}]},
         {"ItemList": [], "StockList": []},
         {"Results": [{"SheetSizeLength": 480}]},
@@ -4462,8 +4466,17 @@ def test_explode_posts_part_create_from_quotes_tab(tmp_path: Path):
         return {"ok": True}
 
     client.add_item_dxf_files = _add  # type: ignore[method-assign]
+    client.upload_dxf_via_page_add_files = (  # type: ignore[method-assign]
+        lambda **_k: {
+            "bound": False,
+            "upload_via": "skipped",
+            "files_kendo": False,
+            "gridDXF_n": 0,
+            "List": [],
+        }
+    )
     with patch(
-        "secturafab.chrome_cdp.chrome_quotes_live", return_value=True
+        "secturafab.chrome_cdp.chrome_quotes_live", return_value=False
     ), patch(
         "secturafab.client.SecturaFabClient.harvest_chrome_antiforgery",
         return_value="chrome_dom",
@@ -8871,7 +8884,7 @@ def test_kendo_cadimport_identity_survives_into_filelist():
     assert "FileType" not in posted
     assert "CadType" not in posted
     assert posted["ItemType"] == "cad"
-    assert posted["ProductType"] == "bar"
+    assert posted["ProductType"] == "prt_dxf"
     assert posted["Stock_X"] == 11.0
     assert posted["Stock_Y"] == 6.25
     assert cap["should_finish"] is True
@@ -8925,7 +8938,7 @@ def test_setpartmode_filetype_survives_into_filelist():
     assert "FileType" not in posted
     assert "CadType" not in posted
     assert posted["ItemType"] == "cad"
-    assert posted["ProductType"] == "bar"
+    assert posted["ProductType"] == "prt_dxf"
     assert "Status" not in posted
     assert cap["should_finish"] is True
     bare = persist_setpartmode_filetype({"CadType": 0, "Stock_X": 1, "Stock_Y": 2})
@@ -8976,12 +8989,10 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert har["send_imagestring"] is False
     assert har["invent_contours"] is False
     assert har["item_type"] == KYLE_HAR_CAD_CONTOURS_PLATE_ITEMTYPE == "cad"
-    assert har["product_type"] == KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE == "bar"
-    assert (
-        har["product_subtype"]
-        == KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE
-        == "bar_flat"
-    )
+    assert har["product_type"] == "bar"
+    assert KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTTYPE == "prt_dxf"
+    assert har["product_subtype"] == "bar_flat"
+    assert KYLE_HAR_CAD_CONTOURS_PLATE_PRODUCTSUBTYPE == "prt_dxf"
     assert har["machine"] == KYLE_HAR_CAD_CONTOURS_PLATE_MACHINE == "Laser"
     assert har["additem_list_min"] == 1
     assert "Status" in har["absent_keys"]
@@ -9041,10 +9052,10 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert posted["Stock_X"] == 11.0
     assert posted["Stock_Y"] == 6.25
     assert posted["ItemType"] == "cad"
-    assert posted["ProductType"] == "bar"
+    assert posted["ProductType"] == "prt_dxf"
     assert posted["ProductType"] != 100
-    assert posted["ProductSubType"] == "bar_flat"
-    assert posted["productSubType"] == "bar_flat"
+    assert posted["ProductSubType"] == "prt_dxf"
+    assert posted["productSubType"] == "prt_dxf"
     assert posted["Machine"] == "Laser"
     assert posted["Length_Units"] == "inch"
     assert posted["Length"] == pytest.approx(6.25)
@@ -9088,8 +9099,8 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert "SourceDataID" not in row
     assert "Contours" not in row
     assert row["ItemType"] == "cad"
-    assert row["ProductType"] == "bar"
-    assert row["ProductSubType"] == "bar_flat"
+    assert row["ProductType"] == "prt_dxf"
+    assert row["ProductSubType"] == "prt_dxf"
     assert row["Machine"] == "Laser"
     assert row["Length_Units"] == "inch"
     assert row["Length"] == pytest.approx(6.25)
@@ -9110,8 +9121,8 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert "PartMode" not in built
     assert "SourceDataID" not in built
     assert built["ItemType"] == "cad"
-    assert built["ProductType"] == "bar"
-    assert built["ProductSubType"] == "bar_flat"
+    assert built["ProductType"] == "prt_dxf"
+    assert built["ProductSubType"] == "prt_dxf"
     assert built["Machine"] == "Laser"
     assert built["Length_Units"] == "inch"
     assert built["Length"] == pytest.approx(6.25)
@@ -9147,8 +9158,8 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert "applyKyleHarCadContoursPlateFileList" in js
     assert "leanKyleHarCadContoursPlateFileList" in js
     assert "omitFileListKey" in js
-    assert 'r.set("ProductType", "bar")' in js or 'ProductType", "bar"' in js
-    assert 'productSubType", "bar_flat"' in js
+    assert 'r.set("ProductType", "prt_dxf")' in js or 'ProductType", "prt_dxf"' in js
+    assert 'productSubType", "prt_dxf"' in js
     assert "Do not invent Contours" in js
     assert "cadMaterialInchesRecipeComplete" in js
     assert "opts.data.FileList = leanRows" in js
@@ -12976,7 +12987,8 @@ def test_step_explode_no_internaldata_aliases_empty_bind_source():
     notes: list[str] = []
     persist_part_create_tlist_bind_source(leftover, notes=notes)
     assert "tlist_bind_source=false" in notes
-    assert STEP_EXPLODE_NO_INTERNALDATA in notes
+    assert "imagestring_without_internaldata=true" in notes
+    assert STEP_EXPLODE_NO_INTERNALDATA not in notes
     refuse = cad_filelist_refuses_additem_dxf(
         {
             "FileType": "Cad",
@@ -24227,6 +24239,7 @@ def test_pick_v20_sample_skips_short():
 
 
 def test_aes_gcm_stdlib_matches_cryptography():
+    pytest.importorskip("cryptography")
     from secturafab import browser_session as bs
 
     key = os.urandom(32)
@@ -24898,8 +24911,12 @@ def _aes_gcm_encrypt(plain: bytes, key: bytes, nonce: bytes) -> bytes:
 
         return AESGCM(key).encrypt(nonce, plain, None)
     except Exception:  # noqa: BLE001
+        pass
+    try:
         from Crypto.Cipher import AES  # type: ignore[import-untyped]
 
         cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
         ct, tag = cipher.encrypt_and_digest(plain)
         return ct + tag
+    except Exception:  # noqa: BLE001
+        pytest.skip("cryptography or PyCryptodome required for Windows cookie decrypt fixtures")
