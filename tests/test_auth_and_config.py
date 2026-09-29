@@ -24,6 +24,7 @@ def test_config_client_credentials_ok() -> None:
     assert cfg.uses_client_credentials
     assert cfg.token_url == "https://www.secturafab.com/token"
     assert cfg.api_root == "https://api.secturafab.com/api"
+    assert cfg.website_root == "https://www.secturafab.com"
 
 
 def test_fetch_client_credentials_token_success() -> None:

@@ -18,6 +18,13 @@ _MM_SI_ONLY_RE = re.compile(
     r"SI_UNIT\s*\(\s*\.MILLI\.\s*,\s*\.METRE\.\s*\)",
     re.IGNORECASE,
 )
+# OCC inch export: CONVERSION_BASED_UNIT('INCH', factor) whose factor is
+# LENGTH_MEASURE(25.4) against SI_UNIT(.MILLI.,.METRE.). The milli entity
+# is the conversion base, not the file length unit.
+_INCH_CONVERSION_RE = re.compile(
+    r"CONVERSION_BASED_UNIT\s*\(\s*'(?:INCH|INCHES|IN)'",
+    re.IGNORECASE,
+)
 _CARTESIAN_POINT_RE = re.compile(
     r"(CARTESIAN_POINT\s*\(\s*'[^']*'\s*,\s*\()"
     r"([^)]+)"
@@ -33,8 +40,23 @@ _ENTITY_ID_RE = re.compile(r"#(\d+)\s*=")
 _MM_TO_IN = 1.0 / 25.4
 
 
+def step_length_unit(text: str) -> str:
+    """``inch``, ``mm``, or ``unknown``.
+
+    An INCH conversion unit wins even when SI milli is only its factor base.
+    True millimetres are SI milli with no inch conversion. Anything else
+    fails closed as unknown.
+    """
+    blob = text or ""
+    if _INCH_CONVERSION_RE.search(blob):
+        return "inch"
+    if _MM_SI_ONLY_RE.search(blob):
+        return "mm"
+    return "unknown"
+
+
 def step_uses_millimetres(text: str) -> bool:
-    return bool(_MM_SI_ONLY_RE.search(text or ""))
+    return step_length_unit(text) == "mm"
 
 
 def _scale_number_list(raw: str, factor: float) -> str:

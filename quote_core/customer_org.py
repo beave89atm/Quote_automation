@@ -18,6 +18,10 @@ _DRAWING_TO_ORGANIZATION: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"\bNATURAL\s+GAS\s+FUEL\s+SYSTEMS\b", re.IGNORECASE),
         "Cummins Clean Fuel Technologies",
     ),
+    (
+        re.compile(r"\bTIME\s+MANUFACTURING\b", re.IGNORECASE),
+        "Time Manufacturing Waco",
+    ),
 ]
 
 # Library folder path segments → Organization (when PDF text is thin).
@@ -27,6 +31,17 @@ _FOLDER_TO_ORGANIZATION: list[tuple[re.Pattern[str], str]] = [
         "Cummins Clean Fuel Technologies",
     ),
     (re.compile(r"\bTYCROP\b", re.IGNORECASE), "Propell"),
+    (
+        re.compile(
+            r"(?:Customer\s+Drawings|\bEngineering\b)[\\/]+Time\b|[\\/]Time[\\/]",
+            re.IGNORECASE,
+        ),
+        "Time Manufacturing Waco",
+    ),
+    (
+        re.compile(r"\bTIME\s+MANUFACTURING\b", re.IGNORECASE),
+        "Time Manufacturing Waco",
+    ),
 ]
 
 
@@ -40,6 +55,10 @@ def detect_organization_from_text(text: str | None) -> str | None:
     return None
 
 
+def _path_segments(folder: Path | str | None) -> list[str]:
+    return [p for p in re.split(r"[\\/]+", str(folder or "")) if p]
+
+
 def detect_organization_from_folder(folder: Path | str | None) -> str | None:
     """Return Organization when the drawing-library folder path names a known customer."""
     if not folder:
@@ -48,6 +67,9 @@ def detect_organization_from_folder(folder: Path | str | None) -> str | None:
     for pattern, org_name in _FOLDER_TO_ORGANIZATION:
         if pattern.search(blob):
             return org_name
+    segs = [s.casefold() for s in _path_segments(folder)]
+    if "time" in segs or any("time manufacturing" in s for s in segs):
+        return "Time Manufacturing Waco"
     return None
 
 
@@ -69,8 +91,16 @@ def detect_organization(
     *,
     pdf_path: Path | str | None = None,
     library_folder: Path | str | None = None,
+    extra_paths: list[Path | str] | None = None,
 ) -> str | None:
     """Prefer PDF brand text; fall back to drawing-library folder path."""
-    return detect_organization_from_pdf(pdf_path) or detect_organization_from_folder(
+    found = detect_organization_from_pdf(pdf_path) or detect_organization_from_folder(
         library_folder
     )
+    if found:
+        return found
+    for extra in extra_paths or []:
+        found = detect_organization_from_folder(extra)
+        if found:
+            return found
+    return None

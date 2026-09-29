@@ -32,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
     who = sub.add_parser("whoami", help="Fetch current user info if available")
     _ = who
 
+    sub.add_parser(
+        "website-auth-check",
+        help="Probe www MVC Finish auth (GetItem_AddView) — no quote writes",
+    )
+
     quotes = sub.add_parser("list-quotes", help="List quotes via adaptive paths")
     quotes.add_argument("--top", type=int, default=25)
 
@@ -68,6 +73,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "whoami":
         print(json.dumps(client.whoami(), indent=2, default=str))
         return 0
+
+    if args.command == "website-auth-check":
+        result = client.probe_website_finish_auth()
+        print(json.dumps(result, indent=2, default=str))
+        return 0 if result.get("can_finish") else 1
 
     if args.command == "list-quotes":
         data = QuoteService(client).list_quotes(top=args.top)
