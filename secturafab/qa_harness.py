@@ -14,10 +14,9 @@ from typing import Any  # noqa: I001
 from secturafab.item_desc import is_bare_part_number, normalize_part_token
 from secturafab.line_item_ops import (
     item_has_grafted_cad_tags,
-    item_has_grafted_saw_tags,
     item_has_laser_pack,
     item_has_pr_tag,
-    item_has_saw_pack,
+    linear_has_priced_saw,
 )
 from secturafab.website import (
     EMPTY_GUID,
@@ -337,14 +336,12 @@ def evaluate_quote_get(
             machine = str(it.get("Machine") or "").strip()
             if machine.casefold() != "saw":
                 failures.append(f"Linear {desc!r} Machine is {machine!r}, want Saw")
-            if item_has_grafted_saw_tags(it):
+            # A priced Saw passes as Primary Costs or as an orange tag.
+            # Do not fail the line because Sectura painted the same op as a badge.
+            if not linear_has_priced_saw(it):
                 failures.append(
-                    f"Linear {desc!r} has Saw or Saw Setup as an orange tag "
-                    "(want Primary Costs only; no Saw badge on the grid)"
-                )
-            if not item_has_saw_pack(it):
-                failures.append(
-                    f"Linear {desc!r} lacks Saw + Saw Setup as Primary Costs"
+                    f"Linear {desc!r} lacks a priced Saw op "
+                    "(badge or orange tag counts when the Saw op is priced)"
                 )
             if not _positive_money(it, "MaterialCost"):
                 failures.append(f"Linear {desc!r} MaterialCost is 0/null/missing")

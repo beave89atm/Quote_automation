@@ -1664,6 +1664,11 @@ class SecturaFabClient:
                 for item in (result.get("gauge_skipped") or [])
                 if str(item).strip()
             ],
+            "gauge_skip_why": [
+                str(item)
+                for item in (result.get("gauge_skip_why") or [])
+                if str(item).strip()
+            ],
             "filelist0_values": (
                 result.get("filelist0_values")
                 if isinstance(result.get("filelist0_values"), dict)

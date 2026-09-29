@@ -2135,6 +2135,218 @@ def test_unlisted_gauge_drops_that_kid_and_keeps_the_rest():
     assert "34892 BOTTOM PLATE" not in out["left"]
 
 
+def test_errorstatus_row_is_flagged_and_the_rest_continue():
+    """One ErrorStatus row must not skip Finish for the other kids.
+
+    The old inspectFresh returned errorstatus_not_zero for the whole grid
+    and skipFinish dropped gauge_skipped before the notes were written.
+    """
+    import json
+    import shutil
+    import subprocess
+    import textwrap
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+
+    start = _PAGE_FINISH_JS.index("async function applyPageNativeCadThickness")
+    end = _PAGE_FINISH_JS.index("  function skipFinish")
+    fn = _PAGE_FINISH_JS[start:end]
+    skip_start = _PAGE_FINISH_JS.index("  function skipFinish")
+    skip_end = _PAGE_FINISH_JS.index("  var rows = gridData();", skip_start)
+    skip_fn = _PAGE_FINISH_JS[skip_start:skip_end]
+    script = textwrap.dedent(
+        r"""
+        const vm = require("vm");
+        const fs = require("fs");
+        const code = fs.readFileSync(process.argv[2], "utf8");
+        const skip = fs.readFileSync(process.argv[3], "utf8");
+        const gauges = [
+          { Thickness: 0.076, Description: ".076 - 14 Ga", Value: "0.076" },
+          { Thickness: 0.125, Description: "0.125", Value: "0.125" }
+        ];
+        function makeStore() {
+          return [
+            { uid: "good", PartID: "good", Name: "34890 PLATE", ItemType: "Cad",
+              PartMode: 0, ProductType: 100, Thickness: 0.076, ErrorStatus: 0, Material: "A36" },
+            { uid: "bad", PartID: "bad", Name: "34892 BOTTOM PLATE", ItemType: "Cad",
+              PartMode: 0, ProductType: 100, Thickness: 0.125, ErrorStatus: 2, Material: "A36" },
+            { uid: "tube", PartID: "tube", Name: "34536 PIVOT TUBE", ItemType: "Linear",
+              PartMode: 1, ProductType: 30, ErrorStatus: 0 }
+          ];
+        }
+        const sandbox = {
+          setTimeout, clearTimeout, Date, Promise, console, Math, parseFloat,
+          isFinite, Number, String, Object
+        };
+        sandbox.window = sandbox;
+        sandbox.document = { querySelector: () => ({ textContent: "Q34887" }) };
+        sandbox.location = { href: "https://www.secturafab.com/Quote/EDIT/qid" };
+        let store = makeStore();
+        let current = store[0];
+        sandbox.store = store;
+        function Deferred() {
+          const fns = [];
+          return {
+            always(fn) { fns.push(fn); return this; },
+            then(fn) { fns.push(fn); return this; },
+            resolve() { fns.forEach((fn) => fn()); }
+          };
+        }
+        sandbox.jQuery = function() {
+          return {
+            data(name) {
+              if (name === "kendoDropDownList") return {
+                value() {},
+                trigger() { sandbox.jQuery.ajax({ url: "/Part/UpdateItemType" }); }
+              };
+              if (name === "kendoComboBox") return {
+                dataSource: { data() { return gauges; } },
+                select() {},
+                trigger() { sandbox.jQuery.ajax({ url: "/Quote/GetBorderSize" }); }
+              };
+              if (name === "kendoGrid") return {
+                clearSelection() {},
+                select(tr) {
+                  if (tr === undefined) return { length: 1, toArray() { return [{ id: current.uid }]; } };
+                  return { length: 1 };
+                },
+                dataItem() { return current; },
+                tbody: {
+                  find(sel) {
+                    const match = String(sel || "").match(/data-uid='([^']+)'/);
+                    if (match) current = store.find((row) => row.uid === match[1]) || current;
+                    return { length: current ? 1 : 0 };
+                  }
+                },
+                dataSource: {
+                  view() { return store; },
+                  data() { return { toJSON() { return store.map((row) => Object.assign({}, row)); } }; },
+                  remove(row) {
+                    const id = row && (row.uid || row.PartID);
+                    const at = store.findIndex((item) => item.uid === id || item.PartID === id);
+                    if (at >= 0) store.splice(at, 1);
+                  }
+                }
+              };
+              return null;
+            }
+          };
+        };
+        sandbox.jQuery.ajax = function() {
+          const d = Deferred();
+          setTimeout(() => d.resolve(), 5);
+          return d;
+        };
+        vm.createContext(sandbox);
+        const runner = `
+          (async () => {
+            const many = await applyPageNativeCadThickness(store.slice(), {
+              quoteId: "qid", thickness: "0.125"
+            });
+            const manyOut = {
+              why: many.why,
+              skipped: many.gauge_skipped,
+              whyList: many.gauge_skip_why,
+              left: store.map((row) => row.Name)
+            };
+            store.length = 0;
+            store.push({
+              uid: "only", PartID: "only", Name: "34892 BOTTOM PLATE", ItemType: "Cad",
+              PartMode: 0, ProductType: 100, Thickness: 0.125, ErrorStatus: 2, Material: "A36"
+            });
+            current = store[0];
+            const alone = await applyPageNativeCadThickness(store.slice(), {
+              quoteId: "qid", thickness: "0.125"
+            });
+            return {
+              many: manyOut,
+              alone: {
+                why: alone.why,
+                skipped: alone.gauge_skipped,
+                left: store.map((row) => row.Name)
+              }
+            };
+          })()
+        `;
+        const skipRunner = `
+          var gaugeSkipped = ["34892 BOTTOM PLATE"];
+          var gaugeSkipWhy = ["errorstatus_not_zero"];
+          var count = 3;
+          function summarize() { return {}; }
+          function kendoGridPresent() { return true; }
+          ${skip}
+          skipFinish("errorstatus_not_zero").then((out) => out);
+        `;
+        vm.runInContext(code + "\n" + runner, sandbox).then((out) => {
+          return vm.runInContext(skipRunner, sandbox).then((skipped) => {
+            out.skip = skipped;
+            console.log(JSON.stringify(out));
+          });
+        }).catch((err) => {
+          console.error(err && err.stack || err);
+          process.exit(1);
+        });
+        """
+    )
+    from pathlib import Path
+
+    fn_path = Path(__file__).resolve().parent / "_errorstatus_fn.js"
+    skip_path = Path(__file__).resolve().parent / "_errorstatus_skip.js"
+    run_path = Path(__file__).resolve().parent / "_errorstatus_run.js"
+    fn_path.write_text(fn, encoding="utf-8")
+    skip_path.write_text(skip_fn, encoding="utf-8")
+    run_path.write_text(script, encoding="utf-8")
+    try:
+        proc = subprocess.run(
+            [node, str(run_path), str(fn_path), str(skip_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    finally:
+        fn_path.unlink(missing_ok=True)
+        skip_path.unlink(missing_ok=True)
+        run_path.unlink(missing_ok=True)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out["many"]["why"] == ""
+    assert out["many"]["skipped"] == ["34892 BOTTOM PLATE"]
+    assert out["many"]["whyList"] == ["errorstatus_not_zero"]
+    assert "34890 PLATE" in out["many"]["left"]
+    assert "34536 PIVOT TUBE" in out["many"]["left"]
+    assert "34892 BOTTOM PLATE" not in out["many"]["left"]
+    assert out["alone"]["why"] == "errorstatus_not_zero"
+    assert out["alone"]["skipped"] == ["34892 BOTTOM PLATE"]
+    assert out["skip"]["via"] == "skipped"
+    assert out["skip"]["finish_why"] == "errorstatus_not_zero"
+    assert out["skip"]["gauge_skipped"] == ["34892 BOTTOM PLATE"]
+    assert out["skip"]["gauge_skip_why"] == ["errorstatus_not_zero"]
+
+
+def test_skip_finish_notes_name_the_errorstatus_row():
+    from secturafab.push import dxf_finish_skip_notes
+
+    notes = dxf_finish_skip_notes(
+        {
+            "via": "skipped",
+            "finish_why": "errorstatus_not_zero",
+            "gauge_skipped": ["34892 BOTTOM PLATE"],
+            "gauge_skip_why": ["errorstatus_not_zero"],
+        }
+    )
+    assert notes == [
+        "FLAG: 34892 BOTTOM PLATE — errorstatus_not_zero "
+        "(removed before Finish; not inventing a gauge)"
+    ]
+    assert dxf_finish_skip_notes(
+        {"via": "skipped", "finish_why": "errorstatus_not_zero"}
+    ) == []
+
+
 def test_linear_only_confident_sku_creates_quote_and_nests(monkeypatch):
     from secturafab.push import SecturaFabPushService
 

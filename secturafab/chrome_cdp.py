@@ -2245,8 +2245,14 @@ _PAGE_FINISH_JS = """(async function(spec) {
     // ErrorStatus. Do not invent L/W, Contours, or a gauge. invent=false.
     var skippedIds = {};
     var skippedGauge = [];
+    var skippedWhy = [];
     function fail(w, component) {
-      return {why: w, component: component || 0, gauge_skipped: skippedGauge};
+      return {
+        why: w,
+        component: component || 0,
+        gauge_skipped: skippedGauge,
+        gauge_skip_why: skippedWhy
+      };
     }
     function sleep(ms) {
       return new Promise(function(resolve) { setTimeout(resolve, ms); });
@@ -2405,16 +2411,80 @@ _PAGE_FINISH_JS = """(async function(spec) {
       }
       return false;
     }
-    function dropUnlistedGauge(row) {
+    function dropUnlistedGauge(row, why) {
       var live = (row && row._gridItem) || row || {};
       skippedGauge.push(String(
         live.PartName || live.Name || live.FileName || live.Description || "part"
       ));
+      skippedWhy.push(String(why || "gauge_not_in_list"));
       var uid = String(live.uid || live.PartID || live.ID || "");
       if (uid) skippedIds[uid] = true;
+      var name = String(live.PartName || live.Name || live.FileName || "");
       if (g && g.dataSource && typeof g.dataSource.remove === "function") {
-        try { g.dataSource.remove(live); } catch (eDrop) {}
+        var target = live;
+        try {
+          var view = (g.dataSource.data && g.dataSource.data()) || [];
+          for (var di = 0; di < view.length; di++) {
+            var item = view[di] || {};
+            var id = String(item.uid || item.PartID || item.ID || "");
+            var itemName = String(item.PartName || item.Name || item.FileName || "");
+            if ((uid && id === uid) || (name && itemName === name)) {
+              target = item;
+              break;
+            }
+          }
+        } catch (eFind) {}
+        try { g.dataSource.remove(target); } catch (eDrop) {}
       }
+    }
+    function rowIsCadPlate(fr) {
+      if (!fr) return false;
+      if (skippedIds[String(fr.uid || fr.PartID || fr.ID || "")]) return false;
+      var fcat = String(fr.ItemType || fr.Category || fr.FileType || "");
+      if (fcat === "Linear" || fcat === "Assembly") return false;
+      if (fr.IsAssembly || Number(fr.ProductType) === 300) return false;
+      if (Number(fr.PartMode) === 1 || fr.IsLinear) return false;
+      if (linearStockName(fr)) return false;
+      return true;
+    }
+    function errorStatusOpen(fr) {
+      if (!Object.prototype.hasOwnProperty.call(fr, "ErrorStatus")
+          || fr.ErrorStatus === null || fr.ErrorStatus === "") {
+        return true;
+      }
+      var errN = Number(fr.ErrorStatus);
+      return !isFinite(errN) || errN !== 0;
+    }
+    function dropOpenErrorRows(fresh) {
+      for (var fi = 0; fi < fresh.length; fi++) {
+        var fr = fresh[fi] || {};
+        if (!rowIsCadPlate(fr)) continue;
+        if (!errorStatusOpen(fr)) continue;
+        dropUnlistedGauge(fr, "errorstatus_not_zero");
+      }
+    }
+    function anyResolvedKid(fresh) {
+      for (var ai = 0; ai < fresh.length; ai++) {
+        var ar = fresh[ai] || {};
+        var acat = String(ar.ItemType || ar.Category || ar.FileType || "");
+        if (acat === "Linear" || Number(ar.PartMode) === 1 || ar.IsLinear) return true;
+        if (linearStockName(ar)) return true;
+        if (!rowIsCadPlate(ar)) continue;
+        if (!errorStatusOpen(ar)) return true;
+      }
+      return false;
+    }
+    function openErrorStillPresent(fresh) {
+      for (var oi = 0; oi < fresh.length; oi++) {
+        var orow = fresh[oi] || {};
+        var ocat = String(orow.ItemType || orow.Category || orow.FileType || "");
+        if (ocat === "Linear" || ocat === "Assembly") continue;
+        if (orow.IsAssembly || Number(orow.ProductType) === 300) continue;
+        if (Number(orow.PartMode) === 1 || orow.IsLinear) continue;
+        if (linearStockName(orow)) continue;
+        if (errorStatusOpen(orow)) return true;
+      }
+      return false;
     }
     // One plate uses the drawing/classify gauge passed in, never the model.
     // Several plates each use that kid's thickness. A value that is not in
@@ -2665,8 +2735,8 @@ _PAGE_FINISH_JS = """(async function(spec) {
       try { data = (cb.dataSource && cb.dataSource.data()) || []; } catch (e3) { data = []; }
       var idx = gaugeIndex(data, gauge);
       if (idx < 0) {
+        dropUnlistedGauge(row, "gauge_not_in_list");
         if (plates.length < 2 && !gridHasLinear()) return fail("gauge_not_in_list", 0);
-        dropUnlistedGauge(row);
         continue;
       }
       var selWhy = selectExactlyOne(row);
@@ -2707,7 +2777,19 @@ _PAGE_FINISH_JS = """(async function(spec) {
       await sleep(25);
       inspected = inspectFresh(readFresh());
     }
-    if (inspected && typeof inspected === "object") inspected.gauge_skipped = skippedGauge;
+    if (inspected && inspected.why === "errorstatus_not_zero") {
+      dropOpenErrorRows(readFresh());
+      var left = readFresh();
+      if (openErrorStillPresent(left) || !anyResolvedKid(left)) {
+        inspected = fail("errorstatus_not_zero", inspected.component);
+      } else {
+        inspected = inspectFresh(left);
+      }
+    }
+    if (inspected && typeof inspected === "object") {
+      inspected.gauge_skipped = skippedGauge;
+      inspected.gauge_skip_why = skippedWhy;
+    }
     return inspected;
   }
   function skipFinish(why) {
@@ -2718,16 +2800,22 @@ _PAGE_FINISH_JS = """(async function(spec) {
       grid_dxf_row_count: count,
       filelist_from_kendo: false,
       finish_af_present: false,
-      finish_why: why
+      finish_why: why,
+      gauge_skipped: gaugeSkipped,
+      gauge_skip_why: gaugeSkipWhy
     }));
   }
   var rows = gridData();
   var count = rows.length;
   var gaugeSkipped = [];
+  var gaugeSkipWhy = [];
   if (count >= 1) {
     var native = await applyPageNativeCadThickness(rows, spec);
     if (native && native.gauge_skipped && native.gauge_skipped.length) {
       gaugeSkipped = native.gauge_skipped;
+    }
+    if (native && native.gauge_skip_why && native.gauge_skip_why.length) {
+      gaugeSkipWhy = native.gauge_skip_why;
     }
     if (native && native.why) return skipFinish(native.why);
     rows = gridData();
@@ -3854,6 +3942,9 @@ def invoke_page_dxf_finish(
         "finish_why": str(value.get("finish_why") or ""),
         "gauge_skipped": [
             str(item) for item in (value.get("gauge_skipped") or []) if str(item).strip()
+        ],
+        "gauge_skip_why": [
+            str(item) for item in (value.get("gauge_skip_why") or []) if str(item).strip()
         ],
         "filelist0_values": (
             value.get("filelist0_values")

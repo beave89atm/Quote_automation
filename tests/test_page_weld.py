@@ -110,6 +110,189 @@ def test_additem_assembly_is_checked_on_the_tree(monkeypatch):
     assert notes == ["AddItem_Assembly persisted; tree has one parent and no loose lines"]
 
 
+def test_assembly_description_is_posted_after_the_line_exists():
+    """AddItem_Assembly ignores Description. The follow-up post must land it.
+
+    The old helper only rewrote the create body, and the stored line stayed
+    the bare part number. This runs the page script and reads the ajax body.
+    """
+    import json
+    import shutil
+    import subprocess
+    import textwrap
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    from pathlib import Path
+
+    script = textwrap.dedent(
+        r"""
+        const vm = require("vm");
+        const fs = require("fs");
+        const code = fs.readFileSync(process.argv[2], "utf8");
+        const wanted = process.argv[3];
+        const part = process.argv[4];
+        const posts = [];
+        const parent = {
+          ID: "parent-1",
+          ItemNumber: part,
+          ProductType: 300,
+          Description: part,
+          AssemblyID: null
+        };
+        const kid = {
+          ID: "kid-1",
+          ItemNumber: "A-" + part,
+          ProductType: 100,
+          AssemblyID: "parent-1"
+        };
+        const sandbox = {
+          setTimeout, clearTimeout, Date, Promise, console, JSON, encodeURIComponent,
+          Object, String, Number, Array
+        };
+        sandbox.window = sandbox;
+        sandbox.document = {
+          querySelector(sel) {
+            if (sel === "#AssemblyName") return { form: null };
+            return null;
+          }
+        };
+        sandbox.AddNewItemHTML = function() {};
+        sandbox.OnCopyAll = function() {};
+        sandbox.OnAddClick = function() {
+          sandbox.jQuery.ajax({
+            url: "/Quote/AddItem_Assembly",
+            type: "POST",
+            data: "AssemblyName=" + encodeURIComponent(part)
+          });
+        };
+        function Deferred() {
+          const doneFns = [];
+          const failFns = [];
+          const alwaysFns = [];
+          return {
+            done(fn) { doneFns.push(fn); return this; },
+            fail(fn) { failFns.push(fn); return this; },
+            always(fn) { alwaysFns.push(fn); return this; },
+            then(fn) { doneFns.push(fn); return this; },
+            resolve(body, status) {
+              const xhr = { status: status || 200 };
+              doneFns.forEach((fn) => fn(body, "success", xhr));
+              alwaysFns.forEach((fn) => fn(body, "success", xhr));
+            }
+          };
+        }
+        sandbox.jQuery = function(sel) {
+          if (sel === "#AssemblyName") {
+            return { val() { return this; }, trigger() { return this; } };
+          }
+          return {
+            data() {
+              return { dataSource: { data() { return [kid]; } } };
+            }
+          };
+        };
+        sandbox.jQuery.ajax = function(opts) {
+          const url = String((opts && opts.url) || "");
+          posts.push({
+            url: url,
+            type: String((opts && opts.type) || ""),
+            data: opts ? opts.data : null
+          });
+          const deferred = Deferred();
+          setTimeout(() => {
+            if (url.indexOf("AddItem_Assembly") >= 0) {
+              deferred.resolve("ok", 200);
+              return;
+            }
+            if (url.indexOf("quoteOnline/update") >= 0) {
+              let body = opts.data;
+              if (typeof body === "string") body = JSON.parse(body);
+              const row = Array.isArray(body) ? body[0] : body;
+              if (row && row.ParamName === "Description" && row.Value) {
+                parent.Description = row.Value;
+              }
+              deferred.resolve(true, 200);
+              return;
+            }
+            if (url.indexOf("QuoteItem_ReadTreeListData") >= 0) {
+              deferred.resolve({ Data: [Object.assign({}, parent), kid] }, 200);
+              return;
+            }
+            deferred.resolve({}, 200);
+          }, 5);
+          return deferred;
+        };
+        vm.createContext(sandbox);
+        const runner = "(" + code + ")(" + JSON.stringify({
+          name: part,
+          quoteId: "qid",
+          description: wanted
+        }) + ")";
+        vm.runInContext(runner, sandbox).then((out) => {
+          console.log(JSON.stringify({ out: out, posts: posts }));
+        }).catch((err) => {
+          console.error(err && err.stack || err);
+          process.exit(1);
+        });
+        """
+    )
+    js_path = Path(__file__).resolve().parent / "_assembly_desc.js"
+    run_path = Path(__file__).resolve().parent / "_assembly_desc_run.js"
+    js_path.write_text(PAGE_ADD_ASSEMBLY_JS, encoding="utf-8")
+    run_path.write_text(script, encoding="utf-8")
+    wanted = "11521-000 - ZZ-TEST weldment 2351d9f inch push_job 9/29"
+    try:
+        proc = subprocess.run(
+            [node, str(run_path), str(js_path), wanted, "11521-000"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    finally:
+        js_path.unlink(missing_ok=True)
+        run_path.unlink(missing_ok=True)
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    posts = payload["posts"]
+    update = next(row for row in posts if "quoteOnline/update" in row["url"])
+    assert update["type"].upper() == "PUT"
+    body = update["data"] if isinstance(update["data"], list) else json.loads(update["data"])
+    assert body[0]["ParamName"] == "Description"
+    assert body[0]["Value"] == wanted
+    assert body[0]["ID"] == "parent-1"
+    assert posts.index(update) > next(
+        i for i, row in enumerate(posts) if "AddItem_Assembly" in row["url"]
+    )
+    assert not any("UpdatePropertyValue" in row["url"] for row in posts)
+    assert payload["out"]["stored_description"] == wanted
+    assert payload["out"]["ok"] is True
+    linear = "1020243-1 - ZZ-TEST linear 2351d9f"
+    js_path.write_text(PAGE_ADD_ASSEMBLY_JS, encoding="utf-8")
+    run_path.write_text(script, encoding="utf-8")
+    try:
+        proc = subprocess.run(
+            [node, str(run_path), str(js_path), linear, "1020243-1"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    finally:
+        js_path.unlink(missing_ok=True)
+        run_path.unlink(missing_ok=True)
+    assert proc.returncode == 0, proc.stderr
+    linear_out = json.loads(proc.stdout.strip().splitlines()[-1])
+    linear_update = next(
+        row for row in linear_out["posts"] if "quoteOnline/update" in row["url"]
+    )
+    linear_body = json.loads(linear_update["data"])
+    assert linear_body[0]["Value"] == linear
+    assert linear_out["out"]["stored_description"] == linear
+
+
 def test_quote_number_posts_update_property_value(monkeypatch):
     seen = {}
 

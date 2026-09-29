@@ -3619,6 +3619,8 @@ def test_linear_website_product_type_bar_tube_angle():
     assert linear_website_product_type("21689-1 HOSE GUARD") == 10
     assert linear_website_product_type("ROUND BAR") == 10
     assert linear_website_product_type("29860-3", sku="L2X1 1/4X1/8-A36") == 40
+    assert linear_website_product_type("1008763-1", sku="C4X5.4-A36") == 40
+    assert linear_website_product_type("1020243-1", sku="RCT5X4X3/16-A500") == 30
 
 
 def test_pick_closest_linear_prefers_rt_over_pipe_sku_for_tube():

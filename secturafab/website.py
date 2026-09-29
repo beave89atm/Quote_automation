@@ -9038,6 +9038,12 @@ def linear_website_product_type(
     # Tenant pipe SKUs (P5-40-A36 / P1 1/4-40-A36) are Long tube, not bar.
     if re.match(r"^P[\d/]+-\d+", compact_sku):
         return LINEAR_PRODUCT_TYPE_TUBE
+    # C4X5.4 is channel. Do not match the C inside RCT5X4 (tube).
+    # 40 is angle/channel. A check that wants 10 for that SKU is wrong.
+    if re.search(r"(^|[^A-Z])C\d+X", compact_sku) or re.search(
+        r"(^|[^A-Z])C\d+X", text.replace(" ", "")
+    ):
+        return LINEAR_PRODUCT_TYPE_ANGLE
     return LINEAR_PRODUCT_TYPE_BAR
 
 

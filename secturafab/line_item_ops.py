@@ -316,6 +316,31 @@ def item_has_grafted_cad_tags(item: dict[str, Any] | None) -> bool:
     return False
 
 
+def _op_money(op: dict[str, Any], key: str) -> float:
+    try:
+        return float(op.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def linear_has_priced_saw(item: dict[str, Any] | None) -> bool:
+    """True when a Saw op is priced, as Primary Costs or as an orange tag.
+
+    Sectura paints the same Saw as a badge or an orange tag. Either one
+    passes when the op or the line has a price. An unpriced tag does not.
+    """
+    for op in (item or {}).get("OperationCostList") or []:
+        if not isinstance(op, dict):
+            continue
+        if "saw" not in _op_text(op):
+            continue
+        if _op_money(op, "UnitCost") > 0 or _op_money(op, "UnitPrice") > 0:
+            return True
+    if any("saw" in part for part in _badge_parts(item)) and _item_unit_cost(item) > 0:
+        return True
+    return False
+
+
 def item_has_grafted_saw_tags(item: dict[str, Any] | None) -> bool:
     """Saw or Saw Setup as an item orange tag (8bcc226b). Not Primary Costs."""
     if any("saw" in part for part in _badge_parts(item)):

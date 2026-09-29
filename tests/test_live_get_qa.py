@@ -899,7 +899,8 @@ def test_addplate_without_pr_or_primary_costs_fails_live_get():
     assert "Saw" in blob or "Primary Costs" in blob
 
 
-def test_linear_saw_badge_alone_fails_live_get():
+def test_priced_saw_passes_as_badge_or_orange_tag():
+    """Live round 8: an orange Saw tag on a priced op is the pass."""
     payload = gold_1001898_get()
     for it in payload["ItemList"]:
         if is_valid_linear_product_type(it.get("ProductType")):
@@ -912,8 +913,24 @@ def test_linear_saw_badge_alone_fails_live_get():
         expected_assembly_title=ASSEMBLY_DESC,
         bom_rows=_bom_rows(),
     )
-    assert result.ok is False
-    assert any("Saw" in f and "orange" in f for f in result.failures)
+    assert result.ok is True
+    assert not any("orange tag" in f for f in result.failures)
+    bare = gold_1001898_get()
+    for it in bare["ItemList"]:
+        if is_valid_linear_product_type(it.get("ProductType")):
+            it["BadgeString"] = "Saw"
+            it["OperationCostList"] = []
+            it["UnitCost"] = 0
+    missing = evaluate_quote_get(
+        bare,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert missing.ok is False
+    assert any("priced Saw" in f for f in missing.failures)
 
 
 def test_grafted_ops_and_blank_unit_cost_fail_live_get():
@@ -928,7 +945,7 @@ def test_grafted_ops_and_blank_unit_cost_fail_live_get():
     assert grafted.ok is False
     blob = " ".join(grafted.failures)
     assert "grafted" in blob.lower() or "orange" in blob.lower()
-    assert "Saw Setup" in blob
+    assert "priced Saw" in blob
     blank = evaluate_quote_get(
         gold_1001898_get(fail="blank_unit_cost"),
         part_key="1001898-1",
@@ -1039,6 +1056,34 @@ def test_angle_product_type_40_passes_and_forced_10_fails():
     blob = " ".join(forced.failures)
     assert "want 40" in blob
     assert "want 10" not in blob
+
+
+def test_channel_c_sku_at_product_type_40_passes_live_get():
+    """C4X5.4 has no CHANNEL word. The old check wanted 10 for ProductType 40."""
+    from secturafab.website import linear_website_product_type
+
+    assert linear_website_product_type("1008763-1", sku="C4X5.4-A36") == 40
+    assert linear_website_product_type("1020243-1", sku="RCT5X4X3/16-A500") == 30
+    payload = gold_1001898_get()
+    channel = next(
+        it
+        for it in payload["ItemList"]
+        if "29860-3" in str(it.get("Description") or "")
+    )
+    channel["Description"] = "29860-3 - C4X5.4-A36"
+    channel["SKU"] = "C4X5.4-A36"
+    channel["ProductType"] = 40
+    channel["BadgeString"] = "Saw"
+    result = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert result.ok is True, result.failures
+    assert not any("want 10" in f for f in result.failures)
 
 
 def test_retype_skips_angle_product_type_40():

@@ -182,7 +182,125 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
       status: addStatus
     };
   }
-  return {ok: true, why: "", posted_additem: true, staged: staged, status: addStatus};
+  // AddItem_Assembly ignores Description when the line does not exist yet.
+  // Post it after the parent is stored, then read the stored value back.
+  // This is the assembly line. Do not write the quote header.
+  function treeRows(body) {
+    if (!body) return [];
+    if (Array.isArray(body)) return body;
+    var data = body.Data || body.rows || body.TreeListData;
+    return Array.isArray(data) ? data : [];
+  }
+  function assemblyParent(rows) {
+    for (var ri = 0; ri < rows.length; ri++) {
+      var row = rows[ri] || {};
+      var aid = String(row.AssemblyID || row.AID || "").trim();
+      if (aid && aid !== "null") continue;
+      var pt = row.ProductType;
+      if (pt === 300 || pt === "300" || row.IsAssembly) return row;
+      if (String(row.ItemType || row.Category || "") === "Assembly") return row;
+    }
+    return null;
+  }
+  function ajaxBody(opts) {
+    return new Promise(function(resolve) {
+      var ret = null;
+      try { ret = jQuery.ajax(opts); } catch (eA) { resolve({body: null, status: 0}); return; }
+      function finish(body, status) {
+        resolve({body: body, status: status || 0});
+      }
+      if (ret && typeof ret.done === "function") {
+        var settled = false;
+        ret.done(function(body, _t, xhr) {
+          if (settled) return;
+          settled = true;
+          finish(body, (xhr && xhr.status) || 200);
+        });
+        if (typeof ret.fail === "function") {
+          ret.fail(function(xhr) {
+            if (settled) return;
+            settled = true;
+            finish(null, (xhr && xhr.status) || 0);
+          });
+        }
+        return;
+      }
+      if (ret && typeof ret.then === "function") {
+        ret.then(function(body) { finish(body, 200); }, function() { finish(null, 0); });
+        return;
+      }
+      finish(ret, 200);
+    });
+  }
+  var stored = "";
+  var postedDescription = "";
+  if (lineDesc) {
+    var quoteId = String((spec && spec.quoteId) || "").trim();
+    var first = await ajaxBody({
+      url: "/Quote/QuoteItem_ReadTreeListData",
+      type: "GET",
+      data: {ParentID: quoteId},
+      dataType: "json"
+    });
+    var parent = assemblyParent(treeRows(first && first.body));
+    stored = parent ? String(parent.Description || "").trim() : "";
+    if (stored !== lineDesc) {
+      var itemId = parent ? String(parent.ID || parent.Id || "").trim() : "";
+      if (!itemId) {
+        return {
+          ok: false,
+          why: "assembly_description_not_stored",
+          posted_additem: true,
+          staged: staged,
+          status: addStatus,
+          stored_description: stored,
+          posted_description: ""
+        };
+      }
+      var payload = JSON.stringify([{
+        ID: itemId,
+        ParentID: quoteId,
+        ParamName: "Description",
+        Value: lineDesc
+      }]);
+      postedDescription = payload;
+      await ajaxBody({
+        url: "/api/v1/quoteOnline/update",
+        type: "PUT",
+        contentType: "application/json; charset=utf-8",
+        processData: false,
+        data: payload
+      });
+      var second = await ajaxBody({
+        url: "/Quote/QuoteItem_ReadTreeListData",
+        type: "GET",
+        data: {ParentID: quoteId},
+        dataType: "json"
+      });
+      parent = assemblyParent(treeRows(second && second.body));
+      stored = parent ? String(parent.Description || "").trim() : "";
+    }
+    if (stored !== lineDesc) {
+      return {
+        ok: false,
+        why: "assembly_description_not_stored",
+        posted_additem: true,
+        staged: staged,
+        status: addStatus,
+        stored_description: stored,
+        posted_description: postedDescription
+      };
+    }
+  }
+  return {
+    ok: true,
+    why: "",
+    posted_additem: true,
+    staged: staged,
+    status: addStatus,
+    stored_description: stored,
+    posted_description: postedDescription
+  };
 })"""
 
 
@@ -473,7 +591,7 @@ def add_page_assembly(
         why = str(gate.get("reason") or "wrong_document")
         return [f"WARNING: page assembly stopped ({why})"]
     tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
-    payload: dict[str, str] = {"name": key}
+    payload: dict[str, str] = {"name": key, "quoteId": str(quote_id)}
     if line:
         payload["description"] = line
     staged = _cdp_evaluate_promise(
@@ -484,6 +602,11 @@ def add_page_assembly(
     if not isinstance(staged, dict) or not staged.get("posted_additem"):
         why = staged.get("why") if isinstance(staged, dict) else "empty"
         return [f"WARNING: page assembly stopped ({why or 'additem_assembly_missing'})"]
+    if line and str(staged.get("why") or "") == "assembly_description_not_stored":
+        return ["WARNING: page assembly stopped (assembly_description_not_stored)"]
+    stored_line = str(staged.get("stored_description") or "").strip()
+    if line and stored_line and stored_line != line:
+        return ["WARNING: page assembly stopped (assembly_description_not_stored)"]
     tree = page_jquery_ajax(
         url="/Quote/QuoteItem_ReadTreeListData",
         method="GET",
@@ -497,7 +620,13 @@ def add_page_assembly(
         kid_count = int(staged.get("staged") or 0)
     except (TypeError, ValueError):
         kid_count = 0
-    problem = assembly_tree_problems(tree_rows(tree.get("body")), kid_count=kid_count)
+    rows = tree_rows(tree.get("body"))
+    problem = assembly_tree_problems(rows, kid_count=kid_count)
     if problem:
         return [f"WARNING: page assembly stopped ({problem})"]
+    if line:
+        parents = [row for row in rows if _is_assembly_parent(row)]
+        got = str(parents[0].get("Description") or "").strip() if parents else ""
+        if got != line:
+            return ["WARNING: page assembly stopped (assembly_description_not_stored)"]
     return ["AddItem_Assembly persisted; tree has one parent and no loose lines"]

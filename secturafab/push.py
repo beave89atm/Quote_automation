@@ -1450,6 +1450,34 @@ def cad_finish_refused_before_post(result: Any, via: str) -> bool:
     return True
 
 
+def dxf_finish_skip_notes(result: dict[str, Any] | None) -> list[str]:
+    """FLAG lines for kids removed before page Finish.
+
+    A skipped Finish still has to name the row. The early return must
+    not swallow gauge_skipped.
+    """
+    if not isinstance(result, dict):
+        return []
+    labels = [str(item or "").strip() for item in (result.get("gauge_skipped") or [])]
+    whys = [str(item or "").strip() for item in (result.get("gauge_skip_why") or [])]
+    notes: list[str] = []
+    for index, text in enumerate(labels):
+        if not text:
+            continue
+        reason = whys[index] if index < len(whys) and whys[index] else "gauge_not_in_list"
+        if reason == "errorstatus_not_zero":
+            notes.append(
+                f"FLAG: {text} — errorstatus_not_zero "
+                "(removed before Finish; not inventing a gauge)"
+            )
+        else:
+            notes.append(
+                f"FLAG: thickness unresolved for {text} — gauge_not_in_list "
+                "(not in the dropdown; not inventing a gauge)"
+            )
+    return notes
+
+
 class SecturaFabPushService:
     def __init__(self, client: SecturaFabClient | None = None) -> None:
         self.client = client or SecturaFabClient()
@@ -4281,14 +4309,7 @@ class SecturaFabPushService:
         if isinstance(via, str) and via:
             notes.append(f"finish_via={via}")
         if isinstance(result, dict):
-            for label in result.get("gauge_skipped") or []:
-                text = str(label or "").strip()
-                if not text:
-                    continue
-                notes.append(
-                    f"FLAG: thickness unresolved for {text} — gauge_not_in_list "
-                    "(not in the dropdown; not inventing a gauge)"
-                )
+            notes.extend(dxf_finish_skip_notes(result))
         after = finish_attempt_empty_partmode_or_internaldata(
             ready, result if isinstance(result, dict) else None
         )
