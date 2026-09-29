@@ -25,6 +25,7 @@ DEFAULT_CDP_PORT = 9224
 DEFAULT_COOLDOWN_S = 12 * 60 * 60
 DEFAULT_ALERT_DIR = Path("/workspace/quote-load-qc/alerts")
 DEFAULT_LOCK_DIR = Path("/workspace/quote-load-qc/locks")
+DEFAULT_SECRETS_PATH = Path("/home/box/agent-data/box-secrets.json")
 
 _FILL_JS = """(function(creds) {
   var banner = "";
@@ -134,6 +135,11 @@ def lock_dir() -> Path:
     return Path(raw) if raw else DEFAULT_LOCK_DIR
 
 
+def secrets_path() -> Path:
+    raw = (os.getenv("SECTURA_WEB_SECRETS_PATH") or "").strip()
+    return Path(raw) if raw else DEFAULT_SECRETS_PATH
+
+
 def chrome_incognito_command(port: int) -> list[str]:
     binary = (os.getenv("SECTURA_CHROME_BIN") or "google-chrome").strip() or "google-chrome"
     profile = tempfile.mkdtemp(prefix="sectura-cdp-")
@@ -235,12 +241,77 @@ def _page_state(probe: Any) -> str:
     return "still_dead"
 
 
-def _credentials(env: dict[str, str] | None = None) -> tuple[str, str] | None:
+class SecretsReadError(Exception):
+    """Secrets file or credential lookup failed. The message is a page state, never a value."""
+
+    def __init__(self, page_state: str) -> None:
+        self.page_state = page_state
+        Exception.__init__(self, page_state)
+
+
+def _secret_text(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        raise SecretsReadError("secrets_file_malformed")
+    return raw.strip()
+
+
+def _card_secret(payload: dict[str, Any], key: str) -> str:
+    """Read card.KEY from a nested card object or a literal dotted top-level key."""
+    dotted = f"card.{key}"
+    card = payload.get("card") if "card" in payload else None
+    if "card" in payload and not isinstance(card, dict) and dotted not in payload:
+        raise SecretsReadError("secrets_file_malformed")
+    nested = ""
+    if isinstance(card, dict) and key in card:
+        nested = _secret_text(card.get(key))
+    literal = ""
+    if dotted in payload:
+        literal = _secret_text(payload.get(dotted))
+    return nested or literal
+
+
+def _read_secrets_file(path: Path) -> tuple[str, str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise SecretsReadError("secrets_file_missing") from None
+    except OSError:
+        raise SecretsReadError("secrets_file_unreadable") from None
+    except UnicodeDecodeError:
+        raise SecretsReadError("secrets_file_malformed") from None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        raise SecretsReadError("secrets_file_malformed") from None
+    if not isinstance(payload, dict):
+        raise SecretsReadError("secrets_file_malformed")
+    email = _card_secret(payload, "SECTURA_WEB_EMAIL")
+    password = _card_secret(payload, "SECTURA_WEB_PASSWORD")
+    del text, payload
+    return email, password
+
+
+def _credentials(
+    env: dict[str, str] | None = None,
+    *,
+    secrets_file: Path | None = None,
+) -> tuple[str, str]:
+    """Env vars win. A secrets file fills only the fields that are still empty."""
     source = env if env is not None else os.environ
     email = str(source.get("SECTURA_WEB_EMAIL") or "").strip()
     password = str(source.get("SECTURA_WEB_PASSWORD") or "").strip()
+    if email and password:
+        return email, password
+    file_email, file_password = _read_secrets_file(
+        secrets_file if secrets_file is not None else secrets_path()
+    )
+    email = email or file_email
+    password = password or file_password
+    del file_email, file_password
     if not email or not password:
-        return None
+        raise SecretsReadError("credentials_missing")
     return email, password
 
 
@@ -375,6 +446,7 @@ def attempt_sectura_relogin(
     cooldown_s: float | None = None,
     port: int | None = None,
     env: dict[str, str] | None = None,
+    secrets_file: Path | None = None,
     sleep: Callable[[float], None] | None = None,
     max_polls: int = 8,
 ) -> None:
@@ -403,16 +475,15 @@ def attempt_sectura_relogin(
         )
     _attempted_this_run = True
     _write_lock(lock_folder, trigger=trigger, page_state="started", now=moment)
-    creds = _credentials(env)
-    if creds is None:
+    try:
+        email, password = _credentials(env, secrets_file=secrets_file)
+    except SecretsReadError as exc:
         _fail(
             trigger=trigger,
-            page_state="env_missing",
+            page_state=exc.page_state,
             on_alert=on_alert,
             alerts=alert_folder,
         )
-    assert creds is not None
-    email, password = creds
     client = cdp or ChromeCdp()
     start = launcher or launch_chrome_incognito
     if not client.reachable(debug_port):

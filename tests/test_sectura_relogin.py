@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +28,8 @@ class FakeCdp:
         self.probes = 0
         self.filled = False
         self.saw_remember = False
+        self.used_file_secret = False
+        self.used_other_email = False
         self.navigated = ""
 
     def reachable(self, port: int) -> bool:
@@ -47,6 +51,8 @@ class FakeCdp:
         if expression.startswith("(function(creds)"):
             self.filled = True
             self.saw_remember = "remember" in expression and "node.click()" in expression
+            self.used_file_secret = SECRET in expression and EMAIL in expression
+            self.used_other_email = "other@example.test" in expression
             return {"ok": True, "state": "submitted"}
         self.probes += 1
         login = {
@@ -137,7 +143,121 @@ def test_relogin_success_lands_on_quote(tmp_path):
     _assert_secret_hidden(str(raised.value))
 
 
-def test_relogin_missing_env_alerts_without_chrome(tmp_path, monkeypatch):
+def _write_secrets(path: Path, payload: object) -> None:
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_relogin_env_credentials_win_over_secrets_file(tmp_path):
+    alerts, locks = _dirs(tmp_path)
+    secrets = tmp_path / "box-secrets.json"
+    secrets.write_text("{", encoding="utf-8")
+    cdp = FakeCdp("success")
+    attempt_sectura_relogin(
+        trigger="login_url",
+        cdp=cdp,
+        launcher=lambda **kwargs: (_ for _ in ()).throw(AssertionError("launched")),
+        alerts=alerts,
+        locks=locks,
+        env=_env(),
+        secrets_file=secrets,
+        sleep=lambda _s: None,
+        max_polls=2,
+        port=9224,
+    )
+    assert cdp.filled is True
+    assert cdp.used_file_secret is True
+    assert list(alerts.glob("alert-*.txt")) == []
+    command = " ".join(chrome_incognito_command(9224))
+    _assert_secret_hidden(command)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"card": {"SECTURA_WEB_EMAIL": EMAIL, "SECTURA_WEB_PASSWORD": SECRET}},
+        {"card.SECTURA_WEB_EMAIL": EMAIL, "card.SECTURA_WEB_PASSWORD": SECRET},
+    ],
+)
+def test_relogin_secrets_file_fallback(tmp_path, payload):
+    alerts, locks = _dirs(tmp_path)
+    secrets = tmp_path / "box-secrets.json"
+    _write_secrets(secrets, payload)
+    cdp = FakeCdp("success")
+    launched: list[dict] = []
+    attempt_sectura_relogin(
+        trigger="no_sectura_tab",
+        cdp=cdp,
+        launcher=lambda **kwargs: launched.append(kwargs),
+        alerts=alerts,
+        locks=locks,
+        env={},
+        secrets_file=secrets,
+        sleep=lambda _s: None,
+        max_polls=2,
+        port=9224,
+    )
+    assert cdp.filled is True
+    assert cdp.used_file_secret is True
+    assert launched == []
+    assert list(alerts.glob("alert-*.txt")) == []
+    _assert_secret_hidden(" ".join(chrome_incognito_command(9224)))
+
+
+def test_relogin_env_email_uses_file_password(tmp_path):
+    alerts, locks = _dirs(tmp_path)
+    secrets = tmp_path / "box-secrets.json"
+    _write_secrets(
+        secrets,
+        {
+            "card": {
+                "SECTURA_WEB_EMAIL": "other@example.test",
+                "SECTURA_WEB_PASSWORD": SECRET,
+            }
+        },
+    )
+    cdp = FakeCdp("success")
+    attempt_sectura_relogin(
+        trigger="login_url",
+        cdp=cdp,
+        alerts=alerts,
+        locks=locks,
+        env={"SECTURA_WEB_EMAIL": EMAIL},
+        secrets_file=secrets,
+        sleep=lambda _s: None,
+        max_polls=2,
+        port=9224,
+    )
+    assert cdp.used_file_secret is True
+    assert cdp.used_other_email is False
+
+
+def test_relogin_credentials_missing_from_env_and_file(tmp_path, monkeypatch):
+    alerts, locks = _dirs(tmp_path)
+    secrets = tmp_path / "box-secrets.json"
+    _write_secrets(secrets, {"card": {}})
+    monkeypatch.setenv("SECTURA_WEB_PASSWORD", SECRET)
+    launched = []
+    with pytest.raises(SecturaReloginError) as raised:
+        attempt_sectura_relogin(
+            trigger="no_sectura_tab",
+            launcher=lambda **kwargs: launched.append(kwargs),
+            alerts=alerts,
+            locks=locks,
+            env={},
+            secrets_file=secrets,
+            sleep=lambda _s: None,
+            port=9224,
+        )
+    assert raised.value.page_state == "credentials_missing"
+    assert launched == []
+    text = (alerts / next(alerts.iterdir()).name).read_text(encoding="utf-8")
+    assert "Chief of Staff" in text
+    assert "credentials_missing" in text
+    _assert_secret_hidden(text)
+    _assert_secret_hidden(str(raised.value))
+
+
+def test_relogin_missing_secrets_file_alerts_without_chrome(tmp_path, monkeypatch):
     alerts, locks = _dirs(tmp_path)
     monkeypatch.delenv("SECTURA_WEB_EMAIL", raising=False)
     monkeypatch.delenv("SECTURA_WEB_PASSWORD", raising=False)
@@ -150,14 +270,76 @@ def test_relogin_missing_env_alerts_without_chrome(tmp_path, monkeypatch):
             alerts=alerts,
             locks=locks,
             env={},
+            secrets_file=tmp_path / "absent.json",
             sleep=lambda _s: None,
             port=9224,
         )
-    assert raised.value.page_state == "env_missing"
+    assert raised.value.page_state == "secrets_file_missing"
     assert launched == []
     text = (alerts / next(alerts.iterdir()).name).read_text(encoding="utf-8")
     assert "Chief of Staff" in text
-    assert "env_missing" in text
+    assert "secrets_file_missing" in text
+    assert str(tmp_path) not in text
+    _assert_secret_hidden(text)
+    _assert_secret_hidden(str(raised.value))
+
+
+def test_relogin_unreadable_secrets_file(tmp_path, monkeypatch):
+    alerts, locks = _dirs(tmp_path)
+    secrets = tmp_path / "box-secrets.json"
+    _write_secrets(secrets, {"card": {"SECTURA_WEB_EMAIL": EMAIL, "SECTURA_WEB_PASSWORD": SECRET}})
+    original = Path.read_text
+
+    def _deny(self, *args, **kwargs):
+        if self == secrets:
+            raise PermissionError("denied")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _deny)
+    with pytest.raises(SecturaReloginError) as raised:
+        attempt_sectura_relogin(
+            trigger="login_url",
+            alerts=alerts,
+            locks=locks,
+            env={},
+            secrets_file=secrets,
+            sleep=lambda _s: None,
+            port=9224,
+        )
+    assert raised.value.page_state == "secrets_file_unreadable"
+    text = "".join(path.read_text(encoding="utf-8") for path in alerts.iterdir())
+    assert "denied" not in text
+    _assert_secret_hidden(text)
+    _assert_secret_hidden(str(raised.value))
+
+
+@pytest.mark.parametrize("raw", ["{", "[]", "12"])
+def test_relogin_malformed_secrets_file(tmp_path, raw, monkeypatch):
+    alerts, locks = _dirs(tmp_path)
+    secrets = tmp_path / "box-secrets.json"
+    secrets.write_text(raw, encoding="utf-8")
+    monkeypatch.setenv("SECTURA_WEB_PASSWORD", SECRET)
+    launched = []
+    with pytest.raises(SecturaReloginError) as raised:
+        attempt_sectura_relogin(
+            trigger="login_url",
+            launcher=lambda **kwargs: launched.append(kwargs),
+            alerts=alerts,
+            locks=locks,
+            env={},
+            secrets_file=secrets,
+            sleep=lambda _s: None,
+            port=9224,
+        )
+    assert raised.value.page_state == "secrets_file_malformed"
+    assert launched == []
+    text = "".join(path.read_text(encoding="utf-8") for path in alerts.iterdir())
+    assert text == (
+        "Chief of Staff: Sectura website sign-in stopped fail-closed.\n"
+        "trigger: login_url\n"
+        "page_state: secrets_file_malformed\n"
+        "No further automatic sign-in this run.\n"
+    )
     _assert_secret_hidden(text)
     _assert_secret_hidden(str(raised.value))
 

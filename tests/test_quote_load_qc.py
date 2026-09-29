@@ -241,6 +241,7 @@ def test_session_dead_signals_abort(tmp_path, monkeypatch):
 
     monkeypatch.setenv("SECTURA_RELOGIN_ALERT_DIR", str(tmp_path / "alerts"))
     monkeypatch.setenv("SECTURA_RELOGIN_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.setenv("SECTURA_WEB_SECRETS_PATH", str(tmp_path / "missing-secrets.json"))
     monkeypatch.delenv("SECTURA_WEB_EMAIL", raising=False)
     monkeypatch.delenv("SECTURA_WEB_PASSWORD", raising=False)
     reset_relogin_attempt_for_tests()
@@ -256,8 +257,8 @@ def test_session_dead_signals_abort(tmp_path, monkeypatch):
     with pytest.raises(SecturaReloginError) as raised:
         abort_if_session_dead(title="SecturaFAB-Login")
     assert isinstance(raised.value, SessionDeadError)
-    assert raised.value.reason == "login_title: env_missing"
-    assert raised.value.page_state == "env_missing"
+    assert raised.value.reason == "login_title: secrets_file_missing"
+    assert raised.value.page_state == "secrets_file_missing"
 
 
 def test_page_native_cad_thickness_recipe_and_inch_finish():
