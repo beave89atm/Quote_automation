@@ -1,7 +1,8 @@
 """Outbound box worker. It polls the jobs API. Nothing dials in.
 
-The default runner refuses to call Sectura. The box process passes a runner
-that uses the existing push path. Tests inject a fake runner.
+Active hours poll quickly after a job is found. An empty queue backs off so
+Neon can suspend. Outside the window the default is to leave the API alone.
+The default runner uses the existing push path. Tests inject a fake runner.
 """
 
 from __future__ import annotations
@@ -11,8 +12,10 @@ import os
 import time
 import urllib.error
 import urllib.request
+from datetime import date, datetime, timezone
 from typing import Any, Callable
 
+from .hosted_platform import decide_poll, worker_zone
 from .hosted_queue import (
     claim_next,
     complete_job,
@@ -146,15 +149,52 @@ def poll_once(base_url: str, token: str, runner: Runner | None = None) -> dict[s
     )
 
 
+def poll_tick(
+    base_url: str,
+    token: str,
+    *,
+    moment: datetime,
+    streak: int,
+    purged_day: date | None,
+    sleeper: Callable[[float], None],
+    runner: Runner | None = None,
+) -> tuple[int, date | None]:
+    """One schedule decision. An empty pending response does not claim."""
+    decision = decide_poll(moment, empty_streak=streak, purged_day=purged_day)
+    sleep_before = float(decision["sleep_before"] or 0)
+    if sleep_before > 0:
+        sleeper(sleep_before)
+    if not decision["contact"]:
+        return 0, purged_day
+    if decision["purge"]:
+        _request(base_url, "/api/hosted/worker/purge", token, {}, "POST")
+        purged_day = moment.astimezone(worker_zone()).date()
+    pending = _request(base_url, "/api/hosted/worker/pending", token, None, "GET")
+    if not pending.get("pending"):
+        return streak + 1, purged_day
+    result = poll_once(base_url, token, runner)
+    if not result:
+        return streak + 1, purged_day
+    sleeper(float(decision["fast_s"] or 1))
+    return 0, purged_day
+
+
 def main() -> None:
     base = (os.getenv("HOSTED_API_BASE") or "").strip()
     token = (os.getenv("HOSTED_WORKER_TOKEN") or "").strip()
     if not base or not token:
         raise SystemExit("HOSTED_API_BASE and HOSTED_WORKER_TOKEN are required")
-    poll_s = float(os.getenv("HOSTED_WORKER_POLL_S") or "5")
+    streak = 0
+    purged_day: date | None = None
     while True:
-        poll_once(base, token)
-        time.sleep(max(1.0, poll_s))
+        streak, purged_day = poll_tick(
+            base,
+            token,
+            moment=datetime.now(timezone.utc),
+            streak=streak,
+            purged_day=purged_day,
+            sleeper=time.sleep,
+        )
 
 
 if __name__ == "__main__":

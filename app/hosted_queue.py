@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -45,6 +46,9 @@ LIMIT 1
 """
 
 _engine: Engine | None = None
+_empty_until: float | None = None
+
+TERMINAL = ("done", "qc_flagged", "failed", "cancelled")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS hosted_jobs (
@@ -64,7 +68,8 @@ CREATE TABLE IF NOT EXISTS hosted_jobs (
     sectura_quote_number TEXT NOT NULL DEFAULT '',
     sectura_quote_id TEXT NOT NULL DEFAULT '',
     qc_report_json TEXT NOT NULL DEFAULT '{}',
-    error TEXT NOT NULL DEFAULT ''
+    error TEXT NOT NULL DEFAULT '',
+    finished_at TEXT
 );
 CREATE TABLE IF NOT EXISTS hosted_job_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,8 +106,46 @@ def database_url() -> str:
     return f"sqlite:///{DATA_DIR / 'hosted.sqlite'}"
 
 
+def reset_queue_cache() -> None:
+    global _empty_until
+    _empty_until = None
+
+
+def mark_queue_pending(pending: bool) -> None:
+    """Remember an empty queue. A pending queue always checks the database."""
+    global _empty_until
+    if pending:
+        _empty_until = None
+        return
+    ttl = float(os.getenv("HOSTED_QUEUE_CACHE_S") or "60")
+    _empty_until = time.monotonic() + max(0.0, ttl)
+
+
+def queue_pending() -> tuple[bool, bool]:
+    """Return (pending, cached). A fresh empty flag skips Postgres."""
+    now = time.monotonic()
+    if _empty_until is not None and now < _empty_until:
+        return False, True
+    pending = _queued_row_exists()
+    mark_queue_pending(pending)
+    return pending, False
+
+
+def _queued_row_exists() -> bool:
+    engine = hosted_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT id FROM hosted_jobs WHERE status = 'queued' LIMIT 1")
+        ).first()
+    return row is not None
+
+
 def reset_for_tests(url: str | None = None) -> Engine:
     global _engine
+    reset_queue_cache()
+    from .hosted_storage import reset_sharepoint_cache
+
+    reset_sharepoint_cache()
     if _engine is not None:
         _engine.dispose()
     target = url or database_url()
@@ -122,6 +165,22 @@ def hosted_engine() -> Engine:
     return _engine
 
 
+def _column_exists(conn: Connection, dialect: str, table: str, column: str) -> bool:
+    if dialect == "sqlite":
+        rows = conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()
+        return any(str(row[1]) == column for row in rows)
+    rows = conn.execute(
+        text(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = :table AND column_name = :column
+            """
+        ),
+        {"table": table, "column": column},
+    ).fetchall()
+    return bool(rows)
+
+
 def init_hosted(engine: Engine) -> None:
     ddl = _SCHEMA
     if engine.dialect.name == "postgresql":
@@ -134,6 +193,9 @@ def init_hosted(engine: Engine) -> None:
         conn.execute(
             text("INSERT INTO hosted_flight (id, holder) SELECT 1, '' WHERE NOT EXISTS (SELECT 1 FROM hosted_flight WHERE id = 1)")
         )
+        if _column_exists(conn, engine.dialect.name, "hosted_jobs", "finished_at"):
+            return
+        conn.exec_driver_sql("ALTER TABLE hosted_jobs ADD COLUMN finished_at TEXT")
 
 
 def _connect(engine: Engine) -> Connection:
@@ -254,12 +316,12 @@ def _reap_stale(conn: Connection, now: datetime, stale_after_s: float) -> None:
                 text(
                     """
                     UPDATE hosted_jobs
-                    SET status = 'failed', error = :error,
+                    SET status = 'failed', error = :error, finished_at = :finished,
                         claimed_by_worker = NULL, heartbeat_at = NULL
                     WHERE id = :id AND status IN ('claimed', 'loading')
                     """
                 ),
-                {"id": row["id"], "error": reason},
+                {"id": row["id"], "error": reason, "finished": _iso(now)},
             )
             _audit(conn, str(row["id"]), str(row["status"]), "failed", "system", reason)
             continue
@@ -317,6 +379,7 @@ def claim_next(
             ).first()
         if row is None:
             _commit(conn)
+            mark_queue_pending(False)
             return None
         job_id = str(row[0])
         if dialect == "postgresql":
@@ -348,6 +411,7 @@ def claim_next(
             return None
         _audit(conn, job_id, "queued", "claimed", worker_id, "claim")
         _commit(conn)
+        mark_queue_pending(True)
         return job
     except Exception:
         _rollback(conn)
@@ -420,6 +484,7 @@ def create_job(
             },
         )
         _audit(conn, job_id, "", "queued", submitted_by, "submit")
+    mark_queue_pending(True)
     job = get_job(job_id)
     assert job is not None
     return job
@@ -522,6 +587,7 @@ def complete_job(
     sectura_quote_id: str = "",
     qc_report: dict[str, Any] | None = None,
     error: str = "",
+    now: datetime | None = None,
 ) -> dict[str, Any] | None:
     report = qc_report or {}
     final = status
@@ -550,6 +616,7 @@ def complete_job(
                     sectura_quote_id = :quote_id,
                     qc_report_json = :report,
                     error = :error,
+                    finished_at = :finished,
                     claimed_by_worker = NULL,
                     heartbeat_at = NULL
                 WHERE id = :id
@@ -562,6 +629,7 @@ def complete_job(
                 "quote_id": sectura_quote_id.strip(),
                 "report": json.dumps(report),
                 "error": error.strip()[:500],
+                "finished": _iso(now or _utcnow()),
             },
         )
         _audit(conn, job_id, str(current["status"]), final, worker_id, "complete")
@@ -575,7 +643,7 @@ def complete_job(
         conn.close()
 
 
-def cancel_job(job_id: str, actor: str) -> dict[str, Any] | None:
+def cancel_job(job_id: str, actor: str, *, now: datetime | None = None) -> dict[str, Any] | None:
     engine = hosted_engine()
     conn = _connect(engine)
     try:
@@ -588,15 +656,17 @@ def cancel_job(job_id: str, actor: str) -> dict[str, Any] | None:
             text(
                 """
                 UPDATE hosted_jobs
-                SET status = 'cancelled', claimed_by_worker = NULL, heartbeat_at = NULL
+                SET status = 'cancelled', finished_at = :finished,
+                    claimed_by_worker = NULL, heartbeat_at = NULL
                 WHERE id = :id
                 """
             ),
-            {"id": job_id},
+            {"id": job_id, "finished": _iso(now or _utcnow())},
         )
         _audit(conn, job_id, str(current["status"]), "cancelled", actor, "cancel")
         job = _fetch(conn, job_id)
         _commit(conn)
+        mark_queue_pending(True)
         return job
     except Exception:
         _rollback(conn)
@@ -673,6 +743,16 @@ class LocalBlobStore:
             raise ValueError("blob_missing")
         return resolved.read_bytes()
 
+    def delete(self, blob_key: str, *, url: str = "") -> None:
+        del url
+        if not blob_key:
+            return
+        path = (self.root / blob_key).resolve()
+        if not path.is_relative_to(self.root.resolve()):
+            raise ValueError("bad_file_type")
+        if path.is_file():
+            path.unlink()
+
 
 _BLOB_API = "https://blob.vercel-storage.com"
 _BLOB_API_VERSION = "12"
@@ -708,6 +788,21 @@ class VercelBlobStore:
             raise BlobNotProvisioned("blob_url_missing")
         del blob_key
         return _blob_request_bytes(target, token)
+
+    def delete(self, blob_key: str, *, url: str = "") -> None:
+        del blob_key
+        token = (os.getenv("BLOB_READ_WRITE_TOKEN") or "").strip()
+        if not token:
+            raise BlobNotProvisioned("BLOB_READ_WRITE_TOKEN is not set")
+        target = (url or "").strip()
+        if not target.startswith("https://"):
+            raise BlobNotProvisioned("blob_url_missing")
+        try:
+            _blob_request_bytes(target, token, method="DELETE")
+        except BlobNotProvisioned as exc:
+            if str(exc) == "blob_http_404":
+                return
+            raise
 
 
 def _blob_request(method: str, pathname: str, token: str, body: bytes | None) -> dict[str, Any]:
@@ -745,12 +840,73 @@ def _blob_request_bytes(
         raise BlobNotProvisioned(f"blob_http_{exc.code}") from None
 
 
-def blob_store() -> LocalBlobStore | VercelBlobStore:
+def blob_store() -> Any:
     provider = (os.getenv("HOSTED_BLOB_PROVIDER") or "local").strip().lower()
+    if provider in {"", "local"}:
+        root = Path((os.getenv("HOSTED_BLOB_DIR") or "").strip() or (DATA_DIR / "hosted-blobs"))
+        return LocalBlobStore(root)
     if provider == "vercel":
         return VercelBlobStore()
-    root = Path((os.getenv("HOSTED_BLOB_DIR") or "").strip() or (DATA_DIR / "hosted-blobs"))
-    return LocalBlobStore(root)
+    if provider in {"r2", "sharepoint"}:
+        from .hosted_storage import store_for
+
+        return store_for(provider)
+    raise BlobNotProvisioned("unknown_blob_provider")
+
+
+def retention_days() -> int:
+    raw = (os.getenv("HOSTED_FILE_RETENTION_DAYS") or "30").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return 30
+
+
+def purge_expired_files(*, now: datetime | None = None) -> dict[str, int]:
+    """Delete files for terminal jobs older than the retention window."""
+    days = retention_days()
+    if days <= 0:
+        return {"purged": 0}
+    moment = now or _utcnow()
+    cutoff = moment - timedelta(days=days)
+    engine = hosted_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT id, status, finished_at, files_json
+                FROM hosted_jobs
+                WHERE status IN ('done', 'qc_flagged', 'failed', 'cancelled')
+                """
+            )
+        ).mappings().all()
+    store = blob_store()
+    purged = 0
+    for row in rows:
+        finished = _parse_time(row["finished_at"])
+        if finished is None or finished > cutoff:
+            continue
+        files = json.loads(row["files_json"] or "[]")
+        if not files:
+            continue
+        failed = False
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            try:
+                store.delete(str(item.get("blob_key") or ""), url=str(item.get("url") or ""))
+            except Exception:
+                failed = True
+        if failed:
+            continue
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE hosted_jobs SET files_json = '[]' WHERE id = :id"),
+                {"id": row["id"]},
+            )
+            _audit(conn, str(row["id"]), str(row["status"]), str(row["status"]), "system", "files_purged")
+        purged += 1
+    return {"purged": purged}
 
 
 def sectura_quote_exists(job: dict[str, Any], lookup: Any = None) -> bool:

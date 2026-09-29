@@ -23,6 +23,7 @@ from .hosted_auth import (
     require_worker,
     verify_bearer_claims,
 )
+from .hosted_platform import platform_name, suggested_storage
 from .hosted_queue import (
     BlobNotProvisioned,
     blob_store,
@@ -35,6 +36,8 @@ from .hosted_queue import (
     heartbeat,
     list_jobs,
     mark_loading,
+    purge_expired_files,
+    queue_pending,
     read_session,
     save_session,
 )
@@ -89,6 +92,11 @@ def _issue(identity: Identity) -> dict[str, Any]:
 @router.get("/auth/config")
 def get_auth_config() -> dict[str, Any]:
     return auth_config()
+
+
+@router.get("/platform")
+def platform_info() -> dict[str, str]:
+    return {"platform": platform_name(), "suggested_storage": suggested_storage()}
 
 
 @router.post("/login")
@@ -219,6 +227,17 @@ def worker_file(
         media_type="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{name}"'},
     )
+
+
+@router.get("/worker/pending")
+def worker_pending(_: str = Depends(require_worker)) -> dict[str, Any]:
+    pending, cached = queue_pending()
+    return {"pending": pending, "cached": cached}
+
+
+@router.post("/worker/purge")
+def worker_purge(_: str = Depends(require_worker)) -> dict[str, int]:
+    return purge_expired_files()
 
 
 @router.post("/worker/claim")

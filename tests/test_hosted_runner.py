@@ -367,5 +367,6 @@ def test_vercel_entrypoint_exports_the_api() -> None:
     config = json.loads(Path("vercel.json").read_text(encoding="utf-8"))
     assert config["framework"] is None
     assert config["outputDirectory"] == "frontend/dist"
+    assert config["functions"]["api/index.py"]["maxDuration"] == 10
     assert any(row["destination"] == "/api/index" for row in config["rewrites"])
     assert "/api/hosted/jobs" in app.openapi()["paths"]
