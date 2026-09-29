@@ -154,9 +154,20 @@ def test_assembly_description_is_posted_after_the_line_exists():
           Object, String, Number, Array
         };
         sandbox.window = sandbox;
+        sandbox.kendo = {
+          antiForgeryTokens() {
+            return { __RequestVerificationToken: "af-live" };
+          }
+        };
         sandbox.document = {
           querySelector(sel) {
             if (sel === "#AssemblyName") return { form: null };
+            if (String(sel).indexOf("RequestVerification") >= 0) {
+              return {
+                value: "af-live",
+                getAttribute() { return "__RequestVerificationToken"; }
+              };
+            }
             return null;
           }
         };
@@ -214,8 +225,15 @@ def test_assembly_description_is_posted_after_the_line_exists():
             }
             if (url.indexOf("UpdatePropertyValue") >= 0) {
               const data = (opts && opts.data) || {};
+              const keys = Object.keys(data);
+              const hasToken = keys.some(
+                (key) => /RequestVerification/i.test(key) && data[key]
+              );
+              // The quote-number post persists because it carries the
+              // page anti-forgery token. A token-less body does not.
               if (
-                data.parameter === "Description"
+                hasToken
+                && data.parameter === "Description"
                 && data.ID === parent.ID
                 && data.value
                 && String(data.value).toLowerCase() !== "root"

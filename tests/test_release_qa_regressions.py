@@ -2689,3 +2689,317 @@ def test_page_finish_drops_0188_root_and_unpriced_tube():
     assert "11 Ga" not in out["selected"]
     assert "3/16" not in out["selected"]
     assert "7 Ga" not in out["selected"]
+
+
+def _run_page_finish(store, gauges, thickness):
+    """applyPageNativeCadThickness is the Finish function push_job calls."""
+    import json
+    import shutil
+    import subprocess
+    import textwrap
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+
+    start = _PAGE_FINISH_JS.index("async function applyPageNativeCadThickness")
+    end = _PAGE_FINISH_JS.index("  function skipFinish")
+    fn = _PAGE_FINISH_JS[start:end]
+    script = textwrap.dedent(
+        r"""
+        const vm = require("vm");
+        const fs = require("fs");
+        const code = fs.readFileSync(process.argv[2], "utf8");
+        const spec = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+        const store = spec.store;
+        const gauges = spec.gauges;
+        const thickness = spec.thickness;
+        const selected = [];
+        let current = store[0];
+        const sandbox = {
+          setTimeout, clearTimeout, Date, Promise, console, Math, parseFloat,
+          isFinite, Number, String, Object
+        };
+        sandbox.store = store;
+        sandbox.selected = selected;
+        sandbox.thickness = thickness;
+        sandbox.window = sandbox;
+        sandbox.document = { querySelector: () => ({ textContent: "Q11521" }) };
+        sandbox.location = { href: "https://www.secturafab.com/Quote/EDIT/qid" };
+        function Deferred() {
+          const fns = [];
+          return {
+            always(fn) { fns.push(fn); return this; },
+            then(fn) { fns.push(fn); return this; },
+            resolve() { fns.forEach((fn) => fn()); }
+          };
+        }
+        sandbox.jQuery = function() {
+          return {
+            data(name) {
+              if (name === "kendoDropDownList") {
+                return {
+                  value() {},
+                  trigger() { sandbox.jQuery.ajax({ url: "/Part/UpdateItemType" }); }
+                };
+              }
+              if (name === "kendoComboBox") {
+                return {
+                  dataSource: { data() { return gauges; } },
+                  select(idx) {
+                    const item = gauges[idx];
+                    selected.push(
+                      (item && (item.Description || item.Text)) || String(item || "")
+                    );
+                  },
+                  trigger() { sandbox.jQuery.ajax({ url: "/Quote/GetBorderSize" }); }
+                };
+              }
+              if (name === "kendoGrid") {
+                return {
+                  clearSelection() {},
+                  select(tr) {
+                    if (tr === undefined) {
+                      return { length: 1, toArray() { return [{ id: current.uid }]; } };
+                    }
+                    return { length: 1 };
+                  },
+                  dataItem() { return current; },
+                  tbody: {
+                    find(sel) {
+                      const match = String(sel || "").match(/data-uid='([^']+)'/);
+                      if (match) current = store.find((row) => row.uid === match[1]) || current;
+                      return { length: current ? 1 : 0 };
+                    }
+                  },
+                  dataSource: {
+                    view() { return store; },
+                    data() { return store; },
+                    remove(row) {
+                      const id = row && (row.uid || row.PartID);
+                      const at = store.findIndex((item) => item.uid === id || item.PartID === id);
+                      if (at >= 0) store.splice(at, 1);
+                    }
+                  }
+                };
+              }
+              return null;
+            }
+          };
+        };
+        sandbox.jQuery.ajax = function() {
+          const d = Deferred();
+          setTimeout(() => d.resolve(), 5);
+          return d;
+        };
+        vm.createContext(sandbox);
+        const runner = `
+          (async () => {
+            const out = await applyPageNativeCadThickness(store.slice(), {
+              quoteId: "qid", thickness: thickness
+            });
+            return {
+              why: out.why,
+              skipped: out.gauge_skipped,
+              whyList: out.gauge_skip_why,
+              left: store.map((row) => row.PartName || row.Name),
+              selected: selected
+            };
+          })()
+        `;
+        vm.runInContext(code + "\n" + runner, sandbox).then((out) => {
+          console.log(JSON.stringify(out));
+        }).catch((err) => {
+          console.error(err && err.stack || err);
+          process.exit(1);
+        });
+        """
+    )
+    from pathlib import Path
+
+    fn_path = Path(__file__).resolve().parent / "_round10_finish_fn.js"
+    run_path = Path(__file__).resolve().parent / "_round10_finish_run.js"
+    spec_path = Path(__file__).resolve().parent / "_round10_finish_spec.json"
+    fn_path.write_text(fn, encoding="utf-8")
+    run_path.write_text(script, encoding="utf-8")
+    spec_path.write_text(
+        json.dumps({"store": store, "gauges": gauges, "thickness": thickness}),
+        encoding="utf-8",
+    )
+    try:
+        proc = subprocess.run(
+            [node, str(run_path), str(fn_path), str(spec_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    finally:
+        fn_path.unlink(missing_ok=True)
+        run_path.unlink(missing_ok=True)
+        spec_path.unlink(missing_ok=True)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def test_drawing_14_ga_0747_selects_dropdown_076():
+    """A-11513-000. Drawing 14 GA parses to 0.0747. The list row is .076.
+
+    The old numeric read treated '.076 - 14 Ga' as 76 and dropped the kid
+    as gauge_not_in_list. push_job finishes through applyPageNativeCadThickness.
+    """
+    store = [
+        {
+            "uid": "sib",
+            "PartID": "sib",
+            "Name": "A-11521-000",
+            "PartName": "A-11521-000",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.076",
+            "ErrorStatus": 0,
+            "Material": "A36",
+            "Length": 26.6,
+            "Width": 37.5,
+        },
+        {
+            "uid": "kid",
+            "PartID": "kid",
+            "Name": "A-11513-000",
+            "PartName": "A-11513-000",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.0747",
+            "drawing_thickness_in": "0.0747",
+            "ErrorStatus": 0,
+            "Material": "A36",
+            "Length": 15.0,
+            "Width": 37.5,
+        },
+    ]
+    out = _run_page_finish(store, [".076 - 14 Ga"], "0.076")
+    assert out["why"] == "", out
+    assert "A-11513-000" in out["left"]
+    assert "A-11521-000" in out["left"]
+    assert "A-11513-000" not in out["skipped"]
+    assert "gauge_not_in_list" not in out["whyList"]
+    assert out["selected"].count(".076 - 14 Ga") == 2
+    objects = _run_page_finish(
+        store,
+        [{"Thickness": 0.076, "Description": ".076 - 14 Ga"}],
+        "0.076",
+    )
+    assert objects["why"] == "", objects
+    assert "A-11513-000" in objects["left"]
+    assert "gauge_not_in_list" not in objects["whyList"]
+    assert ".076 - 14 Ga" in objects["selected"]
+
+
+def test_page_finish_34892_three_sixteenth_not_11_ga():
+    """34892 names 3/16 PLATE and Stock_Y is 0.188. Do not stamp 11 Ga.
+
+    A stray 1/8 must not win. 0.188 is not 11 Ga and not 7 Ga.
+    applyPageNativeCadThickness is the Finish function push_job calls.
+    """
+    store = [
+        {
+            "uid": "good",
+            "PartID": "good",
+            "Name": "34887-1",
+            "PartName": "34889 PLATE",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.1345",
+            "Stock_Z": 0.1345,
+            "ErrorStatus": 0,
+            "Material": "A36",
+            "Length": 10,
+            "Width": 8,
+        },
+        {
+            "uid": "bad",
+            "PartID": "bad",
+            "Name": "34887-1",
+            "PartName": "34892 BOTTOM PLATE",
+            "Description": "3/16 PLATE DOMEX/WELDOX\n.125 SIZE SCALE\n1/8",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "11 Ga",
+            "Stock_Y": 0.188,
+            "ErrorStatus": 0,
+            "Material": "A36",
+            "Length": 43.5625,
+            "Width": 8.4375,
+        },
+    ]
+    out = _run_page_finish(
+        store,
+        [
+            {"Thickness": 0.1196, "Description": "11 Ga"},
+            {"Thickness": 0.1793, "Description": "7 Ga"},
+            {"Thickness": 0.1875, "Description": "3/16"},
+            {"Thickness": 0.125, "Description": "1/8"},
+        ],
+        "11 Ga",
+    )
+    assert out["why"] == "", out
+    assert "34892 BOTTOM PLATE" in out["left"]
+    assert "34892 BOTTOM PLATE" not in out["skipped"]
+    assert "3/16" in out["selected"]
+    assert "11 Ga" not in out["selected"]
+    assert "7 Ga" not in out["selected"]
+    assert "1/8" not in out["selected"]
+
+
+def test_classify_34892_three_sixteenth_not_11_ga(tmp_path, monkeypatch):
+    """push_job classifies through classify_cadimport_rows.
+
+    The kid PDF says 3/16 PLATE. Parent 11 Ga and a stray 1/8 must not stamp.
+    Stock_Y 0.188 agrees with 3/16, so the kid stays.
+    """
+    import fitz
+
+    from secturafab.push import SecturaFabPushService
+
+    pdf = tmp_path / "34892.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text(
+        (72, 720),
+        "3/16 PLATE DOMEX/WELDOX\nTITLE BOTTOM PLATE\n.125 SIZE SCALE\n"
+        "DWG. NO. 54892-1\n1/8",
+    )
+    doc.save(pdf)
+    doc.close()
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *a, **k: True)
+    classified, notes = SecturaFabPushService(client=MagicMock()).classify_cadimport_rows(
+        [
+            {
+                "Name": "34887-1",
+                "PartName": "34892 BOTTOM PLATE",
+                "ID": "plate",
+                "Stock_Y": 0.188,
+                "Length": 43.563,
+                "Width": 8.438,
+            }
+        ],
+        default_material="A36",
+        default_thickness="0.1196",
+        bom_rows=[],
+        library={},
+        extra_pdfs=[pdf],
+        part_key="34887-1",
+        default_thickness_source="drawing",
+    )
+    row = next(item for item in classified if "34892" in str(item.get("PartName") or ""))
+    assert float(row["Thickness"]) == pytest.approx(0.1875)
+    assert "11 Ga" not in str(row.get("Description") or "")
+    assert "0.125" not in str(row.get("Thickness") or "")
+    assert not any(
+        "34892" in note and "not a dropdown gauge" in note for note in notes
+    )

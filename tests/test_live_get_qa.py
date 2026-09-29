@@ -530,6 +530,7 @@ def test_persist_uses_addplate_addlinear_and_get_verifies():
     assert not any(p.endswith("UpdateItem_Part") for p in paths)
     assert not any(c.args[:2] == ("POST", "v1/quote") for c in client.request.call_args_list)
     blob = " ".join(notes)
+    assert "quoteOnline/update Description" not in blob
     assert "GET-verified" in blob
     assert "addplate" in blob
     plate = next(c for c in client.request.call_args_list if "addplate" in str(c))

@@ -409,21 +409,20 @@ def _looks_like_formed_plate(description: str) -> bool:
 
 
 def _model_plate_thickness_in(row: dict[str, Any] | None) -> float | None:
-    """STEP plate thickness on the row. 0.188 is not a dropdown gauge."""
+    """STEP plate thickness on the row. 0.188 agrees with 3/16, not 11 Ga."""
     if not isinstance(row, dict):
         return None
-    raw = row.get("Stock_Z")
-    if raw in (None, ""):
-        raw = row.get("step_thickness_in")
-    if raw in (None, ""):
-        raw = row.get("ModelThickness")
-    try:
-        val = float(raw)
-    except (TypeError, ValueError):
-        return None
-    if val <= 0 or val > 1:
-        return None
-    return val
+    for key in ("Stock_Z", "Stock_Y", "step_thickness_in", "ModelThickness"):
+        raw = row.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if 0 < val <= 1:
+            return val
+    return None
 
 
 def _is_step_assembly_body(row: dict[str, Any] | None, part_key: str) -> bool:

@@ -47,6 +47,22 @@ def test_parse_material_block_gr50():
     assert key == "a572_gr50"
 
 
+def test_three_sixteenth_plate_callout_beats_stray_eighth_and_scale():
+    """34892 OCR. 3/16 PLATE is the callout. 1/8 and .125 SIZE SCALE are not."""
+    text = (
+        "3/16 PLATE DOMEX/WELDOX\n"
+        "TITLE BOTTOM PLATE\n"
+        ".125 SIZE SCALE\n"
+        "DWG. NO. 54892-1\n"
+        "1/8\n"
+    )
+    thk, _key, src = parse_material_block(text)
+    assert thk == 0.1875
+    assert "3/16" in src
+    assert thk != 0.125
+    assert thk != 0.1196
+
+
 def test_parse_material_block_thickness_only_defaults_a36():
     text = "Channel\nSIZE: A\n3/16\nDESCRIPTION\n"
     thk, key, _src = parse_material_block(text)

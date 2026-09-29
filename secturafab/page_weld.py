@@ -324,15 +324,40 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
           posted_description: ""
         };
       }
+      // Same post the quote-number change uses: the page handler
+      // sends the anti-forgery token with UpdatePropertyValue. A body
+      // without that token returns success and does not store.
+      function attachLineAf(data) {
+        try {
+          var el = document.querySelector("input[name='__RequestVerificationToken']");
+          if (!el) el = document.querySelector("input[name*='RequestVerification']");
+          if (el && String(el.value || "").trim()) {
+            data[el.getAttribute("name") || "__RequestVerificationToken"] = el.value;
+            return;
+          }
+          if (window.kendo && typeof kendo.antiForgeryTokens === "function") {
+            var tokens = kendo.antiForgeryTokens() || {};
+            var names = Object.keys(tokens);
+            for (var ai = 0; ai < names.length; ai++) {
+              if (tokens[names[ai]]) {
+                data[names[ai]] = tokens[names[ai]];
+                return;
+              }
+            }
+          }
+        } catch (eAf) {}
+      }
+      var linePayload = {
+        ID: itemId,
+        parameter: "Description",
+        value: lineDesc
+      };
+      attachLineAf(linePayload);
       postedDescription = "parameter=Description&value=" + lineDesc;
       await ajaxBody({
         url: "/Quote/UpdatePropertyValue",
         type: "POST",
-        data: {
-          ID: itemId,
-          parameter: "Description",
-          value: lineDesc
-        }
+        data: linePayload
       });
       var second = await readTree();
       parent = assemblyParent(treeRows(second && second.body));

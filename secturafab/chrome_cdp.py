@@ -2287,20 +2287,61 @@ _PAGE_FINISH_JS = """(async function(spec) {
         jQuery.ajax = wrapped;
       });
     }
+    function itemLabel(item) {
+      if (typeof item === "string") return item;
+      if (!item) return "";
+      return String(item.Description || item.description || item.Text || "");
+    }
+    function displayInch(text) {
+      // '.076 - 14 Ga' is 0.076. A digit-first regex reads that as 76.
+      // '3/16' is 0.1875, not 3.
+      var s = String(text || "").trim();
+      var frac = s.match(/(\\d+)\\s*\\/\\s*(\\d+)/);
+      if (frac && Number(frac[2])) return Number(frac[1]) / Number(frac[2]);
+      var dotted = s.match(/\\.\\d+/);
+      if (dotted && s.charAt(0) === ".") return parseFloat(dotted[0]);
+      var num = s.match(/-?\\d+(?:\\.\\d+)?/);
+      return num ? parseFloat(num[0]) : NaN;
+    }
     function gaugeIndex(data, token) {
       // 14GA is 0.0747; the list row is '.076 - 14 Ga'. Match the gauge
-      // label first, then the nearest decimal within 0.003. invent=false.
+      // the drawing names, then the nearest decimal within 0.003.
+      // Do not require 0.0747 to equal the dropdown Thickness. invent=false.
       var wantText = String(token || "").trim();
       if (!wantText) return -1;
+      var named = "";
       var label = wantText.match(/(\\d+)\\s*ga/i);
-      if (label) {
-        var gaRe = new RegExp("(^|[^0-9])" + label[1] + "\\\\s*ga", "i");
+      if (label) named = label[1];
+      if (!named) {
+        var knownN = displayInch(wantText);
+        var known = [
+          [0.0747, "14"], [0.0598, "16"], [0.1046, "12"],
+          [0.1196, "11"], [0.1345, "10"], [0.1793, "7"]
+        ];
+        if (isFinite(knownN)) {
+          for (var ki = 0; ki < known.length; ki++) {
+            if (Math.abs(knownN - known[ki][0]) <= 0.0002) {
+              named = known[ki][1];
+              break;
+            }
+          }
+        }
+      }
+      if (named) {
+        var gaRe = new RegExp("(^|[^0-9])" + named + "\\\\s*ga", "i");
         for (var gi = 0; gi < data.length; gi++) {
-          var gItem = data[gi];
-          var gDesc = "";
-          if (typeof gItem === "string") gDesc = gItem;
-          else if (gItem) gDesc = String(gItem.Description || gItem.description || gItem.Text || "");
+          var gDesc = itemLabel(data[gi]);
           if (gDesc && gaRe.test(gDesc)) return gi;
+        }
+      }
+      var fraction = wantText.match(/(\\d+)\\s*\\/\\s*(\\d+)/);
+      if (fraction && /plate/i.test(wantText)) {
+        var fracRe = new RegExp(
+          "(^|[^0-9])" + fraction[1] + "\\\\s*/\\\\s*" + fraction[2] + "(?![0-9])",
+          "i"
+        );
+        for (var fi = 0; fi < data.length; fi++) {
+          if (fracRe.test(itemLabel(data[fi]))) return fi;
         }
       }
       var wantN = null;
@@ -2316,8 +2357,7 @@ _PAGE_FINISH_JS = """(async function(spec) {
         if (item == null) continue;
         if (typeof item === "string") {
           if (item === wantText || item.indexOf(wantText) >= 0) return ti;
-          var fromText = item.match(/-?\\d+(?:\\.\\d+)?/);
-          var textN = fromText ? parseFloat(fromText[0]) : NaN;
+          var textN = displayInch(item);
           if (wantN != null && isFinite(textN)) {
             var textAbs = Math.abs(textN - wantN);
             if (textAbs <= 0.003 && textAbs < bestAbs) { best = ti; bestAbs = textAbs; }
@@ -2329,10 +2369,7 @@ _PAGE_FINISH_JS = """(async function(spec) {
           return ti;
         }
         var thick = parseFloat(item.Thickness);
-        if (!isFinite(thick)) {
-          var descNum = desc.match(/-?\\d+(?:\\.\\d+)?/);
-          if (descNum) thick = parseFloat(descNum[0]);
-        }
+        if (!isFinite(thick)) thick = displayInch(desc);
         if (wantN != null && isFinite(thick)) {
           var ad = Math.abs(thick - wantN);
           if (ad <= 0.003 && ad < bestAbs) { best = ti; bestAbs = ad; }
@@ -2793,12 +2830,28 @@ _PAGE_FINISH_JS = """(async function(spec) {
     }
     function modelPlateIn(row) {
       var live = (row && row._gridItem) || row || {};
-      var raw = live.Stock_Z;
-      if (raw == null || raw === "") raw = live.step_thickness_in;
-      if (raw == null || raw === "") raw = live.ModelThickness;
-      var n = parseFloat(raw);
-      if (!isFinite(n) || !(n > 0) || n > 1) return null;
-      return n;
+      var keys = ["Stock_Z", "Stock_Y", "step_thickness_in", "ModelThickness"];
+      for (var mi = 0; mi < keys.length; mi++) {
+        var raw = live[keys[mi]];
+        var n = parseFloat(raw);
+        if (isFinite(n) && n > 0 && n <= 1) return n;
+      }
+      return null;
+    }
+    function rowGaugeCallout(row) {
+      // The drawing callout wins over a stray 1/8 or a parent 11 Ga.
+      // Do not invent a gauge the text does not name.
+      var live = (row && row._gridItem) || row || {};
+      var blob = String(
+        (live.PartName || "") + " " + (live.Name || "") + " "
+        + (live.Description || "") + " " + (live.MaterialCallout || "")
+        + " " + (live.GaugeCallout || "")
+      );
+      var plate = blob.match(/(\\d+)\\s*\\/\\s*(\\d+)\\s*(?:HR\\s+)?PLATE/i);
+      if (plate) return plate[1] + "/" + plate[2];
+      var ga = blob.match(/(\\d+)\\s*GA(?:UGE)?/i);
+      if (ga && /PLATE|DP|SHEET|GAUGE/i.test(blob)) return ga[1] + " Ga";
+      return "";
     }
     function ownDrawingIn(row) {
       var live = (row && row._gridItem) || row || {};
@@ -2817,6 +2870,8 @@ _PAGE_FINISH_JS = """(async function(spec) {
         var ownGauge = liveGauge.Thickness != null ? String(liveGauge.Thickness).trim() : "";
         if (ownGauge) gauge = ownGauge;
       }
+      var callout = rowGaugeCallout(row);
+      if (callout) gauge = callout;
       if (!gauge) {
         dropUnlistedGauge(row);
         continue;
@@ -2839,9 +2894,13 @@ _PAGE_FINISH_JS = """(async function(spec) {
       var ownStatesGauge = ownIn != null && isFinite(chosenIn) && Math.abs(ownIn - chosenIn) <= 0.003;
       var modelIs188 = modelIn != null && Math.abs(modelIn - 0.188) <= 0.001;
       var chosenIs188 = isFinite(chosenIn) && Math.abs(chosenIn - 0.188) <= 0.0001;
+      // 0.188 agrees with 3/16 (0.1875). It is not 11 Ga and not 7 Ga.
+      var chosenIs316 = isFinite(chosenIn) && Math.abs(chosenIn - 0.1875) <= 0.001;
+      var modelAgrees316 = modelIs188 && chosenIs316;
       if (
         modelIn != null
         && !ownStatesGauge
+        && !modelAgrees316
         && (
           (isFinite(chosenIn) && Math.abs(chosenIn - modelIn) > 0.003)
           || (modelIs188 && !chosenIs188)

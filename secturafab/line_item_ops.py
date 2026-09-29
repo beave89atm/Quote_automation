@@ -1502,6 +1502,13 @@ def persist_classified_item_fields(
             )
             if line != raw_desc:
                 desc_n += 1
+    # quoteOnline/update does not store Description (HTTP 200, tree
+    # read-back unchanged). The assembly line uses UpdatePropertyValue.
+    update_params = [
+        row
+        for row in update_params
+        if str(row.get("ParamName") or "") != "Description"
+    ]
     if update_params:
         quote_online_update(client, quote_id, update_params)
 
@@ -1570,8 +1577,6 @@ def persist_classified_item_fields(
             f"WARNING: Linear Machine/Length empty on GET after addLinear "
             f"({lin_miss} line(s))"
         )
-    if desc_n:
-        notes.append(f"quoteOnline/update Description on {desc_n} line(s)")
     if cad_wrote or lin_wrote:
         notes.append(
             f"Wrote addplate×{cad_wrote} addLinear×{lin_wrote} "

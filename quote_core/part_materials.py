@@ -324,6 +324,26 @@ def parse_material_block(text: str) -> tuple[float | None, str | None, str]:
         thk, key, src = plate_hits[0]
         return thk, key, src
 
+    # "3/16 PLATE DOMEX/WELDOX" has no ASTM token. A scale note
+    # (".125 SIZE SCALE") or a stray "1/8" line must not replace it.
+    fraction_plates: list[tuple[float, str, str]] = []
+    for m_plate in re.finditer(
+        r"(?i)(?P<thk>\d+\s*/\s*\d+)\s*[\"″']?\s*(?:HR\s+)?PLATE\b",
+        text,
+    ):
+        window = text[max(0, m_plate.start() - 12) : m_plate.end() + 24]
+        if re.search(r"(?i)\bSIZE\s+SCALE\b|\bSCALE\b", window):
+            continue
+        thk = _parse_thickness_token(m_plate.group("thk"))
+        if thk is None:
+            continue
+        fraction_plates.append(
+            (thk, "a36", f"plate callout {m_plate.group(0).strip()!r}")
+        )
+    if fraction_plates:
+        thk, key, src = fraction_plates[0]
+        return thk, key, src
+
     if _A572_GRADE_RE.search(text):
         # Grade known; try any nearby thickness token.
         for ln in lines:
