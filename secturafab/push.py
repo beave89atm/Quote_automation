@@ -1498,32 +1498,37 @@ def dxf_finish_skip_notes(result: dict[str, Any] | None) -> list[str]:
         return []
     labels = [str(item or "").strip() for item in (result.get("gauge_skipped") or [])]
     whys = [str(item or "").strip() for item in (result.get("gauge_skip_why") or [])]
+    decisions = [str(item or "") for item in (result.get("gauge_skip_decision") or [])]
     notes: list[str] = []
     for index, text in enumerate(labels):
         if not text:
             continue
         reason = whys[index] if index < len(whys) and whys[index] else "gauge_not_in_list"
         if reason == "errorstatus_not_zero":
-            notes.append(
+            note = (
                 f"FLAG: {text} — errorstatus_not_zero "
                 "(removed before Finish; not inventing a gauge)"
             )
         elif reason == "no_catalog_sku":
-            notes.append(
+            note = (
                 f"FLAG: {text} — no confident catalog SKU "
                 "(skipped, not a sheet; not inventing a SKU)"
             )
         elif reason == "step_thickness_not_a_gauge":
-            notes.append(
+            note = (
                 f"FLAG: thickness unresolved for {text} — "
                 "STEP thickness is not a dropdown gauge "
                 "(not snapping to 11 Ga or any other gauge)"
             )
         else:
-            notes.append(
+            note = (
                 f"FLAG: thickness unresolved for {text} — gauge_not_in_list "
                 "(not in the dropdown; not inventing a gauge)"
             )
+        decision = decisions[index] if index < len(decisions) else ""
+        if decision.strip():
+            note = f"{note} | {decision.strip()}"
+        notes.append(note)
     return notes
 
 

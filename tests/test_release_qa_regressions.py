@@ -2840,6 +2840,7 @@ def _run_page_finish(
               why: out.why,
               skipped: out.gauge_skipped,
               whyList: out.gauge_skip_why,
+              decision: out.gauge_skip_decision || [],
               left: store.map((row) => row.PartName || row.Name),
               selected: selected
             };
@@ -3047,6 +3048,62 @@ def test_second_plate_keeps_14_ga_after_the_combobox_clears():
     assert "A-11513-000" not in " ".join(out["skipped"])
     assert "gauge_not_in_list" not in out["whyList"]
     assert out["selected"] == [".076 - 14 Ga", ".076 - 14 Ga"]
+
+
+def test_dropped_plate_skip_note_records_the_gauge_decision():
+    """A drop stays a drop. The existing FLAG note carries the decision.
+
+    Job token 9 Ga is not the .076 - 14 Ga row, so the plate is still
+    removed. The note names the part, the callout, the gauge after
+    drawingNamedGauge, plates.length, gaugeRows.length, gaugeIndex,
+    and the snapshot labels. It does not add a second note.
+    """
+    from secturafab.push import dxf_finish_skip_notes
+
+    store = [
+        {
+            "uid": "kid",
+            "PartID": "kid",
+            "Name": "A-11513-000",
+            "PartName": "A-11513-000",
+            "Description": "A-11513-000",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "not a dropdown row",
+            "ErrorStatus": 0,
+            "Material": "A36",
+            "Length": 15.0,
+            "Width": 37.5,
+        }
+    ]
+    gauges = [{"Description": ".076 - 14 Ga", "Thickness": 0.076}]
+    out = _run_page_finish(store, gauges, "9 Ga")
+    assert "A-11513-000" not in out["left"]
+    assert "A-11513-000" in out["skipped"]
+    assert out["whyList"] == ["gauge_not_in_list"]
+    assert len(out["decision"]) == 1
+    decision = out["decision"][0]
+    assert "part=A-11513-000" in decision
+    assert "callout=" in decision
+    assert "gauge=9 Ga" in decision
+    assert "plates=1" in decision
+    assert "gaugeRows=1" in decision
+    assert "gaugeIndex=-1" in decision
+    assert "labels=.076 - 14 Ga" in decision
+    notes = dxf_finish_skip_notes(
+        {
+            "gauge_skipped": out["skipped"],
+            "gauge_skip_why": out["whyList"],
+            "gauge_skip_decision": out["decision"],
+        }
+    )
+    assert len(notes) == 1
+    assert notes[0].startswith(
+        "FLAG: thickness unresolved for A-11513-000 — gauge_not_in_list "
+        "(not in the dropdown; not inventing a gauge) | "
+    )
+    assert decision in notes[0]
 
 
 def test_three_sixteenth_callout_is_not_dropped_on_an_empty_click():

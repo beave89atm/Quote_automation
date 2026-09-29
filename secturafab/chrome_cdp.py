@@ -2246,12 +2246,14 @@ _PAGE_FINISH_JS = """(async function(spec) {
     var skippedIds = {};
     var skippedGauge = [];
     var skippedWhy = [];
+    var skippedDecision = [];
     function fail(w, component) {
       return {
         why: w,
         component: component || 0,
         gauge_skipped: skippedGauge,
-        gauge_skip_why: skippedWhy
+        gauge_skip_why: skippedWhy,
+        gauge_skip_decision: skippedDecision
       };
     }
     function sleep(ms) {
@@ -2531,12 +2533,33 @@ _PAGE_FINISH_JS = """(async function(spec) {
       } catch (eFind) {}
       try { g.dataSource.remove(target); } catch (eDrop) {}
     }
-    function dropUnlistedGauge(row, why) {
+    function gaugeDecision(row, callout, namedGauge, index) {
+      var live = (row && row._gridItem) || row || {};
+      var part = String(
+        live.PartName || live.Name || live.FileName || live.Description || "part"
+      );
+      var rows = gaugeRows || [];
+      var labels = [];
+      for (var li = 0; li < rows.length && labels.length < 8; li++) {
+        labels.push(itemLabel(rows[li]));
+      }
+      return [
+        "part=" + part,
+        "callout=" + String(callout == null ? "" : callout),
+        "gauge=" + String(namedGauge == null ? "" : namedGauge),
+        "plates=" + String(plates ? plates.length : 0),
+        "gaugeRows=" + String(rows.length),
+        "gaugeIndex=" + String(index),
+        "labels=" + labels.join(" | ")
+      ].join("; ");
+    }
+    function dropUnlistedGauge(row, why, decision) {
       var live = (row && row._gridItem) || row || {};
       skippedGauge.push(String(
         live.PartName || live.Name || live.FileName || live.Description || "part"
       ));
       skippedWhy.push(String(why || "gauge_not_in_list"));
+      skippedDecision.push(String(decision || ""));
       var uid = String(live.uid || live.PartID || live.ID || "");
       if (uid) skippedIds[uid] = true;
       var name = String(live.PartName || live.Name || live.FileName || "");
@@ -2580,7 +2603,13 @@ _PAGE_FINISH_JS = """(async function(spec) {
         var fr = fresh[fi] || {};
         if (!rowIsCadPlate(fr)) continue;
         if (!errorStatusOpen(fr)) continue;
-        dropUnlistedGauge(fr, "errorstatus_not_zero");
+        var esCallout = rowGaugeCallout(fr);
+        var esGauge = drawingNamedGauge(esCallout || sharedGauge || "");
+        dropUnlistedGauge(
+          fr,
+          "errorstatus_not_zero",
+          gaugeDecision(fr, esCallout, esGauge, gaugeIndex(gaugeRows || [], esGauge))
+        );
       }
     }
     function anyResolvedKid(fresh) {
@@ -2842,7 +2871,14 @@ _PAGE_FINISH_JS = """(async function(spec) {
     }
     for (var ari = 0; ari < assemblyRows.length; ari++) removeGridRow(assemblyRows[ari]);
     for (var ski = 0; ski < skuSkipped.length; ski++) {
-      dropUnlistedGauge(skuSkipped[ski], "no_catalog_sku");
+      var skuRow = skuSkipped[ski];
+      var skuCallout = rowGaugeCallout(skuRow);
+      var skuGauge = drawingNamedGauge(skuCallout || "");
+      dropUnlistedGauge(
+        skuRow,
+        "no_catalog_sku",
+        gaugeDecision(skuRow, skuCallout, skuGauge, gaugeIndex(gaugeRows || [], skuGauge))
+      );
     }
     function modelPlateIn(row) {
       var live = (row && row._gridItem) || row || {};
@@ -2903,14 +2939,23 @@ _PAGE_FINISH_JS = """(async function(spec) {
         if (ownGauge && gaugeIndex(gaugeRows, ownGauge) >= 0) gauge = ownGauge;
       }
       if (!gauge) {
-        dropUnlistedGauge(row);
+        var unnamed = drawingNamedGauge(gauge);
+        dropUnlistedGauge(
+          row,
+          "",
+          gaugeDecision(row, callout, unnamed, gaugeIndex(gaugeRows, unnamed))
+        );
         continue;
       }
       gauge = drawingNamedGauge(gauge);
       var data = gaugeRows;
       var idx = gaugeIndex(data, gauge);
       if (idx < 0) {
-        dropUnlistedGauge(row, "gauge_not_in_list");
+        dropUnlistedGauge(
+          row,
+          "gauge_not_in_list",
+          gaugeDecision(row, callout, gauge, idx)
+        );
         if (plates.length < 2 && !gridHasLinear()) return fail("gauge_not_in_list", 0);
         continue;
       }
@@ -2936,7 +2981,11 @@ _PAGE_FINISH_JS = """(async function(spec) {
           || (modelIs188 && !chosenIs188)
         )
       ) {
-        dropUnlistedGauge(row, "step_thickness_not_a_gauge");
+        dropUnlistedGauge(
+          row,
+          "step_thickness_not_a_gauge",
+          gaugeDecision(row, callout, gauge, idx)
+        );
         if (plates.length < 2 && !gridHasLinear()) return fail("gauge_not_in_list", 0);
         continue;
       }
@@ -2990,6 +3039,7 @@ _PAGE_FINISH_JS = """(async function(spec) {
     if (inspected && typeof inspected === "object") {
       inspected.gauge_skipped = skippedGauge;
       inspected.gauge_skip_why = skippedWhy;
+      inspected.gauge_skip_decision = skippedDecision;
     }
     return inspected;
   }
@@ -3003,13 +3053,16 @@ _PAGE_FINISH_JS = """(async function(spec) {
       finish_af_present: false,
       finish_why: why,
       gauge_skipped: gaugeSkipped,
-      gauge_skip_why: gaugeSkipWhy
+      gauge_skip_why: gaugeSkipWhy,
+      gauge_skip_decision: (typeof gaugeSkipDecision !== "undefined")
+        ? gaugeSkipDecision : []
     }));
   }
   var rows = gridData();
   var count = rows.length;
   var gaugeSkipped = [];
   var gaugeSkipWhy = [];
+  var gaugeSkipDecision = [];
   if (count >= 1) {
     var native = await applyPageNativeCadThickness(rows, spec);
     if (native && native.gauge_skipped && native.gauge_skipped.length) {
@@ -3017,6 +3070,9 @@ _PAGE_FINISH_JS = """(async function(spec) {
     }
     if (native && native.gauge_skip_why && native.gauge_skip_why.length) {
       gaugeSkipWhy = native.gauge_skip_why;
+    }
+    if (native && native.gauge_skip_decision && native.gauge_skip_decision.length) {
+      gaugeSkipDecision = native.gauge_skip_decision;
     }
     if (native && native.why) return skipFinish(native.why);
     rows = gridData();
@@ -3372,6 +3428,8 @@ _PAGE_FINISH_JS = """(async function(spec) {
     extra.finish_af_present = !!hit.finish_af_present;
     extra.finish_why = String(hit.finish_why || "");
     extra.gauge_skipped = gaugeSkipped;
+    extra.gauge_skip_why = gaugeSkipWhy;
+    extra.gauge_skip_decision = gaugeSkipDecision;
     extra.filelist0_values = hit.filelist0_values || {};
     extra.response_list_n = Number(extra.response_list_n || 0);
     extra.response_list0 = extra.response_list0 || {};
@@ -4146,6 +4204,9 @@ def invoke_page_dxf_finish(
         ],
         "gauge_skip_why": [
             str(item) for item in (value.get("gauge_skip_why") or []) if str(item).strip()
+        ],
+        "gauge_skip_decision": [
+            str(item or "") for item in (value.get("gauge_skip_decision") or [])
         ],
         "filelist0_values": (
             value.get("filelist0_values")
