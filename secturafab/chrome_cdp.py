@@ -3581,6 +3581,108 @@ def invoke_page_nest_quote_edit(
     return value
 
 
+_DROP_FLAGGED_GRID_PARTS_JS = """(function(spec) {
+  var want = [];
+  var raw = (spec && spec.labels) || [];
+  for (var i = 0; i < raw.length; i++) {
+    var s = String(raw[i] || "").trim().toLowerCase();
+    if (s) want.push(s);
+  }
+  var g = null;
+  try { g = window.jQuery && jQuery("#gridDXFParts").data("kendoGrid"); } catch (e) {}
+  if (!g || !g.dataSource) {
+    return Promise.resolve({ok: false, why: "no_grid", removed: 0, left: 0, still: []});
+  }
+  function blobOf(r) {
+    var j = r && r.toJSON ? r.toJSON() : (r || {});
+    return [j.Name, j.PartName, j.FileName, j.Description, j.name].join(" ").toLowerCase();
+  }
+  var data = g.dataSource.data() || [];
+  var remove = [];
+  for (var n = 0; n < data.length; n++) {
+    var blob = blobOf(data[n]);
+    for (var w = 0; w < want.length; w++) {
+      if (want[w] && blob.indexOf(want[w]) >= 0) { remove.push(data[n]); break; }
+    }
+  }
+  for (var k = 0; k < remove.length; k++) {
+    try { g.dataSource.remove(remove[k]); } catch (e2) {}
+  }
+  var leftRows = g.dataSource.data() || [];
+  var still = [];
+  for (var a = 0; a < want.length; a++) {
+    var hit = false;
+    for (var b = 0; b < leftRows.length; b++) {
+      if (blobOf(leftRows[b]).indexOf(want[a]) >= 0) { hit = true; break; }
+    }
+    if (hit) still.push(want[a]);
+  }
+  return Promise.resolve({
+    ok: still.length === 0,
+    why: still.length ? "still_on_grid" : "",
+    removed: remove.length,
+    left: leftRows.length,
+    still: still
+  });
+})"""
+
+
+def drop_flagged_grid_dxf_parts(
+    labels: list[str],
+    *,
+    quote_id: str | None = None,
+    base: str | None = None,
+) -> dict[str, Any]:
+    """Remove flagged Cad kids from #gridDXFParts before page Finish.
+
+    OnAddDXFClick posts the kendo grid, not the Python FileList. A
+    STEP-only thickness plate has to leave the grid or it is written
+    with the resolved kids (live 34892 on 34887-1). No row is removed
+    when Chrome is not the session.
+    """
+    names = []
+    seen: set[str] = set()
+    for label in labels or []:
+        text = str(label or "").strip()
+        key = text.casefold()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        names.append(text)
+    if not names or not chrome_quotes_live(base):
+        return {"live": False, "ok": True, "removed": 0, "still": [], "why": ""}
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=False)
+    if not gate.get("ok"):
+        return {
+            "live": True,
+            "ok": True,
+            "removed": 0,
+            "still": [],
+            "why": str(gate.get("reason") or "edit_tab"),
+        }
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    value = _cdp_evaluate_promise(
+        _DROP_FLAGGED_GRID_PARTS_JS + "(" + json.dumps({"labels": names}) + ")",
+        base=base,
+        tab=tab,
+        fallback=False,
+    )
+    if not isinstance(value, dict):
+        return {"live": True, "ok": True, "removed": 0, "still": [], "why": "eval_empty"}
+    still = [str(item) for item in (value.get("still") or []) if str(item).strip()]
+    try:
+        removed = int(value.get("removed") or 0)
+    except (TypeError, ValueError):
+        removed = 0
+    return {
+        "live": True,
+        "ok": not still and bool(value.get("ok", True)),
+        "removed": removed,
+        "still": still,
+        "why": str(value.get("why") or ""),
+    }
+
+
 def invoke_page_dxf_finish(
     *,
     base: str | None = None,
@@ -7043,18 +7145,24 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
     return blob.indexOf("20 ft") >= 0 || blob.indexOf("20ft") >= 0 || blob.indexOf("20-ft") >= 0;
   }
   function pickLinearConfig20ft(wantId) {
-    // Stock config is the 20ft row (or the catalog productConfigID).
-    // Wait for LinearConfigList's datasource — selecting before it
-    // loads leaves productConfigID blank and AddItem_Linear 500s.
+    // Stock config is the 20ft row when LinearConfigList is on the form.
+    // This Long form's stock widget is #linearSizes and has no config
+    // list. Gold AddItem_Linear posts productConfigID empty and returns
+    // 200 with Saw. Do not wait for a widget that is not there.
     lastConfigVia = "";
     lastConfigValue = "";
+    var present = findLinearConfigWidget();
+    if (!present || !present.widget) {
+      lastConfigVia = "none";
+      return Promise.resolve("");
+    }
     return new Promise(function(resolve) {
       var t0 = Date.now();
       function attempt() {
         var hit = findLinearConfigWidget();
         if (!hit || !hit.widget) {
-          if (Date.now() - t0 >= 8000) { resolve(""); return; }
-          setTimeout(attempt, 200);
+          lastConfigVia = "none";
+          resolve("");
           return;
         }
         lastConfigVia = hit.via;
@@ -7135,7 +7243,7 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
     }
     return pickLinearConfig20ft(productConfigID).then(function(cfg) {
       return {
-        ok: !!picked && !!cfg,
+        ok: !!picked,
         long_clicked: true,
         opened_via: String((spec && spec.opened_via) || ""),
         picker_via: lastPicker,
@@ -8564,15 +8672,26 @@ _DISPATCH_DXF_FILES_CHANGE_JS = """(function() {
   var el = (zone && (zone.querySelector("#files")
     || zone.querySelector("input[type=file][data-kannon-dxf-add-files='1']")))
     || document.querySelector("#dxfupload_Zone #files");
-  if (!el) return Promise.resolve({changed: false, files_kendo: false});
+  if (!el) return Promise.resolve({changed: false, files_kendo: false, file_n: 0});
+  if (String(el.tagName || "").toLowerCase() !== "input") {
+    var inner = el.querySelector && el.querySelector("input[type=file]");
+    if (inner) el = inner;
+  }
+  try { el.multiple = true; el.setAttribute("multiple", "multiple"); } catch (eM) {}
+  var fileN = 0;
+  try { fileN = (el.files && el.files.length) || 0; } catch (eF) {}
+  var ku = null;
+  try { ku = window.jQuery && jQuery(el).data("kendoUpload"); } catch (eK) { ku = null; }
   try {
-    el.dispatchEvent(new Event("change", {bubbles: true}));
-  } catch (e) {}
-  var ku = false;
-  try {
-    ku = !!(window.jQuery && jQuery(el).data("kendoUpload"));
-  } catch (e2) {}
-  return Promise.resolve({changed: true, files_kendo: ku});
+    if (ku && typeof ku._onInputChange === "function") {
+      ku._onInputChange({target: el});
+    } else {
+      el.dispatchEvent(new Event("change", {bubbles: true}));
+    }
+  } catch (e) {
+    try { el.dispatchEvent(new Event("change", {bubbles: true})); } catch (e2) {}
+  }
+  return Promise.resolve({changed: true, files_kendo: !!ku, file_n: fileN});
 })"""
 
 
@@ -8828,7 +8947,46 @@ def upload_dxf_via_page_add_files(
             "zone": str((found or {}).get("zone") or ""),
         }
     ws = str((tab or {}).get("webSocketDebuggerUrl") or "")
-    set_files_via = _cdp_set_file_input_files(ws, selector, paths)
+    # One file per change. A multi-file setFileInputFiles still posts only
+    # the first STEP (live A-11521-000; #files multiple=true).
+    set_files_via = ""
+    seen_paths: list[list[str]] = []
+    last: dict[str, Any] = {
+        "grid_id": "",
+        "gridDXF_n": 0,
+        "files_kendo": files_kendo,
+        "List": [],
+        "save_url": save_url,
+    }
+    bound_n = 0
+    for path in paths:
+        via = _cdp_set_file_input_files(ws, selector, [path])
+        seen_paths.append([path])
+        if via:
+            set_files_via = via
+        else:
+            continue
+        changed = _cdp_evaluate_promise(
+            _DISPATCH_DXF_FILES_CHANGE_JS + "()", base=base, tab=tab, fallback=False
+        )
+        if isinstance(changed, dict) and changed.get("files_kendo"):
+            files_kendo = True
+        for _ in range(24):
+            count = _cdp_evaluate_promise(
+                _READ_GRID_DXF_COUNT_JS + "()", base=base, tab=tab, fallback=False
+            )
+            if isinstance(count, dict):
+                last = count
+                if count.get("files_kendo"):
+                    files_kendo = True
+                try:
+                    n = int(count.get("gridDXF_n") or 0)
+                except (TypeError, ValueError):
+                    n = 0
+                if n > bound_n and files_kendo:
+                    bound_n = n
+                    break
+            time.sleep(0.25)
     if not set_files_via:
         return {
             **empty,
@@ -8840,62 +8998,40 @@ def upload_dxf_via_page_add_files(
             "zone": "#dxfupload_Zone",
             "set_files_via": "",
         }
-    changed = _cdp_evaluate_promise(
-        _DISPATCH_DXF_FILES_CHANGE_JS + "()", base=base, tab=tab, fallback=False
-    )
-    if isinstance(changed, dict) and changed.get("files_kendo"):
-        files_kendo = True
-    last: dict[str, Any] = {
-        "grid_id": "",
-        "gridDXF_n": 0,
-        "files_kendo": files_kendo,
-        "List": [],
-        "save_url": save_url,
-    }
-    for _ in range(24):
-        count = _cdp_evaluate_promise(
-            _READ_GRID_DXF_COUNT_JS + "()", base=base, tab=tab, fallback=False
-        )
-        if isinstance(count, dict):
-            last = count
-            if count.get("files_kendo"):
-                files_kendo = True
-            try:
-                n = int(count.get("gridDXF_n") or 0)
-            except (TypeError, ValueError):
-                n = 0
-            rows = [r for r in (count.get("List") or []) if isinstance(r, dict)]
-            if n > 0 and files_kendo:
-                return {
-                    "bound": True,
-                    "upload_via": "page_add_files",
-                    "files_kendo": True,
-                    "gridDXF_n": n,
-                    "grid_dxf_row_count": n,
-                    "grid_id": str(count.get("grid_id") or "#gridDXF"),
-                    "opened_via": opened_via,
-                    "finish_why": "",
-                    "edit_gate": "",
-                    "List": rows,
-                    "save_url": str(count.get("save_url") or save_url),
-                    "zone": "#dxfupload_Zone",
-                    "set_files_via": set_files_via,
-                }
-        time.sleep(0.25)
+    rows = [r for r in (last.get("List") or []) if isinstance(r, dict)]
+    want = len(paths)
+    if bound_n >= want and files_kendo:
+        return {
+            "bound": True,
+            "upload_via": "page_add_files",
+            "files_kendo": True,
+            "gridDXF_n": bound_n,
+            "grid_dxf_row_count": bound_n,
+            "grid_id": str(last.get("grid_id") or "#gridDXF"),
+            "opened_via": opened_via,
+            "finish_why": "",
+            "edit_gate": "",
+            "List": rows,
+            "save_url": str(last.get("save_url") or save_url),
+            "zone": "#dxfupload_Zone",
+            "set_files_via": set_files_via,
+            "file_n": want,
+        }
     return {
         "bound": False,
         "upload_via": "page_add_files",
         "files_kendo": files_kendo,
-        "gridDXF_n": int(last.get("gridDXF_n") or 0),
-        "grid_dxf_row_count": int(last.get("gridDXF_n") or 0),
+        "gridDXF_n": bound_n,
+        "grid_dxf_row_count": bound_n,
         "grid_id": str(last.get("grid_id") or ""),
         "opened_via": opened_via,
-        "finish_why": "empty_gridDXF",
+        "finish_why": "partial_upload" if bound_n else "empty_gridDXF",
         "edit_gate": "",
-        "List": [r for r in (last.get("List") or []) if isinstance(r, dict)],
+        "List": rows,
         "save_url": str(last.get("save_url") or save_url),
         "zone": "#dxfupload_Zone",
         "set_files_via": set_files_via,
+        "file_n": len(seen_paths),
     }
 
 

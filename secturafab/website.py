@@ -3973,6 +3973,50 @@ def cad_flat_over_120_refuses(row: dict[str, Any] | None) -> str | None:
     )
 
 
+def thickness_flag_label(note: str) -> str:
+    """Part label from a per-kid thickness flag, or empty."""
+    prefix = "FLAG: thickness unresolved for "
+    text = str(note or "")
+    if not text.startswith(prefix):
+        return ""
+    rest = text[len(prefix) :]
+    if " — " in rest:
+        return rest.split(" — ", 1)[0].strip()
+    return rest.strip()
+
+
+def rows_keeping_resolved_thickness(
+    rows: list[dict[str, Any]] | None,
+    *,
+    keep_via: str = "",
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Drop Cad kids whose thickness is only STEP-derived. Keep the rest.
+
+    One unresolved plate must not refuse the assembly Finish
+    (live 34892 on 34887-1). The dropped kid is flagged. Thickness
+    is not invented. Linears and drawing-gauge plates stay.
+    """
+    kept: list[dict[str, Any]] = []
+    flags: list[str] = []
+    via = str(keep_via or "").strip()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        why = plate_step_thickness_invalid_vs_drawing(row)
+        if not why:
+            kept.append(row)
+            continue
+        if via:
+            why = why.replace(
+                "Cad kid thickness",
+                f"keep-grid Cad kid thickness (keep_grid_via={via})",
+                1,
+            )
+        label = str(row.get("PartName") or row.get("Name") or "part").strip()
+        flags.append(f"FLAG: thickness unresolved for {label} — {why}")
+    return kept, flags
+
+
 def keep_grid_cad_kids_drawing_thickness_refuses(
     rows: list[dict[str, Any]] | None,
     *,
@@ -4021,6 +4065,10 @@ def cad_finish_notes_refuse_additem_dxf(
 
     for note in notes or []:
         text = str(note)
+        # One STEP-only plate is a per-kid flag. It must not refuse the
+        # other kids' Finish (live 34892 on 34887-1).
+        if text.startswith("FLAG: thickness unresolved"):
+            continue
         if (
             NEEDS_INTERNALDATA_FILL_XHR in text
             or STEP_EXPLODE_NO_INTERNALDATA in text

@@ -91,7 +91,6 @@ from .website import (
     step_cad_post_finish_contours_gate,
     step_cad_wizard_state_hard_gate,
     keep_grid_cad_kids_blank_material_refuses,
-    keep_grid_cad_kids_drawing_thickness_refuses,
     step_finish_pack_missing,
     wizard_quote_live_item_count,
     wizard_quote_primary_organization_id,
@@ -263,6 +262,29 @@ def _is_quote_number_token(key: str) -> bool:
     if any(tok in upper for tok in ("WELDMENT", "ASSEMBLY", "FRAME PLATE")):
         return bool(re.fullmatch(r"[A-Z]{1,3}\d{4,}(?:-[A-Z0-9]+)?", upper))
     return True
+
+
+def minted_header_for_persist(
+    *,
+    quote_number: str,
+    description: str | None,
+    part_key: str,
+    description_explicit: bool = False,
+) -> tuple[str, str]:
+    """Header re-applied after Finish. The values set at create stick.
+
+    An explicit QuoteNumber is not replaced by the drawing number
+    (live ZZ-WELD-TEST-602 became 11521-000). A drawing note is not
+    written over the title-block description. A real job's QuoteNumber
+    is the top part number chosen at create.
+    """
+    from quote_core.drawing_title import is_drawing_boilerplate_title
+
+    number = str(quote_number or "").strip() or _pn_quote_number(part_key)
+    desc = str(description or "").strip()
+    if desc and not description_explicit and is_drawing_boilerplate_title(desc):
+        desc = ""
+    return number, desc
 
 
 def quote_header_fields(part_key: str, title: str | None) -> tuple[str, str]:
@@ -1360,11 +1382,21 @@ def collect_job_files(
     if folder and folder.exists():
         for name in library.get("related_pdfs") or []:
             add(_resolve_related_pdf(folder, str(name)), drawings)
-        if not cad:
-            for p in folder.iterdir():
-                if p.suffix.lower() in {".stp", ".step"}:
-                    add(p, cad)
-                    break
+        # Every STEP in the part folder. stp_path alone used to hide the
+        # second plate (live A-11521-000 posted, A-11513-000 never uploaded).
+        try:
+            folder_steps = sorted(
+                (
+                    p
+                    for p in folder.iterdir()
+                    if p.is_file() and p.suffix.lower() in {".stp", ".step"}
+                ),
+                key=lambda p: p.name.lower(),
+            )
+        except OSError:
+            folder_steps = []
+        for p in folder_steps:
+            add(p, cad)
         if not cad and folder.parent.exists():
             for p in folder.parent.glob(f"{folder.name}.*"):
                 if p.suffix.lower() in {".stp", ".step"}:
@@ -3808,7 +3840,7 @@ class SecturaFabPushService:
             filelist_cad_payload_empty_bools,
             filelist_missing_cadimport_identity_keys,
             keep_grid_cad_kids_blank_material_refuses,
-            keep_grid_cad_kids_drawing_thickness_refuses,
+            rows_keeping_resolved_thickness,
             multi_kid_keep_grid_empty_internaldata_refuses,
         )
 
@@ -3918,12 +3950,29 @@ class SecturaFabPushService:
         if blank_mat:
             notes.append(blank_mat)
             return notes
-        drawing_thk = keep_grid_cad_kids_drawing_thickness_refuses(
+        from .website import thickness_flag_label
+
+        dropped_thickness_labels: list[str] = []
+        classified, thickness_flags = rows_keeping_resolved_thickness(
             classified, keep_via=keep_via
         )
-        if drawing_thk:
-            notes.append(drawing_thk)
-            return notes
+        if thickness_flags:
+            notes.extend(thickness_flags)
+            for flag in thickness_flags:
+                label = thickness_flag_label(flag)
+                if label:
+                    dropped_thickness_labels.append(label)
+            still = [
+                row
+                for row in classified
+                if str(row.get("Category") or "") in {"Cad", "Linear"}
+            ]
+            if not still:
+                notes.append(
+                    f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: every Cad kid "
+                    "thickness is STEP-derived or red — not Finishing"
+                )
+                return notes
         classified, post_overlay = self._overlay_cadimport_get_payloads(
             quote_id=quote_id,
             rows=classified,
@@ -4109,12 +4158,26 @@ class SecturaFabPushService:
             if over:
                 notes.append(over)
                 return notes
-        ready_drawing_thk = keep_grid_cad_kids_drawing_thickness_refuses(
+        ready, ready_flags = rows_keeping_resolved_thickness(
             ready, keep_via=keep_via
         )
-        if ready_drawing_thk:
-            notes.append(ready_drawing_thk)
-            return notes
+        if ready_flags:
+            notes.extend(ready_flags)
+            for flag in ready_flags:
+                label = thickness_flag_label(flag)
+                if label and label not in dropped_thickness_labels:
+                    dropped_thickness_labels.append(label)
+            still = [
+                row
+                for row in ready
+                if str(row.get("Category") or "") in {"Cad", "Linear"}
+            ]
+            if not still:
+                notes.append(
+                    f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: every Cad kid "
+                    "thickness is STEP-derived or red — not Finishing"
+                )
+                return notes
         keep_empty = multi_kid_keep_grid_empty_internaldata_refuses(
             ready, keep_via=keep_via
         )
@@ -4188,6 +4251,25 @@ class SecturaFabPushService:
                     "not Finishing; do not invent InternalData; not success"
                 )
             return notes
+        if dropped_thickness_labels:
+            from .chrome_cdp import drop_flagged_grid_dxf_parts
+
+            dropped = drop_flagged_grid_dxf_parts(
+                dropped_thickness_labels, quote_id=quote_id
+            )
+            notes.append(
+                "flagged_thickness_grid_drop removed="
+                + str(int(dropped.get("removed") or 0))
+            )
+            still_names = [str(item) for item in (dropped.get("still") or []) if str(item).strip()]
+            if still_names:
+                notes.append(
+                    f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: flagged Cad kid "
+                    "still on #gridDXFParts ("
+                    + ", ".join(still_names)
+                    + ") — not Finishing the STEP thickness"
+                )
+                return notes
         result = self.client.add_item_dxf_files(
             quote_id=quote_id,
             file_list=ready,
@@ -6512,6 +6594,7 @@ class SecturaFabPushService:
         createfile_retry_max_s: float = CREATEFILE_RETRY_MAX_S,
         quote_number: str | None = None,
         organization: str | None = None,
+        description: str | None = None,
     ) -> PushResult:
         notes: list[str] = []
         uploaded: list[str] = []
@@ -6519,6 +6602,7 @@ class SecturaFabPushService:
         quote_id: str | None = None
         quote_number_override = str(quote_number or "").strip()
         organization_override = str(organization or "").strip()
+        description_override = str(description or "").strip()
         quote_number = None
         quote_request_id: str | None = None
         try:
@@ -6777,7 +6861,10 @@ class SecturaFabPushService:
                     created_new_quote=False,
                     attempts=createfile_attempts,
                 )
-            raw_title = (
+            if description_override:
+                raw_title = description_override
+            else:
+                raw_title = (
                 extract_assembly_description(
                     part_key=part_key,
                     pdf_path=Path(pdf_path) if pdf_path else None,
@@ -6790,7 +6877,9 @@ class SecturaFabPushService:
                 or title_from_job_title(title, part_key=part_key)
                 or title_from_bom_part(bom_rows, part_key=part_key)
             )
-            if (
+            if description_override:
+                pass
+            elif (
                 is_drawing_boilerplate_title(raw_title)
                 or is_nested_child_weldment_title(raw_title)
                 or is_material_callout_title(raw_title)
@@ -6830,7 +6919,7 @@ class SecturaFabPushService:
                         "— use assembly weldment header"
                     )
                     raw_title = fallback
-            if (
+            if not description_override and (
                 is_nested_child_weldment_title(raw_title)
                 or is_drawing_boilerplate_title(raw_title)
                 or is_material_callout_title(raw_title)
@@ -6935,7 +7024,9 @@ class SecturaFabPushService:
             expect_cad = bool(cad or cad_pdfs or ((drawings or has_job_pdf) and not loose_linear))
             expect_linear = bool(loose_linear or linear_bom)
             items_before_finish = self._peek_item_count(quote_id)
-            website_cookie = self._website_cookie_present()
+            # Signed-in Chrome is the session. An env cookie is not required
+            # for Image Files / Long (live 3b skipped the page for a missing cookie).
+            website_cookie = self._website_or_page_session()
             attempted_pack_stamp = False
             try:
                 if cad:
@@ -7407,13 +7498,19 @@ class SecturaFabPushService:
             notes.extend(
                 persist_classified_item_fields(self.client, quote_id, **lin_kwargs)
             )
+            persist_number, persist_desc = minted_header_for_persist(
+                quote_number=quote_number or "",
+                description=quote_description,
+                part_key=part_key,
+                description_explicit=bool(description_override),
+            )
             notes.extend(
                 persist_quote_header(
                     self.client,
                     quote_id,
                     organization_name=organization_name,
-                    description=quote_description,
-                    quote_number=quote_header_fields(part_key, raw_title)[0],
+                    description=persist_desc,
+                    quote_number=persist_number,
                 )
             )
             persist_org_fail = org_stamp_fail_reason(

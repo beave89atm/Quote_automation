@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1492,7 +1492,9 @@ def test_second_long_resets_linear_product_before_search():
     )[0]
     assert "dataSource.read" in config
     assert "20 ft" in _STAMP_LINEAR_FORM_JS
-    assert "ok: !!picked && !!cfg" in _STAMP_LINEAR_FORM_JS
+    assert 'lastConfigVia = "none"' in _STAMP_LINEAR_FORM_JS
+    assert "ok: !!picked," in _STAMP_LINEAR_FORM_JS
+    assert "ok: !!picked && !!cfg" not in _STAMP_LINEAR_FORM_JS
 
 
 def test_push_job_overrides_win_and_missing_org_fails_closed(tmp_path, monkeypatch):
@@ -1691,3 +1693,264 @@ def test_refused_finish_does_not_claim_additem_post(tmp_path):
     assert "Finish POST /Quote/AddItem_DXFFiles" not in blob
     assert "empty body" not in blob.lower()
     assert "posted FileList lacks FileType" not in blob
+
+
+def test_collect_keeps_every_step_in_the_part_folder(tmp_path: Path):
+    from secturafab.push import collect_job_files
+
+    folder = tmp_path / "inch"
+    folder.mkdir()
+    first = folder / "A-11521-000.step"
+    second = folder / "A-11513-000.step"
+    first.write_bytes(b"ISO")
+    second.write_bytes(b"ISO")
+    _drawings, cad = collect_job_files(
+        pdf_path=None,
+        stp_path=first,
+        library={"folder": str(folder)},
+    )
+    assert [p.name for p in cad] == ["A-11521-000.step", "A-11513-000.step"]
+
+
+def test_upload_dxf_posts_each_step_file(tmp_path):
+    from secturafab.chrome_cdp import upload_dxf_via_page_add_files
+
+    first = tmp_path / "A-11521-000.step"
+    second = tmp_path / "A-11513-000.step"
+    first.write_bytes(b"ISO")
+    second.write_bytes(b"ISO")
+    sets: list[list[str]] = []
+    tab = {
+        "title": "*Quote-ZZ",
+        "url": "https://www.secturafab.com/Quote/EDIT/qid",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/edit",
+        "type": "page",
+    }
+
+    def _set(_ws, _selector, paths):
+        sets.append(list(paths))
+        return "objectId"
+
+    def _eval(expr, **kwargs):
+        if "opened_via" in expr:
+            return {"opened_via": "AddNewItemHTML"}
+        if "dropZoneElement" in expr:
+            return {
+                "selector": "#dxfupload_Zone #files",
+                "files_kendo": True,
+                "save_url": "/CadImport/UploadItem_DXFFiles",
+                "zone": "#dxfupload_Zone",
+                "grid_id": "#gridDXF",
+            }
+        if "gridDXF" in expr:
+            return {
+                "grid_id": "#gridDXF",
+                "gridDXF_n": len(sets),
+                "files_kendo": True,
+                "List": [{"FileName": Path(p).name} for batch in sets for p in batch],
+                "save_url": "/CadImport/UploadItem_DXFFiles",
+            }
+        return {"changed": True, "files_kendo": True, "file_n": 1}
+
+    with patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": tab, "reason": ""},
+    ), patch(
+        "secturafab.chrome_cdp._cdp_set_file_input_files", side_effect=_set
+    ), patch(
+        "secturafab.chrome_cdp._cdp_evaluate_promise", side_effect=_eval
+    ), patch("secturafab.chrome_cdp.time.sleep"):
+        result = upload_dxf_via_page_add_files(
+            [first, second], quote_id="11111111-aaaa-bbbb-cccc-000000000086"
+        )
+    assert result["bound"] is True
+    assert result["gridDXF_n"] == 2
+    assert sets == [[str(first.resolve())], [str(second.resolve())]]
+    assert result["finish_why"] != "partial_upload"
+
+
+def test_header_persist_keeps_explicit_number_and_skips_weld_note():
+    from quote_core.drawing_title import extract_title_from_pdf_text, is_drawing_boilerplate_title
+    from secturafab.push import minted_header_for_persist
+
+    note = "1. ALL WELDS FULL LENGTH UNLESS"
+    assert is_drawing_boilerplate_title(note) is True
+    assert (
+        extract_title_from_pdf_text(
+            note + "\nDW WINCH BOX FRONT\n",
+            part_key="A-11521-000",
+        )
+        == "DW WINCH BOX FRONT"
+    )
+    number, desc = minted_header_for_persist(
+        quote_number="ZZ-WELD-TEST-602",
+        description="DW WINCH BOX FRONT",
+        part_key="11521-000",
+    )
+    assert number == "ZZ-WELD-TEST-602"
+    assert desc == "DW WINCH BOX FRONT"
+    _number, cleared = minted_header_for_persist(
+        quote_number="ZZ-WELD-TEST-602",
+        description=note,
+        part_key="11521-000",
+    )
+    assert cleared == ""
+    explicit_number, explicit_desc = minted_header_for_persist(
+        quote_number="ZZ-WELD-TEST-602",
+        description=note,
+        part_key="11521-000",
+        description_explicit=True,
+    )
+    assert explicit_number == "ZZ-WELD-TEST-602"
+    assert explicit_desc == note
+    real_number, _real_desc = minted_header_for_persist(
+        quote_number="A-11521-000",
+        description="DW WINCH BOX FRONT",
+        part_key="11521-000",
+    )
+    assert real_number == "A-11521-000"
+
+
+def test_one_step_thickness_kid_does_not_refuse_the_others():
+    from secturafab.website import (
+        cad_finish_notes_refuse_additem_dxf,
+        rows_keeping_resolved_thickness,
+    )
+
+    good = {
+        "Name": "34890 PLATE",
+        "PartName": "34890 PLATE",
+        "Category": "Cad",
+        "Material": "A36",
+        "Thickness": 0.25,
+        "thickness_source": "drawing",
+        "drawing_thickness_in": 0.25,
+    }
+    bad = {
+        "Name": "34892 BOTTOM PLATE",
+        "PartName": "34892 BOTTOM PLATE",
+        "Category": "Cad",
+        "Material": "A36",
+        "Thickness": 0.25,
+        "thickness_source": "step",
+    }
+    tube = {"Name": "34536 PIVOT TUBE", "Category": "Linear", "Material": "A36"}
+    kept, flags = rows_keeping_resolved_thickness(
+        [good, bad, tube], keep_via="live"
+    )
+    assert [row["Name"] for row in kept] == ["34890 PLATE", "34536 PIVOT TUBE"]
+    assert len(flags) == 1
+    assert "34892" in flags[0]
+    assert flags[0].startswith("FLAG: thickness unresolved")
+    assert cad_finish_notes_refuse_additem_dxf(flags) is None
+    from secturafab.website import thickness_flag_label
+
+    assert thickness_flag_label(flags[0]) == "34892 BOTTOM PLATE"
+
+
+def test_flagged_thickness_kid_is_dropped_from_the_page_grid(monkeypatch):
+    from secturafab.chrome_cdp import (
+        _DROP_FLAGGED_GRID_PARTS_JS,
+        drop_flagged_grid_dxf_parts,
+    )
+
+    assert "#gridDXFParts" in _DROP_FLAGGED_GRID_PARTS_JS
+    assert "dataSource.remove" in _DROP_FLAGGED_GRID_PARTS_JS
+    monkeypatch.setattr(
+        "secturafab.chrome_cdp.chrome_quotes_live", lambda *_a, **_k: False
+    )
+    quiet = drop_flagged_grid_dxf_parts(["34892 BOTTOM PLATE"], quote_id="qid")
+    assert quiet["live"] is False
+    assert quiet["still"] == []
+    seen: dict[str, str] = {}
+
+    def _eval(expr, **_kwargs):
+        seen["expr"] = expr
+        return {
+            "ok": False,
+            "removed": 0,
+            "still": ["34892 BOTTOM PLATE"],
+            "why": "still_on_grid",
+        }
+
+    monkeypatch.setattr(
+        "secturafab.chrome_cdp.chrome_quotes_live", lambda *_a, **_k: True
+    )
+    monkeypatch.setattr(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        lambda *_a, **_k: {
+            "ok": True,
+            "tab": {"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/page/edit"},
+        },
+    )
+    monkeypatch.setattr("secturafab.chrome_cdp._cdp_evaluate_promise", _eval)
+    blocked = drop_flagged_grid_dxf_parts(
+        ["34892 BOTTOM PLATE"], quote_id="qid"
+    )
+    assert "34892 BOTTOM PLATE" in seen["expr"]
+    assert blocked["live"] is True
+    assert blocked["ok"] is False
+    assert blocked["still"] == ["34892 BOTTOM PLATE"]
+
+
+def test_page_session_runs_image_and_long_without_env_cookie(tmp_path, monkeypatch):
+    from secturafab.push import SecturaFabPushService
+
+    pdf = tmp_path / "10099.pdf"
+    pdf.write_bytes(b"%PDF")
+    monkeypatch.setattr("secturafab.push.detect_organization", lambda **_k: "Safe Cave")
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *_a, **_k: True)
+    monkeypatch.setattr("secturafab.chrome_cdp.quotes_tab", lambda *_a, **_k: None)
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_session_lost", lambda *_a, **_k: False)
+    monkeypatch.setattr("secturafab.push.refresh_bom_rows_for_push", lambda *_a, **_k: ([], []))
+    monkeypatch.setattr("secturafab.push.extract_assembly_description", lambda **_k: None)
+    monkeypatch.setattr(
+        "secturafab.push.apply_quote_organization",
+        lambda *_a, **_k: ["Set Organization: Safe Cave"],
+    )
+    client = MagicMock()
+    client.config.website_cookie = ""
+    client.get_json.return_value = {
+        "ItemList": [],
+        "ItemCount": 0,
+        "OrganizationName": "Safe Cave",
+        "PrimaryOrganizationID": "11111111-1111-4111-8111-111111111111",
+    }
+    service = SecturaFabPushService(client=client)
+    called: dict[str, bool] = {}
+    monkeypatch.setattr(service, "create_quote", lambda **_k: "qid")
+    monkeypatch.setattr(service, "allocate_quote_number", lambda *_a, **_k: "10099")
+    monkeypatch.setattr(service, "upload_drawings_quote_request", lambda *_a, **_k: "qr")
+    monkeypatch.setattr(service, "preflight_website_addview_session", lambda: (True, []))
+    monkeypatch.setattr(service, "_page_session_live", lambda: True)
+    monkeypatch.setattr(service, "_website_cookie_present", lambda: False)
+
+    def _pdf(**_k):
+        called["pdf"] = True
+        return ["Image Files"]
+
+    def _lin(**_k):
+        called["lin"] = True
+        return ["Long"]
+
+    monkeypatch.setattr(service, "finish_pdf_files", _pdf)
+    monkeypatch.setattr(service, "finish_linear_bom_rows", _lin)
+    monkeypatch.setattr(service, "_library_cad_pdfs", lambda *_a, **_k: [pdf])
+    monkeypatch.setattr(
+        service,
+        "_library_linear_rows",
+        lambda *_a, **_k: [{"part_no": "21897-1", "description": "TUBE"}],
+    )
+    result = service.push_job(
+        title="10099",
+        pdf_filename="10099.pdf",
+        pdf_path=pdf,
+        stp_path=None,
+        takeoff={"library": {"part_key": "10099"}},
+        times={},
+        job_id=6,
+    )
+    assert called.get("pdf") is True
+    assert called.get("lin") is True
+    blob = " ".join(result.notes or [])
+    assert "skipped Image Files / Long" not in blob

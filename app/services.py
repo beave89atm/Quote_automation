@@ -259,6 +259,7 @@ def push_job_secturafab(job_id: int) -> None:
         service = SecturaFabPushService()
         chosen_org = str((takeoff or {}).get("organization") or "").strip() or None
         chosen_number = str((takeoff or {}).get("quote_number") or "").strip() or None
+        chosen_desc = str((takeoff or {}).get("description") or "").strip() or None
         result = service.push_job(
             title=title,
             pdf_filename=pdf_filename,
@@ -270,6 +271,7 @@ def push_job_secturafab(job_id: int) -> None:
             on_progress=on_progress,
             organization=chosen_org,
             quote_number=chosen_number,
+            description=chosen_desc,
         )
     except Exception as exc:  # noqa: BLE001 — must never leave status stuck on pushing
         err = f"{type(exc).__name__}: {exc}"

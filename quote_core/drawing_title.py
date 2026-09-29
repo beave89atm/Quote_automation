@@ -416,6 +416,10 @@ def is_drawing_boilerplate_title(text: str | None) -> bool:
     upper = s.upper()
     if re.search(r"DWG\.?\s*NO", upper):
         return True
+    # Numbered general notes are not the TITLE field (live A-11521-000
+    # "1. ALL WELDS FULL LENGTH UNLESS").
+    if re.search(r"\bALL WELDS\b", upper) or re.search(r"\bUNLESS OTHERWISE\b", upper):
+        return True
     return (
         "SOLE PROPERTY" in upper
         or "DRAWING IS THE SOLE" in upper
