@@ -631,12 +631,11 @@ class SecturaFabClient:
         return compare_cookie_name_presence(before, names)
 
     def harvest_chrome_antiforgery(self) -> str:
-        """Hypothesis A+B: CDP cookies / Quotes DOM. Returns af_source or ''."""
+        """Antiforgery token from the signed-in page DOM. No cookie read."""
         from .chrome_cdp import (
             chrome_quotes_live,
             chrome_version_user_agent,
             scrape_quotes_af_fields,
-            sectura_cookies_from_cdp,
         )
 
         if not chrome_quotes_live():
@@ -644,9 +643,6 @@ class SecturaFabClient:
         ua = chrome_version_user_agent()
         if ua:
             self._chrome_user_agent = ua
-        pairs = sectura_cookies_from_cdp()
-        if pairs:
-            self._chrome_cookie_name_diff = self._apply_chrome_cookies(pairs)
         fields = scrape_quotes_af_fields()
         if fields:
             self._merge_antiforgery_fields(fields)
@@ -2016,8 +2012,9 @@ class SecturaFabClient:
             if isinstance(result.get("request_bag"), dict)
             else {}
         )
+        status = int(result.get("status") or 0)
         return {
-            "ok": long_from_page,
+            "ok": long_from_page and status < 400,
             "status": int(result.get("status") or 0),
             "via": via,
             "finish_fn": str(result.get("finish_fn") or ""),
@@ -2342,41 +2339,74 @@ class SecturaFabClient:
         return self._parse_website_or_raise(response, require_session=True)
 
     def nest_quote_edit(self, quote_id: str, extra: dict[str, Any] | None = None) -> Any:
-        """POST /Quote/NestQuote_Edit — same nest control the UI uses."""
-        payload: dict[str, Any] = {"ID": quote_id}
-        if extra:
-            payload.update(extra)
-        response = self.website_request(
-            "POST",
-            WEBSITE_FINISH_PATHS["nest_quote_edit"],
-            json=payload,
-            prefer_api_origin=True,
-            timeout=max(self.config.timeout_seconds, 180.0),
-        )
-        return self._parse_website_or_raise(response)
+        """Page OnNestQuote_Edit. Cookie HTTP to the API host 302s."""
+        from .chrome_cdp import chrome_quotes_live, invoke_page_nest_quote_edit
+
+        nest_type = "multi"
+        if extra and extra.get("nestType"):
+            nest_type = str(extra.get("nestType") or "multi")
+        live = False
+        try:
+            live = bool(chrome_quotes_live())
+        except (OSError, TypeError, ValueError):
+            live = False
+        if not live:
+            raise SecturaFabApiError(
+                "NestQuote_Edit needs the signed-in page OnNestQuote_Edit "
+                "— not cookie HTTP"
+            )
+        result = invoke_page_nest_quote_edit(quote_id=quote_id, nest_type=nest_type)
+        if not (isinstance(result, dict) and result.get("ok")):
+            why = result.get("why") if isinstance(result, dict) else "empty"
+            status = int(result.get("status") or 0) if isinstance(result, dict) else 0
+            raise SecturaFabApiError(
+                f"page OnNestQuote_Edit failed ({why})",
+                status_code=status or None,
+            )
+        return result
 
     def renest_linear(
         self,
         quote_id: str,
         extra: dict[str, Any] | None = None,
     ) -> Any:
-        """POST /Nest/RenestLinear — ModalLinearReNest 20ft → 240.
-
-        Do not call /Quote/NestQuoteMultiPart_Renest — it 404s on current Sectura.
+        """Page RenestLinear form. Do not cookie-POST and do not call
+        /Quote/NestQuoteMultiPart_Renest (404).
         """
+        from .chrome_cdp import chrome_quotes_live, page_jquery_ajax
         from .website import build_renest_linear_payload
 
         payload = build_renest_linear_payload(quote_id)
         if extra:
             payload.update(extra)
-        response = self.website_request(
-            "POST",
-            WEBSITE_FINISH_PATHS["renest_linear"],
-            json=payload,
-            prefer_api_origin=False,
-            timeout=max(self.config.timeout_seconds, 180.0),
+        path = WEBSITE_FINISH_PATHS["renest_linear"]
+        live = False
+        try:
+            live = bool(chrome_quotes_live())
+        except (OSError, TypeError, ValueError):
+            live = False
+        if not live:
+            raise SecturaFabApiError(
+                "POST /Nest/RenestLinear needs the signed-in page — not cookie HTTP"
+            )
+        result = page_jquery_ajax(
+            url=path,
+            method="POST",
+            data=payload,
+            quote_id=quote_id,
         )
-        return self._parse_website_or_raise(response)
+        status = int(result.get("status") or 0) if isinstance(result, dict) else 0
+        if not (
+            isinstance(result, dict)
+            and result.get("ok")
+            and 200 <= status < 300
+        ):
+            raise SecturaFabApiError(
+                f"POST /Nest/RenestLinear failed ({status}). "
+                "Do not call /Quote/NestQuoteMultiPart_Renest.",
+                status_code=status or None,
+            )
+        return result.get("body")
 
     def nest_quote_api(
         self,
@@ -2384,12 +2414,11 @@ class SecturaFabClient:
         nest_type: str = "multi",
         id_list: list[str] | None = None,
     ) -> Any:
-        """Documented public nest: POST /api/v1/Nest/quote/{quoteID}/{nestType}.
-
-        ASP.NET rejects a JSON null for optional IDList. Send the page body.
-        """
-        path = f"v1/Nest/quote/{quote_id}/{nest_type}"
-        return self.post_json(path, payload={"IDList": list(id_list or [])})
+        """JSON IDList nest 500s. The page posts OnNestQuote_Edit instead."""
+        del quote_id, nest_type, id_list
+        raise SecturaFabApiError(
+            "JSON IDList nest is not the page OnNestQuote_Edit — fail-closed"
+        )
 
     @staticmethod
     def _parse_or_raise(response: requests.Response) -> Any:

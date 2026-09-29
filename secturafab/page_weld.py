@@ -65,6 +65,11 @@ _PAGE_SET_PROPERTY_JS = r"""(async function(spec) {
 })"""
 
 PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
+  window.confirm = function(msg) {
+    var text = String(msg || "");
+    if (/discard the parts/i.test(text)) return true;
+    return true;
+  };
   var name = String((spec && spec.name) || "").trim();
   if (!name) return {ok: false, why: "assembly_name_missing", posted_additem: false};
   if (!window.jQuery) return {ok: false, why: "no_jquery", posted_additem: false};

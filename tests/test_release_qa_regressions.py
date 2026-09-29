@@ -396,18 +396,13 @@ def test_linear_finish_500_is_not_ok(monkeypatch):
     assert passed["ok"] is True
 
 
-def test_nest_quote_api_sends_idlist_object():
-    from secturafab.client import SecturaFabClient
+def test_nest_quote_api_does_not_post_json_idlist():
+    from secturafab.client import SecturaFabApiError, SecturaFabClient
 
     client = MagicMock()
-    SecturaFabClient.nest_quote_api(client, "qid", nest_type="multi", id_list=["line-1"])
-    client.post_json.assert_called_once_with(
-        "v1/Nest/quote/qid/multi",
-        payload={"IDList": ["line-1"]},
-    )
-    client.post_json.reset_mock()
-    SecturaFabClient.nest_quote_api(client, "qid")
-    assert client.post_json.call_args.kwargs["payload"] == {"IDList": []}
+    with pytest.raises(SecturaFabApiError, match="OnNestQuote_Edit"):
+        SecturaFabClient.nest_quote_api(client, "qid", nest_type="multi", id_list=["line-1"])
+    client.post_json.assert_not_called()
 
 
 def test_create_quote_posts_organization_object():
@@ -536,6 +531,260 @@ def test_default_reader_navigates_to_the_edit_page(monkeypatch):
     )
     assert _default_reader(_QID) == {"rows": []}
     assert calls == [True]
+
+
+def test_harvest_antiforgery_does_not_read_cookies():
+    import inspect
+
+    from secturafab.client import SecturaFabClient
+
+    src = inspect.getsource(SecturaFabClient.harvest_chrome_antiforgery)
+    assert "sectura_cookies_from_cdp" not in src
+
+
+def test_dosetitemtype_passes_cad_then_part_id():
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS, _PAGE_FINISH_JS
+
+    assert 'DoSetItemType("cad", [partId])' in _PAGE_FINISH_JS
+    assert "DoSetItemType(typeName, [partId])" in _APPLY_GRID_PART_MODES_JS
+    assert "opts.data.FileList = leanRows" not in _PAGE_FINISH_JS
+    mark = _PAGE_FINISH_JS.index('DoSetItemType("cad", [partId])')
+    assert _PAGE_FINISH_JS.index("/Quote/GetBorderSize", mark) > mark
+
+
+def test_mm_grid_converts_flats_and_keeps_inch_gauge():
+    from secturafab.website import (
+        convert_mm_grid_flats_to_inches,
+        plate_step_thickness_invalid_vs_drawing,
+    )
+
+    row = {
+        "Name": "plate",
+        "Category": "Cad",
+        "Length": 952.5,
+        "Width": 385.445,
+        "Length_Units": "mm",
+        "Width_Units": "mm",
+        "Units": "mm",
+        "Thickness": 0.0747,
+        "Thickness_Units": "mm",
+        "thickness_source": "drawing",
+        "drawing_thickness_in": "0.0747",
+        "Material": "A36",
+    }
+    assert convert_mm_grid_flats_to_inches(row) is None
+    assert row["Length"] == pytest.approx(37.5, rel=1e-3)
+    assert row["Width"] == pytest.approx(385.445 / 25.4, rel=1e-3)
+    assert row["Thickness"] == pytest.approx(0.0747)
+    assert row["Length_Units"] == "inch"
+    assert row["Thickness_Units"] == "inch"
+    assert plate_step_thickness_invalid_vs_drawing(row) is None
+    bad = {"Length": "nope", "Width": 10, "Length_Units": "mm", "Width_Units": "mm"}
+    assert "not a number" in (convert_mm_grid_flats_to_inches(bad) or "")
+
+
+def test_pn_plus_generic_tube_fails_closed():
+    from secturafab.website import pick_closest_linear_product
+
+    products = [
+        {
+            "ID": "rt18",
+            "ProductName": "RT1/8X0.022-A519",
+            "ShapeName": "TUBE",
+            "MaterialGrade": "A519",
+            "Dim1": 0.125,
+            "Dim2": 0.022,
+        },
+        {
+            "ID": "rt14",
+            "ProductName": "RT2 1/4X0.5-A519",
+            "ShapeName": "TUBE",
+            "MaterialGrade": "A519",
+            "Dim1": 0.25,
+            "Dim2": 0.5,
+        },
+    ]
+    hit, note = pick_closest_linear_product(
+        products, description="21897-1 TUBE", material="A36"
+    )
+    assert hit is None
+    assert note and "no tenant SKU" in note
+
+
+def test_assembly_root_and_tubes_classify_per_part(monkeypatch):
+    from secturafab.push import SecturaFabPushService
+
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *a, **k: True)
+    classified, notes = SecturaFabPushService(client=MagicMock()).classify_cadimport_rows(
+        [
+            {
+                "Name": "34887-1",
+                "PartName": "34536 PIVOT TUBE, BOOM TIP_34536-1",
+                "ID": "tube-1",
+            },
+            {
+                "Name": "34887-1",
+                "PartName": "34894 TUBE CYLINDER ANCHOR SUPPORT_34894-1",
+                "ID": "tube-2",
+            },
+            {"Name": "Root", "PartName": "Root", "ItemType": "assembly", "ID": "asm"},
+        ],
+        default_material="A36",
+        default_thickness="",
+        bom_rows=[],
+        library={},
+        extra_pdfs=[],
+        part_key="34887-1",
+    )
+    cats = [str(row.get("Category") or "") for row in classified]
+    blob = "\n".join(notes)
+    assert cats.count("Linear") == 2
+    assert "Assembly" in cats
+    assert "Assembly:" in blob
+    assert "Cad: 15" not in blob
+
+
+def test_keep_grid_thickness_flags_are_per_part():
+    from secturafab.website import keep_grid_cad_kids_drawing_thickness_refuses
+
+    why = keep_grid_cad_kids_drawing_thickness_refuses(
+        [
+            {
+                "Name": "PLATE-A",
+                "PartName": "111 PLATE",
+                "Category": "Cad",
+                "thickness_source": "step",
+                "Thickness": 0.25,
+                "Material": "A36",
+            },
+            {
+                "Name": "GUSSET",
+                "PartName": "222 GUSSET",
+                "Category": "Cad",
+                "thickness_source": "step",
+                "Thickness": 0.25,
+                "Material": "A36",
+            },
+        ],
+        keep_via="live",
+    )
+    assert why
+    assert why.count("FLAG: thickness unresolved") == 2
+    assert "111 PLATE" in why and "222 GUSSET" in why
+    assert "STEP-derived" in why
+
+
+def test_pdf_stamp_overwrites_defaults_without_claiming_post(monkeypatch, tmp_path):
+    from secturafab.push import SecturaFabPushService
+
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *a, **k: False)
+    monkeypatch.setattr("secturafab.plate_ops.fetch_plate_catalog", lambda client: [])
+    pdf = tmp_path / "10099.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=box"
+    client.upload_pdf_via_page_add_files.return_value = {
+        "bound": True,
+        "files_kendo": True,
+        "upload_via": "page_add_files",
+        "grid_pdf_row_count": 1,
+        "status_gt0_n": 1,
+    }
+    client.stamp_pdf_kendo_flats.return_value = {
+        "stamped": 1,
+        "outside_perimeter_n": 0,
+        "cutting_length_n": 0,
+        "form_lw_synced": False,
+    }
+    client.quote_item_read.return_value = {"Data": []}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id=_QID,
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.076",
+        qty=2,
+        description="10099",
+    )
+    client.stamp_pdf_kendo_flats.assert_called_once()
+    stamped = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
+    assert stamped["Material"] == "A36"
+    assert stamped["Thickness"] == "0.076"
+    assert stamped["Qty"] == 2
+    assert stamped["Machine"] == "Laser"
+    assert "Length" not in stamped
+    assert "Width" not in stamped
+    blob = "\n".join(notes)
+    assert "AddItem_PDFFiles" not in blob
+    assert "not inventing L/W" in blob
+
+
+def test_linear_stamp_uses_onselect_and_records_real_status():
+    from secturafab.chrome_cdp import _PAGE_LINEAR_FINISH_JS, _STAMP_LINEAR_FORM_JS
+
+    picker = _STAMP_LINEAR_FORM_JS.split("function pickLinearSku")[1].split(
+        "function findLinearConfigWidget"
+    )[0]
+    assert "ProductName" not in picker
+    assert "rows[0]" not in _STAMP_LINEAR_FORM_JS
+    assert "onSelect_Linear" in _STAMP_LINEAR_FORM_JS
+    assert "#productType" not in _STAMP_LINEAR_FORM_JS
+    assert "cap.status = 200" not in _PAGE_LINEAR_FINISH_JS
+    assert "ret.always" in _PAGE_LINEAR_FINISH_JS
+
+
+def test_nest_quote_edit_is_page_native(monkeypatch):
+    from secturafab.client import SecturaFabApiError, SecturaFabClient
+
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *a, **k: False)
+    bare = SecturaFabClient.__new__(SecturaFabClient)
+    with pytest.raises(SecturaFabApiError, match="OnNestQuote_Edit"):
+        bare.nest_quote_edit(_QID)
+    seen: dict[str, object] = {}
+
+    def _invoke(**kwargs):
+        seen.update(kwargs)
+        return {"ok": True, "status": 200}
+
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *a, **k: True)
+    monkeypatch.setattr("secturafab.chrome_cdp.invoke_page_nest_quote_edit", _invoke)
+    assert bare.nest_quote_edit(_QID, extra={"nestType": "multi"})["ok"] is True
+    assert seen["quote_id"] == _QID
+    assert seen["nest_type"] == "multi"
+
+
+def test_add_assembly_accepts_discard_parts_confirm():
+    assert "discard the parts" in PAGE_ADD_ASSEMBLY_JS
+
+
+def test_qc_flags_linear_without_saw_op():
+    from secturafab.quote_qc import check_tree
+
+    linear = {
+        "ItemNumber": "1008763-1",
+        "ProductType": 40,
+        "Category": "Linear",
+        "Quantity": 1,
+        "Length": 20,
+        "Width": 4,
+        "Length_Units": "inch",
+        "Material": "A36",
+        "Thickness": 0.25,
+        "Thickness_Units": "inch",
+        "UnitCost": 6.61,
+        "UnitPrice": 6.61,
+        "ErrorCount": 0,
+        "OperationCostList": [{"OperationName": "Material"}],
+    }
+    flagged = check_tree({"Data": [linear]}, {"1008763-1": 1}, formed=[], label="long")
+    assert any(flag.endswith("no Saw op") for flag in flagged.flags)
+    linear["OperationCostList"] = [
+        {"OperationName": "Saw"},
+        {"OperationName": "Saw-Setup"},
+    ]
+    clear = check_tree({"Data": [linear]}, {"1008763-1": 1}, formed=[], label="long")
+    assert not any(flag.endswith("no Saw op") for flag in clear.flags)
 
 
 def test_mm_continue_fails_when_finish_dims_are_blank():

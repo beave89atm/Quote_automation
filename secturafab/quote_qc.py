@@ -170,6 +170,18 @@ def _has_profile(op_names: list[str] | None) -> bool:
     return False
 
 
+def _is_linear_line(row: dict, shape: str) -> bool:
+    pt = _product_type(row, shape)
+    if pt in (10, 30, 40, "10", "30", "40"):
+        return True
+    cat = str(row.get("Category") or row.get("ItemType") or "").strip().casefold()
+    return cat == "linear"
+
+
+def _has_saw(op_names: list[str] | None) -> bool:
+    return any("saw" in str(op).casefold() for op in (op_names or []))
+
+
 def _is_sheet_or_laser(row: dict, shape: str, op_names: list[str] | None) -> bool:
     """Laser/sheet part that must carry a Profile op."""
     if _is_laser(op_names, row, shape):
@@ -423,6 +435,8 @@ def check_tree(
         ops_known = row_ops is not None and (shape != "snapshot" or name in ops)
         if ops_known and _is_sheet_or_laser(row, shape, row_ops) and not _has_profile(row_ops):
             flags.append(f"{name}: no Profile op")
+        if ops_known and _is_linear_line(row, shape) and not _has_saw(row_ops):
+            flags.append(f"{name}: no Saw op")
         if _is_laser(row_ops, row, shape):
             if contour_key not in row or row.get(contour_key) is None:
                 flags.append(f"{name}: Contours missing")

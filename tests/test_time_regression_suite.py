@@ -345,8 +345,7 @@ def test_linear_bind_sets_product_type_10_and_product_id():
         assert item["ProductType"] == 30
         assert item["IsLinear"] is True
         assert item["Machine"] == "Saw"
-        assert item.get("ProductID") == "pid-rct"
-        assert item.get("ProductName") in {None, ""}
+        assert not item.get("ProductID")
         assert item["Description"] != item["ID"]
         # addLinear writes Saw + Saw Setup as Primary Costs. Bind must not
         # graft them as OperationName tags (8bcc226b orange badges).

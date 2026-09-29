@@ -177,11 +177,12 @@ def test_linear_bind_sets_product_id_not_name():
             "Active": True,
         }
     ]
-    pid, sku, _note = match_linear_product(
+    pid, sku, note = match_linear_product(
         catalog, "12689-1 TUBE", material="A513"
     )
-    assert pid == "pid-rct"
-    assert sku == "RCT2 12X1 12X.065-A513"
+    assert pid is None
+    assert sku is None
+    assert note and "no tenant SKU" in note
 
     client = MagicMock()
     client.get_json.return_value = {

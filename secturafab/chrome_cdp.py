@@ -2424,6 +2424,7 @@ _PAGE_FINISH_JS = """(async function(spec) {
       // kendo toJSON() drops uid. Match dataSource.view() items (uid kept)
       // or grid.items(), then select that tr. grid.select does not fire
       // change, so the selection must be exactly this row.
+      var original = row;
       if (!g) return "selection_not_one";
       try {
         if (typeof g.clearSelection === "function") g.clearSelection();
@@ -2466,28 +2467,136 @@ _PAGE_FINISH_JS = """(async function(spec) {
         } catch (eI) {}
       }
       if (!tr || !tr.length) return "selection_not_one";
+      if (!match && typeof g.dataItem === "function") {
+        try {
+          match = g.dataItem(tr.get ? tr.get(0) : tr) || null;
+        } catch (eM) { match = null; }
+      }
       if (match && match.uid) row = match;
+      if (original) original._gridItem = match || row;
+      if (match && match.PartID && original && !original.PartID) original.PartID = match.PartID;
       try { g.select(tr); } catch (eS) { return "selection_not_one"; }
-      try { if (typeof g.trigger === "function") g.trigger("change"); } catch (eCh) {}
+      // Do not trigger("change") here. That fires GetBorderSize with
+      // Stock_Y as Thickness before UpdateItemType. invent=false.
       var ids = selectedKeys();
       var wantId = rowKey(row);
       if (ids.length !== 1 || !wantId || ids[0] !== wantId) return "selection_not_one";
       return "";
     }
+    function isMmUnit(u) {
+      var s = String(u || "").trim().toLowerCase();
+      return s === "mm" || s.indexOf("mill") === 0;
+    }
+    function toInch(n) {
+      var v = parseFloat(n);
+      if (!isFinite(v) || !(v > 0)) return null;
+      return Math.round((v / 25.4) * 10000) / 10000;
+    }
+    function convertMmGrid(row) {
+      // Gauge is always inches. Convert mm flats or fail closed.
+      // Do not divide the drawing thickness.
+      var live = (row && row._gridItem) || row;
+      if (!live) return "";
+      var units = [
+        live.Length_Units, live.Width_Units, live.Stock_Units, live.Units
+      ];
+      var mm = false;
+      for (var ui = 0; ui < units.length; ui++) {
+        if (isMmUnit(units[ui])) mm = true;
+      }
+      if (!mm) {
+        if (isMmUnit(live.Thickness_Units)) {
+          try {
+            if (typeof live.set === "function") live.set("Thickness_Units", "inch");
+            else live.Thickness_Units = "inch";
+          } catch (eU) {}
+        }
+        return "";
+      }
+      var keys = ["Length", "Width", "Stock_X", "Stock_Y", "Stock_Length"];
+      var wrote = 0;
+      for (var ki = 0; ki < keys.length; ki++) {
+        var raw = live[keys[ki]];
+        if (raw == null || raw === "") continue;
+        var inch = toInch(raw);
+        if (inch == null) return "mm_grid_not_inches";
+        try {
+          if (typeof live.set === "function") live.set(keys[ki], inch);
+          else live[keys[ki]] = inch;
+        } catch (eC) { return "mm_grid_not_inches"; }
+        wrote += 1;
+      }
+      if (!wrote) return "mm_grid_not_inches";
+      var unitKeys = ["Length_Units", "Width_Units", "Stock_Units", "Units", "Thickness_Units"];
+      for (var uk = 0; uk < unitKeys.length; uk++) {
+        try {
+          if (typeof live.set === "function") live.set(unitKeys[uk], "inch");
+          else live[unitKeys[uk]] = "inch";
+        } catch (eK) {}
+      }
+      return "";
+    }
+    function setMachineLaser(row) {
+      var live = (row && row._gridItem) || row;
+      try {
+        if (live && typeof live.set === "function") live.set("Machine", "Laser");
+        else if (live) live.Machine = "Laser";
+      } catch (eM) {}
+      var sels = ["#Machine", "#DXFMachine", "#machine", "#MachineEdit", "#cadMachine"];
+      for (var si = 0; si < sels.length; si++) {
+        var w = null;
+        try {
+          w = jQuery(sels[si]).data("kendoDropDownList")
+            || jQuery(sels[si]).data("kendoComboBox");
+        } catch (eW) { w = null; }
+        if (!w) continue;
+        var data = [];
+        try { data = (w.dataSource && w.dataSource.data()) || []; } catch (eD) { data = []; }
+        for (var di = 0; di < data.length; di++) {
+          var item = data[di];
+          var text = "";
+          if (typeof item === "string") text = item;
+          else if (item) text = String(item.Text || item.Description || item.Value || item.Machine || "");
+          if (/laser/i.test(text)) {
+            try {
+              var val = (item && (item.Value || item.Text)) || "Laser";
+              if (typeof w.value === "function") w.value(val);
+              else if (typeof w.select === "function") w.select(di);
+            } catch (eV) {}
+            return;
+          }
+        }
+        try { if (typeof w.value === "function") w.value("Laser"); } catch (eL) {}
+        return;
+      }
+    }
     for (var p = 0; p < plates.length; p++) {
       var row = plates[p];
       var selWhy = selectExactlyOne(row);
       if (selWhy) return fail(selWhy, 0);
+      var mmWhy = convertMmGrid(row);
+      if (mmWhy) return fail(mmWhy, 0);
+      var partId = String((row && row.PartID) || (row._gridItem && row._gridItem.PartID) || "");
+      if (!partId) return fail("part_id_missing", 0);
+      // Gold: UpdateItemType ("cad", [PartID]) first. Do not
+      // ddl.trigger — that calls SetDXFPanel with an empty ProductType
+      // (GetProductSubTypeList 500) and clears Machine.
       var cadDone = armAjax("/Part/UpdateItemType", 12000);
-      ddl.value("cad");
-      ddl.trigger("change");
+      if (typeof window.DoSetItemType === "function") {
+        window.DoSetItemType("cad", [partId]);
+      } else {
+        ddl.value("cad");
+        ddl.trigger("change");
+      }
       await cadDone;
+      setMachineLaser(row);
       var data = [];
       try { data = (cb.dataSource && cb.dataSource.data()) || []; } catch (e3) { data = []; }
       var idx = gaugeIndex(data, gauge);
       if (idx < 0) return fail("gauge_not_in_list", 0);
       selWhy = selectExactlyOne(row);
       if (selWhy) return fail(selWhy, 0);
+      setMachineLaser(row);
       var borderDone = armAjax("/Quote/GetBorderSize", 12000);
       cb.select(idx);
       cb.trigger("change");
@@ -2676,16 +2785,10 @@ _PAGE_FINISH_JS = """(async function(spec) {
         var origSidN = countField(krows, "SourceDataID");
         var origIdN = countField(krows, "ID");
         var origFileIdN = countField(krows, "FileID");
-        if (krows.length) {
-          var leanRows = [];
-          for (var ki = 0; ki < krows.length; ki++) {
-            leanRows.push(leanKyleHarCadContoursPlateFileList(krows[ki]));
-          }
-          opts.data.FileList = leanRows;
-          opts.contentType = "application/x-www-form-urlencoded; charset=UTF-8";
-          opts.processData = true;
-          opts.traditional = false;
-        }
+        // Gold Q10506: the page builds FileList (OnAddDXFClick /
+        // GetPDF-style grid). Do not replace opts.data.FileList.
+        // A hand-built list posts InternalData="", Operations="",
+        // OutsidePerimeter=0 and the laser Profile calculator never runs.
         attachChromeDomAf(opts.data);
         arguments[0] = opts;
         var d = opts.data;
@@ -3267,6 +3370,89 @@ def page_jquery_ajax(
     )
     if not isinstance(value, dict):
         return {"ok": False, "why": "empty", "status": 0, "body": None}
+    return value
+
+
+_PAGE_NEST_QUOTE_EDIT_JS = r"""(async function(spec) {
+  var nestType = String((spec && spec.nestType) || "multi");
+  if (!window.jQuery || !jQuery.ajax) {
+    return {ok: false, why: "no_jquery", status: 0, nestType: nestType};
+  }
+  if (typeof window.OnNestQuote_Edit !== "function") {
+    return {ok: false, why: "no_OnNestQuote_Edit", status: 0, nestType: nestType};
+  }
+  var pending = null;
+  var orig = jQuery.ajax;
+  jQuery.ajax = function(opts) {
+    var url = "";
+    if (typeof opts === "string") url = opts;
+    else if (opts && opts.url) url = String(opts.url);
+    var ret = orig.apply(this, arguments);
+    if (!pending && url.indexOf("/Quote/NestQuote_Edit") >= 0) {
+      pending = new Promise(function(resolve) {
+        function finish(xhr) {
+          var st = 0;
+          try { st = (xhr && xhr.status != null) ? Number(xhr.status) : 0; } catch (eS) { st = 0; }
+          resolve(st);
+        }
+        if (ret && typeof ret.always === "function") {
+          ret.always(function(a, b, c) {
+            var xhr = (c && c.status != null) ? c : ((a && a.status != null) ? a : ret);
+            finish(xhr);
+          });
+        } else {
+          finish(ret);
+        }
+      });
+    }
+    return ret;
+  };
+  try { window.OnNestQuote_Edit(nestType); } catch (e) {}
+  var deadline = Date.now() + 8000;
+  while (!pending && Date.now() < deadline) {
+    await new Promise(function(resolve) { setTimeout(resolve, 25); });
+  }
+  jQuery.ajax = orig;
+  if (!pending) {
+    return {ok: false, why: "nest_quote_edit_missing", status: 0, nestType: nestType};
+  }
+  var status = await pending;
+  return {
+    ok: status >= 200 && status < 300,
+    why: status >= 200 && status < 300 ? "" : "nest_http",
+    status: status,
+    nestType: nestType
+  };
+})"""
+
+
+def invoke_page_nest_quote_edit(
+    *,
+    quote_id: str,
+    nest_type: str = "multi",
+    base: str | None = None,
+) -> dict[str, Any]:
+    """Page OnNestQuote_Edit. Posts id and nestType on www. No cookies."""
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=False)
+    if not gate.get("ok"):
+        return {
+            "ok": False,
+            "why": str(gate.get("reason") or "wrong_document"),
+            "status": 0,
+            "nestType": nest_type,
+        }
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    value = _cdp_evaluate_promise(
+        _PAGE_NEST_QUOTE_EDIT_JS
+        + "("
+        + json.dumps({"nestType": str(nest_type or "multi")})
+        + ")",
+        base=base,
+        tab=tab,
+        fallback=False,
+    )
+    if not isinstance(value, dict):
+        return {"ok": False, "why": "empty", "status": 0, "nestType": nest_type}
     return value
 
 
@@ -6483,45 +6669,38 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
     try {
       if (typeof w.search === "function") w.search(sku);
     } catch (e) {}
-    function applyItem(it) {
+    function exactIndex(rows, wantSku) {
+      var want = String(wantSku || "").trim().toLowerCase();
+      if (!want) return -1;
+      for (var i = 0; i < rows.length; i++) {
+        var nm = itemSku(rows[i]).trim().toLowerCase();
+        if (nm && nm === want) return i;
+      }
+      return -1;
+    }
+    function applyItem(it, idx) {
       var val = itemValue(it);
-      lastApply = "select";
+      lastApply = "onSelect_Linear";
       try {
-        if (typeof w.value === "function") w.value(val || itemSku(it));
-        if (typeof w.trigger === "function") w.trigger("change");
-        else if (hit.el && hit.el.trigger) hit.el.trigger("change");
+        if (typeof window.onSelect_Linear === "function" && idx >= 0) {
+          window.onSelect_Linear.call(w, {
+            item: { index: function() { return idx; } }
+          });
+        }
       } catch (e2) {}
       return val || itemSku(it);
     }
     var data = [];
     try { data = (w.dataSource && w.dataSource.data && w.dataSource.data()) || []; } catch (e3) {}
-    var want = String(sku).toLowerCase();
-    var best = null;
-    for (var i = 0; i < data.length; i++) {
-      var nm = itemSku(data[i]).toLowerCase();
-      if (nm && (nm === want || nm.indexOf(want) >= 0 || want.indexOf(nm) >= 0)) {
-        best = data[i];
-        break;
-      }
-    }
-    if (best) return Promise.resolve(applyItem(best));
-    if (w.dataSource && typeof w.dataSource.filter === "function") {
-      try {
-        w.dataSource.filter({field: "ProductName", operator: "contains", value: sku});
-      } catch (e4) {}
-    }
+    var idx = exactIndex(data, sku);
+    if (idx >= 0) return Promise.resolve(applyItem(data[idx], idx));
     if (w.dataSource && typeof w.dataSource.read === "function") {
       return Promise.resolve(w.dataSource.read()).then(function() {
         var rows = [];
         try { rows = (w.dataSource.data && w.dataSource.data()) || []; } catch (e5) {}
-        for (var j = 0; j < rows.length; j++) {
-          var nm2 = itemSku(rows[j]).toLowerCase();
-          if (nm2 && (nm2 === want || nm2.indexOf(want) >= 0 || want.indexOf(nm2) >= 0)) {
-            return applyItem(rows[j]);
-          }
-        }
-        if (rows.length) return applyItem(rows[0]);
-        return "";
+        var hitIdx = exactIndex(rows, sku);
+        if (hitIdx < 0) return "";
+        return applyItem(rows[hitIdx], hitIdx);
       }).catch(function() { return ""; });
     }
     return Promise.resolve("");
@@ -6587,38 +6766,36 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
   var lastConfigValue = "";
   var sku = String((spec && spec.sku) || "").trim();
   var name = String((spec && spec.name) || "").trim();
-  var productType = String((spec && spec.productType) || "").trim();
   var productConfigID = String((spec && spec.productConfigID) || "").trim();
   var length = spec && spec.length;
   var qty = spec && spec.qty;
   if (qty == null || qty === "") qty = 1;
-  var lengthSet = setInput(
-    ["#length", "#Length", "input[name=length]", "input[name=Length]"],
-    length
-  );
-  var qtySet = setInput(
-    ["#qty", "#Qty", "input[name=qty]", "input[name=Qty]"],
-    qty
-  );
-  var nameSet = setInput(
-    ["#name", "#Name", "input[name=name]", "input[name=Name]"],
-    name
-  );
-  if (productType) {
-    setInput(
-      ["#productType", "#ProductType", "input[name=productType]"],
-      productType
-    );
-  }
   setInput(["#Internal", "input[name=Internal]", "#internal"], "");
   setInput(
     ["#ItemID", "input[name=ItemID]", "#itemID"],
     "00000000-0000-0000-0000-000000000000"
   );
   return pickLinearSku(sku).then(function(picked) {
+    var lengthSet = false;
+    var qtySet = false;
+    var nameSet = false;
+    if (picked) {
+      lengthSet = setInput(
+        ["#length", "#Length", "input[name=length]", "input[name=Length]"],
+        length
+      );
+      qtySet = setInput(
+        ["#qty", "#Qty", "input[name=qty]", "input[name=Qty]"],
+        qty
+      );
+      nameSet = setInput(
+        ["#name", "#Name", "input[name=name]", "input[name=Name]"],
+        name
+      );
+    }
     var cfg = pickLinearConfig20ft(productConfigID);
     return {
-      ok: !!(lengthSet || nameSet || picked || lastPicker),
+      ok: !!picked,
       long_clicked: true,
       opened_via: String((spec && spec.opened_via) || ""),
       picker_via: lastPicker,
@@ -6765,9 +6942,15 @@ _PAGE_LINEAR_FINISH_JS = """(function() {
           response_sku: ""
         };
         var ret = orig.apply(this, arguments);
-        Promise.resolve(ret).then(function(data) {
-          cap.status = 200;
-          cap.data = data;
+        function statusOf(xhr) {
+          try {
+            if (xhr && xhr.status != null && xhr.status !== "") return Number(xhr.status) || 0;
+          } catch (eSt) {}
+          return 0;
+        }
+        function applyPack(data, status) {
+          cap.status = status || 0;
+          cap.data = data || null;
           var pack = list0Pack(data);
           cap.response_list_n = pack.list_n;
           cap.response_tag = pack.tag;
@@ -6779,21 +6962,29 @@ _PAGE_LINEAR_FINISH_JS = """(function() {
           cap.response_product_id = pack.product_id;
           cap.response_sku = pack.sku;
           resolve(cap);
-        }).catch(function(xhr) {
-          cap.status = (xhr && xhr.status) || 0;
-          cap.data = (xhr && xhr.responseJSON) || null;
-          var packE = list0Pack(xhr && xhr.responseJSON);
-          cap.response_list_n = packE.list_n;
-          cap.response_tag = packE.tag;
-          cap.response_badge_string = packE.badge_string;
-          cap.response_production_ready = packE.production_ready;
-          cap.response_ocl_n = packE.ocl_n;
-          cap.response_ocl_names = packE.ocl_names;
-          cap.response_unit_cost = packE.unit_cost;
-          cap.response_product_id = packE.product_id;
-          cap.response_sku = packE.sku;
-          resolve(cap);
-        });
+        }
+        if (ret && typeof ret.always === "function") {
+          ret.always(function(a, _text, c) {
+            var xhr = null;
+            var data = null;
+            if (c && c.status != null) {
+              xhr = c;
+              data = a;
+            } else if (a && a.status != null) {
+              xhr = a;
+              data = a.responseJSON || null;
+            } else {
+              data = a;
+            }
+            applyPack(data, statusOf(xhr));
+          });
+        } else {
+          Promise.resolve(ret).then(function(data) {
+            applyPack(data, statusOf(ret) || statusOf(data));
+          }).catch(function(xhr) {
+            applyPack((xhr && xhr.responseJSON) || null, statusOf(xhr));
+          });
+        }
         return ret;
       }
       return orig.apply(this, arguments);
@@ -8616,7 +8807,9 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     var pt = Number(row.ProductType);
     var item = String(row.ItemType || row.Category || "");
     var name = String(row.Name || row.Description || row.FileName || "");
-    if (row.IsAssembly || pt === 300 || /weldment/i.test(name) || item === "Assembly") {
+    var itemFold = item.toLowerCase();
+    if (row.IsAssembly || pt === 300 || /weldment/i.test(name)
+        || itemFold === "assembly" || name.toLowerCase() === "root") {
       return "Assembly";
     }
     if (mode === 0 || item === "Cad" || pt === 100) return "Cad";
@@ -8648,7 +8841,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     return "";
   }
   function findUpdateItemTypeFn() {
-    var names = ["UpdateItemType", "OnItemTypeChange", "ChangeItemType"];
+    var names = ["DoSetItemType", "UpdateItemType", "OnItemTypeChange", "ChangeItemType"];
     for (var i = 0; i < names.length; i++) {
       if (typeof window[names[i]] === "function") return names[i];
     }
@@ -8832,7 +9025,9 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       kendoModelSet(row, "Category", cat);
       kendoModelSet(row, "FileType", cat);
       if (cat === "Cad") {
-        kendoModelSet(row, "Machine", want.Machine || "Laser");
+        // Machine before UpdateItemType makes the page GET GetBorderSize
+        // with Stock_Y as Thickness. Set Machine only with the gauge pass.
+        if (!classifyOnly) kendoModelSet(row, "Machine", want.Machine || "Laser");
         kendoModelSet(row, "ProductType", 100);
         kendoModelSet(row, "IsPlate", true);
         kendoModelSet(row, "IsLinear", false);
@@ -8865,7 +9060,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       row.Category = cat;
       row.FileType = cat;
       if (cat === "Cad") {
-        row.Machine = want.Machine || "Laser";
+        if (!classifyOnly) row.Machine = want.Machine || "Laser";
         row.ProductType = 100;
         row.IsPlate = true;
         row.IsLinear = false;
@@ -8972,24 +9167,35 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
   }
   function postItemType(id, itemType, fnName) {
     return new Promise(function(resolve) {
-      if (!id || id === "00000000-0000-0000-0000-000000000000") {
+      // Page is DoSetItemType(itemType, idList). idList is [PartID].
+      // ItemType is "cad". fn(rowID, "Cad") posted IDList=Cad.
+      var partId = String(id || "");
+      var typeName = String(itemType || "cad").toLowerCase();
+      if (!partId || partId === "00000000-0000-0000-0000-000000000000") {
         resolve("");
         return;
       }
-      if (fnName && typeof window[fnName] === "function") {
+      if (typeof window.DoSetItemType === "function") {
         try {
-          var fn = window[fnName];
-          if (fn.length >= 2) fn(id, itemType);
-          else fn(id);
+          window.DoSetItemType(typeName, [partId]);
           resolve("page_fn");
           return;
         } catch (e) {}
+      }
+      if (fnName && fnName !== "DoSetItemType" && typeof window[fnName] === "function") {
+        try {
+          var fn = window[fnName];
+          if (fn.length >= 2) fn(typeName, [partId]);
+          else fn([partId]);
+          resolve("page_fn");
+          return;
+        } catch (e2) {}
       }
       if (window.jQuery && jQuery.ajax) {
         jQuery.ajax({
           type: "POST",
           url: "/Part/UpdateItemType",
-          data: {ID: id, ItemType: itemType}
+          data: {IDList: [partId], ItemType: typeName, Width: 0, Height: 0}
         }).always(function() { resolve("jquery_ajax"); });
         return;
       }
@@ -9126,8 +9332,8 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
             return;
           }
           live = findLiveRow(kendoDataRows(g.dataSource), want, live);
-          id = String((live && (live.ID || live.ItemID)) || want.ID || "");
-          return postItemType(id, "Cad", typeFn).then(function(itemVia) {
+          id = String((live && (live.PartID || live.ID || live.ItemID)) || want.PartID || want.ID || "");
+          return postItemType(id, "cad", typeFn).then(function(itemVia) {
             typeSetCount += 1;
             if (itemVia && !typeVia) typeVia = itemVia;
             restoreIfWiped(false);

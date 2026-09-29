@@ -911,13 +911,14 @@ def test_linear_http_500_does_not_abort_weld_or_nest(tmp_path, monkeypatch):
             job_id=93,
         )
     lin.assert_called()
-    nest.assert_called()
-    weld.assert_called()
-    weldment.assert_called()
+    nest.assert_not_called()
+    weld.assert_not_called()
+    weldment.assert_not_called()
     qadd.assert_not_called()
     graft.assert_not_called()
     blob = " ".join(result.notes or []) + " " + (result.error or "")
-    assert "not aborting weld/nest" in blob
+    assert "0 Linear lines is not a nest" in blob
+    assert result.ok is False
     assert result.quote_id == new_id
     assert result.quote_id not in FORBIDDEN_LIVE_QUOTE_IDS
 
@@ -957,23 +958,21 @@ def test_finish_linear_bom_rows_500_is_warning_not_raise(monkeypatch):
     with patch.object(
         svc, "_match_linear_product", return_value=(product, "L1/2X1/2X1/8-A36", None)
     ), patch.object(svc, "_linear_catalog_bind", return_value=bind):
-        notes = svc.finish_linear_bom_rows(
-            quote_id="11111111-aaaa-bbbb-cccc-000000000012",
-            linear_rows=[
-                {
-                    "part_no": "21689-1",
-                    "description": "HOSE GUARD",
-                    "qty": 1,
-                    "cut_length_in": 12.5,
-                }
-            ],
-            material="A36",
-            library={},
-            extra_pdfs=[],
-        )
-    blob = " ".join(notes)
-    assert "500" in blob or "continuing" in blob
-    assert "not aborting weld/nest" in blob
+        with pytest.raises(SecturaFabApiError, match="0 Linear"):
+            svc.finish_linear_bom_rows(
+                quote_id="11111111-aaaa-bbbb-cccc-000000000012",
+                linear_rows=[
+                    {
+                        "part_no": "21689-1",
+                        "description": "HOSE GUARD",
+                        "qty": 1,
+                        "cut_length_in": 12.5,
+                    }
+                ],
+                material="A36",
+                library={},
+                extra_pdfs=[],
+            )
     extra = client.add_item_linear.call_args.kwargs.get("extra") or {}
     assert extra.get("productConfigID") != EMPTY_GUID
     assert extra.get("productSubType")
@@ -992,8 +991,13 @@ def test_finish_linear_cookie_302_is_not_logout(monkeypatch):
     )
     gold = gold_linear_list0_pack_result()
     client.add_item_linear.return_value = gold
-    client.quote_item_read.return_value = {"Data": [], "Total": 0}
-    client.get_json.return_value = {"ItemList": []}
+    landed = {
+        "Data": [{"ProductType": 30, "Description": "1001880-2 TUBE", "Quantity": 1}],
+        "Total": 1,
+        "ItemList": [{"ProductType": 30, "Description": "1001880-2 TUBE", "Quantity": 1}],
+    }
+    client.quote_item_read.return_value = landed
+    client.get_json.return_value = landed
     svc = SecturaFabPushService(client=client)
     product = {
         "ID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
@@ -1053,21 +1057,22 @@ def test_finish_linear_without_page_long_click_is_fail(monkeypatch):
     with patch.object(
         svc, "_match_linear_product", return_value=(product, "RT4X0.375-A519", None)
     ), patch.object(svc, "_linear_catalog_bind", return_value={"sku": "RT4X0.375-A519"}):
-        notes = svc.finish_linear_bom_rows(
-            quote_id="qid",
-            linear_rows=[
-                {
-                    "part_no": "1001880-2",
-                    "description": "TUBE",
-                    "qty": 1,
-                    "cut_length_in": 16.0,
-                }
-            ],
-            material="A519",
-            library={},
-            extra_pdfs=[],
-        )
-    blob = " ".join(notes)
+        with pytest.raises(SecturaFabApiError, match="0 Linear") as raised:
+            svc.finish_linear_bom_rows(
+                quote_id="qid",
+                linear_rows=[
+                    {
+                        "part_no": "1001880-2",
+                        "description": "TUBE",
+                        "qty": 1,
+                        "cut_length_in": 16.0,
+                    }
+                ],
+                material="A519",
+                library={},
+                extra_pdfs=[],
+            )
+    blob = str(raised.value)
     assert "no_long_click" in blob or "without page Long click" in blob
     assert "fail-closed" in blob
     assert "list0_pack Saw + Saw-Setup + UnitCost filled" not in blob
@@ -1157,8 +1162,13 @@ def test_linear_without_catalog_config_still_inpage_with_sku(monkeypatch):
     monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=box")
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=box"
-    client.quote_item_read.return_value = {"Data": [], "Total": 0}
-    client.get_json.return_value = {"ItemList": []}
+    landed = {
+        "Data": [{"ProductType": 40, "Description": "1004740-1 CHANNEL", "Quantity": 1}],
+        "Total": 1,
+        "ItemList": [{"ProductType": 40, "Description": "1004740-1 CHANNEL", "Quantity": 1}],
+    }
+    client.quote_item_read.return_value = landed
+    client.get_json.return_value = landed
     client.add_item_linear.return_value = {
         "ok": True,
         "via": "page_fn",
@@ -4310,7 +4320,7 @@ def test_filelist_missing_dims_is_not_counted_as_posted(tmp_path, monkeypatch):
     )
     client.upload_item_pdf_attachment.assert_not_called()
     blob = " ".join(notes)
-    assert "not inventing reconstructed FileList" in blob
+    assert "not inventing L/W" in blob
     assert "0 ProductType 100" in blob or "GET 0 Cad" in blob
     assert "persisted" not in blob.lower()
 

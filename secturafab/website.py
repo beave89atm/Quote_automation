@@ -526,17 +526,76 @@ def build_renest_linear_payload(
     quote_id: str,
     *,
     nest_id: str | None = None,
+    length_list: list[dict[str, Any]] | None = None,
+    chuck_size: float = 0.0,
 ) -> dict[str, Any]:
-    """ModalLinearReNest submit: 20ft checked → Nest 240; 40ft unchecked."""
-    target = str(nest_id or quote_id or "").strip() or str(quote_id)
+    """Page RenestLinear form. ChuckSize is required (task value 0.0).
+
+    LengthList rows are ProductConfigID + Checked + Length in feet.
+    20ft is checked. 40ft is unchecked. Do not post Length20 JSON.
+    """
+    rows: list[dict[str, Any]] = []
+    for raw in length_list or []:
+        if not isinstance(raw, dict):
+            continue
+        length = raw.get("Length")
+        qty = raw.get("Qty")
+        row: dict[str, Any] = {
+            "Checked": bool(raw.get("Checked")),
+            "Length": 0 if length in (None, "") else length,
+            "Length_Units": str(raw.get("Length_Units") or "foot"),
+            "Qty": 0 if qty in (None, "") else qty,
+        }
+        config_id = str(raw.get("ID") or raw.get("ProductConfigID") or "").strip()
+        if config_id:
+            row["ID"] = config_id
+        rows.append(row)
+    while len(rows) < 7:
+        rows.append({"Length": 0, "Qty": 0})
+    try:
+        chuck = float(chuck_size)
+    except (TypeError, ValueError):
+        chuck = 0.0
     return {
-        "QuoteID": quote_id,
-        "ID": target,
-        "Length20": True,
-        "Length40": False,
-        "SheetSizeLength": int(LINEAR_RENEST_20FT_IN),
-        "StockLength": int(LINEAR_RENEST_20FT_IN),
+        "id": str(quote_id),
+        "NestTaskID": str(nest_id or ""),
+        "ChuckSize": chuck,
+        "ChuckSize_Units": "",
+        "LengthList": rows,
     }
+
+
+def renest_length_list_from_configs(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """20ft checked, 40ft unchecked, from LinearConfigList text. No invented IDs."""
+    out: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        text = str(row.get("Text") or row.get("Name") or "").lower()
+        config_id = str(row.get("Value") or row.get("ID") or "").strip()
+        if not config_id:
+            continue
+        if "20" in text and "40" not in text:
+            out.append(
+                {
+                    "ID": config_id,
+                    "Checked": True,
+                    "Length": 20,
+                    "Length_Units": "foot",
+                    "Qty": 0,
+                }
+            )
+        elif "40" in text:
+            out.append(
+                {
+                    "ID": config_id,
+                    "Checked": False,
+                    "Length": 40,
+                    "Length_Units": "foot",
+                    "Qty": 0,
+                }
+            )
+    return out
 
 
 # Q10056 Weld calculator shape (website AddOperation, not grafted Laser).
@@ -3799,11 +3858,17 @@ def plate_step_thickness_invalid_vs_drawing(
     drawing_thk = drawing_thickness_in(row)
     if drawing_thk is None:
         return None
-    if not plate_step_thickness_units_are_inch(row):
+    if not plate_step_thickness_units_are_inch(row) and not _unit_is_mm(
+        row.get("Thickness_Units")
+    ):
         return None
-    bound = sanitize_bind_thickness_inches(
-        row.get("Thickness"), row.get("Thickness_Units")
+    # Drawing gauge is always inches. A mm grid unit must not divide it.
+    gauge_units = (
+        "inch"
+        if thickness_source_is_drawing(row) or _unit_is_mm(row.get("Thickness_Units"))
+        else row.get("Thickness_Units")
     )
+    bound = sanitize_bind_thickness_inches(row.get("Thickness"), gauge_units)
     if bound is None or drawing_thicknesses_match(drawing_thk, bound):
         return None
     return (
@@ -3813,6 +3878,51 @@ def plate_step_thickness_invalid_vs_drawing(
         "PDF drawing; STEP often wrong; Contours will not process). "
         "Do not invent Contours."
     )
+
+
+def _unit_is_mm(raw: Any) -> bool:
+    unit = str(raw or "").strip().lower()
+    return unit == "mm" or unit.startswith("mill")
+
+
+def convert_mm_grid_flats_to_inches(row: dict[str, Any] | None) -> str | None:
+    """Convert a millimetre #gridDXF L/W to inches, or fail closed.
+
+    The drawing gauge is already inches. Do not divide Thickness by 25.4.
+    """
+    if not isinstance(row, dict):
+        return None
+    unit_fields = (
+        row.get("Length_Units"),
+        row.get("Width_Units"),
+        row.get("Stock_Units"),
+        row.get("Units"),
+    )
+    if not any(_unit_is_mm(unit) for unit in unit_fields):
+        if _unit_is_mm(row.get("Thickness_Units")):
+            row["Thickness_Units"] = "inch"
+        return None
+    dim_keys = ("Length", "Width", "Stock_X", "Stock_Y", "Stock_Length")
+    wrote = 0
+    for key in dim_keys:
+        if row.get(key) in (None, ""):
+            continue
+        try:
+            val = float(row.get(key))
+        except (TypeError, ValueError):
+            return (
+                f"FLAG: mm grid {key} is not a number — not converting, not Finishing"
+            )
+        if val <= 0:
+            return f"FLAG: mm grid {key} is not positive — not Finishing"
+        row[key] = round(val / 25.4, 4)
+        wrote += 1
+    if not wrote:
+        return "FLAG: mm grid has no Length/Width to convert — not Finishing"
+    for key in ("Length_Units", "Width_Units", "Stock_Units", "Units", "Thickness_Units"):
+        if key in row or _unit_is_mm(row.get(key)):
+            row[key] = "inch"
+    return None
 
 
 def keep_grid_cad_kids_drawing_thickness_refuses(
@@ -3837,17 +3947,22 @@ def keep_grid_cad_kids_drawing_thickness_refuses(
         return None
     if len(kids) < 2 and via not in {"live", "rehydrate", ""}:
         return None
+    flags: list[str] = []
     for row in kids:
         why = plate_step_thickness_invalid_vs_drawing(row)
-        if why:
-            if via:
-                return why.replace(
-                    "Cad kid thickness",
-                    f"keep-grid Cad kid thickness (keep_grid_via={via})",
-                    1,
-                )
-            return why
-    return None
+        if not why:
+            continue
+        if via:
+            why = why.replace(
+                "Cad kid thickness",
+                f"keep-grid Cad kid thickness (keep_grid_via={via})",
+                1,
+            )
+        label = str(row.get("PartName") or row.get("Name") or "part").strip()
+        flags.append(f"FLAG: thickness unresolved for {label} — {why}")
+    if not flags:
+        return None
+    return "\n".join(flags)
 
 
 def cad_finish_notes_refuse_additem_dxf(
@@ -9224,6 +9339,13 @@ def _generic_linear_noun_only(description: str) -> bool:
     return bool(_GENERIC_LINEAR_NOUN_ONLY_RE.match(text))
 
 
+def _pn_plus_generic_linear_noun(description: str) -> bool:
+    """True for ``21897-1 TUBE`` — a PN plus a stock noun and no size."""
+    text = re.sub(r"\b\d{4,}(?:-\d+)?\b", " ", str(description or ""))
+    text = re.sub(r"\s+", " ", text).strip(" -_,")
+    return bool(text) and _generic_linear_noun_only(text)
+
+
 def pick_closest_linear_product(
     products: list[dict[str, Any]],
     *,
@@ -9257,13 +9379,25 @@ def pick_closest_linear_product(
             f"{LINEAR_SKU_MISSING} no tenant SKU for {description!r} "
             f"(closest {sku} score={best_score:.1f}; no silent SKU graft)"
         )
-    # invent=false: a bare noun (TUBE, BEAM) must not fuzzy-pick a SKU.
-    # "12689-1 TUBE" and "RETURN TUBE" still bind; "TUBE" / "BEAM" do not.
-    if _generic_linear_noun_only(description):
+    # invent=false: a bare noun, or a part number plus only that noun,
+    # is not a size. "21897-1 TUBE" must not become RT1/8. A dimension
+    # ("1 1/4 RETURN TUBE") or a specific noun (HOSE GUARD) still binds.
+    if _generic_linear_noun_only(description) or _pn_plus_generic_linear_noun(
+        description
+    ):
         return None, (
             f"{LINEAR_SKU_MISSING} no tenant SKU for {description!r} "
-            f"(closest {sku} is a fuzzy noun hit; no silent SKU graft)"
+            f"(closest {sku} is not a confident size match; no silent SKU graft)"
         )
+    if not dims and len(ranked) > 1:
+        second = score_linear_product(
+            ranked[1], description=description, material=material, dims=dims
+        )
+        if best_score - second < 5:
+            return None, (
+                f"{LINEAR_SKU_MISSING} no tenant SKU for {description!r} "
+                f"(closest {sku} is not confident; no silent SKU graft)"
+            )
     if len(dims) >= 3 and _dim_match_score(dims, product_linear_dims(best)) < 20:
         return None, (
             f"{LINEAR_SKU_MISSING} no tenant SKU for {description!r} "

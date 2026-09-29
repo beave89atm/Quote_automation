@@ -3155,7 +3155,6 @@ def test_website_paths_are_quote_mvc_not_quickadd():
 
 def test_renest_linear_payload_checks_20ft_not_40ft():
     from secturafab.website import (
-        LINEAR_RENEST_20FT_IN,
         build_renest_linear_payload,
         collect_nest_stock_lengths,
         item_linear_config_id,
@@ -3165,14 +3164,27 @@ def test_renest_linear_payload_checks_20ft_not_40ft():
     )
 
     payload = build_renest_linear_payload(
-        "qid-1", nest_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        "qid-1",
+        nest_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        length_list=[
+            {"ID": "cfg-20", "Checked": True, "Length": 20, "Length_Units": "foot", "Qty": 0},
+            {"ID": "cfg-40", "Checked": False, "Length": 40, "Length_Units": "foot", "Qty": 0},
+        ],
+        chuck_size=0.0,
     )
-    assert payload["QuoteID"] == "qid-1"
-    assert payload["ID"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-    assert payload["Length20"] is True
-    assert payload["Length40"] is False
-    assert payload["SheetSizeLength"] == int(LINEAR_RENEST_20FT_IN)
-    assert payload["StockLength"] == int(LINEAR_RENEST_20FT_IN)
+    assert payload["id"] == "qid-1"
+    assert payload["NestTaskID"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    assert payload["ChuckSize"] == 0.0
+    assert payload["ChuckSize_Units"] == ""
+    assert "QuoteID" not in payload
+    assert "Length20" not in payload
+    assert "SheetSizeLength" not in payload
+    checked = [row for row in payload["LengthList"] if row.get("Checked")]
+    assert len(checked) == 1
+    assert checked[0]["ID"] == "cfg-20"
+    assert checked[0]["Length"] == 20
+    assert checked[0]["Length_Units"] == "foot"
+    assert len(payload["LengthList"]) == 7
     nest = {
         "Results": [
             {
@@ -3257,9 +3269,21 @@ def test_renest_linear_480_posts_and_persists_20ft():
         )
     client.renest_linear.assert_called_once()
     payload = client.renest_linear.call_args.kwargs.get("extra") or {}
-    assert payload.get("Length20") is True
-    assert payload.get("Length40") is False
-    assert payload.get("SheetSizeLength") == 240
+    assert payload.get("id") == qid
+    assert payload.get("NestTaskID") == nest_id
+    assert payload.get("ChuckSize") == 0.0
+    checked = [
+        row for row in (payload.get("LengthList") or []) if row.get("Checked")
+    ]
+    assert checked and checked[0]["ID"] == cfg20
+    assert checked[0]["Length"] == 20
+    assert checked[0]["Length_Units"] == "foot"
+    unchecked = [
+        row
+        for row in (payload.get("LengthList") or [])
+        if row.get("ID") == cfg40
+    ]
+    assert unchecked and unchecked[0]["Checked"] is False
     persist.assert_called_once()
     params = persist.call_args.args[2]
     assert any(p.get("Value") == cfg20 for p in params)
@@ -3288,8 +3312,15 @@ def test_renest_linear_404_fail_closes():
     client = MagicMock()
     client.nest_quote_edit.return_value = {}
     client.get_json.side_effect = [
-        {"ItemList": []},
-        {"Results": [{"SheetSizeLength": 480}]},
+        {
+            "Results": [
+                {
+                    "ID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "SheetSizeLength": 480,
+                }
+            ]
+        },
+        {"StockList": [{"StockLength": 480}]},
         {"ItemList": [], "StockList": []},
     ]
     client.read_data_linear_lookup.return_value = {"List": []}
@@ -3307,10 +3338,17 @@ def test_renest_linear_still_480_fail_closes():
     client.nest_quote_edit.return_value = {}
     client.renest_linear.return_value = {}
     client.get_json.side_effect = [
-        {"ItemList": []},
-        {"Results": [{"SheetSizeLength": 480}]},
+        {
+            "Results": [
+                {
+                    "ID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "SheetSizeLength": 480,
+                }
+            ]
+        },
+        {"StockList": [{"StockLength": 480}]},
         {"ItemList": [], "StockList": []},
-        {"Results": [{"SheetSizeLength": 480}]},
+        {"StockList": [{"StockLength": 480}]},
     ]
     with pytest.raises(SecturaFabApiError, match="still 480"):
         SecturaFabPushService(client=client).nest_after_finish(
@@ -5911,8 +5949,11 @@ global.window.SetPartMode = function SetPartMode(id, mode) {
     store.rows = [];
   }
 };
-global.window.UpdateItemType = function UpdateItemType(id, itemType) {
-  pageCalls.push({ fn: "UpdateItemType", id: String(id), itemType: String(itemType) });
+global.window.DoSetItemType = function DoSetItemType(itemType, idList) {
+  const ids = Array.isArray(idList) ? idList : [idList];
+  ids.forEach((id) => {
+    pageCalls.push({ fn: "UpdateItemType", id: String(id), itemType: String(itemType) });
+  });
 };
 const apply = 
 """
@@ -5939,7 +5980,7 @@ const done = (value) => {
   if (modes.length !== 3) throw new Error("SetPartMode n=" + modes.length);
   if (types.length !== 3) throw new Error("UpdateItemType n=" + types.length);
   if (!modes.every((c) => c.mode === 0)) throw new Error("PartMode not Cad");
-  if (!types.every((c) => c.itemType === "Cad")) throw new Error("ItemType not Cad");
+  if (!types.every((c) => c.itemType === "cad")) throw new Error("ItemType not cad");
   const ids = ["id-a", "id-b", "id-c"];
   if (!ids.every((id) => modes.some((c) => c.id === id))) throw new Error("mode ids");
   if (!ids.every((id) => types.some((c) => c.id === id))) throw new Error("type ids");
@@ -8759,7 +8800,7 @@ def test_page_finish_js_posts_kendo_filelist_with_chrome_dom_af():
     js = _PAGE_FINISH_JS
     assert "if (count < 1)" in js
     assert "count <= 1" not in js
-    assert "opts.data.FileList = leanRows" in js
+    assert "opts.data.FileList = leanRows" not in js
     assert "leanKyleHarCadContoursPlateFileList" in js
     assert "dataSource.data()" in js
     assert "r.SourceDataID = id" in js
@@ -9162,8 +9203,8 @@ def test_cad_contours_plate_finish_filelist_matches_kyle_har():
     assert 'productSubType", "prt_dxf"' in js
     assert "Do not invent Contours" in js
     assert "cadMaterialInchesRecipeComplete" in js
-    assert "opts.data.FileList = leanRows" in js
-    assert "application/x-www-form-urlencoded" in js
+    assert "opts.data.FileList = leanRows" not in js
+    assert "Do not replace opts.data.FileList" in js
     assert "response_list_n" in js
     assert "filelist0_values" in js
     assert "Length: first.Length" in js

@@ -387,6 +387,22 @@ def _looks_like_formed_plate(description: str) -> bool:
     return any(h in text for h in (" FORMED ", " ROLLED ", " BENT PLATE "))
 
 
+def _classify_row_name(row: dict[str, Any]) -> str:
+    """Prefer PartName when Name is the assembly PN and PartName has the noun.
+
+    Live 34887-1: every kid Name is the parent PN. PartName is
+    ``34536 PIVOT TUBE, BOOM TIP_34536-1``.
+    """
+    part = str(row.get("PartName") or "").strip()
+    name = str(row.get("Name") or "").strip()
+    if part and part.casefold() not in {"", "root"} and part != name:
+        if not name or name.casefold() == "root" or re.fullmatch(
+            r"\d{4,}(?:-\d+)?", name
+        ):
+            return part
+    return row_name(row)
+
+
 def _has_linear_noun(description: str) -> bool:
     text = f" {str(description or '').upper()} "
     if any(h in text for h in _LINEAR_HINTS):
@@ -2944,7 +2960,7 @@ class SecturaFabPushService:
         elif stock_kind:
             notes.append(f"step_stock={stock_kind}")
         for row in rows:
-            name = row_name(row)
+            name = _classify_row_name(row)
             stem = Path(str(row.get("FileName") or "")).stem
             dashed = match_bom_part_no(name, bom_rows) or match_bom_part_no(
                 stem, bom_rows
@@ -3032,6 +3048,10 @@ class SecturaFabPushService:
                 )
             ):
                 cat = "Linear"
+            item_type = str(row.get("ItemType") or "").strip().casefold()
+            raw_name = str(row.get("Name") or "").strip().casefold()
+            if item_type == "assembly" or raw_name == "root":
+                cat = "Assembly"
             aluminum_named = bool(re.search(r"\bALUMINI?UM\b", name, re.I))
             material = default_material
             thickness: str | float = _sanitize_thickness_param(default_thickness) or ""
@@ -3162,8 +3182,6 @@ class SecturaFabPushService:
                 notes.append(
                     f"WARNING: CadImport classify post failed for {name[:40]!r}: {exc}"
                 )
-        if blocked_thickness:
-            return [], notes
         notes.append(
             f"Classified CAD Files kids — Cad: {counts['Cad']}, "
             f"Linear: {counts['Linear']}, Component: {counts['Component']}, "
@@ -3857,6 +3875,15 @@ class SecturaFabPushService:
                 "process). Do not invent Contours."
             )
             return notes
+        from .website import convert_mm_grid_flats_to_inches
+
+        for row in classified:
+            if not isinstance(row, dict):
+                continue
+            mm_fail = convert_mm_grid_flats_to_inches(row)
+            if mm_fail:
+                notes.append(mm_fail)
+                return notes
         blank_mat = keep_grid_cad_kids_blank_material_refuses(
             classified, keep_via=keep_via
         )
@@ -4043,6 +4070,13 @@ class SecturaFabPushService:
         if ready_blank_mat:
             notes.append(ready_blank_mat)
             return notes
+        for row in ready:
+            if not isinstance(row, dict):
+                continue
+            mm_fail = convert_mm_grid_flats_to_inches(row)
+            if mm_fail:
+                notes.append(mm_fail)
+                return notes
         ready_drawing_thk = keep_grid_cad_kids_drawing_thickness_refuses(
             ready, keep_via=keep_via
         )
@@ -4580,6 +4614,7 @@ class SecturaFabPushService:
             extra_pdfs=extra_pdfs,
         )
         posted_n = 0
+        pdf_posted = False
         stamp_rows: list[dict[str, Any]] = []
         cad_paths: list[Path] = []
         for path in pdf_files:
@@ -4668,12 +4703,11 @@ class SecturaFabPushService:
                 noun=locked.get("noun") or noun or description,
             )
             cad_paths.append(path)
-            if plate_w and plate_l and plate_thk not in (None, "", 0, "0"):
+            known_thk = plate_thk not in (None, "", 0, "0")
+            known_flats = bool(plate_w and plate_l)
+            if known_thk or str(plate_mat or "").strip() or row_qty:
                 stamp_row: dict[str, Any] = {
                     "FileName": path.name,
-                    "Length": plate_l,
-                    "Width": plate_w,
-                    "Thickness": plate_thk,
                     "Material": plate_mat,
                     "Machine": "Laser",
                     "Location": "Bay1",
@@ -4683,6 +4717,11 @@ class SecturaFabPushService:
                     "PartName": part_name,
                     "Description": part_name,
                 }
+                if known_thk:
+                    stamp_row["Thickness"] = plate_thk
+                if known_flats:
+                    stamp_row["Length"] = plate_l
+                    stamp_row["Width"] = plate_w
                 plate_sku = match_plate_product(
                     plate_catalog,
                     thickness=plate_thk,
@@ -4746,6 +4785,12 @@ class SecturaFabPushService:
                     holes = _holes_from_noun(str(plat.get("description") or ""))
                 if holes:
                     stamp_row["HoleDiameter"] = holes[0]["diameter"]
+                if not known_flats:
+                    notes.append(
+                        f"WARNING: page PDF kendo stamp missing Length/Width "
+                        f"for {path.name} — not inventing L/W; overwriting "
+                        "Material/Thickness/Qty/Machine"
+                    )
                 stamp_rows.append(stamp_row)
             else:
                 notes.append(
@@ -5044,6 +5089,23 @@ class SecturaFabPushService:
                         why = str(result.get("finish_why") or "")
                         if why:
                             notes.append(f"finish_why={why}")
+                        try:
+                            finish_status = int(result.get("status") or 0)
+                        except (TypeError, ValueError):
+                            finish_status = 0
+                        if (
+                            via
+                            and via != "skipped"
+                            and why
+                            not in {
+                                "empty_perimeter",
+                                "empty_dataSource",
+                                "wrong_document",
+                                "empty_getpdfdata",
+                            }
+                            and 200 <= finish_status < 300
+                        ):
+                            pdf_posted = True
                         row_keys = [
                             str(k) for k in (result.get("filelist_row_keys") or [])
                         ]
@@ -5415,10 +5477,11 @@ class SecturaFabPushService:
                     f"WARNING: Cad {desc} missing PR/pack/UnitCost after "
                     "AddItem_PDFFiles — not calling addplate/quoteOnline update"
                 )
-        notes.append(
-            "Image Files Finish POST /Quote/AddItem_PDFFiles: "
-            + ", ".join(p.name for p in pdf_files)
-        )
+        if pdf_posted:
+            notes.append(
+                "Image Files Finish POST /Quote/AddItem_PDFFiles: "
+                + ", ".join(p.name for p in pdf_files)
+            )
         return notes
 
     def _read_quote_items(self, quote_id: str) -> dict[str, Any]:
@@ -5847,6 +5910,7 @@ class SecturaFabPushService:
         """Long Finish: in-page OnAddLinearClick (10 bar / 30 tube / 40 angle)."""
         if not self._website_or_page_session():
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
+        attempted_linear = False
         from .line_item_ops import (
             _length_from_library,
             bom_row_cut_length,
@@ -5948,6 +6012,7 @@ class SecturaFabPushService:
                     f"WARNING: Linear {pn} has no cut length — skipped AddItem_Linear"
                 )
                 continue
+            attempted_linear = True
             try:
                 result = self.client.add_item_linear(
                     quote_id=quote_id,
@@ -6013,10 +6078,10 @@ class SecturaFabPushService:
                 f"PT={extra.get('productType')}"
             )
         after = count_linear_product_type(self._read_quote_items(quote_id))
-        if linear_rows and after <= 0:
-            notes.append(
-                "WARNING: AddItem_Linear produced 0 Linear ProductType 10/30/40 "
-                "lines — not aborting weld/nest"
+        if linear_rows and attempted_linear and after <= 0:
+            raise SecturaFabApiError(
+                "AddItem_Linear produced 0 Linear ProductType 10/30/40 lines — "
+                + " | ".join(notes)
             )
         return notes
 
@@ -6160,46 +6225,15 @@ class SecturaFabPushService:
         return notes
 
     def nest_after_finish(self, quote_id: str, *, item_count: int) -> list[str]:
-        """UI nest first; documented public Nest API if the website nest 302s."""
+        """Page OnNestQuote_Edit. No cookie HTTP and no JSON IDList nest."""
         notes: list[str] = []
         nest_type = "single" if item_count <= 1 else "multi"
-        id_list: list[str] = []
         try:
-            detail = self.client.get_json(f"v1/quote/{quote_id}")
-        except SecturaFabApiError:
-            detail = {}
-        if isinstance(detail, dict):
-            for item in detail.get("ItemList") or []:
-                if not isinstance(item, dict):
-                    continue
-                item_id = str(item.get("ID") or "").strip()
-                if item_id:
-                    id_list.append(item_id)
-        try:
-            self.client.nest_quote_edit(quote_id)
-            notes.append("Nest POST /Quote/NestQuote_Edit")
-        except SecturaFabWebsiteAuthError:
-            try:
-                self.client.nest_quote_api(
-                    quote_id, nest_type=nest_type, id_list=id_list
-                )
-                notes.append(
-                    f"Nest POST /api/v1/Nest/quote/{quote_id}/{nest_type} "
-                    "(website NestQuote_Edit needs session — used documented public nest)"
-                )
-            except SecturaFabApiError as exc:
-                notes.append(f"WARNING: Nest failed: {exc}")
-                return notes
-        except SecturaFabApiError as exc:
+            self.client.nest_quote_edit(quote_id, extra={"nestType": nest_type})
+            notes.append(f"Nest page OnNestQuote_Edit({nest_type})")
+        except (SecturaFabWebsiteAuthError, SecturaFabApiError) as exc:
             notes.append(f"WARNING: NestQuote_Edit failed: {exc}")
-            try:
-                self.client.nest_quote_api(
-                    quote_id, nest_type=nest_type, id_list=id_list
-                )
-                notes.append(f"Nest POST /api/v1/Nest/quote/{quote_id}/{nest_type}")
-            except SecturaFabApiError as exc2:
-                notes.append(f"WARNING: Public nest failed: {exc2}")
-                return notes
+            return notes
         notes.extend(self._renest_linear_stock_240(quote_id))
         return notes
 
@@ -6291,16 +6325,28 @@ class SecturaFabPushService:
         from .website import (
             LINEAR_RENEST_20FT_IN,
             build_renest_linear_payload,
+            linear_lookup_rows,
             nest_has_480_stock,
             nest_task_ids,
+            renest_length_list_from_configs,
         )
 
         notes: list[str] = []
-        nest_payload: Any = {}
+        list_payload: Any = {}
         try:
-            nest_payload = self.client.get_json(f"v1/Nest?quoteID={quote_id}&pageSize=50")
+            list_payload = self.client.get_json(
+                f"v1/Nest?quoteID={quote_id}&pageSize=50"
+            )
         except SecturaFabApiError:
-            nest_payload = {}
+            list_payload = {}
+        ids = nest_task_ids(list_payload if isinstance(list_payload, dict) else {})
+        nest_id = ids[0] if ids else None
+        task_payload: Any = {}
+        if nest_id:
+            try:
+                task_payload = self.client.get_json(f"v1/Nest/{nest_id}")
+            except SecturaFabApiError:
+                task_payload = {}
         quote: dict[str, Any] = {}
         try:
             raw = self.client.get_json(f"v1/quote/{quote_id}")
@@ -6308,17 +6354,43 @@ class SecturaFabPushService:
                 quote = raw
         except SecturaFabApiError:
             quote = {}
-        saw_480 = nest_has_480_stock(nest_payload) or nest_has_480_stock(
+        stock_payload = task_payload if task_payload else list_payload
+        saw_480 = nest_has_480_stock(stock_payload) or nest_has_480_stock(
             {"StockList": quote.get("StockList") or []}
         )
         if not saw_480:
             return notes
         notes.extend(self._persist_linear_sku_20ft(quote_id, quote=quote))
-        nest_id = None
-        ids = nest_task_ids(nest_payload)
-        if ids:
-            nest_id = ids[0]
-        payload = build_renest_linear_payload(quote_id, nest_id=nest_id)
+        length_rows: list[dict[str, Any]] = []
+        for it in quote.get("ItemList") or []:
+            if not isinstance(it, dict):
+                continue
+            try:
+                pt = int(it.get("ProductType"))
+            except (TypeError, ValueError):
+                pt = None
+            cat = str(it.get("Category") or it.get("ItemType") or "")
+            if pt not in VALID_LINEAR_PRODUCT_TYPES and cat.casefold() != "linear":
+                continue
+            pid = str(it.get("ProductID") or it.get("productID") or "")
+            if not pid or not hasattr(self.client, "read_data_linear_lookup"):
+                continue
+            try:
+                looked = linear_lookup_rows(self.client.read_data_linear_lookup(pid))
+            except (
+                SecturaFabApiError,
+                SecturaFabWebsiteAuthError,
+                TypeError,
+                ValueError,
+            ):
+                looked = []
+            length_rows.extend(renest_length_list_from_configs(looked))
+        payload = build_renest_linear_payload(
+            quote_id,
+            nest_id=nest_id,
+            length_list=length_rows,
+            chuck_size=0.0,
+        )
         try:
             self.client.renest_linear(quote_id, extra=payload)
             notes.append(
@@ -6338,7 +6410,12 @@ class SecturaFabPushService:
                 body=exc.body,
             ) from exc
         try:
-            after = self.client.get_json(f"v1/Nest?quoteID={quote_id}&pageSize=50")
+            after_path = (
+                f"v1/Nest/{nest_id}"
+                if nest_id
+                else f"v1/Nest?quoteID={quote_id}&pageSize=50"
+            )
+            after = self.client.get_json(after_path)
         except SecturaFabApiError as exc:
             raise SecturaFabApiError(
                 f"Nest stock was 480; RenestLinear posted but nest GET failed ({exc})",
@@ -6946,9 +7023,17 @@ class SecturaFabPushService:
                                 attempts=createfile_attempts,
                             )
                         except Exception as exc:
-                            notes.append(
-                                f"WARNING: Long AddItem_Linear failed ({exc}) — "
-                                "not aborting weld/nest"
+                            return self._fail_push(
+                                msg=(
+                                    f"Long AddItem_Linear failed ({exc}) — "
+                                    "0 Linear lines is not a nest"
+                                ),
+                                notes=notes,
+                                quote_id=quote_id,
+                                quote_number=quote_number,
+                                quote_request_id=quote_request_id,
+                                uploaded=uploaded,
+                                attempts=createfile_attempts,
                             )
                     attempted_pack_stamp = True
                 elif drawings or has_job_pdf:
