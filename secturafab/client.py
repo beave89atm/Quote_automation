@@ -1470,6 +1470,7 @@ class SecturaFabClient:
         item_id: str | None = None,
         customer_material: bool = False,
         thickness: str | None = None,
+        part_drawings: dict[str, Any] | None = None,
     ) -> Any:
         """POST /Quote/AddItem_DXFFiles — page Finish (OnAddDXFClick).
 
@@ -1571,6 +1572,7 @@ class SecturaFabClient:
         page = invoke_page_dxf_finish(
             quote_id=quote_id,
             thickness=thickness,
+            part_drawings=part_drawings,
         )
         via = str(page.get("via") or "")
         if via == "skipped" or page.get("edit_gate"):

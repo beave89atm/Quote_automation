@@ -2703,6 +2703,7 @@ def _run_page_finish(
     defer_gauges=False,
     clear_on_select=False,
     empty_after_thickness_change=False,
+    part_drawings=None,
 ):
     """applyPageNativeCadThickness is the Finish function push_job calls."""
     import json
@@ -2738,6 +2739,7 @@ def _run_page_finish(
         sandbox.store = store;
         sandbox.selected = selected;
         sandbox.thickness = thickness;
+        sandbox.partDrawings = spec.partDrawings || {};
         sandbox.window = sandbox;
         sandbox.document = { querySelector: () => ({ textContent: "Q11521" }) };
         sandbox.location = { href: "https://www.secturafab.com/Quote/EDIT/qid" };
@@ -2834,7 +2836,8 @@ def _run_page_finish(
           (async () => {
             const out = await applyPageNativeCadThickness(store.slice(), {
               quoteId: "qid",
-              thickness: thickness
+              thickness: thickness,
+              partDrawings: partDrawings
             });
             return {
               why: out.why,
@@ -2869,6 +2872,7 @@ def _run_page_finish(
             "defer": defer_gauges,
             "clearOnSelect": clear_on_select,
             "emptyAfterThicknessChange": empty_after_thickness_change,
+            "partDrawings": part_drawings or {},
         }),
         encoding="utf-8",
     )
@@ -3162,6 +3166,248 @@ def test_step_thickness_veto_decision_names_the_model_key():
     assert "modelKey=Stock_Z" in decision
     assert "modelRaw=1" in decision
     assert "gauge=14 Ga" in decision
+
+
+def _stock_plate(name, stock_z, **extra):
+    row = {
+        "uid": name,
+        "PartID": name,
+        "Name": name,
+        "PartName": name,
+        "Description": name,
+        "ItemType": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+        "Thickness": "not a dropdown row",
+        "Stock_Z": stock_z,
+        "ErrorStatus": 0,
+        "Material": "A36",
+        "Length": 15.0,
+        "Width": 37.5,
+    }
+    row.update(extra)
+    return row
+
+
+def test_own_pdf_thickness_is_the_only_veto_escape():
+    """The job token is not the kid's drawing. The kid's own PDF is.
+
+    Stock_Z=1 stays a drop until this part's own drawing thickness is
+    within 0.003 of the chosen dropdown row. 14 GA is 0.0747. .076 is
+    inside that window. A sibling PDF does not fill a blank kid.
+    """
+    gauges_14 = [{"Description": ".076 - 14 Ga", "Thickness": 0.076}]
+
+    bare = _run_page_finish(
+        [_stock_plate("A-11513-000", 1), _stock_plate("A-11521-000", None)],
+        gauges_14,
+        0.0747,
+    )
+    assert "A-11513-000" not in bare["left"]
+    assert "A-11521-000" in bare["left"]
+    assert bare["whyList"] == ["step_thickness_not_a_gauge"]
+
+    sibling = _run_page_finish(
+        [_stock_plate("A-11513-000", 1)],
+        gauges_14,
+        0.0747,
+        part_drawings={"A-11521-000": 0.0747},
+    )
+    assert "A-11513-000" not in sibling["left"]
+    assert "step_thickness_not_a_gauge" in sibling["whyList"]
+
+    own = _run_page_finish(
+        [_stock_plate("A-11513-000", 1)],
+        gauges_14,
+        0.0747,
+        part_drawings={"A-11513-000": 0.0747},
+    )
+    assert own["why"] == "", own
+    assert "A-11513-000" in own["left"]
+    assert "A-11513-000" not in " ".join(own["skipped"])
+    assert "step_thickness_not_a_gauge" not in own["whyList"]
+    assert own["selected"] == [".076 - 14 Ga"]
+
+    row_wins = _run_page_finish(
+        [_stock_plate("A-11513-000", 1, drawing_thickness_in=0.5)],
+        gauges_14,
+        0.0747,
+        part_drawings={"A-11513-000": 0.0747},
+    )
+    assert "A-11513-000" not in row_wins["left"]
+    assert "step_thickness_not_a_gauge" in row_wins["whyList"]
+
+    eleven = _run_page_finish(
+        [_stock_plate("34892 BOTTOM PLATE", 0.188)],
+        [{"Description": "11 Ga", "Thickness": 0.1196}],
+        "11 Ga",
+    )
+    assert "34892 BOTTOM PLATE" not in eleven["left"]
+    assert "step_thickness_not_a_gauge" in eleven["whyList"]
+    assert "11 Ga" not in eleven["selected"]
+
+    three_sixteenth = _run_page_finish(
+        [_stock_plate("34892 BOTTOM PLATE", 0.188)],
+        [{"Description": "3/16", "Thickness": 0.1875}],
+        "3/16",
+    )
+    assert three_sixteenth["why"] == "", three_sixteenth
+    assert "34892 BOTTOM PLATE" in three_sixteenth["left"]
+    assert "34892 BOTTOM PLATE" not in " ".join(three_sixteenth["skipped"])
+    assert three_sixteenth["selected"] == ["3/16"]
+
+    half_inch = _run_page_finish(
+        [_stock_plate("11637", 0.5)],
+        gauges_14,
+        "14 Ga",
+    )
+    assert "11637" not in half_inch["left"]
+    assert "step_thickness_not_a_gauge" in half_inch["whyList"]
+    assert ".076 - 14 Ga" not in half_inch["selected"]
+
+
+def test_part_drawing_thickness_stays_on_its_own_pdf(tmp_path, monkeypatch):
+    from quote_core.part_materials import part_drawing_thicknesses
+
+    own = tmp_path / "A-11513-000.pdf"
+    sibling = tmp_path / "A-11521-000.pdf"
+    half = tmp_path / "11637.pdf"
+    for path in (own, sibling, half):
+        path.write_bytes(b"%PDF")
+    texts = {
+        "A-11513-000.pdf": "WINCH BOX BACK WITH NOCO\n14 GA DP ASTM G36\n",
+        "A-11521-000.pdf": "front plate\n",
+        "11637.pdf": "tube\n",
+    }
+    monkeypatch.setattr(
+        "quote_core.part_materials._read_pdf_text",
+        lambda path: texts.get(Path(path).name, ""),
+    )
+    drawn = part_drawing_thicknesses(extra_pdfs=[own, sibling, half])
+    assert drawn == {"A-11513-000": 0.0747}
+
+
+def test_finish_passes_each_kids_own_pdf_thickness(tmp_path, monkeypatch):
+    from unittest.mock import patch
+
+    from secturafab.push import SecturaFabPushService
+
+    own = tmp_path / "A-11513-000.pdf"
+    sibling = tmp_path / "A-11521-000.pdf"
+    own.write_bytes(b"%PDF")
+    sibling.write_bytes(b"%PDF")
+    texts = {
+        "A-11513-000.pdf": "14 GA DP ASTM G36\n",
+        "A-11521-000.pdf": "no gauge on this drawing\n",
+    }
+    monkeypatch.setattr(
+        "quote_core.part_materials._read_pdf_text",
+        lambda path: texts.get(Path(path).name, ""),
+    )
+    stp = tmp_path / "mm.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "ID": "id-1",
+            "Name": "A-11513-000",
+            "PartName": "A-11513-000",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "CadType": 0,
+            "Stock_X": 15.0,
+            "Stock_Y": 37.5,
+            "Stock_Z": 1,
+            "Length": 37.5,
+            "Width": 15.0,
+            "Thickness": 0.076,
+            "Thickness_Units": "inch",
+            "Material": "A36",
+            "ProductType": 100,
+            "Category": "Cad",
+            "PartMode": 0,
+            "InternalData": "server-stamped",
+            "ImageString": "iVBORw0KGgo",
+        }
+    ]
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": kids,
+        "grid_present": True,
+        "grid_dxf_row_count": 1,
+        "list_len": 1,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = _QID
+    client._edit_gate = ""
+    client._finish_via = "page_fn"
+    client._setpartmode_via = "page_fn"
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    client.add_item_dxf_files.return_value = {
+        "status": 200,
+        "via": "page_fn",
+        "finish_fn": "OnAddDXFClick",
+        "finish_why": "",
+        "finish_filelist_n": 1,
+        "body_type": "object",
+        "body_keys": ["NewItem"],
+        "has_NewItem": True,
+        "grid_dxf_row_count": 1,
+        "filelist_sourcedataid_n": 1,
+        "filelist_from_kendo": True,
+        "finish_af_present": True,
+    }
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "itemtype_cad": 1,
+            "itemtype_linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "updateitemtype_via": "page_fn",
+            "updateitemtype_count": 1,
+            "grid_dxf_row_count": 1,
+            "cad_blank_material": 0,
+            "producttype_still_component": 0,
+        },
+    ):
+        SecturaFabPushService(client=client).finish_cad_files(
+            quote_id=_QID,
+            cad_files=[stp],
+            material="A36",
+            thickness="0.0747",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={"folder": str(tmp_path), "related_pdfs": [own.name, sibling.name]},
+            extra_pdfs=None,
+            part_key="A-11513-000",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    assert client.add_item_dxf_files.called
+    passed = client.add_item_dxf_files.call_args.kwargs["part_drawings"]
+    assert passed == {"A-11513-000": 0.0747}
 
 
 def test_three_sixteenth_callout_is_not_dropped_on_an_empty_click():

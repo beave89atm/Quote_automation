@@ -4396,12 +4396,19 @@ class SecturaFabPushService:
                     + ") — not Finishing the STEP thickness"
                 )
                 return notes
+        from quote_core.part_materials import part_drawing_thicknesses
+
         result = self.client.add_item_dxf_files(
             quote_id=quote_id,
             file_list=ready,
             item_id=EMPTY_GUID,
             customer_material=False,
             thickness=str(thickness or ""),
+            part_drawings=part_drawing_thicknesses(
+                library_folder=(library or {}).get("folder"),
+                related_pdf_names=list((library or {}).get("related_pdfs") or []),
+                extra_pdfs=extra_pdfs,
+            ),
         )
         via = getattr(self.client, "_finish_via", "") or ""
         if isinstance(via, str) and via:

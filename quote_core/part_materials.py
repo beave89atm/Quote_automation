@@ -575,6 +575,31 @@ def lookup_part_material(
     return None
 
 
+def part_drawing_thicknesses(
+    *,
+    library_folder: Path | str | None = None,
+    related_pdf_names: list[str] | None = None,
+    extra_pdfs: list[Path] | None = None,
+) -> dict[str, float]:
+    """Part number → that PDF's own drawing thickness.
+
+    Built by the existing dedicated-PDF parser. A weldment packet is
+    ignored, and a sibling PDF does not fill a part whose own drawing
+    states no gauge. invent=false.
+    """
+    materials = build_part_material_map(
+        library_folder=library_folder,
+        related_pdf_names=related_pdf_names,
+        extra_pdfs=extra_pdfs,
+    )
+    out: dict[str, float] = {}
+    for key, pm in materials.items():
+        if pm.thickness_in is None or pm.thickness_in <= 0:
+            continue
+        out[str(key)] = float(pm.thickness_in)
+    return out
+
+
 def part_materials_to_dict(part_materials: dict[str, PartMaterial]) -> dict[str, Any]:
     return {
         k: {

@@ -2638,6 +2638,13 @@ _PAGE_FINISH_JS = """(async function(spec) {
     // One plate uses the drawing/classify gauge passed in, never the model.
     // Several plates each use that kid's thickness. A value that is not in
     // the dropdown drops that kid only. Do not invent a gauge.
+    // partDrawings is each kid's own PDF thickness, keyed by part number.
+    // The job token in spec.thickness is not a kid's drawing.
+    var partDrawings = {};
+    try {
+      var rawMap = specIn && specIn.partDrawings;
+      if (rawMap && typeof rawMap === "object") partDrawings = rawMap;
+    } catch (eMap) { partDrawings = {}; }
     var sharedGauge = drawingNamedGauge(
       String((specIn && specIn.thickness) != null ? specIn.thickness : "")
     );
@@ -2917,10 +2924,30 @@ _PAGE_FINISH_JS = """(async function(spec) {
       if (ga && /PLATE|DP|SHEET|GAUGE/i.test(blob)) return ga[1] + " Ga";
       return "";
     }
+    function partDrawingToken(value) {
+      var text = String(value || "").trim();
+      if (!text) return "";
+      var parts = text.split(/[\\/]/);
+      text = parts[parts.length - 1];
+      text = text.replace(/\.(step|stp|pdf|dxf)$/i, "");
+      return text.split(/\s+/)[0];
+    }
+    function partDrawingRaw(live) {
+      if (!partDrawings || typeof partDrawings !== "object") return "";
+      var fields = [live.PartName, live.Name, live.FileName];
+      for (var pi = 0; pi < fields.length; pi++) {
+        var token = partDrawingToken(fields[pi]);
+        if (token && Object.prototype.hasOwnProperty.call(partDrawings, token)) {
+          return partDrawings[token];
+        }
+      }
+      return "";
+    }
     function ownDrawingIn(row) {
       var live = (row && row._gridItem) || row || {};
       var raw = live.drawing_thickness_in;
       if (raw == null || raw === "") raw = live.DrawingThickness;
+      if (raw == null || raw === "") raw = partDrawingRaw(live);
       var n = parseFloat(raw);
       if (!isFinite(n) || !(n > 0)) return null;
       return n;
@@ -4102,6 +4129,7 @@ def invoke_page_dxf_finish(
     base: str | None = None,
     quote_id: str | None = None,
     thickness: str | None = None,
+    part_drawings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Kyle Finish on /Quote/EDIT: page fn that POSTs /Quote/AddItem_DXFFiles.
 
@@ -4154,10 +4182,24 @@ def invoke_page_dxf_finish(
     if not gate.get("ok"):
         return skipped
     tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
-    spec: dict[str, str] = {"quoteId": str(quote_id or "")}
+    spec: dict[str, Any] = {"quoteId": str(quote_id or "")}
     gauge = str(thickness or "").strip()
     if gauge:
         spec["thickness"] = gauge
+    drawings: dict[str, float] = {}
+    for key, value in (part_drawings or {}).items():
+        token = str(key or "").strip()
+        if not token or value in (None, ""):
+            continue
+        try:
+            inch = float(value)
+        except (TypeError, ValueError):
+            continue
+        if inch <= 0:
+            continue
+        drawings[token] = inch
+    if drawings:
+        spec["partDrawings"] = drawings
     value = _cdp_evaluate_promise(
         _PAGE_FINISH_JS + "(" + json.dumps(spec) + ")",
         base=base,
