@@ -318,3 +318,35 @@ a { color: var(--brand); text-decoration: none; }
   font-size: 0.88rem;
 }
 .fitup-notes li { margin: 0.25rem 0; }
+
+.field select,
+.field textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.4rem 0.5rem;
+  background: white;
+}
+
+.weld-flag {
+  margin: 0.75rem 0 0;
+  padding: 0.75rem 0.9rem;
+  border-radius: 10px;
+  background: #fff3d6;
+  color: var(--warn);
+  font-weight: 700;
+  border: 1px solid #e6d3a1;
+}
+
+.status.queued, .status.claimed, .status.loading { background: #e7f0ff; color: #1d4f91; }
+.status.done { background: #e5f6ec; color: var(--ok); }
+.status.qc_flagged { background: #fff3d6; color: var(--warn); }
+.status.failed, .status.cancelled { background: #fde8e8; color: var(--err); }
+
+.queue-layout {
+  display: grid;
+  gap: 1rem;
+}
+@media (min-width: 900px) {
+  .queue-layout { grid-template-columns: 340px 1fr; align-items: start; }
+}
