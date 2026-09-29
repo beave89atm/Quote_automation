@@ -2243,8 +2243,10 @@ _PAGE_FINISH_JS = """(async function(spec) {
     // Gauge comes from spec.thickness (drawing or classify), never the
     // model thickness on the row. Direct field writes do not clear
     // ErrorStatus. Do not invent L/W, Contours, or a gauge. invent=false.
+    var skippedIds = {};
+    var skippedGauge = [];
     function fail(w, component) {
-      return {why: w, component: component || 0};
+      return {why: w, component: component || 0, gauge_skipped: skippedGauge};
     }
     function sleep(ms) {
       return new Promise(function(resolve) { setTimeout(resolve, ms); });
@@ -2344,6 +2346,7 @@ _PAGE_FINISH_JS = """(async function(spec) {
       var component = 0;
       for (var fi = 0; fi < fresh.length; fi++) {
         var fr = fresh[fi] || {};
+        if (skippedIds[String(fr.uid || fr.PartID || fr.ID || "")]) continue;
         var fcat = String(fr.ItemType || fr.Category || fr.FileType || "");
         if (fcat === "Linear" || fcat === "Assembly") continue;
         if (fr.IsAssembly || Number(fr.ProductType) === 300) continue;
@@ -2392,8 +2395,32 @@ _PAGE_FINISH_JS = """(async function(spec) {
       plates.push(r);
     }
     if (!plates.length) return fail("", 0);
-    var gauge = String((specIn && specIn.thickness) != null ? specIn.thickness : "").trim();
-    if (!gauge) return fail("thickness_missing", 0);
+    function gridHasLinear() {
+      for (var li = 0; li < (gridRows || []).length; li++) {
+        var lr = gridRows[li];
+        if (!lr) continue;
+        var lcat = String(lr.ItemType || lr.Category || lr.FileType || "");
+        if (lcat === "Linear" || Number(lr.PartMode) === 1 || lr.IsLinear) return true;
+        if (linearStockName(lr)) return true;
+      }
+      return false;
+    }
+    function dropUnlistedGauge(row) {
+      var live = (row && row._gridItem) || row || {};
+      skippedGauge.push(String(
+        live.PartName || live.Name || live.FileName || live.Description || "part"
+      ));
+      var uid = String(live.uid || live.PartID || live.ID || "");
+      if (uid) skippedIds[uid] = true;
+      if (g && g.dataSource && typeof g.dataSource.remove === "function") {
+        try { g.dataSource.remove(live); } catch (eDrop) {}
+      }
+    }
+    // One plate uses the drawing/classify gauge passed in, never the model.
+    // Several plates each use that kid's thickness. A value that is not in
+    // the dropdown drops that kid only. Do not invent a gauge.
+    var sharedGauge = String((specIn && specIn.thickness) != null ? specIn.thickness : "").trim();
+    if (plates.length < 2 && !sharedGauge) return fail("thickness_missing", 0);
     var ddl = jQuery("#DXFItemType").data("kendoDropDownList");
     if (!ddl) return fail("no_dxfitemtype", 0);
     var cb = jQuery("#ThicknessEdit").data("kendoComboBox");
@@ -2621,8 +2648,27 @@ _PAGE_FINISH_JS = """(async function(spec) {
         return;
       }
     }
+    var keptPlates = 0;
     for (var p = 0; p < plates.length; p++) {
       var row = plates[p];
+      var gauge = sharedGauge;
+      if (plates.length > 1) {
+        var liveGauge = (row && row._gridItem) || row || {};
+        var ownGauge = liveGauge.Thickness != null ? String(liveGauge.Thickness).trim() : "";
+        if (ownGauge) gauge = ownGauge;
+      }
+      if (!gauge) {
+        dropUnlistedGauge(row);
+        continue;
+      }
+      var data = [];
+      try { data = (cb.dataSource && cb.dataSource.data()) || []; } catch (e3) { data = []; }
+      var idx = gaugeIndex(data, gauge);
+      if (idx < 0) {
+        if (plates.length < 2 && !gridHasLinear()) return fail("gauge_not_in_list", 0);
+        dropUnlistedGauge(row);
+        continue;
+      }
       var selWhy = selectExactlyOne(row);
       if (selWhy) return fail(selWhy, 0);
       var mmWhy = convertMmGrid(row);
@@ -2645,10 +2691,7 @@ _PAGE_FINISH_JS = """(async function(spec) {
       }
       setMaterialCad(row);
       setMachineLaser(row);
-      var data = [];
-      try { data = (cb.dataSource && cb.dataSource.data()) || []; } catch (e3) { data = []; }
-      var idx = gaugeIndex(data, gauge);
-      if (idx < 0) return fail("gauge_not_in_list", 0);
+      keptPlates += 1;
       selWhy = selectExactlyOne(row);
       if (selWhy) return fail(selWhy, 0);
       setMachineLaser(row);
@@ -2657,12 +2700,14 @@ _PAGE_FINISH_JS = """(async function(spec) {
       cb.trigger("change");
       await borderDone;
     }
+    if (keptPlates <= 0 && !gridHasLinear()) return fail("gauge_not_in_list", 0);
     var deadline = Date.now() + 2000;
     var inspected = inspectFresh(readFresh());
     while (inspected.why === "errorstatus_not_zero" && Date.now() < deadline) {
       await sleep(25);
       inspected = inspectFresh(readFresh());
     }
+    if (inspected && typeof inspected === "object") inspected.gauge_skipped = skippedGauge;
     return inspected;
   }
   function skipFinish(why) {
@@ -2678,8 +2723,12 @@ _PAGE_FINISH_JS = """(async function(spec) {
   }
   var rows = gridData();
   var count = rows.length;
+  var gaugeSkipped = [];
   if (count >= 1) {
     var native = await applyPageNativeCadThickness(rows, spec);
+    if (native && native.gauge_skipped && native.gauge_skipped.length) {
+      gaugeSkipped = native.gauge_skipped;
+    }
     if (native && native.why) return skipFinish(native.why);
     rows = gridData();
     count = rows.length;
@@ -3033,6 +3082,7 @@ _PAGE_FINISH_JS = """(async function(spec) {
     extra.filelist_imagestring_empty = !!hit.filelist_imagestring_empty;
     extra.finish_af_present = !!hit.finish_af_present;
     extra.finish_why = String(hit.finish_why || "");
+    extra.gauge_skipped = gaugeSkipped;
     extra.filelist0_values = hit.filelist0_values || {};
     extra.response_list_n = Number(extra.response_list_n || 0);
     extra.response_list0 = extra.response_list0 || {};
@@ -3802,6 +3852,9 @@ def invoke_page_dxf_finish(
         "filelist_imagestring_empty": bool(value.get("filelist_imagestring_empty")),
         "finish_af_present": bool(value.get("finish_af_present")),
         "finish_why": str(value.get("finish_why") or ""),
+        "gauge_skipped": [
+            str(item) for item in (value.get("gauge_skipped") or []) if str(item).strip()
+        ],
         "filelist0_values": (
             value.get("filelist0_values")
             if isinstance(value.get("filelist0_values"), dict)

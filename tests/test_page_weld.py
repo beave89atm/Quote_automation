@@ -129,6 +129,31 @@ def test_quote_number_posts_update_property_value(monkeypatch):
     assert notes == ["QuoteNumber set via UpdatePropertyValue (A-11949-000)"]
 
 
+def test_quote_number_retries_when_the_property_endpoint_is_not_ready(monkeypatch):
+    calls = {"n": 0}
+
+    def _eval(expression, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {
+                "ok": False,
+                "why": "update_property_missing",
+                "parameter": "QuoteNumber",
+            }
+        return {"ok": True, "why": "", "parameter": "QuoteNumber"}
+
+    monkeypatch.setattr(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        lambda *a, **k: {"ok": True, "tab": {"webSocketDebuggerUrl": "ws://local"}},
+    )
+    monkeypatch.setattr("secturafab.chrome_cdp._cdp_evaluate_promise", _eval)
+    monkeypatch.setattr("secturafab.page_weld.time.sleep", lambda *_a, **_k: None)
+    notes = set_page_quote_number("qid", "ZZ-WELD-TEST-701")
+    assert calls["n"] == 2
+    assert notes == ["QuoteNumber set via UpdatePropertyValue (ZZ-WELD-TEST-701)"]
+    assert not any("WARNING" in note for note in notes)
+
+
 def test_millimetre_step_does_not_call_set_units(tmp_path, monkeypatch):
     from secturafab.push import SecturaFabPushService
 

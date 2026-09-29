@@ -7,6 +7,7 @@ fail-closed. This module does not read cookies and does not log secrets.
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 STEP_MM_NOTE = (
@@ -84,6 +85,39 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
     return {ok: false, why: "assembly_name_field_missing", posted_additem: false};
   }
   jQuery("#AssemblyName").val(name).trigger("change");
+  var lineDesc = String((spec && spec.description) || "").trim();
+  var nameEl = document.querySelector("#AssemblyName");
+  var form = nameEl && nameEl.form;
+  if (lineDesc && form) {
+    var fields = form.querySelectorAll(
+      "input[name='Description'], textarea[name='Description']"
+    );
+    for (var di = 0; di < fields.length; di++) {
+      if (!form.contains(fields[di])) continue;
+      jQuery(fields[di]).val(lineDesc).trigger("change");
+      break;
+    }
+  }
+  function applyAssemblyLineDesc(opts) {
+    if (!lineDesc || !opts) return;
+    if (typeof opts.data === "string") {
+      var parts = opts.data.split("&");
+      var found = false;
+      for (var pi = 0; pi < parts.length; pi++) {
+        if (parts[pi].indexOf("Description=") === 0) {
+          parts[pi] = "Description=" + encodeURIComponent(lineDesc);
+          found = true;
+          break;
+        }
+      }
+      if (!found) parts.push("Description=" + encodeURIComponent(lineDesc));
+      opts.data = parts.join("&");
+      return;
+    }
+    if (opts.data && typeof opts.data === "object" && !Array.isArray(opts.data)) {
+      opts.data.Description = lineDesc;
+    }
+  }
   var before = 0;
   try {
     before = jQuery("#GridItem").data("kendoGrid").dataSource.data().length;
@@ -108,6 +142,7 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
     var url = "";
     if (typeof opts === "string") url = opts;
     else if (opts && opts.url) url = String(opts.url);
+    if (url.indexOf("/Quote/AddItem_Assembly") >= 0) applyAssemblyLineDesc(opts);
     var ret = orig.apply(this, arguments);
     if (!pending && url.indexOf("/Quote/AddItem_Assembly") >= 0) {
       pending = new Promise(function(resolve) {
@@ -338,8 +373,18 @@ def tree_rows(body: Any) -> list[dict[str, Any]]:
     return []
 
 
+_PROPERTY_NOT_READY = frozenset(
+    {"update_property_missing", "header_field_missing", "no_jquery"}
+)
+
+
 def set_page_quote_number(quote_id: str, quote_number: str) -> list[str]:
-    """Set #quote_Text through its change event. The value is not logged."""
+    """Set #quote_Text through its change event. The value is not logged.
+
+    The first post right after GET /quote/create can return
+    update_property_missing before the property endpoint is bound.
+    That miss is retried. It does not abort the create.
+    """
     number = str(quote_number or "").strip()
     if not number or not str(quote_id or "").strip():
         return ["Quote Number left blank — not calling UpdatePropertyValue"]
@@ -350,18 +395,22 @@ def set_page_quote_number(quote_id: str, quote_number: str) -> list[str]:
         why = str(gate.get("reason") or "wrong_document")
         return [f"WARNING: QuoteNumber UpdatePropertyValue stopped ({why})"]
     tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
-    value = _cdp_evaluate_promise(
+    expression = (
         _PAGE_SET_PROPERTY_JS
         + "("
         + json.dumps({"parameter": "QuoteNumber", "value": number})
-        + ")",
-        tab=tab,
-        fallback=False,
+        + ")"
     )
-    if not isinstance(value, dict) or not value.get("ok"):
-        why = value.get("why") if isinstance(value, dict) else "empty"
-        return [f"WARNING: QuoteNumber UpdatePropertyValue stopped ({why})"]
-    return [f"QuoteNumber set via UpdatePropertyValue ({number})"]
+    last_why = "empty"
+    for attempt in range(4):
+        value = _cdp_evaluate_promise(expression, tab=tab, fallback=False)
+        if isinstance(value, dict) and value.get("ok"):
+            return [f"QuoteNumber set via UpdatePropertyValue ({number})"]
+        last_why = value.get("why") if isinstance(value, dict) else "empty"
+        if last_why not in _PROPERTY_NOT_READY or attempt >= 3:
+            break
+        time.sleep(0.5)
+    return [f"WARNING: QuoteNumber UpdatePropertyValue stopped ({last_why})"]
 
 
 def set_page_quote_description(quote_id: str, description: str) -> list[str]:
@@ -390,13 +439,33 @@ def set_page_quote_description(quote_id: str, description: str) -> list[str]:
     return ["Description set via UpdatePropertyValue"]
 
 
-def add_page_assembly(*, quote_id: str, name: str) -> list[str]:
-    """OnCopyAll is client-only. AddItem_Assembly must persist, then the tree is checked."""
+def add_page_assembly(
+    *,
+    quote_id: str,
+    name: str,
+    description: str | None = None,
+) -> list[str]:
+    """OnCopyAll is client-only. AddItem_Assembly must persist, then the tree is checked.
+
+    ``description`` is the assembly line (``{PN} - {title chosen at create}``).
+    It is not written onto the quote header.
+    """
     key = str(name or "").strip()
     if key.upper().startswith("PN "):
         key = key[3:].strip()
     if not key:
         return ["WARNING: page assembly stopped (assembly_name_missing)"]
+    from quote_core.drawing_title import is_drawing_boilerplate_title
+    from secturafab.item_desc import is_bare_part_number
+
+    line = str(description or "").strip()
+    if (
+        not line
+        or line == key
+        or is_bare_part_number(line, key)
+        or is_drawing_boilerplate_title(line)
+    ):
+        line = ""
     from .chrome_cdp import _cdp_evaluate_promise, minted_edit_tab_ready, page_jquery_ajax
 
     gate = minted_edit_tab_ready(quote_id, navigate=False)
@@ -404,8 +473,11 @@ def add_page_assembly(*, quote_id: str, name: str) -> list[str]:
         why = str(gate.get("reason") or "wrong_document")
         return [f"WARNING: page assembly stopped ({why})"]
     tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    payload: dict[str, str] = {"name": key}
+    if line:
+        payload["description"] = line
     staged = _cdp_evaluate_promise(
-        PAGE_ADD_ASSEMBLY_JS + "(" + json.dumps({"name": key}) + ")",
+        PAGE_ADD_ASSEMBLY_JS + "(" + json.dumps(payload) + ")",
         tab=tab,
         fallback=False,
     )

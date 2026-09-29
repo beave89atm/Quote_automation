@@ -4280,6 +4280,15 @@ class SecturaFabPushService:
         via = getattr(self.client, "_finish_via", "") or ""
         if isinstance(via, str) and via:
             notes.append(f"finish_via={via}")
+        if isinstance(result, dict):
+            for label in result.get("gauge_skipped") or []:
+                text = str(label or "").strip()
+                if not text:
+                    continue
+                notes.append(
+                    f"FLAG: thickness unresolved for {text} — gauge_not_in_list "
+                    "(not in the dropdown; not inventing a gauge)"
+                )
         after = finish_attempt_empty_partmode_or_internaldata(
             ready, result if isinstance(result, dict) else None
         )
@@ -5847,6 +5856,23 @@ class SecturaFabPushService:
             return proof_hits + other_hits
         return proof_hits + proof + other_hits + other
 
+    def _confident_linear_rows(
+        self, bom_rows: list[dict[str, Any]] | None
+    ) -> list[dict[str, Any]]:
+        """Linear BOM rows with a tenant catalog ProductID. No SKU graft."""
+        out: list[dict[str, Any]] = []
+        for row in self._library_linear_rows(bom_rows):
+            pn = str(row.get("part_no") or row.get("part_number") or "").strip()
+            noun = str(row.get("description") or "")
+            product, _sku, _note = self._match_linear_product(
+                f"{pn} {noun}".strip(),
+                material=None,
+                row=row,
+            )
+            if str((product or {}).get("ID") or "").strip():
+                out.append(row)
+        return out
+
     def _library_linear_rows(
         self, bom_rows: list[dict[str, Any]] | None
     ) -> list[dict[str, Any]]:
@@ -5915,7 +5941,13 @@ class SecturaFabPushService:
                 )
             from .page_weld import add_page_assembly
 
-            notes.extend(add_page_assembly(quote_id=quote_id, name=part_key))
+            notes.extend(
+                add_page_assembly(
+                    quote_id=quote_id,
+                    name=part_key,
+                    description=assembly_description,
+                )
+            )
             if any("page assembly stopped" in note for note in notes):
                 return notes
             notes.extend(
@@ -6646,11 +6678,18 @@ class SecturaFabPushService:
                         break
                 if not already:
                     cad = [stp, *list(cad)]
+            confident_linears: list[dict[str, Any]] = []
             if not drawings and not cad:
-                return PushResult(
-                    ok=False,
-                    error="No PDF or STEP files found to push",
-                    status="failed",
+                confident_linears = self._confident_linear_rows(bom_rows)
+                if not confident_linears:
+                    return PushResult(
+                        ok=False,
+                        error="No PDF or STEP files found to push",
+                        status="failed",
+                    )
+                notes.append(
+                    "Linear-only job — no PDF or STEP; creating the quote for "
+                    f"{len(confident_linears)} confident catalog SKU line(s)"
                 )
             if stp and stp.exists() and not cad:
                 return PushResult(
@@ -6663,7 +6702,7 @@ class SecturaFabPushService:
             has_job_pdf = bool(job_pdf and job_pdf.is_file())
             can_populate_items = bool(cad) or (
                 bool(bom_rows) and bool(library.get("folder"))
-            ) or has_job_pdf
+            ) or has_job_pdf or bool(confident_linears)
             if not can_populate_items:
                 msg = (
                     "Cannot push: no STEP/STP, no library BOM path, and no job PDF "
@@ -7109,7 +7148,9 @@ class SecturaFabPushService:
                             from .page_weld import add_page_assembly
 
                             asm_notes = add_page_assembly(
-                                quote_id=quote_id, name=part_key
+                                quote_id=quote_id,
+                                name=part_key,
+                                description=assembly_description,
                             )
                             notes.extend(asm_notes)
                             stopped = next(

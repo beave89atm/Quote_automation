@@ -1954,3 +1954,282 @@ def test_page_session_runs_image_and_long_without_env_cookie(tmp_path, monkeypat
     assert called.get("lin") is True
     blob = " ".join(result.notes or [])
     assert "skipped Image Files / Long" not in blob
+
+
+def test_assembly_line_uses_part_number_and_chosen_description(monkeypatch):
+    from secturafab.page_weld import PAGE_ADD_ASSEMBLY_JS, add_page_assembly
+
+    seen: dict[str, str] = {}
+
+    def _eval(expression, **_kwargs):
+        seen["expr"] = expression
+        return {"ok": True, "why": "", "posted_additem": True, "staged": 1}
+
+    monkeypatch.setattr(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        lambda *_a, **_k: {"ok": True, "tab": {"webSocketDebuggerUrl": "ws://local"}},
+    )
+    monkeypatch.setattr("secturafab.chrome_cdp._cdp_evaluate_promise", _eval)
+    monkeypatch.setattr(
+        "secturafab.chrome_cdp.page_jquery_ajax",
+        lambda **_k: {
+            "ok": True,
+            "body": {
+                "Data": [
+                    {
+                        "ID": "parent",
+                        "ItemNumber": "11521-000",
+                        "ProductType": 300,
+                        "Description": "11521-000 - ZZ-TEST weldment",
+                    },
+                    {
+                        "ID": "kid",
+                        "ItemNumber": "A-11521-000",
+                        "ProductType": 100,
+                        "AssemblyID": "parent",
+                    },
+                ]
+            },
+        },
+    )
+    notes = add_page_assembly(
+        quote_id="qid",
+        name="11521-000",
+        description="11521-000 - ZZ-TEST weldment",
+    )
+    assert '"description": "11521-000 - ZZ-TEST weldment"' in seen["expr"]
+    assert "applyAssemblyLineDesc" in PAGE_ADD_ASSEMBLY_JS
+    assert "UpdatePropertyValue" not in PAGE_ADD_ASSEMBLY_JS
+    assert "#quote_Text" not in PAGE_ADD_ASSEMBLY_JS
+    assert any("AddItem_Assembly persisted" in note for note in notes)
+    seen.clear()
+    add_page_assembly(
+        quote_id="qid",
+        name="11521-000",
+        description="1. ALL WELDS FULL LENGTH UNLESS",
+    )
+    assert "ALL WELDS" not in seen["expr"]
+
+
+def test_unlisted_gauge_drops_that_kid_and_keeps_the_rest():
+    import json
+    import shutil
+    import subprocess
+    import textwrap
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+
+    start = _PAGE_FINISH_JS.index("async function applyPageNativeCadThickness")
+    end = _PAGE_FINISH_JS.index("  function skipFinish")
+    fn = _PAGE_FINISH_JS[start:end]
+    script = textwrap.dedent(
+        r"""
+        const vm = require("vm");
+        const fs = require("fs");
+        const code = fs.readFileSync(process.argv[2], "utf8");
+        const store = [
+          { uid: "good", PartID: "good", Name: "34890 PLATE", ItemType: "Cad",
+            PartMode: 0, ProductType: 100, Thickness: 0.076, ErrorStatus: 0, Material: "A36" },
+          { uid: "bad", PartID: "bad", Name: "34892 BOTTOM PLATE", ItemType: "Cad",
+            PartMode: 0, ProductType: 100, Thickness: 0.125, ErrorStatus: 2, Material: "A36" },
+          { uid: "tube", PartID: "tube", Name: "34536 PIVOT TUBE", ItemType: "Linear",
+            PartMode: 1, ProductType: 30, ErrorStatus: 0 }
+        ];
+        const gauges = [{ Thickness: 0.076, Description: ".076 - 14 Ga", Value: "0.076" }];
+        let current = store[0];
+        const sandbox = { setTimeout, clearTimeout, Date, Promise, console, Math, parseFloat, isFinite, Number, String, Object };
+        sandbox.store = store;
+        sandbox.window = sandbox;
+        sandbox.document = { querySelector: () => ({ textContent: "Q34887" }) };
+        sandbox.location = { href: "https://www.secturafab.com/Quote/EDIT/qid" };
+        function Deferred() {
+          const fns = [];
+          return { always(fn) { fns.push(fn); return this; }, then(fn) { fns.push(fn); return this; }, resolve() { fns.forEach((fn) => fn()); } };
+        }
+        sandbox.jQuery = function() {
+          return {
+            data(name) {
+              if (name === "kendoDropDownList") return { value() {}, trigger() { sandbox.jQuery.ajax({ url: "/Part/UpdateItemType" }); } };
+              if (name === "kendoComboBox") return {
+                dataSource: { data() { return gauges; } },
+                select() {},
+                trigger() { sandbox.jQuery.ajax({ url: "/Quote/GetBorderSize" }); }
+              };
+              if (name === "kendoGrid") return {
+                clearSelection() {},
+                select(tr) {
+                  if (tr === undefined) return { length: 1, toArray() { return [{ id: current.uid }]; } };
+                  return { length: 1 };
+                },
+                dataItem() { return current; },
+                tbody: {
+                  find(sel) {
+                    const match = String(sel || "").match(/data-uid='([^']+)'/);
+                    if (match) current = store.find((row) => row.uid === match[1]) || current;
+                    return { length: current ? 1 : 0 };
+                  }
+                },
+                dataSource: {
+                  view() { return store; },
+                  data() { return { toJSON() { return store.map((row) => Object.assign({}, row)); } }; },
+                  remove(row) {
+                    const id = row && (row.uid || row.PartID);
+                    const at = store.findIndex((item) => item.uid === id || item.PartID === id);
+                    if (at >= 0) store.splice(at, 1);
+                  }
+                }
+              };
+              return null;
+            }
+          };
+        };
+        sandbox.jQuery.ajax = function() {
+          const d = Deferred();
+          setTimeout(() => d.resolve(), 5);
+          return d;
+        };
+        vm.createContext(sandbox);
+        const runner = `
+          (async () => {
+            const out = await applyPageNativeCadThickness(store.slice(), {
+              quoteId: "qid", thickness: "0.125"
+            });
+            return { why: out.why, skipped: out.gauge_skipped, left: store.map((row) => row.Name) };
+          })()
+        `;
+        vm.runInContext(code + "\n" + runner, sandbox).then((out) => {
+          console.log(JSON.stringify(out));
+        }).catch((err) => {
+          console.error(err && err.stack || err);
+          process.exit(1);
+        });
+        """
+    )
+    fn_path = tmp_path_unused = None
+    from pathlib import Path
+
+    fn_path = Path(__file__).resolve().parent / "_unlisted_gauge_fn.js"
+    run_path = Path(__file__).resolve().parent / "_unlisted_gauge_run.js"
+    fn_path.write_text(fn, encoding="utf-8")
+    run_path.write_text(script, encoding="utf-8")
+    try:
+        proc = subprocess.run(
+            [node, str(run_path), str(fn_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    finally:
+        fn_path.unlink(missing_ok=True)
+        run_path.unlink(missing_ok=True)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out["why"] == ""
+    assert out["skipped"] == ["34892 BOTTOM PLATE"]
+    assert "34890 PLATE" in out["left"]
+    assert "34536 PIVOT TUBE" in out["left"]
+    assert "34892 BOTTOM PLATE" not in out["left"]
+
+
+def test_linear_only_confident_sku_creates_quote_and_nests(monkeypatch):
+    from secturafab.push import SecturaFabPushService
+
+    monkeypatch.setattr("secturafab.push.detect_organization", lambda **_k: "Safe Cave")
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *_a, **_k: True)
+    monkeypatch.setattr("secturafab.chrome_cdp.quotes_tab", lambda *_a, **_k: None)
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_session_lost", lambda *_a, **_k: False)
+    monkeypatch.setattr("secturafab.push.extract_assembly_description", lambda **_k: None)
+    monkeypatch.setattr(
+        "secturafab.push.apply_quote_organization",
+        lambda *_a, **_k: ["Set Organization: Safe Cave"],
+    )
+    monkeypatch.setattr("secturafab.push.ensure_imperial_item_units", lambda *_a, **_k: [])
+    monkeypatch.setattr("secturafab.push.apply_bom_quantities", lambda *_a, **_k: [])
+    monkeypatch.setattr("secturafab.push.ensure_weld_ops", lambda *_a, **_k: [])
+    rows = [{"part_no": "1020243-1", "description": "1 X 1 TUBE", "qty": 1}]
+    monkeypatch.setattr(
+        "secturafab.push.refresh_bom_rows_for_push", lambda *_a, **_k: (rows, [])
+    )
+    client = MagicMock()
+    client.config.website_cookie = ""
+    client.get_json.return_value = {
+        "ItemList": [{"ProductType": 30, "Description": "1020243-1 - TUBE"}],
+        "ItemCount": 1,
+        "OrganizationName": "Safe Cave",
+        "PrimaryOrganizationID": "11111111-1111-4111-8111-111111111111",
+        "Description": "tube job",
+    }
+    service = SecturaFabPushService(client=client)
+    called: dict[str, bool] = {}
+    monkeypatch.setattr(service, "create_quote", lambda **_k: "qid")
+    monkeypatch.setattr(service, "allocate_quote_number", lambda *_a, **_k: "1020243-1")
+    monkeypatch.setattr(service, "upload_drawings_quote_request", lambda *_a, **_k: "qr")
+    monkeypatch.setattr(service, "preflight_website_addview_session", lambda: (True, []))
+    monkeypatch.setattr(service, "_page_session_live", lambda: True)
+    monkeypatch.setattr(service, "_website_cookie_present", lambda: False)
+    monkeypatch.setattr(
+        service,
+        "_match_linear_product",
+        lambda *_a, **_k: ({"ID": "sku-1", "ProductName": "RT1X1-A500"}, "RT1X1-A500", None),
+    )
+
+    def _lin(**_k):
+        called["lin"] = True
+        return ["Long"]
+
+    def _nest(*_a, **_k):
+        called["nest"] = True
+        return ["RenestLinear"]
+
+    monkeypatch.setattr(service, "finish_linear_bom_rows", _lin)
+    monkeypatch.setattr(service, "nest_after_finish", _nest)
+    monkeypatch.setattr(service, "_library_cad_pdfs", lambda *_a, **_k: [])
+    result = service.push_job(
+        title="1020243-1",
+        pdf_filename=None,
+        pdf_path=None,
+        stp_path=None,
+        takeoff={"library": {"part_key": "1020243-1"}, "description": "tube job"},
+        times={},
+        job_id=7,
+        organization="Safe Cave",
+        quote_number="ZZ-LIN-TEST-701",
+    )
+    assert called.get("lin") is True
+    assert called.get("nest") is True
+    blob = " ".join(result.notes or [])
+    assert "No PDF or STEP files found to push" not in blob
+    assert "Linear-only job" in blob
+
+
+def test_linear_only_without_confident_sku_still_stops(monkeypatch):
+    from secturafab.push import SecturaFabPushService
+
+    rows = [{"part_no": "21897-1", "description": "TUBE", "qty": 1}]
+    monkeypatch.setattr(
+        "secturafab.push.refresh_bom_rows_for_push", lambda *_a, **_k: (rows, [])
+    )
+    service = SecturaFabPushService(client=MagicMock())
+    monkeypatch.setattr(
+        service,
+        "_match_linear_product",
+        lambda *_a, **_k: (None, None, "no tenant SKU"),
+    )
+    created = {"n": 0}
+    monkeypatch.setattr(service, "create_quote", lambda **_k: created.__setitem__("n", 1) or "qid")
+    result = service.push_job(
+        title="21897-1",
+        pdf_filename=None,
+        pdf_path=None,
+        stp_path=None,
+        takeoff={"library": {"part_key": "21897-1"}},
+        times={},
+        job_id=8,
+    )
+    assert result.ok is False
+    assert result.error == "No PDF or STEP files found to push"
+    assert created["n"] == 0

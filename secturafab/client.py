@@ -1659,6 +1659,11 @@ class SecturaFabClient:
             ),
             "finish_af_present": bool(result.get("finish_af_present")),
             "finish_why": str(result.get("finish_why") or ""),
+            "gauge_skipped": [
+                str(item)
+                for item in (result.get("gauge_skipped") or [])
+                if str(item).strip()
+            ],
             "filelist0_values": (
                 result.get("filelist0_values")
                 if isinstance(result.get("filelist0_values"), dict)
