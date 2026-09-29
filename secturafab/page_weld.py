@@ -325,17 +325,50 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
           posted_description: ""
         };
       }
-      // The header save sets the field and triggers change. The page
-      // posts UpdatePropertyValue itself. A hand-built body does not
-      // store. Edit this line's Description cell the same way. Do not
-      // write the quote-number field or the header description.
+      // Quote lines are the TreeList behind QuoteItem_ReadTreeListData.
+      // #GridItem is the CAD-files grid. Editing it does not store the
+      // line. Trigger change on the parent Description cell. The page
+      // posts. Do not hand-build a body, and do not write the header.
+      function treeReadUrl(widget) {
+        try {
+          var ds = widget.dataSource || {};
+          var read = ds.options && ds.options.transport && ds.options.transport.read;
+          if (typeof read === "string") return read;
+          if (read && read.url) return String(read.url);
+          var opt = ds.transport && ds.transport.options && ds.transport.options.read;
+          if (typeof opt === "string") return opt;
+          if (opt && opt.url) return String(opt.url);
+        } catch (eU) {}
+        return "";
+      }
+      function quoteLineTreeList() {
+        var nodes = [];
+        try {
+          var found = document.querySelectorAll("[data-role='treelist'], .k-treelist");
+          if (found && found.length != null) {
+            for (var i = 0; i < found.length; i++) nodes.push(found[i]);
+          }
+        } catch (eQ) { nodes = []; }
+        var matched = null;
+        var unlabeled = null;
+        var unlabeledCount = 0;
+        for (var n = 0; n < nodes.length; n++) {
+          var widget = null;
+          try { widget = jQuery(nodes[n]).data("kendoTreeList"); } catch (eW) { widget = null; }
+          if (!widget || typeof widget.editCell !== "function" || !widget.tbody) continue;
+          var url = treeReadUrl(widget);
+          if (url.indexOf("QuoteItem_ReadTreeListData") >= 0) return widget;
+          if (!url) { unlabeled = widget; unlabeledCount += 1; }
+        }
+        if (!matched && unlabeledCount === 1) return unlabeled;
+        return matched;
+      }
       function triggerLineDescription(lineId, value) {
-        var grid = null;
-        try { grid = jQuery("#GridItem").data("kendoGrid"); } catch (eG) { grid = null; }
-        if (!grid || typeof grid.editCell !== "function" || !grid.tbody) return false;
+        var tree = quoteLineTreeList();
+        if (!tree) return false;
         var found = null;
         try {
-          var trs = grid.tbody.find("tr");
+          var trs = tree.tbody.find("tr");
           var list = [];
           if (trs && trs.toArray) list = trs.toArray();
           else if (trs && trs.length != null) {
@@ -343,7 +376,7 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
           }
           for (var ri = 0; ri < list.length; ri++) {
             var item = {};
-            try { item = grid.dataItem(list[ri]) || {}; } catch (eD) { item = {}; }
+            try { item = tree.dataItem(list[ri]) || {}; } catch (eD) { item = {}; }
             var id = String(item.ID || item.Id || "").trim();
             if (id && id === lineId) { found = list[ri]; break; }
           }
@@ -351,25 +384,25 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
         if (!found) return false;
         var tr = jQuery(found);
         var cell = tr.find("td[data-field='Description']");
-        if ((!cell || !cell.length) && grid.columns) {
-          for (var c = 0; c < grid.columns.length; c++) {
-            if (String((grid.columns[c] && grid.columns[c].field) || "") === "Description") {
+        if ((!cell || !cell.length) && tree.columns) {
+          for (var c = 0; c < tree.columns.length; c++) {
+            if (String((tree.columns[c] && tree.columns[c].field) || "") === "Description") {
               cell = tr.find("td").eq(c);
               break;
             }
           }
         }
         if (!cell || !cell.length) return false;
-        try { grid.editCell(cell); } catch (eE) { return false; }
+        try { tree.editCell(cell); } catch (eE) { return false; }
         var editor = null;
         try { editor = cell.find("input, textarea").first(); } catch (eF) { editor = null; }
         if (!editor || !editor.length) {
-          try { if (typeof grid.closeCell === "function") grid.closeCell(); } catch (eC) {}
+          try { if (typeof tree.closeCell === "function") tree.closeCell(); } catch (eC) {}
           return false;
         }
         try {
           editor.val(value).trigger("change");
-          if (typeof grid.closeCell === "function") grid.closeCell();
+          if (typeof tree.closeCell === "function") tree.closeCell();
         } catch (eV) { return false; }
         return true;
       }

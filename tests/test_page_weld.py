@@ -164,6 +164,7 @@ def test_assembly_description_is_posted_after_the_line_exists():
             return { __RequestVerificationToken: "af-live" };
           }
         };
+        const treeEl = { id: "quote-lines" };
         sandbox.document = {
           querySelector(sel) {
             if (sel === "#AssemblyName") return { form: null };
@@ -177,6 +178,11 @@ def test_assembly_description_is_posted_after_the_line_exists():
               };
             }
             return null;
+          },
+          querySelectorAll(sel) {
+            const text = String(sel || "");
+            if (text.indexOf("treelist") >= 0) return [treeEl];
+            return [];
           }
         };
         sandbox.AddNewItemHTML = function() {};
@@ -204,8 +210,10 @@ def test_assembly_description_is_posted_after_the_line_exists():
             }
           };
         }
-        const parentRow = { ID: parent.ID };
-        const kidRow = { ID: kid.ID };
+        const gridParentRow = { ID: parent.ID, kind: "grid" };
+        const gridKidRow = { ID: kid.ID, kind: "grid" };
+        const treeParentRow = { ID: parent.ID, kind: "tree" };
+        const treeKidRow = { ID: kid.ID, kind: "tree" };
         function descriptionEditor(row) {
           const editor = {
             length: 1,
@@ -216,17 +224,19 @@ def test_assembly_description_is_posted_after_the_line_exists():
               return this;
             },
             trigger(ev) {
-              // The page's own change handler is what stores the line.
-              // A hand-built UpdatePropertyValue body does not.
+              // Only the quote-line TreeList stores the description.
+              // #GridItem is the CAD-files grid. A hand-built
+              // UpdatePropertyValue body does not store it either.
               if (
                 ev === "change"
                 && cellOpen
+                && row.kind === "tree"
                 && row.ID === parent.ID
               ) {
                 const text = String(this._value || "");
                 if (text && text.toLowerCase() !== "root") {
                   parent.Description = text;
-                  persistedVia = "description-cell";
+                  persistedVia = "treelist";
                 }
               }
               return this;
@@ -273,13 +283,36 @@ def test_assembly_description_is_posted_after_the_line_exists():
             find() {
               return {
                 length: 2,
-                toArray() { return [parentRow, kidRow]; }
+                toArray() { return [gridParentRow, gridKidRow]; }
               };
             }
           },
           dataItem(tr) {
-            if (tr && tr.ID === parent.ID) return parent;
-            if (tr && tr.ID === kid.ID) return kid;
+            if (tr && tr.kind === "grid" && tr.ID === parent.ID) return parent;
+            if (tr && tr.kind === "grid" && tr.ID === kid.ID) return kid;
+            return {};
+          },
+          editCell() { cellOpen = true; },
+          closeCell() { cellOpen = false; }
+        };
+        const lineTree = {
+          columns: [{ field: "ItemNumber" }, { field: "Description" }],
+          dataSource: {
+            options: {
+              transport: { read: { url: "/Quote/QuoteItem_ReadTreeListData" } }
+            }
+          },
+          tbody: {
+            find() {
+              return {
+                length: 2,
+                toArray() { return [treeParentRow, treeKidRow]; }
+              };
+            }
+          },
+          dataItem(tr) {
+            if (tr && tr.kind === "tree" && tr.ID === parent.ID) return parent;
+            if (tr && tr.kind === "tree" && tr.ID === kid.ID) return kid;
             return {};
           },
           editCell() { cellOpen = true; },
@@ -293,9 +326,22 @@ def test_assembly_description_is_posted_after_the_line_exists():
             throw new Error("header field must stay untouched");
           }
           if (sel === "#GridItem" || sel === "#GridAssembly") {
-            return { data() { return itemGrid; } };
+            return {
+              data(name) {
+                if (name === "kendoTreeList") return null;
+                return itemGrid;
+              }
+            };
           }
-          if (sel && typeof sel === "object" && sel.ID) return wrapTr(sel);
+          if (sel === treeEl) {
+            return {
+              data(name) {
+                if (name === "kendoTreeList") return lineTree;
+                return null;
+              }
+            };
+          }
+          if (sel && typeof sel === "object" && sel.kind) return wrapTr(sel);
           return {
             data() { return null; },
             val() { return this; },
@@ -388,7 +434,7 @@ def test_assembly_description_is_posted_after_the_line_exists():
     assert payload["started"] == "11521-000"
     assert payload["reads"][0] == "11521-000"
     assert payload["reads"][-1] == wanted
-    assert payload["persistedVia"] == "description-cell"
+    assert payload["persistedVia"] == "treelist"
     assert payload["out"]["stored_description"] == wanted
     assert payload["out"]["ok"] is True
     assert not any(
@@ -416,7 +462,7 @@ def test_assembly_description_is_posted_after_the_line_exists():
     assert linear_out["started"] == "1020243-1"
     assert linear_out["reads"][0] == "1020243-1"
     assert linear_out["reads"][-1] == linear
-    assert linear_out["persistedVia"] == "description-cell"
+    assert linear_out["persistedVia"] == "treelist"
     assert linear_out["out"]["stored_description"] == linear
     assert linear_out["out"]["ok"] is True
     bare_parent = "34887-1 - chosen description"
@@ -438,7 +484,7 @@ def test_assembly_description_is_posted_after_the_line_exists():
     assert parent_out["started"] == "34887-1"
     assert parent_out["reads"][0] == "34887-1"
     assert parent_out["reads"][-1] == bare_parent
-    assert parent_out["persistedVia"] == "description-cell"
+    assert parent_out["persistedVia"] == "treelist"
     assert parent_out["out"]["stored_description"] == bare_parent
     assert parent_out["out"]["ok"] is True
     rooted = "34887-1 - chosen description"
@@ -482,7 +528,7 @@ def test_assembly_description_is_posted_after_the_line_exists():
     assert loose_out["started"] == "34887-1"
     assert loose_out["reads"][0] == "34887-1"
     assert loose_out["reads"][-1] == loose_wanted
-    assert loose_out["persistedVia"] == "description-cell"
+    assert loose_out["persistedVia"] == "treelist"
     assert loose_out["out"]["ok"] is True, loose_out["out"]
     assert loose_out["out"]["stored_description"] == loose_wanted
     assert any("CopyMoveItemToAssembly" in row["url"] for row in loose_out["posts"])

@@ -2377,6 +2377,20 @@ _PAGE_FINISH_JS = """(async function(spec) {
       }
       return best;
     }
+    function drawingNamedGauge(token) {
+      // The job token is the drawing decimal. 14 ga is 0.0747.
+      // The dropdown row is .076. Both are "14 Ga". Do not invent
+      // a gauge the drawing does not name.
+      var text = String(token == null ? "" : token).trim();
+      if (!text) return text;
+      if (/(\\d+)\\s*ga/i.test(text)) return text;
+      var n = displayInch(text);
+      if (!isFinite(n)) return text;
+      if (Math.abs(n - 0.0747) <= 0.0002 || Math.abs(n - 0.076) <= 0.0002) {
+        return "14 Ga";
+      }
+      return text;
+    }
     function readFresh() {
       var fresh = [];
       try {
@@ -2595,7 +2609,9 @@ _PAGE_FINISH_JS = """(async function(spec) {
     // One plate uses the drawing/classify gauge passed in, never the model.
     // Several plates each use that kid's thickness. A value that is not in
     // the dropdown drops that kid only. Do not invent a gauge.
-    var sharedGauge = String((specIn && specIn.thickness) != null ? specIn.thickness : "").trim();
+    var sharedGauge = drawingNamedGauge(
+      String((specIn && specIn.thickness) != null ? specIn.thickness : "")
+    );
     if (plates.length < 2 && !sharedGauge) return fail("thickness_missing", 0);
     var ddl = jQuery("#DXFItemType").data("kendoDropDownList");
     if (!ddl) return fail("no_dxfitemtype", 0);
@@ -2882,6 +2898,7 @@ _PAGE_FINISH_JS = """(async function(spec) {
         dropUnlistedGauge(row);
         continue;
       }
+      gauge = drawingNamedGauge(gauge);
       var data = [];
       try { data = (cb.dataSource && cb.dataSource.data()) || []; } catch (e3) { data = []; }
       var idx = gaugeIndex(data, gauge);

@@ -2002,7 +2002,12 @@ def test_assembly_line_uses_part_number_and_chosen_description(monkeypatch):
     )
     assert '"description": "11521-000 - ZZ-TEST weldment"' in seen["expr"]
     assert "applyAssemblyLineDesc" in PAGE_ADD_ASSEMBLY_JS
-    assert "editCell" in PAGE_ADD_ASSEMBLY_JS
+    desc_fn = PAGE_ADD_ASSEMBLY_JS.split("function treeReadUrl", 1)[1]
+    desc_fn = desc_fn.split("postedDescription = triggerLineDescription", 1)[0]
+    assert "kendoTreeList" in desc_fn
+    assert "QuoteItem_ReadTreeListData" in desc_fn
+    assert "#GridItem" not in desc_fn
+    assert "editCell" in desc_fn
     assert "data-field='Description'" in PAGE_ADD_ASSEMBLY_JS
     assert 'parameter: "Description"' not in PAGE_ADD_ASSEMBLY_JS
     assert "#quote_Text" not in PAGE_ADD_ASSEMBLY_JS
@@ -2901,14 +2906,13 @@ def test_drawing_14_ga_0747_selects_dropdown_076():
 
 
 def test_kid_without_callout_keeps_job_level_14_ga():
-    """A-11513-000 has no 14 GA of its own. The job gauge is 14 Ga.
+    """A-11513-000. The job token is the number 0.0747, not the string 14 Ga.
 
-    plates.length > 1 used to replace that name with the grid Thickness
-    before the callout check. This row's Thickness is not a dropdown row
-    and the blob does not say 14 GA, so gaugeIndex returned -1 and the
-    FLAG was gauge_not_in_list. The kid keeps the job-level 14 Ga.
-    0.0747 and the list row .076 are that same gauge. applyPageNativeCadThickness
-    is the Finish function push_job calls.
+    The drawing note is Thickness from drawing: 0.0747 (gauge callout on
+    '14 GA DP -'). That number is spec.thickness. The combobox row is
+    {Description: '.076 - 14 Ga', Thickness: 0.076}. Passing only the
+    string '14 Ga' does not cover this. 0.0747 and 0.076 are both 14 Ga.
+    applyPageNativeCadThickness is the Finish function push_job calls.
     """
     store = [
         {
@@ -2941,8 +2945,8 @@ def test_kid_without_callout_keeps_job_level_14_ga():
             "Width": 37.5,
         },
     ]
-    gauges = [{"Thickness": 0.076, "Description": ".076 - 14 Ga"}]
-    out = _run_page_finish(store, gauges, "14 Ga")
+    gauges = [{"Description": ".076 - 14 Ga", "Thickness": 0.076}]
+    out = _run_page_finish(store, gauges, 0.0747)
     assert out["why"] == "", out
     assert "A-11513-000" in out["left"]
     assert "A-11521-000" in out["left"]
