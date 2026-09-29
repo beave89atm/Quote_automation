@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { PublicClientApplication } from "@azure/msal-browser";
 import { hostedApi, setHostedToken } from "../api";
 
 const TOKEN_KEY = "kannon_hosted_token";
@@ -40,6 +41,7 @@ export default function QueuePage() {
     const path = view === "all" ? "/api/hosted/jobs?scope=all" : "/api/hosted/jobs";
     const rows = await hostedApi(path);
     setJobs(rows);
+    setError("");
   }, [view]);
 
   useEffect(() => {
@@ -85,6 +87,53 @@ export default function QueuePage() {
       clearInterval(timer);
     };
   }, [token, loadJobs]);
+
+  async function onMicrosoft() {
+    setBusy(true);
+    setError("");
+    try {
+      const pca = new PublicClientApplication({
+        auth: {
+          clientId: config.client_id,
+          authority: `https://login.microsoftonline.com/${config.tenant_id}`,
+          redirectUri: config.redirect_uri || `${window.location.origin}/queue`,
+        },
+      });
+      await pca.initialize();
+      const result = await pca.loginPopup({ scopes: ["openid", "profile", "email"] });
+      if (!result || !result.idToken) throw new Error("entra_token_missing");
+      const data = await hostedApi("/api/hosted/auth/callback", {
+        method: "POST",
+        json: { id_token: result.idToken },
+      });
+      setHostedToken(data.token);
+      setToken(data.token);
+      setMe({ email: data.email, role: data.role });
+    } catch (err) {
+      setError(err.message || "Sign-in failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDev(e) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const data = await hostedApi("/api/hosted/auth/dev", {
+        method: "POST",
+        json: { email },
+      });
+      setHostedToken(data.token);
+      setToken(data.token);
+      setMe({ email: data.email, role: data.role });
+    } catch (err) {
+      setError(err.message || "Sign-in failed");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function onLogin(e) {
     e.preventDefault();
@@ -162,13 +211,33 @@ export default function QueuePage() {
       </header>
 
       {!token ? (
-        <form className="panel login-card" onSubmit={onLogin}>
+        <form
+          className="panel login-card"
+          onSubmit={config && config.mode === "password" ? onLogin : (e) => e.preventDefault()}
+        >
           <h1>Drop a quote</h1>
           <p>Team sign-in. Sectura stays on the shop box.</p>
-          {config && config.authorize_url ? (
-            <p>
-              <a href={config.authorize_url}>Continue with {config.provider}</a>
-            </p>
+          {config && config.provider === "entra" && config.client_id ? (
+            <button className="btn" disabled={busy} type="button" onClick={onMicrosoft}>
+              {busy ? "Signing in…" : "Sign in with Microsoft"}
+            </button>
+          ) : null}
+          {config && config.dev_bypass ? (
+            <>
+              <div className="field">
+                <label htmlFor="queue-dev-email">Local dev email</label>
+                <input
+                  id="queue-dev-email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  autoComplete="username"
+                />
+              </div>
+              <button className="btn secondary" disabled={busy || !email} type="button" onClick={onDev}>
+                Dev sign-in
+              </button>
+            </>
           ) : null}
           {config && config.mode === "password" ? (
             <>

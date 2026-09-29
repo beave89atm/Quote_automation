@@ -200,8 +200,9 @@ def test_run_once_skips_push_when_lookup_finds_quote(hosted_db) -> None:
     assert result["status"] == "failed"
     assert result["error"] == "existing_sectura_quote"
     assert default_lookup({}) is False
-    with pytest.raises(RuntimeError, match="hosted_runner_not_configured"):
-        default_runner({})
+    empty = default_runner({})
+    assert empty["status"] == "failed"
+    assert empty["error"] == "files_missing"
 
 
 def test_weld_labor_forces_qc_flag(hosted_db) -> None:
@@ -336,14 +337,55 @@ def test_password_login_disabled_for_entra(client, monkeypatch) -> None:
     assert response.json()["detail"] == "password_login_disabled"
 
 
-def test_vercel_blob_is_not_called(monkeypatch) -> None:
+def test_vercel_blob_private_put_and_get(monkeypatch) -> None:
     monkeypatch.delenv("BLOB_READ_WRITE_TOKEN", raising=False)
     store = VercelBlobStore()
     with pytest.raises(Exception, match="BLOB_READ_WRITE_TOKEN"):
         store.put("a.step", b"abc")
-    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "present-but-unused")
-    with pytest.raises(Exception, match="vercel_blob_not_called"):
-        store.put("a.step", b"abc")
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "blob-token-value")
+    seen: list[dict] = []
+
+    class _Resp:
+        def __init__(self, raw: bytes) -> None:
+            self._raw = raw
+
+        def read(self) -> bytes:
+            return self._raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> bool:
+            return False
+
+    def urlopen(req, timeout=60):
+        del timeout
+        headers = {k.lower(): v for k, v in req.header_items()}
+        seen.append(
+            {
+                "url": req.full_url,
+                "method": req.method,
+                "access": headers.get("x-vercel-blob-access"),
+                "auth": headers.get("authorization"),
+            }
+        )
+        if req.method == "PUT":
+            return _Resp(
+                b'{"url":"https://example.private.blob.vercel-storage.com/hosted/a.step","pathname":"hosted/a.step"}'
+            )
+        return _Resp(b"ISO-10303-21;")
+
+    monkeypatch.setattr("app.hosted_queue.urllib.request.urlopen", urlopen)
+    stored = store.put("a.step", b"ISO-10303-21;")
+    assert stored["url"].startswith("https://")
+    assert stored["blob_key"] == "hosted/a.step"
+    body = store.get(stored["blob_key"], url=stored["url"])
+    assert body == b"ISO-10303-21;"
+    assert seen[0]["method"] == "PUT"
+    assert seen[0]["access"] == "private"
+    assert seen[0]["auth"] == "Bearer blob-token-value"
+    assert seen[1]["method"] == "GET"
+    assert "blob-token-value" not in stored["url"]
 
 
 def test_poll_once_completes_over_http(monkeypatch) -> None:

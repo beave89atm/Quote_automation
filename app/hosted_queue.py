@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
+import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine
@@ -660,17 +663,86 @@ class LocalBlobStore:
             raise ValueError("bad_file_type")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-        return {"name": name, "blob_key": key, "size": len(data)}
+        return {"name": name, "blob_key": key, "url": "", "size": len(data)}
+
+    def get(self, blob_key: str, *, url: str = "") -> bytes:
+        del url
+        path = self.root / blob_key
+        resolved = path.resolve()
+        if not resolved.is_relative_to(self.root.resolve()) or not resolved.is_file():
+            raise ValueError("blob_missing")
+        return resolved.read_bytes()
+
+
+_BLOB_API = "https://blob.vercel-storage.com"
+_BLOB_API_VERSION = "12"
 
 
 class VercelBlobStore:
-    """Config switch only. This build does not call Vercel Blob."""
+    """Server-side private Blob. The browser never sees the token."""
 
     def put(self, filename: str, data: bytes) -> dict[str, Any]:
-        del filename, data
-        if not (os.getenv("BLOB_READ_WRITE_TOKEN") or "").strip():
+        token = (os.getenv("BLOB_READ_WRITE_TOKEN") or "").strip()
+        if not token:
             raise BlobNotProvisioned("BLOB_READ_WRITE_TOKEN is not set")
-        raise BlobNotProvisioned("vercel_blob_not_called")
+        name = Path(filename).name
+        suffix = Path(name).suffix.lower()
+        if suffix not in ALLOWED_SUFFIXES:
+            raise ValueError("bad_file_type")
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise ValueError("file_too_large")
+        key = f"hosted/{uuid.uuid4().hex}/{name}"
+        payload = _blob_request("PUT", key, token, data)
+        url = str(payload.get("url") or "").strip()
+        pathname = str(payload.get("pathname") or key).strip()
+        if not url.startswith("https://"):
+            raise BlobNotProvisioned("blob_url_missing")
+        return {"name": name, "blob_key": pathname, "url": url, "size": len(data)}
+
+    def get(self, blob_key: str, *, url: str = "") -> bytes:
+        token = (os.getenv("BLOB_READ_WRITE_TOKEN") or "").strip()
+        if not token:
+            raise BlobNotProvisioned("BLOB_READ_WRITE_TOKEN is not set")
+        target = (url or "").strip()
+        if not target.startswith("https://"):
+            raise BlobNotProvisioned("blob_url_missing")
+        del blob_key
+        return _blob_request_bytes(target, token)
+
+
+def _blob_request(method: str, pathname: str, token: str, body: bytes | None) -> dict[str, Any]:
+    raw = _blob_request_bytes(f"{_BLOB_API}/{quote(pathname, safe='/')}", token, method=method, body=body, put=True)
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BlobNotProvisioned("blob_response_incomplete") from exc
+    if not isinstance(payload, dict):
+        raise BlobNotProvisioned("blob_response_incomplete")
+    return payload
+
+
+def _blob_request_bytes(
+    url: str,
+    token: str,
+    *,
+    method: str = "GET",
+    body: bytes | None = None,
+    put: bool = False,
+) -> bytes:
+    headers = {
+        "authorization": f"Bearer {token}",
+        "x-api-version": _BLOB_API_VERSION,
+    }
+    if put:
+        headers["x-vercel-blob-access"] = "private"
+        headers["x-content-type"] = "application/octet-stream"
+        headers["x-add-random-suffix"] = "0"
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as exc:
+        raise BlobNotProvisioned(f"blob_http_{exc.code}") from None
 
 
 def blob_store() -> LocalBlobStore | VercelBlobStore:

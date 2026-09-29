@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from .hosted_auth import (
@@ -14,6 +16,7 @@ from .hosted_auth import (
     auth_config,
     authorize_claims,
     check_local_password,
+    dev_bypass_allowed,
     hash_token,
     new_session_token,
     provider_name,
@@ -23,6 +26,7 @@ from .hosted_auth import (
 from .hosted_queue import (
     BlobNotProvisioned,
     blob_store,
+    get_job as read_job,
     cancel_job,
     claim_next,
     complete_job,
@@ -112,6 +116,17 @@ def hosted_callback(body: CallbackBody) -> dict[str, Any]:
     return _issue(identity)
 
 
+@router.post("/auth/dev")
+def hosted_dev(body: LoginBody, request: Request) -> dict[str, Any]:
+    if not dev_bypass_allowed(request.url.hostname or ""):
+        raise HTTPException(status_code=403, detail="dev_bypass_disabled")
+    try:
+        identity = authorize_claims({"email": body.email}, provider="local")
+    except AuthRejected as exc:
+        raise HTTPException(status_code=403, detail=exc.code) from None
+    return _issue(identity)
+
+
 @router.get("/me")
 def me(identity: Identity = Depends(require_identity)) -> dict[str, str]:
     return {"email": identity.email, "role": identity.role}
@@ -178,6 +193,32 @@ def cancel(job_id: str, identity: Identity = Depends(require_identity)) -> dict[
     if updated is None:
         raise HTTPException(status_code=409, detail="not_cancellable")
     return updated
+
+
+@router.get("/worker/file")
+def worker_file(
+    job_id: str,
+    key: str,
+    _: str = Depends(require_worker),
+) -> Response:
+    job = read_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    match = next((item for item in job.get("files") or [] if item.get("blob_key") == key), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    try:
+        data = blob_store().get(key, url=str(match.get("url") or ""))
+    except BlobNotProvisioned as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    name = Path(str(match.get("name") or "file")).name
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
 
 
 @router.post("/worker/claim")

@@ -25,12 +25,14 @@ Lookup = Callable[[dict[str, Any]], bool]
 
 
 def default_runner(job: dict[str, Any]) -> dict[str, Any]:
-    del job
-    raise RuntimeError("hosted_runner_not_configured")
+    """Existing push path for the files on the job. Tests pass their own runner."""
+    from .hosted_runner import execute_hosted_job
+
+    return execute_hosted_job(job)
 
 
 def default_lookup(job: dict[str, Any]) -> bool:
-    """No live Sectura call. Stored quote ids are handled before this."""
+    """Stored quote ids are handled before this. The runner searches Sectura."""
     del job
     return False
 
