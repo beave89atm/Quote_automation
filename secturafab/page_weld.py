@@ -182,11 +182,12 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
       status: addStatus
     };
   }
-  // AddItem_Assembly ignores Description. The old line update does not
-  // persist it either. After the line exists, post the same
-  // /Quote/UpdatePropertyValue the quote header uses, against this
-  // line's id. Do not write the quote-number field or the header description.
-  // Fail only when the tree read-back is still wrong. Never store Root.
+  // AddItem_Assembly ignores Description. A hand-built
+  // UpdatePropertyValue body does not store it either. After the line
+  // exists, edit this line's Description cell and trigger change. The
+  // page posts. Do not write the quote-number field or the header
+  // description. Fail only when the tree read-back is still wrong.
+  // Never store Root.
   function treeRows(body) {
     if (!body) return [];
     if (Array.isArray(body)) return body;
@@ -324,41 +325,55 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
           posted_description: ""
         };
       }
-      // Same post the quote-number change uses: the page handler
-      // sends the anti-forgery token with UpdatePropertyValue. A body
-      // without that token returns success and does not store.
-      function attachLineAf(data) {
+      // The header save sets the field and triggers change. The page
+      // posts UpdatePropertyValue itself. A hand-built body does not
+      // store. Edit this line's Description cell the same way. Do not
+      // write the quote-number field or the header description.
+      function triggerLineDescription(lineId, value) {
+        var grid = null;
+        try { grid = jQuery("#GridItem").data("kendoGrid"); } catch (eG) { grid = null; }
+        if (!grid || typeof grid.editCell !== "function" || !grid.tbody) return false;
+        var found = null;
         try {
-          var el = document.querySelector("input[name='__RequestVerificationToken']");
-          if (!el) el = document.querySelector("input[name*='RequestVerification']");
-          if (el && String(el.value || "").trim()) {
-            data[el.getAttribute("name") || "__RequestVerificationToken"] = el.value;
-            return;
+          var trs = grid.tbody.find("tr");
+          var list = [];
+          if (trs && trs.toArray) list = trs.toArray();
+          else if (trs && trs.length != null) {
+            for (var ti = 0; ti < trs.length; ti++) list.push(trs[ti]);
           }
-          if (window.kendo && typeof kendo.antiForgeryTokens === "function") {
-            var tokens = kendo.antiForgeryTokens() || {};
-            var names = Object.keys(tokens);
-            for (var ai = 0; ai < names.length; ai++) {
-              if (tokens[names[ai]]) {
-                data[names[ai]] = tokens[names[ai]];
-                return;
-              }
+          for (var ri = 0; ri < list.length; ri++) {
+            var item = {};
+            try { item = grid.dataItem(list[ri]) || {}; } catch (eD) { item = {}; }
+            var id = String(item.ID || item.Id || "").trim();
+            if (id && id === lineId) { found = list[ri]; break; }
+          }
+        } catch (eR) { found = null; }
+        if (!found) return false;
+        var tr = jQuery(found);
+        var cell = tr.find("td[data-field='Description']");
+        if ((!cell || !cell.length) && grid.columns) {
+          for (var c = 0; c < grid.columns.length; c++) {
+            if (String((grid.columns[c] && grid.columns[c].field) || "") === "Description") {
+              cell = tr.find("td").eq(c);
+              break;
             }
           }
-        } catch (eAf) {}
+        }
+        if (!cell || !cell.length) return false;
+        try { grid.editCell(cell); } catch (eE) { return false; }
+        var editor = null;
+        try { editor = cell.find("input, textarea").first(); } catch (eF) { editor = null; }
+        if (!editor || !editor.length) {
+          try { if (typeof grid.closeCell === "function") grid.closeCell(); } catch (eC) {}
+          return false;
+        }
+        try {
+          editor.val(value).trigger("change");
+          if (typeof grid.closeCell === "function") grid.closeCell();
+        } catch (eV) { return false; }
+        return true;
       }
-      var linePayload = {
-        ID: itemId,
-        parameter: "Description",
-        value: lineDesc
-      };
-      attachLineAf(linePayload);
-      postedDescription = "parameter=Description&value=" + lineDesc;
-      await ajaxBody({
-        url: "/Quote/UpdatePropertyValue",
-        type: "POST",
-        data: linePayload
-      });
+      postedDescription = triggerLineDescription(itemId, lineDesc) ? lineDesc : "";
       var second = await readTree();
       parent = assemblyParent(treeRows(second && second.body));
       stored = parent ? String(parent.Description || "").trim() : "";

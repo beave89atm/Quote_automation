@@ -2002,7 +2002,9 @@ def test_assembly_line_uses_part_number_and_chosen_description(monkeypatch):
     )
     assert '"description": "11521-000 - ZZ-TEST weldment"' in seen["expr"]
     assert "applyAssemblyLineDesc" in PAGE_ADD_ASSEMBLY_JS
-    assert "/Quote/UpdatePropertyValue" in PAGE_ADD_ASSEMBLY_JS
+    assert "editCell" in PAGE_ADD_ASSEMBLY_JS
+    assert "data-field='Description'" in PAGE_ADD_ASSEMBLY_JS
+    assert 'parameter: "Description"' not in PAGE_ADD_ASSEMBLY_JS
     assert "#quote_Text" not in PAGE_ADD_ASSEMBLY_JS
     assert "quoteOnline/update" not in PAGE_ADD_ASSEMBLY_JS
     assert any("AddItem_Assembly persisted" in note for note in notes)
@@ -2896,6 +2898,57 @@ def test_drawing_14_ga_0747_selects_dropdown_076():
     assert "A-11513-000" in objects["left"]
     assert "gauge_not_in_list" not in objects["whyList"]
     assert ".076 - 14 Ga" in objects["selected"]
+
+
+def test_kid_without_callout_keeps_job_level_14_ga():
+    """A-11513-000 has no 14 GA of its own. The job gauge is 14 Ga.
+
+    plates.length > 1 used to replace that name with the grid Thickness
+    before the callout check. This row's Thickness is not a dropdown row
+    and the blob does not say 14 GA, so gaugeIndex returned -1 and the
+    FLAG was gauge_not_in_list. The kid keeps the job-level 14 Ga.
+    0.0747 and the list row .076 are that same gauge. applyPageNativeCadThickness
+    is the Finish function push_job calls.
+    """
+    store = [
+        {
+            "uid": "sib",
+            "PartID": "sib",
+            "Name": "A-11521-000",
+            "PartName": "A-11521-000",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "0.076",
+            "ErrorStatus": 0,
+            "Material": "A36",
+            "Length": 26.6,
+            "Width": 37.5,
+        },
+        {
+            "uid": "kid",
+            "PartID": "kid",
+            "Name": "A-11513-000",
+            "PartName": "A-11513-000",
+            "Description": "A-11513-000",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "not a dropdown row",
+            "ErrorStatus": 0,
+            "Material": "A36",
+            "Length": 15.0,
+            "Width": 37.5,
+        },
+    ]
+    gauges = [{"Thickness": 0.076, "Description": ".076 - 14 Ga"}]
+    out = _run_page_finish(store, gauges, "14 Ga")
+    assert out["why"] == "", out
+    assert "A-11513-000" in out["left"]
+    assert "A-11521-000" in out["left"]
+    assert "A-11513-000" not in " ".join(out["skipped"])
+    assert "gauge_not_in_list" not in out["whyList"]
+    assert out["selected"].count(".076 - 14 Ga") == 2
 
 
 def test_page_finish_34892_three_sixteenth_not_11_ga():

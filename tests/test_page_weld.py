@@ -111,10 +111,12 @@ def test_additem_assembly_is_checked_on_the_tree(monkeypatch):
 
 
 def test_assembly_description_is_posted_after_the_line_exists():
-    """AddItem_Assembly ignores Description. The follow-up post must land it.
+    """The tree starts as the bare part number. The cell change stores the line.
 
-    The old helper only rewrote the create body, and the stored line stayed
-    the bare part number. This runs the page script and reads the ajax body.
+    A hand-built /Quote/UpdatePropertyValue body, with or without the
+    anti-forgery token, does not change the stored description. The page
+    stores it when the assembly line's Description editor fires change.
+    The read-back is QuoteItem_ReadTreeListData, not the request body.
     """
     import json
     import shutil
@@ -149,6 +151,9 @@ def test_assembly_description_is_posted_after_the_line_exists():
           AssemblyID: process.argv[5] === "loose" ? null : "parent-1"
         };
         if (process.argv[6]) parent.Description = process.argv[6];
+        const reads = [];
+        let persistedVia = "";
+        let cellOpen = false;
         const sandbox = {
           setTimeout, clearTimeout, Date, Promise, console, JSON, encodeURIComponent,
           Object, String, Number, Array
@@ -162,6 +167,9 @@ def test_assembly_description_is_posted_after_the_line_exists():
         sandbox.document = {
           querySelector(sel) {
             if (sel === "#AssemblyName") return { form: null };
+            if (sel === "#quote_Text" || sel === "#Description") {
+              throw new Error("header field must stay untouched");
+            }
             if (String(sel).indexOf("RequestVerification") >= 0) {
               return {
                 value: "af-live",
@@ -196,14 +204,103 @@ def test_assembly_description_is_posted_after_the_line_exists():
             }
           };
         }
+        const parentRow = { ID: parent.ID };
+        const kidRow = { ID: kid.ID };
+        function descriptionEditor(row) {
+          const editor = {
+            length: 1,
+            _value: "",
+            val(v) {
+              if (arguments.length === 0) return this._value;
+              this._value = v;
+              return this;
+            },
+            trigger(ev) {
+              // The page's own change handler is what stores the line.
+              // A hand-built UpdatePropertyValue body does not.
+              if (
+                ev === "change"
+                && cellOpen
+                && row.ID === parent.ID
+              ) {
+                const text = String(this._value || "");
+                if (text && text.toLowerCase() !== "root") {
+                  parent.Description = text;
+                  persistedVia = "description-cell";
+                }
+              }
+              return this;
+            },
+            first() { return this; }
+          };
+          return editor;
+        }
+        function descriptionCell(row) {
+          const editor = descriptionEditor(row);
+          return {
+            length: 1,
+            find(sel) {
+              const text = String(sel || "");
+              if (text.indexOf("input") >= 0 || text.indexOf("textarea") >= 0) {
+                return editor;
+              }
+              return { length: 0, first() { return { length: 0 }; } };
+            },
+            eq() { return this; },
+            first() { return this; }
+          };
+        }
+        function wrapTr(row) {
+          return {
+            length: 1,
+            find(sel) {
+              const text = String(sel || "");
+              if (text.indexOf("Description") >= 0) return descriptionCell(row);
+              if (text === "td") {
+                return {
+                  length: 2,
+                  eq(i) { return i === 1 ? descriptionCell(row) : { length: 0 }; }
+                };
+              }
+              return { length: 0 };
+            }
+          };
+        }
+        const itemGrid = {
+          columns: [{ field: "ItemNumber" }, { field: "Description" }],
+          dataSource: { data() { return [kid]; } },
+          tbody: {
+            find() {
+              return {
+                length: 2,
+                toArray() { return [parentRow, kidRow]; }
+              };
+            }
+          },
+          dataItem(tr) {
+            if (tr && tr.ID === parent.ID) return parent;
+            if (tr && tr.ID === kid.ID) return kid;
+            return {};
+          },
+          editCell() { cellOpen = true; },
+          closeCell() { cellOpen = false; }
+        };
         sandbox.jQuery = function(sel) {
           if (sel === "#AssemblyName") {
             return { val() { return this; }, trigger() { return this; } };
           }
+          if (sel === "#quote_Text" || sel === "#Description") {
+            throw new Error("header field must stay untouched");
+          }
+          if (sel === "#GridItem" || sel === "#GridAssembly") {
+            return { data() { return itemGrid; } };
+          }
+          if (sel && typeof sel === "object" && sel.ID) return wrapTr(sel);
           return {
-            data() {
-              return { dataSource: { data() { return [kid]; } } };
-            }
+            data() { return null; },
+            val() { return this; },
+            trigger() { return this; },
+            find() { return { length: 0 }; }
           };
         };
         sandbox.jQuery.ajax = function(opts) {
@@ -224,22 +321,8 @@ def test_assembly_description_is_posted_after_the_line_exists():
               return;
             }
             if (url.indexOf("UpdatePropertyValue") >= 0) {
-              const data = (opts && opts.data) || {};
-              const keys = Object.keys(data);
-              const hasToken = keys.some(
-                (key) => /RequestVerification/i.test(key) && data[key]
-              );
-              // The quote-number post persists because it carries the
-              // page anti-forgery token. A token-less body does not.
-              if (
-                hasToken
-                && data.parameter === "Description"
-                && data.ID === parent.ID
-                && data.value
-                && String(data.value).toLowerCase() !== "root"
-              ) {
-                parent.Description = data.value;
-              }
+              // Wrong shape, wrong id, or a token-bearing hand-built body:
+              // the stored tree does not change.
               deferred.resolve(true, 200);
               return;
             }
@@ -252,7 +335,10 @@ def test_assembly_description_is_posted_after_the_line_exists():
               return;
             }
             if (url.indexOf("QuoteItem_ReadTreeListData") >= 0) {
-              deferred.resolve({ Data: [Object.assign({}, parent), kid] }, 200);
+              reads.push(String(parent.Description || ""));
+              deferred.resolve({
+                Data: [Object.assign({}, parent), Object.assign({}, kid)]
+              }, 200);
               return;
             }
             deferred.resolve({}, 200);
@@ -265,8 +351,15 @@ def test_assembly_description_is_posted_after_the_line_exists():
           quoteId: "qid",
           description: wanted
         }) + ")";
+        const started = parent.Description;
         vm.runInContext(runner, sandbox).then((out) => {
-          console.log(JSON.stringify({ out: out, posts: posts }));
+          console.log(JSON.stringify({
+            out: out,
+            posts: posts,
+            started: started,
+            reads: reads,
+            persistedVia: persistedVia
+          }));
         }).catch((err) => {
           console.error(err && err.stack || err);
           process.exit(1);
@@ -292,15 +385,18 @@ def test_assembly_description_is_posted_after_the_line_exists():
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout.strip().splitlines()[-1])
     posts = payload["posts"]
-    update = next(row for row in posts if "UpdatePropertyValue" in row["url"])
-    assert update["data"]["ID"] == "parent-1"
-    assert update["data"]["parameter"] == "Description"
-    assert posts.index(update) > next(
-        i for i, row in enumerate(posts) if "AddItem_Assembly" in row["url"]
-    )
-    assert not any("quote_Text" in row["url"] for row in posts)
+    assert payload["started"] == "11521-000"
+    assert payload["reads"][0] == "11521-000"
+    assert payload["reads"][-1] == wanted
+    assert payload["persistedVia"] == "description-cell"
     assert payload["out"]["stored_description"] == wanted
     assert payload["out"]["ok"] is True
+    assert not any(
+        isinstance(row.get("data"), dict) and row["data"].get("parameter") == "Description"
+        for row in posts
+    )
+    assert not any("quoteOnline/update" in row["url"] for row in posts)
+    assert not any("quote_Text" in row["url"] for row in posts)
     linear = "1020243-1 - ZZ-TEST linear tube+channel nest+renest 2b8fc8c push_job 9/29"
     js_path.write_text(PAGE_ADD_ASSEMBLY_JS, encoding="utf-8")
     run_path.write_text(script, encoding="utf-8")
@@ -317,8 +413,34 @@ def test_assembly_description_is_posted_after_the_line_exists():
         run_path.unlink(missing_ok=True)
     assert proc.returncode == 0, proc.stderr
     linear_out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert linear_out["started"] == "1020243-1"
+    assert linear_out["reads"][0] == "1020243-1"
+    assert linear_out["reads"][-1] == linear
+    assert linear_out["persistedVia"] == "description-cell"
     assert linear_out["out"]["stored_description"] == linear
     assert linear_out["out"]["ok"] is True
+    bare_parent = "34887-1 - chosen description"
+    js_path.write_text(PAGE_ADD_ASSEMBLY_JS, encoding="utf-8")
+    run_path.write_text(script, encoding="utf-8")
+    try:
+        proc = subprocess.run(
+            [node, str(run_path), str(js_path), bare_parent, "34887-1"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    finally:
+        js_path.unlink(missing_ok=True)
+        run_path.unlink(missing_ok=True)
+    assert proc.returncode == 0, proc.stderr
+    parent_out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert parent_out["started"] == "34887-1"
+    assert parent_out["reads"][0] == "34887-1"
+    assert parent_out["reads"][-1] == bare_parent
+    assert parent_out["persistedVia"] == "description-cell"
+    assert parent_out["out"]["stored_description"] == bare_parent
+    assert parent_out["out"]["ok"] is True
     rooted = "34887-1 - chosen description"
     js_path.write_text(PAGE_ADD_ASSEMBLY_JS, encoding="utf-8")
     run_path.write_text(script, encoding="utf-8")
@@ -335,6 +457,9 @@ def test_assembly_description_is_posted_after_the_line_exists():
         run_path.unlink(missing_ok=True)
     assert proc.returncode == 0, proc.stderr
     root_out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert root_out["started"] == "Root"
+    assert root_out["reads"][0] == "Root"
+    assert root_out["reads"][-1] == rooted
     assert root_out["out"]["stored_description"] == rooted
     assert root_out["out"]["stored_description"] != "Root"
     assert root_out["out"]["ok"] is True
@@ -343,7 +468,7 @@ def test_assembly_description_is_posted_after_the_line_exists():
     run_path.write_text(script, encoding="utf-8")
     try:
         proc = subprocess.run(
-            [node, str(run_path), str(js_path), loose_wanted, "34887-1", "loose", "Root"],
+            [node, str(run_path), str(js_path), loose_wanted, "34887-1", "loose"],
             check=False,
             capture_output=True,
             text=True,
@@ -354,6 +479,10 @@ def test_assembly_description_is_posted_after_the_line_exists():
         run_path.unlink(missing_ok=True)
     assert proc.returncode == 0, proc.stderr
     loose_out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert loose_out["started"] == "34887-1"
+    assert loose_out["reads"][0] == "34887-1"
+    assert loose_out["reads"][-1] == loose_wanted
+    assert loose_out["persistedVia"] == "description-cell"
     assert loose_out["out"]["ok"] is True, loose_out["out"]
     assert loose_out["out"]["stored_description"] == loose_wanted
     assert any("CopyMoveItemToAssembly" in row["url"] for row in loose_out["posts"])

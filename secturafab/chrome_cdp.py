@@ -2865,13 +2865,19 @@ _PAGE_FINISH_JS = """(async function(spec) {
     for (var p = 0; p < plates.length; p++) {
       var row = plates[p];
       var gauge = sharedGauge;
-      if (plates.length > 1) {
+      var callout = rowGaugeCallout(row);
+      if (callout) {
+        gauge = callout;
+      } else if (plates.length > 1) {
+        // A kid with no callout of its own keeps the job-level named
+        // gauge. The grid Thickness field is not that name. Use it only
+        // when it is itself a dropdown row. Do not invent a gauge.
         var liveGauge = (row && row._gridItem) || row || {};
         var ownGauge = liveGauge.Thickness != null ? String(liveGauge.Thickness).trim() : "";
-        if (ownGauge) gauge = ownGauge;
+        var ownData = [];
+        try { ownData = (cb.dataSource && cb.dataSource.data()) || []; } catch (eOwn) { ownData = []; }
+        if (ownGauge && gaugeIndex(ownData, ownGauge) >= 0) gauge = ownGauge;
       }
-      var callout = rowGaugeCallout(row);
-      if (callout) gauge = callout;
       if (!gauge) {
         dropUnlistedGauge(row);
         continue;
