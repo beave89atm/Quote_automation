@@ -286,6 +286,20 @@ def format_cad_description(
     return " - ".join(bits)
 
 
+def linear_additem_name(
+    part_no: str,
+    *,
+    sku: str | None = None,
+    noun: str | None = None,
+) -> str:
+    """OnAddLinearClick ``name`` is ``{PN} - {SKU}``.
+
+    Cut length stays on the length field. Gold 1020243-1 posted
+    ``1020243-1 - RCT5X4X3/16-A500``, not a `` - 45.188`` suffix.
+    """
+    return format_linear_description(part_no, sku=sku, noun=noun)
+
+
 def format_linear_description(
     part_no: str,
     *,

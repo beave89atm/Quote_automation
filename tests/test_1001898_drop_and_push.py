@@ -302,16 +302,24 @@ def test_step_21678_cookie_uses_finish_dry_run(tmp_path: Path):
     client.config.website_cookie = "ASP.NET_SessionId=test"
     from tests.test_secturafab_website import _gold_cad, _gold_lin
 
+    _org = {
+        "OrganizationName": "Safe Cave",
+        "PrimaryOrganizationID": "11111111-1111-4111-8111-111111111111",
+    }
     populated = {
         "QuoteNumber": "21678-1",
+        "Description": "KNUCKLE WELDMENT",
         "ItemCount": 4,
         "ItemList": [_gold_cad("21680-1 PLATE"), _gold_lin("21679-1 TUBE")],
+        **_org,
     }
     _n = {"i": 0}
 
     def _get_json(_path):
         _n["i"] += 1
-        return {"QuoteNumber": "21678-1", "ItemCount": 0, "ItemList": []} if _n["i"] == 1 else populated
+        if _n["i"] == 1:
+            return {"QuoteNumber": "21678-1", "ItemCount": 0, "ItemList": [], **_org}
+        return populated
 
     client.get_json.side_effect = _get_json
     service = SecturaFabPushService(client=client)
@@ -336,7 +344,11 @@ def test_step_21678_cookie_uses_finish_dry_run(tmp_path: Path):
         "secturafab.push.extract_assembly_description", return_value="KNUCKLE WELDMENT"
     ), patch(
         "secturafab.push.ensure_laser_profile_ops"
-    ) as graft:
+    ) as graft, patch(
+        "secturafab.push.apply_quote_organization", return_value=["Set Organization: Safe Cave"]
+    ), patch.object(
+        service, "_peek_item_count", return_value=0
+    ):
         result = service.push_job(
             title="21678-1",
             pdf_filename="21678-1.pdf",
@@ -345,6 +357,7 @@ def test_step_21678_cookie_uses_finish_dry_run(tmp_path: Path):
             takeoff={"library": {"part_key": "21678-1"}},
             times={"weld_minutes": 10, "total_inches": 20},
             job_id=41,
+            organization="Safe Cave",
         )
     assert result.ok is True
     finish.assert_called_once()
@@ -406,6 +419,7 @@ def test_step_cookie_missing_flags_and_does_not_graft(tmp_path: Path):
             takeoff={"library": {"part_key": "21678-1"}},
             times={},
             job_id=41,
+            organization="Safe Cave",
         )
     assert result.ok is False
     finish.assert_called()

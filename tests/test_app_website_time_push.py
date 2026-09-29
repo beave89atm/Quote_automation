@@ -340,6 +340,7 @@ def test_push_job_mints_with_blank_description_when_title_missing(tmp_path: Path
             takeoff={"library": {"part_key": "lonely"}},
             times={},
             job_id=10,
+            organization="Safe Cave",
         )
     create_q.assert_called_once()
     assert create_q.call_args.kwargs.get("description") == ""
@@ -4286,6 +4287,7 @@ def test_additem_pdf_302_fails_push_ok_false(tmp_path, monkeypatch):
             },
             times={"weld_minutes": 0, "total_inches": 0},
             job_id=1775,
+            organization="Safe Cave",
         )
     assert result.ok is False
     assert result.ready is False
@@ -4460,6 +4462,7 @@ def test_empty_shell_item_count_1_is_not_success(tmp_path, monkeypatch):
             },
             times={},
             job_id=1776,
+            organization="Safe Cave",
         )
     assert result.ok is False
     assert result.ready is False
@@ -4764,6 +4767,7 @@ def test_gold_miss_after_200_finish_is_not_session_expired(tmp_path, monkeypatch
             },
             times={"weld_minutes": 10, "total_inches": 40.0},
             job_id=7049,
+            organization="Safe Cave",
         )
     assert result.ok is False
     assert result.ready is False

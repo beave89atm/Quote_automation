@@ -505,7 +505,7 @@ def test_pdf_and_linear_payloads_share_id_itemid():
     )
     assert tube["productType"] == "tube"
     assert list(linear.keys()) == list(LINEAR_ADD_FIELDS)
-    assert linear["Internal"] == ""
+    assert "Internal" not in linear
     assert linear["ItemID"] == EMPTY_GUID
     assert linear["fixedPrice"] == 0
     assert linear["productionReady"] is False
@@ -10377,6 +10377,7 @@ def test_push_job_does_not_mint_when_af_extracted_false(tmp_path: Path):
             stp_path=stp,
             takeoff={"library": {"part_key": "10072-1"}},
             times={},
+            organization="Safe Cave",
             job_id=7,
         )
     assert result.ok is False
@@ -10662,6 +10663,8 @@ def test_step_job_does_not_call_image_files(tmp_path: Path, monkeypatch):
         "QuoteNumber": "1010103-1",
         "ItemCount": 0,
         "ItemList": [],
+        "OrganizationName": "Safe Cave",
+        "PrimaryOrganizationID": "11111111-1111-4111-8111-111111111111",
     }
     client.quote_item_read.return_value = {"Data": [], "Total": 0}
     service = SecturaFabPushService(client=client)
@@ -10704,6 +10707,7 @@ def test_step_job_does_not_call_image_files(tmp_path: Path, monkeypatch):
             },
             times={},
             job_id=10103,
+            organization="Safe Cave",
         )
     finish_cad.assert_called()
     finish_pdf.assert_not_called()
@@ -11387,7 +11391,7 @@ def test_cadtype_stock_without_filetype_empty_body_is_not_success(tmp_path: Path
     assert "CadType" in blob and "Stock_X" in blob
     assert "filelist_missing_keys=" in blob
     assert "FileType" in blob
-    assert "posted FileList lacks FileType" in blob
+    assert "posted FileList lacks FileType" not in blob
     assert "empty body" in blob.lower()
     assert "not success" in blob
     assert "item_count=0" in blob or "GET item_count=0" in blob
@@ -21214,7 +21218,8 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "image files" in _OPEN_LONG_JS
     assert "OnAddLinearClick" in _PAGE_LINEAR_FINISH_JS
     assert "/Quote/AddItem_Linear" in _PAGE_LINEAR_FINISH_JS
-    assert "opts.data.Internal = \"\"" in _PAGE_LINEAR_FINISH_JS
+    assert "delete opts.data.Internal" in _PAGE_LINEAR_FINISH_JS
+    assert 'opts.data.Internal = ""' not in _PAGE_LINEAR_FINISH_JS
     assert "ItemID" in _PAGE_LINEAR_FINISH_JS
     assert "new line item" in _PAGE_LINEAR_FINISH_JS
     assert "list0Pack" in _PAGE_LINEAR_FINISH_JS
@@ -21223,7 +21228,8 @@ def test_pdf_add_files_js_skips_select_files_and_reads_gridpdf():
     assert "findLinearProductWidget" in _STAMP_LINEAR_FORM_JS
     assert "isProductTypeBar" in _STAMP_LINEAR_FORM_JS
     assert "s.sku" in _STAMP_LINEAR_FORM_JS or "spec.sku" in _STAMP_LINEAR_FORM_JS
-    assert "Internal" in _STAMP_LINEAR_FORM_JS
+    assert "#Internal" not in _STAMP_LINEAR_FORM_JS
+    assert "internal_empty" in _STAMP_LINEAR_FORM_JS
     assert "Hole" not in _STAMP_LINEAR_FORM_JS or "holes" in _STAMP_LINEAR_FORM_JS.lower()
     assert "AddNewPDFFeature" not in _STAMP_LINEAR_FORM_JS
     assert "AddFeature" not in _STAMP_LINEAR_FORM_JS
@@ -21758,7 +21764,8 @@ def test_add_item_linear_posts_page_onaddlinearclick():
     js = _PAGE_LINEAR_FINISH_JS
     assert "OnAddLinearClick" in js
     assert "/Quote/AddItem_Linear" in js
-    assert "opts.data.Internal = \"\"" in js
+    assert "delete opts.data.Internal" in js
+    assert 'opts.data.Internal = ""' not in js
     assert "00000000-0000-0000-0000-000000000000" in js
     minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1898"
     real = SecturaFabClient.__new__(SecturaFabClient)
@@ -21929,6 +21936,7 @@ def test_push_job_no_cookie_fails_without_quickadd(tmp_path: Path):
             takeoff={"library": {"part_key": "part"}},
             times={},
             job_id=2,
+            organization="Safe Cave",
         )
     assert result.ok is False
     create_q.assert_called_once()
@@ -21947,16 +21955,24 @@ def test_push_job_cookie_uses_finish_not_quickadd(tmp_path: Path):
     stp.write_bytes(b"ISO")
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=test"
+    _org = {
+        "OrganizationName": "Safe Cave",
+        "PrimaryOrganizationID": "11111111-1111-4111-8111-111111111111",
+    }
     populated = {
         "QuoteNumber": "21678-1",
+        "Description": "KNUCKLE",
         "ItemCount": 12,
         "ItemList": [_gold_cad("21680-1 PLATE"), _gold_lin("21679-1 TUBE")],
+        **_org,
     }
     _n = {"i": 0}
 
     def _get_json(_path):
         _n["i"] += 1
-        return {"QuoteNumber": "21678-1", "ItemCount": 0, "ItemList": []} if _n["i"] == 1 else populated
+        if _n["i"] == 1:
+            return {"QuoteNumber": "21678-1", "ItemCount": 0, "ItemList": [], **_org}
+        return populated
 
     client.get_json.side_effect = _get_json
     service = SecturaFabPushService(client=client)
@@ -21981,6 +21997,10 @@ def test_push_job_cookie_uses_finish_not_quickadd(tmp_path: Path):
         "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
     ), patch(
         "secturafab.push.extract_assembly_description", return_value="KNUCKLE"
+    ), patch(
+        "secturafab.push.apply_quote_organization", return_value=["Set Organization: Safe Cave"]
+    ), patch.object(
+        service, "_peek_item_count", return_value=0
     ):
         result = service.push_job(
             title="21678-1",
@@ -21990,6 +22010,7 @@ def test_push_job_cookie_uses_finish_not_quickadd(tmp_path: Path):
             takeoff={"library": {"part_key": "21678-1"}},
             times={"weld_minutes": 10, "total_inches": 20},
             job_id=1,
+            organization="Safe Cave",
         )
     assert result.ok is True
     finish.assert_called_once()
@@ -22039,6 +22060,7 @@ def test_push_job_finish_failure_fails_without_quickadd(tmp_path: Path):
             takeoff={"library": {"part_key": "part"}},
             times={},
             job_id=3,
+            organization="Safe Cave",
         )
     assert result.ok is False
     create_q.assert_called_once()
@@ -22053,16 +22075,23 @@ def test_push_pdf_only_with_cookie_uses_image_files_finish(tmp_path: Path):
     pdf.write_bytes(b"%PDF")
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=test"
+    _org = {
+        "OrganizationName": "Safe Cave",
+        "PrimaryOrganizationID": "11111111-1111-4111-8111-111111111111",
+    }
     populated = {
         "QuoteNumber": "lonely",
         "ItemCount": 1,
         "ItemList": [_gold_cad("lonely")],
+        **_org,
     }
     _n = {"i": 0}
 
     def _get_json(_path):
         _n["i"] += 1
-        return {"QuoteNumber": "lonely", "ItemCount": 0, "ItemList": []} if _n["i"] == 1 else populated
+        if _n["i"] == 1:
+            return {"QuoteNumber": "lonely", "ItemCount": 0, "ItemList": [], **_org}
+        return populated
 
     client.get_json.side_effect = _get_json
     service = SecturaFabPushService(client=client)
@@ -22089,6 +22118,10 @@ def test_push_pdf_only_with_cookie_uses_image_files_finish(tmp_path: Path):
         "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
     ), patch(
         "secturafab.push.extract_assembly_description", return_value=None
+    ), patch(
+        "secturafab.push.apply_quote_organization", return_value=["Set Organization: Safe Cave"]
+    ), patch.object(
+        service, "_peek_item_count", return_value=0
     ):
         result = service.push_job(
             title="lonely Title",
@@ -22098,6 +22131,7 @@ def test_push_pdf_only_with_cookie_uses_image_files_finish(tmp_path: Path):
             takeoff={"library": {}},
             times={},
             job_id=99,
+            organization="Safe Cave",
         )
     assert result.ok is True
     pdf_finish.assert_called_once()

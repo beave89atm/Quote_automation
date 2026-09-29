@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from secturafab.item_desc import format_linear_description, item_length_in, normalize_part_token
+from secturafab.item_desc import (
+    format_linear_description,
+    item_length_in,
+    linear_additem_name,
+    normalize_part_token,
+)
 from secturafab.qty_ops import normalize_part_key
 from secturafab.website import linear_website_product_type, pick_closest_linear_product
 from secturafab.weld_ops import _desc_token
@@ -353,8 +358,8 @@ def add_linear_item_from_bom(
                 length=length_in,
                 material=material,
                 machine="Saw",
-                name=format_linear_description(
-                    part_no, sku=sku, length_in=length_in, noun=description
+                name=linear_additem_name(
+                    part_no, sku=sku, noun=description
                 ),
                 extra={"sku": sku or ""},
             )

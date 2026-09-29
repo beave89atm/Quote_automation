@@ -26,8 +26,8 @@ from .browser_session import CHROME_SESSION_REQUIRED, effective_website_cookie
 from .item_desc import (
     format_assembly_description,
     format_cad_description,
-    format_linear_description,
     format_quote_header_description,
+    linear_additem_name,
     is_bare_part_number,
     match_bom_part_no,
     normalize_part_token,
@@ -80,7 +80,6 @@ from .website import (
     cad_finish_notes_pack_missing,
     cad_finish_notes_refuse_additem_dxf,
     finish_cad_chrome_edit_grid_unbound,
-    kyle_har_cad_contours_plate_values_applied,
     classified_kids_missing_part_mode,
     filelist_kids_partmode_set,
     finish_attempt_empty_partmode_or_internaldata,
@@ -1400,6 +1399,23 @@ def _organization_bind_fields(
     if label:
         fields["OrganizationName"] = label
     return fields
+
+
+def cad_finish_refused_before_post(result: Any, via: str) -> bool:
+    """True when the page skipped AddItem_DXFFiles.
+
+    flat_over_120 and the other skipFinish reasons set finish_why and
+    never POST. Those notes must not say Finish POST or EXEC_FAIL empty
+    body. A real page_fn OnAddDXFClick still reports an empty body.
+    """
+    if not isinstance(result, dict):
+        return False
+    why = str(result.get("finish_why") or "").strip()
+    if not why:
+        return False
+    if str(via or "") == "page_fn" and str(result.get("finish_fn") or "").strip():
+        return False
+    return True
 
 
 class SecturaFabPushService:
@@ -4260,13 +4276,6 @@ class SecturaFabPushService:
                     "filelist0_values "
                     + " ".join(f"{key}={vals.get(key)}" for key in note_keys)
                 )
-            kyle_har = kyle_har_cad_contours_plate_values_applied(vals) if isinstance(vals, dict) else False
-            if "FileType" in miss_cmp and not kyle_har:
-                notes.append(
-                    "WARNING: posted FileList lacks FileType — SetPartMode "
-                    "badge/classify is not the posted key "
-                    "(live 16629-1 empty body vs 105918-1 List,Result Component)"
-                )
             miss_id = [str(k) for k in (result.get("filelist_missing_identity") or [])]
             if miss_id:
                 notes.append(
@@ -4344,12 +4353,16 @@ class SecturaFabPushService:
             req_keys = [str(k) for k in (result.get("request_keys") or [])]
             if req_keys:
                 notes.append("finish_request_keys=" + ",".join(req_keys[:12]))
-        notes.append(
-            f"Finish POST /Quote/AddItem_DXFFiles "
-            f"(page-grid {int(grid_n) if isinstance(grid_n, (int, float)) else 0}"
-            f" / classified {len(ready)}) "
-            f"— laser/saw packs come from Finish, not grafted Profile"
+        finish_refused = cad_finish_refused_before_post(
+            result if isinstance(result, dict) else None, via
         )
+        if not finish_refused:
+            notes.append(
+                f"Finish POST /Quote/AddItem_DXFFiles "
+                f"(page-grid {int(grid_n) if isinstance(grid_n, (int, float)) else 0}"
+                f" / classified {len(ready)}) "
+                f"— laser/saw packs come from Finish, not grafted Profile"
+            )
         empty_finish = False
         if via != "page_fn":
             notes.append(
@@ -4391,11 +4404,13 @@ class SecturaFabPushService:
                     "WARNING: AddItem_DXFFiles HTTP 200 List=[] — not success "
                     "(List,Result keys without List length ≥1; Q10481)"
                 )
-            if result.get("empty_body") or (
-                body_type in {"empty", "str"}
-                and not result.get("has_NewItem")
-                and not result.get("has_QuoteItem")
-                and not body_keys
+            if not finish_refused and (
+                result.get("empty_body") or (
+                    body_type in {"empty", "str"}
+                    and not result.get("has_NewItem")
+                    and not result.get("has_QuoteItem")
+                    and not body_keys
+                )
             ):
                 empty_finish = True
                 notes.append(
@@ -6011,9 +6026,7 @@ class SecturaFabPushService:
                     "(page picker needs tenant SKU text)"
                 )
                 continue
-            name = format_linear_description(
-                pn, sku=sku, length_in=length, noun=noun
-            )
+            name = linear_additem_name(pn, sku=sku, noun=noun)
             extra = {k: v for k, v in bind.items() if k != "sku"}
             extra["sku"] = sku
             extra["productType"] = linear_add_product_type(
@@ -6497,12 +6510,16 @@ class SecturaFabPushService:
         createfile_sleep_fn: Callable[[float], None] | None = None,
         createfile_retry_interval_s: float = CREATEFILE_RETRY_INTERVAL_S,
         createfile_retry_max_s: float = CREATEFILE_RETRY_MAX_S,
+        quote_number: str | None = None,
+        organization: str | None = None,
     ) -> PushResult:
         notes: list[str] = []
         uploaded: list[str] = []
         createfile_attempts = 0
         quote_id: str | None = None
-        quote_number: str | None = None
+        quote_number_override = str(quote_number or "").strip()
+        organization_override = str(organization or "").strip()
+        quote_number = None
         quote_request_id: str | None = None
         try:
             part_key = _resolve_part_key(
@@ -6613,11 +6630,17 @@ class SecturaFabPushService:
                 )
                 if p
             ]
-            organization_name = detect_organization(
-                pdf_path=job_pdf,
-                library_folder=library.get("folder"),
-                extra_paths=extra_org_paths,
-            )
+            # An explicit organization wins over Time / folder detection.
+            # Real Time jobs with no override still detect Time Manufacturing Waco.
+            if organization_override:
+                organization_name = organization_override
+                notes.append(f"organization_override={organization_name}")
+            else:
+                organization_name = detect_organization(
+                    pdf_path=job_pdf,
+                    library_folder=library.get("folder"),
+                    extra_paths=extra_org_paths,
+                )
             if drawings:
 
                 def _createfile_progress(info: dict[str, Any]) -> None:
@@ -6722,7 +6745,11 @@ class SecturaFabPushService:
                         attempts=createfile_attempts,
                         created_new_quote=False,
                     )
-            quote_number = self.allocate_quote_number(part_key)
+            if quote_number_override:
+                quote_number = quote_number_override
+                notes.append(f"quote_number_override={quote_number}")
+            else:
+                quote_number = self.allocate_quote_number(part_key)
             from .forbidden_quotes import spent_quote_number_block_reason
 
             blocked = spent_quote_number_block_reason(quote_number)
@@ -6809,6 +6836,21 @@ class SecturaFabPushService:
                 or is_material_callout_title(raw_title)
             ):
                 raw_title = None
+            if not str(organization_name or "").strip():
+                msg = (
+                    "No organization — detect_organization found none and no "
+                    "override was set; not creating the quote"
+                )
+                notes.append(msg)
+                return PushResult(
+                    ok=False,
+                    error=msg,
+                    notes=notes,
+                    status="failed",
+                    quote_number=quote_number,
+                    created_new_quote=False,
+                    attempts=createfile_attempts,
+                )
             assembly_description = format_assembly_description(part_key, raw_title)
             quote_description = quote_header_fields(quote_number, raw_title)[1]
             if quote_description:

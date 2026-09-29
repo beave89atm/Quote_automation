@@ -349,7 +349,7 @@ def test_needs_assembly_structure_single_vs_multi():
     assert needs_assembly_structure([], [{"part_no": "A", "qty": 1}, {"part_no": "B", "qty": 1}]) is True
 
 
-def test_push_single_solid_step_skips_assembly_root(tmp_path: Path):
+def test_push_single_solid_step_skips_assembly_root(tmp_path: Path, monkeypatch):
     """One STEP solid + no multi-row BOM → Part + Profile, not Assembly."""
     pdf = tmp_path / "ME04-2773.pdf"
     stp = tmp_path / "ME04-2773.stp"
@@ -362,16 +362,22 @@ def test_push_single_solid_step_skips_assembly_root(tmp_path: Path):
     gold_item = _gold_cad("ME04-2773 - 0.99 in A36")
     gold_item["ID"] = "p1"
     gold_item["Data"] = 'DataPart:{"Time":0.02}'
+    _org = {
+        "OrganizationName": "Safe Cave",
+        "PrimaryOrganizationID": "11111111-1111-4111-8111-111111111111",
+    }
     _n = {"i": 0}
 
     def _get_json(_path):
         _n["i"] += 1
-        if _n["i"] == 1:
-            return {"QuoteNumber": "ME04-2773", "ItemCount": 0, "ItemList": []}
+        if _n["i"] <= 2:
+            return {"QuoteNumber": "ME04-2773", "ItemCount": 0, "ItemList": [], **_org}
         return {
             "QuoteNumber": "ME04-2773",
+            "Description": "PLATE - DOUBLER",
             "ItemCount": 1,
             "ItemList": [gold_item],
+            **_org,
         }
 
     client.get_json.side_effect = _get_json
@@ -410,6 +416,10 @@ def test_push_single_solid_step_skips_assembly_root(tmp_path: Path):
     ), patch(
         "secturafab.push.extract_assembly_description", return_value="PLATE - DOUBLER"
     ):
+        monkeypatch.setattr(
+            "secturafab.push.apply_quote_organization",
+            lambda *_a, **_k: ["Set Organization: Safe Cave"],
+        )
         result = service.push_job(
             title="ME04-2773",
             pdf_filename="ME04-2773.pdf",
@@ -418,6 +428,7 @@ def test_push_single_solid_step_skips_assembly_root(tmp_path: Path):
             takeoff={"library": {"part_key": "ME04-2773"}},
             times={"weld_minutes": 0, "total_inches": 0},
             job_id=71,
+            organization="Safe Cave",
         )
 
     assert result.ok is True
@@ -647,6 +658,7 @@ def test_push_pdf_only_uses_single_pdf_shell(tmp_path: Path):
             takeoff={"library": {}, "sizes_found": []},
             times={"weld_minutes": 0, "total_inches": 0},
             job_id=99,
+            organization="Safe Cave",
         )
 
     assert result.ok is False
@@ -757,6 +769,7 @@ def test_push_ok_requires_nonzero_item_count(tmp_path: Path):
             takeoff={"library": {"part_key": "part"}},
             times={"weld_minutes": 10, "total_inches": 20},
             job_id=1,
+            organization="Safe Cave",
         )
 
     assert result.ok is False
@@ -803,7 +816,7 @@ def test_push_refuses_oversize_step_without_mint(tmp_path: Path):
     pdf_finish.assert_not_called()
 
 
-def test_push_success_sets_item_count_gt_zero(tmp_path: Path):
+def test_push_success_sets_item_count_gt_zero(tmp_path: Path, monkeypatch):
     pdf = tmp_path / "ok.pdf"
     stp = tmp_path / "ok.stp"
     pdf.write_bytes(b"%PDF")
@@ -812,17 +825,23 @@ def test_push_success_sets_item_count_gt_zero(tmp_path: Path):
 
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=test"
+    _org = {
+        "OrganizationName": "Safe Cave",
+        "PrimaryOrganizationID": "11111111-1111-4111-8111-111111111111",
+    }
     populated = {
         "QuoteNumber": "ok",
+        "Description": "From drawing",
         "ItemCount": 2,
         "ItemList": [_gold_cad("A"), _gold_lin("B")],
+        **_org,
     }
     _n = {"i": 0}
 
     def _get_json(_path):
         _n["i"] += 1
-        if _n["i"] == 1:
-            return {"QuoteNumber": "ok", "ItemCount": 0, "ItemList": []}
+        if _n["i"] <= 2:
+            return {"QuoteNumber": "ok", "ItemCount": 0, "ItemList": [], **_org}
         return populated
 
     client.get_json.side_effect = _get_json
@@ -857,6 +876,10 @@ def test_push_success_sets_item_count_gt_zero(tmp_path: Path):
     ), patch(
         "secturafab.push.extract_assembly_description", return_value="From drawing"
     ):
+        monkeypatch.setattr(
+            "secturafab.push.apply_quote_organization",
+            lambda *_a, **_k: ["Set Organization: Safe Cave"],
+        )
         result = service.push_job(
             title="ok",
             pdf_filename="ok.pdf",
@@ -865,6 +888,7 @@ def test_push_success_sets_item_count_gt_zero(tmp_path: Path):
             takeoff={"library": {"part_key": "ok"}},
             times={"weld_minutes": 5, "total_inches": 10},
             job_id=2,
+            organization="Safe Cave",
         )
 
     assert result.ok is True

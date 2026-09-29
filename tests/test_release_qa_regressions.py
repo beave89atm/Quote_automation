@@ -261,6 +261,8 @@ def test_push_keeps_every_step_file(tmp_path, monkeypatch):
         takeoff={"library": {"part_key": "ZZ-WELD"}},
         times={},
         job_id=1,
+        organization="Safe Cave",
+        quote_number="ZZ-WELD",
     )
     assert seen["n"] == 2
     assert result.ok is False or result.notes
@@ -1303,3 +1305,389 @@ def test_saw_and_laser_pack_qc_guards_stay():
     )
     assert any("no Saw op" in flag for flag in report.flags)
     assert step_finish_pack_missing is not None
+
+
+def test_apply_grid_wrapper_returns_itemtype_counts(monkeypatch):
+    """Live 3a: the page counted Linear 3; the wrapper must not drop it."""
+    from secturafab.chrome_cdp import apply_grid_dxf_part_modes
+
+    monkeypatch.setattr(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        lambda *a, **k: {
+            "ok": True,
+            "tab": {"webSocketDebuggerUrl": "ws://edit"},
+            "edit_quote_id": _QID,
+            "minted_id": _QID,
+            "reason": "",
+        },
+    )
+
+    def _eval(*a, **k):
+        return {
+            "grid_present": True,
+            "cad": 10,
+            "linear": 3,
+            "assembly": 1,
+            "component": 1,
+            "itemtype_cad": 10,
+            "itemtype_linear": 3,
+            "set_count": 14,
+            "setpartmode_via": "page_fn",
+            "updateitemtype_count": 14,
+            "updateitemtype_via": "dropdown",
+            "grid_dxf_row_count": 14,
+        }
+
+    monkeypatch.setattr("secturafab.chrome_cdp._cdp_evaluate_promise", _eval)
+    out = apply_grid_dxf_part_modes(
+        [{"Category": "Linear", "Name": "34536 PIVOT TUBE"}],
+        quote_id=_QID,
+    )
+    assert out["itemtype_linear"] == 3
+    assert out["itemtype_cad"] == 10
+    assert out["updateitemtype_via"] == "dropdown"
+
+
+def test_matching_itemtype_linear_does_not_false_refuse(tmp_path, monkeypatch):
+    """Classifier Linear 1 and grid ItemType Linear 1 is not the 3a refuse."""
+    from unittest.mock import patch
+
+    from secturafab.push import SecturaFabPushService
+
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *a, **k: False)
+    stp = tmp_path / "34887-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-tube",
+            "FileID": "file-tube",
+            "ID": "id-tube",
+            "Name": "34887-1",
+            "PartName": "34536 PIVOT TUBE, BOOM TIP_34536-1",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "CadType": 0,
+            "InternalData": "server-stamped",
+            "ImageString": "iVBORw0KGgo",
+        }
+    ]
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": kids,
+        "grid_present": True,
+        "grid_dxf_row_count": 1,
+        "list_len": 1,
+        "internaldata_key_n": 1,
+        "internaldata_empty_n": 0,
+        "internaldata_nonempty_n": 1,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = _QID
+    client._edit_gate = ""
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 0,
+            "linear": 1,
+            "itemtype_cad": 0,
+            "itemtype_linear": 1,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "updateitemtype_via": "dropdown",
+            "updateitemtype_count": 1,
+            "grid_dxf_row_count": 1,
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id=_QID,
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="34887-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert "grid ItemType Linear 0" not in blob
+    assert "kyle_classify_before_finish=true" in blob
+
+
+def test_linear_add_omits_internal_and_length_suffix():
+    """Gold OnAddLinearClick: no Internal key, name is PN - SKU."""
+    from secturafab.chrome_cdp import _PAGE_LINEAR_FINISH_JS, _STAMP_LINEAR_FORM_JS
+    from secturafab.item_desc import linear_additem_name
+    from secturafab.website import LINEAR_ADD_FIELDS, build_linear_add_payload
+
+    plain = linear_additem_name(
+        "1020243-1", sku="RCT5X4X3/16-A500", noun="TUBE"
+    )
+    assert plain == "1020243-1 - RCT5X4X3/16-A500"
+    assert "45.188" not in plain
+    extra = {
+        "productConfigID": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "productSubType": "tube_rect",
+        "dim1": 5,
+        "dim2": 4,
+        "dim3": 0.1875,
+        "dim4": "",
+        "weightLength": 9.99,
+        "sku": "RCT5X4X3/16-A500",
+    }
+    payload = build_linear_add_payload(
+        "qid",
+        product_id="pid-tube",
+        qty=1,
+        length=45.1875,
+        name=plain,
+        extra=extra,
+    )
+    assert "Internal" not in payload
+    assert "Internal" not in LINEAR_ADD_FIELDS
+    assert payload["name"] == "1020243-1 - RCT5X4X3/16-A500"
+    assert payload["length"] == 45.1875
+    assert payload["productConfigID"] == extra["productConfigID"]
+    assert "#Internal" not in _STAMP_LINEAR_FORM_JS
+    assert "delete opts.data.Internal" in _PAGE_LINEAR_FINISH_JS
+    assert 'opts.data.Internal = ""' not in _PAGE_LINEAR_FINISH_JS
+    assert ' - "' in _PAGE_LINEAR_FINISH_JS
+
+
+def test_second_long_resets_linear_product_before_search():
+    from secturafab.chrome_cdp import _STAMP_LINEAR_FORM_JS
+
+    picker = _STAMP_LINEAR_FORM_JS.split("function pickLinearSku")[1].split(
+        "function findLinearConfigWidget"
+    )[0]
+    assert "resetLinearAutocomplete" in picker
+    assert 'widget.value("")' in picker
+    assert "waitLinearDataSource" in picker
+    assert "dataBound" in picker
+    assert picker.index("resetLinearAutocomplete") < picker.index("exactIndex(data")
+    assert picker.index("w.open") < picker.index("exactIndex(data")
+    config = _STAMP_LINEAR_FORM_JS.split("function pickLinearConfig20ft")[1].split(
+        "var lastPicker"
+    )[0]
+    assert "dataSource.read" in config
+    assert "20 ft" in _STAMP_LINEAR_FORM_JS
+    assert "ok: !!picked && !!cfg" in _STAMP_LINEAR_FORM_JS
+
+
+def test_push_job_overrides_win_and_missing_org_fails_closed(tmp_path, monkeypatch):
+    from secturafab.push import SecturaFabPushService
+
+    stp = tmp_path / "ZZ-OVERRIDE.step"
+    stp.write_text(_OCC_INCH, encoding="utf-8")
+    monkeypatch.setattr(
+        "secturafab.push.collect_job_files",
+        lambda **kwargs: ([], [stp]),
+    )
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *a, **k: False)
+    monkeypatch.setattr("secturafab.chrome_cdp.quotes_tab", lambda *a, **k: None)
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_session_lost", lambda *a, **k: False)
+    monkeypatch.setattr("secturafab.push.refresh_bom_rows_for_push", lambda *a, **k: ([], []))
+    monkeypatch.setattr(
+        "secturafab.push.detect_organization",
+        lambda **kwargs: "Time Manufacturing Waco",
+    )
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    client.get_json.return_value = {"ItemList": [], "ItemCount": 0}
+    service = SecturaFabPushService(client=client)
+    created: dict[str, object] = {}
+
+    def _create(**kwargs):
+        created.update(kwargs)
+        return "qid-override"
+
+    monkeypatch.setattr(service, "create_quote", _create)
+    monkeypatch.setattr(service, "allocate_quote_number", lambda *a, **k: "SHOULD-NOT-WIN")
+    monkeypatch.setattr(service, "upload_drawings_quote_request", lambda *a, **k: None)
+    monkeypatch.setattr(service, "find_quote_by_number", lambda *a, **k: None)
+    monkeypatch.setattr(service, "finish_cad_files", lambda **k: ["Finish stopped for the test"])
+    monkeypatch.setattr(service, "apply_item_categories", lambda *a, **k: [])
+    monkeypatch.setattr("secturafab.push.apply_quote_organization", lambda *a, **k: [])
+
+    overridden = service.push_job(
+        title="ZZ-OVERRIDE",
+        pdf_filename=None,
+        pdf_path=None,
+        stp_path=stp,
+        takeoff={"library": {"part_key": "ZZ-OVERRIDE"}},
+        times={},
+        organization="Safe Cave",
+        quote_number="ZZ-OVERRIDE-TEST",
+    )
+    assert created["organization_name"] == "Safe Cave"
+    assert created["quote_number"] == "ZZ-OVERRIDE-TEST"
+    assert created.get("organization_id") in (None, "")
+    assert "organization_override=Safe Cave" in overridden.notes
+
+    created.clear()
+    time_job = service.push_job(
+        title="21684-1",
+        pdf_filename=None,
+        pdf_path=None,
+        stp_path=stp,
+        takeoff={"library": {"part_key": "21684-1"}},
+        times={},
+    )
+    assert created["organization_name"] == "Time Manufacturing Waco"
+    assert "organization_override=" not in " ".join(time_job.notes)
+
+    created.clear()
+    monkeypatch.setattr("secturafab.push.detect_organization", lambda **kwargs: None)
+    missing = service.push_job(
+        title="NO-ORG",
+        pdf_filename=None,
+        pdf_path=None,
+        stp_path=stp,
+        takeoff={"library": {"part_key": "NO-ORG"}},
+        times={},
+    )
+    assert missing.ok is False
+    assert "not creating the quote" in (missing.error or "")
+    assert "organization_name" not in created
+
+
+def test_refused_finish_does_not_claim_additem_post(tmp_path):
+    """flat_over_120 skipped the POST — do not say Finish POST or empty body."""
+    from unittest.mock import patch
+
+    from secturafab.push import SecturaFabPushService, cad_finish_refused_before_post
+
+    assert cad_finish_refused_before_post(
+        {"finish_why": "flat_over_120"}, "skipped"
+    )
+    assert not cad_finish_refused_before_post(
+        {"finish_why": "flat_over_120", "finish_fn": "OnAddDXFClick"},
+        "page_fn",
+    )
+    stp = tmp_path / "mm.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-1",
+            "FileID": "file-1",
+            "ID": "id-1",
+            "Name": "PLATE",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "CadType": 0,
+            "Stock_X": 11.0,
+            "Stock_Y": 6.25,
+            "Length": 6.25,
+            "Width": 11.0,
+            "Thickness": 0.105,
+            "Thickness_Units": "inch",
+            "Material": "A36",
+            "ProductType": 100,
+            "Category": "Cad",
+            "PartMode": 0,
+            "InternalData": "server-stamped",
+            "ImageString": "iVBORw0KGgo",
+        }
+    ]
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": kids,
+        "grid_present": True,
+        "grid_dxf_row_count": 1,
+        "list_len": 1,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = _QID
+    client._edit_gate = ""
+    client._finish_via = "skipped"
+    client._setpartmode_via = "page_fn"
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    client.add_item_dxf_files.return_value = {
+        "status": 0,
+        "via": "skipped",
+        "finish_fn": "",
+        "finish_why": "flat_over_120",
+        "finish_filelist_n": 0,
+        "empty_body": True,
+        "body_type": "empty",
+        "body_keys": [],
+        "has_NewItem": False,
+        "grid_dxf_row_count": 2,
+        "filelist_sourcedataid_n": 0,
+        "filelist_from_kendo": False,
+        "finish_af_present": False,
+    }
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "itemtype_cad": 1,
+            "itemtype_linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "updateitemtype_via": "page_fn",
+            "updateitemtype_count": 1,
+            "grid_dxf_row_count": 1,
+            "cad_blank_material": 0,
+            "producttype_still_component": 0,
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id=_QID,
+            cad_files=[stp],
+            material="A36",
+            thickness="0.105",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="MM-PLATE",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert client.add_item_dxf_files.called
+    assert "finish_why=flat_over_120" in blob
+    assert "Finish POST /Quote/AddItem_DXFFiles" not in blob
+    assert "empty body" not in blob.lower()
+    assert "posted FileList lacks FileType" not in blob

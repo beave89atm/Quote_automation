@@ -381,20 +381,27 @@ def test_step_weldment_finish_or_no_graft(
     client.request.return_value.status_code = 200
     from tests.test_secturafab_website import _gold_cad, _gold_lin
 
+    _org = {
+        "OrganizationName": "Safe Cave",
+        "PrimaryOrganizationID": "11111111-1111-4111-8111-111111111111",
+    }
     populated = {
         "QuoteNumber": part_key,
+        "Description": "KNUCKLE WELDMENT",
         "ItemCount": 2,
         "ItemList": [
             _gold_lin("21680-1 HOSE GUARD"),
             _gold_cad("21679-1 PLATE"),
         ],
+        **_org,
     }
     _n = {"i": 0}
 
     def _get_json(_path):
         _n["i"] += 1
-        if cookie and _n["i"] == 1:
-            return {"QuoteNumber": part_key, "ItemCount": 0, "ItemList": []}
+        # Org stamp + items-before are empty; later GETs are the finished quote.
+        if cookie and _n["i"] <= 2:
+            return {"QuoteNumber": part_key, "ItemCount": 0, "ItemList": [], **_org}
         return populated
 
     client.get_json.side_effect = _get_json
@@ -432,6 +439,9 @@ def test_step_weldment_finish_or_no_graft(
         "secturafab.push.ensure_imperial_item_units", return_value=[]
     ), patch(
         "secturafab.push.extract_assembly_description", return_value="KNUCKLE WELDMENT"
+    ), patch(
+        "secturafab.push.apply_quote_organization",
+        return_value=["Set Organization: Safe Cave"],
     ):
         result = service.push_job(
             title=part_key,
@@ -441,6 +451,7 @@ def test_step_weldment_finish_or_no_graft(
             takeoff={"library": {"part_key": part_key}},
             times={"weld_minutes": 10, "total_inches": 20},
             job_id=41,
+            organization="Safe Cave",
         )
     graft.assert_not_called()
     finish.assert_called_once()

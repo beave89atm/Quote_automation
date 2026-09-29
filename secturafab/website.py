@@ -4712,7 +4712,6 @@ LINEAR_ADD_FIELDS = (
     "MiterRightAngle1",
     "MiterRightAngle2",
     "MiterRightOffset",
-    "Internal",
     "processLocation",
 )
 
@@ -8555,9 +8554,10 @@ def build_linear_add_payload(
         payload["productionReady"] = False
     if payload.get("outsource") in ("", None):
         payload["outsource"] = False
-    # New rows: empty ItemID. Do not send Internal holes / NREs on Long.
+    # New rows: empty ItemID. Gold OnAddLinearClick has no Internal key
+    # (a_page_onaddlinearclick.json). Internal="" is the 500.
     payload["ItemID"] = item_id or EMPTY_GUID
-    payload["Internal"] = ""
+    payload.pop("Internal", None)
     return payload
 
 

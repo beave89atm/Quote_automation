@@ -6917,9 +6917,41 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
     }
     lastPicker = hit.via;
     var w = hit.widget;
+    function resetLinearAutocomplete(widget) {
+      // Second Long in the same dialog still holds the first SKU.
+      // Clear and re-open before searching so C4X5.4-A36 is not empty.
+      try { if (typeof widget.close === "function") widget.close(); } catch (eC) {}
+      try { if (typeof widget.value === "function") widget.value(""); } catch (eV) {}
+      try {
+        if (widget.input && typeof widget.input.val === "function") widget.input.val("");
+      } catch (eI) {}
+    }
+    function waitLinearDataSource(widget, timeoutMs) {
+      return new Promise(function(resolve) {
+        var settled = false;
+        function rowsNow() {
+          var rows = [];
+          try {
+            rows = (widget.dataSource && widget.dataSource.data && widget.dataSource.data()) || [];
+          } catch (eRows) {}
+          return rows;
+        }
+        function finish() {
+          if (settled) return;
+          settled = true;
+          resolve(rowsNow());
+        }
+        if (!widget || !widget.dataSource) { resolve([]); return; }
+        try { widget.dataSource.one("change", finish); } catch (e1) {}
+        try { if (typeof widget.one === "function") widget.one("dataBound", finish); } catch (e2) {}
+        setTimeout(finish, timeoutMs || 8000);
+      });
+    }
+    resetLinearAutocomplete(w);
     try {
       if (typeof w.search === "function") w.search(sku);
     } catch (e) {}
+    try { if (typeof w.open === "function") w.open(); } catch (eOpen) {}
     function exactIndex(rows, wantSku) {
       var want = String(wantSku || "").trim().toLowerCase();
       if (!want) return -1;
@@ -6973,20 +7005,20 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
         });
       });
     }
-    var data = [];
-    try { data = (w.dataSource && w.dataSource.data && w.dataSource.data()) || []; } catch (e3) {}
-    var idx = exactIndex(data, sku);
-    if (idx >= 0) return Promise.resolve(applyItem(data[idx], idx));
-    if (w.dataSource && typeof w.dataSource.read === "function") {
-      return Promise.resolve(w.dataSource.read()).then(function() {
-        var rows = [];
-        try { rows = (w.dataSource.data && w.dataSource.data()) || []; } catch (e5) {}
-        var hitIdx = exactIndex(rows, sku);
-        if (hitIdx < 0) return "";
-        return applyItem(rows[hitIdx], hitIdx);
-      }).catch(function() { return ""; });
-    }
-    return Promise.resolve("");
+    return waitLinearDataSource(w, 8000).then(function(data) {
+      var idx = exactIndex(data, sku);
+      if (idx >= 0) return applyItem(data[idx], idx);
+      if (w.dataSource && typeof w.dataSource.read === "function") {
+        return Promise.resolve(w.dataSource.read()).then(function() {
+          return waitLinearDataSource(w, 8000);
+        }).then(function(rows) {
+          var hitIdx = exactIndex(rows, sku);
+          if (hitIdx < 0) return "";
+          return applyItem(rows[hitIdx], hitIdx);
+        }).catch(function() { return ""; });
+      }
+      return "";
+    });
     });
   }
   function findLinearConfigWidget() {
@@ -7011,37 +7043,62 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
     return blob.indexOf("20 ft") >= 0 || blob.indexOf("20ft") >= 0 || blob.indexOf("20-ft") >= 0;
   }
   function pickLinearConfig20ft(wantId) {
+    // Stock config is the 20ft row (or the catalog productConfigID).
+    // Wait for LinearConfigList's datasource — selecting before it
+    // loads leaves productConfigID blank and AddItem_Linear 500s.
     lastConfigVia = "";
     lastConfigValue = "";
-    var hit = findLinearConfigWidget();
-    if (!hit) return "";
-    lastConfigVia = hit.via;
-    var w = hit.widget;
-    var data = [];
-    try { data = (w && w.dataSource && w.dataSource.data && w.dataSource.data()) || []; } catch (e) {}
-    var want = String(wantId || "").toLowerCase();
-    var best = null;
-    for (var i = 0; i < data.length; i++) {
-      var val = itemValue(data[i]);
-      if (want && val && val.toLowerCase() === want) { best = data[i]; break; }
-    }
-    if (!best) {
-      for (var j = 0; j < data.length; j++) {
-        if (rowLooks20ft(data[j])) { best = data[j]; break; }
+    return new Promise(function(resolve) {
+      var t0 = Date.now();
+      function attempt() {
+        var hit = findLinearConfigWidget();
+        if (!hit || !hit.widget) {
+          if (Date.now() - t0 >= 8000) { resolve(""); return; }
+          setTimeout(attempt, 200);
+          return;
+        }
+        lastConfigVia = hit.via;
+        var w = hit.widget;
+        var data = [];
+        try { data = (w.dataSource && w.dataSource.data && w.dataSource.data()) || []; } catch (e) {}
+        if (!data.length && Date.now() - t0 < 8000) {
+          try {
+            if (w.dataSource) {
+              w.dataSource.one("change", attempt);
+              if (typeof w.dataSource.read === "function") w.dataSource.read();
+            }
+          } catch (eRead) {}
+          setTimeout(attempt, 200);
+          return;
+        }
+        var want = String(wantId || "").toLowerCase();
+        var best = null;
+        for (var i = 0; i < data.length; i++) {
+          var val = itemValue(data[i]);
+          if (want && val && val.toLowerCase() === want) { best = data[i]; break; }
+        }
+        if (!best) {
+          for (var j = 0; j < data.length; j++) {
+            if (rowLooks20ft(data[j])) { best = data[j]; break; }
+          }
+        }
+        var picked = best ? (itemValue(best) || itemSku(best)) : (wantId || "");
+        if (!picked) { resolve(""); return; }
+        try {
+          if (typeof w.value === "function") {
+            w.value(picked);
+            if (typeof w.trigger === "function") w.trigger("change");
+          } else if (hit.el && hit.el.val) {
+            hit.el.val(picked).trigger("change");
+          }
+        } catch (e2) {}
+        var live = "";
+        try { live = String((typeof w.value === "function" ? w.value() : "") || ""); } catch (e3) {}
+        lastConfigValue = live || picked;
+        resolve(lastConfigValue);
       }
-    }
-    var picked = best ? (itemValue(best) || itemSku(best)) : (wantId || "");
-    if (!picked) return "";
-    try {
-      if (w && typeof w.value === "function") {
-        w.value(picked);
-        if (typeof w.trigger === "function") w.trigger("change");
-      } else if (hit.el && hit.el.val) {
-        hit.el.val(picked).trigger("change");
-      }
-    } catch (e2) {}
-    lastConfigValue = picked;
-    return picked;
+      attempt();
+    });
   }
   var lastPicker = "";
   var lastPickerSku = "";
@@ -7054,7 +7111,6 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
   var length = spec && spec.length;
   var qty = spec && spec.qty;
   if (qty == null || qty === "") qty = 1;
-  setInput(["#Internal", "input[name=Internal]", "#internal"], "");
   setInput(
     ["#ItemID", "input[name=ItemID]", "#itemID"],
     "00000000-0000-0000-0000-000000000000"
@@ -7077,24 +7133,25 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
         name
       );
     }
-    var cfg = pickLinearConfig20ft(productConfigID);
-    return {
-      ok: !!picked,
-      long_clicked: true,
-      opened_via: String((spec && spec.opened_via) || ""),
-      picker_via: lastPicker,
-      picker_sku: lastPickerSku || sku,
-      picker_apply: lastApply,
-      picker_value: picked || "",
-      config_via: lastConfigVia,
-      config_value: cfg || lastConfigValue,
-      length_set: !!lengthSet,
-      qty_set: !!qtySet,
-      name_set: !!nameSet,
-      internal_empty: true,
-      itemid_empty: true,
-      machine: "Saw"
-    };
+    return pickLinearConfig20ft(productConfigID).then(function(cfg) {
+      return {
+        ok: !!picked && !!cfg,
+        long_clicked: true,
+        opened_via: String((spec && spec.opened_via) || ""),
+        picker_via: lastPicker,
+        picker_sku: lastPickerSku || sku,
+        picker_apply: lastApply,
+        picker_value: picked || "",
+        config_via: lastConfigVia,
+        config_value: cfg || lastConfigValue,
+        length_set: !!lengthSet,
+        qty_set: !!qtySet,
+        name_set: !!nameSet,
+        internal_empty: true,
+        itemid_empty: true,
+        machine: "Saw"
+      };
+    });
   });
 })"""
 
@@ -7197,7 +7254,27 @@ _PAGE_LINEAR_FINISH_JS = """(function() {
         if (!opts.data || typeof opts.data !== "object" || Array.isArray(opts.data)) {
           opts.data = {};
         }
-        opts.data.Internal = "";
+        // Gold form has no Internal key. Internal="" is the AddItem_Linear 500.
+        if (Object.prototype.hasOwnProperty.call(opts.data, "Internal")) {
+          delete opts.data.Internal;
+        }
+        var postedName = String(opts.data.name || opts.data.Name || "");
+        var postedLen = parseFloat(opts.data.length != null ? opts.data.length : opts.data.Length);
+        if (postedName && isFinite(postedLen)) {
+          var lenTexts = [
+            String(opts.data.length != null ? opts.data.length : opts.data.Length),
+            String(postedLen),
+            String(Math.round(postedLen * 1000) / 1000)
+          ];
+          for (var ni = 0; ni < lenTexts.length; ni++) {
+            var suffix = " - " + lenTexts[ni];
+            if (lenTexts[ni] && postedName.slice(-suffix.length) === suffix) {
+              postedName = postedName.slice(0, -suffix.length);
+              break;
+            }
+          }
+          opts.data.name = postedName;
+        }
         opts.data.ItemID = emptyGuid();
         attachChromeDomAf(opts.data);
         arguments[0] = opts;
@@ -9982,6 +10059,8 @@ def apply_grid_dxf_part_modes(
         "linear": 0,
         "assembly": 0,
         "component": 0,
+        "itemtype_cad": 0,
+        "itemtype_linear": 0,
         "set_count": 0,
         "setpartmode_via": "",
         "updateitemtype_count": 0,
@@ -10087,6 +10166,17 @@ def apply_grid_dxf_part_modes(
         out["force_live_grid_inch"] = True
     if present and value.get("classify_before_material"):
         out["classify_before_material"] = True
+    # The in-page script already counted ItemType. Dropping the keys
+    # made Finish read Linear 0 and refuse every tube assembly (3a).
+    if "itemtype_linear" in value or "itemtype_cad" in value:
+        try:
+            out["itemtype_linear"] = int(value.get("itemtype_linear") or 0)
+        except (TypeError, ValueError):
+            out["itemtype_linear"] = 0
+        try:
+            out["itemtype_cad"] = int(value.get("itemtype_cad") or 0)
+        except (TypeError, ValueError):
+            out["itemtype_cad"] = 0
     return out
 
 
