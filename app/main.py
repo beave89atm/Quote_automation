@@ -17,10 +17,12 @@ from quote_core.config import load_shop_rates
 from .auth import login, require_auth
 from .batch import pair_upload_files, paired_part_summary
 from .db import Job, SessionLocal, init_db
+from .hosted_routes import router as hosted_router
 from .paths import FRONTEND_DIST, RATES_PATH, UPLOAD_DIR, ensure_data_dirs
 from .services import process_job, push_jobs_secturafab_batch, recompute_from_items
 
 app = FastAPI(title="Kannon Quote App", version="0.1.0")
+app.include_router(hosted_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
