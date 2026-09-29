@@ -3582,7 +3582,7 @@ def test_pick_closest_linear_prefers_rt_over_pipe_sku_for_tube():
         },
     ]
     best, _note = pick_closest_linear_product(
-        products, description="33637-1 1 1/4 RETURN TUBE", material="A36"
+        products, description="33637-1 1 1/4 X 0.120 RETURN TUBE", material="A36"
     )
     assert best is not None
     assert best["ID"] == "rct"
@@ -4936,7 +4936,8 @@ def test_apply_grid_part_modes_js_does_not_reopen_cad_when_kids_exist():
 def test_apply_grid_part_modes_js_keeps_kids_without_select_or_invent():
     """Q10355 / 34328-1: child-row select empties #gridDXFParts.
 
-    Keep-path snapshots / rehydrates CadImport kids. No select, no
+    Keep-path snapshots / rehydrates CadImport kids. The only select is
+    the one row whose #DXFItemType dropdown is about to change. No
     editCell, no Contours invent, no #but_dxf before fail-close.
     """
     from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
@@ -4949,7 +4950,11 @@ def test_apply_grid_part_modes_js_keeps_kids_without_select_or_invent():
     assert 'keepVia = "rehydrate"' in js
     assert "Q10355" in js
     assert "34328-1" in js
-    assert ".select(" not in js
+    before, fn = js.split("function selectOneGridRow", 1)
+    body, after = fn.split("function changePageItemType", 1)
+    assert ".select(" not in before
+    assert "g.select(tr)" in body
+    assert ".select(" not in after
     assert "editCell(" not in js
     assert "NumberOfContours" not in js
     assert "Contours:" not in js
@@ -6260,9 +6265,34 @@ const dataSource = {
   },
 };
 const gridObj = { dataSource };
+const pageDdl = {
+  _v: "",
+  value(v) { this._v = v; return v; },
+  trigger(ev) {
+    if (ev !== "change") return;
+    const token = String(this._v || "");
+    store.rows.forEach((row) => {
+      const write = (k, v) => {
+        try {
+          if (typeof row.set === "function") row.set(k, v);
+          else row[k] = v;
+        } catch (e) { row[k] = v; }
+      };
+      write("ItemType", token);
+      if (token === "cad") {
+        write("ProductType", "prt_dxf");
+        write("ProductSubType", "prt_dxf");
+        write("productSubType", "prt_dxf");
+      }
+    });
+  },
+};
 global.jQuery = Object.assign((sel) => {
   if (sel === "#gridDXFParts") {
     return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#DXFItemType") {
+    return { length: 1, data: (name) => (name === "kendoDropDownList" ? pageDdl : null) };
   }
   if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
     return { length: 1, val: () => "org" };
@@ -6422,9 +6452,34 @@ const dataSource = {
   },
 };
 const gridObj = { dataSource };
+const pageDdl = {
+  _v: "",
+  value(v) { this._v = v; return v; },
+  trigger(ev) {
+    if (ev !== "change") return;
+    const token = String(this._v || "");
+    store.rows.forEach((row) => {
+      const write = (k, v) => {
+        try {
+          if (typeof row.set === "function") row.set(k, v);
+          else row[k] = v;
+        } catch (e) { row[k] = v; }
+      };
+      write("ItemType", token);
+      if (token === "cad") {
+        write("ProductType", "prt_dxf");
+        write("ProductSubType", "prt_dxf");
+        write("productSubType", "prt_dxf");
+      }
+    });
+  },
+};
 global.jQuery = Object.assign((sel) => {
   if (sel === "#gridDXFParts") {
     return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#DXFItemType") {
+    return { length: 1, data: (name) => (name === "kendoDropDownList" ? pageDdl : null) };
   }
   if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
     return { length: 1, val: () => "org" };
@@ -6475,7 +6530,7 @@ Promise.resolve(done(result)).catch((err) => {
     out = json.loads(proc.stdout)
     assert out["producttype_still_component"] >= 1
     assert out["product_type"] == 200
-    assert out["item_type"] == "Cad"
+    assert out["item_type"] == "cad"
 
 
 def test_apply_grid_force_live_grid_inch_iterates_observable_array(
@@ -6580,9 +6635,35 @@ if (Array.isArray(dataSource.data())) {
   throw new Error("mock not ObservableArray");
 }
 const gridObj = { dataSource };
+const pageDdl = {
+  _v: "",
+  value(v) { this._v = v; return v; },
+  trigger(ev) {
+    if (ev !== "change") return;
+    order.push("UpdateItemType");
+    const token = String(this._v || "");
+    store.rows.forEach((row) => {
+      const write = (k, v) => {
+        try {
+          if (typeof row.set === "function") row.set(k, v);
+          else row[k] = v;
+        } catch (e) { row[k] = v; }
+      };
+      write("ItemType", token);
+      if (token === "cad") {
+        write("ProductType", "prt_dxf");
+        write("ProductSubType", "prt_dxf");
+        write("productSubType", "prt_dxf");
+      }
+    });
+  },
+};
 global.jQuery = Object.assign((sel) => {
   if (sel === "#gridDXFParts") {
     return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#DXFItemType") {
+    return { length: 1, data: (name) => (name === "kendoDropDownList" ? pageDdl : null) };
   }
   if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
     return { length: 1, val: () => "org" };
@@ -6616,8 +6697,8 @@ const done = (value) => {
   }
   if (Number(store.rows[0].Thickness) === 7.3819) throw new Error("7.3819 class");
   if (String(store.rows[0].Material) !== "A36") throw new Error("material=" + store.rows[0].Material);
-  if (String(store.rows[0].ItemType) !== "Cad") throw new Error("ItemType=" + store.rows[0].ItemType);
-  if (Number(store.rows[0].ProductType) !== 100) throw new Error("ProductType=" + store.rows[0].ProductType);
+  if (String(store.rows[0].ItemType) !== "cad") throw new Error("ItemType=" + store.rows[0].ItemType);
+  if (String(store.rows[0].ProductType) !== "prt_dxf") throw new Error("ProductType=" + store.rows[0].ProductType);
   if (String(store.rows[0].ProductSubType || "") === "bar") throw new Error("ProductSubType still bar");
   const modeAt = order.indexOf("SetPartMode");
   const typeAt = order.indexOf("UpdateItemType");
@@ -6659,8 +6740,8 @@ Promise.resolve(done(result)).catch((err) => {
     assert out["inch_stamped"] >= 1
     assert out["thickness"] == "0.1875"
     assert out["units"] == "inch"
-    assert out["item_type"] == "Cad"
-    assert out["product_type"] == 100
+    assert out["item_type"] == "cad"
+    assert out["product_type"] == "prt_dxf"
     assert "SetPartMode" in out["order"]
     assert "UpdateItemType" in out["order"]
 
@@ -6742,9 +6823,34 @@ const dataSource = {
   view() { return store.rows; },
 };
 const gridObj = { dataSource };
+const pageDdl = {
+  _v: "",
+  value(v) { this._v = v; return v; },
+  trigger(ev) {
+    if (ev !== "change") return;
+    const token = String(this._v || "");
+    store.rows.forEach((row) => {
+      const write = (k, v) => {
+        try {
+          if (typeof row.set === "function") row.set(k, v);
+          else row[k] = v;
+        } catch (e) { row[k] = v; }
+      };
+      write("ItemType", token);
+      if (token === "cad") {
+        write("ProductType", "prt_dxf");
+        write("ProductSubType", "prt_dxf");
+        write("productSubType", "prt_dxf");
+      }
+    });
+  },
+};
 global.jQuery = Object.assign((sel) => {
   if (sel === "#gridDXFParts") {
     return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#DXFItemType") {
+    return { length: 1, data: (name) => (name === "kendoDropDownList" ? pageDdl : null) };
   }
   if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
     return { length: 1, val: () => "org" };
@@ -6807,7 +6913,7 @@ Promise.resolve(done(result)).catch((err) => {
     assert out["thickness"] == "0.1875"
     assert out["units"] == "inch"
     assert out["exclude_type"] == "function"
-    assert out["item_type"] == "Cad"
+    assert out["item_type"] == "cad"
 
 
 def test_finish_skips_when_grid_classify_cad_is_zero(tmp_path: Path):
@@ -9990,6 +10096,14 @@ def test_page_grid_finish_empty_body_is_not_success(tmp_path: Path):
     assert "grid_dxf_row_count=53" in blob
     assert "empty body" in blob.lower()
     assert "not success" in blob.lower()
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+    )
+
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
+    assert "item_count=0" in blob
+    assert cad_finish_notes_refuse_additem_dxf(notes)
 
 
 def test_stale_grid_65_vs_filelist_12_skips_finish(tmp_path: Path):
@@ -12304,8 +12418,8 @@ def test_finish_cad_files_classify_before_finish_then_additem_dxf(tmp_path: Path
             "SourceDataID": "src-tube",
             "FileID": "file-tube",
             "ID": "id-tube",
-            "Name": "RETURN TUBE",
-            "FileName": "RETURN TUBE",
+            "Name": "1 1/4 X 0.120 RETURN TUBE",
+            "FileName": "1 1/4 X 0.120 RETURN TUBE",
             "Qty": 1,
             "ErrorStatus": 0,
             "Status": 1,
@@ -12414,7 +12528,7 @@ def test_finish_cad_files_classify_before_finish_then_additem_dxf(tmp_path: Path
     posted = captured["file_list"]
     by_name = {str(r.get("Name") or ""): r for r in posted}
     plate = by_name["GUSSET PLATE"]
-    tube = by_name["RETURN TUBE"]
+    tube = by_name["1 1/4 X 0.120 RETURN TUBE"]
     assert plate["PartMode"] == 0
     assert plate["Category"] == "Cad"
     assert tube["PartMode"] == 1

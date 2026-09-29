@@ -189,7 +189,7 @@ def test_linear_bind_sets_product_id_not_name():
         "ItemList": [
             {
                 "ID": "L8",
-                "Description": "1001880-2 PEDESTAL TUBE",
+                "Description": "1001880-2 PEDESTAL TUBE 1.5 X 1.5 X 0.065",
                 "Category": "Linear",
                 "IsLinear": True,
                 "ProductName": "should-clear",

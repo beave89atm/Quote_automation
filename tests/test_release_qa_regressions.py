@@ -545,10 +545,13 @@ def test_harvest_antiforgery_does_not_read_cookies():
 def test_dosetitemtype_passes_cad_then_part_id():
     from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS, _PAGE_FINISH_JS
 
-    assert 'DoSetItemType("cad", [partId])' in _PAGE_FINISH_JS
+    assert 'ddl.value("cad")' in _PAGE_FINISH_JS
+    assert 'ddl.trigger("change")' in _PAGE_FINISH_JS
+    assert 'DoSetItemType("cad", [partId])' not in _PAGE_FINISH_JS
     assert "DoSetItemType(typeName, [partId])" in _APPLY_GRID_PART_MODES_JS
+    assert 'ddl.value(typeToken)' in _APPLY_GRID_PART_MODES_JS
     assert "opts.data.FileList = leanRows" not in _PAGE_FINISH_JS
-    mark = _PAGE_FINISH_JS.index('DoSetItemType("cad", [partId])')
+    mark = _PAGE_FINISH_JS.index('ddl.trigger("change")')
     assert _PAGE_FINISH_JS.index("/Quote/GetBorderSize", mark) > mark
 
 
@@ -707,17 +710,12 @@ def test_pdf_stamp_overwrites_defaults_without_claiming_post(monkeypatch, tmp_pa
         qty=2,
         description="10099",
     )
-    client.stamp_pdf_kendo_flats.assert_called_once()
-    stamped = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
-    assert stamped["Material"] == "A36"
-    assert stamped["Thickness"] == "0.076"
-    assert stamped["Qty"] == 2
-    assert stamped["Machine"] == "Laser"
-    assert "Length" not in stamped
-    assert "Width" not in stamped
+    client.stamp_pdf_kendo_flats.assert_not_called()
     blob = "\n".join(notes)
     assert "AddItem_PDFFiles" not in blob
+    assert "Stamped" not in blob
     assert "not inventing L/W" in blob
+    assert "FLAG: PDF row" in blob
 
 
 def test_linear_stamp_uses_onselect_and_records_real_status():
@@ -785,6 +783,287 @@ def test_qc_flags_linear_without_saw_op():
     ]
     clear = check_tree({"Data": [linear]}, {"1008763-1": 1}, formed=[], label="long")
     assert not any(flag.endswith("no Saw op") for flag in clear.flags)
+
+
+def test_drawing_gauge_is_not_divided_by_mm_grid_units():
+    from secturafab.website import (
+        overlay_classified_row,
+        plate_step_thickness_invalid_vs_drawing,
+    )
+
+    out = overlay_classified_row(
+        {
+            "Name": "A-11521-000",
+            "Category": "Component",
+            "Thickness_Units": "millimeter",
+            "Length": 952.5,
+            "Width": 676.656,
+        },
+        category="Cad",
+        material="A36",
+        thickness="0.0747",
+        thickness_source="drawing",
+    )
+    assert float(out["Thickness"]) == pytest.approx(0.0747)
+    assert out["Thickness"] != pytest.approx(0.0029)
+    assert out["Thickness_Units"] == "inch"
+    assert plate_step_thickness_invalid_vs_drawing(out) is None
+
+
+def test_tube_sku_without_drawing_wall_fails_closed():
+    from secturafab.website import pick_closest_linear_product
+
+    products = [
+        {
+            "ID": "rt",
+            "ProductName": "RT3.5X0.065-A519",
+            "ProductDescription": "Mechanical Tube",
+            "ShapeName": "TUBE",
+            "MaterialGrade": "A519",
+            "Dim1": 3.5,
+            "Dim2": 0.065,
+            "Active": True,
+        }
+    ]
+    best, note = pick_closest_linear_product(
+        products, description="3 1/2 TUBE", material="A519"
+    )
+    assert best is None
+    assert note and "wall" in note
+
+
+def test_page_itemtype_linear_mismatch_refuses_finish(tmp_path, monkeypatch):
+    """Classifier Linear that never lands on the page ItemType is not Finish."""
+    from unittest.mock import patch
+
+    from secturafab.push import SecturaFabPushService
+    from secturafab.website import (
+        STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL,
+        cad_finish_notes_refuse_additem_dxf,
+    )
+
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *a, **k: False)
+    stp = tmp_path / "34887-1.STEP"
+    stp.write_bytes(b"ISO")
+    kids = [
+        {
+            "SourceDataID": "src-tube",
+            "FileID": "file-tube",
+            "ID": "id-tube",
+            "Name": "34887-1",
+            "PartName": "34536 PIVOT TUBE, BOOM TIP_34536-1",
+            "Qty": 1,
+            "ErrorStatus": 0,
+            "Status": 1,
+            "CadType": 0,
+            "InternalData": "server-stamped",
+            "ImageString": "iVBORw0KGgo",
+        }
+    ]
+    client = MagicMock()
+    client.upload_dxf_via_page_add_files.return_value = {
+        "bound": True,
+        "upload_via": "page_add_files",
+        "files_kendo": True,
+        "gridDXF_n": 1,
+        "List": [{"SourceDataID": "src-step", "ID": "src-step", "Units": "inch"}],
+    }
+    client.create_all_parts_from_grid_dxf.return_value = {
+        "via": "createAllParts",
+        "invoked": True,
+        "List": kids,
+        "grid_present": True,
+        "grid_dxf_row_count": 1,
+        "list_len": 1,
+        "internaldata_key_n": 1,
+        "internaldata_empty_n": 0,
+        "internaldata_nonempty_n": 1,
+    }
+    client._grid_present = True
+    client._grid_dxf_row_count = 1
+    client._stale_grid = False
+    client._edit_quote_id = _QID
+    client._edit_gate = ""
+    client.get_item_add_view.return_value = {}
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    with patch(
+        "secturafab.chrome_cdp.apply_grid_dxf_part_modes",
+        return_value={
+            "grid_present": True,
+            "cad": 1,
+            "linear": 0,
+            "itemtype_cad": 1,
+            "itemtype_linear": 0,
+            "assembly": 0,
+            "component": 0,
+            "set_count": 1,
+            "setpartmode_via": "page_fn",
+            "updateitemtype_via": "dropdown",
+            "updateitemtype_count": 1,
+            "grid_dxf_row_count": 1,
+        },
+    ):
+        notes = SecturaFabPushService(client=client).finish_cad_files(
+            quote_id=_QID,
+            cad_files=[stp],
+            material="A36",
+            thickness="0.25",
+            qty=1,
+            takeoff={},
+            bom_rows=[],
+            library={},
+            extra_pdfs=None,
+            part_key="34887-1",
+            explode_polls=1,
+            explode_sleep_s=0,
+        )
+    blob = " ".join(notes)
+    assert "grid ItemType Linear 0" in blob
+    assert "classifier Linear 1" in blob
+    assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob
+    assert cad_finish_notes_refuse_additem_dxf(notes)
+    client.add_item_dxf_files.assert_not_called()
+
+
+def test_apply_fields_leaves_product_type_to_the_page_dropdown():
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    fn = _APPLY_GRID_PART_MODES_JS.split("function applyFields")[1].split(
+        "function force_live_grid_inch"
+    )[0]
+    cad = fn.split('if (cat === "Cad")')[1].split("else if")[0]
+    assert "ProductType" not in cad
+    assert "ProductSubType" not in cad
+    assert "ItemType" not in cad
+    assert "Machine" not in cad
+    assert 'kendoModelSet(row, "ProductType", 100)' not in fn
+    assert "row.ProductType = 100" not in fn
+
+
+def test_linear_stamp_uses_linear_product_and_waits_for_subtype():
+    from secturafab.chrome_cdp import _STAMP_LINEAR_FORM_JS
+
+    finder = _STAMP_LINEAR_FORM_JS.split("function findLinearProductWidget")[1].split(
+        "function pickLinearSku"
+    )[0]
+    assert "#LinearProduct" in finder
+    assert "#gridSelectProductLinear" not in finder
+    assert "waitProductSubTypeReload" in _STAMP_LINEAR_FORM_JS
+    assert "dataBound" in _STAMP_LINEAR_FORM_JS
+
+
+def test_add_item_linear_does_not_click_when_stamp_fails(monkeypatch):
+    from secturafab.client import SecturaFabClient
+
+    client = SecturaFabClient.__new__(SecturaFabClient)
+    client._af_source = "chrome_dom"
+    client.config = object()
+    client.harvest_chrome_antiforgery = lambda: None
+    monkeypatch.setattr(
+        "secturafab.browser_session.effective_website_cookie",
+        lambda *a, **k: True,
+    )
+    clicked = {"n": 0}
+
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        lambda *a, **k: {"ok": True, "tab": {}},
+    )
+    monkeypatch.setattr(
+        "secturafab.chrome_cdp.invoke_page_linear_finish",
+        lambda **k: clicked.__setitem__("n", clicked["n"] + 1) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        client,
+        "stamp_linear_form",
+        lambda **k: {"ok": False, "picker_via": "#gridSelectProductLinear", "opened_via": "#but_bar"},
+    )
+    cap = client.add_item_linear(quote_id=_QID, product_id="pid", name="TUBE", length=10)
+    assert clicked["n"] == 0
+    assert cap["ok"] is False
+    assert cap["finish_why"] == "stamp_linear_form_not_ok"
+
+
+def test_renest_checks_every_nest_task():
+    from unittest.mock import MagicMock, patch
+
+    from secturafab.push import SecturaFabPushService
+
+    tube_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    channel_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    calls: list[str] = []
+
+    def _get(path: str):
+        calls.append(path)
+        if "quoteID=" in path:
+            return {"Results": [{"ID": tube_id}, {"ID": channel_id}]}
+        if path.endswith(tube_id):
+            return {"StockList": [{"SheetSizeLength": 240}]}
+        if path.endswith(channel_id):
+            if any("RenestLinear" in c or c == "renest" for c in calls):
+                return {"StockList": [{"SheetSizeLength": 240}]}
+            return {"StockList": [{"SheetSizeLength": 240}, {"SheetSizeLength": 480}]}
+        return {"ItemList": [], "StockList": []}
+
+    client = MagicMock()
+    client.nest_quote_edit.return_value = {}
+    client.get_json.side_effect = _get
+    client.read_data_linear_lookup.return_value = {"List": []}
+
+    def _renest(*args, **kwargs):
+        calls.append("renest")
+        extra = kwargs.get("extra") or {}
+        calls.append(str(extra.get("NestTaskID") or ""))
+        return {}
+
+    client.renest_linear.side_effect = _renest
+    with patch("secturafab.quote_update.quote_online_update", return_value=True):
+        notes = SecturaFabPushService(client=client).nest_after_finish(
+            "qid-two", item_count=2
+        )
+    assert client.renest_linear.call_count == 1
+    payload = client.renest_linear.call_args.kwargs.get("extra") or {}
+    assert payload.get("NestTaskID") == channel_id
+    assert any("RenestLinear" in n for n in notes)
+
+
+def test_qc_ignores_sku_suffix_linear_width_and_non_weldment():
+    from secturafab.quote_qc import check_tree
+
+    tube = {
+        "ItemNumber": "1020243-1 - RCT5X4X3/16-A500",
+        "ProductType": 30,
+        "Category": "Linear",
+        "Quantity": 1,
+        "Length": 45.1875,
+        "Width": 0,
+        "Length_Units": "inch",
+        "Material": "A500",
+        "Thickness": 0.1875,
+        "Thickness_Units": "inch",
+        "UnitCost": 56.46,
+        "UnitPrice": 56.46,
+        "ErrorCount": 0,
+        "OperationCostList": [{"OperationName": "Saw"}],
+    }
+    channel = dict(tube)
+    channel["ItemNumber"] = "1008763-1 - C4X5.4-A36"
+    channel["ProductType"] = 40
+    channel["Length"] = 26.6875
+    channel["UnitCost"] = 6.61
+    channel["UnitPrice"] = 6.61
+    report = check_tree(
+        {"Data": [tube, channel]},
+        {"1020243-1": 1, "1008763-1": 1},
+        formed=[],
+        label="linear",
+    )
+    blob = "\n".join(report.flags)
+    assert "part list mismatch" not in blob
+    assert "implausible dims" not in blob
+    assert "weldment has no parent line" not in blob
 
 
 def test_mm_continue_fails_when_finish_dims_are_blank():

@@ -279,7 +279,9 @@ def test_page_native_cad_thickness_recipe_and_inch_finish():
     assert 'cb.trigger("change")' in native
     assert "clearSelection" in native
     assert 'g.trigger("change")' not in native
-    assert 'DoSetItemType("cad", [partId])' in native
+    assert 'ddl.value("cad")' in native
+    assert 'ddl.trigger("change")' in native
+    assert 'DoSetItemType("cad", [partId])' not in native
     assert "selection_not_one" in native
     assert native.index("selectExactlyOne(row)") < native.index('ddl.value("cad")')
     assert native.index("selectExactlyOne(row)", native.index('ddl.value("cad")')) < native.index(

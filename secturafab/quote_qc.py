@@ -88,7 +88,8 @@ def _row_name(row: dict, shape: str) -> str:
         raw = row.get("N") if "N" in row else ""
         return "" if _blank(raw) else str(raw).strip()
     if "ItemNumber" in row and not _blank(row.get("ItemNumber")):
-        return str(row["ItemNumber"]).strip()
+        # "1020243-1 - RCT5X4X3/16-A500" is the part number plus the SKU.
+        return str(row["ItemNumber"]).split(" - ", 1)[0].strip()
     desc = row.get("Description") if "Description" in row else None
     if isinstance(desc, str) and desc.strip():
         return desc.strip().split()[0]
@@ -176,6 +177,22 @@ def _is_linear_line(row: dict, shape: str) -> bool:
         return True
     cat = str(row.get("Category") or row.get("ItemType") or "").strip().casefold()
     return cat == "linear"
+
+
+def _looks_like_weldment(kids: list[dict], formed: list[str] | None, shape: str) -> bool:
+    """A multi-line quote is a weldment when it has formed parts or laser plate.
+
+    A linear-only job has no assembly parent and is not a weldment.
+    """
+    if formed:
+        return True
+    for row in kids:
+        if _is_linear_line(row, shape):
+            continue
+        pt = _product_type(row, shape)
+        if pt in (100, "100"):
+            return True
+    return False
 
 
 def _has_saw(op_names: list[str] | None) -> bool:
@@ -423,7 +440,11 @@ def check_tree(
             all_inch = False
         length = _num(row.get(len_key)) if len_key in row else None
         width = _num(row.get(wid_key)) if wid_key in row else None
-        if len_key not in row or wid_key not in row or length is None or width is None:
+        if _is_linear_line(row, shape):
+            # Linear cut length has no plate width. W=0 is not implausible.
+            if length is not None and not (0 < length <= 240):
+                flags.append(f"{name}: implausible dims L={length} W={width}")
+        elif len_key not in row or wid_key not in row or length is None or width is None:
             flags.append(f"{name}: dims missing")
         elif not (0 < length <= 240 and 0 < width <= 120):
             flags.append(f"{name}: implausible dims L={length} W={width}")
@@ -489,7 +510,7 @@ def check_tree(
     elif len(parents) > 1:
         flags.append("parent price rollup unproved")
     else:
-        if len(kids) > 1:
+        if len(kids) > 1 and _looks_like_weldment(kids, formed, shape):
             flags.append("weldment has no parent line")
         line_sum = _child_price_sum(kids, price_key, qty_key)
         if line_sum is not None:

@@ -2581,13 +2581,13 @@ _PAGE_FINISH_JS = """(async function(spec) {
       // Gold: UpdateItemType ("cad", [PartID]) first. Do not
       // ddl.trigger — that calls SetDXFPanel with an empty ProductType
       // (GetProductSubTypeList 500) and clears Machine.
+      // Q10488: the page dropdown change (lowercase "cad") posts
+      // UpdateItemType and SetDXFPanel fills ProductType / ProductSubType.
+      // DoSetItemType alone leaves ItemType=Cad, ProductType=100, and an
+      // empty productSubType, and AddItem_DXFFiles comes back empty.
       var cadDone = armAjax("/Part/UpdateItemType", 12000);
-      if (typeof window.DoSetItemType === "function") {
-        window.DoSetItemType("cad", [partId]);
-      } else {
-        ddl.value("cad");
-        ddl.trigger("change");
-      }
+      ddl.value("cad");
+      ddl.trigger("change");
       await cadDone;
       setMachineLaser(row);
       var data = [];
@@ -5972,7 +5972,10 @@ _STAMP_PDF_KENDO_JS = """(function(spec) {
           editSet(hit.grid, r, "Status", s.Status != null ? s.Status : 1);
           editSet(hit.grid, r, "ItemType", s.ItemType || "cad");
           editSet(hit.grid, r, "Material", s.Material);
-          if (s.Qty != null) editSet(hit.grid, r, "Qty", s.Qty);
+          if (s.Qty != null && s.Qty !== "") {
+            editSet(hit.grid, r, "Qty", s.Qty);
+            editSet(hit.grid, r, "Quantity", s.Qty);
+          }
           if (s.PartName) editSet(hit.grid, r, "PartName", s.PartName);
           stamped += 1;
           return stampPerimeter(hit.grid, r, s).then(function() {
@@ -6624,10 +6627,9 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
     return false;
   }
   function findLinearProductWidget() {
-    var ids = [
-      "#LinearProduct", "#linearProduct", "#Product", "#productID",
-      "#product", "#SelectProductLinear", "#gridSelectProductLinear"
-    ];
+    // Gold Long form is the #LinearProduct autocomplete (onSelect_Linear).
+    // The select-product grid is a different picker and posts the wrong body.
+    var ids = ["#LinearProduct", "#linearProduct"];
     for (var i = 0; i < ids.length; i++) {
       try {
         var el = $(ids[i]);
@@ -6647,6 +6649,7 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
         if (!w2) continue;
         if (isProductTypeBar(inp, w2)) continue;
         var blob = String($b.attr("id") || "") + " " + String(inp.attr("id") || "");
+        if (/gridselectproduct/i.test(blob)) continue;
         if (/product|sku|linear/i.test(blob)) {
           return {el: inp, widget: w2, via: "kendo"};
         }
@@ -6678,9 +6681,35 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
       }
       return -1;
     }
+    function waitProductSubTypeReload() {
+      // onSelect_Linear sets ProductSubType then dataSource.read().
+      // Add before that dataBound posts productSubType empty (500).
+      return new Promise(function(resolve) {
+        var widget = null;
+        try {
+          widget = jQuery("#ProductSubType").data("kendoDropDownList");
+        } catch (eW) { widget = null; }
+        if (!widget || !widget.dataSource) {
+          resolve("no_widget");
+          return;
+        }
+        var settled = false;
+        function finish(why) {
+          if (settled) return;
+          settled = true;
+          var val = "";
+          try { val = String(widget.value() || ""); } catch (eV) {}
+          resolve(val ? (why || "reloaded") : "");
+        }
+        try { widget.one("dataBound", function() { finish("dataBound"); }); } catch (eB) {}
+        try { widget.dataSource.one("change", function() { finish("change"); }); } catch (eC) {}
+        setTimeout(function() { finish("timeout"); }, 8000);
+      });
+    }
     function applyItem(it, idx) {
       var val = itemValue(it);
       lastApply = "onSelect_Linear";
+      var waited = waitProductSubTypeReload();
       try {
         if (typeof window.onSelect_Linear === "function" && idx >= 0) {
           window.onSelect_Linear.call(w, {
@@ -6688,7 +6717,10 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
           });
         }
       } catch (e2) {}
-      return val || itemSku(it);
+      return waited.then(function(why) {
+        if (!why) return "";
+        return val || itemSku(it);
+      });
     }
     var data = [];
     try { data = (w.dataSource && w.dataSource.data && w.dataSource.data()) || []; } catch (e3) {}
@@ -8812,6 +8844,10 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         || itemFold === "assembly" || name.toLowerCase() === "root") {
       return "Assembly";
     }
+    // Page #DXFItemType writes lowercase "cad" / "linear". That token
+    // wins over a leftover PartMode 0, which otherwise counts tubes as Cad.
+    if (itemFold === "linear") return "Linear";
+    if (itemFold === "cad") return "Cad";
     if (mode === 0 || item === "Cad" || pt === 100) return "Cad";
     if (mode === 1 || row.IsLinear || item === "Linear" || pt === 10 || pt === 30 || pt === 40) {
       return "Linear";
@@ -9021,23 +9057,20 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     // editCell (Q10355 wipe class). invent=false.
     if (row.set && !silent) {
       kendoModelSet(row, "PartMode", mode);
-      kendoModelSet(row, "ItemType", cat);
-      kendoModelSet(row, "Category", cat);
-      kendoModelSet(row, "FileType", cat);
+      // Cad / Linear ItemType, ProductType, and ProductSubType come from
+      // the page #DXFItemType change (lowercase "cad" / "linear"). Writing
+      // ItemType=Cad, ProductType=100, or ProductSubType=null posts an
+      // empty Finish body and GETs GetProductSubTypeList?ProductType=
+      // (500). Machine / thickness before that change GETs GetBorderSize
+      // with Stock_Y (11.005). invent=false.
+      if (cat !== "Cad" && cat !== "Linear") {
+        kendoModelSet(row, "ItemType", cat);
+        kendoModelSet(row, "Category", cat);
+        kendoModelSet(row, "FileType", cat);
+      }
       if (cat === "Cad") {
-        // Machine before UpdateItemType makes the page GET GetBorderSize
-        // with Stock_Y as Thickness. Set Machine only with the gauge pass.
-        if (!classifyOnly) kendoModelSet(row, "Machine", want.Machine || "Laser");
-        kendoModelSet(row, "ProductType", 100);
         kendoModelSet(row, "IsPlate", true);
         kendoModelSet(row, "IsLinear", false);
-        var pst0 = row.ProductSubType != null ? String(row.ProductSubType).toLowerCase() : "";
-        if (pst0 === "bar" || pst0.indexOf("bar_") === 0 || pst0 === "tube"
-            || pst0 === "pipe" || pst0 === "channel" || pst0 === "angle"
-            || pst0 === "hss" || pst0 === "beam" || pst0 === "structural"
-            || pst0.indexOf("struct_") === 0) {
-          kendoModelSet(row, "ProductSubType", null);
-        }
         if (want.InternalData != null && String(want.InternalData) !== "") {
           kendoModelSet(row, "InternalData", want.InternalData);
         }
@@ -9045,8 +9078,6 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
           applyCadThickness(row, want, function(k, v) { kendoModelSet(row, k, v); });
         }
       } else if (cat === "Linear") {
-        kendoModelSet(row, "Machine", want.Machine || "Saw");
-        kendoModelSet(row, "ProductType", Number(want.ProductType) || 10);
         kendoModelSet(row, "IsLinear", true);
         kendoModelSet(row, "IsPlate", false);
       } else if (cat === "Component") {
@@ -9056,21 +9087,14 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       }
     } else {
       row.PartMode = mode;
-      row.ItemType = cat;
-      row.Category = cat;
-      row.FileType = cat;
+      if (cat !== "Cad" && cat !== "Linear") {
+        row.ItemType = cat;
+        row.Category = cat;
+        row.FileType = cat;
+      }
       if (cat === "Cad") {
-        if (!classifyOnly) row.Machine = want.Machine || "Laser";
-        row.ProductType = 100;
         row.IsPlate = true;
         row.IsLinear = false;
-        var pst1 = row.ProductSubType != null ? String(row.ProductSubType).toLowerCase() : "";
-        if (pst1 === "bar" || pst1.indexOf("bar_") === 0 || pst1 === "tube"
-            || pst1 === "pipe" || pst1 === "channel" || pst1 === "angle"
-            || pst1 === "hss" || pst1 === "beam" || pst1 === "structural"
-            || pst1.indexOf("struct_") === 0) {
-          row.ProductSubType = null;
-        }
         if (want.InternalData != null && String(want.InternalData) !== "") {
           row.InternalData = want.InternalData;
         }
@@ -9078,8 +9102,6 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
           applyCadThickness(row, want, function(k, v) { row[k] = v; });
         }
       } else if (cat === "Linear") {
-        row.Machine = want.Machine || "Saw";
-        row.ProductType = Number(want.ProductType) || 10;
         row.IsLinear = true;
         row.IsPlate = false;
       }
@@ -9291,6 +9313,65 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       applyAllKidsCadMaterialInches(classifyOnly);
       return true;
     }
+    function selectOneGridRow(row) {
+      if (!g || !row) return false;
+      try { if (typeof g.clearSelection === "function") g.clearSelection(); } catch (eC) {}
+      var wantPart = String((row && (row.PartID || row.ID)) || "");
+      var wantUid = String((row && row.uid) || "");
+      var tr = null;
+      try {
+        if (wantUid && g.tbody && g.tbody.find) {
+          tr = g.tbody.find("tr[data-uid='" + wantUid + "']");
+        }
+      } catch (eT) { tr = null; }
+      if ((!tr || !tr.length) && g.items && window.jQuery) {
+        try {
+          var domRows = g.items();
+          for (var ii = 0; ii < domRows.length; ii++) {
+            var di = {};
+            try { di = g.dataItem(domRows[ii]) || {}; } catch (eD) { di = {}; }
+            var pid = String((di && (di.PartID || di.ID)) || "");
+            var uid = String((di && di.uid) || "");
+            if ((wantUid && uid === wantUid) || (wantPart && pid && pid === wantPart)) {
+              tr = jQuery(domRows[ii]);
+              break;
+            }
+          }
+        } catch (eI) { tr = null; }
+      }
+      if (!tr || !tr.length) return false;
+      try { g.select(tr); } catch (eS) { return false; }
+      return true;
+    }
+    function changePageItemType(row, token) {
+      // Page onChangeDXFItemType: dropdown value is lowercase "cad" /
+      // "linear", then trigger("change") posts UpdateItemType and the
+      // page writes ItemType plus ProductType / ProductSubType.
+      return new Promise(function(resolve) {
+        var typeToken = String(token || "").toLowerCase();
+        if (typeToken !== "cad" && typeToken !== "linear") {
+          resolve("");
+          return;
+        }
+        var ddl = null;
+        try {
+          ddl = window.jQuery && jQuery("#DXFItemType").data("kendoDropDownList");
+        } catch (eDdl) { ddl = null; }
+        if (ddl && typeof ddl.value === "function" && typeof ddl.trigger === "function") {
+          selectOneGridRow(row);
+          try {
+            ddl.value(typeToken);
+            ddl.trigger("change");
+            resolve("dropdown");
+            return;
+          } catch (eCh) {}
+        }
+        var partId = String((row && (row.PartID || row.ID || row.ItemID)) || "");
+        postItemType(partId, typeToken, itemTypeFnName).then(function(via) {
+          resolve(via || "");
+        });
+      });
+    }
     function applyOneKid(want) {
       return new Promise(function(resolve) {
         if (!want) {
@@ -9327,19 +9408,19 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         postMode(id, Number(want.PartMode), modeFn).then(function(modeVia) {
           if (modeVia && !via) via = modeVia;
           restoreIfWiped(true);
-          if (cat !== "Cad") {
+          if (cat !== "Cad" && cat !== "Linear") {
             resolve(modeVia);
             return;
           }
           live = findLiveRow(kendoDataRows(g.dataSource), want, live);
-          id = String((live && (live.PartID || live.ID || live.ItemID)) || want.PartID || want.ID || "");
-          return postItemType(id, "cad", typeFn).then(function(itemVia) {
+          var typeToken = cat === "Linear" ? "linear" : "cad";
+          return changePageItemType(live, typeToken).then(function(itemVia) {
             typeSetCount += 1;
             if (itemVia && !typeVia) typeVia = itemVia;
             restoreIfWiped(false);
             live = findLiveRow(kendoDataRows(g.dataSource), want, live);
-            if (live) applyFields(live, want, false, false);
-            force_live_grid_inch(g, want);
+            if (live && cat === "Cad") applyFields(live, want, false, false);
+            if (cat === "Cad") force_live_grid_inch(g, want);
             resolve(modeVia);
           });
         });
@@ -9387,8 +9468,13 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
       }
       var inchStamped = force_live_grid_inch(g, null);
       var counts = {Cad: 0, Linear: 0, Assembly: 0, Component: 0};
+      var itemtypeCad = 0;
+      var itemtypeLinear = 0;
       for (var j = 0; j < fresh.length; j++) {
         counts[catOf(fresh[j])] += 1;
+        var pit = String((fresh[j] && fresh[j].ItemType) || "").trim().toLowerCase();
+        if (pit === "cad") itemtypeCad += 1;
+        else if (pit === "linear") itemtypeLinear += 1;
       }
       var logKeys = [
         "CadType", "Stock_X", "Stock_Y", "Stock_Z", "Stock_Units",
@@ -9436,6 +9522,8 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
         linear: counts.Linear,
         assembly: counts.Assembly,
         component: counts.Component,
+        itemtype_cad: itemtypeCad,
+        itemtype_linear: itemtypeLinear,
         set_count: setCount,
         setpartmode_via: via || (fnName ? "page_fn" : (setCount ? "grid_set" : "")),
         updateitemtype_count: typeSetCount,

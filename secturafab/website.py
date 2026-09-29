@@ -3200,9 +3200,12 @@ def bind_plate_step_product_type_cad(row: dict[str, Any] | None) -> dict[str, An
         machine = "Laser - Bay1"
     out["Machine"] = machine
     if plate_step_thickness_blocked_by_blank_material(out) is None:
-        inch = sanitize_bind_thickness_inches(
-            out.get("Thickness"), out.get("Thickness_Units")
-        )
+        # A drawing gauge is already inches. The exploded grid's
+        # Thickness_Units=millimeter must not divide 0.0747 into 0.0029.
+        gauge_units = out.get("Thickness_Units")
+        if thickness_source_is_drawing(out):
+            gauge_units = "inch"
+        inch = sanitize_bind_thickness_inches(out.get("Thickness"), gauge_units)
         if inch is not None:
             out["Thickness"] = inch
             out["Thickness_Units"] = "inch"
@@ -9039,14 +9042,20 @@ def overlay_classified_row(
         drawing_inch = sanitize_bind_thickness_inches(thickness, "inch")
         if drawing_inch is not None:
             out["drawing_thickness_in"] = drawing_inch
+            thickness = drawing_inch
+            out["Thickness_Units"] = "inch"
     if thickness is not None and str(thickness) != "":
         # Cad Adjust Properties: Material from drawing before thickness
         # (Q10366). Linear/Component overlay is unchanged.
         # STEP-derived Cad thickness is stamped with thickness_source
         # so keep-grid / Finish can fail-close (Kyle 2026-09-14).
+        # Drawing gauge stays inches even when the grid unit is millimetre.
         if cat != "Cad" or drawing_material_type(out):
             out["Thickness"] = thickness
-            out["Thickness_Units"] = out.get("Thickness_Units") or "inch"
+            if src in DRAWING_THICKNESS_SOURCES:
+                out["Thickness_Units"] = "inch"
+            else:
+                out["Thickness_Units"] = out.get("Thickness_Units") or "inch"
     if product_id:
         out["ProductID"] = product_id
     if sku:
@@ -9346,6 +9355,36 @@ def _pn_plus_generic_linear_noun(description: str) -> bool:
     return bool(text) and _generic_linear_noun_only(text)
 
 
+def _tube_sku_wall_in(product: dict[str, Any] | None) -> float | None:
+    """Wall on a tube/pipe SKU (last dim). None for bar, angle, and channel."""
+    if not isinstance(product, dict):
+        return None
+    sku = str(
+        product.get("ProductName") or product.get("SKU") or product.get("ProductCode") or ""
+    )
+    kind = infer_linear_subtype(sku, str(product.get("ProductDescription") or ""))
+    if kind not in {"tube", "pipe"}:
+        return None
+    parsed = parse_linear_sku_dims(sku)
+    nums = [parsed[k] for k in ("dim1", "dim2", "dim3", "dim4") if parsed.get(k)]
+    if len(nums) < 2:
+        nums = product_linear_dims(product)
+    if len(nums) < 2:
+        return None
+    return float(nums[-1])
+
+
+def _drawing_states_wall(dims: list[float], wall: float) -> bool:
+    """True when the drawing or BOM already states this wall."""
+    for dim in dims:
+        try:
+            if abs(float(dim) - float(wall)) <= 0.01:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
 def pick_closest_linear_product(
     products: list[dict[str, Any]],
     *,
@@ -9402,6 +9441,12 @@ def pick_closest_linear_product(
         return None, (
             f"{LINEAR_SKU_MISSING} no tenant SKU for {description!r} "
             f"{dims} — closest {sku} dims do not match; no silent SKU graft"
+        )
+    wall = _tube_sku_wall_in(best)
+    if wall is not None and not _drawing_states_wall(dims, wall):
+        return None, (
+            f"{LINEAR_SKU_MISSING} wall {wall:g} is not on the drawing or BOM "
+            f"for {description!r} (closest {sku}); not picking a wall"
         )
     want_grade = (material or "").strip().upper().split()[0] if material else ""
     if not want_grade:

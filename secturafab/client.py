@@ -1950,6 +1950,21 @@ class SecturaFabClient:
                 "productConfigID": str(extra.get("productConfigID") or "").strip(),
             },
         )
+        if isinstance(stamp, dict) and stamp.get("ok") is False:
+            self._linear_finish_via = "skipped"
+            cap = self._linear_finish_capture(
+                {
+                    "finish_why": "stamp_linear_form_not_ok",
+                    "long_clicked": False,
+                    "long_from_page": False,
+                    "opened_via": str(stamp.get("opened_via") or ""),
+                },
+                via="skipped",
+            )
+            cap["opened_via"] = str(stamp.get("opened_via") or "")
+            cap["picker_via"] = str(stamp.get("picker_via") or "")
+            cap["picker_sku"] = str(stamp.get("picker_sku") or "")
+            return cap
         if long_without_page_click_is_fail(
             stamp if isinstance(stamp, dict) else None
         ):
