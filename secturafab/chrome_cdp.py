@@ -2890,6 +2890,18 @@ _PAGE_FINISH_JS = """(async function(spec) {
       }
       return null;
     }
+    function modelPlateSource(row) {
+      var live = (row && row._gridItem) || row || {};
+      var keys = ["Stock_Z", "Stock_Y", "step_thickness_in", "ModelThickness"];
+      for (var mi = 0; mi < keys.length; mi++) {
+        var raw = live[keys[mi]];
+        var n = parseFloat(raw);
+        if (isFinite(n) && n > 0 && n <= 1) {
+          return { key: keys[mi], raw: raw };
+        }
+      }
+      return { key: "", raw: "" };
+    }
     function rowGaugeCallout(row) {
       // The drawing callout wins over a stray 1/8 or a parent 11 Ga.
       // Do not invent a gauge the text does not name.
@@ -2981,10 +2993,15 @@ _PAGE_FINISH_JS = """(async function(spec) {
           || (modelIs188 && !chosenIs188)
         )
       ) {
+        var src = modelPlateSource(row);
         dropUnlistedGauge(
           row,
           "step_thickness_not_a_gauge",
           gaugeDecision(row, callout, gauge, idx)
+            + "; modelIn=" + String(modelIn)
+            + "; chosenIn=" + String(chosenIn)
+            + "; modelKey=" + String(src.key || "")
+            + "; modelRaw=" + ((src.raw == null) ? "" : String(src.raw))
         );
         if (plates.length < 2 && !gridHasLinear()) return fail("gauge_not_in_list", 0);
         continue;

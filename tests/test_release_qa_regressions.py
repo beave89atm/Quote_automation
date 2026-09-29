@@ -3106,6 +3106,64 @@ def test_dropped_plate_skip_note_records_the_gauge_decision():
     assert decision in notes[0]
 
 
+def test_step_thickness_veto_decision_names_the_model_key():
+    """The veto still drops the plate. The decision names the model number.
+
+    The job token matches .076 - 14 Ga. Stock_Z is 1, which is not that
+    dropdown thickness, so A-11513-000 stays dropped. The decision must
+    name modelIn, chosenIn, and the key that supplied the model number.
+    """
+    store = [
+        {
+            "uid": "stay",
+            "PartID": "stay",
+            "Name": "A-11521-000",
+            "PartName": "A-11521-000",
+            "Description": "A-11521-000",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "not a dropdown row",
+            "ErrorStatus": 0,
+            "Material": "A36",
+            "Length": 15.0,
+            "Width": 37.5,
+        },
+        {
+            "uid": "drop",
+            "PartID": "drop",
+            "Name": "A-11513-000",
+            "PartName": "A-11513-000",
+            "Description": "A-11513-000",
+            "ItemType": "Cad",
+            "PartMode": 0,
+            "ProductType": 100,
+            "Thickness": "not a dropdown row",
+            "Stock_Z": 1,
+            "ErrorStatus": 0,
+            "Material": "A36",
+            "Length": 15.0,
+            "Width": 37.5,
+        },
+    ]
+    out = _run_page_finish(
+        store,
+        [{"Description": ".076 - 14 Ga", "Thickness": 0.076}],
+        0.0747,
+    )
+    assert "A-11521-000" in out["left"]
+    assert "A-11513-000" not in out["left"]
+    assert "A-11513-000" in out["skipped"]
+    assert out["whyList"] == ["step_thickness_not_a_gauge"]
+    assert len(out["decision"]) == 1
+    decision = out["decision"][0]
+    assert "modelIn=1" in decision
+    assert "chosenIn=0.076" in decision
+    assert "modelKey=Stock_Z" in decision
+    assert "modelRaw=1" in decision
+    assert "gauge=14 Ga" in decision
+
+
 def test_three_sixteenth_callout_is_not_dropped_on_an_empty_click():
     """34892 names 3/16 PLATE and Stock_Y is 0.188. Write that row.
 
