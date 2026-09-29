@@ -218,6 +218,24 @@ def flats_are_plausible_inches(length: Any, width: Any) -> bool:
     return 0 < length_in <= 240 and 0 < width_in <= 120
 
 
+def grid_flat_over_120_refuses(row: dict[str, Any] | None) -> str | None:
+    """Any Length or Width over 120 in stops Finish. Blank dims are not this check."""
+    if not isinstance(row, dict):
+        return None
+    name = str(row.get("Name") or row.get("PartName") or row.get("ItemNumber") or "part")
+    for key in ("Length", "Width"):
+        raw = row.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if val > 120:
+            return f"{name} {key}={val} in is over 120"
+    return None
+
+
 def step_unit_fail_note(notes: list[str] | None) -> str | None:
     """Unknown units fail closed. A true mm file continues and is not this note."""
     for note in notes or []:
@@ -344,6 +362,32 @@ def set_page_quote_number(quote_id: str, quote_number: str) -> list[str]:
         why = value.get("why") if isinstance(value, dict) else "empty"
         return [f"WARNING: QuoteNumber UpdatePropertyValue stopped ({why})"]
     return [f"QuoteNumber set via UpdatePropertyValue ({number})"]
+
+
+def set_page_quote_description(quote_id: str, description: str) -> list[str]:
+    """Set #Description through UpdatePropertyValue. Blank stays blank."""
+    text = str(description or "").strip()
+    if not text or not str(quote_id or "").strip():
+        return ["Description left blank — not calling UpdatePropertyValue"]
+    from .chrome_cdp import _cdp_evaluate_promise, minted_edit_tab_ready
+
+    gate = minted_edit_tab_ready(quote_id, navigate=False)
+    if not gate.get("ok"):
+        why = str(gate.get("reason") or "wrong_document")
+        return [f"WARNING: Description UpdatePropertyValue stopped ({why})"]
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    value = _cdp_evaluate_promise(
+        _PAGE_SET_PROPERTY_JS
+        + "("
+        + json.dumps({"parameter": "Description", "value": text[:500]})
+        + ")",
+        tab=tab,
+        fallback=False,
+    )
+    if not isinstance(value, dict) or not value.get("ok"):
+        why = value.get("why") if isinstance(value, dict) else "empty"
+        return [f"WARNING: Description UpdatePropertyValue stopped ({why})"]
+    return ["Description set via UpdatePropertyValue"]
 
 
 def add_page_assembly(*, quote_id: str, name: str) -> list[str]:

@@ -144,6 +144,17 @@ def org_empty_guid_after_bind_post_is_fail(
         return True
 
 
+def page_new_quote_header(detail: dict[str, Any] | None) -> bool:
+    """Page New Quote read-back: ProfitModel 1 and QuoteStatus OPEN-NEW."""
+    if not isinstance(detail, dict):
+        return False
+    try:
+        profit_ok = float(detail.get("ProfitModel")) == 1.0
+    except (TypeError, ValueError):
+        profit_ok = False
+    return profit_ok and str(detail.get("QuoteStatus") or "") == "OPEN-NEW"
+
+
 def org_autocomplete_search_only_is_fail(result: dict[str, Any] | None) -> bool:
     """Time Waco autocomplete 0 hits is not a Quotes UI bind (live 34603-2)."""
     if not isinstance(result, dict):
@@ -239,6 +250,12 @@ def _stamp_time_waco_org(
         via = "Quotes UI" if isinstance(page, dict) and page.get("ok") else "mint"
         notes.append(
             f"Set Organization: {TIME_WACO_ORG_NAME} ({TIME_WACO_ORG_ID}) via {via}"
+        )
+        return notes
+    if page_new_quote_header(check if isinstance(check, dict) else None):
+        notes.append(
+            "WARNING: page New Quote header is ProfitModel 1 / OPEN-NEW — "
+            "not POSTing v1/quote"
         )
         return notes
 

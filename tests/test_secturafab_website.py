@@ -3175,7 +3175,7 @@ def test_renest_linear_payload_checks_20ft_not_40ft():
     assert payload["id"] == "qid-1"
     assert payload["NestTaskID"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     assert payload["ChuckSize"] == 0.0
-    assert payload["ChuckSize_Units"] == ""
+    assert payload["ChuckSize_Units"] == "inch"
     assert "QuoteID" not in payload
     assert "Length20" not in payload
     assert "SheetSizeLength" not in payload
@@ -3226,8 +3226,12 @@ def test_renest_linear_480_posts_and_persists_20ft():
     cfg40 = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
     cfg20 = "ffffffff-ffff-4fff-8fff-ffffffffffff"
     item_id = "11111111-1111-4111-8111-111111111111"
-    nest_480 = {"Results": [{"ID": nest_id, "SheetSizeLength": 480}]}
-    nest_240 = {"Results": [{"ID": nest_id, "SheetSizeLength": 240}]}
+    nest_480 = {
+        "Results": [{"ID": nest_id, "SheetSizeLength": 480, "ProductID": pid}]
+    }
+    nest_240 = {
+        "Results": [{"ID": nest_id, "SheetSizeLength": 240, "ProductID": pid}]
+    }
     quote = {
         "ItemList": [
             {
@@ -3261,17 +3265,42 @@ def test_renest_linear_480_posts_and_persists_20ft():
         raise AssertionError(path)
 
     client.get_json.side_effect = _get
+    configs = {
+        "ok": True,
+        "body": [
+            {"ID": "default-0", "Length": 0, "Length_Unit": "foot"},
+            {
+                "ID": cfg20,
+                "Length": 20,
+                "Length_Unit": "foot",
+                "ProductConfigName": "20 ft",
+            },
+            {
+                "ID": cfg40,
+                "Length": 40,
+                "Length_Unit": "foot",
+                "ProductConfigName": "40 ft",
+            },
+        ],
+    }
     with patch(
         "secturafab.quote_update.quote_online_update", return_value=True
-    ) as persist:
+    ) as persist, patch(
+        "secturafab.chrome_cdp.page_jquery_ajax", return_value=configs
+    ) as looked:
         notes = SecturaFabPushService(client=client).nest_after_finish(
             qid, item_count=1
         )
+    looked.assert_called_once()
+    assert "GetLinearConfig" in looked.call_args.kwargs["url"]
+    assert pid in looked.call_args.kwargs["url"]
+    client.read_data_linear_lookup.assert_not_called()
     client.renest_linear.assert_called_once()
     payload = client.renest_linear.call_args.kwargs.get("extra") or {}
     assert payload.get("id") == qid
     assert payload.get("NestTaskID") == nest_id
     assert payload.get("ChuckSize") == 0.0
+    assert payload.get("ChuckSize_Units") == "inch"
     checked = [
         row for row in (payload.get("LengthList") or []) if row.get("Checked")
     ]
@@ -3317,18 +3346,34 @@ def test_renest_linear_404_fail_closes():
                 {
                     "ID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
                     "SheetSizeLength": 480,
+                    "ProductID": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
                 }
             ]
         },
-        {"StockList": [{"StockLength": 480}]},
+        {
+            "StockList": [{"StockLength": 480}],
+            "ProductID": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        },
         {"ItemList": [], "StockList": []},
     ]
-    client.read_data_linear_lookup.return_value = {"List": []}
     client.renest_linear.side_effect = SecturaFabApiError(
         "API request failed (404)", status_code=404
     )
-    with pytest.raises(SecturaFabApiError, match="RenestLinear failed"):
+    with patch(
+        "secturafab.chrome_cdp.page_jquery_ajax",
+        return_value={
+            "ok": True,
+            "body": [
+                {
+                    "ID": "ffffffff-ffff-4fff-8fff-ffffffffffff",
+                    "Length": 20,
+                    "Length_Unit": "foot",
+                }
+            ],
+        },
+    ), pytest.raises(SecturaFabApiError, match="RenestLinear failed"):
         SecturaFabPushService(client=client).nest_after_finish("qid-404", item_count=1)
+    client.read_data_linear_lookup.assert_not_called()
 
 
 def test_renest_linear_still_480_fail_closes():
@@ -3343,14 +3388,30 @@ def test_renest_linear_still_480_fail_closes():
                 {
                     "ID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
                     "SheetSizeLength": 480,
+                    "ProductID": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
                 }
             ]
         },
-        {"StockList": [{"StockLength": 480}]},
+        {
+            "StockList": [{"StockLength": 480}],
+            "ProductID": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        },
         {"ItemList": [], "StockList": []},
         {"StockList": [{"StockLength": 480}]},
     ]
-    with pytest.raises(SecturaFabApiError, match="still 480"):
+    with patch(
+        "secturafab.chrome_cdp.page_jquery_ajax",
+        return_value={
+            "ok": True,
+            "body": [
+                {
+                    "ID": "ffffffff-ffff-4fff-8fff-ffffffffffff",
+                    "Length": 20,
+                    "Length_Unit": "foot",
+                }
+            ],
+        },
+    ), pytest.raises(SecturaFabApiError, match="still 480"):
         SecturaFabPushService(client=client).nest_after_finish(
             "qid-still-480", item_count=1
         )

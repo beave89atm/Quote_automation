@@ -405,25 +405,65 @@ def test_nest_quote_api_does_not_post_json_idlist():
     client.post_json.assert_not_called()
 
 
-def test_create_quote_posts_organization_object():
+def test_create_quote_uses_page_new_quote_and_open_new_header():
+    from unittest.mock import patch
+
+    from secturafab.client import SecturaFabApiError
     from secturafab.push import SecturaFabPushService
 
     client = MagicMock()
-    response = MagicMock(status_code=201)
-    client.request.return_value = response
-    client._parse_or_raise.return_value = "qid"
     client.get_json.return_value = {
-        "PrimaryOrganizationID": "b7dbc294-3fd2-43aa-99be-268a6c4fce14"
+        "ID": "new-qid",
+        "ProfitModel": 1,
+        "QuoteStatus": "OPEN-NEW",
+        "PrimaryOrganizationID": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
     }
-    SecturaFabPushService(client=client).create_quote(
-        quote_number="ZZ-ORG",
-        organization_name="Time Manufacturing Waco",
-        organization_id="b7dbc294-3fd2-43aa-99be-268a6c4fce14",
-    )
-    payload = client.request.call_args_list[0].kwargs["json"]
-    assert payload["PrimaryOrganizationID"] == "b7dbc294-3fd2-43aa-99be-268a6c4fce14"
-    assert payload["Organization"]["ID"] == "b7dbc294-3fd2-43aa-99be-268a6c4fce14"
-    assert payload["OrganizationID"] == payload["Organization"]["ID"]
+    with patch(
+        "secturafab.chrome_cdp.page_create_quote",
+        return_value={"ok": True, "quote_id": "new-qid", "via": "GET /quote/create"},
+    ) as created, patch(
+        "secturafab.page_weld.set_page_quote_number",
+        return_value=["QuoteNumber set via UpdatePropertyValue"],
+    ) as number, patch(
+        "secturafab.page_weld.set_page_quote_description",
+        return_value=["Description set via UpdatePropertyValue"],
+    ) as desc, patch(
+        "secturafab.chrome_cdp.bind_quote_organization_detail",
+        return_value={
+            "ok": True,
+            "via": "OrganizationDetail",
+            "search": False,
+            "org_id": "bound",
+        },
+    ) as bound:
+        quote_id = SecturaFabPushService(client=client).create_quote(
+            quote_number="ZZ-ORG",
+            description="SAFE CAVE",
+            organization_name="Time Manufacturing Waco",
+            organization_id="b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+        )
+    assert quote_id == "new-qid"
+    created.assert_called_once()
+    assert number.call_args.args[1] == "ZZ-ORG"
+    assert desc.call_args.args[1] == "SAFE CAVE"
+    assert bound.call_args.kwargs["org_name"] == "Time Manufacturing Waco"
+    client.request.assert_not_called()
+    client.get_json.return_value = {"ProfitModel": 0, "QuoteStatus": "OPEN-DRAFT"}
+    with patch(
+        "secturafab.chrome_cdp.page_create_quote",
+        return_value={"ok": True, "quote_id": "draft-qid", "via": "GET /quote/create"},
+    ), patch(
+        "secturafab.page_weld.set_page_quote_number",
+        return_value=["QuoteNumber set via UpdatePropertyValue"],
+    ), patch(
+        "secturafab.chrome_cdp.bind_quote_organization_detail",
+        return_value={"ok": True, "via": "OrganizationDetail", "search": False, "org_id": "bound"},
+    ), pytest.raises(SecturaFabApiError, match="OPEN-NEW"):
+        SecturaFabPushService(client=client).create_quote(
+            quote_number="ZZ-ORG",
+            organization_name="Time Manufacturing Waco",
+        )
+    client.request.assert_not_called()
 
 
 def test_relogin_success_clears_cooldown(tmp_path, monkeypatch):
@@ -1004,7 +1044,10 @@ def test_renest_checks_every_nest_task():
         if path.endswith(channel_id):
             if any("RenestLinear" in c or c == "renest" for c in calls):
                 return {"StockList": [{"SheetSizeLength": 240}]}
-            return {"StockList": [{"SheetSizeLength": 240}, {"SheetSizeLength": 480}]}
+            return {
+                "ProductID": "73097795-5384-486c-8eab-b32a6593c0ba",
+                "StockList": [{"SheetSizeLength": 240}, {"SheetSizeLength": 480}],
+            }
         return {"ItemList": [], "StockList": []}
 
     client = MagicMock()
@@ -1019,13 +1062,39 @@ def test_renest_checks_every_nest_task():
         return {}
 
     client.renest_linear.side_effect = _renest
-    with patch("secturafab.quote_update.quote_online_update", return_value=True):
+    with patch("secturafab.quote_update.quote_online_update", return_value=True), patch(
+        "secturafab.chrome_cdp.page_jquery_ajax",
+        return_value={
+            "ok": True,
+            "body": [
+                {
+                    "ID": "00f8b766-a818-42f9-bcfa-1e4da59acefc",
+                    "Length": 20,
+                    "Length_Unit": "foot",
+                },
+                {
+                    "ID": "d503d7e9-20d3-4029-872f-839dae144007",
+                    "Length": 40,
+                    "Length_Unit": "foot",
+                },
+            ],
+        },
+    ) as looked:
         notes = SecturaFabPushService(client=client).nest_after_finish(
             "qid-two", item_count=2
         )
+    looked.assert_called_once()
+    assert "73097795-5384-486c-8eab-b32a6593c0ba" in looked.call_args.kwargs["url"]
+    client.read_data_linear_lookup.assert_not_called()
     assert client.renest_linear.call_count == 1
     payload = client.renest_linear.call_args.kwargs.get("extra") or {}
     assert payload.get("NestTaskID") == channel_id
+    assert payload.get("ChuckSize") == 0.0
+    assert payload.get("ChuckSize_Units") == "inch"
+    checked = [row for row in payload.get("LengthList") or [] if row.get("Checked")]
+    assert checked and checked[0]["ID"] == "00f8b766-a818-42f9-bcfa-1e4da59acefc"
+    assert checked[0]["Length"] == 20
+    assert checked[0]["Length_Units"] == "foot"
     assert any("RenestLinear" in n for n in notes)
 
 
@@ -1078,3 +1147,159 @@ def test_mm_continue_fails_when_finish_dims_are_blank():
         )
         is None
     )
+
+
+def test_page_cad_posts_updateitemtype_once_then_gauge():
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+
+    native = _PAGE_FINISH_JS.split("function applyPageNativeCadThickness")[1].split(
+        "function skipFinish"
+    )[0]
+    assert native.count('ddl.value("cad")') == 1
+    assert native.count('ddl.trigger("change")') == 1
+    assert 'already !== "cad"' in native
+    assert "#MaterialEdit_Cad" in native
+    trigger_at = native.index('ddl.trigger("change")')
+    material_at = native.index("setMaterialCad(row)", trigger_at)
+    assert trigger_at < material_at < native.index("cb.select(idx)")
+    assert "flat_over_120" in native
+    assert native.index("convertMmGrid(row)") < native.index("flatOver120(row)")
+
+
+def test_apply_grid_pins_every_live_row():
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+
+    js = _APPLY_GRID_PART_MODES_JS
+    assert "rowPart" in js
+    assert "pinned.PartID" in js
+    loop = js.split("for (var i = 0; i < data.length; i++)")[1].split("if (!kids.length)")[0]
+    assert "queueWant(pinned, rowPart" in loop
+    match = js.split("function matchWant")[1].split("function wantFromName")[0]
+    assert "sourceHit" in match
+    assert match.index("wname && name && wname === name") < match.index("sourceHit = w")
+
+
+def test_flat_over_120_refuses_labeled_inch_mm_grid():
+    from secturafab.website import (
+        cad_finish_notes_refuse_additem_dxf,
+        cad_flat_over_120_refuses,
+        convert_mm_grid_flats_to_inches,
+    )
+
+    labeled = {
+        "Name": "plate",
+        "Length": 952.5,
+        "Width": 676.5,
+        "Length_Units": "inch",
+        "Width_Units": "inch",
+        "Thickness": 0.076,
+        "Thickness_Units": "inch",
+    }
+    why = cad_flat_over_120_refuses(labeled)
+    assert why and "952.5" in why
+    assert cad_finish_notes_refuse_additem_dxf([why])
+    assert labeled["Length"] == 952.5
+    real_mm = {
+        "Name": "plate",
+        "Length": 952.5,
+        "Width": 676.5,
+        "Length_Units": "mm",
+        "Width_Units": "mm",
+    }
+    assert convert_mm_grid_flats_to_inches(real_mm) is None
+    assert cad_flat_over_120_refuses(real_mm) is None
+    assert real_mm["Length"] == pytest.approx(37.5, rel=1e-3)
+
+
+def test_linear_stamp_waits_for_linear_product():
+    from secturafab.chrome_cdp import _STAMP_LINEAR_FORM_JS
+
+    picker = _STAMP_LINEAR_FORM_JS.split("function pickLinearSku")[1].split(
+        "function findLinearConfigWidget"
+    )[0]
+    assert "waitForLinearProduct" in picker
+    assert "8000" in picker
+    assert "3000" in picker
+    assert "none_linear_widget" in picker
+    assert picker.index("waitForLinearProduct") < picker.index("none_linear_widget")
+
+
+def test_nest_skips_when_linear_finish_produced_no_lines():
+    from secturafab.push import SecturaFabPushService
+
+    client = MagicMock()
+    notes = SecturaFabPushService(client=client).nest_after_finish("qid", item_count=0)
+    assert notes == ["Nest skipped — linear finish produced 0 lines"]
+    client.nest_quote_edit.assert_not_called()
+    client.renest_linear.assert_not_called()
+
+
+def test_get_linear_config_error_is_not_swallowed():
+    from unittest.mock import patch
+
+    from secturafab.client import SecturaFabApiError
+    from secturafab.push import SecturaFabPushService
+
+    client = MagicMock()
+    client.nest_quote_edit.return_value = {}
+    nest_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    client.get_json.side_effect = [
+        {"Results": [{"ID": nest_id, "SheetSizeLength": 480, "ProductID": "pid-1"}]},
+        {"ProductID": "pid-1", "StockList": [{"StockLength": 480}]},
+        {"ItemList": []},
+    ]
+    with patch(
+        "secturafab.chrome_cdp.page_jquery_ajax",
+        return_value={"ok": False, "why": "wrong_document"},
+    ), pytest.raises(SecturaFabApiError, match="GetLinearConfig failed"):
+        SecturaFabPushService(client=client).nest_after_finish("qid", item_count=1)
+    client.renest_linear.assert_not_called()
+    client.read_data_linear_lookup.assert_not_called()
+
+
+def test_pdf_skip_does_not_warn_form_lw_synced():
+    from secturafab.website import finish_empty_filelist_after_good_stamp_is_fail
+
+    skipped = {
+        "finish_filelist_n": 0,
+        "getpdfdata_n": 0,
+        "finish_why": "empty_perimeter",
+    }
+    assert finish_empty_filelist_after_good_stamp_is_fail(skipped, None) is False
+    assert (
+        finish_empty_filelist_after_good_stamp_is_fail(
+            skipped, {"form_lw_synced": False, "outside_perimeter_n": 0}
+        )
+        is False
+    )
+
+
+def test_saw_and_laser_pack_qc_guards_stay():
+    from secturafab.quote_qc import check_tree
+    from secturafab.website import step_finish_pack_missing
+
+    src_qc = Path("secturafab/quote_qc.py").read_text(encoding="utf-8")
+    src_web = Path("secturafab/website.py").read_text(encoding="utf-8")
+    assert "no Saw op" in src_qc
+    assert "Cad PR+laser pack missing after Finish" in src_web
+    report = check_tree(
+        {
+            "Data": [
+                {
+                    "ItemNumber": "1020243-1",
+                    "ProductType": 30,
+                    "Category": "Linear",
+                    "Quantity": 1,
+                    "Length": 45,
+                    "Length_Units": "inch",
+                    "UnitPrice": 56.46,
+                    "OperationCostList": [],
+                }
+            ]
+        },
+        {"1020243-1": 1},
+        formed=[],
+        label="Q",
+    )
+    assert any("no Saw op" in flag for flag in report.flags)
+    assert step_finish_pack_missing is not None

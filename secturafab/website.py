@@ -560,41 +560,70 @@ def build_renest_linear_payload(
         "id": str(quote_id),
         "NestTaskID": str(nest_id or ""),
         "ChuckSize": chuck,
-        "ChuckSize_Units": "",
+        "ChuckSize_Units": "inch",
         "LengthList": rows,
     }
 
 
+def _config_length_feet(row: dict[str, Any]) -> float | None:
+    """GetLinearConfig Length + Length_Unit. Skip the 0 ft default."""
+    unit = str(row.get("Length_Unit") or row.get("Length_Units") or "").strip().lower()
+    if unit not in {"foot", "feet", "ft"} and not unit.startswith("foot"):
+        return None
+    try:
+        return float(row.get("Length"))
+    except (TypeError, ValueError):
+        return None
+
+
 def renest_length_list_from_configs(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """20ft checked, 40ft unchecked, from LinearConfigList text. No invented IDs."""
+    """20ft checked, 40ft unchecked. No invented IDs.
+
+    Page GET /product/GetLinearConfig rows use Length, Length_Unit, and ID
+    (ProductConfigID). Older LinearConfigList rows use Text/Value.
+    """
     out: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for row in rows or []:
         if not isinstance(row, dict):
             continue
-        text = str(row.get("Text") or row.get("Name") or "").lower()
-        config_id = str(row.get("Value") or row.get("ID") or "").strip()
-        if not config_id:
+        text = str(
+            row.get("Text")
+            or row.get("Name")
+            or row.get("ProductConfigName")
+            or row.get("SKU")
+            or ""
+        ).lower()
+        config_id = str(
+            row.get("Value") or row.get("ID") or row.get("ProductConfigID") or ""
+        ).strip()
+        if not config_id or config_id in seen:
             continue
-        if "20" in text and "40" not in text:
-            out.append(
-                {
-                    "ID": config_id,
-                    "Checked": True,
-                    "Length": 20,
-                    "Length_Units": "foot",
-                    "Qty": 0,
-                }
-            )
-        elif "40" in text:
-            out.append(
-                {
-                    "ID": config_id,
-                    "Checked": False,
-                    "Length": 40,
-                    "Length_Units": "foot",
-                    "Qty": 0,
-                }
-            )
+        feet = _config_length_feet(row)
+        checked: bool | None = None
+        length: int | None = None
+        if feet == 0:
+            continue
+        if feet in (20.0, 21.0):
+            checked, length = True, 20
+        elif feet == 40.0:
+            checked, length = False, 40
+        elif feet is None and re.search(r"(^|[^0-9])20([^0-9]|$)", text) and "40" not in text:
+            checked, length = True, 20
+        elif feet is None and re.search(r"(^|[^0-9])40([^0-9]|$)", text):
+            checked, length = False, 40
+        if checked is None or length is None:
+            continue
+        seen.add(config_id)
+        out.append(
+            {
+                "ID": config_id,
+                "Checked": checked,
+                "Length": length,
+                "Length_Units": "foot",
+                "Qty": 0,
+            }
+        )
     return out
 
 
@@ -3928,6 +3957,22 @@ def convert_mm_grid_flats_to_inches(row: dict[str, Any] | None) -> str | None:
     return None
 
 
+def cad_flat_over_120_refuses(row: dict[str, Any] | None) -> str | None:
+    """Stop Finish when a flat is still over 120 in.
+
+    Convert millimetre L/W first. A grid labeled inch at 952.5 is not
+    converted — that would also shrink a real part. invent=false.
+    """
+    from .page_weld import grid_flat_over_120_refuses
+
+    why = grid_flat_over_120_refuses(row)
+    if not why:
+        return None
+    return (
+        f"{STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL}: {why} — not Finishing"
+    )
+
+
 def keep_grid_cad_kids_drawing_thickness_refuses(
     rows: list[dict[str, Any]] | None,
     *,
@@ -6405,7 +6450,7 @@ def finish_empty_filelist_after_good_stamp_is_fail(
 ) -> bool:
     """OnAddPDFClick FileList n=0 after form_lw_synced + OP>0.
 
-    Live 1ca884cc. HTTP 200 + ItemList=1 empty pack is not success.
+    Live 1ca884cc. A skipped Finish (no stamp) is not that warning.
     """
     if not isinstance(result, dict):
         return False
@@ -6424,13 +6469,14 @@ def finish_empty_filelist_after_good_stamp_is_fail(
     if str(result.get("finish_why") or "") == "empty_getpdfdata":
         return True
     if not isinstance(stamp_out, dict):
-        return posted < 1 or getn < 1
-    if stamp_out.get("form_lw_synced") is True:
-        try:
-            if int(stamp_out.get("outside_perimeter_n") or 0) > 0:
-                return posted < 1 or getn < 1
-        except (TypeError, ValueError):
-            return True
+        return False
+    if stamp_out.get("form_lw_synced") is not True:
+        return False
+    try:
+        if int(stamp_out.get("outside_perimeter_n") or 0) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return True
     return posted < 1 or getn < 1
 
 
@@ -8014,6 +8060,14 @@ def _linear_config_guid(
 def _linear_stock_feet(row: dict[str, Any] | None) -> float | None:
     if not isinstance(row, dict):
         return None
+    unit = str(row.get("Length_Unit") or row.get("Length_Units") or "").strip().lower()
+    if unit in {"foot", "feet", "ft"} or unit.startswith("foot"):
+        try:
+            feet = float(row.get("Length"))
+        except (TypeError, ValueError):
+            feet = None
+        if feet is not None and feet >= 0:
+            return feet
     label = " ".join(
         str(row.get(k) or "")
         for k in ("Name", "Text", "Display", "Description", "Length", "StockLength")

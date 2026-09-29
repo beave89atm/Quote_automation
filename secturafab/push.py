@@ -1431,14 +1431,16 @@ class SecturaFabPushService:
         organization_id: str | None = None,
     ) -> str:
         """
-        Create a new SecturaFAB quote that displays as the bare part number only.
+        Create a quote through the page New Quote link (GET /quote/create).
 
-        SecturaFAB requires uniqueness for create, so we mint a temporary
-        RevNumber then immediately clear it — otherwise re-pushes would either
-        reuse the old quote or show a revision suffix in the UI.
+        REST POST v1/quote mints EnteredBy api user, ProfitModel 0, and
+        OPEN-DRAFT, and the same part sequence then prices with no Profile
+        or Saw. Rename and the organization bind stay on the page.
+        Read-back must be ProfitModel 1 / OPEN-NEW.
         """
         display = _pn_quote_number(quote_number)
         from .forbidden_quotes import ForbiddenQuoteError, spent_quote_number_block_reason
+        from .org_ops import org_autocomplete_search_only_is_fail, page_new_quote_header
 
         blocked = spent_quote_number_block_reason(display)
         if blocked:
@@ -1446,89 +1448,73 @@ class SecturaFabPushService:
         header_number, header_description = quote_header_fields(display, description)
         display = header_number or display
         description = header_description
-        temp_rev = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-        payload: dict[str, Any] = {
-            "QuoteNumber": display,
-            "RevNumber": temp_rev,
-            "QuoteStatus": "OPEN-DRAFT",
-        }
-        if description:
-            payload["Description"] = description[:500]
-        if memo:
-            payload["Memo"] = memo[:900]
-        if quote_request_id:
-            payload["QuoteRequestID"] = quote_request_id
+        del memo, quote_request_id
+        from .chrome_cdp import bind_quote_organization_detail, page_create_quote
+        from .page_weld import set_page_quote_description, set_page_quote_number
+
+        try:
+            created = page_create_quote()
+        except SecturaFabApiError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — fail closed, no REST mint
+            raise SecturaFabApiError(
+                f"Page New Quote failed ({exc}). Not creating quotes over REST."
+            ) from exc
+        if not isinstance(created, dict) or not created.get("ok"):
+            why = created.get("why") if isinstance(created, dict) else "empty"
+            raise SecturaFabApiError(
+                f"Page New Quote failed ({why}). Not creating quotes over REST."
+            )
+        quote_id = str(created.get("quote_id") or "").strip()
+        if not quote_id:
+            raise SecturaFabApiError(
+                "Page New Quote returned no quote id. Not creating quotes over REST."
+            )
+        number_notes = set_page_quote_number(quote_id, display)
+        if not number_notes or any("WARNING" in note for note in number_notes):
+            raise SecturaFabApiError(
+                "QuoteNumber UpdatePropertyValue failed. Not creating quotes over REST."
+            )
+        if str(description or "").strip():
+            desc_notes = set_page_quote_description(quote_id, description.strip()[:500])
+            if any("WARNING" in note for note in desc_notes):
+                raise SecturaFabApiError(
+                    "Description UpdatePropertyValue failed. Not creating quotes over REST."
+                )
+        org_name = str(organization_name or "").strip()
         org_id = str(organization_id or "").strip()
         if org_empty_guid_is_fail(org_id):
             org_id = str(time_waco_org_id_for_name(organization_name) or "").strip()
-        if org_id and not org_empty_guid_is_fail(org_id):
-            # ID fields alone do not bind the dropdown. Send the Organization
-            # object the page posts (live probe left OrganizationID null).
-            payload.update(
-                _organization_bind_fields(
-                    org_id, str(organization_name or "").strip()
-                )
+        if org_name:
+            bound = bind_quote_organization_detail(
+                quote_id=quote_id,
+                org_name=org_name,
+                org_id=org_id,
             )
-        response = self.client.request("POST", "v1/quote", json=payload)
-        if response.status_code >= 400:
+            if (
+                not isinstance(bound, dict)
+                or not bound.get("ok")
+                or bound.get("via") != "OrganizationDetail"
+                or org_autocomplete_search_only_is_fail(bound)
+            ):
+                why = bound.get("why") if isinstance(bound, dict) else "empty"
+                raise SecturaFabApiError(
+                    f"OrganizationDetail bind failed ({why}). Not creating quotes over REST."
+                )
+        try:
+            minted = self.client.get_json(f"v1/quote/{quote_id}")
+        except SecturaFabApiError as exc:
             raise SecturaFabApiError(
-                f"Create quote failed ({response.status_code})",
-                status_code=response.status_code,
-                body=response.text[:500],
+                f"Page New Quote {quote_id} read-back failed ({exc}). "
+                "Not creating quotes over REST."
+            ) from exc
+        if not page_new_quote_header(minted if isinstance(minted, dict) else None):
+            profit = minted.get("ProfitModel") if isinstance(minted, dict) else None
+            status = minted.get("QuoteStatus") if isinstance(minted, dict) else None
+            raise SecturaFabApiError(
+                f"Page New Quote header is ProfitModel {profit!r} / {status!r} "
+                "— want ProfitModel 1 / OPEN-NEW. Not creating quotes over REST."
             )
-        quote_id = self.client._parse_or_raise(response)
-        if not isinstance(quote_id, str) or not quote_id:
-            raise SecturaFabApiError(f"Create quote returned unexpected body: {quote_id}")
-
-        # Strip revision so the Quote Number field is exactly the part key.
-        strip_payload: dict[str, Any] = {
-            "ID": quote_id,
-            "QuoteNumber": display,
-            "RevNumber": None,
-            "QuoteAndRevNumber": display,
-        }
-        if description:
-            strip_payload["Description"] = description[:500]
-        if org_id and not org_empty_guid_is_fail(org_id):
-            strip_payload.update(
-                _organization_bind_fields(
-                    org_id,
-                    str(organization_name or "").strip(),
-                    quote_id=quote_id,
-                )
-            )
-        strip = self.client.request(
-            "POST",
-            "v1/quote",
-            json=strip_payload,
-        )
-        if strip.status_code >= 400:
-            # Non-fatal: quote exists; UI may briefly show a temp rev suffix.
-            # Aborting here used to block pushes during SecturaFAB 5xx blips.
-            pass
-        if org_id and not org_empty_guid_is_fail(org_id):
-            try:
-                minted = self.client.get_json(f"v1/quote/{quote_id}")
-            except Exception:  # noqa: BLE001 — apply_quote_organization GET-asserts
-                minted = {}
-            got = quote_primary_organization_id(
-                minted if isinstance(minted, dict) else None
-            )
-            if not org_guid_matches(got, org_id):
-                slim = {
-                    "ID": quote_id,
-                    "QuoteNumber": display,
-                }
-                slim.update(
-                    _organization_bind_fields(
-                        org_id,
-                        str(organization_name or "").strip(),
-                        quote_id=quote_id,
-                    )
-                )
-                if description:
-                    slim["Description"] = description[:500]
-                self.client.request("POST", "v1/quote", json=slim)
         return quote_id
 
     def apply_item_categories(
@@ -3897,7 +3883,7 @@ class SecturaFabPushService:
                 "process). Do not invent Contours."
             )
             return notes
-        from .website import convert_mm_grid_flats_to_inches
+        from .website import cad_flat_over_120_refuses, convert_mm_grid_flats_to_inches
 
         for row in classified:
             if not isinstance(row, dict):
@@ -3905,6 +3891,10 @@ class SecturaFabPushService:
             mm_fail = convert_mm_grid_flats_to_inches(row)
             if mm_fail:
                 notes.append(mm_fail)
+                return notes
+            over = cad_flat_over_120_refuses(row)
+            if over:
+                notes.append(over)
                 return notes
         blank_mat = keep_grid_cad_kids_blank_material_refuses(
             classified, keep_via=keep_via
@@ -4098,6 +4088,10 @@ class SecturaFabPushService:
             mm_fail = convert_mm_grid_flats_to_inches(row)
             if mm_fail:
                 notes.append(mm_fail)
+                return notes
+            over = cad_flat_over_120_refuses(row)
+            if over:
+                notes.append(over)
                 return notes
         ready_drawing_thk = keep_grid_cad_kids_drawing_thickness_refuses(
             ready, keep_via=keep_via
@@ -6249,7 +6243,14 @@ class SecturaFabPushService:
     def nest_after_finish(self, quote_id: str, *, item_count: int) -> list[str]:
         """Page OnNestQuote_Edit. No cookie HTTP and no JSON IDList nest."""
         notes: list[str] = []
-        nest_type = "single" if item_count <= 1 else "multi"
+        try:
+            count = int(item_count)
+        except (TypeError, ValueError):
+            count = 0
+        if count <= 0:
+            notes.append("Nest skipped — linear finish produced 0 lines")
+            return notes
+        nest_type = "single" if count <= 1 else "multi"
         try:
             self.client.nest_quote_edit(quote_id, extra={"nestType": nest_type})
             notes.append(f"Nest page OnNestQuote_Edit({nest_type})")
@@ -6264,6 +6265,7 @@ class SecturaFabPushService:
         quote_id: str,
         *,
         quote: dict[str, Any] | None = None,
+        config_rows: dict[str, list[dict[str, Any]]] | None = None,
     ) -> list[str]:
         """Switch LinearConfigList / productConfigID from 40ft → 20ft.
 
@@ -6273,7 +6275,6 @@ class SecturaFabPushService:
         from .website import (
             item_linear_config_id,
             linear_config_stock_feet,
-            linear_lookup_rows,
             pick_linear_config_id,
         )
 
@@ -6301,17 +6302,7 @@ class SecturaFabPushService:
             pid = str(it.get("ProductID") or it.get("productID") or "")
             if not iid or not is_tenant_guid(pid):
                 continue
-            rows: list[dict[str, Any]] = []
-            if hasattr(self.client, "read_data_linear_lookup"):
-                try:
-                    rows = linear_lookup_rows(self.client.read_data_linear_lookup(pid))
-                except (
-                    SecturaFabApiError,
-                    SecturaFabWebsiteAuthError,
-                    TypeError,
-                    ValueError,
-                ):
-                    rows = []
+            rows = list((config_rows or {}).get(pid) or [])
             cfg20 = pick_linear_config_id(rows, product_id=pid)
             if not cfg20:
                 continue
@@ -6353,6 +6344,25 @@ class SecturaFabPushService:
             renest_length_list_from_configs,
         )
 
+        def _task_product_id(task: Any) -> str:
+            if isinstance(task, list):
+                for row in task:
+                    found = _task_product_id(row)
+                    if found:
+                        return found
+                return ""
+            if not isinstance(task, dict):
+                return ""
+            for key in ("ProductID", "productID", "ProductId"):
+                val = str(task.get(key) or "").strip()
+                if val:
+                    return val
+            for bucket in ("Results", "Data", "List"):
+                found = _task_product_id(task.get(bucket))
+                if found:
+                    return found
+            return ""
+
         notes: list[str] = []
         list_payload: Any = {}
         try:
@@ -6386,32 +6396,46 @@ class SecturaFabPushService:
             dirty = [ids[0]] if ids else [""]
         if not dirty:
             return notes
-        notes.extend(self._persist_linear_sku_20ft(quote_id, quote=quote))
-        length_rows: list[dict[str, Any]] = []
-        for it in quote.get("ItemList") or []:
-            if not isinstance(it, dict):
-                continue
-            try:
-                pt = int(it.get("ProductType"))
-            except (TypeError, ValueError):
-                pt = None
-            cat = str(it.get("Category") or it.get("ItemType") or "")
-            if pt not in VALID_LINEAR_PRODUCT_TYPES and cat.casefold() != "linear":
-                continue
-            pid = str(it.get("ProductID") or it.get("productID") or "")
-            if not pid or not hasattr(self.client, "read_data_linear_lookup"):
-                continue
-            try:
-                looked = linear_lookup_rows(self.client.read_data_linear_lookup(pid))
-            except (
-                SecturaFabApiError,
-                SecturaFabWebsiteAuthError,
-                TypeError,
-                ValueError,
-            ):
-                looked = []
-            length_rows.extend(renest_length_list_from_configs(looked))
+        from .chrome_cdp import page_jquery_ajax
+
+        task_by_id = {nest_id: task for nest_id, task in tasks}
+        config_rows: dict[str, list[dict[str, Any]]] = {}
         for nest_id in dirty:
+            product_id = _task_product_id(task_by_id.get(nest_id))
+            if not product_id:
+                raise SecturaFabApiError(
+                    f"Nest task {nest_id or '(missing)'} has no ProductID — "
+                    "not posting RenestLinear"
+                )
+            if product_id in config_rows:
+                continue
+            looked = page_jquery_ajax(
+                url=f"/product/GetLinearConfig?ProductID={product_id}",
+                method="GET",
+                data={},
+                quote_id=quote_id,
+            )
+            if not isinstance(looked, dict) or not looked.get("ok"):
+                why = looked.get("why") if isinstance(looked, dict) else "empty"
+                raise SecturaFabApiError(
+                    f"GetLinearConfig failed ({why}) — not posting RenestLinear"
+                )
+            config_rows[product_id] = linear_lookup_rows(looked.get("body"))
+        notes.extend(
+            self._persist_linear_sku_20ft(
+                quote_id, quote=quote, config_rows=config_rows
+            )
+        )
+        for nest_id in dirty:
+            product_id = _task_product_id(task_by_id.get(nest_id))
+            length_rows = renest_length_list_from_configs(
+                config_rows.get(product_id) or []
+            )
+            if not length_rows:
+                raise SecturaFabApiError(
+                    f"GetLinearConfig for {product_id} has no stock lengths — "
+                    "not posting RenestLinear"
+                )
             payload = build_renest_linear_payload(
                 quote_id,
                 nest_id=nest_id or None,
@@ -7264,7 +7288,7 @@ class SecturaFabPushService:
             )
             peek_count = self._peek_item_count(quote_id)
             notes.extend(
-                self.nest_after_finish(quote_id, item_count=peek_count or 1)
+                self.nest_after_finish(quote_id, item_count=peek_count)
             )
             notes.extend(
                 ensure_weld_ops(

@@ -1,6 +1,8 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from quote_core.customer_org import (
     detect_organization,
     detect_organization_from_folder,
@@ -322,61 +324,76 @@ def test_create_quote_stamps_time_waco_on_mint_and_strip():
     from secturafab.push import SecturaFabPushService
 
     client = MagicMock()
-    minted = MagicMock()
-    minted.status_code = 201
-    minted.text = ""
-    strip = MagicMock()
-    strip.status_code = 200
-    strip.text = ""
-    client.request.side_effect = [minted, strip]
-    client._parse_or_raise.return_value = "new-qid"
     client.get_json.return_value = {
         "ID": "new-qid",
+        "ProfitModel": 1,
+        "QuoteStatus": "OPEN-NEW",
         "PrimaryOrganizationID": TIME_WACO_ORG_ID,
         "OrganizationID": TIME_WACO_ORG_ID,
     }
-    notes = SecturaFabPushService(client=client).create_quote(
-        quote_number="21684-1",
-        description="TUBE, CYLINDER ANCHOR",
-        organization_name="Time Manufacturing Waco",
-    )
-    assert notes == "new-qid"
-    mint_body = client.request.call_args_list[0].kwargs["json"]
-    strip_body = client.request.call_args_list[1].kwargs["json"]
-    assert mint_body["PrimaryOrganizationID"] == TIME_WACO_ORG_ID
-    assert mint_body["OrganizationID"] == TIME_WACO_ORG_ID
-    assert strip_body["PrimaryOrganizationID"] == TIME_WACO_ORG_ID
-    assert strip_body["ID"] == "new-qid"
+    with patch(
+        "secturafab.chrome_cdp.page_create_quote",
+        return_value={"ok": True, "quote_id": "new-qid", "via": "GET /quote/create"},
+    ), patch(
+        "secturafab.page_weld.set_page_quote_number",
+        return_value=["QuoteNumber set via UpdatePropertyValue"],
+    ), patch(
+        "secturafab.page_weld.set_page_quote_description",
+        return_value=["Description set via UpdatePropertyValue"],
+    ), patch(
+        "secturafab.chrome_cdp.bind_quote_organization_detail",
+        return_value={
+            "ok": True,
+            "via": "OrganizationDetail",
+            "search": False,
+            "org_id": "bound",
+        },
+    ) as bound:
+        quote_id = SecturaFabPushService(client=client).create_quote(
+            quote_number="21684-1",
+            description="TUBE, CYLINDER ANCHOR",
+            organization_name="Time Manufacturing Waco",
+        )
+    assert quote_id == "new-qid"
+    assert bound.call_args.kwargs["org_name"] == "Time Manufacturing Waco"
+    client.request.assert_not_called()
     client.get_json.assert_called_once()
-    assert client.request.call_count == 2
 
 
 def test_create_quote_slim_stamps_when_mint_get_org_empty():
+    from secturafab.client import SecturaFabApiError
     from secturafab.push import SecturaFabPushService
 
     client = MagicMock()
-    minted = MagicMock()
-    minted.status_code = 201
-    minted.text = ""
-    strip = MagicMock()
-    strip.status_code = 200
-    strip.text = ""
-    slim = MagicMock()
-    slim.status_code = 200
-    slim.text = ""
-    client.request.side_effect = [minted, strip, slim]
-    client._parse_or_raise.return_value = "new-qid"
-    client.get_json.return_value = leftover_org_empty_guid_get()
-    quote_id = SecturaFabPushService(client=client).create_quote(
-        quote_number="21684-1",
-        description="TUBE, CYLINDER ANCHOR",
-        organization_name="Time Manufacturing Waco",
-    )
-    assert quote_id == "new-qid"
-    assert client.request.call_count == 3
-    slim_body = client.request.call_args_list[2].kwargs["json"]
-    assert slim_body["PrimaryOrganizationID"] == TIME_WACO_ORG_ID
-    assert slim_body["ID"] == "new-qid"
+    client.get_json.return_value = {
+        "ProfitModel": 0,
+        "QuoteStatus": "OPEN-DRAFT",
+        **leftover_org_empty_guid_get(),
+    }
+    with patch(
+        "secturafab.chrome_cdp.page_create_quote",
+        return_value={"ok": True, "quote_id": "new-qid", "via": "GET /quote/create"},
+    ), patch(
+        "secturafab.page_weld.set_page_quote_number",
+        return_value=["QuoteNumber set via UpdatePropertyValue"],
+    ), patch(
+        "secturafab.page_weld.set_page_quote_description",
+        return_value=["Description set via UpdatePropertyValue"],
+    ), patch(
+        "secturafab.chrome_cdp.bind_quote_organization_detail",
+        return_value={
+            "ok": True,
+            "via": "OrganizationDetail",
+            "search": False,
+            "org_id": "bound",
+        },
+    ), pytest.raises(SecturaFabApiError, match="OPEN-NEW"):
+        SecturaFabPushService(client=client).create_quote(
+            quote_number="21684-1",
+            description="TUBE, CYLINDER ANCHOR",
+            organization_name="Time Manufacturing Waco",
+        )
+    client.request.assert_not_called()
 
 
 def test_apply_time_waco_prefers_quotes_ui_bind_not_search():

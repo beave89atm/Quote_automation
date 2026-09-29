@@ -270,29 +270,35 @@ def test_push_job_refuses_byname_spent_before_mint(tmp_path: Path):
 def test_create_quote_refuses_forbidden_number_before_post():
     client = MagicMock()
     service = SecturaFabPushService(client=client)
-    with pytest.raises(ForbiddenQuoteError, match="103535-1"):
-        service.create_quote(quote_number="103535-1")
+    with patch(
+        "secturafab.chrome_cdp.page_create_quote",
+        side_effect=AssertionError("page create"),
+    ):
+        with pytest.raises(ForbiddenQuoteError, match="103535-1"):
+            service.create_quote(quote_number="103535-1")
     client.request.assert_not_called()
 
 
 def test_create_quote_leaves_blank_description_off_the_payload():
     """Kyle 9/28: no title block means Description stays blank, not the part number."""
     client = MagicMock()
-    minted = MagicMock()
-    minted.status_code = 201
-    minted.text = ""
-    strip = MagicMock()
-    strip.status_code = 200
-    strip.text = ""
-    client.request.side_effect = [minted, strip]
-    client._parse_or_raise.return_value = "new-qid"
-    quote_id = SecturaFabPushService(client=client).create_quote(
-        quote_number="A-11949-000", description="  "
-    )
+    client.get_json.return_value = {"ProfitModel": 1, "QuoteStatus": "OPEN-NEW"}
+    with patch(
+        "secturafab.chrome_cdp.page_create_quote",
+        return_value={"ok": True, "quote_id": "new-qid", "via": "GET /quote/create"},
+    ), patch(
+        "secturafab.page_weld.set_page_quote_number",
+        return_value=["QuoteNumber set via UpdatePropertyValue"],
+    ) as number, patch(
+        "secturafab.page_weld.set_page_quote_description",
+        side_effect=AssertionError("blank description posted"),
+    ):
+        quote_id = SecturaFabPushService(client=client).create_quote(
+            quote_number="A-11949-000", description="  "
+        )
     assert quote_id == "new-qid"
-    mint_body = client.request.call_args_list[0].kwargs["json"]
-    assert mint_body["QuoteNumber"] == "A-11949-000"
-    assert "Description" not in mint_body
+    assert number.call_args.args[1] == "A-11949-000"
+    client.request.assert_not_called()
 
 
 def test_push_job_mints_with_blank_description_when_title_missing(tmp_path: Path):

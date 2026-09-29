@@ -2570,25 +2570,80 @@ _PAGE_FINISH_JS = """(async function(spec) {
         return;
       }
     }
+    function flatOver120(row) {
+      var live = (row && row._gridItem) || row;
+      if (!live) return "";
+      var keys = ["Length", "Width"];
+      for (var fi = 0; fi < keys.length; fi++) {
+        var n = parseFloat(live[keys[fi]]);
+        if (isFinite(n) && n > 120) return "flat_over_120";
+      }
+      return "";
+    }
+    function setMaterialCad(row) {
+      var mat = "";
+      try {
+        mat = String(
+          (specIn && specIn.material)
+          || (row && (row.Material || row.MaterialGrade))
+          || ""
+        ).trim();
+      } catch (eMat) { mat = ""; }
+      if (!mat || !window.jQuery) return;
+      var sels = ["#MaterialEdit_Cad", "#MaterialEdit"];
+      for (var mi = 0; mi < sels.length; mi++) {
+        var matBox = null;
+        try {
+          matBox = jQuery(sels[mi]).data("kendoDropDownList")
+            || jQuery(sels[mi]).data("kendoComboBox")
+            || jQuery(sels[mi]).data("kendoAutoComplete");
+        } catch (eBox) { matBox = null; }
+        if (!matBox || typeof matBox.value !== "function") continue;
+        var current = "";
+        try { current = String(matBox.value() || ""); } catch (eCur) { current = ""; }
+        if (current && current.toLowerCase() === mat.toLowerCase()) return;
+        var matData = [];
+        try { matData = (matBox.dataSource && matBox.dataSource.data()) || []; } catch (eMD) { matData = []; }
+        for (var di = 0; di < matData.length; di++) {
+          var matItem = matData[di];
+          var matText = "";
+          if (typeof matItem === "string") matText = matItem;
+          else if (matItem) matText = String(matItem.Text || matItem.Description || matItem.Value || matItem.Material || "");
+          if (matText && matText.toLowerCase() === mat.toLowerCase()) {
+            try {
+              var matVal = (typeof matItem === "string") ? matItem : String((matItem && (matItem.Value || matItem.Text)) || mat);
+              matBox.value(matVal);
+              if (typeof matBox.trigger === "function") matBox.trigger("change");
+            } catch (eMV) {}
+            return;
+          }
+        }
+        return;
+      }
+    }
     for (var p = 0; p < plates.length; p++) {
       var row = plates[p];
       var selWhy = selectExactlyOne(row);
       if (selWhy) return fail(selWhy, 0);
       var mmWhy = convertMmGrid(row);
       if (mmWhy) return fail(mmWhy, 0);
+      var overWhy = flatOver120(row);
+      if (overWhy) return fail(overWhy, 0);
       var partId = String((row && row.PartID) || (row._gridItem && row._gridItem.PartID) || "");
       if (!partId) return fail("part_id_missing", 0);
-      // Gold: UpdateItemType ("cad", [PartID]) first. Do not
-      // ddl.trigger — that calls SetDXFPanel with an empty ProductType
-      // (GetProductSubTypeList 500) and clears Machine.
-      // Q10488: the page dropdown change (lowercase "cad") posts
-      // UpdateItemType and SetDXFPanel fills ProductType / ProductSubType.
-      // DoSetItemType alone leaves ItemType=Cad, ProductType=100, and an
-      // empty productSubType, and AddItem_DXFFiles comes back empty.
-      var cadDone = armAjax("/Part/UpdateItemType", 12000);
-      ddl.value("cad");
-      ddl.trigger("change");
-      await cadDone;
+      // Gold: click the row, UpdateItemType once, material, then the
+      // gauge combobox (GetBorderSize Machine=Laser). Skip the dropdown
+      // when this row is already cad — apply_grid already posted it.
+      var already = String(
+        (row && row.ItemType) || (row._gridItem && row._gridItem.ItemType) || ""
+      ).toLowerCase();
+      if (already !== "cad") {
+        var cadDone = armAjax("/Part/UpdateItemType", 12000);
+        ddl.value("cad");
+        ddl.trigger("change");
+        await cadDone;
+      }
+      setMaterialCad(row);
       setMachineLaser(row);
       var data = [];
       try { data = (cb.dataSource && cb.dataSource.data()) || []; } catch (e3) { data = []; }
@@ -3194,6 +3249,76 @@ def _ensure_quote_edit_page(
     if isinstance(verified, dict) and edit_ids_match(edit_tab_quote_id(verified), qid):
         return verified
     return None
+
+
+_QUOTE_CREATE_URL = "https://www.secturafab.com/quote/create"
+
+
+def _open_edit_ids(base: str | None = None) -> set[str]:
+    found: set[str] = set()
+    for tab in _chrome_page_targets(base):
+        qid = edit_tab_quote_id(tab)
+        if qid:
+            found.add(qid.casefold())
+    return found
+
+
+def page_create_quote(*, base: str | None = None) -> dict[str, Any]:
+    """GET /quote/create on the signed-in Quotes list. No REST mint."""
+    listing = quotes_list_tab(base)
+    if not isinstance(listing, dict):
+        fallback = quotes_tab(base)
+        if isinstance(fallback, dict) and _is_quotes_list_tab(fallback):
+            listing = fallback
+    empty = {"ok": False, "why": "quotes_list_missing", "quote_id": "", "via": ""}
+    if not isinstance(listing, dict) or not listing.get("webSocketDebuggerUrl"):
+        return empty
+    before = _open_edit_ids(base)
+    ws = str(listing.get("webSocketDebuggerUrl") or "")
+    cdp_call(ws, "Page.navigate", {"url": _QUOTE_CREATE_URL})
+    waited = _cdp_evaluate_promise(
+        """(function(){
+      return new Promise(function(resolve){
+        function editId(){
+          var path = String(location.pathname || "");
+          var m = path.match(/\\/Quote\\/EDIT\\/([^/?#]+)/i);
+          return m ? String(m[1]) : "";
+        }
+        var t0 = Date.now();
+        (function tick(){
+          var id = editId();
+          if (id || Date.now() - t0 >= 15000) {
+            resolve({edit_quote_id: id, href: String(location.href || "")});
+            return;
+          }
+          setTimeout(tick, 200);
+        })();
+      });
+    })()""",
+        timeout=20.0,
+        base=base,
+        tab=listing,
+        fallback=False,
+    )
+    page_id = ""
+    if isinstance(waited, dict):
+        page_id = str(waited.get("edit_quote_id") or "").strip()
+    if page_id and page_id.casefold() not in before:
+        return {
+            "ok": True,
+            "why": "",
+            "quote_id": page_id,
+            "via": "GET /quote/create",
+        }
+    fresh = [qid for qid in _open_edit_ids(base) if qid not in before]
+    if len(fresh) == 1:
+        return {
+            "ok": True,
+            "why": "",
+            "quote_id": fresh[0],
+            "via": "GET /quote/create",
+        }
+    return {"ok": False, "why": "quote_create_missing", "quote_id": "", "via": ""}
 
 
 def bind_do_create_dxf_parts_success(
@@ -6504,6 +6629,118 @@ def bind_quote_organization(
     }
 
 
+_BIND_ORG_DETAIL_JS = r"""(async function(spec) {
+  var orgName = String((spec && spec.orgName) || "").trim();
+  if (!orgName) {
+    return {ok: false, why: "org_name_missing", via: "", search: false, org_id: "", org_name: ""};
+  }
+  if (!window.jQuery) {
+    return {ok: false, why: "no_jquery", via: "", search: false, org_id: "", org_name: orgName};
+  }
+  var input = jQuery("#Organization_OrganizationName");
+  if (!input.length) {
+    return {ok: false, why: "org_field_missing", via: "", search: false, org_id: "", org_name: orgName};
+  }
+  var widget = null;
+  try { widget = input.data("kendoAutoComplete"); } catch (eW) { widget = null; }
+  var posted = false;
+  var orig = jQuery.ajax;
+  jQuery.ajax = function(opts) {
+    var url = "";
+    if (typeof opts === "string") url = opts;
+    else if (opts && opts.url) url = String(opts.url);
+    if (url.indexOf("/Quote/OrganizationDetail") >= 0) posted = true;
+    return orig.apply(this, arguments);
+  };
+  try {
+    if (widget && typeof widget.search === "function") widget.search(orgName);
+    else input.val(orgName).trigger("input");
+  } catch (eS) {}
+  var deadline = Date.now() + 4000;
+  var clicked = false;
+  while (!clicked && Date.now() < deadline) {
+    var items = jQuery(".k-animation-container:visible li, .k-list-container:visible li, ul.k-list li");
+    for (var i = 0; i < items.length; i++) {
+      var text = String(items[i].textContent || "");
+      if (text.toLowerCase().indexOf(orgName.toLowerCase()) >= 0) {
+        items[i].click();
+        clicked = true;
+        break;
+      }
+    }
+    if (!clicked) await new Promise(function(r) { setTimeout(r, 50); });
+  }
+  var postDeadline = Date.now() + 4000;
+  while (clicked && !posted && Date.now() < postDeadline) {
+    await new Promise(function(r) { setTimeout(r, 25); });
+  }
+  jQuery.ajax = orig;
+  if (!clicked) {
+    return {
+      ok: false, why: "org_lookup_miss", via: "", search: true,
+      org_id: "", org_name: orgName, autocomplete_hits: 0
+    };
+  }
+  if (!posted) {
+    return {
+      ok: false, why: "organization_detail_missing", via: "", search: false,
+      org_id: "", org_name: orgName, autocomplete_hits: 0
+    };
+  }
+  return {
+    ok: true, why: "", via: "OrganizationDetail", search: false,
+    org_id: "bound", org_name: orgName, autocomplete_hits: 1
+  };
+})"""
+
+
+def bind_quote_organization_detail(
+    *,
+    quote_id: str,
+    org_name: str,
+    org_id: str = "",
+    base: str | None = None,
+) -> dict[str, Any]:
+    """Bind #Organization_OrganizationName through OrganizationDetail. No REST."""
+    empty = {
+        "ok": False,
+        "via": "",
+        "org_id": "",
+        "org_name": org_name,
+        "search": False,
+        "autocomplete_hits": 0,
+        "why": "quotes_list_missing",
+    }
+    name = str(org_name or "").strip()
+    if not name:
+        empty["why"] = "org_name_missing"
+        return empty
+    gate = minted_edit_tab_ready(quote_id, base=base, navigate=False)
+    if not gate.get("ok"):
+        empty["why"] = str(gate.get("reason") or "wrong_document")
+        return empty
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    expression = (
+        _BIND_ORG_DETAIL_JS
+        + "("
+        + json.dumps({"orgName": name, "orgId": str(org_id or "")}, separators=(",", ":"))
+        + ")"
+    )
+    value = _cdp_evaluate_promise(expression, base=base, tab=tab, fallback=False)
+    if not isinstance(value, dict):
+        empty["why"] = "empty"
+        return empty
+    return {
+        "ok": bool(value.get("ok")),
+        "via": str(value.get("via") or ""),
+        "org_id": str(value.get("org_id") or ""),
+        "org_name": str(value.get("org_name") or name),
+        "search": bool(value.get("search")),
+        "autocomplete_hits": int(value.get("autocomplete_hits") or 0),
+        "why": str(value.get("why") or ""),
+    }
+
+
 # QuoteOrderEdit Long mint (live 6d4373bc / d2ec4357): AddNewItemHTML('bar')
 # / #but_bar → LinearProduct + LinearConfigList 20ft → OnAddLinearClick.
 # Do NOT AddNewItemHTML('linear'). Cookie HTTP AddItem_Linear 302s
@@ -6657,15 +6894,26 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
     } catch (e3) {}
     return null;
   }
+  function waitForLinearProduct() {
+    return new Promise(function(resolve) {
+      var t0 = Date.now();
+      (function tick() {
+        var found = findLinearProductWidget();
+        if (found) { resolve(found); return; }
+        if (Date.now() - t0 >= 8000) { resolve(null); return; }
+        setTimeout(tick, 100);
+      })();
+    });
+  }
   function pickLinearSku(sku) {
     lastPicker = "";
     lastPickerSku = sku || "";
     lastApply = "";
     if (!sku || !window.jQuery) return Promise.resolve("");
-    var hit = findLinearProductWidget();
+    return waitForLinearProduct().then(function(hit) {
     if (!hit) {
       lastPicker = "none_linear_widget";
-      return Promise.resolve("");
+      return "";
     }
     lastPicker = hit.via;
     var w = hit.widget;
@@ -6719,7 +6967,10 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
       } catch (e2) {}
       return waited.then(function(why) {
         if (!why) return "";
-        return val || itemSku(it);
+        var pickedVal = val || itemSku(it);
+        return new Promise(function(resolve) {
+          setTimeout(function() { resolve(pickedVal); }, 3000);
+        });
       });
     }
     var data = [];
@@ -6736,6 +6987,7 @@ _STAMP_LINEAR_FORM_JS = """(function(spec) {
       }).catch(function() { return ""; });
     }
     return Promise.resolve("");
+    });
   }
   function findLinearConfigWidget() {
     var ids = [
@@ -9131,20 +9383,21 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     return stamped;
   }
   function matchWant(row, wants) {
-    var id = String(row.ID || row.ItemID || "").toLowerCase();
+    var id = String(row.ID || row.ItemID || row.PartID || "").toLowerCase();
     var sid = String(row.SourceDataID || "").toLowerCase();
     var name = String(row.Name || row.Description || "").toLowerCase();
+    var sourceHit = null;
     for (var i = 0; i < wants.length; i++) {
       var w = wants[i];
-      var wid = String(w.ID || "").toLowerCase();
+      var wid = String(w.ID || w.PartID || "").toLowerCase();
       var wsid = String(w.SourceDataID || "").toLowerCase();
       var wname = String(w.Name || "").toLowerCase();
-      if ((wid && id && wid === id) || (wsid && sid && wsid === sid)
-          || (wname && name && wname === name)) {
+      if ((wid && id && wid === id) || (wname && name && wname === name)) {
         return w;
       }
+      if (!sourceHit && wsid && sid && wsid === sid) sourceHit = w;
     }
-    return null;
+    return sourceHit;
   }
   function wantFromName(row) {
     var name = String(row.Name || row.Description || row.FileName || "");
@@ -9242,7 +9495,16 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     return out;
   }
   function findLiveRow(fresh, want, fallback) {
+    var wantPart = String((want && want.PartID) || "");
+    var wantUid = String((want && want._uid) || "");
     if (want && fresh && fresh.length) {
+      for (var pi = 0; pi < fresh.length; pi++) {
+        var cand = fresh[pi];
+        var pid = String((cand && (cand.PartID || cand.ID || cand.ItemID)) || "");
+        var uid = String((cand && cand.uid) || "");
+        if (wantPart && pid && pid === wantPart) return cand;
+        if (wantUid && uid && uid === wantUid) return cand;
+      }
       for (var fi = 0; fi < fresh.length; fi++) {
         if (matchWant(fresh[fi], [want])) return fresh[fi];
       }
@@ -9345,31 +9607,69 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     }
     function changePageItemType(row, token) {
       // Page onChangeDXFItemType: dropdown value is lowercase "cad" /
-      // "linear", then trigger("change") posts UpdateItemType and the
-      // page writes ItemType plus ProductType / ProductSubType.
+      // "linear", then trigger("change") posts UpdateItemType once.
+      // Wait for that XHR before the next kid. One post per kid.
       return new Promise(function(resolve) {
         var typeToken = String(token || "").toLowerCase();
         if (typeToken !== "cad" && typeToken !== "linear") {
           resolve("");
           return;
         }
+        var partId = String((row && (row.PartID || row.ID || row.ItemID)) || "");
         var ddl = null;
         try {
           ddl = window.jQuery && jQuery("#DXFItemType").data("kendoDropDownList");
         } catch (eDdl) { ddl = null; }
-        if (ddl && typeof ddl.value === "function" && typeof ddl.trigger === "function") {
+        if (!(ddl && typeof ddl.value === "function" && typeof ddl.trigger === "function")) {
+          postItemType(partId, typeToken, itemTypeFnName).then(function(via) {
+            resolve(via || "");
+          });
+          return;
+        }
+        restoreIfWiped(true);
+        if (!selectOneGridRow(row)) {
+          restoreIfWiped(true);
           selectOneGridRow(row);
-          try {
-            ddl.value(typeToken);
-            ddl.trigger("change");
+        }
+        var saw = false;
+        var pending = null;
+        var orig = window.jQuery && jQuery.ajax;
+        if (orig) {
+          jQuery.ajax = function(opts) {
+            var url = "";
+            if (typeof opts === "string") url = opts;
+            else if (opts && opts.url) url = String(opts.url);
+            var ret = orig.apply(this, arguments);
+            if (!saw && url.indexOf("/Part/UpdateItemType") >= 0) {
+              saw = true;
+              pending = ret;
+            }
+            return ret;
+          };
+        }
+        try {
+          ddl.value(typeToken);
+          ddl.trigger("change");
+        } catch (eCh) {}
+        if (orig) jQuery.ajax = orig;
+        function afterPost() {
+          if (saw) {
             resolve("dropdown");
             return;
-          } catch (eCh) {}
+          }
+          postItemType(partId, typeToken, itemTypeFnName).then(function(via) {
+            resolve(via || "");
+          });
         }
-        var partId = String((row && (row.PartID || row.ID || row.ItemID)) || "");
-        postItemType(partId, typeToken, itemTypeFnName).then(function(via) {
-          resolve(via || "");
-        });
+        if (pending && typeof pending.always === "function") {
+          pending.always(function() { afterPost(); });
+          return;
+        }
+        if (pending && typeof pending.then === "function") {
+          Promise.resolve(pending).then(afterPost, afterPost);
+          return;
+        }
+        afterPost();
       });
     }
     function applyOneKid(want) {
@@ -9385,7 +9685,18 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
           live = findLiveRow(kendoDataRows(g.dataSource), want, null);
         }
         if (!live) {
-          resolve("");
+          var missCat = String((want && want.Category) || "");
+          var missToken = missCat === "Linear" ? "linear" : (missCat === "Cad" ? "cad" : "");
+          var missId = String((want && (want.PartID || want.ID)) || "");
+          if (!missToken || !missId) {
+            resolve("");
+            return;
+          }
+          postItemType(missId, missToken, itemTypeFnName).then(function(itemVia) {
+            typeSetCount += 1;
+            if (itemVia && !typeVia) typeVia = itemVia;
+            resolve("");
+          });
           return;
         }
         // Cad classify (UpdateItemType Cad / SetPartMode) BEFORE
@@ -9414,7 +9725,7 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
           }
           live = findLiveRow(kendoDataRows(g.dataSource), want, live);
           var typeToken = cat === "Linear" ? "linear" : "cad";
-          return changePageItemType(live, typeToken).then(function(itemVia) {
+          return changePageItemType(live || want, typeToken).then(function(itemVia) {
             typeSetCount += 1;
             if (itemVia && !typeVia) typeVia = itemVia;
             restoreIfWiped(false);
@@ -9431,16 +9742,27 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     }
     var kids = [];
     var seen = {};
-    function queueWant(want) {
+    function queueWant(want, rowKey) {
       if (!want) return;
-      var key = String(want.ID || want.SourceDataID || want.Name || "");
+      var key = String(rowKey || want.PartID || want.ID || want.SourceDataID || want.Name || "");
       if (key && seen[key]) return;
       if (key) seen[key] = true;
       kids.push(want);
     }
     data = kendoDataRows(g.dataSource);
     for (var i = 0; i < data.length; i++) {
-      queueWant(matchWant(data[i], wants) || wantFromName(data[i]));
+      var liveRow = data[i];
+      var matched = matchWant(liveRow, wants) || wantFromName(liveRow);
+      if (!matched) continue;
+      var pinned = {};
+      for (var pk in matched) {
+        if (Object.prototype.hasOwnProperty.call(matched, pk)) pinned[pk] = matched[pk];
+      }
+      var rowPart = String((liveRow && (liveRow.PartID || liveRow.ID || liveRow.ItemID)) || "");
+      var rowUid = String((liveRow && liveRow.uid) || "");
+      if (rowPart) pinned.PartID = rowPart;
+      if (rowUid) pinned._uid = rowUid;
+      queueWant(pinned, rowPart || rowUid || String(i));
     }
     if (!kids.length) {
       for (var wi = 0; wi < wants.length; wi++) queueWant(wants[wi]);
@@ -9448,7 +9770,9 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     var chain = Promise.resolve("");
     for (var ki = 0; ki < kids.length; ki++) {
       (function(want) {
-        chain = chain.then(function() { return applyOneKid(want); });
+        chain = chain.then(function() {
+          return applyOneKid(want).catch(function() { return ""; });
+        });
       })(kids[ki]);
     }
     return chain.then(function(last) {
