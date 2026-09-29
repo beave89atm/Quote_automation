@@ -511,9 +511,22 @@ def persist_quote_header(
     *,
     organization_name: str | None = None,
     description: str | None = None,
+    quote_number: str | None = None,
 ) -> list[str]:
     """Re-apply org + Description after ItemList POSTs so a live GET is not blank/PN."""
     notes: list[str] = []
+    number = str(quote_number or "").strip()
+    if number and quote_id:
+        try:
+            from .chrome_cdp import chrome_quotes_live
+
+            live_header = bool(chrome_quotes_live())
+        except (OSError, TypeError, ValueError):
+            live_header = False
+        if live_header:
+            from .page_weld import set_page_quote_number
+
+            notes.extend(set_page_quote_number(quote_id, number))
     if organization_name:
         notes.extend(
             apply_quote_organization(

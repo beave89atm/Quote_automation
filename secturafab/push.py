@@ -3374,19 +3374,47 @@ class SecturaFabPushService:
 
         if in_page:
             from .chrome_cdp import page_jquery_ajax
+            from .page_weld import STEP_MM_NOTE, set_units_body, step_header_is_millimetre
 
-            units = page_jquery_ajax(
-                url="/CadImport/SetUnits",
-                method="POST",
-                data={"units": "inch"},
-                quote_id=quote_id,
-            )
-            if not (isinstance(units, dict) and units.get("ok")):
-                why = units.get("why") if isinstance(units, dict) else "empty"
-                notes.append(f"WARNING: CadImport SetUnits in-page failed: {why}")
-            else:
+            milli_names: list[str] = []
+            for path in cad_files:
+                try:
+                    header = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    notes.append(
+                        f"WARNING: STEP unreadable — not calling SetDXFFileUnits ({path.name})"
+                    )
+                    return notes
+                if step_header_is_millimetre(header):
+                    milli_names.append(path.name)
+            if milli_names:
+                notes.append(STEP_MM_NOTE + " (" + ", ".join(milli_names) + ")")
+                return notes
+            source_ids: list[str] = []
+            for row in upload_rows:
+                sid = str(row.get("SourceDataID") or row.get("ID") or "").strip()
+                if sid and sid not in source_ids:
+                    source_ids.append(sid)
+            if not source_ids:
                 notes.append(
-                    "CadImport SetUnits in-page $.ajax (DOM antiforgery, no cookie read)"
+                    "WARNING: SetDXFFileUnits missing SourceDataID — not posting inch"
+                )
+            posted_inch = False
+            for sid in source_ids:
+                units = page_jquery_ajax(
+                    url="/CadImport/SetUnits",
+                    method="POST",
+                    data=set_units_body(sid),
+                    quote_id=quote_id,
+                )
+                if not (isinstance(units, dict) and units.get("ok")):
+                    why = units.get("why") if isinstance(units, dict) else "empty"
+                    notes.append(f"WARNING: CadImport SetUnits in-page failed: {why}")
+                else:
+                    posted_inch = True
+            if posted_inch:
+                notes.append(
+                    "CadImport SetDXFFileUnits inch in-page (IDList, no cookie read)"
                 )
         else:
             try:
@@ -5564,6 +5592,35 @@ class SecturaFabPushService:
                 "(CadImport list / empty shell is not success)"
             )
             return notes
+        live_page = False
+        try:
+            from .chrome_cdp import chrome_quotes_live as _weld_live
+
+            live_page = bool(_weld_live())
+        except (OSError, TypeError, ValueError):
+            live_page = False
+        if live_page:
+            page_components = self._library_component_rows(bom_rows)
+            if page_components:
+                notes.extend(
+                    _add_component_items(self.client, quote_id, page_components)
+                )
+            from .page_weld import add_page_assembly
+
+            notes.extend(add_page_assembly(quote_id=quote_id, name=part_key))
+            if any("page assembly stopped" in note for note in notes):
+                return notes
+            notes.extend(
+                self.stamp_cad_holes(
+                    quote_id=quote_id,
+                    bom_rows=bom_rows,
+                    library=library,
+                    extra_pdfs=extra_pdfs,
+                    takeoff=takeoff,
+                )
+            )
+            del material
+            return notes
         notes.extend(
             create_assembly_shell(
                 self.client,
@@ -6590,6 +6647,51 @@ class SecturaFabPushService:
                             uploaded=uploaded,
                             attempts=createfile_attempts,
                         )
+                    from .page_weld import step_unit_fail_note
+
+                    unit_fail = step_unit_fail_note(notes)
+                    if unit_fail:
+                        return self._fail_push(
+                            msg=unit_fail,
+                            notes=notes,
+                            quote_id=quote_id,
+                            quote_number=quote_number,
+                            quote_request_id=quote_request_id,
+                            uploaded=uploaded,
+                            attempts=createfile_attempts,
+                        )
+                    if len(cad) >= 2:
+                        try:
+                            from .chrome_cdp import chrome_quotes_live as _asm_live
+
+                            live_asm = bool(_asm_live())
+                        except (OSError, TypeError, ValueError):
+                            live_asm = False
+                        if live_asm:
+                            from .page_weld import add_page_assembly
+
+                            asm_notes = add_page_assembly(
+                                quote_id=quote_id, name=part_key
+                            )
+                            notes.extend(asm_notes)
+                            stopped = next(
+                                (
+                                    note
+                                    for note in asm_notes
+                                    if "page assembly stopped" in note
+                                ),
+                                "",
+                            )
+                            if stopped:
+                                return self._fail_push(
+                                    msg=stopped,
+                                    notes=notes,
+                                    quote_id=quote_id,
+                                    quote_number=quote_number,
+                                    quote_request_id=quote_request_id,
+                                    uploaded=uploaded,
+                                    attempts=createfile_attempts,
+                                )
                     uploaded.extend(p.name for p in cad)
                     attempted_pack_stamp = True
                 elif not website_cookie:
@@ -6956,6 +7058,7 @@ class SecturaFabPushService:
                     quote_id,
                     organization_name=organization_name,
                     description=quote_description,
+                    quote_number=quote_header_fields(part_key, raw_title)[0],
                 )
             )
             persist_org_fail = org_stamp_fail_reason(

@@ -277,6 +277,13 @@ def test_page_native_cad_thickness_recipe_and_inch_finish():
     assert "kendoComboBox" in native
     assert "cb.select(idx)" in native
     assert 'cb.trigger("change")' in native
+    assert "clearSelection" in native
+    assert 'g.trigger("change")' in native
+    assert "selection_not_one" in native
+    assert native.index("selectExactlyOne(row)") < native.index('ddl.value("cad")')
+    assert native.index("selectExactlyOne(row)", native.index('ddl.value("cad")')) < native.index(
+        "cb.select(idx)"
+    )
     assert "onThicknessChangeDXF" in native
     assert "/Quote/GetBorderSize" in native
     assert "ErrorStatus" in native
@@ -380,6 +387,7 @@ def test_page_native_description_gauge_and_delayed_errorstatus():
         }];
         let selected = -1;
         const sandbox = {
+          multiSelect: false,
           setTimeout, clearTimeout, Date, Promise, console, Math, parseFloat,
           isFinite, Number, String, Object
         };
@@ -412,8 +420,23 @@ def test_page_native_description_gauge_and_delayed_errorstatus():
               }
               if (name === "kendoGrid") {
                 return {
-                  select() {},
-                  tbody: { find() { return {}; } },
+                  clearSelection() {},
+                  trigger() {},
+                  select(tr) {
+                    if (tr === undefined) {
+                      const ids = sandbox.multiSelect ? ["u1", "u2"] : ["u1"];
+                      return {
+                        length: ids.length,
+                        toArray() { return ids.map((id) => ({ id })); }
+                      };
+                    }
+                    return { length: 1 };
+                  },
+                  dataItem(el) {
+                    const id = (el && el.id) || "u1";
+                    return { uid: id, PartID: id };
+                  },
+                  tbody: { find() { return { length: 1 }; } },
                   dataSource: { data() { return { toJSON() { return [row]; } }; } }
                 };
               }
@@ -461,6 +484,10 @@ def test_page_native_description_gauge_and_delayed_errorstatus():
             const missing = await applyPageNativeCadThickness(
               rows, { quoteId: "qid" }
             );
+            multiSelect = true;
+            const multi = await applyPageNativeCadThickness(
+              rows, { quoteId: "qid", thickness: ".076 - 14 Ga" }
+            );
             return {
               described: described.why,
               describedIdx,
@@ -468,6 +495,7 @@ def test_page_native_description_gauge_and_delayed_errorstatus():
               numericIdx,
               model: model.why,
               missing: missing.why,
+              multi: multi.why,
               err: errAfter
             };
           })()
@@ -503,6 +531,7 @@ def test_page_native_description_gauge_and_delayed_errorstatus():
     assert out["numericIdx"] == 0
     assert out["model"] == "gauge_not_in_list"
     assert out["missing"] == "thickness_missing"
+    assert out["multi"] == "selection_not_one"
     assert out["err"] == 0
 
 
@@ -551,7 +580,7 @@ def test_finish_cad_files_live_chrome_skips_cookie_reads(tmp_path, monkeypatch):
     assert urls == ["/Quote/GetItem_AddView", "/CadImport/SetUnits"]
     assert calls[0]["method"] == "GET"
     assert calls[1]["method"] == "POST"
-    assert calls[1]["data"] == {"units": "inch"}
+    assert calls[1]["data"] == {"IDList": ["src-1"], "Units": "inch"}
     client.get_item_add_view.assert_not_called()
     client.cadimport_set_units.assert_not_called()
     client.harvest_chrome_antiforgery.assert_not_called()

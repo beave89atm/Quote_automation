@@ -23,14 +23,14 @@ Owner: Quote Automation PO. Draft 2, Mon 9/28/2026. Checker and session guard: `
 
 ## 3. STEP explode / assembly structure
 - Split the assembly into part STEPs, but keep the parent/child structure (see section 8). Record the expected part list (name, qty) from the STEP/LOM.
-- **Units:** export with `"INCH"`. **Past miss:** `"IN"` made the exporter silently write mm. **Check:** read the STEP header `SI_UNIT`/`CONVERSION_BASED_UNIT` and FLAG anything that isn't inch. Also call `SetDXFFileUnits(SourceDataID,'inch')` after upload.
+- **Units:** export with `"INCH"`. **Past miss:** `"IN"` made the exporter silently write mm. **Check:** read the STEP header `SI_UNIT`/`CONVERSION_BASED_UNIT` and FLAG anything that isn't inch. Before `SetDXFFileUnits(SourceDataID,'inch')`, a header of `SI_UNIT(.MILLI.,.METRE.)` stops fail-closed. Marking that file inch makes the flat 25.4× too large.
 
 ## 4. ItemType to Cad, plus thickness (the proven page-native recipe, Q10488, 9/25)
 All steps run via CDP `Runtime.evaluate` on the signed-in tab:
 1. `upload_dxf_via_page_add_files`
 2. `SetDXFFileUnits(SourceDataID,'inch')`
 3. `createAllParts()`
-4. Select the row, set `#DXFItemType` kendoDropDownList to `'cad'`, then `.trigger('change')`. This runs POST `/Part/UpdateItemType`, which returns the server-unfolded flat Width and ErrorStatus 0.
+4. Select exactly one `#gridDXFParts` row. `grid.select` does not fire `change`, and `onChangeDXFItemType` applies to every selected row, so `clearSelection`, `select` that row, `trigger('change')`, and require the selection to be that one row before `#DXFItemType` and again before thickness. Set the dropdown to `'cad'`, then `.trigger('change')`. This runs POST `/Part/UpdateItemType`, which returns the server-unfolded flat Width and ErrorStatus 0.
 5. On the `#ThicknessEdit` kendoComboBox, `select()` the gauge entry, then `trigger('change')`. This runs `onThicknessChangeDXF` and GET `/Quote/GetBorderSize`, and the row gets ErrorStatus 0.
 6. Verify ErrorStatus 0 and that the page is still the right quote, then call the page's `OnAddDXFClick()` (`/Quote/AddItem_DXFFiles`).
 
@@ -51,7 +51,8 @@ What can go wrong:
 - **1xN flats:** a line that comes out 1 x N (degenerate width), or a bar that went down the laser path, gets FLAGGED so it can be re-routed to Long/Linear. Renest after any change.
 
 ## 8. Weldment parent/child
-- Proven recipe: the page's **Add Item**, then **Assembly** view. Name it with the parent number (e.g. `A-11949-000`), Copy All, Add. This moves the existing lines under the parent with their qty, and totals stay the same (Q10488 total $1,087.70 before and after).
+- Proven recipe (ZZ Q10506): `AddNewItemHTML('assembly','top')`, set `#AssemblyName` to the parent number, `OnCopyAll()`, then `OnAddClick()`. `OnCopyAll` only moves rows in the browser. The persist is POST `/Quote/AddItem_Assembly` with `ItemList` of `{ID, Qty: BaseQty}`.
+- **Check after that post:** `QuoteItem_ReadTreeListData` shows one parent, N kids, and no loose top-level lines. A staged grid without that post is not success.
 - **Past miss (Kyle correction, Q10488):** the assembly was split and loose top-level lines went in with no parent. **Check:** when an assembly exists, no child line has an empty parent (`AID`).
 
 ## 9. Weld labor
@@ -87,7 +88,7 @@ Q10488 Diamond C — FLAG
 
 ## 13. Quote header (Kyle, 9/28)
 When the app creates or names a Sectura quote:
-- **Quote Number** is the top-level part or assembly number (for example `A-11949-000`). It is not the drawing title.
+- **Quote Number** is the top-level part or assembly number (for example `A-11949-000`). It is not the drawing title. On the quote page it is set by changing `#quote_Text`, which posts `/Quote/UpdatePropertyValue` with `{ID, parameter: QuoteNumber, value}`.
 - **Description** is the title-block or BOM description passed in with the RFQ or drawing (for example `NECK WINCH BOX ASSEMBLY (CENTERED)`). It is not the part number.
 - If that description is not on the input, leave Description blank. Do not invent one, and do not copy the part number into Description.
 - **Check:** FLAG `quote Description blank`, `quote Description is the part number`, or `Quote Number … does not match top-level part …`. The tree read stays read-only. Line-only snapshots that omit `QuoteNumber` and `HeaderDescription` do not invent a header.

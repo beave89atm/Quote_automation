@@ -2355,11 +2355,51 @@ _PAGE_FINISH_JS = """(async function(spec) {
     if (!cb) return fail("no_thicknessedit", 0);
     var g = null;
     try { g = jQuery("#gridDXFParts").data("kendoGrid"); } catch (eG) { g = null; }
+    function rowKey(row) {
+      return String((row && (row.PartID || row.ID || row.uid)) || "");
+    }
+    function selectedKeys() {
+      var ids = [];
+      try {
+        var picked = g.select();
+        var arr = [];
+        if (picked && picked.toArray) arr = picked.toArray();
+        else if (picked && picked.length) {
+          for (var pi = 0; pi < picked.length; pi++) arr.push(picked[pi]);
+        }
+        for (var si = 0; si < arr.length; si++) {
+          var item = {};
+          try { item = g.dataItem(arr[si]) || {}; } catch (eI) { item = {}; }
+          ids.push(rowKey(item));
+        }
+      } catch (eSel) {}
+      return ids;
+    }
+    function selectExactlyOne(row) {
+      // grid.select does not fire change. onChangeDXFItemType applies to
+      // every selected row, so the selection must be exactly this row.
+      if (!g) return "selection_not_one";
+      try {
+        if (typeof g.clearSelection === "function") g.clearSelection();
+      } catch (eC) {}
+      var tr = null;
+      try {
+        if (row && row.uid && g.tbody && g.tbody.find) {
+          tr = g.tbody.find("tr[data-uid='" + row.uid + "']");
+        }
+      } catch (eT) { tr = null; }
+      if (!tr || !tr.length) return "selection_not_one";
+      try { g.select(tr); } catch (eS) { return "selection_not_one"; }
+      try { if (typeof g.trigger === "function") g.trigger("change"); } catch (eCh) {}
+      var ids = selectedKeys();
+      var wantId = rowKey(row);
+      if (ids.length !== 1 || !wantId || ids[0] !== wantId) return "selection_not_one";
+      return "";
+    }
     for (var p = 0; p < plates.length; p++) {
       var row = plates[p];
-      if (g && row.uid) {
-        try { g.select(g.tbody.find("tr[data-uid='" + row.uid + "']")); } catch (e2) {}
-      }
+      var selWhy = selectExactlyOne(row);
+      if (selWhy) return fail(selWhy, 0);
       var cadDone = armAjax("/Part/UpdateItemType", 12000);
       ddl.value("cad");
       ddl.trigger("change");
@@ -2368,6 +2408,8 @@ _PAGE_FINISH_JS = """(async function(spec) {
       try { data = (cb.dataSource && cb.dataSource.data()) || []; } catch (e3) { data = []; }
       var idx = gaugeIndex(data, gauge);
       if (idx < 0) return fail("gauge_not_in_list", 0);
+      selWhy = selectExactlyOne(row);
+      if (selWhy) return fail(selWhy, 0);
       var borderDone = armAjax("/Quote/GetBorderSize", 12000);
       cb.select(idx);
       cb.trigger("change");
