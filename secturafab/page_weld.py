@@ -182,9 +182,11 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
       status: addStatus
     };
   }
-  // AddItem_Assembly ignores Description when the line does not exist yet.
-  // Post it after the parent is stored, then read the stored value back.
-  // This is the assembly line. Do not write the quote header.
+  // AddItem_Assembly ignores Description. The old line update does not
+  // persist it either. After the line exists, post the same
+  // /Quote/UpdatePropertyValue the quote header uses, against this
+  // line's id. Do not write the quote-number field or the header description.
+  // Fail only when the tree read-back is still wrong. Never store Root.
   function treeRows(body) {
     if (!body) return [];
     if (Array.isArray(body)) return body;
@@ -232,18 +234,83 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
       finish(ret, 200);
     });
   }
+  var quoteId = String((spec && spec.quoteId) || "").trim();
   var stored = "";
   var postedDescription = "";
-  if (lineDesc) {
-    var quoteId = String((spec && spec.quoteId) || "").trim();
-    var first = await ajaxBody({
+  async function readTree() {
+    return ajaxBody({
       url: "/Quote/QuoteItem_ReadTreeListData",
       type: "GET",
       data: {ParentID: quoteId},
       dataType: "json"
     });
-    var parent = assemblyParent(treeRows(first && first.body));
+  }
+  function looseKids(rows, parent) {
+    var parentId = parent ? String(parent.ID || parent.Id || "").trim() : "";
+    var loose = [];
+    for (var li = 0; li < rows.length; li++) {
+      var row = rows[li] || {};
+      var id = String(row.ID || row.Id || "").trim();
+      if (!id || (parentId && id === parentId)) continue;
+      if (assemblyParent([row])) continue;
+      var aid = String(row.AssemblyID || row.AID || "").trim();
+      if (parentId && aid === parentId) continue;
+      var label = String(row.Description || row.Name || "").trim();
+      if (label.toLowerCase() === "root") continue;
+      loose.push(row);
+    }
+    return loose;
+  }
+  var first = await readTree();
+  var rows = treeRows(first && first.body);
+  var parent = assemblyParent(rows);
+  var loose = looseKids(rows, parent);
+  var parentId = parent ? String(parent.ID || parent.Id || "").trim() : "";
+  for (var ci = 0; ci < loose.length; ci++) {
+    var kidId = String(loose[ci].ID || loose[ci].Id || "").trim();
+    if (!parentId || !kidId) continue;
+    await ajaxBody({
+      url: "/Quote/CopyMoveItemToAssembly",
+      type: "POST",
+      data: {
+        ID: quoteId,
+        ItemID: kidId,
+        AssemblyID: parentId,
+        Mode: "Move"
+      }
+    });
+  }
+  if (loose.length) {
+    var linked = await readTree();
+    rows = treeRows(linked && linked.body);
+    parent = assemblyParent(rows);
+    loose = looseKids(rows, parent);
+  }
+  if (loose.length) {
+    return {
+      ok: false,
+      why: "assembly_loose_line",
+      posted_additem: true,
+      staged: staged,
+      status: addStatus,
+      stored_description: parent ? String(parent.Description || "").trim() : "",
+      posted_description: ""
+    };
+  }
+  if (lineDesc && lineDesc.toLowerCase() === "root") {
+    return {
+      ok: false,
+      why: "assembly_description_not_stored",
+      posted_additem: true,
+      staged: staged,
+      status: addStatus,
+      stored_description: "Root",
+      posted_description: ""
+    };
+  }
+  if (lineDesc) {
     stored = parent ? String(parent.Description || "").trim() : "";
+    if (stored.toLowerCase() === "root") stored = "";
     if (stored !== lineDesc) {
       var itemId = parent ? String(parent.ID || parent.Id || "").trim() : "";
       if (!itemId) {
@@ -257,30 +324,21 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
           posted_description: ""
         };
       }
-      var payload = JSON.stringify([{
-        ID: itemId,
-        ParentID: quoteId,
-        ParamName: "Description",
-        Value: lineDesc
-      }]);
-      postedDescription = payload;
+      postedDescription = "parameter=Description&value=" + lineDesc;
       await ajaxBody({
-        url: "/api/v1/quoteOnline/update",
-        type: "PUT",
-        contentType: "application/json; charset=utf-8",
-        processData: false,
-        data: payload
+        url: "/Quote/UpdatePropertyValue",
+        type: "POST",
+        data: {
+          ID: itemId,
+          parameter: "Description",
+          value: lineDesc
+        }
       });
-      var second = await ajaxBody({
-        url: "/Quote/QuoteItem_ReadTreeListData",
-        type: "GET",
-        data: {ParentID: quoteId},
-        dataType: "json"
-      });
+      var second = await readTree();
       parent = assemblyParent(treeRows(second && second.body));
       stored = parent ? String(parent.Description || "").trim() : "";
     }
-    if (stored !== lineDesc) {
+    if (stored.toLowerCase() === "root" || stored !== lineDesc) {
       return {
         ok: false,
         why: "assembly_description_not_stored",
@@ -577,6 +635,8 @@ def add_page_assembly(
     from secturafab.item_desc import is_bare_part_number
 
     line = str(description or "").strip()
+    if line.casefold() == "root":
+        return ["WARNING: page assembly stopped (assembly_description_not_stored)"]
     if (
         not line
         or line == key

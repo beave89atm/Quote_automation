@@ -9022,7 +9022,9 @@ def linear_website_product_type(
 ) -> int:
     """GET ItemList ProductType: 10 bar, 30 tube, 40 angle/channel."""
     text = f" {str(description or '').upper()} {str(sku or '').upper()} "
-    if any(h in text for h in (" ANGLE", " CHANNEL")):
+    # "C-CHANNEL4_5.4" has a hyphen, not a space, before CHANNEL.
+    # 40 is angle/channel. Do not rewrite that line to bar 10.
+    if re.search(r"(^|[^A-Z])(ANGLE|CHANNEL)([^A-Z]|$)", text):
         return LINEAR_PRODUCT_TYPE_ANGLE
     # Hose guards bind Round Bar (bar), not tube.
     if "HOSE GUARD" in text or "HOSEGUARD" in text:

@@ -1058,6 +1058,39 @@ def test_angle_product_type_40_passes_and_forced_10_fails():
     assert "want 10" not in blob
 
 
+def test_c_channel_description_at_product_type_40_passes_live_get():
+    """Live string has C-Channel, not a space before CHANNEL and not C4X5.4.
+
+    evaluate_quote_get is what push_job calls. ProductType 40 is correct.
+    The old check wanted 10. Do not rewrite the line to 10.
+    """
+    from secturafab.website import linear_website_product_type
+
+    live = "1008763-1 - C-Channel4_5.4_A36_20ft - 26.688"
+    assert linear_website_product_type(live) == 40
+    assert linear_website_product_type("1020243-1", sku="RCT5X4X3/16-A500") == 30
+    payload = gold_1001898_get()
+    channel = next(
+        it
+        for it in payload["ItemList"]
+        if "29860-3" in str(it.get("Description") or "")
+    )
+    channel["Description"] = live
+    channel["SKU"] = ""
+    channel["ProductName"] = ""
+    channel["ProductType"] = 40
+    result = evaluate_quote_get(
+        payload,
+        part_key="1001898-1",
+        expected_org=TIME_ORG,
+        expected_header=HEADER_DESC,
+        expected_assembly_title=ASSEMBLY_DESC,
+        bom_rows=_bom_rows(),
+    )
+    assert result.ok is True, result.failures
+    assert not any("want 10" in failure for failure in result.failures)
+
+
 def test_channel_c_sku_at_product_type_40_passes_live_get():
     """C4X5.4 has no CHANNEL word. The old check wanted 10 for ProductType 40."""
     from secturafab.website import linear_website_product_type

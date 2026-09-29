@@ -145,8 +145,10 @@ def test_assembly_description_is_posted_after_the_line_exists():
           ID: "kid-1",
           ItemNumber: "A-" + part,
           ProductType: 100,
-          AssemblyID: "parent-1"
+          Description: "A-" + part,
+          AssemblyID: process.argv[5] === "loose" ? null : "parent-1"
         };
+        if (process.argv[6]) parent.Description = process.argv[6];
         const sandbox = {
           setTimeout, clearTimeout, Date, Promise, console, JSON, encodeURIComponent,
           Object, String, Number, Array
@@ -207,11 +209,26 @@ def test_assembly_description_is_posted_after_the_line_exists():
               return;
             }
             if (url.indexOf("quoteOnline/update") >= 0) {
-              let body = opts.data;
-              if (typeof body === "string") body = JSON.parse(body);
-              const row = Array.isArray(body) ? body[0] : body;
-              if (row && row.ParamName === "Description" && row.Value) {
-                parent.Description = row.Value;
+              deferred.resolve(true, 200);
+              return;
+            }
+            if (url.indexOf("UpdatePropertyValue") >= 0) {
+              const data = (opts && opts.data) || {};
+              if (
+                data.parameter === "Description"
+                && data.ID === parent.ID
+                && data.value
+                && String(data.value).toLowerCase() !== "root"
+              ) {
+                parent.Description = data.value;
+              }
+              deferred.resolve(true, 200);
+              return;
+            }
+            if (url.indexOf("CopyMoveItemToAssembly") >= 0) {
+              const data = (opts && opts.data) || {};
+              if (data.ItemID === kid.ID && data.AssemblyID) {
+                kid.AssemblyID = data.AssemblyID;
               }
               deferred.resolve(true, 200);
               return;
@@ -242,7 +259,7 @@ def test_assembly_description_is_posted_after_the_line_exists():
     run_path = Path(__file__).resolve().parent / "_assembly_desc_run.js"
     js_path.write_text(PAGE_ADD_ASSEMBLY_JS, encoding="utf-8")
     run_path.write_text(script, encoding="utf-8")
-    wanted = "11521-000 - ZZ-TEST weldment 2351d9f inch push_job 9/29"
+    wanted = "11521-000 - ZZ-TEST weldment 2b8fc8c inch push_job 9/29"
     try:
         proc = subprocess.run(
             [node, str(run_path), str(js_path), wanted, "11521-000"],
@@ -257,19 +274,16 @@ def test_assembly_description_is_posted_after_the_line_exists():
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout.strip().splitlines()[-1])
     posts = payload["posts"]
-    update = next(row for row in posts if "quoteOnline/update" in row["url"])
-    assert update["type"].upper() == "PUT"
-    body = update["data"] if isinstance(update["data"], list) else json.loads(update["data"])
-    assert body[0]["ParamName"] == "Description"
-    assert body[0]["Value"] == wanted
-    assert body[0]["ID"] == "parent-1"
+    update = next(row for row in posts if "UpdatePropertyValue" in row["url"])
+    assert update["data"]["ID"] == "parent-1"
+    assert update["data"]["parameter"] == "Description"
     assert posts.index(update) > next(
         i for i, row in enumerate(posts) if "AddItem_Assembly" in row["url"]
     )
-    assert not any("UpdatePropertyValue" in row["url"] for row in posts)
+    assert not any("quote_Text" in row["url"] for row in posts)
     assert payload["out"]["stored_description"] == wanted
     assert payload["out"]["ok"] is True
-    linear = "1020243-1 - ZZ-TEST linear 2351d9f"
+    linear = "1020243-1 - ZZ-TEST linear tube+channel nest+renest 2b8fc8c push_job 9/29"
     js_path.write_text(PAGE_ADD_ASSEMBLY_JS, encoding="utf-8")
     run_path.write_text(script, encoding="utf-8")
     try:
@@ -285,12 +299,46 @@ def test_assembly_description_is_posted_after_the_line_exists():
         run_path.unlink(missing_ok=True)
     assert proc.returncode == 0, proc.stderr
     linear_out = json.loads(proc.stdout.strip().splitlines()[-1])
-    linear_update = next(
-        row for row in linear_out["posts"] if "quoteOnline/update" in row["url"]
-    )
-    linear_body = json.loads(linear_update["data"])
-    assert linear_body[0]["Value"] == linear
     assert linear_out["out"]["stored_description"] == linear
+    assert linear_out["out"]["ok"] is True
+    rooted = "34887-1 - chosen description"
+    js_path.write_text(PAGE_ADD_ASSEMBLY_JS, encoding="utf-8")
+    run_path.write_text(script, encoding="utf-8")
+    try:
+        proc = subprocess.run(
+            [node, str(run_path), str(js_path), rooted, "34887-1", "linked", "Root"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    finally:
+        js_path.unlink(missing_ok=True)
+        run_path.unlink(missing_ok=True)
+    assert proc.returncode == 0, proc.stderr
+    root_out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert root_out["out"]["stored_description"] == rooted
+    assert root_out["out"]["stored_description"] != "Root"
+    assert root_out["out"]["ok"] is True
+    loose_wanted = "34887-1 - chosen description"
+    js_path.write_text(PAGE_ADD_ASSEMBLY_JS, encoding="utf-8")
+    run_path.write_text(script, encoding="utf-8")
+    try:
+        proc = subprocess.run(
+            [node, str(run_path), str(js_path), loose_wanted, "34887-1", "loose", "Root"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    finally:
+        js_path.unlink(missing_ok=True)
+        run_path.unlink(missing_ok=True)
+    assert proc.returncode == 0, proc.stderr
+    loose_out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert loose_out["out"]["ok"] is True, loose_out["out"]
+    assert loose_out["out"]["stored_description"] == loose_wanted
+    assert any("CopyMoveItemToAssembly" in row["url"] for row in loose_out["posts"])
 
 
 def test_quote_number_posts_update_property_value(monkeypatch):

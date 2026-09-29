@@ -306,8 +306,11 @@ def test_unresolved_plate_stops_and_tube_is_not_cad():
     )
     assert tubes
     assert not any("thickness unresolved" in note for note in tube_notes)
-    blob = " ".join(str(tubes[0].get(key) or "") for key in ("Category", "ItemType", "FileType"))
+    blob = " ".join(
+        str(tubes[0].get(key) or "") for key in ("Category", "ItemType", "FileType")
+    )
     assert "Linear" in blob
+    assert tubes[0].get("Machine") != "Laser"
 
 
 def test_page_session_replaces_cookie_gate():
@@ -1999,8 +2002,9 @@ def test_assembly_line_uses_part_number_and_chosen_description(monkeypatch):
     )
     assert '"description": "11521-000 - ZZ-TEST weldment"' in seen["expr"]
     assert "applyAssemblyLineDesc" in PAGE_ADD_ASSEMBLY_JS
-    assert "UpdatePropertyValue" not in PAGE_ADD_ASSEMBLY_JS
+    assert "/Quote/UpdatePropertyValue" in PAGE_ADD_ASSEMBLY_JS
     assert "#quote_Text" not in PAGE_ADD_ASSEMBLY_JS
+    assert "quoteOnline/update" not in PAGE_ADD_ASSEMBLY_JS
     assert any("AddItem_Assembly persisted" in note for note in notes)
     seen.clear()
     add_page_assembly(
@@ -2445,3 +2449,243 @@ def test_linear_only_without_confident_sku_still_stops(monkeypatch):
     assert result.ok is False
     assert result.error == "No PDF or STEP files found to push"
     assert created["n"] == 0
+
+
+def test_step_0188_is_not_11_ga_and_assembly_body_is_not_a_plate(monkeypatch):
+    """push_job classifies through classify_cadimport_rows.
+
+    34892's solid is 0.188. That is not 11 Ga and not any other dropdown
+    gauge. The bare 34887-1 solid is the assembly line, not a Cad plate.
+    34536 has no catalog SKU, so it is flagged and not a laser plate.
+    """
+    from secturafab.push import SecturaFabPushService
+
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *a, **k: True)
+    classified, notes = SecturaFabPushService(client=MagicMock()).classify_cadimport_rows(
+        [
+            {"Name": "34887-1", "PartName": "34887-1", "ID": "body"},
+            {
+                "Name": "34887-1",
+                "PartName": "34892 BOTTOM PLATE",
+                "ID": "plate",
+                "Stock_Z": 0.188,
+                "Length": 43.563,
+                "Width": 8.438,
+            },
+            {
+                "Name": "34887-1",
+                "PartName": "34536 PIVOT TUBE, BOOM TIP_34536-1",
+                "ID": "tube",
+            },
+            {
+                "Name": "34887-1",
+                "PartName": "34889 PLATE",
+                "ID": "good",
+                "Stock_Z": 0.1196,
+            },
+        ],
+        default_material="A36",
+        default_thickness="0.1196",
+        bom_rows=[],
+        library={},
+        extra_pdfs=[],
+        part_key="34887-1",
+        default_thickness_source="drawing",
+    )
+    names = [str(row.get("PartName") or row.get("Name") or "") for row in classified]
+    assert not any("34892" in name for name in names)
+    assert any("34892" in note and "0.188" in note for note in notes)
+    assert "11 Ga" not in " ".join(
+        str(row.get("Description") or "") for row in classified if "34892" in str(row)
+    )
+    body = next(row for row in classified if str(row.get("ID") or "") == "body")
+    assert body.get("Category") == "Assembly"
+    assert body.get("Machine") != "Laser"
+    assert "11 Ga" not in str(body.get("Description") or "")
+    tube = next(row for row in classified if str(row.get("ID") or "") == "tube")
+    assert tube.get("Category") == "Linear"
+    assert tube.get("Machine") != "Laser"
+    assert not tube.get("ProductID")
+    assert any("34889" in name for name in names)
+
+
+def test_page_finish_drops_0188_root_and_unpriced_tube():
+    """applyPageNativeCadThickness is the Finish path push_job calls.
+
+    quoteOnline-style gauge stamps must not keep 0.188 as 11 Ga.
+    Root and the bare assembly solid are removed. A tube with no SKU
+    is removed instead of finished as a laser plate.
+    """
+    import json
+    import shutil
+    import subprocess
+    import textwrap
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+
+    start = _PAGE_FINISH_JS.index("async function applyPageNativeCadThickness")
+    end = _PAGE_FINISH_JS.index("  function skipFinish")
+    fn = _PAGE_FINISH_JS[start:end]
+    script = textwrap.dedent(
+        r"""
+        const vm = require("vm");
+        const fs = require("fs");
+        const code = fs.readFileSync(process.argv[2], "utf8");
+        const store = [
+          { uid: "root", PartID: "root", Name: "Root", PartName: "Root",
+            ItemType: "Cad", PartMode: 0, ProductType: 100, Thickness: "11 Ga",
+            ErrorStatus: 0, Material: "A36" },
+          { uid: "body", PartID: "body", Name: "34887-1", PartName: "34887-1",
+            ItemType: "Cad", PartMode: 0, ProductType: 100, Thickness: "11 Ga",
+            ErrorStatus: 0, Material: "A36" },
+          { uid: "bad", PartID: "bad", Name: "34887-1", PartName: "34892 BOTTOM PLATE",
+            ItemType: "Cad", PartMode: 0, ProductType: 100, Thickness: "11 Ga",
+            Stock_Z: 0.188, Length: 43.5625, Width: 8.4375, ErrorStatus: 0, Material: "A36" },
+          { uid: "good", PartID: "good", Name: "34887-1", PartName: "34889 PLATE",
+            ItemType: "Cad", PartMode: 0, ProductType: 100, Thickness: "0.1345",
+            Stock_Z: 0.1345, ErrorStatus: 0, Material: "A36" },
+          { uid: "tube", PartID: "tube", Name: "34887-1",
+            PartName: "34536 PIVOT TUBE, BOOM TIP_34536-1",
+            ItemType: "Cad", PartMode: 0, ProductType: 100, ErrorStatus: 0 },
+          { uid: "bar", PartID: "bar", Name: "10187", PartName: "10187 BAR",
+            ItemType: "Linear", PartMode: 1, ProductType: 10, ProductID: "sku-10187",
+            ErrorStatus: 0 }
+        ];
+        const gauges = [
+          { Thickness: 0.1196, Description: "11 Ga" },
+          { Thickness: 0.1793, Description: "7 Ga" },
+          { Thickness: 0.1875, Description: "3/16" },
+          { Thickness: 0.1345, Description: "10 Ga" }
+        ];
+        let current = store[0];
+        const selected = [];
+        const sandbox = {
+          setTimeout, clearTimeout, Date, Promise, console, Math, parseFloat,
+          isFinite, Number, String, Object
+        };
+        sandbox.store = store;
+        sandbox.selected = selected;
+        sandbox.window = sandbox;
+        sandbox.document = { querySelector: () => ({ textContent: "Q34887" }) };
+        sandbox.location = { href: "https://www.secturafab.com/Quote/EDIT/qid" };
+        function Deferred() {
+          const fns = [];
+          return {
+            always(fn) { fns.push(fn); return this; },
+            then(fn) { fns.push(fn); return this; },
+            resolve() { fns.forEach((fn) => fn()); }
+          };
+        }
+        sandbox.jQuery = function() {
+          return {
+            data(name) {
+              if (name === "kendoDropDownList") {
+                return {
+                  value() {},
+                  trigger() { sandbox.jQuery.ajax({ url: "/Part/UpdateItemType" }); }
+                };
+              }
+              if (name === "kendoComboBox") {
+                return {
+                  dataSource: { data() { return gauges; } },
+                  select(idx) { selected.push(gauges[idx] && gauges[idx].Description); },
+                  trigger() { sandbox.jQuery.ajax({ url: "/Quote/GetBorderSize" }); }
+                };
+              }
+              if (name === "kendoGrid") {
+                return {
+                  clearSelection() {},
+                  select(tr) {
+                    if (tr === undefined) {
+                      return { length: 1, toArray() { return [{ id: current.uid }]; } };
+                    }
+                    return { length: 1 };
+                  },
+                  dataItem() { return current; },
+                  tbody: {
+                    find(sel) {
+                      const match = String(sel || "").match(/data-uid='([^']+)'/);
+                      if (match) current = store.find((row) => row.uid === match[1]) || current;
+                      return { length: current ? 1 : 0 };
+                    }
+                  },
+                  dataSource: {
+                    view() { return store; },
+                    data() { return store; },
+                    remove(row) {
+                      const id = row && (row.uid || row.PartID);
+                      const at = store.findIndex((item) => item.uid === id || item.PartID === id);
+                      if (at >= 0) store.splice(at, 1);
+                    }
+                  }
+                };
+              }
+              return null;
+            }
+          };
+        };
+        sandbox.jQuery.ajax = function() {
+          const d = Deferred();
+          setTimeout(() => d.resolve(), 5);
+          return d;
+        };
+        vm.createContext(sandbox);
+        const runner = `
+          (async () => {
+            const out = await applyPageNativeCadThickness(store.slice(), {
+              quoteId: "qid", thickness: "11 Ga"
+            });
+            return {
+              why: out.why,
+              skipped: out.gauge_skipped,
+              whyList: out.gauge_skip_why,
+              left: store.map((row) => row.PartName || row.Name),
+              selected: selected
+            };
+          })()
+        `;
+        vm.runInContext(code + "\n" + runner, sandbox).then((out) => {
+          console.log(JSON.stringify(out));
+        }).catch((err) => {
+          console.error(err && err.stack || err);
+          process.exit(1);
+        });
+        """
+    )
+    from pathlib import Path
+
+    fn_path = Path(__file__).resolve().parent / "_round9_finish_fn.js"
+    run_path = Path(__file__).resolve().parent / "_round9_finish_run.js"
+    fn_path.write_text(fn, encoding="utf-8")
+    run_path.write_text(script, encoding="utf-8")
+    try:
+        proc = subprocess.run(
+            [node, str(run_path), str(fn_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    finally:
+        fn_path.unlink(missing_ok=True)
+        run_path.unlink(missing_ok=True)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out["why"] == "", out
+    left = " ".join(out["left"])
+    assert "Root" not in left
+    assert "34892" not in left
+    assert "34536" not in left
+    assert "34887-1" not in left
+    assert "34889" in left
+    assert "10187" in left
+    assert "34892 BOTTOM PLATE" in out["skipped"]
+    assert "34536 PIVOT TUBE, BOOM TIP_34536-1" in out["skipped"]
+    assert "step_thickness_not_a_gauge" in out["whyList"]
+    assert "no_catalog_sku" in out["whyList"]
+    assert "11 Ga" not in out["selected"]
+    assert "3/16" not in out["selected"]
+    assert "7 Ga" not in out["selected"]

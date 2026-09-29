@@ -2384,16 +2384,65 @@ _PAGE_FINISH_JS = """(async function(spec) {
     if (idBlob.indexOf(want) < 0) return fail("wrong_quote", 0);
     if (!window.jQuery) return fail("no_dxfitemtype", 0);
     function linearStockName(r) {
+      // Live 34887-1: Name is the parent PN. The noun is PartName.
       var blob = String(
-        (r && (r.Name || r.PartName || r.Description || r.FileName || r.ItemNumber)) || ""
+        (r && (
+          (r.Name || "") + " " + (r.PartName || "") + " " + (r.Description || "")
+          + " " + (r.FileName || "") + " " + (r.ItemNumber || "")
+        )) || ""
       ).toUpperCase();
       return /\\b(TUBE|PIPE|HSS|BEAM|ANGLE|CHANNEL)\\b/.test(blob);
     }
+    function rowBlob(r) {
+      return String(
+        (r && (r.PartName || r.Name || r.Description || r.FileName)) || ""
+      );
+    }
+    function barePartToken(text) {
+      return /^\\d{4,}(?:-\\d+)?$/.test(String(text || "").trim());
+    }
+    function assemblyBody(r, all) {
+      // The STEP root and the bare parent solid are the assembly line.
+      // Do not price either one as a sheet-metal kid.
+      if (!r) return false;
+      var name = String(r.Name || "").trim();
+      var part = String(r.PartName || "").trim();
+      if (name.toLowerCase() === "root" || part.toLowerCase() === "root") return true;
+      if (r.IsAssembly || Number(r.ProductType) === 300) return true;
+      var cat = String(r.ItemType || r.Category || r.FileType || "");
+      if (cat === "Assembly") return true;
+      if (linearStockName(r)) return false;
+      if (/\\b(PLATE|GUSSET|SHEET)\\b/i.test(rowBlob(r))) return false;
+      if (!barePartToken(name)) return false;
+      if (part && part !== name && !barePartToken(part)) return false;
+      for (var bi = 0; bi < (all || []).length; bi++) {
+        if (all[bi] === r) continue;
+        var other = rowBlob(all[bi]);
+        if (/\\b(PLATE|GUSSET|SHEET|TUBE|PIPE|CHANNEL|ANGLE)\\b/i.test(other)) return true;
+      }
+      return false;
+    }
+    function confidentCatalogSku(r) {
+      var pid = String((r && (r.ProductID || r.productID)) || "").trim();
+      var sku = String((r && (r.SKU || r.ProductName)) || "").trim();
+      return !!(pid || sku);
+    }
     var plates = [];
+    var assemblyRows = [];
+    var skuSkipped = [];
     for (var i = 0; i < (gridRows || []).length; i++) {
       var r = gridRows[i];
       if (!r) continue;
+      if (assemblyBody(r, gridRows)) {
+        assemblyRows.push(r);
+        continue;
+      }
       var cat = String(r.ItemType || r.Category || r.FileType || "");
+      var alreadyLinear = cat === "Linear" || Number(r.PartMode) === 1 || r.IsLinear;
+      if (linearStockName(r) && !confidentCatalogSku(r) && !alreadyLinear) {
+        skuSkipped.push(r);
+        continue;
+      }
       if (cat === "Linear" || cat === "Assembly") continue;
       if (r.IsAssembly || Number(r.ProductType) === 300) continue;
       if (Number(r.PartMode) === 1 || r.IsLinear) continue;
@@ -2410,6 +2459,26 @@ _PAGE_FINISH_JS = """(async function(spec) {
         if (linearStockName(lr)) return true;
       }
       return false;
+    }
+    function removeGridRow(row) {
+      var live = (row && row._gridItem) || row || {};
+      var uid = String(live.uid || live.PartID || live.ID || "");
+      var name = String(live.PartName || live.Name || live.FileName || "");
+      if (!(g && g.dataSource && typeof g.dataSource.remove === "function")) return;
+      var target = live;
+      try {
+        var view = (g.dataSource.data && g.dataSource.data()) || [];
+        for (var di = 0; di < view.length; di++) {
+          var item = view[di] || {};
+          var id = String(item.uid || item.PartID || item.ID || "");
+          var itemName = String(item.PartName || item.Name || item.FileName || "");
+          if ((uid && id === uid) || (name && itemName === name)) {
+            target = item;
+            break;
+          }
+        }
+      } catch (eFind) {}
+      try { g.dataSource.remove(target); } catch (eDrop) {}
     }
     function dropUnlistedGauge(row, why) {
       var live = (row && row._gridItem) || row || {};
@@ -2718,6 +2787,27 @@ _PAGE_FINISH_JS = """(async function(spec) {
         return;
       }
     }
+    for (var ari = 0; ari < assemblyRows.length; ari++) removeGridRow(assemblyRows[ari]);
+    for (var ski = 0; ski < skuSkipped.length; ski++) {
+      dropUnlistedGauge(skuSkipped[ski], "no_catalog_sku");
+    }
+    function modelPlateIn(row) {
+      var live = (row && row._gridItem) || row || {};
+      var raw = live.Stock_Z;
+      if (raw == null || raw === "") raw = live.step_thickness_in;
+      if (raw == null || raw === "") raw = live.ModelThickness;
+      var n = parseFloat(raw);
+      if (!isFinite(n) || !(n > 0) || n > 1) return null;
+      return n;
+    }
+    function ownDrawingIn(row) {
+      var live = (row && row._gridItem) || row || {};
+      var raw = live.drawing_thickness_in;
+      if (raw == null || raw === "") raw = live.DrawingThickness;
+      var n = parseFloat(raw);
+      if (!isFinite(n) || !(n > 0)) return null;
+      return n;
+    }
     var keptPlates = 0;
     for (var p = 0; p < plates.length; p++) {
       var row = plates[p];
@@ -2736,6 +2826,28 @@ _PAGE_FINISH_JS = """(async function(spec) {
       var idx = gaugeIndex(data, gauge);
       if (idx < 0) {
         dropUnlistedGauge(row, "gauge_not_in_list");
+        if (plates.length < 2 && !gridHasLinear()) return fail("gauge_not_in_list", 0);
+        continue;
+      }
+      // 0.188 is not 11 Ga (0.1196), 7 Ga (0.1793), or 3/16 (0.1875).
+      // Do not snap a STEP thickness onto a dropdown gauge. A gauge this
+      // kid's own drawing states is kept.
+      var modelIn = modelPlateIn(row);
+      var chosenIn = NaN;
+      try { chosenIn = parseFloat(data[idx] && data[idx].Thickness); } catch (eCh) { chosenIn = NaN; }
+      var ownIn = ownDrawingIn(row);
+      var ownStatesGauge = ownIn != null && isFinite(chosenIn) && Math.abs(ownIn - chosenIn) <= 0.003;
+      var modelIs188 = modelIn != null && Math.abs(modelIn - 0.188) <= 0.001;
+      var chosenIs188 = isFinite(chosenIn) && Math.abs(chosenIn - 0.188) <= 0.0001;
+      if (
+        modelIn != null
+        && !ownStatesGauge
+        && (
+          (isFinite(chosenIn) && Math.abs(chosenIn - modelIn) > 0.003)
+          || (modelIs188 && !chosenIs188)
+        )
+      ) {
+        dropUnlistedGauge(row, "step_thickness_not_a_gauge");
         if (plates.length < 2 && !gridHasLinear()) return fail("gauge_not_in_list", 0);
         continue;
       }

@@ -408,6 +408,45 @@ def _looks_like_formed_plate(description: str) -> bool:
     return any(h in text for h in (" FORMED ", " ROLLED ", " BENT PLATE "))
 
 
+def _model_plate_thickness_in(row: dict[str, Any] | None) -> float | None:
+    """STEP plate thickness on the row. 0.188 is not a dropdown gauge."""
+    if not isinstance(row, dict):
+        return None
+    raw = row.get("Stock_Z")
+    if raw in (None, ""):
+        raw = row.get("step_thickness_in")
+    if raw in (None, ""):
+        raw = row.get("ModelThickness")
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if val <= 0 or val > 1:
+        return None
+    return val
+
+
+def _is_step_assembly_body(row: dict[str, Any] | None, part_key: str) -> bool:
+    """STEP root or the bare parent solid. Not a sheet-metal kid."""
+    if not isinstance(row, dict):
+        return False
+    raw = str(row.get("Name") or "").strip()
+    part = str(row.get("PartName") or "").strip()
+    if raw.casefold() == "root" or part.casefold() == "root":
+        return True
+    blob = f"{part} {raw}"
+    if _has_linear_noun(blob) or _cad_plate_sheet_noun(blob):
+        return False
+    if part and part != raw and not is_bare_part_number(part):
+        return False
+    key = normalize_part_token(part_key)
+    if not key or not is_bare_part_number(raw):
+        return False
+    if normalize_part_token(raw) != key:
+        return False
+    return not part or is_bare_part_number(part)
+
+
 def _classify_row_name(row: dict[str, Any]) -> str:
     """Prefer PartName when Name is the assembly PN and PartName has the noun.
 
@@ -1469,6 +1508,17 @@ def dxf_finish_skip_notes(result: dict[str, Any] | None) -> list[str]:
             notes.append(
                 f"FLAG: {text} — errorstatus_not_zero "
                 "(removed before Finish; not inventing a gauge)"
+            )
+        elif reason == "no_catalog_sku":
+            notes.append(
+                f"FLAG: {text} — no confident catalog SKU "
+                "(skipped, not a sheet; not inventing a SKU)"
+            )
+        elif reason == "step_thickness_not_a_gauge":
+            notes.append(
+                f"FLAG: thickness unresolved for {text} — "
+                "STEP thickness is not a dropdown gauge "
+                "(not snapping to 11 Ga or any other gauge)"
             )
         else:
             notes.append(
@@ -2987,6 +3037,14 @@ class SecturaFabPushService:
             for r in rows
             if isinstance(r, dict)
         )
+        has_leaf_siblings = any(
+            isinstance(r, dict)
+            and (
+                _has_linear_noun(_classify_row_name(r))
+                or _cad_plate_sheet_noun(_classify_row_name(r))
+            )
+            for r in rows
+        )
         name_counts: dict[str, int] = {}
         for r in rows:
             if not isinstance(r, dict):
@@ -3114,6 +3172,12 @@ class SecturaFabPushService:
             raw_name = str(row.get("Name") or "").strip().casefold()
             if item_type == "assembly" or raw_name == "root":
                 cat = "Assembly"
+            if _is_step_assembly_body(row, part_key) and (
+                raw_name == "root"
+                or str(row.get("PartName") or "").strip().casefold() == "root"
+                or has_leaf_siblings
+            ):
+                cat = "Assembly"
             aluminum_named = bool(re.search(r"\bALUMINI?UM\b", name, re.I))
             material = default_material
             thickness: str | float = _sanitize_thickness_param(default_thickness) or ""
@@ -3178,6 +3242,36 @@ class SecturaFabPushService:
                     f"FLAG: thickness unresolved for {label} — not Finishing"
                 )
                 blocked_thickness = True
+                continue
+            model_thk = _model_plate_thickness_in(row)
+            own_drawing = bool(
+                pm is not None and getattr(pm, "thickness_in", None) is not None
+            )
+            stamped_in: float | None
+            try:
+                stamped_in = (
+                    float(thickness) if str(thickness or "").strip() else None
+                )
+            except (TypeError, ValueError):
+                stamped_in = None
+            if (
+                cat == "Cad"
+                and model_thk is not None
+                and stamped_in is not None
+                and not own_drawing
+                and (
+                    abs(stamped_in - model_thk) > 0.003
+                    or (
+                        abs(model_thk - 0.188) <= 0.001
+                        and abs(stamped_in - 0.188) > 0.0001
+                    )
+                )
+            ):
+                label = dashed or name or stem or "part"
+                notes.append(
+                    f"FLAG: {label} — STEP thickness {model_thk:g} in is not "
+                    "a dropdown gauge (not snapping to 11 Ga or any other gauge)"
+                )
                 continue
             row_qty = _row_qty(row)
             if row_qty <= 0:
