@@ -2514,97 +2514,6 @@ def test_step_0188_is_not_11_ga_and_assembly_body_is_not_a_plate(monkeypatch):
     assert any("34889" in name for name in names)
 
 
-def test_one_file_finish_names_the_assembly_body():
-    """One STEP. Finish posts the assembly row. PartName is its description.
-
-    add_page_assembly does not run. OnAddDXFClick posts PartName, not
-    Description or Name. A formatted description must already be that
-    row's PartName. Kids stay under that one parent. A plate PartName
-    stays the plate name. applyPageNativeCadThickness runs before
-    OnAddDXFClick.
-    """
-    wanted = "34887-1 - BOOM WELDMENT"
-    store = [
-        {
-            "uid": "root",
-            "PartID": "root",
-            "Name": "Root",
-            "PartName": "Root",
-            "ItemType": "Cad",
-            "PartMode": 0,
-            "ProductType": 100,
-            "ErrorStatus": 0,
-            "Material": "A36",
-        },
-        {
-            "uid": "body",
-            "PartID": "body",
-            "Name": "34887-1",
-            "PartName": "34887-1",
-            "ItemType": "Cad",
-            "PartMode": 0,
-            "ProductType": 100,
-            "ErrorStatus": 0,
-            "Material": "A36",
-        },
-        {
-            "uid": "plate",
-            "PartID": "plate",
-            "Name": "34887-1",
-            "PartName": "34889 PLATE",
-            "ItemType": "Cad",
-            "PartMode": 0,
-            "ProductType": 100,
-            "Thickness": "0.1345",
-            "Stock_Z": 0.1345,
-            "ErrorStatus": 0,
-            "Material": "A36",
-            "Length": 10,
-            "Width": 8,
-        },
-        {
-            "uid": "bar",
-            "PartID": "bar",
-            "Name": "10187",
-            "PartName": "10187 BAR",
-            "ItemType": "Linear",
-            "PartMode": 1,
-            "ProductType": 10,
-            "ProductID": "sku-10187",
-            "ErrorStatus": 0,
-        },
-    ]
-    out = _run_page_finish(
-        store,
-        [{"Thickness": 0.1345, "Description": "10 Ga"}],
-        "0.1345",
-        assembly_description=wanted,
-        finish_click=True,
-    )
-    assert out["why"] == "", out
-    posted = out["posted"]
-    body = next(row for row in posted if row["uid"] == "body")
-    assert body["PartName"] == wanted
-    assert body["PartName"] != "34887-1"
-    assert "Description" not in body
-    assert "Name" not in body
-    plate = next(row for row in posted if row["uid"] == "plate")
-    assert plate["PartName"] == "34889 PLATE"
-    bar = next(row for row in posted if row["uid"] == "bar")
-    assert bar["PartName"] == "10187 BAR"
-    parents = [row for row in out["tree"] if row.get("ProductType") == 300]
-    assert len(parents) == 1
-    parent = parents[0]
-    assert parent["Description"] == wanted
-    assert parent["ItemNumber"] == wanted
-    assert parent["Description"] == body["PartName"]
-    kids = [row for row in out["tree"] if row.get("ID") != parent["ID"]]
-    assert kids
-    assert all(row.get("AssemblyID") == parent["ID"] for row in kids)
-    assert not any(str(row.get("PartName") or "") == "Root" for row in out["tree"])
-    assert not any(str(row.get("Description") or "") == "Root" for row in out["tree"])
-
-
 def test_page_finish_drops_0188_root_and_unpriced_tube():
     """applyPageNativeCadThickness is the Finish path push_job calls.
 
@@ -2793,8 +2702,6 @@ def _run_page_finish(
     thickness,
     defer_gauges=False,
     clear_on_select=False,
-    assembly_description="",
-    finish_click=False,
 ):
     """applyPageNativeCadThickness is the Finish function push_job calls."""
     import json
@@ -2829,8 +2736,6 @@ def _run_page_finish(
         sandbox.store = store;
         sandbox.selected = selected;
         sandbox.thickness = thickness;
-        sandbox.assemblyDescription = spec.assemblyDescription || "";
-        sandbox.finishClick = !!spec.finishClick;
         sandbox.window = sandbox;
         sandbox.document = { querySelector: () => ({ textContent: "Q11521" }) };
         sandbox.location = { href: "https://www.secturafab.com/Quote/EDIT/qid" };
@@ -2910,46 +2815,14 @@ def _run_page_finish(
           (async () => {
             const out = await applyPageNativeCadThickness(store.slice(), {
               quoteId: "qid",
-              thickness: thickness,
-              assemblyDescription: assemblyDescription
+              thickness: thickness
             });
-            let posted = [];
-            let tree = [];
-            if (finishClick) {
-              // OnAddDXFClick posts PartName and AssemblyName. It does
-              // not post Description or Name. The quote Description is
-              // that assembly row's PartName.
-              posted = store.map((row) => {
-                const item = { uid: row.uid, PartName: row.PartName };
-                if (row.AssemblyName) item.AssemblyName = row.AssemblyName;
-                return item;
-              });
-              const body = store.find((row) => row.uid === "body");
-              const asmPosted = posted.find((row) => row.uid === "body") || {};
-              const line = asmPosted.PartName || "";
-              const parent = {
-                ID: "asm-1",
-                ProductType: 300,
-                Description: line,
-                ItemNumber: line,
-                AssemblyID: null
-              };
-              const kids = store.filter((row) => row.uid !== "body").map((row) => ({
-                ID: row.uid,
-                PartName: row.PartName,
-                ProductType: row.ProductType,
-                AssemblyID: parent.ID
-              }));
-              tree = [parent].concat(kids);
-            }
             return {
               why: out.why,
               skipped: out.gauge_skipped,
               whyList: out.gauge_skip_why,
               left: store.map((row) => row.PartName || row.Name),
-              selected: selected,
-              posted: posted,
-              tree: tree
+              selected: selected
             };
           })()
         `;
@@ -2975,8 +2848,6 @@ def _run_page_finish(
             "thickness": thickness,
             "defer": defer_gauges,
             "clearOnSelect": clear_on_select,
-            "assemblyDescription": assembly_description,
-            "finishClick": finish_click,
         }),
         encoding="utf-8",
     )

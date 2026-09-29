@@ -6,11 +6,13 @@ from unittest.mock import MagicMock
 
 from secturafab.page_weld import (
     PAGE_ADD_ASSEMBLY_JS,
+    PAGE_UPDATE_ASSEMBLY_JS,
     STEP_MM_CONTINUE_NOTE,
     add_page_assembly,
     assembly_tree_problems,
     set_page_quote_number,
     step_header_is_millimetre,
+    update_existing_assembly_name,
 )
 
 _INCH = "CONVERSION_BASED_UNIT('INCH',#12);"
@@ -597,6 +599,491 @@ def test_assembly_description_is_posted_after_the_line_exists():
     assert empty_out["reads"][0] == "11521-000"
     assert empty_out["itemNumber"] == "11521-000"
     assert empty_out["out"]["ok"] is True, empty_out["out"]
+
+
+def test_one_file_assembly_name_is_the_update_click():
+    """One STEP parent already exists. Rename it with Update Assembly.
+
+    DoEditItem opens that line. #AssemblyName is the formatted
+    description. One click on #asmAdd-but posts AddItem_Assembly
+    because QuoteItemID is the existing line. A PartName write, a
+    hand-built AddItem_Assembly body, and a direct OnAddAssemblyClick
+    do not change the tree.
+    """
+    import inspect
+    import json
+    import shutil
+    import subprocess
+    import textwrap
+    from pathlib import Path
+    from urllib.parse import unquote
+
+    import pytest
+
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS, invoke_page_dxf_finish
+    from secturafab.client import SecturaFabClient
+    from secturafab.push import SecturaFabPushService
+
+    wanted = "34887-1 - ZZ-TEST assembly update on the tree"
+    assert "writeAssemblyPartName" not in _PAGE_FINISH_JS
+    assert "assemblyDescription" not in _PAGE_FINISH_JS
+    assert "DoEditItem" in PAGE_UPDATE_ASSEMBLY_JS
+    assert 'jQuery("#AssemblyName")' in PAGE_UPDATE_ASSEMBLY_JS
+    assert "#asmAdd-but" in PAGE_UPDATE_ASSEMBLY_JS
+    assert "AddNewItemHTML" not in PAGE_UPDATE_ASSEMBLY_JS
+    assert "OnCopyAll" not in PAGE_UPDATE_ASSEMBLY_JS
+    assert "OnAddClick" not in PAGE_UPDATE_ASSEMBLY_JS
+    assert "OnAddAssemblyClick" not in PAGE_UPDATE_ASSEMBLY_JS
+    assert "PartName" not in PAGE_UPDATE_ASSEMBLY_JS
+    assert "#gridDXFParts" not in PAGE_UPDATE_ASSEMBLY_JS
+    assert "#quote_Text" not in PAGE_UPDATE_ASSEMBLY_JS
+    assert "#Description" not in PAGE_UPDATE_ASSEMBLY_JS
+    assert "assembly_description" not in inspect.signature(invoke_page_dxf_finish).parameters
+    assert "assembly_description" not in inspect.signature(
+        SecturaFabClient.add_item_dxf_files
+    ).parameters
+    assert "assembly_description" not in inspect.signature(
+        SecturaFabPushService.finish_cad_files
+    ).parameters
+    push_src = (
+        Path(__file__).resolve().parents[1] / "secturafab" / "push.py"
+    ).read_text(encoding="utf-8")
+    cad_branch = push_src.split("if len(cad) >= 2:", 1)[1].split(
+        "uploaded.extend", 1
+    )[0]
+    multi, one = cad_branch.split("elif len(cad) == 1", 1)
+    assert "add_page_assembly(" in multi
+    assert "update_existing_assembly_name(" in one
+    assert "add_page_assembly(" not in one
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    script = textwrap.dedent(
+        r"""
+        const vm = require("vm");
+        const fs = require("fs");
+        const code = fs.readFileSync(process.argv[2], "utf8");
+        const spec = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+        const wanted = spec.description;
+        const mode = spec.mode;
+        const parentId = "parent-1";
+        const parent = {
+          ID: parentId,
+          ProductType: 300,
+          Description: "34887-1",
+          ItemNumber: "34887-1",
+          AssemblyID: null,
+          Name: null,
+          ProductDescription: null
+        };
+        const kids = [
+          {
+            ID: "k-34892", ItemNumber: "34892", Description: "34892",
+            ProductType: 100, AssemblyID: parentId, Price: 129,
+            Thickness: 0.1875, Qty: 1
+          },
+          {
+            ID: "k-34889", ItemNumber: "34889", Description: "34889",
+            ProductType: 100, AssemblyID: parentId, Price: 169.88, Qty: 1
+          },
+          {
+            ID: "k-10187", ItemNumber: "10187", Description: "10187",
+            ProductType: 10, AssemblyID: parentId, Price: 16.37, Qty: 1
+          }
+        ];
+        const kidSnap = JSON.stringify(kids);
+        let formOpen = false;
+        let quoteItemId = "";
+        let assemblyNameValue = "";
+        let fromButton = false;
+        let clicks = 0;
+        let directCall = false;
+        let secondParent = false;
+        let partNameWrite = false;
+        let dirty = false;
+        let nameAtClick = "";
+        let quoteItemAtClick = "";
+        const trace = [];
+        const posts = [];
+        const reads = [];
+        const button = {
+          id: "asmAdd-but",
+          textContent: "",
+          value: "",
+          click() {
+            if (!formOpen) return;
+            clicks += 1;
+            trace.push("click");
+            nameAtClick = assemblyNameValue;
+            quoteItemAtClick = quoteItemId;
+            fromButton = true;
+            try { sandbox.OnAddAssemblyClick(); }
+            finally { fromButton = false; }
+          }
+        };
+        const quoteEl = {
+          id: "QuoteItemID",
+          get value() { return quoteItemId; },
+          set value(v) {
+            if (String(v) !== parentId) dirty = true;
+            quoteItemId = String(v);
+          }
+        };
+        const dxfRow = { uid: "body", Name: "34887-1" };
+        Object.defineProperty(dxfRow, "PartName", {
+          get() { return this._partName; },
+          set(v) { this._partName = v; partNameWrite = true; }
+        });
+        dxfRow._partName = "34887-1";
+        const sandbox = {
+          setTimeout, clearTimeout, Date, Promise, console, JSON,
+          encodeURIComponent, Object, String, Number, Array
+        };
+        sandbox.window = sandbox;
+        sandbox.DoEditItem = function(id) {
+          trace.push("DoEditItem:" + id);
+          if (String(id) !== parentId) {
+            secondParent = true;
+            return;
+          }
+          formOpen = true;
+          quoteItemId = parentId;
+          assemblyNameValue = parent.Description;
+          button.textContent = "Update Assembly";
+        };
+        sandbox.OnAddAssemblyClick = function() {
+          if (!fromButton) {
+            directCall = true;
+            return;
+          }
+          if (quoteItemId !== parentId) {
+            secondParent = true;
+            return;
+          }
+          parent.Description = assemblyNameValue;
+          parent.ItemNumber = assemblyNameValue;
+          sandbox.jQuery.ajax({
+            url: "/Quote/AddItem_Assembly",
+            type: "POST",
+            data: "name=" + encodeURIComponent(assemblyNameValue)
+          });
+        };
+        sandbox.OnAddClick = function() { directCall = true; };
+        sandbox.AddNewItemHTML = function() { secondParent = true; };
+        sandbox.OnCopyAll = function() { dirty = true; };
+        sandbox.document = {
+          querySelector(sel) {
+            if (sel === "#quote_Text" || sel === "#Description") {
+              throw new Error("header field must stay untouched");
+            }
+            if (!formOpen) return null;
+            if (sel === "#newItem") return { id: "newItem" };
+            if (sel === "#QuoteItemID") return quoteEl;
+            if (sel === "#asmAdd-but") return button;
+            if (sel === "#AssemblyName") return { id: "AssemblyName" };
+            return null;
+          }
+        };
+        function treeData() {
+          if (mode === "no-parent") {
+            return [{
+              ID: "plate-1",
+              ProductType: 100,
+              Description: "34889 PLATE",
+              ItemNumber: "34889",
+              AssemblyID: null,
+              Price: 129
+            }];
+          }
+          return [Object.assign({}, parent)].concat(
+            kids.map((kid) => Object.assign({}, kid))
+          );
+        }
+        function Deferred() {
+          const doneFns = [];
+          const failFns = [];
+          const alwaysFns = [];
+          return {
+            done(fn) { doneFns.push(fn); return this; },
+            fail(fn) { failFns.push(fn); return this; },
+            always(fn) { alwaysFns.push(fn); return this; },
+            then(fn) { doneFns.push(fn); return this; },
+            resolve(body, status) {
+              const xhr = { status: status || 200 };
+              doneFns.forEach((fn) => fn(body, "success", xhr));
+              alwaysFns.forEach((fn) => fn(body, "success", xhr));
+            }
+          };
+        }
+        const blocked = new Set([
+          "#Qty", "#Price", "#Memo", "#Quantity", "#UnitPrice", "#asmQty",
+          "#AssemblyQty", "#AssemblyPrice", "#txtMemo", "#MemoText", "#LineMemo"
+        ]);
+        sandbox.jQuery = function(sel) {
+          if (sel === "#quote_Text" || sel === "#Description") {
+            throw new Error("header field must stay untouched");
+          }
+          if (sel === "#AssemblyName") {
+            return {
+              val(v) {
+                if (arguments.length === 0) return assemblyNameValue;
+                trace.push("AssemblyName:" + v);
+                assemblyNameValue = String(v == null ? "" : v);
+                return this;
+              },
+              trigger() { return this; }
+            };
+          }
+          if (sel === "#asmAdd-but") {
+            return {
+              click() {
+                button.click();
+                return this;
+              },
+              text() { return button.textContent; }
+            };
+          }
+          if (blocked.has(sel)) {
+            return {
+              val(v) {
+                if (arguments.length) dirty = true;
+                return arguments.length ? this : "";
+              },
+              trigger() { return this; }
+            };
+          }
+          if (sel === "#gridDXFParts") {
+            return {
+              data() {
+                return {
+                  dataSource: {
+                    data() { return [dxfRow]; },
+                    remove() { dirty = true; }
+                  }
+                };
+              }
+            };
+          }
+          if (sel === "#GridAssembly" || sel === "#GridItem") {
+            return {
+              data() {
+                return {
+                  dataSource: {
+                    data() { return kids; },
+                    remove() { dirty = true; },
+                    insert() { dirty = true; }
+                  }
+                };
+              },
+              val(v) {
+                if (arguments.length) dirty = true;
+                return this;
+              }
+            };
+          }
+          return {
+            val(v) {
+              if (arguments.length) dirty = true;
+              return arguments.length ? this : "";
+            },
+            trigger() { return this; },
+            data() { return null; }
+          };
+        };
+        sandbox.jQuery.ajax = function(opts) {
+          const url = String((opts && opts.url) || "");
+          posts.push({
+            url: url,
+            type: String((opts && opts.type) || ""),
+            data: opts ? opts.data : null,
+            fromButton: fromButton
+          });
+          const deferred = Deferred();
+          setTimeout(() => {
+            if (url.indexOf("QuoteItem_ReadTreeListData") >= 0) {
+              const rows = treeData();
+              reads.push({
+                clicks: clicks,
+                parents: rows.filter((row) => row.ProductType === 300).map((row) => ({
+                  ID: row.ID,
+                  Description: row.Description,
+                  ItemNumber: row.ItemNumber
+                }))
+              });
+              deferred.resolve({ Data: rows }, 200);
+              return;
+            }
+            deferred.resolve("ok", 200);
+          }, 5);
+          return deferred;
+        };
+        vm.createContext(sandbox);
+        const runner = "(" + code + ")(" + JSON.stringify({
+          quoteId: "qid",
+          description: wanted
+        }) + ")";
+        vm.runInContext(runner, sandbox).then((out) => {
+          console.log(JSON.stringify({
+            out: out,
+            trace: trace,
+            clicks: clicks,
+            directCall: directCall,
+            secondParent: secondParent,
+            partNameWrite: partNameWrite,
+            dirty: dirty,
+            nameAtClick: nameAtClick,
+            quoteItemAtClick: quoteItemAtClick,
+            posts: posts,
+            reads: reads,
+            parent: parent,
+            kids: kids,
+            kidsSame: JSON.stringify(kids) === kidSnap,
+            finalTree: treeData()
+          }));
+        }).catch((err) => {
+          console.error(err && err.stack || err);
+          process.exit(1);
+        });
+        """
+    )
+    js_path = Path(__file__).resolve().parent / "_assembly_update.js"
+    run_path = Path(__file__).resolve().parent / "_assembly_update_run.js"
+    spec_path = Path(__file__).resolve().parent / "_assembly_update_spec.json"
+
+    def _run(mode: str) -> dict:
+        js_path.write_text(PAGE_UPDATE_ASSEMBLY_JS, encoding="utf-8")
+        run_path.write_text(script, encoding="utf-8")
+        spec_path.write_text(
+            json.dumps({"mode": mode, "description": wanted}),
+            encoding="utf-8",
+        )
+        proc = subprocess.run(
+            [node, str(run_path), str(js_path), str(spec_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+
+    try:
+        payload = _run("update")
+    finally:
+        js_path.unlink(missing_ok=True)
+        run_path.unlink(missing_ok=True)
+        spec_path.unlink(missing_ok=True)
+    trace = payload["trace"]
+    edit_at = trace.index("DoEditItem:parent-1")
+    name_at = max(i for i, event in enumerate(trace) if event.startswith("AssemblyName:"))
+    click_at = trace.index("click")
+    assert edit_at < name_at < click_at
+    assert trace[name_at] == "AssemblyName:" + wanted
+    assert payload["clicks"] == 1
+    assert payload["nameAtClick"] == wanted
+    assert payload["quoteItemAtClick"] == "parent-1"
+    assert payload["directCall"] is False
+    assert payload["secondParent"] is False
+    assert payload["partNameWrite"] is False
+    assert payload["dirty"] is False
+    assert payload["kidsSame"] is True
+    assert payload["reads"][0]["clicks"] == 0
+    assert payload["reads"][0]["parents"] == [
+        {"ID": "parent-1", "Description": "34887-1", "ItemNumber": "34887-1"}
+    ]
+    assert payload["reads"][-1]["clicks"] == 1
+    assert payload["reads"][-1]["parents"] == [
+        {"ID": "parent-1", "Description": wanted, "ItemNumber": wanted}
+    ]
+    assert payload["parent"]["ID"] == "parent-1"
+    assert payload["parent"]["Description"] == wanted
+    assert payload["parent"]["ItemNumber"] == wanted
+    assert payload["out"]["ok"] is True
+    assert payload["out"]["parent_id"] == "parent-1"
+    assert payload["out"]["stored_description"] == wanted
+    assert payload["out"]["stored_item_number"] == wanted
+    assert payload["out"]["kid_ids"] == ["k-34892", "k-34889", "k-10187"]
+    parents = [row for row in payload["finalTree"] if row.get("ProductType") == 300]
+    assert len(parents) == 1
+    assert parents[0]["ID"] == "parent-1"
+    kids_out = [row for row in payload["finalTree"] if row.get("ID") != "parent-1"]
+    assert [row["ItemNumber"] for row in kids_out] == ["34892", "34889", "10187"]
+    assert all(row["AssemblyID"] == "parent-1" for row in kids_out)
+    by_pn = {row["ItemNumber"]: row for row in kids_out}
+    assert by_pn["34892"]["Price"] == 129
+    assert by_pn["34892"]["Thickness"] == 0.1875
+    assert by_pn["34889"]["Price"] == 169.88
+    assert by_pn["10187"]["Price"] == 16.37
+    add_posts = [row for row in payload["posts"] if "AddItem_Assembly" in row["url"]]
+    assert len(add_posts) == 1
+    assert add_posts[0]["fromButton"] is True
+    assert wanted in unquote(str(add_posts[0].get("data") or ""))
+    try:
+        skipped = _run("no-parent")
+    finally:
+        js_path.unlink(missing_ok=True)
+        run_path.unlink(missing_ok=True)
+        spec_path.unlink(missing_ok=True)
+    assert skipped["trace"] == []
+    assert skipped["clicks"] == 0
+    assert skipped["secondParent"] is False
+    assert skipped["directCall"] is False
+    assert skipped["partNameWrite"] is False
+    assert skipped["out"]["skipped"] is True
+    assert skipped["out"]["why"] == "no_assembly_parent"
+    assert skipped["out"]["posted_additem"] is False
+    assert not any(row.get("ProductType") == 300 for row in skipped["finalTree"])
+
+
+def test_one_file_update_skips_a_bare_name_and_rejects_a_bare_readback(monkeypatch):
+    """A bare part number is not a rename. A read-back that stays bare fails."""
+    monkeypatch.setattr(
+        "secturafab.chrome_cdp._cdp_evaluate_promise",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("page must stay closed")),
+    )
+    assert update_existing_assembly_name(quote_id="qid", description="34887-1") == []
+    assert update_existing_assembly_name(quote_id="qid", description="") == []
+    wanted = "34887-1 - ZZ-TEST assembly update on the tree"
+    seen = {}
+
+    def _eval(expression, **kwargs):
+        seen["expression"] = expression
+        return {
+            "ok": True,
+            "posted_additem": True,
+            "skipped": False,
+            "parent_id": "parent-1",
+            "stored_description": wanted,
+            "stored_item_number": wanted,
+            "kid_ids": ["k-34892", "k-34889", "k-10187"],
+        }
+
+    monkeypatch.setattr(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        lambda *a, **k: {"ok": True, "tab": {"webSocketDebuggerUrl": "ws://local"}},
+    )
+    monkeypatch.setattr("secturafab.chrome_cdp._cdp_evaluate_promise", _eval)
+    monkeypatch.setattr(
+        "secturafab.chrome_cdp.page_jquery_ajax",
+        lambda **kwargs: {
+            "ok": True,
+            "body": {
+                "Data": [
+                    {
+                        "ID": "parent-1",
+                        "ProductType": 300,
+                        "Description": "34887-1",
+                        "ItemNumber": "34887-1",
+                        "AssemblyID": None,
+                    }
+                ]
+            },
+        },
+    )
+    notes = update_existing_assembly_name(quote_id="qid", description=wanted)
+    assert "DoEditItem" in seen["expression"]
+    assert wanted in seen["expression"]
+    assert any("assembly_description_not_stored" in note for note in notes)
 
 
 def test_quote_number_posts_update_property_value(monkeypatch):

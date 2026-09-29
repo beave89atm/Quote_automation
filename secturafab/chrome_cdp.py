@@ -2840,53 +2840,7 @@ _PAGE_FINISH_JS = """(async function(spec) {
         return;
       }
     }
-    var assemblyDesc = String(
-      (specIn && specIn.assemblyDescription) != null ? specIn.assemblyDescription : ""
-    ).trim();
-    function writeAssemblyPartName(row, value) {
-      // OnAddDXFClick posts this grid row. PartName is the field it
-      // copies into the quote Description. Name is not posted.
-      var live = (row && row._gridItem) || null;
-      var uid = String((row && (row.uid || row.PartID || row.ID)) || "");
-      var name = String((row && (row.PartName || row.Name || row.FileName)) || "");
-      if (!live && g && g.dataSource && typeof g.dataSource.data === "function") {
-        try {
-          var view = g.dataSource.data() || [];
-          for (var di = 0; di < view.length; di++) {
-            var item = view[di] || {};
-            var id = String(item.uid || item.PartID || item.ID || "");
-            var itemName = String(item.PartName || item.Name || item.FileName || "");
-            if ((uid && id === uid) || (name && itemName === name)) {
-              live = item;
-              break;
-            }
-          }
-        } catch (eFindName) {}
-      }
-      if (!live) live = row;
-      if (!live) return;
-      if (typeof live.set === "function") {
-        try { live.set("PartName", value); } catch (eSetName) { live.PartName = value; }
-      } else {
-        live.PartName = value;
-      }
-      if (row && row !== live) row.PartName = value;
-    }
-    for (var ari = 0; ari < assemblyRows.length; ari++) {
-      var asmRow = assemblyRows[ari];
-      var asmLabel = String((asmRow && (asmRow.Name || asmRow.PartName)) || "").trim();
-      var bareLabel = String((asmRow && (asmRow.PartName || asmRow.Name)) || "").trim();
-      if (
-        assemblyDesc
-        && assemblyDesc.toLowerCase() !== "root"
-        && asmLabel.toLowerCase() !== "root"
-        && assemblyDesc !== bareLabel
-      ) {
-        writeAssemblyPartName(asmRow, assemblyDesc);
-        continue;
-      }
-      removeGridRow(asmRow);
-    }
+    for (var ari = 0; ari < assemblyRows.length; ari++) removeGridRow(assemblyRows[ari]);
     for (var ski = 0; ski < skuSkipped.length; ski++) {
       dropUnlistedGauge(skuSkipped[ski], "no_catalog_sku");
     }
@@ -4066,7 +4020,6 @@ def invoke_page_dxf_finish(
     base: str | None = None,
     quote_id: str | None = None,
     thickness: str | None = None,
-    assembly_description: str | None = None,
 ) -> dict[str, Any]:
     """Kyle Finish on /Quote/EDIT: page fn that POSTs /Quote/AddItem_DXFFiles.
 
@@ -4123,9 +4076,6 @@ def invoke_page_dxf_finish(
     gauge = str(thickness or "").strip()
     if gauge:
         spec["thickness"] = gauge
-    line = str(assembly_description or "").strip()
-    if line and line.casefold() != "root":
-        spec["assemblyDescription"] = line
     value = _cdp_evaluate_promise(
         _PAGE_FINISH_JS + "(" + json.dumps(spec) + ")",
         base=base,

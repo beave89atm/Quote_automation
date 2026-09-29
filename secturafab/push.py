@@ -3428,7 +3428,6 @@ class SecturaFabPushService:
         explode_sleep_s: float | None = None,
         organization_name: str | None = None,
         thickness_source: str = "",
-        assembly_description: str | None = None,
     ) -> list[str]:
         """CAD Files: page #files → #gridDXF → page Next → SetPartMode → Finish.
 
@@ -4398,7 +4397,6 @@ class SecturaFabPushService:
             item_id=EMPTY_GUID,
             customer_material=False,
             thickness=str(thickness or ""),
-            assembly_description=assembly_description,
         )
         via = getattr(self.client, "_finish_via", "") or ""
         if isinstance(via, str) and via:
@@ -7200,7 +7198,6 @@ class SecturaFabPushService:
                             quote_request_id=quote_request_id,
                             organization_name=organization_name,
                             thickness_source=thickness_source,
-                            assembly_description=assembly_description,
                         )
                     )
                     refuse = cad_finish_notes_refuse_additem_dxf(notes)
@@ -7274,6 +7271,39 @@ class SecturaFabPushService:
                                 (
                                     note
                                     for note in asm_notes
+                                    if "page assembly stopped" in note
+                                ),
+                                "",
+                            )
+                            if stopped:
+                                return self._fail_push(
+                                    msg=stopped,
+                                    notes=notes,
+                                    quote_id=quote_id,
+                                    quote_number=quote_number,
+                                    quote_request_id=quote_request_id,
+                                    uploaded=uploaded,
+                                    attempts=createfile_attempts,
+                                )
+                    elif len(cad) == 1 and assembly_description:
+                        try:
+                            from .chrome_cdp import chrome_quotes_live as _one_live
+
+                            live_one = bool(_one_live())
+                        except (OSError, TypeError, ValueError):
+                            live_one = False
+                        if live_one:
+                            from .page_weld import update_existing_assembly_name
+
+                            one_notes = update_existing_assembly_name(
+                                quote_id=quote_id,
+                                description=assembly_description,
+                            )
+                            notes.extend(one_notes)
+                            stopped = next(
+                                (
+                                    note
+                                    for note in one_notes
                                     if "page assembly stopped" in note
                                 ),
                                 "",

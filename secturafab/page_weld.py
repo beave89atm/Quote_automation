@@ -293,6 +293,251 @@ PAGE_ADD_ASSEMBLY_JS = r"""(async function(spec) {
   };
 })"""
 
+PAGE_UPDATE_ASSEMBLY_JS = r"""(async function(spec) {
+  // One STEP file. Finish already created the ProductType 300 parent.
+  // DoEditItem opens that line. #asmAdd-but says Update Assembly and
+  // posts AddItem_Assembly against the existing QuoteItemID.
+  var lineDesc = String((spec && spec.description) || "").trim();
+  if (!lineDesc || lineDesc.toLowerCase() === "root") {
+    return {ok: false, why: "assembly_description_not_stored", posted_additem: false};
+  }
+  if (!window.jQuery) return {ok: false, why: "no_jquery", posted_additem: false};
+  function treeRows(body) {
+    if (!body) return [];
+    if (Array.isArray(body)) return body;
+    var data = body.Data || body.rows || body.TreeListData;
+    return Array.isArray(data) ? data : [];
+  }
+  function rowId(row) {
+    return String((row && (row.ID || row.Id)) || "").trim();
+  }
+  function assemblyId(row) {
+    return String((row && (row.AssemblyID || row.AID)) || "").trim();
+  }
+  function isParent(row) {
+    if (!row) return false;
+    var aid = assemblyId(row);
+    if (aid && aid !== "null") return false;
+    var pt = row.ProductType;
+    if (pt === 300 || pt === "300" || row.IsAssembly) return true;
+    if (String(row.ItemType || row.Category || "") === "Assembly") return true;
+    return false;
+  }
+  function ajaxBody(opts) {
+    return new Promise(function(resolve) {
+      var ret = null;
+      try { ret = jQuery.ajax(opts); } catch (eA) { resolve({body: null, status: 0}); return; }
+      function finish(body, status) {
+        resolve({body: body, status: status || 0});
+      }
+      if (ret && typeof ret.done === "function") {
+        var settled = false;
+        ret.done(function(body, _t, xhr) {
+          if (settled) return;
+          settled = true;
+          finish(body, (xhr && xhr.status) || 200);
+        });
+        if (typeof ret.fail === "function") {
+          ret.fail(function(xhr) {
+            if (settled) return;
+            settled = true;
+            finish(null, (xhr && xhr.status) || 0);
+          });
+        }
+        return;
+      }
+      if (ret && typeof ret.then === "function") {
+        ret.then(function(body) { finish(body, 200); }, function() { finish(null, 0); });
+        return;
+      }
+      finish(ret, 200);
+    });
+  }
+  var quoteId = String((spec && spec.quoteId) || "").trim();
+  async function readTree() {
+    return ajaxBody({
+      url: "/Quote/QuoteItem_ReadTreeListData",
+      type: "GET",
+      data: {ParentID: quoteId},
+      dataType: "json"
+    });
+  }
+  var first = await readTree();
+  var rows = treeRows(first && first.body);
+  var parents = [];
+  for (var pi = 0; pi < rows.length; pi++) {
+    if (isParent(rows[pi])) parents.push(rows[pi]);
+  }
+  if (!parents.length) {
+    return {ok: true, why: "no_assembly_parent", posted_additem: false, skipped: true};
+  }
+  if (parents.length !== 1) {
+    return {ok: false, why: "assembly_parent_not_one", posted_additem: false};
+  }
+  var parentId = rowId(parents[0]);
+  if (!parentId) {
+    return {ok: false, why: "assembly_parent_missing", posted_additem: false};
+  }
+  var kidIds = [];
+  for (var ki = 0; ki < rows.length; ki++) {
+    var kid = rows[ki];
+    if (!kid || isParent(kid)) continue;
+    if (assemblyId(kid) === parentId) {
+      var kidId = rowId(kid);
+      if (kidId) kidIds.push(kidId);
+    }
+  }
+  if (typeof DoEditItem !== "function") {
+    return {ok: false, why: "no_doedititem", posted_additem: false};
+  }
+  try { DoEditItem(parentId); } catch (eEdit) {}
+  function quoteItemValue() {
+    var el = document.querySelector("#QuoteItemID");
+    if (!el) return "";
+    return String(el.value || "").trim();
+  }
+  function buttonText() {
+    var el = document.querySelector("#asmAdd-but");
+    if (!el) return "";
+    return String(el.textContent || el.innerText || el.value || "").trim();
+  }
+  function formReady() {
+    if (!document.querySelector("#newItem")) return false;
+    if (quoteItemValue() !== parentId) return false;
+    if (!/update assembly/i.test(buttonText())) return false;
+    if (!document.querySelector("#AssemblyName")) return false;
+    return true;
+  }
+  var formDeadline = Date.now() + 8000;
+  while (!formReady() && Date.now() < formDeadline) {
+    await new Promise(function(resolve) { setTimeout(resolve, 25); });
+  }
+  if (!formReady()) {
+    return {ok: false, why: "edit_form_not_ready", posted_additem: false};
+  }
+  jQuery("#AssemblyName").val(lineDesc).trigger("change");
+  var pending = null;
+  var orig = jQuery.ajax;
+  jQuery.ajax = function(opts) {
+    var url = "";
+    if (typeof opts === "string") url = opts;
+    else if (opts && opts.url) url = String(opts.url);
+    var ret = orig.apply(this, arguments);
+    if (!pending && url.indexOf("/Quote/AddItem_Assembly") >= 0) {
+      pending = new Promise(function(resolve) {
+        function finish(xhr) {
+          var st = 0;
+          try { st = (xhr && xhr.status) ? Number(xhr.status) : 0; } catch (eS) { st = 0; }
+          resolve(st);
+        }
+        if (ret && typeof ret.always === "function") {
+          ret.always(function(a, b, c) {
+            var xhr = (c && c.status != null) ? c : ((a && a.status != null) ? a : ret);
+            finish(xhr);
+          });
+        } else {
+          finish(ret);
+        }
+      });
+    }
+    return ret;
+  };
+  var addBtn = document.querySelector("#asmAdd-but");
+  if (!addBtn || typeof addBtn.click !== "function") {
+    jQuery.ajax = orig;
+    return {ok: false, why: "asm_add_button_missing", posted_additem: false};
+  }
+  try { addBtn.click(); } catch (eClick) {}
+  var deadline = Date.now() + 8000;
+  while (!pending && Date.now() < deadline) {
+    await new Promise(function(resolve) { setTimeout(resolve, 25); });
+  }
+  jQuery.ajax = orig;
+  if (!pending) {
+    return {
+      ok: false,
+      why: "additem_assembly_missing",
+      posted_additem: false,
+      parent_id: parentId
+    };
+  }
+  var addStatus = await pending;
+  if (!(addStatus >= 200 && addStatus < 400)) {
+    return {
+      ok: false,
+      why: "additem_assembly_http",
+      posted_additem: false,
+      parent_id: parentId,
+      status: addStatus
+    };
+  }
+  var again = await readTree();
+  rows = treeRows(again && again.body);
+  parents = [];
+  for (var pj = 0; pj < rows.length; pj++) {
+    if (isParent(rows[pj])) parents.push(rows[pj]);
+  }
+  var stored = parents.length ? String(parents[0].Description || "").trim() : "";
+  var itemNumber = parents.length ? String(parents[0].ItemNumber || "").trim() : "";
+  if (parents.length !== 1 || rowId(parents[0]) !== parentId) {
+    return {
+      ok: false,
+      why: parents.length ? "assembly_parent_not_one" : "assembly_parent_missing",
+      posted_additem: true,
+      parent_id: parentId,
+      status: addStatus,
+      stored_description: stored,
+      stored_item_number: itemNumber
+    };
+  }
+  if (!stored || stored.toLowerCase() === "root" || stored !== lineDesc || itemNumber !== lineDesc) {
+    return {
+      ok: false,
+      why: "assembly_description_not_stored",
+      posted_additem: true,
+      parent_id: parentId,
+      status: addStatus,
+      stored_description: stored,
+      stored_item_number: itemNumber,
+      kid_ids: kidIds
+    };
+  }
+  var afterKids = [];
+  for (var ak = 0; ak < rows.length; ak++) {
+    var after = rows[ak];
+    if (!after || isParent(after)) continue;
+    if (assemblyId(after) === parentId) {
+      var afterId = rowId(after);
+      if (afterId) afterKids.push(afterId);
+    }
+  }
+  for (var ck = 0; ck < kidIds.length; ck++) {
+    if (afterKids.indexOf(kidIds[ck]) < 0) {
+      return {
+        ok: false,
+        why: "assembly_loose_line",
+        posted_additem: true,
+        parent_id: parentId,
+        status: addStatus,
+        stored_description: stored,
+        stored_item_number: itemNumber,
+        kid_ids: afterKids
+      };
+    }
+  }
+  return {
+    ok: true,
+    why: "",
+    posted_additem: true,
+    skipped: false,
+    parent_id: parentId,
+    status: addStatus,
+    stored_description: stored,
+    stored_item_number: itemNumber,
+    kid_ids: kidIds
+  };
+})"""
+
 
 def step_header_is_millimetre(text: str) -> bool:
     """True only for a real millimetre length unit, not an inch conversion base."""
@@ -622,3 +867,84 @@ def add_page_assembly(
         if got != line:
             return ["WARNING: page assembly stopped (assembly_description_not_stored)"]
     return ["AddItem_Assembly persisted; tree has one parent and no loose lines"]
+
+
+def update_existing_assembly_name(
+    *,
+    quote_id: str,
+    description: str | None = None,
+) -> list[str]:
+    """Rename the parent Finish already created for a one-file STEP.
+
+    DoEditItem opens that line. ``#AssemblyName`` is the formatted
+    description. One click on ``#asmAdd-but`` posts AddItem_Assembly
+    against the existing QuoteItemID. A tree with no ProductType 300
+    parent is left alone. This does not call add_page_assembly.
+    """
+    from quote_core.drawing_title import is_drawing_boilerplate_title
+    from secturafab.item_desc import is_bare_part_number
+
+    line = str(description or "").strip()
+    if line.casefold() == "root":
+        return ["WARNING: page assembly stopped (assembly_description_not_stored)"]
+    if not line or is_bare_part_number(line) or is_drawing_boilerplate_title(line):
+        return []
+    if not str(quote_id or "").strip():
+        return ["WARNING: page assembly stopped (assembly_name_missing)"]
+    from .chrome_cdp import _cdp_evaluate_promise, minted_edit_tab_ready, page_jquery_ajax
+
+    gate = minted_edit_tab_ready(quote_id, navigate=False)
+    if not gate.get("ok"):
+        why = str(gate.get("reason") or "wrong_document")
+        return [f"WARNING: page assembly stopped ({why})"]
+    tab = gate.get("tab") if isinstance(gate.get("tab"), dict) else None
+    staged = _cdp_evaluate_promise(
+        PAGE_UPDATE_ASSEMBLY_JS
+        + "("
+        + json.dumps({"quoteId": str(quote_id), "description": line})
+        + ")",
+        tab=tab,
+        fallback=False,
+    )
+    if isinstance(staged, dict) and staged.get("skipped"):
+        return []
+    if not isinstance(staged, dict) or not staged.get("posted_additem"):
+        why = staged.get("why") if isinstance(staged, dict) else "empty"
+        return [f"WARNING: page assembly stopped ({why or 'additem_assembly_missing'})"]
+    if str(staged.get("why") or "") == "assembly_description_not_stored":
+        return ["WARNING: page assembly stopped (assembly_description_not_stored)"]
+    stored_line = str(staged.get("stored_description") or "").strip()
+    stored_number = str(staged.get("stored_item_number") or "").strip()
+    if stored_line != line or stored_number != line:
+        return ["WARNING: page assembly stopped (assembly_description_not_stored)"]
+    parent_id = str(staged.get("parent_id") or "").strip()
+    kid_ids = [
+        str(item).strip() for item in (staged.get("kid_ids") or []) if str(item).strip()
+    ]
+    tree = page_jquery_ajax(
+        url="/Quote/QuoteItem_ReadTreeListData",
+        method="GET",
+        data={"ParentID": str(quote_id)},
+        quote_id=str(quote_id),
+    )
+    if not (isinstance(tree, dict) and tree.get("ok")):
+        why = tree.get("why") if isinstance(tree, dict) else "empty"
+        return [f"WARNING: page assembly stopped (assembly_tree_unreadable:{why})"]
+    rows = tree_rows(tree.get("body"))
+    parents = [row for row in rows if _is_assembly_parent(row)]
+    if len(parents) != 1:
+        why = "assembly_parent_missing" if not parents else "assembly_parent_not_one"
+        return [f"WARNING: page assembly stopped ({why})"]
+    got_id = str(parents[0].get("ID") or parents[0].get("Id") or "").strip()
+    got = str(parents[0].get("Description") or "").strip()
+    got_number = str(parents[0].get("ItemNumber") or "").strip()
+    if got_id != parent_id or got != line or got_number != line:
+        return ["WARNING: page assembly stopped (assembly_description_not_stored)"]
+    under = {
+        str(row.get("ID") or row.get("Id") or "").strip()
+        for row in rows
+        if _assembly_id(row) == got_id
+    }
+    if any(kid not in under for kid in kid_ids):
+        return ["WARNING: page assembly stopped (assembly_loose_line)"]
+    return ["Update Assembly persisted; the STEP parent kept its id and kids"]
