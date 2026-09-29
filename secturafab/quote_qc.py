@@ -25,6 +25,9 @@ _THICKNESS_RE = re.compile(r"(\d+\s*Ga|\d+/\d+\"|\d*\.\d+\")")
 _GRID_RE = re.compile(r"\d+\s+\d+\s+\d+\s+(\S+)\s+(.*)")
 _OP_RE = re.compile(r"\sin\s+(\S+)\s+(part|assembly)\b")
 
+# Parent has no Weld op after the shop calculator ran and found no weld length.
+WELD_CALCULATOR_NO_LENGTH = "calculator ran and found no weld length"
+
 
 @dataclass
 class QcReport:
@@ -492,9 +495,7 @@ def check_tree(
                 parent_price = price
         parent_ops = _op_names(parent, shape, ops, name)
         if not _has_weld(parent_ops):
-            flags.append(
-                f"{name}: weld labor not on parent (waiting on Kyle; not guessed)"
-            )
+            flags.append(f"{name}: {WELD_CALCULATOR_NO_LENGTH}")
     if len(parents) == 1:
         parent = parents[0]
         name = _row_name(parent, shape)

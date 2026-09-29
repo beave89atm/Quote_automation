@@ -82,7 +82,7 @@ Tool: `python -m secturafab.quote_qc --quote <id> --expected <LOM/STEP list>`. I
 Output (30-second read):
 ```
 Q10488 Diamond C — FLAG
- - A-11949-000: weld labor not on parent (waiting on Kyle; not guessed)
+ - A-11949-000: calculator ran and found no weld length
  8 parts / 10 pcs match LOM · all inch · Contours ok · 4/4 formed have Bend · Err 0 · $1,087.70
 ```
 
