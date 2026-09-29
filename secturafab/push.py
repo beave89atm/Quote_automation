@@ -3428,6 +3428,7 @@ class SecturaFabPushService:
         explode_sleep_s: float | None = None,
         organization_name: str | None = None,
         thickness_source: str = "",
+        assembly_description: str | None = None,
     ) -> list[str]:
         """CAD Files: page #files → #gridDXF → page Next → SetPartMode → Finish.
 
@@ -4397,6 +4398,7 @@ class SecturaFabPushService:
             item_id=EMPTY_GUID,
             customer_material=False,
             thickness=str(thickness or ""),
+            assembly_description=assembly_description,
         )
         via = getattr(self.client, "_finish_via", "") or ""
         if isinstance(via, str) and via:
@@ -7198,6 +7200,7 @@ class SecturaFabPushService:
                             quote_request_id=quote_request_id,
                             organization_name=organization_name,
                             thickness_source=thickness_source,
+                            assembly_description=assembly_description,
                         )
                     )
                     refuse = cad_finish_notes_refuse_additem_dxf(notes)
