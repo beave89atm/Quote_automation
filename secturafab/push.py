@@ -125,7 +125,7 @@ from .website import (
     quote_treelist_rows,
     row_name,
 )
-from .weld_ops import ensure_weld_ops, weld_ops_needs_info
+from .weld_ops import ensure_weld_ops, fill_weld_times_for_push, weld_ops_needs_info
 
 # CreateFile outage retry (SecturaFAB DB "underlying provider failed on Open").
 CREATEFILE_RETRY_INTERVAL_S = 300.0
@@ -1277,6 +1277,33 @@ def is_transient_secturafab_error(exc: BaseException) -> bool:
             "temporar",
         )
     )
+
+
+def _push_needs_weld_calculator(
+    *,
+    title: str,
+    part_key: str,
+    pdf_filename: str | None,
+    cad: list[Any],
+    bom_rows: list[dict[str, Any]] | None,
+    loose_linear: bool,
+    confident_linears: list[Any] | None,
+) -> bool:
+    """True for a weldment push. Linear-only jobs are not weldments."""
+    if loose_linear:
+        return False
+    if confident_linears and not cad:
+        return False
+    blob = " ".join(str(part or "") for part in (title, part_key, pdf_filename))
+    kind = classify_sectura_item(blob)
+    rows = [row for row in (bom_rows or []) if isinstance(row, dict)]
+    if kind == "Linear" and len(rows) < 2 and len(cad) <= 1:
+        return False
+    if kind == "Assembly" or "weld" in blob.lower():
+        return True
+    if cad and kind != "Linear":
+        return True
+    return len(rows) >= 2
 
 
 def _weld_memo(times: dict[str, Any] | None, takeoff: dict[str, Any] | None) -> str:
@@ -7623,6 +7650,22 @@ class SecturaFabPushService:
             notes.extend(
                 self.nest_after_finish(quote_id, item_count=peek_count)
             )
+            if _push_needs_weld_calculator(
+                title=title,
+                part_key=part_key,
+                pdf_filename=pdf_filename,
+                cad=list(cad or []),
+                bom_rows=bom_rows,
+                loose_linear=loose_linear,
+                confident_linears=confident_linears,
+            ):
+                times, takeoff, weld_calc_notes = fill_weld_times_for_push(
+                    times,
+                    takeoff,
+                    pdf_path=job_pdf,
+                    stp_path=stp,
+                )
+                notes.extend(weld_calc_notes)
             notes.extend(
                 ensure_weld_ops(
                     self.client,

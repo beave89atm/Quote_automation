@@ -37,7 +37,7 @@ EXPECTED = {
     "35PB0.188BRK034": 1,
 }
 FORMED = ["A-11528-000", "A-11521-000", "A-11513-000", "35PB0.188BRK034"]
-WELD_FLAG = "A-11949-000: weld labor not on parent (waiting on Kyle; not guessed)"
+WELD_FLAG = "A-11949-000: calculator ran and found no weld length"
 LABEL = "Q10488 Diamond C"
 
 
@@ -69,6 +69,7 @@ def test_q10488_flags_only_missing_weld_labor():
     report = _report(_tree())
     assert report.status == "FLAG"
     assert report.flags == [WELD_FLAG]
+    assert "waiting on Kyle" not in report.text()
     text = report.text()
     assert text.splitlines()[0] == "Q10488 Diamond C — FLAG"
     assert text.splitlines()[1] == f" - {WELD_FLAG}"
@@ -81,6 +82,7 @@ def test_q10488_live_tree_flags_only_missing_weld_labor():
     report = _report(tree)
     assert report.status == "FLAG"
     assert report.flags == [WELD_FLAG]
+    assert "waiting on Kyle" not in report.text()
     text = report.text()
     assert text.splitlines()[0] == "Q10488 Diamond C — FLAG"
     assert text.splitlines()[1] == f" - {WELD_FLAG}"

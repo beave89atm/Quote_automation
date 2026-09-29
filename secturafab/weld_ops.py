@@ -9,9 +9,15 @@ from __future__ import annotations
 import copy
 import os
 import uuid
+from pathlib import Path
 from typing import Any
 
+from quote_core.config import load_shop_rates
+from quote_core.time_engine import compute_weld_times
+from quote_core.weld.takeoff import WeldLineItem, run_weld_takeoff
+
 from .client import SecturaFabClient
+from .quote_qc import WELD_CALCULATOR_NO_LENGTH
 
 # Captured from Kyle Cleaver quote Q9836 (73476004) — shop Weld calculators.
 _WELD_OP_TEMPLATES: list[dict[str, Any]] = [
@@ -222,7 +228,6 @@ WELD_NEEDS_INFO_NOTE = (
     "needs_info: weld symbols on drawing but weld+fit-up minutes "
     "missing/zero — not inventing AddOperation"
 )
-_NO_SYMBOL_MARKERS = ("No weld symbols", "No weld takeoff")
 
 
 def minutes_to_hours(minutes: float) -> float:
@@ -248,7 +253,8 @@ def weld_symbols_present(
     times = times or {}
     takeoff = takeoff or {}
     notes = _note_blob(times, takeoff)
-    if any(marker in note for note in notes for marker in _NO_SYMBOL_MARKERS):
+    # A takeoff that says there are no weld symbols wins over leftover sizes.
+    if any("No weld symbols" in note for note in notes):
         return False
     if times.get("has_weld_symbols") is True or takeoff.get("has_weld_symbols") is True:
         return True
@@ -258,6 +264,9 @@ def weld_symbols_present(
         source = str(item.get("source") or "")
         if item.get("size") or source in {"symbols", "pdf_size_only", "pdf_note"}:
             return True
+    # "No weld takeoff" is the zero-minute note. It does not hide fillet items above.
+    if any("No weld takeoff" in note for note in notes):
+        return False
     return False
 
 
@@ -472,6 +481,136 @@ def assembly_has_weld(detail: dict[str, Any], *, part_key: str | None = None) ->
     if not target:
         return False
     return item_has_weld_ops(target)
+
+
+def _path_if_file(value: Any) -> Path | None:
+    if not value:
+        return None
+    path = Path(value)
+    return path if path.is_file() else None
+
+
+def _items_from_takeoff(takeoff: dict[str, Any]) -> list[WeldLineItem]:
+    items: list[WeldLineItem] = []
+    for raw in takeoff.get("items") or []:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            inches = float(raw.get("inches") or 0)
+        except (TypeError, ValueError):
+            inches = 0.0
+        page = raw.get("page")
+        items.append(
+            WeldLineItem(
+                size=str(raw.get("size") or "unknown"),
+                inches=inches,
+                joint_notes=str(raw.get("joint_notes") or ""),
+                confidence=str(raw.get("confidence") or "medium"),
+                source=str(raw.get("source") or "takeoff"),
+                page=page if isinstance(page, int) else None,
+                needs_review=bool(raw.get("needs_review", False)),
+            )
+        )
+    return items
+
+
+def _drivers_from_takeoff(takeoff: dict[str, Any]) -> dict[str, Any]:
+    drivers = takeoff.get("fitup_drivers") or {}
+    if not isinstance(drivers, dict):
+        drivers = {}
+    weight_calc = drivers.get("weight_calc") or {}
+    if not isinstance(weight_calc, dict):
+        weight_calc = {}
+    components = drivers.get("component_weights_lb")
+    if components is None:
+        components = weight_calc.get("component_weights_lb")
+    return {
+        "part_count": int(drivers["part_count"]) if drivers.get("part_count") is not None else None,
+        "joint_count": int(drivers["joint_count"]) if drivers.get("joint_count") is not None else None,
+        "assembly_weight_lb": (
+            float(drivers["assembly_weight_lb"])
+            if drivers.get("assembly_weight_lb") is not None
+            else None
+        ),
+        "component_weights_lb": [float(w) for w in (components or [])],
+    }
+
+
+def _merge_takeoff(existing: dict[str, Any], fresh: dict[str, Any]) -> dict[str, Any]:
+    """Keep push fields (library, org) and replace takeoff rows from the calculator."""
+    merged = dict(existing)
+    merged.update(fresh)
+    for key in ("library", "bom_config", "organization", "quote_number", "description", "secturafab"):
+        if key in existing and not merged.get(key):
+            merged[key] = existing[key]
+    return merged
+
+
+def fill_weld_times_for_push(
+    times: dict[str, Any] | None,
+    takeoff: dict[str, Any] | None,
+    *,
+    pdf_path: Any = None,
+    stp_path: Any = None,
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Fill weld and fit-up minutes from takeoff plus shop_rates.yaml.
+
+    Existing positive weld minutes are kept. Otherwise inches come from the
+    takeoff already on the job, or from ``run_weld_takeoff`` when that
+    takeoff has not been run. Minutes use ``compute_weld_times`` only.
+    No weld length is invented when the takeoff finds no weld symbols.
+    """
+    notes: list[str] = []
+    times_out = dict(times or {})
+    takeoff_out = dict(takeoff or {})
+    if resolve_weld_times(times_out):
+        return times_out, takeoff_out, notes
+
+    if "items" not in takeoff_out:
+        pdf = _path_if_file(pdf_path)
+        library = takeoff_out.get("library") or {}
+        if not isinstance(library, dict):
+            library = {}
+        if pdf is not None:
+            try:
+                result = run_weld_takeoff(
+                    pdf_path=pdf,
+                    stp_path=_path_if_file(stp_path),
+                    library_folder=library.get("folder"),
+                    related_pdf_names=list(library.get("related_pdfs") or []),
+                    bom_config=takeoff_out.get("bom_config"),
+                )
+            except Exception:  # noqa: BLE001 — unreadable PDF must not fail the push
+                return times_out, takeoff_out, notes
+            takeoff_out = _merge_takeoff(takeoff_out, result.to_dict())
+        else:
+            notes.append(WELD_CALCULATOR_NO_LENGTH)
+            return times_out, takeoff_out, notes
+
+    drivers = _drivers_from_takeoff(takeoff_out)
+    breakdown = compute_weld_times(
+        _items_from_takeoff(takeoff_out),
+        load_shop_rates(),
+        part_count=drivers["part_count"],
+        joint_count=drivers["joint_count"],
+        assembly_weight_lb=drivers["assembly_weight_lb"],
+        component_weights_lb=drivers["component_weights_lb"],
+    )
+    preserved = {
+        key: times_out[key]
+        for key in ("nested", "by_part", "assemblies")
+        if key in times_out
+    }
+    times_out.update(breakdown.to_dict())
+    times_out.update(preserved)
+    # Judge symbols from the takeoff. Zero-minute fit-up notes say
+    # "No weld takeoff" and must not hide a fillet size that was found.
+    if float(times_out.get("weld_minutes") or 0) <= 0 and not weld_symbols_present(
+        {}, takeoff_out
+    ):
+        if WELD_CALCULATOR_NO_LENGTH not in notes:
+            notes.append(WELD_CALCULATOR_NO_LENGTH)
+    return times_out, takeoff_out, notes
 
 
 def ensure_weld_ops(
