@@ -4099,10 +4099,11 @@ def convert_mm_grid_flats_to_inches(row: dict[str, Any] | None) -> str | None:
 
 
 def cad_flat_over_120_refuses(row: dict[str, Any] | None) -> str | None:
-    """Stop Finish when a flat is still over 120 in.
+    """Stop Finish when a sheet, plate, Cad, or PDF flat is still over 120 in.
 
-    Convert millimetre L/W first. A grid labeled inch at 952.5 is not
-    converted — that would also shrink a real part. invent=false.
+    Bar and tube Linear cut length is not refused. Convert millimetre
+    L/W first. A grid labeled inch at 952.5 is not converted — that
+    would also shrink a real part. invent=false.
     """
     from .page_weld import grid_flat_over_120_refuses
 

@@ -1216,6 +1216,122 @@ def test_flat_over_120_refuses_labeled_inch_mm_grid():
     assert real_mm["Length"] == pytest.approx(37.5, rel=1e-3)
 
 
+def test_tube_over_120_is_accepted_sheet_and_plate_still_refused():
+    """Linear cut length may exceed 120 in. Sheet, plate, Cad, and PDF may not."""
+    from secturafab.page_weld import grid_flat_over_120_refuses
+    from secturafab.website import cad_flat_over_120_refuses
+
+    tube = {
+        "Name": "12842",
+        "Length": 135.0,
+        "Category": "Linear",
+        "ItemType": "Linear",
+        "ProductType": 30,
+        "IsLinear": True,
+        "PartMode": 1,
+    }
+    bar = {
+        "Name": "FLAT BAR",
+        "Length": 144,
+        "Category": "Linear",
+        "ProductType": 10,
+    }
+    angle = {"Name": "C4X5.4", "Length": 150, "ProductType": 40, "ItemType": "Linear"}
+    named_bar = {
+        "Name": "FLAT BAR",
+        "Length": 144,
+        "ItemType": "Linear",
+        "ProductType": "bar",
+    }
+    for row in (tube, bar, angle, named_bar):
+        assert grid_flat_over_120_refuses(row) is None
+        assert cad_flat_over_120_refuses(row) is None
+
+    # Cut length exactly 120 in is already allowed. A longer tube is too.
+    assert grid_flat_over_120_refuses(
+        {"Name": "12842", "Length": 120, "ProductType": "tube"}
+    ) is None
+    assert grid_flat_over_120_refuses(
+        {"Name": "12842", "Length": 240, "Width": 200, "ProductType": 30}
+    ) is None
+
+    plate = {
+        "Name": "BASE PLATE",
+        "Length": 135.0,
+        "Width": 10,
+        "Category": "Cad",
+        "ProductType": 100,
+    }
+    sheet = {"Name": "SHEET", "Length": 121, "ItemType": "cad"}
+    pdf = {"Name": "cover", "Length": 130, "ProductType": "prt_pdf"}
+    dxf = {"Name": "cover", "Width": 121, "ProductSubType": "prt_dxf"}
+    image_bar = {
+        "Name": "cover",
+        "Length": 130,
+        "ProductType": "bar",
+        "ProductSubType": "bar_flat",
+    }
+    image_bar_only = {"Name": "cover", "Length": 130, "ProductType": "bar"}
+    cad_with_tube_type = {
+        "Name": "plate",
+        "Length": 135,
+        "ItemType": "Cad",
+        "ProductType": 30,
+    }
+    unlabeled = {"Name": "part", "Length": 121}
+    for row in (
+        plate,
+        sheet,
+        pdf,
+        dxf,
+        image_bar,
+        image_bar_only,
+        cad_with_tube_type,
+        unlabeled,
+    ):
+        why = grid_flat_over_120_refuses(row)
+        assert why and "over 120" in why
+        wrapped = cad_flat_over_120_refuses(row)
+        assert wrapped and "not Finishing" in wrapped
+
+
+def test_page_finish_accepts_tube_over_120_and_refuses_sheet():
+    """The page Finish copy of the cap matches the Python gate."""
+    import json
+    import subprocess
+
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS
+
+    start = _PAGE_FINISH_JS.index("function linearCutOver120Ok")
+    end = _PAGE_FINISH_JS.index("function setMaterialCad")
+    body = _PAGE_FINISH_JS[start:end]
+    assert body.index("linearCutOver120Ok(live)") < body.index('return "flat_over_120"')
+    cases = [
+        ({"Name": "12842", "Length": 135, "Category": "Linear", "ProductType": 30, "IsLinear": True, "PartMode": 1}, ""),
+        ({"Name": "FLAT BAR", "Length": 144, "ItemType": "Linear", "ProductType": 10}, ""),
+        ({"Name": "12842", "Length": 135, "ProductType": "tube"}, ""),
+        ({"Name": "FLAT BAR", "Length": 144, "ItemType": "Linear", "ProductType": "bar"}, ""),
+        ({"Name": "BASE PLATE", "Length": 135, "Width": 10, "Category": "Cad", "ProductType": 100}, "flat_over_120"),
+        ({"Name": "plate", "Length": 135, "ItemType": "Cad", "ProductType": 30}, "flat_over_120"),
+        ({"Name": "SHEET", "Length": 121, "ItemType": "cad"}, "flat_over_120"),
+        ({"Name": "cover", "Length": 130, "ProductType": "prt_pdf"}, "flat_over_120"),
+        ({"Name": "cover", "Width": 121, "ProductSubType": "prt_dxf"}, "flat_over_120"),
+        ({"Name": "cover", "Length": 130, "ProductType": "bar", "ProductSubType": "bar_flat"}, "flat_over_120"),
+        ({"Name": "cover", "Length": 130, "ProductType": "bar"}, "flat_over_120"),
+        ({"Name": "part", "Length": 121}, "flat_over_120"),
+    ]
+    script = body + "\nconst cases = " + json.dumps(cases) + """;
+for (var i = 0; i < cases.length; i++) {
+  var got = flatOver120(cases[i][0]);
+  if (got !== cases[i][1]) {
+    console.error(JSON.stringify({row: cases[i][0], want: cases[i][1], got: got}));
+    process.exit(1);
+  }
+}
+"""
+    subprocess.run(["node", "-e", script], check=True)
+
+
 def test_linear_stamp_waits_for_linear_product():
     from secturafab.chrome_cdp import _STAMP_LINEAR_FORM_JS
 

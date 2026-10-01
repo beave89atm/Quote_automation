@@ -606,9 +606,95 @@ def flats_are_plausible_inches(length: Any, width: Any) -> bool:
     return 0 < length_in <= 240 and 0 < width_in <= 120
 
 
-def grid_flat_over_120_refuses(row: dict[str, Any] | None) -> str | None:
-    """Any Length or Width over 120 in stops Finish. Blank dims are not this check."""
+# Sectura Linear product types already used on the website (bar / tube / angle).
+# Not a new length limit — these rows are simply not the 120 in sheet cap.
+_LINEAR_CUT_PRODUCT_TYPES = frozenset({10, 30, 40})
+_CAD_FLAT_ITEM_TOKENS = frozenset({"cad", "plate", "sheet", "sheets", "plates"})
+_LINEAR_ITEM_TOKENS = frozenset(
+    {"linear", "tube", "pipe", "structural", "angle", "bar"}
+)
+_CAD_FLAT_PRODUCT_TOKENS = frozenset(
+    {"plate", "sheet", "sheets", "plates", "100", "cad"}
+)
+# OnAddLinearClick productType strings. "bar" is omitted here: the Image
+# Files grid template uses ProductType bar / ProductSubType bar_flat for
+# plates, and that path still refuses length over 120 in.
+_LINEAR_PRODUCT_TEXT = frozenset({"tube", "pipe", "structural"})
+
+
+def _row_item_token(row: dict[str, Any]) -> str:
+    for key in ("ItemType", "Category", "FileType"):
+        token = str(row.get(key) or "").strip().casefold()
+        if token:
+            return token
+    return ""
+
+
+def _product_type_texts(row: dict[str, Any]) -> list[str]:
+    texts: list[str] = []
+    for key in ("ProductType", "productType", "ProductSubType", "productSubType"):
+        raw = row.get(key)
+        if raw in (None, ""):
+            continue
+        texts.append(str(raw).strip().casefold())
+    return texts
+
+
+def _flag_true(value: Any) -> bool:
+    if value is True or value == 1:
+        return True
+    if isinstance(value, str) and value.strip().casefold() in {"true", "1", "yes"}:
+        return True
+    return False
+
+
+def linear_cut_length_skips_flat_cap(row: dict[str, Any] | None) -> bool:
+    """True when this row is bar/tube Linear and the 120 in sheet cap does not apply.
+
+    Sheet, plate, Cad, and PDF image-file rows stay on the cap. Numeric
+    ProductType 10/30/40 are the existing Linear types. The Image Files
+    grid default ProductType ``bar`` / ``bar_flat`` is a plate template,
+    not Linear type 10, so it stays capped.
+    """
     if not isinstance(row, dict):
+        return False
+    item = _row_item_token(row)
+    if item in _CAD_FLAT_ITEM_TOKENS:
+        return False
+    texts = _product_type_texts(row)
+    for text in texts:
+        if text.startswith("prt_") or text in _CAD_FLAT_PRODUCT_TOKENS:
+            return False
+    if item in _LINEAR_ITEM_TOKENS:
+        return True
+    if _flag_true(row.get("IsLinear")):
+        return True
+    try:
+        if int(row.get("PartMode")) == 1:
+            return True
+    except (TypeError, ValueError):
+        pass
+    try:
+        if int(row.get("ProductType")) in _LINEAR_CUT_PRODUCT_TYPES:
+            return True
+    except (TypeError, ValueError):
+        pass
+    if any(text in _LINEAR_PRODUCT_TEXT for text in texts):
+        return True
+    # ProductType "bar" / "bar_flat" with no Linear category is the
+    # Image Files plate template. Leave it on the sheet cap.
+    return False
+
+
+def grid_flat_over_120_refuses(row: dict[str, Any] | None) -> str | None:
+    """Sheet/plate/Cad/PDF Length or Width over 120 in stops Finish.
+
+    Bar and tube (Linear) cut length is not this check. Blank dims are
+    not this check. There is no replacement upper bound for tubes.
+    """
+    if not isinstance(row, dict):
+        return None
+    if linear_cut_length_skips_flat_cap(row):
         return None
     name = str(row.get("Name") or row.get("PartName") or row.get("ItemNumber") or "part")
     for key in ("Length", "Width"):
