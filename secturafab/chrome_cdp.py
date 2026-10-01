@@ -1940,17 +1940,113 @@ _PAGE_FINISH_JS = """(async function(spec) {
     return String(v || "").trim().toLowerCase() === "component";
   }
   function cadPlateStillComponent(list) {
-    // Kyle 2026-09-12: plate/sheet STEP must leave Adjust Properties
-    // as ProductType Cad before Finish. Component on a Cad row is
-    // the Contours fail path. Do not invent Contours. invent=false.
+    // Classify Cad lock before page Finish. Plate/sheet kids cannot
+    // stay Component when they should be Cad. Linear stays for
+    // bar/tube. Purchased hardware may remain Component. Plate over
+    // 3/4 in stays Component (no invented price). invent=false —
+    // do not invent Contours, InternalData, thicknesses, or prices.
+    function componentProduct(v) {
+      if (v === 200 || v === "200") return true;
+      return String(v || "").trim().toLowerCase() === "component";
+    }
+    function blobOf(r) {
+      return String(
+        (r && (
+          (r.PartName || "") + " " + (r.Name || "") + " " + (r.Description || "")
+          + " " + (r.FileName || "") + " " + (r.ItemNumber || "")
+        )) || ""
+      );
+    }
+    function plateNoun(blob) {
+      var text = " " + String(blob || "").toUpperCase() + " ";
+      if (/\\b(PLATE|GUSSET|SHEET)\\b/.test(text)) return true;
+      if (/\\bFLAT\\b/.test(text) && !/\\bFLAT\\s+BAR\\b/.test(text)) return true;
+      if (/\\bMOUNT\\b/.test(text) && !/\\b(CHANNEL|TUBE|PIPE|BARS?|ANGLE|BEAM|HSS)\\b/.test(text)) {
+        return true;
+      }
+      return false;
+    }
+    function formedPlate(blob) {
+      var text = " " + String(blob || "").toUpperCase() + " ";
+      return text.indexOf(" FORMED ") >= 0 || text.indexOf(" ROLLED ") >= 0
+        || text.indexOf(" BENT PLATE ") >= 0;
+    }
+    function purchasedHardware(blob) {
+      return /\\b(BOLT|SCREW|NUT|WASHER|HARDWARE|FASTENER|RIVET|CLAMP|KING\\s*PIN|KINGPIN|COTTER|BUSHING|BEARING|PURCHASED|BUYOUT|BUY\\s+OUT|ELBOW|COUPLING|NIPPLE|PLUG|PIPE\\s+CAP|FILLER\\s*-?\\s*NECK|FITTING|REDUCER|UNION)\\b/i.test(String(blob || ""));
+    }
+    function linearStock(blob) {
+      var text = " " + String(blob || "").toUpperCase() + " ";
+      if (/\\b(TUBE|PIPE|HSS|BEAM|CHANNEL|FLAT\\s+BAR|ROUND\\s+BAR|RD\\.?\\s*BAR|PIVOT\\s+TUBE|BOOM\\s+TUBE|HOSE\\s*GUARD)\\b/.test(text)) {
+        return true;
+      }
+      if (plateNoun(blob)) return false;
+      return /\\b(ANGLE|BAR|STRUCTURAL|SLUG)\\b/.test(text);
+    }
+    function thicknessIn(r) {
+      var raw = r && r.Thickness;
+      var n = parseFloat(raw);
+      if (!isFinite(n) || !(n > 0)) return null;
+      var units = String((r && (r.Thickness_Units || r.thickness_units)) || "").toLowerCase();
+      if (units === "mm" || units.indexOf("milli") === 0) return n / 25.4;
+      return n;
+    }
+    function pagePlateToken(r) {
+      var keys = ["ProductType", "ProductSubType", "productSubType", "productType"];
+      for (var i = 0; i < keys.length; i++) {
+        var s = String((r && r[keys[i]]) || "").trim().toLowerCase();
+        if (!s || s === "component" || s === "200" || s === "cad" || s === "100") continue;
+        if (s.indexOf("bar") === 0) continue;
+        if (s.indexOf("prt_") === 0) return true;
+        if (s === "plate" || s === "sheet" || s === "sheets" || s === "plates") return true;
+      }
+      return false;
+    }
+    function itemTok(r) {
+      return String((r && (r.ItemType || r.FileType || r.Category)) || "").trim().toLowerCase();
+    }
+    function leftComponent(r) {
+      if (!r) return false;
+      if (componentProduct(r.ProductType)) return true;
+      if (itemTok(r) === "component") return true;
+      return Number(r.PartMode) === 2;
+    }
+    function alreadyCad(r) {
+      if (!r || componentProduct(r.ProductType)) return false;
+      var tok = itemTok(r);
+      if (tok === "component") return false;
+      if (tok === "cad") return true;
+      return Number(r.PartMode) === 0 && tok !== "linear" && tok !== "assembly";
+    }
+    function shouldBeCadPlate(r) {
+      var blob = blobOf(r);
+      if (purchasedHardware(blob)) return false;
+      var upper = " " + blob.toUpperCase() + " ";
+      if (/\\b(WELDMENT|ASSEMBLY|ASSY)\\b/.test(upper)) return false;
+      if (/HOSE\\s*GUARD/.test(upper) || upper.indexOf("HOSEGUARD") >= 0) return false;
+      if (upper.indexOf(" HINGE ") >= 0 && !plateNoun(blob)) return false;
+      var plate = plateNoun(blob) || formedPlate(blob);
+      var thick = thicknessIn(r);
+      if (thick != null && thick > 0.75 && (plate || !linearStock(blob))) return false;
+      if (linearStock(blob) && !plate) return false;
+      if (plate) return true;
+      if (pagePlateToken(r) && !linearStock(blob)) return true;
+      return false;
+    }
     for (var i = 0; i < (list || []).length; i++) {
       var r = list[i] || {};
-      if (!productTypeIsComponent(r.ProductType)) continue;
-      var cat = String(r.Category || r.ItemType || "").trim();
-      if (cat === "Linear" || cat === "Assembly" || cat === "Component") continue;
-      var ft = String(r.FileType || "").trim();
-      if (ft === "Linear" || ft === "Component") continue;
-      if (ft === "Cad" || cat === "Cad" || cat.toLowerCase() === "cad") return true;
+      var cat = String(r.Category || r.ItemType || r.FileType || "").trim().toLowerCase();
+      if (cat === "linear" || cat === "assembly") continue;
+      if (r.IsAssembly || Number(r.ProductType) === 300) continue;
+      if (Number(r.PartMode) === 1 || r.IsLinear) continue;
+      if (linearStock(blobOf(r)) && !plateNoun(blobOf(r))) continue;
+      if (componentProduct(r.ProductType)) {
+        var ft = String(r.FileType || "").trim().toLowerCase();
+        var named = String(r.Category || r.ItemType || "").trim().toLowerCase();
+        if (ft === "cad" || named === "cad") return true;
+      }
+      if (alreadyCad(r)) continue;
+      if (!leftComponent(r)) continue;
+      if (shouldBeCadPlate(r)) return true;
     }
     return false;
   }
@@ -4908,6 +5004,118 @@ _PAGE_PDF_FINISH_JS = """(function() {
     if (isFinite(wtN) && wtN > 0) return true;
     return false;
   }
+  function cadPlateStillComponent(list) {
+    // Classify Cad lock before page Finish. Plate/sheet kids cannot
+    // stay Component when they should be Cad. Linear stays for
+    // bar/tube. Purchased hardware may remain Component. Plate over
+    // 3/4 in stays Component (no invented price). invent=false —
+    // do not invent Contours, InternalData, thicknesses, or prices.
+    function componentProduct(v) {
+      if (v === 200 || v === "200") return true;
+      return String(v || "").trim().toLowerCase() === "component";
+    }
+    function blobOf(r) {
+      return String(
+        (r && (
+          (r.PartName || "") + " " + (r.Name || "") + " " + (r.Description || "")
+          + " " + (r.FileName || "") + " " + (r.ItemNumber || "")
+        )) || ""
+      );
+    }
+    function plateNoun(blob) {
+      var text = " " + String(blob || "").toUpperCase() + " ";
+      if (/\\b(PLATE|GUSSET|SHEET)\\b/.test(text)) return true;
+      if (/\\bFLAT\\b/.test(text) && !/\\bFLAT\\s+BAR\\b/.test(text)) return true;
+      if (/\\bMOUNT\\b/.test(text) && !/\\b(CHANNEL|TUBE|PIPE|BARS?|ANGLE|BEAM|HSS)\\b/.test(text)) {
+        return true;
+      }
+      return false;
+    }
+    function formedPlate(blob) {
+      var text = " " + String(blob || "").toUpperCase() + " ";
+      return text.indexOf(" FORMED ") >= 0 || text.indexOf(" ROLLED ") >= 0
+        || text.indexOf(" BENT PLATE ") >= 0;
+    }
+    function purchasedHardware(blob) {
+      return /\\b(BOLT|SCREW|NUT|WASHER|HARDWARE|FASTENER|RIVET|CLAMP|KING\\s*PIN|KINGPIN|COTTER|BUSHING|BEARING|PURCHASED|BUYOUT|BUY\\s+OUT|ELBOW|COUPLING|NIPPLE|PLUG|PIPE\\s+CAP|FILLER\\s*-?\\s*NECK|FITTING|REDUCER|UNION)\\b/i.test(String(blob || ""));
+    }
+    function linearStock(blob) {
+      var text = " " + String(blob || "").toUpperCase() + " ";
+      if (/\\b(TUBE|PIPE|HSS|BEAM|CHANNEL|FLAT\\s+BAR|ROUND\\s+BAR|RD\\.?\\s*BAR|PIVOT\\s+TUBE|BOOM\\s+TUBE|HOSE\\s*GUARD)\\b/.test(text)) {
+        return true;
+      }
+      if (plateNoun(blob)) return false;
+      return /\\b(ANGLE|BAR|STRUCTURAL|SLUG)\\b/.test(text);
+    }
+    function thicknessIn(r) {
+      var raw = r && r.Thickness;
+      var n = parseFloat(raw);
+      if (!isFinite(n) || !(n > 0)) return null;
+      var units = String((r && (r.Thickness_Units || r.thickness_units)) || "").toLowerCase();
+      if (units === "mm" || units.indexOf("milli") === 0) return n / 25.4;
+      return n;
+    }
+    function pagePlateToken(r) {
+      var keys = ["ProductType", "ProductSubType", "productSubType", "productType"];
+      for (var i = 0; i < keys.length; i++) {
+        var s = String((r && r[keys[i]]) || "").trim().toLowerCase();
+        if (!s || s === "component" || s === "200" || s === "cad" || s === "100") continue;
+        if (s.indexOf("bar") === 0) continue;
+        if (s.indexOf("prt_") === 0) return true;
+        if (s === "plate" || s === "sheet" || s === "sheets" || s === "plates") return true;
+      }
+      return false;
+    }
+    function itemTok(r) {
+      return String((r && (r.ItemType || r.FileType || r.Category)) || "").trim().toLowerCase();
+    }
+    function leftComponent(r) {
+      if (!r) return false;
+      if (componentProduct(r.ProductType)) return true;
+      if (itemTok(r) === "component") return true;
+      return Number(r.PartMode) === 2;
+    }
+    function alreadyCad(r) {
+      if (!r || componentProduct(r.ProductType)) return false;
+      var tok = itemTok(r);
+      if (tok === "component") return false;
+      if (tok === "cad") return true;
+      return Number(r.PartMode) === 0 && tok !== "linear" && tok !== "assembly";
+    }
+    function shouldBeCadPlate(r) {
+      var blob = blobOf(r);
+      if (purchasedHardware(blob)) return false;
+      var upper = " " + blob.toUpperCase() + " ";
+      if (/\\b(WELDMENT|ASSEMBLY|ASSY)\\b/.test(upper)) return false;
+      if (/HOSE\\s*GUARD/.test(upper) || upper.indexOf("HOSEGUARD") >= 0) return false;
+      if (upper.indexOf(" HINGE ") >= 0 && !plateNoun(blob)) return false;
+      var plate = plateNoun(blob) || formedPlate(blob);
+      var thick = thicknessIn(r);
+      if (thick != null && thick > 0.75 && (plate || !linearStock(blob))) return false;
+      if (linearStock(blob) && !plate) return false;
+      if (plate) return true;
+      if (pagePlateToken(r) && !linearStock(blob)) return true;
+      return false;
+    }
+    for (var i = 0; i < (list || []).length; i++) {
+      var r = list[i] || {};
+      var cat = String(r.Category || r.ItemType || r.FileType || "").trim().toLowerCase();
+      if (cat === "linear" || cat === "assembly") continue;
+      if (r.IsAssembly || Number(r.ProductType) === 300) continue;
+      if (Number(r.PartMode) === 1 || r.IsLinear) continue;
+      if (linearStock(blobOf(r)) && !plateNoun(blobOf(r))) continue;
+      if (componentProduct(r.ProductType)) {
+        var ft = String(r.FileType || "").trim().toLowerCase();
+        var named = String(r.Category || r.ItemType || "").trim().toLowerCase();
+        if (ft === "cad" || named === "cad") return true;
+      }
+      if (alreadyCad(r)) continue;
+      if (!leftComponent(r)) continue;
+      if (shouldBeCadPlate(r)) return true;
+    }
+    return false;
+  }
+
   var preGet = ensureGetPdfDataReady();
   var preSnap = snapGetPdfRow(preGet);
   var krows = preGet;
@@ -5037,6 +5245,57 @@ _PAGE_PDF_FINISH_JS = """(function() {
       has_QuoteItem: false,
       text_len: 0,
       List: krows,
+      response_list_n: 0,
+      response_tag: "",
+      response_badge_string: "",
+      response_production_ready: false,
+      response_ocl_n: 0,
+      response_ocl_names: [],
+      response_unit_cost: 0,
+      response_unit_weight_cost: 0,
+      response_number_of_contours: 0,
+      response_number_of_pierces: 0
+    });
+  }
+  var classifyRows = [];
+  try { classifyRows = krows.slice(); } catch (eSlice) { classifyRows = []; }
+  try {
+    var hitLock = pdfGrid();
+    if (hitLock && hitLock.grid && hitLock.grid.dataSource) {
+      var gridLock = toRows(hitLock.grid.dataSource.data());
+      if (gridLock && gridLock.length) classifyRows = gridLock;
+    }
+  } catch (eLock) {}
+  if (cadPlateStillComponent(classifyRows) || cadPlateStillComponent(krows)) {
+    return Promise.resolve({
+      via: "skipped",
+      finish_fn: "",
+      reads_kendo: true,
+      filelist_from_kendo: false,
+      finish_filelist_n: 0,
+      filelist_raw: "[]",
+      filelist_producttype: "",
+      filelist_productsubtype: "",
+      filelist_itemtype: "component",
+      posted_keys: [],
+      getpdfdata_n: preSnap.getpdfdata_n,
+      getpdfdata_productid_n: preSnap.getpdfdata_productid_n,
+      getpdfdata_internal_dim1_n: preSnap.getpdfdata_internal_dim1_n,
+      getpdfdata_outside_perimeter_n: preSnap.getpdfdata_outside_perimeter_n,
+      grid_pdf_row_count: dsN,
+      grid_id: gridId,
+      finish_af_present: false,
+      finish_why: "producttype_still_component",
+      request_keys: [],
+      filelist_row_keys: [],
+      kendo_row_keys: [],
+      status: 0,
+      body_keys: [],
+      body_type: "empty",
+      has_NewItem: false,
+      has_QuoteItem: false,
+      text_len: 0,
+      List: [],
       response_list_n: 0,
       response_tag: "",
       response_badge_string: "",
@@ -10516,7 +10775,19 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
           if (itemTok === "Cad" || itemTok.toLowerCase() === "cad") expectsCad = true;
         }
         if (!expectsCad) continue;
-        if (productTypeIsComponent(liveRow.ProductType)) productTypeStillComponent += 1;
+        if (productTypeIsComponent(liveRow.ProductType)) {
+          productTypeStillComponent += 1;
+          continue;
+        }
+        // Spec wants Cad but the page left ItemType Component
+        // (ProductType was not the 200 enum). Fail closed.
+        var liveItem = String(
+          liveRow.ItemType || liveRow.Category || liveRow.FileType || ""
+        ).trim().toLowerCase();
+        if (liveItem === "component") productTypeStillComponent += 1;
+        else if (!liveItem && Number(liveRow.PartMode) === 2) {
+          productTypeStillComponent += 1;
+        }
       }
       return {
         grid_present: present,

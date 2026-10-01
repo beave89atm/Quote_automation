@@ -404,3 +404,223 @@ def test_plate_sheet_component_blocks_finish_cad_inch_allowed():
     assert "producttype_still_component" in _PAGE_FINISH_JS
     assert "cadPlateStillComponent" in _PAGE_FINISH_JS
     assert "producttype_still_component" in _APPLY_GRID_PART_MODES_JS
+
+
+def test_plate_sheet_left_component_refuses_finish_before_page_native():
+    """A plate/sheet kid left as Component cannot Finish.
+
+    The old lock only fired when the row was already Cad and
+    ProductType was still Component. A page-native STEP/PDF kid
+    whose ItemType stayed Component slipped through. Bar/tube
+    stays Linear. Purchased hardware and plate over 3/4 in may
+    stay Component. invent=false — no Contours, thickness, or price.
+    """
+    import json
+    import shutil
+    import subprocess
+    import textwrap
+
+    from secturafab.chrome_cdp import _PAGE_FINISH_JS, _PAGE_PDF_FINISH_JS
+    from secturafab.website import (
+        kendo_filelist_for_finish,
+        page_dxf_finish_skip_why,
+        plate_sheet_left_component_blocks_finish,
+        step_cad_finish_hard_gate,
+    )
+
+    sheet = {
+        "Name": "SIDE SHEET",
+        "PartName": "SIDE SHEET",
+        "ID": "id-sheet",
+        "FileID": "file-sheet",
+        "SourceDataID": "src-sheet",
+        "FileType": "Component",
+        "ItemType": "Component",
+        "Category": "Component",
+        "PartMode": 2,
+        "ProductType": 200,
+        "Material": "A36",
+        "Thickness": "0.25",
+        "Thickness_Units": "inch",
+        "Qty": 1,
+        "ErrorStatus": 0,
+        "InternalData": "server-stamped",
+    }
+    why = plate_sheet_left_component_blocks_finish([sheet])
+    assert why is not None
+    assert "producttype_still_component" in why
+    assert "Contours" in why
+    assert "invent" in why.lower()
+    assert page_dxf_finish_skip_why([sheet]) == "producttype_still_component"
+    blocked = kendo_filelist_for_finish([sheet], from_datasource=True)
+    assert blocked["should_finish"] is False
+    assert blocked["finish_why"] == "producttype_still_component"
+    hard = step_cad_finish_hard_gate([sheet])
+    assert hard is not None
+    assert "producttype_still_component" in hard
+
+    cad = {
+        **sheet,
+        "FileType": "Cad",
+        "ItemType": "Cad",
+        "Category": "Cad",
+        "PartMode": 0,
+        "ProductType": 100,
+    }
+    assert plate_sheet_left_component_blocks_finish([cad]) is None
+    assert page_dxf_finish_skip_why([cad]) is None
+
+    gusset = {**sheet, "Name": "TRIANGLE GUSSET", "PartName": "TRIANGLE GUSSET"}
+    assert plate_sheet_left_component_blocks_finish([gusset]) is not None
+
+    tube = {
+        **sheet,
+        "Name": "BOOM TUBE",
+        "PartName": "2X2X1/4 HSS TUBE",
+        "ItemType": "Linear",
+        "Category": "Linear",
+        "FileType": "Linear",
+        "PartMode": 1,
+        "ProductType": 30,
+    }
+    assert plate_sheet_left_component_blocks_finish([tube]) is None
+    assert page_dxf_finish_skip_why([tube]) is None
+    tube_left = {
+        **sheet,
+        "Name": "BOOM TUBE",
+        "PartName": "2X2X1/4 HSS",
+        "ItemType": "Component",
+        "Category": "Component",
+        "FileType": "Component",
+    }
+    assert plate_sheet_left_component_blocks_finish([tube_left]) is None
+
+    bolt = {**sheet, "Name": "1/2-13 HEX BOLT", "PartName": "HEX BOLT"}
+    assert plate_sheet_left_component_blocks_finish([bolt]) is None
+    assert page_dxf_finish_skip_why([bolt]) is None
+
+    thick = {**sheet, "Name": "PEDESTAL BASE PLATE", "Thickness": "1.25"}
+    assert plate_sheet_left_component_blocks_finish([thick]) is None
+
+    flat_bar = {
+        **sheet,
+        "Name": "FLAT BAR",
+        "PartName": "FLAT BAR 1/4 X 2",
+        "ItemType": "Component",
+        "Category": "Component",
+        "FileType": "Component",
+        "PartMode": 2,
+        "ProductType": 200,
+    }
+    assert plate_sheet_left_component_blocks_finish([flat_bar]) is None
+
+    pdf_plate = {
+        "FileName": "cover-plate.pdf",
+        "PartName": "COVER PLATE",
+        "ItemType": "component",
+        "ProductType": "prt_pdf",
+        "ProductSubType": "prt_pdf",
+        "Thickness": "0.25",
+        "Thickness_Units": "inch",
+    }
+    assert plate_sheet_left_component_blocks_finish([pdf_plate]) is not None
+    pdf_cad = {**pdf_plate, "ItemType": "cad", "ProductType": "prt_pdf"}
+    assert plate_sheet_left_component_blocks_finish([pdf_cad]) is None
+
+    def extract(js: str) -> str:
+        start = js.index("function cadPlateStillComponent")
+        brace = js.index("{", start)
+        depth = 0
+        for idx in range(brace, len(js)):
+            if js[idx] == "{":
+                depth += 1
+            elif js[idx] == "}":
+                depth -= 1
+                if depth == 0:
+                    return js[start : idx + 1]
+        raise AssertionError("cadPlateStillComponent unclosed")
+
+    step_fn = extract(_PAGE_FINISH_JS)
+    pdf_fn = extract(_PAGE_PDF_FINISH_JS)
+    assert step_fn == pdf_fn
+    pre = _PAGE_PDF_FINISH_JS.index("var preGet = ensureGetPdfDataReady()")
+    call = _PAGE_PDF_FINISH_JS.index(
+        "cadPlateStillComponent(classifyRows)", pre
+    )
+    finish = _PAGE_PDF_FINISH_JS.index("var finishName = findFinishName()", pre)
+    assert call < finish
+    assert "producttype_still_component" in _PAGE_PDF_FINISH_JS[pre:finish]
+
+    node = shutil.which("node")
+    if not node:
+        return
+    script = textwrap.dedent(
+        """
+        const fs = require("fs");
+        const fnSrc = fs.readFileSync(process.argv[2], "utf8");
+        const cadPlateStillComponent = new Function(fnSrc + "; return cadPlateStillComponent;")();
+        const sheet = {
+          Name: "SIDE SHEET", ItemType: "Component", Category: "Component",
+          FileType: "Component", PartMode: 2, ProductType: 200,
+          Thickness: "0.25", Thickness_Units: "inch"
+        };
+        const cad = Object.assign({}, sheet, {
+          ItemType: "Cad", Category: "Cad", FileType: "Cad",
+          PartMode: 0, ProductType: 100
+        });
+        const gusset = Object.assign({}, sheet, {Name: "TRIANGLE GUSSET", PartName: "TRIANGLE GUSSET"});
+        const tube = {
+          Name: "BOOM TUBE", PartName: "2X2X1/4 HSS TUBE",
+          ItemType: "Linear", PartMode: 1, ProductType: 30
+        };
+        const bolt = Object.assign({}, sheet, {Name: "1/2-13 HEX BOLT", PartName: "HEX BOLT"});
+        const thick = Object.assign({}, sheet, {Name: "PEDESTAL BASE PLATE", Thickness: "1.25"});
+        const flat = {
+          Name: "FLAT BAR", PartName: "FLAT BAR 1/4 X 2",
+          ItemType: "Component", Category: "Component", FileType: "Component",
+          PartMode: 2, ProductType: 200
+        };
+        const pdf = {
+          FileName: "cover-plate.pdf", PartName: "COVER PLATE",
+          ItemType: "component", ProductType: "prt_pdf", Thickness: "0.25"
+        };
+        const out = {
+          sheet: cadPlateStillComponent([sheet]),
+          cad: cadPlateStillComponent([cad]),
+          gusset: cadPlateStillComponent([gusset]),
+          tube: cadPlateStillComponent([tube]),
+          bolt: cadPlateStillComponent([bolt]),
+          thick: cadPlateStillComponent([thick]),
+          flat: cadPlateStillComponent([flat]),
+          pdf: cadPlateStillComponent([pdf])
+        };
+        process.stdout.write(JSON.stringify(out));
+        """
+    )
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        fn_path = Path(tmp) / "cad_lock.js"
+        run_path = Path(tmp) / "run.js"
+        fn_path.write_text(step_fn, encoding="utf-8")
+        run_path.write_text(script, encoding="utf-8")
+        proc = subprocess.run(
+            [node, str(run_path), str(fn_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    assert proc.returncode == 0, proc.stderr
+    got = json.loads(proc.stdout)
+    assert got == {
+        "sheet": True,
+        "cad": False,
+        "gusset": True,
+        "tube": False,
+        "bolt": False,
+        "thick": False,
+        "flat": False,
+        "pdf": True,
+    }

@@ -2885,6 +2885,10 @@ def page_dxf_finish_skip_why(rows: list[dict[str, Any]] | None) -> str | None:
     kids = [sanitize_cad_partmode_filelist_row(r) for r in (rows or []) if isinstance(r, dict)]
     if not kids:
         return "empty_dataSource"
+    # Plate/sheet left as Component (not only Cad + ProductType 200).
+    # Linear and purchased hardware are not this lock. invent=false.
+    if plate_sheet_left_component_blocks_finish(kids):
+        return "producttype_still_component"
     for row in kids:
         # Plate/sheet Cad still ProductType Component blocks Finish
         # even when InternalData is already present (Kyle 2026-09-12
@@ -3268,6 +3272,132 @@ def plate_step_left_component_refuses_contours(
     )
 
 
+def _row_item_token(row: dict[str, Any]) -> str:
+    for key in ("ItemType", "FileType", "Category"):
+        tok = str(row.get(key) or "").strip()
+        if tok:
+            return tok.casefold()
+    return ""
+
+
+def _row_classify_blob(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("PartName", "Name", "Description", "FileName", "ItemNumber"):
+        val = str(row.get(key) or "").strip()
+        if val and val not in parts:
+            parts.append(val)
+    return " ".join(parts)
+
+
+def _row_left_as_component(row: dict[str, Any]) -> bool:
+    """True when the live row is still the Component classify."""
+    if product_type_is_component(row.get("ProductType")):
+        return True
+    if _row_item_token(row) == "component":
+        return True
+    try:
+        return int(row.get("PartMode")) == 2
+    except (TypeError, ValueError):
+        return False
+
+
+def _row_already_cad_for_lock(row: dict[str, Any]) -> bool:
+    """Cad classify stuck. ProductType / ItemType Component is not stuck."""
+    if product_type_is_component(row.get("ProductType")):
+        return False
+    tok = _row_item_token(row)
+    if tok == "component":
+        return False
+    if tok == "cad":
+        return True
+    if tok in {"linear", "assembly"}:
+        return False
+    return is_cad_filelist_row(row)
+
+
+def _page_product_token_is_plate(row: dict[str, Any]) -> bool:
+    """Image Files / CAD Files plate token (prt_pdf / prt_dxf), not bar."""
+    for key in ("ProductType", "ProductSubType", "productSubType", "productType"):
+        tok = str(row.get(key) or "").strip().casefold()
+        if not tok or tok in {"component", "200", "cad", "100"}:
+            continue
+        if tok.startswith("bar"):
+            continue
+        if tok.startswith("prt_") or tok in {"plate", "sheet", "sheets", "plates"}:
+            return True
+    return False
+
+
+def _row_is_linear_or_assembly_category(row: dict[str, Any]) -> bool:
+    tok = _row_item_token(row)
+    if tok in {"linear", "assembly"}:
+        return True
+    if row.get("IsAssembly") or row.get("IsLinear"):
+        return True
+    try:
+        if int(row.get("ProductType")) == 300:
+            return True
+    except (TypeError, ValueError):
+        pass
+    try:
+        if int(row.get("PartMode")) == 1:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def plate_sheet_left_component_blocks_finish(
+    rows: list[dict[str, Any]] | None,
+) -> str | None:
+    """Refuse Finish when a plate/sheet kid is still Component.
+
+    Page-native STEP/PDF quote-load: a kid that classifies as Cad
+    (plate, sheet, gusset, mount, formed plate) cannot stay ItemType
+    or ProductType Component. Bar/tube stays Linear. Purchased hardware
+    and plate thicker than 3/4 in may remain Component. Does not invent
+    Contours, InternalData, thicknesses, or prices. invent=false.
+    """
+    from .push import (
+        _cad_plate_sheet_noun,
+        _looks_like_formed_plate,
+        _row_thickness_in,
+        classify_sectura_item,
+    )
+
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if _row_is_linear_or_assembly_category(row):
+            continue
+        if _row_already_cad_for_lock(row):
+            continue
+        if not _row_left_as_component(row):
+            continue
+        blob = _row_classify_blob(row)
+        page_plate = _page_product_token_is_plate(row)
+        if not blob and not page_plate:
+            continue
+        thk = _row_thickness_in(row) if blob or page_plate else None
+        want = classify_sectura_item(blob, thk) if blob else "Cad"
+        plate = bool(blob) and (
+            _cad_plate_sheet_noun(blob) or _looks_like_formed_plate(blob)
+        )
+        if want != "Cad":
+            continue
+        if not plate and not page_plate:
+            continue
+        name = row_name(row) or "plate"
+        return (
+            "Plate/sheet kid still Component before Finish — "
+            f"{name} (classify Cad lock; Linear stays for bar/tube; "
+            "purchased hardware may stay Component). "
+            "producttype_still_component. "
+            "Do not invent Contours/InternalData."
+        )
+    return None
+
+
 STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL = "EXEC_FAIL"
 
 
@@ -3471,7 +3601,13 @@ def step_cad_finish_hard_gate(
 
     Q10344 / 55f12530 H.6.38 Kyle UI control PASS: inches then
     Contours fill → Finish.
+
+    Plate/sheet kids left as Component (page-native quote-load) refuse
+    here too. Linear bar/tube and purchased hardware do not.
     """
+    left = plate_sheet_left_component_blocks_finish(rows)
+    if left:
+        return left
     for row in rows or []:
         if not isinstance(row, dict):
             continue
@@ -3539,8 +3675,13 @@ def step_cad_live_product_type_hard_gate(
     Product Ready) before Finish. Noun ``part`` and enum 100 are not
     this refuse (Q10333 / Q10348). Empty live ItemList is mid-wizard
     — no-op. Purchased Component kids and Linear/bar kids are not
-    this gate. invent=false. Do not invent Contours or flat L/W.
+    this gate. A plate/sheet kid left as Component refuses even
+    without a classified twin. invent=false. Do not invent Contours
+    or flat L/W.
     """
+    left = plate_sheet_left_component_blocks_finish(live_rows)
+    if left:
+        return left
     lives = [r for r in (live_rows or []) if isinstance(r, dict)]
     if not lives:
         return None
@@ -4162,8 +4303,11 @@ def kendo_filelist_for_finish(
     # Refuse/contours gates use the pre-strip kendo row — Kyle HAR
     # omits FileType/CadType/NumberOfContours on the posted FileList.
     partmode_ready = filelist_kids_partmode_set(identified)
+    left_component = plate_sheet_left_component_blocks_finish(identified)
     why = ""
-    if flat_refuse:
+    if left_component:
+        why = "producttype_still_component"
+    elif flat_refuse:
         why = "contours_tip_flat_lw_missing"
     elif n > 0 and sid_n == 0 and id_n == 0 and fileid_n == 0:
         why = "filelist_missing_ids"
@@ -4203,6 +4347,7 @@ def kendo_filelist_for_finish(
             from_kendo
             and not refuse
             and not flat_refuse
+            and not left_component
             and (partmode_ready or (not payload_block and not ident_miss))
         ),
         "contours_tip_flat_lw": flat_refuse or "",

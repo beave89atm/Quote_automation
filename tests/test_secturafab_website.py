@@ -7113,7 +7113,12 @@ def test_finish_refuses_live_grid_producttype_still_component(tmp_path: Path):
 
 
 def test_finish_get_zero_cad_is_not_gold(tmp_path: Path):
-    """Live 105918-1: ItemList 66 with 0 Cad is not gold."""
+    """Live 105918-1: a plate still ProductType Component is not Finish.
+
+    The quote read shows PLATE-1297 as Component. The classify Cad
+    lock refuses Finish instead of posting and calling a 0-Cad
+    ItemList gold. invent=false.
+    """
     stp = tmp_path / "105918-1.STEP"
     stp.write_bytes(b"ISO")
     kids = [
@@ -7187,11 +7192,12 @@ def test_finish_get_zero_cad_is_not_gold(tmp_path: Path):
             explode_polls=1,
             explode_sleep_s=0,
         )
-    client.add_item_dxf_files.assert_called()
+    client.add_item_dxf_files.assert_not_called()
     blob = " ".join(notes)
     assert "grid_classify Cad:2" in blob
-    assert "GET 0 Cad" in blob
-    assert "not gold" in blob
+    assert "producttype_still_component" in blob
+    assert "PLATE-1297" in blob
+    assert "GET 0 Cad" not in blob
 
 
 def test_finish_empty_body_200_is_not_success(tmp_path: Path):
