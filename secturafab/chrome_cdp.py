@@ -2921,9 +2921,34 @@ _PAGE_FINISH_JS = """(async function(spec) {
         return;
       }
     }
+    function linearCutOver120Ok(row) {
+      // Bar/tube Linear cut length may be over 120 in. Sheet, plate,
+      // Cad, and PDF image-file (prt_pdf / prt_dxf) stay capped.
+      // ProductType bar / bar_flat is the Image Files plate template,
+      // not Linear product type 10, unless the row is already Linear.
+      var live = row || {};
+      var item = String(live.ItemType || live.Category || live.FileType || "").trim().toLowerCase();
+      if (item === "cad" || item === "plate" || item === "sheet" || item === "sheets" || item === "plates") return false;
+      var typeFields = [live.ProductType, live.productType, live.ProductSubType, live.productSubType];
+      for (var ti = 0; ti < typeFields.length; ti++) {
+        var text = String(typeFields[ti] == null ? "" : typeFields[ti]).trim().toLowerCase();
+        if (!text) continue;
+        if (text.indexOf("prt_") === 0 || text === "plate" || text === "sheet" || text === "sheets" || text === "plates" || text === "100" || text === "cad") return false;
+      }
+      if (item === "linear" || item === "tube" || item === "pipe" || item === "structural" || item === "angle" || item === "bar") return true;
+      var linearFlag = String(live.IsLinear == null ? "" : live.IsLinear).trim().toLowerCase();
+      if (live.IsLinear === true || live.IsLinear === 1 || linearFlag === "true" || linearFlag === "1" || linearFlag === "yes") return true;
+      if (Number(live.PartMode) === 1) return true;
+      var pt = Number(live.ProductType);
+      if (pt === 10 || pt === 30 || pt === 40) return true;
+      var ptText = String(live.ProductType == null ? "" : live.ProductType).trim().toLowerCase();
+      if (ptText === "tube" || ptText === "pipe" || ptText === "structural") return true;
+      return false;
+    }
     function flatOver120(row) {
       var live = (row && row._gridItem) || row;
       if (!live) return "";
+      if (linearCutOver120Ok(live)) return "";
       var keys = ["Length", "Width"];
       for (var fi = 0; fi < keys.length; fi++) {
         var n = parseFloat(live[keys[fi]]);
