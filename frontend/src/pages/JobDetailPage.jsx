@@ -462,14 +462,14 @@ export default function JobDetailPage() {
         </div>
         <div className="row">
           <a
-            className="btn ghost"
+            className="btn"
             href={`/api/jobs/${id}/export.html?token=${encodeURIComponent(
               localStorage.getItem("kannon_quote_token") || ""
             )}`}
             target="_blank"
             rel="noreferrer"
           >
-            Printable
+            Print quote
           </a>
           <a
             className="btn ghost"
@@ -517,7 +517,43 @@ export default function JobDetailPage() {
             quoted total {times.quoted_with_fixture_hours ?? "—"} hr
           </div>
         </div>
+        <div className="metric">
+          <div className="label">Labor no fixture</div>
+          <div className="value">
+            {times.quoted_no_fixture_labor != null
+              ? `$${Number(times.quoted_no_fixture_labor).toFixed(2)}`
+              : "—"}
+          </div>
+          <div className="muted" style={{ fontSize: "0.8rem", marginTop: "0.25rem" }}>
+            {times.quoted_no_fixture_hours ?? "—"} hr
+            {times.labor_rate_per_hour != null
+              ? ` · $${Number(times.labor_rate_per_hour).toFixed(0)}/hr`
+              : ""}
+          </div>
+        </div>
+        <div className="metric">
+          <div className="label">Labor with fixture</div>
+          <div className="value">
+            {times.quoted_with_fixture_labor != null
+              ? `$${Number(times.quoted_with_fixture_labor).toFixed(2)}`
+              : "—"}
+          </div>
+          <div className="muted" style={{ fontSize: "0.8rem", marginTop: "0.25rem" }}>
+            {times.quoted_with_fixture_hours ?? "—"} hr
+            {times.labor_placeholder
+              ? " · rate is a placeholder"
+              : times.labor_rate_per_hour != null
+                ? ` · $${Number(times.labor_rate_per_hour).toFixed(0)}/hr`
+                : ""}
+          </div>
+        </div>
       </div>
+      {times.labor_placeholder ? (
+        <p className="muted" style={{ marginTop: 0 }}>
+          Shop labor $ uses the placeholder rate in <code>config/shop_rates.yaml</code>.
+          Confirm it before sending a quote. Laser / material / buyouts are not included.
+        </p>
+      ) : null}
 
       <details className="fitup-drivers">
         <summary>
@@ -723,18 +759,25 @@ export default function JobDetailPage() {
             busy ||
             ["uploaded", "processing"].includes(job.status) ||
             ["pushing", "retrying_createfile"].includes(job.takeoff?.secturafab?.status) ||
-            job.push_readiness?.ready === false
+            job.push_readiness?.ready === false ||
+            rates?.secturafab?.configured === false
           }
           onClick={pushSecturaFab}
             title={
-            job.push_readiness?.ready === false
-              ? job.push_readiness.reason || "needs PDF, STEP, or library match"
-              : "Always create a new SecturaFAB quote; uses part number (date suffix if that number is taken)"
+            rates?.secturafab?.configured === false
+              ? rates.secturafab.message
+              : job.push_readiness?.ready === false
+                ? job.push_readiness.reason || "needs PDF, STEP, or library match"
+                : "Always create a new SecturaFAB quote; uses part number (date suffix if that number is taken)"
           }
         >
           Push to SecturaFAB
         </button>
-        {job.push_readiness?.ready === false ? (
+        {rates?.secturafab?.configured === false ? (
+          <span className="muted" style={{ alignSelf: "center" }}>
+            {rates.secturafab.message}
+          </span>
+        ) : job.push_readiness?.ready === false ? (
           <span className="muted" style={{ alignSelf: "center" }}>
             {job.push_readiness.reason || "needs PDF, STEP, or library match"}
           </span>

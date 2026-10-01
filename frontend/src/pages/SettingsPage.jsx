@@ -45,7 +45,18 @@ export default function SettingsPage() {
         <li>Efficiency: {rates.default_efficiency_pct}%</li>
         <li>Weld process: {rates.weld_process || "manual"}</li>
         <li>Default IPM: {rates.default_ipm}</li>
+        <li>
+          Shop labor: ${rates.labor_rate_per_hour ?? "—"}/hr
+          {rates.labor_placeholder ? " (placeholder — confirm before sending)" : ""}
+        </li>
       </ul>
+      {rates.labor_notes ? <p className="muted">{rates.labor_notes}</p> : null}
+
+      <h2>SecturaFAB</h2>
+      <p className={rates.secturafab?.configured ? "muted" : "error"}>
+        {rates.secturafab?.message ||
+          "Local quotes work without keys. Push needs SECTURAFAB_CLIENT_ID / SECRET in .env."}
+      </p>
 
       <h2>Manual weld IPM</h2>
       <p className="muted">Robot IPM table will be added later.</p>

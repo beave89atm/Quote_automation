@@ -33,6 +33,7 @@ export default function JobsPage() {
   const [error, setError] = useState("");
   const [banner, setBanner] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sectura, setSectura] = useState(null);
 
   const loadJobs = useCallback(async () => {
     const data = await api("/api/jobs");
@@ -57,6 +58,8 @@ export default function JobsPage() {
     (async () => {
       try {
         await loadJobs();
+        const rates = await api("/api/rates");
+        if (alive) setSectura(rates.secturafab || null);
       } catch (err) {
         if (alive) setError(err.message);
       }
@@ -146,11 +149,15 @@ export default function JobsPage() {
       {banner ? <p className="muted">{banner}</p> : null}
       {error ? <div className="error">{error}</div> : null}
 
+      {sectura && !sectura.configured ? (
+        <p className="muted">{sectura.message}</p>
+      ) : null}
+
       <div className="row" style={{ marginBottom: "0.75rem", flexWrap: "wrap", gap: "0.5rem" }}>
         <button
           className="btn"
           type="button"
-          disabled={busy || !readySelected.length}
+          disabled={busy || !readySelected.length || sectura?.configured === false}
           onClick={() => pushIds(readySelected.map((j) => j.id))}
         >
           {busy ? "Queuing…" : `Push selected (${readySelected.length})`}
@@ -158,7 +165,7 @@ export default function JobsPage() {
         <button
           className="btn secondary"
           type="button"
-          disabled={busy || !allReady.length}
+          disabled={busy || !allReady.length || sectura?.configured === false}
           onClick={() => pushIds(allReady.map((j) => j.id))}
         >
           Push all ready ({allReady.length})
@@ -178,6 +185,7 @@ export default function JobsPage() {
             <th>SecturaFAB</th>
             <th>Inches</th>
             <th>Quoted (fixture)</th>
+            <th>Labor $</th>
             <th></th>
           </tr>
         </thead>
@@ -213,6 +221,11 @@ export default function JobsPage() {
                     ? `${j.times.quoted_with_fixture_hours} hr`
                     : "—"}
                 </td>
+                <td className="mono">
+                  {j.times?.quoted_with_fixture_labor != null
+                    ? `$${Number(j.times.quoted_with_fixture_labor).toFixed(2)}`
+                    : "—"}
+                </td>
                 <td>
                   <Link to={`/jobs/${j.id}`}>Open</Link>
                 </td>
@@ -221,7 +234,7 @@ export default function JobsPage() {
           })}
           {!jobs.length ? (
             <tr>
-              <td colSpan={8} className="muted">
+              <td colSpan={9} className="muted">
                 No jobs yet. Upload a PDF (or a batch) to start.
               </td>
             </tr>

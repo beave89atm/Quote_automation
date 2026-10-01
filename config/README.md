@@ -12,6 +12,9 @@ Fill these before trusting quote times:
 | `weld.process` | `manual` for now; robot rates TBD |
 | `fitup.weight_bands` | Minutes per **piece** by weight band (`per_piece_minutes`) |
 | `fitup.default_band_id` | Band used when component weights are unknown |
+| `labor.shop_rate_per_hour` | $/hr applied to quoted weld + fit-up hours on the printable quote |
+| `labor.placeholder` | `true` until Kyle confirms the shop rate — quote page shows a warning |
+| `labor.notes` | Shown on the Rates page (weld/fit-up labor only) |
 | `always_ask` | Situations the engine must flag instead of guessing |
 | `drawing_library.roots` | Shared-drive folders to search for STP / component PDFs |
 | `drawing_library.auto_attach_stp` | If true, auto-copy matching STP when upload has none |

@@ -101,6 +101,10 @@ def test_rates_with_token(client: TestClient, token: str) -> None:
     body = res.json()
     assert "weld_ipm" in body
     assert body["weld_ipm"].get("1/4") == 3.5
+    assert body["labor_rate_per_hour"] == 95.0
+    assert "secturafab" in body
+    assert "configured" in body["secturafab"]
+    assert "message" in body["secturafab"]
 
 
 def test_jobs_with_token(client: TestClient, token: str) -> None:

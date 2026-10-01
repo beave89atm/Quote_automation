@@ -147,8 +147,8 @@ export default function UploadPage() {
       <h1 style={{ marginTop: 0 }}>New weld takeoff</h1>
       <p className="muted">
         Drop one drawing, or up to ~20 unrelated PDFs (optional matching STEPs by
-        filename). Each PDF stem becomes its own job and can be pushed to its own
-        SecturaFAB quote after review. Orphan STPs without a PDF are skipped.
+        filename). Each PDF stem becomes its own job. After takeoff you can print a
+        shop-labor quote immediately. SecturaFAB push is optional and needs API keys.
       </p>
 
       <div
