@@ -110,6 +110,8 @@ def test_kyle_description_formats():
     ]
     assert match_bom_part_no("14500", cad_rows) == "14500-1"
     assert match_bom_part_no("29860", cad_rows) == "29860"
+    assert match_bom_part_no("1009353-1 20863 Gusset Base Plate_20863-1", []) is None
+    assert match_bom_part_no("12842 SUBFRAME TUBE-3382_12842-18", []) == "12842"
     assert format_component_description("14500-1") == ""
     asm = format_assembly_description("1001898-1", "PEDESTAL WELDMENT")
     assert asm == "1001898-1 - PEDESTAL WELDMENT"

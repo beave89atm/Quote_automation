@@ -1295,6 +1295,209 @@ def test_tube_over_120_is_accepted_sheet_and_plate_still_refused():
         assert wrapped and "not Finishing" in wrapped
 
 
+def _safe_cave_1009353_grid(shape: str) -> list[dict]:
+    """STEP grid for assembly 1009353-1. Names lead with the parent PN.
+
+    ``full`` keeps the parent prefix on Name. ``parent`` is the live
+    shape: Name is only ``1009353-1`` and PartName carries the child.
+    """
+    parent = "1009353-1"
+    kids = [
+        ("t18", f"{parent} 12842 SUBFRAME TUBE-3382_12842-18", "4", 135, 6, 2),
+        ("t2", f"{parent} 12842 SUBFRAME TUBE-3382_12842-2", "4", 26.375, 6, 2),
+        ("gusset", f"{parent} 20863 Gusset Base Plate_20863-1", "0.5", 9, 5.25, 4),
+        ("plate", f"{parent} 13434_13434-21", "0.1875", 40.8125, 26.625, 2),
+        ("pedestal", f"{parent} 1009354 PLATE PEDESTAL MOUNT-23204_1009354-1", "1.25", 26.375, 24.375, 1),
+    ]
+    rows = [
+        {
+            "ID": "root",
+            "PartID": "root",
+            "SourceDataID": "shared-upload",
+            "Name": f"Root {parent}",
+            "PartName": f"Root {parent}",
+            "ItemType": "assembly",
+            "ProductType": "bar",
+            "Thickness": "34.5",
+            "Length": 135,
+            "Width": 6,
+            "Qty": 1,
+            "ErrorStatus": 0,
+        }
+    ]
+    for row_id, full, thickness, length, width, qty in kids:
+        rows.append(
+            {
+                "ID": row_id,
+                "PartID": row_id,
+                "SourceDataID": "shared-upload",
+                "Name": full if shape == "full" else parent,
+                "PartName": "" if shape == "full" else full,
+                "ItemType": "component",
+                "ProductType": "bar",
+                "Thickness": thickness,
+                "Length": length,
+                "Width": width,
+                "Qty": qty,
+                "ErrorStatus": 0,
+            }
+        )
+    return rows
+
+
+def _classify_safe_cave_grid(monkeypatch, shape: str):
+    from secturafab.push import SecturaFabPushService
+
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *a, **k: True)
+    return SecturaFabPushService(client=MagicMock()).classify_cadimport_rows(
+        _safe_cave_1009353_grid(shape),
+        default_material="",
+        default_thickness="",
+        bom_rows=[],
+        library={},
+        extra_pdfs=[],
+        part_key="1009353-1",
+        stock_kind="flat_bar",
+    )
+
+
+def _assert_safe_cave_kinds(classified, notes):
+    from secturafab.page_weld import grid_flat_over_120_refuses
+
+    blob = " ".join(notes)
+    assert "thickness unresolved" not in blob
+    by_id = {str(row.get("ID") or ""): row for row in classified}
+    assert set(by_id) == {"root", "t18", "t2", "gusset", "plate", "pedestal"}
+    assert by_id["root"]["Category"] == "Assembly"
+    assert by_id["t18"]["Category"] == "Linear"
+    assert by_id["t2"]["Category"] == "Linear"
+    assert by_id["gusset"]["Category"] == "Cad"
+    assert by_id["plate"]["Category"] == "Cad"
+    assert by_id["pedestal"]["Category"] == "Component"
+    assert by_id["gusset"]["ProductType"] != 10
+    assert by_id["plate"]["ProductType"] != 10
+    assert float(by_id["t18"]["Length"]) == 135
+    assert grid_flat_over_120_refuses(by_id["t18"]) is None
+    assert by_id["plate"]["ProductType"] == 100
+    assert by_id["gusset"]["ProductType"] == 100
+
+
+def test_parent_prefixed_step_grid_keeps_cad_linear_and_component(monkeypatch, tmp_path):
+    """Live 1009353-1: a shared parent Name stamped every child Linear.
+
+    Tubes stay Linear, including a 135 in cut. Gusset and the unnamed
+    subframe plate stay Cad. The 1.25 in pedestal stays Component.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS
+    from secturafab.website import cadimport_keep_grid_classify_spec
+
+    for shape in ("full", "parent"):
+        classified, notes = _classify_safe_cave_grid(monkeypatch, shape)
+        _assert_safe_cave_kinds(classified, notes)
+
+    classified, _notes = _classify_safe_cave_grid(monkeypatch, "parent")
+    spec_rows = cadimport_keep_grid_classify_spec(classified)
+    live_rows = _safe_cave_1009353_grid("parent")
+    for row in spec_rows:
+        row["ID"] = ""
+        row["SourceDataID"] = "shared-upload"
+    for row in live_rows:
+        row["ID"] = ""
+        row["ItemID"] = ""
+        row["SourceDataID"] = "shared-upload"
+    assert "PartName" in spec_rows[1]
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    spec = {"rows": spec_rows, "keep_rows": []}
+    harness = (
+        "const spec = "
+        + json.dumps(spec)
+        + ";\nconst live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+const store = { rows: live.map((r) => ({ ...r })) };
+function data(rows) {
+  if (arguments.length) {
+    store.rows = (rows || []).map((r) => ({ ...r }));
+    return store.rows;
+  }
+  const arr = store.rows.slice();
+  arr.toJSON = function toJSON() { return store.rows.map((r) => ({ ...r })); };
+  return arr;
+}
+const gridObj = { dataSource: { data, view() { return data(); } } };
+const ajaxCalls = [];
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "b7dbc294-3fd2-43aa-99be-268a6c4fce14" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, {
+  ajax(opts) {
+    ajaxCalls.push(opts);
+    return { always(fn) { fn(); return this; } };
+  },
+});
+global.window = global;
+global.document = { querySelector: () => null };
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+function finish(value) {
+  if (value && typeof value.then === "function") return value.then(finish);
+  const kinds = {};
+  for (const row of store.rows) kinds[row.PartID || row.Name] = {
+    partMode: row.PartMode, itemType: row.ItemType, isLinear: !!row.IsLinear
+  };
+  process.stdout.write(JSON.stringify({
+    cad: value.cad, linear: value.linear, component: value.component,
+    assembly: value.assembly, set_count: value.set_count, kinds
+  }));
+}
+Promise.resolve(finish(apply(spec))).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    script = tmp_path / "parent_prefix_stamp.js"
+    script.write_text(harness)
+    proc = subprocess.run(
+        [node, str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["cad"] == 2
+    assert out["linear"] == 2
+    assert out["component"] == 1
+    assert out["assembly"] == 1
+    assert out["linear"] != 5
+    kinds = out["kinds"]
+    assert kinds["t18"]["partMode"] == 1
+    assert kinds["t2"]["partMode"] == 1
+    assert kinds["gusset"]["partMode"] == 0
+    assert kinds["plate"]["partMode"] == 0
+    assert kinds["plate"]["isLinear"] is False
+    assert kinds["pedestal"]["partMode"] == 2
+    assert kinds["pedestal"]["itemType"] == "Component"
+    assert str(kinds["root"]["itemType"]).lower() == "assembly"
+
+
 def test_page_finish_accepts_tube_over_120_and_refuses_sheet():
     """The page Finish copy of the cap matches the Python gate."""
     import json

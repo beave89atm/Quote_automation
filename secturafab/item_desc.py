@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Any
 
 _PN_RE = re.compile(r"^\d{4,}(?:-\d+[A-Za-z]?)?$", re.IGNORECASE)
+# A later child PN after a space or STEP ``_20863-1`` suffix. ``TUBE-3382``
+# is a drawing number glued to a word, not a second catalog PN.
+_EMBEDDED_PN_RE = re.compile(
+    r"(?:(?<=^)|(?<=\s)|(?<=_))(\d{4,}(?:-\d+[A-Za-z]?)?)(?!\d)"
+)
 _NOUN_WORD_RE = re.compile(r"[A-Z]{3,}")
 _NOUN_SKIP = frozenset({"NPT", "THE", "AND", "FOR", "WITH", "LG"})
 _PLATE_DIM_RE = re.compile(
@@ -52,6 +57,34 @@ def _noun_key_words(text: str | None) -> frozenset[str]:
     return frozenset(w for w in words if w not in _NOUN_SKIP)
 
 
+def _later_catalog_pn_differs(text: str, first: str) -> bool:
+    """True when a parent prefix hides a different child PN.
+
+    ``1009353-1 20863 Gusset Base Plate_20863-1`` leads with the assembly
+    PN. Returning that token collapses every child onto one name.
+    ``12842 SUBFRAME TUBE-3382_12842-18`` stays 12842: 3382 is not a
+    separate catalog token, and ``_12842-18`` is the same base.
+    """
+    first_base = normalize_part_token(first).split("-", 1)[0].upper()
+    if not first_base:
+        return False
+    skipped_lead = False
+    for match in _EMBEDDED_PN_RE.finditer(text):
+        base = match.group(1).split("-", 1)[0].upper()
+        if not skipped_lead and match.start() == 0 and base == first_base:
+            skipped_lead = True
+            continue
+        if base != first_base:
+            return True
+    return False
+
+
+def _pn_is_leading_parent(pn: str, first: str, text: str) -> bool:
+    if not is_catalog_part_no(first) or not _later_catalog_pn_differs(text, first):
+        return False
+    return pn.split("-", 1)[0].upper() == normalize_part_token(first).split("-", 1)[0].upper()
+
+
 def match_bom_part_no(
     description: str | None,
     bom_rows: list[dict[str, Any]] | None,
@@ -66,7 +99,9 @@ def match_bom_part_no(
             dashed.append(normalize_part_token(pn))
 
     first = text.split()[0].rstrip(".,;:") if text.split() else ""
-    if is_catalog_part_no(first):
+    # A leading assembly PN plus a different child PN is not that child.
+    # ``14500`` / ``500065`` still resolve; they have no later catalog PN.
+    if is_catalog_part_no(first) and not _later_catalog_pn_differs(text, first):
         from secturafab.qty_ops import normalize_part_key
 
         key = normalize_part_key(first)
@@ -85,6 +120,8 @@ def match_bom_part_no(
         return normalize_part_token(first)
 
     for pn in dashed:
+        if _pn_is_leading_parent(pn, first, text):
+            continue
         if re.search(rf"(?i)(?<!\d){re.escape(pn)}(?!\d)", text):
             return pn
 
@@ -110,7 +147,7 @@ def match_bom_part_no(
             score += 10
         elif item_words <= words:
             score += 1
-        if score > best_score:
+        if score > best_score and not _pn_is_leading_parent(pn, first, text):
             best_score = score
             best_pn = pn
     if best_score >= 2 or (best_score >= 1 and best_pn and len(item_words) == 1):

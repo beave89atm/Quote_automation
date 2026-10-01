@@ -1006,6 +1006,7 @@ def cadimport_keep_grid_classify_spec(
             "ID": str(row.get("ID") or row.get("ItemID") or ""),
             "SourceDataID": str(row.get("SourceDataID") or ""),
             "Name": str(row.get("Name") or row.get("Description") or ""),
+            "PartName": str(row.get("PartName") or ""),
             "Category": cat,
             "PartMode": int(row["PartMode"]) if "PartMode" in row else (
                 0 if cat == "Cad" else 1 if cat == "Linear" else 2

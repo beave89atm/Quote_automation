@@ -10263,7 +10263,10 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
   function applyFields(row, want, silent, classifyOnly) {
     var cat = String(want.Category || "");
     var mode = Number(want.PartMode);
-    if (cat === "Assembly" || row.IsAssembly || Number(row.ProductType) === 300) {
+    var liveItem = String(row.ItemType || row.Category || row.FileType || "")
+      .trim().toLowerCase();
+    if (cat === "Assembly" || row.IsAssembly || Number(row.ProductType) === 300
+        || liveItem === "assembly") {
       return false;
     }
     // Live per-kid path uses row.set (same as one Safe Cave STP).
@@ -10348,26 +10351,68 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     var id = String(row.ID || row.ItemID || row.PartID || "").toLowerCase();
     var sid = String(row.SourceDataID || "").toLowerCase();
     var name = String(row.Name || row.Description || "").toLowerCase();
+    var part = String(row.PartName || "").toLowerCase();
     var sourceHit = null;
+    var sourceCount = 0;
+    var nameHits = [];
     for (var i = 0; i < wants.length; i++) {
       var w = wants[i];
       var wid = String(w.ID || w.PartID || "").toLowerCase();
       var wsid = String(w.SourceDataID || "").toLowerCase();
       var wname = String(w.Name || "").toLowerCase();
-      if ((wid && id && wid === id) || (wname && name && wname === name)) {
-        return w;
+      // Exact ID wins over a shared parent Name. Live 1009353-1: every
+      // child Name is the assembly PN, so the first name hit must not
+      // stamp Linear onto the plates.
+      if (wid && id && wid === id) return w;
+      if (wname && name && wname === name) nameHits.push(w);
+      if (wsid && sid && wsid === sid) {
+        sourceCount += 1;
+        if (!sourceHit) sourceHit = w;
       }
-      if (!sourceHit && wsid && sid && wsid === sid) sourceHit = w;
     }
-    return sourceHit;
+    if (nameHits.length === 1) return nameHits[0];
+    if (nameHits.length > 1) {
+      var partHits = [];
+      for (var ni = 0; ni < nameHits.length; ni++) {
+        var wp = String(nameHits[ni].PartName || "").toLowerCase();
+        if (part && wp && wp === part) partHits.push(nameHits[ni]);
+      }
+      if (partHits.length === 1) return partHits[0];
+      return null;
+    }
+    // A SourceDataID shared by the parent upload is not one child.
+    if (sourceCount === 1) return sourceHit;
+    return null;
+  }
+  function childLabel(row) {
+    var rawName = String((row && row.Name) || "").trim();
+    var partName = String((row && row.PartName) || "").trim();
+    var name = String((row && (row.Name || row.Description || row.FileName)) || "");
+    // Live 34887-1 / 1009353-1: Name is the parent PN. The noun is PartName.
+    if (partName && partName.toLowerCase() !== "root" && partName !== rawName
+        && (!rawName || /^root$/i.test(rawName) || /^\\d{4,}(?:-\\d+)?$/i.test(rawName))) {
+      name = partName;
+    }
+    return name;
   }
   function wantFromName(row) {
-    var name = String(row.Name || row.Description || row.FileName || "");
+    var name = childLabel(row);
     if (!name || /^root$/i.test(name.trim())) return null;
-    if (/weldment|assembly|\bassy\b|\basm\b/i.test(name)) {
+    if (/^root(?:\\s+\\d{4,}(?:-\\d+)?)$/i.test(name.trim())) {
       return {Category: "Assembly", PartMode: 2};
     }
-    if (/\b(tube|channel|pipe|angle|beam|hss|bars?)\b/i.test(name)) {
+    if (/weldment|assembly|\\bassy\\b|\\basm\\b/i.test(name)) {
+      return {Category: "Assembly", PartMode: 2};
+    }
+    var plate = /\\b(plate|gusset|sheet)\\b/i.test(name);
+    var thk = parseFloat(row && (row.Thickness != null ? row.Thickness : row.thickness));
+    if (plate && isFinite(thk) && thk > 0.75) {
+      return {Category: "Component", PartMode: 2};
+    }
+    if (plate) {
+      return {Category: "Cad", PartMode: 0, Machine: "Laser"};
+    }
+    if (/\\b(tube|channel|pipe|angle|beam|hss|bars?)\\b/i.test(name)) {
       return {Category: "Linear", PartMode: 1, Machine: "Saw"};
     }
     return {Category: "Cad", PartMode: 0, Machine: "Laser"};

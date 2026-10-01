@@ -679,6 +679,24 @@ def _row_thickness_in(row: dict[str, Any] | None, fallback: Any = None) -> float
     return None
 
 
+def _row_length_width_thickness(
+    row: dict[str, Any] | None,
+    thickness: float | None,
+) -> list[float] | None:
+    """This child's Length / Width / Thickness. Not the assembly bbox."""
+    if not isinstance(row, dict) or thickness is None:
+        return None
+    try:
+        length = float(row.get("Length"))
+        width = float(row.get("Width"))
+        thick = float(thickness)
+    except (TypeError, ValueError):
+        return None
+    if length <= 0 or width <= 0 or thick <= 0:
+        return None
+    return [length, width, thick]
+
+
 def classify_image_files_item(description: str, thickness: Any = None) -> str:
     """Image Files classify: plate >3/4 in is Component (no invented $).
 
@@ -3111,7 +3129,8 @@ class SecturaFabPushService:
         elif stock_kind:
             notes.append(f"step_stock={stock_kind}")
         for row in rows:
-            name = _classify_row_name(row)
+            child_label = _classify_row_name(row)
+            name = child_label
             stem = Path(str(row.get("FileName") or "")).stem
             dashed = match_bom_part_no(name, bom_rows) or match_bom_part_no(
                 stem, bom_rows
@@ -3134,10 +3153,14 @@ class SecturaFabPushService:
                     pm = lookup_part_material(part_materials, tok)
                     if pm:
                         break
-            classify_blob = _kid_classify_blob(name, bom_noun, pm)
+            classify_blob = _kid_classify_blob(name, bom_noun, pm, child_label)
+            row_thk = _row_thickness_in(row)
+            thk_for_class = (
+                pm.thickness_in if pm and pm.thickness_in is not None else row_thk
+            )
             cat = classify_sectura_item(
                 classify_blob,
-                pm.thickness_in if pm and pm.thickness_in is not None else None,
+                thk_for_class,
                 stock_dims=stock_dims,
                 stock_kind=stock_kind,
             )
@@ -3159,6 +3182,7 @@ class SecturaFabPushService:
                 part_key
                 and normalize_part_token(stem) == normalize_part_token(part_key)
                 and is_bare_part_number(stem)
+                and is_bare_part_number(child_label)
             ):
                 if sibling_nouns:
                     cat = "Assembly"
@@ -3170,7 +3194,7 @@ class SecturaFabPushService:
                     if extra:
                         cat = classify_sectura_item(
                             _kid_classify_blob(f"{stem} {extra}", bom_noun, pm),
-                            pm.thickness_in if pm and pm.thickness_in is not None else None,
+                            thk_for_class,
                             stock_dims=stock_dims,
                             stock_kind=stock_kind,
                         )
@@ -3199,6 +3223,18 @@ class SecturaFabPushService:
                 )
             ):
                 cat = "Linear"
+            # Live 1009353-1: subframe plate 13434 has no plate noun. The
+            # assembly bbox must not store that thin sheet as bar/Linear.
+            # A named tube still stays Linear. invent=false.
+            if cat == "Linear" and not (
+                _has_linear_noun(classify_blob) or _has_linear_noun(child_label)
+            ):
+                own_box = _row_length_width_thickness(row, row_thk)
+                if own_box is not None:
+                    from .step_classify import STOCK_STRONG_PLATE
+
+                    if score_step_stock(own_box) == STOCK_STRONG_PLATE:
+                        cat = "Cad"
             item_type = str(row.get("ItemType") or "").strip().casefold()
             raw_name = str(row.get("Name") or "").strip().casefold()
             if item_type == "assembly" or raw_name == "root":
@@ -3267,6 +3303,21 @@ class SecturaFabPushService:
                 )
                 del _sku2, _note2
                 bind = self._linear_catalog_bind(product)
+            if cat == "Cad" and not str(thickness or "").strip():
+                # The STEP grid already has this child's inch thickness.
+                # Copy it so a plate is not dropped, and Finish is not
+                # refused, after the kind stamp is corrected. Do not copy
+                # a tube depth, and do not mark it as a drawing or STEP
+                # source. invent=false.
+                if (
+                    row_thk is not None
+                    and not plate_over_three_quarter(row_thk)
+                    and not str(default_thickness or "").strip()
+                ):
+                    filled = _sanitize_thickness_param(row_thk)
+                    if filled:
+                        thickness = filled
+                        thk_source = ""
             if cat == "Cad" and not str(thickness or "").strip():
                 label = dashed or name or stem or "part"
                 notes.append(
