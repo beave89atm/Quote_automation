@@ -52,7 +52,7 @@ DRAWING_READ_NOTE = (
     "A requirement that was not in the file was left blank."
 )
 SHARED_DRIVE_NOTE = (
-    "Customer drawing BB1013 has been read. "
+    "Customer drawings BB1013 and BB2000-ASM have been read. "
     "The rest of the shared drive has not."
 )
 SEPARATE_CALC_NOTE = "Setup and run are separate calculators, not one time."

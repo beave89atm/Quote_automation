@@ -432,6 +432,10 @@ _DECIMAL_WORD = re.compile(r"^\d*\.\d+$")
 _NX_WORD = re.compile(r"^(\d+)X$", re.IGNORECASE)
 _MATERIAL_WORD = re.compile(r"^(?:5052(?:-ALUM)?|ALUM|ALUMINUM|ALEDO)$", re.IGNORECASE)
 _TOLERANCE_WORD = re.compile(r"DECIMAL|TOLERANCE|ANGULAR|PLACE", re.IGNORECASE)
+_PART_WORD = re.compile(r"^BB\d{4}(?:-ASM)?$", re.IGNORECASE)
+_RADIUS_WORD = re.compile(r"^(?:SR|CR|R)\d*\.\d+$", re.IGNORECASE)
+_STOCK_WORD = re.compile(r"^(?:\.125|\.25|0\.125|0\.25)$")
+_SHEET_NO = re.compile(r"SHEET\s+(\d+)\s+OF\s+\d+", re.IGNORECASE)
 _CLUSTER_MARGIN = 8.0
 
 
@@ -452,9 +456,10 @@ def _grow(rect: Any, margin: float) -> Any:
 def _diameter_symbol_rects(page: Any) -> list[Any]:
     """Circle-and-slash geometry placed as the diameter symbol.
 
-    The symbol is drawn, not typed: a small closed curve and a separate
-    diagonal line. Genium Drafting Manual Section 6.1 paragraph 2.1 places
-    that symbol in front of a diameter value.
+    The symbol is drawn, not typed: a small closed curve and a line through
+    it. Genium Drafting Manual Section 6.1 paragraph 2.1 places that symbol
+    in front of a diameter value. The line is not required to sit at 45
+    degrees in page space — a rotated sheet draws it shallow.
     """
     import fitz
 
@@ -462,22 +467,32 @@ def _diameter_symbol_rects(page: Any) -> list[Any]:
     loops = []
     for drawing in page.get_drawings():
         rect = fitz.Rect(drawing["rect"])
-        if not (4 <= rect.width <= 25 and 4 <= rect.height <= 25):
-            continue
         items = drawing["items"]
         kinds = [item[0] for item in items]
+        if (
+            6 <= rect.width <= 20
+            and 6 <= rect.height <= 20
+            and kinds.count("c") >= 2
+            and len(items) <= 12
+        ):
+            loops.append(rect)
         if kinds == ["l"] and len(items) == 1:
             start, end = items[0][1], items[0][2]
-            dx, dy = abs(end.x - start.x), abs(end.y - start.y)
-            if dx > 4 and dy > 4 and abs(dx - dy) < max(3.0, 0.45 * max(dx, dy)):
-                lines.append(rect)
-        elif kinds.count("c") >= 2 and len(items) >= 4:
-            loops.append(rect)
+            length = ((end.x - start.x) ** 2 + (end.y - start.y) ** 2) ** 0.5
+            if 4 <= length <= 30:
+                lines.append((rect, length))
     symbols = []
-    for line in lines:
-        for loop in loops:
-            if line.intersects(_grow(loop, 2)):
-                symbols.append(line | loop)
+    used: set[int] = set()
+    for loop in loops:
+        size = max(loop.width, loop.height)
+        for index, (rect, length) in enumerate(lines):
+            if index in used:
+                continue
+            if not (0.6 * size <= length <= 1.8 * size):
+                continue
+            if rect.intersects(_grow(loop, 1.5)):
+                symbols.append(loop | rect)
+                used.add(index)
                 break
     return symbols
 
@@ -511,22 +526,95 @@ def _near_word(rect: Any, words: list[tuple], pattern: re.Pattern[str], margin: 
     return False
 
 
-def _positioned_pdf_callouts(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
-    """Read callouts whose words and symbols are placed apart on the sheet."""
+def _part_names(words: list[tuple]) -> list[str]:
+    seen: list[str] = []
+    for word in words:
+        if _PART_WORD.fullmatch(word[4]) and word[4] not in seen:
+            seen.append(word[4])
+    return seen
+
+
+def _drawing_number(parts_by_page: list[list[str]]) -> str | None:
+    counts: dict[str, int] = {}
+    for parts in parts_by_page:
+        for part in dict.fromkeys(parts):
+            counts[part] = counts.get(part, 0) + 1
+    if not counts:
+        return None
+    best = max(counts.values())
+    tied = [part for part, count in counts.items() if count == best]
+    tied.sort(key=lambda part: (0 if part.upper().endswith("-ASM") else 1, part.upper()))
+    return tied[0]
+
+
+def _sheet_number(text: str, fallback: int) -> int:
+    match = _SHEET_NO.search(text or "")
+    if not match:
+        return fallback
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return fallback
+
+
+def _unassigned_sentence(sheet: int, parts: list[str]) -> str:
+    listed = ", ".join(parts)
+    return (
+        f" Sheet {sheet} has more than one part ({listed}), so it was not assigned "
+        "to a part and was not added as an operation."
+    )
+
+
+def _positioned_pdf_callouts(
+    path: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str], dict[str, Any]]:
+    """Read callouts whose words and symbols are placed apart on the sheet.
+
+    A hole becomes a feature only when the sheet has one part, or none besides
+    the drawing number. A sheet with several parts keeps the callout and does
+    not turn it into an operation.
+    """
     import fitz
 
     features: list[dict[str, Any]] = []
     callouts: list[dict[str, Any]] = []
     unreadable: list[str] = []
+    pages: list[dict[str, Any]] = []
     doc = fitz.open(path)
     try:
-        page = doc[0]
-        words = []
-        for word in page.get_text("words"):
-            words.append((word[0], word[1], word[2], word[3], word[4], fitz.Rect(word[:4])))
-        symbols = _diameter_symbol_rects(page)
+        for index, page in enumerate(doc):
+            words = []
+            for word in page.get_text("words"):
+                words.append((word[0], word[1], word[2], word[3], word[4], fitz.Rect(word[:4])))
+            pages.append(
+                {
+                    "words": words,
+                    "symbols": _diameter_symbol_rects(page),
+                    "parts": _part_names(words),
+                    "sheet": _sheet_number(page.get_text("text"), index + 1),
+                }
+            )
+    finally:
+        doc.close()
+
+    drawing = _drawing_number([page["parts"] for page in pages])
+    file_parts: list[str] = []
+    for page in pages:
+        for part in page["parts"]:
+            if part not in file_parts:
+                file_parts.append(part)
+    single_file = len(file_parts) <= 1
+    described = describe_symbol("⌀")
+    finish_blank = False
+    saw_outsource = False
+
+    for page in pages:
+        words = page["words"]
+        sheet = page["sheet"]
+        other = [part for part in page["parts"] if drawing is None or part.upper() != drawing.upper()]
+        multi = len(other) > 1
         marked: set[int] = set()
-        for symbol in symbols:
+        for symbol in page["symbols"]:
             best: tuple[float, int] | None = None
             for index, word in enumerate(words):
                 if not _DECIMAL_WORD.fullmatch(word[4]):
@@ -543,7 +631,6 @@ def _positioned_pdf_callouts(path: Path) -> tuple[list[dict[str, Any]], list[dic
         ]
         groups = _cluster_indexes([words[index][5] for index in callout_ids], _CLUSTER_MARGIN)
         used_decimals: set[int] = set()
-        described = describe_symbol("⌀")
         for group in groups:
             indexes = [callout_ids[index] for index in group]
             decimals = [index for index in indexes if _DECIMAL_WORD.fullmatch(words[index][4])]
@@ -558,6 +645,36 @@ def _positioned_pdf_callouts(path: Path) -> tuple[list[dict[str, Any]], list[dic
                 for index in marked_here:
                     used_decimals.add(index)
                     value = _num(words[index][4])
+                    label_parts = []
+                    if len(counts) == 1:
+                        label_parts.append(f"{counts[0]}X")
+                    if thru:
+                        label_parts.append("THRU")
+                    label_parts.append(words[index][4])
+                    label = " ".join(label_parts)
+                    if multi:
+                        callouts.append(
+                            {
+                                "symbol": "diameter",
+                                "text": label,
+                                "value": value,
+                                "count": counts[0] if len(counts) == 1 else None,
+                                "thru": thru,
+                                "sheet": sheet,
+                                "parts_on_sheet": list(other),
+                                "assigned_part": None,
+                                "meaning": described["meaning"],
+                                "citation": described["citation"],
+                                "feature": False,
+                                "unassigned_hole": True,
+                                "note": (
+                                    "Diameter symbol was read next to this value. "
+                                    "The callout does not say drill, ream, or bore. "
+                                    + _unassigned_sentence(sheet, other)
+                                ),
+                            }
+                        )
+                        continue
                     blanks = [
                         _blank(
                             "tolerance",
@@ -582,16 +699,10 @@ def _positioned_pdf_callouts(path: Path) -> tuple[list[dict[str, Any]], list[dic
                         )
                     else:
                         blanks.append(_blank("depth_in", "Depth is not in the callout — left blank."))
-                    label_parts = []
-                    if len(counts) == 1:
-                        label_parts.append(f"{counts[0]}X")
-                    if thru:
-                        label_parts.append("THRU")
-                    label_parts.append(words[index][4])
                     features.append(
                         _feature(
                             "hole",
-                            " ".join(label_parts),
+                            label,
                             dimensions=dimensions,
                             blank_fields=blanks,
                             diameter_symbol={
@@ -605,6 +716,12 @@ def _positioned_pdf_callouts(path: Path) -> tuple[list[dict[str, Any]], list[dic
                 continue
             if len(counts) == 1 and len(decimals) == 1:
                 used_decimals.add(decimals[0])
+                note = (
+                    "Repeated dimension. No diameter symbol is on it — "
+                    "no hole was added."
+                )
+                if multi:
+                    note += _unassigned_sentence(sheet, other)
                 callouts.append(
                     {
                         "symbol": "repetition",
@@ -613,10 +730,10 @@ def _positioned_pdf_callouts(path: Path) -> tuple[list[dict[str, Any]], list[dic
                         "meaning": describe_symbol("X")["meaning"],
                         "citation": describe_symbol("X")["citation"],
                         "feature": False,
-                        "note": (
-                            "Repeated dimension. No diameter symbol is on it — "
-                            "no hole was added."
-                        ),
+                        "sheet": sheet,
+                        "parts_on_sheet": list(other),
+                        "assigned_part": None if multi else (other[0] if other else drawing),
+                        "note": note,
                     }
                 )
                 continue
@@ -641,13 +758,41 @@ def _positioned_pdf_callouts(path: Path) -> tuple[list[dict[str, Any]], list[dic
                         ),
                     }
                 )
-        plate_values = []
         for index, word in enumerate(words):
-            if word[4] != ".125":
+            if not _RADIUS_WORD.fullmatch(word[4]):
                 continue
-            if _near_word(word[5], words, _MATERIAL_WORD, 16):
-                plate_values.append(index)
-        if plate_values:
+            count = None
+            for other_word in words:
+                count_match = _NX_WORD.fullmatch(other_word[4])
+                if count_match and _rect_gap(word[5], other_word[5]) <= 8:
+                    count = int(count_match.group(1))
+                    break
+            prefix = re.match(r"[A-Za-z]+", word[4])
+            described_radius = describe_symbol(prefix.group(0) if prefix else word[4])
+            text = f"{count}X {word[4]}" if count is not None else word[4]
+            note = "Radius was read. It was not added as a machining operation."
+            if multi:
+                note += _unassigned_sentence(sheet, other)
+            callouts.append(
+                {
+                    "symbol": described_radius["id"],
+                    "text": text,
+                    "value": _num(re.sub(r"^[A-Za-z]+", "", word[4])),
+                    "meaning": described_radius["meaning"],
+                    "citation": described_radius["citation"],
+                    "feature": False,
+                    "sheet": sheet,
+                    "parts_on_sheet": list(other),
+                    "assigned_part": None if multi else (other[0] if len(other) == 1 else drawing),
+                    "note": note,
+                }
+            )
+        plate_values = [
+            index
+            for index, word in enumerate(words)
+            if word[4] == ".125" and _near_word(word[5], words, _MATERIAL_WORD, 16)
+        ]
+        if plate_values and single_file:
             features.append(
                 _feature(
                     "plate",
@@ -657,6 +802,57 @@ def _positioned_pdf_callouts(path: Path) -> tuple[list[dict[str, Any]], list[dic
                 )
             )
             used_decimals.update(plate_values)
+        stock_ids = [
+            index
+            for index, word in enumerate(words)
+            if _STOCK_WORD.fullmatch(word[4]) and _near_word(word[5], words, _MATERIAL_WORD, 4)
+        ]
+        if stock_ids and not single_file:
+            used_decimals.update(stock_ids)
+            values = []
+            for index in stock_ids:
+                value = _num(words[index][4])
+                if value is not None and value not in values:
+                    values.append(value)
+            shown = ", ".join(f"{value:g}" for value in values)
+            if len(other) == 1:
+                callouts.append(
+                    {
+                        "symbol": None,
+                        "text": f"{other[0]} {shown}",
+                        "value": values[0] if len(values) == 1 else None,
+                        "meaning": None,
+                        "citation": None,
+                        "feature": False,
+                        "sheet": sheet,
+                        "parts_on_sheet": list(other),
+                        "assigned_part": other[0],
+                        "note": (
+                            f"Stock thickness {shown} in was read on {other[0]}. "
+                            "It is not over 3/4 in, so it was not added as a machine operation."
+                        ),
+                    }
+                )
+            elif multi:
+                callouts.append(
+                    {
+                        "symbol": None,
+                        "text": f"sheet {sheet} stock {shown}",
+                        "value": None,
+                        "meaning": None,
+                        "citation": None,
+                        "feature": False,
+                        "sheet": sheet,
+                        "parts_on_sheet": list(other),
+                        "assigned_part": None,
+                        "note": (
+                            f"Stock thickness {shown} in sits next to a material word. "
+                            + _unassigned_sentence(sheet, other)
+                        ),
+                    }
+                )
+        if any(word[4].upper() == "OUTSOURCE" for word in words):
+            saw_outsource = True
         if any(word[4].upper() == "FINISH" for word in words):
             finish = next(word for word in words if word[4].upper() == "FINISH")
             finish_values = [
@@ -669,9 +865,7 @@ def _positioned_pdf_callouts(path: Path) -> tuple[list[dict[str, Any]], list[dic
                 )
             ]
             if not finish_values:
-                unreadable.append(
-                    "FINISH is on the drawing. No finish value was read — left blank."
-                )
+                finish_blank = True
         for index in callout_ids:
             if index in used_decimals or not _DECIMAL_WORD.fullmatch(words[index][4]):
                 continue
@@ -679,6 +873,12 @@ def _positioned_pdf_callouts(path: Path) -> tuple[list[dict[str, Any]], list[dic
                 continue
             if words[index][4] == ".125" and index in plate_values:
                 continue
+            note = (
+                "Dimension read. The file does not say this is a hole, "
+                "thread, groove, or face — no feature was added."
+            )
+            if multi:
+                note += _unassigned_sentence(sheet, other)
             callouts.append(
                 {
                     "symbol": None,
@@ -687,15 +887,82 @@ def _positioned_pdf_callouts(path: Path) -> tuple[list[dict[str, Any]], list[dic
                     "meaning": None,
                     "citation": None,
                     "feature": False,
-                    "note": (
-                        "Dimension read. The file does not say this is a hole, "
-                        "thread, groove, or face — no feature was added."
-                    ),
+                    "sheet": sheet,
+                    "parts_on_sheet": list(other),
+                    "assigned_part": None if multi else (other[0] if other else drawing),
+                    "note": note,
                 }
             )
-    finally:
-        doc.close()
-    return features, callouts, unreadable
+
+    if finish_blank:
+        unreadable.append("FINISH is on the drawing. No finish value was read — left blank.")
+    if saw_outsource:
+        unreadable.append(
+            "OUTSOURCE is on the drawing. No shop operation was added from that label."
+        )
+    kept: list[dict[str, Any]] = []
+    seen_tolerance: set[str] = set()
+    for callout in callouts:
+        if str(callout.get("note") or "").startswith("Title-block"):
+            token = str(callout.get("text") or "")
+            if token in seen_tolerance:
+                continue
+            seen_tolerance.add(token)
+        kept.append(callout)
+    return features, kept, unreadable, {
+        "drawing_number": drawing,
+        "part_numbers": file_parts,
+        "parts_by_sheet": {page["sheet"]: page["parts"] for page in pages},
+    }
+
+
+def _step_assembly(text: str) -> dict[str, Any]:
+    """Separate assembly nodes from leaf product names. Solids are not parts."""
+    products: dict[str, str] = {}
+    for match in re.finditer(r"#(\d+)\s*=\s*PRODUCT\s*\(\s*'([^']*)'", text):
+        products[match.group(1)] = match.group(2)
+    formations: dict[str, str] = {}
+    for match in re.finditer(
+        r"#(\d+)\s*=\s*PRODUCT_DEFINITION_FORMATION(?:_WITH_SPECIFIED_SOURCE)?"
+        r"\s*\(\s*'[^']*'\s*,\s*'[^']*'\s*,\s*#(\d+)",
+        text,
+    ):
+        formations[match.group(1)] = match.group(2)
+    definitions: dict[str, str] = {}
+    for match in re.finditer(
+        r"#(\d+)\s*=\s*PRODUCT_DEFINITION\s*\(\s*'[^']*'\s*,\s*'[^']*'\s*,\s*#(\d+)",
+        text,
+    ):
+        definitions[match.group(1)] = match.group(2)
+
+    def _name(definition_id: str) -> str | None:
+        formation = definitions.get(definition_id)
+        product_id = formations.get(formation) if formation else None
+        if product_id is None:
+            return None
+        return products.get(product_id)
+
+    children: dict[str, dict[str, int]] = {}
+    for match in re.finditer(
+        r"NEXT_ASSEMBLY_USAGE_OCCURRENCE\s*\(\s*'[^']*'\s*,\s*'[^']*'\s*,\s*'[^']*'\s*,\s*#(\d+)\s*,\s*#(\d+)",
+        text,
+    ):
+        parent = _name(match.group(1))
+        child = _name(match.group(2))
+        if not parent or not child:
+            continue
+        bucket = children.setdefault(parent, {})
+        bucket[child] = bucket.get(child, 0) + 1
+    assemblies = sorted(children)
+    leaves = sorted(name for name in products.values() if name not in children)
+    return {
+        "products": sorted(products.values()),
+        "assemblies": assemblies,
+        "leaf_parts": leaves,
+        "occurrences": {
+            parent: dict(sorted(kids.items())) for parent, kids in sorted(children.items())
+        },
+    }
 
 
 def read_machining_requirements(
@@ -708,6 +975,8 @@ def read_machining_requirements(
     unreadable: list[str] = []
     unknown: list[dict[str, Any]] = []
     geometry: dict[str, Any] | None = None
+    assembly: dict[str, Any] | None = None
+    placed_sheets: dict[str, Any] = {}
     pdf_read = False
     step_read = False
 
@@ -733,10 +1002,25 @@ def read_machining_requirements(
                     unreadable.append(gap)
             unknown.extend(unknown_symbols_in_text(text))
             try:
-                placed, placed_notes, placed_gaps = _positioned_pdf_callouts(pdf)
+                placed, placed_notes, placed_gaps, placed_sheets = _positioned_pdf_callouts(pdf)
             except Exception:
-                placed, placed_notes, placed_gaps = [], [], [
+                placed, placed_notes, placed_gaps, placed_sheets = [], [], [
                     "Placed callouts could not be read — left blank."
+                ], {}
+            radius_texts = [
+                str(callout.get("text") or "")
+                for callout in placed_notes
+                if callout.get("symbol") == "radius" and callout.get("text")
+            ]
+            if radius_texts:
+                callouts = [
+                    callout
+                    for callout in callouts
+                    if callout.get("symbol") != "radius"
+                    or not any(
+                        str(callout.get("text") or "") and str(callout.get("text")) in bigger
+                        for bigger in radius_texts
+                    )
                 ]
             have = {
                 (
@@ -789,17 +1073,53 @@ def read_machining_requirements(
                 "STEP length unit was not read — cylinder sizes left blank."
             )
         _match_step(features, geometry)
+        assembly = _step_assembly(text)
+        step_names = {name.upper() for name in assembly["products"]}
+        pdf_only = []
+        if step_names:
+            pdf_only = [
+                name
+                for name in (placed_sheets.get("part_numbers") or [])
+                if name.upper() not in step_names
+            ]
+        assembly["pdf_only_parts"] = pdf_only
+        assembly["drawing_number"] = placed_sheets.get("drawing_number")
+        assembly["parts_by_sheet"] = placed_sheets.get("parts_by_sheet") or {}
+        if pdf_only:
+            unreadable.append(
+                f"{', '.join(pdf_only)} is on the PDF and not in the STEP."
+            )
+
+    if any(callout.get("unassigned_hole") for callout in callouts):
+        unreadable.append(
+            "Hole callouts were read on a sheet with more than one part. "
+            "They were not assigned and were not added as operations. "
+            "Run time and setup stay blank."
+        )
 
     for index, feature in enumerate(features, start=1):
         feature["id"] = f"read-{index}"
+
+    notes = [SHARED_DRIVE_NOTE]
+    if assembly and assembly.get("assemblies"):
+        notes.append(
+            f"STEP separates {len(assembly['leaf_parts'])} leaf parts. "
+            f"{', '.join(assembly['assemblies'])} are assemblies and were not "
+            "treated as one machined part."
+        )
+    needs_machining = any(feature.get("kind") == "hole" for feature in features) or any(
+        callout.get("unassigned_hole") for callout in callouts
+    )
 
     return {
         "features": features,
         "callouts": callouts,
         "geometry": geometry,
+        "assembly": assembly,
         "unknown_symbols": unknown,
         "unreadable": unreadable,
-        "notes": [SHARED_DRIVE_NOTE],
+        "notes": notes,
+        "needs_machining": needs_machining,
         "pdf_read": pdf_read,
         "step_read": step_read,
         "practiced_on_shared_drive": False,
@@ -823,10 +1143,13 @@ def apply_drawing_reading(
             out["machining_features_source"] = "typed"
         return out
     found = [row for row in reading.get("features") or [] if isinstance(row, dict)]
+    claimed = bool(reading.get("needs_machining"))
     if found:
         out["machining_features"] = found
         out["machining_features_source"] = "drawing"
-    elif source == "drawing":
+    elif claimed or source == "drawing":
         out["machining_features"] = []
         out["machining_features_source"] = "drawing"
+    if claimed and "needs_machining" not in out:
+        out["needs_machining"] = True
     return out

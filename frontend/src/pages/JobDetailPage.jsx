@@ -600,8 +600,8 @@ export default function JobDetailPage() {
                   : ""}
               </li>
             ))}
-            {(job.takeoff.machining_reading.callouts || []).map((callout) => (
-              <li key={`${callout.symbol}-${callout.text}`}>
+            {(job.takeoff.machining_reading.callouts || []).map((callout, index) => (
+              <li key={`${callout.symbol}-${callout.text}-${index}`}>
                 {callout.text}: {callout.note}
               </li>
             ))}
