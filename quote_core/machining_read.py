@@ -291,7 +291,66 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
                 }
             )
             continue
-        if _LONE_INT.fullmatch(line):
+        if re.fullmatch(r"ZINC\s+PLATE", line, re.IGNORECASE):
+            callouts.append(
+                {
+                    "symbol": None,
+                    "text": "ZINC PLATE",
+                    "feature": False,
+                    "outside_process": True,
+                    "meaning": None,
+                    "citation": None,
+                    "note": (
+                        "Zinc plate is the finish. It is an outside process, "
+                        "not a shop machine operation."
+                    ),
+                }
+            )
+            continue
+        fraction = re.fullmatch(r"(\d+)\s*/\s*(\d+)", line)
+        if fraction:
+            callouts.append(
+                {
+                    "symbol": None,
+                    "text": line,
+                    "value": _num(f"{fraction.group(1)}/{fraction.group(2)}"),
+                    "feature": False,
+                    "meaning": None,
+                    "citation": None,
+                    "note": (
+                        "A fraction dimension was read. "
+                        "It was not added as an operation."
+                    ),
+                }
+            )
+            continue
+        mixed = re.fullmatch(r"(\d+)\s+(\d+)", line)
+        if (
+            mixed
+            and index < len(lines)
+            and re.fullmatch(r"\d{1,2}", lines[index])
+            and lines[index] != "0"
+        ):
+            denominator = lines[index]
+            index += 1
+            whole = int(mixed.group(1))
+            numerator = int(mixed.group(2))
+            callouts.append(
+                {
+                    "symbol": None,
+                    "text": f"{whole} {numerator}/{denominator}",
+                    "value": whole + (numerator / int(denominator)),
+                    "feature": False,
+                    "meaning": None,
+                    "citation": None,
+                    "note": (
+                        "A dimension was read. "
+                        "It was not added as an operation."
+                    ),
+                }
+            )
+            continue
+        if re.fullmatch(r"\d{1,2}", line):
             callouts.append(
                 {
                     "symbol": None,
@@ -306,6 +365,36 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
                     ),
                 }
             )
+    joined = " ".join(lines)
+    tapped = re.search(
+        r"TAPPED\s+HOLE\s+IN\s+(\d+)\s+TO\s+ALIGN\s+WITH\s+DRILLED\s+"
+        r"HOLE\s+CENTERLINE\s+IN\s+(\d+)",
+        joined,
+        re.IGNORECASE,
+    )
+    if tapped:
+        item_tapped = tapped.group(1)
+        item_drilled = tapped.group(2)
+        callouts.append(
+            {
+                "symbol": None,
+                "text": (
+                    f"TAPPED HOLE IN {item_tapped} / "
+                    f"DRILLED HOLE IN {item_drilled}"
+                ),
+                "feature": False,
+                "requires_machining": True,
+                "meaning": None,
+                "citation": None,
+                "note": (
+                    f"The sheet says a tapped hole in item {item_tapped} and a "
+                    f"drilled hole in item {item_drilled}. It does not give a "
+                    "diameter or a thread designation, and it does not say "
+                    "lathe, mill, drill, tap, or single-point. "
+                    "No operation was added."
+                ),
+            }
+        )
     return features, callouts, unreadable
 
 
@@ -1057,8 +1146,39 @@ def _positioned_pdf_callouts(
                     word[4] == ".125" and _near_word(word[5], words, _MATERIAL_WORD, 16)
                 )
             ]
-            if not finish_values:
+            zinc_near = any(
+                word[4].upper() in {"ZINC", "PLATE"} and _rect_gap(finish[5], word[5]) <= 16
+                for word in words
+            )
+            if zinc_near:
+                finish_blank = False
+            elif not finish_values:
                 finish_blank = True
+            for word in words:
+                if not str(word[4]).upper().startswith("FINISHES"):
+                    continue
+                for nearby in words:
+                    if not re.fullmatch(r"\d+(?:\.\d+)?", nearby[4]):
+                        continue
+                    if nearby[5].x0 + 1 < word[5].x1:
+                        continue
+                    if _rect_gap(word[5], nearby[5]) > 8:
+                        continue
+                    callouts.append(
+                        {
+                            "symbol": None,
+                            "text": f"MACHINED SURFACE FINISHES= {nearby[4]}",
+                            "value": _num(nearby[4]),
+                            "feature": False,
+                            "meaning": None,
+                            "citation": None,
+                            "note": (
+                                "A machined surface finish value was read. "
+                                "The line does not name the parameter. "
+                                "It was not added as an operation."
+                            ),
+                        }
+                    )
         for index in callout_ids:
             if index in used_decimals or not _DECIMAL_WORD.fullmatch(words[index][4]):
                 continue
@@ -1304,7 +1424,10 @@ def read_machining_requirements(
     needs_machining = any(
         feature.get("kind") == "hole" or feature.get("thread_form") in {"tap", "single_point"}
         for feature in features
-    ) or any(callout.get("unassigned_hole") for callout in callouts)
+    ) or any(
+        callout.get("unassigned_hole") or callout.get("requires_machining")
+        for callout in callouts
+    )
 
     return {
         "features": features,
