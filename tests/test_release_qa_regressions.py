@@ -1243,7 +1243,13 @@ def test_tube_over_120_is_accepted_sheet_and_plate_still_refused():
         "ItemType": "Linear",
         "ProductType": "bar",
     }
-    for row in (tube, bar, angle, named_bar):
+    parent = {
+        "Name": "1009353-1",
+        "Length": 135,
+        "ItemType": "assembly",
+        "ProductType": "bar",
+    }
+    for row in (tube, bar, angle, named_bar, parent):
         assert grid_flat_over_120_refuses(row) is None
         assert cad_flat_over_120_refuses(row) is None
 
@@ -1378,6 +1384,8 @@ def _assert_safe_cave_kinds(classified, notes):
     assert by_id["plate"]["ProductType"] != 10
     assert float(by_id["t18"]["Length"]) == 135
     assert grid_flat_over_120_refuses(by_id["t18"]) is None
+    assert float(by_id["pedestal"]["Thickness"]) == pytest.approx(1.25)
+    assert by_id["pedestal"].get("ProductType") != 100
     assert by_id["plate"]["ProductType"] == 100
     assert by_id["gusset"]["ProductType"] == 100
 
@@ -1498,6 +1506,259 @@ Promise.resolve(finish(apply(spec))).catch((err) => {
     assert str(kinds["root"]["itemType"]).lower() == "assembly"
 
 
+def test_thick_component_plate_is_not_finished_as_three_sixteenths(
+    monkeypatch, tmp_path
+):
+    """Live 1009354: Component at 1.25 in was stored as Cad 3/16.
+
+    A shared plate gauge must not replace that thickness, and Finish
+    must not set the row to Cad product type 100.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    from secturafab.chrome_cdp import _APPLY_GRID_PART_MODES_JS, _PAGE_FINISH_JS
+    from secturafab.push import SecturaFabPushService
+    from secturafab.website import cadimport_keep_grid_classify_spec
+
+    monkeypatch.setattr("secturafab.chrome_cdp.chrome_quotes_live", lambda *a, **k: True)
+    classified, notes = SecturaFabPushService(client=MagicMock()).classify_cadimport_rows(
+        _safe_cave_1009353_grid("parent"),
+        default_material="A36",
+        default_thickness="0.1875",
+        default_thickness_source="drawing",
+        bom_rows=[],
+        library={},
+        extra_pdfs=[],
+        part_key="1009353-1",
+    )
+    assert "thickness unresolved" not in " ".join(notes)
+    ped = next(row for row in classified if row.get("ID") == "pedestal")
+    assert ped["Category"] == "Component"
+    assert float(ped["Thickness"]) == pytest.approx(1.25)
+    assert ped.get("ProductType") != 100
+    assert "3/16" not in str(ped.get("Description") or "")
+    thin = next(row for row in classified if row.get("ID") == "gusset")
+    assert thin["Category"] == "Cad"
+    plate = next(row for row in classified if row.get("ID") == "plate")
+    assert plate["Category"] == "Cad"
+
+    live_rows = _safe_cave_1009353_grid("parent")
+    live_by_id = {str(row.get("ID") or ""): row for row in live_rows}
+    spec_rows = cadimport_keep_grid_classify_spec(classified)
+    for row in spec_rows:
+        if row.get("Category") != "Cad":
+            continue
+        own = live_by_id.get(str(row.get("ID") or ""))
+        if not own:
+            continue
+        row["Material"] = "A36"
+        row["Thickness"] = own.get("Thickness")
+        row["thickness_source"] = "drawing"
+        row["drawing_thickness_in"] = own.get("Thickness")
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    spec = {"rows": spec_rows, "keep_rows": []}
+    stamp = tmp_path / "pedestal_stamp.js"
+    stamp.write_text(
+        "const spec = "
+        + json.dumps(spec)
+        + ";\nconst live = "
+        + json.dumps(live_rows)
+        + ";\n"
+        + r"""
+const store = { rows: live.map((r) => ({ ...r })) };
+function data(rows) {
+  if (arguments.length) {
+    store.rows = (rows || []).map((r) => ({ ...r }));
+    return store.rows;
+  }
+  const arr = store.rows.slice();
+  arr.toJSON = function toJSON() { return store.rows.map((r) => ({ ...r })); };
+  return arr;
+}
+const gridObj = { dataSource: { data, view() { return data(); } } };
+global.jQuery = Object.assign((sel) => {
+  if (sel === "#gridDXFParts") {
+    return { data: (name) => (name === "kendoGrid" ? gridObj : null), length: 1, val: () => "org" };
+  }
+  if (sel === "#PrimaryOrganizationID" || sel === "#OrganizationID") {
+    return { length: 1, val: () => "org" };
+  }
+  return { length: 0, val: () => "", data: () => null };
+}, { ajax() { return { always(fn) { fn(); return this; } }; } });
+global.window = global;
+global.document = { querySelector: () => null };
+const apply = 
+"""
+        + _APPLY_GRID_PART_MODES_JS
+        + r"""
+;
+function finish(value) {
+  if (value && typeof value.then === "function") return value.then(finish);
+  const ped = store.rows.find((r) => r.PartID === "pedestal");
+  const gusset = store.rows.find((r) => r.PartID === "gusset");
+  process.stdout.write(JSON.stringify({
+    pedThickness: ped && ped.Thickness,
+    pedItem: ped && ped.ItemType,
+    pedMode: ped && ped.PartMode,
+    pedType: ped && ped.ProductType,
+    gussetThickness: gusset && gusset.Thickness,
+    gussetItem: gusset && gusset.ItemType
+  }));
+}
+Promise.resolve(finish(apply(spec))).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    proc = subprocess.run(
+        [node, str(stamp)], check=False, capture_output=True, text=True, timeout=20
+    )
+    assert proc.returncode == 0, proc.stderr
+    stamped = json.loads(proc.stdout)
+    assert float(stamped["pedThickness"]) == pytest.approx(1.25)
+    assert str(stamped["pedItem"]).lower() == "component"
+    assert stamped["pedMode"] == 2
+    assert stamped["pedType"] != 100
+    assert float(stamped["gussetThickness"]) == pytest.approx(0.5)
+
+    start = _PAGE_FINISH_JS.index("async function applyPageNativeCadThickness")
+    end = _PAGE_FINISH_JS.index("  function skipFinish")
+    fn = _PAGE_FINISH_JS[start:end]
+    finish_script = tmp_path / "pedestal_finish.js"
+    finish_script.write_text(
+        "const vm = require('vm');\nconst fn = "
+        + json.dumps(fn)
+        + r""";
+const gauges = [
+  { Thickness: 0.1875, Description: "3/16" },
+  { Thickness: 0.5, Description: "1/2" }
+];
+const store = [
+  { uid: "root", PartID: "root", Name: "1009353-1", PartName: "Root 1009353-1",
+    ItemType: "assembly", ProductType: "bar", Thickness: "34.5", Length: 135,
+    ErrorStatus: 0 },
+  { uid: "tube", PartID: "tube", Name: "1009353-1",
+    PartName: "1009353-1 12842 SUBFRAME TUBE-3382_12842-18",
+    ItemType: "linear", PartMode: 1, IsLinear: true, ProductType: 30,
+    Thickness: "4", Length: 135, ErrorStatus: 0 },
+  { uid: "sheet", PartID: "sheet", Name: "1009353-1", PartName: "13434_13434-21",
+    ItemType: "component", PartMode: 2, ProductType: "bar", Thickness: "0.1875",
+    Length: 40.8125, Width: 26.625, ErrorStatus: 0 },
+  { uid: "gusset", PartID: "gusset", Name: "1009353-1",
+    PartName: "20863 Gusset Base Plate_20863-1",
+    ItemType: "component", PartMode: 2, ProductType: "bar", Thickness: "0.5",
+    Length: 9, Width: 5.25, ErrorStatus: 0 },
+  { uid: "ped", PartID: "ped", Name: "1009353-1",
+    PartName: "1009353-1 1009354 PLATE PEDESTAL MOUNT-23204_1009354-1",
+    ItemType: "Component", PartMode: 2, ProductType: 200, Thickness: "1.25",
+    Length: 26.375, Width: 24.375, ErrorStatus: 0 }
+];
+let current = store[0];
+function Deferred() {
+  const fns = [];
+  return { always(fn) { fns.push(fn); return this; }, then(fn) { fns.push(fn); return this; }, resolve() { fns.forEach((fn) => fn()); } };
+}
+const sandbox = {
+  setTimeout, clearTimeout, Date, Promise, console, Math, parseFloat,
+  isFinite, Number, String, Object, store
+};
+sandbox.window = sandbox;
+sandbox.document = { querySelector: () => ({ textContent: "Q1009353" }) };
+sandbox.location = { href: "https://www.secturafab.com/Quote/EDIT/qid" };
+sandbox.jQuery = function() {
+  return {
+    data(name) {
+      if (name === "kendoDropDownList") {
+        return {
+          value(v) { if (v === "cad" && current) { current.ItemType = "cad"; current.ProductType = 100; } },
+          trigger() { sandbox.jQuery.ajax({ url: "/Part/UpdateItemType" }); }
+        };
+      }
+      if (name === "kendoComboBox") {
+        return {
+          dataSource: { data() { return gauges; } },
+          select(idx) {
+            if (current && gauges[idx]) current.Thickness = String(gauges[idx].Thickness);
+          },
+          trigger() { sandbox.jQuery.ajax({ url: "/Quote/GetBorderSize" }); }
+        };
+      }
+      if (name === "kendoGrid") {
+        return {
+          clearSelection() {},
+          select() { return { length: 1 }; },
+          dataItem() { return current; },
+          tbody: {
+            find(sel) {
+              const match = String(sel || "").match(/data-uid='([^']+)'/);
+              if (match) current = store.find((row) => row.uid === match[1]) || current;
+              return { length: current ? 1 : 0 };
+            }
+          },
+          dataSource: {
+            view() { return store; },
+            data() { return store; },
+            remove(row) {
+              const at = store.findIndex((item) => item.uid === row.uid || item.PartID === row.PartID);
+              if (at >= 0) store.splice(at, 1);
+            }
+          }
+        };
+      }
+      return null;
+    }
+  };
+};
+sandbox.jQuery.ajax = function() {
+  const d = Deferred();
+  setTimeout(() => d.resolve(), 0);
+  return d;
+};
+vm.createContext(sandbox);
+const runner = `(async () => {
+  const out = await applyPageNativeCadThickness(store, { quoteId: "qid", thickness: "0.1875" });
+  const ped = store.find((r) => r.PartID === "ped");
+  const sheet = store.find((r) => r.PartID === "sheet");
+  const gusset = store.find((r) => r.PartID === "gusset");
+  return {
+    why: out && out.why,
+    ped: ped && { item: ped.ItemType, type: ped.ProductType, thickness: ped.Thickness },
+    sheet: sheet && { item: sheet.ItemType, thickness: sheet.Thickness },
+    gusset: gusset && { item: gusset.ItemType, thickness: gusset.Thickness }
+  };
+})()`;
+vm.runInContext(fn + "\n" + runner, sandbox).then((out) => {
+  process.stdout.write(JSON.stringify(out));
+}).catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"""
+    )
+    fin = subprocess.run(
+        [node, str(finish_script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert fin.returncode == 0, fin.stderr
+    finished = json.loads(fin.stdout)
+    assert finished["why"] in ("", None)
+    assert finished["ped"]["item"] == "Component"
+    assert finished["ped"]["type"] == 200
+    assert float(finished["ped"]["thickness"]) == pytest.approx(1.25)
+    assert str(finished["sheet"]["item"]).lower() == "cad"
+    assert float(finished["sheet"]["thickness"]) == pytest.approx(0.1875)
+    assert str(finished["gusset"]["item"]).lower() == "cad"
+    assert float(finished["gusset"]["thickness"]) == pytest.approx(0.5)
+
+
 def test_page_finish_accepts_tube_over_120_and_refuses_sheet():
     """The page Finish copy of the cap matches the Python gate."""
     import json
@@ -1513,6 +1774,7 @@ def test_page_finish_accepts_tube_over_120_and_refuses_sheet():
         ({"Name": "12842", "Length": 135, "Category": "Linear", "ProductType": 30, "IsLinear": True, "PartMode": 1}, ""),
         ({"Name": "FLAT BAR", "Length": 144, "ItemType": "Linear", "ProductType": 10}, ""),
         ({"Name": "12842", "Length": 135, "ProductType": "tube"}, ""),
+        ({"Name": "1009353-1", "Length": 135, "ItemType": "assembly", "ProductType": "bar"}, ""),
         ({"Name": "FLAT BAR", "Length": 144, "ItemType": "Linear", "ProductType": "bar"}, ""),
         ({"Name": "BASE PLATE", "Length": 135, "Width": 10, "Category": "Cad", "ProductType": 100}, "flat_over_120"),
         ({"Name": "plate", "Length": 135, "ItemType": "Cad", "ProductType": 30}, "flat_over_120"),

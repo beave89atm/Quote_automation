@@ -661,6 +661,16 @@ def linear_cut_length_skips_flat_cap(row: dict[str, Any] | None) -> bool:
     item = _row_item_token(row)
     if item in _CAD_FLAT_ITEM_TOKENS:
         return False
+    # The assembly parent can carry the long tube's cut length. That
+    # bbox is not a sheet. Live 1009353-1 Length=135 must not refuse
+    # the tube.
+    if item == "assembly" or _flag_true(row.get("IsAssembly")):
+        return True
+    try:
+        if int(row.get("ProductType")) == 300:
+            return True
+    except (TypeError, ValueError):
+        pass
     texts = _product_type_texts(row)
     for text in texts:
         if text.startswith("prt_") or text in _CAD_FLAT_PRODUCT_TOKENS:

@@ -3303,6 +3303,18 @@ class SecturaFabPushService:
                 )
                 del _sku2, _note2
                 bind = self._linear_catalog_bind(product)
+            if (
+                cat == "Component"
+                and row_thk is not None
+                and plate_over_three_quarter(row_thk)
+            ):
+                # Live 1009354: a shared 3/16 plate gauge replaced the
+                # 1.25 in pedestal. A plate thicker than 3/4 in stays
+                # Component at its own thickness. invent=false.
+                kept = _sanitize_thickness_param(row_thk)
+                if kept:
+                    thickness = kept
+                    thk_source = ""
             if cat == "Cad" and not str(thickness or "").strip():
                 # The STEP grid already has this child's inch thickness.
                 # Copy it so a plate is not dropped, and Finish is not

@@ -2497,11 +2497,28 @@ _PAGE_FINISH_JS = """(async function(spec) {
       } catch (e4) { fresh = []; }
       return fresh;
     }
+    function thickComponentPlate(row) {
+      // Plate thicker than 3/4 in stays outsourced Component.
+      // A thinner plate or gusset still has to become Cad.
+      if (!row) return false;
+      var cat = String(row.ItemType || row.Category || row.FileType || "")
+        .trim().toLowerCase();
+      var mode = Number(row.PartMode);
+      if (cat !== "component" && mode !== 2) return false;
+      if (cat === "assembly" || cat === "linear" || cat === "cad") return false;
+      var blob = String(
+        (row.PartName || "") + " " + (row.Name || "") + " " + (row.Description || "")
+      );
+      if (!/\\b(plate|gusset|sheet)\\b/i.test(blob)) return false;
+      var thk = parseFloat(row["Thickness"]);
+      return isFinite(thk) && thk > 0.75;
+    }
     function inspectFresh(fresh) {
       var component = 0;
       for (var fi = 0; fi < fresh.length; fi++) {
         var fr = fresh[fi] || {};
         if (skippedIds[String(fr.uid || fr.PartID || fr.ID || "")]) continue;
+        if (thickComponentPlate(fr)) continue;
         var fcat = String(fr.ItemType || fr.Category || fr.FileType || "");
         if (fcat === "Linear" || fcat === "Assembly") continue;
         if (fr.IsAssembly || Number(fr.ProductType) === 300) continue;
@@ -2596,6 +2613,7 @@ _PAGE_FINISH_JS = """(async function(spec) {
       if (r.IsAssembly || Number(r.ProductType) === 300) continue;
       if (Number(r.PartMode) === 1 || r.IsLinear) continue;
       if (linearStockName(r)) continue;
+      if (thickComponentPlate(r)) continue;
       plates.push(r);
     }
     if (!plates.length) return fail("", 0);
@@ -2678,6 +2696,7 @@ _PAGE_FINISH_JS = """(async function(spec) {
     }
     function rowIsCadPlate(fr) {
       if (!fr) return false;
+      if (thickComponentPlate(fr)) return false;
       if (skippedIds[String(fr.uid || fr.PartID || fr.ID || "")]) return false;
       var fcat = String(fr.ItemType || fr.Category || fr.FileType || "");
       if (fcat === "Linear" || fcat === "Assembly") return false;
@@ -2723,6 +2742,7 @@ _PAGE_FINISH_JS = """(async function(spec) {
       for (var oi = 0; oi < fresh.length; oi++) {
         var orow = fresh[oi] || {};
         var ocat = String(orow.ItemType || orow.Category || orow.FileType || "");
+        if (thickComponentPlate(orow)) continue;
         if (ocat === "Linear" || ocat === "Assembly") continue;
         if (orow.IsAssembly || Number(orow.ProductType) === 300) continue;
         if (Number(orow.PartMode) === 1 || orow.IsLinear) continue;
@@ -2929,6 +2949,8 @@ _PAGE_FINISH_JS = """(async function(spec) {
       var live = row || {};
       var item = String(live.ItemType || live.Category || live.FileType || "").trim().toLowerCase();
       if (item === "cad" || item === "plate" || item === "sheet" || item === "sheets" || item === "plates") return false;
+      // Assembly parent Length is the tube bbox, not a sheet.
+      if (item === "assembly" || live.IsAssembly || Number(live.ProductType) === 300) return true;
       var typeFields = [live.ProductType, live.productType, live.ProductSubType, live.productSubType];
       for (var ti = 0; ti < typeFields.length; ti++) {
         var text = String(typeFields[ti] == null ? "" : typeFields[ti]).trim().toLowerCase();
@@ -10334,10 +10356,13 @@ _APPLY_GRID_PART_MODES_JS = """(function(spec) {
     for (var fi = 0; fi < rows.length; fi++) {
       var row = rows[fi];
       if (!row) continue;
+      // One Cad kid's gauge is not every sibling's. Live 1009354 stayed
+      // Component, then the 3/16 plate wrote 0.1875 onto that 1.25 in row.
+      if (want && !matchWant(row, [want])) continue;
       var w = want || matchWant(row, (spec && spec.rows) || [])
         || wantFromName(row);
       if (!w || String(w.Category || "") !== "Cad") continue;
-      if (catOf(row) === "Assembly") continue;
+      if (catOf(row) === "Assembly" || catOf(row) === "Component") continue;
       var wrote = false;
       applyCadThickness(row, w, function(k, v) {
         kendoModelSet(row, k, v);
