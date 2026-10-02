@@ -171,6 +171,20 @@ _ENTRIES: tuple[dict[str, Any], ...] = (
             "(example form 3X .250-20UNC-3A)."
         ),
     },
+    {
+        "id": "iso_fit",
+        "glyphs": (),
+        "words": (),
+        "meaning": (
+            "A lowercase letter and a grade after a size are an ISO code for "
+            "a shaft fit. The letter is the fundamental deviation and the "
+            "number is the tolerance grade. The limit values are not calculated."
+        ),
+        "citation": (
+            "ISO 286-1, ISO code system for tolerances on linear sizes. "
+            "Part 1 gives the basis of tolerances, deviations and fits."
+        ),
+    },
 )
 
 _BY_GLYPH: dict[str, dict[str, Any]] = {}
@@ -254,6 +268,14 @@ def describe_symbol(token: str) -> dict[str, Any]:
     if _RA.fullmatch(raw):
         return _known(_BY_ID["surface_texture"], raw)
     compact = re.sub(r"\s+", "", raw)
+    shaft_fit = re.fullmatch(r"([a-z])(\d{1,2})", compact)
+    if shaft_fit and compact == raw.replace(" ", ""):
+        return _known(
+            _BY_ID["iso_fit"],
+            raw,
+            deviation=shaft_fit.group(1),
+            grade=int(shaft_fit.group(2)),
+        )
     if _THREAD.fullmatch(compact) or _THREAD.fullmatch(raw) or _METRIC_THREAD.fullmatch(compact):
         described = _known(_BY_ID["thread"], raw)
         if _METRIC_THREAD.fullmatch(compact):

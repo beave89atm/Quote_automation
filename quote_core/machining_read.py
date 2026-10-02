@@ -52,9 +52,16 @@ _COUNTERBORE = re.compile(r"⌴|\bCOUNTERBORE\b|\bSPOTFACE\b", re.IGNORECASE)
 _COUNTERSINK = re.compile(r"⌵|\bCOUNTERSINK\b", re.IGNORECASE)
 _STEP_RADIUS = re.compile(
     r"(CYLINDRICAL_SURFACE|CIRCLE)\s*\(\s*'[^']*'\s*,\s*#\d+\s*,\s*"
-    r"([+-]?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)\s*\)",
+    r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)\s*\)",
     re.IGNORECASE,
 )
+_SHAFT_FIT = re.compile(r"^(\d+(?:\.\d+)?)\s+([a-z])(\d{1,2})$")
+_PLUS_MINUS = re.compile(r"^(\d+(?:\.\d+)?)±(\d+(?:\.\d+)?)$")
+_ANGLE = re.compile(r"^(\d+(?:\.\d+)?)°$")
+_LONE_INT = re.compile(r"^\d+$")
+_LONE_DECIMAL = re.compile(r"^\d+(?:\.\d+)?$")
+_DRILL_SIZE = re.compile(r"\bDRILL\b[^(]*\(\s*([0-9]*\.?[0-9]+)\s*\)", re.IGNORECASE)
+_HOLE_QTY = re.compile(r"\(\s*(\d+)\s*\)\s*HOLE\b", re.IGNORECASE)
 _PLANE = re.compile(r"\bPLANE\s*\(", re.IGNORECASE)
 
 _CYLINDER_NOTE = (
@@ -131,15 +138,19 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
     features: list[dict[str, Any]] = []
     callouts: list[dict[str, Any]] = []
     unreadable: list[str] = []
-    for raw_line in text.splitlines():
-        line = " ".join(raw_line.split())
-        if not line:
-            continue
+    lines = [" ".join(raw.split()) for raw in text.splitlines()]
+    lines = [line for line in lines if line]
+    index = 0
+    while index < len(lines):
+        line = lines[index]
         thread = _THREAD.search(line)
         metric = None if thread else _METRIC.search(line)
         if thread or metric:
-            features.append(_thread_feature(line, thread, metric))
+            feature = _thread_feature(line, thread, metric)
+            index = _attach_tap_note(feature, lines, index)
+            features.append(feature)
             continue
+        index += 1
         groove = _GROOVE.search(line)
         if groove:
             features.append(_groove_feature(line, groove))
@@ -226,7 +237,122 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
                     "note": "Radius was read. It was not added as a machining operation.",
                 }
             )
+            continue
+        fit = _SHAFT_FIT.fullmatch(line)
+        if fit:
+            token = f"{fit.group(2)}{fit.group(3)}"
+            described = describe_symbol(token)
+            callouts.append(
+                {
+                    "symbol": described["id"],
+                    "text": line,
+                    "value": _num(fit.group(1)),
+                    "diameter_mm": _num(fit.group(1)),
+                    "fit": token,
+                    "meaning": described["meaning"],
+                    "citation": described["citation"],
+                    "feature": False,
+                    "note": (
+                        "Diameter and ISO fit were read. The line does not say hole, "
+                        "drill, ream, or bore — no hole feature was added. "
+                        "Fit limits were not calculated."
+                    ),
+                }
+            )
+            continue
+        plus = _PLUS_MINUS.fullmatch(line)
+        if plus:
+            callouts.append(
+                {
+                    "symbol": None,
+                    "text": line,
+                    "value": _num(plus.group(1)),
+                    "feature": False,
+                    "meaning": None,
+                    "citation": None,
+                    "note": (
+                        "A size and a plus-minus value were read. "
+                        "They were not added as an operation."
+                    ),
+                }
+            )
+            continue
+        angle = _ANGLE.fullmatch(line)
+        if angle:
+            callouts.append(
+                {
+                    "symbol": None,
+                    "text": line,
+                    "value": _num(angle.group(1)),
+                    "feature": False,
+                    "meaning": None,
+                    "citation": None,
+                    "note": "An angle was read. It was not added as an operation.",
+                }
+            )
+            continue
+        if _LONE_INT.fullmatch(line):
+            callouts.append(
+                {
+                    "symbol": None,
+                    "text": line,
+                    "value": _num(line),
+                    "feature": False,
+                    "meaning": None,
+                    "citation": None,
+                    "note": (
+                        "Dimension was read. The file does not say this is a hole — "
+                        "no hole feature was added."
+                    ),
+                }
+            )
     return features, callouts, unreadable
+
+
+def _attach_tap_note(feature: dict[str, Any], lines: list[str], thread_index: int) -> int:
+    """Keep a stated drill and hole count on the tap. Do not name an unlabeled number depth."""
+    if feature.get("thread_form") != "tap":
+        return thread_index + 1
+    unlabeled: list[str] = []
+    index = thread_index + 1
+    while index < len(lines) and index <= thread_index + 4:
+        nxt = lines[index]
+        drill = _DRILL_SIZE.search(nxt)
+        hole = _HOLE_QTY.search(nxt)
+        if _LONE_DECIMAL.fullmatch(nxt):
+            unlabeled.append(nxt)
+            index += 1
+            continue
+        if drill:
+            value = _num(drill.group(1))
+            if value is not None:
+                feature.setdefault("dimensions", {})["drill_diameter_mm"] = value
+            feature["drill_callout"] = nxt
+            index += 1
+            continue
+        if hole:
+            feature.setdefault("dimensions", {})["count"] = int(hole.group(1))
+            feature["hole_callout"] = nxt
+            number = re.search(r"\d+(?:\.\d+)?", nxt)
+            if number and number.group(0) != hole.group(1):
+                unlabeled.append(number.group(0))
+            index += 1
+            continue
+        break
+    feature["blank_fields"] = [
+        row for row in feature.get("blank_fields") or [] if row["field"] != "count"
+    ]
+    if unlabeled:
+        shown = " and ".join(unlabeled)
+        verb = "are" if len(unlabeled) > 1 else "is"
+        feature["blank_fields"].append(
+            _blank(
+                "depth_in",
+                f"{shown} {verb} on the tap note. "
+                "The line does not say depth — depth left blank.",
+            )
+        )
+    return index
 
 
 def _places(line: str) -> tuple[int | None, list[dict[str, str]]]:
@@ -310,6 +436,12 @@ def _thread_feature(line: str, unified: re.Match[str] | None, metric: re.Match[s
     if count is not None:
         dimensions["count"] = count
     extra: dict[str, Any] = {}
+    if re.search(r"\bTAP\b", line, re.IGNORECASE):
+        extra["thread_form"] = "tap"
+        blanks = [row for row in blanks if row["field"] != "thread_form"]
+    elif re.search(r"\bSINGLE[\s-]*POINT\b", line, re.IGNORECASE):
+        extra["thread_form"] = "single_point"
+        blanks = [row for row in blanks if row["field"] != "thread_form"]
     if unified:
         if unified.group(1) and unified.group(2):
             major = _num(f"{unified.group(1)}/{unified.group(2)}")
@@ -334,6 +466,18 @@ def _thread_feature(line: str, unified: re.Match[str] | None, metric: re.Match[s
                 "Metric designation is in millimetres. Inch diameter left blank.",
             )
         )
+        letter = re.search(r"\b([A-Z])\s+TAP\b", line)
+        if letter:
+            extra["thread_class"] = letter.group(1)
+            blanks.append(
+                _blank(
+                    "thread_grade",
+                    "The line says the letter "
+                    f"{letter.group(1)}. It does not say a grade — grade left blank.",
+                )
+            )
+        if re.search(r"\bISO\b", line, re.IGNORECASE):
+            extra["thread_standard"] = "ISO"
     return _feature("thread", line, dimensions=dimensions, blank_fields=blanks, **extra)
 
 
@@ -403,26 +547,75 @@ def _step_geometry(text: str) -> dict[str, Any]:
     }
 
 
-def _match_step(features: list[dict[str, Any]], geometry: dict[str, Any]) -> None:
-    diameters = [
+def _cylinder_inches(geometry: dict[str, Any]) -> list[float]:
+    return [
         row["diameter_in"]
         for row in (geometry.get("cylinders") or [])
         if isinstance(row.get("diameter_in"), float)
     ]
+
+
+def _inch_hits(wanted_in: float, diameters: list[float]) -> list[float]:
+    return [dia for dia in diameters if abs(dia - wanted_in) <= _DIAMETER_GAP_IN]
+
+
+def _match_step(features: list[dict[str, Any]], geometry: dict[str, Any]) -> None:
+    diameters = _cylinder_inches(geometry)
+    millimetre = geometry.get("units") == "millimetre"
     for feature in features:
         dims = feature.get("dimensions") or {}
         wanted = dims.get("diameter_in")
-        if not isinstance(wanted, (int, float)):
+        if isinstance(wanted, (int, float)):
+            hits = _inch_hits(float(wanted), diameters)
+            if hits:
+                feature["step_match"] = {
+                    "diameter_in": hits[0],
+                    "matches": len(hits),
+                    "note": (
+                        "A STEP cylindrical diameter matches this callout. "
+                        "It was not added as a second feature."
+                    ),
+                }
+        if not millimetre:
             continue
-        hits = [dia for dia in diameters if abs(dia - float(wanted)) <= _DIAMETER_GAP_IN]
+        for key, label in (
+            ("major_diameter_mm", "major diameter"),
+            ("drill_diameter_mm", "drill diameter"),
+        ):
+            mm = dims.get(key)
+            if not isinstance(mm, (int, float)):
+                continue
+            hits = _inch_hits(float(mm) / 25.4, diameters)
+            if not hits:
+                continue
+            slot = "step_match" if key == "major_diameter_mm" else "drill_step_match"
+            feature[slot] = {
+                "diameter_mm": float(mm),
+                "matches": len(hits),
+                "note": (
+                    f"A STEP cylindrical diameter matches this {label}. "
+                    "It was not added as a second feature."
+                ),
+            }
+
+
+def _match_step_callouts(callouts: list[dict[str, Any]], geometry: dict[str, Any]) -> None:
+    if geometry.get("units") != "millimetre":
+        return
+    diameters = _cylinder_inches(geometry)
+    for callout in callouts:
+        mm = callout.get("diameter_mm")
+        if not isinstance(mm, (int, float)):
+            continue
+        hits = _inch_hits(float(mm) / 25.4, diameters)
         if not hits:
             continue
-        feature["step_match"] = {
-            "diameter_in": hits[0],
+        callout["step_match"] = {
+            "diameter_mm": float(mm),
             "matches": len(hits),
             "note": (
                 "A STEP cylindrical diameter matches this callout. "
-                "It was not added as a second feature."
+                "It was not added as a feature."
             ),
         }
 
@@ -1073,6 +1266,7 @@ def read_machining_requirements(
                 "STEP length unit was not read — cylinder sizes left blank."
             )
         _match_step(features, geometry)
+        _match_step_callouts(callouts, geometry)
         assembly = _step_assembly(text)
         step_names = {name.upper() for name in assembly["products"]}
         pdf_only = []
@@ -1107,9 +1301,10 @@ def read_machining_requirements(
             f"{', '.join(assembly['assemblies'])} are assemblies and were not "
             "treated as one machined part."
         )
-    needs_machining = any(feature.get("kind") == "hole" for feature in features) or any(
-        callout.get("unassigned_hole") for callout in callouts
-    )
+    needs_machining = any(
+        feature.get("kind") == "hole" or feature.get("thread_form") in {"tap", "single_point"}
+        for feature in features
+    ) or any(callout.get("unassigned_hole") for callout in callouts)
 
     return {
         "features": features,
