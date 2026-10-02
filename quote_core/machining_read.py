@@ -729,6 +729,20 @@ def _match_step_callouts(callouts: list[dict[str, Any]], geometry: dict[str, Any
         return
     diameters = _cylinder_inches(geometry)
     for callout in callouts:
+        if callout.get("symbol") == "diameter" and callout.get("unit") == "inch":
+            value = callout.get("value")
+            if isinstance(value, (int, float)):
+                hits = _inch_hits(float(value), diameters)
+                if hits:
+                    closest = min(hits, key=lambda dia: abs(dia - float(value)))
+                    callout["step_match"] = {
+                        "diameter_in": closest,
+                        "matches": len(hits),
+                        "note": (
+                            "A STEP cylindrical diameter matches this callout. "
+                            "It was not added as a feature."
+                        ),
+                    }
         mm = callout.get("diameter_mm")
         if not isinstance(mm, (int, float)):
             continue
@@ -747,6 +761,8 @@ def _match_step_callouts(callouts: list[dict[str, Any]], geometry: dict[str, Any
 
 _CALLOUT_WORD = re.compile(r"^(?:\d*\.\d+|\d+X|THRU|THROUGH)$", re.IGNORECASE)
 _DECIMAL_WORD = re.compile(r"^\d*\.\d+$")
+_INCH_QUOTED = re.compile(r'^(\d*\.\d+)"$')
+_PLUS_WORD = re.compile(r"^±(\d+(?:\.\d+)?|\d+/\d+)(°)?$")
 _NX_WORD = re.compile(r"^(\d+)X$", re.IGNORECASE)
 _MATERIAL_WORD = re.compile(r"^(?:5052(?:-ALUM)?|ALUM|ALUMINUM|ALEDO)$", re.IGNORECASE)
 _TOLERANCE_WORD = re.compile(r"DECIMAL|TOLERANCE|ANGULAR|PLACE", re.IGNORECASE)
@@ -1098,6 +1114,30 @@ def _unassigned_sentence(sheet: int, parts: list[str]) -> str:
     )
 
 
+def _symbol_font_diameter_rects(page: Any) -> list[Any]:
+    """Diameter mark stored as the letter O in a symbol font.
+
+    Solid Edge draws that glyph from its ANSI symbol font. A letter O in a
+    text font is not this mark.
+    """
+    import fitz
+
+    found = []
+    data = page.get_text("dict")
+    for block in data.get("blocks") or []:
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines") or []:
+            for span in line.get("spans") or []:
+                font = str(span.get("font") or "")
+                if "symbol" not in font.casefold():
+                    continue
+                if span.get("text") != "O":
+                    continue
+                found.append(fitz.Rect(span["bbox"]))
+    return found
+
+
 def _positioned_pdf_callouts(
     path: Path,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str], dict[str, Any]]:
@@ -1123,6 +1163,7 @@ def _positioned_pdf_callouts(
                 {
                     "words": words,
                     "symbols": _diameter_symbol_rects(page),
+                    "font_diameters": _symbol_font_diameter_rects(page),
                     "chevrons": _countersink_chevron_rects(page),
                     "parts": _part_names(words),
                     "sheet": _sheet_number(page.get_text("text"), index + 1),
@@ -1300,6 +1341,79 @@ def _positioned_pdf_callouts(
                         ),
                     }
                 )
+        claimed_inch: set[int] = set()
+        for symbol in page.get("font_diameters") or []:
+            best: tuple[float, int] | None = None
+            for index, word in enumerate(words):
+                if index in claimed_inch or not _INCH_QUOTED.fullmatch(word[4]):
+                    continue
+                gap = _rect_gap(symbol, word[5])
+                if gap > 8:
+                    continue
+                if best is None or gap < best[0]:
+                    best = (gap, index)
+            if best is None:
+                continue
+            index = best[1]
+            claimed_inch.add(index)
+            value = _num(_INCH_QUOTED.fullmatch(words[index][4]).group(1))
+            callouts.append(
+                {
+                    "symbol": "diameter",
+                    "text": f"⌀{words[index][4]}",
+                    "value": value,
+                    "unit": "inch",
+                    "feature": False,
+                    "requires_machining": True,
+                    "meaning": described["meaning"],
+                    "citation": described["citation"],
+                    "note": (
+                        "A symbol-font diameter mark was read next to this value. "
+                        "The file does not say drill, ream, or bore — no hole feature was added. "
+                        "The sheet does not say lathe, mill, drill, tap, ream, bore, or single-point. "
+                        "No operation code was added."
+                    ),
+                }
+            )
+        for index, word in enumerate(words):
+            if index in claimed_inch or not _INCH_QUOTED.fullmatch(word[4]):
+                continue
+            callouts.append(
+                {
+                    "symbol": None,
+                    "text": word[4],
+                    "value": _num(word[4][:-1]),
+                    "unit": "inch",
+                    "feature": False,
+                    "note": (
+                        "Dimension read. No diameter symbol is on it. "
+                        "The file does not say this is a hole, thread, groove, or face — "
+                        "no feature was added."
+                    ),
+                }
+            )
+        for word in words:
+            plus = _PLUS_WORD.fullmatch(word[4])
+            if not plus:
+                continue
+            described_plus = describe_symbol("±")
+            citation = described_plus["citation"]
+            if plus.group(2):
+                citation = f"{citation} {describe_symbol('°')['citation']}"
+            callouts.append(
+                {
+                    "symbol": described_plus["id"],
+                    "text": word[4],
+                    "value": _num(plus.group(1)),
+                    "feature": False,
+                    "meaning": described_plus["meaning"],
+                    "citation": citation,
+                    "note": (
+                        "A title-block plus-minus tolerance was read. "
+                        "Limits were not calculated. It was not added as an operation."
+                    ),
+                }
+            )
         for index, word in enumerate(words):
             if not _RADIUS_WORD.fullmatch(word[4]):
                 continue
