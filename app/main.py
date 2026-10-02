@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from quote_core.config import load_shop_rates
+from quote_core.machining_quote import machining_html_items, status_after_review
 
 from .auth import login, require_auth
 from .batch import pair_upload_files, paired_part_summary
@@ -52,6 +53,9 @@ class ReviewUpdate(BaseModel):
     status: str | None = Field(
         default=None, description="review | accepted | needs_info"
     )
+    machining_features: list[dict[str, Any]] | None = None
+    operation_cycle_times: dict[str, float] | None = None
+    needs_machining: bool | None = None
 
 
 @app.get("/api/health")
@@ -366,13 +370,13 @@ def update_job(
             efficiency_pct=body.efficiency_pct,
             ipm_overrides=body.ipm_overrides,
             fitup_drivers=body.fitup_drivers,
+            machining_features=body.machining_features,
+            operation_cycle_times=body.operation_cycle_times,
+            needs_machining=body.needs_machining,
         )
-        if body.status:
-            if body.status not in {"review", "accepted", "needs_info"}:
-                raise HTTPException(400, "Invalid status")
-            job.status = body.status
-        elif job.status == "error":
-            job.status = "review"
+        if body.status and body.status not in {"review", "accepted", "needs_info"}:
+            raise HTTPException(400, "Invalid status")
+        job.status = status_after_review(job.status, body.status, job.times())
         db.commit()
         db.refresh(job)
         return job.to_dict()
@@ -560,6 +564,7 @@ h1{{margin-bottom:.25rem}} .meta{{color:#555}}
 <ul>
 <li>Total inches: {times.get('total_inches', 0)}</li>
 <li>Weld minutes: {round(times.get('weld_minutes', 0), 2)}</li>
+{machining_html_items(times)}
 <li><strong>No fixture: {times.get('quoted_no_fixture_hours', 0)} hr</strong>
  (includes {round(times.get('fitup_no_fixture_minutes', 0), 0):.0f} min fit-up)</li>
 <li><strong>With fixture: {times.get('quoted_with_fixture_hours', 0)} hr</strong>
