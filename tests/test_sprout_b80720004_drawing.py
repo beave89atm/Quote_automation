@@ -1,4 +1,4 @@
-"""Sprout sleeve plate B80720004. One customer drawing. Not the rest of the drive."""
+"""Sprout sleeve plate B80720004. A countersink case. Not Fort Worth Customer Drawings."""
 
 from __future__ import annotations
 
@@ -96,11 +96,13 @@ def test_sprout_plate_reads_the_countersink_and_stays_not_done():
     assert "No groove callout in the STEP file" in unreadable
     assert "not read as a face operation" in unreadable
     notes = " ".join(reading["notes"])
-    assert "Sprout sleeve plate B80720004" in notes
-    assert "BB1013" in notes
-    assert "Alcon Supporting Pin" in notes
-    assert "1002309-1" in notes
-    assert "rest of the shared drive has not" in notes
+    shared = next(note for note in reading["notes"] if "shared drive" in note)
+    assert "Sprout" not in shared
+    assert "B80720004" not in shared
+    assert "BB1013" in shared
+    assert "Alcon Supporting Pin" in shared
+    assert "1002309-1" in shared
+    assert "rest of the shared drive has not" in shared
     assert "were not treated as one machined part" in notes
 
     times = attach_machining_times({"weld_minutes": 3.0}, takeoff)

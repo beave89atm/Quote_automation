@@ -53,8 +53,8 @@ DRAWING_READ_NOTE = (
 )
 SHARED_DRIVE_NOTE = (
     "Customer drawings BB1013, BB2000-ASM, the Alcon Supporting Pin, "
-    "Time handle shaft 1002309-1, and Sprout sleeve plate B80720004 "
-    "have been read. The rest of the shared drive has not."
+    "and Time handle shaft 1002309-1 have been read. "
+    "The rest of the shared drive has not."
 )
 SEPARATE_CALC_NOTE = "Setup and run are separate calculators, not one time."
 NOT_POSTED_NOTE = "Not posted to Sectura."
