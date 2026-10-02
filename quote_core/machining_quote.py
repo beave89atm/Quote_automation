@@ -52,8 +52,8 @@ DRAWING_READ_NOTE = (
     "A requirement that was not in the file was left blank."
 )
 SHARED_DRIVE_NOTE = (
-    "Not practiced on real customer drawings from the shared drive. "
-    "That drive is not available here."
+    "Customer drawing BB1013 has been read. "
+    "The rest of the shared drive has not."
 )
 SEPARATE_CALC_NOTE = "Setup and run are separate calculators, not one time."
 NOT_POSTED_NOTE = "Not posted to Sectura."

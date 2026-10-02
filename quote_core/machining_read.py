@@ -427,6 +427,277 @@ def _match_step(features: list[dict[str, Any]], geometry: dict[str, Any]) -> Non
         }
 
 
+_CALLOUT_WORD = re.compile(r"^(?:\d*\.\d+|\d+X|THRU|THROUGH)$", re.IGNORECASE)
+_DECIMAL_WORD = re.compile(r"^\d*\.\d+$")
+_NX_WORD = re.compile(r"^(\d+)X$", re.IGNORECASE)
+_MATERIAL_WORD = re.compile(r"^(?:5052(?:-ALUM)?|ALUM|ALUMINUM|ALEDO)$", re.IGNORECASE)
+_TOLERANCE_WORD = re.compile(r"DECIMAL|TOLERANCE|ANGULAR|PLACE", re.IGNORECASE)
+_CLUSTER_MARGIN = 8.0
+
+
+def _rect_gap(left: Any, right: Any) -> float:
+    dx = 0.0 if left.x0 <= right.x1 and right.x0 <= left.x1 else min(
+        abs(left.x0 - right.x1), abs(right.x0 - left.x1)
+    )
+    dy = 0.0 if left.y0 <= right.y1 and right.y0 <= left.y1 else min(
+        abs(left.y0 - right.y1), abs(right.y0 - left.y1)
+    )
+    return dx + dy
+
+
+def _grow(rect: Any, margin: float) -> Any:
+    return type(rect)(rect.x0 - margin, rect.y0 - margin, rect.x1 + margin, rect.y1 + margin)
+
+
+def _diameter_symbol_rects(page: Any) -> list[Any]:
+    """Circle-and-slash geometry placed as the diameter symbol.
+
+    The symbol is drawn, not typed: a small closed curve and a separate
+    diagonal line. Genium Drafting Manual Section 6.1 paragraph 2.1 places
+    that symbol in front of a diameter value.
+    """
+    import fitz
+
+    lines = []
+    loops = []
+    for drawing in page.get_drawings():
+        rect = fitz.Rect(drawing["rect"])
+        if not (4 <= rect.width <= 25 and 4 <= rect.height <= 25):
+            continue
+        items = drawing["items"]
+        kinds = [item[0] for item in items]
+        if kinds == ["l"] and len(items) == 1:
+            start, end = items[0][1], items[0][2]
+            dx, dy = abs(end.x - start.x), abs(end.y - start.y)
+            if dx > 4 and dy > 4 and abs(dx - dy) < max(3.0, 0.45 * max(dx, dy)):
+                lines.append(rect)
+        elif kinds.count("c") >= 2 and len(items) >= 4:
+            loops.append(rect)
+    symbols = []
+    for line in lines:
+        for loop in loops:
+            if line.intersects(_grow(loop, 2)):
+                symbols.append(line | loop)
+                break
+    return symbols
+
+
+def _cluster_indexes(rects: list[Any], margin: float) -> list[list[int]]:
+    parent = list(range(len(rects)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    grown = [_grow(rect, margin) for rect in rects]
+    for i in range(len(rects)):
+        for j in range(i + 1, len(rects)):
+            if grown[i].intersects(grown[j]):
+                left, right = find(i), find(j)
+                if left != right:
+                    parent[right] = left
+    groups: dict[int, list[int]] = {}
+    for index in range(len(rects)):
+        groups.setdefault(find(index), []).append(index)
+    return list(groups.values())
+
+
+def _near_word(rect: Any, words: list[tuple], pattern: re.Pattern[str], margin: float) -> bool:
+    for word in words:
+        if pattern.search(word[4]) and _grow(rect, margin).intersects(word[5]):
+            return True
+    return False
+
+
+def _positioned_pdf_callouts(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """Read callouts whose words and symbols are placed apart on the sheet."""
+    import fitz
+
+    features: list[dict[str, Any]] = []
+    callouts: list[dict[str, Any]] = []
+    unreadable: list[str] = []
+    doc = fitz.open(path)
+    try:
+        page = doc[0]
+        words = []
+        for word in page.get_text("words"):
+            words.append((word[0], word[1], word[2], word[3], word[4], fitz.Rect(word[:4])))
+        symbols = _diameter_symbol_rects(page)
+        marked: set[int] = set()
+        for symbol in symbols:
+            best: tuple[float, int] | None = None
+            for index, word in enumerate(words):
+                if not _DECIMAL_WORD.fullmatch(word[4]):
+                    continue
+                gap = _rect_gap(symbol, word[5])
+                if gap > 8:
+                    continue
+                if best is None or gap < best[0]:
+                    best = (gap, index)
+            if best is not None:
+                marked.add(best[1])
+        callout_ids = [
+            index for index, word in enumerate(words) if _CALLOUT_WORD.fullmatch(word[4])
+        ]
+        groups = _cluster_indexes([words[index][5] for index in callout_ids], _CLUSTER_MARGIN)
+        used_decimals: set[int] = set()
+        described = describe_symbol("⌀")
+        for group in groups:
+            indexes = [callout_ids[index] for index in group]
+            decimals = [index for index in indexes if _DECIMAL_WORD.fullmatch(words[index][4])]
+            counts = []
+            for index in indexes:
+                count_match = _NX_WORD.fullmatch(words[index][4])
+                if count_match:
+                    counts.append(int(count_match.group(1)))
+            thru = any(words[index][4].upper() in {"THRU", "THROUGH"} for index in indexes)
+            marked_here = [index for index in decimals if index in marked]
+            if marked_here:
+                for index in marked_here:
+                    used_decimals.add(index)
+                    value = _num(words[index][4])
+                    blanks = [
+                        _blank(
+                            "tolerance",
+                            "The callout does not say drill, ream, or bore — tolerance left blank.",
+                        )
+                    ]
+                    dimensions: dict[str, Any] = {}
+                    if value is None:
+                        blanks.append(_blank("diameter_in", "Diameter value was not read — left blank."))
+                    else:
+                        dimensions["diameter_in"] = value
+                    if len(counts) == 1:
+                        dimensions["count"] = counts[0]
+                    else:
+                        blanks.append(_blank("count", "Place count was not read — left blank."))
+                    if thru:
+                        blanks.append(
+                            _blank(
+                                "depth_in",
+                                "THRU is on the callout. Numeric depth was not given — depth left blank.",
+                            )
+                        )
+                    else:
+                        blanks.append(_blank("depth_in", "Depth is not in the callout — left blank."))
+                    label_parts = []
+                    if len(counts) == 1:
+                        label_parts.append(f"{counts[0]}X")
+                    if thru:
+                        label_parts.append("THRU")
+                    label_parts.append(words[index][4])
+                    features.append(
+                        _feature(
+                            "hole",
+                            " ".join(label_parts),
+                            dimensions=dimensions,
+                            blank_fields=blanks,
+                            diameter_symbol={
+                                "known": True,
+                                "meaning": described["meaning"],
+                                "citation": described["citation"],
+                                "note": "Drawn as a circle and a slash next to the value.",
+                            },
+                        )
+                    )
+                continue
+            if len(counts) == 1 and len(decimals) == 1:
+                used_decimals.add(decimals[0])
+                callouts.append(
+                    {
+                        "symbol": "repetition",
+                        "text": f"{counts[0]}X {words[decimals[0]][4]}",
+                        "value": _num(words[decimals[0]][4]),
+                        "meaning": describe_symbol("X")["meaning"],
+                        "citation": describe_symbol("X")["citation"],
+                        "feature": False,
+                        "note": (
+                            "Repeated dimension. No diameter symbol is on it — "
+                            "no hole was added."
+                        ),
+                    }
+                )
+                continue
+            tolerance_ids = [
+                index
+                for index in decimals
+                if _near_word(words[index][5], words, _TOLERANCE_WORD, 14)
+            ]
+            if tolerance_ids and len(tolerance_ids) == len(decimals):
+                used_decimals.update(decimals)
+                callouts.append(
+                    {
+                        "symbol": None,
+                        "text": " ".join(words[index][4] for index in decimals),
+                        "value": None,
+                        "meaning": None,
+                        "citation": None,
+                        "feature": False,
+                        "note": (
+                            "Title-block tolerance values were read. "
+                            "They were not added as operations."
+                        ),
+                    }
+                )
+        plate_values = []
+        for index, word in enumerate(words):
+            if word[4] != ".125":
+                continue
+            if _near_word(word[5], words, _MATERIAL_WORD, 16):
+                plate_values.append(index)
+        if plate_values:
+            features.append(
+                _feature(
+                    "plate",
+                    "5052 .125",
+                    dimensions={"thickness_in": 0.125},
+                    blank_fields=[],
+                )
+            )
+            used_decimals.update(plate_values)
+        if any(word[4].upper() == "FINISH" for word in words):
+            finish = next(word for word in words if word[4].upper() == "FINISH")
+            finish_values = [
+                word
+                for word in words
+                if _DECIMAL_WORD.fullmatch(word[4])
+                and _grow(finish[5], 12).intersects(word[5])
+                and not (
+                    word[4] == ".125" and _near_word(word[5], words, _MATERIAL_WORD, 16)
+                )
+            ]
+            if not finish_values:
+                unreadable.append(
+                    "FINISH is on the drawing. No finish value was read — left blank."
+                )
+        for index in callout_ids:
+            if index in used_decimals or not _DECIMAL_WORD.fullmatch(words[index][4]):
+                continue
+            if _near_word(words[index][5], words, _TOLERANCE_WORD, 14):
+                continue
+            if words[index][4] == ".125" and index in plate_values:
+                continue
+            callouts.append(
+                {
+                    "symbol": None,
+                    "text": words[index][4],
+                    "value": _num(words[index][4]),
+                    "meaning": None,
+                    "citation": None,
+                    "feature": False,
+                    "note": (
+                        "Dimension read. The file does not say this is a hole, "
+                        "thread, groove, or face — no feature was added."
+                    ),
+                }
+            )
+    finally:
+        doc.close()
+    return features, callouts, unreadable
+
+
 def read_machining_requirements(
     pdf_path: str | Path | None = None,
     stp_path: str | Path | None = None,
@@ -461,6 +732,40 @@ def read_machining_requirements(
                 if gap not in unreadable:
                     unreadable.append(gap)
             unknown.extend(unknown_symbols_in_text(text))
+            try:
+                placed, placed_notes, placed_gaps = _positioned_pdf_callouts(pdf)
+            except Exception:
+                placed, placed_notes, placed_gaps = [], [], [
+                    "Placed callouts could not be read — left blank."
+                ]
+            have = {
+                (
+                    feature.get("kind"),
+                    (feature.get("dimensions") or {}).get("diameter_in"),
+                    (feature.get("dimensions") or {}).get("thickness_in"),
+                )
+                for feature in features
+            }
+            for feature in placed:
+                key = (
+                    feature.get("kind"),
+                    (feature.get("dimensions") or {}).get("diameter_in"),
+                    (feature.get("dimensions") or {}).get("thickness_in"),
+                )
+                if key in have:
+                    continue
+                features.append(feature)
+                have.add(key)
+            callouts.extend(placed_notes)
+            for gap in placed_gaps:
+                if gap not in unreadable:
+                    unreadable.append(gap)
+            if not any(feature.get("kind") == "face" for feature in features):
+                unreadable.append("No face callout in the PDF — face left blank.")
+            if not any(feature.get("kind") == "thread" for feature in features):
+                unreadable.append("No thread designation in the PDF — thread left blank.")
+            if not any(feature.get("kind") == "groove" for feature in features):
+                unreadable.append("No groove callout in the PDF — groove left blank.")
 
     if step is None or not step.is_file():
         unreadable.append(_NO_STEP_NOTE)
