@@ -588,11 +588,46 @@ export default function JobDetailPage() {
           {op.run?.time_min == null ? "—" : `${op.run.time_min} min`} · not posted
         </p>
       ))}
+      {job?.takeoff?.machining_reading ? (
+        <div className="muted" style={{ margin: "0.75rem 0" }}>
+          <div className="label">Read from the drawing</div>
+          <ul>
+            {(job.takeoff.machining_reading.features || []).map((feature) => (
+              <li key={feature.id || feature.callout}>
+                {feature.kind}: {feature.callout || "—"}
+                {(feature.blank_fields || []).length
+                  ? ` — blank: ${feature.blank_fields.map((row) => row.field).join(", ")}`
+                  : ""}
+              </li>
+            ))}
+            {(job.takeoff.machining_reading.callouts || []).map((callout) => (
+              <li key={`${callout.symbol}-${callout.text}`}>
+                {callout.text}: {callout.note}
+              </li>
+            ))}
+            {(job.takeoff.machining_reading.unknown_symbols || []).map((row) => (
+              <li key={row.symbol}>
+                Unknown symbol {row.symbol}: {row.note}
+              </li>
+            ))}
+            {(job.takeoff.machining_reading.unreadable || []).map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+          {(job.takeoff.machining_reading.notes || []).map((note) => (
+            <p key={note}>{note}</p>
+          ))}
+        </div>
+      ) : null}
       <details className="fitup-drivers">
         <summary>
           <h2>Machining features</h2>
           <span className="fitup-summary-meta muted">
-            caller-supplied · STEP and PDF are not read
+            {job?.takeoff?.machining_features_source === "drawing"
+              ? "read from the drawing"
+              : machiningFeatures.length
+                ? "typed"
+                : "none yet"}
           </span>
         </summary>
         <label className="muted" style={{ display: "block", margin: "0.5rem 0" }}>

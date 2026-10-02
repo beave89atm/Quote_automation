@@ -1,4 +1,4 @@
-"""Quote domain services — weld times, plus machining when features are supplied."""
+"""Quote domain services — weld times, plus machining when features are typed or read."""
 
 from .config import ShopRates, load_shop_rates
 from .time_engine import TimeBreakdown, compute_weld_times

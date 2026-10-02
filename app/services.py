@@ -11,6 +11,7 @@ from quote_core.machining_quote import (
     machining_needs_info_flag,
     sync_machining_flag,
 )
+from quote_core.machining_read import apply_drawing_reading
 from quote_core.time_engine import compute_weld_times
 from quote_core.weld.takeoff import WeldLineItem, run_weld_takeoff
 
@@ -85,6 +86,11 @@ def process_job(job_id: int) -> None:
         )
         items = result.items
         takeoff = carry_machining_inputs(previous_takeoff, result.to_dict())
+        takeoff = apply_drawing_reading(
+            takeoff,
+            pdf_path=Path(job.pdf_path) if job.pdf_path else None,
+            stp_path=Path(job.stp_path) if job.stp_path else None,
+        )
         takeoff["library"] = library_info
         takeoff["bom_config"] = bom_config
         drivers = _drivers_from_takeoff(takeoff)
@@ -211,6 +217,7 @@ def recompute_from_items(
     takeoff["fitup_drivers"] = drivers
     if machining_features is not None:
         takeoff["machining_features"] = machining_features
+        takeoff["machining_features_source"] = "typed"
     if operation_cycle_times is not None:
         cleaned: dict[str, float] = {}
         for key, value in operation_cycle_times.items():

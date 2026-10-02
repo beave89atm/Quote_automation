@@ -1,4 +1,4 @@
-"""Machining quote from a caller-supplied feature list.
+"""Machining quote from typed features or from callouts read off a drawing.
 
 Counts shop operations from the feature rules in
 ``references/machining/OPS_WORKFLOW.md``. Run time and setup time stay blank
@@ -45,8 +45,15 @@ VOLUME_NOTE = (
     "Per-feature time needs a removal rate or a typed cycle time."
 )
 DRAWING_NOTE = (
-    "Feature list is caller-supplied. "
-    "Reading the STEP and PDF to fill the feature list is still missing."
+    "Feature list was typed. Drawing callouts were not used for these features."
+)
+DRAWING_READ_NOTE = (
+    "Features were read from callouts in the supplied file. "
+    "A requirement that was not in the file was left blank."
+)
+SHARED_DRIVE_NOTE = (
+    "Not practiced on real customer drawings from the shared drive. "
+    "That drive is not available here."
 )
 SEPARATE_CALC_NOTE = "Setup and run are separate calculators, not one time."
 NOT_POSTED_NOTE = "Not posted to Sectura."
@@ -535,6 +542,7 @@ def quote_machining_features(
     *,
     operation_cycle_times: dict[str, Any] | None = None,
     needs_machining: bool | None = None,
+    features_source: str | None = None,
 ) -> dict[str, Any]:
     """Return operation count, per-operation run time, and setup time.
 
@@ -543,7 +551,14 @@ def quote_machining_features(
     """
     features = [f for f in (features or []) if isinstance(f, dict)]
     overrides = operation_cycle_times or {}
-    notes: list[str] = [DRAWING_NOTE, SEPARATE_CALC_NOTE, NOT_POSTED_NOTE]
+    from_drawing = features_source == "drawing"
+    notes: list[str] = [
+        DRAWING_READ_NOTE if from_drawing else DRAWING_NOTE,
+        SEPARATE_CALC_NOTE,
+        NOT_POSTED_NOTE,
+    ]
+    if from_drawing:
+        notes.insert(1, SHARED_DRIVE_NOTE)
     purchased: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
@@ -751,7 +766,7 @@ def quote_machining_features(
             "quote_id": CODE_SOURCE_ID,
             "status": CODE_SOURCE_STATUS,
         },
-        "reads_drawings": False,
+        "reads_drawings": from_drawing,
         "posted": False,
     }
 
@@ -817,7 +832,12 @@ def sync_machining_flag(flags: list[str], result: dict[str, Any] | None) -> list
 def carry_machining_inputs(previous: dict[str, Any] | None, takeoff: dict[str, Any]) -> dict[str, Any]:
     """Keep caller feature lists when takeoff is rebuilt. Does not invent features."""
     out = dict(takeoff)
-    for key in ("machining_features", "operation_cycle_times", "needs_machining"):
+    for key in (
+        "machining_features",
+        "machining_features_source",
+        "operation_cycle_times",
+        "needs_machining",
+    ):
         if key in (previous or {}) and key not in out:
             out[key] = (previous or {})[key]
     return out
@@ -837,6 +857,9 @@ def attach_machining_times(times: dict[str, Any], takeoff: dict[str, Any] | None
         if isinstance(takeoff.get("operation_cycle_times"), dict)
         else None,
         needs_machining=True if marked else None,
+        features_source=takeoff.get("machining_features_source")
+        if takeoff.get("machining_features_source") == "drawing"
+        else None,
     )
     out = dict(times)
     out["machining"] = result
