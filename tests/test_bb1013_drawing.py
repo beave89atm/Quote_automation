@@ -6,6 +6,7 @@ from pathlib import Path
 
 from quote_core.machining_quote import quote_machining_features
 from quote_core.machining_read import apply_drawing_reading
+from quote_core.machining_symbols import describe_symbol
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "bb1013"
 _PDF = _FIXTURE / "BB1013.pdf"
@@ -57,10 +58,11 @@ def test_bb1013_reads_only_the_callouts_on_the_drawing():
     assert notes["0.88"]["feature"] is False
     assert all(callout["feature"] is False for callout in reading["callouts"])
 
-    unknown = reading["unknown_symbols"]
-    assert [row["symbol"] for row in unknown] == ["°"]
-    assert unknown[0]["known"] is False
-    assert unknown[0]["meaning"] is None
+    assert reading["unknown_symbols"] == []
+    degree = describe_symbol("°")
+    assert degree["known"] is True
+    assert degree["meaning"]
+    assert "Y14.5-2018" in degree["citation"]
 
     unreadable = " ".join(reading["unreadable"])
     assert "FINISH is on the drawing" in unreadable

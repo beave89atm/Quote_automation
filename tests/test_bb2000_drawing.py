@@ -13,6 +13,7 @@ import fitz
 
 from quote_core.machining_quote import attach_machining_times
 from quote_core.machining_read import apply_drawing_reading
+from quote_core.machining_symbols import describe_symbol
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "bb2000"
 _PDF = _FIXTURE / "BB2000-ASM.pdf"
@@ -116,8 +117,10 @@ def test_bb2000_assembly_does_not_assign_callouts_to_one_part():
     assert stock["sheet 10 stock 0.125, 0.25"]["assigned_part"] is None
     assert stock["sheet 3 stock 0.125"]["assigned_part"] is None
 
-    assert [row["symbol"] for row in reading["unknown_symbols"]] == ["°"]
-    assert reading["unknown_symbols"][0]["meaning"] is None
+    assert reading["unknown_symbols"] == []
+    degree = describe_symbol("°")
+    assert degree["known"] is True
+    assert "3.3.3" in degree["citation"]
     unreadable = " ".join(reading["unreadable"])
     assert "FINISH is on the drawing" in unreadable
     assert "OUTSOURCE is on the drawing" in unreadable

@@ -97,10 +97,10 @@ def test_turned_practice_reads_stepped_diameters_face_groove_and_thread():
     assert {feature["kind"] for feature in reading["features"]}.isdisjoint(
         {"hole", "plate", "countersink", "counterbore", "chamfer"}
     )
-    unknown = reading["unknown_symbols"]
-    assert [row["symbol"] for row in unknown] == ["\u00b0"]
-    assert unknown[0]["known"] is False
-    assert unknown[0]["meaning"] is None
+    assert reading["unknown_symbols"] == []
+    degree = describe_symbol("\u00b0")
+    assert degree["known"] is True
+    assert "4-41" in degree["citation"]
     chamfer = describe_symbol("CHAMFER")
     assert chamfer["known"] is False
     assert chamfer["meaning"] is None

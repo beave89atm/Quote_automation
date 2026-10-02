@@ -53,8 +53,8 @@ DRAWING_READ_NOTE = (
 )
 SHARED_DRIVE_NOTE = (
     "Customer drawings BB1013, BB2000-ASM, the Alcon Supporting Pin, "
-    "and Time handle shaft 1002309-1 have been read. "
-    "The rest of the shared drive has not."
+    "Time handle shaft 1002309-1, and Sprout sleeve plate B80720004 "
+    "have been read. The rest of the shared drive has not."
 )
 SEPARATE_CALC_NOTE = "Setup and run are separate calculators, not one time."
 NOT_POSTED_NOTE = "Not posted to Sectura."
@@ -428,8 +428,13 @@ def _plans_for_feature(
             notes.append("Plate at or under 3/4 in is not a machine operation.")
         return [], None, notes
 
-    if family is None:
+    if family is None and feature.get("stated_machine") is not False:
         family = _default_family(kind, form)
+    if feature.get("stated_machine") is False and family is None:
+        return [], (
+            "The sheet does not say lathe, mill, drill, tap, or single-point. "
+            "No operation code was added."
+        ), notes
 
     diameter = _inches(_dim(feature, "diameter_in", "diameter"))
     width = _inches(_dim(feature, "width_in", "width"))

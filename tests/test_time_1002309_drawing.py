@@ -9,6 +9,7 @@ import fitz
 
 from quote_core.machining_quote import attach_machining_times, machining_blocks_quote
 from quote_core.machining_read import apply_drawing_reading
+from quote_core.machining_symbols import describe_symbol
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "time_1002309"
 _PDF = _FIXTURE / "1002309-1.pdf"
@@ -80,10 +81,11 @@ def test_handle_shaft_names_holes_without_a_process_and_stays_not_done():
     assert "Ra" not in finish["note"]
     assert all(callout.get("step_match") is None for callout in reading["callouts"])
 
-    unknown = {row["symbol"]: row for row in reading["unknown_symbols"]}
-    assert set(unknown) == {"°"}
-    assert unknown["°"]["known"] is False
-    assert unknown["°"]["meaning"] is None
+    assert reading["unknown_symbols"] == []
+    assert by_text["90°"]["symbol"] == "degree"
+    degree = describe_symbol("°")
+    assert degree["known"] is True
+    assert degree["meaning"]
 
     assert reading["geometry"]["units"] == "inch"
     assert reading["geometry"]["plane_count"] == 12

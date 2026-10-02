@@ -172,6 +172,30 @@ _ENTRIES: tuple[dict[str, Any], ...] = (
         ),
     },
     {
+        "id": "degree",
+        "glyphs": ("°",),
+        "words": (),
+        "meaning": "Placed after a value that is an angle in degrees.",
+        "citation": (
+            f"{_GENIUM}, paragraph 3.3.3, writes this sign on an angle (30°). "
+            "ASME Y14.5-2018, figure 4-41 (45° chamfer) and figure 5-20 "
+            "(an angular surface). Text encoding: U+00B0."
+        ),
+    },
+    {
+        "id": "plus_minus",
+        "glyphs": ("±",),
+        "words": (),
+        "meaning": (
+            "Placed with a size to show a tolerance that applies in both "
+            "directions. The limit values are not calculated."
+        ),
+        "citation": (
+            "ASME Y14.5-2018, figure 5-2, Plus and Minus Tolerancing. "
+            f"{_Y145} Text encoding: U+00B1."
+        ),
+    },
+    {
         "id": "iso_fit",
         "glyphs": (),
         "words": (),

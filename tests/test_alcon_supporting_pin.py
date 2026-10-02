@@ -83,18 +83,22 @@ def test_alcon_pin_reads_the_stated_tap_and_leaves_times_blank():
     assert by_text["R5"]["symbol"] == "radius"
     assert by_text["R5"]["feature"] is False
     assert by_text["55±0.02"]["feature"] is False
+    assert by_text["55±0.02"]["symbol"] == "plus_minus"
+    assert "5-2" in by_text["55±0.02"]["citation"]
+    assert "not calculated" in by_text["55±0.02"]["meaning"]
     assert by_text["28.64°"]["feature"] is False
+    assert by_text["28.64°"]["symbol"] == "degree"
     assert by_text["22.2°"]["feature"] is False
+    assert by_text["22.2°"]["symbol"] == "degree"
     for bare in ("12", "5", "15", "10.5", "16.12"):
         assert by_text[bare]["feature"] is False
     assert all(callout["feature"] is False for callout in reading["callouts"])
 
-    unknown = {row["symbol"]: row for row in reading["unknown_symbols"]}
-    assert set(unknown) == {"±", "°"}
-    assert unknown["±"]["known"] is False
-    assert unknown["±"]["meaning"] is None
-    assert unknown["°"]["known"] is False
-    assert unknown["°"]["meaning"] is None
+    assert reading["unknown_symbols"] == []
+    plus = describe_symbol("±")
+    degree = describe_symbol("°")
+    assert plus["known"] is True and plus["meaning"]
+    assert degree["known"] is True and degree["meaning"]
 
     assert reading["geometry"]["units"] == "millimetre"
     assert reading["geometry"]["plane_count"] == 3

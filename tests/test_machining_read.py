@@ -59,6 +59,8 @@ def test_library_cites_standards_and_does_not_guess_typical():
         "surface_texture",
         "thread",
         "typical",
+        "degree",
+        "plus_minus",
     ):
         assert library[symbol_id]["meaning"]
         assert library[symbol_id]["citation"]

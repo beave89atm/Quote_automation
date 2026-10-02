@@ -189,10 +189,44 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
             )
             continue
         if _COUNTERBORE.search(line):
-            features.append(_round_feature("counterbore", line))
+            if _DIAMETER.search(line) or "⌴" in line:
+                features.append(_round_feature("counterbore", line))
+            else:
+                described = describe_symbol("counterbore")
+                callouts.append(
+                    {
+                        "symbol": described["id"],
+                        "text": "COUNTERBORE",
+                        "feature": False,
+                        "meaning": described["meaning"],
+                        "citation": described["citation"],
+                        "note": (
+                            "The word COUNTERBORE was read. The line has no "
+                            "counterbore symbol and no counterbore diameter. "
+                            "No counterbore operation was added."
+                        ),
+                    }
+                )
             continue
         if _COUNTERSINK.search(line):
-            features.append(_round_feature("countersink", line))
+            if _DIAMETER.search(line) or "⌵" in line:
+                features.append(_round_feature("countersink", line))
+            else:
+                described = describe_symbol("countersink")
+                callouts.append(
+                    {
+                        "symbol": described["id"],
+                        "text": "COUNTERSINK",
+                        "feature": False,
+                        "meaning": described["meaning"],
+                        "citation": described["citation"],
+                        "note": (
+                            "The word COUNTERSINK was read. The line has no "
+                            "countersink symbol and no countersink diameter. "
+                            "No countersink operation was added."
+                        ),
+                    }
+                )
             continue
         if _HOLE_PROCESS.search(line) and _DIAMETER.search(line):
             features.append(_hole_feature(line))
@@ -262,14 +296,15 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
             continue
         plus = _PLUS_MINUS.fullmatch(line)
         if plus:
+            described = describe_symbol("±")
             callouts.append(
                 {
-                    "symbol": None,
+                    "symbol": described["id"],
                     "text": line,
                     "value": _num(plus.group(1)),
                     "feature": False,
-                    "meaning": None,
-                    "citation": None,
+                    "meaning": described["meaning"],
+                    "citation": described["citation"],
                     "note": (
                         "A size and a plus-minus value were read. "
                         "They were not added as an operation."
@@ -279,14 +314,15 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
             continue
         angle = _ANGLE.fullmatch(line)
         if angle:
+            described = describe_symbol("°")
             callouts.append(
                 {
-                    "symbol": None,
+                    "symbol": described["id"],
                     "text": line,
                     "value": _num(angle.group(1)),
                     "feature": False,
-                    "meaning": None,
-                    "citation": None,
+                    "meaning": described["meaning"],
+                    "citation": described["citation"],
                     "note": "An angle was read. It was not added as an operation.",
                 }
             )
@@ -735,6 +771,217 @@ def _grow(rect: Any, margin: float) -> Any:
     return type(rect)(rect.x0 - margin, rect.y0 - margin, rect.x1 + margin, rect.y1 + margin)
 
 
+def _polyline_diameter_rects(page: Any) -> list[Any]:
+    """A diameter mark drawn as short lines around one long slash.
+
+    Some sheets stroke the circle instead of using curve operators.
+    """
+    import fitz
+
+    found = []
+    for drawing in page.get_drawings():
+        items = drawing["items"]
+        if len(items) < 16 or any(item[0] != "l" for item in items):
+            continue
+        rect = fitz.Rect(drawing["rect"])
+        if not (6 <= rect.width <= 20 and 6 <= rect.height <= 20):
+            continue
+        size = max(rect.width, rect.height)
+        lengths = []
+        for item in items:
+            start, end = item[1], item[2]
+            lengths.append(((end.x - start.x) ** 2 + (end.y - start.y) ** 2) ** 0.5)
+        longest = max(lengths)
+        middle = sorted(lengths)[len(lengths) // 2]
+        if longest < 0.8 * size or middle > 0.25 * size:
+            continue
+        found.append(rect)
+    return found
+
+
+def _countersink_chevron_rects(page: Any) -> list[Any]:
+    """Two lines that meet in a V, the drawn countersink mark."""
+    import fitz
+
+    found = []
+    for drawing in page.get_drawings():
+        items = drawing["items"]
+        if len(items) != 2 or any(item[0] != "l" for item in items):
+            continue
+        first = (items[0][1], items[0][2])
+        second = (items[1][1], items[1][2])
+
+        def _near(left: Any, right: Any) -> bool:
+            return abs(left.x - right.x) <= 0.6 and abs(left.y - right.y) <= 0.6
+
+        vertex = None
+        if _near(first[1], second[0]):
+            vertex = first[1]
+        elif _near(first[0], second[1]):
+            vertex = first[0]
+        elif _near(first[0], second[0]):
+            vertex = first[0]
+        elif _near(first[1], second[1]):
+            vertex = first[1]
+        if vertex is None:
+            continue
+        rect = fitz.Rect(drawing["rect"])
+        if rect.width < 4 or rect.height < 3 or rect.width > 24 or rect.height > 24:
+            continue
+        if vertex.y + 0.5 < max(first[0].y, first[1].y, second[0].y, second[1].y):
+            continue
+        found.append(rect)
+    return found
+
+
+def _countersink_from_sheet(
+    words: list[tuple],
+    symbols: list[Any],
+    chevrons: list[Any],
+) -> tuple[set[int], list[dict[str, Any]]]:
+    """A countersink mark in front of a diameter, then X and a degree."""
+    consumed: set[int] = set()
+    features: list[dict[str, Any]] = []
+    described = describe_symbol("countersink")
+    degree = describe_symbol("°")
+    for chevron in chevrons:
+        symbol = None
+        symbol_gap = None
+        for candidate in symbols:
+            if candidate.x0 + 1 < chevron.x1:
+                continue
+            gap = _rect_gap(chevron, candidate)
+            if gap > 14:
+                continue
+            if symbol_gap is None or gap < symbol_gap:
+                symbol = candidate
+                symbol_gap = gap
+        if symbol is None:
+            continue
+        sink_index = None
+        sink_gap = None
+        for index, word in enumerate(words):
+            if not _DECIMAL_WORD.fullmatch(word[4]):
+                continue
+            if word[5].x0 + 1 < symbol.x1:
+                continue
+            gap = _rect_gap(symbol, word[5])
+            if gap > 10:
+                continue
+            if sink_gap is None or gap < sink_gap:
+                sink_index = index
+                sink_gap = gap
+        if sink_index is None:
+            continue
+        angle_index = None
+        saw_by = False
+        sink_word = words[sink_index]
+        for index, word in enumerate(words):
+            if word[5].x0 <= sink_word[5].x1:
+                continue
+            if _rect_gap(sink_word[5], word[5]) > 28:
+                continue
+            if word[4].upper() == "X":
+                saw_by = True
+                continue
+            if saw_by and _ANGLE.fullmatch(word[4]):
+                angle_index = index
+                break
+        if angle_index is None:
+            continue
+        thru_index = None
+        for index, word in enumerate(words):
+            if index == sink_index or not _DECIMAL_WORD.fullmatch(word[4]):
+                continue
+            if word[5].y0 >= sink_word[5].y0 - 4:
+                continue
+            if sink_word[5].y0 - word[5].y0 > 24:
+                continue
+            if abs(word[5].x0 - sink_word[5].x0) > 20:
+                continue
+            if not any(
+                other[4].upper() in {"THRU", "THROUGH"} and _rect_gap(word[5], other[5]) <= 16
+                for other in words
+            ):
+                continue
+            thru_index = index
+            break
+        count = None
+        count_word = sink_word
+        if thru_index is not None:
+            count_word = words[thru_index]
+        for word in words:
+            places = _NX_WORD.fullmatch(word[4])
+            if not places:
+                continue
+            if _rect_gap(count_word[5], word[5]) > 36:
+                continue
+            count = int(places.group(1))
+            break
+        sink_value = _num(words[sink_index][4])
+        angle_value = _num(_ANGLE.fullmatch(words[angle_index][4]).group(1))
+        thru_value = _num(words[thru_index][4]) if thru_index is not None else None
+        label_parts = []
+        if count is not None and thru_value is not None:
+            label_parts.append(f"{count}X {words[thru_index][4]} THRU")
+        label_parts.append(f"{words[sink_index][4]} X {words[angle_index][4]}")
+        dimensions: dict[str, Any] = {}
+        blanks = [
+            _blank(
+                "machine",
+                "The sheet does not say lathe, mill, drill, tap, or single-point — "
+                "machine left blank.",
+            )
+        ]
+        if thru_value is None:
+            blanks.append(_blank("diameter_in", "Thru diameter was not read — left blank."))
+        else:
+            dimensions["diameter_in"] = thru_value
+        if sink_value is None:
+            blanks.append(
+                _blank("countersink_diameter_in", "Countersink diameter was not read — left blank.")
+            )
+        else:
+            dimensions["countersink_diameter_in"] = sink_value
+        if angle_value is None:
+            blanks.append(_blank("angle_deg", "Countersink angle was not read — left blank."))
+        else:
+            dimensions["angle_deg"] = angle_value
+        if count is None:
+            blanks.append(_blank("count", "Place count was not read — left blank."))
+        else:
+            dimensions["count"] = count
+        if thru_index is not None:
+            blanks.append(
+                _blank(
+                    "depth_in",
+                    "THRU is on the callout. Numeric depth was not given — depth left blank.",
+                )
+            )
+        consumed.add(sink_index)
+        if thru_index is not None:
+            consumed.add(thru_index)
+        features.append(
+            _feature(
+                "countersink",
+                " / ".join(label_parts),
+                dimensions=dimensions,
+                blank_fields=blanks,
+                stated_machine=False,
+                meaning=described["meaning"],
+                citation=described["citation"],
+                angle_meaning=degree["meaning"],
+                angle_citation=degree["citation"],
+                note=(
+                    "Countersink symbol was read in front of the diameter. "
+                    "X between the diameter and the degree is BY. "
+                    "No operation code was added."
+                ),
+            )
+        )
+    return consumed, features
+
+
 def _diameter_symbol_rects(page: Any) -> list[Any]:
     """Circle-and-slash geometry placed as the diameter symbol.
 
@@ -776,6 +1023,10 @@ def _diameter_symbol_rects(page: Any) -> list[Any]:
                 symbols.append(loop | rect)
                 used.add(index)
                 break
+    for rect in _polyline_diameter_rects(page):
+        if any(_rect_gap(rect, have) <= 1 for have in symbols):
+            continue
+        symbols.append(rect)
     return symbols
 
 
@@ -872,6 +1123,7 @@ def _positioned_pdf_callouts(
                 {
                     "words": words,
                     "symbols": _diameter_symbol_rects(page),
+                    "chevrons": _countersink_chevron_rects(page),
                     "parts": _part_names(words),
                     "sheet": _sheet_number(page.get_text("text"), index + 1),
                 }
@@ -913,6 +1165,11 @@ def _positioned_pdf_callouts(
         ]
         groups = _cluster_indexes([words[index][5] for index in callout_ids], _CLUSTER_MARGIN)
         used_decimals: set[int] = set()
+        consumed_sinks, sink_features = _countersink_from_sheet(
+            words, page["symbols"], page.get("chevrons") or []
+        )
+        features.extend(sink_features)
+        used_decimals.update(consumed_sinks)
         for group in groups:
             indexes = [callout_ids[index] for index in group]
             decimals = [index for index in indexes if _DECIMAL_WORD.fullmatch(words[index][4])]
@@ -922,7 +1179,10 @@ def _positioned_pdf_callouts(
                 if count_match:
                     counts.append(int(count_match.group(1)))
             thru = any(words[index][4].upper() in {"THRU", "THROUGH"} for index in indexes)
-            marked_here = [index for index in decimals if index in marked]
+            marked_in_group = [index for index in decimals if index in marked]
+            if marked_in_group and all(index in consumed_sinks for index in marked_in_group):
+                continue
+            marked_here = [index for index in marked_in_group if index not in consumed_sinks]
             if marked_here:
                 for index in marked_here:
                     used_decimals.add(index)
@@ -1422,7 +1682,8 @@ def read_machining_requirements(
             "treated as one machined part."
         )
     needs_machining = any(
-        feature.get("kind") == "hole" or feature.get("thread_form") in {"tap", "single_point"}
+        feature.get("kind") in {"hole", "countersink", "counterbore"}
+        or feature.get("thread_form") in {"tap", "single_point"}
         for feature in features
     ) or any(
         callout.get("unassigned_hole") or callout.get("requires_machining")
