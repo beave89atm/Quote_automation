@@ -12,7 +12,7 @@ from pathlib import Path
 import fitz
 
 from quote_core.machining_quote import attach_machining_times, quote_machining_features
-from quote_core.machining_read import apply_drawing_reading
+from quote_core.machining_read import apply_drawing_reading, read_stated_stock
 from quote_core.machining_symbols import describe_symbol
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "turned_practice"
@@ -58,8 +58,8 @@ def test_turned_practice_reads_stepped_diameters_face_groove_and_thread():
     by_kind = {feature["kind"]: feature for feature in reading["features"]}
     face = by_kind["face"]
     assert face["callout"] == "FACE"
-    assert face["machine"] == "lathe"
-    assert face["machine_source"] == "stock_vs_finished"
+    assert face.get("machine") is None
+    assert face.get("machine_source") is None
     assert face.get("stated_machine") is not True
     assert any(row["field"] == "machine" for row in face["blank_fields"])
     assert "step_match" not in face
@@ -110,10 +110,9 @@ def test_turned_practice_reads_stepped_diameters_face_groove_and_thread():
     assert "4-41" in chamfer_feature["citation"]
     assert "6.1" in chamfer_feature["citation"]
     assert "4-41" in chamfer_feature["angle_citation"]
-    assert chamfer_feature["machine"] == "lathe"
-    assert chamfer_feature["machine_source"] == "stock_vs_finished"
-    assert "assigns lathe" in chamfer_feature["note"]
-    assert "No cycle time was calculated" in chamfer_feature["note"]
+    assert chamfer_feature.get("machine") is None
+    assert chamfer_feature.get("machine_source") is None
+    assert "No operation code was added" in chamfer_feature["note"]
     assert reading["unknown_symbols"] == []
     degree = describe_symbol("\u00b0")
     assert degree["known"] is True
@@ -144,12 +143,22 @@ def test_turned_practice_reads_stepped_diameters_face_groove_and_thread():
     assert "BB1013" in notes
     assert "rest of the shared drive has not" in notes
     assert "PRACTICE" not in notes
+    sheet_stock = read_stated_stock(_pdf_text())
+    assert sheet_stock["form"] == "unknown"
+    assert sheet_stock["guessed"] is False
+    assert "diameter_in" not in sheet_stock
     assignment = reading["process_from_stock"]
-    assert assignment["family"] == "lathe"
+    assert assignment["operation_justified"] is False
+    assert assignment["family"] is None
     assert assignment["stated_on_sheet"] is False
-    assert assignment["stock"]["diameter_in"] == 1.25
+    assert assignment["stock"]["form"] == "unknown"
+    assert assignment["stock"]["guessed"] is False
+    assert "diameter_in" not in assignment["stock"]
+    assert assignment["stock"].get("diameter_in") != 1.25
+    assert assignment["finished"]["shape"] == "round"
     assert assignment["finished"]["diameters_in"] == [0.75, 1.25]
     assert "does not place the cylinder axes" in assignment["evidence"]
+    assert "No operation was justified" in assignment["evidence"]
     assert "Lathe 2 was not chosen" in assignment["evidence"]
     assert "does not supply a run time" in assignment["evidence"]
 
@@ -161,23 +170,19 @@ def test_turned_practice_reads_stepped_diameters_face_groove_and_thread():
     assert result["shop_rate_per_hour"] is None
     assert result["setup_time_min"] is None
     assert result["missing"] == ["operation_count", "run_time", "setup_time"]
-    assert [op["name"] for op in result["operations"]] == ["facing", "grooving", "chamfer"]
-    assert [op["operation_code"] for op in result["operations"]] == ["op_lathe", "op_lathe", "op_lathe"]
-    assert all(op["run_time_min"] is None for op in result["operations"])
-    grooving = result["operations"][1]
-    assert grooving["machine"] == "lathe"
+    assert [op["name"] for op in result["operations"]] == ["grooving"]
+    assert result["operations"][0]["operation_code"] is None
+    assert result["operations"][0]["run_time_min"] is None
+    grooving = result["operations"][0]
+    assert grooving["machine"] == "lathe-unspecified"
     assert grooving["feature_ids"] == ["read-2"]
-    assert {row["kind"] for row in result["unresolved_features"]} == {"thread"}
-    item = result["item_operations"][0]
-    assert item["operation_code"] == "op_lathe"
-    assert item["setup"]["calculator"] == "Lathe-Setup"
-    assert item["setup"]["time_min"] is None
-    assert item["run"]["time_min"] is None
+    assert {row["kind"] for row in result["unresolved_features"]} == {"face", "thread", "chamfer"}
+    assert result["item_operations"] == []
     dumped = str(result)
-    assert "op_lathe2" not in dumped
-    assert "op_mill" not in dumped
+    for code in ("op_lathe", "op_lathe2", "op_mill"):
+        assert code not in dumped
     quote_notes = " ".join(result["notes"])
-    assert "which one is not specified" not in quote_notes
+    assert "which one is not specified" in quote_notes
     assert "Thread form is missing" in quote_notes
     assert "Not posted" in quote_notes
 
@@ -193,18 +198,19 @@ def test_typed_cycle_on_the_practice_groove_does_not_finish_the_quote():
     reading = apply_drawing_reading({}, _PDF, _STEP)["machining_reading"]
     result = quote_machining_features(
         reading["features"],
-        operation_cycle_times={"lathe:grooving:0.125": 4.0},
+        operation_cycle_times={"lathe-unspecified:grooving:0.125": 4.0},
         features_source="drawing",
     )
     grooving = next(op for op in result["operations"] if op["name"] == "grooving")
     assert grooving["run_time_min"] == 4.0
     assert grooving["run_time_source"] == "cycle_override"
-    assert grooving["operation_code"] == "op_lathe"
+    assert grooving["operation_code"] is None
     assert result["setup_time_min"] is None
     assert result["operation_count"] is None
-    assert result["item_operations"][0]["operation_code"] == "op_lathe"
-    assert result["item_operations"][0]["run"]["time_min"] is None
+    assert result["item_operations"] == []
     assert result["shop_rate_per_hour"] is None
     assert result["quote_done"] is False
     assert result["missing"] == ["operation_count", "run_time", "setup_time"]
-    assert "op_lathe2" not in str(result)
+    dumped = str(result)
+    for code in ("op_lathe", "op_lathe2", "op_mill"):
+        assert code not in dumped

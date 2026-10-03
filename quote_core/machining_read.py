@@ -5,11 +5,13 @@ or a plane by itself is not a hole, a thread, a groove, or a face operation.
 Missing values stay blank.
 
 When the sheet does not name mill, lathe, or lathe 2, compare the starting
-envelope to the finished solid (Kyle, 2026-10-02). Concentric turned steps
-assign the lathe family. A prismatic plate with holes, taps, or countersinks
-assigns mill. Lathe 2 is not chosen from that comparison. The comparison
-does not invent a cycle time or a shop rate. The quote maps the family onto
-a verified operation code.
+stock the sheet actually states to the finished solid (Kyle, 2026-10-02).
+Stock is bar, plate, tube, or unknown. A missing stock line stays unknown.
+The largest finished diameter is not a bar size. A finished round smaller
+than a stated round stock can be turning. A finished plate with holes can
+be milling. Lathe 2 is not chosen from that comparison. The comparison
+does not invent a cycle time or a shop rate. The quote maps a justified
+family onto a verified operation code.
 """
 
 from __future__ import annotations
@@ -664,6 +666,19 @@ def _thread_feature(line: str, unified: re.Match[str] | None, metric: re.Match[s
             )
         if re.search(r"\bISO\b", line, re.IGNORECASE):
             extra["thread_standard"] = "ISO"
+    machine, machine_blanks = _machine_from_line(line)
+    if machine.get("stated_machine") is True:
+        extra.update(machine)
+        blanks.extend(machine_blanks)
+    elif extra.get("thread_form"):
+        # Tap, thread mill, and single-point do not name the machine.
+        extra["stated_machine"] = False
+        blanks.append(
+            _blank(
+                "machine",
+                "The line does not say lathe, mill, or lathe 2 — machine left blank.",
+            )
+        )
     return _feature("thread", line, dimensions=dimensions, blank_fields=blanks, **extra)
 
 
@@ -1020,32 +1035,231 @@ def _plate_box(geometry: dict[str, Any]) -> list[float] | None:
     return [length, width, thick]
 
 
+_BAR_WORD = re.compile(
+    r"\b(?:RD\.?\s*BAR|ROUND\s+BAR|BAR\s+ROUND|FLAT\s+BAR|BAR)\b",
+    re.IGNORECASE,
+)
+_TUBE_WORD = re.compile(r"\bTUB(?:E|ING)\b", re.IGNORECASE)
+_PLATE_WORD = re.compile(r"\bPLATE\b", re.IGNORECASE)
+_ZINC_PLATE = re.compile(r"\bZINC\s+PLATE\b", re.IGNORECASE)
+_UNKNOWN_STOCK = {
+    "form": "unknown",
+    "stated": False,
+    "guessed": False,
+    "evidence": "The sheet does not state bar, plate, or tube.",
+}
+
+
+def _stated_number(token: str | None) -> float | None:
+    return _num(token)
+
+
+def _unique_sizes(values: list[float]) -> list[float]:
+    kept: list[float] = []
+    for value in values:
+        if any(abs(value - prior) <= _DIAMETER_CLUSTER_IN for prior in kept):
+            continue
+        kept.append(value)
+    return kept
+
+
+def read_stated_stock(text: str | None) -> dict[str, Any]:
+    """Stock form the sheet or title block writes: bar, plate, tube, or unknown.
+
+    A size is kept only when the same stock words state it. The finished
+    solid is not a source. ``guessed`` is always false.
+    """
+    if not text or not str(text).strip():
+        return dict(_UNKNOWN_STOCK)
+    lines: list[str] = []
+    for raw in str(text).splitlines():
+        line = " ".join(raw.split())
+        if not line or _ZINC_PLATE.fullmatch(line):
+            continue
+        line = _ZINC_PLATE.sub("", line).strip()
+        if line:
+            lines.append(line)
+    blob = "\n".join(lines)
+    forms: list[str] = []
+    if _BAR_WORD.search(blob):
+        forms.append("bar")
+    if _TUBE_WORD.search(blob):
+        forms.append("tube")
+    if _PLATE_WORD.search(blob):
+        forms.append("plate")
+    if len(forms) != 1:
+        return dict(_UNKNOWN_STOCK)
+    form = forms[0]
+    word = {"bar": _BAR_WORD, "tube": _TUBE_WORD, "plate": _PLATE_WORD}[form]
+    quotes = [line for line in lines if word.search(line)]
+    stock: dict[str, Any] = {
+        "form": form,
+        "stated": True,
+        "guessed": False,
+        "evidence": " ".join(quotes),
+    }
+    if form == "plate":
+        thickness = _stated_plate_thickness(blob)
+        if thickness is not None:
+            stock["thickness_in"] = thickness
+        for line in lines:
+            if line in quotes:
+                continue
+            if re.search(r"(?i)A\s*572|\bW:\s*[0-9]", line):
+                quotes.append(line)
+        stock["evidence"] = " ".join(quotes)
+    else:
+        diameter = _stated_round_diameter(blob)
+        if diameter is not None:
+            stock["diameter_in"] = diameter
+    return stock
+
+
+def _stated_plate_thickness(blob: str) -> float | None:
+    """Thickness written with the plate words. Not a finished envelope."""
+    found: list[float] = []
+    patterns = (
+        rf"\bPLATE\s+{_NUMBER}\s*(?:IN(?:CH)?\s*)?THK\b",
+        rf"{_NUMBER}\s*[\"″]\s*(?:HR\s+)?PLATE\b",
+        rf"\bW:\s*{_NUMBER}\s*[\"″]",
+        rf"(?<![\d.]){_NUMBER}\s*[\"″]\s*A\s*572\b",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, blob, re.IGNORECASE):
+            value = _stated_number(match.group(1))
+            if value is not None:
+                found.append(value)
+    sizes = _unique_sizes(found)
+    if len(sizes) == 1:
+        return sizes[0]
+    return None
+
+
+def _stated_round_diameter(blob: str) -> float | None:
+    """Diameter written on the bar or tube line. A bare finished size is not stock."""
+    found: list[float] = []
+    patterns = (
+        rf"(?:⌀|Ø|∅)\s*{_NUMBER}\s*(?:DIA(?:METER)?)?\s*(?:ROUND\s+|RD\.?\s+|FLAT\s+)?(?:BAR|TUB(?:E|ING))\b",
+        rf"\b(?:ROUND\s+BAR|RD\.?\s*BAR|BAR\s+ROUND|FLAT\s+BAR|BAR|TUB(?:E|ING))\b"
+        rf"[^\n]{{0,40}}?(?:⌀|Ø|∅|\bDIA(?:METER)?\b)\s*{_NUMBER}",
+        rf"{_NUMBER}\s*[\"″]\s*(?:DIA(?:METER)?\s*)?(?:ROUND\s+|RD\.?\s+)?(?:BAR|TUB(?:E|ING))\b",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, blob, re.IGNORECASE):
+            value = _stated_number(match.group(1))
+            if value is not None:
+                found.append(value)
+    sizes = _unique_sizes(found)
+    if len(sizes) == 1:
+        return sizes[0]
+    return None
+
+
+def _accept_stated_stock(stated: dict[str, Any] | None) -> dict[str, Any]:
+    """Drop a stock record that was not taken from the sheet."""
+    if not isinstance(stated, dict):
+        return dict(_UNKNOWN_STOCK)
+    if stated.get("guessed") is True or stated.get("stated") is not True:
+        return dict(_UNKNOWN_STOCK)
+    form = str(stated.get("form") or "").casefold()
+    if form not in {"bar", "plate", "tube"}:
+        return dict(_UNKNOWN_STOCK)
+    out: dict[str, Any] = {
+        "form": form,
+        "stated": True,
+        "guessed": False,
+        "evidence": str(stated.get("evidence") or form),
+    }
+    if form == "plate" and isinstance(stated.get("thickness_in"), (int, float)) and not isinstance(
+        stated.get("thickness_in"), bool
+    ):
+        out["thickness_in"] = float(stated["thickness_in"])
+    if form in {"bar", "tube"} and isinstance(stated.get("diameter_in"), (int, float)) and not isinstance(
+        stated.get("diameter_in"), bool
+    ):
+        out["diameter_in"] = float(stated["diameter_in"])
+    return out
+
+
+def _hole_features(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        feature
+        for feature in features
+        if feature.get("kind") in {"hole", "countersink", "counterbore"}
+        or feature.get("thread_form") in {"tap", "thread_mill"}
+    ]
+
+
+def _finished_shape(
+    geometry: dict[str, Any],
+    features: list[dict[str, Any]],
+    cylinders: list[dict[str, Any]],
+    distinct: list[float],
+) -> dict[str, Any]:
+    """Finished solid from the STEP file. This is not starting stock."""
+    box = _plate_box(geometry)
+    axes_known = bool(cylinders) and all(
+        row.get("axis_direction") and row.get("axis_origin_in") for row in cylinders
+    )
+    concentric = bool(
+        axes_known and len(cylinders) >= 2 and _axes_share_one_centerline(cylinders)
+    )
+    holes = _hole_features(features)
+    if box and not concentric:
+        shape = "plate"
+    elif distinct and (
+        concentric or (box is None and not holes and len(distinct) >= 2)
+    ):
+        shape = "round"
+    else:
+        shape = "unknown"
+    finished: dict[str, Any] = {
+        "shape": shape,
+        "diameters_in": distinct,
+        "concentric": concentric,
+    }
+    if box:
+        finished["envelope_in"] = box
+    if not axes_known and shape == "round":
+        finished["axes_placed"] = False
+    return finished
+
+
+def _diameter_list(geometry: dict[str, Any], diameters: list[float]) -> str:
+    if not diameters:
+        return "none read"
+    if geometry.get("units") == "millimetre":
+        return ", ".join(
+            f"{_fmt_in(value * 25.4)} mm ({_fmt_in(value)} in)" for value in diameters
+        )
+    return ", ".join(f"{_fmt_in(value)} in" for value in diameters)
+
+
 def compare_stock_to_finished(
     geometry: dict[str, Any] | None,
     features: list[dict[str, Any]] | None = None,
     callouts: list[dict[str, Any]] | None = None,
     assembly: dict[str, Any] | None = None,
+    stated_stock: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Choose lathe or mill by comparing starting stock to the finished part.
+    """Choose lathe or mill only from stated stock versus the finished part.
 
     Kyle, 2026-10-02: when the drawing does not name lathe or mill, the
-    difference between the starting material and the finished part decides
-    the machining. Shop rates are not part of this comparison.
+    difference between the starting material and the finished part may
+    decide the machining. Shop rates are not part of this comparison.
 
-    Turned OD/ID steps and concentric cylinders assign the lathe family.
-    The starting round is the largest finished outside diameter. The
-    drawing does not state a larger bar, so none is invented. Smaller
-    diameters on that same axis are the material turned away. Lathe 2 is
-    not chosen unless the sheet says lathe 2, and this function never
-    sees that word — a stated machine is left to the caller.
+    Starting stock comes from the sheet or title block: bar, plate, tube,
+    or unknown. A size the sheet does not write is left off. The largest
+    finished diameter is not used as a bar. A guessed stock record is
+    refused.
 
-    A prismatic plate (thin vertex envelope) whose finished difference is
-    holes, taps, or countersinks assigns mill. Those hole axes are not a
-    stack of turned diameters.
+    Turning is justified when the finished solid is round and smaller than
+    a stated round stock. Milling is justified when the finished solid is
+    a plate with holes. Lathe 2 is never chosen here. Nothing here writes
+    a run time, a setup time, or a dollar rate.
 
-    Several leaf parts are not one machined part. A single cylinder, or
-    two diameters that do not share an axis, is not enough. Nothing here
-    writes a run time, a setup time, or a dollar rate.
+    Several leaf parts are not one machined part. A machine the sheet
+    already names is left to the caller.
     """
     features = [row for row in (features or []) if isinstance(row, dict)]
     callouts = [row for row in (callouts or []) if isinstance(row, dict)]
@@ -1062,128 +1276,91 @@ def compare_stock_to_finished(
         if isinstance(row, dict) and isinstance(row.get("diameter_in"), float)
     ]
     distinct = _cluster_diameters([row["diameter_in"] for row in cylinders])
-    turned = _turned_assignment(geometry, features, cylinders, distinct)
-    if turned:
-        return turned
-    return _plate_assignment(geometry, features, distinct)
-
-
-def _turned_assignment(
-    geometry: dict[str, Any],
-    features: list[dict[str, Any]],
-    cylinders: list[dict[str, Any]],
-    distinct: list[float],
-) -> dict[str, Any] | None:
-    if len(distinct) < 2:
-        return None
-    axes_known = all(row.get("axis_direction") and row.get("axis_origin_in") for row in cylinders)
-    if axes_known:
-        if not _axes_share_one_centerline(cylinders):
-            return None
-        axis_note = "The cylinder axes in the STEP file are one centerline."
-    else:
-        # Practice fixture: two diameters and no axis placement. Do not use
-        # this path when the sheet already has holes or a plate.
-        if any(
-            feature.get("kind") in _MILL_FEATURE_KINDS or feature.get("thread_form") == "tap"
-            for feature in features
-        ):
-            return None
-        axis_note = (
-            "The STEP file does not place the cylinder axes. "
-            "The diameters are on one product, and the sheet does not call them holes."
+    stock = _accept_stated_stock(stated_stock)
+    finished = _finished_shape(geometry, features, cylinders, distinct)
+    holes = _hole_features(features)
+    family: str | None = None
+    justified = False
+    if (
+        stock["form"] in {"bar", "tube"}
+        and isinstance(stock.get("diameter_in"), float)
+        and finished["shape"] == "round"
+        and distinct
+        and max(distinct) < stock["diameter_in"] - _DIAMETER_CLUSTER_IN
+    ):
+        family = "lathe"
+        justified = True
+        difference = (
+            "The finished round is smaller than the stated round stock, "
+            "so the difference is turning."
         )
-    stock = max(distinct)
-    finished = [_fmt_in(value) for value in distinct]
-    units = geometry.get("units")
-    shown = ", ".join(f"{value} in" for value in finished)
-    if units == "millimetre":
-        shown = ", ".join(
-            f"{_fmt_in(value * 25.4)} mm ({_fmt_in(value)} in)" for value in distinct
+    elif finished["shape"] == "plate" and holes:
+        family = "mill"
+        justified = True
+        kinds = ", ".join(dict.fromkeys(feature.get("kind") or "feature" for feature in holes))
+        difference = (
+            f"The finished part is a plate with {kinds}. "
+            "That difference is milling, not turning."
         )
-        stock_shown = f"{_fmt_in(stock * 25.4)} mm ({_fmt_in(stock)} in)"
     else:
-        stock_shown = f"{_fmt_in(stock)} in"
-    evidence = (
-        f"The sheet does not name mill, lathe, or lathe 2. {axis_note} "
-        f"Starting stock is a round of {stock_shown}, the largest finished "
-        "outside diameter. The drawing does not state a larger bar. "
-        f"Finished diameters on that round are {shown}. "
-        "The smaller diameters are turned OD or ID steps, so the family is lathe. "
-        "Lathe 2 was not chosen. This comparison does not supply a run time or a setup time."
-    )
-    return {
-        "family": "lathe",
-        "stated_on_sheet": False,
-        "stock": {
-            "form": "round",
-            "diameter_in": stock,
-            "note": (
-                "Starting round is the largest finished outside diameter. "
-                "A larger bar was not on the drawing."
-            ),
-        },
-        "finished": {
-            "diameters_in": distinct,
-            "concentric": True,
-        },
-        "difference": (
-            "Finished diameters smaller than the starting round are turned "
-            "OD or ID steps on the same axis."
-        ),
-        "evidence": evidence,
-    }
-
-
-def _plate_assignment(
-    geometry: dict[str, Any],
-    features: list[dict[str, Any]],
-    distinct: list[float],
-) -> dict[str, Any] | None:
-    box = _plate_box(geometry)
-    if box is None:
-        return None
-    if len(distinct) >= 2:
-        return None
-    mill_features = [
-        feature
-        for feature in features
-        if feature.get("kind") in {"hole", "countersink", "counterbore"}
-        or feature.get("thread_form") in {"tap", "thread_mill"}
-    ]
-    if not mill_features:
-        return None
-    length, width, thick = box
-    kinds = ", ".join(dict.fromkeys(feature.get("kind") or "feature" for feature in mill_features))
+        difference = (
+            "The stated stock and the finished solid do not justify turning or milling. "
+            "Turning needs a finished round smaller than a stated round stock. "
+            "Milling needs a finished plate with holes."
+        )
+    shown = _diameter_list(geometry, distinct)
+    if stock["form"] == "unknown":
+        stock_sentence = (
+            "The sheet does not state bar, plate, or tube. "
+            "Stock is unknown. A bar size was not guessed."
+        )
+    else:
+        stock_sentence = f"The sheet states {stock['form']} stock"
+        if "thickness_in" in stock:
+            stock_sentence += f" {_fmt_in(stock['thickness_in'])} in thick"
+        if "diameter_in" in stock:
+            stock_sentence += f" {_fmt_in(stock['diameter_in'])} in round"
+        quote = stock.get("evidence") or ""
+        if quote:
+            stock_sentence += f" ({quote})"
+        stock_sentence += "."
+    if finished["concentric"]:
+        shape_sentence = (
+            "The finished solid is round. "
+            "The cylinder axes in the STEP file are one centerline."
+        )
+    elif finished["shape"] == "round":
+        shape_sentence = (
+            "The finished solid is round. "
+            "The STEP file does not place the cylinder axes."
+        )
+    elif finished["shape"] == "plate":
+        length, width, thick = finished["envelope_in"]
+        shape_sentence = (
+            f"The finished solid is a plate {_fmt_in(length)} x {_fmt_in(width)} x "
+            f"{_fmt_in(thick)} in."
+        )
+    else:
+        shape_sentence = "The finished solid was not classified as a round or a plate."
+    if justified and family == "lathe":
+        decision = "The family is lathe. Lathe 2 was not chosen."
+    elif justified and family == "mill":
+        decision = "The family is mill. Lathe 2 was not chosen."
+    else:
+        decision = "No operation was justified. Lathe 2 was not chosen."
     evidence = (
         "The sheet does not name mill, lathe, or lathe 2. "
-        f"The finished solid is a plate {_fmt_in(length)} x {_fmt_in(width)} x "
-        f"{_fmt_in(thick)} in. The thin axis is the plate. "
-        f"The machining on that plate is {kinds}. "
-        "Those are holes, taps, or countersinks in a prismatic plate, not turned "
-        "OD or ID steps, so the family is mill. "
+        f"{stock_sentence} {shape_sentence} "
+        f"Finished diameters are {shown}. {difference} {decision} "
         "This comparison does not supply a run time or a setup time."
     )
     return {
-        "family": "mill",
+        "family": family,
         "stated_on_sheet": False,
-        "stock": {
-            "form": "plate",
-            "box_in": box,
-            "thickness_in": thick,
-            "note": (
-                "Starting plate is the finished solid's vertex envelope. "
-                "The thin axis is the plate thickness."
-            ),
-        },
-        "finished": {
-            "diameters_in": distinct,
-            "concentric": False,
-        },
-        "difference": (
-            "The plate envelope stays. Holes, taps, or countersinks are the "
-            "material removed from that plate."
-        ),
+        "operation_justified": justified,
+        "stock": stock,
+        "finished": finished,
+        "difference": difference,
         "evidence": evidence,
     }
 
@@ -1193,7 +1370,7 @@ def _apply_process_from_stock(
     assignment: dict[str, Any] | None,
 ) -> None:
     """Fill a machine the sheet left blank. Do not mark it as written on the sheet."""
-    if not assignment:
+    if not assignment or assignment.get("operation_justified") is not True:
         return
     family = assignment.get("family")
     evidence = assignment.get("evidence") or ""
@@ -2213,6 +2390,7 @@ def read_machining_requirements(
 
     pdf = Path(pdf_path) if pdf_path else None
     step = Path(stp_path) if stp_path else None
+    pdf_text = ""
     if pdf is None or not pdf.is_file():
         unreadable.append(_NO_PDF_NOTE)
     else:
@@ -2221,6 +2399,7 @@ def read_machining_requirements(
         except Exception:
             unreadable.append(_PDF_FAIL_NOTE)
             text = ""
+        pdf_text = text
         pdf_read = True
         if not text.strip():
             unreadable.append(_EMPTY_PDF_NOTE)
@@ -2351,7 +2530,11 @@ def read_machining_requirements(
     process_from_stock = None
     if not any(feature.get("stated_machine") is True for feature in features):
         process_from_stock = compare_stock_to_finished(
-            geometry, features, callouts, assembly
+            geometry,
+            features,
+            callouts,
+            assembly,
+            read_stated_stock(pdf_text),
         )
         _apply_process_from_stock(features, process_from_stock)
     if process_from_stock and process_from_stock.get("evidence"):

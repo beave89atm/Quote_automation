@@ -7,7 +7,7 @@ from pathlib import Path
 import fitz
 
 from quote_core.machining_quote import attach_machining_times, quote_machining_features
-from quote_core.machining_read import apply_drawing_reading
+from quote_core.machining_read import apply_drawing_reading, read_stated_stock
 from quote_core.machining_symbols import describe_symbol
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "alcon_supporting_pin"
@@ -120,52 +120,62 @@ def test_alcon_pin_reads_the_stated_tap_and_leaves_times_blank():
     assert "BB1013" in notes
     assert "rest of the shared drive has not" in notes
 
+    sheet_stock = read_stated_stock(_pdf_text())
+    assert sheet_stock["form"] == "unknown"
+    assert sheet_stock["stated"] is False
+    assert sheet_stock["guessed"] is False
+    assert "diameter_in" not in sheet_stock
+    assert "bar, plate, or tube" in sheet_stock["evidence"]
+    assert "SS-316" not in sheet_stock["evidence"]
+
     assignment = reading["process_from_stock"]
-    assert assignment["family"] == "lathe"
+    assert assignment["operation_justified"] is False
+    assert assignment["family"] is None
     assert assignment["stated_on_sheet"] is False
-    assert assignment["stock"]["form"] == "round"
-    assert abs(assignment["stock"]["diameter_in"] * 25.4 - 15.0) < 0.01
+    assert assignment["stock"]["form"] == "unknown"
+    assert assignment["stock"]["stated"] is False
+    assert assignment["stock"]["guessed"] is False
+    assert "diameter_in" not in assignment["stock"]
     finished_mm = sorted(round(value * 25.4, 3) for value in assignment["finished"]["diameters_in"])
     assert finished_mm == [5.0, 6.0, 10.5, 15.0]
+    assert assignment["stock"].get("diameter_in") not in {value / 25.4 for value in finished_mm}
+    assert assignment["finished"]["shape"] == "round"
     assert assignment["finished"]["concentric"] is True
     assert "one centerline" in assignment["evidence"]
+    assert "No operation was justified" in assignment["evidence"]
     assert "Lathe 2 was not chosen" in assignment["evidence"]
     assert "does not supply a run time" in assignment["evidence"]
-    assert thread["machine"] == "lathe"
-    assert thread["machine_source"] == "stock_vs_finished"
-    assert thread.get("stated_machine") is not True
+    assert "not guessed" in assignment["evidence"]
+    assert thread.get("machine") is None
+    assert thread.get("machine_source") is None
+    assert thread.get("stated_machine") is False
+    assert any("lathe, mill, or lathe 2" in row["note"] for row in thread["blank_fields"])
 
     result = quote_machining_features(reading["features"], features_source="drawing")
     assert result["needs_machining"] is True
     assert result["quote_done"] is False
-    assert result["operation_count"] == 2
+    assert result["operation_count"] is None
     assert result["posted"] is False
     assert result["shop_rate_per_hour"] is None
     assert result["setup_time_min"] is None
-    assert result["missing"] == ["run_time", "setup_time"]
-    assert result["unresolved_features"] == []
-    assert [(op["name"], op["operation_code"], op["run_time_min"]) for op in result["operations"]] == [
-        ("drill", "op_lathe", None),
-        ("tap", "op_lathe", None),
-    ]
-    item = result["item_operations"][0]
-    assert item["operation_code"] == "op_lathe"
-    assert item["equipment"] == "Lathe"
-    assert item["setup"]["calculator"] == "Lathe-Setup"
-    assert item["setup"]["time_min"] is None
-    assert item["run"]["calculator"] == "Lathe-Time"
-    assert item["run"]["field_name"] == "Per Unit Turning Time"
-    assert item["run"]["time_min"] is None
-    assert item["posted"] is False
-    assert "op_mill" not in str(result["operations"])
-    assert "op_lathe2" not in str(result)
+    assert result["operations"] == []
+    assert result["item_operations"] == []
+    assert result["missing"] == ["operation_count", "run_time", "setup_time"]
+    assert result["unresolved_features"]
+    dumped = str(result)
+    for code in ("op_mill", "op_lathe", "op_lathe2"):
+        assert code not in dumped
 
     times = attach_machining_times({"weld_minutes": 3.0}, takeoff)
     assert times["weld_minutes"] == 3.0
     assert times["machining"]["quote_done"] is False
     assert times["machining"]["setup_time_min"] is None
     assert times["machining"]["posted"] is False
-    assert times["machining"]["missing"] == ["run_time", "setup_time"]
-    assert times["machining"]["process_from_stock"]["operation_code"] == "op_lathe"
+    assert times["machining"]["missing"] == ["operation_count", "run_time", "setup_time"]
+    assert times["machining"]["process_from_stock"]["operation_justified"] is False
+    assert times["machining"]["process_from_stock"]["operation_code"] is None
+    assert times["machining"]["process_from_stock"]["stock"]["form"] == "unknown"
+    assert times["machining"]["process_from_stock"]["finished"]["shape"] == "round"
     assert times["machining"]["process_from_stock"]["run_time_min"] is None
+    assert times["machining"]["process_from_stock"]["setup_time_min"] is None
     assert times["machining"]["shop_rate_per_hour"] is None

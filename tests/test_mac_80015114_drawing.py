@@ -8,7 +8,7 @@ from pathlib import Path
 import fitz
 
 from quote_core.machining_quote import attach_machining_times, machining_blocks_quote
-from quote_core.machining_read import apply_drawing_reading
+from quote_core.machining_read import apply_drawing_reading, read_stated_stock
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "mac_80015114"
 _PDF = _FIXTURE / "80015114.pdf"
@@ -127,18 +127,33 @@ def test_spacer_ring_reads_diameters_and_stays_not_done():
     assert "rest of the shared drive has not" in notes
     assert "Sprout" not in notes
 
+    sheet_stock = read_stated_stock(_pdf_text())
+    assert sheet_stock["form"] == "unknown"
+    assert sheet_stock["stated"] is False
+    assert sheet_stock["guessed"] is False
+    assert "diameter_in" not in sheet_stock
+    assert "bar, plate, or tube" in sheet_stock["evidence"]
+
     assignment = reading["process_from_stock"]
-    assert assignment["family"] == "lathe"
+    assert assignment["operation_justified"] is False
+    assert assignment["family"] is None
     assert assignment["stated_on_sheet"] is False
-    assert assignment["stock"]["form"] == "round"
-    assert assignment["stock"]["diameter_in"] == 5.0
+    assert assignment["stock"]["form"] == "unknown"
+    assert assignment["stock"]["stated"] is False
+    assert assignment["stock"]["guessed"] is False
+    assert "diameter_in" not in assignment["stock"]
+    assert assignment["stock"].get("diameter_in") != 5.0
+    assert "not guessed" in assignment["evidence"]
+    assert "largest finished" not in assignment["evidence"]
+    assert assignment["finished"]["shape"] == "round"
     assert assignment["finished"]["concentric"] is True
     finished = [round(value, 4) for value in assignment["finished"]["diameters_in"]]
     assert finished == [3.6, 4.116, 4.616, 5.0]
+    assert max(finished) == 5.0
     assert "one centerline" in assignment["evidence"]
+    assert "No operation was justified" in assignment["evidence"]
     assert "Lathe 2 was not chosen" in assignment["evidence"]
     assert "does not supply a run time" in assignment["evidence"]
-    assert "larger bar" in assignment["evidence"]
 
     times = attach_machining_times({"weld_minutes": 3.0}, takeoff)
     machining = times["machining"]
@@ -154,12 +169,15 @@ def test_spacer_ring_reads_diameters_and_stays_not_done():
     assert machining["posted"] is False
     assert machining_blocks_quote(times) is True
     coded = machining["process_from_stock"]
-    assert coded["operation_code"] == "op_lathe"
-    assert coded["family"] == "lathe"
+    assert coded["operation_justified"] is False
+    assert coded["operation_code"] is None
+    assert coded["stock"]["form"] == "unknown"
+    assert coded["finished"]["shape"] == "round"
     assert coded["run_time_min"] is None
     assert coded["setup_time_min"] is None
     assert coded["shop_rate_per_hour"] is None
     assert coded["posted"] is False
     dumped = str(machining)
     assert "op_lathe2" not in dumped
+    assert "op_lathe" not in dumped
     assert "op_mill" not in dumped

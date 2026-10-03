@@ -8,7 +8,7 @@ from pathlib import Path
 import fitz
 
 from quote_core.machining_quote import attach_machining_times, machining_blocks_quote
-from quote_core.machining_read import apply_drawing_reading
+from quote_core.machining_read import apply_drawing_reading, read_stated_stock
 from quote_core.machining_symbols import describe_symbol
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "sprout_b80720004"
@@ -106,13 +106,25 @@ def test_sprout_plate_reads_the_countersink_and_stays_not_done():
     assert "1002309-1" in shared
     assert "rest of the shared drive has not" in shared
     assert "were not treated as one machined part" in notes
+    sheet_stock = read_stated_stock(_pdf_text())
+    assert sheet_stock["form"] == "plate"
+    assert sheet_stock["stated"] is True
+    assert sheet_stock["guessed"] is False
+    assert sheet_stock["thickness_in"] == 0.5
+    assert "SLEEVE PLATE" in sheet_stock["evidence"]
+    assert "A572" in sheet_stock["evidence"]
     assignment = reading["process_from_stock"]
+    assert assignment["operation_justified"] is True
     assert assignment["family"] == "mill"
     assert assignment["stated_on_sheet"] is False
     assert assignment["stock"]["form"] == "plate"
+    assert assignment["stock"]["guessed"] is False
     assert assignment["stock"]["thickness_in"] == 0.5
+    assert "A572" in assignment["stock"]["evidence"]
+    assert assignment["finished"]["shape"] == "plate"
+    assert "vertex" not in str(assignment["stock"]).lower()
     assert "countersink" in assignment["evidence"]
-    assert "not turned" in assignment["evidence"]
+    assert "not turning" in assignment["evidence"]
     assert "does not supply a run time" in assignment["evidence"]
 
     times = attach_machining_times({"weld_minutes": 3.0}, takeoff)

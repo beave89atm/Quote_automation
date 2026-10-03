@@ -23,10 +23,13 @@ is not an item operation. No other operation code is used. Nothing here
 posts an operation or calls Sectura.
 
 When a drawing does not name a machine, ``process_from_stock`` may name
-the lathe or mill family from the stock-versus-finished comparison. That
-family maps to ``op_lathe`` or ``op_mill``. Lathe 2 (``op_lathe2``) is used
-only when the sheet says lathe 2. The comparison does not fill run time,
-setup, or a dollar rate.
+the lathe or mill family from the stock-versus-finished comparison. Turning
+needs a finished round smaller than round stock the sheet states. Milling
+needs a finished plate with holes. A guessed bar size does not qualify.
+That family maps to ``op_lathe`` or ``op_mill`` only when the comparison
+justifies it. Lathe 2 (``op_lathe2``) is used only when the sheet says
+lathe 2. The comparison does not fill run time, setup, or a dollar rate.
+A typed cycle time may still override run time.
 """
 
 from __future__ import annotations
@@ -856,15 +859,24 @@ def carry_machining_inputs(previous: dict[str, Any] | None, takeoff: dict[str, A
 
 
 def process_assignment_with_code(assignment: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Map a stock-versus-finished family onto one verified operation code.
+    """Map a justified stock-versus-finished family onto one verified code.
 
-    The comparison chooses lathe or mill. Lathe uses ``op_lathe``.
-    ``op_lathe2`` is applied only when the assignment family is already
-    lathe 2, which the stock comparison does not produce. Run time, setup,
-    and the shop rate stay blank.
+    Turning uses ``op_lathe``. Milling uses ``op_mill``. ``op_lathe2`` is
+    applied only when the assignment family is already lathe 2, which the
+    stock comparison does not produce. An unjustified comparison keeps the
+    stock and finished shape and does not receive an operation code. Run
+    time, setup, and the shop rate stay blank.
     """
     if not isinstance(assignment, dict):
         return None
+    out = dict(assignment)
+    out["run_time_min"] = None
+    out["setup_time_min"] = None
+    out["shop_rate_per_hour"] = None
+    out["posted"] = False
+    if assignment.get("operation_justified") is not True:
+        out["operation_code"] = None
+        return out
     family = (
         _text(assignment.get("family"))
         .casefold()
@@ -877,14 +889,10 @@ def process_assignment_with_code(assignment: dict[str, Any] | None) -> dict[str,
     else:
         code = _FAMILY_CODE.get(family)
     if not code:
-        return None
-    out = dict(assignment)
+        out["operation_code"] = None
+        return out
     out["family"] = "lathe2" if family == "lathe2" else family
     out["operation_code"] = code
-    out["run_time_min"] = None
-    out["setup_time_min"] = None
-    out["shop_rate_per_hour"] = None
-    out["posted"] = False
     return out
 
 
