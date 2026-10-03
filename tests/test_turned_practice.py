@@ -52,6 +52,7 @@ def test_turned_practice_reads_stepped_diameters_face_groove_and_thread():
         "face",
         "groove",
         "thread",
+        "chamfer",
     ]
 
     by_kind = {feature["kind"]: feature for feature in reading["features"]}
@@ -95,15 +96,29 @@ def test_turned_practice_reads_stepped_diameters_face_groove_and_thread():
     assert all(callout["feature"] is False for callout in reading["callouts"])
 
     assert {feature["kind"] for feature in reading["features"]}.isdisjoint(
-        {"hole", "plate", "countersink", "counterbore", "chamfer"}
+        {"hole", "plate", "countersink", "counterbore"}
     )
+    chamfer_feature = by_kind["chamfer"]
+    assert chamfer_feature["callout"] == "45\u00b0 CHAMFER"
+    assert chamfer_feature["dimensions"]["angle_deg"] == 45.0
+    assert "size_in" not in chamfer_feature["dimensions"]
+    assert chamfer_feature["stated_machine"] is False
+    assert any(row["field"] == "machine" for row in chamfer_feature["blank_fields"])
+    assert any(row["field"] == "size_in" for row in chamfer_feature["blank_fields"])
+    assert "4-41" in chamfer_feature["citation"]
+    assert "6.1" in chamfer_feature["citation"]
+    assert "4-41" in chamfer_feature["angle_citation"]
+    assert "No operation code was added" in chamfer_feature["note"]
     assert reading["unknown_symbols"] == []
     degree = describe_symbol("\u00b0")
     assert degree["known"] is True
     assert "4-41" in degree["citation"]
     chamfer = describe_symbol("CHAMFER")
-    assert chamfer["known"] is False
-    assert chamfer["meaning"] is None
+    assert chamfer["known"] is True
+    assert chamfer["id"] == "chamfer"
+    assert "4-41" in chamfer["citation"]
+    assert "6.1" in chamfer["citation"]
+    assert describe_symbol("45\u00b0 CHAMFER")["angle_deg"] == 45.0
 
     cylinders = [row["diameter_in"] for row in reading["geometry"]["cylinders"]]
     assert reading["geometry"]["units"] == "inch"
@@ -140,7 +155,10 @@ def test_turned_practice_reads_stepped_diameters_face_groove_and_thread():
     assert grooving["machine"] == "lathe-unspecified"
     assert grooving["run_time_min"] is None
     assert grooving["feature_ids"] == ["read-2"]
-    assert {row["kind"] for row in result["unresolved_features"]} == {"face", "thread"}
+    assert {row["kind"] for row in result["unresolved_features"]} == {"face", "thread", "chamfer"}
+    dumped = str(result)
+    for code in ("op_mill", "op_lathe", "op_lathe2"):
+        assert code not in dumped
     quote_notes = " ".join(result["notes"])
     assert "which one is not specified" in quote_notes
     assert "Thread form is missing" in quote_notes

@@ -47,11 +47,17 @@ _ENTRIES: tuple[dict[str, Any], ...] = (
         "id": "countersink",
         "glyphs": ("⌵",),
         "words": ("countersink",),
-        "meaning": "Placed with the diameter symbol in front of a countersink diameter.",
+        "meaning": (
+            "Placed with the diameter symbol in front of a countersink diameter. "
+            "The common callout writes that diameter, then X, then the included angle. "
+            "A space on each side of X means BY."
+        ),
         "citation": (
             f"{_GENIUM}, paragraph 2.3. {_Y145} "
             "Text encoding of the countersink symbol: U+2335. "
-            "Paragraph 1.5: notes use the symbol name in place of the symbol."
+            "Paragraph 1.5: notes use the symbol name in place of the symbol. "
+            "The included angle uses the degree sign. "
+            "X with a space on each side is BY (paragraph 2.11.1)."
         ),
     },
     {
@@ -172,6 +178,22 @@ _ENTRIES: tuple[dict[str, Any], ...] = (
         ),
     },
     {
+        "id": "chamfer",
+        "glyphs": (),
+        "words": ("chamfer",),
+        "meaning": (
+            "The word CHAMFER names a chamfer. "
+            "An angle written with the degree sign on that note is the chamfer angle. "
+            "A linear size written on the note is the chamfer size. "
+            "A size that is not written stays blank."
+        ),
+        "citation": (
+            "ASME Y14.5-2018, figure 4-41 (45° chamfer). "
+            f"{_GENIUM}. "
+            "Paragraph 1.5: notes use the symbol name in place of a symbol."
+        ),
+    },
+    {
         "id": "degree",
         "glyphs": ("°",),
         "words": (),
@@ -232,6 +254,23 @@ _METRIC_THREAD = re.compile(
     r"M(\d+(?:\.\d+)?)\s*[xX×]\s*(\d+(?:\.\d+)?)",
     re.IGNORECASE,
 )
+_NOTE_NUMBER = r"([0-9]*\.?[0-9]+|\d+\s*/\s*\d+)"
+_CHAMFER_WORD = re.compile(r"\bCHAMFER\b", re.IGNORECASE)
+_COUNTERSINK_WORD = re.compile(r"\bCOUNTERSINK\b", re.IGNORECASE)
+_DEGREE_VALUES = re.compile(r"(\d+(?:\.\d+)?)°")
+_CHAMFER_LEG = re.compile(
+    rf"{_NOTE_NUMBER}\s+X\s+(\d+(?:\.\d+)?)°"
+    rf"|(\d+(?:\.\d+)?)°\s+X\s+{_NOTE_NUMBER}",
+    re.IGNORECASE,
+)
+_COUNTERSINK_CALLOUT = re.compile(
+    rf"(?:⌀|Ø|∅)?\s*{_NOTE_NUMBER}\s+X\s+(\d+(?:\.\d+)?)°",
+    re.IGNORECASE,
+)
+_DIAMETER_MARK = re.compile(
+    rf"(?:⌀|Ø|∅)\s*{_NOTE_NUMBER}",
+    re.IGNORECASE,
+)
 
 KNOWN_GLYPHS = frozenset(_BY_GLYPH)
 
@@ -276,6 +315,74 @@ def _unknown(token: str) -> dict[str, Any]:
     }
 
 
+def _note_number(token: str | None) -> float | None:
+    if not token:
+        return None
+    text = token.strip().replace(" ", "")
+    if not text:
+        return None
+    if "/" in text:
+        num, _, den = text.partition("/")
+        try:
+            return float(num) / float(den)
+        except (ValueError, ZeroDivisionError):
+            return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _named_feature_note(raw: str) -> dict[str, Any] | None:
+    """A chamfer note, or a countersink note that carries a size or an angle.
+
+    The bare words are handled by the word list. A BY dimension with no
+    countersink word and no countersink symbol is not a countersink.
+    """
+    if _COUNTERSINK_WORD.search(raw) or "⌵" in raw:
+        extra: dict[str, Any] = {}
+        callout = _COUNTERSINK_CALLOUT.search(raw)
+        if callout:
+            diameter = _note_number(callout.group(1))
+            angle = _note_number(callout.group(2))
+            if diameter is not None:
+                extra["countersink_diameter_in"] = diameter
+            if angle is not None:
+                extra["angle_deg"] = angle
+        else:
+            marked = _DIAMETER_MARK.search(raw)
+            if marked:
+                diameter = _note_number(marked.group(1))
+                if diameter is not None:
+                    extra["countersink_diameter_in"] = diameter
+            angles = _DEGREE_VALUES.findall(raw)
+            if len(angles) == 1:
+                angle = _note_number(angles[0])
+                if angle is not None:
+                    extra["angle_deg"] = angle
+        if not extra:
+            return None
+        return _known(_BY_ID["countersink"], raw, **extra)
+    if not _CHAMFER_WORD.search(raw) or raw.casefold() == "chamfer":
+        return None
+    extra = {}
+    leg = _CHAMFER_LEG.search(raw)
+    if leg:
+        size = _note_number(leg.group(1) or leg.group(4))
+        angle = _note_number(leg.group(2) or leg.group(3))
+        if size is not None:
+            extra["size_in"] = size
+        if angle is not None:
+            extra["angle_deg"] = angle
+    else:
+        angles = _DEGREE_VALUES.findall(raw)
+        if len(angles) == 1:
+            angle = _note_number(angles[0])
+            if angle is not None:
+                extra["angle_deg"] = angle
+    return _known(_BY_ID["chamfer"], raw, **extra)
+
+
 def describe_symbol(token: str) -> dict[str, Any]:
     """Return the cited meaning, or unknown with a blank meaning."""
     raw = (token or "").strip()
@@ -313,6 +420,9 @@ def describe_symbol(token: str) -> dict[str, Any]:
                 "It does not say tap or single-point, so the thread process stays blank."
             )
         return described
+    named = _named_feature_note(raw)
+    if named is not None:
+        return named
     return _unknown(raw)
 
 

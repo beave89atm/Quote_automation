@@ -61,6 +61,7 @@ def test_library_cites_standards_and_does_not_guess_typical():
         "typical",
         "degree",
         "plus_minus",
+        "chamfer",
     ):
         assert library[symbol_id]["meaning"]
         assert library[symbol_id]["citation"]
@@ -229,6 +230,134 @@ def test_typed_features_are_not_replaced_by_the_drawing(tmp_path: Path):
     )
     assert takeoff["machining_features"][0]["dimensions"]["diameter_in"] == 0.5
     assert takeoff["machining_reading"]["features"][0]["dimensions"]["diameter_in"] == 0.375
+
+
+def _no_operation_codes(result: dict) -> None:
+    assert result["quote_done"] is False
+    assert result["posted"] is False
+    assert result["shop_rate_per_hour"] is None
+    assert result["setup_time_min"] is None
+    assert result["item_operations"] == []
+    assert result["operations"] == []
+    assert result["missing"] == ["operation_count", "run_time", "setup_time"]
+    dumped = str(result)
+    for code in ("op_mill", "op_lathe", "op_lathe2"):
+        assert code not in dumped
+
+
+def test_chamfer_note_is_a_feature_without_an_operation_code(tmp_path: Path):
+    named = describe_symbol("CHAMFER")
+    assert named["known"] is True
+    assert named["id"] == "chamfer"
+    assert "4-41" in named["citation"]
+    assert "6.1" in named["citation"]
+    noted = describe_symbol("45° CHAMFER")
+    assert noted["known"] is True
+    assert noted["angle_deg"] == 45.0
+    sized = describe_symbol(".06 X 45° CHAMFER")
+    assert sized["angle_deg"] == 45.0
+    assert sized["size_in"] == 0.06
+    bare_angle = describe_symbol("45°")
+    assert bare_angle["id"] != "chamfer"
+
+    pdf = tmp_path / "chamfer.pdf"
+    _write_pdf(pdf, ["45° CHAMFER", "CHAMFER"])
+    reading = read_machining_requirements(pdf)
+    assert _kinds(reading) == ["chamfer", "chamfer"]
+    angled, plain = reading["features"]
+    assert angled["callout"] == "45° CHAMFER"
+    assert angled["dimensions"]["angle_deg"] == 45.0
+    assert "size_in" not in angled["dimensions"]
+    assert angled["stated_machine"] is False
+    assert "4-41" in angled["citation"]
+    assert "6.1" in angled["citation"]
+    assert "4-41" in angled["angle_citation"]
+    assert any(row["field"] == "machine" for row in angled["blank_fields"])
+    assert any(row["field"] == "size_in" for row in angled["blank_fields"])
+    assert plain["dimensions"] == {}
+    assert any(row["field"] == "angle_deg" for row in plain["blank_fields"])
+    result = quote_machining_features(reading["features"], features_source="drawing")
+    assert result["needs_machining"] is True
+    _no_operation_codes(result)
+
+
+def test_countersink_text_callout_is_a_feature_without_an_operation_code(tmp_path: Path):
+    word = describe_symbol("COUNTERSINK")
+    assert word["known"] is True
+    assert word["id"] == "countersink"
+    assert "2.3" in word["citation"]
+    pattern = describe_symbol("COUNTERSINK \u23001.00 X 82°")
+    assert pattern["known"] is True
+    assert pattern["countersink_diameter_in"] == 1.0
+    assert pattern["angle_deg"] == 82.0
+    assert "2.11.1" in pattern["citation"]
+    glyph = describe_symbol("\u2335 \u2300.50 X 90°")
+    assert glyph["id"] == "countersink"
+    assert glyph["countersink_diameter_in"] == 0.5
+    assert glyph["angle_deg"] == 90.0
+    by_only = describe_symbol("1.00 X 82°")
+    assert by_only["known"] is False
+
+    pdf = tmp_path / "csk.pdf"
+    _write_pdf(
+        pdf,
+        [
+            "COUNTERSINK \u23001.00 X 82°",
+            "COUNTERSINK",
+            "SLEEVE PLATE COUNTERBORE",
+        ],
+    )
+    reading = read_machining_requirements(pdf)
+    assert _kinds(reading) == ["countersink"]
+    feature = reading["features"][0]
+    assert feature["dimensions"]["countersink_diameter_in"] == 1.0
+    assert feature["dimensions"]["angle_deg"] == 82.0
+    assert feature["stated_machine"] is False
+    assert "2.3" in feature["citation"]
+    assert "4-41" in feature["angle_citation"]
+    assert "BY" in feature["note"]
+    assert any(row["field"] == "machine" for row in feature["blank_fields"])
+    texts = [callout["text"] for callout in reading["callouts"]]
+    assert "COUNTERSINK" in texts
+    assert "COUNTERBORE" in texts
+    assert all(callout["feature"] is False for callout in reading["callouts"])
+    sink = next(callout for callout in reading["callouts"] if callout["text"] == "COUNTERSINK")
+    assert "No countersink operation was added" in sink["note"]
+    bore = next(callout for callout in reading["callouts"] if callout["text"] == "COUNTERBORE")
+    assert "No counterbore operation was added" in bore["note"]
+    result = quote_machining_features(reading["features"], features_source="drawing")
+    assert result["needs_machining"] is True
+    _no_operation_codes(result)
+
+
+def test_named_machine_on_chamfer_or_countersink_uses_only_that_code(tmp_path: Path):
+    pdf = tmp_path / "mill.pdf"
+    _write_pdf(pdf, ["MILL 45° CHAMFER"])
+    reading = read_machining_requirements(pdf)
+    result = quote_machining_features(reading["features"], features_source="drawing")
+    assert result["operations"][0]["name"] == "chamfer"
+    assert result["operations"][0]["operation_code"] == "op_mill"
+    assert result["operations"][0]["run_time_min"] is None
+    assert result["setup_time_min"] is None
+    assert result["shop_rate_per_hour"] is None
+    assert result["quote_done"] is False
+    assert result["posted"] is False
+    assert "op_lathe" not in str(result["operations"])
+
+    lathe = tmp_path / "lathe.pdf"
+    _write_pdf(lathe, ["LATHE 2 COUNTERSINK \u2300.50 X 82°"])
+    lathe_reading = read_machining_requirements(lathe)
+    lathe_result = quote_machining_features(lathe_reading["features"], features_source="drawing")
+    assert lathe_result["operations"][0]["operation_code"] == "op_lathe2"
+    assert lathe_result["operations"][0]["run_time_min"] is None
+    assert lathe_result["setup_time_min"] is None
+    assert lathe_result["quote_done"] is False
+
+    drill = tmp_path / "drill-word.pdf"
+    _write_pdf(drill, ["DRILL 45° CHAMFER"])
+    drill_reading = read_machining_requirements(drill)
+    drill_result = quote_machining_features(drill_reading["features"], features_source="drawing")
+    _no_operation_codes(drill_result)
 
 
 def test_reader_source_does_not_invent_codes_or_call_sectura():

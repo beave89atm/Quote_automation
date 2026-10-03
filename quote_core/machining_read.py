@@ -50,6 +50,8 @@ _RADIUS = re.compile(rf"(?<![A-Z])(?:SR|CR|R)\s*{_NUMBER}", re.IGNORECASE)
 _HOLE_PROCESS = re.compile(r"\b(DRILL|REAM|BORE)\b", re.IGNORECASE)
 _COUNTERBORE = re.compile(r"⌴|\bCOUNTERBORE\b|\bSPOTFACE\b", re.IGNORECASE)
 _COUNTERSINK = re.compile(r"⌵|\bCOUNTERSINK\b", re.IGNORECASE)
+_CHAMFER_WORD = re.compile(r"\bCHAMFER\b", re.IGNORECASE)
+_MACHINE_WORD = re.compile(r"\b(LATHE\s*2|LATHE2|LATHE|MILL)\b", re.IGNORECASE)
 _STEP_RADIUS = re.compile(
     r"(CYLINDRICAL_SURFACE|CIRCLE)\s*\(\s*'[^']*'\s*,\s*#\d+\s*,\s*"
     r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)\s*\)",
@@ -209,8 +211,9 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
                 )
             continue
         if _COUNTERSINK.search(line):
-            if _DIAMETER.search(line) or "⌵" in line:
-                features.append(_round_feature("countersink", line))
+            feature = _countersink_text_feature(line)
+            if feature is not None:
+                features.append(feature)
             else:
                 described = describe_symbol("countersink")
                 callouts.append(
@@ -227,6 +230,9 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
                         ),
                     }
                 )
+            continue
+        if _CHAMFER_WORD.search(line):
+            features.append(_chamfer_feature(line))
             continue
         if _HOLE_PROCESS.search(line) and _DIAMETER.search(line):
             features.append(_hole_feature(line))
@@ -626,6 +632,125 @@ def _groove_feature(line: str, match: re.Match[str]) -> dict[str, Any]:
         )
     )
     return _feature("groove", line, dimensions=dimensions, blank_fields=blanks)
+
+
+def _machine_from_line(line: str) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Mill, lathe, or lathe 2 only when the line writes that word.
+
+    Drill, tap, ream, bore, and single-point do not choose a machine.
+    """
+    match = _MACHINE_WORD.search(line)
+    if not match:
+        return {"stated_machine": False}, [
+            _blank(
+                "machine",
+                "The sheet does not say lathe, mill, drill, tap, or single-point — "
+                "machine left blank.",
+            )
+        ]
+    token = re.sub(r"\s+", "", match.group(1)).casefold()
+    machine = {"lathe2": "lathe2", "lathe": "lathe"}.get(token, "mill")
+    return {"machine": machine, "stated_machine": True}, []
+
+
+def _chamfer_feature(line: str) -> dict[str, Any]:
+    described = describe_symbol(line)
+    if described.get("id") != "chamfer":
+        described = describe_symbol("CHAMFER")
+    degree = describe_symbol("°")
+    machine, blanks = _machine_from_line(line)
+    dimensions: dict[str, Any] = {}
+    if described.get("angle_deg") is not None:
+        dimensions["angle_deg"] = described["angle_deg"]
+    else:
+        blanks.append(_blank("angle_deg", "Chamfer angle is not in the note — left blank."))
+    if described.get("size_in") is not None:
+        dimensions["size_in"] = described["size_in"]
+    else:
+        blanks.append(_blank("size_in", "Chamfer size is not in the note — left blank."))
+    extra: dict[str, Any] = {
+        "dimensions": dimensions,
+        "blank_fields": blanks,
+        "meaning": described["meaning"],
+        "citation": described["citation"],
+    }
+    extra.update(machine)
+    if described.get("angle_deg") is not None:
+        extra["angle_meaning"] = degree["meaning"]
+        extra["angle_citation"] = degree["citation"]
+    if machine.get("stated_machine") is False:
+        extra["note"] = "The word CHAMFER was read. No operation code was added."
+    return _feature("chamfer", line, **extra)
+
+
+def _countersink_text_feature(line: str) -> dict[str, Any] | None:
+    """The word or the symbol with a diameter or an included angle.
+
+    The word alone, with no symbol and no size, stays a callout.
+    """
+    described = describe_symbol(line)
+    has_pattern = (
+        described.get("id") == "countersink"
+        and (
+            described.get("countersink_diameter_in") is not None
+            or described.get("angle_deg") is not None
+            or "⌵" in line
+        )
+    )
+    if not has_pattern and "⌵" in line:
+        described = describe_symbol("countersink")
+        has_pattern = True
+    if not has_pattern:
+        return None
+    degree = describe_symbol("°")
+    machine, blanks = _machine_from_line(line)
+    dimensions: dict[str, Any] = {}
+    if described.get("countersink_diameter_in") is not None:
+        dimensions["countersink_diameter_in"] = described["countersink_diameter_in"]
+    else:
+        blanks.append(
+            _blank("countersink_diameter_in", "Countersink diameter was not read — left blank.")
+        )
+    if described.get("angle_deg") is not None:
+        dimensions["angle_deg"] = described["angle_deg"]
+    else:
+        blanks.append(_blank("angle_deg", "Countersink angle was not read — left blank."))
+    count, count_blanks = _places(line)
+    if count is not None:
+        dimensions["count"] = count
+    blanks.extend(count_blanks)
+    if _THRU.search(line):
+        blanks.append(
+            _blank(
+                "depth_in",
+                "THRU is on the callout. Numeric depth was not given — depth left blank.",
+            )
+        )
+    extra: dict[str, Any] = {
+        "dimensions": dimensions,
+        "blank_fields": blanks,
+        "meaning": described["meaning"],
+        "citation": described["citation"],
+    }
+    extra.update(machine)
+    if described.get("angle_deg") is not None:
+        extra["angle_meaning"] = degree["meaning"]
+        extra["angle_citation"] = degree["citation"]
+    if machine.get("stated_machine") is False:
+        if (
+            described.get("countersink_diameter_in") is not None
+            and described.get("angle_deg") is not None
+        ):
+            extra["note"] = (
+                "Countersink was read from the note. "
+                "X between the diameter and the degree is BY. "
+                "No operation code was added."
+            )
+        else:
+            extra["note"] = (
+                "Countersink was read from the note. No operation code was added."
+            )
+    return _feature("countersink", line, **extra)
 
 
 def _plate_feature(line: str, match: re.Match[str]) -> dict[str, Any]:
