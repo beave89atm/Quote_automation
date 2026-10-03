@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from quote_core.machining_quote import attach_machining_times, quote_machining_features
-from quote_core.machining_read import apply_drawing_reading, read_machining_requirements
+from quote_core.machining_read import (
+    apply_drawing_reading,
+    read_machining_requirements,
+    read_stated_stock,
+)
 from quote_core.machining_symbols import describe_symbol, symbol_library
 
 _FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -61,6 +65,7 @@ def test_library_cites_standards_and_does_not_guess_typical():
         "typical",
         "degree",
         "plus_minus",
+        "iso_fit",
         "chamfer",
     ):
         assert library[symbol_id]["meaning"]
@@ -358,6 +363,173 @@ def test_named_machine_on_chamfer_or_countersink_uses_only_that_code(tmp_path: P
     drill_reading = read_machining_requirements(drill)
     drill_result = quote_machining_features(drill_reading["features"], features_source="drawing")
     _no_operation_codes(drill_result)
+
+
+def test_degree_sign_and_degree_word_are_known(tmp_path: Path):
+    signed = describe_symbol("45°")
+    assert signed["known"] is True
+    assert signed["id"] == "degree"
+    assert signed["angle_deg"] == 45.0
+    assert "3.3.3" in signed["citation"]
+    word = describe_symbol("45 DEG")
+    assert word["known"] is True
+    assert word["id"] == "degree"
+    assert word["angle_deg"] == 45.0
+    assert describe_symbol("DEG")["id"] == "degree"
+    assert describe_symbol("45 DEGREES")["angle_deg"] == 45.0
+    noted = describe_symbol("45 DEG CHAMFER")
+    assert noted["id"] == "chamfer"
+    assert noted["angle_deg"] == 45.0
+    sized = describe_symbol(".06 X 45 DEG CHAMFER")
+    assert sized["id"] == "chamfer"
+    assert sized["size_in"] == 0.06
+    assert sized["angle_deg"] == 45.0
+    sink = describe_symbol("COUNTERSINK \u23001.00 X 82 DEG")
+    assert sink["id"] == "countersink"
+    assert sink["countersink_diameter_in"] == 1.0
+    assert sink["angle_deg"] == 82.0
+
+    pdf = tmp_path / "deg.pdf"
+    _write_pdf(pdf, ["45 DEG", "45° CHAMFER", "SS-316"])
+    reading = read_machining_requirements(pdf)
+    by_text = {row["text"]: row for row in reading["callouts"]}
+    assert by_text["45 DEG"]["symbol"] == "degree"
+    assert by_text["45 DEG"]["feature"] is False
+    assert by_text["45 DEG"]["value"] == 45.0
+    assert "not added as an operation" in by_text["45 DEG"]["note"]
+    assert [row["text"] for row in reading["callouts"] if row["text"] == "45 DEG"] == ["45 DEG"]
+    assert _kinds(reading) == ["chamfer"]
+    assert reading["features"][0]["dimensions"]["angle_deg"] == 45.0
+    assert reading["unknown_symbols"] == []
+    stock = read_stated_stock("45 DEG\n45° CHAMFER\nSS-316")
+    assert stock["form"] == "unknown"
+    assert stock["guessed"] is False
+    assert "diameter_in" not in stock
+    result = quote_machining_features(reading["features"], features_source="drawing")
+    _no_operation_codes(result)
+
+
+def test_plus_minus_slash_form_is_a_callout_not_an_operation(tmp_path: Path):
+    assert describe_symbol("±")["id"] == "plus_minus"
+    slash = describe_symbol("+/\u2212")
+    assert slash["known"] is True
+    assert slash["id"] == "plus_minus"
+    assert "not calculated" in slash["meaning"].lower()
+    assert "5-2" in slash["citation"]
+    assert describe_symbol("+/-")["id"] == "plus_minus"
+    both = describe_symbol("55±0.02")
+    assert both["nominal"] == 55.0
+    assert both["tolerance"] == 0.02
+    assert "upper_limit" not in both
+    assert "lower_limit" not in both
+    written = describe_symbol("55+/\u22120.02")
+    assert written["id"] == "plus_minus"
+    assert written["nominal"] == 55.0
+    assert written["tolerance"] == 0.02
+    bilateral = describe_symbol("+0.02/-0.01")
+    assert bilateral["id"] == "plus_minus"
+    assert bilateral["plus_value"] == 0.02
+    assert bilateral["minus_value"] == 0.01
+    assert "upper_limit" not in bilateral
+    assert "lower_limit" not in bilateral
+
+    pdf = tmp_path / "pm.pdf"
+    _write_pdf(pdf, ["55+/\u22120.02", "+0.02/-0.01", "±0.02"])
+    reading = read_machining_requirements(pdf)
+    by_text = {row["text"]: row for row in reading["callouts"]}
+    for text in ("55+/\u22120.02", "+0.02/-0.01", "±0.02"):
+        assert by_text[text]["symbol"] == "plus_minus"
+        assert by_text[text]["feature"] is False
+        assert "not added as an operation" in by_text[text]["note"]
+    assert by_text["55+/\u22120.02"]["value"] == 55.0
+    assert by_text["+0.02/-0.01"]["plus_value"] == 0.02
+    assert by_text["+0.02/-0.01"]["minus_value"] == 0.01
+    assert by_text["±0.02"]["value"] == 0.02
+    for text in ("55+/\u22120.02", "+0.02/-0.01", "±0.02"):
+        assert [row["text"] for row in reading["callouts"] if row["text"] == text] == [text]
+    assert reading["features"] == []
+    assert reading["unknown_symbols"] == []
+    result = quote_machining_features(reading["features"], features_source="drawing")
+    assert result["operations"] == []
+    assert result["item_operations"] == []
+    assert result["setup_time_min"] is None
+    assert result["posted"] is False
+    dumped = str(result)
+    for code in ("op_mill", "op_lathe", "op_lathe2"):
+        assert code not in dumped
+
+
+def test_iso_shaft_and_hole_fits_match_step_and_are_not_holes(tmp_path: Path):
+    shaft = describe_symbol("15 g6")
+    assert shaft["known"] is True
+    assert shaft["id"] == "iso_fit"
+    assert shaft["deviation"] == "g"
+    assert shaft["grade"] == 6
+    assert shaft["size"] == 15.0
+    assert shaft["applies_to"] == "shaft"
+    assert "286-1" in shaft["citation"]
+    assert "limit" in shaft["meaning"].lower()
+    hole = describe_symbol("15 H7")
+    assert hole["id"] == "iso_fit"
+    assert hole["applies_to"] == "hole"
+    assert hole["deviation"] == "H"
+    assert hole["grade"] == 7
+    assert describe_symbol("g6")["applies_to"] == "shaft"
+    assert describe_symbol("R5")["id"] == "radius"
+    assert describe_symbol("M6x1")["id"] == "thread"
+    assert describe_symbol("M6")["known"] is False
+
+    pdf = tmp_path / "fit.pdf"
+    step = tmp_path / "fit.step"
+    _write_pdf(pdf, ["15 g6", "20 H7", "SS-316"])
+    step.write_text(
+        "ISO-10303-21;\n"
+        "DATA;\n"
+        "#1=SI_UNIT(.MILLI.,.METRE.);\n"
+        "#10=CYLINDRICAL_SURFACE('',#11,7.5);\n"
+        "#12=CYLINDRICAL_SURFACE('',#13,7.5);\n"
+        "#14=CYLINDRICAL_SURFACE('',#15,10.);\n"
+        "ENDSEC;\n"
+        "END-ISO-10303-21;\n"
+    )
+    reading = read_machining_requirements(pdf, step)
+    assert reading["features"] == []
+    by_text = {row["text"]: row for row in reading["callouts"]}
+    fit = by_text["15 g6"]
+    assert fit["feature"] is False
+    assert fit["symbol"] == "iso_fit"
+    assert fit["value"] == 15
+    assert fit["fit"] == "g6"
+    assert fit["applies_to"] == "shaft"
+    assert "286-1" in fit["citation"]
+    assert "not calculated" in fit["note"]
+    assert "no hole feature was added" in fit["note"]
+    assert fit["step_match"]["matches"] == 2
+    assert "not added as a feature" in fit["step_match"]["note"]
+    hole_fit = by_text["20 H7"]
+    assert hole_fit["feature"] is False
+    assert hole_fit["symbol"] == "iso_fit"
+    assert hole_fit["fit"] == "H7"
+    assert hole_fit["applies_to"] == "hole"
+    assert hole_fit["value"] == 20
+    assert "no hole feature was added" in hole_fit["note"]
+    assert hole_fit["step_match"]["matches"] == 1
+    assert [row["text"] for row in reading["callouts"] if row["text"] == "15 g6"] == ["15 g6"]
+    assert [row["text"] for row in reading["callouts"] if row["text"] == "20 H7"] == ["20 H7"]
+    assert reading["unknown_symbols"] == []
+    stock = read_stated_stock("SS-316\n15 g6\n20 H7")
+    assert stock["form"] == "unknown"
+    assert stock["stated"] is False
+    assert stock["guessed"] is False
+    assert "diameter_in" not in stock
+    result = quote_machining_features(reading["features"], features_source="drawing")
+    assert result["operations"] == []
+    assert result["item_operations"] == []
+    assert result["setup_time_min"] is None
+    assert result["posted"] is False
+    dumped = str(result)
+    for code in ("op_mill", "op_lathe", "op_lathe2"):
+        assert code not in dumped
 
 
 def test_reader_source_does_not_invent_codes_or_call_sectura():

@@ -66,9 +66,10 @@ _STEP_RADIUS = re.compile(
     r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)\s*\)",
     re.IGNORECASE,
 )
-_SHAFT_FIT = re.compile(r"^(\d+(?:\.\d+)?)\s+([a-z])(\d{1,2})$")
-_PLUS_MINUS = re.compile(r"^(\d+(?:\.\d+)?)±(\d+(?:\.\d+)?)$")
-_ANGLE = re.compile(r"^(\d+(?:\.\d+)?)°$")
+_ANGLE = re.compile(
+    r"^(\d+(?:\.\d+)?)\s*(?:°|DEGREES?|DEG)$",
+    re.IGNORECASE,
+)
 _LONE_INT = re.compile(r"^\d+$")
 _LONE_DECIMAL = re.compile(r"^\d+(?:\.\d+)?$")
 _DRILL_SIZE = re.compile(r"\bDRILL\b[^(]*\(\s*([0-9]*\.?[0-9]+)\s*\)", re.IGNORECASE)
@@ -335,19 +336,19 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
                 }
             )
             continue
-        fit = _SHAFT_FIT.fullmatch(line)
-        if fit:
-            token = f"{fit.group(2)}{fit.group(3)}"
-            described = describe_symbol(token)
+        described_line = describe_symbol(line)
+        if described_line.get("id") == "iso_fit" and isinstance(described_line.get("size"), float):
+            token = f"{described_line['deviation']}{described_line['grade']}"
             callouts.append(
                 {
-                    "symbol": described["id"],
+                    "symbol": described_line["id"],
                     "text": line,
-                    "value": _num(fit.group(1)),
-                    "diameter_mm": _num(fit.group(1)),
+                    "value": described_line["size"],
+                    "diameter_mm": described_line["size"],
                     "fit": token,
-                    "meaning": described["meaning"],
-                    "citation": described["citation"],
+                    "applies_to": described_line.get("applies_to"),
+                    "meaning": described_line["meaning"],
+                    "citation": described_line["citation"],
                     "feature": False,
                     "note": (
                         "Diameter and ISO fit were read. The line does not say hole, "
@@ -357,35 +358,39 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
                 }
             )
             continue
-        plus = _PLUS_MINUS.fullmatch(line)
-        if plus:
-            described = describe_symbol("±")
-            callouts.append(
-                {
-                    "symbol": described["id"],
-                    "text": line,
-                    "value": _num(plus.group(1)),
-                    "feature": False,
-                    "meaning": described["meaning"],
-                    "citation": described["citation"],
-                    "note": (
-                        "A size and a plus-minus value were read. "
-                        "They were not added as an operation."
-                    ),
-                }
-            )
+        if described_line.get("id") == "plus_minus":
+            value = described_line.get("nominal")
+            if value is None:
+                value = described_line.get("tolerance")
+            row = {
+                "symbol": described_line["id"],
+                "text": line,
+                "value": value,
+                "feature": False,
+                "meaning": described_line["meaning"],
+                "citation": described_line["citation"],
+                "note": (
+                    "A size and a plus-minus value were read. "
+                    "They were not added as an operation."
+                ),
+            }
+            if described_line.get("plus_value") is not None:
+                row["plus_value"] = described_line["plus_value"]
+                row["minus_value"] = described_line["minus_value"]
+            callouts.append(row)
             continue
-        angle = _ANGLE.fullmatch(line)
-        if angle:
-            described = describe_symbol("°")
+        if (
+            described_line.get("id") == "degree"
+            and isinstance(described_line.get("angle_deg"), float)
+        ):
             callouts.append(
                 {
-                    "symbol": described["id"],
+                    "symbol": described_line["id"],
                     "text": line,
-                    "value": _num(angle.group(1)),
+                    "value": described_line["angle_deg"],
                     "feature": False,
-                    "meaning": described["meaning"],
-                    "citation": described["citation"],
+                    "meaning": described_line["meaning"],
+                    "citation": described_line["citation"],
                     "note": "An angle was read. It was not added as an operation.",
                 }
             )
@@ -1481,9 +1486,9 @@ def _match_step_callouts(callouts: list[dict[str, Any]], geometry: dict[str, Any
 
 
 _CALLOUT_WORD = re.compile(r"^(?:\d*\.\d+|\d+X|THRU|THROUGH)$", re.IGNORECASE)
+_DEGREE_WORD = re.compile(r"^DEG(?:REES?)?$", re.IGNORECASE)
 _DECIMAL_WORD = re.compile(r"^\d*\.\d+$")
 _INCH_QUOTED = re.compile(r'^(\d*\.\d+)"$')
-_PLUS_WORD = re.compile(r"^±(\d+(?:\.\d+)?|\d+/\d+)(°)?$")
 _NX_WORD = re.compile(r"^(\d+)X$", re.IGNORECASE)
 _MATERIAL_WORD = re.compile(r"^(?:5052(?:-ALUM)?|ALUM|ALUMINUM|ALEDO)$", re.IGNORECASE)
 _TOLERANCE_WORD = re.compile(r"DECIMAL|TOLERANCE|ANGULAR|PLACE", re.IGNORECASE)
@@ -2114,25 +2119,86 @@ def _positioned_pdf_callouts(
                 }
             )
         for word in words:
-            plus = _PLUS_WORD.fullmatch(word[4])
-            if not plus:
+            token = word[4]
+            described_plus = describe_symbol(token)
+            if described_plus.get("id") != "plus_minus":
                 continue
-            described_plus = describe_symbol("±")
+            if (
+                described_plus.get("nominal") is None
+                and described_plus.get("tolerance") is None
+                and described_plus.get("plus_value") is None
+            ):
+                continue
             citation = described_plus["citation"]
-            if plus.group(2):
+            if "°" in token:
                 citation = f"{citation} {describe_symbol('°')['citation']}"
+            value = described_plus.get("nominal")
+            if value is None:
+                value = described_plus.get("tolerance")
+            row = {
+                "symbol": described_plus["id"],
+                "text": token,
+                "value": value,
+                "feature": False,
+                "meaning": described_plus["meaning"],
+                "citation": citation,
+                "note": (
+                    "A title-block plus-minus tolerance was read. "
+                    "Limits were not calculated. It was not added as an operation."
+                ),
+            }
+            if described_plus.get("plus_value") is not None:
+                row["plus_value"] = described_plus["plus_value"]
+                row["minus_value"] = described_plus["minus_value"]
+            callouts.append(row)
+        for word in words:
+            described_degree = describe_symbol(word[4])
+            if described_degree.get("id") != "degree" or not isinstance(
+                described_degree.get("angle_deg"), float
+            ):
+                continue
             callouts.append(
                 {
-                    "symbol": described_plus["id"],
+                    "symbol": "degree",
                     "text": word[4],
-                    "value": _num(plus.group(1)),
+                    "value": described_degree["angle_deg"],
                     "feature": False,
-                    "meaning": described_plus["meaning"],
-                    "citation": citation,
-                    "note": (
-                        "A title-block plus-minus tolerance was read. "
-                        "Limits were not calculated. It was not added as an operation."
-                    ),
+                    "meaning": described_degree["meaning"],
+                    "citation": described_degree["citation"],
+                    "note": "An angle was read. It was not added as an operation.",
+                }
+            )
+        for word in words:
+            if not _DEGREE_WORD.fullmatch(word[4]):
+                continue
+            number_word = None
+            number_gap = None
+            for other in words:
+                if not re.fullmatch(r"\d+(?:\.\d+)?", other[4]):
+                    continue
+                if other[5].x1 > word[5].x0 + 2:
+                    continue
+                gap = _rect_gap(other[5], word[5])
+                if gap > 14:
+                    continue
+                if number_gap is None or gap < number_gap:
+                    number_word = other
+                    number_gap = gap
+            if number_word is None:
+                continue
+            text = f"{number_word[4]} {word[4]}"
+            described_degree = describe_symbol(text)
+            if described_degree.get("id") != "degree":
+                continue
+            callouts.append(
+                {
+                    "symbol": "degree",
+                    "text": text,
+                    "value": described_degree.get("angle_deg"),
+                    "feature": False,
+                    "meaning": described_degree["meaning"],
+                    "citation": described_degree["citation"],
+                    "note": "An angle was read. It was not added as an operation.",
                 }
             )
         for index, word in enumerate(words):
@@ -2450,7 +2516,19 @@ def read_machining_requirements(
                     continue
                 features.append(feature)
                 have.add(key)
-            callouts.extend(placed_notes)
+            # A full text line and the same placed word are one callout.
+            already = {
+                (callout.get("symbol"), callout.get("text"))
+                for callout in callouts
+                if callout.get("symbol") in {"degree", "plus_minus", "iso_fit"}
+            }
+            for callout in placed_notes:
+                key = (callout.get("symbol"), callout.get("text"))
+                if key[0] in {"degree", "plus_minus", "iso_fit"} and key in already:
+                    continue
+                callouts.append(callout)
+                if key[0] in {"degree", "plus_minus", "iso_fit"}:
+                    already.add(key)
             for gap in placed_gaps:
                 if gap not in unreadable:
                     unreadable.append(gap)

@@ -196,12 +196,13 @@ _ENTRIES: tuple[dict[str, Any], ...] = (
     {
         "id": "degree",
         "glyphs": ("°",),
-        "words": (),
+        "words": ("deg", "degree", "degrees"),
         "meaning": "Placed after a value that is an angle in degrees.",
         "citation": (
             f"{_GENIUM}, paragraph 3.3.3, writes this sign on an angle (30°). "
             "ASME Y14.5-2018, figure 4-41 (45° chamfer) and figure 5-20 "
-            "(an angular surface). Text encoding: U+00B0."
+            "(an angular surface). Text encoding: U+00B0. "
+            "Paragraph 1.5: a note may write DEG in place of the sign."
         ),
     },
     {
@@ -214,7 +215,9 @@ _ENTRIES: tuple[dict[str, Any], ...] = (
         ),
         "citation": (
             "ASME Y14.5-2018, figure 5-2, Plus and Minus Tolerancing. "
-            f"{_Y145} Text encoding: U+00B1."
+            f"{_Y145} Text encoding: U+00B1. "
+            "A plus sign, a slash, and a minus sign write that same tolerance "
+            "when the single glyph is not used."
         ),
     },
     {
@@ -222,8 +225,9 @@ _ENTRIES: tuple[dict[str, Any], ...] = (
         "glyphs": (),
         "words": (),
         "meaning": (
-            "A lowercase letter and a grade after a size are an ISO code for "
-            "a shaft fit. The letter is the fundamental deviation and the "
+            "A letter and a grade after a size are an ISO tolerance code for "
+            "a shaft or a hole. A lowercase letter is a shaft. An uppercase "
+            "letter is a hole. The letter is the fundamental deviation and the "
             "number is the tolerance grade. The limit values are not calculated."
         ),
         "citation": (
@@ -257,16 +261,51 @@ _METRIC_THREAD = re.compile(
 _NOTE_NUMBER = r"([0-9]*\.?[0-9]+|\d+\s*/\s*\d+)"
 _CHAMFER_WORD = re.compile(r"\bCHAMFER\b", re.IGNORECASE)
 _COUNTERSINK_WORD = re.compile(r"\bCOUNTERSINK\b", re.IGNORECASE)
-_DEGREE_VALUES = re.compile(r"(\d+(?:\.\d+)?)°")
+# DEGREE before DEG so the longer word is the one that matches.
+_ANGLE_UNIT = r"(?:°|DEGREES?|DEG)"
+_DEGREE_VALUES = re.compile(
+    rf"(\d+(?:\.\d+)?)\s*{_ANGLE_UNIT}(?![A-Za-z])",
+    re.IGNORECASE,
+)
 _CHAMFER_LEG = re.compile(
-    rf"{_NOTE_NUMBER}\s+X\s+(\d+(?:\.\d+)?)°"
-    rf"|(\d+(?:\.\d+)?)°\s+X\s+{_NOTE_NUMBER}",
+    rf"{_NOTE_NUMBER}\s+X\s+(\d+(?:\.\d+)?)\s*{_ANGLE_UNIT}"
+    rf"|(\d+(?:\.\d+)?)\s*{_ANGLE_UNIT}\s+X\s+{_NOTE_NUMBER}",
     re.IGNORECASE,
 )
 _COUNTERSINK_CALLOUT = re.compile(
-    rf"(?:⌀|Ø|∅)?\s*{_NOTE_NUMBER}\s+X\s+(\d+(?:\.\d+)?)°",
+    rf"(?:⌀|Ø|∅)?\s*{_NOTE_NUMBER}\s+X\s+(\d+(?:\.\d+)?)\s*{_ANGLE_UNIT}",
     re.IGNORECASE,
 )
+_DEGREE_CALLOUT = re.compile(
+    rf"^(\d+(?:\.\d+)?)\s*{_ANGLE_UNIT}$",
+    re.IGNORECASE,
+)
+_RADIUS_VALUE = re.compile(r"^(SR|CR|R)\s*([0-9]*\.?[0-9]+)$", re.IGNORECASE)
+# ISO 286-1 fundamental deviations. i, l, o, q, and w are not used.
+_ISO_SHAFT_DEVIATIONS = frozenset(
+    {
+        "a", "b", "c", "cd", "d", "e", "ef", "f", "fg", "g", "h",
+        "js", "j", "k", "m", "n", "p", "r", "s", "t", "u", "v",
+        "x", "y", "z", "za", "zb", "zc",
+    }
+)
+_ISO_HOLE_DEVIATIONS = frozenset(item.upper() for item in _ISO_SHAFT_DEVIATIONS)
+_ISO_FIT_TOKEN = re.compile(
+    r"^(?:(?P<size>\d+(?:\.\d+)?)\s*)?(?P<dev>[A-Za-z]{1,2})(?P<grade>\d{1,2})$"
+)
+_TOL_TOKEN = r"(?:[0-9]*\.?[0-9]+|\d+\s*/\s*\d+)"
+_MINUS_MARK = "[-\u2212]"
+_PM_BILATERAL = re.compile(
+    rf"^\+\s*(?P<up>{_TOL_TOKEN})\s*/\s*{_MINUS_MARK}\s*(?P<down>{_TOL_TOKEN})$"
+)
+_PM_SLASH = re.compile(
+    rf"^(?:(?P<nom>[0-9]*\.?[0-9]+)\s*)?\+\s*/\s*{_MINUS_MARK}"
+    rf"(?:\s*(?P<tol>{_TOL_TOKEN}))?$"
+)
+_PM_GLYPH = re.compile(
+    rf"^(?:(?P<nom>[0-9]*\.?[0-9]+)\s*)?±\s*(?P<tol>{_TOL_TOKEN})(?P<deg>°)?$"
+)
+_PLUS_MINUS_CHAR_SPAN = re.compile(rf"\+\s*/\s*{_MINUS_MARK}")
 _DIAMETER_MARK = re.compile(
     rf"(?:⌀|Ø|∅)\s*{_NOTE_NUMBER}",
     re.IGNORECASE,
@@ -383,6 +422,110 @@ def _named_feature_note(raw: str) -> dict[str, Any] | None:
     return _known(_BY_ID["chamfer"], raw, **extra)
 
 
+def _describe_radius_value(raw: str) -> dict[str, Any] | None:
+    """R, CR, or SR with a value. A bare R5 is a radius, not an ISO hole code."""
+    match = _RADIUS_VALUE.fullmatch(raw.strip())
+    if not match:
+        return None
+    prefix = match.group(1).casefold()
+    value = _note_number(match.group(2))
+    extra: dict[str, Any] = {}
+    if value is not None:
+        extra["value"] = value
+    return _known(_BY_WORD[prefix], raw, **extra)
+
+
+def _describe_iso_fit(raw: str) -> dict[str, Any] | None:
+    """A size plus an ISO 286 code, or the code alone. Limits stay uncalculated.
+
+    A lowercase code is a shaft. An uppercase code is a hole. The callout is
+    not a hole operation. A bare M and a grade is left unknown so a metric
+    thread designation is not read as a fit.
+    """
+    match = _ISO_FIT_TOKEN.fullmatch(raw.strip())
+    if not match:
+        return None
+    dev = match.group("dev")
+    if dev in _ISO_SHAFT_DEVIATIONS:
+        applies = "shaft"
+    elif dev in _ISO_HOLE_DEVIATIONS:
+        applies = "hole"
+    else:
+        return None
+    try:
+        grade = int(match.group("grade"))
+    except ValueError:
+        return None
+    if grade < 1 or grade > 18:
+        return None
+    size_token = match.group("size")
+    if size_token is None and dev == "M":
+        return None
+    extra: dict[str, Any] = {
+        "deviation": dev,
+        "grade": grade,
+        "applies_to": applies,
+    }
+    if size_token:
+        size = _note_number(size_token)
+        if size is None:
+            return None
+        extra["size"] = size
+    return _known(_BY_ID["iso_fit"], raw, **extra)
+
+
+def _describe_degree(raw: str) -> dict[str, Any] | None:
+    match = _DEGREE_CALLOUT.fullmatch(raw.strip())
+    if not match:
+        return None
+    angle = _note_number(match.group(1))
+    if angle is None:
+        return None
+    return _known(_BY_ID["degree"], raw, angle_deg=angle)
+
+
+def _describe_plus_minus(raw: str) -> dict[str, Any] | None:
+    """±, +/−, or a written plus and minus. Limit values are not calculated."""
+    text = raw.strip()
+    bilateral = _PM_BILATERAL.fullmatch(text)
+    if bilateral:
+        up = _note_number(bilateral.group("up"))
+        down = _note_number(bilateral.group("down"))
+        if up is None or down is None:
+            return None
+        return _known(
+            _BY_ID["plus_minus"],
+            raw,
+            plus_value=up,
+            minus_value=down,
+        )
+    slash = _PM_SLASH.fullmatch(text)
+    if slash:
+        extra: dict[str, Any] = {}
+        if slash.group("nom"):
+            nominal = _note_number(slash.group("nom"))
+            if nominal is not None:
+                extra["nominal"] = nominal
+        if slash.group("tol"):
+            tolerance = _note_number(slash.group("tol"))
+            if tolerance is not None:
+                extra["tolerance"] = tolerance
+        return _known(_BY_ID["plus_minus"], raw, **extra)
+    glyph = _PM_GLYPH.fullmatch(text)
+    if not glyph:
+        return None
+    extra = {}
+    if glyph.group("nom"):
+        nominal = _note_number(glyph.group("nom"))
+        if nominal is not None:
+            extra["nominal"] = nominal
+    if glyph.group("tol"):
+        tolerance = _note_number(glyph.group("tol"))
+        if tolerance is not None:
+            extra["tolerance"] = tolerance
+    return _known(_BY_ID["plus_minus"], raw, **extra)
+
+
 def describe_symbol(token: str) -> dict[str, Any]:
     """Return the cited meaning, or unknown with a blank meaning."""
     raw = (token or "").strip()
@@ -398,15 +541,10 @@ def describe_symbol(token: str) -> dict[str, Any]:
         return _known(_BY_ID["repetition"], raw, count=int(places.group(1)))
     if _RA.fullmatch(raw):
         return _known(_BY_ID["surface_texture"], raw)
+    radius_value = _describe_radius_value(raw)
+    if radius_value is not None:
+        return radius_value
     compact = re.sub(r"\s+", "", raw)
-    shaft_fit = re.fullmatch(r"([a-z])(\d{1,2})", compact)
-    if shaft_fit and compact == raw.replace(" ", ""):
-        return _known(
-            _BY_ID["iso_fit"],
-            raw,
-            deviation=shaft_fit.group(1),
-            grade=int(shaft_fit.group(2)),
-        )
     if _THREAD.fullmatch(compact) or _THREAD.fullmatch(raw) or _METRIC_THREAD.fullmatch(compact):
         described = _known(_BY_ID["thread"], raw)
         if _METRIC_THREAD.fullmatch(compact):
@@ -420,9 +558,18 @@ def describe_symbol(token: str) -> dict[str, Any]:
                 "It does not say tap or single-point, so the thread process stays blank."
             )
         return described
+    fit = _describe_iso_fit(raw)
+    if fit is not None:
+        return fit
     named = _named_feature_note(raw)
     if named is not None:
         return named
+    degree = _describe_degree(raw)
+    if degree is not None:
+        return degree
+    plus = _describe_plus_minus(raw)
+    if plus is not None:
+        return plus
     return _unknown(raw)
 
 
@@ -433,8 +580,11 @@ def unknown_symbols_in_text(text: str) -> list[dict[str, Any]]:
     """
     found: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for char in text or "":
-        if ord(char) < 128 or char in KNOWN_GLYPHS or char in seen:
+    covered: set[int] = set()
+    for match in _PLUS_MINUS_CHAR_SPAN.finditer(text or ""):
+        covered.update(range(match.start(), match.end()))
+    for index, char in enumerate(text or ""):
+        if index in covered or ord(char) < 128 or char in KNOWN_GLYPHS or char in seen:
             continue
         if unicodedata_letter(char):
             continue
