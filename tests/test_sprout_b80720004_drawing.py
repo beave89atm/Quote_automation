@@ -138,17 +138,24 @@ def test_sprout_plate_reads_the_countersink_and_stays_not_done():
     assert machining["operations"][0]["run_time_min"] is None
     assert machining["item_operations"][0]["operation_code"] == "op_mill"
     assert machining["item_operations"][0]["setup"]["calculator"] == "Milling-Setup"
-    assert machining["item_operations"][0]["setup"]["time_min"] is None
+    assert machining["item_operations"][0]["setup"]["time_min"] == 75.0
+    assert machining["item_operations"][0]["setup"]["fixedtime_hours"] == 1.25
     assert machining["item_operations"][0]["run"]["time_min"] is None
-    assert machining["missing"] == ["run_time", "setup_time"]
-    assert machining["setup_time_min"] is None
+    assert machining["missing"] == ["run_time"]
+    assert machining["setup_time_min"] == 75.0
     assert machining["shop_rate_per_hour"] is None
+    assert machining["quote_done"] is False
     assert machining["posted"] is False
     assert machining_blocks_quote(times) is True
     coded = machining["process_from_stock"]
     assert coded["operation_code"] == "op_mill"
     assert coded["run_time_min"] is None
-    assert coded["setup_time_min"] is None
+    assert coded["setup_time_min"] == 75.0
+    assert coded["calculator"]["cubic_inches_removed"] == 0.0
+    assert coded["calculator"]["shop_rate_per_hour"] is None
+    assert coded["calculator"]["program_hours_not_setup"] == 2.0
+    assert "cubic inches removed are 0" in coded["run_blank_reason"]
+    assert "countersink" in coded["run_blank_reason"]
     dumped = str(machining)
     assert "op_lathe2" not in dumped
     assert "op_lathe" not in dumped.replace("op_lathe2", "")

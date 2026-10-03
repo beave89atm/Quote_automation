@@ -107,7 +107,8 @@ def test_stated_round_stock_smaller_finished_round_is_turning():
     coded = process_assignment_with_code(assignment)
     assert coded["operation_code"] == "op_lathe"
     assert coded["run_time_min"] is None
-    assert coded["setup_time_min"] is None
+    assert "stock length" in coded["run_blank_reason"]
+    assert coded["setup_time_min"] == 75.0
     assert coded["shop_rate_per_hour"] is None
     assert coded["posted"] is False
     assert "op_lathe2" not in str(coded["operation_code"])
@@ -207,6 +208,8 @@ def test_stated_plate_keeps_the_sheet_thickness():
     assert stated["form"] == "plate"
     assert stated["guessed"] is False
     assert stated["thickness_in"] == 0.5
+    assert stated["length_in"] == 9.63
+    assert stated["width_in"] == 2.625
     assert "A572" in stated["evidence"]
     assert "SLEEVE PLATE" in stated["evidence"]
     assignment = compare_stock_to_finished(
@@ -221,6 +224,8 @@ def test_stated_plate_keeps_the_sheet_thickness():
     )
     assert assignment["stock"]["form"] == "plate"
     assert assignment["stock"]["thickness_in"] == 0.5
+    assert assignment["stock"]["length_in"] == 9.63
+    assert assignment["stock"]["width_in"] == 2.625
     assert assignment["stock"]["guessed"] is False
     assert "A572" in assignment["stock"]["evidence"]
     assert assignment["operation_justified"] is True

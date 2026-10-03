@@ -1,9 +1,10 @@
 """Machining quote from typed features or from callouts read off a drawing.
 
 Counts shop operations from the feature rules in
-``references/machining/OPS_WORKFLOW.md``. Run time and setup time stay blank
-unless the caller types a cycle time. There is no removal rate and no shop
-setup minutes on file.
+``references/machining/OPS_WORKFLOW.md``. Run time and setup stay blank
+unless a typed cycle time overrides run time, or stated stock justifies an
+operation and Kyle's calculator has the sizes that formula needs. Shop
+dollar rates stay blank.
 
 Item-operation codes come only from quote 121671-1
 (id 94273b6c-072d-4a44-9519-d0e8f5f0f391, OPEN-NEW):
@@ -28,8 +29,13 @@ needs a finished round smaller than round stock the sheet states. Milling
 needs a finished plate with holes. A guessed bar size does not qualify.
 That family maps to ``op_lathe`` or ``op_mill`` only when the comparison
 justifies it. Lathe 2 (``op_lathe2``) is used only when the sheet says
-lathe 2. The comparison does not fill run time, setup, or a dollar rate.
-A typed cycle time may still override run time.
+lathe 2. When that comparison justifies ``op_mill`` from stated plate, or
+``op_lathe`` / ``op_lathe2`` from stated bar or tube whose finished
+round is smaller, run time and setup may be filled from
+``quote_core.machining_calculator`` (Kyle's stock-versus-finished
+workbook). A missing size, a tube volume, or zero cubic inches removed
+leaves run time blank. Shop dollar rates stay blank. A typed cycle
+time may still override run time only.
 """
 
 from __future__ import annotations
@@ -858,14 +864,21 @@ def carry_machining_inputs(previous: dict[str, Any] | None, takeoff: dict[str, A
     return out
 
 
-def process_assignment_with_code(assignment: dict[str, Any] | None) -> dict[str, Any] | None:
+def process_assignment_with_code(
+    assignment: dict[str, Any] | None,
+    features: list[dict[str, Any]] | None = None,
+    callouts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     """Map a justified stock-versus-finished family onto one verified code.
 
     Turning uses ``op_lathe``. Milling uses ``op_mill``. ``op_lathe2`` is
     applied only when the assignment family is already lathe 2, which the
     stock comparison does not produce. An unjustified comparison keeps the
-    stock and finished shape and does not receive an operation code. Run
-    time, setup, and the shop rate stay blank.
+    stock and finished shape and does not receive an operation code.
+
+    A justified code then takes run time and setup from the machining
+    calculator when the stock form is stated plate (mill) or stated bar or
+    tube with a finished round (lathe). The shop rate stays blank.
     """
     if not isinstance(assignment, dict):
         return None
@@ -893,7 +906,132 @@ def process_assignment_with_code(assignment: dict[str, Any] | None) -> dict[str,
         return out
     out["family"] = "lathe2" if family == "lathe2" else family
     out["operation_code"] = code
+    from quote_core.machining_calculator import times_for_justified_operation
+
+    times = times_for_justified_operation(out, features=features, callouts=callouts)
+    out["run_time_min"] = times.get("run_time_min")
+    out["setup_time_min"] = times.get("setup_time_min")
+    out["shop_rate_per_hour"] = None
+    out["posted"] = False
+    if times.get("run_blank_reason"):
+        out["run_blank_reason"] = times["run_blank_reason"]
+    if times.get("setup_note"):
+        out["setup_note"] = times["setup_note"]
+    if times.get("calculator"):
+        out["calculator"] = times["calculator"]
     return out
+
+
+def _apply_calculator_to_quote(result: dict[str, Any], coded: dict[str, Any]) -> None:
+    """Copy a justified calculator setup, and run time when it is one number.
+
+    A typed cycle already on an operation is left as the run time. The
+    calculator's one cycle is not split across several shop operations.
+    """
+    code = coded.get("operation_code")
+    if not code:
+        return
+    operations = [op for op in result.get("operations") or [] if op.get("operation_code") == code]
+    reason = coded.get("run_blank_reason")
+    overrides = [op for op in operations if op.get("run_time_source") == "cycle_override"]
+    run_time = coded.get("run_time_min")
+    if run_time is not None and operations and not overrides and len(operations) == 1:
+        operations[0]["run_time_min"] = run_time
+        operations[0]["run_time_source"] = "calculator"
+        operations[0]["note"] = (
+            "Run time is the calculator cycle for the whole part "
+            "(cut minutes, allowances, and the 1.15 pad)."
+        )
+    elif run_time is not None and len(operations) > 1 and not overrides:
+        reason = (
+            "Run time left blank. The calculator returns one cycle for the part. "
+            "It was not split across operations."
+        )
+    elif reason and operations and not overrides:
+        for op in operations:
+            if op.get("run_time_min") is None:
+                op["note"] = reason
+
+    for item in result.get("item_operations") or []:
+        if item.get("operation_code") != code:
+            continue
+        shop = [
+            op
+            for op in (result.get("operations") or [])
+            if op.get("id") in (item.get("shop_operation_ids") or [])
+        ]
+        run_values = [op.get("run_time_min") for op in shop]
+        if run_values and all(value is not None for value in run_values):
+            item["run"]["time_min"] = float(sum(run_values))
+            sources = {op.get("run_time_source") for op in shop}
+            item["run"]["source"] = "calculator" if sources == {"calculator"} else "cycle_override"
+        setup_min = coded.get("setup_time_min")
+        if setup_min is not None:
+            item["setup"]["fixedtime_hours"] = setup_min / 60.0
+            item["setup"]["time_min"] = setup_min
+            item["setup"]["note"] = coded.get("setup_note") or item["setup"].get("note")
+
+    notes = list(result.get("notes") or [])
+    setup_values = [
+        item["setup"]["time_min"]
+        for item in (result.get("item_operations") or [])
+        if item.get("operation_code")
+    ]
+    setup_filled = bool(setup_values) and all(value is not None for value in setup_values)
+    if setup_filled:
+        notes = [note for note in notes if note != NO_SETUP_NOTE]
+        setup_note = coded.get("setup_note")
+        if setup_note and setup_note not in notes:
+            notes.append(setup_note)
+        result["setup_time_note"] = coded.get("setup_note")
+    runs_filled = bool(operations) and all(op.get("run_time_min") is not None for op in operations)
+    if runs_filled and not (run_time is not None and len(operations) > 1 and not overrides):
+        notes = [note for note in notes if note != NO_REMOVAL_RATE_NOTE]
+    elif reason:
+        notes = [note for note in notes if note != NO_REMOVAL_RATE_NOTE]
+        if reason not in notes:
+            notes.append(reason)
+    result["notes"] = notes
+    _recompute_quote_completion(result)
+
+
+def _recompute_quote_completion(result: dict[str, Any]) -> None:
+    """Set missing and quote_done from the operations currently on the result."""
+    operations = result.get("operations") or []
+    item_operations = result.get("item_operations") or []
+    needs = bool(result.get("needs_machining"))
+    lathe_unspecified = any(op.get("machine") == "lathe-unspecified" for op in operations)
+    operation_count = result.get("operation_count")
+    setup_time_min = None
+    if len(item_operations) == 1 and not lathe_unspecified:
+        setup_time_min = item_operations[0]["setup"]["time_min"]
+    result["setup_time_min"] = setup_time_min
+    missing: list[str] = []
+    if needs:
+        if operation_count is None:
+            missing.append("operation_count")
+        if (
+            operation_count is None
+            or not operations
+            or any(op.get("run_time_min") is None for op in operations)
+        ):
+            missing.append("run_time")
+        setup_incomplete = (
+            lathe_unspecified
+            or not item_operations
+            or any(item["setup"]["time_min"] is None for item in item_operations)
+        )
+        if setup_incomplete or setup_time_min is None:
+            missing.append("setup_time")
+        if "run_time" in missing and NO_REMOVAL_RATE_NOTE not in (result.get("notes") or []):
+            if not any("Run time left blank" in str(note) for note in result.get("notes") or []):
+                result["notes"] = [*(result.get("notes") or []), NO_REMOVAL_RATE_NOTE]
+        if "setup_time" in missing and NO_SETUP_NOTE not in (result.get("notes") or []):
+            result["notes"] = [*(result.get("notes") or []), NO_SETUP_NOTE]
+    result["missing"] = missing
+    result["quote_done"] = (not missing) if needs else True
+    result["shop_rate_per_hour"] = None
+    result["posted"] = False
 
 
 def attach_machining_times(times: dict[str, Any], takeoff: dict[str, Any] | None) -> dict[str, Any]:
@@ -916,12 +1054,17 @@ def attach_machining_times(times: dict[str, Any], takeoff: dict[str, Any] | None
     )
     reading = takeoff.get("machining_reading")
     if isinstance(reading, dict):
-        coded = process_assignment_with_code(reading.get("process_from_stock"))
+        coded = process_assignment_with_code(
+            reading.get("process_from_stock"),
+            features=reading.get("features") if isinstance(reading.get("features"), list) else None,
+            callouts=reading.get("callouts") if isinstance(reading.get("callouts"), list) else None,
+        )
         if coded:
             result["process_from_stock"] = coded
             evidence = coded.get("evidence")
             if evidence and evidence not in result["notes"]:
                 result["notes"] = [*result["notes"], evidence]
+            _apply_calculator_to_quote(result, coded)
     out = dict(times)
     out["machining"] = result
     return out

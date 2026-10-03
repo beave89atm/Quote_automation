@@ -1164,6 +1164,11 @@ def read_stated_stock(text: str | None) -> dict[str, Any]:
         thickness = _stated_plate_thickness(blob)
         if thickness is not None:
             stock["thickness_in"] = thickness
+        length_in, width_in = _stated_plate_plan(lines)
+        if length_in is not None:
+            stock["length_in"] = length_in
+        if width_in is not None:
+            stock["width_in"] = width_in
         for line in lines:
             if line in quotes:
                 continue
@@ -1175,6 +1180,31 @@ def read_stated_stock(text: str | None) -> dict[str, Any]:
         if diameter is not None:
             stock["diameter_in"] = diameter
     return stock
+
+
+def _stated_plate_plan(lines: list[str]) -> tuple[float | None, float | None]:
+    """Plan size written on a plate line: ``L:`` and ``H:``.
+
+    These are the sheet's own words. A finished envelope is not used here.
+    """
+    lengths: list[float] = []
+    widths: list[float] = []
+    for line in lines:
+        if not _PLATE_WORD.search(line):
+            continue
+        for match in re.finditer(rf"\bL:\s*{_NUMBER}", line, re.IGNORECASE):
+            value = _stated_number(match.group(1))
+            if value is not None:
+                lengths.append(value)
+        for match in re.finditer(rf"\bH:\s*{_NUMBER}", line, re.IGNORECASE):
+            value = _stated_number(match.group(1))
+            if value is not None:
+                widths.append(value)
+    length_sizes = _unique_sizes(lengths)
+    width_sizes = _unique_sizes(widths)
+    length = length_sizes[0] if len(length_sizes) == 1 else None
+    width = width_sizes[0] if len(width_sizes) == 1 else None
+    return length, width
 
 
 def _stated_plate_thickness(blob: str) -> float | None:
@@ -1236,6 +1266,10 @@ def _accept_stated_stock(stated: dict[str, Any] | None) -> dict[str, Any]:
         stated.get("thickness_in"), bool
     ):
         out["thickness_in"] = float(stated["thickness_in"])
+    for key in ("length_in", "width_in"):
+        value = stated.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[key] = float(value)
     if form in {"bar", "tube"} and isinstance(stated.get("diameter_in"), (int, float)) and not isinstance(
         stated.get("diameter_in"), bool
     ):
