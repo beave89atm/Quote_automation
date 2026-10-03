@@ -4,6 +4,14 @@ from pathlib import Path
 from typing import Any
 
 from quote_core.config import load_shop_rates
+from quote_core.machining_quote import (
+    attach_machining_times,
+    carry_machining_inputs,
+    machining_blocks_quote,
+    machining_needs_info_flag,
+    sync_machining_flag,
+)
+from quote_core.machining_read import apply_drawing_reading
 from quote_core.time_engine import compute_weld_times
 from quote_core.weld.takeoff import WeldLineItem, run_weld_takeoff
 
@@ -36,6 +44,7 @@ def process_job(job_id: int) -> None:
         job = db.get(Job, job_id)
         if not job:
             return
+        previous_takeoff = job.takeoff()
         job.status = "processing"
         job.error_message = None
         db.commit()
@@ -76,7 +85,12 @@ def process_job(job_id: int) -> None:
             bom_config=bom_config,
         )
         items = result.items
-        takeoff = result.to_dict()
+        takeoff = carry_machining_inputs(previous_takeoff, result.to_dict())
+        takeoff = apply_drawing_reading(
+            takeoff,
+            pdf_path=Path(job.pdf_path) if job.pdf_path else None,
+            stp_path=Path(job.stp_path) if job.stp_path else None,
+        )
         takeoff["library"] = library_info
         takeoff["bom_config"] = bom_config
         drivers = _drivers_from_takeoff(takeoff)
@@ -128,14 +142,23 @@ def process_job(job_id: int) -> None:
             )
             if weld_flag not in flags:
                 flags.append(weld_flag)
+        times_dict = attach_machining_times(times.to_dict(), takeoff)
+        machining_flag = machining_needs_info_flag(times_dict.get("machining"))
+        if machining_flag and machining_flag not in flags:
+            flags.append(machining_flag)
         job.set_takeoff(takeoff)
-        job.set_times(times.to_dict())
+        job.set_times(times_dict)
         job.set_flags(flags)
         drivers_info = takeoff.get("fitup_drivers") or {}
         lom_needs_info = bool(drivers_info.get("needs_info")) or any(
             "needs_info" in n or "clip produced 0 rows" in n for n in flags
         )
-        job.status = "needs_info" if (lom_needs_info or weld_needs_info) else "review"
+        machining_blocks = machining_blocks_quote(times_dict)
+        job.status = (
+            "needs_info"
+            if (lom_needs_info or weld_needs_info or machining_blocks)
+            else "review"
+        )
         db.commit()
     except Exception as exc:  # noqa: BLE001
         job = db.get(Job, job_id)
@@ -153,6 +176,9 @@ def recompute_from_items(
     efficiency_pct: float | None = None,
     ipm_overrides: dict[str, float] | None = None,
     fitup_drivers: dict[str, Any] | None = None,
+    machining_features: list[dict] | None = None,
+    operation_cycle_times: dict[str, Any] | None = None,
+    needs_machining: bool | None = None,
 ) -> None:
     rates = load_shop_rates(RATES_PATH)
     items = [
@@ -189,6 +215,18 @@ def recompute_from_items(
             ]
         drivers["source"] = "manual"
     takeoff["fitup_drivers"] = drivers
+    if machining_features is not None:
+        takeoff["machining_features"] = machining_features
+        takeoff["machining_features_source"] = "typed"
+    if operation_cycle_times is not None:
+        cleaned: dict[str, float] = {}
+        for key, value in operation_cycle_times.items():
+            if value is None or value == "":
+                continue
+            cleaned[str(key)] = float(value)
+        takeoff["operation_cycle_times"] = cleaned
+    if needs_machining is not None:
+        takeoff["needs_machining"] = bool(needs_machining)
 
     times = compute_weld_times(
         items,
@@ -201,8 +239,10 @@ def recompute_from_items(
         component_weights_lb=drivers.get("component_weights_lb")
         or (drivers.get("weight_calc") or {}).get("component_weights_lb"),
     )
+    times_dict = attach_machining_times(times.to_dict(), takeoff)
     job.set_takeoff(takeoff)
-    job.set_times(times.to_dict())
+    job.set_times(times_dict)
+    job.set_flags(sync_machining_flag(job.flags(), times_dict.get("machining")))
 
 
 _PUSH_IN_FLIGHT = {"pushing", "retrying_createfile"}

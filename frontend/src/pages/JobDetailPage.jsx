@@ -109,6 +109,9 @@ export default function JobDetailPage() {
   const [message, setMessage] = useState("");
   const [pushReady, setPushReady] = useState(false);
   const [pushElapsed, setPushElapsed] = useState(0);
+  const [machiningFeatures, setMachiningFeatures] = useState([]);
+  const [cycleTimes, setCycleTimes] = useState({});
+  const [needsMachining, setNeedsMachining] = useState(false);
 
   function applyDrivers(data) {
     const d = data.takeoff?.fitup_drivers || {};
@@ -116,6 +119,15 @@ export default function JobDetailPage() {
     setJointCount(d.joint_count ?? data.times?.joint_count ?? 1);
     const w = d.assembly_weight_lb ?? data.times?.assembly_weight_lb;
     setAssemblyWeight(w == null || w === "" ? "" : String(w));
+  }
+
+  function applyMachining(data) {
+    const takeoff = data.takeoff || {};
+    setMachiningFeatures(
+      Array.isArray(takeoff.machining_features) ? takeoff.machining_features : []
+    );
+    setCycleTimes(takeoff.operation_cycle_times || {});
+    setNeedsMachining(Boolean(takeoff.needs_machining));
   }
 
   useEffect(() => {
@@ -145,6 +157,7 @@ export default function JobDetailPage() {
         setItems(data.takeoff?.items || []);
         setEfficiency(data.efficiency_pct ?? 85);
         applyDrivers(data);
+        applyMachining(data);
       }
       return data;
     }
@@ -208,11 +221,22 @@ export default function JobDetailPage() {
             assembly_weight_lb: assemblyWeight === "" ? null : Number(assemblyWeight),
           },
           status: status || undefined,
+          ...(needsMachining ||
+          machiningFeatures.length ||
+          job?.takeoff?.machining_features ||
+          job?.takeoff?.needs_machining
+            ? {
+                machining_features: machiningFeatures,
+                operation_cycle_times: cycleTimes,
+                needs_machining: needsMachining,
+              }
+            : {}),
         },
       });
       setJob(data);
       setItems(data.takeoff?.items || []);
       applyDrivers(data);
+      applyMachining(data);
       setMessage(status ? `Marked ${status}` : "Recalculated");
     } catch (err) {
       setError(err.message);
@@ -230,6 +254,7 @@ export default function JobDetailPage() {
         setItems(data.takeoff?.items || []);
         setEfficiency(data.efficiency_pct ?? 85);
         applyDrivers(data);
+        applyMachining(data);
         return data;
       }
     }
@@ -517,7 +542,230 @@ export default function JobDetailPage() {
             quoted total {times.quoted_with_fixture_hours ?? "—"} hr
           </div>
         </div>
+        <div className="metric">
+          <div className="label">Machining operations</div>
+          <div className="value">
+            {times.machining?.operation_count != null ? times.machining.operation_count : "—"}
+          </div>
+        </div>
+        <div className="metric">
+          <div className="label">Run time</div>
+          <div className="value" style={{ fontSize: "1rem" }}>
+            {(times.machining?.operations || []).length
+              ? times.machining.operations.map((op) => (
+                  <div key={op.id}>
+                    {op.label}: {op.run_time_min == null ? "—" : `${op.run_time_min} min`}
+                  </div>
+                ))
+              : "—"}
+          </div>
+        </div>
+        <div className="metric">
+          <div className="label">Setup</div>
+          <div className="value">
+            {times.machining?.setup_time_min == null
+              ? "—"
+              : `${times.machining.setup_time_min} min`}
+          </div>
+          <div className="muted" style={{ fontSize: "0.8rem", marginTop: "0.25rem" }}>
+            setup is the fixed time
+          </div>
+        </div>
       </div>
+      {times.machining?.needs_machining && times.machining.quote_done === false ? (
+        <p className="error" style={{ marginTop: 0 }}>
+          Machining quote is not done
+          {times.machining.missing?.length ? ` — missing ${times.machining.missing.join(", ")}` : ""}.
+        </p>
+      ) : null}
+      {(times.machining?.item_operations || []).map((op) => (
+        <p key={op.operation_code} className="muted" style={{ margin: "0.25rem 0" }}>
+          {op.operation_code}
+          {op.operation_name ? ` · ${op.operation_name}` : ""} · {op.equipment} ·{" "}
+          {op.setup?.calculator} fixed time{" "}
+          {op.setup?.fixedtime_hours == null ? "—" : `${op.setup.fixedtime_hours} hr`} ·{" "}
+          {op.run?.calculator} {op.run?.field_name}{" "}
+          {op.run?.time_min == null ? "—" : `${op.run.time_min} min`} · not posted
+        </p>
+      ))}
+      {job?.takeoff?.machining_reading ? (
+        <div className="muted" style={{ margin: "0.75rem 0" }}>
+          <div className="label">Read from the drawing</div>
+          <ul>
+            {(job.takeoff.machining_reading.features || []).map((feature) => (
+              <li key={feature.id || feature.callout}>
+                {feature.kind}: {feature.callout || "—"}
+                {(feature.blank_fields || []).length
+                  ? ` — blank: ${feature.blank_fields.map((row) => row.field).join(", ")}`
+                  : ""}
+              </li>
+            ))}
+            {(job.takeoff.machining_reading.callouts || []).map((callout, index) => (
+              <li key={`${callout.symbol}-${callout.text}-${index}`}>
+                {callout.text}: {callout.note}
+              </li>
+            ))}
+            {(job.takeoff.machining_reading.unknown_symbols || []).map((row) => (
+              <li key={row.symbol}>
+                Unknown symbol {row.symbol}: {row.note}
+              </li>
+            ))}
+            {(job.takeoff.machining_reading.unreadable || []).map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+          {(job.takeoff.machining_reading.notes || []).map((note) => (
+            <p key={note}>{note}</p>
+          ))}
+        </div>
+      ) : null}
+      <details className="fitup-drivers">
+        <summary>
+          <h2>Machining features</h2>
+          <span className="fitup-summary-meta muted">
+            {job?.takeoff?.machining_features_source === "drawing"
+              ? "read from the drawing"
+              : machiningFeatures.length
+                ? "typed"
+                : "none yet"}
+          </span>
+        </summary>
+        <label className="muted" style={{ display: "block", margin: "0.5rem 0" }}>
+          <input
+            type="checkbox"
+            checked={needsMachining}
+            onChange={(e) => setNeedsMachining(e.target.checked)}
+          />{" "}
+          Part needs machining
+        </label>
+        {(times.machining?.operations || []).map((op) => (
+          <div key={op.id} className="field" style={{ maxWidth: 280, marginBottom: "0.5rem" }}>
+            <label htmlFor={`cycle-${op.id}`}>{op.label} cycle time (min)</label>
+            <input
+              id={`cycle-${op.id}`}
+              type="number"
+              min="0"
+              step="0.1"
+              placeholder="overrides estimate"
+              value={cycleTimes[op.id] ?? ""}
+              onChange={(e) => {
+                const raw = e.target.value;
+                setCycleTimes((prev) => {
+                  const next = { ...prev };
+                  if (raw === "") delete next[op.id];
+                  else next[op.id] = Number(raw);
+                  return next;
+                });
+              }}
+            />
+          </div>
+        ))}
+        {machiningFeatures.map((feature, index) => (
+          <div key={feature.id || index} className="row" style={{ gap: "0.5rem", marginBottom: "0.5rem" }}>
+            <select
+              value={feature.kind || "hole"}
+              onChange={(e) => {
+                const kind = e.target.value;
+                setMachiningFeatures((prev) =>
+                  prev.map((row, i) => (i === index ? { ...row, kind } : row))
+                );
+              }}
+            >
+              <option value="face">face</option>
+              <option value="hole">hole</option>
+              <option value="thread">thread</option>
+              <option value="groove">groove</option>
+              <option value="plate">plate</option>
+            </select>
+            <select
+              value={feature.machine || ""}
+              onChange={(e) => {
+                const machine = e.target.value;
+                setMachiningFeatures((prev) =>
+                  prev.map((row, i) => (i === index ? { ...row, machine } : row))
+                );
+              }}
+            >
+              <option value="">machine</option>
+              <option value="mill">CNC Mill</option>
+              <option value="lathe">Lathe</option>
+              <option value="lathe2">Lathe 2</option>
+            </select>
+            <input
+              type="number"
+              step="0.001"
+              placeholder="diameter in"
+              value={feature.dimensions?.diameter_in ?? ""}
+              onChange={(e) => {
+                const diameter_in = e.target.value === "" ? "" : Number(e.target.value);
+                setMachiningFeatures((prev) =>
+                  prev.map((row, i) =>
+                    i === index
+                      ? { ...row, dimensions: { ...(row.dimensions || {}), diameter_in } }
+                      : row
+                  )
+                );
+              }}
+              style={{ maxWidth: 120 }}
+            />
+            <input
+              type="number"
+              step="0.001"
+              placeholder="thickness in"
+              value={feature.dimensions?.thickness_in ?? ""}
+              onChange={(e) => {
+                const thickness_in = e.target.value === "" ? "" : Number(e.target.value);
+                setMachiningFeatures((prev) =>
+                  prev.map((row, i) =>
+                    i === index
+                      ? { ...row, dimensions: { ...(row.dimensions || {}), thickness_in } }
+                      : row
+                  )
+                );
+              }}
+              style={{ maxWidth: 120 }}
+            />
+            <select
+              value={feature.tolerance || ""}
+              onChange={(e) => {
+                const tolerance = e.target.value;
+                setMachiningFeatures((prev) =>
+                  prev.map((row, i) => (i === index ? { ...row, tolerance } : row))
+                );
+              }}
+            >
+              <option value="">tolerance</option>
+              <option value="loose">loose</option>
+              <option value="tight">tight</option>
+            </select>
+            <button
+              className="btn ghost"
+              type="button"
+              onClick={() => setMachiningFeatures((prev) => prev.filter((_, i) => i !== index))}
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+        <button
+          className="btn ghost"
+          type="button"
+          onClick={() =>
+            setMachiningFeatures((prev) => [
+              ...prev,
+              {
+                id: `f${Date.now()}`,
+                kind: "hole",
+                machine: "mill",
+                tolerance: "loose",
+                dimensions: { diameter_in: 0.375 },
+              },
+            ])
+          }
+        >
+          Add feature
+        </button>
+      </details>
 
       <details className="fitup-drivers">
         <summary>
