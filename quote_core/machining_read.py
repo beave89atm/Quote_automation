@@ -3,6 +3,13 @@
 A feature is added only when the file states it. A diameter, a cylinder,
 or a plane by itself is not a hole, a thread, a groove, or a face operation.
 Missing values stay blank.
+
+When the sheet does not name mill, lathe, or lathe 2, compare the starting
+envelope to the finished solid (Kyle, 2026-10-02). Concentric turned steps
+assign the lathe family. A prismatic plate with holes, taps, or countersinks
+assigns mill. Lathe 2 is not chosen from that comparison. The comparison
+does not invent a cycle time or a shop rate. The quote maps the family onto
+a verified operation code.
 """
 
 from __future__ import annotations
@@ -65,6 +72,54 @@ _LONE_DECIMAL = re.compile(r"^\d+(?:\.\d+)?$")
 _DRILL_SIZE = re.compile(r"\bDRILL\b[^(]*\(\s*([0-9]*\.?[0-9]+)\s*\)", re.IGNORECASE)
 _HOLE_QTY = re.compile(r"\(\s*(\d+)\s*\)\s*HOLE\b", re.IGNORECASE)
 _PLANE = re.compile(r"\bPLANE\s*\(", re.IGNORECASE)
+_STEP_ENTITY = re.compile(r"^#(\d+)\s*=\s*(.+?);\s*$", re.MULTILINE)
+_STEP_POINT = re.compile(
+    r"CARTESIAN_POINT\s*\(\s*'[^']*'\s*,\s*\(\s*([^)]+)\)",
+    re.IGNORECASE,
+)
+_STEP_VERTEX = re.compile(
+    r"VERTEX_POINT\s*\(\s*'[^']*'\s*,\s*#(\d+)",
+    re.IGNORECASE,
+)
+_STEP_DIR = re.compile(
+    r"DIRECTION\s*\(\s*'[^']*'\s*,\s*\(\s*([^)]+)\)",
+    re.IGNORECASE,
+)
+_STEP_AXIS = re.compile(
+    r"AXIS2_PLACEMENT_3D\s*\(\s*'[^']*'\s*,\s*#(\d+)\s*,\s*#(\d+)",
+    re.IGNORECASE,
+)
+_STEP_CYLINDER = re.compile(
+    r"CYLINDRICAL_SURFACE\s*\(\s*'[^']*'\s*,\s*#(\d+)\s*,\s*"
+    r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)\s*\)",
+    re.IGNORECASE,
+)
+# A revolved profile stores vertices in one plane. That is not a plate.
+_PROFILE_SPAN_IN = 0.01
+# Same gap the callout matcher uses for one diameter.
+_DIAMETER_CLUSTER_IN = 0.001
+# Origins this close to one axis are the same centerline.
+_AXIS_TOL_IN = 0.02
+# Plate: thin axis at or under the purchased-plate limit, and thin vs width.
+_PLATE_THICK_MAX_IN = 0.75
+_PLATE_THIN_RATIO = 0.25
+_PROCESS_KINDS = {
+    "face",
+    "groove",
+    "thread",
+    "chamfer",
+    "countersink",
+    "counterbore",
+    "hole",
+    "slot",
+    "pocket",
+    "turn",
+    "bore",
+    "taper",
+    "knurl",
+    "part_off",
+}
+_MILL_FEATURE_KINDS = {"hole", "countersink", "counterbore", "plate"}
 
 _CYLINDER_NOTE = (
     "Cylindrical surfaces in the STEP file are not holes. "
@@ -764,6 +819,10 @@ def _plate_feature(line: str, match: re.Match[str]) -> dict[str, Any]:
     return _feature("plate", line, dimensions=dimensions, blank_fields=blanks)
 
 
+def _step_floats(blob: str) -> list[float]:
+    return [float(token) for token in blob.split(",") if token.strip()]
+
+
 def _step_geometry(text: str) -> dict[str, Any]:
     if re.search(r"CONVERSION_BASED_UNIT\s*\(\s*'INCH'", text, re.IGNORECASE):
         scale = 1.0
@@ -774,27 +833,387 @@ def _step_geometry(text: str) -> dict[str, Any]:
     else:
         scale = None
         units = None
+    entities = {
+        int(match.group(1)): match.group(2)
+        for match in _STEP_ENTITY.finditer(text)
+    }
+    points: dict[int, list[float]] = {}
+    directions: dict[int, list[float]] = {}
+    axes: dict[int, tuple[int, int]] = {}
+    for eid, body in entities.items():
+        point = _STEP_POINT.search(body)
+        if point and scale is not None:
+            vals = _step_floats(point.group(1))
+            if len(vals) >= 3:
+                points[eid] = [vals[0] * scale, vals[1] * scale, vals[2] * scale]
+        direction = _STEP_DIR.search(body)
+        if direction:
+            vals = _step_floats(direction.group(1))
+            if len(vals) >= 3:
+                directions[eid] = vals[:3]
+        axis = _STEP_AXIS.search(body)
+        if axis:
+            axes[eid] = (int(axis.group(1)), int(axis.group(2)))
     cylinders = []
-    circles = []
-    for kind, raw in _STEP_RADIUS.findall(text):
-        radius = float(raw)
+    for match in _STEP_CYLINDER.finditer(text):
+        radius = float(match.group(2))
         radius_in = None if scale is None else radius * scale
-        row = {
+        row: dict[str, Any] = {
             "radius_file": radius,
             "radius_in": radius_in,
             "diameter_in": None if radius_in is None else radius_in * 2.0,
         }
+        placement = axes.get(int(match.group(1)))
+        if placement:
+            origin = points.get(placement[0])
+            direction = directions.get(placement[1])
+            if origin:
+                row["axis_origin_in"] = origin
+            if direction:
+                row["axis_direction"] = direction
+        cylinders.append(row)
+    circles = []
+    for kind, raw in _STEP_RADIUS.findall(text):
         if kind.upper().startswith("CYLINDRICAL"):
-            cylinders.append(row)
-        else:
-            circles.append(row)
+            continue
+        radius = float(raw)
+        radius_in = None if scale is None else radius * scale
+        circles.append(
+            {
+                "radius_file": radius,
+                "radius_in": radius_in,
+                "diameter_in": None if radius_in is None else radius_in * 2.0,
+            }
+        )
     return {
         "units": units,
         "cylinders": cylinders,
         "circles": circles,
         "plane_count": len(_PLANE.findall(text)),
+        "vertex_box_in": _vertex_box_in(points, entities),
         "note": _PLANE_NOTE,
     }
+
+
+def _vertex_box_in(
+    points: dict[int, list[float]],
+    entities: dict[int, str],
+) -> list[float] | None:
+    """Sorted length, width, thickness from VERTEX_POINT only.
+
+    A zero span means the vertices are a revolved profile, not a plate.
+    """
+    coords = []
+    for body in entities.values():
+        found = _STEP_VERTEX.search(body)
+        if not found:
+            continue
+        point = points.get(int(found.group(1)))
+        if point:
+            coords.append(point)
+    if len(coords) < 2:
+        return None
+    spans = []
+    for axis in range(3):
+        values = [point[axis] for point in coords]
+        spans.append(max(values) - min(values))
+    if min(spans) < _PROFILE_SPAN_IN:
+        return None
+    return sorted(spans, reverse=True)
+
+
+def _fmt_in(value: float) -> str:
+    return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _cluster_diameters(values: list[float]) -> list[float]:
+    """One entry per finished diameter. Pairs inside 0.001 in are one size."""
+    ordered = sorted(value for value in values if isinstance(value, float))
+    groups: list[list[float]] = []
+    for value in ordered:
+        if not groups or value - groups[-1][-1] > _DIAMETER_CLUSTER_IN:
+            groups.append([value])
+        else:
+            groups[-1].append(value)
+    return [max(group) for group in groups]
+
+
+def _unit_direction(values: list[float]) -> tuple[float, float, float] | None:
+    mag = (values[0] ** 2 + values[1] ** 2 + values[2] ** 2) ** 0.5
+    if mag < 1e-12:
+        return None
+    return (values[0] / mag, values[1] / mag, values[2] / mag)
+
+
+def _axes_share_one_centerline(rows: list[dict[str, Any]]) -> bool:
+    """True when every cylinder axis is the same line.
+
+    Parallel hole axes spaced across a plate are not this. A turned OD and
+    the bore inside it are.
+    """
+    placed = []
+    for row in rows:
+        origin = row.get("axis_origin_in")
+        direction = row.get("axis_direction")
+        if not origin or not direction or len(origin) < 3 or len(direction) < 3:
+            return False
+        unit = _unit_direction(direction)
+        if unit is None:
+            return False
+        placed.append((origin, unit))
+    if len(placed) < 2:
+        return False
+    origin, direction = placed[0]
+    for other_origin, other_direction in placed[1:]:
+        aligned = abs(
+            direction[0] * other_direction[0]
+            + direction[1] * other_direction[1]
+            + direction[2] * other_direction[2]
+        )
+        if aligned < 0.99:
+            return False
+        delta = (
+            other_origin[0] - origin[0],
+            other_origin[1] - origin[1],
+            other_origin[2] - origin[2],
+        )
+        cross = (
+            delta[1] * direction[2] - delta[2] * direction[1],
+            delta[2] * direction[0] - delta[0] * direction[2],
+            delta[0] * direction[1] - delta[1] * direction[0],
+        )
+        distance = (cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2) ** 0.5
+        if distance > _AXIS_TOL_IN:
+            return False
+    return True
+
+
+def _sheet_claims_machining(
+    features: list[dict[str, Any]],
+    callouts: list[dict[str, Any]],
+) -> bool:
+    if any(feature.get("kind") in _PROCESS_KINDS for feature in features):
+        return True
+    return any(
+        callout.get("requires_machining") or callout.get("symbol") == "diameter"
+        for callout in callouts
+    )
+
+
+def _one_machined_part(assembly: dict[str, Any] | None) -> bool:
+    """An assembly of several leaves is not one turned or milled part."""
+    leaves = list((assembly or {}).get("leaf_parts") or [])
+    return len(leaves) <= 1
+
+
+def _plate_box(geometry: dict[str, Any]) -> list[float] | None:
+    box = geometry.get("vertex_box_in")
+    if not isinstance(box, list) or len(box) < 3:
+        return None
+    length, width, thick = (float(box[0]), float(box[1]), float(box[2]))
+    if thick < _PROFILE_SPAN_IN or width <= 0:
+        return None
+    if thick > _PLATE_THICK_MAX_IN:
+        return None
+    if thick / width > _PLATE_THIN_RATIO:
+        return None
+    return [length, width, thick]
+
+
+def compare_stock_to_finished(
+    geometry: dict[str, Any] | None,
+    features: list[dict[str, Any]] | None = None,
+    callouts: list[dict[str, Any]] | None = None,
+    assembly: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Choose lathe or mill by comparing starting stock to the finished part.
+
+    Kyle, 2026-10-02: when the drawing does not name lathe or mill, the
+    difference between the starting material and the finished part decides
+    the machining. Shop rates are not part of this comparison.
+
+    Turned OD/ID steps and concentric cylinders assign the lathe family.
+    The starting round is the largest finished outside diameter. The
+    drawing does not state a larger bar, so none is invented. Smaller
+    diameters on that same axis are the material turned away. Lathe 2 is
+    not chosen unless the sheet says lathe 2, and this function never
+    sees that word — a stated machine is left to the caller.
+
+    A prismatic plate (thin vertex envelope) whose finished difference is
+    holes, taps, or countersinks assigns mill. Those hole axes are not a
+    stack of turned diameters.
+
+    Several leaf parts are not one machined part. A single cylinder, or
+    two diameters that do not share an axis, is not enough. Nothing here
+    writes a run time, a setup time, or a dollar rate.
+    """
+    features = [row for row in (features or []) if isinstance(row, dict)]
+    callouts = [row for row in (callouts or []) if isinstance(row, dict)]
+    geometry = geometry or {}
+    if any(feature.get("stated_machine") is True for feature in features):
+        return None
+    if not _one_machined_part(assembly):
+        return None
+    if not _sheet_claims_machining(features, callouts):
+        return None
+    cylinders = [
+        row
+        for row in (geometry.get("cylinders") or [])
+        if isinstance(row, dict) and isinstance(row.get("diameter_in"), float)
+    ]
+    distinct = _cluster_diameters([row["diameter_in"] for row in cylinders])
+    turned = _turned_assignment(geometry, features, cylinders, distinct)
+    if turned:
+        return turned
+    return _plate_assignment(geometry, features, distinct)
+
+
+def _turned_assignment(
+    geometry: dict[str, Any],
+    features: list[dict[str, Any]],
+    cylinders: list[dict[str, Any]],
+    distinct: list[float],
+) -> dict[str, Any] | None:
+    if len(distinct) < 2:
+        return None
+    axes_known = all(row.get("axis_direction") and row.get("axis_origin_in") for row in cylinders)
+    if axes_known:
+        if not _axes_share_one_centerline(cylinders):
+            return None
+        axis_note = "The cylinder axes in the STEP file are one centerline."
+    else:
+        # Practice fixture: two diameters and no axis placement. Do not use
+        # this path when the sheet already has holes or a plate.
+        if any(
+            feature.get("kind") in _MILL_FEATURE_KINDS or feature.get("thread_form") == "tap"
+            for feature in features
+        ):
+            return None
+        axis_note = (
+            "The STEP file does not place the cylinder axes. "
+            "The diameters are on one product, and the sheet does not call them holes."
+        )
+    stock = max(distinct)
+    finished = [_fmt_in(value) for value in distinct]
+    units = geometry.get("units")
+    shown = ", ".join(f"{value} in" for value in finished)
+    if units == "millimetre":
+        shown = ", ".join(
+            f"{_fmt_in(value * 25.4)} mm ({_fmt_in(value)} in)" for value in distinct
+        )
+        stock_shown = f"{_fmt_in(stock * 25.4)} mm ({_fmt_in(stock)} in)"
+    else:
+        stock_shown = f"{_fmt_in(stock)} in"
+    evidence = (
+        f"The sheet does not name mill, lathe, or lathe 2. {axis_note} "
+        f"Starting stock is a round of {stock_shown}, the largest finished "
+        "outside diameter. The drawing does not state a larger bar. "
+        f"Finished diameters on that round are {shown}. "
+        "The smaller diameters are turned OD or ID steps, so the family is lathe. "
+        "Lathe 2 was not chosen. This comparison does not supply a run time or a setup time."
+    )
+    return {
+        "family": "lathe",
+        "stated_on_sheet": False,
+        "stock": {
+            "form": "round",
+            "diameter_in": stock,
+            "note": (
+                "Starting round is the largest finished outside diameter. "
+                "A larger bar was not on the drawing."
+            ),
+        },
+        "finished": {
+            "diameters_in": distinct,
+            "concentric": True,
+        },
+        "difference": (
+            "Finished diameters smaller than the starting round are turned "
+            "OD or ID steps on the same axis."
+        ),
+        "evidence": evidence,
+    }
+
+
+def _plate_assignment(
+    geometry: dict[str, Any],
+    features: list[dict[str, Any]],
+    distinct: list[float],
+) -> dict[str, Any] | None:
+    box = _plate_box(geometry)
+    if box is None:
+        return None
+    if len(distinct) >= 2:
+        return None
+    mill_features = [
+        feature
+        for feature in features
+        if feature.get("kind") in {"hole", "countersink", "counterbore"}
+        or feature.get("thread_form") in {"tap", "thread_mill"}
+    ]
+    if not mill_features:
+        return None
+    length, width, thick = box
+    kinds = ", ".join(dict.fromkeys(feature.get("kind") or "feature" for feature in mill_features))
+    evidence = (
+        "The sheet does not name mill, lathe, or lathe 2. "
+        f"The finished solid is a plate {_fmt_in(length)} x {_fmt_in(width)} x "
+        f"{_fmt_in(thick)} in. The thin axis is the plate. "
+        f"The machining on that plate is {kinds}. "
+        "Those are holes, taps, or countersinks in a prismatic plate, not turned "
+        "OD or ID steps, so the family is mill. "
+        "This comparison does not supply a run time or a setup time."
+    )
+    return {
+        "family": "mill",
+        "stated_on_sheet": False,
+        "stock": {
+            "form": "plate",
+            "box_in": box,
+            "thickness_in": thick,
+            "note": (
+                "Starting plate is the finished solid's vertex envelope. "
+                "The thin axis is the plate thickness."
+            ),
+        },
+        "finished": {
+            "diameters_in": distinct,
+            "concentric": False,
+        },
+        "difference": (
+            "The plate envelope stays. Holes, taps, or countersinks are the "
+            "material removed from that plate."
+        ),
+        "evidence": evidence,
+    }
+
+
+def _apply_process_from_stock(
+    features: list[dict[str, Any]],
+    assignment: dict[str, Any] | None,
+) -> None:
+    """Fill a machine the sheet left blank. Do not mark it as written on the sheet."""
+    if not assignment:
+        return
+    family = assignment.get("family")
+    evidence = assignment.get("evidence") or ""
+    if family not in {"lathe", "mill"}:
+        return
+    for feature in features:
+        if feature.get("kind") not in _PROCESS_KINDS:
+            continue
+        if feature.get("stated_machine") is True or feature.get("machine"):
+            continue
+        feature["machine"] = family
+        feature["machine_source"] = "stock_vs_finished"
+        feature["process_evidence"] = evidence
+        note = str(feature.get("note") or "")
+        if "No operation code was added" in note:
+            feature["note"] = (
+                "The sheet does not name mill, lathe, or lathe 2. "
+                f"Stock versus finished geometry assigns {family}. "
+                "No cycle time was calculated."
+            )
 
 
 def _cylinder_inches(geometry: dict[str, Any]) -> list[float]:
@@ -1928,6 +2347,15 @@ def read_machining_requirements(
         callout.get("unassigned_hole") or callout.get("requires_machining")
         for callout in callouts
     )
+    # The sheet's own machine word wins. Stock versus finished fills only a blank.
+    process_from_stock = None
+    if not any(feature.get("stated_machine") is True for feature in features):
+        process_from_stock = compare_stock_to_finished(
+            geometry, features, callouts, assembly
+        )
+        _apply_process_from_stock(features, process_from_stock)
+    if process_from_stock and process_from_stock.get("evidence"):
+        notes.append(process_from_stock["evidence"])
 
     return {
         "features": features,
@@ -1938,6 +2366,7 @@ def read_machining_requirements(
         "unreadable": unreadable,
         "notes": notes,
         "needs_machining": needs_machining,
+        "process_from_stock": process_from_stock,
         "pdf_read": pdf_read,
         "step_read": step_read,
         "practiced_on_shared_drive": False,

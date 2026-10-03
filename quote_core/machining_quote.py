@@ -21,6 +21,12 @@ on those cost rows is not used. Setup and run stay on separate calculators.
 A quote-header row named Milling with equipment Laser and code ``op_mill``
 is not an item operation. No other operation code is used. Nothing here
 posts an operation or calls Sectura.
+
+When a drawing does not name a machine, ``process_from_stock`` may name
+the lathe or mill family from the stock-versus-finished comparison. That
+family maps to ``op_lathe`` or ``op_mill``. Lathe 2 (``op_lathe2``) is used
+only when the sheet says lathe 2. The comparison does not fill run time,
+setup, or a dollar rate.
 """
 
 from __future__ import annotations
@@ -849,6 +855,39 @@ def carry_machining_inputs(previous: dict[str, Any] | None, takeoff: dict[str, A
     return out
 
 
+def process_assignment_with_code(assignment: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Map a stock-versus-finished family onto one verified operation code.
+
+    The comparison chooses lathe or mill. Lathe uses ``op_lathe``.
+    ``op_lathe2`` is applied only when the assignment family is already
+    lathe 2, which the stock comparison does not produce. Run time, setup,
+    and the shop rate stay blank.
+    """
+    if not isinstance(assignment, dict):
+        return None
+    family = (
+        _text(assignment.get("family"))
+        .casefold()
+        .replace(" ", "")
+        .replace("_", "")
+        .replace("-", "")
+    )
+    if family == "lathe2":
+        code = "op_lathe2"
+    else:
+        code = _FAMILY_CODE.get(family)
+    if not code:
+        return None
+    out = dict(assignment)
+    out["family"] = "lathe2" if family == "lathe2" else family
+    out["operation_code"] = code
+    out["run_time_min"] = None
+    out["setup_time_min"] = None
+    out["shop_rate_per_hour"] = None
+    out["posted"] = False
+    return out
+
+
 def attach_machining_times(times: dict[str, Any], takeoff: dict[str, Any] | None) -> dict[str, Any]:
     """Attach a machining result only when features or an explicit need is present."""
     takeoff = takeoff or {}
@@ -867,6 +906,14 @@ def attach_machining_times(times: dict[str, Any], takeoff: dict[str, Any] | None
         if takeoff.get("machining_features_source") == "drawing"
         else None,
     )
+    reading = takeoff.get("machining_reading")
+    if isinstance(reading, dict):
+        coded = process_assignment_with_code(reading.get("process_from_stock"))
+        if coded:
+            result["process_from_stock"] = coded
+            evidence = coded.get("evidence")
+            if evidence and evidence not in result["notes"]:
+                result["notes"] = [*result["notes"], evidence]
     out = dict(times)
     out["machining"] = result
     return out

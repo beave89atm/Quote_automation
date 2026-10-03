@@ -55,6 +55,8 @@ def test_sprout_plate_reads_the_countersink_and_stays_not_done():
     feature = reading["features"][0]
     assert feature["callout"] == "6X .63 THRU / 1.00 X 82°"
     assert feature["stated_machine"] is False
+    assert feature["machine"] == "mill"
+    assert feature["machine_source"] == "stock_vs_finished"
     assert feature["dimensions"]["count"] == 6
     assert feature["dimensions"]["diameter_in"] == 0.63
     assert feature["dimensions"]["countersink_diameter_in"] == 1.0
@@ -104,20 +106,37 @@ def test_sprout_plate_reads_the_countersink_and_stays_not_done():
     assert "1002309-1" in shared
     assert "rest of the shared drive has not" in shared
     assert "were not treated as one machined part" in notes
+    assignment = reading["process_from_stock"]
+    assert assignment["family"] == "mill"
+    assert assignment["stated_on_sheet"] is False
+    assert assignment["stock"]["form"] == "plate"
+    assert assignment["stock"]["thickness_in"] == 0.5
+    assert "countersink" in assignment["evidence"]
+    assert "not turned" in assignment["evidence"]
+    assert "does not supply a run time" in assignment["evidence"]
 
     times = attach_machining_times({"weld_minutes": 3.0}, takeoff)
     machining = times["machining"]
     assert times["weld_minutes"] == 3.0
     assert machining["needs_machining"] is True
     assert machining["quote_done"] is False
-    assert machining["operation_count"] is None
-    assert machining["operations"] == []
-    assert machining["item_operations"] == []
-    assert machining["missing"] == ["operation_count", "run_time", "setup_time"]
+    assert machining["operation_count"] == 1
+    assert machining["operations"][0]["name"] == "countersink"
+    assert machining["operations"][0]["operation_code"] == "op_mill"
+    assert machining["operations"][0]["run_time_min"] is None
+    assert machining["item_operations"][0]["operation_code"] == "op_mill"
+    assert machining["item_operations"][0]["setup"]["calculator"] == "Milling-Setup"
+    assert machining["item_operations"][0]["setup"]["time_min"] is None
+    assert machining["item_operations"][0]["run"]["time_min"] is None
+    assert machining["missing"] == ["run_time", "setup_time"]
     assert machining["setup_time_min"] is None
     assert machining["shop_rate_per_hour"] is None
     assert machining["posted"] is False
     assert machining_blocks_quote(times) is True
+    coded = machining["process_from_stock"]
+    assert coded["operation_code"] == "op_mill"
+    assert coded["run_time_min"] is None
+    assert coded["setup_time_min"] is None
     dumped = str(machining)
-    for code in ("op_mill", "op_lathe", "op_lathe2"):
-        assert code not in dumped
+    assert "op_lathe2" not in dumped
+    assert "op_lathe" not in dumped.replace("op_lathe2", "")

@@ -58,7 +58,9 @@ def test_turned_practice_reads_stepped_diameters_face_groove_and_thread():
     by_kind = {feature["kind"]: feature for feature in reading["features"]}
     face = by_kind["face"]
     assert face["callout"] == "FACE"
-    assert "machine" not in face
+    assert face["machine"] == "lathe"
+    assert face["machine_source"] == "stock_vs_finished"
+    assert face.get("stated_machine") is not True
     assert any(row["field"] == "machine" for row in face["blank_fields"])
     assert "step_match" not in face
 
@@ -108,7 +110,10 @@ def test_turned_practice_reads_stepped_diameters_face_groove_and_thread():
     assert "4-41" in chamfer_feature["citation"]
     assert "6.1" in chamfer_feature["citation"]
     assert "4-41" in chamfer_feature["angle_citation"]
-    assert "No operation code was added" in chamfer_feature["note"]
+    assert chamfer_feature["machine"] == "lathe"
+    assert chamfer_feature["machine_source"] == "stock_vs_finished"
+    assert "assigns lathe" in chamfer_feature["note"]
+    assert "No cycle time was calculated" in chamfer_feature["note"]
     assert reading["unknown_symbols"] == []
     degree = describe_symbol("\u00b0")
     assert degree["known"] is True
@@ -139,6 +144,14 @@ def test_turned_practice_reads_stepped_diameters_face_groove_and_thread():
     assert "BB1013" in notes
     assert "rest of the shared drive has not" in notes
     assert "PRACTICE" not in notes
+    assignment = reading["process_from_stock"]
+    assert assignment["family"] == "lathe"
+    assert assignment["stated_on_sheet"] is False
+    assert assignment["stock"]["diameter_in"] == 1.25
+    assert assignment["finished"]["diameters_in"] == [0.75, 1.25]
+    assert "does not place the cylinder axes" in assignment["evidence"]
+    assert "Lathe 2 was not chosen" in assignment["evidence"]
+    assert "does not supply a run time" in assignment["evidence"]
 
     result = quote_machining_features(reading["features"], features_source="drawing")
     assert result["needs_machining"] is True
@@ -147,22 +160,25 @@ def test_turned_practice_reads_stepped_diameters_face_groove_and_thread():
     assert result["posted"] is False
     assert result["shop_rate_per_hour"] is None
     assert result["setup_time_min"] is None
-    assert result["item_operations"] == []
     assert result["missing"] == ["operation_count", "run_time", "setup_time"]
-    assert [op["name"] for op in result["operations"]] == ["grooving"]
-    grooving = result["operations"][0]
-    assert grooving["operation_code"] is None
-    assert grooving["machine"] == "lathe-unspecified"
-    assert grooving["run_time_min"] is None
+    assert [op["name"] for op in result["operations"]] == ["facing", "grooving", "chamfer"]
+    assert [op["operation_code"] for op in result["operations"]] == ["op_lathe", "op_lathe", "op_lathe"]
+    assert all(op["run_time_min"] is None for op in result["operations"])
+    grooving = result["operations"][1]
+    assert grooving["machine"] == "lathe"
     assert grooving["feature_ids"] == ["read-2"]
-    assert {row["kind"] for row in result["unresolved_features"]} == {"face", "thread", "chamfer"}
+    assert {row["kind"] for row in result["unresolved_features"]} == {"thread"}
+    item = result["item_operations"][0]
+    assert item["operation_code"] == "op_lathe"
+    assert item["setup"]["calculator"] == "Lathe-Setup"
+    assert item["setup"]["time_min"] is None
+    assert item["run"]["time_min"] is None
     dumped = str(result)
-    for code in ("op_mill", "op_lathe", "op_lathe2"):
-        assert code not in dumped
+    assert "op_lathe2" not in dumped
+    assert "op_mill" not in dumped
     quote_notes = " ".join(result["notes"])
-    assert "which one is not specified" in quote_notes
+    assert "which one is not specified" not in quote_notes
     assert "Thread form is missing" in quote_notes
-    assert "machine not supplied" in quote_notes
     assert "Not posted" in quote_notes
 
     times = attach_machining_times({"weld_minutes": 2.0}, takeoff)
@@ -177,15 +193,18 @@ def test_typed_cycle_on_the_practice_groove_does_not_finish_the_quote():
     reading = apply_drawing_reading({}, _PDF, _STEP)["machining_reading"]
     result = quote_machining_features(
         reading["features"],
-        operation_cycle_times={"lathe-unspecified:grooving:0.125": 4.0},
+        operation_cycle_times={"lathe:grooving:0.125": 4.0},
         features_source="drawing",
     )
-    assert result["operations"][0]["run_time_min"] == 4.0
-    assert result["operations"][0]["run_time_source"] == "cycle_override"
-    assert result["operations"][0]["operation_code"] is None
+    grooving = next(op for op in result["operations"] if op["name"] == "grooving")
+    assert grooving["run_time_min"] == 4.0
+    assert grooving["run_time_source"] == "cycle_override"
+    assert grooving["operation_code"] == "op_lathe"
     assert result["setup_time_min"] is None
     assert result["operation_count"] is None
-    assert result["item_operations"] == []
+    assert result["item_operations"][0]["operation_code"] == "op_lathe"
+    assert result["item_operations"][0]["run"]["time_min"] is None
     assert result["shop_rate_per_hour"] is None
     assert result["quote_done"] is False
     assert result["missing"] == ["operation_count", "run_time", "setup_time"]
+    assert "op_lathe2" not in str(result)

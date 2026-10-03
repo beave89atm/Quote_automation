@@ -120,6 +120,21 @@ def test_alcon_pin_reads_the_stated_tap_and_leaves_times_blank():
     assert "BB1013" in notes
     assert "rest of the shared drive has not" in notes
 
+    assignment = reading["process_from_stock"]
+    assert assignment["family"] == "lathe"
+    assert assignment["stated_on_sheet"] is False
+    assert assignment["stock"]["form"] == "round"
+    assert abs(assignment["stock"]["diameter_in"] * 25.4 - 15.0) < 0.01
+    finished_mm = sorted(round(value * 25.4, 3) for value in assignment["finished"]["diameters_in"])
+    assert finished_mm == [5.0, 6.0, 10.5, 15.0]
+    assert assignment["finished"]["concentric"] is True
+    assert "one centerline" in assignment["evidence"]
+    assert "Lathe 2 was not chosen" in assignment["evidence"]
+    assert "does not supply a run time" in assignment["evidence"]
+    assert thread["machine"] == "lathe"
+    assert thread["machine_source"] == "stock_vs_finished"
+    assert thread.get("stated_machine") is not True
+
     result = quote_machining_features(reading["features"], features_source="drawing")
     assert result["needs_machining"] is True
     assert result["quote_done"] is False
@@ -130,16 +145,20 @@ def test_alcon_pin_reads_the_stated_tap_and_leaves_times_blank():
     assert result["missing"] == ["run_time", "setup_time"]
     assert result["unresolved_features"] == []
     assert [(op["name"], op["operation_code"], op["run_time_min"]) for op in result["operations"]] == [
-        ("drill", "op_mill", None),
-        ("tap", "op_mill", None),
+        ("drill", "op_lathe", None),
+        ("tap", "op_lathe", None),
     ]
     item = result["item_operations"][0]
-    assert item["operation_code"] == "op_mill"
-    assert item["setup"]["calculator"] == "Milling-Setup"
+    assert item["operation_code"] == "op_lathe"
+    assert item["equipment"] == "Lathe"
+    assert item["setup"]["calculator"] == "Lathe-Setup"
     assert item["setup"]["time_min"] is None
-    assert item["run"]["calculator"] == "Milling-Time"
+    assert item["run"]["calculator"] == "Lathe-Time"
+    assert item["run"]["field_name"] == "Per Unit Turning Time"
     assert item["run"]["time_min"] is None
     assert item["posted"] is False
+    assert "op_mill" not in str(result["operations"])
+    assert "op_lathe2" not in str(result)
 
     times = attach_machining_times({"weld_minutes": 3.0}, takeoff)
     assert times["weld_minutes"] == 3.0
@@ -147,3 +166,6 @@ def test_alcon_pin_reads_the_stated_tap_and_leaves_times_blank():
     assert times["machining"]["setup_time_min"] is None
     assert times["machining"]["posted"] is False
     assert times["machining"]["missing"] == ["run_time", "setup_time"]
+    assert times["machining"]["process_from_stock"]["operation_code"] == "op_lathe"
+    assert times["machining"]["process_from_stock"]["run_time_min"] is None
+    assert times["machining"]["shop_rate_per_hour"] is None

@@ -127,6 +127,19 @@ def test_spacer_ring_reads_diameters_and_stays_not_done():
     assert "rest of the shared drive has not" in notes
     assert "Sprout" not in notes
 
+    assignment = reading["process_from_stock"]
+    assert assignment["family"] == "lathe"
+    assert assignment["stated_on_sheet"] is False
+    assert assignment["stock"]["form"] == "round"
+    assert assignment["stock"]["diameter_in"] == 5.0
+    assert assignment["finished"]["concentric"] is True
+    finished = [round(value, 4) for value in assignment["finished"]["diameters_in"]]
+    assert finished == [3.6, 4.116, 4.616, 5.0]
+    assert "one centerline" in assignment["evidence"]
+    assert "Lathe 2 was not chosen" in assignment["evidence"]
+    assert "does not supply a run time" in assignment["evidence"]
+    assert "larger bar" in assignment["evidence"]
+
     times = attach_machining_times({"weld_minutes": 3.0}, takeoff)
     machining = times["machining"]
     assert times["weld_minutes"] == 3.0
@@ -140,6 +153,13 @@ def test_spacer_ring_reads_diameters_and_stays_not_done():
     assert machining["shop_rate_per_hour"] is None
     assert machining["posted"] is False
     assert machining_blocks_quote(times) is True
+    coded = machining["process_from_stock"]
+    assert coded["operation_code"] == "op_lathe"
+    assert coded["family"] == "lathe"
+    assert coded["run_time_min"] is None
+    assert coded["setup_time_min"] is None
+    assert coded["shop_rate_per_hour"] is None
+    assert coded["posted"] is False
     dumped = str(machining)
-    for code in ("op_mill", "op_lathe", "op_lathe2"):
-        assert code not in dumped
+    assert "op_lathe2" not in dumped
+    assert "op_mill" not in dumped
