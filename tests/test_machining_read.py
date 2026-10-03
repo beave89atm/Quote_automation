@@ -532,6 +532,101 @@ def test_iso_shaft_and_hole_fits_match_step_and_are_not_holes(tmp_path: Path):
         assert code not in dumped
 
 
+def test_surface_finish_callouts_resolve_and_are_not_operations(tmp_path: Path):
+    library = {row["id"]: row for row in symbol_library()}
+    words = {word.casefold() for word in library["surface_texture"]["words"]}
+    assert {"ra", "finish", "surface finish", "machined surface"} <= words
+    assert "Y14.36" in library["surface_texture"]["citation"]
+    assert "B46.1" in library["surface_texture"]["citation"]
+
+    ra_before = describe_symbol("Ra 125")
+    ra_metric = describe_symbol("RA 1.6")
+    ra_after = describe_symbol("125 Ra")
+    for described, value in ((ra_before, 125.0), (ra_metric, 1.6), (ra_after, 125.0)):
+        assert described["known"] is True
+        assert described["id"] == "surface_texture"
+        assert described["roughness"] == value
+        assert "Y14.36" in described["citation"]
+        assert "B46.1" in described["citation"]
+    for token in ("FINISH", "SURFACE FINISH", "MACHINED SURFACE"):
+        named = describe_symbol(token)
+        assert named["known"] is True
+        assert named["id"] == "surface_texture"
+        assert "roughness" not in named
+        assert "Y14.36" in named["citation"]
+    noted = describe_symbol("MACHINED SURFACE FINISHES= 125")
+    assert noted["known"] is True
+    assert noted["roughness"] == 125
+    assert describe_symbol("FINISH 63")["roughness"] == 63
+    assert describe_symbol("63 FINISH")["roughness"] == 63
+    assert describe_symbol("SURFACE FINISH 125")["roughness"] == 125
+    for bare in ("125", "63"):
+        unknown = describe_symbol(bare)
+        assert unknown["known"] is False
+        assert unknown["meaning"] is None
+
+    pdf = tmp_path / "finish.pdf"
+    _write_pdf(
+        pdf,
+        [
+            "Ra 125",
+            "RA 1.6",
+            "125 Ra",
+            "MACHINED SURFACE FINISHES= 63",
+            "SURFACE FINISH 125",
+            "FINISH 63",
+            "MACHINED SURFACE",
+            "SS-316",
+        ],
+    )
+    reading = read_machining_requirements(pdf)
+    assert reading["features"] == []
+    by_text = {row["text"]: row for row in reading["callouts"]}
+    for text, value in (
+        ("Ra 125", "125"),
+        ("RA 1.6", "1.6"),
+        ("125 Ra", "125"),
+        ("MACHINED SURFACE FINISHES= 63", 63),
+        ("SURFACE FINISH 125", 125),
+        ("FINISH 63", 63),
+    ):
+        row = by_text[text]
+        assert row["symbol"] == "surface_texture"
+        assert row["value"] == value
+        assert row["feature"] is False
+        assert row["meaning"]
+        assert "Y14.36" in row["citation"]
+        assert "B46.1" in row["citation"]
+        assert "not added as an operation" in row["note"] or "not an operation" in row["note"]
+    bare_note = by_text["MACHINED SURFACE"]
+    assert bare_note["symbol"] == "surface_texture"
+    assert bare_note["feature"] is False
+    assert "value" not in bare_note
+    assert "run time and setup were not added" in bare_note["note"].lower()
+    assert all(row["feature"] is False for row in reading["callouts"])
+    assert reading["unknown_symbols"] == []
+    stock = read_stated_stock("SS-316\nMACHINED SURFACE FINISHES= 63\nFINISH 63")
+    assert stock["form"] == "unknown"
+    assert stock["guessed"] is False
+    assert "diameter_in" not in stock
+    result = quote_machining_features(reading["features"], features_source="drawing")
+    assert result["needs_machining"] is False
+    assert result["operations"] == []
+    assert result["item_operations"] == []
+    assert result["setup_time_min"] is None
+    assert result["shop_rate_per_hour"] is None
+    assert result["posted"] is False
+    dumped = str(result)
+    for code in ("op_mill", "op_lathe", "op_lathe2"):
+        assert code not in dumped
+
+    bare = tmp_path / "numbers.pdf"
+    _write_pdf(bare, ["125", "63"])
+    bare_reading = read_machining_requirements(bare)
+    assert all(row.get("symbol") != "surface_texture" for row in bare_reading["callouts"])
+    assert bare_reading["features"] == []
+
+
 def test_reader_source_does_not_invent_codes_or_call_sectura():
     for module in ("quote_core.machining_read", "quote_core.machining_symbols"):
         src = Path(__import__(module, fromlist=["x"]).__file__).read_text()

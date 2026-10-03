@@ -149,7 +149,7 @@ _ENTRIES: tuple[dict[str, Any], ...] = (
     {
         "id": "surface_texture",
         "glyphs": (),
-        "words": ("ra",),
+        "words": ("ra", "finish", "surface finish", "machined surface"),
         "meaning": (
             "A surface-texture parameter that the drawing requires on a surface. "
             "The parameter definition is in ASME B46.1 and is not restated here."
@@ -248,7 +248,23 @@ for _entry in _ENTRIES:
         _BY_WORD[_word] = _entry
 
 _NX = re.compile(r"(\d+)[Xx]")
-_RA = re.compile(r"Ra\s*([0-9]*\.?[0-9]+)", re.IGNORECASE)
+# Ra before the value, or the value before Ra. A bare number is not a finish.
+_RA = re.compile(
+    r"^(?:Ra\s*(?P<a>[0-9]*\.?[0-9]+)|(?P<b>[0-9]*\.?[0-9]+)\s*Ra)$",
+    re.IGNORECASE,
+)
+_FINISH_PHRASE = re.compile(
+    r"^(?:"
+    r"(?P<lead>[0-9]*\.?[0-9]+)\s+"
+    r"(?P<left>MACHINED\s+SURFACE(?:\s+FINISH(?:ES)?)?|SURFACE\s+FINISH|FINISH)"
+    r"|"
+    r"(?P<right>MACHINED\s+SURFACE(?:\s+FINISH(?:ES)?)?|SURFACE\s+FINISH|FINISH)"
+    r"(?:\s*=\s*|\s+)(?P<trail>[0-9]*\.?[0-9]+)"
+    r"|"
+    r"(?P<bare>MACHINED\s+SURFACE(?:\s+FINISH(?:ES)?)?|SURFACE\s+FINISH)"
+    r")$",
+    re.IGNORECASE,
+)
 _THREAD = re.compile(
     r"(?:(\d+)\s*/\s*(\d+)|(\d*\.\d+|\d+))\s*-\s*(\d+)\s*"
     r"(UNC|UNF|UNEF|UNS|UN)(?:\s*-?\s*(\d[AB]))?",
@@ -422,6 +438,34 @@ def _named_feature_note(raw: str) -> dict[str, Any] | None:
     return _known(_BY_ID["chamfer"], raw, **extra)
 
 
+def _describe_surface_finish(raw: str) -> dict[str, Any] | None:
+    """Ra with a value, or a finish note. A bare number is not a finish.
+
+    FINISH, SURFACE FINISH, and MACHINED SURFACE name the requirement.
+    The value may sit on either side of Ra, or beside that note.
+    The parameter limits in ASME B46.1 are not calculated here.
+    """
+    text = re.sub(r"\s+", " ", raw.strip())
+    rough = _RA.fullmatch(text)
+    if rough:
+        value = _note_number(rough.group("a") or rough.group("b"))
+        extra: dict[str, Any] = {}
+        if value is not None:
+            extra["roughness"] = value
+        return _known(_BY_ID["surface_texture"], raw, **extra)
+    phrase = _FINISH_PHRASE.fullmatch(text)
+    if not phrase:
+        return None
+    token = phrase.group("lead") or phrase.group("trail")
+    extra = {}
+    if token:
+        value = _note_number(token)
+        if value is None:
+            return None
+        extra["roughness"] = value
+    return _known(_BY_ID["surface_texture"], raw, **extra)
+
+
 def _describe_radius_value(raw: str) -> dict[str, Any] | None:
     """R, CR, or SR with a value. A bare R5 is a radius, not an ISO hole code."""
     match = _RADIUS_VALUE.fullmatch(raw.strip())
@@ -539,8 +583,9 @@ def describe_symbol(token: str) -> dict[str, Any]:
     places = _NX.fullmatch(raw)
     if places:
         return _known(_BY_ID["repetition"], raw, count=int(places.group(1)))
-    if _RA.fullmatch(raw):
-        return _known(_BY_ID["surface_texture"], raw)
+    finish = _describe_surface_finish(raw)
+    if finish is not None:
+        return finish
     radius_value = _describe_radius_value(raw)
     if radius_value is not None:
         return radius_value

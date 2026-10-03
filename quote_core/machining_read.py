@@ -54,7 +54,14 @@ _GROOVE = re.compile(
 )
 _PLATE = re.compile(rf"\bPLATE\b\s+{_NUMBER}\s*(?:IN(?:CH)?\s*)?THK\b", re.IGNORECASE)
 _FACE = re.compile(r"^(?:MACHINE\s+)?FACE$", re.IGNORECASE)
-_RA = re.compile(rf"\bRa\s*{_NUMBER}", re.IGNORECASE)
+_RA = re.compile(
+    rf"(?:\bRa\s*{_NUMBER}|\b{_NUMBER}\s*Ra\b)",
+    re.IGNORECASE,
+)
+_FINISH_NOTE_LINE = re.compile(
+    r"(?:SURFACE\s+FINISH|MACHINED\s+SURFACE(?:\s+FINISH(?:ES)?)?)",
+    re.IGNORECASE,
+)
 _RADIUS = re.compile(rf"(?<![A-Z])(?:SR|CR|R)\s*{_NUMBER}", re.IGNORECASE)
 _HOLE_PROCESS = re.compile(r"\b(DRILL|REAM|BORE)\b", re.IGNORECASE)
 _COUNTERBORE = re.compile(r"⌴|\bCOUNTERBORE\b|\bSPOTFACE\b", re.IGNORECASE)
@@ -136,6 +143,18 @@ _NO_STEP_NOTE = "STEP was not supplied — solid geometry left blank."
 _EMPTY_PDF_NOTE = "PDF has no extractable text — callouts left blank."
 _PDF_FAIL_NOTE = "PDF text could not be read — callouts left blank."
 _STEP_FAIL_NOTE = "STEP text could not be read — geometry left blank."
+_SURFACE_RA_NOTE = "Surface texture is a callout. It was not added as an operation."
+_SURFACE_VALUE_NOTE = (
+    "A machined surface finish value was read. "
+    "It is a surface-finish requirement, not a hole and not an operation. "
+    "The roughness parameter name is not on the line. "
+    "Run time and setup were not added."
+)
+_SURFACE_WORD_NOTE = (
+    "A surface-finish note was read. "
+    "It is a requirement, not a hole and not an operation. "
+    "Run time and setup were not added."
+)
 
 
 def _diameter_value(line: str) -> float | None:
@@ -194,6 +213,46 @@ def _feature(kind: str, callout: str, **extra: Any) -> dict[str, Any]:
     return feature
 
 
+def _surface_finish_callout(text: str, value: Any | None = None) -> dict[str, Any] | None:
+    """A finish requirement. Not a hole and not an operation."""
+    described = describe_symbol(text)
+    if described.get("id") != "surface_texture" or described.get("known") is not True:
+        return None
+    if value is None and isinstance(described.get("roughness"), float):
+        value = described["roughness"]
+    if re.search(r"\bRa\b", text, re.IGNORECASE):
+        note = _SURFACE_RA_NOTE
+    elif value is not None:
+        note = _SURFACE_VALUE_NOTE
+    else:
+        note = _SURFACE_WORD_NOTE
+    row: dict[str, Any] = {
+        "symbol": "surface_texture",
+        "text": text.strip(),
+        "feature": False,
+        "meaning": described["meaning"],
+        "citation": described["citation"],
+        "note": note,
+    }
+    if value is not None:
+        row["value"] = value
+    return row
+
+
+def _word_on_the_left(words: list[tuple], anchor: tuple | None, token: str) -> tuple | None:
+    if anchor is None:
+        return None
+    for word in words:
+        if str(word[4]).upper() != token:
+            continue
+        if word[5].x1 > anchor[5].x0 + 2:
+            continue
+        if _rect_gap(word[5], anchor[5]) > 8:
+            continue
+        return word
+    return None
+
+
 def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     features: list[dict[str, Any]] = []
     callouts: list[dict[str, Any]] = []
@@ -235,18 +294,16 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
             continue
         roughness = _RA.search(line)
         if roughness and not _HOLE_PROCESS.search(line):
-            described = describe_symbol(roughness.group(0))
-            callouts.append(
-                {
-                    "symbol": described["id"],
-                    "text": roughness.group(0),
-                    "value": roughness.group(1),
-                    "meaning": described["meaning"],
-                    "citation": described["citation"],
-                    "feature": False,
-                    "note": "Surface texture is a callout. It was not added as an operation.",
-                }
-            )
+            number = roughness.group(1) or roughness.group(2)
+            row = _surface_finish_callout(roughness.group(0), number)
+            if row is not None:
+                callouts.append(row)
+                continue
+        finish_line = _surface_finish_callout(line)
+        if finish_line is not None and line.casefold() != "finish" and (
+            "value" in finish_line or _FINISH_NOTE_LINE.fullmatch(line)
+        ):
+            callouts.append(finish_line)
             continue
         if _COUNTERBORE.search(line):
             if _DIAMETER.search(line) or "⌴" in line:
@@ -1907,6 +1964,7 @@ def _positioned_pdf_callouts(
     single_file = len(file_parts) <= 1
     described = describe_symbol("⌀")
     finish_blank = False
+    saw_finish_value = False
     saw_outsource = False
 
     for page in pages:
@@ -2296,6 +2354,17 @@ def _positioned_pdf_callouts(
                 )
         if any(word[4].upper() == "OUTSOURCE" for word in words):
             saw_outsource = True
+        consumed_finish: set[int] = set()
+        ra_value_ids: set[int] = set()
+        for index, word in enumerate(words):
+            if word[4].casefold() != "ra":
+                continue
+            for other_index, other in enumerate(words):
+                if not re.fullmatch(r"\d+(?:\.\d+)?", other[4]):
+                    continue
+                if _rect_gap(word[5], other[5]) > 8:
+                    continue
+                ra_value_ids.add(other_index)
         if any(word[4].upper() == "FINISH" for word in words):
             finish = next(word for word in words if word[4].upper() == "FINISH")
             finish_values = [
@@ -2315,33 +2384,60 @@ def _positioned_pdf_callouts(
                 finish_blank = False
             elif not finish_values:
                 finish_blank = True
-            for word in words:
-                if not str(word[4]).upper().startswith("FINISHES"):
-                    continue
-                for nearby in words:
+            if not zinc_near:
+                for nearby_index, nearby in enumerate(words):
+                    if nearby_index in consumed_finish:
+                        continue
                     if not re.fullmatch(r"\d+(?:\.\d+)?", nearby[4]):
                         continue
-                    if nearby[5].x0 + 1 < word[5].x1:
+                    if nearby[4] == ".125" and _near_word(nearby[5], words, _MATERIAL_WORD, 16):
                         continue
-                    if _rect_gap(word[5], nearby[5]) > 8:
+                    if nearby[5].x0 + 1 < finish[5].x1:
                         continue
-                    callouts.append(
-                        {
-                            "symbol": None,
-                            "text": f"MACHINED SURFACE FINISHES= {nearby[4]}",
-                            "value": _num(nearby[4]),
-                            "feature": False,
-                            "meaning": None,
-                            "citation": None,
-                            "note": (
-                                "A machined surface finish value was read. "
-                                "The line does not name the parameter. "
-                                "It was not added as an operation."
-                            ),
-                        }
-                    )
+                    if _rect_gap(finish[5], nearby[5]) > 8:
+                        continue
+                    surface = _word_on_the_left(words, finish, "SURFACE")
+                    machined = _word_on_the_left(words, surface, "MACHINED")
+                    if machined is not None:
+                        label = f"MACHINED SURFACE {nearby[4]}"
+                    elif surface is not None:
+                        label = f"SURFACE FINISH {nearby[4]}"
+                    else:
+                        label = f"FINISH {nearby[4]}"
+                    row = _surface_finish_callout(label, _num(nearby[4]))
+                    if row is None:
+                        continue
+                    callouts.append(row)
+                    consumed_finish.add(nearby_index)
+                    saw_finish_value = True
+        for word in words:
+            if not str(word[4]).upper().startswith("FINISHES"):
+                continue
+            surface = _word_on_the_left(words, word, "SURFACE")
+            machined = _word_on_the_left(words, surface, "MACHINED")
+            for nearby_index, nearby in enumerate(words):
+                if nearby_index in consumed_finish:
+                    continue
+                if not re.fullmatch(r"\d+(?:\.\d+)?", nearby[4]):
+                    continue
+                if nearby[5].x0 + 1 < word[5].x1:
+                    continue
+                if _rect_gap(word[5], nearby[5]) > 8:
+                    continue
+                if machined is not None and surface is not None:
+                    label = f"MACHINED SURFACE FINISHES= {nearby[4]}"
+                else:
+                    label = f"FINISH {nearby[4]}"
+                row = _surface_finish_callout(label, _num(nearby[4]))
+                if row is None:
+                    continue
+                callouts.append(row)
+                consumed_finish.add(nearby_index)
+                saw_finish_value = True
         for index in callout_ids:
-            if index in used_decimals or not _DECIMAL_WORD.fullmatch(words[index][4]):
+            if index in used_decimals or index in consumed_finish or index in ra_value_ids:
+                continue
+            if not _DECIMAL_WORD.fullmatch(words[index][4]):
                 continue
             if _near_word(words[index][5], words, _TOLERANCE_WORD, 14):
                 continue
@@ -2368,7 +2464,7 @@ def _positioned_pdf_callouts(
                 }
             )
 
-    if finish_blank:
+    if finish_blank and not saw_finish_value:
         unreadable.append("FINISH is on the drawing. No finish value was read — left blank.")
     if saw_outsource:
         unreadable.append(
@@ -2520,14 +2616,14 @@ def read_machining_requirements(
             already = {
                 (callout.get("symbol"), callout.get("text"))
                 for callout in callouts
-                if callout.get("symbol") in {"degree", "plus_minus", "iso_fit"}
+                if callout.get("symbol") in {"degree", "plus_minus", "iso_fit", "surface_texture"}
             }
             for callout in placed_notes:
                 key = (callout.get("symbol"), callout.get("text"))
-                if key[0] in {"degree", "plus_minus", "iso_fit"} and key in already:
+                if key[0] in {"degree", "plus_minus", "iso_fit", "surface_texture"} and key in already:
                     continue
                 callouts.append(callout)
-                if key[0] in {"degree", "plus_minus", "iso_fit"}:
+                if key[0] in {"degree", "plus_minus", "iso_fit", "surface_texture"}:
                     already.add(key)
             for gap in placed_gaps:
                 if gap not in unreadable:

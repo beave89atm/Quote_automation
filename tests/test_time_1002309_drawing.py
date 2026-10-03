@@ -76,9 +76,23 @@ def test_handle_shaft_names_holes_without_a_process_and_stays_not_done():
     assert by_text[".19"]["value"] == 0.19
     assert by_text["90°"]["value"] == 90.0
     finish = by_text["MACHINED SURFACE FINISHES= 125"]
+    assert finish["symbol"] == "surface_texture"
     assert finish["value"] == 125
-    assert "does not name the parameter" in finish["note"]
+    assert finish["feature"] is False
+    assert finish["meaning"]
+    assert "Y14.36" in finish["citation"]
+    assert "B46.1" in finish["citation"]
+    assert "surface-finish requirement" in finish["note"]
+    assert "not a hole" in finish["note"]
+    assert "not an operation" in finish["note"]
+    assert "parameter name is not on the line" in finish["note"]
     assert "Ra" not in finish["note"]
+    assert "run time and setup were not added" in finish["note"].lower()
+    described_finish = describe_symbol("MACHINED SURFACE FINISHES= 125")
+    assert described_finish["known"] is True
+    assert described_finish["id"] == "surface_texture"
+    assert described_finish["roughness"] == 125
+    assert describe_symbol("125")["known"] is False
     assert all(callout.get("step_match") is None for callout in reading["callouts"])
 
     assert reading["unknown_symbols"] == []
