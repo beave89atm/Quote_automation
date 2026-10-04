@@ -77,6 +77,15 @@ CYCLE_OVERRIDE_NOTE = "Typed cycle time overrides the estimated run time."
 CYCLE_NOT_SPLIT_NOTE = (
     "Typed cycle time was not split across operations — each run time left blank."
 )
+STARTER_RUN_NOTE = (
+    "Run time is starter feature minutes (not shop-proven) plus rapid, "
+    "deburr, and in-process inspection, times the 1.15 pad. "
+    "Cubic inches removed are 0. The shop dollar rate is blank."
+)
+CALCULATOR_RUN_NOTE = (
+    "Run time is the calculator cycle for the whole part "
+    "(cut minutes, allowances, and the 1.15 pad)."
+)
 LATHE_WHICH_NOTE = (
     "Lathe and Lathe 2 are both real — which one is not specified, "
     "so no operation code or setup calculator was chosen."
@@ -836,6 +845,7 @@ def machining_needs_info_flag(result: dict[str, Any] | None) -> str | None:
         "operation_count": "operation count",
         "run_time": "run time",
         "setup_time": "setup time",
+        "shop_rate": "shop rate",
     }
     missing = [labels.get(item, item) for item in (result.get("missing") or [])]
     detail = ", ".join(missing) if missing else "operation count, run time, or setup time"
@@ -935,13 +945,13 @@ def _apply_calculator_to_quote(result: dict[str, Any], coded: dict[str, Any]) ->
     reason = coded.get("run_blank_reason")
     overrides = [op for op in operations if op.get("run_time_source") == "cycle_override"]
     run_time = coded.get("run_time_min")
+    starter = bool((coded.get("calculator") or {}).get("starter_feature_minutes"))
     if run_time is not None and operations and not overrides and len(operations) == 1:
         operations[0]["run_time_min"] = run_time
         operations[0]["run_time_source"] = "calculator"
-        operations[0]["note"] = (
-            "Run time is the calculator cycle for the whole part "
-            "(cut minutes, allowances, and the 1.15 pad)."
-        )
+        operations[0]["note"] = STARTER_RUN_NOTE if starter else CALCULATOR_RUN_NOTE
+        if starter:
+            result["starter_feature_minutes"] = True
     elif run_time is not None and len(operations) > 1 and not overrides:
         reason = (
             "Run time left blank. The calculator returns one cycle for the part. "
@@ -987,6 +997,8 @@ def _apply_calculator_to_quote(result: dict[str, Any], coded: dict[str, Any]) ->
     runs_filled = bool(operations) and all(op.get("run_time_min") is not None for op in operations)
     if runs_filled and not (run_time is not None and len(operations) > 1 and not overrides):
         notes = [note for note in notes if note != NO_REMOVAL_RATE_NOTE]
+        if starter and STARTER_RUN_NOTE not in notes:
+            notes.append(STARTER_RUN_NOTE)
     elif reason:
         notes = [note for note in notes if note != NO_REMOVAL_RATE_NOTE]
         if reason not in notes:
@@ -1028,6 +1040,15 @@ def _recompute_quote_completion(result: dict[str, Any]) -> None:
                 result["notes"] = [*(result.get("notes") or []), NO_REMOVAL_RATE_NOTE]
         if "setup_time" in missing and NO_SETUP_NOTE not in (result.get("notes") or []):
             result["notes"] = [*(result.get("notes") or []), NO_SETUP_NOTE]
+    if (
+        needs
+        and not missing
+        and result.get("starter_feature_minutes") is True
+        and result.get("shop_rate_per_hour") is None
+    ):
+        # Starter feature minutes are not a priced quote. The dollar rate
+        # stays blank, so the quote stays not done.
+        missing.append("shop_rate")
     result["missing"] = missing
     result["quote_done"] = (not missing) if needs else True
     result["shop_rate_per_hour"] = None

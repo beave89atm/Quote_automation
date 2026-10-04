@@ -45,12 +45,42 @@ A typed cycle time replaces run minutes only. The workbook would still add
 allowances and the 1.15 pad on top of a Mastercam time. That is not done
 here.
 
-Holes, threads, grooves, and deep bores have no minute rows. The Quote tab
-says they need their own rows or a STEP reader. When the stock box and the
-finished box are the same size, cubic inches removed are 0 and run time
-stays blank. The flat deburr and inspection minutes are not used as a run
-time by themselves. A stated size and a finished size within 0.01 in are
-the same size (a title of 9.63 in and a solid of 9.625 in).
+When the stock box and the finished box are the same size, cubic inches
+removed are 0. A stated size and a finished size within 0.01 in are the
+same size (a title of 9.63 in and a solid of 9.625 in). The flat deburr
+and inspection minutes are not a run time by themselves.
+
+A thru hole, countersink, counterbore, thread, groove, or bore still has
+work in it. The Quote tab says those need their own rows. The workbook
+file is not in this repo, so the rows below are transcribed here the same
+way Feeds!B17 and Allowances!B3 are: named constants, not an Excel read.
+They are starter minutes per place. They are not shop-proven. They are not
+scaled by diameter, depth, or the roughing factor. A missing depth is not
+turned into a formula.
+
+Features sheet, minutes per place (STARTER):
+
+- Thru hole, Features!B2, 1.0. One drill cycle. Longer than a quick peck
+  on thin plate, and not a setup.
+- Countersink, Features!B3, 0.5. One countersink after the hole exists.
+- Counterbore, Features!B4, 1.0. A second tool and a depth stop.
+- Thread, Features!B5, 1.5. Tap or single-point, including one spring
+  pass. This row does not add a separate hole.
+- Groove, Features!B6, 1.5. One plunge. Width is not scaled.
+- Bore, Features!B7, 2.0. A boring bar, a rough pass and a light finish.
+
+A countersink or counterbore that also states the through diameter
+(``diameter_in`` plus ``countersink_diameter_in`` or
+``counterbore_diameter_in``, as on 6X .63 THRU / 1.00 X 82°) adds the
+thru-hole row once per place as well as its own row. That is the drill
+and the countersink, not a second invented feature.
+
+Those minutes stand in for cut minutes. Quote!E10 still multiplies
+(cut + allowances) by 1.15. Finish share and tight share are fractions of
+volume cut minutes, so they add nothing here and are not applied to the
+flat starter minutes. Rapid, deburr, and in-process inspection are added.
+The shop dollar rate stays blank. A run time from these rows does not
+finish the quote while that rate is blank.
 
 Tube is round stock for the lathe or lathe-2 decision, but the cubic-inch
 formula applies only when the stock form is Bar. Tube run time stays blank.
@@ -82,6 +112,22 @@ NEW_SETUP_HOURS_PER_OPERATION = 0.75
 NEW_PROGRAM_LATHE_HOURS = 1.5
 NEW_PROGRAM_MILL_HOURS = 2.0
 
+# Features!B2:B7. Starter minutes per place. Not shop-proven.
+STARTER_THRU_HOLE_MIN = 1.0
+STARTER_COUNTERSINK_MIN = 0.5
+STARTER_COUNTERBORE_MIN = 1.0
+STARTER_THREAD_MIN = 1.5
+STARTER_GROOVE_MIN = 1.5
+STARTER_BORE_MIN = 2.0
+_STARTER_MINUTES = {
+    "thru_hole": STARTER_THRU_HOLE_MIN,
+    "countersink": STARTER_COUNTERSINK_MIN,
+    "counterbore": STARTER_COUNTERBORE_MIN,
+    "thread": STARTER_THREAD_MIN,
+    "groove": STARTER_GROOVE_MIN,
+    "bore": STARTER_BORE_MIN,
+}
+
 # Title-block hundredths versus a solid measured to thousandths.
 _SAME_SIZE_IN = 0.01
 
@@ -100,9 +146,6 @@ _ROUGHING_FACTORS = {
     "c360": 0.35,
     "delrin": 0.4,
 }
-
-_HOLE_KINDS = {"hole", "countersink", "counterbore", "thread", "groove", "bore"}
-
 
 def _num(value: Any) -> float | None:
     if isinstance(value, bool) or value is None or value == "":
@@ -304,17 +347,111 @@ def _part_type(operation_code: str | None) -> str | None:
     return None
 
 
-def _skipped_feature_kinds(features: list[dict[str, Any]] | None) -> list[str]:
-    found: list[str] = []
+def _kind_token(value: Any) -> str:
+    return str(value or "").casefold().replace(" ", "_").replace("-", "_")
+
+
+def _feature_dimensions(feature: dict[str, Any]) -> dict[str, Any]:
+    dims = feature.get("dimensions")
+    return dims if isinstance(dims, dict) else {}
+
+
+def _canonical_feature(feature: dict[str, Any]) -> str:
+    """Map a read feature onto a Features-sheet row. Empty means no row."""
+    kind = _kind_token(feature.get("kind"))
+    if kind == "grooving":
+        kind = "groove"
+    dims = _feature_dimensions(feature)
+    tolerance = _kind_token(dims.get("tolerance") or feature.get("tolerance"))
+    if kind == "hole" and tolerance == "bore":
+        return "bore"
+    if kind == "hole":
+        return "thru_hole"
+    if kind in _STARTER_MINUTES:
+        return kind
+    if feature.get("thread_form"):
+        return "thread"
+    return ""
+
+
+def _places(feature: dict[str, Any]) -> int | None:
+    """Place count. One when the callout has no multiplier. None when unread."""
+    dims = _feature_dimensions(feature)
+    if "count" in dims:
+        count = _num(dims.get("count"))
+        if count is None or count <= 0 or count != int(count):
+            return None
+        return int(count)
+    blanks = feature.get("blank_fields") or []
+    if any(isinstance(row, dict) and row.get("field") == "count" for row in blanks):
+        return None
+    return 1
+
+
+def _states_through_hole(feature: dict[str, Any]) -> bool:
+    """True when a countersink or counterbore also states the through diameter.
+
+    Sprout stores .63 on ``diameter_in`` and 1.00 on ``countersink_diameter_in``.
+    A lone ``diameter_in`` is the feature's own size and is not a second hole.
+    """
+    dims = _feature_dimensions(feature)
+    thru = _num(dims.get("diameter_in"))
+    if thru is None or thru <= 0:
+        return False
+    for key in ("countersink_diameter_in", "counterbore_diameter_in"):
+        named = _num(dims.get(key))
+        if named is not None and named > 0:
+            return True
+    return False
+
+
+def _starter_row(kind: str, places: int) -> dict[str, Any]:
+    each = _STARTER_MINUTES[kind]
+    return {
+        "feature": kind,
+        "places": places,
+        "minutes_each": each,
+        "minutes": each * places,
+        "starter": True,
+        "shop_proven": False,
+    }
+
+
+def starter_feature_minutes(
+    features: list[dict[str, Any]] | None,
+) -> tuple[float | None, list[dict[str, Any]], str | None]:
+    """Sum starter minutes. None minutes means no covered feature was usable.
+
+    The reason is set when a covered feature was read and its count was not.
+    A partial sum is not returned in that case.
+    """
+    rows: list[dict[str, Any]] = []
+    unread: list[str] = []
     for feature in features or []:
         if not isinstance(feature, dict):
             continue
-        kind = str(feature.get("kind") or "").casefold().replace(" ", "_").replace("-", "_")
-        if kind in _HOLE_KINDS or feature.get("thread_form"):
-            label = kind or "thread"
-            if label not in found:
-                found.append(label)
-    return found
+        kind = _canonical_feature(feature)
+        if not kind:
+            continue
+        places = _places(feature)
+        if places is None:
+            if kind not in unread:
+                unread.append(kind)
+            continue
+        if kind in {"countersink", "counterbore"} and _states_through_hole(feature):
+            rows.append(_starter_row("thru_hole", places))
+        rows.append(_starter_row(kind, places))
+    if unread:
+        shown = ", ".join(unread)
+        return None, [], (
+            "Run time left blank. Stock and the finished envelope are the same size, "
+            "so cubic inches removed are 0. "
+            f"A {shown} was read, and its place count was not. "
+            "Starter minutes were not multiplied by a guessed count."
+        )
+    if not rows:
+        return None, [], None
+    return sum(float(row["minutes"]) for row in rows), rows, None
 
 
 def _tight_from_callouts(callouts: list[dict[str, Any]] | None) -> bool:
@@ -355,8 +492,9 @@ def times_for_justified_operation(
 ) -> dict[str, Any]:
     """Fill run and setup only when this workbook can.
 
-    ``shop_rate_per_hour`` is always None. A zero-removal part does not get
-    a run time. A typed cycle is applied by the caller and is not padded.
+    ``shop_rate_per_hour`` is always None. A typed cycle is applied by the
+    caller and is not padded. When cubic inches removed are 0, starter
+    feature minutes can fill the run. Deburr and inspection alone cannot.
     """
     blank = {
         "run_time_min": None,
@@ -430,20 +568,35 @@ def times_for_justified_operation(
     run_time: float | None = None
     run_reason: str | None = volume_reason
     if removed == 0:
-        skipped = _skipped_feature_kinds(features)
-        feature_sentence = (
-            f" The features include {', '.join(skipped)}. "
-            "The workbook has no minute row for a hole, countersink, counterbore, "
-            "thread, groove, or bore."
-            if skipped
-            else ""
-        )
-        run_reason = (
-            "Run time left blank. Stock and the finished envelope are the same size, "
-            "so cubic inches removed are 0."
-            + feature_sentence
-            + " Deburr and inspection minutes were not used as a run time by themselves."
-        )
+        feature_minutes, feature_rows, count_reason = starter_feature_minutes(features)
+        if count_reason:
+            run_reason = count_reason
+        elif feature_minutes is None:
+            run_reason = (
+                "Run time left blank. Stock and the finished envelope are the same size, "
+                "so cubic inches removed are 0. "
+                "No thru hole, countersink, counterbore, thread, groove, or bore was read, "
+                "so the starter feature minutes were not applied. "
+                "Deburr and inspection minutes were not used as a run time by themselves."
+            )
+        else:
+            # Cut minutes are 0. Finish and tight shares of that cut are 0
+            # and are not applied to the flat starter minutes.
+            allowances = _allowance_minutes(
+                0.0,
+                operations,
+                tight=False,
+                finish=False,
+            )
+            run_time = (feature_minutes + allowances) * CONFIDENCE_PAD
+            run_reason = None
+            detail["cut_minutes"] = 0.0
+            detail["feature_minutes"] = feature_minutes
+            detail["feature_rows"] = feature_rows
+            detail["starter_feature_minutes"] = True
+            detail["shop_proven"] = False
+            detail["allowance_minutes"] = allowances
+            detail["cycle_minutes"] = run_time
     elif removed is not None and removed > 0:
         cycle, cut = cycle_minutes(
             removed,

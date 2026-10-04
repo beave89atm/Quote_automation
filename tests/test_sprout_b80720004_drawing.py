@@ -7,6 +7,16 @@ from pathlib import Path
 
 import fitz
 
+import pytest
+
+from quote_core.machining_calculator import (
+    CONFIDENCE_PAD,
+    DEBURR_MIN_PER_PART,
+    IN_PROCESS_MIN_PER_PART,
+    RAPID_MIN_PER_OPERATION,
+    STARTER_COUNTERSINK_MIN,
+    STARTER_THRU_HOLE_MIN,
+)
 from quote_core.machining_quote import attach_machining_times, machining_blocks_quote
 from quote_core.machining_read import apply_drawing_reading, read_stated_stock
 from quote_core.machining_symbols import describe_symbol
@@ -133,15 +143,20 @@ def test_sprout_plate_reads_the_countersink_and_stays_not_done():
     assert machining["needs_machining"] is True
     assert machining["quote_done"] is False
     assert machining["operation_count"] == 1
+    feature_minutes = 6 * (STARTER_THRU_HOLE_MIN + STARTER_COUNTERSINK_MIN)
+    allowances = RAPID_MIN_PER_OPERATION + DEBURR_MIN_PER_PART + IN_PROCESS_MIN_PER_PART
+    run = (feature_minutes + allowances) * CONFIDENCE_PAD
     assert machining["operations"][0]["name"] == "countersink"
     assert machining["operations"][0]["operation_code"] == "op_mill"
-    assert machining["operations"][0]["run_time_min"] is None
+    assert machining["operations"][0]["run_time_min"] == pytest.approx(run)
+    assert machining["operations"][0]["run_time_source"] == "calculator"
+    assert "not shop-proven" in machining["operations"][0]["note"]
     assert machining["item_operations"][0]["operation_code"] == "op_mill"
     assert machining["item_operations"][0]["setup"]["calculator"] == "Milling-Setup"
     assert machining["item_operations"][0]["setup"]["time_min"] == 75.0
     assert machining["item_operations"][0]["setup"]["fixedtime_hours"] == 1.25
-    assert machining["item_operations"][0]["run"]["time_min"] is None
-    assert machining["missing"] == ["run_time"]
+    assert machining["item_operations"][0]["run"]["time_min"] == pytest.approx(run)
+    assert machining["missing"] == ["shop_rate"]
     assert machining["setup_time_min"] == 75.0
     assert machining["shop_rate_per_hour"] is None
     assert machining["quote_done"] is False
@@ -149,13 +164,19 @@ def test_sprout_plate_reads_the_countersink_and_stays_not_done():
     assert machining_blocks_quote(times) is True
     coded = machining["process_from_stock"]
     assert coded["operation_code"] == "op_mill"
-    assert coded["run_time_min"] is None
+    assert coded["run_time_min"] == pytest.approx(run)
     assert coded["setup_time_min"] == 75.0
     assert coded["calculator"]["cubic_inches_removed"] == 0.0
+    assert coded["calculator"]["feature_minutes"] == pytest.approx(feature_minutes)
+    assert coded["calculator"]["starter_feature_minutes"] is True
+    assert coded["calculator"]["shop_proven"] is False
+    assert [row["feature"] for row in coded["calculator"]["feature_rows"]] == [
+        "thru_hole",
+        "countersink",
+    ]
     assert coded["calculator"]["shop_rate_per_hour"] is None
     assert coded["calculator"]["program_hours_not_setup"] == 2.0
-    assert "cubic inches removed are 0" in coded["run_blank_reason"]
-    assert "countersink" in coded["run_blank_reason"]
+    assert coded.get("run_blank_reason") is None
     dumped = str(machining)
     assert "op_lathe2" not in dumped
     assert "op_lathe" not in dumped.replace("op_lathe2", "")
