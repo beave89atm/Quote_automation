@@ -6,12 +6,13 @@ Missing values stay blank.
 
 When the sheet does not name mill, lathe, or lathe 2, compare the starting
 stock the sheet actually states to the finished solid (Kyle, 2026-10-02).
-Stock is bar, plate, tube, or unknown. A missing stock line stays unknown.
-The largest finished diameter is not a bar size. A finished round smaller
-than a stated round stock can be turning. A finished plate with holes can
-be milling. Lathe 2 is not chosen from that comparison. The comparison
-does not invent a cycle time or a shop rate. The quote maps a justified
-family onto a verified operation code.
+Stock is bar, plate, tube, forging, or unknown. A missing stock line stays
+unknown. The largest finished diameter is not a bar size. A finished round
+smaller than a stated round stock can be turning. Milling needs a stated
+plate with holes, or a stated forging whose finished solid is a prismatic
+block. Lathe 2 is not chosen from that comparison. The comparison does not
+invent a cycle time or a shop rate. The quote maps a justified family onto
+a verified operation code. Forging does not use the plate or bar volume path.
 """
 
 from __future__ import annotations
@@ -45,7 +46,12 @@ _THREAD = re.compile(
     re.IGNORECASE,
 )
 _METRIC = re.compile(
-    r"(?<![A-Z])M(\d+(?:\.\d+)?)\s*[xX×]\s*(\d+(?:\.\d+)?)",
+    r"(?<![A-Z])M(\d+(?:\.\d+)?)\s*[xX×]\s*(\d+(?:\.\d+)?)"
+    r"(?:\s*-\s*(\d?[A-H]))?",
+    re.IGNORECASE,
+)
+_NPT = re.compile(
+    r"(?<![A-Z0-9])(?:(\d+)\s*/\s*(\d+)|(\d*\.\d+|\d+))\s*-?\s*NPT\b",
     re.IGNORECASE,
 )
 _GROOVE = re.compile(
@@ -64,8 +70,8 @@ _FINISH_NOTE_LINE = re.compile(
 )
 _RADIUS = re.compile(rf"(?<![A-Z])(?:SR|CR|R)\s*{_NUMBER}", re.IGNORECASE)
 _HOLE_PROCESS = re.compile(r"\b(DRILL|REAM|BORE)\b", re.IGNORECASE)
-_COUNTERBORE = re.compile(r"⌴|\bCOUNTERBORE\b|\bSPOTFACE\b", re.IGNORECASE)
-_COUNTERSINK = re.compile(r"⌵|\bCOUNTERSINK\b", re.IGNORECASE)
+_COUNTERBORE = re.compile(r"⌴|\bCOUNTERBORE\b|\bSPOTFACE\b|\bCB\b", re.IGNORECASE)
+_COUNTERSINK = re.compile(r"⌵|\bCOUNTERSINK\b|\bCSK\b", re.IGNORECASE)
 _CHAMFER_WORD = re.compile(r"\bCHAMFER\b", re.IGNORECASE)
 _MACHINE_WORD = re.compile(r"\b(LATHE\s*2|LATHE2|LATHE|MILL)\b", re.IGNORECASE)
 _STEP_RADIUS = re.compile(
@@ -213,6 +219,71 @@ def _feature(kind: str, callout: str, **extra: Any) -> dict[str, Any]:
     return feature
 
 
+_TEXT_CALLOUTS = {
+    "position",
+    "parallelism",
+    "perpendicularity",
+    "flatness",
+    "basic",
+    "reference",
+    "thru",
+    "typical",
+    "near_side",
+    "bolt_circle",
+    "datum",
+    "composite_position",
+    "third_angle",
+    "depth",
+}
+
+
+def _text_symbol_callout(text: str, described: dict[str, Any]) -> dict[str, Any]:
+    """A known drawing note. Not an operation and not a place count."""
+    symbol_id = described.get("id")
+    notes = {
+        "thru": (
+            "THRU was read. Numeric depth was not given. "
+            "It was not added as an operation."
+        ),
+        "typical": "TYP was read. It does not state a place count.",
+        "reference": (
+            "A reference dimension was read. It was not added as a hole "
+            "or an operation."
+        ),
+        "basic": "A basic dimension was read. Limits were not calculated.",
+        "bolt_circle": (
+            "Bolt circle was read. It was not added as a hole and it is not a place count."
+        ),
+        "depth": (
+            "Two depth limits were read. A single depth was not chosen."
+            if described.get("depth_limits")
+            else "Depth was read. It was not added as an operation."
+        ),
+    }
+    row: dict[str, Any] = {
+        "symbol": symbol_id,
+        "text": text.strip(),
+        "feature": False,
+        "meaning": described.get("meaning"),
+        "citation": described.get("citation"),
+        "note": notes.get(
+            symbol_id,
+            "The symbol was read. It was not added as an operation.",
+        ),
+    }
+    if described.get("value") is not None:
+        row["value"] = described["value"]
+    if described.get("depth_limits"):
+        row["depth_limits"] = described["depth_limits"]
+    if described.get("datum_letter"):
+        row["datum_letter"] = described["datum_letter"]
+    if described.get("limit"):
+        row["limit"] = described["limit"]
+    if described.get("tolerance") is not None:
+        row["tolerance"] = described["tolerance"]
+    return row
+
+
 def _surface_finish_callout(text: str, value: Any | None = None) -> dict[str, Any] | None:
     """A finish requirement. Not a hole and not an operation."""
     described = describe_symbol(text)
@@ -264,10 +335,29 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
         line = lines[index]
         thread = _THREAD.search(line)
         metric = None if thread else _METRIC.search(line)
-        if thread or metric:
-            feature = _thread_feature(line, thread, metric)
+        npt = None if thread or metric else _NPT.search(line)
+        if thread or metric or npt:
+            feature = _thread_feature(line, thread, metric, npt)
             index = _attach_tap_note(feature, lines, index)
             features.append(feature)
+            if _COUNTERSINK.search(line):
+                sink = _countersink_text_feature(line)
+                if sink is not None:
+                    features.append(sink)
+            cb_span = re.search(
+                rf"(?:⌴|\bCB\b|\bCOUNTERBORE\b|\bSPOTFACE\b)\s*(?:⌀|Ø|∅)?\s*{_NUMBER}",
+                line,
+                re.IGNORECASE,
+            )
+            if cb_span and (_DIAMETER.search(cb_span.group(0)) or "⌴" in cb_span.group(0)):
+                features.append(_round_feature("counterbore", cb_span.group(0)))
+            bore = re.search(
+                rf"(?:(\d+)X\s+)?(?:⌀|Ø|∅)\s*{_NUMBER}\s*(?:↧\s*)?(?:BORE|DRILL|REAM)\b",
+                line,
+                re.IGNORECASE,
+            )
+            if bore:
+                features.append(_hole_feature(bore.group(0)))
             continue
         index += 1
         groove = _GROOVE.search(line)
@@ -346,11 +436,35 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
                     }
                 )
             continue
-        if _CHAMFER_WORD.search(line):
+        described_chamfer = describe_symbol(line)
+        if _CHAMFER_WORD.search(line) or (
+            described_chamfer.get("id") == "chamfer" and not _COUNTERSINK.search(line)
+        ):
             features.append(_chamfer_feature(line))
             continue
         if _HOLE_PROCESS.search(line) and _DIAMETER.search(line):
             features.append(_hole_feature(line))
+            continue
+        if re.search(r"\bB\.C\.?\b", line, re.IGNORECASE) and _DIAMETER.search(line):
+            described_bc = describe_symbol("B.C.")
+            callouts.append(
+                {
+                    "symbol": "bolt_circle",
+                    "text": line,
+                    "value": _diameter_value(line),
+                    "meaning": described_bc["meaning"],
+                    "citation": described_bc["citation"],
+                    "feature": False,
+                    "note": (
+                        "Bolt circle was read. It was not added as a hole "
+                        "and it is not a place count."
+                    ),
+                }
+            )
+            continue
+        described_ref = describe_symbol(line)
+        if described_ref.get("id") == "reference":
+            callouts.append(_text_symbol_callout(line, described_ref))
             continue
         found_diameter = _DIAMETER.search(line)
         if found_diameter:
@@ -372,6 +486,30 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
                     ),
                 }
             )
+            if re.search(r"±", line):
+                tolerance = re.search(rf"±\s*{_NUMBER}", line)
+                if tolerance:
+                    callouts[-1]["tolerance"] = _num(tolerance.group(1))
+                callouts[-1]["citation"] = (
+                    f"{callouts[-1]['citation']} {describe_symbol('±')['citation']}"
+                )
+                callouts[-1]["note"] = (
+                    "Diameter and a plus-minus tolerance were read. "
+                    "Limits were not calculated. The file does not say this is a hole — "
+                    "no hole feature was added."
+                )
+            if _THRU.search(line):
+                callouts[-1]["thru"] = True
+                callouts[-1]["note"] = (
+                    "THRU was read with the diameter. It is a through feature. "
+                    "Numeric depth was not given. The file does not say drill, ream, or bore — "
+                    "no hole operation was added."
+                )
+            if re.search(r"\bTYP\b|\bTYPICAL\b", line, re.IGNORECASE):
+                callouts[-1]["count"] = None
+                callouts[-1]["note"] = (
+                    f"{callouts[-1]['note']} TYP does not state a count."
+                )
             unreadable.append(
                 "Diameter was read. The file does not say this is a hole — "
                 "no hole feature was added."
@@ -380,18 +518,29 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
         radius = _RADIUS.search(line)
         if radius:
             prefix = re.match(r"[A-Za-z]+", radius.group(0))
-            described = describe_symbol(prefix.group(0) if prefix else radius.group(0))
+            token = line if re.search(r"\b(?:MAX|MIN)\b", line, re.IGNORECASE) else radius.group(0)
+            described = describe_symbol(token)
+            if described.get("id") not in {"radius", "controlled_radius", "spherical_radius"}:
+                described = describe_symbol(prefix.group(0) if prefix else radius.group(0))
+            note = "Radius was read. It was not added as a machining operation."
+            if described.get("limit") in {"max", "min"}:
+                note = (
+                    "A limiting radius was read. MAX or MIN does not state a place count. "
+                    "It was not added as a machining operation."
+                )
             callouts.append(
                 {
                     "symbol": described["id"],
-                    "text": radius.group(0),
-                    "value": _num(radius.group(1)),
+                    "text": token if described.get("limit") else radius.group(0),
+                    "value": described.get("value", _num(radius.group(1))),
                     "meaning": described["meaning"],
                     "citation": described["citation"],
                     "feature": False,
-                    "note": "Radius was read. It was not added as a machining operation.",
+                    "note": note,
                 }
             )
+            if described.get("limit"):
+                callouts[-1]["limit"] = described["limit"]
             continue
         described_line = describe_symbol(line)
         if described_line.get("id") == "iso_fit" and isinstance(described_line.get("size"), float):
@@ -451,6 +600,9 @@ def _parse_pdf_lines(text: str) -> tuple[list[dict[str, Any]], list[dict[str, An
                     "note": "An angle was read. It was not added as an operation.",
                 }
             )
+            continue
+        if described_line.get("known") and described_line.get("id") in _TEXT_CALLOUTS:
+            callouts.append(_text_symbol_callout(line, described_line))
             continue
         if re.fullmatch(r"ZINC\s+PLATE", line, re.IGNORECASE):
             callouts.append(
@@ -620,6 +772,18 @@ def _places(line: str) -> tuple[int | None, list[dict[str, str]]]:
 
 
 def _depth_fields(line: str) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    ranged = re.search(
+        rf"(?:↧|↓|\bDEPTH\b)\s*{_NUMBER}\s*/\s*{_NUMBER}",
+        line,
+        re.IGNORECASE,
+    )
+    if ranged:
+        return {}, [
+            _blank(
+                "depth_in",
+                "Two depth limits were read. A single depth was not chosen — left blank.",
+            )
+        ]
     depth = _DEPTH.search(line)
     if depth:
         value = _num(depth.group(1))
@@ -670,10 +834,23 @@ def _round_feature(kind: str, line: str) -> dict[str, Any]:
     depths, depth_blanks = _depth_fields(line)
     dimensions.update(depths)
     blanks.extend(depth_blanks)
-    return _feature(kind, line, dimensions=dimensions, blank_fields=blanks)
+    machine, machine_blanks = _machine_from_line(line)
+    blanks.extend(machine_blanks)
+    feature = _feature(kind, line, dimensions=dimensions, blank_fields=blanks)
+    feature.update(machine)
+    if machine.get("stated_machine") is False:
+        feature["note"] = (
+            "Counterbore was read from the note. No operation code was added."
+        )
+    return feature
 
 
-def _thread_feature(line: str, unified: re.Match[str] | None, metric: re.Match[str] | None) -> dict[str, Any]:
+def _thread_feature(
+    line: str,
+    unified: re.Match[str] | None,
+    metric: re.Match[str] | None,
+    npt: re.Match[str] | None = None,
+) -> dict[str, Any]:
     dimensions: dict[str, Any] = {}
     blanks = [
         _blank(
@@ -706,6 +883,20 @@ def _thread_feature(line: str, unified: re.Match[str] | None, metric: re.Match[s
         extra["thread_class"] = (unified.group(6) or "").upper() or None
         if extra["thread_class"] is None:
             blanks.append(_blank("thread_class", "Thread class is not in the designation — left blank."))
+    elif npt:
+        if npt.group(1) and npt.group(2):
+            major = _num(f"{npt.group(1)}/{npt.group(2)}")
+        else:
+            major = _num(npt.group(3))
+        if major is None:
+            blanks.append(_blank("diameter_in", "NPT size was not read — left blank."))
+        else:
+            dimensions["diameter_in"] = major
+        extra["series"] = "NPT"
+        described = describe_symbol(npt.group(0))
+        extra["meaning"] = described["meaning"]
+        extra["citation"] = described["citation"]
+        blanks.append(_blank("thread_class", "NPT designation has no class — left blank."))
     else:
         assert metric is not None
         dimensions["major_diameter_mm"] = _num(metric.group(1))
@@ -716,6 +907,8 @@ def _thread_feature(line: str, unified: re.Match[str] | None, metric: re.Match[s
                 "Metric designation is in millimetres. Inch diameter left blank.",
             )
         )
+        if metric.group(3) and not re.search(r"\bTAP\b", line, re.IGNORECASE):
+            extra["thread_class"] = metric.group(3).upper()
         letter = re.search(r"\b([A-Z])\s+TAP\b", line)
         if letter:
             extra["thread_class"] = letter.group(1)
@@ -810,8 +1003,17 @@ def _chamfer_feature(line: str) -> dict[str, Any]:
     if described.get("angle_deg") is not None:
         extra["angle_meaning"] = degree["meaning"]
         extra["angle_citation"] = degree["citation"]
+    count, count_blanks = _places(line)
+    if count is not None:
+        dimensions["count"] = count
+    blanks.extend(count_blanks)
     if machine.get("stated_machine") is False:
-        extra["note"] = "The word CHAMFER was read. No operation code was added."
+        if _CHAMFER_WORD.search(line):
+            extra["note"] = "The word CHAMFER was read. No operation code was added."
+        else:
+            extra["note"] = (
+                "A chamfer size and angle were read. No operation code was added."
+            )
     return _feature("chamfer", line, **extra)
 
 
@@ -868,6 +1070,8 @@ def _countersink_text_feature(line: str) -> dict[str, Any] | None:
     if described.get("angle_deg") is not None:
         extra["angle_meaning"] = degree["meaning"]
         extra["angle_citation"] = degree["citation"]
+    if re.search(r"\bNEAR\s+SIDE\b|\bNS\b", line, re.IGNORECASE):
+        extra["near_side"] = True
     if machine.get("stated_machine") is False:
         if (
             described.get("countersink_diameter_in") is not None
@@ -1097,6 +1301,22 @@ def _plate_box(geometry: dict[str, Any]) -> list[float] | None:
     return [length, width, thick]
 
 
+def _block_box(geometry: dict[str, Any]) -> list[float] | None:
+    """A rectangular envelope that is not a thin plate and not a flat profile."""
+    box = geometry.get("vertex_box_in")
+    if not isinstance(box, list) or len(box) < 3:
+        return None
+    try:
+        dims = [float(box[0]), float(box[1]), float(box[2])]
+    except (TypeError, ValueError):
+        return None
+    if min(dims) < _PROFILE_SPAN_IN:
+        return None
+    if _plate_box(geometry):
+        return None
+    return dims
+
+
 _BAR_WORD = re.compile(
     r"\b(?:RD\.?\s*BAR|ROUND\s+BAR|BAR\s+ROUND|FLAT\s+BAR|BAR)\b",
     re.IGNORECASE,
@@ -1104,11 +1324,21 @@ _BAR_WORD = re.compile(
 _TUBE_WORD = re.compile(r"\bTUB(?:E|ING)\b", re.IGNORECASE)
 _PLATE_WORD = re.compile(r"\bPLATE\b", re.IGNORECASE)
 _ZINC_PLATE = re.compile(r"\bZINC\s+PLATE\b", re.IGNORECASE)
+_FORGING_WORD = re.compile(r"\bFORGING\b", re.IGNORECASE)
+_FORGING_SIZE = re.compile(
+    r"\bFORGING\b\s*,?\s*"
+    r"([0-9]*\.?[0-9]+)\s*[xX×]\s*"
+    r"([0-9]*\.?[0-9]+)\s*[xX×]\s*"
+    r"([0-9]*\.?[0-9]+)",
+    re.IGNORECASE,
+)
 _UNKNOWN_STOCK = {
     "form": "unknown",
     "stated": False,
     "guessed": False,
-    "evidence": "The sheet does not state bar, plate, or tube.",
+    "evidence": (
+        "The sheet does not state bar, plate, or tube, and it does not state forging."
+    ),
 }
 
 
@@ -1125,11 +1355,36 @@ def _unique_sizes(values: list[float]) -> list[float]:
     return kept
 
 
+def _forging_blank(lines: list[str]) -> list[float] | None:
+    """Three sizes written on the forging line, in the order the line writes them.
+
+    The order is not an axis map. A missing size is not filled in.
+    """
+    found: list[tuple[float, float, float]] = []
+    for line in lines:
+        match = _FORGING_SIZE.search(line)
+        if not match:
+            continue
+        sizes = [_stated_number(match.group(index)) for index in (1, 2, 3)]
+        if any(item is None for item in sizes):
+            continue
+        found.append((float(sizes[0]), float(sizes[1]), float(sizes[2])))
+    unique = []
+    for triple in found:
+        if any(all(abs(left - right) <= _DIAMETER_CLUSTER_IN for left, right in zip(triple, prior)) for prior in unique):
+            continue
+        unique.append(triple)
+    if len(unique) == 1:
+        return list(unique[0])
+    return None
+
+
 def read_stated_stock(text: str | None) -> dict[str, Any]:
-    """Stock form the sheet or title block writes: bar, plate, tube, or unknown.
+    """Stock form the sheet or title block writes: bar, plate, tube, forging, or unknown.
 
     A size is kept only when the same stock words state it. The finished
-    solid is not a source. ``guessed`` is always false.
+    solid is not a source. ``guessed`` is always false. Forging is stated
+    when the line says FORGING. The largest finished diameter is not a bar.
     """
     if not text or not str(text).strip():
         return dict(_UNKNOWN_STOCK)
@@ -1149,10 +1404,17 @@ def read_stated_stock(text: str | None) -> dict[str, Any]:
         forms.append("tube")
     if _PLATE_WORD.search(blob):
         forms.append("plate")
+    if _FORGING_WORD.search(blob):
+        forms.append("forging")
     if len(forms) != 1:
         return dict(_UNKNOWN_STOCK)
     form = forms[0]
-    word = {"bar": _BAR_WORD, "tube": _TUBE_WORD, "plate": _PLATE_WORD}[form]
+    word = {
+        "bar": _BAR_WORD,
+        "tube": _TUBE_WORD,
+        "plate": _PLATE_WORD,
+        "forging": _FORGING_WORD,
+    }[form]
     quotes = [line for line in lines if word.search(line)]
     stock: dict[str, Any] = {
         "form": form,
@@ -1175,6 +1437,10 @@ def read_stated_stock(text: str | None) -> dict[str, Any]:
             if re.search(r"(?i)A\s*572|\bW:\s*[0-9]", line):
                 quotes.append(line)
         stock["evidence"] = " ".join(quotes)
+    elif form == "forging":
+        blank = _forging_blank(lines)
+        if blank is not None:
+            stock["blank_in"] = blank
     else:
         diameter = _stated_round_diameter(blob)
         if diameter is not None:
@@ -1254,7 +1520,7 @@ def _accept_stated_stock(stated: dict[str, Any] | None) -> dict[str, Any]:
     if stated.get("guessed") is True or stated.get("stated") is not True:
         return dict(_UNKNOWN_STOCK)
     form = str(stated.get("form") or "").casefold()
-    if form not in {"bar", "plate", "tube"}:
+    if form not in {"bar", "plate", "tube", "forging"}:
         return dict(_UNKNOWN_STOCK)
     out: dict[str, Any] = {
         "form": form,
@@ -1274,6 +1540,15 @@ def _accept_stated_stock(stated: dict[str, Any] | None) -> dict[str, Any]:
         stated.get("diameter_in"), bool
     ):
         out["diameter_in"] = float(stated["diameter_in"])
+    if form == "forging" and isinstance(stated.get("blank_in"), list) and len(stated["blank_in"]) == 3:
+        blank = []
+        for item in stated["blank_in"]:
+            if isinstance(item, bool) or not isinstance(item, (int, float)):
+                blank = []
+                break
+            blank.append(float(item))
+        if len(blank) == 3:
+            out["blank_in"] = blank
     return out
 
 
@@ -1301,8 +1576,11 @@ def _finished_shape(
         axes_known and len(cylinders) >= 2 and _axes_share_one_centerline(cylinders)
     )
     holes = _hole_features(features)
+    block = _block_box(geometry)
     if box and not concentric:
         shape = "plate"
+    elif block and not concentric:
+        shape = "prismatic"
     elif distinct and (
         concentric or (box is None and not holes and len(distinct) >= 2)
     ):
@@ -1316,6 +1594,8 @@ def _finished_shape(
     }
     if box:
         finished["envelope_in"] = box
+    elif block:
+        finished["envelope_in"] = block
     if not axes_known and shape == "round":
         finished["axes_placed"] = False
     return finished
@@ -1345,14 +1625,16 @@ def compare_stock_to_finished(
     decide the machining. Shop rates are not part of this comparison.
 
     Starting stock comes from the sheet or title block: bar, plate, tube,
-    or unknown. A size the sheet does not write is left off. The largest
-    finished diameter is not used as a bar. A guessed stock record is
-    refused.
+    forging, or unknown. A size the sheet does not write is left off. The
+    largest finished diameter is not used as a bar. A guessed stock record
+    is refused. A BOM line that says FORGING is a stated form.
 
     Turning is justified when the finished solid is round and smaller than
-    a stated round stock. Milling is justified when the finished solid is
-    a plate with holes. Lathe 2 is never chosen here. Nothing here writes
-    a run time, a setup time, or a dollar rate.
+    a stated round stock. Milling is justified when the sheet states plate
+    and the finished solid is a plate with holes, or when the sheet states
+    forging and the finished solid is a prismatic block. A missing form
+    leaves the operation code blank. Lathe 2 is never chosen here. Nothing
+    here writes a run time, a setup time, or a dollar rate.
 
     Several leaf parts are not one machined part. A machine the sheet
     already names is left to the caller.
@@ -1390,24 +1672,33 @@ def compare_stock_to_finished(
             "The finished round is smaller than the stated round stock, "
             "so the difference is turning."
         )
-    elif finished["shape"] == "plate" and holes:
+    elif stock["form"] == "plate" and finished["shape"] == "plate" and holes:
         family = "mill"
         justified = True
         kinds = ", ".join(dict.fromkeys(feature.get("kind") or "feature" for feature in holes))
         difference = (
-            f"The finished part is a plate with {kinds}. "
+            f"The sheet states plate and the finished part is a plate with {kinds}. "
             "That difference is milling, not turning."
+        )
+    elif stock["form"] == "forging" and finished["shape"] == "prismatic":
+        family = "mill"
+        justified = True
+        difference = (
+            "The sheet states a forging and the finished solid is a prismatic block. "
+            "That difference is milling. It is not bar turning."
         )
     else:
         difference = (
             "The stated stock and the finished solid do not justify turning or milling. "
             "Turning needs a finished round smaller than a stated round stock. "
-            "Milling needs a finished plate with holes."
+            "Milling needs a stated plate with holes, or a stated forging whose "
+            "finished solid is a prismatic block. "
+            "A missing stock form leaves the operation code blank."
         )
     shown = _diameter_list(geometry, distinct)
     if stock["form"] == "unknown":
         stock_sentence = (
-            "The sheet does not state bar, plate, or tube. "
+            "The sheet does not state bar, plate, or tube, and it does not state forging. "
             "Stock is unknown. A bar size was not guessed."
         )
     else:
@@ -1416,6 +1707,9 @@ def compare_stock_to_finished(
             stock_sentence += f" {_fmt_in(stock['thickness_in'])} in thick"
         if "diameter_in" in stock:
             stock_sentence += f" {_fmt_in(stock['diameter_in'])} in round"
+        if stock["form"] == "forging" and isinstance(stock.get("blank_in"), list):
+            shown = " x ".join(_fmt_in(value) for value in stock["blank_in"])
+            stock_sentence += f" {shown} in, in the order written"
         quote = stock.get("evidence") or ""
         if quote:
             stock_sentence += f" ({quote})"
@@ -1435,6 +1729,12 @@ def compare_stock_to_finished(
         shape_sentence = (
             f"The finished solid is a plate {_fmt_in(length)} x {_fmt_in(width)} x "
             f"{_fmt_in(thick)} in."
+        )
+    elif finished["shape"] == "prismatic":
+        length, width, thick = finished["envelope_in"]
+        shape_sentence = (
+            f"The finished solid is a prismatic block {_fmt_in(length)} x "
+            f"{_fmt_in(width)} x {_fmt_in(thick)} in."
         )
     else:
         shape_sentence = "The finished solid was not classified as a round or a plate."

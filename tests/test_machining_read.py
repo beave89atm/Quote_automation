@@ -67,6 +67,13 @@ def test_library_cites_standards_and_does_not_guess_typical():
         "plus_minus",
         "iso_fit",
         "chamfer",
+        "position",
+        "parallelism",
+        "perpendicularity",
+        "flatness",
+        "basic",
+        "thru",
+        "bolt_circle",
     ):
         assert library[symbol_id]["meaning"]
         assert library[symbol_id]["citation"]

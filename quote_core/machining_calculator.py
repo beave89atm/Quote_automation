@@ -180,6 +180,12 @@ def cubic_inches_removed(stock: dict[str, Any], finished: dict[str, Any]) -> tup
             "Run time left blank. The round volume formula applies when stock "
             "form is Bar. Tube has no volume formula in the calculator."
         )
+    if form == "forging":
+        return None, (
+            "Run time left blank. Forging is a stated form. "
+            "The calculator's cubic-inch path is bar or plate only. "
+            "A forging volume was not invented."
+        )
     if form != "plate":
         return None, "Run time left blank. Stock form is not bar or plate."
     thickness = _num(stock.get("thickness_in"))
@@ -385,11 +391,19 @@ def times_for_justified_operation(
         )
     )
     if part_type is None or not allowed:
-        reason = (
-            "Run time and setup left blank. The calculator runs for op_mill "
-            "when the sheet states plate, and for op_lathe or op_lathe2 when "
-            "the sheet states bar or tube and the finished part is round."
-        )
+        if form == "forging":
+            reason = (
+                "Run time and setup left blank. Forging is stated. "
+                "The calculator's cubic-inch path is stated plate for mill, "
+                "or stated bar or tube for a finished round. "
+                "A forging volume was not invented."
+            )
+        else:
+            reason = (
+                "Run time and setup left blank. The calculator runs for op_mill "
+                "when the sheet states plate, and for op_lathe or op_lathe2 when "
+                "the sheet states bar or tube and the finished part is round."
+            )
         blank["run_blank_reason"] = reason
         blank["setup_blank_reason"] = reason
         return blank

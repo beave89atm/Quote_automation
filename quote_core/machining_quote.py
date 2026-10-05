@@ -26,14 +26,16 @@ posts an operation or calls Sectura.
 When a drawing does not name a machine, ``process_from_stock`` may name
 the lathe or mill family from the stock-versus-finished comparison. Turning
 needs a finished round smaller than round stock the sheet states. Milling
-needs a finished plate with holes. A guessed bar size does not qualify.
-That family maps to ``op_lathe`` or ``op_mill`` only when the comparison
-justifies it. Lathe 2 (``op_lathe2``) is used only when the sheet says
-lathe 2. When that comparison justifies ``op_mill`` from stated plate, or
-``op_lathe`` / ``op_lathe2`` from stated bar or tube whose finished
-round is smaller, run time and setup may be filled from
-``quote_core.machining_calculator`` (Kyle's stock-versus-finished
-workbook). A missing size, a tube volume, or zero cubic inches removed
+needs a stated plate with holes, or a stated forging whose finished solid
+is a prismatic block. A missing stock form leaves the operation code blank.
+A guessed bar size does not qualify. That family maps to ``op_lathe`` or
+``op_mill`` only when the comparison justifies it. Lathe 2 (``op_lathe2``)
+is used only when the sheet says lathe 2. When that comparison justifies
+``op_mill`` from stated plate, or ``op_lathe`` / ``op_lathe2`` from stated
+bar or tube whose finished round is smaller, run time and setup may be
+filled from ``quote_core.machining_calculator`` (Kyle's stock-versus-finished
+workbook). A stated forging can justify mill and does not use that volume
+path. A missing size, a tube volume, a forging, or zero cubic inches removed
 leaves run time blank. Shop dollar rates stay blank. A typed cycle
 time may still override run time only.
 """
@@ -883,7 +885,8 @@ def process_assignment_with_code(
 
     A justified code then takes run time and setup from the machining
     calculator when the stock form is stated plate (mill) or stated bar or
-    tube with a finished round (lathe). The shop rate stays blank.
+    tube with a finished round (lathe). A stated forging that justifies mill
+    does not take a volume from the calculator. The shop rate stays blank.
     """
     if not isinstance(assignment, dict):
         return None

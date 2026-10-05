@@ -32,7 +32,7 @@ _ENTRIES: tuple[dict[str, Any], ...] = (
     {
         "id": "counterbore",
         "glyphs": ("⌴",),
-        "words": ("counterbore", "spotface"),
+        "words": ("counterbore", "spotface", "cb"),
         "meaning": (
             "Placed with the diameter symbol in front of a counterbore "
             "or spotface diameter."
@@ -46,7 +46,7 @@ _ENTRIES: tuple[dict[str, Any], ...] = (
     {
         "id": "countersink",
         "glyphs": ("⌵",),
-        "words": ("countersink",),
+        "words": ("countersink", "csk"),
         "meaning": (
             "Placed with the diameter symbol in front of a countersink diameter. "
             "The common callout writes that diameter, then X, then the included angle. "
@@ -89,8 +89,16 @@ _ENTRIES: tuple[dict[str, Any], ...] = (
         "id": "radius",
         "glyphs": (),
         "words": ("r", "radius"),
-        "meaning": "The letter R placed in front of a radius value.",
-        "citation": f"{_GENIUM}, paragraph 2.11.2. {_Y145}",
+        "meaning": (
+            "The letter R placed in front of a radius value. "
+            "MAX or MIN on that value is a limiting radius. "
+            "It does not state a place count."
+        ),
+        "citation": (
+            f"{_GENIUM}, paragraph 2.11.2. {_Y145} "
+            "ASME Y14.5 limiting practice: MAX or MIN on a radius is a limit, "
+            "not a count."
+        ),
     },
     {
         "id": "controlled_radius",
@@ -235,6 +243,104 @@ _ENTRIES: tuple[dict[str, Any], ...] = (
             "Part 1 gives the basis of tolerances, deviations and fits."
         ),
     },
+    {
+        "id": "position",
+        "glyphs": ("\u2316",),
+        "words": ("position",),
+        "meaning": (
+            "A position tolerance. The tolerance and the datum letters stay "
+            "as written. The callout is not a hole count."
+        ),
+        "citation": "ASME Y14.5, position. Text encoding of the symbol: U+2316.",
+    },
+    {
+        "id": "parallelism",
+        "glyphs": ("//", "\u2225"),
+        "words": ("parallelism",),
+        "meaning": "Parallelism to a datum. The tolerance stays as written.",
+        "citation": (
+            "ASME Y14.5, parallelism. "
+            "Text forms: two slashes, or U+2225."
+        ),
+    },
+    {
+        "id": "perpendicularity",
+        "glyphs": ("\u22a5",),
+        "words": ("perpendicularity", "perpendicular"),
+        "meaning": "Perpendicularity to a datum. The tolerance stays as written.",
+        "citation": "ASME Y14.5, perpendicularity. Text encoding: U+22A5.",
+    },
+    {
+        "id": "flatness",
+        "glyphs": ("\u25ad",),
+        "words": ("flatness",),
+        "meaning": (
+            "Flatness of a surface. The tolerance stays as written. "
+            "It is not a hole."
+        ),
+        "citation": "ASME Y14.5, flatness. Text encoding of the frame used here: U+25AD.",
+    },
+    {
+        "id": "basic",
+        "glyphs": (),
+        "words": ("basic",),
+        "meaning": (
+            "A basic dimension. The drawing boxes the value. "
+            "Limits are not calculated."
+        ),
+        "citation": "ASME Y14.5, basic dimension.",
+    },
+    {
+        "id": "thru",
+        "glyphs": (),
+        "words": ("thru", "through"),
+        "meaning": (
+            "The feature passes through. This word does not state a numeric depth "
+            "and does not state a place count. It may stand with a diameter."
+        ),
+        "citation": "Common drawing practice. THRU names a through feature.",
+    },
+    {
+        "id": "near_side",
+        "glyphs": (),
+        "words": ("near side", "ns"),
+        "meaning": "The feature is on the near face of the view. It does not supply a place count.",
+        "citation": "Common drawing practice.",
+    },
+    {
+        "id": "bolt_circle",
+        "glyphs": (),
+        "words": ("b.c.", "bolt circle"),
+        "meaning": (
+            "A bolt-circle diameter. The features lie on that circle. "
+            "It is not a hole count."
+        ),
+        "citation": "Common drawing practice. The abbreviation on the sheet is B.C.",
+    },
+    {
+        "id": "datum",
+        "glyphs": (),
+        "words": ("datum",),
+        "meaning": "A datum feature letter, kept as written. It is not a hole.",
+        "citation": "ASME Y14.5, datum feature.",
+    },
+    {
+        "id": "composite_position",
+        "glyphs": (),
+        "words": ("composite position",),
+        "meaning": (
+            "Two stacked position frames. Each frame stays as written. "
+            "One position frame is not composite."
+        ),
+        "citation": "ASME Y14.5, composite position tolerancing.",
+    },
+    {
+        "id": "third_angle",
+        "glyphs": (),
+        "words": ("third angle",),
+        "meaning": "Third-angle projection. It names the view method. It is not a feature.",
+        "citation": "ASME Y14.3, third-angle projection.",
+    },
 )
 
 _BY_GLYPH: dict[str, dict[str, Any]] = {}
@@ -261,6 +367,9 @@ _FINISH_PHRASE = re.compile(
     r"(?P<right>MACHINED\s+SURFACE(?:\s+FINISH(?:ES)?)?|SURFACE\s+FINISH|FINISH)"
     r"(?:\s*=\s*|\s+)(?P<trail>[0-9]*\.?[0-9]+)"
     r"|"
+    r"(?P<uos>MACHINED\s+SURFACE(?:\s+FINISH(?:ES)?)?|SURFACE\s+FINISH|FINISH)"
+    r"(?:\s*\(\s*UOS\s*\)|\s+UOS)\s+(?P<uos_val>[0-9]*\.?[0-9]+)"
+    r"|"
     r"(?P<bare>MACHINED\s+SURFACE(?:\s+FINISH(?:ES)?)?|SURFACE\s+FINISH)"
     r")$",
     re.IGNORECASE,
@@ -271,12 +380,21 @@ _THREAD = re.compile(
     re.IGNORECASE,
 )
 _METRIC_THREAD = re.compile(
-    r"M(\d+(?:\.\d+)?)\s*[xX×]\s*(\d+(?:\.\d+)?)",
+    r"^M(\d+(?:\.\d+)?)\s*[xX×]\s*(\d+(?:\.\d+)?)"
+    r"(?:\s*-\s*(\d?[A-H]))?"
+    r"(?:\s+ISO)?"
+    r"(?:\s*-\s*([A-H]))?"
+    r"(?:\s+TAP)?$",
+    re.IGNORECASE,
+)
+_NPT_THREAD = re.compile(
+    r"^(?:(\d+)\s*/\s*(\d+)|(\d+(?:\.\d+)?))\s*-?\s*NPT$",
     re.IGNORECASE,
 )
 _NOTE_NUMBER = r"([0-9]*\.?[0-9]+|\d+\s*/\s*\d+)"
 _CHAMFER_WORD = re.compile(r"\bCHAMFER\b", re.IGNORECASE)
-_COUNTERSINK_WORD = re.compile(r"\bCOUNTERSINK\b", re.IGNORECASE)
+_COUNTERSINK_WORD = re.compile(r"\bCOUNTERSINK\b|\bCSK\b", re.IGNORECASE)
+_COUNTERBORE_WORD = re.compile(r"\bCOUNTERBORE\b|\bSPOTFACE\b|\bCB\b|⌴", re.IGNORECASE)
 # DEGREE before DEG so the longer word is the one that matches.
 _ANGLE_UNIT = r"(?:°|DEGREES?|DEG)"
 _DEGREE_VALUES = re.compile(
@@ -289,14 +407,55 @@ _CHAMFER_LEG = re.compile(
     re.IGNORECASE,
 )
 _COUNTERSINK_CALLOUT = re.compile(
-    rf"(?:⌀|Ø|∅)?\s*{_NOTE_NUMBER}\s+X\s+(\d+(?:\.\d+)?)\s*{_ANGLE_UNIT}",
+    rf"(?:⌀|Ø|∅)?\s*(?P<dia>{_NOTE_NUMBER})"
+    rf"(?:\s*±\s*(?P<tol>{_NOTE_NUMBER}))?"
+    rf"\s*[xX×]\s*(?P<ang>\d+(?:\.\d+)?)\s*{_ANGLE_UNIT}",
+    re.IGNORECASE,
+)
+# Size and angle with no space around X. A spaced X is BY, not a chamfer.
+_TIGHT_CHAMFER = re.compile(
+    rf"^(?:(?P<count>\d+)X\s+)?"
+    rf"(?P<size>{_NOTE_NUMBER})[xX×](?P<ang>\d+(?:\.\d+)?)\s*{_ANGLE_UNIT}$",
     re.IGNORECASE,
 )
 _DEGREE_CALLOUT = re.compile(
     rf"^(\d+(?:\.\d+)?)\s*{_ANGLE_UNIT}$",
     re.IGNORECASE,
 )
-_RADIUS_VALUE = re.compile(r"^(SR|CR|R)\s*([0-9]*\.?[0-9]+)$", re.IGNORECASE)
+_RADIUS_VALUE = re.compile(
+    r"^(SR|CR|R)\s*([0-9]*\.?[0-9]+)\s*(MAX|MIN)?$",
+    re.IGNORECASE,
+)
+_SURFACE_CHECK = re.compile(r"^[✓✔√]\s*([0-9]*\.?[0-9]+)$")
+_DEPTH_RANGE = re.compile(
+    rf"^(?:↧|↓)\s*(?P<a>{_NOTE_NUMBER})\s*/\s*(?P<b>{_NOTE_NUMBER})$",
+    re.IGNORECASE,
+)
+_DEPTH_ONE = re.compile(rf"^(?:↧|↓)\s*(?P<v>{_NOTE_NUMBER})$", re.IGNORECASE)
+_DIA_VALUE = re.compile(
+    rf"^(?:⌀|Ø|∅)\s*(?P<nom>{_NOTE_NUMBER})(?:\s*±\s*(?P<tol>{_NOTE_NUMBER}))?$"
+)
+_REFERENCE_DIM = re.compile(
+    rf"^\(\s*(?P<dia>⌀|Ø|∅)?\s*(?P<val>{_NOTE_NUMBER})\s*\)$"
+)
+_BASIC_LINE = re.compile(
+    r"^(?:BASIC(?:\s+(?P<a>[0-9]*\.?[0-9]+))?|(?P<b>[0-9]*\.?[0-9]+)\s+BASIC)$",
+    re.IGNORECASE,
+)
+_FLAT_LINE = re.compile(
+    r"^(?:▭\s*)?(?:(?P<a>[0-9]*\.?[0-9]+)\s+)?FLATNESS(?:\s+(?P<b>[0-9]*\.?[0-9]+))?$"
+    r"|^(?:▭)\s*(?P<c>[0-9]*\.?[0-9]+)$",
+    re.IGNORECASE,
+)
+_POSITION_LINE = re.compile(rf"^⌖\s*(?P<val>[0-9]*\.?[0-9]+)?(?:\s*\|.*)?$")
+_PARALLEL_LINE = re.compile(rf"^(?://|∥)\s*(?P<val>[0-9]*\.?[0-9]+)?(?:\s*\|.*)?$")
+_PERP_LINE = re.compile(rf"^⊥\s*(?P<val>[0-9]*\.?[0-9]+)?(?:\s*\|.*)?$")
+_DATUM_LINE = re.compile(r"^DATUM\s+([A-Z])$", re.IGNORECASE)
+_BOLT_CIRCLE_LINE = re.compile(
+    rf"^(?:(?:⌀|Ø|∅)\s*)?(?P<val>[0-9]*\.?[0-9]+)\s+B\.C\.?$",
+    re.IGNORECASE,
+)
+_CHECK_GLYPHS = frozenset("✓✔√")
 # ISO 286-1 fundamental deviations. i, l, o, q, and w are not used.
 _ISO_SHAFT_DEVIATIONS = frozenset(
     {
@@ -398,12 +557,15 @@ def _named_feature_note(raw: str) -> dict[str, Any] | None:
         extra: dict[str, Any] = {}
         callout = _COUNTERSINK_CALLOUT.search(raw)
         if callout:
-            diameter = _note_number(callout.group(1))
-            angle = _note_number(callout.group(2))
+            diameter = _note_number(callout.group("dia"))
+            angle = _note_number(callout.group("ang"))
+            tolerance = _note_number(callout.group("tol"))
             if diameter is not None:
                 extra["countersink_diameter_in"] = diameter
             if angle is not None:
                 extra["angle_deg"] = angle
+            if tolerance is not None:
+                extra["tolerance"] = tolerance
         else:
             marked = _DIAMETER_MARK.search(raw)
             if marked:
@@ -418,6 +580,18 @@ def _named_feature_note(raw: str) -> dict[str, Any] | None:
         if not extra:
             return None
         return _known(_BY_ID["countersink"], raw, **extra)
+    tight = _TIGHT_CHAMFER.fullmatch(raw.strip())
+    if tight and not _COUNTERSINK_WORD.search(raw) and "⌵" not in raw:
+        extra = {}
+        size = _note_number(tight.group("size"))
+        angle = _note_number(tight.group("ang"))
+        if size is not None:
+            extra["size_in"] = size
+        if angle is not None:
+            extra["angle_deg"] = angle
+        if tight.group("count"):
+            extra["count"] = int(tight.group("count"))
+        return _known(_BY_ID["chamfer"], raw, **extra)
     if not _CHAMFER_WORD.search(raw) or raw.casefold() == "chamfer":
         return None
     extra = {}
@@ -446,6 +620,13 @@ def _describe_surface_finish(raw: str) -> dict[str, Any] | None:
     The parameter limits in ASME B46.1 are not calculated here.
     """
     text = re.sub(r"\s+", " ", raw.strip())
+    check = _SURFACE_CHECK.fullmatch(text)
+    if check:
+        value = _note_number(check.group(1))
+        extra = {}
+        if value is not None:
+            extra["roughness"] = value
+        return _known(_BY_ID["surface_texture"], raw, **extra)
     rough = _RA.fullmatch(text)
     if rough:
         value = _note_number(rough.group("a") or rough.group("b"))
@@ -457,6 +638,8 @@ def _describe_surface_finish(raw: str) -> dict[str, Any] | None:
     if not phrase:
         return None
     token = phrase.group("lead") or phrase.group("trail")
+    if token is None and "uos_val" in phrase.groupdict():
+        token = phrase.group("uos_val")
     extra = {}
     if token:
         value = _note_number(token)
@@ -476,6 +659,8 @@ def _describe_radius_value(raw: str) -> dict[str, Any] | None:
     extra: dict[str, Any] = {}
     if value is not None:
         extra["value"] = value
+    if match.group(3):
+        extra["limit"] = match.group(3).casefold()
     return _known(_BY_WORD[prefix], raw, **extra)
 
 
@@ -570,6 +755,161 @@ def _describe_plus_minus(raw: str) -> dict[str, Any] | None:
     return _known(_BY_ID["plus_minus"], raw, **extra)
 
 
+def _describe_thread(raw: str) -> dict[str, Any] | None:
+    """UNC, metric, or NPT. The process stays blank unless the line says otherwise."""
+    compact = re.sub(r"\s+", "", raw)
+    unified = _THREAD.fullmatch(compact) or _THREAD.fullmatch(raw)
+    if unified:
+        described = _known(_BY_ID["thread"], raw, series=unified.group(5).upper())
+        if unified.group(6):
+            described["thread_class"] = unified.group(6).upper()
+        tpi = unified.group(4)
+        if tpi:
+            described["threads_per_inch"] = int(tpi)
+        return described
+    metric = _METRIC_THREAD.fullmatch(raw.strip()) or _METRIC_THREAD.fullmatch(compact)
+    if metric:
+        described = _known(_BY_ID["thread"], raw)
+        described["citation"] = (
+            "ASME B1.13M, Metric Screw Threads. "
+            "The designation states major diameter and pitch. "
+            "It does not say tap or single-point, so the thread process stays blank."
+        )
+        described["meaning"] = (
+            "A metric screw-thread designation states major diameter and pitch. "
+            "It does not say tap or single-point, so the thread process stays blank."
+        )
+        described["major_diameter_mm"] = _note_number(metric.group(1))
+        described["pitch_mm"] = _note_number(metric.group(2))
+        fit = metric.group(3) or metric.group(4)
+        if fit:
+            described["thread_class"] = fit.upper()
+        if re.search(r"\bTAP\b", raw, re.IGNORECASE):
+            described["thread_form"] = "tap"
+            described["meaning"] = (
+                "A metric screw-thread designation states major diameter and pitch. "
+                "The line says TAP. It does not name lathe or mill."
+            )
+        if re.search(r"\bISO\b", raw, re.IGNORECASE):
+            described["thread_standard"] = "ISO"
+        return described
+    npt = _NPT_THREAD.fullmatch(raw.strip()) or _NPT_THREAD.fullmatch(compact)
+    if npt or raw.casefold() == "npt":
+        described = _known(_BY_ID["thread"], raw, series="NPT")
+        described["citation"] = (
+            "ASME B1.20.1, Pipe Threads, General Purpose (Inch). "
+            "The callout is the NPT designation as written. "
+            "It does not say tap or single-point, so the thread process stays blank."
+        )
+        described["meaning"] = (
+            "An NPT designation is a National Pipe Taper thread. "
+            "It does not say tap or single-point, so the thread process stays blank."
+        )
+        if npt and (npt.group(1) or npt.group(3)):
+            size = _note_number(
+                f"{npt.group(1)}/{npt.group(2)}" if npt.group(1) else npt.group(3)
+            )
+            if size is not None:
+                described["size_in"] = size
+        return described
+    return None
+
+
+def _describe_counterbore(raw: str) -> dict[str, Any] | None:
+    """CB or the counterbore symbol with a diameter. The bare word stays on the word list."""
+    if raw.casefold() in {"cb", "counterbore", "spotface"}:
+        return None
+    if not _COUNTERBORE_WORD.search(raw):
+        return None
+    marked = _DIAMETER_MARK.search(raw)
+    if not marked and "⌴" not in raw:
+        return None
+    extra: dict[str, Any] = {}
+    if marked:
+        diameter = _note_number(marked.group(1))
+        if diameter is not None:
+            extra["diameter_in"] = diameter
+    tolerance = re.search(rf"±\s*{_NOTE_NUMBER}", raw)
+    if tolerance:
+        value = _note_number(tolerance.group(1))
+        if value is not None:
+            extra["tolerance"] = value
+    if not extra and "⌴" not in raw:
+        return None
+    return _known(_BY_ID["counterbore"], raw, **extra)
+
+
+def _with_value(entry_id: str, raw: str, value: float | None) -> dict[str, Any]:
+    extra: dict[str, Any] = {}
+    if value is not None:
+        extra["value"] = value
+    return _known(_BY_ID[entry_id], raw, **extra)
+
+
+def _describe_geometric(raw: str) -> dict[str, Any] | None:
+    """GD&T and drawing notes that are callouts, not operations."""
+    text = raw.strip()
+    if text.count("\u2316") >= 2:
+        return _known(_BY_ID["composite_position"], raw, frames=text.count("\u2316"))
+    position = _POSITION_LINE.fullmatch(text)
+    if position:
+        return _with_value("position", raw, _note_number(position.group("val")))
+    parallel = _PARALLEL_LINE.fullmatch(text)
+    if parallel:
+        return _with_value("parallelism", raw, _note_number(parallel.group("val")))
+    perp = _PERP_LINE.fullmatch(text)
+    if perp:
+        return _with_value("perpendicularity", raw, _note_number(perp.group("val")))
+    flat = _FLAT_LINE.fullmatch(text)
+    if flat:
+        value = _note_number(flat.group("a") or flat.group("b") or flat.group("c"))
+        return _with_value("flatness", raw, value)
+    basic = _BASIC_LINE.fullmatch(text)
+    if basic and text.casefold() != "basic":
+        return _with_value("basic", raw, _note_number(basic.group("a") or basic.group("b")))
+    reference = _REFERENCE_DIM.fullmatch(text)
+    if reference:
+        extra: dict[str, Any] = {}
+        value = _note_number(reference.group("val"))
+        if value is not None:
+            extra["value"] = value
+        if reference.group("dia"):
+            extra["diameter"] = True
+        return _known(_BY_ID["reference"], raw, **extra)
+    datum = _DATUM_LINE.fullmatch(text)
+    if datum:
+        return _known(_BY_ID["datum"], raw, datum_letter=datum.group(1).upper())
+    circle = _BOLT_CIRCLE_LINE.fullmatch(text)
+    if circle:
+        return _with_value("bolt_circle", raw, _note_number(circle.group("val")))
+    depth_range = _DEPTH_RANGE.fullmatch(text)
+    if depth_range:
+        first = _note_number(depth_range.group("a"))
+        second = _note_number(depth_range.group("b"))
+        limits = [item for item in (first, second) if item is not None]
+        return _known(_BY_ID["depth"], raw, depth_limits=limits)
+    depth = _DEPTH_ONE.fullmatch(text)
+    if depth:
+        return _with_value("depth", raw, _note_number(depth.group("v")))
+    diameter = _DIA_VALUE.fullmatch(text)
+    if diameter:
+        extra = {}
+        nominal = _note_number(diameter.group("nom"))
+        if nominal is not None:
+            extra["value"] = nominal
+        tolerance = _note_number(diameter.group("tol"))
+        if tolerance is not None:
+            extra["tolerance"] = tolerance
+            extra["citation"] = (
+                f"{_BY_ID['diameter']['citation']} {_BY_ID['plus_minus']['citation']}"
+            )
+        described = _known(_BY_ID["diameter"], raw, **extra)
+        if tolerance is not None:
+            described["citation"] = extra["citation"]
+        return described
+    return None
+
+
 def describe_symbol(token: str) -> dict[str, Any]:
     """Return the cited meaning, or unknown with a blank meaning."""
     raw = (token or "").strip()
@@ -589,26 +929,21 @@ def describe_symbol(token: str) -> dict[str, Any]:
     radius_value = _describe_radius_value(raw)
     if radius_value is not None:
         return radius_value
-    compact = re.sub(r"\s+", "", raw)
-    if _THREAD.fullmatch(compact) or _THREAD.fullmatch(raw) or _METRIC_THREAD.fullmatch(compact):
-        described = _known(_BY_ID["thread"], raw)
-        if _METRIC_THREAD.fullmatch(compact):
-            described["citation"] = (
-                "ASME B1.13M, Metric Screw Threads. "
-                "The designation states major diameter and pitch. "
-                "It does not say tap or single-point, so the thread process stays blank."
-            )
-            described["meaning"] = (
-                "A metric screw-thread designation states major diameter and pitch. "
-                "It does not say tap or single-point, so the thread process stays blank."
-            )
-        return described
+    thread = _describe_thread(raw)
+    if thread is not None:
+        return thread
     fit = _describe_iso_fit(raw)
     if fit is not None:
         return fit
     named = _named_feature_note(raw)
     if named is not None:
         return named
+    bore = _describe_counterbore(raw)
+    if bore is not None:
+        return bore
+    geometric = _describe_geometric(raw)
+    if geometric is not None:
+        return geometric
     degree = _describe_degree(raw)
     if degree is not None:
         return degree
@@ -632,6 +967,8 @@ def unknown_symbols_in_text(text: str) -> list[dict[str, Any]]:
         if index in covered or ord(char) < 128 or char in KNOWN_GLYPHS or char in seen:
             continue
         if unicodedata_letter(char):
+            continue
+        if char in _CHECK_GLYPHS and re.match(r"\s*[0-9]", (text or "")[index + 1 : index + 8]):
             continue
         seen.add(char)
         found.append(describe_symbol(char))
