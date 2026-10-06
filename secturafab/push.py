@@ -6947,6 +6947,36 @@ class SecturaFabPushService:
             loose_linear = (not cad) and classify_sectura_item(
                 title or part_key or ""
             ) == "Linear"
+            # One drawing, no STEP, no BOM kids: plate/sheet → Image Files,
+            # tube/bar → Long. Missing thickness, L/W, or cut length FLAGs
+            # before mint. Empty or non-stock text stays on the existing path.
+            pdf_only_plan = None
+            if not cad and has_job_pdf and not bom_rows:
+                from .pdf_only import plan_pdf_only_file
+
+                pdf_only_plan = plan_pdf_only_file(
+                    job_pdf,
+                    title=title or "",
+                    part_key=part_key or "",
+                )
+                if pdf_only_plan.route == "refuse":
+                    notes.extend(pdf_only_plan.notes)
+                    msg = pdf_only_plan.notes[-1] if pdf_only_plan.notes else (
+                        "FLAG: PDF-only part is missing a required field"
+                    )
+                    return PushResult(
+                        ok=False,
+                        error=msg,
+                        notes=notes,
+                        status="failed",
+                        last_error=msg,
+                    )
+                if pdf_only_plan.notes:
+                    notes.extend(pdf_only_plan.notes)
+                if pdf_only_plan.route == "long":
+                    loose_linear = True
+                elif pdf_only_plan.route == "image_files":
+                    loose_linear = False
             if on_progress:
                 on_progress(
                     {
@@ -7428,12 +7458,21 @@ class SecturaFabPushService:
                         "skipped Image Files / Long. Public nest/weld continue."
                     )
                 elif loose_linear:
+                    linear_desc = quote_description or title or part_key
+                    linear_material = material
+                    linear_length = None
+                    if pdf_only_plan is not None and pdf_only_plan.route == "long":
+                        linear_desc = pdf_only_plan.description or linear_desc
+                        if pdf_only_plan.material:
+                            linear_material = pdf_only_plan.material
+                        linear_length = pdf_only_plan.cut_length_in
                     notes.extend(
                         self.add_loose_linears(
                             quote_id=quote_id,
-                            description=quote_description or title or part_key,
-                            material=material,
+                            description=linear_desc,
+                            material=linear_material,
                             qty=qty,
+                            length=linear_length,
                         )
                     )
                     attempted_pack_stamp = True
@@ -7594,6 +7633,12 @@ class SecturaFabPushService:
                         if cad and (not created or not cad_gold):
                             fail_closed = True
                         elif expect_cad and not cad_gold:
+                            fail_closed = True
+                        elif (
+                            pdf_only_plan is not None
+                            and pdf_only_plan.route == "long"
+                            and not gold
+                        ):
                             fail_closed = True
                         extra = (
                             "AddItem_PDFFiles HTTP 200 is not session-expired; "
