@@ -31,6 +31,7 @@ TUBE_DRAWING = "\n".join(
         "TITLE",
         "PEDESTAL TUBE",
         "2 X 2 X 0.250 TUBE",
+        "A36",
         "48 LG.",
     ]
 )

@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 import fitz
 import pytest
 
+from quote_core.config import load_shop_rates
+from secturafab.pdf_only import plan_pdf_only_part
 from secturafab.push import SecturaFabPushService
 from tests.fixtures.pdf_only_pages import (
     PLATE_DRAWING,
@@ -154,6 +156,7 @@ def test_pdf_plate_image_files_lands_gold_pack(tmp_path: Path, monkeypatch):
     assert {float(stamped["Width"]), float(stamped["Length"])} == set(PLATE_FLATS)
     blob = " ".join(result.notes or [])
     assert "Image Files" in blob
+    assert "FLAG:" not in blob
     assert "PR" in blob
     assert "UnitCost" in blob
     line = gold["ItemList"][0]
@@ -207,6 +210,7 @@ def test_pdf_tube_long_lands_saw_packs(tmp_path: Path, monkeypatch):
     )
     blob = " ".join(result.notes or [])
     assert "Long" in blob
+    assert "FLAG:" not in blob
     assert "Saw" in blob
     line = gold["ItemList"][0]
     assert line["UnitCost"] > line["UnitWeightCost"]
@@ -250,3 +254,214 @@ def test_pdf_plate_missing_flats_flags_and_does_not_push(tmp_path: Path, monkeyp
     assert "FLAG:" in blob
     assert "L/W" in blob
     assert "not inventing" in blob
+    assert "material grade" not in blob
+    assert result.error and "L/W" in result.error
+
+
+def _plate_text(grade_line: str) -> str:
+    lines = [
+        "TITLE",
+        "LIFT LOG GUSSET",
+        "MATERIAL",
+        "1/4",
+    ]
+    if grade_line:
+        lines.append(grade_line)
+    lines.append("PLATE SIZE 4.00 X 6.00")
+    return "\n".join(lines)
+
+
+def _grade_flags(plan) -> list[str]:
+    return [note for note in plan.notes if note.startswith("FLAG: material grade")]
+
+
+@pytest.mark.parametrize(
+    "family",
+    [
+        "CARBON STEEL",
+        "MILD STEEL",
+        "HOT ROLLED STEEL",
+        "COLD-ROLLED STEEL",
+        "HR STEEL",
+    ],
+)
+def test_pdf_carbon_steel_no_grade_defaults_and_flags(family: str):
+    plan = plan_pdf_only_part(text=_plate_text(family), title="LIFT LOG GUSSET")
+    assert plan.route == "image_files"
+    assert plan.material == "A36"
+    flags = _grade_flags(plan)
+    assert len(flags) == 1
+    assert "defaulted to A36" in flags[0]
+    assert "confirm the grade" in flags[0]
+    assert plan.thickness_in == pytest.approx(0.25)
+
+
+def test_pdf_stainless_no_grade_flags_and_does_not_default():
+    plan = plan_pdf_only_part(text=_plate_text("STAINLESS"), title="LIFT LOG GUSSET")
+    assert plan.route == "refuse"
+    assert plan.material is None
+    assert plan.missing == ("material grade",)
+    flags = _grade_flags(plan)
+    assert len(flags) == 1
+    assert "stainless" in flags[0]
+    assert "not defaulting" in flags[0]
+    assert "A36" not in flags[0]
+
+
+def test_pdf_aluminum_no_grade_flags_and_does_not_default():
+    plan = plan_pdf_only_part(text=_plate_text("ALUMINUM"), title="LIFT LOG GUSSET")
+    assert plan.route == "refuse"
+    assert plan.material is None
+    flags = _grade_flags(plan)
+    assert len(flags) == 1
+    assert "aluminum" in flags[0]
+    assert "not defaulting" in flags[0]
+    assert "A36" not in flags[0]
+
+
+def test_pdf_unidentified_family_does_not_default_a36():
+    plan = plan_pdf_only_part(text=_plate_text(""), title="LIFT LOG GUSSET")
+    assert plan.route == "refuse"
+    assert plan.material is None
+    flags = _grade_flags(plan)
+    assert len(flags) == 1
+    assert "not identified" in flags[0]
+    assert "not defaulting" in flags[0]
+    assert "A36" not in flags[0]
+
+
+def test_pdf_named_grade_does_not_flag():
+    plan = plan_pdf_only_part(text=PLATE_DRAWING, title="LIFT LOG GUSSET")
+    assert plan.route == "image_files"
+    assert plan.material and "A572" in plan.material
+    assert _grade_flags(plan) == []
+
+
+def test_shop_config_carbon_default_is_a36():
+    assert load_shop_rates().carbon_steel_default_grade == "A36"
+
+
+def test_carbon_default_grade_reads_shop_config(tmp_path: Path):
+    cfg = tmp_path / "shop_rates.yaml"
+    cfg.write_text(
+        "\n".join(
+            [
+                "app: {}",
+                "weld: {}",
+                "fitup: {}",
+                "materials:",
+                "  carbon_steel_default_grade: '1018'",
+                "",
+            ]
+        )
+    )
+    assert load_shop_rates(cfg).carbon_steel_default_grade == "1018"
+
+
+def test_carbon_default_grade_blank_falls_back_to_a36(tmp_path: Path):
+    cfg = tmp_path / "shop_rates.yaml"
+    cfg.write_text("app: {}\nweld: {}\nfitup: {}\nmaterials: {}\n")
+    assert load_shop_rates(cfg).carbon_steel_default_grade == "A36"
+
+
+def test_pdf_carbon_default_grade_follows_config(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "secturafab.pdf_only._carbon_steel_default_grade",
+        lambda: "1018",
+    )
+    plan = plan_pdf_only_part(text=_plate_text("CARBON STEEL"), title="LIFT LOG GUSSET")
+    assert plan.route == "image_files"
+    assert plan.material == "1018"
+    flags = _grade_flags(plan)
+    assert len(flags) == 1
+    assert "defaulted to 1018" in flags[0]
+    assert "A36" not in flags[0]
+
+
+def test_pdf_carbon_steel_still_pushes_with_config_grade(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "secturafab.pdf_only._carbon_steel_default_grade",
+        lambda: "1018",
+    )
+    _silence_chrome(monkeypatch)
+    pdf = tmp_path / "73476004.pdf"
+    _write_pdf(pdf, _plate_text("CARBON STEEL"))
+    client = MagicMock()
+    client.upload_pdf_via_page_add_files.return_value = plate_upload_bound()
+    client.stamp_pdf_kendo_flats.return_value = plate_perimeter_stamp()
+    client.add_item_pdf_files.return_value = plate_gold_finish_response()
+    client.quote_item_read.return_value = {}
+    client.quote_item_read_treelist.return_value = {}
+    gold = {
+        "QuoteNumber": "73476004",
+        "Description": "LIFT LOG GUSSET",
+        "ItemCount": 1,
+        "ItemList": [plate_gold_line("LIFT LOG GUSSET")],
+        **_ORG,
+    }
+    client.get_json.side_effect = _quote_gets(gold)
+    service = _service(client)
+    patches = _common_patches(service, "LIFT LOG GUSSET")
+    for item in patches:
+        item.start()
+    try:
+        result = service.push_job(
+            title="73476004",
+            pdf_filename="73476004.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={"library": {}},
+            times={},
+            job_id=4,
+            organization="Safe Cave",
+        )
+    finally:
+        for item in reversed(patches):
+            item.stop()
+
+    assert result.ok is True, (result.error, result.notes)
+    client.add_item_pdf_files.assert_called()
+    stamped = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
+    assert stamped["Material"] == "1018"
+    blob = " ".join(result.notes or [])
+    assert "FLAG: material grade" in blob
+    assert "defaulted to 1018" in blob
+    assert "confirm the grade" in blob
+
+
+def test_pdf_stainless_no_grade_does_not_push(tmp_path: Path, monkeypatch):
+    _silence_chrome(monkeypatch)
+    pdf = tmp_path / "73476004.pdf"
+    _write_pdf(pdf, _plate_text("STAINLESS STEEL"))
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    service = SecturaFabPushService(client=client)
+    with patch.object(service, "create_quote", return_value="qid") as create_q, patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ) as upload, patch.object(
+        service, "finish_pdf_files"
+    ) as finish, patch.object(
+        service, "add_loose_linears"
+    ) as linear, patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ):
+        result = service.push_job(
+            title="73476004",
+            pdf_filename="73476004.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={"library": {}},
+            times={},
+            job_id=5,
+            organization="Safe Cave",
+        )
+    assert result.ok is False
+    create_q.assert_not_called()
+    upload.assert_not_called()
+    finish.assert_not_called()
+    linear.assert_not_called()
+    blob = (result.error or "") + " " + " ".join(result.notes or [])
+    assert "FLAG: material grade" in (result.error or "")
+    assert "stainless" in (result.error or "")
+    assert "not defaulting" in (result.error or "")
+    assert "defaulted to" not in blob

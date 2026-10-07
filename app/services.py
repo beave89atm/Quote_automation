@@ -309,7 +309,9 @@ def push_job_secturafab(job_id: int) -> None:
             if flag not in flags:
                 flags.append(flag)
             for note in result.notes or []:
-                if note.startswith("WARNING:") and note not in flags:
+                if (
+                    note.startswith("WARNING:") or note.startswith("FLAG:")
+                ) and note not in flags:
                     flags.append(note)
             job.set_flags(flags)
         else:

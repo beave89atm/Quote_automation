@@ -4800,6 +4800,7 @@ class SecturaFabPushService:
         library: dict[str, Any] | None = None,
         extra_pdfs: list[Path] | None = None,
         takeoff: dict[str, Any] | None = None,
+        drawing_material: str | None = None,
     ) -> list[str]:
         """Image Files Finish: page +Add Files bind → stamp → OnAddPDFClick.
 
@@ -5011,12 +5012,17 @@ class SecturaFabPushService:
                 named_grade = "A572 Grade 50"
             elif re.search(r"(?i)DOMEX|WELDOX|100\s*K", grade_blob):
                 named_grade = "DOMEX/WELDOX"
-            plate_mat = _shop_material(
-                locked.get("grade")
-                or (pm.material if pm and pm.material else None)
-                or named_grade
-                or material
-            )
+            if drawing_material and str(drawing_material).strip():
+                # PDF-only grade (named, or the shop carbon-steel default).
+                # A parsed A36 seed must not replace it.
+                plate_mat = _shop_material(locked.get("grade") or drawing_material)
+            else:
+                plate_mat = _shop_material(
+                    locked.get("grade")
+                    or (pm.material if pm and pm.material else None)
+                    or named_grade
+                    or material
+                )
             plate_thk = locked.get("thickness")
             if plate_thk is None and pm and pm.thickness_in:
                 plate_thk = pm.thickness_in
@@ -6977,6 +6983,13 @@ class SecturaFabPushService:
                     loose_linear = True
                 elif pdf_only_plan.route == "image_files":
                     loose_linear = False
+                if pdf_only_plan.material and pdf_only_plan.route in {
+                    "image_files",
+                    "long",
+                }:
+                    # Shop carbon-steel default or a grade the drawing named.
+                    # Do not leave the silent A36 seed in place of this.
+                    material = pdf_only_plan.material
             if on_progress:
                 on_progress(
                     {
@@ -7566,6 +7579,12 @@ class SecturaFabPushService:
                                 library=library,
                                 extra_pdfs=extra_pdfs,
                                 takeoff=takeoff,
+                                drawing_material=(
+                                    pdf_only_plan.material
+                                    if pdf_only_plan is not None
+                                    and pdf_only_plan.route == "image_files"
+                                    else None
+                                ),
                             )
                         )
                         uploaded.extend(p.name for p in pdfs)

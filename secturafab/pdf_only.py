@@ -3,13 +3,19 @@
 Plate/sheet uses Image Files. Tube/bar/angle/channel uses Long.
 Thickness, gauge, flat size, and cut length come only from the drawing
 text. A missing required field is a FLAG. Nothing is invented.
+
+A missing grade is also a FLAG. Carbon steel with no grade uses the shop
+config grade (A36 unless changed) and still pushes. Any other family, or a
+drawing that does not name a family, is flagged and not given a grade.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from quote_core.config import load_shop_rates
 from quote_core.drawing_title import extract_title_from_pdf_text
 from quote_core.part_materials import _sectura_material_string, parse_material_block
 
@@ -44,6 +50,165 @@ class PdfOnlyPlan:
 
 def _flag(field: str, detail: str) -> str:
     return f"FLAG: {field} — {detail}"
+
+
+# Parser keys that name a family, not a grade. A36 is a grade only when the
+# drawing actually writes A36 — the material parser also uses it as a seed.
+_FAMILY_ONLY_KEYS = {"carbon_steel", "stainless_300", "aluminum"}
+_LITERAL_GRADES = {
+    "A1011",
+    "A519",
+    "AR400",
+    "AR450",
+    "AR500",
+    "DOMEX/WELDOX",
+    "100K",
+}
+# Specific grades. Family words (CARBON STEEL, STAINLESS, ALUMINUM) are not here.
+_NAMED_GRADE_RES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)(?<![A-Z0-9])A\s*[-]?\s*656\b"), "a656_gr80"),
+    (re.compile(r"(?i)\bGR(?:ADE)?\s*80\b"), "a656_gr80"),
+    (re.compile(r"(?i)\bGR(?:ADE)?\s*70\b"), "a656_gr70"),
+    (re.compile(r"(?i)\bGR(?:ADE)?\s*65\b"), "a572_gr65"),
+    (re.compile(r"(?i)\bGR(?:ADE)?\s*60\b"), "a656_gr60"),
+    (re.compile(r"(?i)\bGR(?:ADE)?\s*55\b"), "a572_gr55"),
+    (re.compile(r"(?i)\bGR(?:ADE)?\s*42\b"), "a572_gr42"),
+    (
+        re.compile(
+            r"(?i)(?<![A-Z0-9])A\s*[-]?\s*572\b|\bGR(?:ADE)?\s*50\b|"
+            r"\b50\s*K\b|\bG\s*50\b|\bPL0?25(?:\s*-\s*50\s*K)?\b"
+        ),
+        "a572_gr50",
+    ),
+    (re.compile(r"(?i)(?<![A-Z0-9])A\s*[-]?\s*516\b"), "a516_gr70"),
+    (re.compile(r"(?i)(?<![A-Z0-9])A\s*[-]?\s*514\b"), "a514"),
+    (re.compile(r"(?i)(?<![A-Z0-9])A\s*[-]?\s*500\b"), "a500"),
+    (re.compile(r"(?i)(?<![A-Z0-9])A\s*[-]?\s*992\b"), "a992"),
+    (re.compile(r"(?i)(?<![A-Z0-9])A\s*[-]?\s*1011\b"), "A1011"),
+    (re.compile(r"(?i)(?<![A-Z0-9])A\s*[-]?\s*519\b"), "A519"),
+    (re.compile(r"(?i)\bAR\s*[-]?\s*500\b"), "AR500"),
+    (re.compile(r"(?i)\bAR\s*[-]?\s*450\b"), "AR450"),
+    (re.compile(r"(?i)\bAR\s*[-]?\s*400\b"), "AR400"),
+    (re.compile(r"(?i)\bDOMEX\b|\bWELDOX\b"), "DOMEX/WELDOX"),
+    (re.compile(r"(?i)\b100\s*K\b"), "100K"),
+    (re.compile(r"(?i)\b6061(?:\s*-?\s*T6)?\b"), "aluminum_6061"),
+    (re.compile(r"(?i)\b5052(?:\s*-?\s*H32)?\b|\bALPL[A-Z0-9\-]*\b"), "aluminum_5052"),
+    (
+        re.compile(
+            r"(?i)\b(?:316\s*(?:SS|STAINLESS)|(?:SS|STAINLESS|TYPE)\s*316|316SS)\b"
+        ),
+        "stainless_316",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(?:304\s*(?:SS|STAINLESS)|(?:SS|STAINLESS|TYPE)\s*304|304SS)\b"
+        ),
+        "stainless_304",
+    ),
+    (re.compile(r"(?i)(?<![A-Z0-9])A\s*[-]?\s*36\b"), "a36"),
+)
+# Explicit carbon-steel family only. Bare STEEL, PLATE, TUBE, HSS, or a
+# thickness are not enough — those stay unidentified.
+_CARBON_FAMILY_RE = re.compile(
+    r"(?i)\b(?:CARBON\s+STEEL|MILD\s+STEEL|HOT[-\s]?ROLLED\s+STEEL|"
+    r"COLD[-\s]?ROLLED\s+STEEL|H\.?R\.?\s+STEEL)\b"
+)
+_OTHER_FAMILIES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("stainless", re.compile(r"(?i)\bSTAINLESS(?:\s+STEEL)?\b")),
+    ("aluminum", re.compile(r"(?i)\bALUMIN(?:UM|IUM)\b|\bALUM\b")),
+    ("brass", re.compile(r"(?i)\bBRASS\b")),
+    ("bronze", re.compile(r"(?i)\bBRONZE\b")),
+    ("copper", re.compile(r"(?i)\bCOPPER\b")),
+    ("titanium", re.compile(r"(?i)\bTITANIUM\b")),
+)
+
+
+def _carbon_steel_default_grade() -> str:
+    grade = str(load_shop_rates().carbon_steel_default_grade or "").strip()
+    return grade or "A36"
+
+
+def _grade_token_material(token: str) -> str:
+    if token in _LITERAL_GRADES:
+        return token
+    return _sectura_material_string(token)
+
+
+def _named_grade_material(text: str) -> str | None:
+    """Sectura grade string when the drawing names one. None if it does not."""
+    matched: str | None = None
+    for rx, token in _NAMED_GRADE_RES:
+        if rx.search(text or ""):
+            matched = token
+            break
+    if matched is None:
+        return None
+    _thk, key, source = parse_material_block(text)
+    defaulted = "default" in str(source or "").lower()
+    a36_written = bool(re.search(r"(?i)(?<![A-Z0-9])A\s*[-]?\s*36\b", text or ""))
+    if (
+        key
+        and key not in _FAMILY_ONLY_KEYS
+        and not defaulted
+        and (key != "a36" or a36_written)
+    ):
+        parsed = _parsed_grade(key, source)
+        if parsed:
+            return parsed
+    return _grade_token_material(matched)
+
+
+def _other_family_name(text: str) -> str | None:
+    for name, rx in _OTHER_FAMILIES:
+        if rx.search(text or ""):
+            return name
+    return None
+
+
+@dataclass(frozen=True)
+class _GradeDecision:
+    material: str | None = None
+    flag: str | None = None
+    blocks: bool = False
+
+
+def _grade_decision(text: str) -> _GradeDecision:
+    """Named grade, carbon-steel default, or stop with no grade applied."""
+    named = _named_grade_material(text)
+    if named:
+        return _GradeDecision(material=named)
+    other = _other_family_name(text)
+    if other:
+        return _GradeDecision(
+            flag=_flag(
+                "material grade",
+                f"{other} called out with no grade; not defaulting a grade",
+            ),
+            blocks=True,
+        )
+    if _CARBON_FAMILY_RE.search(text or ""):
+        grade = _carbon_steel_default_grade()
+        return _GradeDecision(
+            material=grade,
+            flag=_flag(
+                "material grade",
+                f"carbon steel with no grade; defaulted to {grade} "
+                "from shop config; confirm the grade",
+            ),
+        )
+    return _GradeDecision(
+        flag=_flag(
+            "material grade",
+            "material family not identified; not defaulting a grade",
+        ),
+        blocks=True,
+    )
+
+
+def _with_grade(grade: _GradeDecision, *notes: str) -> tuple[str, ...]:
+    """Grade note first so a dimension FLAG stays last (that note is the error)."""
+    head = (grade.flag,) if grade.flag else ()
+    return head + notes
 
 
 def _stock_lines(text: str) -> list[str]:
@@ -96,11 +261,24 @@ def plan_pdf_only_part(
     if not plate and not linear:
         return PdfOnlyPlan(route="unclassified")
 
-    thickness_in, material_key, source = parse_material_block(text)
+    thickness_in, _material_key, _source = parse_material_block(text)
     category = classify_sectura_item(blob, thickness_in)
     stock = _stock_lines(text)
     description = _description(drawing_title, stock, title)
-    material = _parsed_grade(material_key, source)
+    grade = _grade_decision(text)
+    material = grade.material
+
+    def _blocked_grade() -> PdfOnlyPlan | None:
+        if not grade.blocks:
+            return None
+        return PdfOnlyPlan(
+            route="refuse",
+            missing=("material grade",),
+            description=description,
+            material=None,
+            thickness_in=float(thickness_in) if thickness_in is not None else None,
+            notes=_with_grade(grade),
+        )
 
     if category == "Linear" or (linear and not plate):
         cut = parse_cut_length(text) or parse_cut_length(title)
@@ -114,8 +292,18 @@ def plan_pdf_only_part(
                 route="refuse",
                 missing=("cut length",),
                 description=description,
-                material=material,
-                notes=(note,),
+                material=None if grade.blocks else material,
+                notes=_with_grade(grade, note),
+            )
+        blocked = _blocked_grade()
+        if blocked is not None:
+            return PdfOnlyPlan(
+                route="refuse",
+                missing=("material grade",),
+                description=description,
+                material=None,
+                cut_length_in=float(cut),
+                notes=blocked.notes,
             )
         note = (
             f"PDF-only tube/bar → Long; cut length {cut:g} in from the drawing"
@@ -125,7 +313,7 @@ def plan_pdf_only_part(
             description=description,
             material=material,
             cut_length_in=float(cut),
-            notes=(note,),
+            notes=_with_grade(grade, note),
         )
 
     if plate and thickness_in is not None and plate_over_three_quarter(thickness_in):
@@ -138,17 +326,17 @@ def plan_pdf_only_part(
             route="refuse",
             missing=("thickness",),
             description=description,
-            material=material,
+            material=None if grade.blocks else material,
             thickness_in=float(thickness_in),
-            notes=(note,),
+            notes=_with_grade(grade, note),
         )
 
     if category == "Cad" or plate:
         missing: list[str] = []
-        notes: list[str] = []
+        dim_notes: list[str] = []
         if thickness_in is None:
             missing.append("thickness")
-            notes.append(
+            dim_notes.append(
                 _flag(
                     "thickness",
                     "PDF parse did not give a thickness or gauge; "
@@ -158,7 +346,7 @@ def plan_pdf_only_part(
         width_in, length_in = parse_plate_flats(text)
         if not (width_in and length_in):
             missing.append("L/W")
-            notes.append(
+            dim_notes.append(
                 _flag(
                     "L/W",
                     "PDF parse did not give length and width; not inventing flats",
@@ -169,11 +357,23 @@ def plan_pdf_only_part(
                 route="refuse",
                 missing=tuple(missing),
                 description=description,
-                material=material,
+                material=None if grade.blocks else material,
                 thickness_in=float(thickness_in) if thickness_in is not None else None,
                 width_in=width_in,
                 length_in=length_in,
-                notes=tuple(notes),
+                notes=_with_grade(grade, *dim_notes),
+            )
+        blocked = _blocked_grade()
+        if blocked is not None:
+            return PdfOnlyPlan(
+                route="refuse",
+                missing=("material grade",),
+                description=description,
+                material=None,
+                thickness_in=float(thickness_in) if thickness_in is not None else None,
+                width_in=width_in,
+                length_in=length_in,
+                notes=blocked.notes,
             )
         note = (
             "PDF-only plate/sheet → Image Files; "
@@ -187,7 +387,7 @@ def plan_pdf_only_part(
             thickness_in=float(thickness_in),
             width_in=float(width_in),
             length_in=float(length_in),
-            notes=(note,),
+            notes=_with_grade(grade, note),
         )
 
     return PdfOnlyPlan(route="unclassified", description=description)

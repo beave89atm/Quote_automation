@@ -61,6 +61,12 @@ fitup:
   # When piece weights are unknown, use this band and flag for review.
   default_band_id: "20_50"
 
+# PDF-only carbon steel with no grade on the drawing uses this grade and still
+# raises FLAG: material grade so a person confirms it. Stainless, aluminum,
+# and any drawing that does not name a family do not use this default.
+materials:
+  carbon_steel_default_grade: A36
+
 # Rules the takeoff engine should never invent — flag for human review instead.
 always_ask:
   - cover_plate_welds_not_named_in_notes
