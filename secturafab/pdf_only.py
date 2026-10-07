@@ -10,7 +10,11 @@ drawing that does not name a family, is flagged and not given a grade.
 
 A bend callout (UP/DOWN, a bend angle, a bend radius, FORMED, BEND, a
 brake note, multiple views of a formed shape, a hem, or an offset/jog)
-is ``FLAG: formed part`` and does not go through as a flat laser plate.
+does not go through as a flat laser plate. One or two 90° bends with a
+stated inside radius and one dimension convention (inside, outside, or
+mold-line) are developed from the press-brake chart, then sent through
+Image Files with Profile and Bend. Anything the chart cannot price is
+``FLAG: formed part`` before a quote is created.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from quote_core.config import load_shop_rates
 from quote_core.drawing_title import extract_title_from_pdf_text
 from quote_core.part_materials import _sectura_material_string, parse_material_block
 
-from .flat_pattern import formed_flag
+from .flat_pattern import evaluate_formed
 from .item_desc import parse_plate_flats
 from .line_item_ops import parse_cut_length
 from .push import (
@@ -51,6 +55,10 @@ class PdfOnlyPlan:
     length_in: float | None = None
     cut_length_in: float | None = None
     notes: tuple[str, ...] = ()
+    bend_count: int | None = None
+    line_note: str = ""
+    operations: tuple[str, ...] = ()
+    flats_from_chart: bool = False
 
 
 def _flag(field: str, detail: str) -> str:
@@ -270,28 +278,6 @@ def plan_pdf_only_part(
     grade = _grade_decision(text)
     material = grade.material
 
-    def _formed_refuse() -> PdfOnlyPlan | None:
-        """Stop before a quote when this is not a flat laser plate."""
-        if linear and not plate:
-            return None
-        reason = formed_flag(f"{text}\n{title}")
-        if not reason:
-            return None
-        return PdfOnlyPlan(
-            route="refuse",
-            missing=("formed part",),
-            description=description,
-            material=None if grade.blocks else material,
-            thickness_in=float(thickness_in) if thickness_in is not None else None,
-            notes=_with_grade(grade, _flag("formed part", reason)),
-        )
-
-    if not plate and not linear:
-        formed = _formed_refuse()
-        if formed is not None:
-            return formed
-        return PdfOnlyPlan(route="unclassified")
-
     def _blocked_grade() -> PdfOnlyPlan | None:
         if not grade.blocks:
             return None
@@ -303,6 +289,54 @@ def plan_pdf_only_part(
             thickness_in=float(thickness_in) if thickness_in is not None else None,
             notes=_with_grade(grade),
         )
+
+    def _apply_formed() -> PdfOnlyPlan | None:
+        """Refuse a bend callout, or develop a simple flat from the chart."""
+        if linear and not plate:
+            return None
+        decision = evaluate_formed(
+            f"{text}\n{title}",
+            material=None if grade.blocks else material,
+            thickness_in=float(thickness_in) if thickness_in is not None else None,
+        )
+        if decision is None:
+            return None
+        if decision.flag:
+            return PdfOnlyPlan(
+                route="refuse",
+                missing=("formed part",),
+                description=description,
+                material=None if grade.blocks else material,
+                thickness_in=float(thickness_in) if thickness_in is not None else None,
+                notes=_with_grade(grade, _flag("formed part", decision.flag)),
+            )
+        if grade.blocks:
+            return _blocked_grade()
+        return PdfOnlyPlan(
+            route="image_files",
+            description=description,
+            material=material,
+            thickness_in=float(thickness_in) if thickness_in is not None else None,
+            width_in=decision.width_in,
+            length_in=decision.developed_length_in,
+            bend_count=decision.bend_count,
+            line_note=decision.line_note,
+            operations=decision.operations,
+            flats_from_chart=True,
+            notes=_with_grade(
+                grade,
+                decision.line_note,
+                "PDF-only formed plate → Image Files; "
+                "flat L×W from the press brake chart; "
+                "ops Profile, Bend",
+            ),
+        )
+
+    if not plate and not linear:
+        formed = _apply_formed()
+        if formed is not None:
+            return formed
+        return PdfOnlyPlan(route="unclassified")
 
     if category == "Linear" or (linear and not plate):
         cut = parse_cut_length(text) or parse_cut_length(title)
@@ -340,7 +374,7 @@ def plan_pdf_only_part(
             notes=_with_grade(grade, note),
         )
 
-    formed = _formed_refuse()
+    formed = _apply_formed()
     if formed is not None:
         return formed
 

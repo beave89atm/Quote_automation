@@ -4801,6 +4801,10 @@ class SecturaFabPushService:
         extra_pdfs: list[Path] | None = None,
         takeoff: dict[str, Any] | None = None,
         drawing_material: str | None = None,
+        flat_width_in: float | None = None,
+        flat_length_in: float | None = None,
+        line_note: str | None = None,
+        bend_count: int | None = None,
     ) -> list[str]:
         """Image Files Finish: page +Add Files bind → stamp → OnAddPDFClick.
 
@@ -5031,14 +5035,17 @@ class SecturaFabPushService:
                 plate_thk = pm.thickness_in
             if plate_thk is None:
                 plate_thk = thickness
-            plate_w, plate_l = resolve_cad_plate_flats(
-                pn,
-                bom_row=matched_row,
-                takeoff=takeoff,
-                pdf_path=path,
-                noun=noun,
-                locked=locked,
-            )
+            if flat_width_in and flat_length_in:
+                plate_w, plate_l = float(flat_width_in), float(flat_length_in)
+            else:
+                plate_w, plate_l = resolve_cad_plate_flats(
+                    pn,
+                    bom_row=matched_row,
+                    takeoff=takeoff,
+                    pdf_path=path,
+                    noun=noun,
+                    locked=locked,
+                )
             if matched_row is not None and plate_w and plate_l:
                 matched_row["width_in"] = plate_w
                 matched_row["length_in"] = plate_l
@@ -5133,6 +5140,12 @@ class SecturaFabPushService:
                     holes = _holes_from_noun(str(plat.get("description") or ""))
                 if holes:
                     stamp_row["HoleDiameter"] = holes[0]["diameter"]
+                if line_note:
+                    stamp_row["Notes"] = line_note
+                    stamp_row["Memo"] = line_note
+                if bend_count:
+                    stamp_row["BendCount"] = int(bend_count)
+                    stamp_row["Operations"] = "Profile,Bend"
                 stamp_rows.append(stamp_row)
             else:
                 missing = []
@@ -5144,6 +5157,12 @@ class SecturaFabPushService:
                     f"FLAG: PDF row {path.name} missing {' and '.join(missing) or 'Qty and L/W'} "
                     "— skipped, not inventing L/W"
                 )
+        if line_note and line_note not in notes:
+            notes.append(line_note)
+        if bend_count:
+            bend_note = f"Bend op with Profile; bend count {int(bend_count)}"
+            if bend_note not in notes:
+                notes.append(bend_note)
         from_kendo = False
         bound = False
         upload_via = ""
@@ -7626,6 +7645,30 @@ class SecturaFabPushService:
                                     pdf_only_plan.material
                                     if pdf_only_plan is not None
                                     and pdf_only_plan.route == "image_files"
+                                    else None
+                                ),
+                                flat_width_in=(
+                                    pdf_only_plan.width_in
+                                    if pdf_only_plan is not None
+                                    and pdf_only_plan.flats_from_chart
+                                    else None
+                                ),
+                                flat_length_in=(
+                                    pdf_only_plan.length_in
+                                    if pdf_only_plan is not None
+                                    and pdf_only_plan.flats_from_chart
+                                    else None
+                                ),
+                                line_note=(
+                                    pdf_only_plan.line_note
+                                    if pdf_only_plan is not None
+                                    and pdf_only_plan.flats_from_chart
+                                    else None
+                                ),
+                                bend_count=(
+                                    pdf_only_plan.bend_count
+                                    if pdf_only_plan is not None
+                                    and pdf_only_plan.flats_from_chart
                                     else None
                                 ),
                             )
