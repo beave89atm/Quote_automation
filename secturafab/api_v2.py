@@ -213,6 +213,47 @@ def quote_id_from_create_response(payload: Any) -> str:
     return _clean(data.get("QuoteId") or data.get("quote_id"))
 
 
+def discard_quote_created_this_run(client: SecturaFabClient, quote_id: str) -> str:
+    """Delete the quote id this run's ``POST /api/v2/quote`` just returned.
+
+    v2 has ``DELETE /api/v2/quote/{quoteId}`` and no operation that sets
+    Status to Archived. When the editor for this id is already open, the
+    shop archive prefix is applied first (``ZZ-DEL-`` plus the id). A
+    forbidden id is left alone. An empty id means this run did not create
+    a quote.
+    """
+    from .forbidden_quotes import is_forbidden_quote_id
+
+    qid = _clean(quote_id)
+    if not qid:
+        return "no quote id from this POST — nothing discarded"
+    if is_forbidden_quote_id(qid):
+        return f"refusing to discard forbidden quote {qid}"
+    archive_note = ""
+    try:
+        from .chrome_cdp import minted_edit_tab_ready
+        from .page_weld import set_page_quote_number
+
+        gate = minted_edit_tab_ready(qid, navigate=False)
+        if isinstance(gate, dict) and gate.get("ok"):
+            notes = set_page_quote_number(qid, f"ZZ-DEL-{qid[:8]}")
+            if notes and not any("WARNING" in note for note in notes):
+                archive_note = "archived as ZZ-DEL; "
+            else:
+                archive_note = "ZZ-DEL rename did not stick; "
+    except Exception as exc:
+        archive_note = f"ZZ-DEL rename skipped ({exc}); "
+    try:
+        client.delete_json(f"v2/quote/{qid}")
+    except Exception as exc:
+        return (
+            f"ORPHAN quote {qid} — {archive_note}"
+            f"DELETE /api/v2/quote/{qid} failed ({exc}). "
+            "Clean this id up by hand."
+        )
+    return f"{archive_note}deleted {qid} via DELETE /api/v2/quote/{qid}"
+
+
 def post_create_quote(
     client: SecturaFabClient,
     *,

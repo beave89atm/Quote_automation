@@ -2427,6 +2427,7 @@ class SecturaFabClient:
             method="POST",
             data=payload,
             quote_id=quote_id,
+            operation="nest",
         )
         status = int(result.get("status") or 0) if isinstance(result, dict) else 0
         if not (

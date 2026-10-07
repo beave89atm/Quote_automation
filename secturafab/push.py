@@ -49,6 +49,7 @@ from .line_item_ops import (
 from .qa_harness import evaluate_quote_get
 
 from .api_v2 import (
+    discard_quote_created_this_run,
     post_create_quote,
     quote_id_from_create_response,
     resolve_organization_id,
@@ -1621,7 +1622,14 @@ class SecturaFabPushService:
 
         CreateQuoteRequestBody has no QuoteNumber. The shop number and the
         editor organization dropdown are still set on the page after the id
-        comes back. Read-back must be ProfitModel 1 / OPEN-NEW.
+        comes back. A v1 read-back that is not ProfitModel 1 / OPEN-NEW is
+        flagged. v2 create does not set those fields, and no supported
+        update lists them.
+
+        Anything that fails after this call's POST returns a quote id
+        discards that id (ZZ-DEL when its editor is already open, then
+        DELETE /api/v2/quote/{id}). A quote this run did not create,
+        including a forbidden id, is not discarded.
         """
         display = _pn_quote_number(quote_number)
         from .forbidden_quotes import (
@@ -1629,7 +1637,10 @@ class SecturaFabPushService:
             is_forbidden_quote_id,
             spent_quote_number_block_reason,
         )
-        from .org_ops import org_autocomplete_search_only_is_fail, page_new_quote_header
+        from .org_ops import (
+            org_autocomplete_search_only_is_fail,
+            rest_mint_header_flag,
+        )
 
         blocked = spent_quote_number_block_reason(display)
         if blocked:
@@ -1651,71 +1662,80 @@ class SecturaFabPushService:
                 name=org_name,
                 known_id=org_id or None,
             )
-        created = post_create_quote(
-            self.client,
-            organization_id=org_id,
-            description=description,
-            external_reference=display,
-        )
-        quote_id = quote_id_from_create_response(created)
-        if not quote_id:
-            raise SecturaFabApiError(
-                "POST /api/v2/quote returned no QuoteId."
-            )
-        if is_forbidden_quote_id(quote_id):
-            raise ForbiddenQuoteError(
-                f"Refusing to continue on forbidden live quote {quote_id}"
-            )
-        # CreateQuoteRequestBody has no QuoteNumber. Open the editor, then
-        # set the shop number the same way the page mint did.
-        editor = minted_edit_tab_ready(quote_id, navigate=True)
-        if not isinstance(editor, dict) or not editor.get("ok"):
-            why = editor.get("reason") if isinstance(editor, dict) else "empty"
-            raise SecturaFabApiError(
-                f"Quote editor did not open for {quote_id} ({why}). "
-                "QuoteNumber was not set."
-            )
-        number_notes = set_page_quote_number(quote_id, display)
-        if not number_notes or any("WARNING" in note for note in number_notes):
-            raise SecturaFabApiError(
-                f"QuoteNumber UpdatePropertyValue failed after POST /api/v2/quote {quote_id}."
-            )
-        if str(description or "").strip():
-            desc_notes = set_page_quote_description(quote_id, description.strip()[:500])
-            if any("WARNING" in note for note in desc_notes):
-                raise SecturaFabApiError(
-                    f"Description UpdatePropertyValue failed after POST /api/v2/quote {quote_id}."
-                )
-        if org_name:
-            bound = bind_quote_organization_detail(
-                quote_id=quote_id,
-                org_name=org_name,
-                org_id=org_id,
-            )
-            if (
-                not isinstance(bound, dict)
-                or not bound.get("ok")
-                or bound.get("via") != "OrganizationDetail"
-                or org_autocomplete_search_only_is_fail(bound)
-            ):
-                why = bound.get("why") if isinstance(bound, dict) else "empty"
-                raise SecturaFabApiError(
-                    f"OrganizationDetail bind failed ({why}) on {quote_id}."
-                )
+        created_id = ""
         try:
-            minted = self.client.get_json(f"v1/quote/{quote_id}")
-        except SecturaFabApiError as exc:
-            raise SecturaFabApiError(
-                f"Quote {quote_id} read-back failed ({exc})."
-            ) from exc
-        if not page_new_quote_header(minted if isinstance(minted, dict) else None):
-            profit = minted.get("ProfitModel") if isinstance(minted, dict) else None
-            status = minted.get("QuoteStatus") if isinstance(minted, dict) else None
-            raise SecturaFabApiError(
-                f"Quote {quote_id} header is ProfitModel {profit!r} / {status!r} "
-                "— want ProfitModel 1 / OPEN-NEW."
+            created = post_create_quote(
+                self.client,
+                organization_id=org_id,
+                description=description,
+                external_reference=display,
             )
-        return quote_id
+            quote_id = quote_id_from_create_response(created)
+            if not quote_id:
+                raise SecturaFabApiError(
+                    "POST /api/v2/quote returned no QuoteId."
+                )
+            if is_forbidden_quote_id(quote_id):
+                raise ForbiddenQuoteError(
+                    f"Refusing to continue on forbidden live quote {quote_id}"
+                )
+            created_id = quote_id
+            # CreateQuoteRequestBody has no QuoteNumber. Open the editor, then
+            # set the shop number the same way the page mint did.
+            editor = minted_edit_tab_ready(quote_id, navigate=True)
+            if not isinstance(editor, dict) or not editor.get("ok"):
+                why = editor.get("reason") if isinstance(editor, dict) else "empty"
+                raise SecturaFabApiError(
+                    f"Quote editor did not open for {quote_id} ({why}). "
+                    "QuoteNumber was not set."
+                )
+            number_notes = set_page_quote_number(quote_id, display)
+            if not number_notes or any("WARNING" in note for note in number_notes):
+                raise SecturaFabApiError(
+                    f"QuoteNumber UpdatePropertyValue failed after POST /api/v2/quote {quote_id}."
+                )
+            if str(description or "").strip():
+                desc_notes = set_page_quote_description(quote_id, description.strip()[:500])
+                if any("WARNING" in note for note in desc_notes):
+                    raise SecturaFabApiError(
+                        f"Description UpdatePropertyValue failed after POST /api/v2/quote {quote_id}."
+                    )
+            if org_name:
+                bound = bind_quote_organization_detail(
+                    quote_id=quote_id,
+                    org_name=org_name,
+                    org_id=org_id,
+                )
+                if (
+                    not isinstance(bound, dict)
+                    or not bound.get("ok")
+                    or bound.get("via") != "OrganizationDetail"
+                    or org_autocomplete_search_only_is_fail(bound)
+                ):
+                    why = bound.get("why") if isinstance(bound, dict) else "empty"
+                    raise SecturaFabApiError(
+                        f"OrganizationDetail bind failed ({why}) on {quote_id}."
+                    )
+            try:
+                minted = self.client.get_json(f"v1/quote/{quote_id}")
+            except SecturaFabApiError as exc:
+                raise SecturaFabApiError(
+                    f"Quote {quote_id} read-back failed ({exc})."
+                ) from exc
+            header_flag = rest_mint_header_flag(
+                minted if isinstance(minted, dict) else None
+            )
+            if header_flag:
+                raise SecturaFabApiError(f"Quote {quote_id}: {header_flag}")
+            return quote_id
+        except Exception as exc:
+            if not created_id:
+                raise
+            cleanup = discard_quote_created_this_run(self.client, created_id)
+            text = f"ORPHAN quote {created_id}: {exc} Cleanup: {cleanup}"
+            if isinstance(exc, ForbiddenQuoteError):
+                raise ForbiddenQuoteError(text) from exc
+            raise SecturaFabApiError(text) from exc
 
     def apply_item_categories(
         self,

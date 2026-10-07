@@ -164,6 +164,35 @@ def page_new_quote_header(detail: dict[str, Any] | None) -> bool:
     return profit_ok and str(detail.get("QuoteStatus") or "") == "OPEN-NEW"
 
 
+def rest_mint_header_flag(detail: dict[str, Any] | None) -> str | None:
+    """None when the v1 read-back is ProfitModel 1 / OPEN-NEW.
+
+    The 2026-10-07 v2 create body is OrganizationId, Description, and
+    ExternalReference. The response is QuoteId only. v2 QuoteResponse
+    ProfitModel is Margin or Markup, and Status has no OPEN-NEW or
+    OPEN-DRAFT. PUT /api/v1/quoteOnline/update does not list ProfitModel
+    or QuoteStatus. There is no supported call that sets the page New
+    Quote header, so a miss is flagged and not written.
+    """
+    if page_new_quote_header(detail if isinstance(detail, dict) else None):
+        return None
+    profit = None
+    status = None
+    if isinstance(detail, dict):
+        profit = detail.get("ProfitModel")
+        status = detail.get("QuoteStatus")
+        if status in (None, ""):
+            status = detail.get("Status")
+    return (
+        f"FLAG: REST mint read back ProfitModel {profit!r} / {status!r}. "
+        "POST /api/v2/quote does not set ProfitModel or QuoteStatus "
+        "(body is OrganizationId, Description, ExternalReference; "
+        "response is QuoteId only). v2 ProfitModel is Margin or Markup "
+        "and Status has no OPEN-NEW. PUT /api/v1/quoteOnline/update does "
+        "not list those fields. No supported call sets ProfitModel 1 / OPEN-NEW."
+    )
+
+
 def org_autocomplete_search_only_is_fail(result: dict[str, Any] | None) -> bool:
     """Time Waco autocomplete 0 hits is not a Quotes UI bind (live 34603-2)."""
     if not isinstance(result, dict):

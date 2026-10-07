@@ -6,7 +6,7 @@ bodies are checked against mocked client calls.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -15,6 +15,7 @@ from secturafab.api_v2 import (
     add_linear_item,
     add_manual_component_item,
     add_plate_item,
+    discard_quote_created_this_run,
     build_add_cad_form,
     build_add_linear_item_body,
     build_add_plate_item_body,
@@ -230,3 +231,132 @@ def test_component_kids_post_manual_endpoint_not_full_quote():
     assert any("add-manual-component-item" in note for note in notes)
     with pytest.raises(SecturaFabApiError, match="Quantity"):
         add_manual_component_item(client, "qid", {"Description": "no qty"})
+
+
+def _status_fields(client: MagicMock) -> list[dict]:
+    found = []
+    for call in client.post_json.call_args_list + client.put_json.call_args_list:
+        body = call.args[1] if len(call.args) > 1 else {}
+        if isinstance(body, dict):
+            found.append(body)
+        elif isinstance(body, list):
+            found.extend(row for row in body if isinstance(row, dict))
+    return found
+
+
+def test_create_quote_discards_only_the_quote_this_post_created():
+    """Post-create failures delete that id. A miss before POST does not."""
+    from secturafab.forbidden_quotes import LVTONG_CUSTOMER_QUOTE_ID, ForbiddenQuoteError
+    from secturafab.push import SecturaFabPushService
+
+    client = MagicMock()
+    client.post_json.return_value = {"Data": {"QuoteId": "mint-1"}}
+    with patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": False, "reason": "edit_tab_missing"},
+    ), pytest.raises(SecturaFabApiError, match="ORPHAN quote mint-1"):
+        SecturaFabPushService(client=client).create_quote(quote_number="ZZ-MINT")
+    client.delete_json.assert_called_once_with("v2/quote/mint-1")
+
+    client = MagicMock()
+    with patch(
+        "secturafab.push.resolve_organization_id",
+        side_effect=OrganizationLookupError("FLAG: no organization match"),
+    ), pytest.raises(OrganizationLookupError, match="no organization"):
+        SecturaFabPushService(client=client).create_quote(
+            quote_number="ZZ-MINT",
+            organization_name="Nope",
+        )
+    client.post_json.assert_not_called()
+    client.delete_json.assert_not_called()
+
+    client = MagicMock()
+    client.post_json.return_value = {"Data": {"QuoteId": LVTONG_CUSTOMER_QUOTE_ID}}
+    with pytest.raises(ForbiddenQuoteError, match="forbidden"):
+        SecturaFabPushService(client=client).create_quote(quote_number="ZZ-MINT")
+    client.delete_json.assert_not_called()
+
+    client = MagicMock()
+    client.post_json.return_value = {"Data": {"QuoteId": "kept-1"}}
+    client.get_json.return_value = {"ProfitModel": 1, "QuoteStatus": "OPEN-NEW"}
+    with patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": {}},
+    ), patch(
+        "secturafab.page_weld.set_page_quote_number",
+        return_value=["QuoteNumber set via UpdatePropertyValue"],
+    ):
+        assert (
+            SecturaFabPushService(client=client).create_quote(quote_number="ZZ-MINT")
+            == "kept-1"
+        )
+    client.delete_json.assert_not_called()
+
+
+def test_create_quote_delete_failure_still_names_the_orphan():
+    from secturafab.push import SecturaFabPushService
+
+    client = MagicMock()
+    client.post_json.return_value = {"Data": {"QuoteId": "mint-2"}}
+    client.delete_json.side_effect = SecturaFabApiError("delete down")
+    with patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": False, "reason": "edit_tab_missing"},
+    ), pytest.raises(SecturaFabApiError, match="ORPHAN quote mint-2") as raised:
+        SecturaFabPushService(client=client).create_quote(quote_number="ZZ-MINT")
+    assert "delete down" in str(raised.value)
+    assert "mint-2" in str(raised.value)
+    client.delete_json.assert_called_once_with("v2/quote/mint-2")
+
+
+def test_rest_mint_header_is_flagged_without_a_status_write():
+    """v2 create cannot set ProfitModel or QuoteStatus. Do not invent a setter."""
+    from secturafab.org_ops import rest_mint_header_flag
+    from secturafab.push import SecturaFabPushService
+
+    assert rest_mint_header_flag(
+        {"ProfitModel": 1, "QuoteStatus": "OPEN-NEW"}
+    ) is None
+    draft = rest_mint_header_flag({"ProfitModel": 0, "QuoteStatus": "OPEN-DRAFT"})
+    assert draft is not None
+    assert "ProfitModel 0" in draft
+    assert "OPEN-DRAFT" in draft
+    assert "No supported call" in draft
+    entered = rest_mint_header_flag({"ProfitModel": "Margin", "Status": "Entered"})
+    assert entered is not None
+    assert "Margin" in entered
+    assert "Entered" in entered
+
+    client = MagicMock()
+    client.post_json.return_value = {"Data": {"QuoteId": "draft-1"}}
+    client.get_json.return_value = {"ProfitModel": 0, "QuoteStatus": "OPEN-DRAFT"}
+    with patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": {}},
+    ), patch(
+        "secturafab.page_weld.set_page_quote_number",
+        return_value=["QuoteNumber set via UpdatePropertyValue"],
+    ), pytest.raises(SecturaFabApiError, match="FLAG:") as raised:
+        SecturaFabPushService(client=client).create_quote(quote_number="ZZ-MINT")
+    message = str(raised.value)
+    assert "ORPHAN quote draft-1" in message
+    assert "OPEN-DRAFT" in message
+    assert "No supported call" in message
+    client.delete_json.assert_called_once_with("v2/quote/draft-1")
+    client.put_json.assert_not_called()
+    for body in _status_fields(client):
+        assert "QuoteStatus" not in body
+        assert "ProfitModel" not in body
+        assert "Status" not in body
+        assert body.get("ParamName") not in {"QuoteStatus", "ProfitModel", "Status"}
+
+
+def test_discard_refuses_a_forbidden_or_empty_id():
+    from secturafab.forbidden_quotes import LVTONG_CUSTOMER_QUOTE_ID
+
+    client = MagicMock()
+    assert "nothing discarded" in discard_quote_created_this_run(client, "")
+    note = discard_quote_created_this_run(client, LVTONG_CUSTOMER_QUOTE_ID)
+    assert "refusing" in note
+    assert LVTONG_CUSTOMER_QUOTE_ID in note
+    client.delete_json.assert_not_called()

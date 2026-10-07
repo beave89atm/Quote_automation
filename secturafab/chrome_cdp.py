@@ -176,10 +176,14 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 SECTURA_HOST = "secturafab.com"
+# Fallback only when SECTURA_CHROME_DEBUG is unset. The shop box must set
+# SECTURA_CHROME_DEBUG (http://127.0.0.1:9224). 9230, 9231, and 9234 are
+# never DevTools ports.
 DEFAULT_DEBUG_PORTS = (9222, 9223, 9224, 9333)
+_BLOCKED_DEBUG_PORTS = frozenset({9230, 9231, 9234})
 _CDP_TIMEOUT_S = 5.0
 _PART_CREATE_TIMEOUT_S = 180.0
 
@@ -237,22 +241,44 @@ def compare_cookie_name_presence(
     }
 
 
+def _debug_endpoint(raw: str) -> str | None:
+    """One DevTools base, or None when the port must not be used."""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        port = int(text)
+        if port in _BLOCKED_DEBUG_PORTS:
+            return None
+        return f"http://127.0.0.1:{port}"
+    url = text if "://" in text else "http://" + text.lstrip("/")
+    url = url.rstrip("/")
+    parsed = urlparse(url)
+    if parsed.port in _BLOCKED_DEBUG_PORTS:
+        return None
+    return url
+
+
 def _debug_candidates() -> list[str]:
-    raw = (
-        (os.getenv("SECTURA_CHROME_DEBUG") or os.getenv("CHROME_DEBUG_PORT") or "")
-        .strip()
-    )
+    """DevTools bases.
+
+    ``SECTURA_CHROME_DEBUG`` must be set on the shop box. When it is set,
+    that endpoint is the only candidate — ``DEFAULT_DEBUG_PORTS`` is not
+    appended. ``CHROME_DEBUG_PORT`` is the same when the first variable is
+    unset. Ports 9230, 9231, and 9234 are never returned.
+    """
+    configured_raw = (os.getenv("SECTURA_CHROME_DEBUG") or "").strip()
+    if configured_raw:
+        configured = _debug_endpoint(configured_raw)
+        return [configured] if configured else []
+    alt_raw = (os.getenv("CHROME_DEBUG_PORT") or "").strip()
+    if alt_raw:
+        alt = _debug_endpoint(alt_raw)
+        return [alt] if alt else []
     out: list[str] = []
-    if raw:
-        if raw.startswith("http://") or raw.startswith("https://"):
-            out.append(raw.rstrip("/"))
-        elif "://" in raw:
-            out.append(raw.rstrip("/"))
-        elif raw.isdigit():
-            out.append(f"http://127.0.0.1:{raw}")
-        else:
-            out.append("http://" + raw.lstrip("/"))
     for port in DEFAULT_DEBUG_PORTS:
+        if port in _BLOCKED_DEBUG_PORTS:
+            continue
         url = f"http://127.0.0.1:{port}"
         if url not in out:
             out.append(url)
@@ -269,7 +295,11 @@ def _http_json(url: str, timeout: float = _CDP_TIMEOUT_S) -> Any:
 
 
 def chrome_debug_bases() -> list[str]:
-    """Every live Chrome DevTools HTTP endpoint (box may use 9224, not 9222)."""
+    """Live Chrome DevTools HTTP endpoints.
+
+    Set ``SECTURA_CHROME_DEBUG`` (shop box: ``http://127.0.0.1:9224``).
+    When it is set, no other port is probed.
+    """
     found: list[str] = []
     for base in _debug_candidates():
         try:
@@ -3659,6 +3689,106 @@ def _cdp_evaluate_promise(
     return _unwrap_evaluate(result)
 
 
+def _create_page_target(url: str, *, base: str | None = None) -> dict[str, Any] | None:
+    """Open a new Chrome tab via ``PUT /json/new``. Does not touch an existing tab."""
+    root = str(base or chrome_debug_base() or "").rstrip("/")
+    target = str(url or "").strip()
+    if not root or not target:
+        return None
+    endpoint = f"{root}/json/new?{quote(target, safe=':/')}"
+    req = urllib.request.Request(endpoint, data=b"", method="PUT")
+    try:
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            body = resp.read()
+    except (OSError, urllib.error.URLError, TimeoutError, ValueError):
+        return None
+    if not body:
+        return None
+    try:
+        payload = json.loads(body.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if not payload.get("webSocketDebuggerUrl"):
+        return None
+    return payload
+
+
+def _wait_edit_id(tab: dict[str, Any], qid: str, *, base: str | None) -> bool:
+    """True when this tab's URL id is ``qid``. Does not switch tabs."""
+    want = json.dumps(qid)
+    waited = _cdp_evaluate_promise(
+        "(function(){"
+        f"  var want = {want};"
+        """
+      return new Promise(function(resolve){
+        function editId(){
+          var path = String(location.pathname || "");
+          var m = path.match(/\\/Quote\\/EDIT\\/([^/?#]+)/i);
+          return m ? String(m[1]) : "";
+        }
+        function done(){
+          var id = editId();
+          resolve({
+            edit_quote_id: id,
+            ok: !!(id && id.toLowerCase() === String(want || "").toLowerCase())
+          });
+        }
+        if (document.readyState === "complete") { done(); return; }
+        window.addEventListener("load", function(){ setTimeout(done, 250); });
+        setTimeout(done, 15000);
+      });
+    })()""",
+        timeout=20.0,
+        base=base,
+        tab=tab,
+        fallback=False,
+    )
+    if not isinstance(waited, dict):
+        return False
+    page_id = str(waited.get("edit_quote_id") or "").strip()
+    return bool(waited.get("ok")) and edit_ids_match(page_id, qid)
+
+
+def _open_quote_edit_in_new_tab(
+    quote_id: str,
+    *,
+    base: str | None = None,
+) -> dict[str, Any] | None:
+    """Open this quote's editor in its own tab.
+
+    Never ``Page.navigate`` a tab whose edit id is a different quote.
+    """
+    qid = str(quote_id or "").strip()
+    if not qid:
+        return None
+    created = _create_page_target(_quote_edit_url(qid), base=base)
+    if not isinstance(created, dict):
+        return None
+    if edit_tab_navigate_would_stomp(created, qid):
+        return None
+    ws = str(created.get("webSocketDebuggerUrl") or "")
+    if not ws:
+        return None
+    here_id = edit_tab_quote_id(created)
+    if edit_ids_match(here_id, qid):
+        return created
+    if here_id:
+        return None
+    cdp_call(ws, "Page.navigate", {"url": _quote_edit_url(qid)})
+    if _wait_edit_id(created, qid, base=base):
+        stamped = dict(created)
+        stamped["url"] = _quote_edit_url(qid)
+        return stamped
+    verified = quote_edit_tab(base, quote_id=qid)
+    if isinstance(verified, dict) and edit_ids_match(edit_tab_quote_id(verified), qid):
+        if edit_tab_navigate_would_stomp(verified, qid):
+            return None
+        return verified
+    return None
+
+
 def _quote_edit_url(quote_id: str) -> str:
     """QuoteOrderEdit — kendo #gridDXFParts after #but_dxf. Not GetItem_AddView."""
     qid = str(quote_id or "").strip()
@@ -3671,20 +3801,34 @@ def minted_edit_tab_ready(
     quote_number: str | None = None,
     base: str | None = None,
     navigate: bool = True,
+    operation: str = "write",
 ) -> dict[str, Any]:
     """Require Chrome ``/Quote/EDIT/{minted_id}`` before bind / SetPartMode / Finish.
 
     Logs ``edit_quote_id`` vs ``minted_id``. ``ok`` is false when the tab is
     still a leftover / spent EDIT (live 997f1eb7 / 5003313-001).
+
+    ``operation`` ``write`` (the default) refuses every forbidden id. ``read``
+    and ``nest`` may use the Lvtong customer editor. They still refuse every
+    other forbidden id, and they never navigate a different quote's tab.
     """
-    from .forbidden_quotes import is_forbidden_quote_id
+    from .forbidden_quotes import editor_read_or_nest_allowed, is_forbidden_quote_id
+
+    op = str(operation or "write").strip().lower()
+
+    def _blocked(qid: str | None) -> bool:
+        if not is_forbidden_quote_id(qid):
+            return False
+        if op in {"read", "nest"} and editor_read_or_nest_allowed(qid):
+            return False
+        return True
 
     minted = str(minted_id or "").strip()
     leftover = quote_edit_tab(base)
     leftover_id = edit_tab_quote_id(leftover)
     tab = quote_edit_tab(base, quote_id=minted, quote_number=quote_number) if minted else None
     edit_id = edit_tab_quote_id(tab) or leftover_id
-    if minted and is_forbidden_quote_id(minted):
+    if minted and _blocked(minted):
         return {
             "ok": False,
             "tab": None,
@@ -3697,7 +3841,7 @@ def minted_edit_tab_ready(
         and edit_ids_match(edit_id, minted)
         and isinstance(tab, dict)
         and tab.get("webSocketDebuggerUrl")
-        and not is_forbidden_quote_id(edit_id)
+        and not _blocked(edit_id)
     ):
         return {
             "ok": True,
@@ -3721,7 +3865,7 @@ def minted_edit_tab_ready(
             edit_ids_match(edit_id, minted)
             and isinstance(ensured, dict)
             and ensured.get("webSocketDebuggerUrl")
-            and not is_forbidden_quote_id(edit_id)
+            and not _blocked(edit_id)
         ):
             return {
                 "ok": True,
@@ -3733,7 +3877,7 @@ def minted_edit_tab_ready(
         tab = ensured
     if not minted:
         reason = "missing_minted_id"
-    elif is_forbidden_quote_id(edit_id) or is_forbidden_quote_id(leftover_id):
+    elif _blocked(edit_id) or _blocked(leftover_id):
         reason = "spent_edit_id"
     elif chrome_session_lost(base):
         reason = "session_lost"
@@ -3770,24 +3914,23 @@ def _ensure_quote_edit_page(
             return existing
     if chrome_session_lost(base):
         return None
-    leftover = quote_edit_tab(base)
-    if edit_tab_navigate_would_stomp(leftover, qid):
-        leftover = None
     listing = quotes_list_tab(base)
     if not isinstance(listing, dict):
         fallback = quotes_tab(base)
         if isinstance(fallback, dict) and _is_quotes_list_tab(fallback):
             listing = fallback
-    tab = listing if isinstance(listing, dict) else leftover
-    if not isinstance(tab, dict):
-        return None
-    if edit_tab_navigate_would_stomp(tab, qid):
-        return None
+    tab = listing if isinstance(listing, dict) else None
+    # A leftover Edit tab is not a navigation target. Open this quote in
+    # its own tab instead of writing the other quote's document.
+    if (
+        not isinstance(tab, dict)
+        or edit_tab_navigate_would_stomp(tab, qid)
+        or not _is_quotes_list_tab(tab)
+    ):
+        return _open_quote_edit_in_new_tab(qid, base=base)
     here_id = edit_tab_quote_id(tab)
     if edit_ids_match(here_id, qid) and tab.get("webSocketDebuggerUrl"):
         return tab
-    if not _is_quotes_list_tab(tab):
-        return None
     ws = str(tab.get("webSocketDebuggerUrl") or "")
     if not ws:
         return None
@@ -4054,9 +4197,14 @@ def page_jquery_ajax(
     quote_id: str,
     data_type: str = "json",
     base: str | None = None,
+    operation: str | None = None,
 ) -> dict[str, Any]:
     """In-page $.ajax. Reads the antiforgery token from the DOM. No cookies."""
-    gate = minted_edit_tab_ready(quote_id, base=base, navigate=False)
+    verb = str(method or "GET").upper()
+    op = operation or ("read" if verb in {"GET", "HEAD", "OPTIONS"} else "write")
+    gate = minted_edit_tab_ready(
+        quote_id, base=base, navigate=False, operation=op
+    )
     if not gate.get("ok"):
         return {
             "ok": False,
@@ -4142,7 +4290,9 @@ def invoke_page_nest_quote_edit(
     base: str | None = None,
 ) -> dict[str, Any]:
     """Page OnNestQuote_Edit. Posts id and nestType on www. No cookies."""
-    gate = minted_edit_tab_ready(quote_id, base=base, navigate=False)
+    gate = minted_edit_tab_ready(
+        quote_id, base=base, navigate=False, operation="nest"
+    )
     if not gate.get("ok"):
         return {
             "ok": False,

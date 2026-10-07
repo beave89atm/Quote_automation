@@ -159,6 +159,90 @@ def test_copy_move_and_internal_payloads():
     assert "0.375" in blob
 
 
+def test_lvtong_customer_quote_blocks_writes_and_keeps_read_and_nest():
+    """Real customer quote: remint and writes refused. GET and page nest stay open."""
+    from secturafab.chrome_cdp import minted_edit_tab_ready, page_jquery_ajax
+    from secturafab.forbidden_quotes import (
+        LVTONG_CUSTOMER_QUOTE_ID,
+        editor_read_or_nest_allowed,
+        is_forbidden_quote_id,
+        is_forbidden_quote_number,
+        spent_quote_number_block_reason,
+    )
+    from secturafab.quote_qc import _default_reader
+
+    qid = LVTONG_CUSTOMER_QUOTE_ID
+    number = "2.03.115.100001"
+    assert is_forbidden_quote_id(qid)
+    assert is_forbidden_quote_number(number)
+    assert editor_read_or_nest_allowed(qid)
+    reason = spent_quote_number_block_reason(number)
+    assert reason is not None
+    assert "not minting" in reason
+    with pytest.raises(ForbiddenQuoteError, match="forbidden"):
+        refuse_forbidden_quote_write(method="POST", path=f"v2/quote/{qid}")
+    with pytest.raises(ForbiddenQuoteError, match="forbidden"):
+        refuse_forbidden_quote_write(method="DELETE", path=f"v2/quote/{qid}")
+    with pytest.raises(ForbiddenQuoteError, match=number):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="v1/quote",
+            payload={"QuoteNumber": number},
+        )
+    refuse_forbidden_quote_write(method="GET", path=f"v1/quote/{qid}")
+
+    tab = {
+        "type": "page",
+        "title": "*Quote-2.03.115.100001",
+        "url": f"https://www.secturafab.com/Quote/EDIT/{qid}",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/lvtong",
+    }
+
+    def fake_edit(base=None, quote_id=None, quote_number=None):
+        asked = str(quote_id or "").strip().lower()
+        if asked and asked != qid.lower():
+            return None
+        return tab
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", side_effect=fake_edit):
+        blocked = minted_edit_tab_ready(qid, navigate=False)
+        reading = minted_edit_tab_ready(qid, navigate=False, operation="read")
+        nesting = minted_edit_tab_ready(qid, navigate=False, operation="nest")
+    assert blocked["ok"] is False
+    assert blocked["reason"] == "spent_minted_id"
+    assert reading["ok"] is True
+    assert reading["tab"]["webSocketDebuggerUrl"].endswith("/lvtong")
+    assert nesting["ok"] is True
+    assert nesting["tab"] is tab
+
+    other = "a7dc46bf-836a-4250-b038-9331cc0595a7"
+    with patch("secturafab.chrome_cdp.quote_edit_tab", return_value=None):
+        still = minted_edit_tab_ready(other, navigate=False, operation="nest")
+    assert still["ok"] is False
+    assert still["reason"] == "spent_minted_id"
+
+    gate = MagicMock(return_value={"ok": False, "reason": "edit_tab_missing"})
+    with patch("secturafab.chrome_cdp.minted_edit_tab_ready", gate):
+        got = page_jquery_ajax(
+            url="/Quote/QuoteItem_Read",
+            method="GET",
+            data={},
+            quote_id=qid,
+        )
+        assert got["ok"] is False
+        assert gate.call_args.kwargs["operation"] == "read"
+        page_jquery_ajax(
+            url="/Quote/AddOperation",
+            method="POST",
+            data={},
+            quote_id=qid,
+        )
+        assert gate.call_args.kwargs["operation"] == "write"
+        with pytest.raises(RuntimeError, match="edit_tab_missing"):
+            _default_reader(qid)
+        assert gate.call_args.kwargs["operation"] == "read"
+
+
 def test_refuse_forbidden_quote_writes():
     for qid in FORBIDDEN_LIVE_QUOTE_IDS:
         with pytest.raises(ForbiddenQuoteError, match="forbidden"):
