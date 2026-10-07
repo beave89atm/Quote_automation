@@ -61,7 +61,12 @@ def _org_name(payload: dict[str, Any]) -> str:
 
 
 def _org_id(payload: dict[str, Any]) -> str:
-    raw = payload.get("PrimaryOrganizationID") or payload.get("OrganizationID")
+    # QuoteResponse.LocationName was removed 2026-10-07. Do not read it.
+    raw = (
+        payload.get("PrimaryOrganizationID")
+        or payload.get("PrimaryOrganizationId")
+        or payload.get("OrganizationID")
+    )
     if isinstance(payload.get("Organization"), dict):
         raw = raw or payload["Organization"].get("ID")
     return str(raw or "").strip()

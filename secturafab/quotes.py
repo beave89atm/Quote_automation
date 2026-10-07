@@ -14,7 +14,6 @@ class QuoteService:
     """
 
     LIST_CANDIDATES = ("Quotes", "Quote", "quotes")
-    CREATE_CANDIDATES = ("Quotes", "Quote", "quotes")
 
     def __init__(self, client: SecturaFabClient) -> None:
         self.client = client
@@ -45,17 +44,12 @@ class QuoteService:
 
     def create_quote(self, payload: dict[str, Any]) -> Any:
         """
-        Create a quote.
+        Create a quote on ``POST /api/v2/quote``.
 
-        `payload` shape depends on your tenant/API version. Run discovery first,
-        or pass a payload captured from Swagger / a known-good request.
+        A customer name is resolved to ``OrganizationId`` through
+        ``GET /api/v2/organization/lookup`` first. The body does not send
+        ``OrganizationName`` or ``LocationName``.
         """
-        errors: list[str] = []
-        for path in self.CREATE_CANDIDATES:
-            response = self.client.request("POST", path, json=payload)
-            if response.status_code < 400:
-                return self.client._parse_or_raise(response)
-            errors.append(f"{path}->{response.status_code}:{response.text[:160]}")
-        raise SecturaFabApiError(
-            "Unable to create quote via known paths: " + " | ".join(errors)
-        )
+        from .api_v2 import create_quote_from_payload
+
+        return create_quote_from_payload(self.client, payload)

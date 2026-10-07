@@ -283,9 +283,13 @@ def test_create_quote_leaves_blank_description_off_the_payload():
     """Kyle 9/28: no title block means Description stays blank, not the part number."""
     client = MagicMock()
     client.get_json.return_value = {"ProfitModel": 1, "QuoteStatus": "OPEN-NEW"}
+    client.post_json.return_value = {"Data": {"QuoteId": "new-qid"}}
     with patch(
         "secturafab.chrome_cdp.page_create_quote",
-        return_value={"ok": True, "quote_id": "new-qid", "via": "GET /quote/create"},
+        side_effect=AssertionError("page create"),
+    ), patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": {}},
     ), patch(
         "secturafab.page_weld.set_page_quote_number",
         return_value=["QuoteNumber set via UpdatePropertyValue"],
@@ -298,6 +302,13 @@ def test_create_quote_leaves_blank_description_off_the_payload():
         )
     assert quote_id == "new-qid"
     assert number.call_args.args[1] == "A-11949-000"
+    body = client.post_json.call_args.args[1]
+    assert "Description" not in body
+    assert body["ExternalReference"] == "A-11949-000"
+    assert "OrganizationName" not in body
+    assert "LocationName" not in body
+    client.get_json.assert_called_once()
+    assert "organization/lookup" not in str(client.get_json.call_args.args[0])
     client.request.assert_not_called()
 
 

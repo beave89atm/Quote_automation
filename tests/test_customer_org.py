@@ -324,16 +324,31 @@ def test_create_quote_stamps_time_waco_on_mint_and_strip():
     from secturafab.push import SecturaFabPushService
 
     client = MagicMock()
-    client.get_json.return_value = {
-        "ID": "new-qid",
-        "ProfitModel": 1,
-        "QuoteStatus": "OPEN-NEW",
-        "PrimaryOrganizationID": TIME_WACO_ORG_ID,
-        "OrganizationID": TIME_WACO_ORG_ID,
-    }
+
+    def _get(path, **_kwargs):
+        if "organization/lookup" in str(path):
+            return {
+                "Data": {
+                    "OrganizationId": TIME_WACO_ORG_ID,
+                    "Name": "Time Manufacturing Waco",
+                }
+            }
+        return {
+            "ID": "new-qid",
+            "ProfitModel": 1,
+            "QuoteStatus": "OPEN-NEW",
+            "PrimaryOrganizationID": TIME_WACO_ORG_ID,
+            "OrganizationID": TIME_WACO_ORG_ID,
+        }
+
+    client.get_json.side_effect = _get
+    client.post_json.return_value = {"Data": {"QuoteId": "new-qid"}}
     with patch(
         "secturafab.chrome_cdp.page_create_quote",
-        return_value={"ok": True, "quote_id": "new-qid", "via": "GET /quote/create"},
+        side_effect=AssertionError("page create"),
+    ), patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": {}},
     ), patch(
         "secturafab.page_weld.set_page_quote_number",
         return_value=["QuoteNumber set via UpdatePropertyValue"],
@@ -356,8 +371,12 @@ def test_create_quote_stamps_time_waco_on_mint_and_strip():
         )
     assert quote_id == "new-qid"
     assert bound.call_args.kwargs["org_name"] == "Time Manufacturing Waco"
+    assert bound.call_args.kwargs["org_id"] == TIME_WACO_ORG_ID
+    body = client.post_json.call_args.args[1]
+    assert body["OrganizationId"] == TIME_WACO_ORG_ID
+    assert "OrganizationName" not in body
+    assert "LocationName" not in body
     client.request.assert_not_called()
-    client.get_json.assert_called_once()
 
 
 def test_create_quote_slim_stamps_when_mint_get_org_empty():
@@ -365,14 +384,26 @@ def test_create_quote_slim_stamps_when_mint_get_org_empty():
     from secturafab.push import SecturaFabPushService
 
     client = MagicMock()
-    client.get_json.return_value = {
-        "ProfitModel": 0,
-        "QuoteStatus": "OPEN-DRAFT",
-        **leftover_org_empty_guid_get(),
-    }
+
+    def _get(path, **_kwargs):
+        if "organization/lookup" in str(path):
+            return {
+                "Data": {
+                    "OrganizationId": TIME_WACO_ORG_ID,
+                    "Name": "Time Manufacturing Waco",
+                }
+            }
+        return {
+            "ProfitModel": 0,
+            "QuoteStatus": "OPEN-DRAFT",
+            **leftover_org_empty_guid_get(),
+        }
+
+    client.get_json.side_effect = _get
+    client.post_json.return_value = {"Data": {"QuoteId": "new-qid"}}
     with patch(
-        "secturafab.chrome_cdp.page_create_quote",
-        return_value={"ok": True, "quote_id": "new-qid", "via": "GET /quote/create"},
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": {}},
     ), patch(
         "secturafab.page_weld.set_page_quote_number",
         return_value=["QuoteNumber set via UpdatePropertyValue"],

@@ -48,6 +48,11 @@ from .line_item_ops import (
 )
 from .qa_harness import evaluate_quote_get
 
+from .api_v2 import (
+    post_create_quote,
+    quote_id_from_create_response,
+    resolve_organization_id,
+)
 from .assembly_ops import (
     ensure_assembly_root,
     needs_assembly_structure,
@@ -1606,15 +1611,24 @@ class SecturaFabPushService:
         organization_id: str | None = None,
     ) -> str:
         """
-        Create a quote through the page New Quote link (GET /quote/create).
+        Create a quote with ``POST /api/v2/quote``.
 
-        REST POST v1/quote mints EnteredBy api user, ProfitModel 0, and
-        OPEN-DRAFT, and the same part sequence then prices with no Profile
-        or Saw. Rename and the organization bind stay on the page.
-        Read-back must be ProfitModel 1 / OPEN-NEW.
+        When a customer name is set, ``GET /api/v2/organization/lookup`` must
+        return exactly one organization. The body sends that
+        ``OrganizationId`` plus Description and ExternalReference.
+        ``OrganizationName`` and ``LocationName`` are not sent, and
+        ``POST /api/v2/organization`` is not called.
+
+        CreateQuoteRequestBody has no QuoteNumber. The shop number and the
+        editor organization dropdown are still set on the page after the id
+        comes back. Read-back must be ProfitModel 1 / OPEN-NEW.
         """
         display = _pn_quote_number(quote_number)
-        from .forbidden_quotes import ForbiddenQuoteError, spent_quote_number_block_reason
+        from .forbidden_quotes import (
+            ForbiddenQuoteError,
+            is_forbidden_quote_id,
+            spent_quote_number_block_reason,
+        )
         from .org_ops import org_autocomplete_search_only_is_fail, page_new_quote_header
 
         blocked = spent_quote_number_block_reason(display)
@@ -1624,42 +1638,54 @@ class SecturaFabPushService:
         display = header_number or display
         description = header_description
         del memo, quote_request_id
-        from .chrome_cdp import bind_quote_organization_detail, page_create_quote
+        from .chrome_cdp import bind_quote_organization_detail, minted_edit_tab_ready
         from .page_weld import set_page_quote_description, set_page_quote_number
 
-        try:
-            created = page_create_quote()
-        except SecturaFabApiError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — fail closed, no REST mint
-            raise SecturaFabApiError(
-                f"Page New Quote failed ({exc}). Not creating quotes over REST."
-            ) from exc
-        if not isinstance(created, dict) or not created.get("ok"):
-            why = created.get("why") if isinstance(created, dict) else "empty"
-            raise SecturaFabApiError(
-                f"Page New Quote failed ({why}). Not creating quotes over REST."
+        org_name = str(organization_name or "").strip()
+        org_id = str(organization_id or "").strip()
+        if org_empty_guid_is_fail(org_id):
+            org_id = str(time_waco_org_id_for_name(organization_name) or "").strip()
+        if org_name:
+            org_id = resolve_organization_id(
+                self.client,
+                name=org_name,
+                known_id=org_id or None,
             )
-        quote_id = str(created.get("quote_id") or "").strip()
+        created = post_create_quote(
+            self.client,
+            organization_id=org_id,
+            description=description,
+            external_reference=display,
+        )
+        quote_id = quote_id_from_create_response(created)
         if not quote_id:
             raise SecturaFabApiError(
-                "Page New Quote returned no quote id. Not creating quotes over REST."
+                "POST /api/v2/quote returned no QuoteId."
+            )
+        if is_forbidden_quote_id(quote_id):
+            raise ForbiddenQuoteError(
+                f"Refusing to continue on forbidden live quote {quote_id}"
+            )
+        # CreateQuoteRequestBody has no QuoteNumber. Open the editor, then
+        # set the shop number the same way the page mint did.
+        editor = minted_edit_tab_ready(quote_id, navigate=True)
+        if not isinstance(editor, dict) or not editor.get("ok"):
+            why = editor.get("reason") if isinstance(editor, dict) else "empty"
+            raise SecturaFabApiError(
+                f"Quote editor did not open for {quote_id} ({why}). "
+                "QuoteNumber was not set."
             )
         number_notes = set_page_quote_number(quote_id, display)
         if not number_notes or any("WARNING" in note for note in number_notes):
             raise SecturaFabApiError(
-                "QuoteNumber UpdatePropertyValue failed. Not creating quotes over REST."
+                f"QuoteNumber UpdatePropertyValue failed after POST /api/v2/quote {quote_id}."
             )
         if str(description or "").strip():
             desc_notes = set_page_quote_description(quote_id, description.strip()[:500])
             if any("WARNING" in note for note in desc_notes):
                 raise SecturaFabApiError(
-                    "Description UpdatePropertyValue failed. Not creating quotes over REST."
+                    f"Description UpdatePropertyValue failed after POST /api/v2/quote {quote_id}."
                 )
-        org_name = str(organization_name or "").strip()
-        org_id = str(organization_id or "").strip()
-        if org_empty_guid_is_fail(org_id):
-            org_id = str(time_waco_org_id_for_name(organization_name) or "").strip()
         if org_name:
             bound = bind_quote_organization_detail(
                 quote_id=quote_id,
@@ -1674,21 +1700,20 @@ class SecturaFabPushService:
             ):
                 why = bound.get("why") if isinstance(bound, dict) else "empty"
                 raise SecturaFabApiError(
-                    f"OrganizationDetail bind failed ({why}). Not creating quotes over REST."
+                    f"OrganizationDetail bind failed ({why}) on {quote_id}."
                 )
         try:
             minted = self.client.get_json(f"v1/quote/{quote_id}")
         except SecturaFabApiError as exc:
             raise SecturaFabApiError(
-                f"Page New Quote {quote_id} read-back failed ({exc}). "
-                "Not creating quotes over REST."
+                f"Quote {quote_id} read-back failed ({exc})."
             ) from exc
         if not page_new_quote_header(minted if isinstance(minted, dict) else None):
             profit = minted.get("ProfitModel") if isinstance(minted, dict) else None
             status = minted.get("QuoteStatus") if isinstance(minted, dict) else None
             raise SecturaFabApiError(
-                f"Page New Quote header is ProfitModel {profit!r} / {status!r} "
-                "— want ProfitModel 1 / OPEN-NEW. Not creating quotes over REST."
+                f"Quote {quote_id} header is ProfitModel {profit!r} / {status!r} "
+                "— want ProfitModel 1 / OPEN-NEW."
             )
         return quote_id
 

@@ -58,7 +58,11 @@ def quote_primary_organization_id(payload: dict[str, Any] | None) -> str:
     """GET PrimaryOrganizationID (OrganizationID / Organization.ID fallback)."""
     if not isinstance(payload, dict):
         return ""
-    raw = payload.get("PrimaryOrganizationID") or payload.get("OrganizationID")
+    raw = (
+        payload.get("PrimaryOrganizationID")
+        or payload.get("PrimaryOrganizationId")
+        or payload.get("OrganizationID")
+    )
     org = payload.get("Organization")
     if isinstance(org, dict):
         raw = raw or org.get("ID")
@@ -86,7 +90,12 @@ def org_guid_empty_after_stamp_is_fail(
         return False
     has_org_field = any(
         key in payload
-        for key in ("PrimaryOrganizationID", "OrganizationID", "Organization")
+        for key in (
+            "PrimaryOrganizationID",
+            "PrimaryOrganizationId",
+            "OrganizationID",
+            "Organization",
+        )
     )
     if not has_org_field:
         return False
