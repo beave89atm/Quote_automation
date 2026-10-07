@@ -465,3 +465,162 @@ def test_pdf_stainless_no_grade_does_not_push(tmp_path: Path, monkeypatch):
     assert "stainless" in (result.error or "")
     assert "not defaulting" in (result.error or "")
     assert "defaulted to" not in blob
+
+
+def _no_hole_zero_contour_finish() -> dict:
+    """Gold PR + laser pack with NumberOfContours=0. No hole on the capture."""
+    out = plate_gold_finish_response()
+    out.update(
+        {
+            "response_number_of_contours": 0,
+            "response_number_of_pierces": 0,
+            "response_error_count": 0,
+            "response_data_kind": "DataPartPDF",
+            "response_data_present": True,
+            "response_error_text": "",
+            "getpdfdata_n": 1,
+            "finish_filelist_n": 1,
+        }
+    )
+    return out
+
+
+def test_no_hole_rectangle_zero_contours_passes_gold_check():
+    """Outer outline is not a contour. NumberOfContours=0 is gold."""
+    from secturafab.website import (
+        drawing_hole_named,
+        finish_list0_data_null_or_errorcount_is_fail,
+        list0_pack_badge_ocl_contours_is_gold,
+        list0_pack_badge_ocl_is_gold,
+        list0_pack_contours_zero_after_productid_hole_is_fail,
+    )
+
+    pack = _no_hole_zero_contour_finish()
+    assert drawing_hole_named(pack, plate_perimeter_stamp(), []) is False
+    assert list0_pack_badge_ocl_is_gold(pack) is True
+    assert list0_pack_badge_ocl_contours_is_gold(pack) is False
+    assert finish_list0_data_null_or_errorcount_is_fail(pack) is False
+    assert (
+        list0_pack_contours_zero_after_productid_hole_is_fail(
+            pack, plate_perimeter_stamp(), []
+        )
+        is False
+    )
+    assert pack["response_unit_cost"] > pack["response_unit_weight_cost"]
+
+
+def test_pdf_no_hole_rectangle_zero_contours_pushes_gold(
+    tmp_path: Path, monkeypatch
+):
+    _silence_chrome(monkeypatch)
+    pdf = tmp_path / "73476004.pdf"
+    _write_pdf(pdf, PLATE_DRAWING)
+    client = MagicMock()
+    client.upload_pdf_via_page_add_files.return_value = plate_upload_bound()
+    client.stamp_pdf_kendo_flats.return_value = plate_perimeter_stamp()
+    client.add_item_pdf_files.return_value = _no_hole_zero_contour_finish()
+    client.quote_item_read.return_value = {}
+    client.quote_item_read_treelist.return_value = {}
+    line = plate_gold_line("LIFT LOG GUSSET")
+    line["NumberOfContours"] = 0
+    line["NumberOfPierces"] = 0
+    gold = {
+        "QuoteNumber": "73476004",
+        "Description": "LIFT LOG GUSSET",
+        "ItemCount": 1,
+        "ItemList": [line],
+        **_ORG,
+    }
+    client.get_json.side_effect = _quote_gets(gold)
+    service = _service(client)
+    patches = _common_patches(service, "LIFT LOG GUSSET")
+    for item in patches:
+        item.start()
+    try:
+        result = service.push_job(
+            title="73476004",
+            pdf_filename="73476004.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={"library": {}},
+            times={},
+            job_id=6,
+            organization="Safe Cave",
+        )
+    finally:
+        for item in reversed(patches):
+            item.stop()
+
+    assert result.ok is True, (result.error, result.notes)
+    blob = " ".join(result.notes or [])
+    assert "NumberOfContours=0 is acceptable" in blob
+    assert "DoD FAIL" not in blob
+    assert "FLAG:" not in blob
+    assert "vs gold DataPartPDF Contours" not in blob
+    assert line["BadgeString"] == "PR"
+    assert line["NumberOfContours"] == 0
+    assert line["UnitCost"] > line["UnitWeightCost"]
+    names = [op["CalculatorName"] for op in line["OperationCostList"]]
+    assert "Laser" in names and "Deburr" in names
+
+
+def test_hole_missing_contours_still_fails(tmp_path: Path, monkeypatch):
+    """A drawing hole with NumberOfContours=0 stays fail-closed."""
+    from secturafab.website import (
+        drawing_hole_named,
+        finish_list0_data_null_or_errorcount_is_fail,
+        list0_pack_contours_zero_after_productid_hole_is_fail,
+    )
+
+    _silence_chrome(monkeypatch)
+    monkeypatch.setenv("SECTURA_WEBSITE_COOKIE", "ASP.NET_SessionId=test")
+    pdf = tmp_path / "HOLE-PLATE.pdf"
+    pdf.write_bytes(b"%PDF")
+    pack = _no_hole_zero_contour_finish()
+    pack["filelist_bag"] = {"ProductID": "plate-sku", "HoleDiameter": 0.5}
+    stamp = plate_perimeter_stamp()
+    stamp.update(
+        {
+            "pdfinternal_xhr": True,
+            "internaldata_n": 1,
+            "productid_n": 1,
+            "getpdfdata_internal_dim1_n": 1,
+            "hole_dim1": 0.5,
+        }
+    )
+    rows = [{"HoleDiameter": 0.5, "Length": 6.0, "Width": 4.0}]
+    assert drawing_hole_named(pack, stamp, rows) is True
+    assert finish_list0_data_null_or_errorcount_is_fail(pack) is True
+    assert list0_pack_contours_zero_after_productid_hole_is_fail(pack, stamp, rows) is True
+
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    client.get_item_add_view.return_value = {}
+    client.upload_pdf_via_page_add_files.return_value = plate_upload_bound()
+    client.stamp_pdf_kendo_flats.return_value = stamp
+    client.add_item_pdf_files.return_value = pack
+    client.quote_item_read.return_value = {"Data": [], "Total": 0}
+    client.get_json.return_value = {"ItemList": []}
+    notes = SecturaFabPushService(client=client).finish_pdf_files(
+        quote_id="11111111-aaaa-bbbb-cccc-00000000hole",
+        pdf_files=[pdf],
+        material="A36",
+        thickness="0.25",
+        qty=1,
+        description="PLATE 1/2 HOLE",
+        bom_rows=[
+            {
+                "part_no": "HOLE-PLATE",
+                "qty": 1,
+                "description": "PLATE 1/2 HOLE",
+                "width_in": 4.0,
+                "length_in": 6.0,
+            }
+        ],
+    )
+    client.add_item_pdf_files.assert_called_once()
+    stamped = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
+    assert stamped["HoleDiameter"] == 0.5
+    blob = " ".join(notes)
+    assert "Image Files DoD FAIL" in blob
+    assert "NumberOfContours=0 is acceptable" not in blob

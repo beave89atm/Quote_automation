@@ -4820,6 +4820,9 @@ class SecturaFabPushService:
         Weight / Weight_UseLocal from the XHR / #Weight (leftover
         XHR Weight=7.7607 was not on the row).         Empty InternalData
         after a landed perimeter is expected for no-hole rectangles.
+        NumberOfContours=0 is acceptable on that plate (PR + laser pack
+        + UnitCost>UnitWeightCost). The outer outline is not a contour.
+        A drawing hole still needs NumberOfContours/Pierces.
         AddNewPDFFeature() with no args is not gold. Named hole step
         is ``AddNewPDFFeature(feature, "cad")`` then wait for GET
         ``/Quote/PDFInternal`` (not a 400ms race) then page
@@ -5149,6 +5152,7 @@ class SecturaFabPushService:
         if cad_paths:
             from .website import (
                 cookie_http_pdf_upload_is_fail,
+                drawing_hole_named,
                 hole_feature_without_pdfinternal_is_fail,
                 list0_pack_badge_ocl_contours_is_gold,
                 list0_pack_badge_ocl_is_gold,
@@ -5670,11 +5674,19 @@ class SecturaFabPushService:
                             notes.append(
                                 f"finish_getpdfdata_n={result.get('getpdfdata_n')}"
                             )
-                        if list0_pack_contours_zero_after_productid_hole_is_fail(
+                        hole_named = drawing_hole_named(
                             result,
                             stamp_out if isinstance(stamp_out, dict) else None,
                             stamp_rows,
-                        ):
+                        )
+                        contours_zero_after_hole = (
+                            list0_pack_contours_zero_after_productid_hole_is_fail(
+                                result,
+                                stamp_out if isinstance(stamp_out, dict) else None,
+                                stamp_rows,
+                            )
+                        )
+                        if contours_zero_after_hole:
                             notes.append(
                                 "WARNING: AddItem_PDFFiles List[0] Contours=0 "
                                 "or BadgeString empty after ProductID+hole "
@@ -5685,6 +5697,29 @@ class SecturaFabPushService:
                                 "do not invent FileList keys — Nest is later — "
                                 "Image Files DoD FAIL"
                             )
+                        try:
+                            named_contours = int(
+                                result.get("response_number_of_contours") or 0
+                            )
+                        except (TypeError, ValueError):
+                            named_contours = 0
+                        contours_named = "response_number_of_contours" in result
+                        if (
+                            contours_named
+                            and named_contours < 1
+                            and hole_named
+                            and not contours_zero_after_hole
+                            and not finish_prt_pdf_still_contours_zero_is_fail(
+                                result,
+                                stamp_out if isinstance(stamp_out, dict) else None,
+                            )
+                        ):
+                            notes.append(
+                                "WARNING: drawing hole still needs "
+                                "NumberOfContours/Pierces (gold 14501-1 is 1/1) "
+                                "— NumberOfContours=0 — do not invent FileList "
+                                "keys — Image Files DoD FAIL"
+                            )
                         if list0_pack_badge_ocl_contours_is_gold(result):
                             notes.append(
                                 "list0_pack BadgeString PR + laser OCL + "
@@ -5692,10 +5727,18 @@ class SecturaFabPushService:
                                 "NumberOfContours/Pierces 1/1"
                             )
                         elif list0_pack_badge_ocl_is_gold(result):
-                            notes.append(
-                                "list0_pack BadgeString PR + laser OCL + "
-                                "UnitCost>UnitWeightCost"
-                            )
+                            if contours_named and named_contours < 1 and not hole_named:
+                                notes.append(
+                                    "list0_pack BadgeString PR + laser OCL + "
+                                    "UnitCost>UnitWeightCost; NumberOfContours=0 "
+                                    "is acceptable (no hole; outer outline is not "
+                                    "a contour)"
+                                )
+                            else:
+                                notes.append(
+                                    "list0_pack BadgeString PR + laser OCL + "
+                                    "UnitCost>UnitWeightCost"
+                                )
                         if plate_modal_without_filelist_productid_is_fail(
                             stamp_out if isinstance(stamp_out, dict) else None,
                             result,

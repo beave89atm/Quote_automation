@@ -7763,12 +7763,64 @@ def leftover_list0_data_null_errorcount_is_fail(
     return True
 
 
+def drawing_hole_named(
+    result: dict[str, Any] | None = None,
+    stamp_out: dict[str, Any] | None = None,
+    stamp_rows: list[dict[str, Any]] | None = None,
+) -> bool:
+    """True when the drawing calls out a hole.
+
+    The outer outline of a plain flat rectangle is not a hole and is not
+    a contour. Dim1 / InternalData type hole / HoleDiameter are holes.
+    """
+    if isinstance(result, dict):
+        for key in ("filelist_internaldata_dim1_n", "getpdfdata_internal_dim1_n"):
+            try:
+                if int(result.get(key) or 0) >= 1:
+                    return True
+            except (TypeError, ValueError):
+                return True
+        blobs = [str(result.get("filelist_internaldata") or "")]
+        bag = result.get("filelist_bag") if isinstance(result.get("filelist_bag"), dict) else {}
+        blobs.append(str(bag.get("InternalData") or ""))
+        if any(re.search(r"(?i)\bhole\b", blob) for blob in blobs if blob):
+            return True
+        try:
+            if float(bag.get("HoleDiameter") or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            return True
+    if isinstance(stamp_out, dict):
+        try:
+            if int(stamp_out.get("internaldata_n") or 0) >= 1:
+                return True
+        except (TypeError, ValueError):
+            return True
+        try:
+            if float(stamp_out.get("hole_dim1") or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            return True
+    for row in stamp_rows or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            if float(row.get("HoleDiameter") or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
 def finish_list0_data_null_or_errorcount_is_fail(
     result: dict[str, Any] | None,
 ) -> bool:
-    """Finish List[0] Data null or ErrorCount>0 or Contours=0.
+    """Finish List[0] Data null, ErrorCount>0, or a hole with Contours=0.
 
     Live 97ae3e4f. Gold 14501-1 Data=DataPartPDF Contours 1/1 ErrorCount=0.
+    A no-hole flat plate with DataPartPDF, ErrorCount 0, and
+    NumberOfContours=0 is not this fail: the outer outline is not a
+    contour. A named hole with contours still missing fails closed.
     Older mocks without response_error_count / response_data_kind pass through.
     """
     if not isinstance(result, dict):
@@ -7793,7 +7845,9 @@ def finish_list0_data_null_or_errorcount_is_fail(
         contours = int(result.get("response_number_of_contours") or 0)
     except (TypeError, ValueError):
         contours = 0
-    return data_null or err > 0 or contours < 1
+    if data_null or err > 0:
+        return True
+    return contours < 1 and drawing_hole_named(result)
 
 
 def list0_pack_contours_zero_after_productid_hole_is_fail(
