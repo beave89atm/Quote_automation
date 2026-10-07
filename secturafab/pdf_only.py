@@ -7,6 +7,10 @@ text. A missing required field is a FLAG. Nothing is invented.
 A missing grade is also a FLAG. Carbon steel with no grade uses the shop
 config grade (A36 unless changed) and still pushes. Any other family, or a
 drawing that does not name a family, is flagged and not given a grade.
+
+A bend callout (UP/DOWN, a bend angle, a bend radius, FORMED, BEND, a
+brake note, multiple views of a formed shape, a hem, or an offset/jog)
+is ``FLAG: formed part`` and does not go through as a flat laser plate.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from quote_core.config import load_shop_rates
 from quote_core.drawing_title import extract_title_from_pdf_text
 from quote_core.part_materials import _sectura_material_string, parse_material_block
 
+from .flat_pattern import formed_flag
 from .item_desc import parse_plate_flats
 from .line_item_ops import parse_cut_length
 from .push import (
@@ -258,15 +263,34 @@ def plan_pdf_only_part(
     blob, drawing_title = _classify_blob(text, title, part_key)
     plate = _cad_plate_sheet_noun(blob)
     linear = _has_linear_noun(blob)
-    if not plate and not linear:
-        return PdfOnlyPlan(route="unclassified")
-
     thickness_in, _material_key, _source = parse_material_block(text)
     category = classify_sectura_item(blob, thickness_in)
     stock = _stock_lines(text)
     description = _description(drawing_title, stock, title)
     grade = _grade_decision(text)
     material = grade.material
+
+    def _formed_refuse() -> PdfOnlyPlan | None:
+        """Stop before a quote when this is not a flat laser plate."""
+        if linear and not plate:
+            return None
+        reason = formed_flag(f"{text}\n{title}")
+        if not reason:
+            return None
+        return PdfOnlyPlan(
+            route="refuse",
+            missing=("formed part",),
+            description=description,
+            material=None if grade.blocks else material,
+            thickness_in=float(thickness_in) if thickness_in is not None else None,
+            notes=_with_grade(grade, _flag("formed part", reason)),
+        )
+
+    if not plate and not linear:
+        formed = _formed_refuse()
+        if formed is not None:
+            return formed
+        return PdfOnlyPlan(route="unclassified")
 
     def _blocked_grade() -> PdfOnlyPlan | None:
         if not grade.blocks:
@@ -315,6 +339,10 @@ def plan_pdf_only_part(
             cut_length_in=float(cut),
             notes=_with_grade(grade, note),
         )
+
+    formed = _formed_refuse()
+    if formed is not None:
+        return formed
 
     if plate and thickness_in is not None and plate_over_three_quarter(thickness_in):
         note = _flag(

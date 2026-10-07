@@ -467,6 +467,122 @@ def test_pdf_stainless_no_grade_does_not_push(tmp_path: Path, monkeypatch):
     assert "defaulted to" not in blob
 
 
+def _formed_plate(*extra: str) -> str:
+    """A plate that would otherwise be a flat laser part, plus a bend callout."""
+    lines = [
+        "TITLE",
+        "LIFT LOG GUSSET",
+        "MATERIAL",
+        "1/4",
+        "A36",
+        "PLATE SIZE 4.00 X 6.00",
+        *extra,
+    ]
+    return "\n".join(lines)
+
+
+@pytest.mark.parametrize(
+    ("extra", "reason"),
+    [
+        (("HEM",), "hem is not a simple bend"),
+        (("JOG",), "offset/jog is not a simple bend"),
+        (("OFFSET",), "offset/jog is not a simple bend"),
+        (
+            ("3 BENDS", "90 DEG", "INSIDE RADIUS 0.25", "DIMENSIONS INSIDE"),
+            "more than two bends",
+        ),
+        (
+            ("BEND 45 DEG", "INSIDE RADIUS 0.25", "DIMENSIONS INSIDE"),
+            "bend angle is not 90°",
+        ),
+        (
+            (
+                "1 BEND",
+                "BEND UP 90 DEG",
+                "DIMENSIONS INSIDE",
+                "LEG 2.00",
+                "LEG 3.00",
+                "WIDTH 6.00",
+            ),
+            "inside radius was not on the drawing",
+        ),
+        (
+            (
+                "1 BEND",
+                "90 DEG",
+                "INSIDE RADIUS 0.25",
+                "DIMENSIONS INSIDE",
+                "DIMENSIONS OUTSIDE",
+            ),
+            "dimension convention is ambiguous",
+        ),
+        (
+            ("1 BEND", "90 DEG", "INSIDE RADIUS 0.25", "LEG 2.00", "LEG 3.00", "WIDTH 6.00"),
+            "dimension convention was not stated",
+        ),
+        (("FRONT VIEW", "SIDE VIEW"), "multiple views of a formed shape"),
+        (("UP",), "UP/DOWN"),
+        (("90 DEG",), "bend angle"),
+        (("BEND RADIUS 0.25",), "bend radius"),
+        (("FORMED",), "FORMED"),
+        (("BEND",), "BEND"),
+        (("PRESS BRAKE",), "press brake"),
+    ],
+)
+def test_pdf_bend_callout_flags_formed_part(extra: tuple[str, ...], reason: str):
+    plan = plan_pdf_only_part(text=_formed_plate(*extra), title="LIFT LOG GUSSET")
+    assert plan.route == "refuse"
+    assert plan.missing == ("formed part",)
+    assert plan.notes[-1].startswith("FLAG: formed part — ")
+    assert reason in plan.notes[-1]
+    assert "Image Files" not in " ".join(plan.notes)
+
+
+def test_formed_callout_without_plate_noun_still_refuses():
+    plan = plan_pdf_only_part(
+        text="FORMED\n1/4\nA36\n",
+        title="BRACKET",
+    )
+    assert plan.route == "refuse"
+    assert plan.notes[-1].startswith("FLAG: formed part — ")
+
+
+def test_pdf_formed_part_stops_before_quote(tmp_path: Path, monkeypatch):
+    _silence_chrome(monkeypatch)
+    pdf = tmp_path / "73476004.pdf"
+    _write_pdf(pdf, _formed_plate("HEM"))
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    service = SecturaFabPushService(client=client)
+    with patch.object(service, "create_quote", return_value="qid") as create_q, patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ) as upload, patch.object(
+        service, "finish_pdf_files"
+    ) as finish, patch.object(
+        service, "add_loose_linears"
+    ) as linear, patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ):
+        result = service.push_job(
+            title="73476004",
+            pdf_filename="73476004.pdf",
+            pdf_path=pdf,
+            stp_path=None,
+            takeoff={"library": {}},
+            times={},
+            job_id=7,
+            organization="Safe Cave",
+        )
+    assert result.ok is False
+    create_q.assert_not_called()
+    upload.assert_not_called()
+    finish.assert_not_called()
+    linear.assert_not_called()
+    assert result.error is not None
+    assert result.error.startswith("FLAG: formed part — ")
+    assert "hem is not a simple bend" in result.error
+
+
 def _no_hole_zero_contour_finish() -> dict:
     """Gold PR + laser pack with NumberOfContours=0. No hole on the capture."""
     out = plate_gold_finish_response()
